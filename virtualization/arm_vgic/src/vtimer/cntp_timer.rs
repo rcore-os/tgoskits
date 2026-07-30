@@ -22,8 +22,10 @@ const CNTP_PPI: u8 = 30;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const TIMER_TOKEN_NONE: usize = usize::MAX;
 
-pub(super) struct CntpTimerState {
+pub struct CntpTimerState {
     banks: TimerBankLock<BTreeMap<(usize, usize), Arc<CntpTimerBank>>>,
+    #[cfg(test)]
+    test_identity: TimerBankLock<(usize, usize)>,
 }
 
 struct CntpTimerBank {
@@ -41,6 +43,8 @@ impl CntpTimerState {
     pub(super) fn new() -> Self {
         Self {
             banks: TimerBankLock::new(BTreeMap::new()),
+            #[cfg(test)]
+            test_identity: TimerBankLock::new((0, 0)),
         }
     }
 
@@ -68,8 +72,28 @@ impl CntpTimerState {
         self.current_bank().write_tval(value);
     }
 
+    pub fn reset(&self) {
+        let banks = self.snapshot_banks();
+        for bank in &banks {
+            bank.reset();
+        }
+        lock_timer_banks(&self.banks).clear();
+    }
+
+    pub fn suspend(&self) {
+        for bank in self.snapshot_banks() {
+            bank.suspend();
+        }
+    }
+
+    pub fn resume(&self) {
+        for bank in self.snapshot_banks() {
+            bank.rearm();
+        }
+    }
+
     fn current_bank(&self) -> Arc<CntpTimerBank> {
-        let (vm_id, vcpu_id) = current_timer_identity();
+        let (vm_id, vcpu_id) = self.current_timer_identity();
         let mut banks = lock_timer_banks(&self.banks);
         Arc::clone(
             banks
@@ -78,10 +102,35 @@ impl CntpTimerState {
         )
     }
 
+    fn snapshot_banks(&self) -> alloc::vec::Vec<Arc<CntpTimerBank>> {
+        lock_timer_banks(&self.banks).values().cloned().collect()
+    }
+
+    #[cfg(test)]
+    fn current_timer_identity(&self) -> (usize, usize) {
+        *lock_test_identity(&self.test_identity)
+    }
+
+    #[cfg(not(test))]
+    fn current_timer_identity(&self) -> (usize, usize) {
+        current_timer_identity()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_current_identity(&self, vm_id: usize, vcpu_id: usize) {
+        *lock_test_identity(&self.test_identity) = (vm_id, vcpu_id);
+    }
+
     #[cfg(test)]
     pub(super) fn current_fire_target_for_test(&self) -> Option<(usize, usize, u8)> {
         let bank = self.current_bank();
         bank.fire_target(bank.generation.load(Ordering::Acquire))
+    }
+}
+
+impl Default for CntpTimerState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -97,6 +146,15 @@ fn lock_timer_banks(
     banks: &TimerBankLock<BTreeMap<(usize, usize), Arc<CntpTimerBank>>>,
 ) -> TimerBankLockGuard<'_, BTreeMap<(usize, usize), Arc<CntpTimerBank>>> {
     banks.lock()
+}
+
+#[cfg(test)]
+fn lock_test_identity(
+    identity: &TimerBankLock<(usize, usize)>,
+) -> TimerBankLockGuard<'_, (usize, usize)> {
+    identity
+        .lock()
+        .expect("CNTP timer test identity lock poisoned")
 }
 
 impl CntpTimerBank {
@@ -204,6 +262,23 @@ impl CntpTimerBank {
         }
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
+    fn cancel_pending_timer(&self) {
+        self.timer_token.store(TIMER_TOKEN_NONE, Ordering::Release);
+    }
+
+    fn reset(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.ctl.store(0, Ordering::Release);
+        self.cval.store(0, Ordering::Release);
+        self.cancel_pending_timer();
+    }
+
+    fn suspend(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.cancel_pending_timer();
+    }
+
     #[cfg(target_arch = "aarch64")]
     fn fire(self: &Arc<Self>, expected_generation: u64) {
         if !self.is_armed_for(expected_generation) {
@@ -211,10 +286,15 @@ impl CntpTimerBank {
         }
 
         if counter_ticks() < self.cval.load(Ordering::Acquire) {
-            self.rearm();
+            if self.is_armed_for(expected_generation) {
+                self.rearm();
+            }
             return;
         }
 
+        if !self.is_armed_for(expected_generation) {
+            return;
+        }
         host::queue_virtual_interrupt(self.vm_id, self.vcpu_id, CNTP_PPI);
     }
 
@@ -237,25 +317,6 @@ impl CntpTimerBank {
         let ctl = self.ctl.load(Ordering::Acquire);
         ctl & CNTP_CTL_ENABLE != 0 && ctl & CNTP_CTL_IMASK == 0
     }
-}
-
-#[cfg(test)]
-static TEST_CURRENT_VM_ID: AtomicUsize = AtomicUsize::new(0);
-#[cfg(test)]
-static TEST_CURRENT_VCPU_ID: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(test)]
-pub(super) fn set_test_current_identity(vm_id: usize, vcpu_id: usize) {
-    TEST_CURRENT_VM_ID.store(vm_id, Ordering::Relaxed);
-    TEST_CURRENT_VCPU_ID.store(vcpu_id, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-fn current_timer_identity() -> (usize, usize) {
-    (
-        TEST_CURRENT_VM_ID.load(Ordering::Relaxed),
-        TEST_CURRENT_VCPU_ID.load(Ordering::Relaxed),
-    )
 }
 
 #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -326,19 +387,19 @@ mod tests {
     fn banks_timer_state_per_vcpu_identity() {
         let state = CntpTimerState::new();
 
-        set_test_current_identity(11, 0);
+        state.set_test_current_identity(11, 0);
         state.write_cval(0x1111);
         state.write_ctl(CNTP_CTL_ENABLE | CNTP_CTL_IMASK);
 
-        set_test_current_identity(11, 1);
+        state.set_test_current_identity(11, 1);
         state.write_cval(0x2222);
         state.write_ctl(CNTP_CTL_ENABLE);
 
-        set_test_current_identity(11, 0);
+        state.set_test_current_identity(11, 0);
         assert_eq!(state.read_cval(), 0x1111);
         assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0x3);
 
-        set_test_current_identity(11, 1);
+        state.set_test_current_identity(11, 1);
         assert_eq!(state.read_cval(), 0x2222);
         assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0x1);
     }
@@ -347,12 +408,12 @@ mod tests {
     fn resolves_ppi30_delivery_target_from_each_vcpu_bank() {
         let state = CntpTimerState::new();
 
-        set_test_current_identity(11, 0);
+        state.set_test_current_identity(11, 0);
         state.write_cval(0);
         state.write_ctl(CNTP_CTL_ENABLE);
         let vcpu0_target = state.current_fire_target_for_test();
 
-        set_test_current_identity(11, 1);
+        state.set_test_current_identity(11, 1);
         state.write_cval(0);
         state.write_ctl(CNTP_CTL_ENABLE);
         let vcpu1_target = state.current_fire_target_for_test();
@@ -360,14 +421,76 @@ mod tests {
         assert_eq!(vcpu0_target, Some((11, 0, CNTP_PPI)));
         assert_eq!(vcpu1_target, Some((11, 1, CNTP_PPI)));
 
-        set_test_current_identity(11, 0);
+        state.set_test_current_identity(11, 0);
         state.write_ctl(CNTP_CTL_ENABLE | CNTP_CTL_IMASK);
         assert_eq!(state.current_fire_target_for_test(), None);
 
-        set_test_current_identity(11, 1);
+        state.set_test_current_identity(11, 1);
         assert_eq!(
             state.current_fire_target_for_test(),
             Some((11, 1, CNTP_PPI))
         );
+    }
+
+    #[test]
+    fn reset_invalidates_stale_callbacks_for_all_banks() {
+        let state = CntpTimerState::new();
+
+        state.set_test_current_identity(11, 0);
+        state.write_cval(0);
+        state.write_ctl(CNTP_CTL_ENABLE);
+        let bank0 = state.current_bank();
+        let generation0 = bank0.generation.load(Ordering::Acquire);
+
+        state.set_test_current_identity(11, 1);
+        state.write_cval(0);
+        state.write_ctl(CNTP_CTL_ENABLE);
+        let bank1 = state.current_bank();
+        let generation1 = bank1.generation.load(Ordering::Acquire);
+
+        state.reset();
+
+        assert_eq!(bank0.fire_target(generation0), None);
+        assert_eq!(bank1.fire_target(generation1), None);
+
+        state.set_test_current_identity(11, 0);
+        assert_eq!(state.read_cval(), 0);
+        assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0);
+    }
+
+    #[test]
+    fn suspend_invalidates_stale_callbacks_and_resume_rearms_all_banks() {
+        let state = CntpTimerState::new();
+
+        state.set_test_current_identity(11, 0);
+        state.write_cval(0);
+        state.write_ctl(CNTP_CTL_ENABLE);
+        let bank0 = state.current_bank();
+        let generation0 = bank0.generation.load(Ordering::Acquire);
+
+        state.set_test_current_identity(11, 1);
+        state.write_cval(0x2222);
+        state.write_ctl(CNTP_CTL_ENABLE | CNTP_CTL_IMASK);
+        let bank1 = state.current_bank();
+        let generation1 = bank1.generation.load(Ordering::Acquire);
+
+        state.suspend();
+
+        assert_eq!(bank0.fire_target(generation0), None);
+        assert_eq!(bank1.fire_target(generation1), None);
+
+        state.set_test_current_identity(11, 1);
+        assert_eq!(state.read_cval(), 0x2222);
+        assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0x3);
+
+        state.resume();
+
+        state.set_test_current_identity(11, 0);
+        assert_eq!(
+            state.current_fire_target_for_test(),
+            Some((11, 0, CNTP_PPI))
+        );
+        state.set_test_current_identity(11, 1);
+        assert_eq!(state.current_fire_target_for_test(), None);
     }
 }
