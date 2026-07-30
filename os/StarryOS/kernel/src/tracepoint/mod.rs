@@ -1,5 +1,6 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
+mod registry;
 mod sched;
 mod sched_filter;
 mod trace;
@@ -15,14 +16,14 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoPreempt;
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_sync::PiMutex;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
+pub use registry::KernelExtTracePoint;
+use registry::TracepointReclaimer;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
@@ -42,14 +43,6 @@ const TRACE_TASK_COMM_LEN: usize = 16;
 /// Maximum number of PID→cmdline entries in the command-line cache.
 const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 
-// The registry entry is locked from the tracepoint fire path, which for
-// `sched:sched_switch` runs from the ax-task switch path (IRQ off,
-// preemption disabled). A sleeping `ax_sync::PiMutex` would trip the
-// "sleeping in atomic context" guard there, so this lock must be a
-// non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
-// uses for exactly this reason.
-pub type KernelExtTracePoint = Arc<SpinNoPreempt<ExtTracePoint<KernelTraceAux>>>;
-
 /// Look up a registered tracepoint by its numeric id (as found in
 /// `/sys/kernel/debug/tracing/events/<subsystem>/<event>/id`).
 ///
@@ -66,7 +59,7 @@ pub fn lookup_ext_tracepoint(id: u32) -> Option<KernelExtTracePoint> {
 /// initialized yet.
 pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
     for ext_tp in TRACE_STATE.ext_tracepoints.get()?.values() {
-        if ext_tp.lock().trace_point().name() == name {
+        if ext_tp.trace_point().name() == name {
             return Some(ext_tp.clone());
         }
     }
@@ -212,6 +205,7 @@ struct TraceState {
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
     sched_notify: IrqNotify,
+    reclaimer: TracepointReclaimer,
     cmdline_cache: LazyInit<PiMutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
@@ -226,6 +220,7 @@ impl TraceState {
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
             sched_notify: IrqNotify::new(),
+            reclaimer: TracepointReclaimer::new(),
             cmdline_cache: LazyInit::new(),
             ext_tracepoints: LazyInit::new(),
         }
@@ -237,6 +232,7 @@ static TRACE_PIPE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
 static TRACE_INGRESS_DROPPED: AtomicU64 = AtomicU64::new(0);
 static SCHED_TRACE_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 static TRACE_PIPE_NOTIFY_WORKER_ID: AtomicU64 = AtomicU64::new(0);
+static TRACEPOINT_RECLAIM_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct KernelTraceAux;
 
@@ -274,18 +270,13 @@ impl KernelTraceOps for KernelTraceAux {
         publish_trace_ingress(TraceIngressRecord::cmdline(pid, &comm[..len]));
     }
 
-    fn write_kernel_text(addr: *mut core::ffi::c_void, data: &[u8]) {
-        crate::mm::write_kernel_text(VirtAddr::from_mut_ptr_of(addr), data)
-            .expect("Failed to write kernel text");
-    }
-
     fn read_tracepoint_state<R>(id: u32, f: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
         let ext_tp = TRACE_STATE
             .ext_tracepoints
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
-        f(ext_tp.lock().deref())
+        ext_tp.read(f)
     }
 
     fn write_tracepoint_state<R>(id: u32, f: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
@@ -294,9 +285,28 @@ impl KernelTraceOps for KernelTraceAux {
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
-        let mut ext_tp = ext_tp.lock();
-        f(&mut ext_tp)
+        ext_tp.update(f)
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn callbacks_run_without_raw_guard_for_test() -> bool {
+    let tracepoint =
+        KernelExtTracePoint::new(sched::tracepoint_state_for_test(), &TRACE_STATE.reclaimer);
+    let read_result = tracepoint.read(|_| ax_runtime::task::yield_current_cpu());
+    let write_result = tracepoint.update(|_| ax_runtime::task::yield_current_cpu());
+    let blocked_retirement = tracepoint.read(|_| {
+        // Cross both reader-counter epochs while the first epoch is still
+        // leased. Neither generation sharing that counter may be reclaimed.
+        for _ in 0..3 {
+            tracepoint.update(|_| {});
+        }
+        TRACE_STATE.reclaimer.drain_for_test()
+    });
+    read_result.is_ok()
+        && write_result.is_ok()
+        && blocked_retirement
+        && !TRACE_STATE.reclaimer.drain_for_test()
 }
 
 fn publish_trace_ingress(record: TraceIngressRecord) {
@@ -495,7 +505,12 @@ pub fn tracepoint_init() -> AxResult<()> {
 
     let ext_tps = ext_tps
         .into_iter()
-        .map(|ext_tp| (ext_tp.id(), Arc::new(SpinNoPreempt::new(ext_tp))))
+        .map(|ext_tp| {
+            (
+                ext_tp.id(),
+                KernelExtTracePoint::new(ext_tp, &TRACE_STATE.reclaimer),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
 
     ax_println!("Initialized {} tracepoints", tp_map.len());
@@ -508,6 +523,7 @@ pub fn tracepoint_init() -> AxResult<()> {
         )));
     let sched_worker = sched::start_worker();
     let pipe_worker = start_trace_pipe_notify_worker();
+    let reclaim_worker = TRACE_STATE.reclaimer.start_worker();
     publish_trace_worker_id(
         &SCHED_TRACE_WORKER_ID,
         &sched_worker,
@@ -518,7 +534,12 @@ pub fn tracepoint_init() -> AxResult<()> {
         &pipe_worker,
         "trace pipe notify worker",
     );
-    // The hook becomes visible only after both infrastructure identities are
+    publish_trace_worker_id(
+        &TRACEPOINT_RECLAIM_WORKER_ID,
+        &reclaim_worker,
+        "tracepoint reclaim worker",
+    );
+    // The hook becomes visible only after every infrastructure identity is
     // published, so their first schedule-in cannot enter the deferred ring.
     sched::install();
     Ok(())
@@ -530,7 +551,7 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
     let mut subsystem = BTreeMap::new();
 
     for ext_tp in TRACE_STATE.ext_tracepoints.deref().values() {
-        let tp = ext_tp.lock().trace_point();
+        let tp = ext_tp.trace_point();
         let subsystem_name = tp.system();
         let event_name = tp.name();
 

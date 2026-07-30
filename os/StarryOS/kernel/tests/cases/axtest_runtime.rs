@@ -107,6 +107,11 @@ fn perf_control_callback_runs_preemptible() {
 }
 
 #[axtest]
+fn tracepoint_callbacks_run_without_raw_guard() {
+    ax_assert!(axtest_exports::tracepoint_callbacks_run_without_raw_guard());
+}
+
+#[axtest]
 fn staged_thread_entry_waits_for_activation() {
     let entered = Arc::new(AtomicBool::new(false));
     let entered_by_thread = Arc::clone(&entered);

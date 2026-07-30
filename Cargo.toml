@@ -39,6 +39,7 @@ members = [
     "components/kasm-aarch64",
     "components/kernel_guard",
     "components/kernutil",
+    "components/ktracepoint",
     "components/kspin",
     "components/linked_list_r4l",
     "components/lockdep",
@@ -153,6 +154,7 @@ ax-errno = { version = "0.6.2", path = "components/axerrno" }
 ax-fs-ng = { version = "0.8.6", path = "os/arceos/modules/axfs-ng" }
 ax-hal = { version = "0.5.30", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.3.1", path = "components/irq-framework" }
+ktracepoint = { version = "0.6.0", path = "components/ktracepoint" }
 ax-input = { version = "0.6.7", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6.3", path = "components/axio" }
 ax-ipi = { version = "0.5.29", path = "os/arceos/modules/axipi" }

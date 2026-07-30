@@ -12,8 +12,9 @@
 //!   `TracePointCallBackFunc::call(entry)` callback registration.
 //! * Registration goes through `ExtTracePoint::register(TraceCallbackType::Event(...))`
 //!   rather than `TracePoint::register_event_callback(id, callback)`.
-//! * Enable/disable is implicit: `ExtTracePoint::register` enables the
-//!   static-key when the callback list becomes non-empty.
+//! * The Starry tracepoint registry publishes callback snapshots and updates
+//!   the atomic callback gate; `ExtTracePoint::register` only edits the
+//!   unpublished replacement state.
 
 use alloc::{boxed::Box, sync::Arc};
 use core::any::Any;
@@ -107,9 +108,11 @@ impl PerfEventOps for TracepointPerfEvent {
             }
         });
         let callback = Arc::new(TraceEventFunc::new(func, ctx));
+        self.registered
+            .try_reserve(1)
+            .map_err(|_| AxError::NoMemory)?;
         self.ext_tp
-            .lock()
-            .register(TraceCallbackType::Event(callback.clone()));
+            .update(|ext_tp| ext_tp.register(TraceCallbackType::Event(callback.clone())));
         self.registered.push(callback);
         Ok(())
     }
@@ -140,10 +143,12 @@ impl PerfEventOps for TracepointPerfEvent {
 
 impl Drop for TracepointPerfEvent {
     fn drop(&mut self) {
-        let mut ext_tp = self.ext_tp.lock();
-        for cb in self.registered.drain(..) {
-            ext_tp.unregister(TraceCallbackType::Event(cb));
-        }
+        let registered = core::mem::take(&mut self.registered);
+        self.ext_tp.update(|ext_tp| {
+            for callback in registered {
+                ext_tp.unregister(TraceCallbackType::Event(callback));
+            }
+        });
     }
 }
 
