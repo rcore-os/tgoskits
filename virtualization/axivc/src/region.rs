@@ -2,8 +2,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
     IVC_REGION_MAGIC, IVC_REGION_VERSION,
-    message::{IvcMessage, IvcMessageKind},
-    ring::{IvcRing, IvcRingDirection, IvcRingError},
+    endpoint::IvcEndpoints,
+    ring::{IvcRing, IvcRingDirection},
 };
 
 const RING_HEADER_SIZE: u32 = core::mem::size_of::<IvcRing>() as u32;
@@ -27,10 +27,12 @@ pub struct IvcRegion {
     subscriber_to_publisher: IvcRing,
 }
 
-// SAFETY: The two rings (publisher_to_subscriber and subscriber_to_publisher)
-// are independent SPSC rings. Each ring has exactly one writer and one
-// reader thread. The header fields are either initialized once before
-// sharing or atomic. Concurrent &IvcRegion access across threads is safe.
+// SAFETY: The two rings are independent SPSC rings. Mutable ring state is
+// only reachable through `IvcProducer`/`IvcConsumer` endpoints with `&mut`
+// methods, and the `unsafe` endpoint constructors require callers to keep one
+// endpoint per ring role. The header fields are initialized once before
+// sharing or are atomic, so concurrent &IvcRegion access across threads is
+// sound.
 unsafe impl Sync for IvcRegion {}
 
 impl IvcRegion {
@@ -38,11 +40,13 @@ impl IvcRegion {
     pub fn initialize(&mut self, publisher_id: usize, key: usize) {
         self.publisher_id = publisher_id as u64;
         self.key = key as u64;
-        self.header.initialize();
         self.publisher_to_subscriber
             .initialize(IvcRingDirection::PublisherToSubscriber);
         self.subscriber_to_publisher
             .initialize(IvcRingDirection::SubscriberToPublisher);
+        // Publish the protocol header only after both rings are ready. A peer
+        // that observes `magic` with Acquire may immediately use the rings.
+        self.header.initialize();
     }
 
     /// Returns whether the host-provided IVC channel header matches.
@@ -58,36 +62,34 @@ impl IvcRegion {
                 >= core::mem::size_of::<Self>()
     }
 
-    /// Sends one publisher-to-subscriber message.
-    pub fn send_request(&self, sequence: u64, payload: &[u8]) -> Result<(), IvcRingError> {
-        self.publisher_to_subscriber
-            .send(IvcMessageKind::Request, sequence, payload)
+    /// Attaches the publisher side and returns its channel endpoints.
+    ///
+    /// The producer sends on the publisher-to-subscriber ring. The consumer
+    /// receives from the subscriber-to-publisher ring.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the publisher role is attached only
+    /// once across every address space sharing this region. Attaching it again
+    /// would create duplicate producer and consumer endpoints, allowing data
+    /// races on slot payloads.
+    pub unsafe fn publisher_endpoints(&self) -> IvcEndpoints<'_> {
+        IvcEndpoints::new(&self.publisher_to_subscriber, &self.subscriber_to_publisher)
     }
 
-    /// Receives one publisher-to-subscriber message.
-    pub fn try_recv_request(&self, payload: &mut [u8]) -> Result<Option<IvcMessage>, IvcRingError> {
-        self.publisher_to_subscriber.try_recv(payload)
-    }
-
-    /// Sends one subscriber-to-publisher data message.
-    pub fn send_data_to_publisher(
-        &self,
-        sequence: u64,
-        payload: &[u8],
-    ) -> Result<(), IvcRingError> {
-        self.subscriber_to_publisher
-            .send(IvcMessageKind::Request, sequence, payload)
-    }
-
-    /// Sends one subscriber-to-publisher acknowledgement.
-    pub fn send_ack(&self, sequence: u64, payload: &[u8]) -> Result<(), IvcRingError> {
-        self.subscriber_to_publisher
-            .send(IvcMessageKind::Ack, sequence, payload)
-    }
-
-    /// Receives one subscriber-to-publisher acknowledgement.
-    pub fn try_recv_ack(&self, payload: &mut [u8]) -> Result<Option<IvcMessage>, IvcRingError> {
-        self.subscriber_to_publisher.try_recv(payload)
+    /// Attaches the subscriber side and returns its channel endpoints.
+    ///
+    /// The producer sends on the subscriber-to-publisher ring. The consumer
+    /// receives from the publisher-to-subscriber ring.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the subscriber role is attached only
+    /// once across every address space sharing this region. Attaching it again
+    /// would create duplicate producer and consumer endpoints, allowing data
+    /// races on slot payloads.
+    pub unsafe fn subscriber_endpoints(&self) -> IvcEndpoints<'_> {
+        IvcEndpoints::new(&self.subscriber_to_publisher, &self.publisher_to_subscriber)
     }
 }
 

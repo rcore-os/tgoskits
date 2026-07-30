@@ -2,11 +2,16 @@
 
 //! Shared-memory protocol helpers for AxVisor inter-VM communication.
 
+#[cfg(test)]
+extern crate std;
+
+mod endpoint;
 mod event;
 mod message;
 mod region;
 mod ring;
 
+pub use endpoint::{IvcConsumer, IvcEndpoints, IvcProducer};
 pub use event::{IvcPeerEventWaiter, fallback_poll, record_peer_event};
 pub use message::{IvcMessage, IvcMessageKind};
 pub use region::IvcRegion;

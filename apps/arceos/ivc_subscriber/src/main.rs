@@ -30,7 +30,10 @@ mod subscriber {
         println, thread,
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
-    use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcPeerEventWaiter, IvcRegion, record_peer_event};
+    use axivc::{
+        IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcPeerEventWaiter, IvcProducer,
+        IvcRegion, record_peer_event,
+    };
 
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
     const PASS_SEQUENCE: u64 = 5;
@@ -84,17 +87,22 @@ mod subscriber {
         }
 
         let region: &'static IvcRegion = region;
+        // SAFETY: this app is the only subscriber side of this channel and
+        // creates each endpoint exactly once; the producer moves into the
+        // sender task and the consumer into the receiver task.
+        let (reply_producer, request_consumer) =
+            unsafe { region.subscriber_endpoints() }.into_parts();
 
         // Each task owns its waiter: `IvcPeerEventWaiter` tracks the observed
         // event count internally, so sharing one waiter would let one task
         // consume IRQ observations meant to wake the other.
         let sender = thread::spawn(move || {
             let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
-            sender_task(region, &waiter);
+            sender_task(reply_producer, &waiter);
         });
         let receiver = thread::spawn(move || {
             let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
-            receiver_task(region, &waiter);
+            receiver_task(request_consumer, &waiter);
         });
 
         sender.join().expect("sender thread panicked");
@@ -128,61 +136,23 @@ mod subscriber {
         None
     }
 
-    #[allow(dead_code)]
-    fn run_request_ack_demo(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
-        loop {
-            match region.try_recv_request(&mut payload) {
-                Ok(Some(message)) => {
-                    let text =
-                        core::str::from_utf8(&payload[..message.len()]).unwrap_or("<non-utf8>");
-                    println!("ivc recv seq={} msg={text}", message.sequence());
-                    send_ack_when_ready(region, message.sequence(), waiter);
-                    if message.sequence() >= PASS_SEQUENCE {
-                        println!("ivc demo pass");
-                        return;
-                    }
-                }
-                Ok(None) => waiter.wait_for_peer_event(),
-                Err(err) => {
-                    println!("ivc subscribe failed: recv request error {err:?}");
-                    return;
-                }
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn send_ack_when_ready(
-        region: &'static IvcRegion,
-        sequence: u64,
-        waiter: &IvcPeerEventWaiter<'_>,
-    ) {
-        loop {
-            match region.send_ack(sequence, b"ack from arceos subscriber") {
-                Ok(()) => {
-                    notify_publisher();
-                    return;
-                }
-                Err(_) => waiter.wait_for_peer_event(),
-            }
-        }
-    }
-
     /// Sends subscriber data messages and acks of publisher data on ring B.
     /// Skips notification on the first data send because the publisher may not
     /// be ready to receive the notify yet. Acks every publisher sequence seen
     /// in `HIGHEST_RECV_SEQ` in order, so no ack is lost when several
     /// publisher messages arrive between two sender iterations.
-    fn sender_task(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
+    fn sender_task(mut producer: IvcProducer<'_>, waiter: &IvcPeerEventWaiter<'_>) {
         let mut sent_data = 0u64;
         let mut last_acked_seq = 0u64;
         let mut publisher_ready = false;
 
         loop {
             if sent_data < SUBSCRIBE_DATA_COUNT {
-                match region.send_data_to_publisher(sent_data + 1, b"hello from arceos subscriber")
-                {
+                match producer.send(
+                    IvcMessageKind::Request,
+                    sent_data + 1,
+                    b"hello from arceos subscriber",
+                ) {
                     Ok(()) => {
                         sent_data += 1;
                         println!("ivc send data seq={sent_data}");
@@ -198,7 +168,11 @@ mod subscriber {
             let highest = HIGHEST_RECV_SEQ.load(Ordering::Acquire);
             let mut acked_any = false;
             while last_acked_seq < highest {
-                match region.send_ack(last_acked_seq + 1, b"ack from arceos subscriber") {
+                match producer.send(
+                    IvcMessageKind::Ack,
+                    last_acked_seq + 1,
+                    b"ack from arceos subscriber",
+                ) {
                     Ok(()) => {
                         last_acked_seq += 1;
                         acked_any = true;
@@ -220,10 +194,10 @@ mod subscriber {
     }
 
     /// Receives publisher data messages from ring A.
-    fn receiver_task(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
+    fn receiver_task(mut consumer: IvcConsumer<'_>, waiter: &IvcPeerEventWaiter<'_>) {
         let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
         loop {
-            match region.try_recv_request(&mut payload) {
+            match consumer.try_recv(&mut payload) {
                 Ok(Some(msg)) => {
                     let text = core::str::from_utf8(&payload[..msg.len()]).unwrap_or("<non-utf8>");
                     println!("ivc recv pub data seq={} msg={text}", msg.sequence());

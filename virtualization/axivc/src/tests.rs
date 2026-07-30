@@ -23,37 +23,49 @@ fn region_header_and_channel_header_match_after_initialize() {
 fn request_ring_delivers_messages_in_fifo_order() {
     let mut region = new_region();
     region.initialize(PUBLISHER_VM_ID, CHANNEL_KEY);
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
 
-    region.send_request(1, b"one").unwrap();
-    region.send_request(2, b"two").unwrap();
+    producer.send(IvcMessageKind::Request, 1, b"one").unwrap();
+    producer.send(IvcMessageKind::Request, 2, b"two").unwrap();
 
     let mut payload = [0; IVC_SLOT_PAYLOAD_SIZE];
-    let first = region.try_recv_request(&mut payload).unwrap().unwrap();
+    let first = consumer.try_recv(&mut payload).unwrap().unwrap();
     assert_eq!(first.kind(), IvcMessageKind::Request);
     assert_eq!(first.sequence(), 1);
     assert_eq!(&payload[..first.len()], b"one");
 
-    let second = region.try_recv_request(&mut payload).unwrap().unwrap();
+    let second = consumer.try_recv(&mut payload).unwrap().unwrap();
     assert_eq!(second.sequence(), 2);
     assert_eq!(&payload[..second.len()], b"two");
-    assert_eq!(region.try_recv_request(&mut payload), Ok(None));
+    assert_eq!(consumer.try_recv(&mut payload), Ok(None));
 }
 
 #[test]
 fn ack_ring_is_independent_from_request_ring() {
     let mut region = new_region();
     region.initialize(PUBLISHER_VM_ID, CHANNEL_KEY);
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut request_producer, mut reply_consumer) =
+        unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut reply_producer, mut request_consumer) =
+        unsafe { region.subscriber_endpoints() }.into_parts();
 
-    region.send_request(9, b"request").unwrap();
-    region.send_ack(9, b"ack").unwrap();
+    request_producer
+        .send(IvcMessageKind::Request, 9, b"request")
+        .unwrap();
+    reply_producer.send(IvcMessageKind::Ack, 9, b"ack").unwrap();
 
     let mut payload = [0; IVC_SLOT_PAYLOAD_SIZE];
-    let ack = region.try_recv_ack(&mut payload).unwrap().unwrap();
+    let ack = reply_consumer.try_recv(&mut payload).unwrap().unwrap();
     assert_eq!(ack.kind(), IvcMessageKind::Ack);
     assert_eq!(ack.sequence(), 9);
     assert_eq!(&payload[..ack.len()], b"ack");
 
-    let request = region.try_recv_request(&mut payload).unwrap().unwrap();
+    let request = request_consumer.try_recv(&mut payload).unwrap().unwrap();
     assert_eq!(request.kind(), IvcMessageKind::Request);
     assert_eq!(request.sequence(), 9);
 }
@@ -62,13 +74,17 @@ fn ack_ring_is_independent_from_request_ring() {
 fn send_fails_when_ring_is_full() {
     let mut region = new_region();
     region.initialize(PUBLISHER_VM_ID, CHANNEL_KEY);
+    // SAFETY: this test attaches the publisher role exactly once.
+    let (mut producer, _consumer) = unsafe { region.publisher_endpoints() }.into_parts();
 
     for sequence in 0..IVC_RING_CAPACITY as u64 {
-        region.send_request(sequence, b"x").unwrap();
+        producer
+            .send(IvcMessageKind::Request, sequence, b"x")
+            .unwrap();
     }
 
     assert_eq!(
-        region.send_request(IVC_RING_CAPACITY as u64, b"x"),
+        producer.send(IvcMessageKind::Request, IVC_RING_CAPACITY as u64, b"x"),
         Err(IvcRingError::Full)
     );
 }
@@ -87,6 +103,62 @@ fn peer_event_waiter_observes_recorded_irq_events_once() {
     record_peer_event(&counter);
     assert!(waiter.observe_peer_event());
     assert!(!waiter.observe_peer_event());
+}
+
+/// Regression test for the blocking review finding that the previous safe
+/// `&self` API allowed two threads to produce on the same ring concurrently,
+/// losing and tearing messages. With endpoint ownership, the only concurrent
+/// pattern safe code can express is one producer plus one consumer; exercise
+/// that pattern at volume and require every message to arrive exactly once,
+/// in FIFO order, and intact.
+#[test]
+fn spsc_endpoints_deliver_all_messages_across_threads() {
+    use std::{boxed::Box, thread, vec::Vec};
+
+    const MESSAGES: u64 = 100_000;
+
+    let region = Box::leak(Box::new(new_region()));
+    region.initialize(PUBLISHER_VM_ID, CHANNEL_KEY);
+    let region: &'static IvcRegion = region;
+    // SAFETY: this test attaches each channel role exactly once.
+    let (mut producer, _reply_consumer) = unsafe { region.publisher_endpoints() }.into_parts();
+    // SAFETY: this test attaches each channel role exactly once.
+    let (_reply_producer, mut consumer) = unsafe { region.subscriber_endpoints() }.into_parts();
+
+    let producer_thread = thread::spawn(move || {
+        let payload = [0x5a; IVC_SLOT_PAYLOAD_SIZE];
+        for sequence in 0..MESSAGES {
+            while producer
+                .send(IvcMessageKind::Request, sequence, &payload)
+                .is_err()
+            {
+                thread::yield_now();
+            }
+        }
+    });
+
+    let mut received: Vec<u64> = Vec::new();
+    let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
+    loop {
+        match consumer.try_recv(&mut payload) {
+            Ok(Some(message)) => {
+                assert!(payload.iter().all(|&byte| byte == 0x5a));
+                received.push(message.sequence());
+            }
+            Ok(None) if producer_thread.is_finished() => break,
+            Ok(None) => thread::yield_now(),
+            Err(err) => panic!("recv failed: {err:?}"),
+        }
+    }
+    producer_thread.join().expect("producer thread panicked");
+
+    assert_eq!(received.len(), MESSAGES as usize, "messages were lost");
+    for (expected, sequence) in received.iter().enumerate() {
+        assert_eq!(
+            *sequence, expected as u64,
+            "messages must arrive in FIFO order"
+        );
+    }
 }
 
 fn new_region() -> IvcRegion {
