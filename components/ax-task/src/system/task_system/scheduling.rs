@@ -273,6 +273,10 @@ impl TaskSystem {
         cpu.as_mut().scheduler_enter();
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
         self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        // Claim the deadline-work doorbell reasserted by the entry-side
+        // pending check. The Acquire recheck inside `scheduler_enter` keeps
+        // concurrently published inbox or deadline work sticky.
+        cpu.as_mut().scheduler_enter();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         let mut migration_target = None;
@@ -332,7 +336,7 @@ impl TaskSystem {
         // this decision. `scheduler_enter` consumes only the request observed
         // on entry; the second exchange closes the publication window without
         // losing a request that races after it.
-        switch_requested |= cpu.take_preempt_requested();
+        switch_requested |= cpu.as_mut().scheduler_enter();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         if let Some(core) = previous_core.as_ref()
@@ -403,6 +407,7 @@ impl TaskSystem {
         cpu.as_mut().scheduler_enter();
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
         self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        cpu.as_mut().scheduler_enter();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         let mut migration_target = None;
@@ -418,12 +423,11 @@ impl TaskSystem {
                     if let SchedulingEntity::Deadline(deadline) = sched.entity {
                         sched.base_entity = sched.entity;
                         sched.base_deadline = Some(deadline);
-                        cpu.as_mut()
-                            .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
                     }
                     sched.placement.set_running_cpu(None)?;
                     sched.deadline_replenish_pending = true;
                     sched.transition(core, ThreadState::Blocked)?;
+                    Self::refresh_owner_deadline_timers_locked(core, &mut sched, cpu.as_mut())?;
                     true
                 } else {
                     false

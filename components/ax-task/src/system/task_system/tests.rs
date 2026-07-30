@@ -1937,7 +1937,7 @@ fn bounded_inbox_remainder_stays_sticky_across_scheduler_entry() {
 }
 
 #[test]
-fn bounded_deadline_member_scan_completes_one_finite_cycle() {
+fn bounded_deadline_expiration_retains_only_due_work() {
     let system = TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     system
@@ -1952,27 +1952,26 @@ fn bounded_deadline_member_scan_completes_one_finite_cycle() {
         system.make_ready(thread.id()).unwrap();
         system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
     }
-    assert_eq!(cpu.deadline_members.len(), 2);
-
-    // Discard the preemption requested by initial Deadline placement so this
-    // test observes only the bounded owner scan's continuation doorbell.
+    // Discard the preemption requested by initial Deadline placement. Both CBS
+    // events are due at 10, but the safe point may consume only one per batch.
     assert!(cpu.as_mut().scheduler_enter());
-    system.service_deadline_timers(cpu.as_mut(), 0).unwrap();
+    system.service_deadline_timers(cpu.as_mut(), 10).unwrap();
     assert!(
         cpu.needs_reschedule(),
-        "the first bounded batch must retain the unfinished scan"
+        "the first bounded batch must retain the second expired event"
     );
 
-    assert!(!cpu.as_mut().scheduler_enter());
-    system.service_deadline_timers(cpu.as_mut(), 0).unwrap();
+    cpu.as_mut().scheduler_enter();
+    system.service_deadline_timers(cpu.as_mut(), 10).unwrap();
+    cpu.as_mut().scheduler_enter();
     assert!(
         !cpu.needs_reschedule(),
-        "visiting every stable member once must complete the finite scan"
+        "draining the second expired event must finish bounded owner work"
     );
 }
 
 #[test]
-fn bounded_deadline_member_scan_reports_owner_work_backpressure() {
+fn future_deadline_members_do_not_create_scheduler_work() {
     let system = TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     system
@@ -1988,22 +1987,32 @@ fn bounded_deadline_member_scan_reports_owner_work_backpressure() {
         system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
     }
 
+    // Consume the one-time preemption request created by initial placement.
+    // Neither future CBS deadline is due, so an ordinary safe point must not
+    // manufacture more scheduler work merely to scan the reservation set.
     assert!(cpu.as_mut().scheduler_enter());
-    cpu.request_scheduler_work();
     let outcome = system.schedule_if_requested(cpu.as_mut(), 0).unwrap();
-    assert!(
-        outcome.owner_work_pending(),
-        "the runtime must observe bounded Deadline scan backpressure"
-    );
-    assert!(cpu.needs_reschedule());
+    assert!(matches!(outcome, SchedulerOutcome::Quiescent));
+}
 
-    assert!(matches!(
-        system.schedule_if_requested(cpu.as_mut(), 0).unwrap(),
-        SchedulerOutcome::Quiescent
-    ));
+#[test]
+fn forced_yield_clears_slice_expiration_accounted_by_that_schedule() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let policy = SchedulePolicy::round_robin_with_quantum(RtPriority::new(50).unwrap(), 8).unwrap();
+    for _ in 0..2 {
+        let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+    system.schedule(cpu.as_mut(), 0).unwrap();
+
+    system.yield_current(cpu.as_mut(), 8).unwrap();
+
     assert!(
         !cpu.needs_reschedule(),
-        "the final member must close the finite owner scan"
+        "the scheduling transaction already handled the RR expiration it accounted"
     );
 }
 
@@ -2855,22 +2864,17 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
                 .expect("Deadline donor must retain CBS state"),
         )
     };
-    assert!(
-        cpu0.take_due_scheduler_deadline(20),
-        "the donor deadline must first be consumed by its clockevent"
-    );
     system.service_deadline_timers(cpu0.as_mut(), 20).unwrap();
-    assert_eq!(
-        cpu0.scheduler_deadline_ns(),
-        None,
-        "the donor CPU must not rearm a CBS timer while the remote PI owner holds its baton"
-    );
     {
         let state = system.state.lock();
         let sched = state.thread_record(donor.id()).unwrap().sched.lock();
         assert_eq!(sched.deadline_cbs_borrower, Some(owner.id()));
         assert_eq!(sched.deadline_cbs_generation, borrowed_generation);
         assert_eq!(sched.base_deadline, Some(budget_before_timer));
+        assert!(
+            sched.deadline_cbs_timer.is_none(),
+            "the expired donor CBS event must stay detached while the borrower owns the baton"
+        );
     }
     cpu0.as_mut().scheduler_enter();
     assert!(
@@ -2903,8 +2907,53 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
             5
         );
     }
+    system.drain_policy_updates(cpu0.as_mut(), 20).unwrap();
     system.service_deadline_timers(cpu0.as_mut(), 20).unwrap();
     assert_eq!(system.deadline_runtime(donor.id()).unwrap().misses(), 1);
+}
+
+#[test]
+fn coalesced_old_deadline_refresh_reconciles_the_latest_cbs_state() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let policy =
+        SchedulePolicy::deadline(DeadlinePolicy::new(10, 20, 100, DeadlineFlags::NONE).unwrap());
+    let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+
+    let core = {
+        let state = system.state.lock();
+        Arc::clone(&state.thread_record(thread.id()).unwrap().core)
+    };
+    let latest_generation = {
+        let mut sched = core.sched().lock();
+        TaskSystem::cancel_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut()).unwrap();
+        sched.deadline_cbs_generation += 2;
+        sched.deadline_cbs_generation
+    };
+    assert!(core.sched().lock().deadline_cbs_timer.is_none());
+
+    system
+        .publish_owner_deadline_refresh(&core, CpuId::new(0), latest_generation - 1)
+        .unwrap();
+    system
+        .publish_owner_deadline_refresh(&core, CpuId::new(0), latest_generation)
+        .unwrap();
+    assert_eq!(
+        core.scheduler_inbox_delivery_count(),
+        1,
+        "the dedicated intrusive node must coalesce the newer refresh"
+    );
+
+    system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
+
+    assert!(
+        core.sched().lock().deadline_cbs_timer.is_some(),
+        "the retained old message must reconcile current CBS state rather than replay old state"
+    );
+    assert_eq!(core.scheduler_inbox_delivery_count(), 0);
 }
 
 #[test]

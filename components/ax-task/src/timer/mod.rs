@@ -8,7 +8,10 @@ pub use node::{
     TaskDeadlineToken,
 };
 
-use self::heap::{TimerEntry, TimerHeap};
+use self::{
+    heap::{TimerEntry, TimerHeap},
+    node::{TASK_DEADLINE_CLASS_COUNT, TaskDeadlineNodeId},
+};
 
 /// Failure returned while arming a fixed-capacity timer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -19,9 +22,12 @@ pub enum TaskDeadlineError {
     /// `u64::MAX` represents no finite task deadline and cannot be queued.
     #[error("task deadline is not finite")]
     InvalidDeadline,
-    /// The node's generation space has been exhausted.
-    #[error("timer generation space is exhausted")]
+    /// The node identity or arm generation space has been exhausted.
+    #[error("timer identity or generation space is exhausted")]
     GenerationExhausted,
+    /// The typed event does not belong to the supplied embedded timer node.
+    #[error("task deadline kind does not match its timer node")]
+    KindMismatch,
 }
 
 /// Absolute task deadline that is finite in the monotonic-clock domain.
@@ -104,27 +110,36 @@ impl TaskDeadlineExpireBatch {
 #[derive(Debug)]
 pub struct TaskDeadlineQueue {
     heap: TimerHeap,
+    capacity_per_class: usize,
+    class_counts: [usize; TASK_DEADLINE_CLASS_COUNT],
 }
 
 impl TaskDeadlineQueue {
-    /// Preallocates exactly `capacity` timer-entry slots.
+    /// Preallocates `capacity` independent slots for each typed timer class.
     pub fn new(capacity: usize) -> Self {
+        let total_capacity = capacity
+            .checked_mul(TASK_DEADLINE_CLASS_COUNT)
+            .expect("task deadline capacity exceeds addressable storage");
         Self {
-            heap: TimerHeap::new(capacity),
+            heap: TimerHeap::new(total_capacity),
+            capacity_per_class: capacity,
+            class_counts: [0; TASK_DEADLINE_CLASS_COUNT],
         }
     }
 
     /// Arms a typed task deadline for an absolute monotonic deadline.
     ///
-    /// Rearming replaces the node's previous entry in place. A node therefore
-    /// consumes at most one preallocated heap slot.
+    /// Rearming replaces this physical node's previous entry in place. Distinct
+    /// nodes for one thread remain independent, and each node consumes at most
+    /// one preallocated heap slot.
     ///
     /// # Errors
     ///
     /// Returns [`TaskDeadlineError::InvalidDeadline`] before consuming a heap
     /// slot or generation when `deadline_ns` is the no-deadline sentinel.
-    /// Returns [`TaskDeadlineError::Capacity`] without changing the node if no
-    /// heap slot remains. Returns
+    /// Returns [`TaskDeadlineError::Capacity`] without changing the queue or
+    /// consuming an arm generation if no heap slot remains. A node may retain
+    /// the lazily assigned identity used for this capacity check. Returns
     /// [`TaskDeadlineError::GenerationExhausted`] instead of reusing an old
     /// generation.
     ///
@@ -140,21 +155,33 @@ impl TaskDeadlineQueue {
         let deadline = FiniteTaskDeadline::from_nanos(deadline_ns)
             .ok_or(TaskDeadlineError::InvalidDeadline)?;
         let thread = node.thread();
-        let replacing = self.heap.contains_thread(thread);
-        if self.heap.is_full() && !replacing {
+        let class = kind.class();
+        if node.class() != class {
+            return Err(TaskDeadlineError::KindMismatch);
+        }
+        let identity = node.identity()?;
+        let replacing = self.heap.contains_node(identity);
+        if self.class_counts[class.index()] == self.capacity_per_class && !replacing {
             return Err(TaskDeadlineError::Capacity);
         }
-        let token = node.next_token()?;
+        let token = node.next_token(identity)?;
         if replacing {
-            let removed = self.heap.remove_thread(thread);
+            let removed = self.heap.remove_node(identity);
             debug_assert!(
                 removed.is_some(),
-                "contains_thread proved the task deadline entry exists"
+                "contains_node proved the physical task deadline entry exists"
             );
+        } else {
+            self.class_counts[class.index()] += 1;
         }
         let entry = TimerEntry::new(deadline, thread, token, kind);
         self.heap.push(entry);
-        Ok(TaskDeadlineRegistration::new(thread, token, kind))
+        Ok(TaskDeadlineRegistration::new(
+            thread,
+            token,
+            deadline_ns,
+            kind,
+        ))
     }
 
     /// Cancels one matching arm operation and immediately releases its heap slot.
@@ -162,13 +189,18 @@ impl TaskDeadlineQueue {
     /// Unlike lazy tombstoning, physical removal releases capacity immediately
     /// and makes the registration terminal as soon as this method returns.
     pub fn cancel(&mut self, registration: &TaskDeadlineRegistration) -> bool {
-        self.heap
+        let removed = self
+            .heap
             .remove(
                 registration.thread(),
                 registration.token(),
                 registration.kind(),
             )
-            .is_some()
+            .is_some();
+        if removed {
+            self.class_counts[registration.kind().class().index()] -= 1;
+        }
+        removed
     }
 
     /// Returns the earliest representable one-shot deadline without mutating the queue.
@@ -213,6 +245,7 @@ impl TaskDeadlineQueue {
                 .heap
                 .pop_min()
                 .expect("peek proved the fixed timer heap is non-empty");
+            self.class_counts[entry.kind().class().index()] -= 1;
             processed += 1;
             output[expired] = ExpiredTaskDeadline::new(
                 entry.thread(),
@@ -234,7 +267,7 @@ impl TaskDeadlineQueue {
 
     /// Returns the preallocated entry capacity.
     pub const fn capacity(&self) -> usize {
-        self.heap.capacity()
+        self.capacity_per_class
     }
 
     /// Returns the number of active task deadline entries in storage.

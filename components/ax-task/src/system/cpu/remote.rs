@@ -139,7 +139,6 @@ pub struct CpuRemote {
     idle_pull_state: AtomicU64,
     pub(super) fair_balance_deadline_ns: AtomicU64,
     pub(super) scheduler_deadline_ns: AtomicU64,
-    pub(super) deferred_scheduler_deadline_ns: AtomicU64,
     remote_wake_inbox: SchedulerInbox,
     migration_inbox: SchedulerInbox,
     reclaim_inbox: SchedulerInbox,
@@ -175,7 +174,6 @@ impl CpuRemote {
             // online after that duration immediately overdue.
             fair_balance_deadline_ns: AtomicU64::new(u64::MAX),
             scheduler_deadline_ns: AtomicU64::new(0),
-            deferred_scheduler_deadline_ns: AtomicU64::new(0),
             remote_wake_inbox: SchedulerInbox::new(InboxKind::RemoteWake),
             migration_inbox: SchedulerInbox::new(InboxKind::Migration),
             reclaim_inbox: SchedulerInbox::new(InboxKind::Reclaim),
@@ -322,8 +320,6 @@ impl CpuRemote {
         self.fair_balance_deadline_ns
             .store(u64::MAX, Ordering::Relaxed);
         self.scheduler_deadline_ns.store(0, Ordering::Relaxed);
-        self.deferred_scheduler_deadline_ns
-            .store(0, Ordering::Relaxed);
         if self
             .lifecycle
             .compare_exchange(
@@ -504,6 +500,7 @@ impl CpuRemote {
         preempt_requested
     }
 
+    #[cfg(test)]
     pub(crate) fn take_preempt_requested(&self) -> bool {
         self.preempt_requested.swap(false, Ordering::AcqRel)
     }
@@ -845,42 +842,6 @@ impl CpuRemote {
 
     pub(crate) fn is_idle_polling(&self) -> bool {
         self.idle_polling.load(Ordering::Acquire)
-    }
-
-    pub(super) fn arm_scheduler_deadline(&self, deadline_ns: u64) {
-        let mut current = self.scheduler_deadline_ns.load(Ordering::Acquire);
-        loop {
-            if current != 0 && current <= deadline_ns {
-                return;
-            }
-            match self.scheduler_deadline_ns.compare_exchange_weak(
-                current,
-                deadline_ns,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    pub(super) fn clear_due_deferred_deadline(&self, now_ns: u64) {
-        let mut current = self.deferred_scheduler_deadline_ns.load(Ordering::Acquire);
-        loop {
-            if current == 0 || current > now_ns {
-                return;
-            }
-            match self.deferred_scheduler_deadline_ns.compare_exchange_weak(
-                current,
-                0,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(observed) => current = observed,
-            }
-        }
     }
 }
 

@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use super::{FiniteTaskDeadline, TaskDeadlineKind, TaskDeadlineToken};
+use super::{FiniteTaskDeadline, TaskDeadlineKind, TaskDeadlineNodeId, TaskDeadlineToken};
 use crate::ThreadId;
 
 #[derive(Clone, Copy, Debug)]
@@ -49,7 +49,9 @@ impl TimerEntry {
             || (self.deadline == other.deadline
                 && (self.thread.as_u64() < other.thread.as_u64()
                     || (self.thread == other.thread
-                        && self.token.generation() < other.token.generation())))
+                        && (self.token.node().as_u64() < other.token.node().as_u64()
+                            || (self.token.node() == other.token.node()
+                                && self.token.generation() < other.token.generation())))))
     }
 }
 
@@ -67,10 +69,6 @@ impl TimerHeap {
         }
     }
 
-    pub(super) const fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -83,8 +81,10 @@ impl TimerHeap {
         self.entries.len() == self.capacity
     }
 
-    pub(super) fn contains_thread(&self, thread: ThreadId) -> bool {
-        self.entries.iter().any(|entry| entry.thread() == thread)
+    pub(super) fn contains_node(&self, node: TaskDeadlineNodeId) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.token().node() == node)
     }
 
     pub(super) fn peek(&self) -> Option<TimerEntry> {
@@ -92,7 +92,10 @@ impl TimerHeap {
     }
 
     pub(super) fn push(&mut self, entry: TimerEntry) {
-        debug_assert!(!self.is_full());
+        assert!(
+            !self.is_full(),
+            "fixed task deadline heap capacity invariant violated"
+        );
         self.entries.push(entry);
         self.sift_up(self.entries.len() - 1);
     }
@@ -130,11 +133,11 @@ impl TimerHeap {
         Some(removed)
     }
 
-    pub(super) fn remove_thread(&mut self, thread: ThreadId) -> Option<TimerEntry> {
+    pub(super) fn remove_node(&mut self, node: TaskDeadlineNodeId) -> Option<TimerEntry> {
         let index = self
             .entries
             .iter()
-            .position(|entry| entry.thread() == thread)?;
+            .position(|entry| entry.token().node() == node)?;
         let removed = self.entries.swap_remove(index);
         if index < self.entries.len() {
             if index > 0 {

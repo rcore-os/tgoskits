@@ -125,9 +125,8 @@ pub(crate) fn arm_current_park_deadline(
             .map_err(|error| match error {
                 crate::timer::TaskDeadlineError::Capacity => TaskError::TimerCapacity,
                 crate::timer::TaskDeadlineError::InvalidDeadline
-                | crate::timer::TaskDeadlineError::GenerationExhausted => {
-                    TaskError::InvalidConfiguration
-                }
+                | crate::timer::TaskDeadlineError::GenerationExhausted
+                | crate::timer::TaskDeadlineError::KindMismatch => TaskError::InvalidConfiguration,
             })?;
         let token = registration.token();
         thread.core.register_sleep_timer(owner, token.generation());

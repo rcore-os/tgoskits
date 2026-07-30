@@ -408,7 +408,10 @@ pub(crate) struct ThreadCore {
     remote_wake_node: InboxNode,
     policy_update_node: InboxNode,
     affinity_update_node: InboxNode,
+    deadline_refresh_node: InboxNode,
     sleep_timer: TaskDeadlineNode,
+    deadline_cbs_timer: TaskDeadlineNode,
+    deadline_zero_lag_timer: TaskDeadlineNode,
     sleep_timer_cpu: AtomicU32,
     sleep_timer_generation: AtomicU64,
     migration_node: InboxNode,
@@ -454,7 +457,10 @@ impl ThreadCore {
             remote_wake_node: InboxNode::new(InboxKind::RemoteWake),
             policy_update_node: InboxNode::new(InboxKind::Migration),
             affinity_update_node: InboxNode::new(InboxKind::Migration),
+            deadline_refresh_node: InboxNode::new(InboxKind::Migration),
             sleep_timer: TaskDeadlineNode::for_thread(id),
+            deadline_cbs_timer: TaskDeadlineNode::deadline_cbs_for_thread(id),
+            deadline_zero_lag_timer: TaskDeadlineNode::deadline_zero_lag_for_thread(id),
             sleep_timer_cpu: AtomicU32::new(u32::MAX),
             sleep_timer_generation: AtomicU64::new(0),
             migration_node: InboxNode::new(InboxKind::Migration),
@@ -844,6 +850,18 @@ impl ThreadCore {
 
     pub(crate) const fn affinity_update_node(&self) -> &InboxNode {
         &self.affinity_update_node
+    }
+
+    pub(crate) const fn deadline_cbs_timer(&self) -> &TaskDeadlineNode {
+        &self.deadline_cbs_timer
+    }
+
+    pub(crate) const fn deadline_zero_lag_timer(&self) -> &TaskDeadlineNode {
+        &self.deadline_zero_lag_timer
+    }
+
+    pub(crate) const fn deadline_refresh_node(&self) -> &InboxNode {
+        &self.deadline_refresh_node
     }
 
     pub(crate) const fn migration_node(&self) -> &InboxNode {

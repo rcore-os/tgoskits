@@ -71,7 +71,7 @@ pub(super) fn drain_current_expired_timers(
     loop {
         let event = {
             let mut cpu = runtime_current_cpu_mut(pin)?;
-            cpu.as_mut().take_expired_task_deadline()
+            cpu.as_mut().take_expired_park_deadline()
         };
         let Some(event) = event else {
             break;
@@ -82,9 +82,9 @@ pub(super) fn drain_current_expired_timers(
         match system.thread_handle(thread) {
             Ok(handle) => {
                 let completed = handle.core.complete_sleep_timer(event.token().generation());
-                let park_matches = event
-                    .kind()
-                    .is_some_and(|kind| kind.park_generation() == handle.core.park_generation());
+                let park_matches = event.kind().is_some_and(|kind| {
+                    kind.park_generation() == Some(handle.core.park_generation())
+                });
                 if completed && park_matches {
                     let _wake_result = handle.wake_handle().wake();
                 }
@@ -129,7 +129,8 @@ pub(super) fn service_current_task_deadline_work(
         };
         drained += drain_current_expired_timers(system, pin)?;
         let mut cpu = runtime_current_cpu_mut(pin)?;
-        cpu.as_mut().finish_deadline_work(batch.pending());
+        let pending = batch.pending() || cpu.has_expired_task_deadlines();
+        cpu.as_mut().finish_deadline_work(pending);
         Ok(drained)
     })();
     if result.is_err() {

@@ -17,6 +17,7 @@ pub enum InboxKind {
 }
 
 /// Operation carried by one scheduler inbox message.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum InboxOperation {
@@ -28,6 +29,8 @@ pub enum InboxOperation {
     PolicyUpdate,
     /// Reconcile a thread's latest affinity with physical placement.
     AffinityUpdate,
+    /// Refresh one Deadline donor after its remote CBS baton returns.
+    DeadlineRefresh,
     /// Ask a remote owner to donate one queued thread.
     BalanceRequest,
     /// Release one deferred task-context resource.
@@ -145,6 +148,28 @@ impl InboxMessage {
             source_cpu: owner.as_u32(),
             target_cpu: target_cpu.as_u32(),
             generation: thread_id.generation() as u64,
+            payload,
+        }
+    }
+
+    /// Creates an owner-local Deadline timer refresh request.
+    ///
+    /// `payload` transfers one retained scheduler-thread reference to the
+    /// owner inbox. The owner validates `generation` against the thread's
+    /// current CBS baton generation before recomputing its typed timer.
+    pub const fn deadline_refresh_with_payload(
+        thread_id: ThreadId,
+        owner: CpuId,
+        generation: u64,
+        payload: usize,
+    ) -> Self {
+        Self {
+            kind: InboxKind::Migration,
+            operation: InboxOperation::DeadlineRefresh,
+            thread_id,
+            source_cpu: owner.as_u32(),
+            target_cpu: owner.as_u32(),
+            generation,
             payload,
         }
     }
