@@ -4,7 +4,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::spin::SpinNoIrq;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use starry_signal::{SignalInfo, Signo};
 
@@ -37,19 +37,19 @@ struct PtracePendingEvent {
 pub(super) struct ProcessPtraceState {
     tracer_pid: AtomicU32,
     traceme: AtomicBool,
-    stops: SpinNoIrq<BTreeMap<u32, PtraceStopRecord>>,
+    stops: PiMutex<BTreeMap<u32, PtraceStopRecord>>,
     selected_tid: AtomicU32,
     stop_event: Arc<PollSet>,
-    resume_signo: SpinNoIrq<BTreeMap<u32, u32>>,
-    resume_signal_bypass: SpinNoIrq<BTreeMap<u32, u32>>,
+    resume_signo: PiMutex<BTreeMap<u32, u32>>,
+    resume_signal_bypass: PiMutex<BTreeMap<u32, u32>>,
     exec_stop_pending: AtomicBool,
     attached: AtomicBool,
     singlestep_tid: AtomicU32,
-    syscall_trace: SpinNoIrq<BTreeMap<u32, SyscallTraceState>>,
+    syscall_trace: PiMutex<BTreeMap<u32, SyscallTraceState>>,
     options: AtomicUsize,
-    pending_event: SpinNoIrq<BTreeMap<u32, PtracePendingEvent>>,
-    ss_saved_insn: SpinNoIrq<BTreeMap<u32, (usize, usize)>>,
-    stop_fp_data: SpinNoIrq<BTreeMap<u32, PtraceStopFpData>>,
+    pending_event: PiMutex<BTreeMap<u32, PtracePendingEvent>>,
+    ss_saved_insn: PiMutex<BTreeMap<u32, (usize, usize)>>,
+    stop_fp_data: PiMutex<BTreeMap<u32, PtraceStopFpData>>,
 }
 
 impl ProcessPtraceState {
@@ -57,19 +57,19 @@ impl ProcessPtraceState {
         Self {
             tracer_pid: AtomicU32::new(0),
             traceme: AtomicBool::new(false),
-            stops: SpinNoIrq::new(BTreeMap::new()),
+            stops: PiMutex::new(BTreeMap::new()),
             selected_tid: AtomicU32::new(0),
             stop_event: Arc::default(),
-            resume_signo: SpinNoIrq::new(BTreeMap::new()),
-            resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
+            resume_signo: PiMutex::new(BTreeMap::new()),
+            resume_signal_bypass: PiMutex::new(BTreeMap::new()),
             exec_stop_pending: AtomicBool::new(false),
             attached: AtomicBool::new(false),
             singlestep_tid: AtomicU32::new(0),
-            syscall_trace: SpinNoIrq::new(BTreeMap::new()),
+            syscall_trace: PiMutex::new(BTreeMap::new()),
             options: AtomicUsize::new(0),
-            pending_event: SpinNoIrq::new(BTreeMap::new()),
-            ss_saved_insn: SpinNoIrq::new(BTreeMap::new()),
-            stop_fp_data: SpinNoIrq::new(BTreeMap::new()),
+            pending_event: PiMutex::new(BTreeMap::new()),
+            ss_saved_insn: PiMutex::new(BTreeMap::new()),
+            stop_fp_data: PiMutex::new(BTreeMap::new()),
         }
     }
 }
@@ -666,5 +666,28 @@ impl ProcessData {
 
     pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: PtraceStopFpData) -> bool {
         self.ptrace.stop_fp_data.lock().insert(tid, data).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_sync::PiMutex;
+
+    use super::ProcessPtraceState;
+
+    #[test]
+    fn ptrace_heap_registries_use_sleepable_pi_locks() {
+        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_ptrace_lock_types(state: &ProcessPtraceState) {
+            assert_pi_mutex(&state.stops);
+            assert_pi_mutex(&state.resume_signo);
+            assert_pi_mutex(&state.resume_signal_bypass);
+            assert_pi_mutex(&state.syscall_trace);
+            assert_pi_mutex(&state.pending_event);
+            assert_pi_mutex(&state.ss_saved_insn);
+            assert_pi_mutex(&state.stop_fp_data);
+        }
+
+        let _ = assert_ptrace_lock_types as fn(&ProcessPtraceState);
     }
 }

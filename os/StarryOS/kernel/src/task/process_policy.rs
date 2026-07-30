@@ -2,12 +2,12 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
-use ax_kspin::{SpinRwLock, SpinRwLockReadGuard, SpinRwLockWriteGuard};
+use ax_sync::{PiMutex, PiMutexGuard};
 
 use super::{ProcessData, Rlimits};
 
 pub(super) struct ProcessPolicyState {
-    rlimits: SpinRwLock<Rlimits>,
+    rlimits: PiMutex<Rlimits>,
     umask: AtomicU32,
     membarrier_state: AtomicU32,
     dumpable: AtomicI32,
@@ -18,7 +18,7 @@ pub(super) struct ProcessPolicyState {
 impl ProcessPolicyState {
     pub(super) fn new() -> Self {
         Self {
-            rlimits: SpinRwLock::default(),
+            rlimits: PiMutex::new(Rlimits::default()),
             umask: AtomicU32::new(0o022),
             membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
@@ -29,12 +29,12 @@ impl ProcessPolicyState {
 }
 
 impl ProcessData {
-    pub fn rlimits(&self) -> SpinRwLockReadGuard<'_, Rlimits> {
-        self.policy.rlimits.read()
+    pub fn rlimits(&self) -> Rlimits {
+        *self.policy.rlimits.lock()
     }
 
-    pub fn rlimits_mut(&self) -> SpinRwLockWriteGuard<'_, Rlimits> {
-        self.policy.rlimits.write()
+    pub fn rlimits_mut(&self) -> PiMutexGuard<'_, Rlimits> {
+        self.policy.rlimits.lock()
     }
 
     pub fn umask(&self) -> u32 {
@@ -81,5 +81,22 @@ impl ProcessData {
 
     pub fn replace_personality(&self, personality: usize) -> usize {
         self.policy.personality.swap(personality, Ordering::AcqRel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_sync::PiMutex;
+
+    use super::ProcessPolicyState;
+
+    #[test]
+    fn resource_limits_use_a_sleepable_pi_lock() {
+        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_policy_lock_types(policy: &ProcessPolicyState) {
+            assert_pi_mutex(&policy.rlimits);
+        }
+
+        let _ = assert_policy_lock_types as fn(&ProcessPolicyState);
     }
 }

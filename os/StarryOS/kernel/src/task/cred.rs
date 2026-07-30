@@ -90,6 +90,7 @@ impl Cred {
     /// The bounding set remains full so future privileged transitions can
     /// still be represented, but the effective/permitted/ambient sets start
     /// empty.
+    #[cfg(axtest)]
     pub fn unprivileged(uid: u32, gid: u32) -> Self {
         Self {
             uid,

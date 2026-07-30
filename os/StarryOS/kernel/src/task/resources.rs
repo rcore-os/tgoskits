@@ -15,7 +15,7 @@ pub const AX_FILE_LIMIT: usize = 1024;
 pub const MQ_BYTES_MAX: u64 = 819200;
 
 /// The limit for a specific resource
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Rlimit {
     /// The current limit for the resource (soft)
     pub current: u64,
@@ -43,6 +43,7 @@ impl From<u64> for Rlimit {
 }
 
 /// Process resource limits
+#[derive(Clone, Copy)]
 pub struct Rlimits([Rlimit; RLIM_NLIMITS as usize]);
 
 impl Default for Rlimits {

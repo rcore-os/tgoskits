@@ -9,8 +9,11 @@ use core::{
     time::Duration,
 };
 
-use ax_kspin::SpinNoIrq;
+#[cfg(not(feature = "multitask"))]
+use ax_kspin::SpinNoIrq as ThreadGroupLock;
 use ax_lazyinit::LazyInit;
+#[cfg(feature = "multitask")]
+use ax_sync::PiMutex as ThreadGroupLock;
 
 use crate::{
     Pid, ProcessGroup, Session,
@@ -69,7 +72,7 @@ pub enum ThreadExit {
 pub struct Process {
     pid: Pid,
     is_child_subreaper: AtomicBool,
-    pub(crate) tg: SpinNoIrq<ThreadGroup>,
+    pub(crate) tg: ThreadGroupLock<ThreadGroup>,
 
     pub(crate) children: RelationLock<ChildRelations>,
     pub(crate) parent: RelationLock<Weak<Process>>,
@@ -354,7 +357,17 @@ impl Process {
 
     /// Get all threads in this [`Process`].
     pub fn threads(&self) -> Vec<Pid> {
-        self.tg.lock().threads.iter().cloned().collect()
+        loop {
+            let thread_count = self.tg.lock().threads.len();
+            let mut threads = Vec::with_capacity(thread_count);
+            let thread_group = self.tg.lock();
+            if threads.capacity() < thread_group.threads.len() {
+                drop(thread_group);
+                continue;
+            }
+            threads.extend(thread_group.threads.iter().copied());
+            return threads;
+        }
     }
 
     /// Renames a thread in the thread group.
@@ -381,13 +394,22 @@ impl Process {
     /// state was first published. Later exiting threads must not overwrite the
     /// recorded process exit code.
     pub fn start_group_exit(&self, exit_code: i32) -> Option<Vec<Pid>> {
-        let mut tg = self.tg.lock();
-        if tg.group_exited {
-            return None;
+        loop {
+            let thread_count = self.tg.lock().threads.len();
+            let mut threads = Vec::with_capacity(thread_count);
+            let mut thread_group = self.tg.lock();
+            if thread_group.group_exited {
+                return None;
+            }
+            if threads.capacity() < thread_group.threads.len() {
+                drop(thread_group);
+                continue;
+            }
+            thread_group.group_exited = true;
+            thread_group.exit_code = exit_code;
+            threads.extend(thread_group.threads.iter().copied());
+            return Some(threads);
         }
-        tg.group_exited = true;
-        tg.exit_code = exit_code;
-        Some(tg.threads.iter().cloned().collect())
     }
 
     /// Marks the [`Process`] as group exited.
@@ -496,7 +518,7 @@ impl Process {
         Arc::new(Process {
             pid,
             is_child_subreaper: AtomicBool::new(false),
-            tg: SpinNoIrq::new(ThreadGroup::default()),
+            tg: ThreadGroupLock::new(ThreadGroup::default()),
             children: RelationLock::new(ChildRelations::new()),
             parent: RelationLock::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
             group: RelationLock::new(group.clone()),
@@ -580,6 +602,15 @@ mod tests {
     fn test_init() -> Arc<Process> {
         static TEST_INIT: OnceLock<Arc<Process>> = OnceLock::new();
         TEST_INIT.get_or_init(|| Process::new_init(1)).clone()
+    }
+
+    #[cfg(feature = "multitask")]
+    #[test]
+    fn multitask_thread_group_uses_a_sleepable_pi_lock() {
+        fn assert_pi_mutex<T>(_: &ax_sync::PiMutex<T>) {}
+
+        let process = test_init();
+        assert_pi_mutex(&process.tg);
     }
 
     #[test]
