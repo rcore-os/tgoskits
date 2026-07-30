@@ -7,9 +7,9 @@ use ax_runtime::hal::time::TimeValue;
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 
 use super::{
-    AlarmChange, AlarmToken, CpuTimeDelta, ITimerType, PendingTimerActions, PosixTimerTable,
-    ProcessCpuTimeAccounting, ProcessCpuTimeSnapshot, ProcessData, ProcessTimerManager,
-    SetITimerOutcome, get_task,
+    AlarmChange, AlarmToken, CpuTimeDelta, ITimerSetting, ITimerType, PendingTimerActions,
+    PosixTimerTable, ProcessCpuTimeAccounting, ProcessCpuTimeSnapshot, ProcessData,
+    ProcessTimerManager, SetITimerOutcome, get_task,
 };
 
 /// Accounting state and timer tables shared by a thread group.
@@ -99,17 +99,23 @@ impl ProcessData {
     }
 
     pub fn get_interval_timer(&self, timer: ITimerType) -> (TimeValue, TimeValue) {
-        self.accounting.interval_timers.lock().get_itimer(timer)
+        let snapshot = self.cpu_time_snapshot();
+        self.accounting
+            .interval_timers
+            .lock()
+            .get_itimer(timer, snapshot)
     }
 
     pub(crate) fn set_interval_timer(
         &self,
         timer: ITimerType,
-        interval_ns: usize,
-        remaining_ns: usize,
+        interval: TimeValue,
+        remaining: TimeValue,
     ) -> SetITimerOutcome {
+        let setting = ITimerSetting::new(interval, remaining);
+        let snapshot = self.cpu_time_snapshot();
         let mut timers = self.accounting.interval_timers.lock();
-        let outcome = timers.set_itimer(timer, interval_ns, remaining_ns);
+        let outcome = timers.set_itimer(timer, setting, snapshot);
         self.accounting
             .active_interval_timers
             .store(timers.active_mask(), Ordering::Release);

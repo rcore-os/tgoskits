@@ -1,7 +1,9 @@
 //! POSIX per-process interval timers (timer_create, timer_settime, etc.)
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::collections::BTreeMap;
 use core::{
+    mem,
+    ops::Bound::{Excluded, Included, Unbounded},
     sync::atomic::{AtomicBool, AtomicI32, Ordering},
     time::Duration,
 };
@@ -19,19 +21,68 @@ use starry_signal::{SignalInfo, Signo};
 
 use super::timer::{AlarmChange, AlarmSlot, AlarmTarget, AlarmToken};
 
-enum ExpiryAction {
-    Emit(SignalInfo),
-    UpdateAlarm(AlarmChange),
+const EXPIRY_SCAN_BATCH_SIZE: usize = 16;
+const MAX_TIMER_NANOS: u64 = i64::MAX as u64;
+
+#[derive(Clone, Copy)]
+struct TimerClockSnapshot {
+    realtime: u64,
+    monotonic: u64,
+    boottime: u64,
 }
 
-fn dispatch_timer_actions<Action>(
-    produce: impl FnOnce(&mut dyn FnMut(Action)),
-    mut consume: impl FnMut(Action),
-) {
-    let mut pending = Vec::new();
-    produce(&mut |action| pending.push(action));
-    for action in pending {
-        consume(action);
+impl TimerClockSnapshot {
+    fn capture(mut now_ns: impl FnMut(u32) -> u64) -> Self {
+        Self {
+            realtime: now_ns(CLOCK_REALTIME),
+            monotonic: now_ns(CLOCK_MONOTONIC),
+            boottime: now_ns(CLOCK_BOOTTIME),
+        }
+    }
+
+    fn now(self, clock_id: u32) -> u64 {
+        match clock_id {
+            CLOCK_REALTIME => self.realtime,
+            CLOCK_MONOTONIC => self.monotonic,
+            CLOCK_BOOTTIME => self.boottime,
+            _ => unreachable!("unsupported POSIX timer clock"),
+        }
+    }
+}
+
+struct ExpiryOutcome {
+    signal: Option<SignalInfo>,
+    alarm_change: AlarmChange,
+}
+
+struct ExpiryScanBatch {
+    outcomes: heapless::Vec<ExpiryOutcome, EXPIRY_SCAN_BATCH_SIZE>,
+    last_scanned_id: Option<i32>,
+    complete: bool,
+}
+
+impl ExpiryScanBatch {
+    const fn new() -> Self {
+        Self {
+            outcomes: heapless::Vec::new(),
+            last_scanned_id: None,
+            complete: false,
+        }
+    }
+
+    fn push(&mut self, outcome: ExpiryOutcome) {
+        if self.outcomes.push(outcome).is_err() {
+            unreachable!("expiry scan produced more than one outcome per timer")
+        }
+    }
+
+    fn apply(self, pid: Pid, emitter: &mut impl FnMut(SignalInfo)) {
+        for outcome in self.outcomes {
+            if let Some(signal) = outcome.signal {
+                emitter(signal);
+            }
+            outcome.alarm_change.apply(AlarmTarget::Process(pid));
+        }
     }
 }
 
@@ -46,10 +97,61 @@ struct PosixTimer {
     sigev_value: i64,
     /// Interval for periodic timers (0 = one-shot).
     interval_ns: u64,
-    /// Absolute deadline (monotonic nanos) for the next expiry, or 0 if disarmed.
+    /// Absolute deadline in `clock_id`'s time domain, or 0 if disarmed.
     deadline_ns: u64,
     /// Stable alarm-queue identity with generation-based stale-wakeup rejection.
     alarm_slot: AlarmSlot,
+}
+
+impl PosixTimer {
+    fn poll_expiry(&mut self, now: u64, trigger: Option<&AlarmToken>) -> Option<ExpiryOutcome> {
+        if self.deadline_ns == 0 {
+            return None;
+        }
+        if trigger.is_some_and(|token| !self.alarm_slot.matches(token)) {
+            return None;
+        }
+
+        if now >= self.deadline_ns {
+            let signal = self
+                .signo
+                .map(|signo| SignalInfo::new_timer(signo, self.sigev_value));
+            let elapsed = now.saturating_sub(self.deadline_ns);
+            let alarm_change = if let Some(elapsed_periods) = elapsed.checked_div(self.interval_ns)
+            {
+                // Advance to the first future period. A delayed worker
+                // produces one coalesced signal rather than an unbounded
+                // burst of immediate re-firings.
+                let periods = elapsed_periods.saturating_add(1);
+                self.deadline_ns = self
+                    .deadline_ns
+                    .saturating_add(periods.saturating_mul(self.interval_ns))
+                    .min(MAX_TIMER_NANOS);
+                self.alarm_slot.replace(Some(Duration::from_nanos(
+                    self.deadline_ns.saturating_sub(now),
+                )))
+            } else {
+                self.deadline_ns = 0;
+                self.alarm_slot.replace(None)
+            };
+            return Some(ExpiryOutcome {
+                signal,
+                alarm_change,
+            });
+        }
+
+        trigger.map(|_| {
+            // The physical alarm may precede a non-monotonic clock deadline.
+            // Its queue entry was consumed, so publish the remaining interval
+            // again.
+            ExpiryOutcome {
+                signal: None,
+                alarm_change: self.alarm_slot.replace(Some(Duration::from_nanos(
+                    self.deadline_ns.saturating_sub(now),
+                ))),
+            }
+        })
+    }
 }
 
 /// The value/interval pair passed to `timer_settime`.
@@ -102,10 +204,19 @@ fn clock_now_ns(clock_id: u32) -> u64 {
     match clock_id {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE => {
             let t = wall_time();
-            t.as_secs() * NANOS_PER_SEC + t.subsec_nanos() as u64
+            t.as_secs()
+                .saturating_mul(NANOS_PER_SEC)
+                .saturating_add(t.subsec_nanos() as u64)
         }
         _ => monotonic_time_nanos() as u64,
     }
+}
+
+fn timespec_to_nanos_saturated(seconds: i64, nanoseconds: i64) -> u64 {
+    (seconds as u64)
+        .saturating_mul(NANOS_PER_SEC)
+        .saturating_add(nanoseconds as u64)
+        .min(MAX_TIMER_NANOS)
 }
 
 impl PosixTimerTable {
@@ -163,15 +274,14 @@ impl PosixTimerTable {
 
     /// Delete a timer. Returns true if it existed.
     pub fn delete(&self, id: i32) -> bool {
-        let cancellation = {
+        let timer = {
             let mut timers = self.timers.lock();
-            let cancellation = timers
-                .remove(&id)
-                .map(|timer| timer.alarm_slot.replace(None));
+            let timer = timers.remove(&id);
             self.publish_armed_state(&timers);
-            cancellation
+            timer
         };
-        if let Some(cancellation) = cancellation {
+        if let Some(timer) = timer {
+            let cancellation = timer.alarm_slot.replace(None);
             cancellation.apply_cancellation();
             true
         } else {
@@ -181,17 +291,14 @@ impl PosixTimerTable {
 
     /// Clear all timers. Used on execve.
     pub fn clear(&self) {
-        let cancellations = {
+        let timers = {
             let mut timers = self.timers.lock();
-            let cancellations = timers
-                .values()
-                .map(|timer| timer.alarm_slot.replace(None))
-                .collect::<Vec<_>>();
-            timers.clear();
+            let removed = mem::take(&mut *timers);
             self.armed.store(false, Ordering::Release);
-            cancellations
+            removed
         };
-        for cancellation in cancellations {
+        for timer in timers.into_values() {
+            let cancellation = timer.alarm_slot.replace(None);
             cancellation.apply_cancellation();
         }
     }
@@ -223,6 +330,7 @@ impl PosixTimerTable {
         if interval_sec < 0 {
             return Err(());
         }
+        let clocks = TimerClockSnapshot::capture(clock_now_ns);
 
         let (old, alarm_change) = {
             let mut timers = self.timers.lock();
@@ -231,15 +339,15 @@ impl PosixTimerTable {
             // Compute old remaining time
             let old_interval = timer.interval_ns;
             let old_remaining = if timer.deadline_ns > 0 {
-                let now = clock_now_ns(timer.clock_id);
+                let now = clocks.now(timer.clock_id);
                 timer.deadline_ns.saturating_sub(now)
             } else {
                 0
             };
 
             // Compute new values
-            let new_value_ns = value_sec as u64 * NANOS_PER_SEC + value_nsec as u64;
-            let new_interval_ns = interval_sec as u64 * NANOS_PER_SEC + interval_nsec as u64;
+            let new_value_ns = timespec_to_nanos_saturated(value_sec, value_nsec);
+            let new_interval_ns = timespec_to_nanos_saturated(interval_sec, interval_nsec);
 
             timer.interval_ns = new_interval_ns;
 
@@ -248,7 +356,7 @@ impl PosixTimerTable {
                 timer.deadline_ns = 0;
                 None
             } else {
-                let now = clock_now_ns(timer.clock_id);
+                let now = clocks.now(timer.clock_id);
                 let abs_flag = flags & 1; // TIMER_ABSTIME = 1
                 if abs_flag != 0 {
                     // Absolute time: use the requested time directly.
@@ -257,11 +365,9 @@ impl PosixTimerTable {
                     timer.deadline_ns = new_value_ns;
                 } else {
                     // Relative time
-                    timer.deadline_ns = now + new_value_ns;
+                    timer.deadline_ns = now.saturating_add(new_value_ns).min(MAX_TIMER_NANOS);
                 }
-                let remaining = timer
-                    .deadline_ns
-                    .saturating_sub(clock_now_ns(timer.clock_id));
+                let remaining = timer.deadline_ns.saturating_sub(now);
                 Some(Duration::from_nanos(remaining))
             };
 
@@ -279,11 +385,12 @@ impl PosixTimerTable {
 
     /// Get the current timer state. Returns (interval_ns, remaining_ns).
     pub fn gettime(&self, id: i32) -> Result<(u64, u64), ()> {
+        let clocks = TimerClockSnapshot::capture(clock_now_ns);
         let timers = self.timers.lock();
         let timer = timers.get(&id).ok_or(())?;
 
         let remaining = if timer.deadline_ns > 0 {
-            let now = clock_now_ns(timer.clock_id);
+            let now = clocks.now(timer.clock_id);
             timer.deadline_ns.saturating_sub(now)
         } else {
             0
@@ -319,130 +426,59 @@ impl PosixTimerTable {
         &self,
         pid: Pid,
         trigger: Option<&AlarmToken>,
-        mut now_ns: impl FnMut(u32) -> u64,
+        now_ns: impl FnMut(u32) -> u64,
         mut emitter: impl FnMut(SignalInfo),
     ) {
-        dispatch_timer_actions(
-            |publish| {
-                let mut timers = self.timers.lock();
-                for timer in timers.values_mut() {
-                    if timer.deadline_ns == 0 {
-                        continue;
-                    }
-                    if trigger.is_some_and(|token| !timer.alarm_slot.matches(token)) {
-                        continue;
-                    }
+        let clocks = TimerClockSnapshot::capture(now_ns);
+        let upper_id = {
+            let timers = self.timers.lock();
+            timers.last_key_value().map(|(&id, _)| id)
+        };
+        let Some(upper_id) = upper_id else {
+            return;
+        };
 
-                    let now = now_ns(timer.clock_id);
-                    if now >= timer.deadline_ns {
-                        // Timer expired
-                        if let Some(signo) = timer.signo {
-                            publish(ExpiryAction::Emit(SignalInfo::new_timer(
-                                signo,
-                                timer.sigev_value,
-                            )));
-                        }
-                        let elapsed = now.saturating_sub(timer.deadline_ns);
-                        if let Some(elapsed_periods) = elapsed.checked_div(timer.interval_ns) {
-                            // Advance to the first future period. A delayed
-                            // worker produces one coalesced signal rather than
-                            // an unbounded burst of immediate re-firings.
-                            let periods = elapsed_periods.saturating_add(1);
-                            timer.deadline_ns = timer
-                                .deadline_ns
-                                .saturating_add(periods.saturating_mul(timer.interval_ns));
-                            let remaining =
-                                timer.deadline_ns.saturating_sub(now_ns(timer.clock_id));
-                            publish(ExpiryAction::UpdateAlarm(
-                                timer
-                                    .alarm_slot
-                                    .replace(Some(Duration::from_nanos(remaining))),
-                            ));
-                        } else {
-                            // One-shot: disarm
-                            timer.deadline_ns = 0;
-                            publish(ExpiryAction::UpdateAlarm(timer.alarm_slot.replace(None)));
-                        }
-                    } else if trigger.is_some() {
-                        // The physical alarm may precede a non-monotonic clock
-                        // deadline or a newly-accounted CPU-time deadline.
-                        // Its queue entry was consumed, so publish the current
-                        // remaining interval again.
-                        publish(ExpiryAction::UpdateAlarm(timer.alarm_slot.replace(Some(
-                            Duration::from_nanos(timer.deadline_ns.saturating_sub(now)),
-                        ))));
-                    }
+        let mut cursor = None;
+        loop {
+            let batch = self.collect_expiry_batch(cursor, upper_id, trigger, clocks);
+            let complete = batch.complete;
+            let next_cursor = batch.last_scanned_id;
+            batch.apply(pid, &mut emitter);
+            if complete {
+                break;
+            }
+            let Some(next_cursor) = next_cursor else {
+                break;
+            };
+            cursor = Some(next_cursor);
+        }
+    }
+
+    fn collect_expiry_batch(
+        &self,
+        start_after: Option<i32>,
+        upper_id: i32,
+        trigger: Option<&AlarmToken>,
+        clocks: TimerClockSnapshot,
+    ) -> ExpiryScanBatch {
+        let mut batch = ExpiryScanBatch::new();
+        let mut timers = self.timers.lock();
+        {
+            let lower_bound = start_after.map_or(Unbounded, Excluded);
+            let mut candidates = timers.range_mut((lower_bound, Included(upper_id)));
+            for _ in 0..EXPIRY_SCAN_BATCH_SIZE {
+                let Some((&id, timer)) = candidates.next() else {
+                    break;
+                };
+                batch.last_scanned_id = Some(id);
+                if let Some(outcome) = timer.poll_expiry(clocks.now(timer.clock_id), trigger) {
+                    batch.push(outcome);
                 }
-                self.publish_armed_state(&timers);
-            },
-            |action| match action {
-                ExpiryAction::Emit(signal) => emitter(signal),
-                ExpiryAction::UpdateAlarm(change) => change.apply(AlarmTarget::Process(pid)),
-            },
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use core::cell::Cell;
-
-    use linux_raw_sys::general::CLOCK_MONOTONIC;
-
-    use super::{AlarmSlot, PosixTimer, PosixTimerTable, dispatch_timer_actions};
-
-    #[test]
-    fn expiry_callback_runs_after_releasing_timer_metadata() {
-        let metadata_held = Cell::new(false);
-        let callback_ran = Cell::new(false);
-
-        dispatch_timer_actions(
-            |publish| {
-                metadata_held.set(true);
-                publish(7);
-                metadata_held.set(false);
-            },
-            |action| {
-                assert_eq!(action, 7);
-                assert!(
-                    !metadata_held.get(),
-                    "timer metadata must not be held across signal delivery"
-                );
-                callback_ran.set(true);
-            },
-        );
-
-        assert!(callback_ran.get());
-    }
-
-    #[test]
-    fn armed_gate_tracks_deadline_metadata() {
-        let table = PosixTimerTable::default();
-        assert!(!table.has_armed_timers());
-
-        {
-            let mut timers = table.timers.lock();
-            timers.insert(
-                1,
-                PosixTimer {
-                    clock_id: CLOCK_MONOTONIC,
-                    signo: None,
-                    sigev_value: 0,
-                    interval_ns: 0,
-                    deadline_ns: 1,
-                    alarm_slot: AlarmSlot::new(),
-                },
-            );
-            table.publish_armed_state(&timers);
+            }
+            batch.complete = candidates.next().is_none();
         }
-        assert!(table.has_armed_timers());
-
-        {
-            let mut timers = table.timers.lock();
-            timers.get_mut(&1).unwrap().deadline_ns = 0;
-            table.publish_armed_state(&timers);
-        }
-        assert!(!table.has_armed_timers());
+        self.publish_armed_state(&timers);
+        batch
     }
 }
 
@@ -519,4 +555,226 @@ pub(crate) fn posix_timer_active_gate_rules_hold_for_test() -> bool {
         },
     );
     disarmed.is_ok() && !timers.has_armed_timers() && timers.delete(id)
+}
+
+#[cfg(axtest)]
+pub(crate) fn posix_timer_clock_sampling_rules_hold_for_test() -> bool {
+    use core::cell::Cell;
+
+    let table = PosixTimerTable::default();
+    {
+        let mut timers = table.timers.lock();
+        timers.insert(
+            1,
+            PosixTimer {
+                clock_id: CLOCK_MONOTONIC,
+                signo: None,
+                sigev_value: 0,
+                interval_ns: 0,
+                deadline_ns: 1,
+                alarm_slot: AlarmSlot::new(),
+            },
+        );
+        table.publish_armed_state(&timers);
+    }
+
+    let sampled_outside_metadata = Cell::new(false);
+    table.poll_expired_at(
+        1,
+        None,
+        |_| {
+            sampled_outside_metadata.set(table.timers.try_lock().is_some());
+            2
+        },
+        |_| {},
+    );
+    sampled_outside_metadata.get()
+}
+
+#[cfg(axtest)]
+pub(crate) fn posix_timer_saturating_timespec_rules_hold_for_test() -> bool {
+    let table = PosixTimerTable::default();
+    let Ok(id) = table.create(CLOCK_MONOTONIC, SIGEV_NONE, 0, 0) else {
+        return false;
+    };
+    if table
+        .settime(
+            1,
+            id,
+            1,
+            TimerSpec {
+                value_sec: i64::MAX,
+                value_nsec: (NANOS_PER_SEC - 1) as i64,
+                interval_sec: i64::MAX,
+                interval_nsec: (NANOS_PER_SEC - 1) as i64,
+            },
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    let timers = table.timers.lock();
+    let Some(timer) = timers.get(&id) else {
+        return false;
+    };
+    timer.deadline_ns == i64::MAX as u64 && timer.interval_ns == i64::MAX as u64
+}
+
+#[cfg(axtest)]
+pub(crate) fn posix_timer_expiry_batch_rules_hold_for_test() -> bool {
+    use core::cell::Cell;
+
+    let table = PosixTimerTable::default();
+    {
+        let mut timers = table.timers.lock();
+        for id in 0..=(EXPIRY_SCAN_BATCH_SIZE as i32) {
+            timers.insert(
+                id,
+                PosixTimer {
+                    clock_id: CLOCK_MONOTONIC,
+                    signo: Some(Signo::SIGALRM),
+                    sigev_value: id as i64,
+                    interval_ns: 0,
+                    deadline_ns: 1,
+                    alarm_slot: AlarmSlot::new(),
+                },
+            );
+        }
+        table.publish_armed_state(&timers);
+    }
+
+    let emitted = Cell::new(0);
+    let callbacks_outside_metadata = Cell::new(true);
+    table.poll_expired_at(
+        1,
+        None,
+        |_| 2,
+        |_| {
+            callbacks_outside_metadata
+                .set(callbacks_outside_metadata.get() && table.timers.try_lock().is_some());
+            emitted.set(emitted.get() + 1);
+        },
+    );
+    emitted.get() == EXPIRY_SCAN_BATCH_SIZE + 1
+        && callbacks_outside_metadata.get()
+        && !table.has_armed_timers()
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use linux_raw_sys::general::CLOCK_MONOTONIC;
+    use starry_signal::Signo;
+
+    use super::{
+        AlarmSlot, EXPIRY_SCAN_BATCH_SIZE, ExpiryOutcome, ExpiryScanBatch, PosixTimer,
+        PosixTimerTable,
+    };
+
+    #[test]
+    fn expiry_callback_runs_after_releasing_timer_metadata() {
+        let table = PosixTimerTable::default();
+        {
+            let mut timers = table.timers.lock();
+            timers.insert(
+                1,
+                PosixTimer {
+                    clock_id: CLOCK_MONOTONIC,
+                    signo: Some(Signo::SIGALRM),
+                    sigev_value: 7,
+                    interval_ns: 0,
+                    deadline_ns: 1,
+                    alarm_slot: AlarmSlot::new(),
+                },
+            );
+            table.publish_armed_state(&timers);
+        }
+        let callback_ran = Cell::new(false);
+
+        table.poll_expired_at(
+            1,
+            None,
+            |_| 2,
+            |_| {
+                assert!(
+                    table.timers.try_lock().is_some(),
+                    "timer metadata must not be held across signal delivery"
+                );
+                callback_ran.set(true);
+            },
+        );
+
+        assert!(callback_ran.get());
+    }
+
+    #[test]
+    fn armed_gate_tracks_deadline_metadata() {
+        let table = PosixTimerTable::default();
+        assert!(!table.has_armed_timers());
+
+        {
+            let mut timers = table.timers.lock();
+            timers.insert(
+                1,
+                PosixTimer {
+                    clock_id: CLOCK_MONOTONIC,
+                    signo: None,
+                    sigev_value: 0,
+                    interval_ns: 0,
+                    deadline_ns: 1,
+                    alarm_slot: AlarmSlot::new(),
+                },
+            );
+            table.publish_armed_state(&timers);
+        }
+        assert!(table.has_armed_timers());
+
+        {
+            let mut timers = table.timers.lock();
+            timers.get_mut(&1).unwrap().deadline_ns = 0;
+            table.publish_armed_state(&timers);
+        }
+        assert!(!table.has_armed_timers());
+    }
+
+    #[test]
+    fn clock_sampling_runs_before_timer_metadata_is_locked() {
+        let table = PosixTimerTable::default();
+        {
+            let mut timers = table.timers.lock();
+            timers.insert(
+                1,
+                PosixTimer {
+                    clock_id: CLOCK_MONOTONIC,
+                    signo: None,
+                    sigev_value: 0,
+                    interval_ns: 0,
+                    deadline_ns: 1,
+                    alarm_slot: AlarmSlot::new(),
+                },
+            );
+            table.publish_armed_state(&timers);
+        }
+
+        table.poll_expired_at(
+            1,
+            None,
+            |_| {
+                assert!(
+                    table.timers.try_lock().is_some(),
+                    "clock sampling must not run under the timer metadata lock"
+                );
+                2
+            },
+            |_| {},
+        );
+    }
+
+    #[test]
+    fn expiry_scan_uses_a_fixed_capacity_batch() {
+        let batch = ExpiryScanBatch::new();
+        let _: &heapless::Vec<ExpiryOutcome, { EXPIRY_SCAN_BATCH_SIZE }> = &batch.outcomes;
+    }
 }

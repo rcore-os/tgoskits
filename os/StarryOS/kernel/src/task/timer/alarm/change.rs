@@ -1,6 +1,6 @@
 #[derive(Clone, Debug)]
 pub(crate) enum AlarmChange {
-    Cancel(AlarmSlot),
+    Cancel(AlarmToken),
     Schedule { delay: Duration, token: AlarmToken },
 }
 
@@ -9,7 +9,7 @@ impl AlarmChange {
         let mut alarms = ALARM_LIST.lock();
         let previous_earliest = alarms.earliest_deadline();
         match self {
-            Self::Cancel(slot) => alarms.cancel(&slot),
+            Self::Cancel(token) => alarms.cancel(&token),
             Self::Schedule { delay, token } => {
                 alarms.schedule(wall_time().saturating_add(delay), token, target);
             }
@@ -23,7 +23,7 @@ impl AlarmChange {
 
     pub(crate) fn apply_cancellation(self) {
         match self {
-            Self::Cancel(slot) => cancel_alarm_slot(&slot),
+            Self::Cancel(token) => cancel_alarm_generation(&token),
             Self::Schedule { .. } => {
                 unreachable!("disarming an alarm slot must produce a cancellation")
             }
@@ -40,10 +40,10 @@ pub(super) fn apply_alarm_changes(
     }
 }
 
-fn cancel_alarm_slot(slot: &AlarmSlot) {
+fn cancel_alarm_generation(token: &AlarmToken) {
     let mut alarms = ALARM_LIST.lock();
     let previous_earliest = alarms.earliest_deadline();
-    alarms.cancel(slot);
+    alarms.cancel(token);
     let earliest_changed = alarms.earliest_deadline() != previous_earliest;
     drop(alarms);
     if earliest_changed {

@@ -52,11 +52,17 @@ pub(crate) use self::{
     ops::decode_wait_status_rules_hold_for_test,
     posix_timer::{
         posix_timer_active_gate_rules_hold_for_test,
+        posix_timer_clock_sampling_rules_hold_for_test,
         posix_timer_clock_validation_rules_hold_for_test,
+        posix_timer_expiry_batch_rules_hold_for_test,
+        posix_timer_saturating_timespec_rules_hold_for_test,
     },
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,
-    timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
+    timer::{
+        alarm_generation_rules_hold_for_test, interval_timer_arm_uses_current_snapshot_for_test,
+        itimer_type_signo_and_time_conversion_rules_hold_for_test,
+    },
 };
 use self::{
     job_control::ProcessJobControl, process_accounting::ProcessAccountingState,
