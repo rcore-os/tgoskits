@@ -19,13 +19,13 @@ impl IrqSink for Aarch64VmIrqSink {
     }
 
     fn pulse(&self, line: IrqLineId) -> IrqResult {
-        crate::manager::inject_interrupt(self.vm_id, self.target_vcpu_id, line.0).map_err(
-            |error| IrqError::Backend {
+        crate::manager::inject_interrupt(self.vm_id, self.target_vcpu_id, line.0).map_err(|error| {
+            IrqError::Backend {
                 line,
                 operation: "pulse AArch64 VM IRQ line",
                 detail: alloc::format!("{error}"),
-            },
-        )
+            }
+        })
     }
 }
 
