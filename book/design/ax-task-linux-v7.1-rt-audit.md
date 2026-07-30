@@ -1445,6 +1445,50 @@ startup delay, so no scheduler design was changed without a deterministic
 failure. These integrated results are not inferred from host linking, whose
 bare-metal symbols are intentionally supplied only by the xtask build.
 
+## Current-head reschedule ownership closure
+
+The runtime timer and IPI adapters used to complete owner-local scheduler
+state transitions themselves. The timer adapter interpreted four
+`TaskClockEventOutcome` fields and called `CpuRemote::request_reschedule()`;
+the IPI adapter acknowledged the ax-task epoch and then made the same direct
+write. That public method only set sticky owner state. It did not ring a remote
+doorbell, so a caller holding another CPU's public `CpuRemote` could create a
+permanently sleeping reschedule request.
+
+Linux v7.1 keeps this distinction inside `__resched_curr()`:
+
+- for the current runqueue it sets the task and preemption flags directly;
+- for a remote runqueue it first publishes need-resched and then calls
+  `smp_send_reschedule()` unless the target is polling; and
+- `sched_tick()` owns the current runqueue lock while scheduling-class tick
+  logic decides whether to call that boundary.
+
+TGOSKits now applies the same ownership rule. The ax-task clockevent facade
+publishes owner preemption before returning when class accounting, a task
+deadline, bounded backlog, or a scheduler deadline requires a safe point.
+Scheduler IPI acknowledgement releases the delivered epoch and promotes any
+remaining owner work to preemption in the same core facade. ax-runtime now
+transports only the physical clockevent update and IPI edge; it no longer
+interprets scheduler policy or writes `CpuRemote`. The owner-only
+`request_reschedule()` and `acknowledge_scheduler_ipi()` methods are
+crate-private, while remote wake, migration, and policy producers continue to
+use the payload-before-sticky-before-IPI publication state machine.
+
+Both ownership gaps were captured before the fix:
+
+- a due deferred scheduler deadline returned `pending` without publishing
+  current-CPU preemption; and
+- acknowledging a scheduler IPI with sticky work left
+  `preempt_requested == false` unless ax-runtime performed a second write.
+
+The two deterministic tests are green after the ownership transfer. The
+complete ax-task suite now passes 190 unit tests, all integration/doc tests,
+and 17 loom models. The ax-runtime IRQ/multitask unit configuration passes all
+50 tests, and the full ax-task plus 25-combination ax-runtime feature-clippy
+matrices pass with warnings denied. The timer-expiry facade regression also
+asserts that the resulting scheduler decision preserves the current execution
+context when no runnable peer exists.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

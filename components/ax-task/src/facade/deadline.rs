@@ -26,6 +26,10 @@ pub fn on_clock_event_with_scheduler_tick(
         .as_mut()
         .expire_task_deadlines(now_ns, timer_resolution_ns, budget);
     let scheduler_due = cpu.take_due_scheduler_deadline(now_ns);
+    let pending = batch.pending() || scheduler_due;
+    if charge.slice_expired() || charge.deadline_overrun() || batch.expired() != 0 || pending {
+        cpu.request_reschedule();
+    }
     let update = cpu
         .as_mut()
         .next_task_deadline_update(now_ns, timer_resolution_ns)?;
@@ -33,7 +37,7 @@ pub fn on_clock_event_with_scheduler_tick(
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),
         expired: batch.expired(),
-        pending: batch.pending() || scheduler_due,
+        pending,
         update,
     })
 }

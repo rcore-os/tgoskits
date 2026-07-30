@@ -195,6 +195,49 @@ mod tests {
     }
 
     #[test]
+    fn clock_event_publishes_owner_reschedule_before_returning() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        cpu.arm_deferred_scheduler_deadline(10);
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        assert!(!current_cpu_needs_resched().unwrap());
+        let outcome = on_clock_event(10, 64).unwrap();
+
+        assert!(!outcome.slice_expired());
+        assert_eq!(outcome.expired(), 0);
+        assert!(outcome.pending());
+        assert!(
+            current_cpu_needs_resched().unwrap(),
+            "the scheduler core must publish owner-local preemption before returning to runtime"
+        );
+    }
+
+    #[test]
+    fn scheduler_ipi_acknowledgement_promotes_owner_preemption() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        cpu.request_scheduler_work();
+        assert!(!cpu.remote().take_preempt_requested());
+        acknowledge_current_scheduler_ipi().unwrap();
+
+        assert!(
+            cpu.remote().take_preempt_requested(),
+            "the core IPI boundary must request preemption without a runtime-side CpuRemote write"
+        );
+    }
+
+    #[test]
     fn irq_budget_exhaustion_defers_backlog_without_resolution_rate_rearm() {
         let system =
             Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());

@@ -49,7 +49,7 @@ pub(crate) use bootstrap::initialize_early_bootstrap_tls;
 #[cfg(test)]
 use bootstrap::{IdleEntryAction, idle_entry_action};
 pub(crate) use bootstrap::{
-    PublishedCpuOnline, current_cpu_remote, initialize_primary, publish_current_cpu_online,
+    PublishedCpuOnline, initialize_primary, publish_current_cpu_online,
     start_deferred_task_work_service,
 };
 use bootstrap::{
@@ -75,8 +75,6 @@ use resources::{
 pub use runtime_impl::{SchedSwitchTraceHook, install_sched_switch_trace_hook};
 #[cfg(all(test, any(feature = "ipi", feature = "wake-ipi")))]
 use scheduler_events::SchedulerIpiDoorbell;
-#[cfg(test)]
-use scheduler_events::clock_event_requests_reschedule;
 #[cfg(all(test, not(any(feature = "ipi", feature = "wake-ipi"))))]
 use scheduler_events::publish_then_notify_scheduler_ipi;
 pub use scheduler_events::timer_irq_count;
