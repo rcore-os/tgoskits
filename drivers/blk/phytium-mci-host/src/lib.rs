@@ -133,7 +133,10 @@ pub use host2::{BusRequest, DataRequest, PhytiumMciIrqHandle, TransactionRequest
 
 #[cfg(test)]
 mod tests {
-    use core::num::{NonZeroU16, NonZeroU32};
+    use core::{
+        num::{NonZeroU16, NonZeroU32},
+        ptr::NonNull,
+    };
 
     use sdmmc_protocol::{
         cmd::{CMD0, cmd6_sd_access_mode},
@@ -148,6 +151,24 @@ mod tests {
         regs::{Ctrl, RegisterBlockVolatileFieldAccess, Uhs},
         timing::{MediaKind, TimingTable},
     };
+
+    #[test]
+    fn controller_card_detect_matches_linux_active_low_semantics() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let host = unsafe { PhytiumMci::new(base) };
+        const CDETECT_WORD: usize = 0x50 / size_of::<u32>();
+
+        unsafe {
+            mmio.as_mut_ptr().add(CDETECT_WORD).write_volatile(0);
+        }
+        assert!(host.card_present());
+
+        unsafe {
+            mmio.as_mut_ptr().add(CDETECT_WORD).write_volatile(1);
+        }
+        assert!(!host.card_present());
+    }
 
     #[test]
     fn sd_timing_table_matches_linux_phytium_clock_source_rules() {

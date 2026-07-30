@@ -273,6 +273,15 @@ impl PhytiumMci {
         unsafe { Self::new(base) }
     }
 
+    /// Return whether the controller currently reports media in slot 0.
+    ///
+    /// Phytium MCI follows the Linux driver's active-low `MCI_CARD_DETECT`
+    /// convention: bit 0 clear means present, while bit 0 set means absent.
+    /// Non-removable policy remains board glue responsibility.
+    pub fn card_present(&self) -> bool {
+        self.regs.cdetect().read() & 1 == 0
+    }
+
     /// Install the DMA capability and allocate the controller-lifetime IDMAC ring.
     ///
     /// PhytiumPi deployments have only been validated with a 32-bit DMA

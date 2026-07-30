@@ -27,6 +27,17 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
+    let node = info.node.as_node();
+    let no_sd = node.get_property("no-sd").is_some();
+    let no_mmc = node.get_property("no-mmc").is_some();
+    if !supports_memory_card(no_sd, no_mmc) {
+        info!(
+            "phytium-mci: skip SDIO-only node {} in block probe",
+            info.node.name()
+        );
+        return Ok(());
+    }
+    let non_removable = node.get_property("non-removable").is_some();
     let base_reg = info
         .node
         .regs()
@@ -47,6 +58,13 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { PhytiumMci::new(mmio_base) };
+    if !non_removable && !host.card_present() {
+        info!(
+            "phytium-mci: skip removable node {} without media",
+            info.node.name()
+        );
+        return Ok(());
+    }
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     let block_config = phytium_block_config(&dma);
     host.configure_dma(dma).map_err(|err| {
@@ -61,6 +79,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let irq = probe.register_block(dev)?;
     info!("phytium-mci block device registered irq={:?}", irq);
     Ok(())
+}
+
+const fn supports_memory_card(no_sd: bool, no_mmc: bool) -> bool {
+    !(no_sd && no_mmc)
 }
 
 fn card_init_preference(info: &FdtInfo<'_>) -> CardInitPreference {
@@ -184,5 +206,13 @@ mod tests {
         assert_eq!(config.limits.max_submit_batch, 1);
         assert_eq!(config.limits.max_blocks_per_request, IDMAC_MAX_BLOCKS);
         assert_eq!(config.limits.max_segment_size, IDMAC_MAX_TRANSFER_SIZE);
+    }
+
+    #[test]
+    fn sdio_only_node_is_not_registered_as_a_block_controller() {
+        assert!(supports_memory_card(false, false));
+        assert!(supports_memory_card(true, false));
+        assert!(supports_memory_card(false, true));
+        assert!(!supports_memory_card(true, true));
     }
 }
