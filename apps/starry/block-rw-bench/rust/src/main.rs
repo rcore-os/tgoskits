@@ -8,6 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use diskstats::DiskstatsProbe;
+
+mod diskstats;
+
 const BENCH_DIR: &str = "/root/block-rw-bench";
 const SEQUENTIAL_BYTES: usize = 8 * 1024 * 1024;
 const MULTITASK_BYTES_PER_WORKER: usize = 2 * 1024 * 1024;
@@ -133,7 +137,13 @@ fn run() -> io::Result<()> {
     let config = BenchConfig::from_env()?;
     let dir = config.workdir.as_path();
     fs::create_dir_all(dir)?;
-    verify_root_device(&config)?;
+    let diskstats = verify_root_device(&config)?;
+    println!(
+        "block-rw-bench: io_model=buffered-file write_scope=write-syscalls fsync={} \
+         drop_caches={}",
+        config.fsync,
+        env::var_os(DROP_CACHES_ENV).is_some()
+    );
     let planner_split_bytes = config
         .max_transfer_bytes
         .checked_add(512)
@@ -151,7 +161,13 @@ fn run() -> io::Result<()> {
             case.name, case.io_size, config.sequential_bytes
         );
         io::stdout().flush()?;
-        run_case(dir, case, config.sequential_bytes, config.fsync)?;
+        run_case(
+            dir,
+            case,
+            config.sequential_bytes,
+            config.fsync,
+            &diskstats,
+        )?;
     }
     println!(
         "block-rw-bench: start case=multitask tasks={} io_size={} bytes_per_task={}",
@@ -160,7 +176,7 @@ fn run() -> io::Result<()> {
         config.multitask_bytes_per_worker
     );
     io::stdout().flush()?;
-    run_multitask_case(dir, &config)?;
+    run_multitask_case(dir, &config, &diskstats)?;
 
     println!(
         "block-rw-bench: done cases={} status=ok",
@@ -171,7 +187,7 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
-fn verify_root_device(config: &BenchConfig) -> io::Result<()> {
+fn verify_root_device(config: &BenchConfig) -> io::Result<DiskstatsProbe> {
     let mounts = fs::read_to_string("/proc/mounts")?;
     let root_source = mounts
         .lines()
@@ -192,7 +208,7 @@ fn verify_root_device(config: &BenchConfig) -> io::Result<()> {
         config.controller
     );
     io::stdout().flush()?;
-    Ok(())
+    Ok(DiskstatsProbe::for_root(root_source, &config.root_device))
 }
 
 fn root_device_matches(root_source: &str, expected: &str) -> bool {
@@ -205,11 +221,18 @@ fn root_device_matches(root_source: &str, expected: &str) -> bool {
             })
 }
 
-fn run_case(dir: &Path, case: Case, bytes: usize, fsync: bool) -> io::Result<()> {
+fn run_case(
+    dir: &Path,
+    case: Case,
+    bytes: usize,
+    fsync: bool,
+    diskstats: &DiskstatsProbe,
+) -> io::Result<()> {
     maybe_drop_caches()?;
 
     let path = case_path(dir, case.name);
     let mut pattern = vec![0; case.io_size];
+    let before_write = diskstats.snapshot()?;
     let write_start = Instant::now();
     let mut file = OpenOptions::new()
         .create(true)
@@ -225,19 +248,23 @@ fn run_case(dir: &Path, case: Case, bytes: usize, fsync: bool) -> io::Result<()>
         offset += chunk_len;
     }
     let write_elapsed = write_start.elapsed();
+    let after_write = diskstats.snapshot()?;
 
     let fsync_start = Instant::now();
     if fsync {
         file.sync_all()?;
     }
     let fsync_elapsed = fsync_start.elapsed();
+    let after_fsync = diskstats.snapshot()?;
     drop(file);
 
     maybe_drop_caches()?;
 
+    let before_read = diskstats.snapshot()?;
     let read_start = Instant::now();
     verify_file(&path, case.io_size, bytes)?;
     let read_elapsed = read_start.elapsed();
+    let after_read = diskstats.snapshot()?;
 
     println!(
         "block-rw-bench: case={} io_size={} bytes={} write_mib_s={:.2} read_mib_s={:.2} \
@@ -249,14 +276,22 @@ fn run_case(dir: &Path, case: Case, bytes: usize, fsync: bool) -> io::Result<()>
         throughput_mib_s(bytes, read_elapsed),
         duration_ms(fsync_elapsed)
     );
+    diskstats.print_delta(case.name, "write", before_write, after_write);
+    diskstats.print_delta(case.name, "fsync", after_write, after_fsync);
+    diskstats.print_delta(case.name, "read", before_read, after_read);
     io::stdout().flush()?;
 
     fs::remove_file(path)?;
     Ok(())
 }
 
-fn run_multitask_case(dir: &Path, config: &BenchConfig) -> io::Result<()> {
+fn run_multitask_case(
+    dir: &Path,
+    config: &BenchConfig,
+    diskstats: &DiskstatsProbe,
+) -> io::Result<()> {
     let barrier = Arc::new(Barrier::new(config.multitask_workers));
+    let before = diskstats.snapshot()?;
     let started = Instant::now();
     let bytes_per_worker = config.multitask_bytes_per_worker;
     let fsync = config.fsync;
@@ -283,6 +318,7 @@ fn run_multitask_case(dir: &Path, config: &BenchConfig) -> io::Result<()> {
             .join()
             .map_err(|_| io::Error::other("multitask worker panicked"))??;
     }
+    let after = diskstats.snapshot()?;
     println!(
         "block-rw-bench: case=multitask tasks={} io_size={} bytes_per_task={} elapsed_ms={} \
          fsync={} verify=ok",
@@ -292,6 +328,7 @@ fn run_multitask_case(dir: &Path, config: &BenchConfig) -> io::Result<()> {
         duration_ms(started.elapsed()),
         fsync
     );
+    diskstats.print_delta("multitask", "total", before, after);
     io::stdout().flush()?;
     Ok(())
 }
