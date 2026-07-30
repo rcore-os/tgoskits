@@ -101,6 +101,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   raw entry symbol is the direct-loader entry and its physical address must remain valid after a
   load bias.
 - On AArch64, pass EL transition state into the post-relocation entry path when it must be kept in Rust globals; do not write relocatable statics before relocation has been applied.
+- On AArch64 UEFI entry, adapt `relocate::apply` to the generic EFI relocation
+  contract, initialize the UEFI/FDT/ACPI state before common EL setup, and do
+  not re-enter the direct-boot path that clears BSS or overwrites the captured
+  FDT address.
 - Clear BSS exactly once and after preserving any entry data that lives there.
 - Render separate TLS and no-TLS linker layouts. A no-TLS kernel must reject `.tdata`/`.tbss`
   inputs and omit `PT_TLS`; a TLS kernel must retain the TLS program header and bootstrap data.
