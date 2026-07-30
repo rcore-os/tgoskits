@@ -13,6 +13,7 @@ use crate::support::process::run_cargo_status;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 const MIGHT_SLEEP_FILTER: &str = "might_sleep";
+const TASK_INITIALIZATION_FILTER: &str = "task_initialization_precedes_scheduling";
 
 #[derive(Clone, Copy, Debug)]
 struct PackageFeatureProfile {
@@ -23,6 +24,12 @@ struct PackageFeatureProfile {
 }
 
 const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+multitask-task-initialization",
+        features: &["host-test", "multitask"],
+        name_filter: Some(TASK_INITIALIZATION_FILTER),
+        expected_tests: &["api::tests::task_initialization_precedes_scheduling"],
+    },
     PackageFeatureProfile {
         name: "host-test+multitask",
         features: &["host-test", "multitask"],
@@ -573,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn ax_task_uses_two_might_sleep_feature_profiles() {
+    fn ax_task_uses_task_initialization_and_might_sleep_feature_profiles() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
         let mut runner = FakeCargoRunner::succeeding().with_ax_task_discovery();
@@ -589,6 +596,24 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask",
+                    "task_initialization_precedes_scheduling",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask",
+                    "task_initialization_precedes_scheduling",
+                ],
                 vec![
                     "test",
                     "-p",
@@ -657,9 +682,10 @@ mod tests {
     fn profile_discovery_mismatch_fails_without_running_that_profile() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
-        let basic_profile = &AX_TASK_FEATURE_PROFILES[0];
-        let diagnostic_profile = &AX_TASK_FEATURE_PROFILES[1];
+        let basic_profile = &AX_TASK_FEATURE_PROFILES[1];
+        let diagnostic_profile = &AX_TASK_FEATURE_PROFILES[2];
         let mut runner = FakeCargoRunner::succeeding()
+            .with_ax_task_discovery()
             .with_listing(basic_profile, &["tests::might_sleep_unexpected"])
             .with_listing(diagnostic_profile, diagnostic_profile.expected_tests);
 
@@ -704,6 +730,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task", "ax-api"]);
-        assert_eq!(runner.invocations.len(), 5);
+        assert_eq!(runner.invocations.len(), 7);
     }
 }

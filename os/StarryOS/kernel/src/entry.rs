@@ -6,7 +6,7 @@ use alloc::{
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
-use ax_task::{AxTaskExt, spawn_task};
+use ax_task::{AxTaskExt, spawn_task_with};
 use starry_process::{Pid, Process};
 
 use crate::{
@@ -111,8 +111,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let task = {
         let _guard = NoPreemptIrqSave::new();
-        let task = spawn_task(task);
-        add_task_to_table(&task);
+        let task = spawn_task_with(task, add_task_to_table);
         tty::arm_console_irq();
         task
     };

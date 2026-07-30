@@ -223,10 +223,38 @@ pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
 
 /// Adds the given task to the run queue, returns the task reference.
 pub fn spawn_task(task: TaskInner) -> AxTaskRef {
+    spawn_task_with(task, |_| {})
+}
+
+/// Initializes the given task before adding it to the run queue.
+///
+/// The `initialize` callback receives the stable task reference before the task
+/// becomes runnable. Use it to publish runtime-specific task metadata that the
+/// task must be able to observe on its first instruction. The callback must not
+/// wait for the new task to run because it has not been registered or queued.
+///
+/// # Panics
+///
+/// Panics if `initialize` panics.
+pub fn spawn_task_with<F>(task: TaskInner, initialize: F) -> AxTaskRef
+where
+    F: FnOnce(&AxTaskRef),
+{
     let task_ref = task.into_arc();
-    register_task(&task_ref);
-    select_run_queue::<NoPreemptIrqSave>(&task_ref).add_task(task_ref.clone());
+    initialize_task_before_schedule(&task_ref, initialize, |task_ref| {
+        register_task(task_ref);
+        select_run_queue::<NoPreemptIrqSave>(task_ref).add_task(task_ref.clone());
+    });
     task_ref
+}
+
+fn initialize_task_before_schedule<T>(
+    task: &T,
+    initialize: impl FnOnce(&T),
+    schedule: impl FnOnce(&T),
+) {
+    initialize(task);
+    schedule(task);
 }
 
 /// Spawns a new task with the given parameters.
@@ -720,4 +748,27 @@ pub(crate) fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    #[test]
+    fn task_initialization_precedes_scheduling() {
+        let initialized = Cell::new(false);
+
+        super::initialize_task_before_schedule(
+            &(),
+            |_| initialized.set(true),
+            |_| {
+                assert!(
+                    initialized.get(),
+                    "task was scheduled before initialization"
+                )
+            },
+        );
+
+        assert!(initialized.get());
+    }
 }
