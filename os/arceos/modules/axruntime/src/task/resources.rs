@@ -95,19 +95,16 @@ fn allocate_guarded_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
         )
         .map_err(map_alloc_status)?;
     let guard = ax_memory_addr::VirtAddr::from(base);
-    if ax_mm::kernel_aspace()
-        .lock()
-        .protect(
-            guard,
-            request.guard_size,
-            ax_hal::paging::MappingFlags::empty(),
-        )
-        .is_err()
+    if crate::kernel_mapping::protect_kernel_range(
+        guard,
+        request.guard_size,
+        ax_hal::paging::MappingFlags::empty(),
+    )
+    .is_err()
     {
         ax_alloc::global_allocator().dealloc_pages(base, pages, ax_alloc::UsageKind::Global);
         return Err(RuntimeStatus::Platform);
     }
-    ax_hal::asm::flush_tlb(None);
     let stack = Box::new(RuntimeStack {
         base,
         usable_top: base + total_size,
@@ -140,15 +137,10 @@ pub(super) fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
         StackBacking::GuardedPages { pages, guard_size } => {
             let guard = ax_memory_addr::VirtAddr::from(stack.base);
             let restore = ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE;
-            if ax_mm::kernel_aspace()
-                .lock()
-                .protect(guard, guard_size, restore)
-                .is_err()
-            {
+            if crate::kernel_mapping::protect_kernel_range(guard, guard_size, restore).is_err() {
                 core::mem::forget(stack);
                 return RuntimeStatus::Platform;
             }
-            ax_hal::asm::flush_tlb(None);
             ax_alloc::global_allocator().dealloc_pages(
                 stack.base,
                 pages,
