@@ -2,6 +2,23 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    static BALANCE_CANDIDATE_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+pub(super) fn reset_balance_candidate_visits() {
+    BALANCE_CANDIDATE_VISITS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn balance_candidate_visits() -> usize {
+    BALANCE_CANDIDATE_VISITS.get()
+}
+
 impl TaskSystem {
     /// Captures stable state for deterministic scheduler comparisons.
     pub fn snapshot(&self, cpu: Pin<&CpuLocal>) -> Result<CpuSnapshot, TaskError> {
@@ -32,24 +49,7 @@ impl TaskSystem {
             .as_ref()
             .map(CurrentDispatch::scheduling_key);
         let current_non_idle = fields.current.is_some() && fields.current != fields.idle;
-        let candidate =
-            self.select_owner_balance_candidate(fields, None, u64::MAX, BalanceReason::Summary);
-        let pushable_key = candidate.map(|candidate| {
-            candidate.entity.fair().map_or_else(
-                || {
-                    candidate
-                        .entity
-                        .scheduling_key(candidate.policy, candidate.id.as_u64())
-                },
-                |fair| {
-                    crate::SchedulingKey::new(
-                        candidate.policy.class_rank(),
-                        fair.virtual_deadline(),
-                        candidate.id.as_u64(),
-                    )
-                },
-            )
-        });
+        let pushable_key = fields.run_queue.pushable_key();
         let workload = fields
             .run_queue
             .len()
@@ -78,6 +78,8 @@ impl TaskSystem {
         let top_rt_count =
             queued_top_rt.map_or(0, |priority| cpu.run_queue.rt_count_at_priority(priority));
         cpu.run_queue.balance_candidate(|candidate| {
+            #[cfg(test)]
+            BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
             let sched = candidate.core.sched().lock();
             let target_is_allowed = |target: CpuId| {
                 self.cpu_remotes
@@ -112,7 +114,7 @@ impl TaskSystem {
                 return false;
             }
             let class_allowed = match reason {
-                BalanceReason::Summary | BalanceReason::IdlePull => {
+                BalanceReason::IdlePull => {
                     !matches!(
                         candidate.policy,
                         SchedulePolicy::Fair {

@@ -104,7 +104,6 @@ pub(super) struct RootDomainState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BalanceReason {
-    Summary,
     RtDeadlinePush,
     IdlePull,
     FairPeriodic,

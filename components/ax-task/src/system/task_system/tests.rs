@@ -2147,6 +2147,35 @@ fn class_order_is_deadline_then_rt_then_fair() {
 }
 
 #[test]
+fn load_summary_publication_does_not_scan_runnable_threads() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+    let threads = (0..64)
+        .map(|_| {
+            let thread = system
+                .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+                .unwrap();
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+            thread
+        })
+        .collect::<Vec<_>>();
+
+    balance::reset_balance_candidate_visits();
+    system.publish_owner_cpu_load_summary(cpu0.as_mut());
+
+    assert_eq!(
+        balance::balance_candidate_visits(),
+        0,
+        "rq summary publication must use incrementally maintained owner state"
+    );
+    assert_eq!(threads.len(), 64);
+}
+
+#[test]
 fn deadline_affinity_must_cover_online_root_domain() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
