@@ -40,6 +40,7 @@ use crate::{
 /// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
 /// Each JIT-compiled eBPF program fits within this space; the allocation
 /// is sized generously (16 KiB) since programs are typically < 1 page.
+#[cfg(target_arch = "x86_64")]
 const BPF_JIT_MEM_PAGES: usize = 4;
 
 /// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with kernel state: a poll

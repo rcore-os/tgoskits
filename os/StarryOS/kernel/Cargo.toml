@@ -13,6 +13,55 @@ authors = [
 repository.workspace = true
 license.workspace = true
 
+[[package.metadata.clippy.configurations]]
+name = "aarch64-system"
+target = "aarch64-unknown-none-softfloat"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/serial",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "ax-driver/xhci-pci",
+    "ax-runtime/display",
+    "ax-runtime/rtc",
+    "smp",
+    "starry-kernel/input",
+    "starry-kernel/vsock",
+]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "aarch64"
+AX_LOG = "warn"
+AX_TARGET = "aarch64-unknown-none-softfloat"
+SMP = "4"
+
+[[package.metadata.clippy.configurations]]
+name = "aarch64-system-rga"
+target = "aarch64-unknown-none-softfloat"
+features = [
+    "ax-driver/nvme",
+    "ax-driver/serial",
+    "ax-driver/virtio-gpu",
+    "ax-driver/virtio-input",
+    "ax-driver/virtio-net",
+    "ax-driver/virtio-socket",
+    "ax-driver/xhci-pci",
+    "ax-runtime/display",
+    "ax-runtime/rtc",
+    "rga",
+    "smp",
+    "starry-kernel/input",
+    "starry-kernel/vsock",
+]
+
+[package.metadata.clippy.configurations.env]
+AX_ARCH = "aarch64"
+AX_LOG = "warn"
+AX_TARGET = "aarch64-unknown-none-softfloat"
+SMP = "4"
+
 [features]
 default = ["dynamic_debug"]
 dev-log = []

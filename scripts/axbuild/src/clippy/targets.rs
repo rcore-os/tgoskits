@@ -58,7 +58,7 @@ pub(super) fn docs_rs_targets(package: &Package) -> Vec<String> {
     unique_targets.into_iter().collect()
 }
 
-fn normalize_clippy_target(target: &str) -> &str {
+pub(super) fn normalize_clippy_target(target: &str) -> &str {
     CLIPPY_TARGET_ALIASES
         .iter()
         .find_map(|(source, normalized)| (*source == target).then_some(*normalized))

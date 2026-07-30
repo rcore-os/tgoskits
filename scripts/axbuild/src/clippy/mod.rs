@@ -4,6 +4,7 @@ use anyhow::{Context, bail};
 use chrono::Local;
 
 mod check;
+mod configurations;
 mod env;
 mod expand;
 mod report;
