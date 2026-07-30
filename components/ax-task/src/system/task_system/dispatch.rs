@@ -81,6 +81,7 @@ impl TaskSystem {
             }
         }
         Self::activate_owner_deadline_bandwidth(core, sched, cpu.as_mut(), owner)?;
+        Self::refresh_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
         let fields = cpu.as_mut().fields_mut();
         let queued_entity = fields.run_queue.enqueue(
             core.id(),
@@ -193,6 +194,7 @@ impl TaskSystem {
                 actual: owner.as_u32(),
             });
         }
+        Self::cancel_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
         cpu.as_mut().fields_mut().remove_deadline_bandwidth(
             sched.deadline_bandwidth_scaled,
             sched.deadline_activity != DeadlineActivity::Inactive,
@@ -235,7 +237,7 @@ impl TaskSystem {
         sched.deadline_activity = DeadlineActivity::Inactive;
         sched.deadline_bandwidth_cpu = Some(owner);
         sched.deadline_zero_lag_ns = 0;
-        Ok(())
+        Self::refresh_owner_deadline_timers_locked(core, &mut sched, cpu)
     }
 
     pub(super) fn mark_owner_deadline_non_contending(
@@ -263,9 +265,8 @@ impl TaskSystem {
         } else {
             sched.deadline_activity = DeadlineActivity::ActiveNonContending;
             sched.deadline_zero_lag_ns = zero_lag_ns;
-            cpu.arm_deferred_scheduler_deadline(zero_lag_ns);
         }
-        Ok(())
+        Self::refresh_owner_deadline_timers_locked(core, &mut sched, cpu)
     }
 
     pub(super) fn owner_fair_policy_placement(
@@ -423,20 +424,21 @@ impl TaskSystem {
             deadline_task_work |= dispatch.deadline_overrun;
             donor.deadline_cbs_borrower = None;
             donor.deadline_cbs_generation = next_cbs_generation;
-            deadline_owner_reconcile = donor.deadline_bandwidth_cpu;
+            deadline_owner_reconcile = donor
+                .deadline_bandwidth_cpu
+                .map(|owner| (Arc::clone(donor_core), owner, next_cbs_generation));
         }
-        if let Some(owner) = deadline_owner_reconcile {
-            let remote = self
-                .cpu_remote(owner)
-                .ok_or(TaskError::CpuOffline(owner.as_u32()))?;
+        if let Some((donor_core, owner, generation)) = deadline_owner_reconcile {
             if owner == cpu.owner() {
-                remote.request_scheduler_work();
+                let mut donor = donor_core.sched().lock();
+                Self::refresh_owner_deadline_timers_locked(&donor_core, &mut donor, cpu.as_mut())?;
+                cpu.request_scheduler_work();
             } else {
-                // Baton return is a cross-CPU state publication. Publish the
-                // donor owner's sticky work before the coalesced doorbell, so
-                // a racing safe point either observes this request or a later
-                // retry retains delivery ownership.
-                remote.kick_scheduler_work();
+                // The retained, generation-bearing donor identity replaces
+                // the old reservation-set scan. Publication precedes the IPI
+                // doorbell, so the owner either drains this refresh or a
+                // coalesced predecessor that observes the latest CBS state.
+                self.publish_owner_deadline_refresh(&donor_core, owner, generation)?;
             }
         }
         let mut sched = dispatch.runtime_core_arc().sched().lock();

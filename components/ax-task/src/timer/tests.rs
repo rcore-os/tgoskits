@@ -94,6 +94,69 @@ fn rearm_replaces_the_existing_entry_without_consuming_capacity() {
 }
 
 #[test]
+fn one_thread_can_own_independent_park_cbs_and_zero_lag_entries() {
+    let park_node = timer(8);
+    let cbs_node = Box::new(TaskDeadlineNode::deadline_cbs_for_thread(thread(8)));
+    let zero_lag_node = Box::new(TaskDeadlineNode::deadline_zero_lag_for_thread(thread(8)));
+    let mut timers = TaskDeadlineQueue::new(1);
+
+    let _park = timers.arm(park_node.as_ref(), 30, park(1)).unwrap();
+    let _cbs = timers
+        .arm(cbs_node.as_ref(), 10, TaskDeadlineKind::DeadlineCbs)
+        .unwrap();
+    let _zero_lag = timers
+        .arm(
+            zero_lag_node.as_ref(),
+            20,
+            TaskDeadlineKind::DeadlineZeroLag,
+        )
+        .unwrap();
+
+    assert_eq!(timers.capacity(), 1);
+    assert_eq!(timers.len(), 3);
+
+    let mut expired = [ExpiredTaskDeadline::EMPTY; 3];
+    let batch = timers.expire(TaskDeadlineExpireRequest::new(30, 3, 1), &mut expired);
+    assert_eq!(batch.expired(), 3);
+    assert_eq!(expired[0].kind(), Some(TaskDeadlineKind::DeadlineCbs));
+    assert_eq!(expired[1].kind(), Some(TaskDeadlineKind::DeadlineZeroLag));
+    assert_eq!(expired[2].kind(), Some(park(1)));
+}
+
+#[test]
+fn rearm_replaces_only_the_matching_typed_slot() {
+    let park_node = timer(9);
+    let cbs_node = Box::new(TaskDeadlineNode::deadline_cbs_for_thread(thread(9)));
+    let mut timers = TaskDeadlineQueue::new(1);
+    let park = timers.arm(park_node.as_ref(), 10, park(1)).unwrap();
+    let stale_cbs = timers
+        .arm(cbs_node.as_ref(), 20, TaskDeadlineKind::DeadlineCbs)
+        .unwrap();
+
+    let live_cbs = timers
+        .arm(cbs_node.as_ref(), 30, TaskDeadlineKind::DeadlineCbs)
+        .unwrap();
+
+    assert_eq!(timers.len(), 2);
+    assert!(!timers.cancel(&stale_cbs));
+    assert!(timers.cancel(&park));
+    assert!(timers.cancel(&live_cbs));
+    assert!(timers.is_empty());
+}
+
+#[test]
+fn node_rejects_a_deadline_kind_from_another_slot() {
+    let node = timer(10);
+    let mut timers = TaskDeadlineQueue::new(1);
+
+    assert_eq!(
+        timers.arm(node.as_ref(), 10, TaskDeadlineKind::DeadlineCbs),
+        Err(TaskDeadlineError::KindMismatch)
+    );
+    assert!(timers.is_empty());
+}
+
+#[test]
 fn cancellation_removes_entry_and_reclaims_capacity_immediately() {
     let first = timer(11);
     let second = timer(22);
@@ -114,6 +177,7 @@ fn cancellation_rejects_the_non_arm_token() {
         !timers.cancel(&TaskDeadlineRegistration::new(
             thread(23),
             TaskDeadlineToken::NONE,
+            0,
             park(1),
         )),
         "the NONE sentinel must not identify an active arm operation"
@@ -125,6 +189,7 @@ fn cancellation_rejects_the_non_arm_token() {
     assert!(!timers.cancel(&TaskDeadlineRegistration::new(
         thread(23),
         TaskDeadlineToken::NONE,
+        0,
         park(1),
     )));
 }
@@ -139,6 +204,25 @@ fn stale_generation_cancel_cannot_remove_the_rearmed_entry() {
     assert!(!timers.cancel(&stale));
     assert_eq!(timers.len(), 1);
     assert!(timers.cancel(&live));
+    assert!(timers.is_empty());
+}
+
+#[test]
+fn distinct_nodes_for_one_thread_keep_independent_registration_identity() {
+    let first_node = timer(34);
+    let second_node = timer(34);
+    let mut timers = TaskDeadlineQueue::new(2);
+    let first = timers.arm(first_node.as_ref(), 10, park(1)).unwrap();
+    let second = timers.arm(second_node.as_ref(), 20, park(1)).unwrap();
+
+    assert_eq!(
+        timers.len(),
+        2,
+        "each physical timer node must retain its own queue entry"
+    );
+    assert!(timers.cancel(&first));
+    assert_eq!(timers.len(), 1);
+    assert!(timers.cancel(&second));
     assert!(timers.is_empty());
 }
 

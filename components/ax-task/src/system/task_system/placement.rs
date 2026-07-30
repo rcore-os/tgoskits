@@ -119,6 +119,38 @@ impl TaskSystem {
         Ok(())
     }
 
+    pub(super) fn publish_owner_deadline_refresh(
+        &self,
+        core: &Arc<ThreadCore>,
+        owner: CpuId,
+        generation: u64,
+    ) -> Result<(), TaskError> {
+        let remote = self
+            .cpu_remote(owner)
+            .ok_or(TaskError::CpuOffline(owner.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(());
+        }
+        let pointer = Arc::as_ptr(core);
+        // SAFETY: this count is transferred to the dedicated refresh node and
+        // consumed by exactly one owner-side inbox drain.
+        unsafe { Arc::increment_strong_count(pointer) };
+        // SAFETY: the transferred Arc count pins the embedded refresh node.
+        let node = unsafe { Pin::new_unchecked((*pointer).deadline_refresh_node()) };
+        let message = InboxMessage::deadline_refresh_with_payload(
+            core.id(),
+            owner,
+            generation,
+            pointer.expose_provenance(),
+        );
+        if remote.publish_policy_update(node, message) != PublishResult::Published {
+            // SAFETY: rejected/coalesced publication retained no extra count.
+            unsafe { Arc::decrement_strong_count(pointer) };
+            core.cancel_scheduler_inbox_delivery();
+        }
+        Ok(())
+    }
+
     pub(super) fn publish_owner_policy_reserved(
         &self,
         core: &Arc<ThreadCore>,

@@ -82,8 +82,7 @@ impl TaskSystem {
                 }
                 sched.base_deadline = Some(deadline);
                 sched.deadline_replenish_pending = true;
-                cpu.as_mut()
-                    .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
+                Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
             }
             sched.transition(&core, ThreadState::Blocked)?;
             sched.placement.set_running_cpu(None)?;

@@ -3,6 +3,124 @@
 use super::*;
 
 impl TaskSystem {
+    fn task_deadline_error(error: TaskDeadlineError) -> TaskError {
+        match error {
+            TaskDeadlineError::Capacity => TaskError::TimerCapacity,
+            TaskDeadlineError::InvalidDeadline
+            | TaskDeadlineError::GenerationExhausted
+            | TaskDeadlineError::KindMismatch => TaskError::InvalidConfiguration,
+        }
+    }
+
+    fn replace_owner_deadline_timer(
+        mut cpu: Pin<&mut CpuLocal>,
+        node: &TaskDeadlineNode,
+        registration: &mut Option<TaskDeadlineRegistration>,
+        deadline_ns: Option<u64>,
+        kind: TaskDeadlineKind,
+    ) -> Result<(), TaskError> {
+        let deadline_ns = deadline_ns.filter(|deadline| *deadline != 0 && *deadline != u64::MAX);
+        if registration.as_ref().is_some_and(|registration| {
+            Some(registration.deadline_ns()) == deadline_ns && registration.kind() == kind
+        }) {
+            return Ok(());
+        }
+        if let Some(previous) = registration.take() {
+            // Expiration may already have moved the value-owned entry into the
+            // safe-point buffer. A later token makes that buffered copy stale;
+            // physical cancellation is required only while it remains queued.
+            let _removed = cpu.as_mut().task_deadlines().cancel(&previous);
+        }
+        let Some(deadline_ns) = deadline_ns else {
+            return Ok(());
+        };
+        *registration = Some(
+            cpu.as_mut()
+                .task_deadlines()
+                .arm(node, deadline_ns, kind)
+                .map_err(Self::task_deadline_error)?,
+        );
+        Ok(())
+    }
+
+    pub(super) fn refresh_owner_deadline_timers_locked(
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let owns_bandwidth = sched.deadline_bandwidth_cpu == Some(owner);
+        let cbs_deadline_ns = owns_bandwidth
+            .then_some(())
+            .filter(|_| sched.deadline_cbs_borrower.is_none())
+            .and(sched.base_deadline)
+            .map(DeadlineEntity::next_scheduler_event_ns);
+        Self::replace_owner_deadline_timer(
+            cpu.as_mut(),
+            core.deadline_cbs_timer(),
+            &mut sched.deadline_cbs_timer,
+            cbs_deadline_ns,
+            TaskDeadlineKind::DeadlineCbs,
+        )?;
+
+        let zero_lag_ns = (owns_bandwidth
+            && sched.deadline_activity == DeadlineActivity::ActiveNonContending)
+            .then_some(sched.deadline_zero_lag_ns);
+        Self::replace_owner_deadline_timer(
+            cpu,
+            core.deadline_zero_lag_timer(),
+            &mut sched.deadline_zero_lag_timer,
+            zero_lag_ns,
+            TaskDeadlineKind::DeadlineZeroLag,
+        )
+    }
+
+    pub(super) fn cancel_owner_deadline_timers_locked(
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<(), TaskError> {
+        Self::replace_owner_deadline_timer(
+            cpu.as_mut(),
+            core.deadline_cbs_timer(),
+            &mut sched.deadline_cbs_timer,
+            None,
+            TaskDeadlineKind::DeadlineCbs,
+        )?;
+        Self::replace_owner_deadline_timer(
+            cpu,
+            core.deadline_zero_lag_timer(),
+            &mut sched.deadline_zero_lag_timer,
+            None,
+            TaskDeadlineKind::DeadlineZeroLag,
+        )
+    }
+
+    fn registration_matches(
+        registration: &TaskDeadlineRegistration,
+        event: ExpiredTaskDeadline,
+    ) -> bool {
+        event.thread() == Some(registration.thread())
+            && event.token() == registration.token()
+            && event.deadline_ns() == registration.deadline_ns()
+            && event.kind() == Some(registration.kind())
+    }
+
+    fn take_expired_registration(
+        registration: &mut Option<TaskDeadlineRegistration>,
+        event: ExpiredTaskDeadline,
+    ) -> bool {
+        if registration
+            .as_ref()
+            .is_some_and(|registration| Self::registration_matches(registration, event))
+        {
+            registration.take();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Returns Deadline budget and PI rescue state for diagnostics and ABI glue.
     pub fn deadline_runtime(&self, thread: ThreadId) -> Result<DeadlineRuntimeSnapshot, TaskError> {
         let state = self.state.lock();
@@ -99,68 +217,103 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        let (start, examined) = cpu.as_mut().fields_mut().begin_deadline_scan_batch();
-        if examined == 0 {
-            cpu.as_mut().refresh_scheduler_deadline(now_ns);
-            return Ok(());
+        let budget = cpu.batch_limit();
+        let batch =
+            cpu.as_mut()
+                .expire_task_deadlines(now_ns, task_runtime::timer_resolution_ns(), budget);
+        if cpu.as_mut().begin_deadline_work() {
+            let mut processed = 0;
+            let service = (|| {
+                while processed < budget {
+                    let Some(event) = cpu.as_mut().take_expired_scheduler_deadline() else {
+                        break;
+                    };
+                    self.service_expired_scheduler_deadline(cpu.as_mut(), event, now_ns)?;
+                    processed += 1;
+                }
+                Ok(())
+            })();
+            if let Err(error) = service {
+                cpu.as_mut().finish_deadline_work(true);
+                return Err(error);
+            }
+            let pending = batch.pending() || cpu.has_expired_task_deadlines();
+            cpu.as_mut().finish_deadline_work(pending);
         }
+        cpu.as_mut().refresh_scheduler_deadline(now_ns);
+        Ok(())
+    }
+
+    fn service_expired_scheduler_deadline(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        event: ExpiredTaskDeadline,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
+        let Some(thread) = event.thread() else {
+            return Ok(());
+        };
+        let core = {
+            let state = self.state.lock();
+            match state.thread_record(thread) {
+                Ok(record) => Arc::clone(&record.core),
+                Err(TaskError::StaleThreadId) => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        };
+        match event.kind() {
+            Some(TaskDeadlineKind::DeadlineCbs) => {
+                self.service_expired_deadline_cbs(cpu, core, event, now_ns)
+            }
+            Some(TaskDeadlineKind::DeadlineZeroLag) => {
+                Self::service_expired_deadline_zero_lag(cpu, core, event)
+            }
+            Some(TaskDeadlineKind::ParkTimeout { .. }) | None => Ok(()),
+        }
+    }
+
+    fn service_expired_deadline_cbs(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        event: ExpiredTaskDeadline,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
         let owner = cpu.owner();
-        for offset in 0..examined {
-            let index = (start + offset) % cpu.deadline_members.len();
-            let core = Arc::clone(&cpu.deadline_members[index]);
-            let mut update_queued = None;
-            let mut replenish = false;
-            {
-                let mut sched = core.sched().lock();
-                if sched.deadline_bandwidth_cpu != Some(owner) {
-                    return Err(TaskError::CpuOwnerMismatch {
-                        expected: sched.deadline_bandwidth_cpu.map_or(u32::MAX, CpuId::as_u32),
-                        actual: owner.as_u32(),
-                    });
+        let mut update_queued = None;
+        let mut replenish = false;
+        {
+            let mut sched = core.sched().lock();
+            if !Self::take_expired_registration(&mut sched.deadline_cbs_timer, event) {
+                return Ok(());
+            }
+            if sched.deadline_bandwidth_cpu != Some(owner) {
+                return Err(TaskError::CpuOwnerMismatch {
+                    expected: sched.deadline_bandwidth_cpu.map_or(u32::MAX, CpuId::as_u32),
+                    actual: owner.as_u32(),
+                });
+            }
+            if sched.deadline_cbs_borrower.is_some() {
+                // The borrower owns the mutable CBS copy. Its baton-return
+                // message will refresh this exact donor rather than scanning
+                // the CPU reservation set.
+                return Ok(());
+            }
+            let Some(mut deadline) = sched.base_deadline else {
+                return Ok(());
+            };
+            let missed = deadline.observe_time(now_ns);
+            let replenish_due =
+                deadline.is_throttled() && now_ns >= deadline.next_scheduler_event_ns();
+            if replenish_due {
+                deadline.replenish(now_ns);
+                sched.base_deadline = Some(deadline);
+                sched.base_entity = SchedulingEntity::Deadline(deadline);
+                if !sched.is_pi_boosted() {
+                    sched.entity = sched.base_entity;
+                    core.publish_effective_schedule(sched.policy, sched.entity);
                 }
-                if sched.deadline_cbs_borrower.is_some() {
-                    // The remote PI owner holds the only mutable copy of this
-                    // CBS entity in its CurrentDispatch. Its CPU owns the
-                    // corresponding execution-budget clockevent until the
-                    // baton is committed back below a scheduler safe point.
-                    // Re-arming the donor's stale copy would give two CPUs
-                    // timer ownership and, once overdue, create a resolution-
-                    // rate interrupt loop without advancing CBS state.
-                    continue;
-                }
-                if sched.deadline_activity == DeadlineActivity::ActiveNonContending {
-                    if now_ns >= sched.deadline_zero_lag_ns {
-                        cpu.as_mut()
-                            .fields_mut()
-                            .deactivate_deadline_bandwidth(sched.deadline_bandwidth_scaled)?;
-                        sched.deadline_activity = DeadlineActivity::Inactive;
-                        sched.deadline_zero_lag_ns = 0;
-                    } else {
-                        cpu.arm_deferred_scheduler_deadline(sched.deadline_zero_lag_ns);
-                    }
-                }
-                let Some(mut deadline) = sched.base_deadline else {
-                    continue;
-                };
-                let missed = deadline.observe_time(now_ns);
-                let replenish_due =
-                    deadline.is_throttled() && now_ns >= deadline.next_scheduler_event_ns();
-                let next_event_ns = deadline.next_scheduler_event_ns();
-                if !replenish_due && next_event_ns > now_ns {
-                    cpu.arm_deferred_scheduler_deadline(next_event_ns);
-                }
-                if replenish_due {
-                    deadline.replenish(now_ns);
-                    sched.base_deadline = Some(deadline);
-                    sched.base_entity = SchedulingEntity::Deadline(deadline);
-                    if !sched.is_pi_boosted() {
-                        sched.entity = sched.base_entity;
-                        core.publish_effective_schedule(sched.policy, sched.entity);
-                    }
-                    if deadline.is_throttled() {
-                        cpu.arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
-                        continue;
-                    }
+                if !deadline.is_throttled() {
                     if sched.deadline_replenish_pending {
                         sched.deadline_replenish_pending = false;
                         match sched.lifecycle.state() {
@@ -177,39 +330,61 @@ impl TaskSystem {
                     {
                         update_queued = Some(SchedulingEntity::Deadline(deadline));
                     }
-                } else if missed {
-                    sched.base_deadline = Some(deadline);
-                    sched.base_entity = SchedulingEntity::Deadline(deadline);
-                    if !sched.is_pi_boosted() {
-                        sched.entity = sched.base_entity;
-                        if sched.placement.queued_cpu() == Some(owner) {
-                            update_queued = Some(SchedulingEntity::Deadline(deadline));
-                        }
+                }
+            } else if missed {
+                sched.base_deadline = Some(deadline);
+                sched.base_entity = SchedulingEntity::Deadline(deadline);
+                if !sched.is_pi_boosted() {
+                    sched.entity = sched.base_entity;
+                    core.publish_effective_schedule(sched.policy, sched.entity);
+                    if sched.placement.queued_cpu() == Some(owner) {
+                        update_queued = Some(SchedulingEntity::Deadline(deadline));
                     }
                 }
             }
-            if let Some(entity) = update_queued
-                && !cpu
-                    .as_mut()
-                    .fields_mut()
-                    .run_queue
-                    .update_deadline_entity(core.id(), entity)
-            {
-                return Err(TaskError::InvalidConfiguration);
-            }
-            if replenish {
-                self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Replenished)?;
-            }
+            Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
         }
-        if cpu
-            .as_mut()
-            .fields_mut()
-            .finish_deadline_scan_batch(examined)
+        if let Some(entity) = update_queued
+            && !cpu
+                .as_mut()
+                .fields_mut()
+                .run_queue
+                .update_deadline_entity(core.id(), entity)
         {
-            cpu.request_scheduler_work();
+            return Err(TaskError::InvalidConfiguration);
         }
-        cpu.as_mut().refresh_scheduler_deadline(now_ns);
+        if replenish {
+            self.enqueue_owner_thread(cpu, core, now_ns, EnqueueReason::Replenished)?;
+        }
         Ok(())
+    }
+
+    fn service_expired_deadline_zero_lag(
+        mut cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        event: ExpiredTaskDeadline,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let mut sched = core.sched().lock();
+        if !Self::take_expired_registration(&mut sched.deadline_zero_lag_timer, event) {
+            return Ok(());
+        }
+        if sched.deadline_bandwidth_cpu != Some(owner) {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: sched.deadline_bandwidth_cpu.map_or(u32::MAX, CpuId::as_u32),
+                actual: owner.as_u32(),
+            });
+        }
+        if sched.deadline_activity == DeadlineActivity::ActiveNonContending
+            && event.deadline_ns() >= sched.deadline_zero_lag_ns
+        {
+            cpu.as_mut()
+                .fields_mut()
+                .deactivate_deadline_bandwidth(sched.deadline_bandwidth_scaled)?;
+            sched.deadline_activity = DeadlineActivity::Inactive;
+            sched.deadline_zero_lag_ns = 0;
+        }
+        Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu)
     }
 
     /// Returns a monotonic sample suitable for work scheduled after this

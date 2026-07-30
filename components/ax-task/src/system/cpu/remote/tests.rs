@@ -9,7 +9,7 @@ mod scheduler_ipi_tests {
         let remote = CpuRemote::create(CpuId::new(0));
         assert!(remote.mark_online());
         let cpu = CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), Arc::clone(&remote));
-        cpu.arm_deferred_scheduler_deadline(100);
+        cpu.replace_scheduler_deadline(Some(100));
 
         assert_eq!(
             cpu.next_oneshot_deadline_ns(100, 1),

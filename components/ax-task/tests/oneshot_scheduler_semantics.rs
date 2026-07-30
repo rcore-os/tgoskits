@@ -242,7 +242,16 @@ fn yielded_deadline_rearms_replenishment_after_earlier_zero_lag_event() {
         cpu.as_mut(),
     );
     support::set_monotonic_ns(10);
-    assert!(ax_task::on_clock_event(10, 64).unwrap().pending());
+    let event = ax_task::on_clock_event(10, 64).unwrap();
+    assert_eq!(
+        event.expired(),
+        1,
+        "zero-lag must arrive as one typed task deadline"
+    );
+    assert!(
+        !event.pending(),
+        "no second immediately due event remains after the bounded IRQ pass"
+    );
     system.schedule(cpu.as_mut(), 10).unwrap();
     assert_eq!(
         support::last_oneshot_ns(),

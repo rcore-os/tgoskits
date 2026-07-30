@@ -64,6 +64,10 @@ use crate::{
     },
     system::cpu::{CurrentDispatch, CurrentDispatchState, IdlePullReservation},
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
+    timer::{
+        ExpiredTaskDeadline, TaskDeadlineError, TaskDeadlineKind, TaskDeadlineNode,
+        TaskDeadlineRegistration,
+    },
 };
 
 struct UnpublishedThreadGuard<'system> {

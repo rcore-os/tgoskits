@@ -67,6 +67,8 @@ impl TaskSystem {
                 active_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
                 desired_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
                 deadline_zero_lag_ns: 0,
+                deadline_cbs_timer: None,
+                deadline_zero_lag_timer: None,
                 placement: SchedulerPlacement::detached(),
                 blocked_pi_waiters: 0,
                 pi_donor: None,

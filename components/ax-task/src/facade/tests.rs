@@ -198,17 +198,19 @@ mod tests {
     fn clock_event_publishes_owner_reschedule_before_returning() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let policy =
+            SchedulePolicy::round_robin_with_quantum(crate::RtPriority::new(1).unwrap(), 10)
+                .unwrap();
         system
-            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(policy))
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
-        cpu.arm_deferred_scheduler_deadline(10);
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
 
         assert!(!current_cpu_needs_resched().unwrap());
         let outcome = on_clock_event(10, 64).unwrap();
 
-        assert!(!outcome.slice_expired());
+        assert!(outcome.slice_expired());
         assert_eq!(outcome.expired(), 0);
         assert!(outcome.pending());
         assert!(

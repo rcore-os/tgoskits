@@ -5,18 +5,64 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::TaskDeadlineError;
 use crate::ThreadId;
 
-/// Generation token identifying one specific task-deadline arm operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) const TASK_DEADLINE_CLASS_COUNT: usize = 3;
+static NEXT_TASK_DEADLINE_NODE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Process-lifetime identity assigned lazily to one physical timer node.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
-pub struct TaskDeadlineToken(u64);
+pub(super) struct TaskDeadlineNodeId(u64);
+
+impl TaskDeadlineNodeId {
+    const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub(super) const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Independent physical timer slot owned by one scheduler thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(super) enum TaskDeadlineClass {
+    Park            = 0,
+    DeadlineCbs     = 1,
+    DeadlineZeroLag = 2,
+}
+
+impl TaskDeadlineClass {
+    pub(super) const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Node identity and generation identifying one task-deadline arm operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskDeadlineToken {
+    node: TaskDeadlineNodeId,
+    generation: u64,
+}
 
 impl TaskDeadlineToken {
     /// Sentinel that cannot identify a live task-deadline arm.
-    pub const NONE: Self = Self(0);
+    pub const NONE: Self = Self {
+        node: TaskDeadlineNodeId::from_raw(0),
+        generation: 0,
+    };
 
     /// Returns the monotonically assigned arm generation.
     pub const fn generation(self) -> u64 {
-        self.0
+        self.generation
+    }
+
+    const fn new(node: TaskDeadlineNodeId, generation: u64) -> Self {
+        Self { node, generation }
+    }
+
+    pub(super) const fn node(self) -> TaskDeadlineNodeId {
+        self.node
     }
 }
 
@@ -24,14 +70,30 @@ impl TaskDeadlineToken {
 #[derive(Debug)]
 pub struct TaskDeadlineNode {
     thread: ThreadId,
+    class: TaskDeadlineClass,
+    identity: AtomicU64,
     sequence: AtomicU64,
 }
 
 impl TaskDeadlineNode {
     /// Creates a deadline node owned by one generation-checked scheduler thread.
     pub const fn for_thread(thread: ThreadId) -> Self {
+        Self::new(thread, TaskDeadlineClass::Park)
+    }
+
+    pub(crate) const fn deadline_cbs_for_thread(thread: ThreadId) -> Self {
+        Self::new(thread, TaskDeadlineClass::DeadlineCbs)
+    }
+
+    pub(crate) const fn deadline_zero_lag_for_thread(thread: ThreadId) -> Self {
+        Self::new(thread, TaskDeadlineClass::DeadlineZeroLag)
+    }
+
+    const fn new(thread: ThreadId, class: TaskDeadlineClass) -> Self {
         Self {
             thread,
+            class,
+            identity: AtomicU64::new(0),
             sequence: AtomicU64::new(0),
         }
     }
@@ -40,7 +102,48 @@ impl TaskDeadlineNode {
         self.thread
     }
 
-    pub(super) fn next_token(&self) -> Result<TaskDeadlineToken, TaskDeadlineError> {
+    pub(super) const fn class(&self) -> TaskDeadlineClass {
+        self.class
+    }
+
+    pub(super) fn identity(&self) -> Result<TaskDeadlineNodeId, TaskDeadlineError> {
+        let identity = self.identity.load(Ordering::Acquire);
+        if identity != 0 {
+            return Ok(TaskDeadlineNodeId::from_raw(identity));
+        }
+
+        let mut candidate = NEXT_TASK_DEADLINE_NODE_ID.load(Ordering::Relaxed);
+        loop {
+            if candidate == u64::MAX {
+                return Err(TaskDeadlineError::GenerationExhausted);
+            }
+            match NEXT_TASK_DEADLINE_NODE_ID.compare_exchange_weak(
+                candidate,
+                candidate + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return match self.identity.compare_exchange(
+                        0,
+                        candidate,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => Ok(TaskDeadlineNodeId::from_raw(candidate)),
+                        Err(published) => Ok(TaskDeadlineNodeId::from_raw(published)),
+                    };
+                }
+                Err(updated) => candidate = updated,
+            }
+        }
+    }
+
+    pub(super) fn next_token(
+        &self,
+        identity: TaskDeadlineNodeId,
+    ) -> Result<TaskDeadlineToken, TaskDeadlineError> {
+        debug_assert_eq!(self.identity.load(Ordering::Relaxed), identity.as_u64());
         let mut sequence = self.sequence.load(Ordering::Relaxed);
         loop {
             if sequence == u64::MAX {
@@ -52,7 +155,7 @@ impl TaskDeadlineNode {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Ok(TaskDeadlineToken(sequence + 1)),
+                Ok(_) => return Ok(TaskDeadlineToken::new(identity, sequence + 1)),
                 Err(updated) => sequence = updated,
             }
         }
@@ -63,10 +166,15 @@ impl TaskDeadlineNode {
 ///
 /// The queue deliberately has no arbitrary callback variant. Every entry is a
 /// value-owned scheduler identity that can be validated again at a safe point.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskDeadlineKind {
     /// Timeout for one generation of the thread park handshake.
     ParkTimeout { park_generation: u64 },
+    /// CBS deadline miss or replenishment boundary.
+    DeadlineCbs,
+    /// GRUB inactive-bandwidth transition at zero lag.
+    DeadlineZeroLag,
 }
 
 impl TaskDeadlineKind {
@@ -75,10 +183,19 @@ impl TaskDeadlineKind {
         Self::ParkTimeout { park_generation }
     }
 
-    /// Returns the park generation carried by this deadline.
-    pub const fn park_generation(self) -> u64 {
+    /// Returns the park generation carried by this deadline, when applicable.
+    pub const fn park_generation(self) -> Option<u64> {
         match self {
-            Self::ParkTimeout { park_generation } => park_generation,
+            Self::ParkTimeout { park_generation } => Some(park_generation),
+            Self::DeadlineCbs | Self::DeadlineZeroLag => None,
+        }
+    }
+
+    pub(super) const fn class(self) -> TaskDeadlineClass {
+        match self {
+            Self::ParkTimeout { .. } => TaskDeadlineClass::Park,
+            Self::DeadlineCbs => TaskDeadlineClass::DeadlineCbs,
+            Self::DeadlineZeroLag => TaskDeadlineClass::DeadlineZeroLag,
         }
     }
 }
@@ -93,6 +210,7 @@ impl TaskDeadlineKind {
 pub struct TaskDeadlineRegistration {
     thread: ThreadId,
     token: TaskDeadlineToken,
+    deadline_ns: u64,
     kind: TaskDeadlineKind,
 }
 
@@ -100,11 +218,13 @@ impl TaskDeadlineRegistration {
     pub(super) const fn new(
         thread: ThreadId,
         token: TaskDeadlineToken,
+        deadline_ns: u64,
         kind: TaskDeadlineKind,
     ) -> Self {
         Self {
             thread,
             token,
+            deadline_ns,
             kind,
         }
     }
@@ -117,6 +237,11 @@ impl TaskDeadlineRegistration {
     /// Returns the arm generation owned by this registration.
     pub const fn token(&self) -> TaskDeadlineToken {
         self.token
+    }
+
+    /// Returns the absolute monotonic deadline owned by this registration.
+    pub const fn deadline_ns(&self) -> u64 {
+        self.deadline_ns
     }
 
     /// Returns the typed scheduler event.

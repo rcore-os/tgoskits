@@ -389,6 +389,19 @@ impl TaskSystem {
             let target = message
                 .target_cpu()
                 .ok_or(TaskError::InvalidConfiguration)?;
+            if operation == InboxOperation::DeadlineRefresh {
+                if source != owner || target != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: source.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
+                let mut sched = core.sched().lock();
+                if message.generation() <= sched.deadline_cbs_generation {
+                    Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
+                }
+                continue;
+            }
             if operation == InboxOperation::AffinityUpdate {
                 if source != owner {
                     return Err(TaskError::CpuOwnerMismatch {

@@ -11,6 +11,7 @@ use crate::{
     ThreadId, ThreadLifecycle, ThreadState,
     lock::{IrqTicketGuard, IrqTicketLock},
     runtime::{AddressSpaceHandle, ExecutionContextHandle},
+    timer::TaskDeadlineRegistration,
 };
 
 /// GRUB activity of one admitted Deadline reservation.
@@ -80,6 +81,8 @@ impl ThreadSchedCell {
                 active_deadline_reservation: 0,
                 desired_deadline_reservation: 0,
                 deadline_zero_lag_ns: 0,
+                deadline_cbs_timer: None,
+                deadline_zero_lag_timer: None,
                 placement: SchedulerPlacement::detached(),
                 blocked_pi_waiters: 0,
                 pi_donor: None,
@@ -119,6 +122,8 @@ pub(super) struct ThreadSchedState {
     pub(super) active_deadline_reservation: u64,
     pub(super) desired_deadline_reservation: u64,
     pub(super) deadline_zero_lag_ns: u64,
+    pub(super) deadline_cbs_timer: Option<TaskDeadlineRegistration>,
+    pub(super) deadline_zero_lag_timer: Option<TaskDeadlineRegistration>,
     pub(super) placement: SchedulerPlacement,
     pub(super) blocked_pi_waiters: usize,
     pub(super) pi_donor: Option<ThreadId>,

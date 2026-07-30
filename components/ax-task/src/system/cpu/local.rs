@@ -28,8 +28,6 @@ pub struct CpuLocal {
     deadline_expired_buffer: Vec<ExpiredTaskDeadline>,
     deadline_expired_count: usize,
     task_deadline_generation: u64,
-    deadline_scan_cursor: usize,
-    deadline_scan_remaining: usize,
     fair_balance_interval_ns: u64,
     switch_handoff: Option<SwitchHandoff>,
     batch_limit: usize,
@@ -63,8 +61,6 @@ impl CpuLocal {
             deadline_expired_buffer: vec![ExpiredTaskDeadline::EMPTY; config.batch_limit()],
             deadline_expired_count: 0,
             task_deadline_generation: 0,
-            deadline_scan_cursor: 0,
-            deadline_scan_remaining: 0,
             fair_balance_interval_ns: config.balance_interval_ns().max(1),
             switch_handoff: None,
             batch_limit: config.batch_limit(),
@@ -320,7 +316,6 @@ impl CpuLocal {
                 return Err(TaskError::TimerCapacity);
             }
             self.deadline_members.push(Arc::clone(core));
-            self.reset_deadline_scan();
             return Ok(true);
         }
         Ok(false)
@@ -333,7 +328,6 @@ impl CpuLocal {
             .position(|member| Arc::ptr_eq(member, core))
         {
             self.deadline_members.swap_remove(index);
-            self.reset_deadline_scan();
         }
     }
 
@@ -344,10 +338,6 @@ impl CpuLocal {
         // inbox after the claim closes the race where a forced scheduling path
         // otherwise overwrote a remote producer's doorbell.
         self.remote.scheduler_enter()
-    }
-
-    pub(crate) fn take_preempt_requested(&self) -> bool {
-        self.remote.take_preempt_requested()
     }
 
     pub(crate) fn defer_park_preemption(&self, requested: bool) {
@@ -456,32 +446,6 @@ impl CpuLocal {
         }
     }
 
-    pub(crate) fn arm_deferred_scheduler_deadline(&self, deadline_ns: u64) {
-        if deadline_ns == 0 {
-            return;
-        }
-        let mut current = self
-            .remote
-            .deferred_scheduler_deadline_ns
-            .load(Ordering::Acquire);
-        loop {
-            if current != 0 && current <= deadline_ns {
-                return;
-            }
-            match self
-                .remote
-                .deferred_scheduler_deadline_ns
-                .compare_exchange_weak(current, deadline_ns, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
-                    self.remote.arm_scheduler_deadline(deadline_ns);
-                    return;
-                }
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
     pub(crate) fn replace_scheduler_deadline(&self, deadline_ns: Option<u64>) {
         self.remote
             .scheduler_deadline_ns
@@ -500,10 +464,7 @@ impl CpuLocal {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => {
-                    self.remote.clear_due_deferred_deadline(now_ns);
-                    return true;
-                }
+                Ok(_) => return true,
                 Err(observed) => current = observed,
             }
         }
@@ -592,11 +553,7 @@ impl CpuLocal {
     }
 
     fn recompute_scheduler_deadline(&mut self, now_ns: u64) {
-        let mut next_deadline_ns = nonzero_deadline(
-            self.remote
-                .deferred_scheduler_deadline_ns
-                .load(Ordering::Acquire),
-        );
+        let mut next_deadline_ns = None;
         if let Some(deadline) = self.run_queue.earliest_deadline_event_ns() {
             next_deadline_ns = earliest(next_deadline_ns, deadline);
         }
@@ -642,43 +599,6 @@ impl CpuLocal {
             );
         }
         self.replace_scheduler_deadline(next_deadline_ns);
-    }
-
-    pub(crate) fn begin_deadline_scan_batch(&mut self) -> (usize, usize) {
-        let member_count = self.deadline_members.len();
-        if member_count == 0 {
-            self.reset_deadline_scan();
-            return (0, 0);
-        }
-        if self.deadline_scan_remaining == 0 {
-            self.deadline_scan_cursor %= member_count;
-            self.deadline_scan_remaining = member_count;
-        }
-        debug_assert!(
-            self.deadline_scan_remaining <= member_count,
-            "Deadline membership changes must restart the owner scan"
-        );
-        (
-            self.deadline_scan_cursor,
-            self.deadline_scan_remaining.min(self.batch_limit),
-        )
-    }
-
-    pub(crate) fn finish_deadline_scan_batch(&mut self, examined: usize) -> bool {
-        let member_count = self.deadline_members.len();
-        if member_count == 0 {
-            self.reset_deadline_scan();
-            return false;
-        }
-        debug_assert!(examined <= self.deadline_scan_remaining);
-        self.deadline_scan_cursor = (self.deadline_scan_cursor + examined) % member_count;
-        self.deadline_scan_remaining -= examined;
-        self.deadline_scan_remaining != 0
-    }
-
-    fn reset_deadline_scan(&mut self) {
-        self.deadline_scan_cursor = 0;
-        self.deadline_scan_remaining = 0;
     }
 
     /// Attempts to return a coherent remotely observable scheduling snapshot.
@@ -783,11 +703,36 @@ impl CpuLocal {
         count
     }
 
-    pub(crate) fn take_expired_task_deadline(self: Pin<&mut Self>) -> Option<ExpiredTaskDeadline> {
+    pub(crate) fn take_expired_park_deadline(self: Pin<&mut Self>) -> Option<ExpiredTaskDeadline> {
+        self.take_expired_task_deadline_matching(|event| {
+            event
+                .kind()
+                .is_some_and(|kind| kind.park_generation().is_some())
+        })
+    }
+
+    pub(crate) fn take_expired_scheduler_deadline(
+        self: Pin<&mut Self>,
+    ) -> Option<ExpiredTaskDeadline> {
+        self.take_expired_task_deadline_matching(|event| {
+            event
+                .kind()
+                .is_some_and(|kind| kind.park_generation().is_none())
+        })
+    }
+
+    pub(crate) const fn has_expired_task_deadlines(&self) -> bool {
+        self.deadline_expired_count != 0
+    }
+
+    fn take_expired_task_deadline_matching(
+        self: Pin<&mut Self>,
+        matches: impl Fn(ExpiredTaskDeadline) -> bool,
+    ) -> Option<ExpiredTaskDeadline> {
         let fields = self.fields_mut();
         let index = fields.deadline_expired_buffer[..fields.deadline_expired_count]
             .iter()
-            .rposition(|event| event.thread().is_some())?;
+            .rposition(|event| event.thread().is_some() && matches(*event))?;
         fields.deadline_expired_count -= 1;
         let last = fields.deadline_expired_count;
         fields.deadline_expired_buffer.swap(index, last);

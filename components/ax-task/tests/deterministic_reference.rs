@@ -250,17 +250,22 @@ impl ReferenceScheduler {
     }
 
     fn preempt(&mut self, now_ns: u64) -> ThreadId {
-        self.need_resched = false;
         self.settle_current(now_ns);
         self.enqueue_current(ReferenceEnqueue::Preempted);
-        self.select_next(now_ns)
+        let next = self.select_next(now_ns);
+        // Linux clears TIF_NEED_RESCHED after update_rq_clock() and
+        // pick_next_task(), so accounting performed by this same scheduling
+        // transaction cannot leak a stale request into the next task.
+        self.need_resched = false;
+        next
     }
 
     fn yield_current(&mut self, now_ns: u64) -> ThreadId {
-        self.need_resched = false;
         self.settle_current(now_ns);
         self.enqueue_current(ReferenceEnqueue::Yield);
-        self.select_next(now_ns)
+        let next = self.select_next(now_ns);
+        self.need_resched = false;
+        next
     }
 
     fn charge(&mut self, now_ns: u64, runtime_ns: u64) -> bool {
