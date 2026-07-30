@@ -265,7 +265,11 @@ pub fn enable_lasx() {
 }
 
 #[cfg(feature = "uspace")]
-core::arch::global_asm!(include_asm_macros!(), include_str!("user_copy.S"));
+core::arch::global_asm!(
+    include_asm_macros!(),
+    include_str!("user_copy.S"),
+    include_str!("user_atomic.S"),
+);
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {

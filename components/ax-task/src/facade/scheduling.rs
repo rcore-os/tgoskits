@@ -261,6 +261,7 @@ pub(super) fn execute_switch_plan(
     // SAFETY: the scheduler committed both endpoint states before releasing its
     // locks. Runtime handles remain live, and local IRQs stay disabled here.
     unsafe { task_runtime::switch_context(previous.context(), next.context()) };
+    scheduler_frame.refresh_current_cpu();
     if complete_current_context_switch_tail(scheduler_frame).is_err() {
         task_runtime::fatal_invariant(5, 0);
     }

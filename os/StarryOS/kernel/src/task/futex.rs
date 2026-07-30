@@ -5,6 +5,8 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+#[cfg(axtest)]
+use core::sync::atomic::AtomicUsize;
 use core::{
     cmp::Ordering,
     future::Future,
@@ -16,6 +18,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoPreempt;
 use ax_memory_addr::VirtAddr;
 use ax_sync::{LockdepMutexExt, PiMutex};
 use hashbrown::HashMap;
@@ -26,13 +29,34 @@ use crate::{
 };
 
 const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
+const NESTED_FUTEX_TABLE_LOCK_SUBCLASS: u32 = 1;
+
+#[cfg(axtest)]
+static FUTEX_ENTRY_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Retry outcome from a futex operation's nofault user-memory phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FutexAccessError {
+    /// The user word must be faulted in after releasing futex locks.
+    UserFault,
+    /// A bounded architecture atomic sequence should be retried.
+    Retry,
+    /// The futex operation failed without requiring a retry.
+    Operation(AxError),
+}
+
+impl From<AxError> for FutexAccessError {
+    fn from(error: AxError) -> Self {
+        Self::Operation(error)
+    }
+}
 
 /// Wait queue used by futex.
 #[derive(Default)]
 pub struct WaitQueue {
-    // Futex waits must re-check the user value while serializing with wakeups.
-    // That re-check may fault and sleep, so this queue cannot use a no-IRQ
-    // spinlock.
+    // Queue mutation allocates and cancellation may enter the task scheduler.
+    // User-memory conditions are nofault while this sleeping PI mutex is held;
+    // page faults are resolved only after the guard is released.
     inner: PiMutex<WaitQueueInner>,
 }
 
@@ -50,7 +74,11 @@ struct Waiter {
 struct WaiterState {
     woken: AtomicBool,
     cancelled: AtomicBool,
-    cleanup: PiMutex<Option<FutexWaitCleanup>>,
+    // Requeue and cancellation only exchange one Arc-backed route record.
+    // No IRQ path observes it and the guard is never held while taking the
+    // table or wait-queue locks, so a short preemption-only spin lock is the
+    // narrow capability this metadata needs.
+    cleanup: SpinNoPreempt<Option<FutexWaitCleanup>>,
 }
 
 impl WaiterState {
@@ -58,7 +86,7 @@ impl WaiterState {
         Self {
             woken: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
-            cleanup: PiMutex::new(cleanup),
+            cleanup: SpinNoPreempt::new(cleanup),
         }
     }
 
@@ -90,21 +118,22 @@ struct WaitIfFuture<'a, F> {
     state: Option<Arc<WaiterState>>,
 }
 
-impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
-    type Output = AxResult<bool>;
+impl<F: FnOnce() -> Result<bool, FutexAccessError> + Unpin> Future for WaitIfFuture<'_, F> {
+    type Output = Result<bool, FutexAccessError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         if let Some(condition) = this.condition.take() {
+            let state = Arc::new(WaiterState::new(this.cleanup.clone()));
+            let waker = cx.waker().clone();
             let mut inner = this.queue.inner.lock();
-            if !condition() {
+            if !condition()? {
                 return Poll::Ready(Ok(false));
             }
 
-            let state = Arc::new(WaiterState::new(this.cleanup.clone()));
             inner.queue.push_back(Waiter {
-                waker: cx.waker().clone(),
+                waker,
                 bitset: this.bitset,
                 state: state.clone(),
             });
@@ -181,8 +210,25 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
+        match self.wait_if_with_cleanup_nofault(bitset, timeout, cleanup, || Ok(condition())) {
+            Ok(waited) => Ok(waited),
+            Err(FutexAccessError::Operation(error)) => Err(error),
+            Err(FutexAccessError::UserFault | FutexAccessError::Retry) => {
+                unreachable!("infallible wait condition returned a nofault retry")
+            }
+        }
+    }
+
+    /// Waits while serializing a nofault user-word check with queue insertion.
+    pub fn wait_if_with_cleanup_nofault(
+        &self,
+        bitset: u32,
+        timeout: Option<Duration>,
+        cleanup: Option<FutexWaitCleanup>,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
+    ) -> Result<bool, FutexAccessError> {
         let task = current_user_task();
-        block_on_user_timeout(
+        match block_on_user_timeout(
             &task,
             timeout,
             WaitIfFuture {
@@ -194,7 +240,10 @@ impl WaitQueue {
             },
         )
         .into_result()
-        .map_err(AxError::from)?
+        {
+            Ok(result) => result,
+            Err(error) => Err(FutexAccessError::Operation(AxError::from(error))),
+        }
     }
 
     fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {
@@ -228,51 +277,65 @@ impl WaitQueue {
         woke
     }
 
-    /// Serializes a FUTEX_WAKE_OP user RMW with both futex wait queues.
-    pub fn wake_op(
-        &self,
+    fn collect_wake_op(
+        source: Option<&Self>,
         wake_count: usize,
-        target: &WaitQueue,
+        target: Option<&Self>,
         wake2_count: usize,
-        condition: impl FnOnce() -> AxResult<bool>,
-    ) -> AxResult<usize> {
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<Vec<Waker>, FutexAccessError> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
-        match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
-            Ordering::Less => {
-                let mut src = self.inner.lock();
-                let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
-                let wake_second = condition.take().expect("condition used once")()?;
-                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
-                if wake_second {
-                    Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+        match (source, target) {
+            (Some(source), Some(target)) => {
+                match core::ptr::from_ref(source).cmp(&core::ptr::from_ref(target)) {
+                    Ordering::Less => {
+                        let mut src = source.inner.lock();
+                        let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
+                        let wake_second = condition.take().expect("condition used once")()?;
+                        Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                        if wake_second {
+                            Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+                        }
+                    }
+                    Ordering::Greater => {
+                        let mut dst = target.inner.lock();
+                        let mut src = source.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
+                        let wake_second = condition.take().expect("condition used once")()?;
+                        Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                        if wake_second {
+                            Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+                        }
+                    }
+                    Ordering::Equal => {
+                        let mut src = source.inner.lock();
+                        let wake_second = condition.take().expect("condition used once")()?;
+                        Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                        if wake_second {
+                            Self::wake_locked(&mut src.queue, wake2_count, u32::MAX, &mut wakers);
+                        }
+                    }
                 }
             }
-            Ordering::Greater => {
+            (Some(source), None) => {
+                let mut src = source.inner.lock();
+                let _ = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+            }
+            (None, Some(target)) => {
                 let mut dst = target.inner.lock();
-                let mut src = self.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 let wake_second = condition.take().expect("condition used once")()?;
-                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
                 if wake_second {
                     Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
                 }
             }
-            Ordering::Equal => {
-                let mut src = self.inner.lock();
-                let wake_second = condition.take().expect("condition used once")()?;
-                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
-                if wake_second {
-                    Self::wake_locked(&mut src.queue, wake2_count, u32::MAX, &mut wakers);
-                }
+            (None, None) => {
+                let _ = condition.take().expect("condition used once")()?;
             }
         }
 
-        let woke = wakers.len();
-        for waker in wakers {
-            waker.wake();
-        }
-        Ok(woke)
+        Ok(wakers)
     }
 
     fn wake_requeue_locked(
@@ -324,8 +387,8 @@ impl WaitQueue {
         requeue_count: usize,
         target_cleanup: FutexWaitCleanup,
         target: &WaitQueue,
-        condition: impl FnOnce() -> AxResult<bool>,
-    ) -> AxResult<Option<usize>> {
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<Option<usize>, FutexAccessError> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
@@ -504,6 +567,8 @@ pub struct FutexEntry {
 
 impl FutexEntry {
     fn new() -> Self {
+        #[cfg(axtest)]
+        FUTEX_ENTRY_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
         Self {
             wq: WaitQueue::new(),
         }
@@ -549,6 +614,124 @@ impl FutexTable {
             key,
             inner: entry.clone(),
         }
+    }
+
+    fn remove_unused_locked(table: &mut HashMap<usize, Arc<FutexEntry>>, key: usize) {
+        let should_remove = table
+            .get(&key)
+            .is_some_and(|entry| Arc::strong_count(entry) == 1 && entry.wq.is_empty());
+        if should_remove {
+            table.remove(&key);
+        }
+    }
+
+    fn collect_wake_op_locked(
+        source_table: &mut HashMap<usize, Arc<FutexEntry>>,
+        source_key: usize,
+        wake_count: usize,
+        target_table: &mut HashMap<usize, Arc<FutexEntry>>,
+        target_key: usize,
+        wake2_count: usize,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<Vec<Waker>, FutexAccessError> {
+        let wakers = WaitQueue::collect_wake_op(
+            source_table.get(&source_key).map(|entry| &entry.wq),
+            wake_count,
+            target_table.get(&target_key).map(|entry| &entry.wq),
+            wake2_count,
+            condition,
+        )?;
+        Self::remove_unused_locked(source_table, source_key);
+        Self::remove_unused_locked(target_table, target_key);
+        Ok(wakers)
+    }
+
+    fn collect_wake_op_same_table_locked(
+        table: &mut HashMap<usize, Arc<FutexEntry>>,
+        source_key: usize,
+        wake_count: usize,
+        target_key: usize,
+        wake2_count: usize,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<Vec<Waker>, FutexAccessError> {
+        let wakers = WaitQueue::collect_wake_op(
+            table.get(&source_key).map(|entry| &entry.wq),
+            wake_count,
+            table.get(&target_key).map(|entry| &entry.wq),
+            wake2_count,
+            condition,
+        )?;
+        Self::remove_unused_locked(table, source_key);
+        if source_key != target_key {
+            Self::remove_unused_locked(table, target_key);
+        }
+        Ok(wakers)
+    }
+
+    /// Executes `FUTEX_WAKE_OP` while serializing waiter lookup and the user
+    /// RMW with both futex tables.
+    ///
+    /// Empty keys are not materialized. Holding the table lock across the
+    /// condition prevents a waiter from being inserted between an empty lookup
+    /// and the operation, matching Linux futex hash-bucket serialization.
+    pub fn wake_op(
+        &self,
+        source_key: &FutexKey,
+        wake_count: usize,
+        target_table: &Self,
+        target_key: &FutexKey,
+        wake2_count: usize,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<usize, FutexAccessError> {
+        let source_key = source_key.as_usize();
+        let target_key = target_key.as_usize();
+        let mut condition = Some(condition);
+
+        let wakers = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target_table)) {
+            Ordering::Less => {
+                let mut source_table = self.0.lock();
+                let mut target_table = target_table.0.lock_nested(NESTED_FUTEX_TABLE_LOCK_SUBCLASS);
+                Self::collect_wake_op_locked(
+                    &mut source_table,
+                    source_key,
+                    wake_count,
+                    &mut target_table,
+                    target_key,
+                    wake2_count,
+                    condition.take().expect("condition used once"),
+                )?
+            }
+            Ordering::Greater => {
+                let mut target_table_guard = target_table.0.lock();
+                let mut source_table = self.0.lock_nested(NESTED_FUTEX_TABLE_LOCK_SUBCLASS);
+                Self::collect_wake_op_locked(
+                    &mut source_table,
+                    source_key,
+                    wake_count,
+                    &mut target_table_guard,
+                    target_key,
+                    wake2_count,
+                    condition.take().expect("condition used once"),
+                )?
+            }
+            Ordering::Equal => {
+                let mut table = self.0.lock();
+                Self::collect_wake_op_same_table_locked(
+                    &mut table,
+                    source_key,
+                    wake_count,
+                    target_key,
+                    wake2_count,
+                    condition.take().expect("condition used once"),
+                )?
+            }
+        };
+
+        let woke = wakers.len();
+        for waker in wakers {
+            waker.wake();
+        }
+        Ok(woke)
     }
 
     /// Returns cleanup metadata for a waiter queued under `key`.
@@ -652,4 +835,21 @@ pub fn futex_table_for_process(proc_data: &ProcessData, key: &FutexKey) -> Arc<F
             SHARED_FUTEX_TABLES.lock().get_or_insert(ptr)
         }
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn empty_wake_op_entry_allocations_for_test() -> usize {
+    let table = FutexTable::new();
+    let source_key = FutexKey::Private { address: 0x1000 };
+    let target_key = FutexKey::Private { address: 0x2000 };
+    FUTEX_ENTRY_ALLOCATIONS.store(0, AtomicOrdering::Relaxed);
+
+    {
+        assert_eq!(
+            table.wake_op(&source_key, 0, &table, &target_key, 0, || Ok(false)),
+            Ok(0)
+        );
+    }
+
+    FUTEX_ENTRY_ALLOCATIONS.load(AtomicOrdering::Relaxed)
 }

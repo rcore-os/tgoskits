@@ -7,6 +7,9 @@ std::thread_local! {
     static BALANCE_CANDIDATE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
+    static LOAD_SUMMARY_PUBLICATIONS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
 }
 
 #[cfg(test)]
@@ -17,6 +20,16 @@ pub(super) fn reset_balance_candidate_visits() {
 #[cfg(test)]
 pub(super) fn balance_candidate_visits() -> usize {
     BALANCE_CANDIDATE_VISITS.get()
+}
+
+#[cfg(test)]
+pub(super) fn reset_load_summary_publications() {
+    LOAD_SUMMARY_PUBLICATIONS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn load_summary_publications() -> usize {
+    LOAD_SUMMARY_PUBLICATIONS.get()
 }
 
 impl TaskSystem {
@@ -38,6 +51,8 @@ impl TaskSystem {
     }
 
     pub(super) fn publish_owner_cpu_load_summary(&self, mut cpu: Pin<&mut CpuLocal>) {
+        #[cfg(test)]
+        LOAD_SUMMARY_PUBLICATIONS.set(LOAD_SUMMARY_PUBLICATIONS.get().saturating_add(1));
         // Linux protects runqueue load state with the owner rq lock and local
         // preemption exclusion. Keep the complete owner snapshot transaction
         // non-preemptible so the sequence cannot remain odd while an interrupt
@@ -225,7 +240,11 @@ impl TaskSystem {
         if cpu.idle() == Some(next) {
             let _requested = self.request_idle_pull(cpu.as_ref())?;
         } else {
-            let _pushed = self.push_overloaded(cpu.as_mut())?;
+            let _pushed = if task_runtime::in_hard_irq() {
+                None
+            } else {
+                self.push_overloaded_from_published_summary(cpu.as_mut())?
+            };
             let _fair = self.balance_fair(cpu.as_mut(), now_ns)?;
         }
         Ok(())

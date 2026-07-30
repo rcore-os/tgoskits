@@ -83,6 +83,62 @@ impl ProcessSignalManager {
         self.actions_slot.lock().clone()
     }
 
+    pub(crate) fn register_child(&self, tid: u32, child: Weak<ThreadSignalManager>) {
+        let mut replacement = Vec::new();
+        loop {
+            let required = self.children.lock().len().saturating_add(1);
+            if replacement.capacity() < required {
+                replacement.reserve_exact(required - replacement.capacity());
+            }
+
+            let mut children = self.children.lock();
+            if replacement.capacity() < children.len().saturating_add(1) {
+                drop(children);
+                continue;
+            }
+            replacement.append(&mut children);
+            replacement.push((tid, child));
+            core::mem::swap(&mut *children, &mut replacement);
+            drop(children);
+            // The replaced allocation is empty and is released after the
+            // IRQ-disabled registry guard has gone away.
+            drop(replacement);
+            return;
+        }
+    }
+
+    fn children_snapshot(&self) -> Vec<(u32, Weak<ThreadSignalManager>)> {
+        let mut snapshot = Vec::new();
+        loop {
+            let child_count = self.children.lock().len();
+            if snapshot.capacity() < child_count {
+                snapshot.reserve_exact(child_count - snapshot.capacity());
+            }
+            let children = self.children.lock();
+            if snapshot.capacity() < children.len() {
+                drop(children);
+                continue;
+            }
+            snapshot.extend(children.iter().cloned());
+            return snapshot;
+        }
+    }
+
+    fn remove_dead_child(&self, tid: u32, dead: &Weak<ThreadSignalManager>) {
+        let removed = {
+            let mut children = self.children.lock();
+            children
+                .iter()
+                .position(|(registered_tid, child)| {
+                    *registered_tid == tid && Weak::ptr_eq(child, dead)
+                })
+                .map(|index| children.swap_remove(index))
+        };
+        // A final Weak drop may release the allocation. Keep it out of the
+        // non-sleeping registry lock.
+        drop(removed);
+    }
+
     pub(crate) fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
         let mut guard = self.pending.lock();
         let result = guard.dequeue_signal(mask);
@@ -128,19 +184,16 @@ impl ProcessSignalManager {
         //       rt_sigtimedwait/sigwaitinfo (its sigwait state contains signo).
         // In both cases, applying is_ignore() would silently drop the signal
         // and leave sigwaitinfo sleeping forever.
-        let (all_blocked, any_sigwait_for_this) = {
-            let children = self.children.lock();
-            let all = !children.is_empty()
-                && children
-                    .iter()
-                    .all(|(_, thread)| thread.upgrade().is_none_or(|t| t.signal_blocked(signo)));
-            let any = children.iter().any(|(_, thread)| {
-                thread
-                    .upgrade()
-                    .is_some_and(|thread| thread.is_sigwait_for(signo))
-            });
-            (all, any)
-        };
+        let children = self.children_snapshot();
+        let all_blocked = !children.is_empty()
+            && children
+                .iter()
+                .all(|(_, thread)| thread.upgrade().is_none_or(|t| t.signal_blocked(signo)));
+        let any_sigwait_for_this = children.iter().any(|(_, thread)| {
+            thread
+                .upgrade()
+                .is_some_and(|thread| thread.is_sigwait_for(signo))
+        });
         if !all_blocked && !any_sigwait_for_this && actions[signo].is_ignore(signo) {
             return None;
         }
@@ -153,25 +206,24 @@ impl ProcessSignalManager {
             self.possibly_has_signal.store(true, Ordering::Release);
         }
         let mut result = None;
-        self.children.lock().retain(|(tid, thread)| {
-            let Some(thread) = thread.upgrade() else {
-                return false;
+        let mut dead_children = Vec::new();
+        let mut waiters = Vec::new();
+        for (tid, weak) in &children {
+            let Some(thread) = weak.upgrade() else {
+                dead_children.push((*tid, weak.clone()));
+                continue;
             };
             if result.is_none() && !thread.signal_blocked(signo) {
                 result = Some(*tid);
             }
-            true
-        });
+            if thread.is_sigwait_for(signo) {
+                waiters.push(thread);
+            }
+        }
+        for (tid, dead) in &dead_children {
+            self.remove_dead_child(*tid, dead);
+        }
         if result.is_none() {
-            let waiters: Vec<_> = self
-                .children
-                .lock()
-                .iter()
-                .filter_map(|(_, thread)| {
-                    let thread = thread.upgrade()?;
-                    thread.is_sigwait_for(signo).then_some(thread)
-                })
-                .collect();
             // The future waker is an arbitrary task-context callback. Invoke it
             // only after dropping the process child registry lock.
             for thread in waiters {
@@ -228,7 +280,10 @@ impl ProcessSignalManager {
                 *action = SignalAction::default();
             }
         }
-        *self.actions_slot.lock() = Arc::new(SpinNoIrq::new(new_actions));
+        let replacement = Arc::new(SpinNoIrq::new(new_actions));
+        let previous = core::mem::replace(&mut *self.actions_slot.lock(), replacement);
+        // The old Arc may own the final allocation reference.
+        drop(previous);
     }
 
     /// Updates a thread's TID in the children registration. Called by

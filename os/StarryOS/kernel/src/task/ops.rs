@@ -320,24 +320,24 @@ fn apply_process_timer_actions(pid: Pid, pending: PendingTimerActions) {
 }
 
 fn poll_interval_timers(proc_data: &ProcessData, token: Option<&AlarmToken>) {
+    if !proc_data.has_active_interval_timers() {
+        return;
+    }
     let snapshot = proc_data.cpu_time_snapshot();
-    let pending = {
-        let mut timers = proc_data.interval_timers().lock();
-        match token {
-            Some(token) => timers.poll_for_alarm(snapshot, token),
-            None => timers.poll(snapshot),
-        }
-    };
-    apply_process_timer_actions(proc_data.proc.pid(), pending);
+    if let Some(pending) = proc_data.poll_interval_timers(snapshot, token) {
+        apply_process_timer_actions(proc_data.proc.pid(), pending);
+    }
 }
 
 /// Poll process interval timers and POSIX timers.
 pub fn poll_process_timer(pid: Pid) {
     if let Ok(proc_data) = get_process_data(pid) {
         poll_interval_timers(&proc_data, None);
-        proc_data.posix_timers().poll_expired(pid, |sig| {
-            let _ = send_signal_to_process(pid, Some(sig));
-        });
+        if proc_data.posix_timers().has_armed_timers() {
+            proc_data.posix_timers().poll_expired(pid, |sig| {
+                let _ = send_signal_to_process(pid, Some(sig));
+            });
+        }
     }
 }
 
@@ -611,7 +611,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::cgroup::exit_process(&thr.proc_data);
         thr.proc_data.nsproxy.lock().release_cgroup_namespace();
 
-        let timer_cancellations = thr.proc_data.interval_timers().lock().cancel_alarms();
+        let timer_cancellations = thr.proc_data.cancel_interval_timer_alarms();
         for cancellation in timer_cancellations {
             cancellation.apply_cancellation();
         }

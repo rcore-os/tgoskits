@@ -135,6 +135,25 @@ pub fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
         && acct.rss_anon_pages() == 1
 }
 
+pub fn futex_empty_wake_op_avoids_entry_allocation() -> bool {
+    super::task::empty_wake_op_entry_allocations_for_test() == 0
+}
+
+pub fn nofault_user_access_rejects_unmapped_word() -> bool {
+    use ax_runtime::hal::cpu::{
+        UserAccessError, UserAtomicError, UserAtomicU32Op, user_atomic_u32, user_read_u32,
+    };
+
+    let address = super::config::USER_SPACE_BASE as *mut u32;
+    // SAFETY: USER_SPACE_BASE is aligned and inside the user range. The
+    // bootstrap axtest address space deliberately leaves its first page
+    // unmapped, so both instructions must be recovered by the nofault table.
+    unsafe {
+        user_read_u32(address.cast_const()) == Err(UserAccessError::Fault)
+            && user_atomic_u32(address, UserAtomicU32Op::Set, 1) == Err(UserAtomicError::Fault)
+    }
+}
+
 pub fn accounting_edge_cases_and_snapshot_rules_hold() -> bool {
     super::mm::accounting_edge_cases_and_snapshot_rules_hold_for_test()
 }
@@ -173,6 +192,11 @@ pub fn resource_limit_defaults_hold() -> bool {
 
 pub fn posix_timer_clock_validation_rules_hold() -> bool {
     super::task::posix_timer_clock_validation_rules_hold_for_test()
+}
+
+pub fn timer_active_gate_rules_hold() -> bool {
+    super::task::interval_timer_active_gate_rules_hold_for_test()
+        && super::task::posix_timer_active_gate_rules_hold_for_test()
 }
 
 pub fn itimer_type_signo_and_time_conversion_rules_hold() -> bool {

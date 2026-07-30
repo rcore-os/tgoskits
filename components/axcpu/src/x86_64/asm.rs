@@ -149,7 +149,7 @@ pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
 }
 
 #[cfg(feature = "uspace")]
-core::arch::global_asm!(include_str!("user_copy.S"));
+core::arch::global_asm!(include_str!("user_copy.S"), include_str!("user_atomic.S"),);
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {

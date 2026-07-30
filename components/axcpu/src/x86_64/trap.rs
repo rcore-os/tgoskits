@@ -162,6 +162,14 @@ fn handle_page_fault(tf: &mut KernelTrapFrame<'_>) {
     let access_flags = err_code_to_flags(tf.raw.error_code)
         .unwrap_or_else(|e| panic!("Invalid #PF error code: {:#x}", e));
     let vaddr = va!(unsafe { cr2() });
+    #[cfg(feature = "exception-table")]
+    {
+        let mut updated = tf.snapshot();
+        if updated.fixup_nofault_exception() {
+            tf.apply_registers(&updated);
+            return;
+        }
+    }
     if crate::trap::call_page_fault_handler_with_parent_irqs(
         vaddr,
         access_flags,

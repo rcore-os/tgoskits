@@ -133,49 +133,67 @@ impl TaskSystem {
         policy: SchedulePolicy,
     ) -> Result<(), TaskError> {
         policy.validate()?;
-        let mut state = self.state.lock();
-        self.drain_pending_deadline_admission(&mut state);
-        let root_domain = self.root_domain.lock();
-        let (core, sched_cell) = {
-            let record = state.thread_record(thread)?;
-            (Arc::clone(&record.core), Arc::clone(&record.sched))
+        // Allocate the affinity snapshot before entering IRQ-disabled cold
+        // domains. Copying into this fixed-topology buffer is allocation-free.
+        let mut affinity = CpuSet::empty(self.config.cpu_count());
+        let (core, owner, generation, owner_publication) = {
+            let mut state = self.state.lock();
+            self.drain_pending_deadline_admission(&mut state);
+            let root_domain = self.root_domain.lock();
+            let (core, sched_cell) = {
+                let record = state.thread_record(thread)?;
+                (Arc::clone(&record.core), Arc::clone(&record.sched))
+            };
+            let mut sched = sched_cell.lock();
+            if sched.lifecycle.state() == ThreadState::Exited {
+                return Err(TaskError::NotReady);
+            }
+            affinity.copy_from_set(&sched.affinity)?;
+            let active_reservation = u128::from(sched.active_deadline_reservation);
+            let desired_reservation = u128::from(sched.desired_deadline_reservation);
+            let owner = sched
+                .placement
+                .running_cpu()
+                .or(sched.placement.queued_cpu())
+                .or(sched.deadline_bandwidth_cpu);
+            let generation = sched
+                .policy_generation
+                .checked_add(1)
+                .ok_or(TaskError::InvalidConfiguration)?;
+            let owner_publication = owner
+                .map(|owner| {
+                    self.cpu_remotes
+                        .get(owner.as_usize())
+                        .ok_or(TaskError::InvalidCpu(owner.as_u32()))?
+                        .begin_publication()
+                        .ok_or(TaskError::CpuOffline(owner.as_u32()))
+                })
+                .transpose()?;
+            let reservation =
+                state.deadline_reservation_for(policy, &affinity, &root_domain.online)?;
+            let old_held = active_reservation.max(desired_reservation);
+            let new_held = active_reservation.max(reservation);
+            if new_held > old_held {
+                state
+                    .deadline_admission
+                    .reserve_utilization(new_held - old_held)?;
+            } else {
+                state.deadline_admission.release(old_held - new_held);
+            }
+            sched.desired_deadline_reservation = u64::try_from(reservation).unwrap_or(u64::MAX);
+            sched.base_policy = policy;
+            sched.policy_generation = generation;
+            (core, owner, generation, owner_publication)
         };
-        let mut sched = sched_cell.lock();
-        if sched.lifecycle.state() == ThreadState::Exited {
-            return Err(TaskError::NotReady);
-        }
-        let active_reservation = u128::from(sched.active_deadline_reservation);
-        let desired_reservation = u128::from(sched.desired_deadline_reservation);
-        let affinity = sched.affinity.clone();
-        let owner = sched
-            .placement
-            .running_cpu()
-            .or(sched.placement.queued_cpu())
-            .or(sched.deadline_bandwidth_cpu);
-        let generation = sched
-            .policy_generation
-            .checked_add(1)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        let reservation = state.deadline_reservation_for(policy, &affinity, &root_domain.online)?;
-        let old_held = active_reservation.max(desired_reservation);
-        let new_held = active_reservation.max(reservation);
-        if new_held > old_held {
-            state
-                .deadline_admission
-                .reserve_utilization(new_held - old_held)?;
-        } else {
-            state.deadline_admission.release(old_held - new_held);
-        }
-        sched.desired_deadline_reservation = u64::try_from(reservation).unwrap_or(u64::MAX);
-        sched.base_policy = policy;
-        sched.policy_generation = generation;
-        drop(sched);
         core.publish_base_policy(policy);
-        if owner.is_some() {
-            state.request_owner_reschedule(thread);
+        if let Some(owner_publication) = owner_publication {
+            self.publish_owner_policy_reserved(
+                &core,
+                owner.expect("a reserved policy publication must retain its owner"),
+                generation,
+                owner_publication,
+            );
         } else {
-            drop(root_domain);
-            drop(state);
             let applied = self.apply_owner_policy_generation(
                 &core,
                 generation,

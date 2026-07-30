@@ -14,6 +14,8 @@ std::thread_local! {
     static ACTIVE_IRQ_TOKENS: RefCell<std::vec::Vec<usize>> = const { RefCell::new(std::vec::Vec::new()) };
     static TASK_SYSTEM_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCAL_HANDLE: Cell<usize> = const { Cell::new(0) };
+    static CPU_LOCAL_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
+    static CPU_REMOTE_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
     static SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
     static MAX_SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
     static IRQ_ENTER_SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -31,6 +33,7 @@ std::thread_local! {
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
     static CONTEXT_BIND_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static LAST_CONTEXT_BINDING: Cell<Option<ContextThreadBinding>> = const { Cell::new(None) };
+    static IRQ_GUARDS_AT_CONTEXT_BIND: Cell<usize> = const { Cell::new(usize::MAX) };
     static CONTEXT_SWITCH_TAIL_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static CONTEXT_SWITCH_TAIL_COUNT: Cell<usize> = const { Cell::new(0) };
     static HOOK_REENTRY_QUERY: Cell<HookReentryQuery> = const { Cell::new(HookReentryQuery::None) };
@@ -106,6 +109,7 @@ impl TaskRuntime for UnitTestRuntime {
         })
     }
     unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+        CPU_LOCAL_HANDLE_READS.with(|reads| reads.set(reads.get() + 1));
         CPU_LOCAL_HANDLE.with(|handle| {
             // SAFETY: unit fixtures install only the current thread's pinned
             // CpuLocal and clear the handle before destroying it.
@@ -113,6 +117,7 @@ impl TaskRuntime for UnitTestRuntime {
         })
     }
     unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
+        CPU_REMOTE_HANDLE_READS.with(|reads| reads.set(reads.get() + 1));
         let raw = TASK_SYSTEM_HANDLE.with(Cell::get);
         if raw == 0 {
             return CpuRemoteHandle::NONE;
@@ -345,6 +350,9 @@ impl TaskRuntime for UnitTestRuntime {
     }
     fn bind_context_thread(binding: ContextThreadBinding) -> RuntimeStatus {
         LAST_CONTEXT_BINDING.with(|observed| observed.set(Some(binding)));
+        IRQ_GUARDS_AT_CONTEXT_BIND.with(|observed| {
+            observed.set(ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().len()));
+        });
         CONTEXT_BIND_STATUS.with(Cell::get)
     }
     fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
@@ -380,6 +388,7 @@ impl TaskRuntime for UnitTestRuntime {
 pub(crate) fn configure_context_binding(status: RuntimeStatus) {
     CONTEXT_BIND_STATUS.with(|current| current.set(status));
     LAST_CONTEXT_BINDING.with(|observed| observed.set(None));
+    IRQ_GUARDS_AT_CONTEXT_BIND.with(|observed| observed.set(usize::MAX));
 }
 
 pub(crate) fn configure_resource_release(status: RuntimeStatus) {
@@ -397,6 +406,10 @@ pub(crate) fn resource_release_events() -> std::vec::Vec<ResourceReleaseEvent> {
 
 pub(crate) fn last_context_binding() -> Option<ContextThreadBinding> {
     LAST_CONTEXT_BINDING.with(Cell::get)
+}
+
+pub(crate) fn irq_guards_at_context_bind() -> usize {
+    IRQ_GUARDS_AT_CONTEXT_BIND.with(Cell::get)
 }
 
 pub(crate) fn configure_context_switch_tail(status: RuntimeStatus) {
@@ -552,8 +565,21 @@ pub(crate) fn install_task_handles(task_system: usize, cpu_local: usize) {
     CPU_LOCAL_HANDLE.with(|handle| handle.set(cpu_local));
 }
 
+pub(crate) fn reset_cpu_handle_reads() {
+    CPU_LOCAL_HANDLE_READS.with(|reads| reads.set(0));
+    CPU_REMOTE_HANDLE_READS.with(|reads| reads.set(0));
+}
+
+pub(crate) fn cpu_handle_reads() -> (usize, usize) {
+    (
+        CPU_LOCAL_HANDLE_READS.with(Cell::get),
+        CPU_REMOTE_HANDLE_READS.with(Cell::get),
+    )
+}
+
 pub(crate) fn clear_task_handles() {
     install_task_handles(0, 0);
+    reset_cpu_handle_reads();
     MONOTONIC_NS.with(|now| now.set(0));
     LAST_TASK_DEADLINE_UPDATE.with(|observed| observed.set(None));
     CPU_LIFECYCLE_EVENTS.with(|events| events.borrow_mut().clear());

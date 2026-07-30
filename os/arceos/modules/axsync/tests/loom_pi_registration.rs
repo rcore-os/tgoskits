@@ -3,10 +3,14 @@
 use loom::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
 };
+
+const OWNER_ONE: usize = 2;
+const OWNER_TWO: usize = 4;
+const HAS_WAITERS: usize = 1;
 
 #[derive(Debug)]
 struct LocalState {
@@ -21,6 +25,64 @@ struct SchedulerState {
     donation_owner: usize,
     token_granted: bool,
     reject_handoff: bool,
+}
+
+#[test]
+fn owner_waiters_bit_closes_fast_unlock_registration_race() {
+    loom::model(|| {
+        let owner = Arc::new(AtomicUsize::new(OWNER_ONE));
+        let local = Arc::new(Mutex::new(LocalState {
+            owner: 1,
+            queued: false,
+            granted: false,
+            acquired_directly: false,
+        }));
+
+        let waiter = {
+            let owner = Arc::clone(&owner);
+            let local = Arc::clone(&local);
+            thread::spawn(move || {
+                let mut local = local.lock().unwrap();
+                let previous = owner.fetch_or(HAS_WAITERS, Ordering::AcqRel);
+                if previous & !HAS_WAITERS == 0 {
+                    owner.store(OWNER_TWO, Ordering::Release);
+                    local.owner = 2;
+                    local.acquired_directly = true;
+                } else {
+                    assert_eq!(previous & !HAS_WAITERS, OWNER_ONE);
+                    local.queued = true;
+                }
+            })
+        };
+        let unlock = {
+            let owner = Arc::clone(&owner);
+            let local = Arc::clone(&local);
+            thread::spawn(move || {
+                if owner
+                    .compare_exchange(OWNER_ONE, 0, Ordering::Release, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return;
+                }
+
+                let mut local = local.lock().unwrap();
+                assert!(local.queued);
+                local.queued = false;
+                local.owner = 2;
+                local.granted = true;
+                owner.store(OWNER_TWO, Ordering::Release);
+            })
+        };
+
+        waiter.join().unwrap();
+        unlock.join().unwrap();
+
+        let local = local.lock().unwrap();
+        assert_eq!(owner.load(Ordering::Acquire), OWNER_TWO);
+        assert_eq!(local.owner, 2);
+        assert!(!local.queued);
+        assert_ne!(local.granted, local.acquired_directly);
+    });
 }
 
 #[test]

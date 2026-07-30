@@ -1,18 +1,20 @@
 use alloc::{string::String, vec::Vec};
 use core::{
-    alloc::Layout,
     ffi::c_char,
-    hint::{spin_loop, unlikely},
+    hint::unlikely,
     mem::{MaybeUninit, size_of, transmute},
     ptr,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
-    cpu::{asm::user_copy, trap::page_fault_handler},
+    cpu::{
+        UserAccessError, UserAtomicError, UserAtomicU32Op, asm::user_copy,
+        trap::page_fault_handler, user_atomic_u32, user_read_u32,
+    },
     paging::MappingFlags,
 };
 use bytemuck::{AnyBitPattern, NoUninit};
@@ -43,36 +45,6 @@ fn access_user_memory<R>(f: impl FnOnce() -> R) -> VmResult<R> {
     let curr = current_user_task();
     let _scope = curr.as_thread().enter_user_memory_access();
     Ok(f())
-}
-
-fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> AxResult<()> {
-    if ax_runtime::hal::irq::in_irq_context() {
-        return Err(AxError::BadAddress);
-    }
-    let align = layout.align();
-    if start.as_usize() & (align - 1) != 0 {
-        return Err(AxError::BadAddress);
-    }
-
-    let curr = try_current_user_task()
-        .map_err(|_| AxError::BadAddress)?
-        .ok_or(AxError::BadAddress)?;
-    let thr = curr.as_thread();
-    let aspace_arc = thr.proc_data.aspace();
-    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
-        return Err(AxError::BadAddress);
-    }
-    let mut aspace = aspace_arc.lock();
-
-    if !aspace.can_access_range(start, layout.size(), access_flags) {
-        return Err(AxError::BadAddress);
-    }
-
-    let page_start = start.align_down_4k();
-    let page_end = (start + layout.size()).align_up_4k();
-    aspace.populate_area(page_start, page_end - page_start, access_flags)?;
-
-    Ok(())
 }
 
 /// A pointer to user space memory.
@@ -216,35 +188,54 @@ impl<T> UserPtr<T> {
     }
 }
 
-pub fn atomic_update_user_u32(
+pub fn atomic_update_user_u32_nofault(
     ptr: *mut u32,
-    mut update: impl FnMut(u32) -> AxResult<u32>,
-) -> AxResult<u32> {
-    check_region(
-        VirtAddr::from_ptr_of(ptr),
-        Layout::new::<u32>(),
-        MappingFlags::READ.union(MappingFlags::WRITE),
-    )?;
+    operation: UserAtomicU32Op,
+    argument: u32,
+) -> Result<u32, UserAtomicError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAtomicError::Fault);
+    }
 
-    let ptr = ptr.cast::<AtomicU32>();
-    access_user_memory(|| {
-        loop {
-            // SAFETY: check_region() validated that the user address is a
-            // writable, properly aligned u32 in the current address space.
-            let old = unsafe { &*ptr }.load(Ordering::SeqCst);
-            let new = update(old)?;
-            match unsafe { &*ptr }.compare_exchange_weak(
-                old,
-                new,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(old),
-                Err(_) => spin_loop(),
-            }
-        }
-    })
-    .map_err(AxError::from)?
+    // SAFETY: the range and alignment checks above establish the architecture
+    // contract. The dedicated nofault exception table converts a concurrent
+    // unmap or protection change into `UserAtomicError::Fault`.
+    unsafe { user_atomic_u32(ptr, operation, argument) }
+}
+
+pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAccessError::Fault);
+    }
+
+    // SAFETY: the range and alignment checks above establish the architecture
+    // contract. Concurrent mapping changes are recovered by the dedicated
+    // nofault exception table.
+    unsafe { user_read_u32(ptr) }
+}
+
+/// Resolves and validates a readable futex word outside futex bucket locks.
+pub fn fault_in_user_u32_read(ptr: *const u32) -> AxResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ)
+}
+
+/// Resolves and validates a writable futex word outside futex bucket locks.
+pub fn fault_in_user_u32_write(ptr: *mut u32) -> AxResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ.union(MappingFlags::WRITE))
+}
+
+fn fault_in_user_u32(address: usize, access: MappingFlags) -> AxResult<()> {
+    if !address.is_multiple_of(size_of::<u32>()) {
+        return Err(AxError::BadAddress);
+    }
+    prepare_user_memory("fault in futex word", address, size_of::<u32>(), access)
+        .map_err(Into::into)
 }
 
 /// An immutable pointer to user space memory.

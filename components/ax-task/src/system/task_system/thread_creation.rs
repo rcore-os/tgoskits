@@ -16,19 +16,25 @@ impl TaskSystem {
         let unpublished = UnpublishedThreadGuard::new(self, spec);
         policy.validate()?;
         validate_affinity(&affinity, self.config.cpu_count())?;
-        let mut state = self.state.lock();
-        self.drain_pending_deadline_admission(&mut state);
-        let root_domain = self.root_domain.lock();
-        let reservation = state.reserve_deadline(policy, &affinity, &root_domain.online)?;
-        drop(root_domain);
-        let (slot, generation) = match state.allocate_thread_slot() {
-            Ok(identity) => identity,
-            Err(error) => {
-                state.deadline_admission.release(reservation);
-                return Err(error);
-            }
+        let (slot, generation, reservation) = {
+            let mut state = self.state.lock();
+            self.drain_pending_deadline_admission(&mut state);
+            let root_domain = self.root_domain.lock();
+            let reservation = state.reserve_deadline(policy, &affinity, &root_domain.online)?;
+            let (slot, generation) = match state.allocate_thread_slot() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    state.deadline_admission.release(reservation);
+                    return Err(error);
+                }
+            };
+            (slot, generation, reservation)
         };
         let id = ThreadId::from_parts(slot, generation);
+
+        // Runtime construction may allocate, fault, or call into platform
+        // code. Keep it outside the IRQ-disabled registry domain. The removed
+        // slot is a private reservation until the short commit below.
         let entity = SchedulingEntity::new(policy, self.config.fair_slice_ns(), 0);
         let base_deadline = match entity {
             SchedulingEntity::Deadline(deadline) => Some(deadline),
@@ -98,19 +104,60 @@ impl TaskSystem {
                 identity: ThreadIdentityV1::new(id.slot(), id.generation()),
             });
             if status != RuntimeStatus::Success {
-                let failed_slot = &mut state.slots[slot as usize];
-                debug_assert!(failed_slot.record.is_none());
-                if advance_thread_slot_generation(failed_slot) {
-                    state.free_slots.push(slot);
+                {
+                    let mut state = self.state.lock();
+                    let failed_slot = &mut state.slots[slot as usize];
+                    debug_assert_eq!(failed_slot.generation, generation);
+                    debug_assert!(failed_slot.record.is_none());
+                    if advance_thread_slot_generation(failed_slot) {
+                        state.free_slots.push(slot);
+                    }
+                    state.deadline_admission.release(reservation);
                 }
-                state.deadline_admission.release(reservation);
-                drop(state);
                 drop(core);
                 let _rollback = self.release_thread_record(record);
                 return Err(TaskError::RuntimeFailure(status as u32));
             }
         }
-        state.slots[slot as usize].record = Some(record);
+
+        let mut record = Some(record);
+        let commit_error = {
+            let mut state = self.state.lock();
+            self.drain_pending_deadline_admission(&mut state);
+            let root_domain = self.root_domain.lock();
+            let is_deadline = matches!(policy, SchedulePolicy::Deadline(_));
+            let topology_rejects_deadline = is_deadline && !affinity.covers(&root_domain.online);
+            let admission_overcommitted = is_deadline
+                && state.deadline_admission.reserved_scaled()
+                    > state.deadline_admission.capacity_scaled();
+            if topology_rejects_deadline || admission_overcommitted {
+                let failed_slot = &mut state.slots[slot as usize];
+                debug_assert_eq!(failed_slot.generation, generation);
+                debug_assert!(failed_slot.record.is_none());
+                if advance_thread_slot_generation(failed_slot) {
+                    state.free_slots.push(slot);
+                }
+                state.deadline_admission.release(reservation);
+                Some(if topology_rejects_deadline {
+                    TaskError::DeadlineAffinity
+                } else {
+                    TaskError::DeadlineAdmission
+                })
+            } else {
+                let reserved_slot = &mut state.slots[slot as usize];
+                debug_assert_eq!(reserved_slot.generation, generation);
+                debug_assert!(reserved_slot.record.is_none());
+                reserved_slot.record = record.take();
+                None
+            }
+        };
+        if let Some(error) = commit_error {
+            drop(core);
+            let _rollback = self.release_thread_record(
+                record.expect("rejected thread commit must retain its resource record"),
+            );
+            return Err(error);
+        }
         Ok(ThreadHandle::from_core(core))
     }
 

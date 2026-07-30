@@ -33,8 +33,8 @@ use alarm::apply_alarm_changes;
 pub(crate) use alarm::{AlarmChange, AlarmSlot, AlarmToken};
 pub use alarm::{AlarmTarget, spawn_alarm_task};
 use common::time_value_from_nanos;
-pub(crate) use itimer::PendingTimerActions;
 pub use itimer::{ITimerType, ProcessTimerManager};
+pub(crate) use itimer::{PendingTimerActions, SetITimerOutcome};
 pub(crate) use rttime::RttimeLimitAction;
 pub use rttime::RttimeWatchdog;
 

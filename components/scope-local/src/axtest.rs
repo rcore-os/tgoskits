@@ -56,7 +56,6 @@ fn scope_local_drops_scope_owned_values() {
 
 #[axtest]
 fn scope_local_active_scope_switching_rules_hold() {
-    ActiveScope::set_global();
     ax_assert!(ActiveScope::is_global());
     ax_assert_eq!(COVERAGE_NUMBER.with(|number| *number), 7);
 
@@ -67,7 +66,9 @@ fn scope_local_active_scope_switching_rules_hold() {
     ax_assert!(!ActiveScope::is_global());
     ax_assert_eq!(COVERAGE_NUMBER.with(|number| *number), 123);
 
-    ActiveScope::set_global();
+    // SAFETY: this test installed the raw activation above and the borrowed
+    // scope remains alive until after it is cleared here.
+    unsafe { ActiveScope::set_global() };
     ax_assert!(ActiveScope::is_global());
     ax_assert_eq!(COVERAGE_NUMBER.with(|number| *number), 7);
 }

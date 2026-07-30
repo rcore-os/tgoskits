@@ -896,6 +896,18 @@ fn collect_cpu_presence(cpus: &CpuSet, cpu_num: usize) -> Vec<bool> {
     cpu_presence
 }
 
+#[cfg(axtest)]
+fn collect_cpu_presence_for_test(
+    cpus: impl IntoIterator<Item = usize>,
+    cpu_num: usize,
+) -> Vec<bool> {
+    let mut cpumask = CpuSet::empty(cpu_num);
+    for cpu in cpus {
+        assert!(cpumask.insert(CpuId::new(cpu as u32)));
+    }
+    collect_cpu_presence(&cpumask, cpu_num)
+}
+
 /// The /proc/[pid]/fd directory
 struct ThreadFdDir {
     fs: Arc<SimpleFs>,
@@ -2131,10 +2143,12 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
 
 #[cfg(axtest)]
 pub(crate) fn formatting_contracts_hold_for_test() -> bool {
-    let cpu_presence = collect_cpu_presence([0usize, 1, 32, 63], 64);
+    let cpu_presence = collect_cpu_presence_for_test([0usize, 1, 32, 63], 64);
     format_cpu_presence_hex(&cpu_presence) == "80000001,00000003"
-        && format_cpu_presence_list(&collect_cpu_presence([0usize, 2, 3, 4, 7, 9, 10, 11], 12))
-            == "0,2-4,7,9-11"
+        && format_cpu_presence_list(&collect_cpu_presence_for_test(
+            [0usize, 2, 3, 4, 7, 9, 10, 11],
+            12,
+        )) == "0,2-4,7,9-11"
         && proc_net_snmp_field_counts_match()
         && proc_net_dev_header_matches_linux_layout()
         && task_status_fields_match_linux_layout()
@@ -2221,12 +2235,13 @@ fn descriptor_helpers_round_trip_known_offsets() -> bool {
 #[cfg(axtest)]
 fn format_cpu_presence_list_handles_single_cpu() -> bool {
     // Single present CPU with no neighbors yields a bare number.
-    let presence = collect_cpu_presence([0usize], 1);
+    let presence = collect_cpu_presence_for_test([0usize], 1);
     format_cpu_presence_list(&presence) == "0"
         // All-absent list renders as the empty string (no ranges).
-        && format_cpu_presence_list(&collect_cpu_presence([], 4)).is_empty()
+        && format_cpu_presence_list(&collect_cpu_presence_for_test([], 4)).is_empty()
         // Contiguous range across the whole mask collapses to one range.
-        && format_cpu_presence_list(&collect_cpu_presence([0usize, 1, 2, 3], 4)) == "0-3"
+        && format_cpu_presence_list(&collect_cpu_presence_for_test([0usize, 1, 2, 3], 4))
+            == "0-3"
 }
 
 #[cfg(axtest)]
@@ -2234,9 +2249,9 @@ fn format_cpu_presence_hex_handles_zero_size_input() -> bool {
     // Empty input still produces at least one 32-bit word ("00000000").
     format_cpu_presence_hex(&[]) == "00000000"
         // Exactly 32 CPUs in one word emits a single word.
-        && format_cpu_presence_hex(&collect_cpu_presence([0usize], 32)) == "00000001"
+        && format_cpu_presence_hex(&collect_cpu_presence_for_test([0usize], 32)) == "00000001"
         // Boundary: cpu 31 sets bit 31 in the single word.
-        && format_cpu_presence_hex(&collect_cpu_presence([31usize], 32)) == "80000000"
+        && format_cpu_presence_hex(&collect_cpu_presence_for_test([31usize], 32)) == "80000000"
 }
 
 #[cfg(axtest)]
@@ -2285,7 +2300,7 @@ fn proc_net_dev_header_matches_linux_layout() -> bool {
 
 #[cfg(axtest)]
 fn task_status_fields_match_linux_layout() -> bool {
-    let cpu_presence = collect_cpu_presence([1usize, 3], 4);
+    let cpu_presence = collect_cpu_presence_for_test([1usize, 3], 4);
     let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
     let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
     let mem = ProcessMemStats {

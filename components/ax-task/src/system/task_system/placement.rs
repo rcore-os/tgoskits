@@ -119,6 +119,36 @@ impl TaskSystem {
         Ok(())
     }
 
+    pub(super) fn publish_owner_policy_reserved(
+        &self,
+        core: &Arc<ThreadCore>,
+        owner: CpuId,
+        generation: u64,
+        publication: CpuRemotePublication<'_>,
+    ) {
+        if !core.reserve_scheduler_inbox_delivery() {
+            return;
+        }
+        let pointer = Arc::as_ptr(core);
+        // SAFETY: this count is transferred to the embedded inbox node and
+        // consumed by the owner drain.
+        unsafe { Arc::increment_strong_count(pointer) };
+        // SAFETY: the transferred Arc count keeps the embedded node pinned.
+        let node = unsafe { Pin::new_unchecked((*pointer).policy_update_node()) };
+        let message = InboxMessage::policy_update_with_payload(
+            core.id(),
+            owner,
+            generation,
+            pointer.expose_provenance(),
+        );
+        if publication.publish_policy_update(node, message) != PublishResult::Published {
+            // SAFETY: rejected/coalesced publication did not consume this
+            // attempt's retained reference.
+            unsafe { Arc::decrement_strong_count(pointer) };
+            core.cancel_scheduler_inbox_delivery();
+        }
+    }
+
     pub(super) fn publish_owner_affinity_retry(
         &self,
         core: &Arc<ThreadCore>,
