@@ -1,3 +1,9 @@
+#ifdef QCZ1_HOST_SELFTEST
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
 typedef unsigned long usize;
 typedef unsigned long u64;
 typedef long i64;
@@ -76,6 +82,140 @@ struct ack_info {
     u16 flags;
 };
 
+#ifdef QCZ1_HOST_SELFTEST
+static void put_be32(u8 *output, u32 value);
+static u32 get_be32(const u8 *input);
+static i32 get_be_i32(const u8 *input);
+static usize qcz1_build_frame(
+    u8 *frame,
+    u8 msg_type,
+    u32 seq,
+    const u8 *payload,
+    u16 payload_len
+);
+
+enum {
+    QCZ1_SELFTEST_STATUS_OK = 0,
+    QCZ1_SELFTEST_STATUS_TIMEOUT = 1,
+    QCZ1_SELFTEST_STATUS_MALFORMED = 2,
+};
+
+static int qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_OK;
+static u8 qcz1_selftest_last_frame[256];
+static usize qcz1_selftest_last_frame_len;
+static u64 qcz1_selftest_time_ns = 1000000000UL;
+static u32 qcz1_selftest_last_seq;
+static u32 qcz1_selftest_applied_count;
+static u32 qcz1_selftest_duplicate_count;
+static u32 qcz1_selftest_error_count;
+static i32 qcz1_selftest_setpoint_milli;
+static i32 qcz1_selftest_ai_score_milli;
+static i32 qcz1_selftest_output_milli;
+
+static void qcz1_selftest_put_status_payload(u8 *payload, u32 status) {
+    put_be32(payload, qcz1_selftest_last_seq);
+    put_be32(payload + 4, status);
+    put_be32(payload + 8, (u32)qcz1_selftest_setpoint_milli);
+    put_be32(payload + 12, (u32)qcz1_selftest_ai_score_milli);
+    put_be32(payload + 16, (u32)qcz1_selftest_output_milli);
+    put_be32(payload + 20, qcz1_selftest_applied_count);
+    put_be32(payload + 24, qcz1_selftest_duplicate_count);
+    put_be32(payload + 28, qcz1_selftest_error_count);
+}
+
+static long qcz1_selftest_recvfrom(u8 *response, usize response_len) {
+    u8 payload[32];
+    u8 msg_type;
+    u32 seq;
+    u32 status = QCZ1_STATUS_OK;
+
+    if (qcz1_selftest_last_frame_len < QCZ1_HEADER_LEN || response_len < 64) {
+        return -1;
+    }
+
+    msg_type = qcz1_selftest_last_frame[5];
+    seq = get_be32(qcz1_selftest_last_frame + 12);
+    if (msg_type == QCZ1_MSG_CONTROL_SET) {
+        if (seq == qcz1_selftest_last_seq) {
+            status = QCZ1_STATUS_DUPLICATE;
+            qcz1_selftest_duplicate_count++;
+        } else {
+            qcz1_selftest_last_seq = seq;
+            qcz1_selftest_applied_count++;
+            qcz1_selftest_setpoint_milli = get_be_i32(qcz1_selftest_last_frame + QCZ1_HEADER_LEN);
+            qcz1_selftest_ai_score_milli = get_be_i32(qcz1_selftest_last_frame + QCZ1_HEADER_LEN + 4);
+            qcz1_selftest_output_milli =
+                (qcz1_selftest_setpoint_milli * qcz1_selftest_ai_score_milli) / 1000;
+        }
+        put_be32(payload, seq);
+        put_be32(payload + 4, status);
+        put_be32(payload + 8, qcz1_selftest_applied_count);
+        put_be32(payload + 12, (u32)qcz1_selftest_output_milli);
+        return (long)qcz1_build_frame(response, QCZ1_MSG_ACK, seq, payload, 16);
+    }
+
+    if (msg_type == QCZ1_MSG_STATE_REQ) {
+        if (qcz1_selftest_status_mode == QCZ1_SELFTEST_STATUS_TIMEOUT) {
+            return -1;
+        }
+        if (qcz1_selftest_status_mode == QCZ1_SELFTEST_STATUS_MALFORMED) {
+            response[0] = 0;
+            response[1] = 1;
+            response[2] = 2;
+            response[3] = 3;
+            return 4;
+        }
+        qcz1_selftest_put_status_payload(payload, QCZ1_STATUS_OK);
+        return (long)qcz1_build_frame(response, QCZ1_MSG_STATUS, seq, payload, 32);
+    }
+
+    qcz1_selftest_error_count++;
+    return -1;
+}
+
+static long syscall6(
+    long number,
+    long arg0,
+    long arg1,
+    long arg2,
+    long arg3,
+    long arg4,
+    long arg5
+) {
+    (void)arg3;
+    (void)arg4;
+    (void)arg5;
+
+    switch (number) {
+    case SYS_CLOSE:
+    case SYS_SETSOCKOPT:
+    case SYS_NANOSLEEP:
+        return 0;
+    case SYS_WRITE:
+        return (long)fwrite((const void *)arg1, 1, (usize)arg2, stdout);
+    case SYS_EXIT:
+        exit((int)arg0);
+    case SYS_CLOCK_GETTIME:
+        ((struct timespec *)arg1)->tv_sec = (long)(qcz1_selftest_time_ns / 1000000000UL);
+        ((struct timespec *)arg1)->tv_nsec = (long)(qcz1_selftest_time_ns % 1000000000UL);
+        qcz1_selftest_time_ns += 1000000UL;
+        return 0;
+    case SYS_SOCKET:
+        return 3;
+    case SYS_SENDTO:
+        if ((usize)arg2 > sizeof(qcz1_selftest_last_frame)) {
+            return -1;
+        }
+        memcpy(qcz1_selftest_last_frame, (const void *)arg1, (usize)arg2);
+        qcz1_selftest_last_frame_len = (usize)arg2;
+        return arg2;
+    case SYS_RECVFROM:
+        return qcz1_selftest_recvfrom((u8 *)arg1, (usize)arg2);
+    default:
+        return -1;
+    }
+}
+#else
 static long syscall6(
     long number,
     long arg0,
@@ -101,6 +241,7 @@ static long syscall6(
     );
     return x0;
 }
+#endif
 
 static usize string_length(const char *text) {
     usize length = 0;
@@ -612,6 +753,8 @@ static int run_demo(void) {
     u64 ai_e2e_max = 0;
     u64 ai_error_sum = 0;
     u64 manual_error_sum = 0;
+    int reliable_status_ok = 0;
+    int ai_status_ok = 0;
     u32 seq;
 
     target.sin_port = host_to_network_u16(4242);
@@ -707,12 +850,13 @@ static int run_demo(void) {
         write_name_u64("QC_QCZ1_LATENCY_MEAN_US=", latency_sum / reliable_success);
         write_name_u64("QC_QCZ1_LATENCY_MAX_US=", latency_max);
     }
+    reliable_status_ok = request_status(socket_fd, &target, 1010) == 0;
+    write_name_u64("QC_QCZ1_RELIABLE_STATUS_OK=", reliable_status_ok ? 1 : 0);
     write_text(
-        reliable_success == 10 && reliable_failure == 0 && duplicate_acks == 2
+        reliable_success == 10 && reliable_failure == 0 && duplicate_acks == 2 && reliable_status_ok
             ? "QC_QCZ1_RELIABLE_RESULT=PASS\n"
             : "QC_QCZ1_RELIABLE_RESULT=FAIL\n"
     );
-    (void)request_status(socket_fd, &target, 1010);
 
     write_text("QC_AI_CONTROL_START\n");
     for (seq = 1001; seq <= 1010; seq++) {
@@ -792,16 +936,17 @@ static int run_demo(void) {
     write_name_u64("QC_AI_E2E_MAX_US=", ai_e2e_max);
     write_name_u64("QC_AI_CONTROL_ERROR_MEAN=", ai_error_sum / 10);
     write_name_u64("QC_MANUAL_CONTROL_ERROR_MEAN=", manual_error_sum / 10);
+    ai_status_ok = request_status(socket_fd, &target, 2010) == 0;
+    write_name_u64("QC_AI_STATUS_OK=", ai_status_ok ? 1 : 0);
     write_text(
-        ai_success == 10 && ai_failure == 0
+        ai_success == 10 && ai_failure == 0 && ai_status_ok
             ? "QC_AI_CONTROL_RESULT=PASS\n"
             : "QC_AI_CONTROL_RESULT=FAIL\n"
     );
-    (void)request_status(socket_fd, &target, 2010);
 
     syscall6(SYS_CLOSE, socket_fd, 0, 0, 0, 0, 0);
     if (reliable_success == 10 && reliable_failure == 0 && duplicate_acks == 2
-        && ai_success == 10 && ai_failure == 0) {
+        && reliable_status_ok && ai_success == 10 && ai_failure == 0 && ai_status_ok) {
         write_text("QC_QCZ1_GUEST_DEMO=PASS\n");
         return 0;
     }
@@ -810,6 +955,7 @@ static int run_demo(void) {
     return 20;
 }
 
+#ifndef QCZ1_HOST_SELFTEST
 __attribute__((noreturn)) void _start(void) {
     int status = run_demo();
 
@@ -817,3 +963,4 @@ __attribute__((noreturn)) void _start(void) {
     for (;;) {
     }
 }
+#endif
