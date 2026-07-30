@@ -6,6 +6,6 @@ use crate::task::current_user_task;
 /// network namespaces only see the loopback interface.
 pub fn in_root_net_ns() -> bool {
     let curr = current_user_task();
-    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
     nsproxy.net_ns.lock().ns_id == 0
 }

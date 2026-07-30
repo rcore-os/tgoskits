@@ -609,7 +609,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     let mut shutdown_reap_parent = None;
     if let ThreadExit::Last(process_cpu_time) = thread_exit {
         crate::cgroup::exit_process(&thr.proc_data);
-        thr.proc_data.nsproxy.lock().release_cgroup_namespace();
+        thr.proc_data.release_cgroup_namespace();
 
         let timer_cancellations = thr.proc_data.cancel_interval_timer_alarms();
         for cancellation in timer_cancellations {

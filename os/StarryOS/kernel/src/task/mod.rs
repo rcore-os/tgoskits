@@ -33,7 +33,7 @@ mod user_wait;
 
 use alloc::sync::Arc;
 
-use ax_sync::{PiMutex, spin::SpinNoIrq};
+use ax_sync::{PiMutex, PiMutexGuard, spin::SpinNoIrq};
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
 use starry_process::{Pid, Process};
 use starry_signal::{
@@ -81,8 +81,13 @@ pub struct ProcessData {
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
     pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
-    /// The namespace proxy — aggregates all namespace types for this process.
-    pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
+    /// Short raw publication lock for the structurally immutable aggregate.
+    ///
+    /// Namespace objects referenced by the aggregate retain their own locks
+    /// because processes in the same namespace intentionally share them.
+    nsproxy: SpinNoIrq<Arc<axnsproxy::NsProxy>>,
+    /// Sleepable writer transaction gate for process-wide namespace updates.
+    namespace_update: PiMutex<()>,
     /// Authoritative cgroup membership and exit serialization.
     cgroup: ProcessCgroupState,
     /// Resource limits and process-wide compatibility policy.
@@ -191,7 +196,8 @@ impl ProcessData {
 
                 futex_table: Arc::new(FutexTable::new()),
 
-                nsproxy: SpinNoIrq::new(nsproxy),
+                nsproxy: SpinNoIrq::new(Arc::new(nsproxy)),
+                namespace_update: PiMutex::new(()),
                 cgroup: ProcessCgroupState::new(cgroup),
 
                 ptrace: ProcessPtraceState::new(),
@@ -230,10 +236,104 @@ impl ProcessData {
     pub(crate) fn exit_cgroup(&self) {
         self.cgroup.exit(self.proc.pid());
     }
+
+    /// Returns a stable namespace aggregate without retaining the raw lock.
+    pub(crate) fn namespace_snapshot(&self) -> Arc<axnsproxy::NsProxy> {
+        self.nsproxy.lock().clone()
+    }
+
+    /// Serializes one process-wide namespace mutation or replacement.
+    ///
+    /// This is the outermost task-context lock for namespace changes. A
+    /// transaction may acquire a thread scope or filesystem-context lock, but
+    /// code holding either of those locks must not start a namespace update.
+    pub(crate) fn namespace_update(&self) -> ProcessNamespaceUpdate<'_> {
+        ProcessNamespaceUpdate {
+            publication: &self.nsproxy,
+            _guard: self.namespace_update.lock(),
+        }
+    }
+
+    /// Takes one consistent namespace snapshot for a new process.
+    ///
+    /// A PID namespace staged by `unshare` or `setns` is consumed from the
+    /// same published snapshot copied for the child. The caller must retain
+    /// the returned namespace in a rollback guard until child publication.
+    pub(crate) fn prepare_child_namespaces(
+        &self,
+    ) -> (axnsproxy::NsProxy, Option<axnsproxy::PidNamespaceRef>) {
+        let update = self.namespace_update();
+        let snapshot = update.snapshot();
+        let child = snapshot.clone_all();
+        let mut replacement = snapshot.clone_for_unshare();
+        match replacement.child_pid_ns.take() {
+            Some(namespace) => {
+                update.publish(replacement);
+                (child, Some(namespace))
+            }
+            None => (child, None),
+        }
+    }
+
+    /// Releases the process-owned cgroup namespace after the final thread exits.
+    pub(crate) fn release_cgroup_namespace(&self) {
+        let update = self.namespace_update();
+        let mut replacement = update.snapshot().clone_for_unshare();
+        replacement.release_cgroup_namespace();
+        update.publish(replacement);
+    }
 }
 
 impl Drop for ProcessData {
     fn drop(&mut self) {
         self.release_aspace_slot_if_needed();
+    }
+}
+
+/// A serialized namespace writer whose preparation happens outside the raw
+/// publication lock.
+///
+/// The writer gate remains held while a caller mutates an object reachable
+/// from the current snapshot. This prevents a concurrent replacement from
+/// making that mutation invisible to the process.
+pub(crate) struct ProcessNamespaceUpdate<'a> {
+    publication: &'a SpinNoIrq<Arc<axnsproxy::NsProxy>>,
+    _guard: PiMutexGuard<'a, ()>,
+}
+
+impl ProcessNamespaceUpdate<'_> {
+    /// Returns the namespace snapshot on which this transaction should build.
+    pub(crate) fn snapshot(&self) -> Arc<axnsproxy::NsProxy> {
+        self.publication.lock().clone()
+    }
+
+    /// Publishes a fully prepared namespace set and releases old resources
+    /// after both the raw publication lock and writer gate are released.
+    pub(crate) fn publish(self, replacement: axnsproxy::NsProxy) {
+        let replacement = Arc::new(replacement);
+        let previous = {
+            let mut current = self.publication.lock();
+            core::mem::replace(&mut *current, replacement)
+        };
+        drop(self);
+        drop(previous);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProcessData;
+
+    #[test]
+    fn namespace_publication_lock_only_contains_a_shared_snapshot() {
+        fn assert_snapshot_lock(
+            _: &ax_sync::spin::SpinNoIrq<alloc::sync::Arc<axnsproxy::NsProxy>>,
+        ) {
+        }
+        fn assert_process_lock_type(process: &ProcessData) {
+            assert_snapshot_lock(&process.nsproxy);
+        }
+
+        let _ = assert_process_lock_type as fn(&ProcessData);
     }
 }

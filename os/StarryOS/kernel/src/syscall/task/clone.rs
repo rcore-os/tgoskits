@@ -169,17 +169,12 @@ struct PendingChildPidNamespace {
 }
 
 impl PendingChildPidNamespace {
-    fn take(owner: &Arc<ProcessData>) -> Option<Self> {
-        let namespace = owner.nsproxy.lock().child_pid_ns.take()?;
-        Some(Self {
+    fn new(owner: &Arc<ProcessData>, namespace: axnsproxy::PidNamespaceRef) -> Self {
+        Self {
             owner: owner.clone(),
             namespace,
             committed: false,
-        })
-    }
-
-    fn namespace(&self) -> axnsproxy::PidNamespaceRef {
-        self.namespace.clone()
+        }
     }
 
     fn commit(mut self) {
@@ -192,11 +187,11 @@ impl Drop for PendingChildPidNamespace {
         if self.committed {
             return;
         }
-        let _ = self
-            .owner
-            .nsproxy
-            .lock()
-            .restore_child_pid_ns_if_empty(self.namespace.clone());
+        let update = self.owner.namespace_update();
+        let mut replacement = update.snapshot().clone_for_unshare();
+        if replacement.restore_child_pid_ns_if_empty(self.namespace.clone()) {
+            update.publish(replacement);
+        }
     }
 }
 
@@ -559,7 +554,16 @@ impl CloneArgs {
             };
 
             let inherited_cgroup = old_proc_data.cgroup_node();
-            let mut new_nsproxy = old_proc_data.nsproxy.lock().clone_all();
+            let (mut new_nsproxy, pending_child_pid_ns) = if flags.contains(CloneFlags::NEWPID) {
+                (old_proc_data.namespace_snapshot().clone_all(), None)
+            } else {
+                old_proc_data.prepare_child_namespaces()
+            };
+            if let Some(namespace) = pending_child_pid_ns {
+                new_nsproxy.pid_ns = namespace.clone();
+                pending_pid_namespace =
+                    Some(PendingChildPidNamespace::new(old_proc_data, namespace));
+            }
             if flags.contains(CloneFlags::NEWUTS) {
                 new_nsproxy.unshare_uts();
             }
@@ -573,9 +577,7 @@ impl CloneArgs {
             if flags.contains(CloneFlags::NEWPID) {
                 new_nsproxy.unshare_pid();
                 namespace_init = true;
-            } else if let Some(reservation) = PendingChildPidNamespace::take(old_proc_data) {
-                new_nsproxy.pid_ns = reservation.namespace();
-                pending_pid_namespace = Some(reservation);
+            } else if pending_pid_namespace.is_some() {
                 namespace_init = true;
             }
             if flags.contains(CloneFlags::NEWNET) {
@@ -627,7 +629,7 @@ impl CloneArgs {
         };
 
         let unpublished_thread = UnpublishedThread::register(new_proc_data.proc.clone(), tid);
-        let pid_namespace = new_proc_data.nsproxy.lock().pid_ns.clone();
+        let pid_namespace = new_proc_data.namespace_snapshot().pid_ns.clone();
         let pid_kind = if flags.contains(CloneFlags::THREAD) {
             PidReservationKind::Thread
         } else {

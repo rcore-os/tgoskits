@@ -395,7 +395,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     let current_uid = cred.euid;
     let current_gid = cred.egid;
     let current_pid = proc_data.proc.pid();
-    let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
 
     let mut msg_manager = MSG_MANAGER.lock();
 
@@ -493,7 +493,7 @@ pub fn sys_msgsnd(
 
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
-        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
         msg_manager
             .get_queue_by_msqid(msqid, ns_id)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL - queue does not exist
@@ -603,7 +603,7 @@ pub fn sys_msgrcv(
     // Get the message queue
     let msg_queue_ref = {
         let msg_manager = MSG_MANAGER.lock();
-        let ns_id = proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+        let ns_id = proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
         msg_manager
             .get_queue_by_msqid(msqid, ns_id)
             .ok_or(AxError::from(LinuxError::EINVAL))? // EINVAL
@@ -729,7 +729,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     let current_uid = cred.euid;
     let current_gid = cred.egid;
     let is_privileged = current_uid == 0; // root user check
-    let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
+    let ns_id = thread.proc_data.namespace_snapshot().ipc_ns.lock().ns_id;
 
     // Validate command code
     if cmd != IPC_STAT

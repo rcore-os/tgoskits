@@ -190,7 +190,7 @@ fn commit_cred_with_id_rules(
 
 fn user_ns_overflow_uid() -> u32 {
     let curr = current_user_task();
-    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
     let ns = nsproxy.user_ns.lock();
     if ns.is_root || ns.uid_mapped {
         return 0;
@@ -200,7 +200,7 @@ fn user_ns_overflow_uid() -> u32 {
 
 fn user_ns_overflow_gid() -> u32 {
     let curr = current_user_task();
-    let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+    let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
     let ns = nsproxy.user_ns.lock();
     if ns.is_root || ns.gid_mapped {
         return 0;
@@ -668,7 +668,7 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
     // before we touch user memory via vm_write (access_user_memory requires
     // IRQs enabled, but SpinNoIrq disables them).
     let uts = {
-        let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
+        let nsproxy = curr.as_thread().proc_data.namespace_snapshot();
         let ns = nsproxy.uts_ns.lock();
         axnsproxy::build_utsname(&ns)
     };
@@ -702,7 +702,8 @@ pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
         core::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), nodename.as_mut_ptr(), len);
     }
     let proc_data = &curr.as_thread().proc_data;
-    proc_data.nsproxy.lock().uts_ns.lock().nodename = nodename;
+    let update = proc_data.namespace_update();
+    update.snapshot().uts_ns.lock().nodename = nodename;
     Ok(0)
 }
 
@@ -726,7 +727,8 @@ pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
         );
     }
     let proc_data = &curr.as_thread().proc_data;
-    proc_data.nsproxy.lock().uts_ns.lock().domainname = domainname;
+    let update = proc_data.namespace_update();
+    update.snapshot().uts_ns.lock().domainname = domainname;
     Ok(0)
 }
 

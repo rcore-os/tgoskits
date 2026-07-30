@@ -291,7 +291,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         None
     };
 
-    let nsproxy = proc_data.nsproxy.lock();
+    let nsproxy = proc_data.namespace_snapshot();
 
     let nsfd: NsFd = match ns_type_str {
         "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
