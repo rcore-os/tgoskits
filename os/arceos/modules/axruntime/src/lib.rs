@@ -185,6 +185,7 @@ fn is_init_ok() -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(not(feature = "fs"))]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/nvme0n1"));
     }

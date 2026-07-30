@@ -17,7 +17,6 @@ host-test = [
   "ax-ipi?/host-test",
   "ax-kspin?/host-test",
   "ax-percpu/host-test",
-  "ax-task?/host-test",
 ]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
