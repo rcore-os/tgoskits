@@ -17,7 +17,8 @@ const DEFAULT_ROOTFS_WIRING: RootfsQemuWiring = RootfsQemuWiring {
     disk_id: "disk0",
     block_devices: &[
         "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
-        "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+        "virtio-blk-pci,drive=disk0",
+        "virtio-blk-device,drive=disk0",
     ],
     default_block_device: "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     netdev_id: "net0",
@@ -75,7 +76,7 @@ impl RootfsQemuWiring {
 pub(crate) enum RootfsPatchMode {
     /// Only replace or insert the `disk0` drive argument.
     ReplaceDriveOnly,
-    /// Ensure a complete disk + virtio block device + user network baseline.
+    /// Ensure a complete disk, block device, and user network baseline.
     EnsureDiskBootNet,
 }
 

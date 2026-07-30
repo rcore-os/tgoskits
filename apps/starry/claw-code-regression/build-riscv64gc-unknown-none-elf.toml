@@ -1,3 +1,4 @@
+target = "riscv64gc-unknown-none-elf"
 features = [
   "ax-runtime/display",
   "ax-runtime/rtc",
@@ -11,4 +12,3 @@ features = [
   "starry-kernel/vsock",
 ]
 log = "Warn"
-target = "riscv64gc-unknown-none-elf"
