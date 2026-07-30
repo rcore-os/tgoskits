@@ -1921,6 +1921,77 @@ fn bounded_inbox_remainder_stays_sticky_across_scheduler_entry() {
 }
 
 #[test]
+fn bounded_deadline_member_scan_completes_one_finite_cycle() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    for _ in 0..2 {
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(1, 10, 100, DeadlineFlags::NONE).unwrap());
+        let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+    assert_eq!(cpu.deadline_members.len(), 2);
+
+    // Discard the preemption requested by initial Deadline placement so this
+    // test observes only the bounded owner scan's continuation doorbell.
+    assert!(cpu.as_mut().scheduler_enter());
+    system.service_deadline_timers(cpu.as_mut(), 0).unwrap();
+    assert!(
+        cpu.needs_reschedule(),
+        "the first bounded batch must retain the unfinished scan"
+    );
+
+    assert!(!cpu.as_mut().scheduler_enter());
+    system.service_deadline_timers(cpu.as_mut(), 0).unwrap();
+    assert!(
+        !cpu.needs_reschedule(),
+        "visiting every stable member once must complete the finite scan"
+    );
+}
+
+#[test]
+fn bounded_deadline_member_scan_reports_owner_work_backpressure() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    for _ in 0..2 {
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(1, 10, 100, DeadlineFlags::NONE).unwrap());
+        let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+
+    assert!(cpu.as_mut().scheduler_enter());
+    cpu.request_scheduler_work();
+    let outcome = system.schedule_if_requested(cpu.as_mut(), 0).unwrap();
+    assert!(
+        outcome.owner_work_pending(),
+        "the runtime must observe bounded Deadline scan backpressure"
+    );
+    assert!(cpu.needs_reschedule());
+
+    assert!(matches!(
+        system.schedule_if_requested(cpu.as_mut(), 0).unwrap(),
+        SchedulerOutcome::Quiescent
+    ));
+    assert!(
+        !cpu.needs_reschedule(),
+        "the final member must close the finite owner scan"
+    );
+}
+
+#[test]
 fn running_migration_is_published_only_after_switch_tail() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
