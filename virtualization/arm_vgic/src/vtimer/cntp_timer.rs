@@ -21,11 +21,14 @@ const CNTP_PPI: u8 = 30;
 #[cfg(any(test, target_arch = "aarch64"))]
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const TIMER_TOKEN_NONE: usize = usize::MAX;
+const TIMER_REMAINING_NONE: u64 = u64::MAX;
 
 pub struct CntpTimerState {
     banks: TimerBankLock<BTreeMap<(usize, usize), Arc<CntpTimerBank>>>,
     #[cfg(test)]
     test_identity: TimerBankLock<(usize, usize)>,
+    #[cfg(test)]
+    test_counter_ticks: AtomicU64,
 }
 
 struct CntpTimerBank {
@@ -37,6 +40,10 @@ struct CntpTimerBank {
     ctl: AtomicU32,
     generation: AtomicU64,
     timer_token: AtomicUsize,
+    suspended_remaining_ticks: AtomicU64,
+    lifecycle: TimerBankLock<()>,
+    #[cfg(test)]
+    test_counter_ticks: AtomicU64,
 }
 
 impl CntpTimerState {
@@ -45,6 +52,8 @@ impl CntpTimerState {
             banks: TimerBankLock::new(BTreeMap::new()),
             #[cfg(test)]
             test_identity: TimerBankLock::new((0, 0)),
+            #[cfg(test)]
+            test_counter_ticks: AtomicU64::new(0),
         }
     }
 
@@ -88,18 +97,21 @@ impl CntpTimerState {
 
     pub fn resume(&self) {
         for bank in self.snapshot_banks() {
-            bank.rearm();
+            bank.resume();
         }
     }
 
     fn current_bank(&self) -> Arc<CntpTimerBank> {
         let (vm_id, vcpu_id) = self.current_timer_identity();
+        #[cfg(test)]
+        let test_counter_ticks = self.test_counter_ticks.load(Ordering::Acquire);
         let mut banks = lock_timer_banks(&self.banks);
-        Arc::clone(
-            banks
-                .entry((vm_id, vcpu_id))
-                .or_insert_with(|| Arc::new(CntpTimerBank::new(vm_id, vcpu_id))),
-        )
+        Arc::clone(banks.entry((vm_id, vcpu_id)).or_insert_with(|| {
+            let bank = Arc::new(CntpTimerBank::new(vm_id, vcpu_id));
+            #[cfg(test)]
+            bank.set_test_counter_ticks(test_counter_ticks);
+            bank
+        }))
     }
 
     fn snapshot_banks(&self) -> alloc::vec::Vec<Arc<CntpTimerBank>> {
@@ -125,6 +137,14 @@ impl CntpTimerState {
     pub(super) fn current_fire_target_for_test(&self) -> Option<(usize, usize, u8)> {
         let bank = self.current_bank();
         bank.fire_target(bank.generation.load(Ordering::Acquire))
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_counter_ticks(&self, ticks: u64) {
+        self.test_counter_ticks.store(ticks, Ordering::Release);
+        for bank in self.snapshot_banks() {
+            bank.set_test_counter_ticks(ticks);
+        }
     }
 }
 
@@ -157,8 +177,18 @@ fn lock_test_identity(
         .expect("CNTP timer test identity lock poisoned")
 }
 
+#[cfg(test)]
+fn lock_timer_bank(bank: &TimerBankLock<()>) -> TimerBankLockGuard<'_, ()> {
+    bank.lock().expect("CNTP timer test bank lock poisoned")
+}
+
+#[cfg(not(test))]
+fn lock_timer_bank(bank: &TimerBankLock<()>) -> TimerBankLockGuard<'_, ()> {
+    bank.lock()
+}
+
 impl CntpTimerBank {
-    const fn new(vm_id: usize, vcpu_id: usize) -> Self {
+    fn new(vm_id: usize, vcpu_id: usize) -> Self {
         #[cfg(not(any(test, target_arch = "aarch64")))]
         let _ = (vm_id, vcpu_id);
 
@@ -171,6 +201,10 @@ impl CntpTimerBank {
             ctl: AtomicU32::new(0),
             generation: AtomicU64::new(0),
             timer_token: AtomicUsize::new(TIMER_TOKEN_NONE),
+            suspended_remaining_ticks: AtomicU64::new(TIMER_REMAINING_NONE),
+            lifecycle: TimerBankLock::new(()),
+            #[cfg(test)]
+            test_counter_ticks: AtomicU64::new(0),
         }
     }
 
@@ -179,14 +213,17 @@ impl CntpTimerBank {
     }
 
     fn write_cval(self: &Arc<Self>, value: u64) {
+        let _guard = lock_timer_bank(&self.lifecycle);
+        self.suspended_remaining_ticks
+            .store(TIMER_REMAINING_NONE, Ordering::Release);
         self.cval.store(value, Ordering::Release);
-        self.rearm();
+        self.rearm_locked();
     }
 
     fn read_ctl(&self) -> u32 {
         let ctl = self.ctl.load(Ordering::Acquire);
         let expired =
-            ctl & CNTP_CTL_ENABLE != 0 && counter_ticks() >= self.cval.load(Ordering::Acquire);
+            ctl & CNTP_CTL_ENABLE != 0 && self.counter_ticks() >= self.cval.load(Ordering::Acquire);
 
         if expired {
             ctl | CNTP_CTL_ISTATUS
@@ -196,45 +233,51 @@ impl CntpTimerBank {
     }
 
     fn write_ctl(self: &Arc<Self>, value: u32) {
+        let _guard = lock_timer_bank(&self.lifecycle);
+        self.suspended_remaining_ticks
+            .store(TIMER_REMAINING_NONE, Ordering::Release);
         self.ctl.store(
             value & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK),
             Ordering::Release,
         );
-        self.rearm();
+        self.rearm_locked();
     }
 
     fn read_tval(&self) -> u32 {
         self.cval
             .load(Ordering::Acquire)
-            .wrapping_sub(counter_ticks()) as u32
+            .wrapping_sub(self.counter_ticks()) as u32
     }
 
     fn write_tval(self: &Arc<Self>, value: u32) {
+        let _guard = lock_timer_bank(&self.lifecycle);
         let delta = value as i32 as i64;
-        let now = counter_ticks();
+        let now = self.counter_ticks();
         let cval = if delta >= 0 {
             now.wrapping_add(delta as u64)
         } else {
             now.wrapping_sub(delta.unsigned_abs())
         };
 
+        self.suspended_remaining_ticks
+            .store(TIMER_REMAINING_NONE, Ordering::Release);
         self.cval.store(cval, Ordering::Release);
-        self.rearm();
+        self.rearm_locked();
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn rearm(self: &Arc<Self>) {
+    fn rearm_locked(self: &Arc<Self>) {
         let generation = self
             .generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        self.cancel_pending_timer();
+        self.cancel_pending_timer_locked();
         let ctl = self.ctl.load(Ordering::Acquire);
         if ctl & CNTP_CTL_ENABLE == 0 || ctl & CNTP_CTL_IMASK != 0 {
             return;
         }
 
-        let now_ticks = counter_ticks();
+        let now_ticks = self.counter_ticks();
         let deadline_ticks = self.cval.load(Ordering::Acquire);
         let delay_ticks = deadline_ticks.saturating_sub(now_ticks);
         let delay_ns = ticks_to_nanos_ceil(delay_ticks, counter_frequency_hz());
@@ -249,13 +292,13 @@ impl CntpTimerBank {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    fn rearm(self: &Arc<Self>) {
+    fn rearm_locked(self: &Arc<Self>) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.timer_token.store(TIMER_TOKEN_NONE, Ordering::Release);
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn cancel_pending_timer(&self) {
+    fn cancel_pending_timer_locked(&self) {
         let token = self.timer_token.swap(TIMER_TOKEN_NONE, Ordering::AcqRel);
         if token != TIMER_TOKEN_NONE {
             host::cancel_timer(token);
@@ -263,31 +306,60 @@ impl CntpTimerBank {
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    fn cancel_pending_timer(&self) {
+    fn cancel_pending_timer_locked(&self) {
         self.timer_token.store(TIMER_TOKEN_NONE, Ordering::Release);
     }
 
     fn reset(&self) {
+        let _guard = lock_timer_bank(&self.lifecycle);
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.ctl.store(0, Ordering::Release);
         self.cval.store(0, Ordering::Release);
-        self.cancel_pending_timer();
+        self.suspended_remaining_ticks
+            .store(TIMER_REMAINING_NONE, Ordering::Release);
+        self.cancel_pending_timer_locked();
     }
 
     fn suspend(&self) {
+        let _guard = lock_timer_bank(&self.lifecycle);
         self.generation.fetch_add(1, Ordering::AcqRel);
-        self.cancel_pending_timer();
+        let ctl = self.ctl.load(Ordering::Acquire);
+        let remaining_ticks = if ctl & CNTP_CTL_ENABLE != 0 {
+            self.cval
+                .load(Ordering::Acquire)
+                .saturating_sub(self.counter_ticks())
+        } else {
+            TIMER_REMAINING_NONE
+        };
+        self.suspended_remaining_ticks
+            .store(remaining_ticks, Ordering::Release);
+        self.cancel_pending_timer_locked();
+    }
+
+    fn resume(self: &Arc<Self>) {
+        let _guard = lock_timer_bank(&self.lifecycle);
+        let remaining_ticks = self
+            .suspended_remaining_ticks
+            .swap(TIMER_REMAINING_NONE, Ordering::AcqRel);
+        if remaining_ticks != TIMER_REMAINING_NONE {
+            self.cval.store(
+                self.counter_ticks().saturating_add(remaining_ticks),
+                Ordering::Release,
+            );
+        }
+        self.rearm_locked();
     }
 
     #[cfg(target_arch = "aarch64")]
     fn fire(self: &Arc<Self>, expected_generation: u64) {
+        let _guard = lock_timer_bank(&self.lifecycle);
         if !self.is_armed_for(expected_generation) {
             return;
         }
 
-        if counter_ticks() < self.cval.load(Ordering::Acquire) {
+        if self.counter_ticks() < self.cval.load(Ordering::Acquire) {
             if self.is_armed_for(expected_generation) {
-                self.rearm();
+                self.rearm_locked();
             }
             return;
         }
@@ -300,8 +372,9 @@ impl CntpTimerBank {
 
     #[cfg(test)]
     fn fire_target(&self, expected_generation: u64) -> Option<(usize, usize, u8)> {
+        let _guard = lock_timer_bank(&self.lifecycle);
         if !self.is_armed_for(expected_generation)
-            || counter_ticks() < self.cval.load(Ordering::Acquire)
+            || self.counter_ticks() < self.cval.load(Ordering::Acquire)
         {
             return None;
         }
@@ -316,6 +389,26 @@ impl CntpTimerBank {
 
         let ctl = self.ctl.load(Ordering::Acquire);
         ctl & CNTP_CTL_ENABLE != 0 && ctl & CNTP_CTL_IMASK == 0
+    }
+
+    fn counter_ticks(&self) -> u64 {
+        #[cfg(test)]
+        {
+            self.test_counter_ticks.load(Ordering::Acquire)
+        }
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        {
+            counter_ticks()
+        }
+        #[cfg(all(not(test), not(target_arch = "aarch64")))]
+        {
+            0
+        }
+    }
+
+    #[cfg(test)]
+    fn set_test_counter_ticks(&self, ticks: u64) {
+        self.test_counter_ticks.store(ticks, Ordering::Release);
     }
 }
 
@@ -337,11 +430,6 @@ fn counter_ticks() -> u64 {
         asm!("mrs {value}, CNTPCT_EL0", value = out(reg) value);
     }
     value
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn counter_ticks() -> u64 {
-    0
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -456,6 +544,39 @@ mod tests {
         state.set_test_current_identity(11, 0);
         assert_eq!(state.read_cval(), 0);
         assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0);
+    }
+
+    #[test]
+    fn suspend_resume_preserves_remaining_ticks_for_enabled_bank() {
+        let state = CntpTimerState::new();
+
+        state.set_test_current_identity(11, 0);
+        state.set_test_counter_ticks(100);
+        state.write_cval(1_100);
+        state.write_ctl(CNTP_CTL_ENABLE);
+        assert_eq!(state.read_tval(), 1_000);
+        assert_eq!(state.current_fire_target_for_test(), None);
+
+        let bank = state.current_bank();
+        let generation = bank.generation.load(Ordering::Acquire);
+        state.set_test_counter_ticks(700);
+        state.suspend();
+
+        assert_eq!(bank.fire_target(generation), None);
+        assert_eq!(state.read_tval(), 400);
+
+        state.set_test_counter_ticks(5_000);
+        state.resume();
+
+        assert_eq!(state.read_cval(), 5_400);
+        assert_eq!(state.read_tval(), 400);
+        assert_eq!(state.current_fire_target_for_test(), None);
+
+        state.set_test_counter_ticks(5_400);
+        assert_eq!(
+            state.current_fire_target_for_test(),
+            Some((11, 0, CNTP_PPI))
+        );
     }
 
     #[test]
