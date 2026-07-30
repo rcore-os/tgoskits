@@ -8,7 +8,7 @@ args = [
     "-smp",
     "4",
     "-device",
-    "virtio-blk-device,drive=disk0",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/runtime-assets/arceos/rust/disk.img",
     "-device",

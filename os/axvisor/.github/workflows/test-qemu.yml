@@ -98,7 +98,7 @@ jobs:
               echo "Rootfs setup completed"
             else
               echo "No rootfs.img found, removing rootfs device configuration from qemu-${{ matrix.arch }}.toml..."
-              sed -i '/-device/,/virtio-blk-device,drive=disk0/d' ".github/workflows/qemu-${{ matrix.arch }}.toml"
+              sed -i '/-device/,/nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65/d' ".github/workflows/qemu-${{ matrix.arch }}.toml"
               sed -i '/-drive/,/id=disk0,if=none,format=raw,file=${workspaceFolder}\/tmp\/rootfs.img/d' ".github/workflows/qemu-${{ matrix.arch }}.toml"
               sed -i 's/root=\/dev\/vda rw //' ".github/workflows/qemu-${{ matrix.arch }}.toml"
               echo "Rootfs device configuration removed"

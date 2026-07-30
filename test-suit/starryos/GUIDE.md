@@ -126,7 +126,7 @@ install(TARGETS mytest RUNTIME DESTINATION usr/bin/starry-test-suit)
 `system/qemu-x86_64.toml`、`system/qemu-aarch64.toml`、`system/qemu-riscv64.toml`
 需要同时覆盖常规系统回归、DRM、evdev 和 USB：
 
-- `virtio-blk` 主启动盘 `disk0` 使用 Alpine rootfs。
+- `NVMe` 主启动盘 `disk0` 使用 Alpine rootfs。
 - `virtio-net` 提供基础网络。
 - `virtio-gpu`、`virtio-keyboard`、`virtio-tablet` 支持 DRM/evdev。
 - `qemu-xhci,id=xhci,msi=off,msix=off`、`usb-audio`、`usb-storage` 支持 USB 回归。
@@ -183,7 +183,7 @@ plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落�
 ```toml
 args = [
     "-nographic", "-cpu", "rv64",
-    "-device", "virtio-blk-pci,drive=disk0",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",

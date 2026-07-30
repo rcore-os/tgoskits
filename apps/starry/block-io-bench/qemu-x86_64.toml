@@ -3,7 +3,7 @@ args = [
     "-m",
     "512M",
     "-device",
-    "virtio-blk-pci,drive=disk0",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-device",
     "virtio-net-pci,netdev=net0",
     "-netdev",

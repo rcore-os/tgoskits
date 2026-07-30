@@ -16,10 +16,10 @@ use ostool::run::qemu::QemuConfig;
 const DEFAULT_ROOTFS_WIRING: RootfsQemuWiring = RootfsQemuWiring {
     disk_id: "disk0",
     block_devices: &[
-        "virtio-blk-pci,drive=disk0",
-        "virtio-blk-device,drive=disk0",
+        "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+        "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     ],
-    default_block_device: "virtio-blk-pci,drive=disk0",
+    default_block_device: "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     netdev_id: "net0",
     net_devices: &[
         "virtio-net-pci,netdev=net0",
@@ -382,7 +382,7 @@ mod tests {
         let mut qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
-                "virtio-blk-device,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
             ],
             ..Default::default()
         };
@@ -393,7 +393,7 @@ mod tests {
             qemu.args,
             vec![
                 "-device".to_string(),
-                "virtio-blk-device,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-drive".to_string(),
                 "id=disk0,if=none,format=raw,file=/tmp/rootfs.img".to_string(),
             ]
@@ -406,7 +406,7 @@ mod tests {
         let mut qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
-                "virtio-blk-device,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-drive".to_string(),
                 "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
                 "-device".to_string(),
@@ -423,7 +423,7 @@ mod tests {
             qemu.args,
             vec![
                 "-device".to_string(),
-                "virtio-blk-device,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-drive".to_string(),
                 "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
                 "-device".to_string(),
@@ -440,7 +440,7 @@ mod tests {
         let mut qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
-                "virtio-blk-pci,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-drive".to_string(),
                 "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
                 "-device".to_string(),
@@ -457,7 +457,7 @@ mod tests {
             qemu.args,
             vec![
                 "-device".to_string(),
-                "virtio-blk-pci,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-drive".to_string(),
                 "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
                 "-device".to_string(),

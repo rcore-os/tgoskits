@@ -4,7 +4,7 @@
 # compiled from OpenWrt upstream source in prebuild; the carpet is fully offline (no guest net).
 args = [
     "-nographic", "-m", "1024M", "-smp", "1", "-cpu", "cortex-a72",
-    "-device", "virtio-blk-pci,drive=disk0",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
 ]
 uefi = false

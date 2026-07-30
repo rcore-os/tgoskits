@@ -56,7 +56,7 @@ fn qemu_case_rootfs_uses_drive_file_arg() {
     let qemu = QemuConfig {
         args: vec![
             "-device".to_string(),
-            "virtio-blk-pci,drive=disk0".to_string(),
+            "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
             "-drive".to_string(),
             "/tmp/not-disk0.img".to_string(),
             "-drive".to_string(),
