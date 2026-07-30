@@ -7,6 +7,11 @@ sidebar_label: "性能剖析"
 
 `cargo xtask starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图（SVG/HTML/Folded）、Pprof 或 callchain 数据。这是 StarryOS 独有的命令，[ArceOS](../arceos/overview) 和 [Axvisor](../axvisor/overview) 没有。
 
+目前支持 `riscv64`、`loongarch64` 和 `x86_64`。x86_64 使用 StarryOS 的 q35/UEFI
+启动配置；命令会优先复用 ostool 下载的 OVMF，也可以通过 `QPERF_OVMF_DIR` 指向包含
+`code.fd` 和 `vars.fd` 的目录。建议在 x86_64 上同时使用 `--kernel-filter`，排除 UEFI
+固件和用户态地址。
+
 ## 剖析流程
 
 ```mermaid
@@ -29,7 +34,7 @@ flowchart TD
 | 参数 | 说明 |
 |------|------|
 | `-c/--case <NAME>` | 性能测试用例名（默认 `boot`） |
-| `--arch <ARCH>` | 目标架构（默认 `riscv64`） |
+| `--arch <ARCH>` | 目标架构：`riscv64`/`loongarch64`/`x86_64`（默认 `riscv64`） |
 | `--freq <HZ>` | 采样频率（默认 99） |
 | `--format` | 输出格式：`Folded`/`Svg`/`Pprof`/`All`（默认 `All`） |
 | `--mode` | 采样模式：`Tb`（trace buffer，默认）/ `Insn`（指令级） |
@@ -81,10 +86,10 @@ flowchart TD
 
 - 火焰图（`.svg` / `.html`）
 - 折叠栈（`.folded`）
-- 原始采样（`.raw`）
+- 原始采样（`qperf.bin`）
 - 符号化统计（`resolve_stats`、`stack_depth_summary`）
 - phase/focus 火焰图（按采样窗口分段）
-- `summary.md` 汇总报告
+- `report.md`/`report.json` 汇总报告与 `hotspots.csv`
 
 ## 用法示例
 
@@ -92,11 +97,13 @@ flowchart TD
 # 默认 riscv64 性能剖析（boot 用例）
 cargo starry perf
 
-# 指定输出格式和架构
-cargo starry perf --format Svg --arch aarch64
+# x86_64 内核 boot 剖析：出现 shell 后写入结束标记并停止 QEMU
+cargo starry perf --arch x86_64 --kernel-filter --format folded \
+    --shell-init-cmd "echo QPERF_BOOT_DONE" \
+    --stop-marker "QPERF_BOOT_DONE" --timeout 60
 
 # 指令级采样 + 帧指针解栈
-cargo starry perf --mode Insn --callchain Fp --force-frame-pointers
+cargo starry perf --mode insn --callchain fp --force-frame-pointers
 
 # 自定义工作负载采样窗口
 cargo starry perf --shell-init-cmd "/bin/run_benchmark.sh" \

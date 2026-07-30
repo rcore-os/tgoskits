@@ -17,11 +17,14 @@ use qemu_plugin::{
     CallbackFlags, PluginId, TranslationBlock, VCPUIndex,
     install::{Args, Info, Value},
     plugin::{HasCallbacks, Register},
-    qemu_plugin_get_registers, qemu_plugin_read_memory_vaddr,
+    qemu_plugin_get_registers, qemu_plugin_read_memory_vaddr, qemu_plugin_register_atexit_cb,
 };
 use zerocopy::IntoBytes;
 
-use crate::reg::{AllRegs, Frame, Reg, Target};
+use crate::{
+    reg::AllRegs,
+    target::{Frame, Reg, Target},
+};
 
 #[derive(bincode::Encode)]
 struct SampleRecord {
@@ -32,6 +35,11 @@ struct SampleRecord {
     cpu: u32,
     callchain: u8,
     trace: Vec<u64>,
+}
+
+enum WriterEvent {
+    Sample(SampleRecord),
+    Shutdown(Sender<()>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,7 +280,7 @@ struct Stats {
 #[derive(Clone)]
 pub struct Profiler {
     target: Target,
-    tx: Sender<SampleRecord>,
+    tx: Sender<WriterEvent>,
     intvl: Duration,
     max_depth: usize,
     mode: SamplingMode,
@@ -340,17 +348,21 @@ impl Profiler {
                 if !seen_fps.insert(fp) {
                     break;
                 }
+                let Some(frame_address) = self.target.frame_address(fp) else {
+                    break;
+                };
                 let mut frame = Frame::default();
-                if qemu_plugin_read_memory_vaddr(fp - self.target.fp_offset(), frame.as_mut_bytes())
-                    .is_err()
-                {
+                if qemu_plugin_read_memory_vaddr(frame_address, frame.as_mut_bytes()).is_err() {
                     break;
                 };
                 if qemu_plugin_read_memory_vaddr(frame.ip, &mut [0; 8]).is_err() {
                     break;
                 }
 
-                ips.push(self.canonicalize_ip(frame.ip).unwrap_or(frame.ip));
+                let Some(frame_ip) = self.sample_ip_for(frame.ip) else {
+                    break;
+                };
+                ips.push(frame_ip);
                 if frame.fp <= fp {
                     break;
                 }
@@ -372,7 +384,7 @@ impl Profiler {
             trace: ips,
         };
 
-        match self.tx.try_send(record) {
+        match self.tx.try_send(WriterEvent::Sample(record)) {
             Ok(()) => {
                 self.stats.samples.fetch_add(1, Ordering::Relaxed);
             }
@@ -494,14 +506,27 @@ impl Register for Profiler {
         let callchain = args.callchain;
         let target = info.target_name.to_string();
         spawn(move || {
+            let mut shutdown = None;
             while let Ok(event) = rx.recv() {
-                if bincode::encode_into_std_write(event, &mut file, bincode::config::standard())
-                    .is_err()
-                {
-                    writer_stats.sample_failures.fetch_add(1, Ordering::Relaxed);
-                    break;
+                match event {
+                    WriterEvent::Sample(sample) => {
+                        if bincode::encode_into_std_write(
+                            sample,
+                            &mut file,
+                            bincode::config::standard(),
+                        )
+                        .is_err()
+                        {
+                            writer_stats.sample_failures.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                        let _ = file.flush();
+                    }
+                    WriterEvent::Shutdown(done) => {
+                        shutdown = Some(done);
+                        break;
+                    }
                 }
-                let _ = file.flush();
             }
             let _ = file.flush();
             if let Ok(mut summary) = File::create(&summary_path).map(BufWriter::new) {
@@ -538,7 +563,18 @@ impl Register for Profiler {
                 let _ = writeln!(summary, "output = {}", out.display());
                 let _ = summary.flush();
             }
+            if let Some(done) = shutdown {
+                let _ = done.send(());
+            }
         });
+
+        let exit_tx = tx.clone();
+        qemu_plugin_register_atexit_cb(id, move |_| {
+            let (done_tx, done_rx) = bounded(0);
+            if exit_tx.send(WriterEvent::Shutdown(done_tx)).is_ok() {
+                let _ = done_rx.recv();
+            }
+        })?;
 
         self.target = info.target_name.parse()?;
         self.tx = tx;

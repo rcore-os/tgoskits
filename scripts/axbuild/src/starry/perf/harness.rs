@@ -20,6 +20,8 @@ use crate::support::process::ProcessExt;
 
 const HARNESS_KIT_REPO: &str = "https://github.com/cg24-THU/tgoskit-harness_kit.git";
 const HARNESS_KIT_COMMIT: &str = "762c22725024a065e85b26e0b01121eccea651c0";
+const LEGACY_PERF_POSTPROCESS_ARCH_ARG: &str = r#"perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#;
+const X86_64_PERF_POSTPROCESS_ARCH_ARG: &str = r#"perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64", "x86_64"])"#;
 
 pub(super) struct QperfTools {
     pub(super) plugin: PathBuf,
@@ -260,16 +262,7 @@ pub(super) fn run_report_postprocess(
     arch: &str,
     returncode: i32,
 ) -> anyhow::Result<PathBuf> {
-    let harness =
-        match workspace_harness_path(&outputs.work_dir).or_else(|| workspace_harness_path(root)) {
-            Some(harness) => harness,
-            None => {
-                let checkout = ensure_harness_kit_checkout(root)?;
-                let harness = checkout.join("tools/starry-syscall-harness/harness.py");
-                ensure_file(&harness, "fixed harness kit postprocess script")?;
-                harness
-            }
-        };
+    let harness = report_harness(root, outputs, arch)?;
     let python = env::var_os("STARRY_SYSCALL_HARNESS_PYTHON")
         .or_else(|| env::var_os("PYTHON"))
         .unwrap_or_else(|| OsString::from("python3"));
@@ -370,6 +363,46 @@ pub(super) fn run_report_postprocess(
     Ok(harness)
 }
 
+fn report_harness(root: &Path, outputs: &PerfOutputs, arch: &str) -> anyhow::Result<PathBuf> {
+    if arch == "x86_64" {
+        let checkout = ensure_harness_kit_checkout(root)?;
+        let upstream = checkout.join("tools/starry-syscall-harness/harness.py");
+        ensure_file(&upstream, "fixed harness kit postprocess script")?;
+        let source = fs::read_to_string(&upstream)
+            .with_context(|| format!("failed to read {}", upstream.display()))?;
+        let patched = add_x86_64_perf_postprocess_choice(&source)?;
+        let harness = outputs.dir.join("harness-x86_64.py");
+        fs::write(&harness, patched)
+            .with_context(|| format!("failed to write {}", harness.display()))?;
+        return Ok(harness);
+    }
+
+    match workspace_harness_path(&outputs.work_dir).or_else(|| workspace_harness_path(root)) {
+        Some(harness) => Ok(harness),
+        None => {
+            let checkout = ensure_harness_kit_checkout(root)?;
+            let harness = checkout.join("tools/starry-syscall-harness/harness.py");
+            ensure_file(&harness, "fixed harness kit postprocess script")?;
+            Ok(harness)
+        }
+    }
+}
+
+fn add_x86_64_perf_postprocess_choice(source: &str) -> anyhow::Result<String> {
+    let legacy_matches = source.matches(LEGACY_PERF_POSTPROCESS_ARCH_ARG).count();
+    if legacy_matches != 1 {
+        bail!(
+            "cannot apply the x86_64 qperf postprocess compatibility patch: expected exactly one \
+             pinned legacy perf-postprocess architecture declaration, found {legacy_matches}"
+        );
+    }
+    Ok(source.replacen(
+        LEGACY_PERF_POSTPROCESS_ARCH_ARG,
+        X86_64_PERF_POSTPROCESS_ARCH_ARG,
+        1,
+    ))
+}
+
 fn ensure_report_outputs(outputs: &PerfOutputs) -> anyhow::Result<()> {
     for path in [
         &outputs.report_json,
@@ -401,4 +434,24 @@ fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
         current = path.parent();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_x86_64_perf_postprocess_choice;
+
+    #[test]
+    fn x86_64_postprocess_shim_extends_only_the_perf_postprocess_arch_choice() {
+        let legacy = r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])
+perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#;
+
+        let patched = add_x86_64_perf_postprocess_choice(legacy).unwrap();
+
+        assert!(patched.contains(
+            r#"perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64", "x86_64"])"#
+        ));
+        assert!(patched.contains(
+            r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#
+        ));
+    }
 }
