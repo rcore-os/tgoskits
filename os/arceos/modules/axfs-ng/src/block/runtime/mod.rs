@@ -5,6 +5,7 @@ mod hctx;
 mod irq;
 mod lifecycle;
 mod metrics;
+mod waiters;
 
 pub use completion::{CompletionGroup, CompletionSubscription};
 pub use irq::BlockIrqAction;

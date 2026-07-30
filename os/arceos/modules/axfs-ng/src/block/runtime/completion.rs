@@ -1,4 +1,5 @@
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rdif_block::{BlkError, CompletedRequest};
 
@@ -20,6 +21,11 @@ pub(super) struct CompletionSender {
 
 struct CompletionCell {
     state: IrqMutex<CompletionState>,
+    group: Arc<CompletionBarrier>,
+}
+
+struct CompletionBarrier {
+    remaining: AtomicUsize,
     notification: Arc<dyn BlockNotification>,
 }
 
@@ -37,15 +43,24 @@ impl CompletionSubscription {
         Ok(Self::pair_with_notification(notification))
     }
 
+    #[cfg(test)]
     fn pair_with_notification(
         notification: Arc<dyn BlockNotification>,
     ) -> (Self, CompletionSender) {
+        let group = Arc::new(CompletionBarrier {
+            remaining: AtomicUsize::new(1),
+            notification,
+        });
+        Self::pair_with_group(group)
+    }
+
+    fn pair_with_group(group: Arc<CompletionBarrier>) -> (Self, CompletionSender) {
         let cell = Arc::new(CompletionCell {
             state: IrqMutex::new(CompletionState {
                 result: None,
                 receiver_alive: true,
             }),
-            notification,
+            group,
         });
         (
             Self {
@@ -83,7 +98,7 @@ impl CompletionSubscription {
             if let Some(result) = result {
                 return Ok(result);
             }
-            self.cell.notification.wait();
+            self.cell.group.notification.wait();
         }
     }
 }
@@ -93,6 +108,16 @@ impl CompletionGroup {
         if count == 0 {
             return Err(BlkError::InvalidRequest);
         }
+        let notification = runtime_ops()
+            .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
+            .notification();
+        Self::pairs_with_notification(count, notification)
+    }
+
+    fn pairs_with_notification(
+        count: usize,
+        notification: Arc<dyn BlockNotification>,
+    ) -> Result<(Self, VecDeque<CompletionSender>), BlkError> {
         let mut subscriptions = Vec::new();
         subscriptions
             .try_reserve_exact(count)
@@ -101,12 +126,13 @@ impl CompletionGroup {
         senders
             .try_reserve_exact(count)
             .map_err(|_| BlkError::NoMemory)?;
-        let notification = runtime_ops()
-            .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
-            .notification();
+        let barrier = Arc::new(CompletionBarrier {
+            remaining: AtomicUsize::new(count),
+            notification,
+        });
         for _ in 0..count {
             let (subscription, sender) =
-                CompletionSubscription::pair_with_notification(Arc::clone(&notification));
+                CompletionSubscription::pair_with_group(Arc::clone(&barrier));
             subscriptions.push(subscription);
             senders.push_back(sender);
         }
@@ -165,8 +191,14 @@ impl CompletionSender {
         let mut state = self.cell.state.lock();
         if state.receiver_alive {
             state.result = Some(request);
-            drop(state);
-            self.cell.notification.notify();
+        }
+        drop(state);
+
+        // Every group receiver waits for all members, so publishing an
+        // intermediate member cannot unblock useful work. The AcqRel
+        // countdown makes the final publisher the single notification owner.
+        if self.cell.group.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.cell.group.notification.notify();
         }
     }
 }
@@ -174,20 +206,49 @@ impl CompletionSender {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
 
-    use super::CompletionGroup;
+    use rdif_block::{CompletedRequest, RequestId};
+
+    use super::{BlockNotification, CompletionGroup};
+
+    #[derive(Default)]
+    struct CountingNotification {
+        notifications: AtomicUsize,
+    }
+
+    impl BlockNotification for CountingNotification {
+        fn notify(&self) {
+            self.notifications.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn notify_from_irq(&self) {
+            self.notify();
+        }
+
+        fn wait(&self) {
+            unreachable!("the completion publisher test does not block")
+        }
+
+        fn wait_timeout(&self, _duration: Duration) -> bool {
+            unreachable!("the completion publisher test does not block")
+        }
+    }
 
     #[test]
-    fn completion_group_coalesces_wakeups_on_one_notification() {
-        crate::os::task::install_test_runtime_ops();
-        let (group, _senders) = CompletionGroup::pairs(4).unwrap();
-        let first = &group.subscriptions[0].cell.notification;
+    fn completion_group_notifies_waiter_once_after_all_members_complete() {
+        let notification = Arc::new(CountingNotification::default());
+        let notification_dyn: Arc<dyn BlockNotification> = notification.clone();
+        let (_group, senders) =
+            CompletionGroup::pairs_with_notification(4, notification_dyn).unwrap();
 
-        assert!(
-            group
-                .subscriptions
-                .iter()
-                .all(|subscription| Arc::ptr_eq(first, &subscription.cell.notification))
-        );
+        for (index, sender) in senders.into_iter().enumerate() {
+            sender.complete(CompletedRequest::new(RequestId::new(index), Ok(()), None));
+        }
+
+        assert_eq!(notification.notifications.load(Ordering::Relaxed), 1);
     }
 }

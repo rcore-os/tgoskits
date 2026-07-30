@@ -35,6 +35,7 @@ use super::{
     irq::{
         BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, IrqTarget, LatchedControllerIrq,
     },
+    waiters::TaskWaiters,
 };
 use crate::os::{
     BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
@@ -189,7 +190,9 @@ struct DeviceInner {
     accepting: AtomicBool,
     active_data: AtomicUsize,
     flush_active: AtomicBool,
-    barrier_notification: Arc<dyn BlockNotification>,
+    data_gate_waiters: TaskWaiters,
+    flush_gate_waiters: TaskWaiters,
+    data_drain_waiters: TaskWaiters,
     state_notification: Arc<dyn BlockNotification>,
 }
 
@@ -248,7 +251,9 @@ impl BlockDeviceHandle {
             accepting: AtomicBool::new(false),
             active_data: AtomicUsize::new(0),
             flush_active: AtomicBool::new(false),
-            barrier_notification: ops.notification(),
+            data_gate_waiters: TaskWaiters::new(),
+            flush_gate_waiters: TaskWaiters::new(),
+            data_drain_waiters: TaskWaiters::new(),
             state_notification: ops.notification(),
         });
         let weak = Arc::downgrade(&inner);

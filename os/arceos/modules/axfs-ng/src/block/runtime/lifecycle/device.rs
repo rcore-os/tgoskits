@@ -33,7 +33,7 @@ impl DeviceInner {
             .is_ok()
         {
             self.state_notification.notify();
-            self.barrier_notification.notify();
+            self.notify_all_barrier_waiters();
         }
     }
 
@@ -64,21 +64,38 @@ impl DeviceInner {
         }
         loop {
             while self.flush_active.load(Ordering::Acquire) {
+                if !self.accepting.load(Ordering::Acquire) {
+                    return Err(BlkError::Io);
+                }
                 if admission.cannot_wait() {
                     return Err(BlkError::Retry);
                 }
-                self.barrier_notification.wait();
+                self.data_gate_waiters
+                    .wait_while(|| {
+                        self.flush_active.load(Ordering::Acquire)
+                            && self.accepting.load(Ordering::Acquire)
+                    })
+                    .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
+            }
+            if !self.accepting.load(Ordering::Acquire) {
+                return Err(BlkError::Io);
             }
             self.active_data
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                     active.checked_add(count)
                 })
                 .map_err(|_| BlkError::InvalidRequest)?;
-            if !self.flush_active.load(Ordering::Acquire) {
+            if !self.flush_active.load(Ordering::Acquire) && self.accepting.load(Ordering::Acquire)
+            {
                 return Ok(());
             }
-            self.active_data.fetch_sub(count, Ordering::AcqRel);
-            self.barrier_notification.notify();
+            let previous = self.active_data.fetch_sub(count, Ordering::AcqRel);
+            if previous == count && self.flush_active.load(Ordering::Acquire) {
+                self.data_drain_waiters.notify_all();
+            }
+            if !self.accepting.load(Ordering::Acquire) {
+                return Err(BlkError::Io);
+            }
         }
     }
 
@@ -87,6 +104,9 @@ impl DeviceInner {
         admission: SubmissionAdmission,
     ) -> Result<(), BlkError> {
         loop {
+            if !self.accepting.load(Ordering::Acquire) {
+                return Err(BlkError::Io);
+            }
             if self
                 .flush_active
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -97,15 +117,30 @@ impl DeviceInner {
             if admission.cannot_wait() {
                 return Err(BlkError::Retry);
             }
-            self.barrier_notification.wait();
+            self.flush_gate_waiters
+                .wait_while(|| {
+                    self.flush_active.load(Ordering::Acquire)
+                        && self.accepting.load(Ordering::Acquire)
+                })
+                .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
         }
         while self.active_data.load(Ordering::Acquire) != 0 {
+            if !self.accepting.load(Ordering::Acquire) {
+                self.flush_active.store(false, Ordering::Release);
+                self.notify_flush_gate_released();
+                return Err(BlkError::Io);
+            }
             if admission.cannot_wait() {
                 self.flush_active.store(false, Ordering::Release);
-                self.barrier_notification.notify();
+                self.notify_flush_gate_released();
                 return Err(BlkError::Retry);
             }
-            self.barrier_notification.wait();
+            self.data_drain_waiters
+                .wait_while(|| {
+                    self.active_data.load(Ordering::Acquire) != 0
+                        && self.accepting.load(Ordering::Acquire)
+                })
+                .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
         }
         Ok(())
     }
@@ -113,12 +148,14 @@ impl DeviceInner {
     pub(super) fn undo_submission_admission(&self, op: RequestOp, count: usize) {
         match op {
             RequestOp::Read | RequestOp::Write => {
-                self.active_data.fetch_sub(count, Ordering::AcqRel);
-                self.barrier_notification.notify();
+                let previous = self.active_data.fetch_sub(count, Ordering::AcqRel);
+                if previous == count && self.flush_active.load(Ordering::Acquire) {
+                    self.data_drain_waiters.notify_all();
+                }
             }
             RequestOp::Flush => {
                 self.flush_active.store(false, Ordering::Release);
-                self.barrier_notification.notify();
+                self.notify_flush_gate_released();
             }
         }
     }
@@ -349,7 +386,7 @@ impl DeviceInner {
             return 0;
         }
         self.accepting.store(false, Ordering::Release);
-        self.barrier_notification.notify();
+        self.notify_all_barrier_waiters();
 
         let quiesce_result = self.controller.call(ControllerEvent::QuiesceIrqs);
         let quiesce_confirmed_terminal = matches!(quiesce_result, Ok(ControllerState::Shutdown));
@@ -417,7 +454,7 @@ impl HctxObserver for DeviceInner {
     fn request_completed(&self, op: RequestOp, block_count: u32, result: Result<(), BlkError>) {
         match op {
             RequestOp::Read => {
-                self.active_data.fetch_sub(1, Ordering::AcqRel);
+                let previous = self.active_data.fetch_sub(1, Ordering::AcqRel);
                 if result.is_ok() {
                     BLOCK_READS.fetch_add(1, Ordering::Relaxed);
                     BLOCK_SECTORS_READ.fetch_add(
@@ -425,10 +462,12 @@ impl HctxObserver for DeviceInner {
                         Ordering::Relaxed,
                     );
                 }
-                self.barrier_notification.notify();
+                if previous == 1 && self.flush_active.load(Ordering::Acquire) {
+                    self.data_drain_waiters.notify_all();
+                }
             }
             RequestOp::Write => {
-                self.active_data.fetch_sub(1, Ordering::AcqRel);
+                let previous = self.active_data.fetch_sub(1, Ordering::AcqRel);
                 if result.is_ok() {
                     BLOCK_WRITES.fetch_add(1, Ordering::Relaxed);
                     BLOCK_SECTORS_WRITTEN.fetch_add(
@@ -436,16 +475,31 @@ impl HctxObserver for DeviceInner {
                         Ordering::Relaxed,
                     );
                 }
-                self.barrier_notification.notify();
+                if previous == 1 && self.flush_active.load(Ordering::Acquire) {
+                    self.data_drain_waiters.notify_all();
+                }
             }
             RequestOp::Flush => {
                 self.flush_active.store(false, Ordering::Release);
-                self.barrier_notification.notify();
+                self.notify_flush_gate_released();
             }
         }
     }
 
     fn hctx_failed(&self, _hctx_id: usize, _error: BlkError) {
         self.mark_failed();
+    }
+}
+
+impl DeviceInner {
+    fn notify_flush_gate_released(&self) {
+        self.data_gate_waiters.notify_all();
+        self.flush_gate_waiters.notify_one();
+    }
+
+    fn notify_all_barrier_waiters(&self) {
+        self.data_gate_waiters.notify_all();
+        self.flush_gate_waiters.notify_all();
+        self.data_drain_waiters.notify_all();
     }
 }

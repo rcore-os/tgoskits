@@ -14,11 +14,15 @@ use super::*;
 struct FakeRegs([u8; 0x100]);
 
 #[test]
-fn multi_block_transfer_mode_leaves_stop_command_to_request_state_machine() {
+fn generic_multi_block_transfer_does_not_assume_auto_cmd12() {
     let mode = transfer_mode(DataDirection::Read, 4, false);
 
     assert_ne!(mode & XFER_MODE_MULTI_BLOCK, 0);
-    assert_eq!(mode & XFER_MODE_AUTO_CMD12, 0);
+    assert_eq!(
+        mode & XFER_MODE_AUTO_CMD12,
+        0,
+        "Linux enables Auto CMD12 only for an explicit controller quirk"
+    );
 }
 
 #[test]

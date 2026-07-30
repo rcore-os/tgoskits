@@ -157,6 +157,13 @@ pub(super) fn collect_submission_batch(
     submissions: &mut VecDeque<Submission>,
 ) {
     debug_assert!(submissions.is_empty());
+    if retry_submissions.is_empty() {
+        if drain_submission_channels(state, next_channel, limit, submissions) != 0 {
+            *prefer_retry = true;
+        }
+        return;
+    }
+
     while submissions.len() < limit {
         let submission = if *prefer_retry {
             retry_submissions
@@ -171,6 +178,37 @@ pub(super) fn collect_submission_batch(
         *prefer_retry = !*prefer_retry;
         submissions.push_back(submission);
     }
+}
+
+fn drain_submission_channels(
+    state: &HctxState,
+    next_channel: &mut usize,
+    limit: usize,
+    submissions: &mut VecDeque<Submission>,
+) -> usize {
+    if limit == 0 {
+        return 0;
+    }
+    let channels = state.submission_channels.lock();
+    if channels.is_empty() {
+        return 0;
+    }
+
+    let quantum = limit.div_ceil(channels.len()).max(1);
+    let mut received = 0;
+    let mut empty_channels = 0;
+    while received < limit && empty_channels < channels.len() {
+        let index = *next_channel % channels.len();
+        let count = channels[index].try_recv_many(submissions, quantum.min(limit - received));
+        *next_channel = (index + 1) % channels.len();
+        received += count;
+        if count == 0 {
+            empty_channels += 1;
+        } else {
+            empty_channels = 0;
+        }
+    }
+    received
 }
 
 fn split_submission_batch(

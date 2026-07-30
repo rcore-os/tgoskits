@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::iter::Peekable;
 
 use ax_errno::{AxError, AxResult};
@@ -12,6 +12,18 @@ use super::super::dma::prepare_write;
 use super::{super::dma::prepare_read, BlockDeviceHandle, block_io_error, request_cannot_block};
 
 const MAX_RUNTIME_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
+const SOFTWARE_PIPELINE_WINDOWS: usize = 2;
+
+struct ReadWindow {
+    chunks: Vec<TransferChunk>,
+    completions: super::super::CompletionGroup,
+}
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+struct WriteWindow {
+    chunks: Vec<TransferChunk>,
+    completions: super::super::CompletionGroup,
+}
 
 pub(super) fn read_blocks(
     device: &BlockDeviceHandle,
@@ -25,19 +37,23 @@ pub(super) fn read_blocks(
     let info = device.inner.selected_queue_info().ok_or(AxError::Io)?;
     let mut plan = transfer_plan(info, block_id, buffer.len(), RequestOp::Read)?.peekable();
     let window_limit = submission_window_limit(info);
+    let mut pending = VecDeque::with_capacity(SOFTWARE_PIPELINE_WINDOWS);
 
-    while plan.peek().is_some() {
-        let chunks = take_window(&mut plan, window_limit)?;
-        let requests = prepare_read_requests(info, &chunks)?;
-        let first_lba = chunks[0].lba;
-        let completions = device
-            .submit_batch_owned(requests)
-            .map_err(|error| {
-                block_io_error("submit window", RequestOp::Read, first_lba, error.error)
-            })?
+    while plan.peek().is_some() || !pending.is_empty() {
+        while pending.len() < SOFTWARE_PIPELINE_WINDOWS && plan.peek().is_some() {
+            pending.push_back(submit_read_window(
+                device,
+                info,
+                take_window(&mut plan, window_limit)?,
+            )?);
+        }
+        let window = pending.pop_front().ok_or(AxError::BadState)?;
+        let first_lba = window.chunks[0].lba;
+        let completions = window
+            .completions
             .recv()
             .map_err(|error| block_io_error("receive window", RequestOp::Read, first_lba, error))?;
-        complete_read_window(&chunks, completions, buffer)?;
+        complete_read_window(&window.chunks, completions, buffer)?;
     }
     Ok(())
 }
@@ -51,23 +67,59 @@ pub(super) fn write_blocks(device: &BlockDeviceHandle, block_id: u64, buffer: &[
     let info = device.inner.selected_queue_info().ok_or(AxError::Io)?;
     let mut plan = transfer_plan(info, block_id, buffer.len(), RequestOp::Write)?.peekable();
     let window_limit = submission_window_limit(info);
+    let mut pending = VecDeque::with_capacity(SOFTWARE_PIPELINE_WINDOWS);
 
-    while plan.peek().is_some() {
-        let chunks = take_window(&mut plan, window_limit)?;
-        let requests = prepare_write_requests(info, &chunks, buffer)?;
-        let first_lba = chunks[0].lba;
-        let completions = device
-            .submit_batch_owned(requests)
-            .map_err(|error| {
-                block_io_error("submit window", RequestOp::Write, first_lba, error.error)
-            })?
-            .recv()
-            .map_err(|error| {
-                block_io_error("receive window", RequestOp::Write, first_lba, error)
-            })?;
-        complete_write_window(&chunks, completions)?;
+    while plan.peek().is_some() || !pending.is_empty() {
+        while pending.len() < SOFTWARE_PIPELINE_WINDOWS && plan.peek().is_some() {
+            pending.push_back(submit_write_window(
+                device,
+                info,
+                take_window(&mut plan, window_limit)?,
+                buffer,
+            )?);
+        }
+        let window = pending.pop_front().ok_or(AxError::BadState)?;
+        let first_lba = window.chunks[0].lba;
+        let completions = window.completions.recv().map_err(|error| {
+            block_io_error("receive window", RequestOp::Write, first_lba, error)
+        })?;
+        complete_write_window(&window.chunks, completions)?;
     }
     Ok(())
+}
+
+fn submit_read_window(
+    device: &BlockDeviceHandle,
+    info: QueueInfo,
+    chunks: Vec<TransferChunk>,
+) -> Result<ReadWindow, AxError> {
+    let first_lba = chunks[0].lba;
+    let requests = prepare_read_requests(info, &chunks)?;
+    let completions = device.submit_batch_owned(requests).map_err(|error| {
+        block_io_error("submit window", RequestOp::Read, first_lba, error.error)
+    })?;
+    Ok(ReadWindow {
+        chunks,
+        completions,
+    })
+}
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn submit_write_window(
+    device: &BlockDeviceHandle,
+    info: QueueInfo,
+    chunks: Vec<TransferChunk>,
+    buffer: &[u8],
+) -> Result<WriteWindow, AxError> {
+    let first_lba = chunks[0].lba;
+    let requests = prepare_write_requests(info, &chunks, buffer)?;
+    let completions = device.submit_batch_owned(requests).map_err(|error| {
+        block_io_error("submit window", RequestOp::Write, first_lba, error.error)
+    })?;
+    Ok(WriteWindow {
+        chunks,
+        completions,
+    })
 }
 
 fn transfer_plan(

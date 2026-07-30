@@ -505,7 +505,7 @@ fn log_position(log: &[&str], item: &str) -> usize {
 }
 
 #[test]
-fn read_blocks_submits_a_bounded_window_before_waiting() {
+fn read_blocks_queues_the_next_bounded_window_before_waiting() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     install_dma_op(&TEST_DMA_OP);
@@ -536,7 +536,7 @@ fn read_blocks_submits_a_bounded_window_before_waiting() {
     let reader = Arc::clone(&handle);
     let (result_tx, result_rx) = mpsc::channel();
     let read_thread = thread::spawn(move || {
-        let mut buffer = vec![0; 4 * 512];
+        let mut buffer = vec![0; 8 * 512];
         result_tx.send(reader.read_blocks(0, &mut buffer)).unwrap();
     });
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -557,7 +557,41 @@ fn read_blocks_submits_a_bounded_window_before_waiting() {
 
     assert_eq!(counters.largest_batch.load(Ordering::Acquire), 4);
     assert_eq!(counters.commits.load(Ordering::Acquire), 1);
+    while handle
+        .inner
+        .cpu_channels
+        .lock()
+        .iter()
+        .map(|channel| channel.channel.queued_len())
+        .sum::<usize>()
+        < 4
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the requester did not queue the second window before the first IRQ"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(counters.submitted.load(Ordering::Acquire), 4);
     assert!(result_rx.try_recv().is_err());
+    assert_eq!(
+        TEST_IRQ_REGISTRAR.run_registered_action(),
+        BlockIrqOutcome::Wake
+    );
+    while counters.submitted.load(Ordering::Acquire) < 8 {
+        assert!(
+            Instant::now() < deadline,
+            "maintenance task did not refill from the queued second window"
+        );
+        thread::yield_now();
+    }
+    while counters.commits.load(Ordering::Acquire) < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "maintenance task did not commit the refilled second window"
+        );
+        thread::yield_now();
+    }
     assert_eq!(
         TEST_IRQ_REGISTRAR.run_registered_action(),
         BlockIrqOutcome::Wake
@@ -799,7 +833,9 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
         accepting: AtomicBool::new(true),
         active_data: AtomicUsize::new(0),
         flush_active: AtomicBool::new(false),
-        barrier_notification: ops.notification(),
+        data_gate_waiters: TaskWaiters::new(),
+        flush_gate_waiters: TaskWaiters::new(),
+        data_drain_waiters: TaskWaiters::new(),
         state_notification: ops.notification(),
     })
 }
@@ -867,4 +903,44 @@ fn nowait_admission_never_sleeps_behind_flush_barrier() {
         Err(BlkError::Retry)
     );
     assert!(!inner.flush_active.load(Ordering::Acquire));
+}
+
+#[test]
+fn flush_completion_wakes_every_blocked_data_submitter() {
+    crate::os::task::install_test_runtime_ops();
+    let inner = barrier_test_inner();
+    inner.flush_active.store(true, Ordering::Release);
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let mut joins = Vec::new();
+    for _ in 0..3 {
+        let waiter = Arc::clone(&inner);
+        let done_tx = done_tx.clone();
+        joins.push(thread::spawn(move || {
+            waiter
+                .enter_data_submissions(1, SubmissionAdmission::Blocking)
+                .unwrap();
+            done_tx.send(()).unwrap();
+        }));
+    }
+    drop(done_tx);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while inner.data_gate_waiters.len() != 3 {
+        assert!(
+            Instant::now() < deadline,
+            "data submitters did not enter the barrier wait set"
+        );
+        thread::yield_now();
+    }
+
+    inner.request_completed(RequestOp::Flush, 0, Ok(()));
+    for _ in 0..3 {
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
+    for _ in 0..3 {
+        inner.request_completed(RequestOp::Read, 1, Ok(()));
+    }
+    for join in joins {
+        join.join().unwrap();
+    }
 }
