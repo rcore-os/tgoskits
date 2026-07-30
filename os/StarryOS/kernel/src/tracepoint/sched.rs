@@ -208,6 +208,19 @@ ktracepoint::define_event_trace!(
     })
 );
 
+#[cfg(axtest)]
+pub(super) fn tracepoint_state_for_test() -> ktracepoint::ExtTracePoint<super::KernelTraceAux> {
+    fn unused_default_callback() {}
+
+    ktracepoint::ExtTracePoint::new(
+        &__sched_switch,
+        alloc::sync::Arc::new(ktracepoint::TraceDefaultFunc {
+            func: unused_default_callback,
+            data: Box::new(()),
+        }),
+    )
+}
+
 pub(super) fn install() {
     let rings = (0..ax_runtime::hal::cpu_num())
         .map(|_| DeferredSchedRing::new())
@@ -240,6 +253,7 @@ fn on_sched_switch(record: SchedSwitchRecord) {
     let worker_ids = [
         super::SCHED_TRACE_WORKER_ID.load(Ordering::Acquire),
         super::TRACE_PIPE_NOTIFY_WORKER_ID.load(Ordering::Acquire),
+        super::TRACEPOINT_RECLAIM_WORKER_ID.load(Ordering::Acquire),
     ];
     if !should_defer_sched_switch(true, worker_ids, record.previous_thread, record.next_thread) {
         return;

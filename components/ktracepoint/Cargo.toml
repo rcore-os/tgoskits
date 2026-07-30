@@ -1,0 +1,20 @@
+[package]
+name = "ktracepoint"
+version = "0.6.0"
+edition.workspace = true
+authors.workspace = true
+license = "MIT"
+repository.workspace = true
+documentation = "https://docs.rs/ktracepoint"
+readme = "README.md"
+keywords = ["tracepoint", "kernel", "tracing", "no-std"]
+description = "A Rust crate for implementing tracepoints in operating systems."
+
+[dependencies]
+log.workspace = true
+lru = "0.18"
+paste = "1.0"
+tp-lexer = "0.5.5"
+
+[dev-dependencies]
+env_logger = "0.11"

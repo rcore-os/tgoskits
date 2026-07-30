@@ -223,7 +223,7 @@ sg200x-jpu = { workspace = true, optional = true }
 # 0.10 to match sg200x-bsp 0.7.x's internal tock-registers; the Writeable trait
 # must come from the same version as sg200x-bsp's ReadWrite types.
 tock-registers = { version = "0.10", optional = true }
-ktracepoint = "0.6"
+ktracepoint.workspace = true
 ksym = "0.6"
 kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }

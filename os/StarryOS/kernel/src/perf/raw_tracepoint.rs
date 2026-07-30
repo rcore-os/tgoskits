@@ -65,9 +65,9 @@ impl FileLike for RawTracepointPerfEvent {
 
 impl Drop for RawTracepointPerfEvent {
     fn drop(&mut self) {
-        self.ext_tp
-            .lock()
-            .unregister(TraceCallbackType::RawEvent(self.callback.clone()));
+        self.ext_tp.update(|ext_tp| {
+            ext_tp.unregister(TraceCallbackType::RawEvent(self.callback.clone()));
+        });
     }
 }
 
@@ -108,9 +108,7 @@ impl RawTracepointPerfEvent {
             }
         });
         let callback = Arc::new(RawTraceEventFunc::new(func, ctx));
-        ext_tp
-            .lock()
-            .register(TraceCallbackType::RawEvent(callback.clone()));
+        ext_tp.update(|ext_tp| ext_tp.register(TraceCallbackType::RawEvent(callback.clone())));
         Ok(Self { ext_tp, callback })
     }
 }

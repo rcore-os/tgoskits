@@ -367,6 +367,10 @@ pub fn perf_control_callback_runs_preemptible() -> bool {
     super::perf::control_callback_runs_preemptible_for_test()
 }
 
+pub fn tracepoint_callbacks_run_without_raw_guard() -> bool {
+    super::tracepoint::callbacks_run_without_raw_guard_for_test()
+}
+
 pub fn is_wext_ioctl_validation_rules_hold() -> bool {
     super::file::is_wext_ioctl_validation_rules_hold_for_test()
 }

@@ -76,6 +76,7 @@ violate the crate dependency boundaries.
 | Starry signal return | user-task interrupt state and signal safe point | `recalc_sigpending_tsk()`, `complete_signal()`, `signal_wake_up_state()` | A return-to-user acknowledgement can clear only wake publications observed before its signal scan | The boolean interruption flag is cleared unconditionally after the scan, so a concurrently queued process signal can lose its only wake |
 | Process lifecycle | starry-process and Starry task/process glue | `exit.c`, `forget_original_parent`, `do_wait` | PR #1706 identity owns exit/reap; relationship updates have one lock order and one publication transaction | Reparent and retire can acquire children/group locks in conflicting orders |
 | Perf ownership | Starry perf task, hardware and sampling paths | `kernel/events/core.c` | `pid == 0` is a task context; `pid == -1` with a CPU is a CPU context; teardown executes on the owner CPU before storage release | CPU-local sampling slots are registered and removed on the current CPU and contain raw notify pointers |
+| Tracepoint publication | Starry tracepoint registry and perf/BPF attachment | `kernel/tracepoint.c` | Publish a complete callback generation before enabling its fast-path gate; callback execution holds no raw writer lock; retired callback data remains live through a read-side grace period | The registry held `SpinNoPreempt` across arbitrary callbacks, and callback registration patched executable text after SMP startup |
 | Generic timers | Starry POSIX timers and AxVM timer worker | hrtimer soft/threaded callbacks | Arbitrary callbacks run in task context; earlier deadlines use a bounded wake endpoint | Worker design exists and must remain separate from ax-task task deadlines |
 | CPU interval timers | Starry `ITIMER_VIRTUAL`/`ITIMER_PROF`, ax-runtime periodic clockevent, ax-task task work | `update_process_times()`, `run_posix_cpu_timers()`, `TWA_RESUME` task work | A real periodic tick performs only bounded generation/timestamp publication in hard IRQ; accounting, expiry, and signal work run in task context; writer contention is retried without spinning; disable/rearm cannot replay an old generation | After wall polling was removed, CPU timers were checked only at user/kernel transition safe points, so a long-running syscall could delay expiry; the first runtime composition also hid inner OS tick work behind its outer extension |
 | Serial and driver IRQ | rdif-serial, some-serial, ax-runtime serial, changed vsock/USB adapters | serial core, NAPI/event publication | IRQ endpoint only reads/acks/drains a bounded amount and publishes stable events; workers advance flow | Endpoint separation exists but changed paths still require lock, allocation and ownership audit |
@@ -98,6 +99,7 @@ disposition of every row is:
 | Starry signal return | Closed by monotonic interruption publication/acknowledgement generations and typed `Ready / Interrupted / TimedOut` waits. |
 | Process lifecycle | Closed around dev's sole `ProcessIdentity` authority, `ProcessRelationTxn`, and PI-backed task/PID/group/session registries; no competing zombie/PID state machine or preemptible raw registry lock is present. |
 | Perf ownership | Closed by typed task/CPU targets, fixed owner-CPU workers, generation-checked sampling registrations, IRQ grace before release, and a physical scheduler-owner fence during migration. |
+| Tracepoint publication | Closed by side-effect-free callback generations, an atomic callback gate, raw-lock-only snapshot acquisition, two-epoch reader leases, and task-context retirement after the last IRQ/scheduler reader. |
 | Generic timers | Closed by CPU-affine task workers and bounded wake endpoints; ax-task contains no arbitrary timer callback API. |
 | CPU interval timers | Closed by real-periodic-expiry detection, hard-IRQ-only generation/timestamp publication, a serialized task-context accounting writer, bounded retry ownership, O(1) aggregate snapshots, retained delivery, explicit ax-runtime forwarding, and Starry task-context expiry/signals. |
 | Serial and driver IRQ | Closed for the branch-touched serial, vsock, and USB/xHCI paths: hard IRQ work is bounded and non-sleeping, while manager/topology work is task-owned. The upstream vsock credit observer limitation is tracked separately as #1724. |
@@ -1913,9 +1915,60 @@ after releasing the gate.
 The deterministic x86_64 QEMU regression invokes a real scheduler yield from a
 mock `PerfEventOps::enable` callback. It failed under the old wrapper because
 the scheduler rejected the `SpinNoPreempt` context, and passes after the
-control-plane split. The complete Starry axtest suite passes 388/388,
+control-plane split. The complete Starry axtest suite passes 389/389,
 Starry's 24 feature/target clippy configurations pass, and the 186-package
 synchronization-boundary lint remains green.
+
+## Current-head tracepoint callback publication boundary
+
+The Starry tracepoint registry previously stored each mutable
+`ExtTracePoint` behind `SpinNoPreempt` and held that gate while invoking every
+trace, perf, and raw-BPF callback. A callback that yielded, allocated through
+a sleepable path, or changed tracepoint control state therefore ran in an
+atomic context or recursively acquired the same raw gate. The upstream
+`ktracepoint` registration path also enabled and disabled `static-keys`
+directly, so constructing an unpublished replacement could change the global
+fast path before the replacement state was visible. Runtime static-key text
+patching is not a suitable SMP publication primitive here; Starry retains it
+only for the pre-existing dynamic-debug subsystem.
+
+Linux v7.1 publishes complete probe arrays with `rcu_assign_pointer()` before
+enabling the static branch (`kernel/tracepoint.c:286-352`). Final removal
+disables the branch before publishing the empty pointer
+(`kernel/tracepoint.c:361-423`). Old probe arrays are released through
+`call_srcu()` or `call_rcu_tasks_trace()` rather than while the trace callback
+is returning (`kernel/tracepoint.c:115-129`). A caller that must destroy module
+storage separately invokes `tracepoint_synchronize_unregister()`
+(`include/linux/tracepoint.h:103-123`).
+
+The workspace-local `ktracepoint` now separates immutable event metadata from
+runtime callback generations. `ExtTracePoint::register()` and
+`unregister()` only edit an unpublished value. Starry serializes writers with
+a `PiMutex`, clones a complete replacement, and uses `SpinNoPreempt` only to
+acquire or replace one `Arc` snapshot. The shared event descriptor has an
+Acquire/Release atomic callback gate: the writer publishes a non-empty
+snapshot before opening it and closes it before retiring the last callback.
+Scheduler and IRQ readers increment one of two generation counters while
+acquiring the snapshot, release the raw gate before dispatch, and retain the
+snapshot through the callback.
+
+Retired snapshots whose readers have not left are queued to a dedicated
+task-context reclaimer. The last reader only decrements its epoch counter and
+publishes an IRQ-safe sticky notification, so neither an IRQ nor the scheduler
+path performs the final callback allocation drop. This is the Arc/epoch
+equivalent of Linux's deferred SRCU release. It intentionally permits an
+already-started callback to finish after unregister returns while keeping all
+callback data alive; callers do not need a separate module-storage grace
+operation because the retired snapshot owns that data.
+
+The deterministic x86_64 regression yielded from the tracepoint read closure.
+It failed on the old implementation with exactly one failure in the 389-case
+suite (`388/389`) because the raw registry gate still disabled preemption. The
+same test also exercises read-callback-to-update re-entry and deferred
+retirement; the new implementation passes the complete `389/389` suite. The
+local crate additionally tests that callback-list edits have no gate side
+effects until the owner publishes them, and its host example executes both
+cooked and raw callbacks through the new atomic gate.
 
 ## Current-head Starry clone activation boundary
 
