@@ -211,6 +211,9 @@ curl() {
   fi
   count=$(( count + 1 ))
   printf '%s' "$count" > "$BLOCK_RW_BENCH_CURL_COUNT"
+  if [ "$count" -eq 2 ]; then
+    printf 'root@starry:/root # '
+  fi
   return 1
 }
 "#,

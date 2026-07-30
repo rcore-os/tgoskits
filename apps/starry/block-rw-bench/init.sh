@@ -76,5 +76,5 @@ if [ "$helper_ready" = "1" ] &&
 fi
 
 if [ "$helper_passed" != "1" ]; then
-  echo "${marker}_FAILED"
+  printf '\n%s\n' "${marker}_FAILED"
 fi
