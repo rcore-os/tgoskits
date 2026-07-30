@@ -211,7 +211,7 @@ log = "Warn"
             "qemu-riscv64",
             r#"
 target = "riscv64gc-unknown-none-elf"
-features = ["ax-driver/serial", "ax-driver/virtio-blk"]
+features = ["ax-driver/serial", "ax-driver/nvme"]
 log = "Warn"
 "#,
         );
