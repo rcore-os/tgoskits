@@ -122,13 +122,13 @@ impl ProcessData {
         outcome
     }
 
-    pub(crate) fn cancel_interval_timer_alarms(&self) -> [AlarmChange; 3] {
+    pub(crate) fn cancel_interval_timer_alarm(&self) -> AlarmChange {
         let mut timers = self.accounting.interval_timers.lock();
-        let cancellations = timers.cancel_alarms();
+        let cancellation = timers.cancel_alarm();
         self.accounting
             .active_interval_timers
             .store(0, Ordering::Release);
-        cancellations
+        cancellation
     }
 
     pub fn posix_timers(&self) -> &PosixTimerTable {

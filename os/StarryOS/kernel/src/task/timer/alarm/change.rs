@@ -39,15 +39,6 @@ impl AlarmChange {
     }
 }
 
-pub(super) fn apply_alarm_changes(
-    changes: impl IntoIterator<Item = AlarmChange>,
-    target: AlarmTarget,
-) {
-    for change in changes {
-        change.apply(target.clone());
-    }
-}
-
 fn cancel_alarm_generation(token: &AlarmToken) {
     let mut alarms = ALARM_LIST.lock();
     let previous_earliest = alarms.earliest_deadline();

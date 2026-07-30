@@ -34,16 +34,8 @@ impl ITimerType {
     }
 }
 
-fn itimer_alarm_delay(ty: ITimerType, remaining_ns: u64) -> Duration {
-    let divisor = match ty {
-        ITimerType::Real => 1_u64,
-        // Process CPU time may advance concurrently on every configured CPU.
-        // Waking conservatively early keeps the task-context worker from
-        // delivering a CPU timer late without putting POSIX timer callbacks in
-        // the hard-IRQ path.
-        ITimerType::Virtual | ITimerType::Prof => ax_runtime::CPU_CAPACITY.max(1) as u64,
-    };
-    Duration::from_nanos(remaining_ns.div_ceil(divisor).max(1))
+fn real_itimer_alarm_delay(remaining_ns: u64) -> Duration {
+    Duration::from_nanos(remaining_ns.max(1))
 }
 
 #[derive(Clone, Copy)]
@@ -64,7 +56,6 @@ impl ITimerSetting {
 struct ITimer {
     interval_ns: u64,
     deadline_ns: Option<u64>,
-    alarm_slot: AlarmSlot,
 }
 
 impl ITimer {
@@ -72,7 +63,6 @@ impl ITimer {
         Self {
             interval_ns: 0,
             deadline_ns: None,
-            alarm_slot: AlarmSlot::new(),
         }
     }
 
@@ -81,43 +71,26 @@ impl ITimer {
             .map_or(0, |deadline_ns| deadline_ns.saturating_sub(now_ns))
     }
 
-    fn replace(&mut self, ty: ITimerType, setting: ITimerSetting, now_ns: u64) -> AlarmChange {
+    fn replace(&mut self, setting: ITimerSetting, now_ns: u64) {
         self.interval_ns = setting.interval_ns;
         self.deadline_ns = (setting.remaining_ns != 0).then(|| {
             now_ns
                 .saturating_add(setting.remaining_ns)
                 .min(MAX_ITIMER_NANOS)
         });
-        self.alarm_slot.replace(
-            self.deadline_ns
-                .map(|deadline_ns| itimer_alarm_delay(ty, deadline_ns.saturating_sub(now_ns))),
-        )
     }
 
-    fn update(&mut self, ty: ITimerType, now_ns: u64, triggered: bool) -> ITimerUpdate {
+    fn update(&mut self, now_ns: u64) -> bool {
         let Some(deadline_ns) = self.deadline_ns else {
-            return ITimerUpdate::default();
+            return false;
         };
         if now_ns < deadline_ns {
-            ITimerUpdate {
-                expired: false,
-                alarm_change: triggered.then(|| {
-                    self.alarm_slot
-                        .replace(Some(itimer_alarm_delay(ty, deadline_ns - now_ns)))
-                }),
-            }
+            false
         } else {
             self.deadline_ns = (self.interval_ns != 0).then(|| {
                 next_periodic_deadline(deadline_ns, self.interval_ns, now_ns).min(MAX_ITIMER_NANOS)
             });
-            ITimerUpdate {
-                expired: true,
-                alarm_change: Some(self.alarm_slot.replace(self.deadline_ns.map(
-                    |next_deadline_ns| {
-                        itimer_alarm_delay(ty, next_deadline_ns.saturating_sub(now_ns))
-                    },
-                ))),
-            }
+            true
         }
     }
 }

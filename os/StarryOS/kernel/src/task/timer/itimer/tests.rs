@@ -9,7 +9,6 @@ mod tests {
             *timer = ITimer {
                 interval_ns: 0,
                 deadline_ns: Some(5),
-                alarm_slot: AlarmSlot::new(),
             };
         }
 
@@ -19,7 +18,7 @@ mod tests {
                 system_ns: 0,
                 sampled_at_ns: 10,
             },
-            None,
+            false,
         );
         let signals: alloc::vec::Vec<_> = pending.signals().collect();
 
@@ -50,7 +49,7 @@ mod tests {
             1 << ITimerType::Virtual as usize
         );
 
-        let _cancellations = manager.cancel_alarms();
+        let _cancellation = manager.cancel_alarm();
         assert_eq!(manager.active_mask(), 0);
     }
 
@@ -73,6 +72,41 @@ mod tests {
             manager.get_itimer(ITimerType::Real, armed_at).1,
             time_value_from_nanos(2 * SECOND)
         );
+    }
+
+    #[test]
+    fn cpu_timers_do_not_publish_wall_clock_alarms() {
+        for (timer, signal) in [
+            (ITimerType::Virtual, Signo::SIGVTALRM),
+            (ITimerType::Prof, Signo::SIGPROF),
+        ] {
+            let mut manager = ProcessTimerManager::new();
+            let armed_at = snapshot_at(100, 50, 1_000);
+            let armed = manager.set_itimer(timer, setting(0, 10), armed_at);
+
+            assert!(
+                !armed.publishes_wall_alarm(),
+                "{timer:?} must be driven by CPU accounting, not wall time"
+            );
+
+            let wall_only_advanced = snapshot_at(100, 50, 1_000_000);
+            let pending = manager.poll(wall_only_advanced);
+            assert_eq!(pending.signals().next(), None);
+            assert!(!pending.publishes_wall_alarm());
+            assert_eq!(
+                manager.get_itimer(timer, wall_only_advanced).1,
+                time_value_from_nanos(10)
+            );
+
+            let cpu_advanced = match timer {
+                ITimerType::Virtual => snapshot_at(110, 50, 1_000_001),
+                ITimerType::Prof => snapshot_at(100, 60, 1_000_001),
+                ITimerType::Real => unreachable!(),
+            };
+            let expired = manager.poll(cpu_advanced);
+            assert_eq!(expired.signals().collect::<alloc::vec::Vec<_>>(), [signal]);
+            assert!(!expired.publishes_wall_alarm());
+        }
     }
 
     #[test]

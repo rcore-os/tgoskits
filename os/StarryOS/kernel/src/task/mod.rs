@@ -61,7 +61,8 @@ pub(crate) use self::{
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::{
-        alarm_generation_rules_hold_for_test, interval_timer_arm_uses_current_snapshot_for_test,
+        alarm_generation_rules_hold_for_test, cpu_interval_timers_avoid_wall_alarms_for_test,
+        interval_timer_arm_uses_current_snapshot_for_test,
         itimer_type_signo_and_time_conversion_rules_hold_for_test,
     },
 };
