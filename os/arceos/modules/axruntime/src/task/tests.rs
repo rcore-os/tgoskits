@@ -3,19 +3,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
-#[test]
-fn periodic_tick_without_task_work_does_not_request_reschedule() {
-    assert!(!clock_event_requests_reschedule(false, false, 0, false));
-}
-
-#[test]
-fn task_clock_event_outcomes_remain_sticky_reschedule_sources() {
-    assert!(clock_event_requests_reschedule(true, false, 0, false));
-    assert!(clock_event_requests_reschedule(false, true, 0, false));
-    assert!(clock_event_requests_reschedule(false, false, 1, false));
-    assert!(clock_event_requests_reschedule(false, false, 0, true));
-}
-
 static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     on_switch_in: ignore_extension_thread_event,
     on_switch_out: ignore_extension_switch_out,

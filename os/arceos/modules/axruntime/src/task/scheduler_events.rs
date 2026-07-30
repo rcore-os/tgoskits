@@ -11,8 +11,8 @@ use ax_task::runtime::RuntimeStatus;
 #[cfg(feature = "irq")]
 use ax_task::runtime::TaskDeadlineUpdate;
 
-#[cfg(any(feature = "irq", feature = "ipi", feature = "wake-ipi"))]
-use super::{current_cpu_remote, with_current_cpu_pin};
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+use super::with_current_cpu_pin;
 
 const TASK_CLOCK_EVENT_IRQ_BUDGET: usize = 64;
 
@@ -57,16 +57,6 @@ pub fn timer_irq_count() -> u64 {
     TASK_TIMER_IRQ_COUNT.load(Ordering::Relaxed)
 }
 
-#[cfg(any(feature = "irq", test))]
-pub(super) const fn clock_event_requests_reschedule(
-    slice_expired: bool,
-    deadline_overrun: bool,
-    expired: usize,
-    pending: bool,
-) -> bool {
-    slice_expired || deadline_overrun || expired != 0 || pending
-}
-
 /// Performs bounded task accounting and publishes a sticky reschedule request.
 #[cfg(feature = "irq")]
 pub(crate) fn on_clock_event(now_ns: u64, scheduler_tick: bool) -> Option<TaskDeadlineUpdate> {
@@ -90,25 +80,7 @@ fn account_clock_event(now_ns: u64, scheduler_tick: bool) -> Option<TaskDeadline
         TASK_CLOCK_EVENT_IRQ_BUDGET,
         scheduler_tick,
     ) {
-        Ok(outcome) => {
-            if clock_event_requests_reschedule(
-                outcome.slice_expired(),
-                outcome.deadline_overrun(),
-                outcome.expired(),
-                outcome.pending(),
-            ) {
-                // SAFETY: hard IRQ execution cannot migrate until this callback
-                // returns, and no CPU-local borrow escapes the callback.
-                unsafe {
-                    with_current_cpu_pin(|pin| {
-                        if let Some(cpu) = current_cpu_remote(pin) {
-                            cpu.request_reschedule();
-                        }
-                    });
-                }
-            }
-            Some(outcome.update())
-        }
+        Ok(outcome) => Some(outcome.update()),
         Err(TaskError::NotInitialized | TaskError::CpuOffline(_)) => None,
         Err(error) => panic!("task clockevent accounting failed: {error}"),
     }
@@ -119,20 +91,9 @@ fn account_clock_event(now_ns: u64, scheduler_tick: bool) -> Option<TaskDeadline
 pub(crate) fn on_scheduler_ipi() {
     match ax_task::acknowledge_current_scheduler_ipi() {
         Ok(()) => {}
-        Err(TaskError::NotInitialized | TaskError::CpuOffline(_)) => return,
+        Err(TaskError::NotInitialized | TaskError::CpuOffline(_)) => {}
         Err(error) => panic!("scheduler IPI acknowledgement failed: {error}"),
     }
-
-    // SAFETY: scheduler IPI handling is a hard-IRQ scope and cannot migrate.
-    unsafe {
-        with_current_cpu_pin(|pin| {
-            if let Some(cpu) =
-                current_cpu_remote(pin).filter(|cpu| cpu.is_online() && cpu.needs_reschedule())
-            {
-                cpu.request_reschedule();
-            }
-        })
-    };
 }
 
 /// Consumes scheduler delivery ownership from the shared physical IPI vector.

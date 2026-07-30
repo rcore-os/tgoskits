@@ -291,7 +291,7 @@ impl CpuRemote {
     }
 
     /// Publishes a sticky owner-CPU reschedule request.
-    pub fn request_reschedule(&self) {
+    pub(crate) fn request_reschedule(&self) {
         let Some(_publication) = self.begin_publication() else {
             return;
         };
@@ -599,7 +599,7 @@ impl CpuRemote {
     }
 
     /// Acknowledges one coalesced scheduler IPI epoch and rechecks publication.
-    pub fn acknowledge_scheduler_ipi(&self) {
+    pub(crate) fn acknowledge_scheduler_ipi(&self) {
         let mut current = self.scheduler_ipi_pending.load(Ordering::Acquire);
         while current & IPI_CLAIMED != 0 {
             match self.scheduler_ipi_pending.compare_exchange_weak(

@@ -293,8 +293,15 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
 }
 
 /// Acknowledges the current CPU's coalesced scheduler IPI epoch.
+///
+/// Any scheduler work visible after the epoch claim is released is promoted
+/// to owner-local preemption before returning to the runtime IRQ handler.
 pub fn acknowledge_current_scheduler_ipi() -> Result<(), TaskError> {
-    runtime_current_cpu()?.acknowledge_scheduler_ipi();
+    let cpu = runtime_current_cpu()?;
+    cpu.acknowledge_scheduler_ipi();
+    if cpu.needs_reschedule() {
+        cpu.request_reschedule();
+    }
     Ok(())
 }
 

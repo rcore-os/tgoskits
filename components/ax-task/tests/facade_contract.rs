@@ -145,7 +145,14 @@ fn timer_irq_facade_bounds_and_preserves_unconsumed_expirations() {
         expired[1].thread().unwrap().slot(),
     ];
     support::set_monotonic_ns(1);
-    assert!(schedule_current_cpu().unwrap().decision().is_none());
+    let decision = schedule_current_cpu()
+        .unwrap()
+        .decision()
+        .expect("the timer IRQ's owner preemption request must reach one scheduler decision");
+    assert!(
+        !decision.requires_context_switch(),
+        "draining timer work with no runnable peer must preserve the current execution context"
+    );
     assert!(!current_cpu_needs_resched().unwrap());
     let (_, next_deadline_ns, deferred_work) = support::last_task_deadline_update();
     assert_ne!(next_deadline_ns, 2);
