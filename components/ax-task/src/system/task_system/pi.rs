@@ -477,14 +477,11 @@ impl TaskSystem {
         {
             return Err(TaskError::InvalidPiState);
         }
-        match state.ensure_pi_acyclic(waiter, owner) {
-            Ok(()) => {}
-            Err(TaskError::PiCycle) => {
-                drop(state);
-                task_runtime::fatal_invariant(0x5049_0001, waiter.as_u64() as usize);
-            }
-            Err(error) => return Err(error),
-        }
+        // Like Linux's PI-futex/proxy registration, the scheduler core reports
+        // deadlock detection to its caller before publishing a waiter edge.
+        // A normal kernel mutex may still treat this as a fatal programming
+        // error, but that policy does not belong in the reusable PI graph.
+        state.ensure_pi_acyclic(waiter, owner)?;
         let owner_core = Arc::clone(&state.thread_record(owner)?.core);
         let waiter_core = Arc::clone(&state.thread_record(waiter)?.core);
         if state.thread_record(waiter)?.blocked_on.is_some() {

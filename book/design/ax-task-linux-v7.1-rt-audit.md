@@ -1834,6 +1834,23 @@ retained `DeadlineRefresh` reconciles the latest CBS generation instead of
 replaying its old state. The hard-IRQ allocation contract remains zero
 allocation, zero free, and zero callback.
 
+## Current-head PI cycle policy boundary
+
+The reusable PI graph exposed `TaskError::PiCycle`, but `pi_wait_start()`
+intercepted that result and invoked the runtime fatal hook before publishing
+the new waiter edge. This mixed two Linux policies at the wrong layer. Linux
+ordinary `rt_mutex_lock()` treats an actual kernel mutex deadlock as a fatal
+programming error, while the PI-futex/proxy registration path performs a full
+chain walk and returns `-EDEADLK` so its caller can apply ABI policy.
+
+`ax-task::pi_wait_start()` is the reusable graph/proxy boundary because it
+accepts explicit waiter and owner identities and already returns a typed
+`Result`. It now returns `TaskError::PiCycle` before starting the waiter
+generation or changing the donation graph. `ax-sync::RawMutex` remains free to
+turn that error into a kernel programming failure through its infallible lock
+API. The deterministic regression first observed the old fatal hook, then
+proved the typed error leaves the pre-existing edge cancellable.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

@@ -295,7 +295,7 @@ unsafe impl Sync for WaiterNode {}
 mod tests {
     use ax_task::{
         CpuId, FairMode, Nice, PiLockIdentity, RtPriority, SchedulePolicy, SchedulingUrgency,
-        TaskSystem, TaskSystemConfig, ThreadHandle, ThreadId, ThreadSpec,
+        TaskError, TaskSystem, TaskSystemConfig, ThreadHandle, ThreadId, ThreadSpec,
     };
 
     use super::*;
@@ -425,20 +425,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "scheduler invariant reported by ax-sync unit test")]
-    fn donation_cycle_is_a_fatal_scheduler_invariant() {
+    fn donation_cycle_is_rejected_before_the_scheduler_graph_changes() {
         let system = task_system(1);
         let first = create_thread(&system, fair_policy());
         let second = create_thread(&system, fair_policy());
         let first_lock = PiLockIdentity::new().id().unwrap();
         let second_lock = PiLockIdentity::new().id().unwrap();
-        let _first_wait = system
+        let first_wait = system
             .pi_wait_start(first_lock, second.id(), first.id())
             .unwrap();
 
-        let _cycle = system
-            .pi_wait_start(second_lock, first.id(), second.id())
-            .unwrap();
+        assert!(matches!(
+            system.pi_wait_start(second_lock, first.id(), second.id()),
+            Err(TaskError::PiCycle)
+        ));
+        system.pi_wait_cancel(first_wait).unwrap();
     }
 
     fn thread(slot: u32) -> ThreadId {
