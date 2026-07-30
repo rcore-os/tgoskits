@@ -1881,6 +1881,42 @@ registry declarations and then passed after the migration. Starry's complete
 24-configuration feature clippy validates normal, `axtest`, SMP, and
 architecture builds with the new sleepable boundary.
 
+## Current-head perf control and IRQ-output boundary
+
+The generic Starry `PerfEvent` wrapper serialized every dynamic event
+operation with `SpinNoPreempt<Box<dyn PerfEventOps>>`. That lock was also held
+across `PERF_EVENT_IOC_SET_BPF`, event enable/disable/read callbacks, and
+`mmap(perf_fd)`. Those callbacks can construct a BPF VM, register a
+tracepoint, allocate and zero contiguous ring pages, or wait for a CPU-owned
+PMU worker. The wrapper therefore made task-context allocation and sleeping
+control operations execute with preemption disabled.
+
+Linux v7.1 keeps these ownership classes separate. `_perf_ioctl()` resolves a
+BPF fd before installing the program (`kernel/events/core.c:6598-6669`), and
+the context operation is serialized by the sleepable perf context mutex
+(`kernel/events/core.c:11657-11717`). `perf_mmap()` performs ring creation and
+mapping under the event's `mmap_mutex` (`kernel/events/core.c:7420-7520`).
+Only the bounded buffer publication/write state remains reachable from
+IRQ/NMI-side producers.
+
+Starry now uses a `PiMutex<Box<dyn PerfEventOps>>` for the generic task-control
+plane. Software BPF events additionally publish a dedicated `BpfPerfOutput`
+capability containing only a `SpinNoPreempt` ring state and the IRQ-safe worker
+notification. `bpf_perf_event_output` resolves that capability directly and
+never acquires the sleepable control mutex. Ring page allocation, zeroing, and
+`Arc` construction happen before the raw gate; the gate only revalidates
+single-mmap ownership, installs the already-allocated ring, writes bounded
+records, and observes enabled state. A concurrent second mmap may allocate
+speculatively but revalidates under the raw state and drops its unused pages
+after releasing the gate.
+
+The deterministic x86_64 QEMU regression invokes a real scheduler yield from a
+mock `PerfEventOps::enable` callback. It failed under the old wrapper because
+the scheduler rejected the `SpinNoPreempt` context, and passes after the
+control-plane split. The complete Starry axtest suite passes 388/388,
+Starry's 24 feature/target clippy configurations pass, and the 186-package
+synchronization-boundary lint remains green.
+
 ## Current-head Starry clone activation boundary
 
 Starry clone previously inserted the child into its public task and process
