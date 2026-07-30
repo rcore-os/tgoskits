@@ -23,6 +23,15 @@ __axcpu_user_read_u32:
     _asm_nofault_extable 1b, .Luser_read_fault
 .size __axcpu_user_read_u32, . - __axcpu_user_read_u32
 
+/*
+ * LLVM 22 validates the ratified A extension as the split Zaamo/Zalrsc
+ * features, while Rust's riscv64gc target still advertises the aggregate
+ * `+a` feature. This routine uses only AMO instructions, so declare the
+ * precise subset locally without changing the platform-wide ISA contract.
+ */
+.option push
+.option arch, +zaamo
+
 .global __axcpu_user_atomic_u32
 .type __axcpu_user_atomic_u32, @function
 __axcpu_user_atomic_u32:
@@ -69,3 +78,5 @@ __axcpu_user_atomic_u32:
     _asm_nofault_extable 4b, .Luser_atomic_fault
     _asm_nofault_extable 5b, .Luser_atomic_fault
 .size __axcpu_user_atomic_u32, . - __axcpu_user_atomic_u32
+
+.option pop
