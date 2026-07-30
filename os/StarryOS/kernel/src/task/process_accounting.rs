@@ -84,6 +84,10 @@ impl ProcessData {
             })
     }
 
+    pub(crate) fn scheduler_tick_cpu_time_snapshot(&self) -> ProcessCpuTimeSnapshot {
+        self.accounting.process_cpu_time.snapshot_committed()
+    }
+
     /// Returns process-wide user and system CPU time.
     pub fn cpu_time(&self) -> (TimeValue, TimeValue) {
         self.cpu_time_snapshot().output()

@@ -123,19 +123,39 @@ pub(super) static RUNTIME_THREAD_EXTENSION_OPS: ThreadExtensionOps = ThreadExten
 };
 
 pub(super) unsafe fn runtime_thread_extension(data: usize) -> ThreadExtension {
-    let scheduler_tick_gate = unsafe { runtime_thread_data_from_raw(data) }
+    let scheduler_tick_work = unsafe { runtime_thread_data_from_raw(data) }
         .os_extension
         .as_ref()
-        .and_then(ThreadExtension::scheduler_tick_work_gate);
+        .and_then(|extension| {
+            extension
+                .scheduler_tick_work_gate()
+                .map(|gate| (gate, extension.has_scheduler_tick_irq_accounting()))
+        });
     // SAFETY: the caller transfers one live `RuntimeThreadData` allocation
     // whose final destruction right belongs to this outer extension.
     let extension = unsafe { ThreadExtension::new(data, &RUNTIME_THREAD_EXTENSION_OPS) };
-    if let Some(gate) = scheduler_tick_gate {
-        // SAFETY: the outer callback retains `RuntimeThreadData`, then forwards
-        // exactly one generation-authorized publication to its inner extension.
-        unsafe { extension.with_scheduler_tick_work(gate, runtime_thread_scheduler_tick_hook) }
-    } else {
-        extension
+    match scheduler_tick_work {
+        Some((gate, true)) => {
+            // SAFETY: the outer callbacks retain `RuntimeThreadData` and
+            // forward both phases to the same live inner extension. The IRQ
+            // phase preserves the inner callback's bounded accounting
+            // contract; the task phase preserves its generation-authorized
+            // publication.
+            unsafe {
+                extension.with_scheduler_tick_accounting_work(
+                    gate,
+                    runtime_thread_scheduler_tick_irq_accounting_hook,
+                    runtime_thread_scheduler_tick_hook,
+                )
+            }
+        }
+        Some((gate, false)) => {
+            // SAFETY: the outer callback retains `RuntimeThreadData`, then
+            // forwards exactly one generation-authorized publication to its
+            // inner extension.
+            unsafe { extension.with_scheduler_tick_work(gate, runtime_thread_scheduler_tick_hook) }
+        }
+        None => extension,
     }
 }
 
@@ -202,6 +222,26 @@ unsafe extern "Rust" fn runtime_thread_scheduler_tick_hook(data: usize, thread: 
     if !forwarded {
         panic!(
             "runtime scheduler-tick forwarding lost callback for thread {:#x}",
+            thread.as_u64()
+        );
+    }
+}
+
+unsafe extern "Rust" fn runtime_thread_scheduler_tick_irq_accounting_hook(
+    data: usize,
+    thread: ThreadId,
+) {
+    let runtime = unsafe { runtime_thread_data_from_raw(data) };
+    let Some(extension) = runtime.os_extension.as_ref() else {
+        panic!(
+            "runtime scheduler-tick accounting lost OS extension for thread {:#x}",
+            thread.as_u64()
+        );
+    };
+    let forwarded = unsafe { extension.forward_scheduler_tick_irq_accounting(thread) };
+    if !forwarded {
+        panic!(
+            "runtime scheduler-tick accounting lost callback for thread {:#x}",
             thread.as_u64()
         );
     }

@@ -72,15 +72,38 @@ impl Default for SchedulerTickGate {
 /// Task-context callback selected by one scheduler-tick publication.
 pub type SchedulerTickTaskWork = unsafe extern "Rust" fn(data: usize, thread: ThreadId);
 
+/// Bounded accounting callback invoked for the current thread from scheduler-tick IRQ context.
+///
+/// This hook exists for operating systems that maintain aggregate CPU-time
+/// counters before deferring timer expiry and signal delivery to task context.
+pub type SchedulerTickIrqAccounting = unsafe extern "Rust" fn(data: usize, thread: ThreadId);
+
 #[derive(Clone, Debug)]
 pub(crate) struct SchedulerTickWork {
     gate: Arc<SchedulerTickGate>,
+    irq_accounting: Option<SchedulerTickIrqAccounting>,
     callback: SchedulerTickTaskWork,
 }
 
 impl SchedulerTickWork {
     pub(crate) const fn new(gate: Arc<SchedulerTickGate>, callback: SchedulerTickTaskWork) -> Self {
-        Self { gate, callback }
+        Self {
+            gate,
+            irq_accounting: None,
+            callback,
+        }
+    }
+
+    pub(crate) const fn with_irq_accounting(
+        gate: Arc<SchedulerTickGate>,
+        irq_accounting: SchedulerTickIrqAccounting,
+        callback: SchedulerTickTaskWork,
+    ) -> Self {
+        Self {
+            gate,
+            irq_accounting: Some(irq_accounting),
+            callback,
+        }
     }
 
     pub(crate) fn enabled_generation(&self) -> Option<u64> {
@@ -93,6 +116,18 @@ impl SchedulerTickWork {
 
     pub(crate) fn gate(&self) -> Arc<SchedulerTickGate> {
         Arc::clone(&self.gate)
+    }
+
+    pub(crate) const fn has_irq_accounting(&self) -> bool {
+        self.irq_accounting.is_some()
+    }
+
+    pub(crate) unsafe fn account_irq(&self, data: usize, thread: ThreadId) -> bool {
+        let Some(accounting) = self.irq_accounting else {
+            return false;
+        };
+        unsafe { accounting(data, thread) };
+        true
     }
 
     pub(crate) unsafe fn invoke(&self, data: usize, thread: ThreadId) {

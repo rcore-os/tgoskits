@@ -376,6 +376,11 @@ impl Thread {
             .record_cpu_time_transition(|| self.accounting.cpu_time.account_now());
     }
 
+    pub(super) fn account_scheduler_tick_cpu_time(&self) {
+        self.proc_data
+            .record_cpu_time_transition(|| self.accounting.cpu_time.account_scheduler_tick());
+    }
+
     pub(crate) fn cpu_time(&self) -> &CpuTimeAccounting {
         &self.accounting.cpu_time
     }

@@ -122,6 +122,11 @@ pub(crate) fn cpu_interval_timers_avoid_wall_alarms_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn scheduler_tick_group_accounting_is_aggregate_for_test() -> bool {
+    accounting::scheduler_tick_group_accounting_is_aggregate_for_test()
+}
+
+#[cfg(axtest)]
 pub(crate) fn alarm_generation_rules_hold_for_test() -> bool {
     alarm::stale_alarm_cancellation_preserves_new_generation_for_test()
 }

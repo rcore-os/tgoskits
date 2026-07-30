@@ -333,7 +333,7 @@ pub(crate) fn poll_process_cpu_timers_from_scheduler_tick(proc_data: &ProcessDat
     if !proc_data.has_active_cpu_interval_timers() {
         return;
     }
-    let snapshot = proc_data.cpu_time_snapshot();
+    let snapshot = proc_data.scheduler_tick_cpu_time_snapshot();
     if let Some(pending) = proc_data.poll_cpu_interval_timers(snapshot) {
         apply_process_timer_actions(proc_data.proc.pid(), pending);
     }

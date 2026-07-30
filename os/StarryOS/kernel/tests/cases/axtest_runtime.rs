@@ -72,6 +72,11 @@ fn cpu_interval_timers_are_scheduler_tick_driven() {
 }
 
 #[axtest]
+fn scheduler_ticks_publish_process_cpu_time_without_sibling_scans() {
+    ax_assert!(axtest_exports::scheduler_tick_group_accounting_is_aggregate());
+}
+
+#[axtest]
 fn futex_empty_wake_op_avoids_entry_allocation() {
     ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
 }

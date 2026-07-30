@@ -16,6 +16,7 @@ mod support;
 
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static SCHEDULER_TICK_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_TICK_IRQ_ACCOUNTING: AtomicUsize = AtomicUsize::new(0);
 static BLOCKING_TICK_ENTERED: AtomicBool = AtomicBool::new(false);
 static RELEASE_BLOCKING_TICK: AtomicBool = AtomicBool::new(false);
 
@@ -202,6 +203,53 @@ fn scheduler_tick_extension_work_is_deferred_out_of_hard_irq() {
         system.deferred_task_work_pending(),
         "an enabled scheduler tick must publish task work"
     );
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 1);
+
+    support::clear_handles();
+}
+
+#[test]
+fn scheduler_tick_accounts_every_irq_before_coalescing_task_work() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_IRQ_ACCOUNTING.store(0, Ordering::Relaxed);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS).with_scheduler_tick_accounting_work(
+            gate,
+            count_scheduler_tick_irq_accounting,
+            count_scheduler_tick,
+        )
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    for now_ns in 1..=3 {
+        support::set_hard_irq(true);
+        on_clock_event_with_scheduler_tick(now_ns, 1, true).unwrap();
+        support::set_hard_irq(false);
+    }
+    assert_eq!(
+        SCHEDULER_TICK_IRQ_ACCOUNTING.load(Ordering::Acquire),
+        3,
+        "every physical tick must charge the current thread before deferred work coalesces"
+    );
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 0);
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
     assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 1);
 
@@ -446,6 +494,10 @@ unsafe extern "Rust" fn no_extension_drop(_data: usize) {}
 
 unsafe extern "Rust" fn count_scheduler_tick(_data: usize, _thread: ThreadId) {
     SCHEDULER_TICK_CALLBACKS.fetch_add(1, Ordering::Release);
+}
+
+unsafe extern "Rust" fn count_scheduler_tick_irq_accounting(_data: usize, _thread: ThreadId) {
+    SCHEDULER_TICK_IRQ_ACCOUNTING.fetch_add(1, Ordering::Release);
 }
 
 unsafe extern "Rust" fn block_scheduler_tick(_data: usize, _thread: ThreadId) {
