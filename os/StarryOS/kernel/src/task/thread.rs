@@ -172,8 +172,8 @@ struct ThreadSecurity {
     oom_score_adj: AtomicI32,
     pdeathsig: AtomicU32,
     no_new_privs: AtomicBool,
-    seccomp: SpinNoIrq<SeccompState>,
-    cred: SpinNoIrq<Arc<Cred>>,
+    seccomp: PiMutex<Arc<SeccompState>>,
+    cred: PiMutex<Arc<Cred>>,
     uid_map_written: AtomicBool,
     gid_map_written: AtomicBool,
     setgroups_deny: AtomicBool,
@@ -185,8 +185,8 @@ impl ThreadSecurity {
             oom_score_adj: AtomicI32::new(200),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
-            seccomp: SpinNoIrq::new(SeccompState::default()),
-            cred: SpinNoIrq::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
+            seccomp: PiMutex::new(Arc::new(SeccompState::default())),
+            cred: PiMutex::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
             setgroups_deny: AtomicBool::new(false),
@@ -550,23 +550,27 @@ impl Thread {
     }
 
     /// Returns a snapshot of the seccomp state.
-    pub fn seccomp_state(&self) -> SeccompState {
+    pub fn seccomp_state(&self) -> Arc<SeccompState> {
         self.security.seccomp.lock().clone()
     }
 
     /// Replaces inherited seccomp state.
-    pub fn set_seccomp_state(&self, state: SeccompState) {
-        *self.security.seccomp.lock() = state;
+    pub fn set_seccomp_state(&self, state: Arc<SeccompState>) {
+        let previous = {
+            let mut current = self.security.seccomp.lock();
+            core::mem::replace(&mut *current, state)
+        };
+        drop(previous);
     }
 
     /// Enables strict seccomp mode.
     pub fn install_seccomp_strict(&self) -> AxResult<()> {
-        self.security.seccomp.lock().install_strict()
+        Arc::make_mut(&mut self.security.seccomp.lock()).install_strict()
     }
 
     /// Appends one seccomp filter program.
     pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
-        self.security.seccomp.lock().append_filter(insns)
+        Arc::make_mut(&mut self.security.seccomp.lock()).append_filter(insns)
     }
 
     /// Returns a credential snapshot.
@@ -575,7 +579,11 @@ impl Thread {
     }
 
     fn set_cred_single(&self, new_cred: Arc<Cred>) {
-        *self.security.cred.lock() = new_cred;
+        let previous = {
+            let mut current = self.security.cred.lock();
+            core::mem::replace(&mut *current, new_cred)
+        };
+        drop(previous);
     }
 
     /// Replaces credentials for every thread in this process.
@@ -664,7 +672,20 @@ impl Thread {
 mod tests {
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use super::NextSignalCheckBlock;
+    use ax_sync::PiMutex;
+
+    use super::{NextSignalCheckBlock, ThreadSecurity};
+
+    #[test]
+    fn thread_security_heap_state_uses_sleepable_pi_locks() {
+        fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_security_lock_types(security: &ThreadSecurity) {
+            assert_pi_mutex(&security.seccomp);
+            assert_pi_mutex(&security.cred);
+        }
+
+        let _ = assert_security_lock_types as fn(&ThreadSecurity);
+    }
 
     #[test]
     fn old_global_signal_check_block_leaks_between_threads() {

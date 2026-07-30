@@ -595,12 +595,12 @@ impl CloneArgs {
                 proc,
                 ProcessDataInit::new(
                     ProcessImage::new(
-                        old_proc_data.exe_path().clone(),
-                        old_proc_data.cmdline().clone(),
-                        old_proc_data.envp().clone(),
-                        old_proc_data.auxv().clone(),
-                        old_proc_data.root_path().clone(),
-                        old_proc_data.cwd_path().clone(),
+                        old_proc_data.exe_path().as_ref().clone(),
+                        old_proc_data.cmdline(),
+                        old_proc_data.envp(),
+                        old_proc_data.auxv().to_vec(),
+                        old_proc_data.root_path().as_ref().clone(),
+                        old_proc_data.cwd_path().as_ref().clone(),
                     ),
                     aspace,
                     signal_actions,
