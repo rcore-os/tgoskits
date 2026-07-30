@@ -74,6 +74,9 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - QEMU `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
 - In QEMU grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
 - In QEMU shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
+- Keep grouped/system logs compact but traceable: print a begin marker before each binary, one passed or failed result with its binary path and elapsed seconds, and one suite summary. Do not repeat the same per-binary durations in a trailing timing block.
+- Test-suit CMake configure, build, and install commands are quiet on success. On failure, the runner must replay the command, stdout, stderr, exit status, and phase context; prebuild and guest/QEMU output remain live.
+- Select rootfs extraction privileges before starting `debugfs`: direct `rdump` requires full host ownership privileges; otherwise enter `fakeroot` first. On Linux, check EUID, full UID/GID identity mappings, and effective `CAP_CHOWN`. If `fakeroot` is unavailable when required, fail before `debugfs` starts; do not emit and then filter ownership warnings or silently retry with weaker semantics.
 - Explicit QEMU skips are allowed only when the test prints a clear skip marker and the review or case comment explains why the environment cannot require success. Bugfix and regression QEMU tests should fail loudly when the fixed behavior is absent.
 
 ## Editing Rules

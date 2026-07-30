@@ -99,6 +99,19 @@ qemu/system/<subcase>/
 STARRY_GROUPED_TESTS_PASSED
 ```
 
+日志为每个 binary 保留一条开始标记和一条带耗时的完成结果，失败结果还包含退出码；
+suite 结束时只打印一条总数、成功数、失败数和总耗时汇总，不再重复输出一份逐项
+timing 列表。例如：
+
+```text
+STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/mytest
+STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mytest elapsed_s=1
+STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=1
+```
+
+开始标记用于在超时时定位卡住的 binary；失败时保留该 binary 的原始输出、
+`STARRY_SYSTEM_TEST_FAILED`、退出码和耗时。
+
 子测例 CMake 产物应安装到：
 
 ```cmake
@@ -142,6 +155,12 @@ target/<target>/qemu-cases/<build_group>/<case>/cache/rootfs/
 ```
 
 plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落回共享镜像。
+
+需要 staging rootfs 的 pipeline 依赖 `debugfs` 和 `fakeroot`。xtask 会在启动
+`debugfs rdump` 前检查 EUID；Linux 上还会检查 UID/GID identity mapping 和有效
+`CAP_CHOWN`。只有能完整恢复 guest ownership 时才直接提取，否则预先进入
+`fakeroot`，避免产生大量权限警告。如果此时缺少 `fakeroot`，xtask 会在启动
+`debugfs` 前明确失败，不会先执行再过滤警告或静默回退。
 
 ## QEMU TOML
 
@@ -228,6 +247,10 @@ apk add zlib-dev
 - `STARRY_CASE_WORK_DIR`
 - `STARRY_CASE_BUILD_DIR`
 - `STARRY_CASE_OVERLAY_DIR`
+
+xtask 对 CMake configure、build 和 install 的成功输出默认静默，只保留对应阶段耗时。
+任一阶段失败时会回放完整命令、stdout、stderr、退出状态和阶段上下文。`prebuild.sh`
+以及 QEMU/guest 输出仍然实时显示，不能依赖成功路径的 CMake 输出作为测试判定标记。
 
 ## Grouped 用例
 

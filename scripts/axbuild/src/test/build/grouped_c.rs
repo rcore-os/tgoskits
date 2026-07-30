@@ -471,7 +471,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             &build_env,
             config,
         );
-        let result = configure.exec().with_context(|| {
+        let result = configure.exec_quiet().with_context(|| {
             format!(
                 "failed to configure grouped C subcase `{}`",
                 subcase.name.as_str()
@@ -489,7 +489,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ],
         );
         let mut build = build_cmake_build_command(&subcase_layout, &build_env);
-        let result = build.exec().with_context(|| {
+        let result = build.exec_quiet().with_context(|| {
             format!(
                 "failed to build grouped C subcase `{}`",
                 subcase.name.as_str()
@@ -507,7 +507,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ],
         );
         let mut install = build_cmake_install_command(&subcase_layout, &build_env);
-        let result = install.exec().with_context(|| {
+        let result = install.exec_quiet().with_context(|| {
             format!(
                 "failed to install grouped C subcase `{}`",
                 subcase.name.as_str()
@@ -560,7 +560,7 @@ pub(super) fn prepare_grouped_c_root_project_sync(
         config,
     );
     let result = configure
-        .exec()
+        .exec_quiet()
         .context("failed to configure grouped C root project");
     timing_stage.finish();
     result?;
@@ -575,7 +575,7 @@ pub(super) fn prepare_grouped_c_root_project_sync(
     );
     let mut build = build_cmake_build_command(layout, build_env);
     let result = build
-        .exec()
+        .exec_quiet()
         .context("failed to build grouped C root project");
     timing_stage.finish();
     result?;
@@ -589,7 +589,7 @@ pub(super) fn prepare_grouped_c_root_project_sync(
     );
     let mut install = build_cmake_install_command(layout, build_env);
     let result = install
-        .exec()
+        .exec_quiet()
         .context("failed to install grouped C root project");
     timing_stage.finish();
     result?;
