@@ -47,6 +47,23 @@ fn assert_contains(path: &Path, expected: &str) {
     );
 }
 
+fn assert_unique_source_contains(root: &Path, expected: &str) {
+    let matches = rust_sources(root)
+        .into_iter()
+        .filter(|path| {
+            fs::read_to_string(path)
+                .map(|source| compact(&source).contains(&compact(expected)))
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "{} must contain exactly one explicit `{expected}` declaration, found {matches:#?}",
+        root.display(),
+    );
+}
+
 #[test]
 fn selected_consumers_reject_the_ambiguous_ax_sync_mutex_alias() {
     let workspace = workspace_root();
@@ -125,8 +142,8 @@ fn consumer_lock_classes_match_their_waiting_behavior() {
     let fat = workspace.join("os/arceos/modules/axfs-ng/src/fs/fat/fs.rs");
     assert_contains(&fat, "inner: PiMutex<FatFilesystemInner>");
     assert_contains(&fat, "root_dir: SpinMutex<Option<DirEntry>>");
-    assert_contains(
-        &workspace.join("os/arceos/modules/axfs-ng/src/file/cache.rs"),
+    assert_unique_source_contains(
+        &workspace.join("os/arceos/modules/axfs-ng/src/file/cache"),
         "static CACHED_FILE_BY_INODE: spin::LazyLock<SpinMutex<InodeCacheIndex>>",
     );
 }
