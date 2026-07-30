@@ -113,28 +113,41 @@ pub(crate) fn enable_irqs_after_scheduler_online(_online: crate::task::Published
 #[cfg(feature = "irq")]
 struct ClockEventFiringGuard {
     active: bool,
+    #[cfg(feature = "multitask")]
+    scheduler_tick: bool,
 }
 
 #[cfg(feature = "irq")]
 impl ClockEventFiringGuard {
     fn begin(now_ns: u64) -> Self {
-        with_local_clock_event_mut(|clockevent| {
+        let _scheduler_tick = with_local_clock_event_mut(|clockevent| {
             clockevent.begin_firing();
-            clockevent.advance_periodic(now_ns, periodic_interval_nanos());
+            clockevent.advance_periodic(now_ns, periodic_interval_nanos())
         });
-        Self { active: true }
+        Self {
+            active: true,
+            #[cfg(feature = "multitask")]
+            scheduler_tick: _scheduler_tick,
+        }
     }
 
     #[cfg(feature = "multitask")]
     fn begin_if_due(now_ns: u64) -> Option<Self> {
-        let active = with_local_clock_event_mut(|clockevent| {
+        let scheduler_tick = with_local_clock_event_mut(|clockevent| {
             if !clockevent.begin_firing_if_due(now_ns) {
-                return false;
+                return None;
             }
-            clockevent.advance_periodic(now_ns, periodic_interval_nanos());
-            true
+            Some(clockevent.advance_periodic(now_ns, periodic_interval_nanos()))
         });
-        active.then_some(Self { active: true })
+        scheduler_tick.map(|scheduler_tick| Self {
+            active: true,
+            scheduler_tick,
+        })
+    }
+
+    #[cfg(feature = "multitask")]
+    const fn scheduler_tick(&self) -> bool {
+        self.scheduler_tick
     }
 
     fn finish(
@@ -186,7 +199,7 @@ pub(crate) fn recover_overdue_local_clock_event(now_ns: u64) -> bool {
     let Some(firing) = ClockEventFiringGuard::begin_if_due(now_ns) else {
         return false;
     };
-    let task_update = crate::task::recover_clock_event(now_ns);
+    let task_update = crate::task::recover_clock_event(now_ns, firing.scheduler_tick());
     firing.finish(task_update);
     true
 }
@@ -282,7 +295,7 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         let now_ns = ax_hal::time::monotonic_time_nanos();
         let firing = ClockEventFiringGuard::begin(now_ns);
         #[cfg(feature = "multitask")]
-        let task_update = crate::task::on_clock_event(now_ns);
+        let task_update = crate::task::on_clock_event(now_ns, firing.scheduler_tick());
         firing.finish(
             #[cfg(feature = "multitask")]
             task_update,

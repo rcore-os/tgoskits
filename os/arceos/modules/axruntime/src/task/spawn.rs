@@ -357,7 +357,10 @@ where
     .expose_provenance();
     // SAFETY: the boxed data remains live until the scheduler reaper invokes
     // `runtime_thread_drop_hook` through this exact ops table.
-    let extension = unsafe { ThreadExtension::new(data, &RUNTIME_THREAD_EXTENSION_OPS) };
+    let extension = unsafe {
+        // SAFETY: `data` is the unique live runtime allocation created above.
+        runtime_thread_extension(data)
+    };
     let mut spec = unsafe {
         // SAFETY: create_thread_resources returned one live bundle created by
         // this runtime, and this specification is its unique installation.

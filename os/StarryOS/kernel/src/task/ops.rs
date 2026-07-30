@@ -329,6 +329,16 @@ fn poll_interval_timers(proc_data: &ProcessData, token: Option<&AlarmToken>) {
     }
 }
 
+pub(crate) fn poll_process_cpu_timers_from_scheduler_tick(proc_data: &ProcessData) {
+    if !proc_data.has_active_cpu_interval_timers() {
+        return;
+    }
+    let snapshot = proc_data.cpu_time_snapshot();
+    if let Some(pending) = proc_data.poll_cpu_interval_timers(snapshot) {
+        apply_process_timer_actions(proc_data.proc.pid(), pending);
+    }
+}
+
 /// Poll process interval timers and POSIX timers.
 pub fn poll_process_timer(pid: Pid) {
     if let Ok(proc_data) = get_process_data(pid) {

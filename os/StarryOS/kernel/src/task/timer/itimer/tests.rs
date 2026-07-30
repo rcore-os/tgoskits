@@ -90,7 +90,7 @@ mod tests {
             );
 
             let wall_only_advanced = snapshot_at(100, 50, 1_000_000);
-            let pending = manager.poll(wall_only_advanced);
+            let pending = manager.poll_cpu(wall_only_advanced);
             assert_eq!(pending.signals().next(), None);
             assert!(!pending.publishes_wall_alarm());
             assert_eq!(
@@ -103,10 +103,30 @@ mod tests {
                 ITimerType::Prof => snapshot_at(100, 60, 1_000_001),
                 ITimerType::Real => unreachable!(),
             };
-            let expired = manager.poll(cpu_advanced);
+            let expired = manager.poll_cpu(cpu_advanced);
             assert_eq!(expired.signals().collect::<alloc::vec::Vec<_>>(), [signal]);
             assert!(!expired.publishes_wall_alarm());
         }
+    }
+
+    #[test]
+    fn scheduler_tick_poll_does_not_consume_the_wall_timer() {
+        let mut manager = ProcessTimerManager::new();
+        let armed_at = snapshot_at(0, 0, 0);
+        let _real = manager.set_itimer(ITimerType::Real, setting(0, 10), armed_at);
+        let _virtual = manager.set_itimer(ITimerType::Virtual, setting(0, 10), armed_at);
+
+        let pending = manager.poll_cpu(snapshot_at(10, 0, 10));
+
+        assert_eq!(
+            pending.signals().collect::<alloc::vec::Vec<_>>(),
+            [Signo::SIGVTALRM]
+        );
+        assert_eq!(
+            manager.active_mask(),
+            1 << ITimerType::Real as usize,
+            "the wall timer remains owned by its alarm generation"
+        );
     }
 
     #[test]

@@ -143,12 +143,12 @@ impl LocalClockEvent {
     ///
     /// A periodic clockevent is only one physical wakeup source. Whether the
     /// current thread must be preempted remains an ax-task policy decision.
-    pub(crate) fn advance_periodic(&mut self, now_ns: u64, interval_ns: u64) {
+    pub(crate) fn advance_periodic(&mut self, now_ns: u64, interval_ns: u64) -> bool {
         let Some(current) = self.periodic_deadline else {
-            return;
+            return false;
         };
         if now_ns < current.as_nanos() {
-            return;
+            return false;
         }
         self.periodic_deadline = crate::clock_event_runtime::next_periodic_deadline(
             current.as_nanos(),
@@ -156,6 +156,7 @@ impl LocalClockEvent {
             interval_ns,
         )
         .and_then(ClockDeadline::from_nanos);
+        true
     }
 
     pub(crate) fn finish_firing(&mut self) -> ClockEventAction {
@@ -334,7 +335,7 @@ mod tests {
             ClockEventAction::Program(deadline(u64::MAX - 5))
         );
         event.begin_firing();
-        event.advance_periodic(u64::MAX - 1, 10);
+        assert!(event.advance_periodic(u64::MAX - 1, 10));
         assert_eq!(event.finish_firing(), ClockEventAction::None);
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
@@ -422,7 +423,7 @@ mod tests {
         let mut event = LocalClockEvent::offline();
         event.online(Some(deadline(100)));
         event.begin_firing();
-        event.advance_periodic(100, 25);
+        assert!(event.advance_periodic(100, 25));
         event.publish_task(1, Some(140), false);
         assert_eq!(
             event.finish_firing(),
@@ -443,7 +444,7 @@ mod tests {
         );
 
         event.begin_firing();
-        event.advance_periodic(100, 25);
+        assert!(event.advance_periodic(100, 25));
         assert_eq!(event.publish_task(2, None, false), ClockEventAction::None);
 
         assert_eq!(
@@ -466,7 +467,7 @@ mod tests {
         );
 
         event.begin_firing();
-        event.advance_periodic(50, 25);
+        assert!(!event.advance_periodic(50, 25));
         assert_eq!(
             event.publish_task(2, Some(100), false),
             ClockEventAction::None,

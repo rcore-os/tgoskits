@@ -2,11 +2,26 @@ use super::*;
 
 /// Performs one bounded task-clockevent pass without allocation or callbacks.
 pub fn on_clock_event(now_ns: u64, budget: usize) -> Result<TaskClockEventOutcome, TaskError> {
+    on_clock_event_with_scheduler_tick(now_ns, budget, false)
+}
+
+/// Performs one bounded task-clockevent pass and records a periodic scheduler tick.
+///
+/// Scheduler-tick extension work, when enabled, is deferred to the dedicated
+/// task-work service and never invoked from this hard-IRQ path.
+pub fn on_clock_event_with_scheduler_tick(
+    now_ns: u64,
+    budget: usize,
+    scheduler_tick: bool,
+) -> Result<TaskClockEventOutcome, TaskError> {
     let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
     let timer_resolution_ns = task_runtime::timer_resolution_ns();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let charge = system.charge_current_until(cpu.as_mut(), now_ns, 0)?;
+    if scheduler_tick {
+        system.publish_current_scheduler_tick_work(&cpu);
+    }
     let batch = cpu
         .as_mut()
         .expire_task_deadlines(now_ns, timer_resolution_ns, budget);

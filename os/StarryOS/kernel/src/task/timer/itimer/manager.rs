@@ -38,6 +38,14 @@ impl ProcessTimerManager {
         self.poll_at(snapshot, false)
     }
 
+    pub(crate) fn poll_cpu(&mut self, snapshot: ProcessCpuTimeSnapshot) -> PendingTimerActions {
+        let mut pending = PendingTimerActions::new();
+        for ty in [ITimerType::Virtual, ITimerType::Prof] {
+            pending.record(ty, self.update_itimer(ty, snapshot, false));
+        }
+        pending
+    }
+
     pub(crate) fn poll_for_alarm(
         &mut self,
         snapshot: ProcessCpuTimeSnapshot,
@@ -46,7 +54,12 @@ impl ProcessTimerManager {
         if !self.real_alarm_slot.matches(token) {
             return PendingTimerActions::new();
         }
-        self.poll_at(snapshot, true)
+        let mut pending = PendingTimerActions::new();
+        pending.record(
+            ITimerType::Real,
+            self.update_itimer(ITimerType::Real, snapshot, true),
+        );
+        pending
     }
 
     fn poll_at(

@@ -9,8 +9,8 @@ use core::{
 
 use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
-    SchedulingKey, SchedulingUrgency, TaskError, ThreadAffinityCompletion, ThreadExtensionView,
-    ThreadId, ThreadSchedCell, ThreadState,
+    SchedulerTickWork, SchedulingKey, SchedulingUrgency, TaskError, ThreadAffinityCompletion,
+    ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
@@ -388,6 +388,9 @@ pub(crate) struct ThreadCore {
     // Immutable after publication. Every handle retaining this copy also pins
     // the registry-owned extension destructor through the reaper Arc contract.
     extension: Option<ThreadExtensionView>,
+    scheduler_tick_work: Option<SchedulerTickWork>,
+    scheduler_tick_work_generation: AtomicU64,
+    scheduler_tick_work_node: InboxNode,
     base_policy: AtomicPolicy,
     effective_policy: AtomicPolicy,
     effective_key_sequence: AtomicUsize,
@@ -421,6 +424,7 @@ impl ThreadCore {
         policy: SchedulePolicy,
         sched: Arc<ThreadSchedCell>,
         extension: Option<ThreadExtensionView>,
+        scheduler_tick_work: Option<SchedulerTickWork>,
         task_work: Option<Arc<TaskWorkDoorbell>>,
     ) -> Self {
         debug_assert_eq!(id, sched.id());
@@ -429,6 +433,9 @@ impl ThreadCore {
             id,
             sched,
             extension,
+            scheduler_tick_work,
+            scheduler_tick_work_generation: AtomicU64::new(0),
+            scheduler_tick_work_node: InboxNode::new(InboxKind::TaskWork),
             base_policy: AtomicPolicy::new(policy),
             effective_policy: AtomicPolicy::new(policy),
             effective_key_sequence: AtomicUsize::new(0),
@@ -526,6 +533,53 @@ impl ThreadCore {
 
     pub(crate) fn publish_task_work(&self) {
         self.reap_signal.publish();
+    }
+
+    pub(crate) fn begin_scheduler_tick_work(&self) -> bool {
+        let Some(work) = self.scheduler_tick_work.as_ref() else {
+            return false;
+        };
+        let Some(generation) = work.enabled_generation() else {
+            return false;
+        };
+        let mut pending = self.scheduler_tick_work_generation.load(Ordering::Acquire);
+        loop {
+            if pending == generation {
+                return false;
+            }
+            match self.scheduler_tick_work_generation.compare_exchange_weak(
+                pending,
+                generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return pending == 0,
+                Err(current) => pending = current,
+            }
+        }
+    }
+
+    pub(crate) fn cancel_scheduler_tick_work(&self) {
+        assert!(
+            self.scheduler_tick_work_generation
+                .swap(0, Ordering::AcqRel)
+                != 0,
+            "scheduler tick work cancellation requires a pending publication"
+        );
+    }
+
+    pub(crate) fn take_scheduler_tick_work(&self) -> Option<SchedulerTickWork> {
+        let generation = self
+            .scheduler_tick_work_generation
+            .swap(0, Ordering::AcqRel);
+        assert!(
+            generation != 0,
+            "scheduler tick work consumption requires a pending publication"
+        );
+        self.scheduler_tick_work
+            .as_ref()
+            .filter(|work| work.generation_is_enabled(generation))
+            .cloned()
     }
 
     pub(crate) fn try_claim_reap(&self) -> bool {
@@ -770,6 +824,10 @@ impl ThreadCore {
         &self.migration_node
     }
 
+    pub(crate) const fn scheduler_tick_work_node(&self) -> &InboxNode {
+        &self.scheduler_tick_work_node
+    }
+
     pub(crate) fn publish_wake(&self) -> bool {
         self.wake_state
             .fetch_or(WAKE_STATE_PUBLISHED, Ordering::AcqRel)
@@ -987,7 +1045,7 @@ mod tests {
 
     fn test_core(id: ThreadId, policy: SchedulePolicy) -> Arc<ThreadCore> {
         let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
-        Arc::new(ThreadCore::new(id, policy, sched, None, None))
+        Arc::new(ThreadCore::new(id, policy, sched, None, None, None))
     }
 
     #[test]

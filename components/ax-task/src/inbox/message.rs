@@ -12,6 +12,8 @@ pub enum InboxKind {
     Migration,
     /// Reap a thread, coroutine, context, or other deferred resource.
     Reclaim,
+    /// Run one typed extension callback in ordinary task context.
+    TaskWork,
 }
 
 /// Operation carried by one scheduler inbox message.
@@ -30,6 +32,8 @@ pub enum InboxOperation {
     BalanceRequest,
     /// Release one deferred task-context resource.
     Reclaim,
+    /// Account one coalesced scheduler tick outside hard IRQ context.
+    SchedulerTick,
 }
 
 /// Allocation-free scheduler request copied into owner CPU storage.
@@ -182,6 +186,19 @@ impl InboxMessage {
             source_cpu: Self::NO_CPU,
             target_cpu: Self::NO_CPU,
             generation,
+            payload,
+        }
+    }
+
+    /// Creates one retained scheduler-tick task-work request.
+    pub const fn scheduler_tick(thread_id: ThreadId, payload: usize) -> Self {
+        Self {
+            kind: InboxKind::TaskWork,
+            operation: InboxOperation::SchedulerTick,
+            thread_id,
+            source_cpu: Self::NO_CPU,
+            target_cpu: Self::NO_CPU,
+            generation: thread_id.generation() as u64,
             payload,
         }
     }
