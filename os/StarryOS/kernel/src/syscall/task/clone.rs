@@ -713,7 +713,7 @@ impl CloneArgs {
         #[cfg(target_arch = "riscv64")]
         let prepared_task = prepare_user_thread_with_fp_state_and_policy(
             new_user_task(new_uctx, set_child_tid),
-            curr.name(),
+            alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
             page_table_root,
             child_fp_state,
@@ -725,7 +725,7 @@ impl CloneArgs {
         #[cfg(not(target_arch = "riscv64"))]
         let prepared_task = prepare_user_thread_with_policy(
             new_user_task(new_uctx, set_child_tid),
-            curr.name(),
+            alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
             page_table_root,
             thr,

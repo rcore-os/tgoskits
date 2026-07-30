@@ -1,6 +1,6 @@
 //! Starry ownership adapter for runtime-backed scheduler threads.
 
-use alloc::{boxed::Box, string::String};
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{
     ptr,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -9,8 +9,8 @@ use core::{
 };
 
 use ax_kernel_guard::NoPreemptIrqSave;
-use ax_kspin::SpinNoIrq;
 use ax_std::os::arceos::task as scheduler;
+use ax_sync::PiMutex;
 
 use super::Thread;
 
@@ -97,17 +97,23 @@ impl UserTaskRef {
         self.extension().thread.as_ref()
     }
 
-    /// Returns the diagnostic task name retained by the Starry extension.
-    pub fn name(&self) -> String {
+    /// Returns a shared snapshot of the diagnostic task name.
+    pub fn name(&self) -> Arc<str> {
         self.extension().name.lock().clone()
     }
 
     /// Replaces the Linux-visible thread command name.
     pub fn set_name(&self, name: &str) {
         let extension = self.extension();
-        let mut stored_name = extension.name.lock();
-        *stored_name = String::from(name);
-        extension.irq_identity.set_comm(name);
+        let replacement = Arc::<str>::from(name);
+        let previous = {
+            let mut stored_name = extension.name.lock();
+            let previous = core::mem::replace(&mut *stored_name, replacement);
+            extension.irq_identity.set_comm(name);
+            previous
+        };
+        // The old snapshot may own the final allocation reference.
+        drop(previous);
     }
 
     /// Returns whether Linux `RESET_ON_FORK` is active for this thread.
@@ -575,7 +581,7 @@ where
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
     let data = Box::into_raw(Box::new(StarryUserTaskExtension {
         thread,
-        name: SpinNoIrq::new(name.clone()),
+        name: PiMutex::new(Arc::from(name.as_str())),
         irq_identity,
         deadline_overrun: AtomicBool::new(false),
         reset_on_fork: AtomicBool::new(context_state.reset_on_fork),
@@ -643,7 +649,7 @@ fn finish_published_user_thread(handle: scheduler::ThreadHandle) -> UserTaskRef 
 
 struct StarryUserTaskExtension {
     thread: Box<Thread>,
-    name: SpinNoIrq<String>,
+    name: PiMutex<Arc<str>>,
     irq_identity: IrqTaskIdentity,
     deadline_overrun: AtomicBool,
     reset_on_fork: AtomicBool,
@@ -846,6 +852,16 @@ mod tests {
     fn accepts_only_starry_extension_ops_identity() {
         assert!(is_starry_thread_extension(&STARRY_USER_TASK_EXTENSION_OPS));
         assert!(!is_starry_thread_extension(&FOREIGN_EXTENSION_OPS));
+    }
+
+    #[test]
+    fn task_name_uses_a_sleepable_snapshot_lock() {
+        fn assert_name_lock(_: &ax_sync::PiMutex<alloc::sync::Arc<str>>) {}
+        fn assert_extension_name_lock(extension: &StarryUserTaskExtension) {
+            assert_name_lock(&extension.name);
+        }
+
+        let _ = assert_extension_name_lock as fn(&StarryUserTaskExtension);
     }
 
     #[test]
