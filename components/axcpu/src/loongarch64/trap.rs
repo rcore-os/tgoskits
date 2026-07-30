@@ -101,6 +101,10 @@ fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>) {
 
 fn handle_page_fault(tf: &mut KernelTrapFrame<'_>, access_flags: PageFaultFlags) {
     let vaddr = va!(badv::read().vaddr());
+    #[cfg(feature = "exception-table")]
+    if tf.raw.0.fixup_nofault_exception() {
+        return;
+    }
     if crate::trap::call_page_fault_handler_with_parent_irqs(
         vaddr,
         access_flags,

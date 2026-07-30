@@ -6,9 +6,18 @@ pub fn pi_wait_start(lock: PiLockId, owner: ThreadId) -> Result<PiWaitToken, Tas
     runtime_task_system()?.pi_wait_start(lock, waiter, owner)
 }
 
-/// Blocks the calling waiter unless handoff already granted its token.
+/// Creates a PI wait registration in an ownerless mutex claim window.
+pub fn pi_wait_start_pending(
+    lock: PiLockId,
+    pending_head: ThreadId,
+) -> Result<PiWaitToken, TaskError> {
+    let waiter = current_thread_id()?;
+    runtime_task_system()?.pi_wait_start_pending(lock, waiter, pending_head)
+}
+
+/// Blocks the calling waiter until it is selected to claim or granted.
 pub fn pi_block_current(token: &PiWaitToken) -> Result<(), TaskError> {
-    if token.is_granted() {
+    if token.is_selected() || token.is_granted() {
         return Ok(());
     }
     let system = runtime_task_system()?;
@@ -22,7 +31,7 @@ pub fn pi_block_current(token: &PiWaitToken) -> Result<(), TaskError> {
             let mut cpu = runtime_current_cpu_mut(&mut irq)?;
             system.drain_policy_updates(cpu.as_mut(), now_ns)?;
         }
-        if token.is_granted() {
+        if token.is_selected() || token.is_granted() {
             return Ok(());
         }
         let mut ticket = {
@@ -32,12 +41,12 @@ pub fn pi_block_current(token: &PiWaitToken) -> Result<(), TaskError> {
                 ParkPrepare::Prepared(ticket) => ticket,
             }
         };
-        if token.is_granted() {
+        if token.is_selected() || token.is_granted() {
             cancel_current_park(&mut ticket)?;
             return Ok(());
         }
         commit_current_park(&mut ticket)?;
-        if token.is_granted() {
+        if token.is_selected() || token.is_granted() {
             return Ok(());
         }
     }
@@ -55,6 +64,24 @@ pub fn prepare_pi_mutex_handoff(
     next_owner: Option<ThreadId>,
 ) -> Result<PiMutexHandoff<'static>, TaskError> {
     runtime_task_system()?.prepare_pi_mutex_handoff(lock, old_owner, next_owner)
+}
+
+/// Prepares the scheduler half of a contended PI mutex release.
+pub fn prepare_pi_mutex_release(
+    lock: PiLockId,
+    old_owner: ThreadId,
+    selected: ThreadId,
+) -> Result<PiMutexRelease<'static>, TaskError> {
+    runtime_task_system()?.prepare_pi_mutex_release(lock, old_owner, selected)
+}
+
+/// Prepares the scheduler half of claiming an ownerless PI mutex.
+pub fn prepare_pi_mutex_claim(
+    lock: PiLockId,
+    pending_head: ThreadId,
+    claimant: ThreadId,
+) -> Result<PiMutexClaim<'static>, TaskError> {
+    runtime_task_system()?.prepare_pi_mutex_claim(lock, pending_head, claimant)
 }
 
 /// Publishes a targeted task-context wake after PI metadata handoff.

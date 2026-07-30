@@ -6,10 +6,10 @@ use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 use crate::{
     CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult,
     IrqUnregisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit,
-    ParkPrepare, PiLockId, PiMutexHandoff, PiWaitToken, RtPriority, ScheduleDecision,
-    SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadExtensionLease,
-    ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState, ThreadWakeHandle, WaitQueue,
-    WakeResult,
+    ParkPrepare, PiLockId, PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority,
+    ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
+    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
+    ThreadWakeHandle, WaitQueue, WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
     runtime::{
@@ -31,7 +31,10 @@ pub(crate) use deadline::{
     arm_current_park_deadline, cancel_current_park, cancel_current_park_deadline,
     commit_current_park, prepare_current_park,
 };
-pub use pi::{pi_block_current, pi_wait_cancel, pi_wait_start, pi_wake, prepare_pi_mutex_handoff};
+pub use pi::{
+    pi_block_current, pi_wait_cancel, pi_wait_start, pi_wait_start_pending, pi_wake,
+    prepare_pi_mutex_claim, prepare_pi_mutex_handoff, prepare_pi_mutex_release,
+};
 use runtime_cpu::{
     RuntimeCpuPin, RuntimeSchedulerFrameGuard, runtime_current_cpu, validate_schedule_context,
 };
@@ -87,6 +90,20 @@ pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
         .ok_or(TaskError::NotInitialized)?
         .current_thread()
         .ok_or(TaskError::NoRunnableThread)
+}
+
+/// Tests the current CPU's sticky reschedule request while migration is pinned.
+///
+/// # Safety
+///
+/// The caller must prevent migration until it has finished the decision that
+/// uses this snapshot. Sleeping-lock owner spinning normally satisfies this
+/// with a preemption guard.
+pub unsafe fn current_needs_reschedule_pinned() -> Result<bool, TaskError> {
+    let cpu = CpuId::new(task_runtime::current_cpu_id().as_u32());
+    Ok(cpu_local_for_wake(cpu)
+        .ok_or(TaskError::NotInitialized)?
+        .needs_reschedule())
 }
 
 fn current_thread_id_from_cpu() -> Result<ThreadId, TaskError> {

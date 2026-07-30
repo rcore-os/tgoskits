@@ -249,7 +249,7 @@ impl CpuRemote {
         }
     }
 
-    fn begin_publication(&self) -> Option<CpuRemotePublication<'_>> {
+    pub(crate) fn begin_publication(&self) -> Option<CpuRemotePublication<'_>> {
         let mut current = self.lifecycle.load(Ordering::Acquire);
         loop {
             if current & CPU_LIFECYCLE_MASK != 0 {
@@ -452,9 +452,17 @@ impl CpuRemote {
         node: Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
-        let Some(_remote_publication) = self.begin_publication() else {
+        let Some(remote_publication) = self.begin_publication() else {
             return PublishResult::WrongKind;
         };
+        remote_publication.publish_policy_update(node, message)
+    }
+
+    fn publish_policy_update_owned(
+        &self,
+        node: Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> PublishResult {
         let _irq = IrqScope::enter();
         let (result, _head_became_non_empty) = self
             .migration_inbox
@@ -668,8 +676,18 @@ impl CpuRemote {
     }
 }
 
-struct CpuRemotePublication<'remote> {
+pub(crate) struct CpuRemotePublication<'remote> {
     remote: &'remote CpuRemote,
+}
+
+impl CpuRemotePublication<'_> {
+    pub(crate) fn publish_policy_update(
+        self,
+        node: Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> PublishResult {
+        self.remote.publish_policy_update_owned(node, message)
+    }
 }
 
 impl Drop for CpuRemotePublication<'_> {

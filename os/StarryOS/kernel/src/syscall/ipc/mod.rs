@@ -99,6 +99,7 @@ pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
         mode: 0o644, // rw-r--r-- (owner has read+write)
         seq: 0,
         pad: 0,
+        alignment_pad: 0,
         unused0: 0,
         unused1: 0,
     };
@@ -129,6 +130,7 @@ pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
         mode: 0o444, // r--r--r-- (only read)
         seq: 0,
         pad: 0,
+        alignment_pad: 0,
         unused0: 0,
         unused1: 0,
     };

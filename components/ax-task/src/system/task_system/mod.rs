@@ -36,7 +36,7 @@ pub use outcome::{
     ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, RemoteWakeDrain,
     ScheduleDecision, SchedulerOutcome,
 };
-pub use pi::PiMutexHandoff;
+pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};
 use registry::{
     CpuRegistration, DetachedThreadRecord, PendingResourceRelease, PiRecomputeProof,
     PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
@@ -48,13 +48,13 @@ use super::thread_sched::{
 #[cfg(test)]
 use crate::runtime::ExecutionContextHandle;
 use crate::{
-    CpuId, CpuLocal, CpuRemote, CpuSet, CpuSnapshot, DeadlineAdmission, DeadlineBandwidthSnapshot,
-    DeadlineEntity, EnqueueReason, FairMode, ParkCommit, ParkPrepare, ParkTicket, PiLockId,
-    PiWaitToken, QueuedThread, SchedulePolicy, SchedulingClass, SchedulingEntity, SwitchReason,
-    TaskError, TaskSystemConfig, ThreadAffinityChange, ThreadCore, ThreadExtension,
-    ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId,
-    ThreadLifecycle, ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
-    ThreadWakeHandle,
+    CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot, DeadlineAdmission,
+    DeadlineBandwidthSnapshot, DeadlineEntity, EnqueueReason, FairMode, ParkCommit, ParkPrepare,
+    ParkTicket, PiLockId, PiWaitToken, QueuedThread, SchedulePolicy, SchedulingClass,
+    SchedulingEntity, SwitchReason, TaskError, TaskSystemConfig, ThreadAffinityChange, ThreadCore,
+    ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView,
+    ThreadHandle, ThreadId, ThreadLifecycle, ThreadResources, ThreadRuntimeSnapshot, ThreadSpec,
+    ThreadState, ThreadWakeHandle,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
@@ -204,8 +204,17 @@ fn validate_affinity(affinity: &CpuSet, cpu_count: usize) -> Result<(), TaskErro
     }
 }
 
+// The top bit of the generation-bearing identity is reserved for compact
+// scheduler-adjacent owner words such as the Linux-style PI mutex waiters bit.
+// Exhausting a slot retires it instead of wrapping and reintroducing ABA.
+const MAX_THREAD_GENERATION: u32 = i32::MAX as u32;
+
 const fn next_generation(generation: u32) -> u32 {
-    generation.saturating_add(1)
+    if generation < MAX_THREAD_GENERATION {
+        generation + 1
+    } else {
+        generation
+    }
 }
 
 fn advance_thread_slot_generation(slot: &mut ThreadSlot) -> bool {

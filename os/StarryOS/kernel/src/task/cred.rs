@@ -85,6 +85,30 @@ impl Cred {
         }
     }
 
+    /// Create credentials for an unprivileged identity.
+    ///
+    /// The bounding set remains full so future privileged transitions can
+    /// still be represented, but the effective/permitted/ambient sets start
+    /// empty.
+    pub fn unprivileged(uid: u32, gid: u32) -> Self {
+        Self {
+            uid,
+            gid,
+            euid: uid,
+            egid: gid,
+            suid: uid,
+            sgid: gid,
+            fsuid: uid,
+            fsgid: gid,
+            groups: Arc::from([].as_slice()),
+            cap_inheritable: 0,
+            cap_permitted: 0,
+            cap_effective: 0,
+            cap_bounding: CAP_MASK,
+            cap_ambient: 0,
+        }
+    }
+
     /// Check whether a capability is present in the effective set.
     pub fn has_cap(&self, cap: u32) -> bool {
         self.cap_effective & cap_bit(cap) != 0
@@ -269,6 +293,10 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
 
     // Exercise every has_cap_* helper at least once on a root credential so
     // the bit checks are covered. All of these must be true for root.
+    #[cfg(feature = "rga")]
+    let root_rawio = root.has_cap_sys_rawio();
+    #[cfg(not(feature = "rga"))]
+    let root_rawio = true;
     let root_capability_helpers = root.has_cap_setuid()
         && root.has_cap_setgid()
         && root.has_cap_net_raw()
@@ -276,7 +304,7 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
         && root.has_cap_sys_resource()
         && root.has_cap_sys_admin()
         && root.has_cap_sys_boot()
-        && root.has_cap_sys_rawio()
+        && root_rawio
         && root.has_cap_sys_module()
         && root.has_cap_chown()
         && root.has_cap_dac_override()
@@ -291,12 +319,16 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
     // remaining capability helpers report false for non-root.
     let mut net_raw_only = Cred::unprivileged(1000, 100);
     net_raw_only.cap_effective = cap_bit(CAP_NET_RAW);
+    #[cfg(feature = "rga")]
+    let net_raw_lacks_rawio = !net_raw_only.has_cap_sys_rawio();
+    #[cfg(not(feature = "rga"))]
+    let net_raw_lacks_rawio = true;
     let selective_capability_helpers = net_raw_only.has_cap_net_raw()
         && !net_raw_only.has_cap_setuid()
         && !net_raw_only.has_cap_setgid()
         && !net_raw_only.has_cap_sys_admin()
         && !net_raw_only.has_cap_sys_boot()
-        && !net_raw_only.has_cap_sys_rawio()
+        && net_raw_lacks_rawio
         && !net_raw_only.has_cap_sys_module()
         && !net_raw_only.has_cap_sys_nice()
         && !net_raw_only.has_cap_sys_resource()

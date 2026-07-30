@@ -129,6 +129,39 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
 }
 
 #[test]
+fn policy_update_doorbell_runs_outside_cold_irq_lock_domains() {
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    let owner_scope_guards = crate::test_runtime::active_irq_guards();
+
+    system
+        .set_thread_policy(
+            thread.id(),
+            SchedulePolicy::fifo(crate::RtPriority::new(1).unwrap()),
+        )
+        .unwrap();
+
+    assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_irq_guards(),
+        owner_scope_guards + 1,
+        "the inbox publish guard may cover the doorbell, but registry/root-domain guards must be \
+         gone"
+    );
+}
+
+#[test]
 fn coalesced_busy_ipi_drains_real_payloads_and_accepts_new_epoch() {
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -488,19 +521,19 @@ fn configuration_rejects_batch_larger_than_irq_contract() {
 #[test]
 fn exhausted_thread_slot_generation_never_wraps_to_the_first_identity() {
     assert_ne!(
-        next_generation(u32::MAX),
+        next_generation(MAX_THREAD_GENERATION),
         1,
         "slot reuse must not make an old generation-1 ThreadId valid again"
     );
     let mut slot = ThreadSlot {
-        generation: u32::MAX,
+        generation: MAX_THREAD_GENERATION,
         record: None,
     };
     assert!(
         !advance_thread_slot_generation(&mut slot),
         "an exhausted empty slot must be retired rather than reused"
     );
-    assert_eq!(slot.generation, u32::MAX);
+    assert_eq!(slot.generation, MAX_THREAD_GENERATION);
 }
 
 use crate::{DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, ThreadExtensionOps};
@@ -724,6 +757,39 @@ fn context_is_bound_to_the_allocated_thread_before_new_is_published() {
             context,
             identity: ThreadIdentityV1::new(thread.id().slot(), thread.id().generation()),
         })
+    );
+}
+
+#[test]
+fn context_binding_runs_outside_irq_disabled_registry_section() {
+    crate::test_runtime::configure_context_binding(RuntimeStatus::Success);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let context = unsafe {
+        // SAFETY: the unit runtime models this non-zero scalar as a live
+        // context until the task-system fixture is dropped.
+        ExecutionContextHandle::from_raw(0x1800)
+    };
+    let resources = unsafe {
+        // SAFETY: this specification is the sole owner of the modeled context.
+        ThreadResources::new(
+            context,
+            crate::runtime::StackHandle::NONE,
+            crate::runtime::TlsHandle::NONE,
+            crate::runtime::AddressSpaceHandle::NONE,
+        )
+    };
+
+    let _thread = system
+        .create_thread(unsafe {
+            // SAFETY: ownership of `resources` is transferred exactly once.
+            ThreadSpec::new(Default::default()).with_resources(resources)
+        })
+        .unwrap();
+
+    assert_eq!(
+        crate::test_runtime::irq_guards_at_context_bind(),
+        0,
+        "runtime binding may allocate or invoke platform code and must not run under an IRQ lock"
     );
 }
 
@@ -2176,6 +2242,30 @@ fn load_summary_publication_does_not_scan_runnable_threads() {
 }
 
 #[test]
+fn one_owner_selection_publishes_one_load_summary() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online_at(cpu.as_mut(), 0).unwrap();
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+
+    balance::reset_load_summary_publications();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 0).unwrap().next(),
+        thread.id()
+    );
+
+    assert_eq!(
+        balance::load_summary_publications(),
+        1,
+        "the already-published owner snapshot must serve the post-selection balance tail"
+    );
+}
+
+#[test]
 fn deadline_affinity_must_cover_online_root_domain() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -2361,6 +2451,34 @@ fn pi_registration_does_not_scan_unrelated_registry_slots() {
 }
 
 #[test]
+fn equal_urgency_pi_registration_does_not_rescan_owner_donors() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let first = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let second = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let lock = PiLockIdentity::new().id().unwrap();
+    let first_wait = system.pi_wait_start(lock, first.id(), owner.id()).unwrap();
+    registry::reset_pi_donor_record_visits();
+
+    let second_wait = system.pi_wait_start(lock, second.id(), owner.id()).unwrap();
+
+    assert_eq!(
+        registry::pi_donor_record_visits(),
+        0,
+        "an equal-urgency waiter cannot change the owner or its upstream donation chain"
+    );
+    assert_eq!(owner.effective_policy(), owner.policy());
+    system.pi_wait_cancel(second_wait).unwrap();
+    system.pi_wait_cancel(first_wait).unwrap();
+}
+
+#[test]
 fn failed_pi_registration_does_not_publish_a_partial_edge() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let owner = system
@@ -2432,7 +2550,7 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
         state.thread_record(waiter.id()).unwrap().blocked_on,
         Some(PiWaitRegistration {
             lock,
-            owner: owner.id(),
+            owner: Some(owner.id()),
             generation: token.generation,
             owner_prev: None,
             owner_next: None,
@@ -2474,7 +2592,7 @@ fn dropped_pi_handoff_preparation_leaves_the_wait_transaction_intact() {
         state.thread_record(waiter.id()).unwrap().blocked_on,
         Some(PiWaitRegistration {
             lock,
-            owner: owner.id(),
+            owner: Some(owner.id()),
             generation: token.generation,
             owner_prev: None,
             owner_next: None,

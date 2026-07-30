@@ -2,7 +2,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 use core::{
-    sync::atomic::{AtomicI32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
     time::Duration,
 };
 
@@ -63,6 +63,7 @@ pub struct TimerSpec {
 /// Per-process POSIX timer table.
 pub struct PosixTimerTable {
     next_id: AtomicI32,
+    armed: AtomicBool,
     timers: PiMutex<BTreeMap<i32, PosixTimer>>,
 }
 
@@ -70,6 +71,7 @@ impl Default for PosixTimerTable {
     fn default() -> Self {
         Self {
             next_id: AtomicI32::new(0),
+            armed: AtomicBool::new(false),
             timers: PiMutex::new(BTreeMap::new()),
         }
     }
@@ -107,6 +109,18 @@ fn clock_now_ns(clock_id: u32) -> u64 {
 }
 
 impl PosixTimerTable {
+    fn publish_armed_state(&self, timers: &BTreeMap<i32, PosixTimer>) {
+        self.armed.store(
+            timers.values().any(|timer| timer.deadline_ns != 0),
+            Ordering::Release,
+        );
+    }
+
+    /// Returns whether an expiry scan can observe an armed timer.
+    pub fn has_armed_timers(&self) -> bool {
+        self.armed.load(Ordering::Acquire)
+    }
+
     /// Create a new POSIX timer. Returns the timer ID.
     pub fn create(
         &self,
@@ -149,11 +163,14 @@ impl PosixTimerTable {
 
     /// Delete a timer. Returns true if it existed.
     pub fn delete(&self, id: i32) -> bool {
-        let cancellation = self
-            .timers
-            .lock()
-            .remove(&id)
-            .map(|timer| timer.alarm_slot.replace(None));
+        let cancellation = {
+            let mut timers = self.timers.lock();
+            let cancellation = timers
+                .remove(&id)
+                .map(|timer| timer.alarm_slot.replace(None));
+            self.publish_armed_state(&timers);
+            cancellation
+        };
         if let Some(cancellation) = cancellation {
             cancellation.apply_cancellation();
             true
@@ -171,6 +188,7 @@ impl PosixTimerTable {
                 .map(|timer| timer.alarm_slot.replace(None))
                 .collect::<Vec<_>>();
             timers.clear();
+            self.armed.store(false, Ordering::Release);
             cancellations
         };
         for cancellation in cancellations {
@@ -247,10 +265,9 @@ impl PosixTimerTable {
                 Some(Duration::from_nanos(remaining))
             };
 
-            (
-                (old_interval, old_remaining),
-                timer.alarm_slot.replace(alarm_delay),
-            )
+            let alarm_change = timer.alarm_slot.replace(alarm_delay);
+            self.publish_armed_state(&timers);
+            ((old_interval, old_remaining), alarm_change)
         };
 
         // The alarm queue is a sleeping task-context boundary. Never enter it
@@ -280,6 +297,9 @@ impl PosixTimerTable {
     /// `task` is the user task that owns these timers (needed to
     /// re-register alarms for periodic timers).
     pub fn poll_expired(&self, pid: Pid, mut emitter: impl FnMut(SignalInfo)) {
+        if !self.has_armed_timers() {
+            return;
+        }
         self.poll_expired_at(pid, None, clock_now_ns, &mut emitter);
     }
 
@@ -289,6 +309,9 @@ impl PosixTimerTable {
         token: &AlarmToken,
         mut emitter: impl FnMut(SignalInfo),
     ) {
+        if !self.has_armed_timers() {
+            return;
+        }
         self.poll_expired_at(pid, Some(token), clock_now_ns, &mut emitter);
     }
 
@@ -350,6 +373,7 @@ impl PosixTimerTable {
                         ))));
                     }
                 }
+                self.publish_armed_state(&timers);
             },
             |action| match action {
                 ExpiryAction::Emit(signal) => emitter(signal),
@@ -363,7 +387,9 @@ impl PosixTimerTable {
 mod tests {
     use core::cell::Cell;
 
-    use super::dispatch_timer_actions;
+    use linux_raw_sys::general::CLOCK_MONOTONIC;
+
+    use super::{AlarmSlot, PosixTimer, PosixTimerTable, dispatch_timer_actions};
 
     #[test]
     fn expiry_callback_runs_after_releasing_timer_metadata() {
@@ -387,6 +413,36 @@ mod tests {
         );
 
         assert!(callback_ran.get());
+    }
+
+    #[test]
+    fn armed_gate_tracks_deadline_metadata() {
+        let table = PosixTimerTable::default();
+        assert!(!table.has_armed_timers());
+
+        {
+            let mut timers = table.timers.lock();
+            timers.insert(
+                1,
+                PosixTimer {
+                    clock_id: CLOCK_MONOTONIC,
+                    signo: None,
+                    sigev_value: 0,
+                    interval_ns: 0,
+                    deadline_ns: 1,
+                    alarm_slot: AlarmSlot::new(),
+                },
+            );
+            table.publish_armed_state(&timers);
+        }
+        assert!(table.has_armed_timers());
+
+        {
+            let mut timers = table.timers.lock();
+            timers.get_mut(&1).unwrap().deadline_ns = 0;
+            table.publish_armed_state(&timers);
+        }
+        assert!(!table.has_armed_timers());
     }
 }
 
@@ -424,4 +480,43 @@ pub(crate) fn posix_timer_clock_validation_rules_hold_for_test() -> bool {
         && unknown
         && valid_known
         && invalid_unknown
+}
+
+#[cfg(axtest)]
+pub(crate) fn posix_timer_active_gate_rules_hold_for_test() -> bool {
+    let timers = PosixTimerTable::default();
+    let Ok(id) = timers.create(CLOCK_MONOTONIC, SIGEV_NONE, 0, 0) else {
+        return false;
+    };
+    if timers.has_armed_timers() {
+        return false;
+    }
+
+    let armed = timers.settime(
+        1,
+        id,
+        0,
+        TimerSpec {
+            value_sec: 0,
+            value_nsec: 1_000_000,
+            interval_sec: 0,
+            interval_nsec: 0,
+        },
+    );
+    if armed.is_err() || !timers.has_armed_timers() {
+        return false;
+    }
+
+    let disarmed = timers.settime(
+        1,
+        id,
+        0,
+        TimerSpec {
+            value_sec: 0,
+            value_nsec: 0,
+            interval_sec: 0,
+            interval_nsec: 0,
+        },
+    );
+    disarmed.is_ok() && !timers.has_armed_timers() && timers.delete(id)
 }

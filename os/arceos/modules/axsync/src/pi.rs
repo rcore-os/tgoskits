@@ -55,6 +55,19 @@ impl WaiterNode {
         self.granted.load(Ordering::Acquire)
     }
 
+    /// Returns the generation-bearing scheduler identity of this waiter.
+    pub(crate) const fn thread_id(&self) -> ThreadId {
+        self.thread_id
+    }
+
+    /// Returns this waiter's current urgency without its FIFO tie-break.
+    pub(crate) fn effective_urgency(&self) -> SchedulingUrgency {
+        self.thread
+            .as_ref()
+            .map(ThreadHandle::effective_scheduling_urgency)
+            .unwrap_or(self.urgency)
+    }
+
     #[cfg(test)]
     fn new_for_test(
         thread_id: ThreadId,
@@ -194,13 +207,17 @@ impl WaiterQueue {
     }
 
     /// Returns whether the queue contains no waiters.
-    #[cfg(test)]
     pub(crate) const fn is_empty(&self) -> bool {
         self.len == 0
     }
 }
 
 impl WaiterPointer {
+    /// Creates a metadata-owned pointer for a pinned local waiter.
+    pub(crate) fn from_pin(waiter: Pin<&WaiterNode>) -> Self {
+        Self(NonNull::from(waiter.get_ref()))
+    }
+
     /// Returns the selected waiter's thread identity.
     /// # Safety
     ///

@@ -66,8 +66,22 @@ impl TaskSystem {
             return Ok(None);
         }
         self.ensure_owner_cpu_online(&cpu)?;
-        let source = cpu.owner();
         self.publish_owner_cpu_load_summary(cpu.as_mut());
+        self.push_overloaded_from_published_summary(cpu)
+    }
+
+    /// Pushes from the coherent owner snapshot published by the immediately
+    /// preceding runqueue transaction.
+    ///
+    /// Scheduler selection publishes after installing its next dispatch, so
+    /// its common tail can reuse that snapshot just as Linux keeps balancing
+    /// decisions under one owner-rq transaction. Callers must not mutate the
+    /// local runqueue or current dispatch between publication and this call.
+    pub(super) fn push_overloaded_from_published_summary(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<Option<ThreadId>, TaskError> {
+        let source = cpu.owner();
         let Some(source_summary) = cpu.try_load_summary() else {
             return Ok(None);
         };

@@ -201,6 +201,14 @@ impl CpuSet {
                 .zip(&required.allowed)
                 .all(|(allowed, is_required)| !is_required || *allowed)
     }
+
+    pub(crate) fn copy_from_set(&mut self, source: &Self) -> Result<(), TaskError> {
+        if self.allowed.len() != source.allowed.len() {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.allowed.copy_from_slice(&source.allowed);
+        Ok(())
+    }
 }
 
 /// OS-owned callbacks attached to a thread without exposing OS types.

@@ -179,12 +179,7 @@ pub fn sys_times(tms: *mut Tms) -> AxResult<isize> {
 pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
     let ty = ITimerType::from_repr(which).ok_or(AxError::InvalidInput)?;
     let curr = current_user_task();
-    let (it_interval, it_value) = curr
-        .as_thread()
-        .proc_data
-        .interval_timers()
-        .lock()
-        .get_itimer(ty);
+    let (it_interval, it_value) = curr.as_thread().proc_data.get_interval_timer(ty);
 
     write_itimerval(
         value,
@@ -220,10 +215,7 @@ pub fn sys_setitimer(
 
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
-    let outcome = proc_data
-        .interval_timers()
-        .lock()
-        .set_itimer(ty, interval, remained);
+    let outcome = proc_data.set_interval_timer(ty, interval, remained);
     let old = outcome.apply(crate::task::AlarmTarget::Process(pid));
 
     if let Some(old_value) = old_value.nullable() {

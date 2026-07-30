@@ -629,10 +629,16 @@ mod tests {
         let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         let _context_switch = test_runtime::allow_context_switch();
         test_runtime::reset_scheduler_frame_state();
+        test_runtime::reset_cpu_handle_reads();
 
         let decision = schedule_current_cpu().unwrap().decision().unwrap();
 
         assert!(decision.requires_context_switch());
+        assert_eq!(
+            test_runtime::cpu_handle_reads(),
+            (2, 2),
+            "scheduler entry must capture once and switch return must refresh once"
+        );
         assert_eq!(
             test_runtime::scheduler_frame_state(),
             (0, 1, 1),
@@ -963,6 +969,34 @@ mod tests {
             Some(TaskError::CpuOwnerBorrowed)
         );
         assert_eq!(owner_pin.as_ref().get_ref().owner(), CpuId::new(0));
+    }
+
+    #[test]
+    fn irq_pin_captures_runtime_cpu_handles_once() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_cpu_handle_reads();
+
+        let mut irq = RuntimeIrqGuard::enter();
+        {
+            let owner = runtime_current_cpu_mut(&mut irq).unwrap();
+            assert_eq!(owner.owner(), CpuId::new(0));
+        }
+        {
+            let owner = runtime_current_cpu_mut(&mut irq).unwrap();
+            assert_eq!(owner.owner(), CpuId::new(0));
+        }
+
+        assert_eq!(
+            test_runtime::cpu_handle_reads(),
+            (1, 1),
+            "one migration pin must validate its CPU-local identity once"
+        );
     }
 
     #[test]

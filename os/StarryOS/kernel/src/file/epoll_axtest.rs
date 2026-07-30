@@ -53,8 +53,8 @@ pub(crate) fn concurrent_reverse_add_is_serialized_for_test() -> bool {
         )
     };
 
-    left_task.join();
-    right_task.join();
+    crate::task::join_kernel_thread(left_task);
+    crate::task::join_kernel_thread(right_task);
     EPOLL_ADD_TEST_BARRIER_ENABLED.store(false, Ordering::Release);
 
     let results = results.lock();

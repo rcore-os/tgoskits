@@ -180,7 +180,7 @@ impl TaskSystemState {
             .thread_record(waiter)?
             .blocked_on
             .ok_or(TaskError::InvalidPiState)?;
-        if registration.owner != cursor.owner || registration.owner_prev != cursor.previous {
+        if registration.owner != Some(cursor.owner) || registration.owner_prev != cursor.previous {
             return Err(TaskError::InvalidPiState);
         }
         cursor.previous = Some(waiter);
@@ -487,7 +487,10 @@ impl TaskSystemState {
             let Some(registration) = self.thread_record(owner)?.blocked_on else {
                 return Ok(());
             };
-            owner = registration.owner;
+            let Some(next_owner) = registration.owner else {
+                return Ok(());
+            };
+            owner = next_owner;
         }
         Err(TaskError::PiCycle)
     }
@@ -639,7 +642,10 @@ impl TaskSystemState {
             let Some(registration) = blocked_on else {
                 return Ok(PiRecomputeProof { start });
             };
-            current = registration.owner;
+            let Some(owner) = registration.owner else {
+                return Ok(PiRecomputeProof { start });
+            };
+            current = owner;
         }
         Err(TaskError::PiCycle)
     }
@@ -789,7 +795,10 @@ impl TaskSystemState {
             let Some(registration) = blocked_on else {
                 return;
             };
-            current = registration.owner;
+            let Some(owner) = registration.owner else {
+                return;
+            };
+            current = owner;
         }
         unreachable!("prepared PI chain must be acyclic");
     }
@@ -889,7 +898,10 @@ impl PendingResourceRelease {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PiWaitRegistration {
     pub(super) lock: PiLockId,
-    pub(super) owner: ThreadId,
+    /// Current donation owner. `None` denotes an ownerless rtmutex claim
+    /// window; `owner_prev`/`owner_next` then form the pending lock chain
+    /// anchored by the mutex-local selected waiter.
+    pub(super) owner: Option<ThreadId>,
     pub(super) generation: u64,
     pub(super) owner_prev: Option<ThreadId>,
     pub(super) owner_next: Option<ThreadId>,

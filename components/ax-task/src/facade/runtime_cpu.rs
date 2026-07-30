@@ -27,8 +27,8 @@ impl Deref for RuntimeCurrentCpu {
 }
 
 pub(super) fn runtime_current_cpu() -> Result<RuntimeCurrentCpu, TaskError> {
-    let irq = RuntimeIrqGuard::enter();
-    let cpu = claim_runtime_current_cpu()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let cpu = irq.claim_current_cpu()?;
     Ok(RuntimeCurrentCpu { cpu, _irq: irq })
 }
 
@@ -36,7 +36,55 @@ mod runtime_cpu_pin_sealed {
     pub trait Sealed {}
 }
 
-pub(crate) trait RuntimeCpuPin: runtime_cpu_pin_sealed::Sealed {}
+pub(crate) trait RuntimeCpuPin: runtime_cpu_pin_sealed::Sealed {
+    fn claim_current_cpu(&mut self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError>;
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeCpuHandles {
+    runtime_cpu: RuntimeCpuId,
+    cpu_local: crate::runtime::CurrentCpuLocalHandle,
+    cpu_remote: crate::runtime::CpuRemoteHandle,
+}
+
+impl RuntimeCpuHandles {
+    fn capture() -> Self {
+        let runtime_cpu = task_runtime::current_cpu_id();
+        // SAFETY: a RuntimeCpuPin is created only after its runtime guard has
+        // disabled migration. The provider returns shutdown-lifetime handles
+        // for the CPU selected by that same pinned context.
+        let cpu_remote = unsafe { task_runtime::cpu_remote_handle(runtime_cpu) };
+        // SAFETY: the same guard pins the current CPU while the runtime reads
+        // and validates its architecture-owned CPU-local registers.
+        let cpu_local = unsafe { task_runtime::current_cpu_local_handle() };
+        Self {
+            runtime_cpu,
+            cpu_local,
+            cpu_remote,
+        }
+    }
+
+    fn claim(self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
+        let remote_raw = self.cpu_remote.into_raw();
+        validate_handle::<CpuRemote>(remote_raw)?;
+        // SAFETY: TaskRuntime guarantees this handle identifies the Arc-backed
+        // remote endpoint retained by the task system until shutdown.
+        let remote = unsafe { &*ptr::with_exposed_provenance::<CpuRemote>(remote_raw) };
+        if !remote.is_online() {
+            return Err(TaskError::NotInitialized);
+        }
+
+        let local_raw = self.cpu_local.into_raw();
+        validate_handle::<CpuLocal>(local_raw)?;
+        // SAFETY: capture ran under this guard's migration pin. The provider
+        // guarantees that the pointer is the pinned CpuLocal paired with
+        // `remote`; its owner gate excludes every overlapping mutable borrow.
+        let cpu =
+            unsafe { remote.claim_local(ptr::with_exposed_provenance_mut::<CpuLocal>(local_raw))? };
+        validate_cpu_owner(&cpu, self.runtime_cpu)?;
+        Ok(cpu)
+    }
+}
 
 pub(crate) struct RuntimeCpuOwnerBorrow<'pin> {
     cpu: CpuLocalOwnerBorrow<'static>,
@@ -58,29 +106,12 @@ impl Deref for RuntimeCpuOwnerBorrow<'_> {
 }
 
 pub(crate) fn runtime_current_cpu_mut<'pin>(
-    _pin: &'pin mut impl RuntimeCpuPin,
+    pin: &'pin mut impl RuntimeCpuPin,
 ) -> Result<RuntimeCpuOwnerBorrow<'pin>, TaskError> {
     Ok(RuntimeCpuOwnerBorrow {
-        cpu: claim_runtime_current_cpu()?,
+        cpu: pin.claim_current_cpu()?,
         _pin: PhantomData,
     })
-}
-
-fn claim_runtime_current_cpu() -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
-    let runtime_cpu = task_runtime::current_cpu_id();
-    let remote = cpu_local_for_wake(crate::CpuId::new(runtime_cpu.as_u32()))
-        .ok_or(TaskError::NotInitialized)?;
-    // SAFETY: callers acquire an IRQ pin or scheduler-frame baton before this
-    // helper and retain it for the complete lifetime of the returned claim.
-    let handle = unsafe { task_runtime::current_cpu_local_handle() };
-    let raw = handle.into_raw();
-    validate_handle::<CpuLocal>(raw)?;
-    // SAFETY: TaskRuntime guarantees this address identifies the current CPU's
-    // pinned shutdown-lifetime CpuLocal. The separately allocated remote gate
-    // is claimed before a reference to that allocation is reconstructed.
-    let cpu = unsafe { remote.claim_local(ptr::with_exposed_provenance_mut::<CpuLocal>(raw))? };
-    validate_cpu_owner(&cpu)?;
-    Ok(cpu)
 }
 
 pub(crate) fn cpu_local_for_wake(cpu: crate::CpuId) -> Option<&'static CpuRemote> {
@@ -108,8 +139,8 @@ fn validate_handle<T>(raw: usize) -> Result<(), TaskError> {
     }
 }
 
-fn validate_cpu_owner(cpu: &CpuLocal) -> Result<(), TaskError> {
-    let actual = task_runtime::current_cpu_id().as_u32();
+fn validate_cpu_owner(cpu: &CpuLocal, runtime_cpu: RuntimeCpuId) -> Result<(), TaskError> {
+    let actual = runtime_cpu.as_u32();
     let expected = cpu.owner().as_u32();
     if actual == expected {
         Ok(())
@@ -128,20 +159,27 @@ pub(super) fn validate_schedule_context(origin: RuntimeScheduleOrigin) -> Result
 
 pub(crate) struct RuntimeIrqGuard {
     token: IrqGuardToken,
+    cpu: RuntimeCpuHandles,
     _not_send: PhantomData<*mut ()>,
 }
 
 impl RuntimeIrqGuard {
     pub(crate) fn enter() -> Self {
+        let token = task_runtime::irq_guard_enter();
         Self {
-            token: task_runtime::irq_guard_enter(),
+            token,
+            cpu: RuntimeCpuHandles::capture(),
             _not_send: PhantomData,
         }
     }
 }
 
 impl runtime_cpu_pin_sealed::Sealed for RuntimeIrqGuard {}
-impl RuntimeCpuPin for RuntimeIrqGuard {}
+impl RuntimeCpuPin for RuntimeIrqGuard {
+    fn claim_current_cpu(&mut self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
+        self.cpu.claim()
+    }
+}
 
 impl Drop for RuntimeIrqGuard {
     fn drop(&mut self) {
@@ -152,11 +190,16 @@ impl Drop for RuntimeIrqGuard {
 
 pub(super) struct RuntimeSchedulerFrameGuard {
     return_to: RuntimeSchedulerReturn,
+    cpu: RuntimeCpuHandles,
     _not_send: PhantomData<*mut ()>,
 }
 
 impl runtime_cpu_pin_sealed::Sealed for RuntimeSchedulerFrameGuard {}
-impl RuntimeCpuPin for RuntimeSchedulerFrameGuard {}
+impl RuntimeCpuPin for RuntimeSchedulerFrameGuard {
+    fn claim_current_cpu(&mut self) -> Result<CpuLocalOwnerBorrow<'static>, TaskError> {
+        self.cpu.claim()
+    }
+}
 
 impl RuntimeSchedulerFrameGuard {
     pub(super) fn enter(
@@ -178,8 +221,16 @@ impl RuntimeSchedulerFrameGuard {
         };
         Ok(Self {
             return_to,
+            cpu: RuntimeCpuHandles::capture(),
             _not_send: PhantomData,
         })
+    }
+
+    pub(super) fn refresh_current_cpu(&mut self) {
+        // A saved scheduler continuation may resume after its task migrated.
+        // Capture the target CPU once before switch-tail owner access; all
+        // later borrows in this frame reuse that validated identity.
+        self.cpu = RuntimeCpuHandles::capture();
     }
 }
 

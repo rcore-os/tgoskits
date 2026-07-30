@@ -32,6 +32,21 @@ fn time_value_conversion_rules_hold() {
 }
 
 #[axtest]
+fn inactive_task_and_posix_timers_keep_the_fast_gate_closed() {
+    ax_assert!(axtest_exports::timer_active_gate_rules_hold());
+}
+
+#[axtest]
+fn futex_empty_wake_op_avoids_entry_allocation() {
+    ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
+}
+
+#[axtest]
+fn nofault_user_access_rejects_unmapped_word() {
+    ax_assert!(axtest_exports::nofault_user_access_rejects_unmapped_word());
+}
+
+#[axtest]
 fn dummy_stat_fs_fields_match_expected_defaults() {
     ax_assert!(axtest_exports::dummy_stat_fs_fields_match_expected_defaults());
 }

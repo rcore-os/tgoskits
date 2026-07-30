@@ -111,7 +111,7 @@ impl ThreadSignalManager {
             possibly_has_signal: AtomicBool::new(false),
             sigwait: SpinNoIrq::new(SigwaitState::default()),
         });
-        proc.children.lock().push((tid, Arc::downgrade(&this)));
+        proc.register_child(tid, Arc::downgrade(&this));
         this
     }
 

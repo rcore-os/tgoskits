@@ -58,7 +58,13 @@ impl KernelTlsBase {
 #[cfg(feature = "exception-table")]
 mod exception_table;
 #[cfg(feature = "uspace")]
+mod user_access;
+#[cfg(feature = "uspace")]
 mod uspace_common;
+#[cfg(feature = "uspace")]
+pub use user_access::{
+    UserAccessError, UserAtomicError, UserAtomicU32Op, user_atomic_u32, user_read_u32,
+};
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {

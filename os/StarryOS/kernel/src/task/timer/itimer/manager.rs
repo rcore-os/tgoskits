@@ -22,6 +22,15 @@ impl ProcessTimerManager {
         }
     }
 
+    pub(crate) fn active_mask(&self) -> u8 {
+        self.itimers
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (index, timer)| {
+                mask | u8::from(timer.remained_ns != 0) << index
+            })
+    }
+
     /// Polls CPU/wall interval timers without invoking external code.
     pub(crate) fn poll(&mut self, snapshot: ProcessCpuTimeSnapshot) -> PendingTimerActions {
         self.poll_at(snapshot, None)
@@ -179,4 +188,3 @@ impl PendingTimerActions {
 fn timer_delta(delta: u64) -> usize {
     delta.min(usize::MAX as u64) as usize
 }
-

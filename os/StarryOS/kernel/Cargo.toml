@@ -230,7 +230,6 @@ rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 axtest.workspace = true
-loom.workspace = true
 axbacktrace = { workspace = true, features = ["axtest"] }
 ax-cpumask = { workspace = true, features = ["axtest"] }
 ax-driver = { workspace = true, features = ["axtest"] }
@@ -276,6 +275,9 @@ rsext4 = { workspace = true, features = ["axtest"] }
 scope-local = { workspace = true, features = ["axtest"] }
 ax-page-table-entry = { workspace = true, features = ["axtest"] }
 buddy-slab-allocator = { workspace = true, features = ["axtest"] }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+loom.workspace = true
 
 [[test]]
 name = "axtest_kernel"

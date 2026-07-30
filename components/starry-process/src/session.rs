@@ -1,8 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, convert::Infallible, fmt};
 
-use ax_kspin::SpinNoIrq;
-
 use crate::{
     Pid, ProcessGroup,
     relations::{RelationLock, SessionGroups},
@@ -12,7 +10,10 @@ use crate::{
 pub struct Session {
     sid: Pid,
     pub(crate) process_groups: RelationLock<SessionGroups>,
-    terminal: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
+    // Terminal initialization can allocate and update TTY job-control state.
+    // The multitask build therefore uses the same sleepable PI lock as process
+    // relations instead of holding an IRQ spinlock across the initializer.
+    terminal: RelationLock<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Session {
@@ -21,7 +22,7 @@ impl Session {
         Arc::new(Self {
             sid,
             process_groups: RelationLock::new(SessionGroups::with_capacity(1)),
-            terminal: SpinNoIrq::new(None),
+            terminal: RelationLock::new(None),
         })
     }
 }
