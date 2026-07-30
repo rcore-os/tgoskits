@@ -611,10 +611,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::cgroup::exit_process(&thr.proc_data);
         thr.proc_data.release_cgroup_namespace();
 
-        let timer_cancellations = thr.proc_data.cancel_interval_timer_alarms();
-        for cancellation in timer_cancellations {
-            cancellation.apply_cancellation();
-        }
+        thr.proc_data
+            .cancel_interval_timer_alarm()
+            .apply_cancellation();
         thr.proc_data.posix_timers().clear();
 
         // AIO contexts pin the process address space and may have worker tasks

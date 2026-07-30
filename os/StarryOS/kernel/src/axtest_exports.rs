@@ -218,6 +218,10 @@ pub fn interval_timer_arm_uses_current_snapshot() -> bool {
     super::task::interval_timer_arm_uses_current_snapshot_for_test()
 }
 
+pub fn cpu_interval_timers_avoid_wall_alarms() -> bool {
+    super::task::cpu_interval_timers_avoid_wall_alarms_for_test()
+}
+
 pub fn timer_active_gate_rules_hold() -> bool {
     super::task::interval_timer_active_gate_rules_hold_for_test()
         && super::task::posix_timer_active_gate_rules_hold_for_test()

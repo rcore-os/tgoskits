@@ -67,6 +67,11 @@ fn interval_timer_arm_starts_from_current_clock_snapshot() {
 }
 
 #[axtest]
+fn cpu_interval_timers_are_scheduler_tick_driven() {
+    ax_assert!(axtest_exports::cpu_interval_timers_avoid_wall_alarms());
+}
+
+#[axtest]
 fn futex_empty_wake_op_avoids_entry_allocation() {
     ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
 }

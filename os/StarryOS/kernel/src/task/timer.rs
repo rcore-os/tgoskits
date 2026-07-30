@@ -29,7 +29,6 @@ mod rttime;
 
 pub use accounting::{CpuTimeAccounting, ProcessCpuTimeAccounting, TimerState};
 pub(crate) use accounting::{CpuTimeDelta, ProcessCpuTimeSnapshot};
-use alarm::apply_alarm_changes;
 pub(crate) use alarm::{AlarmChange, AlarmSlot, AlarmToken};
 pub use alarm::{AlarmTarget, spawn_alarm_task};
 use common::time_value_from_nanos;

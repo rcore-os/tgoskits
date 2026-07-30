@@ -68,6 +68,60 @@ pub(crate) fn interval_timer_arm_uses_current_snapshot_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn cpu_interval_timers_avoid_wall_alarms_for_test() -> bool {
+    for (timer, signal) in [
+        (ITimerType::Virtual, Signo::SIGVTALRM),
+        (ITimerType::Prof, Signo::SIGPROF),
+    ] {
+        let mut timers = ProcessTimerManager::new();
+        let armed_at = ProcessCpuTimeSnapshot {
+            user_ns: 100,
+            system_ns: 50,
+            sampled_at_ns: 1_000,
+        };
+        let armed = timers.set_itimer(
+            timer,
+            ITimerSetting::new(TimeValue::ZERO, time_value_from_nanos(10)),
+            armed_at,
+        );
+        if armed.publishes_wall_alarm() {
+            return false;
+        }
+
+        let wall_only_advanced = ProcessCpuTimeSnapshot {
+            sampled_at_ns: 1_000_000,
+            ..armed_at
+        };
+        let pending = timers.poll(wall_only_advanced);
+        if pending.signals().next().is_some()
+            || pending.publishes_wall_alarm()
+            || timers.get_itimer(timer, wall_only_advanced).1.as_nanos() != 10
+        {
+            return false;
+        }
+
+        let cpu_advanced = match timer {
+            ITimerType::Virtual => ProcessCpuTimeSnapshot {
+                user_ns: 110,
+                ..wall_only_advanced
+            },
+            ITimerType::Prof => ProcessCpuTimeSnapshot {
+                system_ns: 60,
+                ..wall_only_advanced
+            },
+            ITimerType::Real => unreachable!(),
+        };
+        let expired = timers.poll(cpu_advanced);
+        if expired.signals().collect::<alloc::vec::Vec<_>>() != [signal]
+            || expired.publishes_wall_alarm()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(axtest)]
 pub(crate) fn alarm_generation_rules_hold_for_test() -> bool {
     alarm::stale_alarm_cancellation_preserves_new_generation_for_test()
 }
