@@ -3,26 +3,6 @@
 use super::*;
 
 impl TaskSystem {
-    /// Consumes a direct wake publication and changes a blocked thread to ready.
-    pub fn consume_wake(&self, wake: &ThreadWakeHandle) -> Result<bool, TaskError> {
-        let state = self.state.lock();
-        Self::consume_wake_locked(&state, wake)
-    }
-
-    fn consume_wake_locked(
-        state: &TaskSystemState,
-        wake: &ThreadWakeHandle,
-    ) -> Result<bool, TaskError> {
-        let core = match state.thread_record(wake.thread_id()) {
-            Ok(record) => Arc::clone(&record.core),
-            // A late IRQ wake racing with reaping or slot reuse is an idempotent
-            // no-op, not a registry lookup failure visible to the IRQ producer.
-            Err(TaskError::StaleThreadId) => return Ok(false),
-            Err(error) => return Err(error),
-        };
-        Self::consume_owner_wake(&core)
-    }
-
     pub(super) fn consume_owner_wake(core: &Arc<ThreadCore>) -> Result<bool, TaskError> {
         let mut sched = core.sched().lock();
         let lifecycle = sched.lifecycle.state();

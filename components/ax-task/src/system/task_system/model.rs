@@ -93,6 +93,19 @@ impl DeferredTaskWorkBatch {
 /// No instance is stored globally. A runtime owns one pinned `TaskSystem` and
 /// passes explicit object references to the scheduler or exposes them through its
 /// trait-FFI facade.
+///
+/// Direct wake consumption is deliberately not part of the public scheduler
+/// boundary. IRQ and remote producers must publish through
+/// [`ThreadWakeHandle::wake`](crate::ThreadWakeHandle::wake), leaving the owner
+/// CPU as the only consumer of its bounded inbox.
+///
+/// ```compile_fail
+/// use ax_task::{TaskSystem, ThreadWakeHandle};
+///
+/// fn bypass_owner_inbox(system: &TaskSystem, wake: &ThreadWakeHandle) {
+///     system.consume_wake(wake).unwrap();
+/// }
+/// ```
 #[derive(Debug)]
 pub struct TaskSystem {
     pub(super) config: TaskSystemConfig,

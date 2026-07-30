@@ -54,7 +54,7 @@ use crate::{
     SchedulingEntity, SwitchReason, TaskError, TaskSystemConfig, ThreadAffinityChange, ThreadCore,
     ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView,
     ThreadHandle, ThreadId, ThreadLifecycle, ThreadResources, ThreadRuntimeSnapshot, ThreadSpec,
-    ThreadState, ThreadWakeHandle,
+    ThreadState,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,

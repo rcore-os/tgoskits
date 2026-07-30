@@ -142,12 +142,17 @@ fn closes_the_wake_during_park_window() {
 
 #[test]
 fn predicate_aware_os_park_observes_work_after_scheduler_wake_drain() {
-    let fixture = executor();
+    let mut fixture = executor();
     let completed = Rc::new(Cell::new(false));
     let saved_waker = Rc::new(RefCell::new(None::<Waker>));
-    let executor = fixture.local();
-    let owner_wake = executor.shared.owner_wake.clone();
-    let system = fixture.system();
+    let ExecutorFixture {
+        executor,
+        cpu,
+        system,
+        ..
+    } = &mut fixture;
+    let executor = executor.as_ref().expect("executor must remain active");
+    let system = system.as_ref().get_ref();
 
     executor.run(
         {
@@ -169,12 +174,11 @@ fn predicate_aware_os_park_observes_work_after_scheduler_wake_drain() {
                 .expect("pending future must publish its waker")
                 .wake_by_ref();
 
-            assert!(
-                !system
-                    .consume_wake(&owner_wake)
-                    .expect("running owner must consume the direct wake"),
-                "a running owner must not be enqueued by a direct wake"
-            );
+            let wake = system
+                .drain_remote_wakes(cpu.as_mut(), 0)
+                .expect("owner CPU must drain its published wake");
+            assert_eq!(wake.drained(), 1);
+            assert!(!wake.pending());
             assert!(
                 condition.should_abort(),
                 "executor readiness must survive scheduler notification consumption"
