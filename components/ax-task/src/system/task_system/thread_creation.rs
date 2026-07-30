@@ -42,6 +42,9 @@ impl TaskSystem {
         };
         let (extension, resources) = unpublished.into_owned_parts();
         let switch_extension = extension.as_ref().map(ThreadExtension::as_view);
+        let scheduler_tick_work = extension
+            .as_ref()
+            .and_then(ThreadExtension::scheduler_tick_work);
         let sched = Arc::new(ThreadSchedCell::new(
             id,
             ThreadSchedState {
@@ -84,6 +87,7 @@ impl TaskSystem {
             policy,
             Arc::clone(&sched),
             switch_extension,
+            scheduler_tick_work,
             Some(Arc::clone(&self.task_work)),
         ));
         let record = ThreadRecord {

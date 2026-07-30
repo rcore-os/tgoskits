@@ -92,7 +92,7 @@ pub(crate) fn cpu_interval_timers_avoid_wall_alarms_for_test() -> bool {
             sampled_at_ns: 1_000_000,
             ..armed_at
         };
-        let pending = timers.poll(wall_only_advanced);
+        let pending = timers.poll_cpu(wall_only_advanced);
         if pending.signals().next().is_some()
             || pending.publishes_wall_alarm()
             || timers.get_itimer(timer, wall_only_advanced).1.as_nanos() != 10
@@ -111,7 +111,7 @@ pub(crate) fn cpu_interval_timers_avoid_wall_alarms_for_test() -> bool {
             },
             ITimerType::Real => unreachable!(),
         };
-        let expired = timers.poll(cpu_advanced);
+        let expired = timers.poll_cpu(cpu_advanced);
         if expired.signals().collect::<alloc::vec::Vec<_>>() != [signal]
             || expired.publishes_wall_alarm()
         {

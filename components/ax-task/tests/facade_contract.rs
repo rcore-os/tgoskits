@@ -1,14 +1,23 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
 use ax_task::{
-    CpuId, FairMode, Nice, SchedulePolicy, TaskError, TaskSystem, TaskSystemConfig,
-    ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState, WakeResult,
-    current_cpu_needs_resched, current_thread_extension, current_thread_id, on_clock_event,
-    schedule_current_cpu, take_current_expired_task_deadlines,
+    CpuId, FairMode, Nice, SchedulePolicy, SchedulerTickGate, TaskError, TaskSystem,
+    TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState,
+    WakeResult, current_cpu_needs_resched, current_thread_extension, current_thread_id,
+    on_clock_event, on_clock_event_with_scheduler_tick, schedule_current_cpu,
+    take_current_expired_task_deadlines,
     timer::{ExpiredTaskDeadline, TaskDeadlineKind, TaskDeadlineNode},
 };
 
 mod support;
 
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SCHEDULER_TICK_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static BLOCKING_TICK_ENTERED: AtomicBool = AtomicBool::new(false);
+static RELEASE_BLOCKING_TICK: AtomicBool = AtomicBool::new(false);
 
 #[test]
 fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
@@ -149,6 +158,154 @@ fn timer_irq_facade_bounds_and_preserves_unconsumed_expirations() {
 }
 
 #[test]
+fn scheduler_tick_extension_work_is_deferred_out_of_hard_irq() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, count_scheduler_tick)
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    support::set_hard_irq(true);
+    on_clock_event_with_scheduler_tick(1, 1, true).unwrap();
+    support::set_hard_irq(false);
+    assert_eq!(
+        SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire),
+        0,
+        "scheduler tick work must not run in hard IRQ context"
+    );
+    assert!(
+        system.deferred_task_work_pending(),
+        "an enabled scheduler tick must publish task work"
+    );
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 1);
+
+    support::clear_handles();
+}
+
+#[test]
+fn scheduler_tick_gate_does_not_replay_work_from_an_old_enable_epoch() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(Arc::clone(&gate), count_scheduler_tick)
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    on_clock_event_with_scheduler_tick(1, 1, true).unwrap();
+    gate.set_enabled(false);
+    gate.set_enabled(true);
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+    assert_eq!(
+        SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire),
+        0,
+        "a publication from an earlier enabled epoch must not cross a disable boundary"
+    );
+
+    on_clock_event_with_scheduler_tick(2, 1, true).unwrap();
+    on_clock_event_with_scheduler_tick(3, 1, true).unwrap();
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+    assert_eq!(
+        SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire),
+        1,
+        "ticks in one enabled epoch should coalesce into one task-work callback"
+    );
+
+    support::clear_handles();
+}
+
+#[test]
+fn scheduler_tick_delivery_pins_extension_across_thread_exit() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    BLOCKING_TICK_ENTERED.store(false, Ordering::Relaxed);
+    RELEASE_BLOCKING_TICK.store(false, Ordering::Relaxed);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, block_scheduler_tick)
+    };
+    let bootstrap = system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    on_clock_event_with_scheduler_tick(1, 1, true).unwrap();
+    system.block_current(cpu.as_mut()).unwrap();
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let exit_result = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| system.service_deferred_task_work(1).unwrap());
+        while !BLOCKING_TICK_ENTERED.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        let result = system.mark_exited(bootstrap.id());
+        RELEASE_BLOCKING_TICK.store(true, Ordering::Release);
+        assert_eq!(worker.join().unwrap().processed(), 1);
+        result
+    });
+    assert_eq!(
+        exit_result,
+        Ok(()),
+        "a sleepable task-work callback must not turn normal thread exit into a fatal busy error"
+    );
+
+    support::clear_handles();
+}
+
+#[test]
 fn partial_deadline_drain_preserves_buffered_events() {
     let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
     support::clear_handles();
@@ -279,3 +436,14 @@ unsafe extern "Rust" fn no_extension_switch_out(
 }
 
 unsafe extern "Rust" fn no_extension_drop(_data: usize) {}
+
+unsafe extern "Rust" fn count_scheduler_tick(_data: usize, _thread: ThreadId) {
+    SCHEDULER_TICK_CALLBACKS.fetch_add(1, Ordering::Release);
+}
+
+unsafe extern "Rust" fn block_scheduler_tick(_data: usize, _thread: ThreadId) {
+    BLOCKING_TICK_ENTERED.store(true, Ordering::Release);
+    while !RELEASE_BLOCKING_TICK.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+}

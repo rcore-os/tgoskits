@@ -578,6 +578,7 @@ fn prepare_user_thread_inner<F>(
 where
     F: FnOnce() + Send + 'static,
 {
+    let scheduler_tick_gate = thread.proc_data.scheduler_tick_gate();
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
     let data = Box::into_raw(Box::new(StarryUserTaskExtension {
         thread,
@@ -590,8 +591,10 @@ where
     // SAFETY: `data` is a uniquely owned `Box<StarryUserTaskExtension>`. The
     // runtime takes that ownership even when scheduler creation fails and
     // invokes `starry_user_task_drop` exactly once from task/reaper context.
-    let extension =
-        unsafe { scheduler::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS) };
+    let extension = unsafe {
+        scheduler::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
+            .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
+    };
     let Some(address_space) = context_state.address_space else {
         drop(extension);
         return Err(scheduler::TaskError::InvalidRuntimeHandle);
@@ -772,6 +775,11 @@ unsafe extern "Rust" fn starry_user_task_deadline_overrun(
 ) {
     let data = unsafe { extension_data_from_raw(data) };
     data.deadline_overrun.store(true, Ordering::Release);
+}
+
+unsafe extern "Rust" fn starry_user_task_scheduler_tick(data: usize, _thread: scheduler::ThreadId) {
+    let extension = unsafe { extension_data_from_raw(data) };
+    super::poll_process_cpu_timers_from_scheduler_tick(&extension.thread.proc_data);
 }
 
 unsafe extern "Rust" fn starry_user_task_drop(data: usize) {

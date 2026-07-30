@@ -1,9 +1,10 @@
 //! Thread construction data kept independent from an operating system.
 
-use alloc::{vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    CpuId, SchedulePolicy, TaskError, ThreadHandle, ThreadId,
+    CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWork, TaskError,
+    ThreadHandle, ThreadId,
     runtime::{
         AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle,
         task_runtime,
@@ -232,6 +233,7 @@ pub struct ThreadExtensionOps {
 pub struct ThreadExtension {
     data: usize,
     ops: &'static ThreadExtensionOps,
+    scheduler_tick_work: Option<SchedulerTickWork>,
 }
 
 impl ThreadExtension {
@@ -245,7 +247,31 @@ impl ThreadExtension {
     /// dedicated service thread; abandoning that stack leaves their explicit
     /// in-flight lifetime claim closed to prevent use-after-free.
     pub const unsafe fn new(data: usize, ops: &'static ThreadExtensionOps) -> Self {
-        Self { data, ops }
+        Self {
+            data,
+            ops,
+            scheduler_tick_work: None,
+        }
+    }
+
+    /// Adds task-context work gated by scheduler tick interest.
+    ///
+    /// The scheduler hard-IRQ path only publishes a typed deferred-work record.
+    /// The callback runs later on the dedicated task-work service thread.
+    ///
+    /// # Safety
+    ///
+    /// `callback` must interpret `data` according to this extension, remain
+    /// valid for its complete lifetime, and return normally to the task-work
+    /// service. The callback may use task-context synchronization but must not
+    /// retain the borrowed extension data after it returns.
+    pub unsafe fn with_scheduler_tick_work(
+        mut self,
+        gate: Arc<SchedulerTickGate>,
+        callback: SchedulerTickTaskWork,
+    ) -> Self {
+        self.scheduler_tick_work = Some(SchedulerTickWork::new(gate, callback));
+        self
     }
 
     /// Returns the opaque OS-owned value.
@@ -258,11 +284,43 @@ impl ThreadExtension {
         self.ops
     }
 
+    /// Clones the gate used to select scheduler-tick task work.
+    ///
+    /// Runtime extension composition uses this to install the same interest
+    /// generation on an outer scheduler-owned extension.
+    pub fn scheduler_tick_work_gate(&self) -> Option<Arc<SchedulerTickGate>> {
+        self.scheduler_tick_work
+            .as_ref()
+            .map(SchedulerTickWork::gate)
+    }
+
+    /// Forwards one scheduler-tick task-work callback to this extension.
+    ///
+    /// Returns `false` when this extension did not register such work.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own an ordinary task-context publication authorized by
+    /// the gate returned from [`Self::scheduler_tick_work_gate`], keep this
+    /// extension alive for the call, and invoke it at most once for that
+    /// publication.
+    pub unsafe fn forward_scheduler_tick_work(&self, thread: ThreadId) -> bool {
+        let Some(work) = self.scheduler_tick_work.as_ref() else {
+            return false;
+        };
+        unsafe { work.invoke(self.data, thread) };
+        true
+    }
+
     pub(crate) const fn as_view(&self) -> ThreadExtensionView {
         ThreadExtensionView {
             data: self.data,
             ops: self.ops,
         }
+    }
+
+    pub(crate) fn scheduler_tick_work(&self) -> Option<SchedulerTickWork> {
+        self.scheduler_tick_work.clone()
     }
 }
 

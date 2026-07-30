@@ -26,7 +26,10 @@ mod runtime_cpu;
 mod scheduling;
 mod task_work;
 
-pub use deadline::{TaskClockEventOutcome, on_clock_event, take_current_expired_task_deadlines};
+pub use deadline::{
+    TaskClockEventOutcome, on_clock_event, on_clock_event_with_scheduler_tick,
+    take_current_expired_task_deadlines,
+};
 pub(crate) use deadline::{
     arm_current_park_deadline, cancel_current_park, cancel_current_park_deadline,
     commit_current_park, prepare_current_park,

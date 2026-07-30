@@ -122,6 +122,23 @@ pub(super) static RUNTIME_THREAD_EXTENSION_OPS: ThreadExtensionOps = ThreadExten
     drop: runtime_thread_drop_hook,
 };
 
+pub(super) unsafe fn runtime_thread_extension(data: usize) -> ThreadExtension {
+    let scheduler_tick_gate = unsafe { runtime_thread_data_from_raw(data) }
+        .os_extension
+        .as_ref()
+        .and_then(ThreadExtension::scheduler_tick_work_gate);
+    // SAFETY: the caller transfers one live `RuntimeThreadData` allocation
+    // whose final destruction right belongs to this outer extension.
+    let extension = unsafe { ThreadExtension::new(data, &RUNTIME_THREAD_EXTENSION_OPS) };
+    if let Some(gate) = scheduler_tick_gate {
+        // SAFETY: the outer callback retains `RuntimeThreadData`, then forwards
+        // exactly one generation-authorized publication to its inner extension.
+        unsafe { extension.with_scheduler_tick_work(gate, runtime_thread_scheduler_tick_hook) }
+    } else {
+        extension
+    }
+}
+
 unsafe extern "Rust" fn runtime_thread_switch_in_hook(data: usize, thread: ThreadId) {
     let runtime = unsafe { runtime_thread_data_from_raw(data) };
     if let Some(extension) = runtime.os_extension.as_ref() {
@@ -170,6 +187,23 @@ unsafe extern "Rust" fn runtime_thread_deadline_overrun_hook(data: usize, thread
     if let Some(extension) = runtime.os_extension.as_ref() {
         // SAFETY: the scheduler defers this callback to an ordinary safe point.
         unsafe { (extension.ops().on_deadline_overrun)(extension.data(), thread) };
+    }
+}
+
+unsafe extern "Rust" fn runtime_thread_scheduler_tick_hook(data: usize, thread: ThreadId) {
+    let runtime = unsafe { runtime_thread_data_from_raw(data) };
+    let Some(extension) = runtime.os_extension.as_ref() else {
+        panic!(
+            "runtime scheduler-tick forwarding lost OS extension for thread {:#x}",
+            thread.as_u64()
+        );
+    };
+    let forwarded = unsafe { extension.forward_scheduler_tick_work(thread) };
+    if !forwarded {
+        panic!(
+            "runtime scheduler-tick forwarding lost callback for thread {:#x}",
+            thread.as_u64()
+        );
     }
 }
 

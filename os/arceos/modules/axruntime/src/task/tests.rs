@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
@@ -244,6 +244,33 @@ fn matching_runtime_ops_reject_malformed_extension_data() {
         ),
         Ok(RuntimeExtensionKind::Runtime)
     );
+}
+
+#[test]
+fn runtime_outer_extension_forwards_os_scheduler_tick_work() {
+    let callbacks = AtomicUsize::new(0);
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let callback_data = (&callbacks as *const AtomicUsize).expose_provenance();
+    let os_extension = unsafe {
+        ThreadExtension::new(callback_data, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, count_scheduler_tick_work)
+    };
+    let data = Box::into_raw(Box::new(RuntimeThreadData::new(
+        Box::new(|| {}),
+        String::from("tick-forwarding"),
+        Some(os_extension),
+    )))
+    .expose_provenance();
+    let outer = unsafe { runtime_thread_extension(data) };
+
+    assert!(
+        outer.scheduler_tick_work_gate().is_some(),
+        "the scheduler-owned outer extension must retain OS tick interest"
+    );
+    assert!(unsafe { outer.forward_scheduler_tick_work(ThreadId::from_parts(1, 1)) });
+    assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    drop(outer);
 }
 
 #[test]
@@ -533,4 +560,9 @@ unsafe extern "Rust" fn count_extension_drop(data: usize) {
     // synchronously observes the extension's matching drop callback.
     let drops = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
     drops.fetch_add(1, Ordering::Release);
+}
+
+unsafe extern "Rust" fn count_scheduler_tick_work(data: usize, _thread: ThreadId) {
+    let callbacks = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
+    callbacks.fetch_add(1, Ordering::Release);
 }

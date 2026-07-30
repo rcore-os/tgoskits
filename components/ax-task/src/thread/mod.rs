@@ -8,6 +8,7 @@ mod pi;
 mod policy;
 mod spec;
 mod state;
+mod tick_work;
 
 pub use affinity::ThreadAffinityChange;
 pub(crate) use affinity::ThreadAffinityCompletion;
@@ -18,3 +19,4 @@ pub use pi::*;
 pub use policy::*;
 pub use spec::*;
 pub use state::*;
+pub use tick_work::*;

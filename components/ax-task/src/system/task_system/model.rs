@@ -45,6 +45,8 @@ impl OwnedThreadReapError {
 pub struct DeferredTaskWorkBatch {
     pub(super) deadline_events: usize,
     pub(super) deadline_callbacks: usize,
+    pub(super) scheduler_tick_events: usize,
+    pub(super) scheduler_tick_callbacks: usize,
     pub(super) exit_callbacks: usize,
     pub(super) reaped_threads: usize,
     pub(super) reclaimed_resources: usize,
@@ -53,12 +55,21 @@ pub struct DeferredTaskWorkBatch {
 impl DeferredTaskWorkBatch {
     /// Returns the number of queue entries or resources consumed by this pass.
     pub const fn processed(self) -> usize {
-        self.deadline_events + self.exit_callbacks + self.reaped_threads + self.reclaimed_resources
+        self.deadline_events
+            + self.scheduler_tick_events
+            + self.exit_callbacks
+            + self.reaped_threads
+            + self.reclaimed_resources
     }
 
     /// Returns the number of Deadline extension callbacks invoked.
     pub const fn deadline_callbacks(self) -> usize {
         self.deadline_callbacks
+    }
+
+    /// Returns the number of scheduler-tick extension callbacks invoked.
+    pub const fn scheduler_tick_callbacks(self) -> usize {
+        self.scheduler_tick_callbacks
     }
 
     /// Returns whether another pass should run before the worker parks.
@@ -91,6 +102,7 @@ pub struct TaskSystem {
     pub(super) state: IrqTicketLock<TaskSystemState>,
     pub(super) root_domain: IrqTicketLock<RootDomainState>,
     pub(super) deferred_reclaims: SchedulerInbox,
+    pub(super) deferred_scheduler_ticks: SchedulerInbox,
     pub(super) task_work: Arc<TaskWorkDoorbell>,
     pub(super) topology_sequence: SequenceCounter,
     pub(super) online_count: AtomicUsize,
@@ -137,17 +149,19 @@ pub(super) enum DetachedPayloadKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeferredTaskWorkClass {
     Deadline,
+    SchedulerTick,
     Exit,
     Reap,
     Reclaim,
 }
 
 impl DeferredTaskWorkClass {
-    pub(super) const COUNT: usize = 4;
+    pub(super) const COUNT: usize = 5;
 
     pub(super) const fn next(self) -> Self {
         match self {
-            Self::Deadline => Self::Exit,
+            Self::Deadline => Self::SchedulerTick,
+            Self::SchedulerTick => Self::Exit,
             Self::Exit => Self::Reap,
             Self::Reap => Self::Reclaim,
             Self::Reclaim => Self::Deadline,

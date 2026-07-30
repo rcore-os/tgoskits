@@ -13,11 +13,12 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
     CpuId, CpuSet, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult, IrqUnregisterResult,
-    IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, RtPriority, SchedulePolicy, SwitchReason,
-    TaskError, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadState,
-    ThreadWakeHandle, WaitQueue, WakeResult, cpu_busy_runtime_ns, current_cpu_needs_resched,
-    current_thread_extension, current_thread_handle, current_thread_id, executor::LocalExecutor,
-    exit_current_thread, quiesce_irq_wait, runtime::SchedSwitchRecord, schedule_current_cpu,
+    IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, RtPriority, SchedulePolicy,
+    SchedulerTickGate, SchedulerTickTaskWork, SwitchReason, TaskError, ThreadExtension,
+    ThreadExtensionOps, ThreadHandle, ThreadId, ThreadState, ThreadWakeHandle, WaitQueue,
+    WakeResult, cpu_busy_runtime_ns, current_cpu_needs_resched, current_thread_extension,
+    current_thread_handle, current_thread_id, executor::LocalExecutor, exit_current_thread,
+    quiesce_irq_wait, runtime::SchedSwitchRecord, schedule_current_cpu,
     set_current_thread_affinity, set_thread_affinity, set_thread_affinity_and_wait,
     set_thread_policy, sleep, sleep_until, thread_affinity, thread_handle, thread_policy,
     thread_round_robin_interval_ns, thread_runtime, yield_current_cpu,
@@ -101,13 +102,14 @@ pub use thread::{
     PreparedThread, ThreadOsExtensionBorrow, ThreadOsExtensionLease, current_os_extension,
     exit_current, join_thread, thread_os_extension, wait_thread,
 };
-use thread::{
-    RUNTIME_THREAD_EXTENSION_OPS, RuntimeThreadData, finish_initial_scheduler_switch,
-    release_transferred_extension, runtime_thread_entry,
-};
 #[cfg(test)]
 use thread::{
-    RuntimeExtensionKind, classify_runtime_extension, extension_data_after_releasing_lease,
+    RUNTIME_THREAD_EXTENSION_OPS, RuntimeExtensionKind, classify_runtime_extension,
+    extension_data_after_releasing_lease,
+};
+use thread::{
+    RuntimeThreadData, finish_initial_scheduler_switch, release_transferred_extension,
+    runtime_thread_entry, runtime_thread_extension,
 };
 #[cfg(all(test, feature = "tls"))]
 use thread_resources::assemble_bootstrap_resources;

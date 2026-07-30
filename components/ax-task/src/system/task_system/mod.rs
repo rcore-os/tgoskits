@@ -152,6 +152,7 @@ impl TaskSystem {
                 online: CpuSet::empty(config.cpu_count()),
             }),
             deferred_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
+            deferred_scheduler_ticks: SchedulerInbox::new(InboxKind::TaskWork),
             task_work,
             topology_sequence: SequenceCounter::default(),
             online_count: AtomicUsize::new(0),
