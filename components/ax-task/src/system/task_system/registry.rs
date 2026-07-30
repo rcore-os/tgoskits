@@ -3,16 +3,20 @@
 use super::*;
 
 #[cfg(test)]
-static PI_DONOR_RECORD_VISITS: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static PI_DONOR_RECORD_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
 
 #[cfg(test)]
 pub(super) fn reset_pi_donor_record_visits() {
-    PI_DONOR_RECORD_VISITS.store(0, Ordering::Relaxed);
+    PI_DONOR_RECORD_VISITS.set(0);
 }
 
 #[cfg(test)]
 pub(super) fn pi_donor_record_visits() -> usize {
-    PI_DONOR_RECORD_VISITS.load(Ordering::Relaxed)
+    PI_DONOR_RECORD_VISITS.get()
 }
 
 #[derive(Debug)]
@@ -171,7 +175,7 @@ impl TaskSystemState {
             return Err(TaskError::PiCycle);
         }
         #[cfg(test)]
-        PI_DONOR_RECORD_VISITS.fetch_add(1, Ordering::Relaxed);
+        PI_DONOR_RECORD_VISITS.set(PI_DONOR_RECORD_VISITS.get().saturating_add(1));
         let registration = self
             .thread_record(waiter)?
             .blocked_on

@@ -3,7 +3,8 @@
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use crate::{
-    FairEntity, FairMode, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore, ThreadId,
+    FairEntity, FairMode, SchedulePolicy, SchedulingEntity, SchedulingKey, TaskError, ThreadCore,
+    ThreadId,
 };
 
 /// Why a runnable thread is being inserted into its owner run queue.
@@ -32,6 +33,27 @@ pub(crate) struct QueuedThread {
     sequence: u64,
 }
 
+impl QueuedThread {
+    pub(crate) fn balance_key(&self) -> SchedulingKey {
+        self.entity.fair().map_or_else(
+            || self.entity.scheduling_key(self.policy, self.id.as_u64()),
+            |fair| {
+                SchedulingKey::new(
+                    self.policy.class_rank(),
+                    fair.virtual_deadline(),
+                    self.id.as_u64(),
+                )
+            },
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PushableSummary {
+    thread: ThreadId,
+    key: SchedulingKey,
+}
+
 #[derive(Debug)]
 pub(crate) struct RunQueue {
     deadline: Vec<QueuedThread>,
@@ -41,6 +63,7 @@ pub(crate) struct RunQueue {
     virtual_time: u64,
     idle_virtual_time: u64,
     earliest_deadline_event_ns: Option<u64>,
+    pushable_summary: Option<PushableSummary>,
     next_sequence: u64,
     len: usize,
 }
@@ -55,6 +78,7 @@ impl RunQueue {
             virtual_time: 0,
             idle_virtual_time: 0,
             earliest_deadline_event_ns: None,
+            pushable_summary: None,
             next_sequence: 0,
             len: 0,
         }
@@ -124,6 +148,13 @@ impl RunQueue {
         self.earliest_deadline_event_ns
     }
 
+    pub(crate) const fn pushable_key(&self) -> Option<SchedulingKey> {
+        match self.pushable_summary {
+            Some(summary) => Some(summary.key),
+            None => None,
+        }
+    }
+
     pub(crate) fn update_deadline_entity(
         &mut self,
         id: ThreadId,
@@ -134,6 +165,7 @@ impl RunQueue {
         };
         thread.entity = entity;
         self.recompute_earliest_deadline_event();
+        self.recompute_pushable_summary();
         true
     }
 
@@ -211,7 +243,7 @@ impl RunQueue {
             reason
         };
         let queued_entity = entry.entity;
-        match policy {
+        let pushable_summary = match policy {
             SchedulePolicy::Deadline(_) => {
                 if reason == EnqueueReason::Wake {
                     entry.entity.activate_deadline(now_ns);
@@ -221,24 +253,36 @@ impl RunQueue {
                 }) {
                     return Err(TaskError::NotReady);
                 }
+                let summary = Self::pushable_summary_for(&entry);
                 self.deadline.push(entry);
                 self.recompute_earliest_deadline_event();
+                summary
             }
             SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
+                let summary = Self::pushable_summary_for(&entry);
                 let queue = &mut self.rt[(priority.get() - 1) as usize];
                 if reason == EnqueueReason::Preempted {
                     queue.push_front(entry);
                 } else {
                     queue.push_back(entry);
                 }
+                summary
             }
             SchedulePolicy::Fair {
                 mode: FairMode::Idle,
                 ..
-            } => self.idle_fair.push(entry),
-            SchedulePolicy::Fair { .. } => self.fair.push(entry),
-        }
+            } => {
+                self.idle_fair.push(entry);
+                None
+            }
+            SchedulePolicy::Fair { .. } => {
+                let summary = Self::pushable_summary_for(&entry);
+                self.fair.push(entry);
+                summary
+            }
+        };
         self.len += 1;
+        self.consider_pushable_summary(pushable_summary);
         Ok(queued_entity)
     }
 
@@ -261,9 +305,17 @@ impl RunQueue {
             .or_else(|| remove_from_rt(&mut self.rt, id))
             .or_else(|| remove_from_vec(&mut self.fair, id))
             .or_else(|| remove_from_vec(&mut self.idle_fair, id));
-        if removed.is_some() {
+        if let Some(removed) = &removed {
             self.len -= 1;
-            self.recompute_earliest_deadline_event();
+            if matches!(removed.policy, SchedulePolicy::Deadline(_)) {
+                self.recompute_earliest_deadline_event();
+            }
+            if self
+                .pushable_summary
+                .is_some_and(|summary| summary.thread == removed.id)
+            {
+                self.recompute_pushable_summary();
+            }
         }
         removed
     }
@@ -280,6 +332,11 @@ impl RunQueue {
             .or_else(|| self.pick_fair(true));
         if picked.is_some() {
             self.len -= 1;
+            if self.pushable_summary.is_some_and(|summary| {
+                Some(summary.thread) == picked.as_ref().map(|entry| entry.id)
+            }) {
+                self.recompute_pushable_summary();
+            }
         }
         picked
     }
@@ -363,6 +420,40 @@ impl RunQueue {
             .map(|deadline| deadline.next_scheduler_event_ns())
             .filter(|deadline| *deadline != 0)
             .min();
+    }
+
+    fn pushable_summary_for(thread: &QueuedThread) -> Option<PushableSummary> {
+        (!matches!(
+            thread.policy,
+            SchedulePolicy::Fair {
+                mode: FairMode::Idle,
+                ..
+            }
+        ))
+        .then(|| PushableSummary {
+            thread: thread.id,
+            key: thread.balance_key(),
+        })
+    }
+
+    fn consider_pushable_summary(&mut self, candidate: Option<PushableSummary>) {
+        if let Some(candidate) = candidate
+            && self
+                .pushable_summary
+                .is_none_or(|current| candidate.key < current.key)
+        {
+            self.pushable_summary = Some(candidate);
+        }
+    }
+
+    fn recompute_pushable_summary(&mut self) {
+        self.pushable_summary = self
+            .deadline
+            .iter()
+            .chain(self.rt.iter().flat_map(|queue| queue.iter()))
+            .chain(self.fair.iter())
+            .filter_map(Self::pushable_summary_for)
+            .min_by_key(|summary| summary.key);
     }
 
     fn contains(&self, id: ThreadId) -> bool {
@@ -590,5 +681,50 @@ mod tests {
         let deadline = queue.dequeue(thread).unwrap().entity.deadline().unwrap();
         assert_eq!(deadline.absolute_deadline_ns(), 8);
         assert_eq!(deadline.remaining_runtime_ns(), 3);
+    }
+
+    #[test]
+    fn pushable_summary_tracks_the_top_non_idle_thread() {
+        let mut queue = RunQueue::new();
+        let idle = SchedulePolicy::fair(Nice::ZERO, FairMode::Idle);
+        let fair = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let rt = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+        let deadline =
+            SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap());
+        let idle_id = ThreadId::from_parts(0, 1);
+        let fair_id = ThreadId::from_parts(1, 1);
+        let rt_id = ThreadId::from_parts(2, 1);
+        let deadline_id = ThreadId::from_parts(3, 1);
+
+        queue
+            .enqueue_test(
+                idle_id,
+                idle,
+                SchedulingEntity::new(idle, 1, 0),
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+        assert_eq!(queue.pushable_key(), None);
+        for (id, policy) in [(fair_id, fair), (rt_id, rt), (deadline_id, deadline)] {
+            queue
+                .enqueue_test(
+                    id,
+                    policy,
+                    SchedulingEntity::new(policy, 1, 0),
+                    0,
+                    EnqueueReason::Wake,
+                )
+                .unwrap();
+        }
+        assert_eq!(queue.pushable_key().unwrap().class_rank(), 0);
+
+        queue.dequeue(deadline_id).unwrap();
+        assert_eq!(queue.pushable_key().unwrap().class_rank(), 1);
+        assert_eq!(queue.pick_next_with_rt(true, |_| false).unwrap().id, rt_id);
+        assert_eq!(queue.pushable_key().unwrap().class_rank(), 2);
+        queue.dequeue(fair_id).unwrap();
+        assert_eq!(queue.pushable_key(), None);
+        assert_eq!(queue.dequeue(idle_id).unwrap().id, idle_id);
     }
 }

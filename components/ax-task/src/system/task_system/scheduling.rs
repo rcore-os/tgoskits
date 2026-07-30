@@ -96,20 +96,7 @@ impl TaskSystem {
                     0,
                     BalanceReason::RtDeadlinePush,
                 )?;
-                let key = candidate.entity.fair().map_or_else(
-                    || {
-                        candidate
-                            .entity
-                            .scheduling_key(candidate.policy, candidate.id.as_u64())
-                    },
-                    |fair| {
-                        crate::SchedulingKey::new(
-                            candidate.policy.class_rank(),
-                            fair.virtual_deadline(),
-                            candidate.id.as_u64(),
-                        )
-                    },
-                );
+                let key = candidate.balance_key();
                 if target_summary
                     .current_key()
                     .is_some_and(|current| current <= key && current.class_rank() != 3)
