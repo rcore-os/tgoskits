@@ -60,6 +60,7 @@ pub use axvm_types::{
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
 pub use guest_memory::AxvmGuestMemoryAccessor;
+#[cfg(not(test))]
 pub use host::worker::{
     WorkerTask, WorkerWaitQueue, host_cpu_count, spawn_worker_task,
     spawn_worker_task_with_affinity, yield_now,

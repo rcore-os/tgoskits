@@ -4,6 +4,7 @@ pub(crate) mod arceos;
 pub(crate) mod paging;
 pub(crate) mod task;
 pub(crate) mod traits;
+#[cfg(not(test))]
 pub mod worker;
 
 pub(crate) fn default_host() -> &'static arceos::ArceOsHost {

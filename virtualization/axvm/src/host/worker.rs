@@ -54,15 +54,8 @@ pub struct WorkerTask(AxTaskRef);
 
 impl WorkerTask {
     /// Waits until the worker exits and returns its task exit code.
-    #[cfg(not(test))]
     pub fn join(&self) -> i32 {
         self.0.join()
-    }
-
-    /// Host unit tests do not link an ArceOS image or its task linker symbols.
-    #[cfg(test)]
-    pub fn join(&self) -> i32 {
-        0
     }
 }
 

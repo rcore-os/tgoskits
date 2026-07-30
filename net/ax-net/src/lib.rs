@@ -1015,8 +1015,7 @@ pub(crate) mod test_support {
     use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
     use std::{
         panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-        sync::{Once, OnceLock, mpsc},
-        thread,
+        sync::{Mutex as StdMutex, Once},
     };
 
     use ax_sync::Mutex;
@@ -1036,26 +1035,11 @@ pub(crate) mod test_support {
     pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
     pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
 
-    type TestResult = Result<(), Box<dyn core::any::Any + Send>>;
-    type TestJob = (Box<dyn FnOnce() + Send + 'static>, mpsc::Sender<TestResult>);
-
-    static NETWORK_TEST_WORKER: OnceLock<mpsc::Sender<TestJob>> = OnceLock::new();
+    static NETWORK_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     pub(crate) fn run_in_network_test(f: impl FnOnce() + Send + 'static) {
-        let worker = NETWORK_TEST_WORKER.get_or_init(|| {
-            let (job_tx, job_rx) = mpsc::channel::<TestJob>();
-            thread::spawn(move || {
-                ax_task::init_scheduler();
-                while let Ok((job, result_tx)) = job_rx.recv() {
-                    let _ = result_tx.send(catch_unwind(AssertUnwindSafe(job)));
-                }
-            });
-            job_tx
-        });
-
-        let (result_tx, result_rx) = mpsc::channel();
-        worker.send((Box::new(f), result_tx)).unwrap();
-        if let Err(err) = result_rx.recv().unwrap() {
+        let _guard = NETWORK_TEST_LOCK.lock().unwrap();
+        if let Err(err) = catch_unwind(AssertUnwindSafe(f)) {
             resume_unwind(err);
         }
     }

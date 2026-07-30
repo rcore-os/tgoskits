@@ -92,7 +92,7 @@ impl IrqSink for VmQueuedIrqSink {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host-test"))]
 mod tests {
     use super::*;
 
