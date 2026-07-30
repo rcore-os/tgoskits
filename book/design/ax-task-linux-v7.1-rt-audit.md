@@ -164,6 +164,20 @@ baton. The four-CPU Starry affinity stress case and its deterministic owner
 scope regression validate that nested lock-preemption restoration cannot enter
 the scheduler over a half-committed switch.
 
+Idle-pull source selection preserves the same class split as Linux instead of
+using one total scheduling key as a load metric. Deadline and RT candidates
+retain their globally comparable absolute-deadline or fixed-priority ordering,
+and therefore take precedence over Fair work. Fair and Idle candidates first
+select the busiest published runqueue because EEVDF virtual deadlines are
+local to each runqueue and cannot order load across CPUs. Linux v7.1 expresses
+the same separation through RT pull selection and Fair
+`sched_balance_newidle()`/`sched_balance_rq()` load balancing. The deterministic
+regression
+`idle_pull_uses_load_not_cross_cpu_eevdf_deadline_within_fair_class` failed
+when a two-task high-weight Fair queue had a numerically earlier local virtual
+deadline than a five-task low-weight queue; the idle CPU now requests the
+five-task source while the existing RT-over-Fair regression remains green.
+
 Remote affinity completion now follows Linux's shared
 `set_affinity_pending` model. Each request advances a generation while holding
 the same scheduler-state lock that publishes its mask. A move-only completion

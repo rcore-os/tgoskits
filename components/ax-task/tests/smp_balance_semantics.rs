@@ -182,6 +182,62 @@ fn idle_pull_prefers_rt_work_over_a_larger_fair_queue() {
 }
 
 #[test]
+fn idle_pull_uses_load_not_cross_cpu_eevdf_deadline_within_fair_class() {
+    let (system, mut cpus, _idle2) = online_triple();
+    for cpu in &mut cpus {
+        let _idle = system.schedule(cpu.as_mut(), 0).unwrap();
+    }
+
+    let lightly_loaded = (0..2)
+        .map(|_| {
+            let thread = ready_thread(
+                &system,
+                SchedulePolicy::fair(Nice::new(-20).unwrap(), FairMode::Normal),
+            );
+            system.enqueue(cpus[0].as_mut(), thread.id(), 0).unwrap();
+            thread
+        })
+        .collect::<Vec<_>>();
+    let heavily_loaded = (0..5)
+        .map(|_| {
+            let thread = ready_thread(
+                &system,
+                SchedulePolicy::fair(Nice::new(19).unwrap(), FairMode::Normal),
+            );
+            system.enqueue(cpus[1].as_mut(), thread.id(), 0).unwrap();
+            thread
+        })
+        .collect::<Vec<_>>();
+
+    let light = cpus[0].try_load_summary().unwrap();
+    let heavy = cpus[1].try_load_summary().unwrap();
+    assert_eq!(light.runnable_count(), 2);
+    assert_eq!(heavy.runnable_count(), 5);
+    assert!(
+        light.pushable_key() < heavy.pushable_key(),
+        "the fixture must expose that per-runqueue EEVDF deadlines are not a cross-CPU load metric"
+    );
+
+    support::set_monotonic_ns(DEFAULT_BALANCE_INTERVAL_NS);
+    assert!(system.request_idle_pull(cpus[2].as_ref()).unwrap());
+    for cpu in &mut cpus {
+        system
+            .drain_policy_updates(cpu.as_mut(), DEFAULT_BALANCE_INTERVAL_NS)
+            .unwrap();
+    }
+    let pulled = system
+        .schedule(cpus[2].as_mut(), DEFAULT_BALANCE_INTERVAL_NS)
+        .unwrap()
+        .next();
+    assert!(
+        heavily_loaded.iter().any(|thread| thread.id() == pulled),
+        "the idle CPU must pull from the busiest fair source, not the source with the smallest \
+         unrelated runqueue-local EEVDF deadline"
+    );
+    assert!(lightly_loaded.iter().all(|thread| thread.id() != pulled));
+}
+
+#[test]
 fn balance_never_hands_off_a_thread_that_is_still_on_cpu() {
     let (system, mut cpu0, mut cpu1, idle1) = online_pair();
     let previous = ready_thread(&system, SchedulePolicy::default());
