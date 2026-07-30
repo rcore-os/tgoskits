@@ -277,6 +277,46 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_ivc_success_markers_accept_ansi_sgr_prefixes() {
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "test-suit/axvisor/normal/qemu/ivc/qemu-aarch64-ivc.toml",
+                &[
+                    "linux ivc demo pass",
+                    "ivc ack seq=5 msg=ack from linux subscriber",
+                ],
+            ),
+            (
+                "test-suit/axvisor/normal/qemu/ivc/qemu-aarch64-arceos2arceos.toml",
+                &[
+                    "ivc ack seq=5 msg=ack from arceos subscriber",
+                    "ivc full-duplex demo complete",
+                    "ivc subscriber full-duplex demo complete",
+                ],
+            ),
+        ];
+
+        for (relative_path, markers) in cases {
+            let path = workspace_root.join(relative_path);
+            let config: ostool::run::qemu::QemuConfig =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(config.success_regex.len(), markers.len());
+
+            for (pattern, marker) in config.success_regex.iter().zip(*markers) {
+                let transcript = format!("\x1b[m{marker}\n");
+                let output = captured_output(&[pattern], &[transcript.as_bytes()]);
+                verify_qemu_success_contract(Ok(()), Some(&output)).unwrap_or_else(|err| {
+                    panic!(
+                        "{} success regex did not accept ANSI-prefixed marker `{marker}`: {err}",
+                        path.display()
+                    )
+                });
+            }
+        }
+    }
+
+    #[test]
     fn empty_success_contract_preserves_normal_exit() {
         verify_qemu_success_contract(Ok(()), None).unwrap();
     }

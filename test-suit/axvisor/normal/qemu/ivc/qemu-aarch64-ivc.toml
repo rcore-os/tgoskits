@@ -23,9 +23,10 @@ fail_regex = [
     "ivc publish failed",
     "(?m)^linux ivc demo failed\\s*$",
 ]
+# Concurrent console streams may prepend ANSI SGR resets to a completion line.
 success_regex = [
-    "(?m)^linux ivc demo pass\\s*$",
-    "(?m)^ivc ack seq=5 msg=ack from linux subscriber\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*linux ivc demo pass\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*ivc ack seq=5 msg=ack from linux subscriber\\s*$",
 ]
 shell_prefix = "~ #"
 shell_init_cmd = '''

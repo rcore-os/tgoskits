@@ -30,10 +30,11 @@ fail_regex = [
 #   subscriber data), which is only possible after the last subscriber ack;
 # - the two completion lines require both guests' sender/receiver threads to
 #   have joined, i.e. every data and ack message was exchanged.
+# Concurrent console streams may prepend ANSI SGR resets to these lines.
 success_regex = [
-    "(?m)^ivc ack seq=5 msg=ack from arceos subscriber\\s*$",
-    "(?m)^ivc full-duplex demo complete\\s*$",
-    "(?m)^ivc subscriber full-duplex demo complete\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*ivc ack seq=5 msg=ack from arceos subscriber\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*ivc full-duplex demo complete\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*ivc subscriber full-duplex demo complete\\s*$",
 ]
 to_bin = true
 uefi = false
