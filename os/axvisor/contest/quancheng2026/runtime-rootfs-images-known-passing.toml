@@ -1,0 +1,179 @@
+[[images]]
+name = "initramfs-aarch64-busybox.cpio.gz"
+version = "0.0.10"
+released_at = "2026-07-27T02:20:49Z"
+description = "BusyBox initramfs for aarch64"
+sha256 = "e2daee0e217350c00bfc463dfa035d8a07056da14ebc2ed957810aeafc8751e3"
+arch = "aarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/initramfs-aarch64-busybox.cpio.gz.tar.xz"
+
+[[images]]
+name = "initramfs-loongarch64-busybox.cpio.gz"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:14Z"
+description = "BusyBox initramfs for loongarch64"
+sha256 = "27bf18e492b44cf86e40e8c96599aa31fe57704bd32b25a3b0e36450ef8f2f64"
+arch = "loongarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/initramfs-loongarch64-busybox.cpio.gz.tar.xz"
+
+[[images]]
+name = "initramfs-riscv64-busybox.cpio.gz"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:19Z"
+description = "BusyBox initramfs for riscv64"
+sha256 = "d2279791cd0a168bd1f9575543ebcf607e7de9bd931c341360d28ac1f82fe326"
+arch = "riscv64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/initramfs-riscv64-busybox.cpio.gz.tar.xz"
+
+[[images]]
+name = "initramfs-x86_64-busybox.cpio.gz"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:25Z"
+description = "BusyBox initramfs for x86_64"
+sha256 = "5990660753edd985f2028e53d34cc141b1fd25ceb43bd0eda8de825d8695019f"
+arch = "x86_64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/initramfs-x86_64-busybox.cpio.gz.tar.xz"
+
+[[images]]
+name = "orangepi-5-plus-starry"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:28Z"
+description = "StarryOS for Orange Pi development board"
+sha256 = "78974bbded1bd73da6030a876be8e246d88062b709df9cd31496af01298198b9"
+arch = "aarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/orangepi-5-plus-starry.tar.xz"
+
+[[images]]
+name = "qemu-aarch64"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:38Z"
+description = "Guest image bundle for QEMU aarch64 virtualization"
+sha256 = "f4c9ea68474e0b39e380f1929c58fb23e86ddbd9bb114a0f7a759719ba0e771f"
+arch = "aarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/qemu-aarch64.tar.xz"
+
+[[images]]
+name = "qemu-loongarch64"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:44Z"
+description = "Guest image bundle for QEMU LoongArch64 virtualization"
+sha256 = "ecea7d94cd54a5d91378cd6fdca92e424149faa0c25a2695bbe5951454c95396"
+arch = "loongarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/qemu-loongarch64.tar.xz"
+
+[[images]]
+name = "qemu-riscv64"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:48Z"
+description = "Guest image bundle for QEMU riscv64 virtualization"
+sha256 = "2a113cf7215797da910122880c7a72527d6471a9a00562574f2a44ba718d681f"
+arch = "riscv64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/qemu-riscv64.tar.xz"
+
+[[images]]
+name = "qemu-x86_64"
+version = "0.0.10"
+released_at = "2026-07-27T02:21:53Z"
+description = "Guest image bundle for QEMU x86_64 virtualization"
+sha256 = "ea5e7e5a4520e1cbcfb43cb729218cc9421dc883bf5cf72fd5452c4ccda6809b"
+arch = "x86_64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/qemu-x86_64.tar.xz"
+
+[[images]]
+name = "rootfs-aarch64-alpine.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:22:09Z"
+description = "Alpine rootfs image for aarch64"
+sha256 = "5dd54f97eedb7a984b8832ac559fa84a52034cf12899e8df5b53f07678547a03"
+arch = "aarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-aarch64-alpine.img.tar.xz"
+
+[[images]]
+name = "rootfs-aarch64-busybox.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:22:14Z"
+description = "BusyBox rootfs image for aarch64"
+sha256 = "6870c6c4ed81b7d1642475c8a866f77a14a01f3995e0a5e788f52b95d36dc843"
+arch = "aarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-aarch64-busybox.img.tar.xz"
+
+[[images]]
+name = "rootfs-aarch64-debian.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:22:27Z"
+description = "Debian rootfs image for aarch64"
+sha256 = "df1965d6d0f4bdda6e7ee22fef4ed20aefda11f4ae012a7ce0a1ada62c129ce5"
+arch = "aarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-aarch64-debian.img.tar.xz"
+
+[[images]]
+name = "rootfs-loongarch64-alpine.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:22:45Z"
+description = "Alpine rootfs image for loongarch64"
+sha256 = "e1f9f1e74f383de20052e85e82c617a3ad4d10964b51ec4aa8ece54926b9ab2a"
+arch = "loongarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-loongarch64-alpine.img.tar.xz"
+
+[[images]]
+name = "rootfs-loongarch64-busybox.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:22:50Z"
+description = "BusyBox rootfs image for loongarch64"
+sha256 = "dd165f1f8b59acc8cc805d0c65939144f275cdbcd2eff09f80d4b997a05e2b57"
+arch = "loongarch64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-loongarch64-busybox.img.tar.xz"
+
+[[images]]
+name = "rootfs-riscv64-alpine.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:23:07Z"
+description = "Alpine rootfs image for riscv64"
+sha256 = "a757dd075f1e05303d3f1a7bac7b9e56683defadefe384c1e4ad55fb7d4340e8"
+arch = "riscv64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-riscv64-alpine.img.tar.xz"
+
+[[images]]
+name = "rootfs-riscv64-busybox.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:23:12Z"
+description = "BusyBox rootfs image for riscv64"
+sha256 = "0e35558748b3de20b4cdf440d630d634a959706faf132edbed281a7c8f4f1cdd"
+arch = "riscv64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-riscv64-busybox.img.tar.xz"
+
+[[images]]
+name = "rootfs-riscv64-debian.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:23:26Z"
+description = "Debian rootfs image for riscv64"
+sha256 = "21510bff9b2a0f843f7dfe4998ba7bce049deddd0a3ca0c3dfa0e7d296753281"
+arch = "riscv64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-riscv64-debian.img.tar.xz"
+
+[[images]]
+name = "rootfs-x86_64-alpine.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:23:42Z"
+description = "Alpine rootfs image for x86_64"
+sha256 = "99ad0b06d8761e20d3cd156aadbe29cd96274613b56af9d8f942691f4bbc9152"
+arch = "x86_64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-x86_64-alpine.img.tar.xz"
+
+[[images]]
+name = "rootfs-x86_64-busybox.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:23:47Z"
+description = "BusyBox rootfs image for x86_64"
+sha256 = "862ad70533a5e7d2c0f8a52f71736fe35074ed6d8160eeaaa64f8d57e14f0a35"
+arch = "x86_64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-x86_64-busybox.img.tar.xz"
+
+[[images]]
+name = "rootfs-x86_64-debian.img"
+version = "0.0.10"
+released_at = "2026-07-27T02:24:02Z"
+description = "Debian rootfs image for x86_64"
+sha256 = "6cf7302c021be61eaf60835d6a8272309e7cbaeb220cde96a188e1137ee7e862"
+arch = "x86_64"
+url = "https://github.com/rcore-os/tgosimages/releases/download/v0.0.10/rootfs-x86_64-debian.img.tar.xz"

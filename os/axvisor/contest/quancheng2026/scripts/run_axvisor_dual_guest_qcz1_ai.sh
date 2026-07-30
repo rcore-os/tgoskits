@@ -35,6 +35,7 @@ Linux guest 192.0.2.10 <-> Zephyr RTOS guest 192.0.2.20 over IPv4/UDP.
 Required runtime artifacts, relative to --repo:
   manifest: os/axvisor/contest/quancheng2026/runtime-artifacts-known-passing.sha256
   rootfs: tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+  rootfs registry: tmp/axbuild/rootfs/images.toml
   linux:  os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu
   rtos:   os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin
   dtb:    os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb
@@ -111,12 +112,16 @@ axvisor="${repo}/os/axvisor"
 contest_dir="${axvisor}/contest/quancheng2026"
 rootfs_cache="${repo}/tmp/axbuild/rootfs"
 rootfs_image_source="${rootfs_cache}/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img"
+rootfs_registry="${rootfs_cache}/images.toml"
 linux_kernel="${axvisor}/tmp/images/qemu-aarch64/linux/linux-qemu"
 zephyr_bin="${axvisor}/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin"
 host_dtb="${axvisor}/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb"
 artifact_manifest="${contest_dir}/runtime-artifacts-known-passing.sha256"
+rootfs_registry_source="${contest_dir}/runtime-rootfs-images-known-passing.toml"
 build_dir="${repo}/tmp/quancheng2026-dual-guest-qcz1-ai-build"
-rootfs_dir="${rootfs_cache}/quancheng2026-dual-guest-qcz1-ai"
+# Keep the QEMU rootfs copy outside axbuild image storage so --rootfs is
+# treated as a caller-managed artifact after the manifest check.
+rootfs_dir="${build_dir}/rootfs"
 rootfs_img="${rootfs_dir}/rootfs-aarch64-alpine.img"
 config_dir="${build_dir}/configs"
 binary_dir="${build_dir}/bin"
@@ -243,6 +248,7 @@ echo "linux_stress_workers=${linux_stress_workers}"
 echo "linux_stress_seconds=${linux_stress_seconds}"
 echo "net_mode=${net_mode}"
 echo "runtime_artifact_manifest=${artifact_manifest}"
+echo "rootfs_registry_source=${rootfs_registry_source}"
 echo "runtime_artifact_manifest_policy=checked-in known-passing manifest; alternate runtime artifacts require a manifest update in review"
 
 for required in \
@@ -267,10 +273,21 @@ if [[ -z "${lld}" || ! -x "${lld}" ]]; then
     exit 11
 fi
 
+if [[ ! -f "${rootfs_registry_source}" ]]; then
+    echo "missing_required_path=${rootfs_registry_source}" >&2
+    exit 12
+fi
+
+mkdir -p "${rootfs_cache}"
+if [[ ! -f "${rootfs_registry}" ]]; then
+    cp "${rootfs_registry_source}" "${rootfs_registry}"
+    date +%s >"${rootfs_cache}/.last_sync"
+fi
+
 if [[ ! -f "${rootfs_image_source}" ]]; then
     echo "rootfs_image_missing=${rootfs_image_source}"
-    echo "action=cargo xtask image pull --arch aarch64 -S tmp/axbuild/rootfs"
-    (cd "${repo}" && cargo xtask image pull --arch aarch64 -S tmp/axbuild/rootfs)
+    echo "action=cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64"
+    (cd "${repo}" && cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64)
 fi
 
 if [[ ! -f "${rootfs_image_source}" ]]; then
