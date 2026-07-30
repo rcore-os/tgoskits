@@ -13,6 +13,9 @@ std::thread_local! {
     static FAIR_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
+    static RUNQUEUE_MEMBERSHIP_LOOKUPS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
 }
 
 #[cfg(test)]
@@ -28,6 +31,16 @@ fn fair_runqueue_visits() -> usize {
 #[cfg(test)]
 pub(super) fn record_fair_runqueue_visit() {
     FAIR_RUNQUEUE_VISITS.set(FAIR_RUNQUEUE_VISITS.get().saturating_add(1));
+}
+
+#[cfg(test)]
+fn reset_runqueue_membership_lookups() {
+    RUNQUEUE_MEMBERSHIP_LOOKUPS.set(0);
+}
+
+#[cfg(test)]
+fn runqueue_membership_lookups() -> usize {
+    RUNQUEUE_MEMBERSHIP_LOOKUPS.get()
 }
 
 /// Why a runnable thread is being inserted into its owner run queue.
@@ -77,12 +90,28 @@ struct PushableSummary {
     key: SchedulingKey,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueueMembershipClass {
+    Deadline,
+    Realtime(u8),
+    Fair,
+    IdleFair,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QueueMembership {
+    generation: u32,
+    class: QueueMembershipClass,
+}
+
 #[derive(Debug)]
 pub(crate) struct RunQueue {
     deadline: Vec<QueuedThread>,
     rt: [VecDeque<QueuedThread>; 99],
+    rt_bitmap: u128,
     fair: FairRunQueue,
     idle_fair: FairRunQueue,
+    membership: Vec<Option<QueueMembership>>,
     virtual_time: u64,
     idle_virtual_time: u64,
     earliest_deadline_event_ns: Option<u64>,
@@ -96,8 +125,10 @@ impl RunQueue {
         Self {
             deadline: Vec::new(),
             rt: core::array::from_fn(|_| VecDeque::new()),
+            rt_bitmap: 0,
             fair: FairRunQueue::new(),
             idle_fair: FairRunQueue::new(),
+            membership: Vec::new(),
             virtual_time: 0,
             idle_virtual_time: 0,
             earliest_deadline_event_ns: None,
@@ -141,15 +172,11 @@ impl RunQueue {
     }
 
     pub(crate) fn has_rt(&self) -> bool {
-        self.rt.iter().any(|queue| !queue.is_empty())
+        self.rt_bitmap != 0
     }
 
     pub(crate) fn highest_rt_priority(&self) -> Option<u8> {
-        self.rt
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, queue)| (!queue.is_empty()).then_some(index as u8 + 1))
+        (self.rt_bitmap != 0).then(|| (u128::BITS - self.rt_bitmap.leading_zeros()) as u8)
     }
 
     pub(crate) fn rt_count_at_priority(&self, priority: u8) -> usize {
@@ -255,7 +282,7 @@ impl RunQueue {
             reason
         };
         let queued_entity = entry.entity;
-        let pushable_summary = match policy {
+        let (pushable_summary, membership_class) = match policy {
             SchedulePolicy::Deadline(_) => {
                 if reason == EnqueueReason::Wake {
                     entry.entity.activate_deadline(now_ns);
@@ -268,7 +295,7 @@ impl RunQueue {
                 let summary = Self::pushable_summary_for(&entry);
                 self.deadline.push(entry);
                 self.recompute_earliest_deadline_event();
-                summary
+                (summary, QueueMembershipClass::Deadline)
             }
             SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
                 let summary = Self::pushable_summary_for(&entry);
@@ -278,22 +305,24 @@ impl RunQueue {
                 } else {
                     queue.push_back(entry);
                 }
-                summary
+                self.rt_bitmap |= 1_u128 << (priority.get() - 1);
+                (summary, QueueMembershipClass::Realtime(priority.get()))
             }
             SchedulePolicy::Fair {
                 mode: FairMode::Idle,
                 ..
             } => {
                 self.idle_fair.insert(entry);
-                None
+                (None, QueueMembershipClass::IdleFair)
             }
             SchedulePolicy::Fair { .. } => {
                 let summary = Self::pushable_summary_for(&entry);
                 self.fair.insert(entry);
-                summary
+                (summary, QueueMembershipClass::Fair)
             }
         };
         self.len += 1;
+        self.register_membership(id, membership_class);
         self.consider_pushable_summary(pushable_summary);
         Ok(queued_entity)
     }
@@ -313,23 +342,33 @@ impl RunQueue {
     }
 
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
-        let removed = remove_from_vec(&mut self.deadline, id)
-            .or_else(|| remove_from_rt(&mut self.rt, id))
-            .or_else(|| self.fair.remove(id))
-            .or_else(|| self.idle_fair.remove(id));
-        if let Some(removed) = &removed {
-            self.len -= 1;
-            if matches!(removed.policy, SchedulePolicy::Deadline(_)) {
-                self.recompute_earliest_deadline_event();
+        let class = self.membership_class(id)?;
+        let removed = match class {
+            QueueMembershipClass::Deadline => remove_from_vec(&mut self.deadline, id),
+            QueueMembershipClass::Realtime(priority) => {
+                let index = (priority - 1) as usize;
+                let removed = remove_from_rt_queue(&mut self.rt[index], id);
+                if self.rt[index].is_empty() {
+                    self.rt_bitmap &= !(1_u128 << index);
+                }
+                removed
             }
-            if self
-                .pushable_summary
-                .is_some_and(|summary| summary.thread == removed.id)
-            {
-                self.recompute_pushable_summary();
-            }
+            QueueMembershipClass::Fair => self.fair.remove(id),
+            QueueMembershipClass::IdleFair => self.idle_fair.remove(id),
         }
-        removed
+        .expect("runqueue membership must identify a linked scheduling entity");
+        self.len -= 1;
+        self.unregister_membership(removed.id);
+        if matches!(removed.policy, SchedulePolicy::Deadline(_)) {
+            self.recompute_earliest_deadline_event();
+        }
+        if self
+            .pushable_summary
+            .is_some_and(|summary| summary.thread == removed.id)
+        {
+            self.recompute_pushable_summary();
+        }
+        Some(removed)
     }
 
     pub(crate) fn pick_next_with_rt(
@@ -342,11 +381,13 @@ impl RunQueue {
             .or_else(|| self.pick_rt(ordinary_rt_may_run, &mut is_pi_boosted_owner))
             .or_else(|| self.pick_fair(false))
             .or_else(|| self.pick_fair(true));
-        if picked.is_some() {
+        if let Some(picked_entry) = &picked {
             self.len -= 1;
-            if self.pushable_summary.is_some_and(|summary| {
-                Some(summary.thread) == picked.as_ref().map(|entry| entry.id)
-            }) {
+            self.unregister_membership(picked_entry.id);
+            if self
+                .pushable_summary
+                .is_some_and(|summary| summary.thread == picked_entry.id)
+            {
                 self.recompute_pushable_summary();
             }
         }
@@ -376,13 +417,26 @@ impl RunQueue {
         ordinary_rt_may_run: bool,
         is_pi_boosted_owner: &mut impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThread> {
-        for queue in self.rt.iter_mut().rev() {
-            if ordinary_rt_may_run {
-                if let Some(thread) = queue.pop_front() {
-                    return Some(thread);
+        if ordinary_rt_may_run {
+            let priority = self.highest_rt_priority()?;
+            let index = (priority - 1) as usize;
+            let thread = self.rt[index]
+                .pop_front()
+                .expect("RT bitmap must identify a non-empty priority queue");
+            if self.rt[index].is_empty() {
+                self.rt_bitmap &= !(1_u128 << index);
+            }
+            return Some(thread);
+        }
+        for (index, queue) in self.rt.iter_mut().enumerate().rev() {
+            if let Some(position) = queue.iter().position(&mut *is_pi_boosted_owner) {
+                let thread = queue.remove(position);
+                if queue.is_empty() {
+                    self.rt_bitmap &= !(1_u128 << index);
                 }
-            } else if let Some(index) = queue.iter().position(&mut *is_pi_boosted_owner) {
-                return queue.remove(index);
+                if thread.is_some() {
+                    return thread;
+                }
             }
         }
         None
@@ -441,25 +495,58 @@ impl RunQueue {
     }
 
     fn recompute_pushable_summary(&mut self) {
-        let non_fair = self
+        self.pushable_summary = self
             .deadline
             .iter()
-            .chain(self.rt.iter().flat_map(|queue| queue.iter()))
             .filter_map(Self::pushable_summary_for)
             .min_by_key(|summary| summary.key);
-        self.pushable_summary = non_fair;
+        let rt = self.highest_rt_priority().and_then(|priority| {
+            self.rt[(priority - 1) as usize]
+                .front()
+                .and_then(Self::pushable_summary_for)
+        });
+        self.consider_pushable_summary(rt);
         let fair = self.fair.first().and_then(Self::pushable_summary_for);
         self.consider_pushable_summary(fair);
     }
 
     fn contains(&self, id: ThreadId) -> bool {
-        self.deadline.iter().any(|entry| entry.id == id)
-            || self
-                .rt
-                .iter()
-                .any(|queue| queue.iter().any(|entry| entry.id == id))
-            || self.fair.contains(id)
-            || self.idle_fair.contains(id)
+        self.membership_class(id).is_some()
+    }
+
+    fn membership_class(&self, id: ThreadId) -> Option<QueueMembershipClass> {
+        #[cfg(test)]
+        RUNQUEUE_MEMBERSHIP_LOOKUPS.set(RUNQUEUE_MEMBERSHIP_LOOKUPS.get().saturating_add(1));
+        self.membership
+            .get(id.slot() as usize)
+            .and_then(|membership| *membership)
+            .filter(|membership| membership.generation == id.generation())
+            .map(|membership| membership.class)
+    }
+
+    fn register_membership(&mut self, id: ThreadId, class: QueueMembershipClass) {
+        let slot = id.slot() as usize;
+        if self.membership.len() <= slot {
+            self.membership.resize(slot.saturating_add(1), None);
+        }
+        assert!(
+            self.membership[slot]
+                .replace(QueueMembership {
+                    generation: id.generation(),
+                    class,
+                })
+                .is_none(),
+            "runqueue membership must be unique"
+        );
+    }
+
+    fn unregister_membership(&mut self, id: ThreadId) {
+        let membership = self
+            .membership
+            .get_mut(id.slot() as usize)
+            .and_then(Option::take)
+            .expect("queued thread must retain owner membership until removal");
+        assert_eq!(membership.generation, id.generation());
     }
 
     fn allocate_sequence(&mut self) -> u64 {
@@ -474,13 +561,9 @@ fn remove_from_vec(queue: &mut Vec<QueuedThread>, id: ThreadId) -> Option<Queued
     Some(queue.swap_remove(index))
 }
 
-fn remove_from_rt(queues: &mut [VecDeque<QueuedThread>; 99], id: ThreadId) -> Option<QueuedThread> {
-    for queue in queues {
-        if let Some(index) = queue.iter().position(|entry| entry.id == id) {
-            return queue.remove(index);
-        }
-    }
-    None
+fn remove_from_rt_queue(queue: &mut VecDeque<QueuedThread>, id: ThreadId) -> Option<QueuedThread> {
+    let index = queue.iter().position(|entry| entry.id == id)?;
+    queue.remove(index)
 }
 
 #[cfg(test)]
@@ -763,5 +846,94 @@ mod tests {
                 .unwrap();
             removal_queue.fair.assert_invariants();
         }
+    }
+
+    #[test]
+    fn fair_enqueue_uses_direct_runqueue_membership() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        queue
+            .enqueue_test(
+                ThreadId::from_parts(0, 1),
+                policy,
+                SchedulingEntity::new(policy, 1_000, 0),
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+
+        reset_runqueue_membership_lookups();
+        queue
+            .enqueue_test(
+                ThreadId::from_parts(1, 1),
+                policy,
+                SchedulingEntity::new(policy, 1_000, 0),
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+        assert_eq!(
+            runqueue_membership_lookups(),
+            1,
+            "enqueue must perform one generation-checked lookup instead of probing scheduler \
+             classes"
+        );
+    }
+
+    #[test]
+    fn direct_membership_rejects_a_retired_thread_generation() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let retired = ThreadId::from_parts(7, 1);
+        let replacement = ThreadId::from_parts(7, 2);
+
+        queue
+            .enqueue_test(
+                retired,
+                policy,
+                SchedulingEntity::new(policy, 1_000, 0),
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+        assert_eq!(queue.dequeue(retired).unwrap().id, retired);
+        queue
+            .enqueue_test(
+                replacement,
+                policy,
+                SchedulingEntity::new(policy, 1_000, 0),
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+
+        assert!(queue.dequeue(retired).is_none());
+        assert_eq!(queue.dequeue(replacement).unwrap().id, replacement);
+    }
+
+    #[test]
+    fn realtime_bitmap_tracks_the_highest_nonempty_priority() {
+        let mut queue = RunQueue::new();
+        let low = SchedulePolicy::fifo(RtPriority::new(1).unwrap());
+        let high = SchedulePolicy::fifo(RtPriority::new(99).unwrap());
+        let low_id = ThreadId::from_parts(0, 1);
+        let high_id = ThreadId::from_parts(1, 1);
+        for (id, policy) in [(low_id, low), (high_id, high)] {
+            queue
+                .enqueue_test(
+                    id,
+                    policy,
+                    SchedulingEntity::new(policy, 1_000, 0),
+                    0,
+                    EnqueueReason::Wake,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(queue.highest_rt_priority(), Some(99));
+        assert_eq!(queue.dequeue(high_id).unwrap().id, high_id);
+        assert_eq!(queue.highest_rt_priority(), Some(1));
+        assert_eq!(queue.pick_next_with_rt(true, |_| false).unwrap().id, low_id);
+        assert!(!queue.has_rt());
     }
 }
