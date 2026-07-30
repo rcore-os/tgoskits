@@ -76,7 +76,7 @@ impl_trait! {
                 })
         }
 
-        fn current_cpu_id() -> RuntimeCpuId {
+        unsafe fn current_cpu_id() -> RuntimeCpuId {
             CURRENT_CPU.with(|cpu| RuntimeCpuId::new(cpu.get()))
         }
         fn online_cpu_count() -> u32 {

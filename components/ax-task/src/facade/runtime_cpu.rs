@@ -49,7 +49,9 @@ struct RuntimeCpuHandles {
 
 impl RuntimeCpuHandles {
     fn capture() -> Self {
-        let runtime_cpu = task_runtime::current_cpu_id();
+        // SAFETY: every capture is owned by a live RuntimeIrqGuard or
+        // RuntimeSchedulerFrameGuard that prevents migration.
+        let runtime_cpu = unsafe { task_runtime::current_cpu_id() };
         // SAFETY: a RuntimeCpuPin is created only after its runtime guard has
         // disabled migration. The provider returns shutdown-lifetime handles
         // for the CPU selected by that same pinned context.

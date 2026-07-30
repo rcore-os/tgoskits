@@ -31,6 +31,36 @@ fn lock_preempt_exit_reports_only_the_outermost_transition() {
 }
 
 #[test]
+fn nested_preempt_exit_does_not_reenter_context_queries() {
+    use core::cell::Cell;
+
+    let mut state = RuntimeGuardState::new();
+    state.enter_lock_preempt();
+    state.enter_lock_preempt();
+    let irq_queries = Cell::new(0);
+    let reschedule_queries = Cell::new(0);
+
+    assert!(!preempt_exit_needs_schedule(
+        &state,
+        true,
+        false,
+        || {
+            irq_queries.set(irq_queries.get() + 1);
+            false
+        },
+        || {
+            reschedule_queries.set(reschedule_queries.get() + 1);
+            false
+        },
+    ));
+    assert_eq!(
+        (irq_queries.get(), reschedule_queries.get()),
+        (0, 0),
+        "a nested NoPreempt drop must not recursively query IRQ or scheduler state"
+    );
+}
+
+#[test]
 fn scheduler_baton_is_exactly_one_cpu_local_frame() {
     let mut state = RuntimeGuardState::new();
     assert!(state.claim_task_scheduler());

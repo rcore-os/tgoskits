@@ -26,8 +26,20 @@ pub use register::install_kernel_tls;
 #[cfg(feature = "tls")]
 pub use register::kernel_tls;
 #[doc(hidden)]
-pub use register::{install_bootstrap_thread, install_cpu_area, scheduler_current_thread};
+pub use register::{
+    install_bootstrap_thread, install_cpu_area, scheduler_current_cpu_index,
+    scheduler_current_thread,
+};
 pub use switch::{PreparedThreadSwitch, PreviousThreadBinding, prepare_thread_switch};
 #[doc(hidden)]
 pub use symbol::{cpu_area_template_base, cpu_area_template_size};
 pub use thread::*;
+
+/// Host-only observations of the modeled architecture register boundary.
+#[cfg(feature = "host-test")]
+#[doc(hidden)]
+pub mod host_test {
+    pub use crate::register::host_test::{
+        RegisterReadCounts, register_read_counts, reset_register_read_counts,
+    };
+}

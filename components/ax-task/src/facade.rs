@@ -88,7 +88,7 @@ pub fn current_thread_id() -> Result<ThreadId, TaskError> {
 /// Task-context callers normally satisfy this with a preemption guard or an
 /// IRQ-aware metadata lock.
 pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
-    let cpu = CpuId::new(task_runtime::current_cpu_id().as_u32());
+    let cpu = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
     cpu_local_for_wake(cpu)
         .ok_or(TaskError::NotInitialized)?
         .current_thread()
@@ -103,7 +103,7 @@ pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
 /// uses this snapshot. Sleeping-lock owner spinning normally satisfies this
 /// with a preemption guard.
 pub unsafe fn current_needs_reschedule_pinned() -> Result<bool, TaskError> {
-    let cpu = CpuId::new(task_runtime::current_cpu_id().as_u32());
+    let cpu = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
     Ok(cpu_local_for_wake(cpu)
         .ok_or(TaskError::NotInitialized)?
         .needs_reschedule())

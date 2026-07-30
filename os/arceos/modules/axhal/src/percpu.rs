@@ -40,6 +40,20 @@ pub unsafe fn current_thread_raw() -> *const CurrentThreadHeader {
         .map_or(core::ptr::null(), |pointer| pointer.as_ptr().cast_const())
 }
 
+/// Reads the logical CPU ID before constructing a scheduler guard.
+///
+/// # Safety
+///
+/// The caller must already prevent migration or own an offline CPU and must
+/// not use this observation after a context switch.
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn scheduler_current_cpu_id() -> usize {
+    unsafe { cpu_local::scheduler_current_cpu_index() }
+        .expect("scheduler current thread must retain a CPU binding")
+        .as_usize()
+}
+
 /// Prepares a complete current-thread switch transaction.
 ///
 /// # Safety

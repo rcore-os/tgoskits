@@ -44,6 +44,28 @@ use x86_64 as imp;
 ))]
 compile_error!("cpu-local supports x86_64, AArch64, RISC-V, and LoongArch64 only");
 
+#[cfg(feature = "host-test")]
+pub(crate) mod host_test {
+    /// Number of modeled architecture register reads since the last reset.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct RegisterReadCounts {
+        /// Reads of the architecture CPU-area base.
+        pub cpu_base: usize,
+        /// Reads of the architecture current-thread pointer.
+        pub current_thread: usize,
+    }
+
+    /// Resets the current host thread's modeled register read counters.
+    pub fn reset_register_read_counts() {
+        super::imp::reset_register_read_counts();
+    }
+
+    /// Returns the current host thread's modeled register read counters.
+    pub fn register_read_counts() -> RegisterReadCounts {
+        super::imp::register_read_counts()
+    }
+}
+
 /// Installs the final area of an offline CPU.
 ///
 /// # Safety
@@ -116,6 +138,7 @@ pub fn current_thread(pin: &CpuPin<'_>) -> Result<NonNull<CurrentThreadHeader>, 
 /// The caller must keep the scheduler-owned current task alive and must not
 /// dereference the result after a context switch.
 #[doc(hidden)]
+#[inline(always)]
 pub unsafe fn scheduler_current_thread() -> Result<NonNull<CurrentThreadHeader>, CpuLocalError> {
     #[cfg(not(feature = "tls"))]
     {
@@ -140,6 +163,21 @@ pub unsafe fn scheduler_current_thread() -> Result<NonNull<CurrentThreadHeader>,
         return NonNull::new(register as *mut CurrentThreadHeader)
             .ok_or(CpuLocalError::CurrentThreadMismatch);
     }
+}
+
+/// Reads the logical CPU identity before the scheduler can construct its guard.
+///
+/// # Safety
+///
+/// The caller must keep the scheduler-owned current task alive and must not
+/// use this observation after a context switch.
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn scheduler_current_cpu_index() -> Result<crate::CpuIndex, CpuLocalError> {
+    let current = unsafe { scheduler_current_thread()? };
+    unsafe { current.as_ref() }
+        .cpu_index()
+        .ok_or(CpuLocalError::CurrentThreadMismatch)
 }
 
 #[cfg(all(test, feature = "host-test"))]

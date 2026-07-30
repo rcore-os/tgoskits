@@ -53,6 +53,7 @@ where
     }
 
     /// Returns this symbol's byte offset in one area.
+    #[inline(always)]
     pub fn offset(&self) -> usize {
         S::offset()
     }
@@ -86,6 +87,23 @@ where
             unsafe { NonNull::new_unchecked((exclusive.area().base() + S::offset()) as *mut T) };
         operation(unsafe { pointer.as_mut() })
     }
+
+    /// Mutates the scheduler's current CPU object before a [`CpuPin`] exists.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep the scheduler-owned current thread alive, prevent
+    /// context switches and local IRQ/re-entry for the complete callback, and
+    /// exclude every conflicting remote access to this object. Offline CPU
+    /// bootstrap satisfies the same contract before interrupt publication.
+    #[doc(hidden)]
+    pub unsafe fn with_scheduler_current_mut<R>(
+        &self,
+        operation: impl for<'value> FnOnce(&'value mut T) -> R,
+    ) -> Result<R, cpu_local::CpuLocalError> {
+        let mut pointer = unsafe { scheduler_current_ptr::<T, S>()? };
+        Ok(operation(unsafe { pointer.as_mut() }))
+    }
 }
 
 impl<T, S> PerCpu<T, S>
@@ -102,6 +120,38 @@ where
         // SAFETY: T: Sync permits shared observation and the pin fixes address.
         operation(unsafe { S::current_ptr(pin).as_ref() })
     }
+
+    /// Borrows the scheduler's current CPU object before a [`CpuPin`] exists.
+    ///
+    /// # Safety
+    ///
+    /// The caller must keep the scheduler-owned current thread alive, prevent
+    /// context switches and local IRQ/re-entry for the complete callback, and
+    /// exclude every conflicting mutation of this object. Offline CPU
+    /// bootstrap satisfies the same contract before interrupt publication.
+    #[doc(hidden)]
+    pub unsafe fn with_scheduler_current<R>(
+        &self,
+        operation: impl for<'value> FnOnce(&'value T) -> R,
+    ) -> Result<R, cpu_local::CpuLocalError> {
+        let pointer = unsafe { scheduler_current_ptr::<T, S>()? };
+        Ok(operation(unsafe { pointer.as_ref() }))
+    }
+}
+
+#[inline(always)]
+unsafe fn scheduler_current_ptr<T, S>() -> Result<NonNull<T>, cpu_local::CpuLocalError>
+where
+    S: PerCpuSymbol<T>,
+{
+    let thread = unsafe { cpu_local::scheduler_current_thread()? };
+    let area_base = unsafe { thread.as_ref() }
+        .cpu_area_base()
+        .ok_or(cpu_local::CpuLocalError::CurrentThreadMismatch)?;
+    let address = area_base
+        .checked_add(S::offset())
+        .ok_or(cpu_local::CpuLocalError::AddressOverflow)?;
+    NonNull::new(address as *mut T).ok_or(cpu_local::CpuLocalError::CurrentThreadMismatch)
 }
 
 mod primitive {

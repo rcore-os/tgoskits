@@ -438,8 +438,13 @@ pub trait TaskRuntime {
     /// a [`crate::CpuLocal`] or any other allocation.
     unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle;
 
-    /// Returns the calling CPU's logical identifier.
-    fn current_cpu_id() -> RuntimeCpuId;
+    /// Returns the calling CPU's logical identifier under an existing pin.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prevent migration until it has finished the local
+    /// operation associated with the returned identity.
+    unsafe fn current_cpu_id() -> RuntimeCpuId;
 
     /// Returns the number of CPUs published online to the scheduler.
     fn online_cpu_count() -> u32;

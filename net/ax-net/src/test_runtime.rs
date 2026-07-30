@@ -42,7 +42,7 @@ impl_task_runtime! {
                     }
                 })
         }
-        fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
+        unsafe fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
         fn online_cpu_count() -> u32 { 1 }
         fn prepare_cpu_online(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn prepare_cpu_offline(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
