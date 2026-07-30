@@ -1489,6 +1489,40 @@ matrices pass with warnings denied. The timer-expiry facade regression also
 asserts that the resulting scheduler decision preserves the current execution
 context when no runnable peer exists.
 
+## Current-head wake-consumption boundary closure
+
+The scheduler previously exposed `TaskSystem::consume_wake()` as a public
+shortcut. It resolved a generation-bearing wake handle through the global
+thread registry and changed the target lifecycle under the per-thread
+scheduler lock. Production IRQ wakeups did not use it: they already published
+an intrusive record into the owner CPU inbox and rang the scheduler doorbell.
+The shortcut nevertheless made a global scheduler lock look like an
+IRQ-capable wake boundary and let an external caller bypass owner-CPU enqueue,
+placement, and bounded-drain ordering.
+
+Linux v7.1 keeps wake activation within the scheduler's ownership protocol:
+
+- `try_to_wake_up()` serializes task state with `p->pi_lock` and publishes
+  `TASK_WAKING`;
+- `ttwu_queue_wakelist()` publishes into the target runqueue wake list and
+  sends the target CPU an IPI when remote activation should be deferred; and
+- the target CPU performs activation under its runqueue ownership instead of
+  offering an unrelated public routine that consumes only half of the wake
+  transaction.
+
+TGOSKits now has the same single path. A producer can only call
+`ThreadWakeHandle::wake()`. The owner CPU's bounded
+`drain_remote_wakes()` consumes the transferred reference, validates the
+generation-bearing identity, performs the lifecycle transition, enqueues the
+thread if needed, and preserves the executor's lost-wakeup predicate. Direct
+wake consumption is private to that owner drain.
+
+A compile-fail API regression was first observed red while the shortcut
+remained public. The executor regression was then changed from manually
+calling the shortcut to draining the real owner inbox and asserting that
+exactly one wake record was consumed while the park predicate remained
+abortable. Both tests are green after removing the bypass.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest
