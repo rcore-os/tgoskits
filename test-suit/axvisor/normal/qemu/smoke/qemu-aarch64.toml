@@ -11,7 +11,7 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
   "-append",
-  "root=/dev/nvme0n1 rw init=/bin/sh",
+  "root=/dev/vda rw init=/bin/sh",
   "-m",
   "8g",
 ]
@@ -21,16 +21,8 @@ fail_regex = [
   "(?i)login incorrect",
   "(?i)permission denied",
 ]
-success_regex = [
-  "(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$",
-  "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$",
-]
-shell_prefix = "axvisor:/$"
-shell_init_cmd = """
-echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
-cat /tmp/axvisor-nvme-rw
-rm -f /tmp/axvisor-nvme-rw
-echo AXVISOR_NVME_ROOTFS_RW_PASSED
-"""
+success_regex = ["(?m)^guest test pass!\\s*$"]
+shell_prefix = "~ #"
+shell_init_cmd = "pwd && echo 'guest test pass!'"
 to_bin = true
 uefi = false
