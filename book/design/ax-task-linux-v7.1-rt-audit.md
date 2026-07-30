@@ -96,7 +96,7 @@ disposition of every row is:
 | PI and sleep locks | Closed by generation-bearing PI identities, bounded waiter/grant transactions, deboost-before-wake, quiescent destruction, and task-context sleeping waits. |
 | IRQ wake lifetime | Closed by generation-bearing `IrqWaitCell` state, revocation plus quiescence, and no consumer-visible raw wake pointer. |
 | Starry signal return | Closed by monotonic interruption publication/acknowledgement generations and typed `Ready / Interrupted / TimedOut` waits. |
-| Process lifecycle | Closed around dev's sole `ProcessIdentity` authority and `ProcessRelationTxn`; no competing zombie/PID state machine is present. |
+| Process lifecycle | Closed around dev's sole `ProcessIdentity` authority, `ProcessRelationTxn`, and PI-backed task/PID/group/session registries; no competing zombie/PID state machine or preemptible raw registry lock is present. |
 | Perf ownership | Closed by typed task/CPU targets, fixed owner-CPU workers, generation-checked sampling registrations, IRQ grace before release, and a physical scheduler-owner fence during migration. |
 | Generic timers | Closed by CPU-affine task workers and bounded wake endpoints; ax-task contains no arbitrary timer callback API. |
 | CPU interval timers | Closed by real-periodic-expiry detection, hard-IRQ-only generation/timestamp publication, a serialized task-context accounting writer, bounded retry ownership, O(1) aggregate snapshots, retained delivery, explicit ax-runtime forwarding, and Starry task-context expiry/signals. |
@@ -1850,6 +1850,36 @@ generation or changing the donation graph. `ax-sync::RawMutex` remains free to
 turn that error into a kernel programming failure through its infallible lock
 API. The deterministic regression first observed the old fatal hook, then
 proved the typed error leaves the pre-existing edge cancellable.
+
+## Current-head Starry registry lock boundary
+
+The Starry task, PID identity, process-group, and session registries were
+task-context data structures but used `ax_kspin::SpinRwLock`, whose `NoOp`
+guard neither disables preemption nor provides priority inheritance. Their
+write critical sections insert into or remove from `BTreeMap` and `WeakMap`,
+and read-side operations can allocate result vectors or upgrade scheduler
+handles. A lock holder could therefore be preempted on its CPU while another
+task spun on the same raw word, and a higher-priority waiter could not donate
+priority to the owner.
+
+Linux v7.1 declares `tasklist_lock` as an ordinary `rwlock_t` in
+`kernel/fork.c:158`, but under `CONFIG_PREEMPT_RT` the type is replaced by an
+`rwbase_rt`-backed lock (`include/linux/rwlock_types.h:54-76`).
+`rt_read_lock()` and `rt_write_lock()` enter the rtmutex-based wait path rather
+than spinning (`kernel/locking/spinlock_rt.c:229-247`).
+
+TGOSKits has no PI read/write lock, so the four registries now use exclusive
+`PiMutex` ownership. This trades parallel read access for a bounded,
+priority-inheriting sleep path and keeps allocation, weak-handle upgrade, and
+table traversal out of a raw critical section. The per-identity lifecycle word
+remains a short `SpinNoIrq` transaction because it is bounded, allocation-free,
+and may nest only after the registry lock. The explicit lock order is registry
+then identity state; identity-state code does not acquire a registry lock.
+
+The deterministic lock-boundary regression first failed against all four raw
+registry declarations and then passed after the migration. Starry's complete
+24-configuration feature clippy validates normal, `axtest`, SMP, and
+architecture builds with the new sleepable boundary.
 
 ## Completion rules
 

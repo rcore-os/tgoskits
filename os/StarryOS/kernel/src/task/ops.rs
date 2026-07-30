@@ -6,9 +6,9 @@ use alloc::{
 use core::ffi::c_long;
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
 use ax_std::os::arceos::task::yield_current_cpu;
+use ax_sync::PiMutex;
 use axpoll::IoEvents;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -49,11 +49,15 @@ pub fn decode_wait_status(raw: i32) -> (i32, i32) {
     }
 }
 
-static TASK_TABLE: RwLock<BTreeMap<Pid, WeakUserTaskRef>> = RwLock::new(BTreeMap::new());
+// These registries are task-context only. Their map operations may allocate,
+// free, or upgrade scheduler handles, so contention must sleep with PI rather
+// than spin with preemption enabled.
+static TASK_TABLE: PiMutex<BTreeMap<Pid, WeakUserTaskRef>> = PiMutex::new(BTreeMap::new());
 
-static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
+static PROCESS_GROUP_TABLE: PiMutex<WeakMap<Pid, Weak<ProcessGroup>>> =
+    PiMutex::new(WeakMap::new());
 
-static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap::new());
+static SESSION_TABLE: PiMutex<WeakMap<Pid, Weak<Session>>> = PiMutex::new(WeakMap::new());
 
 fn remove_matching_entry<K, V>(
     entries: &mut BTreeMap<K, V>,
@@ -77,7 +81,7 @@ where
 #[cfg(feature = "memtrack")]
 pub fn cleanup_task_tables() -> AxResult<()> {
     let mut invalid_extension = false;
-    TASK_TABLE.write().retain(|_, task| match task.upgrade() {
+    TASK_TABLE.lock().retain(|_, task| match task.upgrade() {
         Ok(Some(_)) => true,
         Ok(None) => false,
         Err(_) => {
@@ -85,8 +89,8 @@ pub fn cleanup_task_tables() -> AxResult<()> {
             true
         }
     });
-    PROCESS_GROUP_TABLE.write().cleanup();
-    SESSION_TABLE.write().cleanup();
+    PROCESS_GROUP_TABLE.lock().cleanup();
+    SESSION_TABLE.lock().cleanup();
     if invalid_extension {
         Err(AxError::BadState)
     } else {
@@ -105,7 +109,7 @@ pub fn add_task_to_table(task: &UserTaskRef) {
     let proc_data = &task.as_thread().proc_data;
     let tid = task.as_thread().tid() as Pid;
 
-    let mut task_table = TASK_TABLE.write();
+    let mut task_table = TASK_TABLE.lock();
     task_table.insert(tid, task.downgrade());
     drop(task_table);
 
@@ -113,7 +117,7 @@ pub fn add_task_to_table(task: &UserTaskRef) {
 
     let proc = &proc_data.proc;
     let pg = proc.group();
-    let mut pg_table = PROCESS_GROUP_TABLE.write();
+    let mut pg_table = PROCESS_GROUP_TABLE.lock();
     if pg_table.contains_key(&pg.pgid()) {
         return;
     }
@@ -121,7 +125,7 @@ pub fn add_task_to_table(task: &UserTaskRef) {
     drop(pg_table);
 
     let session = pg.session();
-    let mut session_table = SESSION_TABLE.write();
+    let mut session_table = SESSION_TABLE.lock();
     if session_table.contains_key(&session.sid()) {
         return;
     }
@@ -153,7 +157,7 @@ impl Drop for PreparedTaskRegistration {
             return;
         }
 
-        let mut task_table = TASK_TABLE.write();
+        let mut task_table = TASK_TABLE.lock();
         remove_matching_entry(&mut task_table, &self.tid, |task| {
             task.scheduler_id() == self.scheduler_id
         });
@@ -177,7 +181,7 @@ pub fn register_prepared_task(
 ) -> AxResult<PreparedTaskRegistration> {
     let tid = task.as_thread().tid() as Pid;
     let scheduler_id = task.id();
-    let mut task_table = TASK_TABLE.write();
+    let mut task_table = TASK_TABLE.lock();
     if task_table.contains_key(&tid) {
         return Err(AxError::BadState);
     }
@@ -188,7 +192,7 @@ pub fn register_prepared_task(
     if let Some(process) = process.as_ref()
         && let Err(error) = register_prepared_process_identity(process)
     {
-        remove_matching_entry(&mut TASK_TABLE.write(), &tid, |registered| {
+        remove_matching_entry(&mut TASK_TABLE.lock(), &tid, |registered| {
             registered.scheduler_id() == scheduler_id
         });
         return Err(error);
@@ -208,12 +212,12 @@ pub fn register_prepared_task(
 /// but Linux-visible task lookup must stop at thread exit rather than inherit
 /// that implementation lifetime.
 pub fn remove_task_from_table(tid: Pid) {
-    TASK_TABLE.write().remove(&tid);
+    TASK_TABLE.lock().remove(&tid);
 }
 
 /// Lists all tasks.
 pub fn tasks() -> AxResult<Vec<UserTaskRef>> {
-    let table = TASK_TABLE.read();
+    let table = TASK_TABLE.lock();
     let mut tasks = Vec::with_capacity(table.len());
     for task in table.values() {
         if let Some(task) = task.upgrade().map_err(|_| AxError::BadState)? {
@@ -229,7 +233,7 @@ pub fn get_task(tid: Pid) -> AxResult<UserTaskRef> {
         return Ok(current_user_task());
     }
     let weak = TASK_TABLE
-        .read()
+        .lock()
         .get(&tid)
         .copied()
         .ok_or(AxError::NoSuchProcess)?;
@@ -272,7 +276,7 @@ pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
 
 /// Finds the process group with the given PGID.
 pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
-    if let Some(pg) = PROCESS_GROUP_TABLE.read().get(&pgid) {
+    if let Some(pg) = PROCESS_GROUP_TABLE.lock().get(&pgid) {
         return Ok(pg);
     }
 
@@ -286,7 +290,7 @@ pub fn get_process_group(pgid: Pid) -> AxResult<Arc<ProcessGroup>> {
 
 /// Registers a process group in the global table.
 pub fn register_process_group(pg: &Arc<ProcessGroup>) {
-    let mut pg_table = PROCESS_GROUP_TABLE.write();
+    let mut pg_table = PROCESS_GROUP_TABLE.lock();
     pg_table.insert(pg.pgid(), pg);
 }
 
@@ -303,7 +307,7 @@ fn find_process_group_by_member(pgid: Pid) -> Option<Arc<ProcessGroup>> {
 
 /// Registers a session in the global table.
 pub fn register_session(session: &Arc<Session>) {
-    let mut session_table = SESSION_TABLE.write();
+    let mut session_table = SESSION_TABLE.lock();
     session_table.insert(session.sid(), session);
 }
 
@@ -797,7 +801,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 /// to each other; a brief window exists where both keys point at the same
 /// task, which is harmless because both lookups resolve to the same task.
 pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) {
-    let mut table = TASK_TABLE.write();
+    let mut table = TASK_TABLE.lock();
     table.insert(new_tid, task.downgrade());
     table.remove(&old_tid);
 }
