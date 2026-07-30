@@ -50,7 +50,6 @@ pub struct InboxMessage {
 
 impl InboxMessage {
     const NO_CPU: u32 = u32::MAX;
-    const BALANCE_REQUEST_FLAG: u64 = 1 << 63;
 
     /// Empty value used to initialize fixed drain buffers.
     pub const EMPTY: Self = Self {
@@ -151,14 +150,14 @@ impl InboxMessage {
     }
 
     /// Creates an idle-pull request sent to a remote runqueue owner.
-    pub const fn balance_request(source_cpu: CpuId, target_cpu: CpuId, source_epoch: u64) -> Self {
+    pub const fn balance_request(source_cpu: CpuId, target_cpu: CpuId, reservation: u64) -> Self {
         Self {
             kind: InboxKind::Migration,
             operation: InboxOperation::BalanceRequest,
             thread_id: ThreadId::from_parts(0, 0),
             source_cpu: source_cpu.as_u32(),
             target_cpu: target_cpu.as_u32(),
-            generation: Self::BALANCE_REQUEST_FLAG | (source_epoch & !Self::BALANCE_REQUEST_FLAG),
+            generation: reservation,
             payload: 0,
         }
     }
@@ -168,10 +167,10 @@ impl InboxMessage {
         self.operation as u8 == InboxOperation::BalanceRequest as u8 && self.payload == 0
     }
 
-    /// Returns the source load-summary epoch observed by an idle requester.
-    pub const fn balance_source_epoch(self) -> Option<u64> {
+    /// Returns the target-owned reservation carried by an idle-pull request.
+    pub const fn balance_reservation(self) -> Option<u64> {
         if self.is_balance_request() {
-            Some(self.generation & !Self::BALANCE_REQUEST_FLAG)
+            Some(self.generation)
         } else {
             None
         }

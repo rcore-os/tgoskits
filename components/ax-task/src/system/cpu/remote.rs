@@ -7,9 +7,94 @@ const CPU_LIFECYCLE_MASK: usize = CPU_LIFECYCLE_OFFLINE | CPU_LIFECYCLE_DRAINING
 const CPU_PUBLICATION_COUNT_MASK: usize = !CPU_LIFECYCLE_MASK;
 const CPU_PUBLICATION_OVERFLOW_INVARIANT: u32 = 0x4350_5542;
 const CPU_PUBLICATION_RELEASE_INVARIANT: u32 = 0x4350_5544;
+const IDLE_PULL_PHASE_MASK: u64 = 0b11;
+const IDLE_PULL_IDLE: u64 = 0;
+const IDLE_PULL_PENDING: u64 = 1;
+const IDLE_PULL_CLAIMED: u64 = 2;
+const IDLE_PULL_COMMITTED: u64 = 3;
+const IDLE_PULL_PUBLISHER_SHIFT: u32 = 2;
+const IDLE_PULL_PUBLISHER_BITS: u32 = 16;
+const IDLE_PULL_PUBLISHER_ONE: u64 = 1 << IDLE_PULL_PUBLISHER_SHIFT;
+const IDLE_PULL_PUBLISHER_MASK: u64 =
+    ((1 << IDLE_PULL_PUBLISHER_BITS) - 1) << IDLE_PULL_PUBLISHER_SHIFT;
+const IDLE_PULL_GENERATION_STEP: u64 = 1 << (IDLE_PULL_PUBLISHER_SHIFT + IDLE_PULL_PUBLISHER_BITS);
+const IDLE_PULL_GENERATION_MASK: u64 = !(IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK);
+const IDLE_PULL_PUBLISHER_OVERFLOW_INVARIANT: u32 = 0x4944_4c50;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SchedulerIpiClaim(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IdlePullReservation {
+    Started(u64),
+    AlreadyPending,
+    Busy,
+}
+
+pub(crate) struct IdlePullClaim<'remote> {
+    remote: &'remote CpuRemote,
+    state: u64,
+}
+
+impl IdlePullClaim<'_> {
+    /// Linearizes the pull before the target admits newer runnable work.
+    pub(crate) fn commit(&mut self) -> bool {
+        let committed = (self.state & !IDLE_PULL_PHASE_MASK) | IDLE_PULL_COMMITTED;
+        if self
+            .remote
+            .idle_pull_state
+            .compare_exchange(self.state, committed, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.state = committed;
+        true
+    }
+}
+
+impl Drop for IdlePullClaim<'_> {
+    fn drop(&mut self) {
+        let generation = self.state & IDLE_PULL_GENERATION_MASK;
+        let phase = self.state & IDLE_PULL_PHASE_MASK;
+        let mut current = self.remote.idle_pull_state.load(Ordering::Acquire);
+        loop {
+            if current & IDLE_PULL_GENERATION_MASK != generation
+                || current & IDLE_PULL_PHASE_MASK != phase
+            {
+                return;
+            }
+            let idle = current & !IDLE_PULL_PHASE_MASK;
+            match self.remote.idle_pull_state.compare_exchange_weak(
+                current,
+                idle,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+pub(crate) struct IdlePullWorkPublication<'remote> {
+    remote: &'remote CpuRemote,
+}
+
+impl Drop for IdlePullWorkPublication<'_> {
+    fn drop(&mut self) {
+        let previous = self
+            .remote
+            .idle_pull_state
+            .fetch_sub(IDLE_PULL_PUBLISHER_ONE, Ordering::Release);
+        debug_assert_ne!(
+            previous & IDLE_PULL_PUBLISHER_MASK,
+            0,
+            "idle-pull work publisher count underflowed"
+        );
+    }
+}
 
 /// Placement and remote-publication state of one logical CPU.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +136,7 @@ pub struct CpuRemote {
     load_summary_current_sequence: AtomicU64,
     load_summary_pushable_primary: AtomicU64,
     load_summary_pushable_sequence: AtomicU64,
+    idle_pull_state: AtomicU64,
     pub(super) fair_balance_deadline_ns: AtomicU64,
     pub(super) scheduler_deadline_ns: AtomicU64,
     pub(super) deferred_scheduler_deadline_ns: AtomicU64,
@@ -83,6 +169,7 @@ impl CpuRemote {
             load_summary_current_sequence: AtomicU64::new(0),
             load_summary_pushable_primary: AtomicU64::new(0),
             load_summary_pushable_sequence: AtomicU64::new(0),
+            idle_pull_state: AtomicU64::new(IDLE_PULL_IDLE),
             // An offline CPU has no monotonic time origin yet. Publishing a
             // duration here as an absolute deadline makes every CPU brought
             // online after that duration immediately overdue.
@@ -192,14 +279,19 @@ impl CpuRemote {
     pub(crate) fn try_begin_draining(&self) -> bool {
         // Matching the exact zero-valued Online state also proves that no
         // producer currently spans queue publication and its doorbell.
-        self.lifecycle
+        let draining = self
+            .lifecycle
             .compare_exchange(
                 0,
                 CPU_LIFECYCLE_DRAINING,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .is_ok();
+        if draining {
+            self.cancel_idle_pull_if_uncommitted();
+        }
+        draining
     }
 
     pub(crate) fn cancel_draining(&self) {
@@ -280,6 +372,9 @@ impl CpuRemote {
             && !self.has_remote_work()
             && self.scheduler_ipi_pending.load(Ordering::Acquire) & IPI_CLAIMED == 0
             && !self.is_idle_polling()
+            && self.idle_pull_state.load(Ordering::Acquire)
+                & (IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK)
+                == IDLE_PULL_IDLE
     }
 
     pub(crate) fn mark_scheduler_ready(&self) {
@@ -435,6 +530,7 @@ impl CpuRemote {
             return PublishResult::WrongKind;
         };
         let _irq = IrqScope::enter();
+        let _idle_pull_work = self.begin_idle_pull_work();
         let (result, _head_became_non_empty) = self
             .remote_wake_inbox
             .publish_with_head_transition(node, message);
@@ -464,6 +560,7 @@ impl CpuRemote {
         message: InboxMessage,
     ) -> PublishResult {
         let _irq = IrqScope::enter();
+        let _idle_pull_work = self.begin_idle_pull_work();
         let (result, _head_became_non_empty) = self
             .migration_inbox
             .publish_with_head_transition(node, message);
@@ -489,6 +586,117 @@ impl CpuRemote {
         // SAFETY: TaskSystem owns this Arc-backed endpoint until shutdown. The
         // embedded node is never moved and coalesces publications for one CPU.
         unsafe { Pin::new_unchecked(&*node) }
+    }
+
+    pub(crate) fn begin_idle_pull(&self) -> IdlePullReservation {
+        let mut current = self.idle_pull_state.load(Ordering::Acquire);
+        loop {
+            if current & IDLE_PULL_PUBLISHER_MASK != 0 {
+                return IdlePullReservation::Busy;
+            }
+            if current & IDLE_PULL_PHASE_MASK != IDLE_PULL_IDLE {
+                return IdlePullReservation::AlreadyPending;
+            }
+            let generation = (current & IDLE_PULL_GENERATION_MASK)
+                .wrapping_add(IDLE_PULL_GENERATION_STEP)
+                & IDLE_PULL_GENERATION_MASK;
+            let pending = generation | IDLE_PULL_PENDING;
+            match self.idle_pull_state.compare_exchange_weak(
+                current,
+                pending,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return IdlePullReservation::Started(pending),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn cancel_idle_pull(&self, reservation: u64) {
+        let generation = reservation & IDLE_PULL_GENERATION_MASK;
+        let mut current = self.idle_pull_state.load(Ordering::Acquire);
+        loop {
+            if current & IDLE_PULL_GENERATION_MASK != generation
+                || !matches!(
+                    current & IDLE_PULL_PHASE_MASK,
+                    IDLE_PULL_PENDING | IDLE_PULL_CLAIMED
+                )
+            {
+                return;
+            }
+            let idle = current & !IDLE_PULL_PHASE_MASK;
+            match self.idle_pull_state.compare_exchange_weak(
+                current,
+                idle,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn cancel_idle_pull_if_uncommitted(&self) {
+        let mut current = self.idle_pull_state.load(Ordering::Acquire);
+        loop {
+            match current & IDLE_PULL_PHASE_MASK {
+                IDLE_PULL_IDLE | IDLE_PULL_COMMITTED => return,
+                IDLE_PULL_PENDING | IDLE_PULL_CLAIMED => {}
+                _ => unreachable!(),
+            }
+            let idle = current & !IDLE_PULL_PHASE_MASK;
+            match self.idle_pull_state.compare_exchange_weak(
+                current,
+                idle,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn begin_idle_pull_work(&self) -> IdlePullWorkPublication<'_> {
+        let mut current = self.idle_pull_state.load(Ordering::Acquire);
+        loop {
+            if current & IDLE_PULL_PUBLISHER_MASK == IDLE_PULL_PUBLISHER_MASK {
+                task_runtime::fatal_invariant(
+                    IDLE_PULL_PUBLISHER_OVERFLOW_INVARIANT,
+                    self.owner.as_u32() as usize,
+                );
+            }
+            let phase = match current & IDLE_PULL_PHASE_MASK {
+                IDLE_PULL_PENDING | IDLE_PULL_CLAIMED => IDLE_PULL_IDLE,
+                phase => phase,
+            };
+            let next = ((current + IDLE_PULL_PUBLISHER_ONE) & !IDLE_PULL_PHASE_MASK) | phase;
+            match self.idle_pull_state.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return IdlePullWorkPublication { remote: self },
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn claim_idle_pull(&self, reservation: u64) -> Option<IdlePullClaim<'_>> {
+        if reservation & (IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK) != IDLE_PULL_PENDING {
+            return None;
+        }
+        let claimed = (reservation & !IDLE_PULL_PHASE_MASK) | IDLE_PULL_CLAIMED;
+        self.idle_pull_state
+            .compare_exchange(reservation, claimed, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| IdlePullClaim {
+                remote: self,
+                state: claimed,
+            })
     }
 
     pub(crate) fn publish_load_summary(

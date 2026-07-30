@@ -311,15 +311,44 @@ impl TaskSystem {
                         actual: cpu.owner().as_u32(),
                     });
                 }
-                let _source_epoch = message
-                    .balance_source_epoch()
+                let reservation = message
+                    .balance_reservation()
                     .ok_or(TaskError::InvalidConfiguration)?;
-                let _migrated = self.transfer_owner_balance_candidate(
+                let target_remote = self
+                    .cpu_remotes
+                    .get(target.as_usize())
+                    .ok_or(TaskError::InvalidCpu(target.as_u32()))?;
+                let Some(mut claim) = target_remote.claim_idle_pull(reservation) else {
+                    continue;
+                };
+                if !cpu
+                    .try_load_summary()
+                    .is_some_and(|summary| summary.is_overloaded())
+                {
+                    drop(claim);
+                    target_remote.kick_scheduler_work();
+                    continue;
+                }
+                if !claim.commit() {
+                    continue;
+                }
+                let migrated = self.transfer_owner_balance_candidate(
                     cpu.as_mut(),
                     target,
                     now_ns,
                     BalanceReason::IdlePull,
-                )?;
+                );
+                drop(claim);
+                match migrated {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        target_remote.kick_scheduler_work();
+                    }
+                    Err(error) => {
+                        target_remote.kick_scheduler_work();
+                        return Err(error);
+                    }
+                }
                 continue;
             }
             if matches!(

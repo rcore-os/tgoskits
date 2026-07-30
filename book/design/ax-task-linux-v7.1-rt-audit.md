@@ -178,6 +178,21 @@ when a two-task high-weight Fair queue had a numerically earlier local virtual
 deadline than a five-task low-weight queue; the idle CPU now requests the
 five-task source while the existing RT-over-Fair regression remains green.
 
+The asynchronous owner-to-owner pull also has a target-owned reservation
+transaction. `Pending -> Claimed -> Committed` shares one atomic word with the
+count of remote work publishers. Local enqueue cancels before mutating the
+target runqueue; remote wake and migration publication increment that count
+and cancel an uncommitted pull in the same compare-exchange. The source can
+therefore commit only before newer target work starts, while work arriving
+after commit is ordered as an ordinary post-balance wake. This replaces the
+old unused source-summary epoch, which could not protect target idleness.
+Linux closes the equivalent window while `sched_balance_newidle()` rechecks
+the target rq and pending wake work under scheduler locking; the reservation
+is the owner-only message-passing equivalent. The deterministic stale-request
+regression and Loom's
+`idle_pull_commit_orders_against_target_work_publication` cover both sides of
+the commit race.
+
 Remote affinity completion now follows Linux's shared
 `set_affinity_pending` model. Each request advances a generation while holding
 the same scheduler-state lock that publishes its mask. A move-only completion

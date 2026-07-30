@@ -64,6 +64,10 @@ impl TaskSystem {
         if !sched.affinity.contains(owner) {
             return Err(TaskError::InvalidCpu(owner.as_u32()));
         }
+        cpu.as_ref()
+            .get_ref()
+            .remote()
+            .cancel_idle_pull_if_uncommitted();
         let policy = sched.policy;
         let mut queued_entity = sched.entity;
         if matches!(reason, EnqueueReason::Wake) && matches!(policy, SchedulePolicy::Deadline(_)) {
