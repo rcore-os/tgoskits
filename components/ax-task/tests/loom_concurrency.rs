@@ -469,6 +469,60 @@ fn scheduler_tick_retry_and_new_irq_share_one_delivery_owner() {
 }
 
 #[test]
+fn coalesced_scheduler_tick_publishes_its_timestamp_before_claim() {
+    loom::model(|| {
+        const GENERATION: usize = 3;
+        const OLD_TIMESTAMP: usize = 5;
+        const NEW_TIMESTAMP: usize = 11;
+
+        let pending_generation = Arc::new(AtomicUsize::new(GENERATION));
+        let observed_timestamp = Arc::new(AtomicUsize::new(OLD_TIMESTAMP));
+        let claimed_timestamp = Arc::new(AtomicUsize::new(0));
+
+        let irq = {
+            let pending_generation = Arc::clone(&pending_generation);
+            let observed_timestamp = Arc::clone(&observed_timestamp);
+            thread::spawn(move || {
+                observed_timestamp.fetch_max(NEW_TIMESTAMP, Ordering::AcqRel);
+                let mut pending = pending_generation.load(Ordering::Acquire);
+                loop {
+                    match pending_generation.compare_exchange_weak(
+                        pending,
+                        GENERATION,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return,
+                        Err(current) => pending = current,
+                    }
+                }
+            })
+        };
+        let consumer = {
+            let pending_generation = Arc::clone(&pending_generation);
+            let observed_timestamp = Arc::clone(&observed_timestamp);
+            let claimed_timestamp = Arc::clone(&claimed_timestamp);
+            thread::spawn(move || {
+                if pending_generation.swap(0, Ordering::AcqRel) == GENERATION {
+                    claimed_timestamp.store(
+                        observed_timestamp.load(Ordering::Acquire),
+                        Ordering::Release,
+                    );
+                }
+            })
+        };
+
+        irq.join().unwrap();
+        consumer.join().unwrap();
+        assert!(
+            claimed_timestamp.load(Ordering::Acquire) == NEW_TIMESTAMP
+                || pending_generation.load(Ordering::Acquire) == GENERATION,
+            "the latest timestamp must be observed by the claim or retain a physical publication"
+        );
+    });
+}
+
+#[test]
 fn inbox_empty_transition_owns_the_scheduler_ipi_epoch() {
     loom::model(|| {
         let inbox_head = Arc::new(AtomicBool::new(false));
