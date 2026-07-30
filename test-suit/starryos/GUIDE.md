@@ -396,6 +396,14 @@ musl 交叉编译流水线，把静态程序安装到每次运行独立的
 文件上传。`init.sh` 通过 `${sessionFile:usr/bin/<program>}` 显式下载、赋权和执行；
 该流程不通过 SSH，也不把程序预装到持久 rootfs。
 
+若 Starry 尚无对应板卡网卡驱动，可给 `starry app board` 增加
+`--linux-stage`。xtask 会完成同一 app 资产构建，在 `board connect` 的默认 Linux
+会话中上传资产并打印 board-visible HTTP URL，而不启动 Starry 内核。操作者应在该
+Linux 会话中下载并验证资产，写入 Starry 可见的持久 rootfs 路径并执行 `sync`；
+退出会话释放 lease 后，再运行不带 `--linux-stage` 的正常 Starry 板测。这个流程只
+改变二进制交付位置，Linux 与 Starry 必须执行同一资产；不得以另一个 shell workload
+复用成功标记。
+
 App 的 `board-<name>.toml` 默认复用
 `os/StarryOS/configs/board/<name>.toml` 作为内核 build config；只有 app 目录存在
 精确的 `build-<target>.toml` 时才覆盖。多个同架构板卡需要不同 SoC feature 时应

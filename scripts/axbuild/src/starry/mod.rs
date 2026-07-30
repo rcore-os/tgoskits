@@ -396,6 +396,15 @@ impl Starry {
             &board_config.session_files,
         )
         .await?;
+        if args.linux_stage {
+            let assets = session_assets.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Starry app `{}` has no Rust or declared session files to stage",
+                    args.test_case
+                )
+            })?;
+            return app::stage_in_default_linux(&args, &board_config, assets).await;
+        }
         self.run_board_artifact(
             &request,
             cargo,

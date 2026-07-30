@@ -1,54 +1,72 @@
 url='${sessionFile:usr/bin/block-rw-bench}'
-program=/tmp/block-rw-bench
-download=/tmp/block-rw-bench.part
-network_ready=0
-downloaded=0
+program="${BLOCK_RW_BENCH_PROGRAM:-/tmp/block-rw-bench}"
+download="${program}.part"
+helper_log="${program}.log"
+staged_program="${BLOCK_RW_BENCH_STAGED_PROGRAM:-/usr/local/libexec/block-rw-bench}"
+workdir="${BLOCK_RW_BENCH_WORKDIR:-/root/block-rw-bench}"
+download_attempts="${BLOCK_RW_BENCH_DOWNLOAD_ATTEMPTS:-6}"
+download_retry_seconds="${BLOCK_RW_BENCH_DOWNLOAD_RETRY_SECONDS:-5}"
+helper_ready=0
+helper_passed=0
 
 export BLOCK_RW_BENCH_ROOT_DEVICE="${BLOCK_RW_BENCH_ROOT_DEVICE:-}"
 export BLOCK_RW_BENCH_CONTROLLER="${BLOCK_RW_BENCH_CONTROLLER:-}"
 export BLOCK_RW_BENCH_SUCCESS_MARKER="${BLOCK_RW_BENCH_SUCCESS_MARKER:-BLOCK_RW_BENCH_PASSED}"
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES="${BLOCK_RW_BENCH_MAX_TRANSFER_BYTES:-}"
-export BLOCK_RW_BENCH_NETWORK_WAIT_SECONDS="${BLOCK_RW_BENCH_NETWORK_WAIT_SECONDS:-30}"
 marker="${BLOCK_RW_BENCH_SUCCESS_MARKER%_PASSED}_SESSION"
 echo "block-rw-bench: root_device=$BLOCK_RW_BENCH_ROOT_DEVICE controller=$BLOCK_RW_BENCH_CONTROLLER"
-rm -f "$program" "$download"
+rm -f "$program" "$download" "$helper_log"
 
-attempt=0
-while [ "$attempt" -lt "$BLOCK_RW_BENCH_NETWORK_WAIT_SECONDS" ]; do
-  ip_addr_out="$(ip -4 addr show scope global 2>&1 || true)"
-  echo "$ip_addr_out"
-  if echo "$ip_addr_out" | grep -q 'inet '; then
-    network_ready=1
-    break
-  fi
-  attempt=$(( attempt + 1 ))
-  sleep 1
-done
-if [ "$network_ready" != "1" ]; then
-  echo "${marker}_FAILED"
-elif command -v curl >/dev/null 2>&1; then
-  if curl --connect-timeout 10 --max-time 60 -fsSL "$url" -o "$download"; then
-    downloaded=1
-  else
-    echo "${marker}_FAILED"
-  fi
-elif command -v wget >/dev/null 2>&1; then
-  if wget -T 60 -O "$download" "$url"; then
-    downloaded=1
-  else
-    echo "${marker}_FAILED"
+case "$download_attempts" in
+  ''|*[!0-9]*|0) download_attempts=0 ;;
+esac
+case "$download_retry_seconds" in
+  ''|*[!0-9]*) download_retry_seconds=0 ;;
+esac
+
+if [ -s "$staged_program" ]; then
+  if cp "$staged_program" "$download"; then
+    helper_ready=1
+    echo "block-rw-bench: helper=linux-staged"
   fi
 else
-  echo "${marker}_FAILED"
+  attempt=1
+  while [ "$attempt" -le "$download_attempts" ]; do
+    rm -f "$download"
+    if command -v curl >/dev/null 2>&1; then
+      curl --connect-timeout 10 --max-time 30 -fsSL "$url" -o "$download" || true
+    elif command -v wget >/dev/null 2>&1; then
+      wget -T 30 -O "$download" "$url" || true
+    else
+      break
+    fi
+    if [ -s "$download" ]; then
+      helper_ready=1
+      echo "block-rw-bench: helper=session-http attempt=$attempt"
+      break
+    fi
+    attempt=$(( attempt + 1 ))
+    if [ "$attempt" -le "$download_attempts" ] && [ "$download_retry_seconds" -gt 0 ]; then
+      sleep "$download_retry_seconds"
+    fi
+  done
 fi
-if [ "$downloaded" = "1" ] && [ -s "$download" ]; then
+
+if [ "$helper_ready" = "1" ] &&
   mv "$download" "$program" &&
-    chmod +x "$program" &&
-    rm -rf /root/block-rw-bench &&
-    mkdir -p /root/block-rw-bench &&
-    "$program" &&
-    sync ||
-    echo "${marker}_FAILED"
-elif [ "$downloaded" = "1" ]; then
+  chmod +x "$program" &&
+  mkdir -p "$workdir"; then
+  export BLOCK_RW_BENCH_WORKDIR="$workdir"
+  if "$program" >"$helper_log" 2>&1; then
+    cat "$helper_log"
+    if grep -Fqx "$BLOCK_RW_BENCH_SUCCESS_MARKER" "$helper_log" && sync; then
+      helper_passed=1
+    fi
+  else
+    cat "$helper_log"
+  fi
+fi
+
+if [ "$helper_passed" != "1" ]; then
   echo "${marker}_FAILED"
 fi

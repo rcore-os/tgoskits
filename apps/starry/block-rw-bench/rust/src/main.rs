@@ -23,6 +23,7 @@ const FSYNC_ENV: &str = "BLOCK_RW_BENCH_FSYNC";
 const CHECKSUM_ENV: &str = "BLOCK_RW_BENCH_CHECKSUM_SCENARIO";
 const SUCCESS_MARKER_ENV: &str = "BLOCK_RW_BENCH_SUCCESS_MARKER";
 const MAX_TRANSFER_BYTES_ENV: &str = "BLOCK_RW_BENCH_MAX_TRANSFER_BYTES";
+const WORKDIR_ENV: &str = "BLOCK_RW_BENCH_WORKDIR";
 
 #[derive(Clone, Copy)]
 struct Case {
@@ -31,6 +32,7 @@ struct Case {
 }
 
 struct BenchConfig {
+    workdir: PathBuf,
     root_device: String,
     controller: String,
     sequential_bytes: usize,
@@ -45,6 +47,7 @@ struct BenchConfig {
 impl BenchConfig {
     fn from_env() -> io::Result<Self> {
         let config = Self {
+            workdir: env_path(WORKDIR_ENV, BENCH_DIR),
             root_device: env_string(ROOT_DEVICE_ENV, "/dev/mmcblk0"),
             controller: env_string(CONTROLLER_ENV, "rk3588-dwcmshc-emmc"),
             sequential_bytes: env_usize(SEQUENTIAL_BYTES_ENV, SEQUENTIAL_BYTES)?,
@@ -63,6 +66,7 @@ impl BenchConfig {
         if self.root_device.is_empty()
             || self.controller.is_empty()
             || self.success_marker.is_empty()
+            || !self.workdir.is_absolute()
             || self.sequential_bytes == 0
             || self.multitask_bytes_per_worker == 0
             || self.multitask_workers == 0
@@ -87,6 +91,13 @@ fn env_string(name: &str, default: &str) -> String {
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.into())
+}
+
+fn env_path(name: &str, default: &str) -> PathBuf {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(default))
 }
 
 fn env_usize(name: &str, default: usize) -> io::Result<usize> {
@@ -120,7 +131,7 @@ fn main() {
 
 fn run() -> io::Result<()> {
     let config = BenchConfig::from_env()?;
-    let dir = Path::new(BENCH_DIR);
+    let dir = config.workdir.as_path();
     fs::create_dir_all(dir)?;
     verify_root_device(&config)?;
     let planner_split_bytes = config
@@ -411,7 +422,25 @@ fn maybe_drop_caches() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::root_device_matches;
+    use super::{BenchConfig, root_device_matches};
+
+    #[test]
+    fn bench_config_rejects_relative_workdir() {
+        let config = BenchConfig {
+            workdir: "relative".into(),
+            root_device: "/dev/mmcblk0".into(),
+            controller: "test-controller".into(),
+            sequential_bytes: 512,
+            multitask_bytes_per_worker: 512,
+            multitask_workers: 1,
+            fsync: false,
+            checksum: "pattern".into(),
+            success_marker: "TEST_PASSED".into(),
+            max_transfer_bytes: 512,
+        };
+
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn root_device_match_accepts_only_the_device_or_numeric_partition() {
