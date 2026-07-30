@@ -38,7 +38,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
         })),
     });
     assert!(
-        PROCESS_TABLE.write().insert(TEST_PID, identity).is_none(),
+        PROCESS_TABLE.lock().insert(TEST_PID, identity).is_none(),
         "test PID must not already be registered"
     );
 
@@ -77,5 +77,5 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
         && matches!(getsid_result, Err(AxError::NoSuchProcess))
         && matches!(getpgid_result, Err(AxError::NoSuchProcess))
         && *reaped_cpu_time.lock() == Some(ProcessCpuTime::default())
-        && !PROCESS_TABLE.read().contains_key(&TEST_PID)
+        && !PROCESS_TABLE.lock().contains_key(&TEST_PID)
 }
