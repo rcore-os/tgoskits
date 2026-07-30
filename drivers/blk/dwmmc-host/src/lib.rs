@@ -185,6 +185,21 @@ mod tests {
     use crate::host2::{DWMMC_REGISTER_RETRY_DELAY, event_from_raw_status};
 
     #[test]
+    fn bus_width_contract_is_closed_and_exhaustive() {
+        fn width_bits(width: sdio_host2::BusWidth) -> u8 {
+            match width {
+                sdio_host2::BusWidth::Bit1 => 1,
+                sdio_host2::BusWidth::Bit4 => 4,
+                sdio_host2::BusWidth::Bit8 => 8,
+            }
+        }
+
+        assert_eq!(width_bits(sdio_host2::BusWidth::Bit1), 1);
+        assert_eq!(width_bits(sdio_host2::BusWidth::Bit4), 4);
+        assert_eq!(width_bits(sdio_host2::BusWidth::Bit8), 8);
+    }
+
+    #[test]
     fn irq_capability_trait_controls_hardware_interrupt_mask() {
         const CTRL_WORD: usize = 0;
         const INTMASK_WORD: usize = 9;

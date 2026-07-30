@@ -60,9 +60,6 @@ impl DwMmc {
             Ok(CommandProgress::Complete) => self
                 .take_command_response()
                 .map(CommandResponseProgress::Complete),
-            // Future progress variants remain pending until an IRQ cause owns
-            // the completion transition.
-            Ok(_) => Ok(CommandResponseProgress::Pending),
             Err(err) => Err(err),
         }
     }

@@ -345,7 +345,6 @@ fn submit_mmc_bus_width_or_continue<H: SdioIrqHost>(
         BusWidth::Bit1 => 0,
         BusWidth::Bit4 => 1,
         BusWidth::Bit8 => 2,
-        _ => return Err(Error::UnsupportedCommand),
     };
     request.current_bus_width = width;
     request.mmc_switch_request =

@@ -185,8 +185,6 @@ impl DwMmc {
                             }
                         }
                         Ok(CommandProgress::Complete) => return Ok(DataCommandProgress::Pending),
-                        // Future CommandProgress variants: best-effort, treat as still pending.
-                        Ok(_) => return Ok(DataCommandProgress::Pending),
                         Err(err) => {
                             let _ = self.abort_block_request(request, id, slot, phase);
                             return Err(err);
@@ -202,8 +200,6 @@ impl DwMmc {
                         DataCommandProgress::Pending => {}
                         complete => return Ok(complete),
                     },
-                    // Future BlockProgress variants: best-effort, treat as still pending.
-                    Ok(_) => return Ok(DataCommandProgress::Pending),
                     Err(err) => {
                         let _ = self.abort_block_request(request, id, slot, phase);
                         return Err(err);
@@ -559,8 +555,6 @@ impl DwMmc {
                 slot.complete_with_dma(id, completed_dma)?;
                 Ok(DataCommandProgress::Complete(response))
             }
-            // Future CommandProgress variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandProgress::Pending),
             Err(err) => {
                 let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)

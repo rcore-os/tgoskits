@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parse the eMMC EXT_CSD cache capability, enable an advertised cache during
   IRQ-driven initialization, and issue `FLUSH_CACHE` only while it is enabled;
   cacheless devices use an IRQ-completed transfer-state barrier.
+- Make command, data, block, and generic operation progress exhaustive so a
+  protocol extension cannot be converted into an indefinite pending state.
 
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.1...sdmmc-protocol-v0.4.2) - 2026-07-23
 

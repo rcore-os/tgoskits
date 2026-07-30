@@ -130,7 +130,7 @@ const ADMA2_ATTR_ACT_TRAN: u16 = 0b10 << 4;
 /// `length == 0` (some Synopsys MSHC variants).
 const ADMA2_MAX_PER_DESC: usize = 65_528; // 64 KiB - 8B, multiple of 8
 
-/// Caller-owned scratch region for the ADMA2 descriptor table.
+/// Controller-owned scratch region for the depth-one ADMA2 queue.
 ///
 /// Sized for a worst-case 64 KiB transfer split into 4 KiB chunks (16
 /// descriptors), which is the SDMA boundary the controller falls back to
@@ -181,10 +181,11 @@ impl PreparedDmaSubmitError {
     }
 }
 
-// `BlockRequest` owns the DMA mappings and descriptor buffer for one
-// submitted transfer. Moving that ownership to another queue thread does not
-// grant shared access to the mapped memory; completion still requires a
-// mutable `Sdhci` reference and consumes the request.
+// `BlockRequest` owns the payload DMA mapping for one submitted transfer.
+// The depth-one controller keeps its fixed descriptor table; moving the
+// request to another queue thread does not grant shared access to either
+// resource. Completion still requires a mutable `Sdhci` and consumes the
+// request.
 unsafe impl Send for BlockRequest {}
 
 enum BlockRequestKind {

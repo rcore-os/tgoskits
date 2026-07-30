@@ -5,6 +5,28 @@ use sdio_host2::{ProgressCause, RequestProgress, ResponseType};
 use super::*;
 
 #[test]
+fn protocol_progress_contracts_are_closed_and_exhaustive() {
+    fn command_state(progress: sdmmc_protocol::CommandProgress) -> bool {
+        match progress {
+            sdmmc_protocol::CommandProgress::Pending => false,
+            sdmmc_protocol::CommandProgress::Complete => true,
+        }
+    }
+
+    fn block_state(progress: sdmmc_protocol::BlockProgress) -> bool {
+        match progress {
+            sdmmc_protocol::BlockProgress::Pending => false,
+            sdmmc_protocol::BlockProgress::Complete => true,
+        }
+    }
+
+    assert!(!command_state(sdmmc_protocol::CommandProgress::Pending));
+    assert!(command_state(sdmmc_protocol::CommandProgress::Complete));
+    assert!(!block_state(sdmmc_protocol::BlockProgress::Pending));
+    assert!(block_state(sdmmc_protocol::BlockProgress::Complete));
+}
+
+#[test]
 fn irq_capability_trait_controls_hardware_signal_masks() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
@@ -105,7 +127,7 @@ fn data_transaction_rejects_missing_dma_capability() {
 }
 
 #[test]
-fn host2_data_submit_reports_busy_without_dirtying_pending_data() {
+fn host2_data_submit_reports_busy_without_replacing_the_active_command() {
     let mut host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
     host.command_state = command::CommandState::Issued {
         cmd: Command::new(0, 0, ResponseType::None),
@@ -127,7 +149,10 @@ fn host2_data_submit_reports_busy_without_dirtying_pending_data() {
     };
 
     assert_eq!(err, sdio_host2::Error::Busy);
-    assert!(host.pending_data.is_none());
+    assert!(matches!(
+        host.command_state,
+        command::CommandState::Issued { .. }
+    ));
 }
 
 #[test]

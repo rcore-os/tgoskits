@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use only preallocated 32-bit, 64-bit, or v4 ADMA2 descriptors and enforce
   DMA mask, alignment, descriptor-count, and 128 MiB boundary limits.
 - Route acknowledgement exclusively through the owned IRQ endpoint.
+- Keep the depth-one ADMA2 table under controller ownership and pass each
+  transfer shape directly into command submission instead of moving
+  descriptor and transient command state through parallel fields.
+- Match all shared protocol progress and bus-width states exhaustively.
 
 ### Removed
 

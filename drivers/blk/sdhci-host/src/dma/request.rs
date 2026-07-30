@@ -130,8 +130,6 @@ impl Sdhci {
                     }
                 }
                 Ok(CommandPoll::Complete) => return Ok(DataCommandProgress::Pending),
-                // Future CommandPoll variants: best-effort, treat as still pending.
-                Ok(_) => return Ok(DataCommandProgress::Pending),
                 Err(err) => {
                     let _ = self.abort_block_request(request, id, slot);
                     return Err(err);
@@ -150,8 +148,6 @@ impl Sdhci {
         match self.advance_data_complete_with_adma(cmd_index, phase) {
             Ok(BlockProgress::Pending) => Ok(DataCommandProgress::Pending),
             Ok(BlockProgress::Complete) => self.finish_dma_data(request, id, slot),
-            // Future BlockProgress variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandProgress::Pending),
             Err(err) => {
                 let _ = self.abort_block_request(request, id, slot);
                 Err(err)
@@ -350,32 +346,29 @@ impl Sdhci {
         phase: Phase,
     ) -> Result<(), Error> {
         validate_adma2_data_shape(block_size, block_count, byte_count)?;
-        let mut desc = self.adma2_desc.take().ok_or(Error::UnsupportedCommand)?;
-        let result = (|| {
-            desc.build(buffer_dma, byte_count, phase)?;
-            let desc_bus = desc.dma_addr();
-            let desc_end = desc_bus
-                .checked_add(desc.bytes_len() as u64)
+        let (table_bus, table_end, use_64bit) = {
+            let table = self.adma2_table.as_mut().ok_or(Error::UnsupportedCommand)?;
+            table.build(buffer_dma, byte_count, phase)?;
+            let table_bus = table.dma_addr();
+            let table_end = table_bus
+                .checked_add(table.bytes_len() as u64)
                 .ok_or(Error::InvalidArgument)?;
-            let use_64bit = desc.is_64bit();
-            if !use_64bit && desc_end > u32::MAX as u64 + 1 {
-                return Err(Error::BadResponse(ErrorContext::new(phase)));
-            }
+            (table_bus, table_end, table.is_64bit())
+        };
+        if !use_64bit && table_end > u32::MAX as u64 + 1 {
+            return Err(Error::BadResponse(ErrorContext::new(phase)));
+        }
 
-            self.pending_data = Some(PendingData {
+        self.select_adma2(use_64bit);
+        self.write_adma_addr(table_bus, use_64bit);
+        self.submit_dma_command(
+            cmd,
+            PendingData {
                 direction,
                 block_size,
                 block_count,
-            });
-            self.use_dma = true;
-            self.select_adma2(use_64bit);
-            self.write_adma_addr(desc_bus, use_64bit);
-            let response = self.submit_command(cmd);
-            self.use_dma = false;
-            response
-        })();
-        self.adma2_desc = Some(desc);
-        result
+            },
+        )
     }
 
     pub(super) fn finish_block_request(
@@ -392,7 +385,6 @@ impl Sdhci {
     ) -> Result<Option<CompletedDma>, Error> {
         if !quiesced {
             self.poison_dma();
-            self.pending_data = None;
             self.active_data_cmd = 0;
             self.irq.state.end_request();
             return Ok(None);
@@ -419,7 +411,6 @@ impl Sdhci {
                 }
             }
         };
-        self.pending_data = None;
         self.active_data_cmd = 0;
         self.irq.state.end_request();
         Ok(completed_dma)
@@ -489,8 +480,6 @@ impl Sdhci {
                 slot.complete_with_dma(id, completed_dma)?;
                 Ok(DataCommandProgress::Complete(response))
             }
-            // Future CommandPoll variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandProgress::Pending),
             Err(err) => {
                 let _ = self.abort_block_request(request, id, slot);
                 Err(err)
@@ -514,8 +503,6 @@ impl Sdhci {
 
     fn recover_after_adma2_error(&mut self) -> Result<(), Error> {
         let was_irq_enabled = self.completion_irq_enabled();
-        self.use_dma = false;
-        self.pending_data = None;
         self.active_data_cmd = 0;
         self.command_state = CommandState::Idle;
         self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);

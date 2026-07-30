@@ -126,10 +126,9 @@ impl BlockTransferState {
 
 /// Result of advancing a submitted transfer without blocking.
 ///
-/// Marked `#[non_exhaustive]`: intermediate states such as `Aborted` or
-/// per-block progress may be added before 1.0.
+/// The state set is deliberately exhaustive so every driver must handle a
+/// newly added transition when the shared protocol contract changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum BlockProgress {
     Pending,
     Complete,
@@ -163,9 +162,9 @@ pub enum DataCommandState {
 
 /// Result of advancing a generic data command without blocking.
 ///
-/// Marked `#[non_exhaustive]` for forward compatibility.
+/// The state set is deliberately exhaustive so callers cannot turn an
+/// unrecognized terminal transition into an indefinite wait.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub enum DataCommandProgress {
     Pending,
     Complete(crate::response::Response),
@@ -173,9 +172,9 @@ pub enum DataCommandProgress {
 
 /// Result of advancing a submitted command without blocking.
 ///
-/// Marked `#[non_exhaustive]` for forward compatibility.
+/// The state set is deliberately exhaustive so callers cannot turn an
+/// unrecognized terminal transition into an indefinite wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum CommandProgress {
     Pending,
     Complete,
@@ -184,9 +183,9 @@ pub enum CommandProgress {
 /// Result of advancing a submitted command and harvesting its response when
 /// available.
 ///
-/// Marked `#[non_exhaustive]` for forward compatibility.
+/// The state set is deliberately exhaustive; extending the protocol must
+/// update every consumer in the same change.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub enum CommandResponseProgress {
     Pending,
     Complete(crate::response::Response),
@@ -194,9 +193,9 @@ pub enum CommandResponseProgress {
 
 /// Generic result of advancing an operation without blocking.
 ///
-/// Marked `#[non_exhaustive]` for forward compatibility.
+/// The state set is deliberately exhaustive; extending the protocol must
+/// update every consumer in the same change.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub enum OperationProgress<T> {
     Pending,
     Complete(T),

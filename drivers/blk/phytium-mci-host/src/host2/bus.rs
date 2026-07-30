@@ -94,12 +94,7 @@ impl PhytiumMci {
                 }))
             }
             sdio_host2::BusOp::SetClockHz(_) => Err(sdio_host2::Error::Unsupported),
-            sdio_host2::BusOp::SetBusWidth(width) => match width {
-                BusWidth::Bit1 | BusWidth::Bit4 | BusWidth::Bit8 => {
-                    Ok(BusRequestState::SetBusWidth(width))
-                }
-                _ => Err(sdio_host2::Error::Unsupported),
-            },
+            sdio_host2::BusOp::SetBusWidth(width) => Ok(BusRequestState::SetBusWidth(width)),
             sdio_host2::BusOp::SetSignalVoltage(voltage) => {
                 uhs_bits_after_voltage(self.regs.uhs().read(), voltage)
                     .map_err(map_protocol_error)?;

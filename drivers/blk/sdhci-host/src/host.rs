@@ -12,8 +12,7 @@ use sdmmc_protocol::error::{Error, ErrorContext, Phase};
 
 use crate::{command::CommandState, dma::Adma2DescriptorTable, regs::*};
 
-/// Cached state for a single pending data phase, populated by the
-/// data-command submit path and consumed when that path issues the command.
+/// Shape of the single data phase carried by an in-flight command state.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingData {
     pub direction: sdmmc_protocol::DataDirection,
@@ -39,11 +38,6 @@ pub(crate) use irq_state::IrqCore;
 pub struct Sdhci {
     pub(crate) base_addr: usize,
     pub(crate) command_state: CommandState,
-    pub(crate) pending_data: Option<PendingData>,
-    /// When set, command submission programs the controller's transfer mode
-    /// register with `DMA_ENABLE`. Set by the ADMA2 wrapper just before it
-    /// fires off a command.
-    pub(crate) use_dma: bool,
     /// Optional CRU-side clock callback. When set, the `SdioHost::set_clock`
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
@@ -65,10 +59,12 @@ pub struct Sdhci {
     /// fall back to a 3.3 V-compatible mode.
     pub(crate) support_1v8: bool,
     /// Command index for the data phase currently being drained by the
-    /// submit/poll data-command state machine.
+    /// IRQ-driven data-command state machine.
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
-    pub(crate) adma2_desc: Option<Adma2DescriptorTable>,
+    /// Controller-lifetime ADMA2 table. Queue depth one guarantees that the
+    /// hardware and the maintenance thread never reuse it concurrently.
+    pub(crate) adma2_table: Option<Adma2DescriptorTable>,
     pub(crate) dma_mask: u64,
     pub(crate) v4_mode: bool,
     pub(crate) dma_poisoned: bool,
@@ -88,15 +84,13 @@ impl Sdhci {
         Self {
             base_addr: base.as_ptr() as usize,
             command_state: CommandState::Idle,
-            pending_data: None,
-            use_dma: false,
             ext_clock: None,
             reset_hook: None,
             timer: None,
             support_1v8: false,
             active_data_cmd: 0,
             dma: None,
-            adma2_desc: None,
+            adma2_table: None,
             dma_mask: u32::MAX as u64,
             v4_mode: false,
             dma_poisoned: false,
@@ -214,7 +208,7 @@ impl Sdhci {
     /// Requests are rejected when DMA is unavailable or violates the host
     /// limits; the driver never falls back to PIO.
     pub fn configure_dma(&mut self, dma: DeviceDma) -> Result<(), Error> {
-        if !matches!(self.command_state, CommandState::Idle) || self.pending_data.is_some() {
+        if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
         if !self.supports_adma2() {
@@ -233,7 +227,7 @@ impl Sdhci {
         let table = Adma2DescriptorTable::allocate(&dma, use_64bit)?;
         self.dma_mask = hardware_mask;
         self.dma = Some(dma);
-        self.adma2_desc = Some(table);
+        self.adma2_table = Some(table);
         Ok(())
     }
 

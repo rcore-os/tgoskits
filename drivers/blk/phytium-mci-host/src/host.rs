@@ -498,8 +498,6 @@ impl PhytiumMci {
             BusWidth::Bit1 => CType::new(),
             BusWidth::Bit4 => CType::new().with_width4(1),
             BusWidth::Bit8 => CType::new().with_width8(1),
-            // Future BusWidth variants: fall back to 1-bit (no width bits set).
-            _ => CType::new(),
         };
         self.regs.ctype().write(ctype);
     }

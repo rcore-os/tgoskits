@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expose physical IRQ enable/disable through `SdioIrqHost`.
 - Build only the active IDMAC chain for each request and route acknowledgement
   exclusively through the owned IRQ endpoint.
+- Match all shared protocol progress and bus-width states exhaustively instead
+  of treating an unknown terminal state as pending or an unknown width as
+  1-bit.
 
 ### Removed
 

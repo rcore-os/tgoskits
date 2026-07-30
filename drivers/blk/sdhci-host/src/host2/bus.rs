@@ -40,12 +40,7 @@ impl Sdhci {
                     high_speed: None,
                 }))
             }
-            sdio_host2::BusOp::SetBusWidth(width) => match width {
-                BusWidth::Bit1 | BusWidth::Bit4 | BusWidth::Bit8 => {
-                    Ok(BusRequestState::SetBusWidth(width))
-                }
-                _ => Err(sdio_host2::Error::Unsupported),
-            },
+            sdio_host2::BusOp::SetBusWidth(width) => Ok(BusRequestState::SetBusWidth(width)),
             sdio_host2::BusOp::SetSignalVoltage(voltage) => self.prepare_host2_voltage(voltage),
             sdio_host2::BusOp::ExecuteTuning {
                 command,
@@ -456,7 +451,6 @@ impl Sdhci {
         self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
         self.clear_cached_irq_status();
         self.restore_completion_irq_after_reset(was_irq_enabled);
-        self.pending_data = None;
         self.command_state = command::CommandState::Idle;
         Ok(())
     }
@@ -503,7 +497,6 @@ impl Sdhci {
             BusWidth::Bit1 => {}
             BusWidth::Bit4 => ctrl |= HOST_CTRL1_4BIT,
             BusWidth::Bit8 => ctrl |= HOST_CTRL1_8BIT,
-            _ => return Err(Error::UnsupportedCommand),
         }
         self.write_u8(REG_HOST_CONTROL1, ctrl);
         Ok(())

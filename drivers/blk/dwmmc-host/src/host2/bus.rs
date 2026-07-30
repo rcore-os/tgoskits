@@ -110,12 +110,7 @@ impl DwMmc {
                     wait_prvdata_complete: true,
                 }))
             }
-            sdio_host2::BusOp::SetBusWidth(width) => match width {
-                BusWidth::Bit1 | BusWidth::Bit4 | BusWidth::Bit8 => {
-                    Ok(BusRequestState::SetBusWidth(width))
-                }
-                _ => Err(sdio_host2::Error::Unsupported),
-            },
+            sdio_host2::BusOp::SetBusWidth(width) => Ok(BusRequestState::SetBusWidth(width)),
             sdio_host2::BusOp::SetSignalVoltage(voltage) => match volt_mask_for_signal(voltage) {
                 Ok(_) => Ok(BusRequestState::SetSignalVoltage(voltage)),
                 Err(err) => Err(map_protocol_error(err)),

@@ -100,9 +100,7 @@ impl Sdhci {
     }
 
     fn physical_bus_idle(&self) -> bool {
-        matches!(self.command_state, command::CommandState::Idle)
-            && self.pending_data.is_none()
-            && self.host2_active_id.is_none()
+        matches!(self.command_state, command::CommandState::Idle) && self.host2_active_id.is_none()
     }
 
     fn start_host2_request(&mut self) -> u64 {

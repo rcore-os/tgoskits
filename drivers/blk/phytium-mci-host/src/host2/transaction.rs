@@ -238,7 +238,6 @@ impl sdio_host2::SdioHost for PhytiumMci {
                     Ok(CommandResponseProgress::Complete(_)) => {
                         Ok(sdio_host2::RequestProgress::WaitingForIrq)
                     }
-                    Ok(_) => Ok(self.pending_transaction_progress()),
                     Err(err) => {
                         self.complete_host2_transaction_request(request);
                         Ok(sdio_host2::RequestProgress::Complete(Err(
@@ -270,7 +269,6 @@ impl sdio_host2::SdioHost for PhytiumMci {
                     Ok(DataCommandProgress::Complete(_)) => {
                         Ok(sdio_host2::RequestProgress::WaitingForIrq)
                     }
-                    Ok(_) => Ok(self.pending_transaction_progress()),
                     Err(err) => {
                         let _ = self.abort_host2_transaction_request(request);
                         Ok(sdio_host2::RequestProgress::Complete(Err(

@@ -248,7 +248,6 @@ impl sdio_host2::SdioHost for Sdhci {
                             map_protocol_error(error),
                         )))
                     }
-                    Ok(_) => Ok(self.pending_transaction_progress()),
                 }
             }
             TransactionRequestKind::Command { response } => match self.advance_command_response() {
@@ -261,7 +260,6 @@ impl sdio_host2::SdioHost for Sdhci {
                         resp.to_raw_response(response)
                     )))
                 }
-                Ok(_) => Ok(self.pending_transaction_progress()),
                 Err(err) => {
                     self.complete_host2_transaction_request(request);
                     Ok(sdio_host2::RequestProgress::Complete(Err(
@@ -288,7 +286,6 @@ impl sdio_host2::SdioHost for Sdhci {
                     Ok(DataCommandProgress::Complete(_)) => {
                         Ok(sdio_host2::RequestProgress::WaitingForIrq)
                     }
-                    Ok(_) => Ok(self.pending_transaction_progress()),
                     Err(err) => {
                         let _ = self.abort_host2_transaction_request(request);
                         Ok(sdio_host2::RequestProgress::Complete(Err(

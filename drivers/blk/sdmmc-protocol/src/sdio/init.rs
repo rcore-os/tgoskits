@@ -397,7 +397,6 @@ pub(super) fn sd_acmd6_arg(width: BusWidth) -> Result<u32, Error> {
         BusWidth::Bit1 => Ok(0),
         BusWidth::Bit4 => Ok(2),
         BusWidth::Bit8 => Err(Error::UnsupportedCommand),
-        _ => Err(Error::UnsupportedCommand),
     }
 }
 

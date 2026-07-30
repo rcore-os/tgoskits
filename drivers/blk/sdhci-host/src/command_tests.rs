@@ -33,13 +33,15 @@ fn new_command_discards_cached_irq_status_from_previous_request() {
         NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE,
         ERROR_INT_DATA_TIMEOUT,
     );
-    host.pending_data = Some(crate::host::PendingData {
-        direction: DataDirection::Read,
-        block_size: 512,
-        block_count: 1,
-    });
-
-    host.submit_command(&cmd17(0)).unwrap();
+    host.submit_dma_command(
+        &cmd17(0),
+        crate::host::PendingData {
+            direction: DataDirection::Read,
+            block_size: 512,
+            block_count: 1,
+        },
+    )
+    .unwrap();
 
     assert_eq!(host.irq.state.pending_normal(), 0);
     assert_eq!(host.irq.state.pending_error(), 0);
@@ -52,13 +54,15 @@ fn issued_command_keeps_irq_generation_active_for_completion_cache() {
     let mut host = unsafe { Sdhci::new(base) };
     host.enable_interrupt_status_capture();
     host.enable_completion_irq();
-    host.pending_data = Some(crate::host::PendingData {
-        direction: DataDirection::Read,
-        block_size: 512,
-        block_count: 1,
-    });
-
-    host.submit_command(&cmd17(0)).unwrap();
+    host.submit_dma_command(
+        &cmd17(0),
+        crate::host::PendingData {
+            direction: DataDirection::Read,
+            block_size: 512,
+            block_count: 1,
+        },
+    )
+    .unwrap();
     assert_ne!(host.irq.state.generation(), 0);
 
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);

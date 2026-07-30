@@ -51,10 +51,6 @@ impl Sdhci {
             Ok(CommandPoll::Complete) => self
                 .take_command_response()
                 .map(CommandResponseProgress::Complete),
-            // Future CommandPoll variants: treat as best-effort harvest, same as Err path.
-            Ok(_) => self
-                .take_command_response()
-                .map(CommandResponseProgress::Complete),
             Err(_) => self
                 .take_command_response()
                 .map(CommandResponseProgress::Complete),
@@ -64,22 +60,31 @@ impl Sdhci {
     /// Program the command register and leave completion to
     /// [`Sdhci::advance_command`].
     pub fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
-        self.submit_command_in_generation(cmd, true)
+        self.submit_command_in_generation(cmd, true, None, false)
     }
 
     pub(crate) fn submit_chained_command(&mut self, cmd: &Command) -> Result<(), Error> {
-        self.submit_command_in_generation(cmd, false)
+        self.submit_command_in_generation(cmd, false, None, false)
+    }
+
+    pub(crate) fn submit_dma_command(
+        &mut self,
+        cmd: &Command,
+        data: crate::host::PendingData,
+    ) -> Result<(), Error> {
+        self.submit_command_in_generation(cmd, true, Some(data), true)
     }
 
     fn submit_command_in_generation(
         &mut self,
         cmd: &Command,
         begin_irq_generation: bool,
+        data: Option<crate::host::PendingData>,
+        use_dma: bool,
     ) -> Result<(), Error> {
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
-        let data = self.pending_data.take();
         info_command_start(self, cmd, data);
         if begin_irq_generation {
             self.prepare_irq_for_request();
@@ -88,7 +93,7 @@ impl Sdhci {
         self.command_state = CommandState::WaitingInhibit {
             cmd: *cmd,
             data,
-            use_dma: self.use_dma,
+            use_dma,
             preserve_irq_generation: !begin_irq_generation,
             polls: 0,
         };
@@ -299,8 +304,6 @@ impl Sdhci {
         self.clear_cached_irq_status();
         self.reset_cmd()?;
         self.reset_dat()?;
-        self.pending_data = None;
-        self.use_dma = false;
         self.active_data_cmd = 0;
         self.command_state = CommandState::Idle;
         Ok(())

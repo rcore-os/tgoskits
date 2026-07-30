@@ -405,8 +405,11 @@ pub enum AdvanceRequestError {
 }
 
 /// SD/SDIO/MMC bus width.
+///
+/// This is a closed protocol set. Keeping it exhaustive makes every host
+/// choose the exact hardware encoding instead of silently guessing for an
+/// unknown width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum BusWidth {
     Bit1,
     Bit4,
