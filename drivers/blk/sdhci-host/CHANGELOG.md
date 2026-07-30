@@ -20,10 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signal masks instead of inheriting the no-op default implementation.
 - Use only preallocated 32-bit, 64-bit, or v4 ADMA2 descriptors and enforce
   DMA mask, alignment, descriptor-count, and 128 MiB boundary limits.
+- Route acknowledgement exclusively through the owned IRQ endpoint.
 
 ### Removed
 
 - Remove PIO block fallback and FIFO DMA compatibility code.
+- Remove the direct host `handle_irq` compatibility entry point.
 
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.1...sdhci-host-v0.4.2) - 2026-07-23
 

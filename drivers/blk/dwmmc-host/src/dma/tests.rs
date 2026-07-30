@@ -122,6 +122,23 @@ fn idmac_ring_splits_4608_bytes_into_4096_and_512() {
 }
 
 #[test]
+fn idmac_ring_does_not_rewrite_descriptors_after_the_terminal_entry() {
+    let sentinel = IdmacDesc {
+        des0: 0x11,
+        des1: 0x22,
+        des2: 0x33,
+        des3: 0x44,
+    };
+    let mut descriptors = [IdmacDesc::default(); 4];
+    descriptors[3] = sentinel;
+
+    let count = prepare_idmac_descriptors(&mut descriptors, 0x1000, 0x4000, 512).unwrap();
+
+    assert_eq!(count, 1);
+    assert_eq!(descriptors[3], sentinel);
+}
+
+#[test]
 fn idmac_ring_does_not_cross_a_four_kib_dma_boundary() {
     let mut descriptors = [IdmacDesc::default(); 4];
 

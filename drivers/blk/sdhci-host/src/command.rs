@@ -1,8 +1,8 @@
 //! Command issue / response collection.
 //!
 //! Drives the SDHCI command pipeline: argument register → transfer-mode
-//! shape (if data is present) → command register → poll the normal/error
-//! interrupt status registers → harvest the response slot(s).
+//! shape (if data is present) → command register → consume IRQ-latched
+//! normal/error status → harvest the response slot(s).
 //!
 //! All raise sites tag their phase with [`Phase::CommandSend`] /
 //! [`Phase::ResponseWait`] so callers can pinpoint failures.

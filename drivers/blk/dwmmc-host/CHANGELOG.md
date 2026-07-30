@@ -13,10 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   4 KiB IDMAC descriptor ring owned by the controller.
 - Advance command and data requests only after acknowledged IRQ events, and
   expose physical IRQ enable/disable through `SdioIrqHost`.
+- Build only the active IDMAC chain for each request and route acknowledgement
+  exclusively through the owned IRQ endpoint.
 
 ### Removed
 
 - Remove FIFO block fallback, completion polling, and per-request DMA reset.
+- Remove the direct host `handle_irq` compatibility entry point.
 
 ## [0.3.3](https://github.com/rcore-os/tgoskits/compare/dwmmc-host-v0.3.2...dwmmc-host-v0.3.3) - 2026-07-23
 

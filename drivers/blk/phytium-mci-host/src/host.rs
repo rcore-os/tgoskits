@@ -471,10 +471,6 @@ impl PhytiumMci {
         }
     }
 
-    pub fn handle_irq(&mut self) -> Event {
-        handle_irq_core(&self.irq)
-    }
-
     pub(crate) fn event_from_raw_irq(raw: u32, idsts: u32) -> Event {
         if raw & crate::MCI_INT_ERROR_MASK != 0 {
             Event::Error { raw_status: raw }
@@ -664,7 +660,7 @@ mod tests {
                 .write_volatile(IDSTS_RECEIVE)
         };
 
-        assert_eq!(host.handle_irq(), crate::Event::None);
+        assert_eq!(host.irq_endpoint().handle_irq(), crate::Event::None);
         assert_eq!(host.irq.state.pending_idmac_status(), 0);
         assert_eq!(host.irq.state.pending_status(), 0);
 
@@ -685,7 +681,7 @@ mod tests {
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let mut host = unsafe { PhytiumMci::new(base) };
 
-        assert_eq!(host.handle_irq(), crate::Event::None);
+        assert_eq!(host.irq_endpoint().handle_irq(), crate::Event::None);
         assert_eq!(mmio[IRQ_LATCH_OFFSET / size_of::<u32>()], 0);
     }
 }

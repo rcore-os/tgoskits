@@ -407,7 +407,7 @@ mod tests {
         unsafe {
             mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(0);
         }
-        assert_eq!(host.handle_irq(), Event::None);
+        assert_eq!(host.irq_endpoint().handle_irq(), Event::None);
 
         host.irq.state.end_request();
         host.irq.state.begin_request();

@@ -1,8 +1,8 @@
 //! Command issue and response decoding.
 //!
 //! Encodes [`sdmmc_protocol::cmd::Command`] into a DW_mshc CMD register
-//! value, fires it, polls RINTSTS for completion, and decodes the four
-//! 32-bit response slots back into [`Response`].
+//! value, fires it, consumes IRQ-latched RINTSTS events, advances bounded
+//! register-only waits, and decodes the four response slots into [`Response`].
 
 use log::warn;
 use sdmmc_protocol::{

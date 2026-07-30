@@ -140,7 +140,6 @@ pub(super) fn prepare_idmac_descriptors(
         return Err(Error::InvalidArgument);
     }
 
-    descriptors.fill(IdmacDesc::default());
     let mut remaining = len;
     let mut offset = 0_u64;
     for (index, descriptor) in descriptors[..count].iter_mut().enumerate() {

@@ -316,16 +316,21 @@ impl HardIrqHandler for AhciIrqHandler {
             self.port.hba.write(HOST_IS, 1_u32 << self.port.index);
             return IrqAck::spurious(IRQ_SOURCE_ID);
         }
+        let relevant = status & PORT_IRQ_ENABLE;
+        if relevant == 0 {
+            self.port.acknowledge_interrupts(status);
+            return IrqAck::spurious(IRQ_SOURCE_ID);
+        }
 
         // Mask before W1C acknowledgement. Any edge arriving while the hctx is
         // draining remains latched in PxIS and asserts after task-context
         // rearm, closing the check-to-sleep race without touching queue state.
         self.port.set_interrupts_enabled(false);
         self.port.acknowledge_interrupts(status);
-        self.status_latch.fetch_or(status, Ordering::Release);
+        self.status_latch.fetch_or(relevant, Ordering::Release);
         IrqAck::masked_needs_rearm(
             IrqQueueMask::from_queue(QUEUE_ID),
-            ControlEvent::new(IRQ_SOURCE_ID, CONTROL_EVENT_IRQ | u64::from(status)),
+            ControlEvent::new(IRQ_SOURCE_ID, CONTROL_EVENT_IRQ | u64::from(relevant)),
         )
     }
 }
@@ -377,6 +382,26 @@ mod tests {
 
         assert!(ack.is_spurious());
         assert_eq!(mmio[(PORT_BASE + PORT_IE) / 4], PORT_IRQ_ENABLE);
+    }
+
+    #[test]
+    fn hard_irq_acks_unenabled_port_status_without_waking_the_queue() {
+        const UNENABLED_STATUS: u32 = 1 << 7;
+
+        let mut mmio = vec![0_u32; (PORT_BASE + PORT_STRIDE) / 4];
+        let hba = registers(&mut mmio);
+        let status_latch = Arc::new(AtomicU32::new(0));
+        mmio[HOST_IS / 4] = 1;
+        mmio[(PORT_BASE + PORT_IE) / 4] = PORT_IRQ_ENABLE;
+        mmio[(PORT_BASE + PORT_IS) / 4] = UNENABLED_STATUS;
+
+        let ack = AhciIrqHandler::new(hba.port(0), Arc::clone(&status_latch)).ack();
+
+        assert!(ack.is_spurious());
+        assert_eq!(mmio[(PORT_BASE + PORT_IE) / 4], PORT_IRQ_ENABLE);
+        assert_eq!(mmio[(PORT_BASE + PORT_IS) / 4], UNENABLED_STATUS);
+        assert_eq!(mmio[HOST_IS / 4], 1);
+        assert_eq!(status_latch.load(Ordering::Acquire), 0);
     }
 
     #[test]

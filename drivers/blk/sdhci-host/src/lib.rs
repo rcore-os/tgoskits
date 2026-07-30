@@ -350,12 +350,6 @@ impl Sdhci {
             irq: self.irq.clone(),
         }
     }
-
-    /// Read and acknowledge pending controller status, returning a stable
-    /// event for OS glue to translate into wakeups or worker scheduling.
-    pub fn handle_irq(&mut self) -> Event {
-        handle_irq_core(&self.irq)
-    }
 }
 
 impl SdioIrqHandle for SdhciIrqHandle {

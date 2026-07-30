@@ -429,7 +429,7 @@ fn owned_irq_endpoint_acks_and_caches_status() {
     assert_eq!(host.irq.state.pending_error(), ERROR_INT_DATA_TIMEOUT);
     host.write_u16(REG_NORMAL_INT_STATUS, 0);
     host.write_u16(REG_ERROR_INT_STATUS, 0);
-    assert_eq!(host.handle_irq(), Event::None);
+    assert_eq!(host.irq_endpoint().handle_irq(), Event::None);
 }
 
 #[test]

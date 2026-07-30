@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IRQ-driven queue that owns command and request DMA through `dma-api`.
 - Bind NVMe admin and I/O vectors independently and enable each MSI-X source
   only after its non-reentrant handler is installed.
+- Keep the NVMe INTx acknowledgement path lock-free and ignore AHCI port status
+  outside the controller's enabled completion, error, and link event mask.
 
 ### Removed
 

@@ -11,7 +11,7 @@ fn idmac_interrupt_mask_matches_linux_phytium_error_contract() {
 use core::ptr::NonNull;
 
 use ::alloc::{alloc, boxed::Box};
-use sdmmc_protocol::block::BlockProgress;
+use sdmmc_protocol::{block::BlockProgress, sdio::host::SdioIrqHandle};
 
 use crate::regs::RIntSts;
 
@@ -171,7 +171,10 @@ fn controller_data_over_completes_without_an_idmac_ri_bit() {
             .add(RINTSTS_WORD)
             .write_volatile(RIntSts::new().with_data_transfer_over(true).into_bits())
     };
-    assert_eq!(host.handle_irq(), crate::Event::TransferComplete);
+    assert_eq!(
+        host.irq_endpoint().handle_irq(),
+        crate::Event::TransferComplete
+    );
 
     assert_eq!(
         host.consume_dma_completion(&mut request, 17, Phase::DataRead)
@@ -199,7 +202,7 @@ fn idmac_read_completes_when_idmac_and_data_done_arrive_separately() {
     });
 
     unsafe { mmio.as_mut_ptr().add(IDSTS_WORD).write_volatile(1 << 1) };
-    assert_eq!(host.handle_irq(), crate::Event::None);
+    assert_eq!(host.irq_endpoint().handle_irq(), crate::Event::None);
     assert_eq!(
         host.consume_dma_completion(&mut request, 17, Phase::DataRead)
             .unwrap(),
@@ -211,7 +214,10 @@ fn idmac_read_completes_when_idmac_and_data_done_arrive_separately() {
             .add(RINTSTS_WORD)
             .write_volatile(RIntSts::new().with_data_transfer_over(true).into_bits())
     };
-    assert_eq!(host.handle_irq(), crate::Event::TransferComplete);
+    assert_eq!(
+        host.irq_endpoint().handle_irq(),
+        crate::Event::TransferComplete
+    );
     assert_eq!(
         host.consume_dma_completion(&mut request, 17, Phase::DataRead)
             .unwrap(),

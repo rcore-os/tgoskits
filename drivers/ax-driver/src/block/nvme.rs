@@ -2,7 +2,6 @@ extern crate alloc;
 
 use alloc::format;
 
-use ax_kspin::SpinNoPreempt;
 use log::{info, warn};
 use nvme_driver::{Config, Nvme, NvmeBlockDriver, NvmeIntxSource};
 use pcie::{CommandRegister, DeviceType, Endpoint};
@@ -99,7 +98,7 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     )
     .map_err(|err| OnProbeError::other(format!("failed to initialize NVMe: {err:?}")))?;
     let intx_source = PciNvmeIntxSource {
-        endpoint: SpinNoPreempt::new(probe.take_endpoint()),
+        endpoint: probe.take_endpoint(),
     };
     let driver = NvmeBlockDriver::from_nvme(nvme).with_intx_source(intx_source);
     let irq = probe.register_block(driver, PciIrqRequirement::Required)?;
@@ -143,11 +142,11 @@ fn register_msix_block(
 }
 
 struct PciNvmeIntxSource {
-    endpoint: SpinNoPreempt<Endpoint>,
+    endpoint: Endpoint,
 }
 
 impl NvmeIntxSource for PciNvmeIntxSource {
     fn is_asserted(&self) -> bool {
-        self.endpoint.lock().status().interrupt_status()
+        self.endpoint.status().interrupt_status()
     }
 }

@@ -146,7 +146,6 @@ fn prepare_idmac_descriptors(
             .ok_or(Error::InvalidArgument)?,
     )?;
 
-    descriptors.fill(IdmacDesc::default());
     for (index, descriptor) in descriptors[..count].iter_mut().enumerate() {
         let offset = index * IDMAC_DESC_MAX_BYTES;
         let chunk_len = (len - offset).min(IDMAC_DESC_MAX_BYTES);
@@ -210,6 +209,28 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(descriptors[0].len, 64);
         assert_eq!(descriptors[0].addr_lo, 0x2000_0004);
+    }
+
+    #[test]
+    fn descriptor_builder_does_not_rewrite_entries_after_the_terminal_descriptor() {
+        let sentinel = IdmacDesc {
+            attribute: 0x11,
+            reserved0: 0x22,
+            len: 0x33,
+            reserved1: 0x44,
+            addr_lo: 0x55,
+            addr_hi: 0x66,
+            desc_lo: 0x77,
+            desc_hi: 0x88,
+        };
+        let mut descriptors = [IdmacDesc::default(); 4];
+        descriptors[3] = sentinel;
+
+        let count =
+            prepare_idmac_descriptors(&mut descriptors, 0x1000_0000, 0x2000_0000, 512).unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(descriptors[3], sentinel);
     }
 
     #[test]
