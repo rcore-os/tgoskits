@@ -236,7 +236,7 @@ fn owner_and_waiter_policy_updates_recompute_the_pi_chain() {
 }
 
 #[test]
-fn a_pi_wait_cycle_reports_the_fatal_scheduler_invariant() {
+fn a_pi_wait_cycle_returns_a_typed_error_without_mutating_the_graph() {
     let (system, _cpu) = online_system();
     let first = system
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
@@ -246,14 +246,15 @@ fn a_pi_wait_cycle_reports_the_fatal_scheduler_invariant() {
         .unwrap();
     let first_lock = PiLockIdentity::new().id().unwrap();
     let second_lock = PiLockIdentity::new().id().unwrap();
-    let _edge = system
+    let edge = system
         .pi_wait_start(first_lock, second.id(), first.id())
         .unwrap();
 
-    let cycle = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _never = system.pi_wait_start(second_lock, first.id(), second.id());
-    }));
-    assert!(cycle.is_err());
+    assert!(matches!(
+        system.pi_wait_start(second_lock, first.id(), second.id()),
+        Err(TaskError::PiCycle)
+    ));
+    system.pi_wait_cancel(edge).unwrap();
 }
 
 #[test]
