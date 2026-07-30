@@ -51,7 +51,7 @@ impl AlarmSlot {
         };
         match delay {
             Some(delay) => AlarmChange::Schedule { delay, token },
-            None => AlarmChange::Cancel(self.clone()),
+            None => AlarmChange::Cancel(token),
         }
     }
 
@@ -156,9 +156,11 @@ impl<T> AlarmQueue<T> {
         }
     }
 
-    fn cancel(&mut self, slot: &AlarmSlot) {
-        self.entries
-            .retain(|entry| entry.token.slot_id() != slot.id());
+    fn cancel(&mut self, cancellation: &AlarmToken) {
+        self.entries.retain(|entry| {
+            entry.token.slot_id() != cancellation.slot_id()
+                || entry.token.generation > cancellation.generation
+        });
     }
 
     fn pop_expired(&mut self, now: Duration) -> Option<Entry<T>> {

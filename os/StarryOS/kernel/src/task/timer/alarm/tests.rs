@@ -73,12 +73,48 @@ mod tests {
         queue.schedule(deadline, token, ());
 
         let cancellation = slot.replace(None);
-        let AlarmChange::Cancel(cancelled_slot) = cancellation else {
+        let AlarmChange::Cancel(cancellation_token) = cancellation else {
             unreachable!("disarmed slot must produce a cancellation")
         };
-        queue.cancel(&cancelled_slot);
+        queue.cancel(&cancellation_token);
 
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn stale_cancellation_does_not_remove_a_newer_alarm_generation() {
+        let slot = AlarmSlot::new();
+        let mut queue = AlarmQueue::new();
+        let stale_schedule = slot.replace(Some(Duration::from_nanos(10)));
+        let AlarmChange::Schedule {
+            delay: stale_deadline,
+            token: stale_token,
+        } = stale_schedule
+        else {
+            unreachable!("armed slot must produce a schedule action")
+        };
+        queue.schedule(stale_deadline, stale_token, ());
+
+        // Delay the cancellation until a concurrent rearm has already
+        // published and installed a newer generation.
+        let stale_cancellation = slot.replace(None);
+        let current_schedule = slot.replace(Some(Duration::from_nanos(20)));
+        let AlarmChange::Schedule {
+            delay: current_deadline,
+            token: current_token,
+        } = current_schedule
+        else {
+            unreachable!("rearmed slot must produce a schedule action")
+        };
+        queue.schedule(current_deadline, current_token, ());
+
+        let AlarmChange::Cancel(cancellation_token) = stale_cancellation else {
+            unreachable!("disarmed slot must produce a cancellation")
+        };
+        queue.cancel(&cancellation_token);
+
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(queue.earliest_deadline(), Some(Duration::from_nanos(20)));
     }
 
     #[test]
@@ -115,4 +151,38 @@ mod tests {
         ));
         assert_eq!(queue.entries.len(), 1);
     }
+}
+
+#[cfg(axtest)]
+pub(super) fn stale_alarm_cancellation_preserves_new_generation_for_test() -> bool {
+    let slot = AlarmSlot::new();
+    let mut queue = AlarmQueue::new();
+    let stale_schedule = slot.replace(Some(Duration::from_nanos(10)));
+    let AlarmChange::Schedule {
+        delay: stale_deadline,
+        token: stale_token,
+    } = stale_schedule
+    else {
+        return false;
+    };
+    queue.schedule(stale_deadline, stale_token, ());
+
+    let stale_cancellation = slot.replace(None);
+    let current_schedule = slot.replace(Some(Duration::from_nanos(20)));
+    let AlarmChange::Schedule {
+        delay: current_deadline,
+        token: current_token,
+    } = current_schedule
+    else {
+        return false;
+    };
+    queue.schedule(current_deadline, current_token, ());
+
+    let AlarmChange::Cancel(cancellation_token) = stale_cancellation else {
+        return false;
+    };
+    queue.cancel(&cancellation_token);
+
+    queue.entries.len() == 1
+        && queue.earliest_deadline() == Some(Duration::from_nanos(20))
 }

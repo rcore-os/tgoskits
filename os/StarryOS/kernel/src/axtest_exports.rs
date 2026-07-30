@@ -194,6 +194,26 @@ pub fn posix_timer_clock_validation_rules_hold() -> bool {
     super::task::posix_timer_clock_validation_rules_hold_for_test()
 }
 
+pub fn posix_timer_clock_sampling_rules_hold() -> bool {
+    super::task::posix_timer_clock_sampling_rules_hold_for_test()
+}
+
+pub fn posix_timer_saturating_timespec_rules_hold() -> bool {
+    super::task::posix_timer_saturating_timespec_rules_hold_for_test()
+}
+
+pub fn posix_timer_expiry_batch_rules_hold() -> bool {
+    super::task::posix_timer_expiry_batch_rules_hold_for_test()
+}
+
+pub fn alarm_generation_rules_hold() -> bool {
+    super::task::alarm_generation_rules_hold_for_test()
+}
+
+pub fn interval_timer_arm_uses_current_snapshot() -> bool {
+    super::task::interval_timer_arm_uses_current_snapshot_for_test()
+}
+
 pub fn timer_active_gate_rules_hold() -> bool {
     super::task::interval_timer_active_gate_rules_hold_for_test()
         && super::task::posix_timer_active_gate_rules_hold_for_test()

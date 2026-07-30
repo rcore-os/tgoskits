@@ -37,6 +37,31 @@ fn inactive_task_and_posix_timers_keep_the_fast_gate_closed() {
 }
 
 #[axtest]
+fn posix_timer_clock_sampling_stays_outside_metadata_lock() {
+    ax_assert!(axtest_exports::posix_timer_clock_sampling_rules_hold());
+}
+
+#[axtest]
+fn posix_timer_timespec_conversion_saturates() {
+    ax_assert!(axtest_exports::posix_timer_saturating_timespec_rules_hold());
+}
+
+#[axtest]
+fn posix_timer_expiry_scans_use_bounded_batches() {
+    ax_assert!(axtest_exports::posix_timer_expiry_batch_rules_hold());
+}
+
+#[axtest]
+fn stale_alarm_cancellation_preserves_new_generation() {
+    ax_assert!(axtest_exports::alarm_generation_rules_hold());
+}
+
+#[axtest]
+fn interval_timer_arm_starts_from_current_clock_snapshot() {
+    ax_assert!(axtest_exports::interval_timer_arm_uses_current_snapshot());
+}
+
+#[axtest]
 fn futex_empty_wake_op_avoids_entry_allocation() {
     ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
 }

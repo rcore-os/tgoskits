@@ -204,11 +204,11 @@ pub fn sys_setitimer(
             // FIXME: AnyBitPattern
             let new_value = unsafe { new_value.vm_read_uninit()?.assume_init() };
             (
-                new_value.it_interval.try_into_time_value()?.as_nanos() as usize,
-                new_value.it_value.try_into_time_value()?.as_nanos() as usize,
+                new_value.it_interval.try_into_time_value()?,
+                new_value.it_value.try_into_time_value()?,
             )
         }
-        None => (0, 0),
+        None => (TimeValue::ZERO, TimeValue::ZERO),
     };
 
     debug!("sys_setitimer <= type: {ty:?}, interval: {interval:?}, remained: {remained:?}");
