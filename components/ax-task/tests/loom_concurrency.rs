@@ -285,6 +285,77 @@ fn in_flight_migration_converges_on_latest_published_target() {
 }
 
 #[test]
+fn idle_pull_commit_orders_against_target_work_publication() {
+    loom::model(|| {
+        const PHASE_MASK: usize = 0b11;
+        const IDLE: usize = 0;
+        const PENDING: usize = 1;
+        const CLAIMED: usize = 2;
+        const COMMITTED: usize = 3;
+        const PUBLISHER_ONE: usize = 1 << 2;
+
+        let state = Arc::new(AtomicUsize::new(PENDING));
+        let work_published = Arc::new(AtomicBool::new(false));
+        let work_observed_committed = Arc::new(AtomicBool::new(false));
+        let migration_committed = Arc::new(AtomicBool::new(false));
+
+        let publisher = {
+            let state = Arc::clone(&state);
+            let work_published = Arc::clone(&work_published);
+            let work_observed_committed = Arc::clone(&work_observed_committed);
+            thread::spawn(move || {
+                let mut current = state.load(Ordering::Acquire);
+                loop {
+                    let phase = match current & PHASE_MASK {
+                        PENDING | CLAIMED => IDLE,
+                        phase => phase,
+                    };
+                    let next = ((current + PUBLISHER_ONE) & !PHASE_MASK) | phase;
+                    match state.compare_exchange_weak(
+                        current,
+                        next,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            work_observed_committed.store(phase == COMMITTED, Ordering::Release);
+                            break;
+                        }
+                        Err(actual) => current = actual,
+                    }
+                }
+                work_published.store(true, Ordering::Release);
+                state.fetch_sub(PUBLISHER_ONE, Ordering::Release);
+            })
+        };
+        let source = {
+            let state = Arc::clone(&state);
+            let migration_committed = Arc::clone(&migration_committed);
+            thread::spawn(move || {
+                if state
+                    .compare_exchange(PENDING, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                    && state
+                        .compare_exchange(CLAIMED, COMMITTED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    migration_committed.store(true, Ordering::Release);
+                }
+            })
+        };
+
+        publisher.join().unwrap();
+        source.join().unwrap();
+        if migration_committed.load(Ordering::Acquire) && work_published.load(Ordering::Acquire) {
+            assert!(
+                work_observed_committed.load(Ordering::Acquire),
+                "target work published before commit must cancel the idle-pull reservation"
+            );
+        }
+    });
+}
+
+#[test]
 fn failed_try_lock_rolls_back_context_depth() {
     loom::model(|| {
         let locked = Arc::new(AtomicBool::new(true));

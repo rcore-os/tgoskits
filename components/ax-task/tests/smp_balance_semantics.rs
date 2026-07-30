@@ -55,6 +55,38 @@ fn coalesced_idle_requests_leave_final_selection_to_the_source_owner() {
 }
 
 #[test]
+fn stale_idle_pull_request_cannot_overfill_a_target_that_became_runnable() {
+    let (system, mut cpu0, mut cpu1, idle1) = online_pair();
+    let high = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(90).unwrap()));
+    let low = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(80).unwrap()));
+    system.enqueue(cpu0.as_mut(), high.id(), 0).unwrap();
+    system.enqueue(cpu0.as_mut(), low.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 0).unwrap().next(),
+        idle1.id()
+    );
+
+    assert!(system.request_idle_pull(cpu1.as_ref()).unwrap());
+    let local = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu1.as_mut(), local.id(), 1).unwrap();
+    assert_eq!(cpu1.try_runnable_summary(), Some(1));
+
+    system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
+    system.drain_policy_updates(cpu1.as_mut(), 1).unwrap();
+
+    assert_eq!(
+        cpu0.try_runnable_summary(),
+        Some(2),
+        "the source must retain its candidate when the target cancels an uncommitted pull"
+    );
+    assert_eq!(
+        cpu1.try_runnable_summary(),
+        Some(1),
+        "work arriving before the pull commits must invalidate the stale idle request"
+    );
+}
+
+#[test]
 fn overloaded_owner_pushes_earliest_deadline_without_remote_rq_locking() {
     let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
     let later = ready_thread(&system, SchedulePolicy::deadline(deadline_policy(1, 8, 20)));

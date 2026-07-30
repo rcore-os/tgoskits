@@ -14,7 +14,23 @@ impl TaskSystem {
             return Ok(false);
         }
         self.ensure_owner_cpu_online(&cpu)?;
-        if cpu.try_runnable_summary() != Some(0) {
+        if cpu.current() != cpu.idle()
+            || cpu.has_remote_work()
+            || cpu.try_runnable_summary() != Some(0)
+        {
+            return Ok(false);
+        }
+        let target_remote = cpu.remote();
+        let reservation = match target_remote.begin_idle_pull() {
+            IdlePullReservation::Started(reservation) => reservation,
+            IdlePullReservation::AlreadyPending => return Ok(true),
+            IdlePullReservation::Busy => return Ok(false),
+        };
+        if cpu.current() != cpu.idle()
+            || cpu.has_remote_work()
+            || cpu.try_runnable_summary() != Some(0)
+        {
+            target_remote.cancel_idle_pull(reservation);
             return Ok(false);
         }
         let now_ns = task_runtime::monotonic_ns();
@@ -34,15 +50,9 @@ impl TaskSystem {
                 {
                     return None;
                 }
-                Some((
-                    class,
-                    key,
-                    summary.runnable_count(),
-                    summary.epoch(),
-                    source,
-                ))
+                Some((class, key, summary.runnable_count(), source))
             })
-            .min_by_key(|(class, key, load, _, source)| {
+            .min_by_key(|(class, key, load, source)| {
                 let cross_cpu_urgency =
                     matches!(class, SchedulingClass::Deadline | SchedulingClass::Realtime)
                         .then_some(*key);
@@ -53,18 +63,27 @@ impl TaskSystem {
                     source.as_u32(),
                 )
             });
-        let Some((_, _, _, source_epoch, source)) = source else {
+        let Some((_, _, _, source)) = source else {
+            target_remote.cancel_idle_pull(reservation);
             return Ok(false);
         };
-        let source_local = self
-            .cpu_remote(source)
-            .ok_or(TaskError::CpuOffline(source.as_u32()))?;
-        let message = InboxMessage::balance_request(source, target, source_epoch);
+        let Some(source_local) = self.cpu_remote(source) else {
+            target_remote.cancel_idle_pull(reservation);
+            return Err(TaskError::CpuOffline(source.as_u32()));
+        };
+        let message = InboxMessage::balance_request(source, target, reservation);
         let result = source_local.publish_migration(cpu.balance_request_node(), message);
-        Ok(matches!(
-            result,
-            PublishResult::Published | PublishResult::AlreadyPending
-        ))
+        match result {
+            PublishResult::Published => Ok(true),
+            PublishResult::AlreadyPending => {
+                target_remote.cancel_idle_pull(reservation);
+                Ok(true)
+            }
+            PublishResult::WrongKind => {
+                target_remote.cancel_idle_pull(reservation);
+                Ok(false)
+            }
+        }
     }
 
     /// Pushes one queued thread from an overloaded owner to the least loaded CPU.
