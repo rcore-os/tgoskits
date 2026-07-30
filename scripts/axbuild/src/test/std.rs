@@ -550,7 +550,14 @@ mod tests {
         assert_eq!(
             runner.invocations,
             vec![
-                (root.clone(), CargoTestInvocation::default_for("ax-api")),
+                (
+                    root.clone(),
+                    CargoTestInvocation::for_profile(
+                        "ax-api",
+                        &HOST_TEST_FEATURE_PROFILES[0],
+                        CargoTestAction::Run,
+                    ),
+                ),
                 (root.clone(), CargoTestInvocation::default_for("ax-hal")),
                 (root, CargoTestInvocation::default_for("starry-process")),
             ]
@@ -763,7 +770,14 @@ mod tests {
                 CargoTestInvocation::for_profile("ax-task", failed_profile, CargoTestAction::Run),
                 false,
             )
-            .with_status(CargoTestInvocation::default_for("ax-api"), false);
+            .with_status(
+                CargoTestInvocation::for_profile(
+                    "ax-api",
+                    &HOST_TEST_FEATURE_PROFILES[0],
+                    CargoTestAction::Run,
+                ),
+                false,
+            );
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
