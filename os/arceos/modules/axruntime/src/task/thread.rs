@@ -1,15 +1,36 @@
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicU8;
+
 use super::*;
+
+const THREAD_START_PENDING: u8 = 0;
+const THREAD_START_ACTIVE: u8 = 1;
+const THREAD_START_ABORTED: u8 = 2;
 
 /// Scheduler thread whose resources and registry identity exist but which is
 /// not yet runnable.
 ///
-/// OS layers use this move-only transaction boundary to publish their own task,
-/// PID, and resource registries before the new context can execute. Dropping an
-/// unpublished value removes the scheduler record and releases context, stack,
-/// TLS, extension, and address-space resources in task context.
+/// OS layers use this move-only transaction boundary to finish private resource
+/// construction. They must call [`Self::stage`] before publishing externally
+/// visible task identity, then call [`StagedThread::activate`] after committing
+/// that identity. Dropping an unpublished value removes the scheduler record
+/// and releases context, stack, TLS, extension, and address-space resources in
+/// task context.
 pub struct PreparedThread {
     system: &'static TaskSystem,
     handle: Option<ThreadHandle>,
+    start: Arc<RuntimeThreadStart>,
+}
+
+/// Scheduler thread placed on a run queue but not yet activated by its OS.
+///
+/// This transaction token must be activated or dropped from task context.
+/// Completing either path wakes the staged trampoline through a task-context
+/// wait queue and is therefore not valid in a hard-interrupt handler.
+#[must_use = "staged threads must be activated or explicitly dropped to abort"]
+pub struct StagedThread {
+    handle: Option<ThreadHandle>,
+    start: Arc<RuntimeThreadStart>,
 }
 
 impl PreparedThread {
@@ -21,20 +42,67 @@ impl PreparedThread {
             .clone()
     }
 
-    /// Makes the prepared thread ready and places it on a run queue.
-    pub fn publish(mut self) -> Result<ThreadHandle, TaskError> {
+    /// Places and immediately activates a thread with no external publication
+    /// transaction.
+    pub fn publish(self) -> Result<ThreadHandle, TaskError> {
+        Ok(self.stage()?.activate())
+    }
+
+    /// Completes the fallible scheduler placement phase without entering the
+    /// caller-owned thread entry point.
+    ///
+    /// The scheduler may select the staged thread, but its runtime trampoline
+    /// remains blocked on an internal start gate. This lets an OS complete its
+    /// public identity transaction before [`StagedThread::activate`] provides
+    /// the final infallible release, matching Linux's `wake_up_new_task`
+    /// boundary.
+    pub fn stage(mut self) -> Result<StagedThread, TaskError> {
         let handle = self
             .handle
             .take()
             .expect("prepared thread was already consumed");
-        publish_prepared_thread(self.system, handle)
+        publish_prepared_thread(self.system, handle).map(|handle| StagedThread {
+            handle: Some(handle),
+            start: Arc::clone(&self.start),
+        })
     }
 
-    pub(super) fn new(system: &'static TaskSystem, handle: ThreadHandle) -> Self {
+    pub(super) fn new(
+        system: &'static TaskSystem,
+        handle: ThreadHandle,
+        start: Arc<RuntimeThreadStart>,
+    ) -> Self {
         Self {
             system,
             handle: Some(handle),
+            start,
         }
+    }
+}
+
+impl StagedThread {
+    /// Returns a strong handle for the OS publication transaction.
+    pub fn thread_handle(&self) -> ThreadHandle {
+        self.handle
+            .as_ref()
+            .expect("staged thread was already consumed")
+            .clone()
+    }
+
+    /// Releases the staged thread to execute its caller-owned entry point.
+    pub fn activate(mut self) -> ThreadHandle {
+        let handle = self
+            .handle
+            .take()
+            .expect("staged thread was already consumed");
+        self.start.activate();
+        handle
+    }
+}
+
+impl Drop for StagedThread {
+    fn drop(&mut self) {
+        self.start.abort();
     }
 }
 
@@ -48,12 +116,71 @@ impl Drop for PreparedThread {
 
 type KernelThreadEntry = Box<dyn FnOnce() + Send + 'static>;
 
+#[derive(Debug)]
+pub(super) struct RuntimeThreadStart {
+    state: AtomicU8,
+    wait: WaitQueue,
+}
+
+impl RuntimeThreadStart {
+    pub(super) const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(THREAD_START_PENDING),
+            wait: WaitQueue::new(),
+        }
+    }
+
+    fn activate(&self) {
+        self.state
+            .compare_exchange(
+                THREAD_START_PENDING,
+                THREAD_START_ACTIVE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .unwrap_or_else(|state| panic!("invalid staged-thread activation state: {state}"));
+        self.wait.notify_all();
+    }
+
+    fn abort(&self) {
+        if self
+            .state
+            .compare_exchange(
+                THREAD_START_PENDING,
+                THREAD_START_ABORTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.wait.notify_all();
+        }
+    }
+
+    fn wait_for_activation(&self) -> bool {
+        match self.state.load(Ordering::Acquire) {
+            THREAD_START_ACTIVE => return true,
+            THREAD_START_ABORTED => return false,
+            THREAD_START_PENDING => {}
+            state => panic!("invalid runtime thread-start state: {state}"),
+        }
+        self.wait
+            .wait_until(|| self.state.load(Ordering::Acquire) != THREAD_START_PENDING);
+        match self.state.load(Ordering::Acquire) {
+            THREAD_START_ACTIVE => true,
+            THREAD_START_ABORTED => false,
+            state => panic!("invalid completed thread-start state: {state}"),
+        }
+    }
+}
+
 pub(super) struct RuntimeThreadData {
     pub(super) entry: SpinNoIrq<Option<KernelThreadEntry>>,
     pub(super) exit_code: AtomicI32,
     pub(super) exit_completed: AtomicBool,
     pub(super) join_wait: WaitQueue,
     pub(super) os_extension: Option<ThreadExtension>,
+    pub(super) start: Arc<RuntimeThreadStart>,
     pub(super) _name: String,
 }
 
@@ -102,6 +229,7 @@ impl RuntimeThreadData {
         entry: KernelThreadEntry,
         name: String,
         os_extension: Option<ThreadExtension>,
+        start: Arc<RuntimeThreadStart>,
     ) -> Self {
         Self {
             entry: SpinNoIrq::new(Some(entry)),
@@ -109,6 +237,7 @@ impl RuntimeThreadData {
             exit_completed: AtomicBool::new(false),
             join_wait: WaitQueue::new(),
             os_extension,
+            start,
             _name: name,
         }
     }
@@ -379,6 +508,9 @@ pub(super) unsafe extern "C" fn runtime_thread_entry() -> ! {
     // `Box<RuntimeThreadData>`. The registry record keeps it live through exit;
     // the temporary lease must not survive the non-unwinding exit path.
     let data = unsafe { &*ptr::with_exposed_provenance::<RuntimeThreadData>(data_raw) };
+    if !data.start.wait_for_activation() {
+        exit_current(0);
+    }
     let entry = data
         .entry
         .lock()

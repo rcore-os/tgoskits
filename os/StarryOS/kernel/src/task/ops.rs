@@ -132,11 +132,12 @@ pub fn add_task_to_table(task: &UserTaskRef) {
     session_table.insert(session.sid(), &session);
 }
 
-/// Rollback token for a task registered before scheduler publication.
+/// Rollback token for a task registered before runtime entry activation.
 ///
-/// Clone installs Linux-visible identity while the scheduler thread is still
-/// prepared. Dropping this token removes only the matching generation and
-/// process object; [`Self::commit`] transfers ownership to normal exit paths.
+/// Clone installs Linux-visible identity after fallible scheduler placement
+/// while the runtime start gate remains closed. Dropping this token removes
+/// only the matching generation and process object; [`Self::commit`] transfers
+/// ownership to normal exit paths.
 pub struct PreparedTaskRegistration {
     tid: Pid,
     scheduler_id: ax_std::os::arceos::task::ThreadId,
@@ -170,7 +171,7 @@ impl Drop for PreparedTaskRegistration {
     }
 }
 
-/// Registers a prepared task before it becomes runnable.
+/// Registers a staged task before its runtime entry is activated.
 ///
 /// `new_process` must be true only for a freshly forked process. Existing
 /// process entries belong to the thread group and must never be removed when a

@@ -1,3 +1,8 @@
+extern crate alloc;
+
+use alloc::{string::String, sync::Arc};
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use axtest::prelude::*;
 use starry_kernel::axtest_exports;
 
@@ -99,4 +104,45 @@ fn dummy_stat_fs_fields_match_expected_defaults() {
 #[axtest]
 fn perf_control_callback_runs_preemptible() {
     ax_assert!(axtest_exports::perf_control_callback_runs_preemptible());
+}
+
+#[axtest]
+fn staged_thread_entry_waits_for_activation() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_by_thread = Arc::clone(&entered);
+    let prepared = ax_std::os::arceos::task::prepare_raw(
+        move || entered_by_thread.store(true, Ordering::Release),
+        String::from("staged-start-gate"),
+        64 * 1024,
+    )
+    .expect("failed to prepare staged test thread");
+    let staged = prepared.stage().expect("failed to stage test thread");
+
+    for _ in 0..4 {
+        ax_std::os::arceos::task::yield_current_cpu().expect("failed to yield to staged thread");
+    }
+    ax_assert!(!entered.load(Ordering::Acquire));
+
+    let thread = staged.activate();
+    ax_std::os::arceos::task::join_thread(thread).expect("failed to join activated test thread");
+    ax_assert!(entered.load(Ordering::Acquire));
+}
+
+#[axtest]
+fn dropping_staged_thread_aborts_its_entry() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_by_thread = Arc::clone(&entered);
+    let prepared = ax_std::os::arceos::task::prepare_raw(
+        move || entered_by_thread.store(true, Ordering::Release),
+        String::from("staged-start-abort"),
+        64 * 1024,
+    )
+    .expect("failed to prepare abortable test thread");
+    let observer = prepared.thread_handle();
+    let staged = prepared.stage().expect("failed to stage abortable thread");
+
+    drop(staged);
+    ax_std::os::arceos::task::wait_thread(&observer).expect("aborted staged thread did not exit");
+    ax_assert!(!entered.load(Ordering::Acquire));
+    ax_std::os::arceos::task::join_thread(observer).expect("failed to reap aborted staged thread");
 }
