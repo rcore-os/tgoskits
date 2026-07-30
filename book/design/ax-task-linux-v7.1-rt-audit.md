@@ -1728,6 +1728,48 @@ result: 13,980 sampled instruction intervals in 14.33 seconds versus dev's
 correct bounded-work reduction, not closure of the end-to-end regression; the
 remaining scheduler-work amplification stays open.
 
+## Current-head direct current-CPU reschedule endpoint
+
+The remaining preemption-exit path still converted the already-current CPU
+into a logical identifier and then resolved that identifier through the
+generic remote-CPU registry. This happened after every outermost preemption
+guard release, even though the caller already held migration exclusion and
+needed only the current CPU's `need_resched` bit.
+
+Linux v7.1 does not turn this local observation into a remote runqueue lookup.
+The architecture `preempt_count` word embeds the inverted reschedule flag,
+`preempt_count_dec_and_test()` reads that current-CPU word directly, and
+`preempt_enable()` invokes the scheduler only for the outermost transition.
+Explicit CPU lookup remains a remote-operation boundary, for example
+`cpu_rq(cpu)` in wake and migration paths.
+
+ax-runtime now caches each CPU's Arc-backed `CpuRemote` endpoint in its
+architecture-owned per-CPU area before online publication. The
+`TaskRuntime::current_cpu_remote_handle()` capability reaches that immutable
+endpoint through the scheduler-current thread register. It neither asks for a
+logical CPU ID nor enters the task-system registry. The endpoint allocation
+remains stable until shutdown; online, draining and offline are states of that
+same allocation, and the ax-task facade rejects it whenever it is not online.
+Generic `cpu_remote_handle(cpu)` remains the only path for actual remote
+producers.
+
+The deterministic regression was first observed with current-handle read
+counts `(0, 1)`: the pinned reschedule query performed no owner-handle read but
+did perform one generic remote lookup. It now observes `(0, 0)`. A CPU
+lifecycle regression additionally retains the bootstrap-time handle across
+offline and re-online transitions, verifies that its address never changes,
+and observes only the endpoint's publication state changing.
+
+The earlier qperf slowdown was then checked without the instruction plugin,
+while retaining the exact `qperf` Cargo feature set, NVMe root filesystem and
+virtio network configuration. The current branch reached DHCP at
+3.328285 seconds and the latest dev baseline at 3.321183 seconds, a
+7.1-millisecond difference. This does not support a material real-time
+performance regression. The much larger plugin-window difference is therefore
+kept as evidence of instrumentation-sensitive scheduler work, not used as an
+end-to-end wall-time claim. A later plugin run that missed both workload
+markers was rejected rather than compared with valid DHCP-to-shell windows.
+
 ## Current-head bounded Deadline scan closure
 
 The GRUB/CBS service retained a round-robin `deadline_members` cursor but did

@@ -10,6 +10,7 @@ use ax_task::{
 static NEXT_IRQ_TOKEN: AtomicUsize = AtomicUsize::new(1);
 static TASK_SYSTEM: AtomicUsize = AtomicUsize::new(0);
 static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
+static CPU_REMOTE: AtomicUsize = AtomicUsize::new(0);
 static TEST_RUNTIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct NetTestTaskRuntime;
@@ -23,6 +24,11 @@ impl_task_runtime! {
         unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
             // SAFETY: the test guard keeps the pinned CPU-local state alive.
             unsafe { CurrentCpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire)) }
+        }
+        unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
+            // SAFETY: the test runtime retains the TaskSystem that owns this
+            // cached endpoint until InstalledTestRuntime is dropped.
+            unsafe { CpuRemoteHandle::from_raw(CPU_REMOTE.load(Ordering::Acquire)) }
         }
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
             let raw = TASK_SYSTEM.load(Ordering::Acquire);
@@ -120,6 +126,7 @@ pub(crate) struct InstalledTestRuntime {
 
 impl Drop for InstalledTestRuntime {
     fn drop(&mut self) {
+        CPU_REMOTE.store(0, Ordering::Release);
         CPU_LOCAL.store(0, Ordering::Release);
         TASK_SYSTEM.store(0, Ordering::Release);
     }
@@ -138,6 +145,12 @@ pub(crate) fn install(
     );
     CPU_LOCAL.store(
         (cpu_local.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        Ordering::Release,
+    );
+    CPU_REMOTE.store(
+        task_system
+            .runtime_cpu_remote_handle(CpuId::new(0))
+            .into_raw(),
         Ordering::Release,
     );
     InstalledTestRuntime { _lock: lock }

@@ -23,6 +23,7 @@ struct UnitTestTaskRuntime;
 
 static TASK_SYSTEM: AtomicUsize = AtomicUsize::new(0);
 static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
+static CPU_REMOTE: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULER_IPIS: AtomicUsize = AtomicUsize::new(0);
 static LAST_SCHEDULER_IPI_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
@@ -59,6 +60,11 @@ impl_task_runtime! {
         unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
             // SAFETY: install/clear bracket the pinned owner CpuLocal fixture.
             unsafe { CurrentCpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire)) }
+        }
+        unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
+            // SAFETY: install/clear bracket the fixture TaskSystem that owns
+            // this cached current-CPU endpoint.
+            unsafe { CpuRemoteHandle::from_raw(CPU_REMOTE.load(Ordering::Acquire)) }
         }
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
             let raw = TASK_SYSTEM.load(Ordering::Acquire);
@@ -199,12 +205,21 @@ pub(crate) fn install(task_system: usize, cpu_local: usize) -> std::sync::MutexG
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     TASK_SYSTEM.store(task_system, Ordering::Release);
     CPU_LOCAL.store(cpu_local, Ordering::Release);
+    let remote = if task_system == 0 {
+        0
+    } else {
+        // SAFETY: the caller retains this TaskSystem until clear.
+        let system = unsafe { &*core::ptr::with_exposed_provenance::<TaskSystem>(task_system) };
+        system.runtime_cpu_remote_handle(CpuId::new(0)).into_raw()
+    };
+    CPU_REMOTE.store(remote, Ordering::Release);
     SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
     IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
     guard
 }
 
 pub(crate) fn clear() {
+    CPU_REMOTE.store(0, Ordering::Release);
     CPU_LOCAL.store(0, Ordering::Release);
     TASK_SYSTEM.store(0, Ordering::Release);
     PREEMPT_DEPTH.store(0, Ordering::Release);

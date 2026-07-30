@@ -1015,6 +1015,27 @@ mod tests {
     }
 
     #[test]
+    fn pinned_reschedule_query_does_not_resolve_the_current_cpu_as_remote() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_cpu_handle_reads();
+
+        // SAFETY: this single-threaded fixture cannot migrate during the
+        // current-CPU reschedule observation.
+        assert!(!unsafe { current_needs_reschedule_pinned() }.unwrap());
+        assert_eq!(
+            test_runtime::cpu_handle_reads(),
+            (0, 0),
+            "a pinned current-CPU query must not enter the generic remote-CPU lookup"
+        );
+    }
+
+    #[test]
     fn irq_pin_captures_runtime_cpu_handles_once() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

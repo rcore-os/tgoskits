@@ -425,6 +425,21 @@ pub trait TaskRuntime {
     /// direct owner accesses must use the same gate as the ax-task facade.
     unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle;
 
+    /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for the calling CPU.
+    ///
+    /// This is the scheduler-adjacent current-CPU fast path. Unlike
+    /// [`Self::cpu_remote_handle`], it must not derive a CPU identifier and
+    /// resolve that identifier through the global task-system registry.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prevent migration until it has finished every read
+    /// through the returned endpoint. A non-`NONE` result must identify the
+    /// calling CPU's Arc-backed [`crate::CpuRemote`] and remain live until
+    /// shutdown. It must not identify a [`crate::CpuLocal`] or any other
+    /// allocation.
+    unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle;
+
     /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for `cpu`.
     ///
     /// Unlike [`Self::current_cpu_local_handle`], this handle must never point

@@ -54,7 +54,8 @@ pub(crate) use bootstrap::{
 };
 use bootstrap::{
     cpu_remote, current_cpu_local_owner_handle, idle_context_entry, primary_bootstrap_thread,
-    task_system, with_current_cpu_local_mut_owner, with_current_cpu_pin,
+    scheduler_current_cpu_remote_handle, task_system, with_current_cpu_local_mut_owner,
+    with_current_cpu_pin,
 };
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
