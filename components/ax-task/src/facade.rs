@@ -42,7 +42,8 @@ use runtime_cpu::{
     RuntimeCpuPin, RuntimeSchedulerFrameGuard, runtime_current_cpu, validate_schedule_context,
 };
 pub(crate) use runtime_cpu::{
-    RuntimeIrqGuard, cpu_local_for_wake, runtime_current_cpu_mut, runtime_task_system,
+    RuntimeIrqGuard, cpu_local_for_wake, current_cpu_remote, runtime_current_cpu_mut,
+    runtime_task_system,
 };
 pub use scheduling::{
     ExitPermit, commit_current_exit, exit_current_thread, prepare_current_exit,
@@ -88,8 +89,7 @@ pub fn current_thread_id() -> Result<ThreadId, TaskError> {
 /// Task-context callers normally satisfy this with a preemption guard or an
 /// IRQ-aware metadata lock.
 pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
-    let cpu = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
-    cpu_local_for_wake(cpu)
+    current_cpu_remote()
         .ok_or(TaskError::NotInitialized)?
         .current_thread()
         .ok_or(TaskError::NoRunnableThread)
@@ -103,8 +103,7 @@ pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
 /// uses this snapshot. Sleeping-lock owner spinning normally satisfies this
 /// with a preemption guard.
 pub unsafe fn current_needs_reschedule_pinned() -> Result<bool, TaskError> {
-    let cpu = CpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32());
-    Ok(cpu_local_for_wake(cpu)
+    Ok(current_cpu_remote()
         .ok_or(TaskError::NotInitialized)?
         .needs_reschedule())
 }

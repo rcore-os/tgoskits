@@ -14,6 +14,7 @@ std::thread_local! {
     static ACTIVE_IRQ_TOKENS: RefCell<std::vec::Vec<usize>> = const { RefCell::new(std::vec::Vec::new()) };
     static TASK_SYSTEM_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCAL_HANDLE: Cell<usize> = const { Cell::new(0) };
+    static CURRENT_CPU_REMOTE_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCAL_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
     static CPU_REMOTE_HANDLE_READS: Cell<usize> = const { Cell::new(0) };
     static SCHEDULER_FRAME_DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -114,6 +115,13 @@ impl TaskRuntime for UnitTestRuntime {
             // SAFETY: unit fixtures install only the current thread's pinned
             // CpuLocal and clear the handle before destroying it.
             unsafe { CurrentCpuLocalHandle::from_raw(handle.get()) }
+        })
+    }
+    unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
+        CURRENT_CPU_REMOTE_HANDLE.with(|handle| {
+            // SAFETY: unit fixtures install only CPU 0's Arc-backed endpoint
+            // and retain the owning TaskSystem until this slot is cleared.
+            unsafe { CpuRemoteHandle::from_raw(handle.get()) }
         })
     }
     unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
@@ -563,6 +571,17 @@ pub(crate) fn take_switch_observations() -> std::vec::Vec<SwitchObservation> {
 pub(crate) fn install_task_handles(task_system: usize, cpu_local: usize) {
     TASK_SYSTEM_HANDLE.with(|handle| handle.set(task_system));
     CPU_LOCAL_HANDLE.with(|handle| handle.set(cpu_local));
+    let remote = if task_system == 0 {
+        0
+    } else {
+        // SAFETY: the fixture retains this TaskSystem until clear_task_handles.
+        let system =
+            unsafe { &*core::ptr::with_exposed_provenance::<crate::TaskSystem>(task_system) };
+        system
+            .runtime_cpu_remote_handle(crate::CpuId::new(0))
+            .into_raw()
+    };
+    CURRENT_CPU_REMOTE_HANDLE.with(|handle| handle.set(remote));
 }
 
 pub(crate) fn reset_cpu_handle_reads() {

@@ -121,6 +121,18 @@ pub(crate) fn cpu_local_for_wake(cpu: crate::CpuId) -> Option<&'static CpuRemote
     // Arc-backed CpuRemote for `cpu` and keeps it alive until shutdown.
     let handle =
         unsafe { task_runtime::cpu_remote_handle(crate::runtime::RuntimeCpuId::new(cpu.as_u32())) };
+    cpu_remote_from_handle(handle)
+}
+
+pub(crate) fn current_cpu_remote() -> Option<&'static CpuRemote> {
+    // SAFETY: callers of the current-CPU facade retain migration exclusion.
+    // The linked runtime publishes the current CPU's shutdown-lifetime remote
+    // endpoint directly, without resolving it through the global registry.
+    let handle = unsafe { task_runtime::current_cpu_remote_handle() };
+    cpu_remote_from_handle(handle)
+}
+
+fn cpu_remote_from_handle(handle: crate::runtime::CpuRemoteHandle) -> Option<&'static CpuRemote> {
     let raw = handle.into_raw();
     if validate_handle::<CpuRemote>(raw).is_err() {
         return None;

@@ -50,6 +50,16 @@ impl_task_runtime! {
             unsafe { CurrentCpuLocalHandle::from_raw(raw) }
         }
 
+        unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
+            // SAFETY: the ax-task caller keeps the scheduler-owned current
+            // thread fixed. Bootstrap cached this CPU's Arc-backed endpoint
+            // before online publication and retains its TaskSystem owner.
+            let raw = unsafe { scheduler_current_cpu_remote_handle() };
+            // SAFETY: zero denotes pre-initialization; every nonzero value is
+            // the shutdown-lifetime current-CPU endpoint cached above.
+            unsafe { CpuRemoteHandle::from_raw(raw) }
+        }
+
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
             cpu_remote(cpu).map_or(CpuRemoteHandle::NONE, |cpu| {
                 // SAFETY: TaskSystem owns this Arc-backed CpuRemote endpoint

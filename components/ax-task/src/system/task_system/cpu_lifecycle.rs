@@ -20,6 +20,24 @@ impl TaskSystem {
             .filter(|remote| remote.is_online())
     }
 
+    /// Returns the opaque runtime endpoint for a configured CPU.
+    ///
+    /// This bootstrap capability is available before online publication so a
+    /// runtime can cache its current-CPU endpoint in architecture-owned
+    /// storage. Ordinary scheduler producers must use [`Self::cpu_remote`],
+    /// which rejects an offline CPU.
+    #[doc(hidden)]
+    pub fn runtime_cpu_remote_handle(&self, cpu: CpuId) -> CpuRemoteHandle {
+        self.cpu_remotes
+            .get(cpu.as_usize())
+            .map_or(CpuRemoteHandle::NONE, |remote| {
+                // SAFETY: TaskSystem retains this Arc allocation until the
+                // system is destroyed. Runtime providers may publish the raw
+                // handle only while they retain that TaskSystem lifetime.
+                unsafe { CpuRemoteHandle::from_raw(Arc::as_ptr(remote).expose_provenance()) }
+            })
+    }
+
     /// Returns cumulative non-idle runtime charged by one online CPU.
     pub fn cpu_busy_runtime_ns(&self, cpu: CpuId) -> Result<u64, TaskError> {
         let remote = self

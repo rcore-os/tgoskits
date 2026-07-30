@@ -15,6 +15,14 @@ struct PrimaryBootstrapThread(ThreadId);
 #[ax_percpu::def_percpu]
 static CPU_LOCAL: LazyInit<Pin<Box<CpuLocal>>> = LazyInit::new();
 
+/// Arc-backed scheduler endpoint cached before this CPU becomes online.
+///
+/// The endpoint is immutable and shutdown-live. Scheduler-adjacent current-CPU
+/// reads reach it through the architecture current-thread register instead of
+/// resolving a logical CPU through the global task-system registry.
+#[ax_percpu::def_percpu]
+static CPU_REMOTE_HANDLE: LazyInit<usize> = LazyInit::new();
+
 /// Owner-capability address published once before this CPU becomes online.
 ///
 /// The pointer originates from the unique pinned allocation, rather than a
@@ -162,6 +170,10 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     let system = task_system().ok_or(TaskError::NotInitialized)?;
     let cpu_id = u32::try_from(cpu_id).map_err(|_| TaskError::InvalidCpu(u32::MAX))?;
     let owner = CpuId::new(cpu_id);
+    let remote_handle = system.runtime_cpu_remote_handle(owner).into_raw();
+    if remote_handle == 0 {
+        return Err(TaskError::InvalidCpu(cpu_id));
+    }
     #[cfg(feature = "uspace")]
     {
         let kernel_root = if cfg!(any(target_arch = "x86_64", target_arch = "riscv64")) {
@@ -246,6 +258,9 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
     unsafe {
         with_current_cpu_pin(|pin| {
             ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                CPU_REMOTE_HANDLE.with_current_mut(exclusive, |slot| {
+                    slot.init_once(remote_handle);
+                });
                 CPU_LOCAL.with_current_mut(exclusive, |slot| {
                     slot.init_once(cpu);
                 });
@@ -339,6 +354,17 @@ pub(super) fn cpu_remote(cpu: RuntimeCpuId) -> Option<&'static CpuRemote> {
 
 pub(super) fn current_cpu_local_owner_handle(cpu_pin: &CpuPin) -> usize {
     CPU_LOCAL_OWNER_HANDLE.read_current(cpu_pin)
+}
+
+/// Reads the current CPU's cached remote endpoint without constructing a pin.
+///
+/// # Safety
+///
+/// The caller must keep the scheduler-owned current thread alive and prevent
+/// context switches and local IRQ re-entry for the complete observation.
+pub(super) unsafe fn scheduler_current_cpu_remote_handle() -> usize {
+    unsafe { CPU_REMOTE_HANDLE.with_scheduler_current(|slot| slot.get().copied().unwrap_or(0)) }
+        .unwrap_or(0)
 }
 
 pub(super) fn primary_bootstrap_thread() -> Option<ThreadId> {

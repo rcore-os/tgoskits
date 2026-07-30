@@ -20,6 +20,7 @@ std::thread_local! {
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(1) };
     static TASK_SYSTEM: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCALS: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
+    static CPU_REMOTES: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
     static IPI_COUNTS: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
     static ONLINE_CPU_COUNT: Cell<usize> = const { Cell::new(1) };
     static DESTROYED_CONTEXTS: Cell<usize> = const { Cell::new(0) };
@@ -53,6 +54,14 @@ impl_trait! {
             // SAFETY: the fixture publishes only the selected CPU's pinned
             // CpuLocal and clears every entry before destroying the objects.
             unsafe { CurrentCpuLocalHandle::from_raw(raw) }
+        }
+
+        unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
+            let index = CURRENT_CPU.with(|cpu| cpu.get() as usize);
+            let raw = CPU_REMOTES.with(|handles| handles.borrow().get(index).copied().unwrap_or(0));
+            // SAFETY: each fixture retains the TaskSystem that owns every
+            // installed current-CPU endpoint until clear_handles.
+            unsafe { CpuRemoteHandle::from_raw(raw) }
         }
 
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
@@ -223,12 +232,15 @@ impl_trait! {
 pub fn install_handles(task_system: usize, cpu_local: Pin<&mut CpuLocal>) {
     TASK_SYSTEM.with(|handle| handle.set(task_system));
     install_cpu_raw(0, owner_cpu_handle(cpu_local));
+    install_cpu_remote_raw(0, task_system);
     CURRENT_CPU.with(|cpu| cpu.set(0));
     ONLINE_CPU_COUNT.with(|count| count.set(1));
 }
 
 pub fn install_cpu(cpu: u32, cpu_local: Pin<&mut CpuLocal>) {
     install_cpu_raw(cpu, owner_cpu_handle(cpu_local));
+    let task_system = TASK_SYSTEM.with(Cell::get);
+    install_cpu_remote_raw(cpu, task_system);
 }
 
 // Every integration-test crate compiles this shared runtime provider as its
@@ -247,6 +259,17 @@ fn owner_cpu_handle(cpu: Pin<&mut CpuLocal>) -> usize {
 
 fn install_cpu_raw(cpu: u32, cpu_local: usize) {
     CPU_LOCALS.with(|handles| handles.borrow_mut()[cpu as usize] = cpu_local);
+}
+
+fn install_cpu_remote_raw(cpu: u32, task_system: usize) {
+    let remote = if task_system == 0 {
+        0
+    } else {
+        // SAFETY: install/clear bracket the fixture-owned TaskSystem lifetime.
+        let system = unsafe { &*core::ptr::with_exposed_provenance::<TaskSystem>(task_system) };
+        system.runtime_cpu_remote_handle(CpuId::new(cpu)).into_raw()
+    };
+    CPU_REMOTES.with(|handles| handles.borrow_mut()[cpu as usize] = remote);
 }
 
 pub fn set_online_cpu_count(count: usize) {
@@ -299,6 +322,7 @@ pub fn clear_handles() {
     TASK_SYSTEM.with(|handle| handle.set(0));
     for cpu in 0..MAX_TEST_CPUS as u32 {
         install_cpu_raw(cpu, 0);
+        install_cpu_remote_raw(cpu, 0);
         IPI_COUNTS.with(|counts| counts.borrow_mut()[cpu as usize] = 0);
         let _cleared = ipi_count(cpu);
     }

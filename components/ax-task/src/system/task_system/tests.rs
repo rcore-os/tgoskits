@@ -264,6 +264,14 @@ fn quiescent_cpu_can_cycle_offline_and_online() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
     let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let cached_remote_handle = system.runtime_cpu_remote_handle(CpuId::new(1));
+    assert!(!cached_remote_handle.is_none());
+    let cached_remote = unsafe {
+        // SAFETY: the handle originates from `system`, which remains alive for
+        // the complete observation.
+        &*core::ptr::with_exposed_provenance::<CpuRemote>(cached_remote_handle.into_raw())
+    };
+    assert!(!cached_remote.is_online());
     let mut affinity0 = CpuSet::empty(2);
     let mut affinity1 = CpuSet::empty(2);
     assert!(affinity0.insert(CpuId::new(0)));
@@ -284,15 +292,23 @@ fn quiescent_cpu_can_cycle_offline_and_online() {
         .unwrap();
     system.bring_cpu_online_at(cpu0.as_mut(), 10).unwrap();
     system.bring_cpu_online_at(cpu1.as_mut(), 10).unwrap();
+    assert!(cached_remote.is_online());
 
     system.take_cpu_offline(cpu1.as_mut()).unwrap();
     assert_eq!(system.online_cpu_count(), 1);
     assert!(!cpu1.is_online());
+    assert!(!cached_remote.is_online());
     assert!(system.cpu_remote(CpuId::new(1)).is_none());
+    assert_eq!(
+        system.runtime_cpu_remote_handle(CpuId::new(1)),
+        cached_remote_handle,
+        "offline publication must not replace the shutdown-lifetime endpoint"
+    );
 
     system.bring_cpu_online_at(cpu1.as_mut(), 1_000).unwrap();
     assert_eq!(system.online_cpu_count(), 2);
     assert!(cpu1.is_online());
+    assert!(cached_remote.is_online());
     assert_eq!(
         crate::test_runtime::take_cpu_lifecycle_events(),
         [
