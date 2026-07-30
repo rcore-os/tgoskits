@@ -166,7 +166,7 @@ ivc_publisher_p ivc_publish(ivc_manager_p manager, uint64_t channel_key, uint64_
         free(publisher);
         return NULL;
     }
-    
+
     return publisher;
 }
 
