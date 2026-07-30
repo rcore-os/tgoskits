@@ -76,7 +76,7 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -218,16 +218,15 @@ pub struct PerfReadValues {
 
 /// File-like handle returned by `perf_event_open(2)`.
 ///
-/// Task-context control operations use a blocking mutex because callbacks may
-/// allocate, fault, or reschedule. Software BPF output has a separate
-/// non-sleeping capability containing only the bounded ring-write state needed
-/// by trace and IRQ producers.
+/// Task-context control operations use a priority-inheriting sleepable mutex.
+/// Software BPF output has a separate non-sleeping capability containing only
+/// the bounded ring-write state needed by trace/IRQ producers.
 pub struct PerfEvent {
-    event: Mutex<Box<dyn PerfEventOps>>,
-    /// Bounded non-sleeping output endpoint for software BPF events.
-    irq_output: Option<bpf::BpfPerfOutput>,
+    event: PiMutex<Box<dyn PerfEventOps>>,
     /// Sleepable control plane, kept separate from IRQ/BPF output access.
     control: Option<Arc<dyn PerfControl>>,
+    /// Bounded non-sleeping output endpoint for software BPF events.
+    irq_output: Option<bpf::BpfPerfOutput>,
     /// Unique, stable perf-event id (see [`NEXT_PERF_EVENT_ID`]). Returned by
     /// `PERF_EVENT_IOC_ID` and used as the `read_format` `PERF_FORMAT_ID` value.
     id: u64,
@@ -250,10 +249,6 @@ impl PerfEvent {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
         event.finish_open()?;
-        let irq_output = event
-            .as_any_mut()
-            .downcast_mut::<BpfPerfEventWrapper>()
-            .map(|event| event.output_handle());
         #[cfg(target_arch = "aarch64")]
         let control = event
             .as_any_mut()
@@ -261,10 +256,14 @@ impl PerfEvent {
             .map(|event| event.control_handle());
         #[cfg(not(target_arch = "aarch64"))]
         let control = None;
+        let irq_output = event
+            .as_any_mut()
+            .downcast_mut::<BpfPerfEventWrapper>()
+            .map(|event| event.output_handle());
         Ok(PerfEvent {
-            event: Mutex::new(event),
-            irq_output,
+            event: PiMutex::new(event),
             control,
+            irq_output,
             id,
             nonblocking: AtomicBool::new(false),
         })
@@ -643,7 +642,9 @@ pub fn perf_event_output(_ctx: *mut c_void, fd: usize, _flags: u32, data: &[u8])
 #[cfg(axtest)]
 pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
     #[derive(Debug)]
-    struct YieldingControl;
+    struct YieldingControl {
+        preemptible: Arc<AtomicBool>,
+    }
 
     impl Pollable for YieldingControl {
         fn poll(&self) -> axpoll::IoEvents {
@@ -655,7 +656,10 @@ pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
 
     impl PerfEventOps for YieldingControl {
         fn enable(&mut self) -> AxResult<()> {
-            ax_task::yield_now();
+            self.preemptible.store(
+                ax_runtime::task::yield_current_cpu().is_ok(),
+                Ordering::Release,
+            );
             Ok(())
         }
 
@@ -668,8 +672,15 @@ pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
         }
     }
 
-    let event = PerfEvent::new(Box::new(YieldingControl));
-    event.ioctl(PerfEventIoc::Enable as u32, 0).is_ok()
+    let preemptible = Arc::new(AtomicBool::new(false));
+    let event = PerfEvent::new(Box::new(YieldingControl {
+        preemptible: Arc::clone(&preemptible),
+    }))
+    .expect("failed to create perf control test event");
+    event
+        .ioctl(PerfEventIoc::Enable as u32, 0)
+        .expect("failed to enable perf control test event");
+    preemptible.load(Ordering::Acquire)
 }
 
 /// Executable kernel mapping used by rbpf JIT programs on x86_64.
