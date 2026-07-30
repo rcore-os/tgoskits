@@ -276,7 +276,7 @@ pub fn sys_mount(
         "cgroup2" => {
             let (cgroup_root, cgroup_root_pin) = {
                 let task = current_user_task();
-                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                let nsproxy = task.as_thread().proc_data.namespace_snapshot();
                 let namespace = nsproxy.cgroup_ns.lock();
                 (namespace.root(), namespace.pin_root())
             };

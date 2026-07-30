@@ -979,37 +979,37 @@ impl SimpleDirOps for NsDir {
 
         let content: String = match name {
             "uts" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.uts_ns.lock().id;
                 format!("uts:[{}]\n", ns_id)
             }
             "ipc" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.ipc_ns.lock().ns_id;
                 format!("ipc:[{}]\n", ns_id)
             }
             "mnt" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.mnt_ns.lock().id();
                 format!("mnt:[{}]\n", ns_id)
             }
             "pid" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.pid_ns.id();
                 format!("pid:[{}]\n", ns_id)
             }
             "net" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.net_ns.lock().ns_id;
                 format!("net:[{}]\n", ns_id)
             }
             "user" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.user_ns.lock().id;
                 format!("user:[{}]\n", ns_id)
             }
             "cgroup" => {
-                let nsproxy = proc_data.nsproxy.lock();
+                let nsproxy = proc_data.namespace_snapshot();
                 let ns_id = nsproxy.cgroup_ns.lock().id();
                 format!("cgroup:[{}]\n", ns_id)
             }
@@ -1507,7 +1507,8 @@ impl SimpleDirOps for ThreadDir {
                             // getuid/geteuid/getresuid return the mapped
                             // value instead of 65534 (nobody).
                             let proc_data = &thr.proc_data;
-                            let nsproxy = proc_data.nsproxy.lock();
+                            let update = proc_data.namespace_update();
+                            let nsproxy = update.snapshot();
                             nsproxy.user_ns.lock().uid_mapped = true;
                         }
                         Ok(None)
@@ -1553,7 +1554,8 @@ impl SimpleDirOps for ThreadDir {
                             Thread::set_cred(thr, cred);
                             thr.set_gid_map_written(true);
                             let proc_data = &thr.proc_data;
-                            let nsproxy = proc_data.nsproxy.lock();
+                            let update = proc_data.namespace_update();
+                            let nsproxy = update.snapshot();
                             nsproxy.user_ns.lock().gid_mapped = true;
                         }
                         Ok(None)
@@ -1592,8 +1594,7 @@ impl SimpleDirOps for ThreadDir {
                 let reader_cgroup_ns = reader
                     .as_thread()
                     .proc_data
-                    .nsproxy
-                    .lock()
+                    .namespace_snapshot()
                     .cgroup_ns
                     .clone();
                 let reader_root = reader_cgroup_ns.lock().root();

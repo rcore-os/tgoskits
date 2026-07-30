@@ -34,9 +34,11 @@ fn restore_if_empty<T>(slot: &mut Option<T>, value: T) -> bool {
 
 /// Aggregates all namespace types for a process.
 ///
-/// `ProcessData` holds a single `SpinNoIrq<NsProxy>` field.  Clone and unshare
-/// operations work through `NsProxy` methods so that syscall handlers do not
-/// manipulate namespace internals directly.
+/// `ProcessData` publishes structurally immutable `Arc<NsProxy>` aggregates
+/// behind a short raw lock and serializes task-context writers separately.
+/// Individual namespace objects remain shared and synchronize their own
+/// mutable state. Clone and unshare operations work through `NsProxy` methods
+/// so that syscall handlers do not mutate the published aggregate in place.
 pub struct NsProxy {
     /// The UTS namespace (hostname, domainname).
     pub uts_ns: Arc<SpinNoIrq<UtNamespace>>,

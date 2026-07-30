@@ -14,7 +14,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
-    task::{AX_FILE_LIMIT, Thread, current_user_task, get_task},
+    task::{AX_FILE_LIMIT, ProcessNamespaceUpdate, Thread, current_user_task, get_task},
 };
 
 const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
@@ -38,15 +38,20 @@ struct PreparedUnshare {
 }
 
 impl PreparedUnshare {
-    fn prepare(flags: u32, thread: &Thread) -> AxResult<Self> {
+    fn prepare(
+        flags: u32,
+        thread: &Thread,
+        namespace_update: Option<&ProcessNamespaceUpdate<'_>>,
+    ) -> AxResult<Self> {
         let file_table = (flags & CLONE_FILES != 0).then(|| {
             Arc::new(SpinRwLock::new(
                 crate::file::current_fd_table().read().clone(),
             ))
         });
 
-        let mut nsproxy = (flags & UNSHARE_NAMESPACE_FLAGS != 0)
-            .then(|| thread.proc_data.nsproxy.lock().clone_for_unshare());
+        let mut nsproxy = namespace_update
+            .map(ProcessNamespaceUpdate::snapshot)
+            .map(|snapshot| snapshot.clone_for_unshare());
         if let Some(nsproxy) = &mut nsproxy {
             if flags & CLONE_NEWUTS != 0 {
                 nsproxy.unshare_uts();
@@ -89,7 +94,7 @@ impl PreparedUnshare {
         })
     }
 
-    fn commit(self, thread: &Thread) {
+    fn commit(self, thread: &Thread, namespace_update: Option<ProcessNamespaceUpdate<'_>>) {
         let Self {
             file_table,
             fs_context,
@@ -106,8 +111,10 @@ impl PreparedUnshare {
                 }
             });
         }
-        if let Some(nsproxy) = nsproxy {
-            *thread.proc_data.nsproxy.lock() = nsproxy;
+        match (nsproxy, namespace_update) {
+            (Some(nsproxy), Some(update)) => update.publish(nsproxy),
+            (None, None) => {}
+            _ => unreachable!("namespace update token and replacement must agree"),
         }
     }
 }
@@ -127,8 +134,13 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         return Err(AxError::OperationNotPermitted);
     }
 
-    let prepared = PreparedUnshare::prepare(flags, thread)?;
-    prepared.commit(thread);
+    // Starry currently stores namespaces per process rather than per Linux
+    // task. Serialize writers while all allocation and namespace cloning occur
+    // outside the short raw publication lock.
+    let namespace_update =
+        (flags & UNSHARE_NAMESPACE_FLAGS != 0).then(|| thread.proc_data.namespace_update());
+    let prepared = PreparedUnshare::prepare(flags, thread, namespace_update.as_ref())?;
+    prepared.commit(thread, namespace_update);
 
     Ok(0)
 }
@@ -201,36 +213,35 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
             return Err(AxError::InvalidInput);
         }
     }
+    if matches!(nsfd, NsFd::User(_)) {
+        let thread_count = proc_data.proc.threads().len();
+        if thread_count > 1 {
+            warn!(
+                "sys_setns: cannot change user namespace in multi-threaded process ({} threads)",
+                thread_count
+            );
+            return Err(AxError::OperationNotPermitted);
+        }
+    }
 
-    let mut nsproxy = proc_data.nsproxy.lock();
+    let update = proc_data.namespace_update();
+    let mut nsproxy = update.snapshot().clone_for_unshare();
 
     match nsfd {
         NsFd::Uts(ns) => nsproxy.set_ns_uts(ns.clone()),
         NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
         NsFd::Mnt { ns, fs_ns } => {
-            drop(nsproxy);
             ax_fs_ng::vfs::current_fs_context()
                 .lock()
                 .set_mount_namespace(fs_ns.clone())?;
-            proc_data.nsproxy.lock().set_ns_mnt(ns.clone());
+            nsproxy.set_ns_mnt(ns.clone());
         }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
         NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
         NsFd::Cgroup(ns) => nsproxy.set_ns_cgroup(ns.clone()),
-        NsFd::User(ns) => {
-            // Multi-threaded process cannot change user namespace.
-            let thread_count = proc_data.proc.threads().len();
-            if thread_count > 1 {
-                warn!(
-                    "sys_setns: cannot change user namespace in multi-threaded process ({} \
-                     threads)",
-                    thread_count
-                );
-                return Err(AxError::OperationNotPermitted);
-            }
-            nsproxy.set_ns_user(ns.clone());
-        }
+        NsFd::User(ns) => nsproxy.set_ns_user(ns.clone()),
     }
+    update.publish(nsproxy);
 
     debug!(
         "sys_setns: successfully joined namespace type {:#x}",
@@ -262,7 +273,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     } else {
         None
     };
-    let target_nsproxy = target_proc.nsproxy.lock().clone_all();
+    let target_nsproxy = target_proc.namespace_snapshot();
 
     let curr = current_user_task();
     let thread = curr.as_thread();
@@ -288,34 +299,34 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
         return Err(AxError::OperationNotPermitted);
     }
 
-    let mut nsproxy = proc_data.nsproxy.lock();
+    let update = proc_data.namespace_update();
+    let mut nsproxy = update.snapshot().clone_for_unshare();
 
     if nstype & CLONE_NEWUTS != 0 {
-        nsproxy.set_ns_uts(target_nsproxy.uts_ns);
+        nsproxy.set_ns_uts(target_nsproxy.uts_ns.clone());
     }
     if nstype & CLONE_NEWIPC != 0 {
-        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns);
+        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns.clone());
     }
     if nstype & CLONE_NEWNS != 0 {
-        drop(nsproxy);
         ax_fs_ng::vfs::current_fs_context()
             .lock()
             .set_mount_namespace(target_mnt_fs_ns.expect("target mount namespace captured"))?;
-        nsproxy = proc_data.nsproxy.lock();
-        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns);
+        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns.clone());
     }
     if nstype & CLONE_NEWPID != 0 {
-        nsproxy.set_ns_pid(target_nsproxy.pid_ns);
+        nsproxy.set_ns_pid(target_nsproxy.pid_ns.clone());
     }
     if nstype & CLONE_NEWNET != 0 {
-        nsproxy.set_ns_net(target_nsproxy.net_ns);
+        nsproxy.set_ns_net(target_nsproxy.net_ns.clone());
     }
     if nstype & CLONE_NEWUSER != 0 {
-        nsproxy.set_ns_user(target_nsproxy.user_ns);
+        nsproxy.set_ns_user(target_nsproxy.user_ns.clone());
     }
     if nstype & CLONE_NEWCGROUP != 0 {
-        nsproxy.set_ns_cgroup(target_nsproxy.cgroup_ns);
+        nsproxy.set_ns_cgroup(target_nsproxy.cgroup_ns.clone());
     }
+    update.publish(nsproxy);
 
     debug!(
         "sys_setns: successfully joined namespaces {:#x} via pidfd",
