@@ -53,6 +53,8 @@ pub struct SchedulerInbox {
     publication: EpochMpscQueue<InboxNode>,
     pending: AtomicPtr<InboxNode>,
     draining: AtomicBool,
+    #[cfg(test)]
+    drain_attempts: core::sync::atomic::AtomicUsize,
 }
 
 impl SchedulerInbox {
@@ -63,6 +65,8 @@ impl SchedulerInbox {
             publication: EpochMpscQueue::new(),
             pending: AtomicPtr::new(ptr::null_mut()),
             draining: AtomicBool::new(false),
+            #[cfg(test)]
+            drain_attempts: core::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -105,6 +109,8 @@ impl SchedulerInbox {
     /// Concurrent drain attempts return immediately with `pending = true`; the
     /// owner CPU remains the only logical consumer.
     pub fn drain(&self, limit: usize, output: &mut [InboxMessage]) -> DrainBatch {
+        #[cfg(test)]
+        self.drain_attempts.fetch_add(1, Ordering::Relaxed);
         if self
             .draining
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -143,6 +149,11 @@ impl SchedulerInbox {
     /// Reports whether producer or partially drained work remains.
     pub fn has_pending(&self) -> bool {
         !self.pending.load(Ordering::Acquire).is_null() || !self.publication.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drain_attempts(&self) -> usize {
+        self.drain_attempts.load(Ordering::Relaxed)
     }
 
     fn take_snapshot(&self) -> *mut InboxNode {
