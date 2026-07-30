@@ -192,17 +192,23 @@ impl RuntimeContext {
 
     unsafe fn finish_switch_tail(&self) -> RuntimeStatus {
         // SAFETY: the current incoming continuation owns this slot with local
-        // IRQs disabled and consumes the one-shot previous-binding token.
+        // IRQs disabled and completes the one-shot previous-binding token.
         let slot = unsafe { &mut *self.switch_tail.get() };
-        let Some(tail) = slot.take() else {
+        let Some(tail) = slot.as_mut() else {
             return RuntimeStatus::InvalidHandle;
         };
         // SAFETY: the outgoing header stays pinned and unreclaimable through
         // the scheduler `on_cpu` handoff; this tail owns its exact epoch.
         let previous = unsafe { Pin::new_unchecked(tail.previous.as_ref()) };
-        unsafe { tail.binding.finish(previous) }
-            .unwrap_or_else(|error| panic!("failed to finish CPU thread binding: {error}"));
-        RuntimeStatus::Success
+        match unsafe { tail.binding.finish(previous) } {
+            Ok(()) => {
+                // The exact binding epoch is now withdrawn. Only this success
+                // consumes the staged transaction and permits scheduler tail.
+                let _ = slot.take();
+                RuntimeStatus::Success
+            }
+            Err(_) => RuntimeStatus::InvalidHandle,
+        }
     }
 }
 
@@ -536,4 +542,70 @@ pub(super) unsafe fn switch_runtime_context(
             previous_arch_context.switch_to_prepared(next_arch_context, prepared);
         })
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::MaybeUninit;
+
+    use cpu_local::{CpuAreaPrefix, CpuAreaRef, CpuIndex};
+
+    use super::*;
+
+    #[test]
+    fn failed_switch_tail_preserves_the_binding_transaction_for_retry() {
+        std::thread::spawn(|| {
+            let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+            let base = storage.as_mut_ptr() as usize;
+            storage.write(CpuAreaPrefix::initialize(CpuIndex::try_from(0).unwrap(), base).unwrap());
+            // SAFETY: the leaked prefix is initialized and remains mapped for
+            // this modeled CPU's complete process lifetime.
+            let area = unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap();
+            // SAFETY: this fresh host thread owns its CPU-local register model.
+            unsafe { cpu_local::install_cpu_area(area) }.unwrap();
+
+            let previous =
+                RuntimeContext::allocate(ax_hal::context::TaskContext::new(), StackHandle::NONE);
+            let next =
+                RuntimeContext::allocate(ax_hal::context::TaskContext::new(), StackHandle::NONE);
+
+            // SAFETY: both leaked runtime contexts remain pinned for the
+            // modeled switch, and this host thread cannot migrate.
+            unsafe {
+                cpu_local::with_cpu_pin(|pin| {
+                    let previous = &*previous;
+                    let next = &*next;
+                    cpu_local::install_bootstrap_thread(pin, previous.header()).unwrap();
+                    let (prepared, binding) =
+                        cpu_local::prepare_thread_switch(pin, previous.header(), next.header())
+                            .unwrap();
+                    prepared.commit();
+
+                    next.stage_switch_tail(RuntimeSwitchTail {
+                        // Inject a retryable validation failure without
+                        // mutating the live previous binding.
+                        previous: next.header().as_non_null(),
+                        binding,
+                    })
+                    .unwrap();
+                    assert_eq!(next.finish_switch_tail(), RuntimeStatus::InvalidHandle);
+                    assert!(
+                        next.has_switch_tail(),
+                        "a failed runtime tail must retain its binding token"
+                    );
+
+                    (*next.switch_tail.get())
+                        .as_mut()
+                        .expect("failed tail must remain staged")
+                        .previous = previous.header().as_non_null();
+                    assert_eq!(next.finish_switch_tail(), RuntimeStatus::Success);
+                    assert!(!next.has_switch_tail());
+                    assert_eq!(previous.header.cpu_area(), None);
+                })
+            }
+            .unwrap();
+        })
+        .join()
+        .expect("modeled CPU must complete the retry");
+    }
 }

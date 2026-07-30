@@ -52,7 +52,7 @@ impl Drop for PreparedThreadSwitch<'_> {
     }
 }
 
-/// Opaque previous-task binding consumed by the incoming switch tail.
+/// Opaque previous-task binding completed by the incoming switch tail.
 #[must_use = "the incoming task must withdraw the previous CPU binding"]
 #[derive(Debug)]
 pub struct PreviousThreadBinding {
@@ -69,13 +69,15 @@ impl PreviousThreadBinding {
     /// Returns [`ThreadSwitchError::PreviousThreadMismatch`] if `previous`
     /// differs from the prepared task, or
     /// [`ThreadSwitchError::StalePreviousBinding`] for an obsolete tail.
+    /// Failure leaves this token available to the caller; success spends its
+    /// binding epoch and the token must be discarded.
     ///
     /// # Safety
     ///
     /// The incoming switch tail must be the sole owner of this token and the
     /// previous task allocation must remain pinned and alive.
     pub unsafe fn finish(
-        self,
+        &mut self,
         previous: Pin<&CurrentThreadHeader>,
     ) -> Result<(), ThreadSwitchError> {
         if previous.as_non_null() != self.previous {
@@ -219,7 +221,7 @@ mod tests {
             unsafe {
                 with_cpu_pin(|pin| {
                     install_bootstrap_thread(pin, previous.as_ref()).unwrap();
-                    let (prepared, previous_binding) =
+                    let (prepared, mut previous_binding) =
                         prepare_thread_switch(pin, previous.as_ref(), next.as_ref()).unwrap();
 
                     assert_eq!(current_thread(pin), Ok(previous.as_ref().as_non_null()));

@@ -135,3 +135,6 @@ thiserror.workspace = true
 
 [build-dependencies]
 quote = "1.0"
+
+[dev-dependencies]
+cpu-local = { workspace = true, features = ["host-test"] }
