@@ -52,6 +52,11 @@ fn posix_timer_expiry_scans_use_bounded_batches() {
 }
 
 #[axtest]
+fn posix_timer_disarm_suppresses_collected_stale_expiry() {
+    ax_assert!(axtest_exports::posix_timer_stale_expiry_signal_is_suppressed());
+}
+
+#[axtest]
 fn stale_alarm_cancellation_preserves_new_generation() {
     ax_assert!(axtest_exports::alarm_generation_rules_hold());
 }
