@@ -70,40 +70,39 @@ impl Default for SchedulerTickGate {
 }
 
 /// Task-context callback selected by one scheduler-tick publication.
-pub type SchedulerTickTaskWork = unsafe extern "Rust" fn(data: usize, thread: ThreadId);
-
-/// Bounded accounting callback invoked for the current thread from scheduler-tick IRQ context.
 ///
-/// This hook exists for operating systems that maintain aggregate CPU-time
-/// counters before deferring timer expiry and signal delivery to task context.
-pub type SchedulerTickIrqAccounting = unsafe extern "Rust" fn(data: usize, thread: ThreadId);
+/// `observed_ns` is the latest monotonic scheduler-tick timestamp coalesced
+/// into this publication. It lets the callback account the carrier thread up
+/// to the IRQ observation boundary without running OS code in hard IRQ.
+///
+/// The callback returns [`SchedulerTickWorkDisposition::Retry`] only when a
+/// transient task-context serialization boundary prevented it from consuming
+/// the publication. The task system then republishes the same generation
+/// instead of spinning in one worker pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchedulerTickWorkDisposition {
+    /// The callback consumed the publication.
+    Complete,
+    /// The callback made no state change and needs a later task-context retry.
+    Retry,
+}
+
+/// Scheduler-tick task-work callback.
+pub type SchedulerTickTaskWork = unsafe extern "Rust" fn(
+    data: usize,
+    thread: ThreadId,
+    observed_ns: u64,
+) -> SchedulerTickWorkDisposition;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SchedulerTickWork {
     gate: Arc<SchedulerTickGate>,
-    irq_accounting: Option<SchedulerTickIrqAccounting>,
     callback: SchedulerTickTaskWork,
 }
 
 impl SchedulerTickWork {
     pub(crate) const fn new(gate: Arc<SchedulerTickGate>, callback: SchedulerTickTaskWork) -> Self {
-        Self {
-            gate,
-            irq_accounting: None,
-            callback,
-        }
-    }
-
-    pub(crate) const fn with_irq_accounting(
-        gate: Arc<SchedulerTickGate>,
-        irq_accounting: SchedulerTickIrqAccounting,
-        callback: SchedulerTickTaskWork,
-    ) -> Self {
-        Self {
-            gate,
-            irq_accounting: Some(irq_accounting),
-            callback,
-        }
+        Self { gate, callback }
     }
 
     pub(crate) fn enabled_generation(&self) -> Option<u64> {
@@ -118,19 +117,46 @@ impl SchedulerTickWork {
         Arc::clone(&self.gate)
     }
 
-    pub(crate) const fn has_irq_accounting(&self) -> bool {
-        self.irq_accounting.is_some()
+    pub(crate) unsafe fn invoke(
+        &self,
+        data: usize,
+        thread: ThreadId,
+        observed_ns: u64,
+    ) -> SchedulerTickWorkDisposition {
+        unsafe { (self.callback)(data, thread, observed_ns) }
+    }
+}
+
+/// One detached scheduler-tick publication owned by the task-work consumer.
+#[derive(Debug)]
+pub(crate) struct SchedulerTickWorkClaim {
+    work: SchedulerTickWork,
+    generation: u64,
+    observed_ns: u64,
+}
+
+impl SchedulerTickWorkClaim {
+    pub(crate) const fn new(work: SchedulerTickWork, generation: u64, observed_ns: u64) -> Self {
+        Self {
+            work,
+            generation,
+            observed_ns,
+        }
     }
 
-    pub(crate) unsafe fn account_irq(&self, data: usize, thread: ThreadId) -> bool {
-        let Some(accounting) = self.irq_accounting else {
-            return false;
-        };
-        unsafe { accounting(data, thread) };
-        true
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
     }
 
-    pub(crate) unsafe fn invoke(&self, data: usize, thread: ThreadId) {
-        unsafe { (self.callback)(data, thread) };
+    pub(crate) fn generation_is_enabled(&self) -> bool {
+        self.work.generation_is_enabled(self.generation)
+    }
+
+    pub(crate) unsafe fn invoke(
+        &self,
+        data: usize,
+        thread: ThreadId,
+    ) -> SchedulerTickWorkDisposition {
+        unsafe { self.work.invoke(data, thread, self.observed_ns) }
     }
 }

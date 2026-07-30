@@ -3,8 +3,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickIrqAccounting, SchedulerTickTaskWork,
-    SchedulerTickWork, TaskError, ThreadHandle, ThreadId,
+    CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWork,
+    SchedulerTickWorkDisposition, TaskError, ThreadHandle, ThreadId,
     runtime::{
         AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle,
         task_runtime,
@@ -264,40 +264,15 @@ impl ThreadExtension {
     /// `callback` must interpret `data` according to this extension, remain
     /// valid for its complete lifetime, and return normally to the task-work
     /// service. The callback may use task-context synchronization but must not
-    /// retain the borrowed extension data after it returns.
+    /// retain the borrowed extension data after it returns. It may return
+    /// [`SchedulerTickWorkDisposition::Retry`] only after a transient conflict
+    /// and before publishing any accounting, timer, or signal state.
     pub unsafe fn with_scheduler_tick_work(
         mut self,
         gate: Arc<SchedulerTickGate>,
         callback: SchedulerTickTaskWork,
     ) -> Self {
         self.scheduler_tick_work = Some(SchedulerTickWork::new(gate, callback));
-        self
-    }
-
-    /// Adds bounded hard-IRQ accounting followed by deferred task-context work.
-    ///
-    /// The accounting callback runs for every observed scheduler tick while
-    /// the gate is enabled, even when task-work publications coalesce. The
-    /// task callback retains the lifetime and execution contract documented by
-    /// [`Self::with_scheduler_tick_work`].
-    ///
-    /// # Safety
-    ///
-    /// `irq_accounting` must interpret `data` according to this extension and
-    /// perform only bounded, allocation-free, non-blocking operations valid in
-    /// hard-IRQ context. `callback` must satisfy the task-work contract of
-    /// [`Self::with_scheduler_tick_work`].
-    pub unsafe fn with_scheduler_tick_accounting_work(
-        mut self,
-        gate: Arc<SchedulerTickGate>,
-        irq_accounting: SchedulerTickIrqAccounting,
-        callback: SchedulerTickTaskWork,
-    ) -> Self {
-        self.scheduler_tick_work = Some(SchedulerTickWork::with_irq_accounting(
-            gate,
-            irq_accounting,
-            callback,
-        ));
         self
     }
 
@@ -321,45 +296,24 @@ impl ThreadExtension {
             .map(SchedulerTickWork::gate)
     }
 
-    /// Returns whether this extension registered scheduler-tick IRQ accounting.
-    pub fn has_scheduler_tick_irq_accounting(&self) -> bool {
-        self.scheduler_tick_work
-            .as_ref()
-            .is_some_and(SchedulerTickWork::has_irq_accounting)
-    }
-
-    /// Forwards scheduler-tick IRQ accounting to this extension.
-    ///
-    /// Returns `false` when this extension did not register accounting.
-    ///
-    /// # Safety
-    ///
-    /// The caller must invoke this only for the current scheduler thread with
-    /// local IRQs disabled while retaining this extension for the complete
-    /// callback.
-    pub unsafe fn forward_scheduler_tick_irq_accounting(&self, thread: ThreadId) -> bool {
-        let Some(work) = self.scheduler_tick_work.as_ref() else {
-            return false;
-        };
-        unsafe { work.account_irq(self.data, thread) }
-    }
-
     /// Forwards one scheduler-tick task-work callback to this extension.
     ///
-    /// Returns `false` when this extension did not register such work.
+    /// Returns `None` when this extension did not register such work.
     ///
     /// # Safety
     ///
     /// The caller must own an ordinary task-context publication authorized by
     /// the gate returned from [`Self::scheduler_tick_work_gate`], keep this
     /// extension alive for the call, and invoke it at most once for that
-    /// publication.
-    pub unsafe fn forward_scheduler_tick_work(&self, thread: ThreadId) -> bool {
-        let Some(work) = self.scheduler_tick_work.as_ref() else {
-            return false;
-        };
-        unsafe { work.invoke(self.data, thread) };
-        true
+    /// publication. A forwarded [`SchedulerTickWorkDisposition::Retry`] keeps
+    /// the same no-partial-publication contract as the original callback.
+    pub unsafe fn forward_scheduler_tick_work(
+        &self,
+        thread: ThreadId,
+        observed_ns: u64,
+    ) -> Option<SchedulerTickWorkDisposition> {
+        let work = self.scheduler_tick_work.as_ref()?;
+        Some(unsafe { work.invoke(self.data, thread, observed_ns) })
     }
 
     pub(crate) const fn as_view(&self) -> ThreadExtensionView {

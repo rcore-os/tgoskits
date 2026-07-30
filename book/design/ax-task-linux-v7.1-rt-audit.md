@@ -6,14 +6,14 @@ This document is the audit ledger for the task-system migration on
 `codex/refactor-ax-task-from-1596`.
 
 The current audited base is `origin/dev` at
-`81ce224072c6e569f4746b4408ed4adbaa9a4dba`. The base already contains the
+`07f221e6880fc5e2f88a81185b2647f5f7500f02`. The base already contains the
 Starry PID lifecycle fix from PR #1706. Its generation-specific
 `ProcessIdentity` and `Live -> Zombie -> Reaping -> Reaped` transition remain
 the sole authority for PID visibility and reaping.
 
 The implementation snapshot immediately before this ledger update is
-`ffbbcafc4e4d0e58cf7c68aea68f67eabe87a808`: 121 commits and 650 paths relative
-to that base, with 80,824 insertions and 19,539 deletions. Every path in that
+`0a8758ca95f1176a38ea5cd8ad69f424af0b5893`: 128 commits and 646 paths relative
+to that base, with 82,502 insertions and 19,103 deletions. Every path in that
 range is assigned to one of the areas below. Driver work is limited to drivers
 and IRQ adapters already changed by the range, plus the minimum adjacent
 runtime boundary needed to repair them.
@@ -77,7 +77,7 @@ violate the crate dependency boundaries.
 | Process lifecycle | starry-process and Starry task/process glue | `exit.c`, `forget_original_parent`, `do_wait` | PR #1706 identity owns exit/reap; relationship updates have one lock order and one publication transaction | Reparent and retire can acquire children/group locks in conflicting orders |
 | Perf ownership | Starry perf task, hardware and sampling paths | `kernel/events/core.c` | `pid == 0` is a task context; `pid == -1` with a CPU is a CPU context; teardown executes on the owner CPU before storage release | CPU-local sampling slots are registered and removed on the current CPU and contain raw notify pointers |
 | Generic timers | Starry POSIX timers and AxVM timer worker | hrtimer soft/threaded callbacks | Arbitrary callbacks run in task context; earlier deadlines use a bounded wake endpoint | Worker design exists and must remain separate from ax-task task deadlines |
-| CPU interval timers | Starry `ITIMER_VIRTUAL`/`ITIMER_PROF`, ax-runtime periodic clockevent, ax-task task work | `update_process_times()`, `run_posix_cpu_timers()`, `TWA_RESUME` task work | A real periodic tick performs only bounded atomic accounting and intrusive publication in hard IRQ; expiry and signal work run in task context; disable/rearm cannot replay an old generation | After wall polling was removed, CPU timers were checked only at user/kernel transition safe points, so a long-running syscall could delay expiry; the first runtime composition also hid inner OS tick work behind its outer extension |
+| CPU interval timers | Starry `ITIMER_VIRTUAL`/`ITIMER_PROF`, ax-runtime periodic clockevent, ax-task task work | `update_process_times()`, `run_posix_cpu_timers()`, `TWA_RESUME` task work | A real periodic tick performs only bounded generation/timestamp publication in hard IRQ; accounting, expiry, and signal work run in task context; writer contention is retried without spinning; disable/rearm cannot replay an old generation | After wall polling was removed, CPU timers were checked only at user/kernel transition safe points, so a long-running syscall could delay expiry; the first runtime composition also hid inner OS tick work behind its outer extension |
 | Serial and driver IRQ | rdif-serial, some-serial, ax-runtime serial, changed vsock/USB adapters | serial core, NAPI/event publication | IRQ endpoint only reads/acks/drains a bounded amount and publishes stable events; workers advance flow | Endpoint separation exists but changed paths still require lock, allocation and ownership audit |
 | Architecture idle | axcpu idle primitives and trap glue | architecture idle entry, especially LoongArch `genex.S` | IRQ enable plus idle is atomic with pending-work recheck; an interrupt in the enable/idle window returns after the idle instruction and is still dispatched | LoongArch follows the Linux return-address pattern but lacks injected timer/IPI window tests |
 | Compatibility | ax-api, ax-posix-api, axstd, Starry syscalls and axvm callers | Linux UAPI and project compatibility contracts | Internal APIs may change; Linux ABI, errno and axstd observable behavior do not | The migration spans many adapters, so compile-only validation is insufficient |
@@ -99,7 +99,7 @@ disposition of every row is:
 | Process lifecycle | Closed around dev's sole `ProcessIdentity` authority and `ProcessRelationTxn`; no competing zombie/PID state machine is present. |
 | Perf ownership | Closed by typed task/CPU targets, fixed owner-CPU workers, generation-checked sampling registrations, IRQ grace before release, and a physical scheduler-owner fence during migration. |
 | Generic timers | Closed by CPU-affine task workers and bounded wake endpoints; ax-task contains no arbitrary timer callback API. |
-| CPU interval timers | Closed by real-periodic-expiry detection, current-thread atomic accounting before intrusive publication, O(1) aggregate snapshots in deferred work, generation-bearing interest, retained delivery, explicit ax-runtime forwarding, and Starry task-context expiry/signals. |
+| CPU interval timers | Closed by real-periodic-expiry detection, hard-IRQ-only generation/timestamp publication, a serialized task-context accounting writer, bounded retry ownership, O(1) aggregate snapshots, retained delivery, explicit ax-runtime forwarding, and Starry task-context expiry/signals. |
 | Serial and driver IRQ | Closed for the branch-touched serial, vsock, and USB/xHCI paths: hard IRQ work is bounded and non-sleeping, while manager/topology work is task-owned. The upstream vsock credit observer limitation is tracked separately as #1724. |
 | Architecture idle | Closed by pending-work recheck and live injected timer/IPI window tests on all four architectures. |
 | Compatibility | Closed by source/feature validation and the final four-architecture ArceOS and Starry QEMU milestones recorded below. |
@@ -1435,21 +1435,27 @@ or arbitrary callbacks in ax-task:
 1. `LocalClockEvent` reports whether the physical firing transaction actually
    crossed the periodic deadline. An earlier task deadline does not masquerade
    as a scheduler tick, and delayed ticks catch up without deadline drift.
-2. The ax-task hard-IRQ path invokes a separately typed, bounded accounting
-   capability before publication. Starry's implementation only advances the
-   current thread's atomic timestamp/counters and the process aggregate. It
-   then observes the shared generation-bearing `SchedulerTickGate`, retains
-   one generation-bearing thread identity, and publishes one intrusive
-   task-work record. It does not allocate, take a lock, run expiry logic, or
-   publish a signal.
-3. Repeated ticks in one enabled generation coalesce. Disabling the gate
-   invalidates queued work from that generation; re-enabling cannot replay it.
-   A callback already claimed by task context is allowed to finish.
-4. ax-runtime explicitly composes an inner OS extension's tick capability into
-   its scheduler-owned outer extension. The forwarding callback recovers the
-   retained runtime extension and invokes the inner callback with the inner
-   data identity. This prevents capability loss at the wrapper boundary.
-5. The task-work callback reads the process aggregate in O(1), polls only
+2. The ax-task hard-IRQ path observes the shared generation-bearing
+   `SchedulerTickGate`, updates a monotonic `observed_ns` watermark, retains the
+   generation-bearing carrier `ThreadId`, and publishes at most one intrusive
+   task-work record. It does not invoke OS code, allocate, acquire a Starry
+   lock, run expiry logic, or publish a signal.
+3. The task-work callback tries the carrier thread's `SpinNoPreempt` accounting
+   writer gate. On success it advances the thread and process counters through
+   the IRQ observation boundary, polls the process CPU timers, and returns
+   `Complete`. On contention it makes no accounting, timer, or signal state
+   change and returns `Retry`; ax-task republishes one physical record unless a
+   newer tick has already acquired delivery ownership. The worker never spins
+   behind a switch or state-transition writer.
+4. Repeated ticks in one enabled generation coalesce and retain the latest
+   timestamp. Disabling the gate invalidates queued work and retry claims from
+   that generation; re-enabling cannot replay them. A callback already past
+   its writer gate may finish.
+5. ax-runtime explicitly composes an inner OS extension's tick capability into
+   its scheduler-owned outer extension. It forwards both the timestamp and the
+   `Complete`/`Retry` disposition while retaining the inner extension's data
+   identity.
+6. The task-work callback reads the process aggregate in O(1), polls only
    Starry's Virtual and Prof timers under their task-context `PiMutex`, then
    publishes signals after releasing timer metadata. Ordinary process-clock
    and `getitimer` reads retain the precise live-sibling residual scan. Real
@@ -1458,47 +1464,54 @@ or arbitrary callbacks in ax-task:
    rather than the carrier thread state, decides whether the work is still
    relevant.
 
-The original deferred callback did not follow step 2: every carrier callback
-called `ProcessData::cpu_time_snapshot()`, copied the whole thread-ID vector,
-and performed one global task-registry lookup per sibling. A process with N
-running threads could publish N callbacks per physical tick and each callback
-performed O(N) work, producing O(N²) scans plus repeated process and registry
-lock contention. This remained invisible to the timer-family correctness tests
-because their thread count and deadlines were small.
+The explicit writer gate is necessary even though readers already used
+`writers` and `completed_writes` as a sequence protocol. Those atomics made a
+snapshot retry around an active writer but did not exclude two writers. A
+CPU-local `NoPreempt` guard also could not serialize a scheduler switch on one
+CPU with deferred accounting on another. Linux's `TWA_RESUME` work normally
+runs on the exact target task at its resume boundary; TGOSKits currently uses a
+fixed global task-work consumer, so the target accounting object needs an
+explicit non-sleeping writer owner and a non-blocking retry path.
+
+The older callback had two separate defects. First, the typed IRQ hook still
+allowed arbitrary OS code to execute in hard IRQ and raced task-context
+writers. Second, the original deferred callback called
+`ProcessData::cpu_time_snapshot()`, copied the whole thread-ID vector, and
+performed one global task-registry lookup per sibling. A process with N running
+threads could publish N callbacks per physical tick and each callback performed
+O(N) work, producing O(N²) scans plus repeated process and registry lock
+contention. Small timer-family correctness cases did not exercise either the
+cross-CPU writer conflict or this scaling boundary.
 
 The lowest-layer regressions were deliberately observed red before the fixes:
 
-- `scheduler_tick_accounts_every_irq_before_coalescing_task_work` observed
-  zero accounting callbacks across three physical ticks before the typed IRQ
-  capability was wired, then verifies three bounded accounting callbacks and
-  one coalesced task callback;
-- `scheduler_tick_extension_work_is_deferred_out_of_hard_irq` initially found
-  no published task work;
-- `scheduler_tick_gate_does_not_replay_work_from_an_old_enable_epoch` observed
-  one stale callback after disable and re-enable;
-- `runtime_outer_extension_forwards_os_scheduler_tick_work` found that the
-  runtime wrapper exposed no OS tick interest.
+- `scheduler_tick_os_work_is_deferred_with_latest_irq_timestamp` observed the
+  old OS accounting hook execute three times in hard IRQ instead of zero;
+- `scheduler_tick_accounting_excludes_an_active_state_writer` produced an
+  x86_64 axtest summary of 384 passes and one failure because the old sequence
+  counter admitted a second writer;
+- `scheduler_tick_retry_republishes_one_bounded_task_work_attempt` observed
+  zero events on the required second worker pass before retry ownership was
+  implemented;
+- the pre-existing gate, wrapper-composition, and carrier-exit tests retain
+  coverage for stale epochs, lost runtime capabilities, and extension
+  reclamation.
 
-The same tests are green after the generation protocol, split IRQ/task
-capabilities, and explicit runtime composition.
-`scheduler_ticks_publish_group_time_without_scanning_live_siblings` verifies
-that per-thread tick accounting reaches the aggregate snapshot without a live
-sibling provider. `scheduler_tick_delivery_pins_extension_across_thread_exit`
-additionally prevents a sleepable callback from turning normal thread exit
-into an unrecoverable `ThreadBusy`. The complete ax-task suite (190 unit tests,
-all integration/doc tests, and 18 loom models) and the 51 ax-runtime
-IRQ/multitask tests pass. Starry's 24 feature/target clippy configurations pass;
-its focused manager regressions also verify that scheduler-tick polling expires
-CPU timers without consuming `ITIMER_REAL`. The x86_64 Starry kernel axtest
-suite passed all 388 cases with `AXTEST_SUITE_OK`, including the aggregate
-tick-accounting case. The focused system timer-family runner then passed all
-136 assertions with zero failures, reported three seconds of guest test time
-and 8.90 seconds of QEMU time, and emitted
-`STARRY_GROUPED_TESTS_PASSED`. An earlier invocation that produced no grouped
-test marker for more than one minute was stopped as required by the
-performance triage policy; the bounded log-enabled rerun did not reproduce the
-startup delay, so no scheduler design was changed without a deterministic
-failure. These integrated results are not inferred from host linking, whose
+The same tests are green after hard-IRQ callback removal, writer
+serialization, generation-checked retry, and explicit runtime composition.
+`newer_tick_owns_delivery_when_it_races_a_callback_retry` proves that a new IRQ
+and a retry cannot both publish the intrusive node, while
+`scheduler_tick_retry_cannot_cross_a_gate_disable_epoch` proves that retry
+cannot resurrect disabled work. The corresponding loom model checks the
+single delivery owner. The complete ax-task suite has 190 unit tests, all
+integration/doc tests, and 19 loom models; the ax-runtime host IRQ/multitask
+suite has 51 tests, and the FS-enabled host composition has 52. All 24
+`starry-kernel` clippy configurations pass. The post-fix x86_64 Starry axtest
+run passed all 385 cases with `AXTEST_SUITE_OK`. A previous focused system
+timer-family milestone passed all 136 assertions and emitted
+`STARRY_GROUPED_TESTS_PASSED`; it remains historical integrated evidence rather
+than a claim that the full system runner was repeated for this localized
+writer-gate patch. These results are not inferred from host linking, whose
 bare-metal symbols are intentionally supplied only by the xtask build.
 
 ## Current-head reschedule ownership closure

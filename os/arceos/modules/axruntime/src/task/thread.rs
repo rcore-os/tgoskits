@@ -123,36 +123,18 @@ pub(super) static RUNTIME_THREAD_EXTENSION_OPS: ThreadExtensionOps = ThreadExten
 };
 
 pub(super) unsafe fn runtime_thread_extension(data: usize) -> ThreadExtension {
-    let scheduler_tick_work = unsafe { runtime_thread_data_from_raw(data) }
+    let scheduler_tick_gate = unsafe { runtime_thread_data_from_raw(data) }
         .os_extension
         .as_ref()
-        .and_then(|extension| {
-            extension
-                .scheduler_tick_work_gate()
-                .map(|gate| (gate, extension.has_scheduler_tick_irq_accounting()))
-        });
+        .and_then(ThreadExtension::scheduler_tick_work_gate);
     // SAFETY: the caller transfers one live `RuntimeThreadData` allocation
     // whose final destruction right belongs to this outer extension.
     let extension = unsafe { ThreadExtension::new(data, &RUNTIME_THREAD_EXTENSION_OPS) };
-    match scheduler_tick_work {
-        Some((gate, true)) => {
-            // SAFETY: the outer callbacks retain `RuntimeThreadData` and
-            // forward both phases to the same live inner extension. The IRQ
-            // phase preserves the inner callback's bounded accounting
-            // contract; the task phase preserves its generation-authorized
-            // publication.
-            unsafe {
-                extension.with_scheduler_tick_accounting_work(
-                    gate,
-                    runtime_thread_scheduler_tick_irq_accounting_hook,
-                    runtime_thread_scheduler_tick_hook,
-                )
-            }
-        }
-        Some((gate, false)) => {
-            // SAFETY: the outer callback retains `RuntimeThreadData`, then
-            // forwards exactly one generation-authorized publication to its
-            // inner extension.
+    match scheduler_tick_gate {
+        Some(gate) => {
+            // SAFETY: the outer callback retains `RuntimeThreadData` and
+            // forwards exactly one generation-authorized publication, with
+            // the IRQ-observed monotonic timestamp, to its inner extension.
             unsafe { extension.with_scheduler_tick_work(gate, runtime_thread_scheduler_tick_hook) }
         }
         None => extension,
@@ -210,7 +192,11 @@ unsafe extern "Rust" fn runtime_thread_deadline_overrun_hook(data: usize, thread
     }
 }
 
-unsafe extern "Rust" fn runtime_thread_scheduler_tick_hook(data: usize, thread: ThreadId) {
+unsafe extern "Rust" fn runtime_thread_scheduler_tick_hook(
+    data: usize,
+    thread: ThreadId,
+    observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
     let runtime = unsafe { runtime_thread_data_from_raw(data) };
     let Some(extension) = runtime.os_extension.as_ref() else {
         panic!(
@@ -218,33 +204,12 @@ unsafe extern "Rust" fn runtime_thread_scheduler_tick_hook(data: usize, thread: 
             thread.as_u64()
         );
     };
-    let forwarded = unsafe { extension.forward_scheduler_tick_work(thread) };
-    if !forwarded {
+    unsafe { extension.forward_scheduler_tick_work(thread, observed_ns) }.unwrap_or_else(|| {
         panic!(
             "runtime scheduler-tick forwarding lost callback for thread {:#x}",
             thread.as_u64()
-        );
-    }
-}
-
-unsafe extern "Rust" fn runtime_thread_scheduler_tick_irq_accounting_hook(
-    data: usize,
-    thread: ThreadId,
-) {
-    let runtime = unsafe { runtime_thread_data_from_raw(data) };
-    let Some(extension) = runtime.os_extension.as_ref() else {
-        panic!(
-            "runtime scheduler-tick accounting lost OS extension for thread {:#x}",
-            thread.as_u64()
-        );
-    };
-    let forwarded = unsafe { extension.forward_scheduler_tick_irq_accounting(thread) };
-    if !forwarded {
-        panic!(
-            "runtime scheduler-tick accounting lost callback for thread {:#x}",
-            thread.as_u64()
-        );
-    }
+        )
+    })
 }
 
 unsafe extern "Rust" fn runtime_thread_drop_hook(data: usize) {

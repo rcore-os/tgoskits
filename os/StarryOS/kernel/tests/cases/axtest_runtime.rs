@@ -77,6 +77,11 @@ fn scheduler_ticks_publish_process_cpu_time_without_sibling_scans() {
 }
 
 #[axtest]
+fn scheduler_tick_accounting_excludes_an_active_state_writer() {
+    ax_assert!(axtest_exports::scheduler_tick_accounting_excludes_state_writer());
+}
+
+#[axtest]
 fn futex_empty_wake_op_avoids_entry_allocation() {
     ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
 }

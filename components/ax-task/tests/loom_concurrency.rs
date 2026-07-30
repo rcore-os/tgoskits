@@ -425,6 +425,50 @@ fn scheduler_claim_either_consumes_or_preserves_published_owner_work() {
 }
 
 #[test]
+fn scheduler_tick_retry_and_new_irq_share_one_delivery_owner() {
+    loom::model(|| {
+        const GENERATION: usize = 3;
+
+        let pending_generation = Arc::new(AtomicUsize::new(0));
+        let physical_publications = Arc::new(AtomicUsize::new(0));
+
+        let irq = {
+            let pending_generation = Arc::clone(&pending_generation);
+            let physical_publications = Arc::clone(&physical_publications);
+            thread::spawn(move || {
+                if pending_generation
+                    .compare_exchange(0, GENERATION, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    physical_publications.fetch_add(1, Ordering::Release);
+                }
+            })
+        };
+        let retry = {
+            let pending_generation = Arc::clone(&pending_generation);
+            let physical_publications = Arc::clone(&physical_publications);
+            thread::spawn(move || {
+                if pending_generation
+                    .compare_exchange(0, GENERATION, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    physical_publications.fetch_add(1, Ordering::Release);
+                }
+            })
+        };
+
+        irq.join().unwrap();
+        retry.join().unwrap();
+        assert_eq!(pending_generation.load(Ordering::Acquire), GENERATION);
+        assert_eq!(
+            physical_publications.load(Ordering::Acquire),
+            1,
+            "a retry and a new tick must not both own intrusive publication"
+        );
+    });
+}
+
+#[test]
 fn inbox_empty_transition_owns_the_scheduler_ipi_epoch() {
     loom::model(|| {
         let inbox_head = Arc::new(AtomicBool::new(false));

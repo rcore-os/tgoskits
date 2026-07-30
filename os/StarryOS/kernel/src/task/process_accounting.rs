@@ -58,6 +58,15 @@ impl ProcessData {
             .record_transition(transition);
     }
 
+    pub(crate) fn try_record_cpu_time_transition(
+        &self,
+        transition: impl FnOnce() -> Option<CpuTimeDelta>,
+    ) -> bool {
+        self.accounting
+            .process_cpu_time
+            .try_record_transition(transition)
+    }
+
     /// Returns accumulated CPU time of waited children.
     pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
         *self.accounting.children_cpu_time.lock()
