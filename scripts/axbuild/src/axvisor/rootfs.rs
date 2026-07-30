@@ -357,7 +357,7 @@ kernel_path = "{}"
         let mut qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
+                "virtio-blk-device,drive=disk0".to_string(),
                 "-append".to_string(),
                 "root=/dev/vda rw init=/bin/sh".to_string(),
             ],
@@ -370,7 +370,7 @@ kernel_path = "{}"
             qemu.args,
             vec![
                 "-device".to_string(),
-                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
+                "virtio-blk-device,drive=disk0".to_string(),
                 "-drive".to_string(),
                 format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
                 "-append".to_string(),
