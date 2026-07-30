@@ -3,6 +3,7 @@
 mod admission;
 mod entity;
 mod fair;
+mod fair_queue;
 mod queue;
 mod rt;
 

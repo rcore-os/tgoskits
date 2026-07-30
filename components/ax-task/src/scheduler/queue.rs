@@ -2,10 +2,33 @@
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
+use super::fair_queue::FairRunQueue;
 use crate::{
     FairEntity, FairMode, SchedulePolicy, SchedulingEntity, SchedulingKey, TaskError, ThreadCore,
     ThreadId,
 };
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIR_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+fn reset_fair_runqueue_visits() {
+    FAIR_RUNQUEUE_VISITS.set(0);
+}
+
+#[cfg(test)]
+fn fair_runqueue_visits() -> usize {
+    FAIR_RUNQUEUE_VISITS.get()
+}
+
+#[cfg(test)]
+pub(super) fn record_fair_runqueue_visit() {
+    FAIR_RUNQUEUE_VISITS.set(FAIR_RUNQUEUE_VISITS.get().saturating_add(1));
+}
 
 /// Why a runnable thread is being inserted into its owner run queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,7 +53,7 @@ pub(crate) struct QueuedThread {
     pub(crate) policy: SchedulePolicy,
     pub(crate) entity: SchedulingEntity,
     pub(crate) core: Arc<ThreadCore>,
-    sequence: u64,
+    pub(super) sequence: u64,
 }
 
 impl QueuedThread {
@@ -58,8 +81,8 @@ struct PushableSummary {
 pub(crate) struct RunQueue {
     deadline: Vec<QueuedThread>,
     rt: [VecDeque<QueuedThread>; 99],
-    fair: Vec<QueuedThread>,
-    idle_fair: Vec<QueuedThread>,
+    fair: FairRunQueue,
+    idle_fair: FairRunQueue,
     virtual_time: u64,
     idle_virtual_time: u64,
     earliest_deadline_event_ns: Option<u64>,
@@ -73,8 +96,8 @@ impl RunQueue {
         Self {
             deadline: Vec::new(),
             rt: core::array::from_fn(|_| VecDeque::new()),
-            fair: Vec::new(),
-            idle_fair: Vec::new(),
+            fair: FairRunQueue::new(),
+            idle_fair: FairRunQueue::new(),
             virtual_time: 0,
             idle_virtual_time: 0,
             earliest_deadline_event_ns: None,
@@ -109,10 +132,10 @@ impl RunQueue {
     pub(crate) fn update_fair_virtual_time(&mut self, current: Option<FairEntity>) {
         let normal_current = current.filter(|entity| entity.mode() != FairMode::Idle);
         let idle_current = current.filter(|entity| entity.mode() == FairMode::Idle);
-        if let Some(mean) = weighted_virtual_time(&self.fair, normal_current) {
+        if let Some(mean) = self.fair.weighted_virtual_time(normal_current) {
             self.virtual_time = self.virtual_time.max(mean);
         }
-        if let Some(mean) = weighted_virtual_time(&self.idle_fair, idle_current) {
+        if let Some(mean) = self.idle_fair.weighted_virtual_time(idle_current) {
             self.idle_virtual_time = self.idle_virtual_time.max(mean);
         }
     }
@@ -190,18 +213,7 @@ impl RunQueue {
                     .rev()
                     .find_map(|queue| queue.iter().find(|thread| may_migrate(thread)).cloned())
             })
-            .or_else(|| {
-                self.fair
-                    .iter()
-                    .filter(|thread| may_migrate(thread))
-                    .min_by_key(|thread| {
-                        thread
-                            .entity
-                            .fair()
-                            .map_or(u64::MAX, |fair| fair.virtual_deadline())
-                    })
-                    .cloned()
-            })
+            .or_else(|| self.fair.find_first_matching(&mut may_migrate))
     }
 
     pub(crate) fn enqueue(
@@ -272,12 +284,12 @@ impl RunQueue {
                 mode: FairMode::Idle,
                 ..
             } => {
-                self.idle_fair.push(entry);
+                self.idle_fair.insert(entry);
                 None
             }
             SchedulePolicy::Fair { .. } => {
                 let summary = Self::pushable_summary_for(&entry);
-                self.fair.push(entry);
+                self.fair.insert(entry);
                 summary
             }
         };
@@ -303,8 +315,8 @@ impl RunQueue {
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
         let removed = remove_from_vec(&mut self.deadline, id)
             .or_else(|| remove_from_rt(&mut self.rt, id))
-            .or_else(|| remove_from_vec(&mut self.fair, id))
-            .or_else(|| remove_from_vec(&mut self.idle_fair, id));
+            .or_else(|| self.fair.remove(id))
+            .or_else(|| self.idle_fair.remove(id));
         if let Some(removed) = &removed {
             self.len -= 1;
             if matches!(removed.policy, SchedulePolicy::Deadline(_)) {
@@ -391,25 +403,7 @@ impl RunQueue {
         if queue.is_empty() {
             return None;
         }
-        let index = queue
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry
-                    .entity
-                    .fair()
-                    .is_some_and(|entity| entity.is_eligible(virtual_time))
-            })
-            .min_by_key(|(_, entry)| {
-                let deadline = entry
-                    .entity
-                    .fair()
-                    .map(|entity| entity.virtual_deadline())
-                    .unwrap_or(u64::MAX);
-                (deadline, entry.sequence)
-            })
-            .map(|(index, _)| index)?;
-        Some(queue.swap_remove(index))
+        queue.pick_eligible(virtual_time)
     }
 
     fn recompute_earliest_deadline_event(&mut self) {
@@ -447,13 +441,15 @@ impl RunQueue {
     }
 
     fn recompute_pushable_summary(&mut self) {
-        self.pushable_summary = self
+        let non_fair = self
             .deadline
             .iter()
             .chain(self.rt.iter().flat_map(|queue| queue.iter()))
-            .chain(self.fair.iter())
             .filter_map(Self::pushable_summary_for)
             .min_by_key(|summary| summary.key);
+        self.pushable_summary = non_fair;
+        let fair = self.fair.first().and_then(Self::pushable_summary_for);
+        self.consider_pushable_summary(fair);
     }
 
     fn contains(&self, id: ThreadId) -> bool {
@@ -462,8 +458,8 @@ impl RunQueue {
                 .rt
                 .iter()
                 .any(|queue| queue.iter().any(|entry| entry.id == id))
-            || self.fair.iter().any(|entry| entry.id == id)
-            || self.idle_fair.iter().any(|entry| entry.id == id)
+            || self.fair.contains(id)
+            || self.idle_fair.contains(id)
     }
 
     fn allocate_sequence(&mut self) -> u64 {
@@ -471,22 +467,6 @@ impl RunQueue {
         self.next_sequence = self.next_sequence.wrapping_add(1);
         sequence
     }
-}
-
-fn weighted_virtual_time(queue: &[QueuedThread], current: Option<FairEntity>) -> Option<u64> {
-    let mut weighted_sum = 0_u128;
-    let mut total_weight = 0_u128;
-    for entity in queue
-        .iter()
-        .filter_map(|entry| entry.entity.fair())
-        .chain(current)
-    {
-        let weight = u128::from(entity.weight());
-        weighted_sum =
-            weighted_sum.saturating_add(u128::from(entity.vruntime()).saturating_mul(weight));
-        total_weight = total_weight.saturating_add(weight);
-    }
-    (total_weight != 0).then(|| u64::try_from(weighted_sum / total_weight).unwrap_or(u64::MAX))
 }
 
 fn remove_from_vec(queue: &mut Vec<QueuedThread>, id: ThreadId) -> Option<QueuedThread> {
@@ -726,5 +706,62 @@ mod tests {
         queue.dequeue(fair_id).unwrap();
         assert_eq!(queue.pushable_key(), None);
         assert_eq!(queue.dequeue(idle_id).unwrap().id, idle_id);
+    }
+
+    #[test]
+    fn fair_virtual_time_and_pick_do_not_scan_the_runnable_set() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        for slot in 0..128 {
+            queue
+                .enqueue_test(
+                    ThreadId::from_parts(slot, 1),
+                    policy,
+                    SchedulingEntity::new(policy, 1_000, slot as u64),
+                    0,
+                    EnqueueReason::Migrated,
+                )
+                .unwrap();
+        }
+
+        reset_fair_runqueue_visits();
+        queue.update_fair_virtual_time(None);
+        assert_eq!(
+            fair_runqueue_visits(),
+            0,
+            "weighted virtual time must come from incrementally maintained rq sums"
+        );
+
+        queue.fair.assert_invariants();
+        while queue.has_fair() {
+            reset_fair_runqueue_visits();
+            queue.pick_next_with_rt(true, |_| false).unwrap();
+            assert!(
+                fair_runqueue_visits() <= 32,
+                "EEVDF selection must remain logarithmic, observed {} visits",
+                fair_runqueue_visits()
+            );
+            queue.fair.assert_invariants();
+        }
+
+        let mut removal_queue = RunQueue::new();
+        for slot in 0..128 {
+            removal_queue
+                .enqueue_test(
+                    ThreadId::from_parts(slot, 1),
+                    policy,
+                    SchedulingEntity::new(policy, 1_000, slot as u64),
+                    0,
+                    EnqueueReason::Migrated,
+                )
+                .unwrap();
+        }
+        for index in 0..128 {
+            let slot = (index * 73) % 128;
+            removal_queue
+                .dequeue(ThreadId::from_parts(slot, 1))
+                .unwrap();
+            removal_queue.fair.assert_invariants();
+        }
     }
 }
