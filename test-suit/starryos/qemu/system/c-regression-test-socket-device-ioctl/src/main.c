@@ -97,6 +97,15 @@ static void test_family(int domain, int type, int protocol, const char *fam)
     snprintf(msg, sizeof(msg), "%s: SIOCGIFNAME(unknown index) -> ENODEV", fam);
     check(r == -1 && errno == ENODEV, msg);
 
+    // A bad user pointer must map to EFAULT, not a crash or a wrong errno.
+    // Linux net/socket.c dev_ifname copies the ifreq in from user space before
+    // any lookup, so an unreadable argument fails with EFAULT - the directly
+    // observable ABI of the newly routed request across all three families.
+    errno = 0;
+    r = ioctl(fd, SIOCGIFNAME, (struct ifreq *)0);
+    snprintf(msg, sizeof(msg), "%s: SIOCGIFNAME(NULL ifreq) -> EFAULT", fam);
+    check(r == -1 && errno == EFAULT, msg);
+
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
     errno = 0;
