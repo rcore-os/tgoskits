@@ -5,6 +5,14 @@ pub(crate) enum AlarmChange {
 }
 
 impl AlarmChange {
+    pub(crate) fn is_current_generation(&self) -> bool {
+        match self {
+            Self::Cancel(token) | Self::Schedule { token, .. } => {
+                token.is_current_generation()
+            }
+        }
+    }
+
     pub(crate) fn apply(self, target: AlarmTarget) {
         let mut alarms = ALARM_LIST.lock();
         let previous_earliest = alarms.earliest_deadline();

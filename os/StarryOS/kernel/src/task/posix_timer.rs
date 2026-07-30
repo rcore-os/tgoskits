@@ -55,6 +55,21 @@ struct ExpiryOutcome {
     alarm_change: AlarmChange,
 }
 
+impl ExpiryOutcome {
+    fn apply(self, target: AlarmTarget, emitter: &mut impl FnMut(SignalInfo)) {
+        // settime/delete/exec invalidate the slot generation before updating
+        // the alarm queue. Mirror Linux's it_signal_seq check at the signal
+        // publication boundary so an expiry collected by an older generation
+        // cannot publish after the timer was replaced.
+        if self.alarm_change.is_current_generation()
+            && let Some(signal) = self.signal
+        {
+            emitter(signal);
+        }
+        self.alarm_change.apply(target);
+    }
+}
+
 struct ExpiryScanBatch {
     outcomes: heapless::Vec<ExpiryOutcome, EXPIRY_SCAN_BATCH_SIZE>,
     last_scanned_id: Option<i32>,
@@ -77,11 +92,9 @@ impl ExpiryScanBatch {
     }
 
     fn apply(self, pid: Pid, emitter: &mut impl FnMut(SignalInfo)) {
+        let target = AlarmTarget::Process(pid);
         for outcome in self.outcomes {
-            if let Some(signal) = outcome.signal {
-                emitter(signal);
-            }
-            outcome.alarm_change.apply(AlarmTarget::Process(pid));
+            outcome.apply(target.clone(), emitter);
         }
     }
 }
@@ -659,6 +672,62 @@ pub(crate) fn posix_timer_expiry_batch_rules_hold_for_test() -> bool {
     emitted.get() == EXPIRY_SCAN_BATCH_SIZE + 1
         && callbacks_outside_metadata.get()
         && !table.has_armed_timers()
+}
+
+#[cfg(axtest)]
+pub(crate) fn posix_timer_stale_expiry_signal_is_suppressed_for_test() -> bool {
+    use core::cell::Cell;
+
+    let table = PosixTimerTable::default();
+    {
+        let mut timers = table.timers.lock();
+        timers.insert(
+            1,
+            PosixTimer {
+                clock_id: CLOCK_MONOTONIC,
+                signo: Some(Signo::SIGALRM),
+                sigev_value: 7,
+                interval_ns: 0,
+                deadline_ns: 1,
+                alarm_slot: AlarmSlot::new(),
+            },
+        );
+        table.publish_armed_state(&timers);
+    }
+
+    let batch = table.collect_expiry_batch(
+        None,
+        1,
+        None,
+        TimerClockSnapshot {
+            realtime: 2,
+            monotonic: 2,
+            boottime: 2,
+        },
+    );
+    if batch.outcomes.len() != 1 {
+        return false;
+    }
+    if table
+        .settime(
+            1,
+            1,
+            0,
+            TimerSpec {
+                value_sec: 0,
+                value_nsec: 0,
+                interval_sec: 0,
+                interval_nsec: 0,
+            },
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    let emitted = Cell::new(0);
+    batch.apply(1, &mut |_| emitted.set(emitted.get() + 1));
+    emitted.get() == 0
 }
 
 #[cfg(test)]

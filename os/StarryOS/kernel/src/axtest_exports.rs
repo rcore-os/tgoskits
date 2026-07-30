@@ -206,6 +206,10 @@ pub fn posix_timer_expiry_batch_rules_hold() -> bool {
     super::task::posix_timer_expiry_batch_rules_hold_for_test()
 }
 
+pub fn posix_timer_stale_expiry_signal_is_suppressed() -> bool {
+    super::task::posix_timer_stale_expiry_signal_is_suppressed_for_test()
+}
+
 pub fn alarm_generation_rules_hold() -> bool {
     super::task::alarm_generation_rules_hold_for_test()
 }
