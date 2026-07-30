@@ -1685,6 +1685,49 @@ safe points. It is not evidence against the direct register boundary; it is a
 separate scheduler-work amplification finding that must be resolved before
 the performance milestone is complete.
 
+## Current-head empty owner-inbox fast path
+
+The owner safe point previously entered both scheduler inbox drains even when
+neither inbox contained a publication. An empty drain still acquired the
+single-consumer gate, exchanged the detached-list head, crossed the epoch
+queue's grace observation, and released the gate. This work was repeated for
+every scheduler-only sticky request.
+
+Linux v7.1 uses the cheaper predicate at the equivalent boundary:
+`sched_ttwu_pending()` returns immediately when its detached llist argument is
+empty. When work exists, it still owns the runqueue transaction, updates the
+runqueue clock, and activates every detached wake before clearing
+`ttwu_pending`. ax-task now applies only that empty-list optimization. The
+owner samples the wake, policy, and reclaim inbox heads, enters a bounded drain
+only for a present wake or policy publication, and keeps the existing
+claim-before-drain acknowledgement for policy-only or reclaim-only work.
+Publication racing the snapshot remains visible in the final inbox recheck and
+is carried by a fresh or retained scheduler doorbell.
+
+The deterministic regression first observed one wake-inbox drain and one
+policy-inbox drain for a synthetic scheduler-only request. Both counts are now
+unchanged. A companion policy-only regression proves that the policy inbox is
+still drained exactly once, the empty wake inbox is not entered, and the
+delivery is not stranded behind its consumed IPI epoch. The complete ax-task
+suite passes 191 unit tests, every integration and documentation test, and 20
+loom models; the package clippy check also passes with warnings denied.
+
+This optimization deliberately does not skip dispatch commit, Deadline
+service, or dispatch reinstallation merely because the final selection keeps
+the same thread. `CurrentDispatch` owns running runtime, PI/CBS baton, policy
+generation, and Deadline entity state. Linux `__schedule()` likewise executes
+`hrtick_schedule_enter()`, `update_rq_clock()`, and `pick_next_task()` before
+testing `prev != next`; only the physical context-switch tail is conditional.
+Removing those state transitions would trade a measured performance problem
+for incorrect accounting and timer semantics.
+
+The post-change DHCP-to-shell qperf window remains a negative performance
+result: 13,980 sampled instruction intervals in 14.33 seconds versus dev's
+4,606 intervals in 4.99 seconds. `scheduler_wait_preempt` still accounts for
+46.27% of the candidate samples. The empty-inbox fast path is therefore a
+correct bounded-work reduction, not closure of the end-to-end regression; the
+remaining scheduler-work amplification stays open.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

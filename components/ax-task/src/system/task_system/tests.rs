@@ -1603,14 +1603,69 @@ fn scheduler_work_without_preemption_preserves_current_dispatch() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
+    let remote_wake_drains = cpu.remote().remote_wake_inbox().drain_attempts();
+    let policy_drains = cpu.remote().migration_inbox().drain_attempts();
     cpu.request_scheduler_work();
     assert!(matches!(
         system.schedule_if_requested(cpu.as_mut(), 1).unwrap(),
         SchedulerOutcome::Quiescent
     ));
+    assert_eq!(
+        cpu.remote().remote_wake_inbox().drain_attempts(),
+        remote_wake_drains,
+        "a work-only safe point must not enter an empty wake inbox"
+    );
+    assert_eq!(
+        cpu.remote().migration_inbox().drain_attempts(),
+        policy_drains,
+        "a work-only safe point must not enter an empty policy inbox"
+    );
     system
         .charge_current(cpu.as_mut(), 2, 1, 0)
         .expect("scheduler-only work must not discard the running dispatch");
+}
+
+#[test]
+fn policy_only_safe_point_skips_the_empty_wake_inbox() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    let remote_wake_drains = cpu.remote().remote_wake_inbox().drain_attempts();
+    let policy_drains = cpu.remote().migration_inbox().drain_attempts();
+    system
+        .set_thread_policy(
+            running.id(),
+            SchedulePolicy::fifo(RtPriority::new(1).unwrap()),
+        )
+        .unwrap();
+    assert!(cpu.remote().migration_inbox().has_pending());
+
+    system.schedule_if_requested(cpu.as_mut(), 1).unwrap();
+
+    assert_eq!(
+        cpu.remote().remote_wake_inbox().drain_attempts(),
+        remote_wake_drains,
+        "policy-only work must not enter the empty wake inbox"
+    );
+    assert_eq!(
+        cpu.remote().migration_inbox().drain_attempts(),
+        policy_drains + 1,
+        "the owner must still consume the policy delivery"
+    );
+    assert!(
+        !cpu.remote().migration_inbox().has_pending(),
+        "the policy delivery must not be stranded behind its consumed IPI epoch"
+    );
 }
 
 #[test]

@@ -606,8 +606,26 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        self.drain_remote_wakes(cpu.as_mut(), now_ns)?;
-        self.drain_policy_updates(cpu.as_mut(), now_ns)?;
+        let (wake_pending, policy_pending, reclaim_pending) = {
+            let remote = cpu.remote();
+            (
+                remote.remote_wake_inbox().has_pending(),
+                remote.migration_inbox().has_pending(),
+                remote.reclaim_inbox().has_pending(),
+            )
+        };
+        if !wake_pending && (policy_pending || reclaim_pending) {
+            // A non-wake safe point may beat its physical IPI. Release the
+            // delivered epoch before consuming work so a concurrent producer
+            // can ring a fresh edge, just as the wake drain does below.
+            cpu.acknowledge_scheduler_ipi();
+        }
+        if wake_pending {
+            self.drain_remote_wakes(cpu.as_mut(), now_ns)?;
+        }
+        if policy_pending {
+            self.drain_policy_updates(cpu.as_mut(), now_ns)?;
+        }
         if cpu.has_remote_work() {
             cpu.request_scheduler_work();
             // One safe point consumes at most one batch from each inbox. A
