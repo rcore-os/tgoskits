@@ -1523,6 +1523,35 @@ calling the shortcut to draining the real owner inbox and asserting that
 exactly one wake record was consumed while the park predicate remained
 abortable. Both tests are green after removing the bypass.
 
+## Current-head switch-tail retry closure
+
+The runtime switch-tail contract requires a failed architecture handoff to
+leave the outgoing context physically bound and unreclaimable so the
+scheduler can retry. ax-runtime previously removed its staged
+`RuntimeSwitchTail` before calling `PreviousThreadBinding::finish()`, while
+the cpu-local API consumed that binding token by value. A validation failure
+therefore panicked after permanently discarding the only exact binding epoch;
+the scheduler's existing retry and `ThreadBusy` protection could not run.
+
+Linux v7.1 keeps the corresponding ordering inside `finish_task_switch()`:
+it observes the outgoing state before `finish_task()` performs the release
+store that clears `prev->on_cpu`, and only then permits task-stack or task
+object release. The incoming continuation is the sole owner of this tail;
+failure must not be reported after silently consuming its ownership proof.
+
+The cpu-local finish operation now borrows its move-only binding token
+mutably. ax-runtime retains the staged tail while validation or epoch
+withdrawal fails, returns a typed runtime failure to ax-task, and removes the
+slot only after the exact previous binding is successfully withdrawn. The
+core can consequently keep the outgoing placement and resources
+unreclaimable and retry the same transaction.
+
+A host CPU-local regression constructs a real prepared switch, deliberately
+pairs the tail with the wrong previous header, and was first observed to
+panic in the old implementation. It now receives `InvalidHandle`, verifies
+that the binding transaction remains staged, corrects the injected header,
+and completes the same tail successfully.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest
