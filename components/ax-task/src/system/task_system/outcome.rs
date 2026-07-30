@@ -18,7 +18,7 @@ pub struct ScheduleDecision {
 
 /// Result of one bounded scheduler safe point.
 ///
-/// This type deliberately keeps lifecycle deferral and inbox backpressure
+/// This type deliberately keeps lifecycle deferral and bounded owner work
 /// separate from a scheduling decision. Callers must not infer either state
 /// from a boolean `need_resched` value or an absent decision.
 #[derive(Clone, Copy, Debug)]
@@ -27,7 +27,7 @@ pub enum SchedulerOutcome {
     Quiescent,
     /// The current thread owns an in-flight park token and must finish it.
     ParkingDeferred,
-    /// One bounded inbox batch completed, with more owner-only work retained.
+    /// One bounded owner batch completed, with more work retained.
     OwnerWorkPending,
     /// The scheduler selected a next thread.
     Decision(ScheduleDecision),
@@ -48,8 +48,7 @@ impl SchedulerOutcome {
         matches!(self, Self::ParkingDeferred)
     }
 
-    /// Returns whether more owner-only inbox work remains for a later bounded
-    /// safe point.
+    /// Returns whether more owner-only work remains for a later bounded safe point.
     pub const fn owner_work_pending(self) -> bool {
         matches!(self, Self::OwnerWorkPending)
     }

@@ -29,6 +29,7 @@ pub struct CpuLocal {
     deadline_expired_count: usize,
     task_deadline_generation: u64,
     deadline_scan_cursor: usize,
+    deadline_scan_remaining: usize,
     fair_balance_interval_ns: u64,
     switch_handoff: Option<SwitchHandoff>,
     batch_limit: usize,
@@ -63,6 +64,7 @@ impl CpuLocal {
             deadline_expired_count: 0,
             task_deadline_generation: 0,
             deadline_scan_cursor: 0,
+            deadline_scan_remaining: 0,
             fair_balance_interval_ns: config.balance_interval_ns().max(1),
             switch_handoff: None,
             batch_limit: config.batch_limit(),
@@ -318,6 +320,7 @@ impl CpuLocal {
                 return Err(TaskError::TimerCapacity);
             }
             self.deadline_members.push(Arc::clone(core));
+            self.reset_deadline_scan();
             return Ok(true);
         }
         Ok(false)
@@ -330,11 +333,7 @@ impl CpuLocal {
             .position(|member| Arc::ptr_eq(member, core))
         {
             self.deadline_members.swap_remove(index);
-            if self.deadline_members.is_empty() {
-                self.deadline_scan_cursor = 0;
-            } else {
-                self.deadline_scan_cursor %= self.deadline_members.len();
-            }
+            self.reset_deadline_scan();
         }
     }
 
@@ -645,12 +644,41 @@ impl CpuLocal {
         self.replace_scheduler_deadline(next_deadline_ns);
     }
 
-    pub(crate) const fn deadline_scan_cursor(&self) -> usize {
-        self.deadline_scan_cursor
+    pub(crate) fn begin_deadline_scan_batch(&mut self) -> (usize, usize) {
+        let member_count = self.deadline_members.len();
+        if member_count == 0 {
+            self.reset_deadline_scan();
+            return (0, 0);
+        }
+        if self.deadline_scan_remaining == 0 {
+            self.deadline_scan_cursor %= member_count;
+            self.deadline_scan_remaining = member_count;
+        }
+        debug_assert!(
+            self.deadline_scan_remaining <= member_count,
+            "Deadline membership changes must restart the owner scan"
+        );
+        (
+            self.deadline_scan_cursor,
+            self.deadline_scan_remaining.min(self.batch_limit),
+        )
     }
 
-    pub(crate) fn set_deadline_scan_cursor(&mut self, cursor: usize) {
-        self.deadline_scan_cursor = cursor;
+    pub(crate) fn finish_deadline_scan_batch(&mut self, examined: usize) -> bool {
+        let member_count = self.deadline_members.len();
+        if member_count == 0 {
+            self.reset_deadline_scan();
+            return false;
+        }
+        debug_assert!(examined <= self.deadline_scan_remaining);
+        self.deadline_scan_cursor = (self.deadline_scan_cursor + examined) % member_count;
+        self.deadline_scan_remaining -= examined;
+        self.deadline_scan_remaining != 0
+    }
+
+    fn reset_deadline_scan(&mut self) {
+        self.deadline_scan_cursor = 0;
+        self.deadline_scan_remaining = 0;
     }
 
     /// Attempts to return a coherent remotely observable scheduling snapshot.

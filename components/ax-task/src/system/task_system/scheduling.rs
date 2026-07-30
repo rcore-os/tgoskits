@@ -352,7 +352,7 @@ impl TaskSystem {
                 cpu.request_scheduler_work();
             }
             Self::program_local_timer(cpu.as_mut(), now_ns)?;
-            return Ok(if cpu.has_remote_work() {
+            return Ok(if cpu.needs_reschedule() || cpu.has_remote_work() {
                 SchedulerOutcome::OwnerWorkPending
             } else {
                 SchedulerOutcome::Quiescent

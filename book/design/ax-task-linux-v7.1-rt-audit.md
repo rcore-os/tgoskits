@@ -90,7 +90,7 @@ disposition of every row is:
 | Scheduler placement | Closed by the single `SchedulerPlacement` state machine, owner-scoped runqueue operations, switch-tail retention, and the offline-target recovery carrier. |
 | Remote delivery | Closed by generation-bearing scheduler work, claim-before-drain acknowledgement, publish-before-IPI ordering, and re-kick after a newer epoch. |
 | CPU lifecycle | Closed at the scheduler/runtime boundary by producer draining, quiescence validation, clockevent offline/online hooks, and `min(platform_cpu_count, CPU_CAPACITY)` admission. A complete platform CPU hot-unplug service remains a stated non-goal. |
-| Task deadlines | Closed by value-only `ThreadId + park generation + kind` heap entries, move-only registration, physical removal on cancel/rearm, and bounded IRQ promotion. |
+| Task deadlines | Reopened for SCHED_DEADLINE scheduler events: park timeout ownership is closed by the value-only heap, while CBS replenishment and GRUB zero-lag still use a bounded owner-member scan pending conversion to generation-checked per-entity events. |
 | Physical clockevent | Closed by the sole per-CPU `Offline / Idle / Armed / Firing` owner, typed finite deadlines, saturating tick conversion, overdue recovery, and one hardware commit per transaction. |
 | Context switch | Closed by the scheduler baton, runtime switch-tail hook, physical `on_cpu` release ordering, and transactional stack/TLS/context/address-space ownership. |
 | PI and sleep locks | Closed by generation-bearing PI identities, bounded waiter/grant transactions, deboost-before-wake, quiescent destruction, and task-context sleeping waits. |
@@ -1727,6 +1727,47 @@ result: 13,980 sampled instruction intervals in 14.33 seconds versus dev's
 46.27% of the candidate samples. The empty-inbox fast path is therefore a
 correct bounded-work reduction, not closure of the end-to-end regression; the
 remaining scheduler-work amplification stays open.
+
+## Current-head bounded Deadline scan closure
+
+The GRUB/CBS service retained a round-robin `deadline_members` cursor but did
+not retain how many members remained in the current bounded pass. With two
+members and a batch limit of one, every invocation observed
+`examined < member_count` and republished scheduler work. The cursor alternated
+between the two members, but the owner could never prove that one complete
+pass had finished. The no-switch scheduler tail then compounded the contract
+error by reporting `Quiescent`, because it classified only inbox remainder and
+ignored the sticky owner work published by Deadline service.
+
+Linux v7.1 does not scan every SCHED_DEADLINE task at a scheduler entry.
+Each `sched_dl_entity` owns a replenishment `dl_timer` and an
+`inactive_timer`. `start_dl_timer()` arms the entity's next CBS event while
+holding its runqueue lock; `dl_task_timer()` resolves the task's current
+runqueue before replenishing and enqueueing it; and
+`inactive_task_timer()` owns zero-lag bandwidth removal. Task references pin
+the callback lifetime, while the runqueue transaction serializes migration
+and policy changes.
+
+The current scan fallback now retains an explicit remaining-member count.
+Membership changes restart the pass, each bounded batch advances the stable
+cursor exactly once, and only a genuinely incomplete pass republishes owner
+work. `SchedulerOutcome::OwnerWorkPending` now covers all bounded owner work,
+not only inbox backpressure, so a runtime cannot return to task context while
+the next batch is sticky. The two deterministic regressions were first
+observed failing: one proved that a two-member pass never converged, and the
+other proved that its first batch was misreported as `Quiescent`. Both are
+green after the finite-pass and outcome fixes.
+
+This closes the livelock and runtime-boundary defects, but not the architectural
+finding. `deadline_members` remains the stable reservation registry needed for
+GRUB ownership and CPU-offline validation; it must not remain the timer
+dispatch mechanism. The next Deadline phase will add generation-checked typed
+CBS replenishment and zero-lag events, rearm or cancel them at the state
+transition that changes their expiry, and leave member scanning out of the
+ordinary scheduler safe point. The existing park heap cannot be reused
+unchanged because a Deadline task may simultaneously own a park timeout and a
+CBS/zero-lag event; the queue key and per-thread registration ownership must
+represent distinct typed nodes without introducing arbitrary callbacks.
 
 ## Completion rules
 

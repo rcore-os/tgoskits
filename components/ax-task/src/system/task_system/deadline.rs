@@ -99,16 +99,14 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        let member_count = cpu.deadline_members.len();
-        if member_count == 0 {
+        let (start, examined) = cpu.as_mut().fields_mut().begin_deadline_scan_batch();
+        if examined == 0 {
             cpu.as_mut().refresh_scheduler_deadline(now_ns);
             return Ok(());
         }
         let owner = cpu.owner();
-        let start = cpu.deadline_scan_cursor() % member_count;
-        let examined = member_count.min(cpu.batch_limit());
         for offset in 0..examined {
-            let index = (start + offset) % member_count;
+            let index = (start + offset) % cpu.deadline_members.len();
             let core = Arc::clone(&cpu.deadline_members[index]);
             let mut update_queued = None;
             let mut replenish = false;
@@ -203,10 +201,11 @@ impl TaskSystem {
                 self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Replenished)?;
             }
         }
-        cpu.as_mut()
+        if cpu
+            .as_mut()
             .fields_mut()
-            .set_deadline_scan_cursor((start + examined) % member_count);
-        if examined < member_count {
+            .finish_deadline_scan_batch(examined)
+        {
             cpu.request_scheduler_work();
         }
         cpu.as_mut().refresh_scheduler_deadline(now_ns);
