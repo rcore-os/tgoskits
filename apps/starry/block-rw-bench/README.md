@@ -12,10 +12,10 @@ cargo xtask starry app board -t block-rw-bench \
 
 Axbuild cross-compiles the static helper from `rust/`, uploads it as an ostool
 session file, and expands `${sessionFile:usr/bin/block-rw-bench}` to the
-board-visible HTTP URL. Boards with a StarryOS network device download the
-helper into `/tmp`. Profiles for boards without a StarryOS network device run
-the equivalent serial-injected shell workload instead. Neither path requires
-SSH deployment or persistent rootfs installation.
+board-visible HTTP URL. The board downloads the helper into `/tmp`; failure to
+acquire a network address, download the session file, or execute the helper is
+terminal and cannot produce the benchmark success marker. This path requires
+neither SSH deployment nor persistent rootfs installation.
 
 The legacy shared AArch64 kernel build TOML remains available for existing
 direct invocations. New board runs should pass an explicit board profile:
