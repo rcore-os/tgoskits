@@ -28,18 +28,32 @@ impl TaskSystem {
                 let source = CpuId::new(index as u32);
                 let summary = local.try_load_summary()?;
                 let key = summary.pushable_key()?;
+                let class = summary.pushable_class()?;
                 if !summary.is_overloaded()
-                    || (summary.pushable_class() == Some(SchedulingClass::Fair)
-                        && !local.fair_balance_due(now_ns))
+                    || (class == SchedulingClass::Fair && !local.fair_balance_due(now_ns))
                 {
                     return None;
                 }
-                Some((key, summary.runnable_count(), summary.epoch(), source))
+                Some((
+                    class,
+                    key,
+                    summary.runnable_count(),
+                    summary.epoch(),
+                    source,
+                ))
             })
-            .min_by_key(|(key, load, _, source)| {
-                (*key, core::cmp::Reverse(*load), source.as_u32())
+            .min_by_key(|(class, key, load, _, source)| {
+                let cross_cpu_urgency =
+                    matches!(class, SchedulingClass::Deadline | SchedulingClass::Realtime)
+                        .then_some(*key);
+                (
+                    *class as u8,
+                    cross_cpu_urgency,
+                    core::cmp::Reverse(*load),
+                    source.as_u32(),
+                )
             });
-        let Some((_, _, source_epoch, source)) = source else {
+        let Some((_, _, _, source_epoch, source)) = source else {
             return Ok(false);
         };
         let source_local = self
