@@ -359,6 +359,62 @@ fn scheduler_tick_retry_republishes_one_bounded_task_work_attempt() {
 }
 
 #[test]
+fn scheduler_tick_retry_defers_until_a_later_service_pass() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_OBSERVED_NS.store(0, Ordering::Relaxed);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(Arc::clone(&gate), always_retry_scheduler_tick)
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    on_clock_event_with_scheduler_tick(17, 1, true).unwrap();
+    let first = system
+        .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+        .unwrap();
+    assert_eq!(
+        first.scheduler_tick_callbacks(),
+        1,
+        "one transient conflict must not busy-retry in the same service pass"
+    );
+    assert_eq!(first.processed(), 1);
+    assert!(system.deferred_task_work_pending());
+
+    let second = system
+        .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+        .unwrap();
+    assert_eq!(second.scheduler_tick_callbacks(), 1);
+    assert_eq!(second.processed(), 1);
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 2);
+
+    gate.set_enabled(false);
+    let stale = system
+        .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+        .unwrap();
+    assert_eq!(stale.scheduler_tick_callbacks(), 0);
+    assert_eq!(stale.processed(), 1);
+
+    support::clear_handles();
+}
+
+#[test]
 fn newer_tick_owns_delivery_when_it_races_a_callback_retry() {
     let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
     support::clear_handles();
@@ -687,6 +743,16 @@ unsafe extern "Rust" fn retry_scheduler_tick_once(
     } else {
         SchedulerTickWorkDisposition::Complete
     }
+}
+
+unsafe extern "Rust" fn always_retry_scheduler_tick(
+    _data: usize,
+    _thread: ThreadId,
+    observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
+    SCHEDULER_TICK_OBSERVED_NS.store(observed_ns, Ordering::Release);
+    SCHEDULER_TICK_CALLBACKS.fetch_add(1, Ordering::Release);
+    SchedulerTickWorkDisposition::Retry
 }
 
 unsafe extern "Rust" fn block_then_retry_scheduler_tick_once(

@@ -1445,7 +1445,9 @@ or arbitrary callbacks in ax-task:
    the IRQ observation boundary, polls the process CPU timers, and returns
    `Complete`. On contention it makes no accounting, timer, or signal state
    change and returns `Retry`; ax-task republishes one physical record unless a
-   newer tick has already acquired delivery ownership. The worker never spins
+   newer tick has already acquired delivery ownership. One service pass
+   attempts a retried scheduler-tick record at most once; the outer worker
+   yields before the next attempt, so it never burns its 64-item batch spinning
    behind a switch or state-transition writer.
 4. Repeated ticks in one enabled generation coalesce and retain the latest
    timestamp. Disabling the gate invalidates queued work and retry claims from
@@ -1471,7 +1473,10 @@ CPU-local `NoPreempt` guard also could not serialize a scheduler switch on one
 CPU with deferred accounting on another. Linux's `TWA_RESUME` work normally
 runs on the exact target task at its resume boundary; TGOSKits currently uses a
 fixed global task-work consumer, so the target accounting object needs an
-explicit non-sleeping writer owner and a non-blocking retry path.
+explicit non-sleeping writer owner and a non-blocking retry path. Linux
+`task_work_run()` calls `cond_resched()` after every callback; the TGOSKits
+worker provides the corresponding scheduling point by deferring a contended
+retry to its next service pass.
 
 The older callback had two separate defects. First, the typed IRQ hook still
 allowed arbitrary OS code to execute in hard IRQ and raced task-context
@@ -1493,6 +1498,9 @@ The lowest-layer regressions were deliberately observed red before the fixes:
 - `scheduler_tick_retry_republishes_one_bounded_task_work_attempt` observed
   zero events on the required second worker pass before retry ownership was
   implemented;
+- `scheduler_tick_retry_defers_until_a_later_service_pass` observed 64 callback
+  attempts in one 64-item batch before the worker began suppressing same-pass
+  retries;
 - the pre-existing gate, wrapper-composition, and carrier-exit tests retain
   coverage for stale epochs, lost runtime capabilities, and extension
   reclamation.
