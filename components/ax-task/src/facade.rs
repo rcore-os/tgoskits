@@ -68,6 +68,27 @@ pub fn current_thread_id() -> Result<ThreadId, TaskError> {
     current_thread_id_from_cpu()
 }
 
+/// Returns the calling scheduler thread while the caller retains a CPU pin.
+///
+/// This is the scheduler-adjacent fast path used by primitives that already
+/// hold migration exclusion. It reads the generation-bearing current identity
+/// from the CPU's remote publication endpoint without recursively entering the
+/// IRQ-guarded mutable owner facade.
+///
+/// # Safety
+///
+/// The caller must prevent migration from before this call until it has
+/// completed the local state transition associated with the returned identity.
+/// Task-context callers normally satisfy this with a preemption guard or an
+/// IRQ-aware metadata lock.
+pub unsafe fn current_thread_id_pinned() -> Result<ThreadId, TaskError> {
+    let cpu = CpuId::new(task_runtime::current_cpu_id().as_u32());
+    cpu_local_for_wake(cpu)
+        .ok_or(TaskError::NotInitialized)?
+        .current_thread()
+        .ok_or(TaskError::NoRunnableThread)
+}
+
 fn current_thread_id_from_cpu() -> Result<ThreadId, TaskError> {
     // RuntimeCurrentCpu retains the IRQ pin across handle validation and the
     // owner-state read. The copied generation-bearing ID remains valid after
