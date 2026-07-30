@@ -260,8 +260,8 @@ fn scheduler_tick_gate_does_not_replay_work_from_an_old_enable_epoch() {
 fn scheduler_tick_delivery_pins_extension_across_thread_exit() {
     let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
     support::clear_handles();
-    BLOCKING_TICK_ENTERED.store(false, Ordering::Relaxed);
-    RELEASE_BLOCKING_TICK.store(false, Ordering::Relaxed);
+    BLOCKING_TICK_ENTERED.store(false, Ordering::Release);
+    RELEASE_BLOCKING_TICK.store(false, Ordering::Release);
 
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
