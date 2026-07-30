@@ -548,9 +548,10 @@ impl ThreadCore {
             .fetch_max(observed_ns, Ordering::AcqRel);
         let mut pending = self.scheduler_tick_work_generation.load(Ordering::Acquire);
         loop {
-            if pending == generation {
-                return false;
-            }
+            // Even an already-pending generation must perform an RMW. This
+            // publishes the timestamp to the consumer's generation claim. If
+            // the consumer raced ahead and cleared the generation, the CAS
+            // fails and this producer installs a fresh physical publication.
             match self.scheduler_tick_work_generation.compare_exchange_weak(
                 pending,
                 generation,

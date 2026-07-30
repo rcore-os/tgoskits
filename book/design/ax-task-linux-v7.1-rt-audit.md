@@ -1450,9 +1450,13 @@ or arbitrary callbacks in ax-task:
    yields before the next attempt, so it never burns its 64-item batch spinning
    behind a switch or state-transition writer.
 4. Repeated ticks in one enabled generation coalesce and retain the latest
-   timestamp. Disabling the gate invalidates queued work and retry claims from
-   that generation; re-enabling cannot replay them. A callback already past
-   its writer gate may finish.
+   timestamp. The already-pending path still performs an AcqRel generation
+   RMW: either a concurrent claim observes the timestamp publication, or the
+   failed RMW installs a new physical record after the claim. This mirrors the
+   publish/claim pairing in Linux `irq_work_claim()` instead of treating a
+   plain pending-bit load as a publication barrier. Disabling the gate
+   invalidates queued work and retry claims from that generation; re-enabling
+   cannot replay them. A callback already past its writer gate may finish.
 5. ax-runtime explicitly composes an inner OS extension's tick capability into
    its scheduler-owned outer extension. It forwards both the timestamp and the
    `Complete`/`Retry` disposition while retaining the inner extension's data
@@ -1501,6 +1505,10 @@ The lowest-layer regressions were deliberately observed red before the fixes:
 - `scheduler_tick_retry_defers_until_a_later_service_pass` observed 64 callback
   attempts in one 64-item batch before the worker began suppressing same-pass
   retries;
+- `coalesced_scheduler_tick_publishes_its_timestamp_before_claim` found a weak
+  memory execution where the consumer observed the old timestamp while the
+  producer's plain pending-generation load suppressed the replacement
+  publication;
 - the pre-existing gate, wrapper-composition, and carrier-exit tests retain
   coverage for stale epochs, lost runtime capabilities, and extension
   reclamation.
@@ -1511,8 +1519,9 @@ serialization, generation-checked retry, and explicit runtime composition.
 and a retry cannot both publish the intrusive node, while
 `scheduler_tick_retry_cannot_cross_a_gate_disable_epoch` proves that retry
 cannot resurrect disabled work. The corresponding loom model checks the
-single delivery owner. The complete ax-task suite has 190 unit tests, all
-integration/doc tests, and 19 loom models; the ax-runtime host IRQ/multitask
+single delivery owner, and the coalescing model checks the timestamp's
+publish-before-claim edge. The complete ax-task suite has 190 unit tests, all
+integration/doc tests, and 20 loom models; the ax-runtime host IRQ/multitask
 suite has 51 tests, and the FS-enabled host composition has 52. All 24
 `starry-kernel` clippy configurations pass. The post-fix x86_64 Starry axtest
 run passed all 385 cases with `AXTEST_SUITE_OK`. A previous focused system
