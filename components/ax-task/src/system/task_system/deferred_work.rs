@@ -3,6 +3,13 @@
 use super::*;
 use crate::SchedulerTickWorkDisposition;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SchedulerTickDispatch {
+    events: usize,
+    callbacks: usize,
+    retry_deferred: bool,
+}
+
 impl TaskSystem {
     pub(crate) fn publish_current_scheduler_tick_work(&self, cpu: &CpuLocal, observed_ns: u64) {
         let Some(core) = cpu.current_core() else {
@@ -116,6 +123,7 @@ impl TaskSystem {
         let outcome = (|| {
             let mut batch = DeferredTaskWorkBatch::default();
             let mut classes_without_progress = 0;
+            let mut scheduler_tick_retry_deferred = false;
             while batch.processed() < limit
                 && classes_without_progress < DeferredTaskWorkClass::COUNT
             {
@@ -128,11 +136,13 @@ impl TaskSystem {
                         batch.deadline_callbacks += callbacks;
                         events
                     }
+                    DeferredTaskWorkClass::SchedulerTick if scheduler_tick_retry_deferred => 0,
                     DeferredTaskWorkClass::SchedulerTick => {
-                        let (events, callbacks) = self.dispatch_scheduler_tick_work_inner(1)?;
-                        batch.scheduler_tick_events += events;
-                        batch.scheduler_tick_callbacks += callbacks;
-                        events
+                        let dispatch = self.dispatch_scheduler_tick_work_inner(1)?;
+                        batch.scheduler_tick_events += dispatch.events;
+                        batch.scheduler_tick_callbacks += dispatch.callbacks;
+                        scheduler_tick_retry_deferred |= dispatch.retry_deferred;
+                        dispatch.events
                     }
                     DeferredTaskWorkClass::Exit => {
                         let callbacks = self.dispatch_exit_callbacks_inner(1)?;
@@ -166,12 +176,13 @@ impl TaskSystem {
     fn dispatch_scheduler_tick_work_inner(
         &self,
         limit: usize,
-    ) -> Result<(usize, usize), TaskError> {
+    ) -> Result<SchedulerTickDispatch, TaskError> {
         let mut messages = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
         let batch = self
             .deferred_scheduler_ticks
             .drain(limit.min(crate::DEFAULT_BATCH_LIMIT), &mut messages);
         let mut callbacks = 0;
+        let mut retry_deferred = false;
         for message in messages.iter().take(batch.drained()) {
             if message.operation() != InboxOperation::SchedulerTick || message.payload() == 0 {
                 task_runtime::fatal_invariant(0x5457_0002, message.payload());
@@ -198,17 +209,22 @@ impl TaskSystem {
                 // work remains relevant; carrier-thread state does not.
                 let disposition = unsafe { claim.invoke(extension.data(), core.id()) };
                 callbacks += 1;
-                if disposition == SchedulerTickWorkDisposition::Retry
-                    && core.retry_scheduler_tick_work(&claim)
-                {
-                    self.publish_claimed_scheduler_tick_work(&core);
+                if disposition == SchedulerTickWorkDisposition::Retry {
+                    retry_deferred = true;
+                    if core.retry_scheduler_tick_work(&claim) {
+                        self.publish_claimed_scheduler_tick_work(&core);
+                    }
                 }
             }
         }
         if batch.pending() {
             self.task_work.publish();
         }
-        Ok((batch.drained(), callbacks))
+        Ok(SchedulerTickDispatch {
+            events: batch.drained(),
+            callbacks,
+            retry_deferred,
+        })
     }
 
     fn reclaim_one_resource(&self) -> Result<usize, TaskError> {
