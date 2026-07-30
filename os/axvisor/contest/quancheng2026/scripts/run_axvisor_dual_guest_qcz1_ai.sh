@@ -33,6 +33,7 @@ The script reproduces the AxVisor dual-guest contest path:
 Linux guest 192.0.2.10 <-> Zephyr RTOS guest 192.0.2.20 over IPv4/UDP.
 
 Required runtime artifacts, relative to --repo:
+  manifest: os/axvisor/contest/quancheng2026/runtime-artifacts-known-passing.sha256
   rootfs: tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
   linux:  os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu
   rtos:   os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin
@@ -113,6 +114,7 @@ rootfs_image_source="${rootfs_cache}/rootfs-aarch64-alpine.img/rootfs-aarch64-al
 linux_kernel="${axvisor}/tmp/images/qemu-aarch64/linux/linux-qemu"
 zephyr_bin="${axvisor}/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin"
 host_dtb="${axvisor}/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb"
+artifact_manifest="${contest_dir}/runtime-artifacts-known-passing.sha256"
 build_dir="${repo}/tmp/quancheng2026-dual-guest-qcz1-ai-build"
 rootfs_dir="${rootfs_cache}/quancheng2026-dual-guest-qcz1-ai"
 rootfs_img="${rootfs_dir}/rootfs-aarch64-alpine.img"
@@ -240,6 +242,8 @@ echo "linux_rt_samples=${linux_rt_samples}"
 echo "linux_stress_workers=${linux_stress_workers}"
 echo "linux_stress_seconds=${linux_stress_seconds}"
 echo "net_mode=${net_mode}"
+echo "runtime_artifact_manifest=${artifact_manifest}"
+echo "runtime_artifact_manifest_policy=checked-in known-passing manifest; alternate runtime artifacts require a manifest update in review"
 
 for required in \
     clang \
@@ -277,6 +281,11 @@ fi
 rootfs_source_kind="image-manager"
 rootfs_source_path="${rootfs_image_source}"
 
+if [[ ! -f "${artifact_manifest}" ]]; then
+    echo "missing_required_manifest=${artifact_manifest}" >&2
+    exit 13
+fi
+
 for required_path in \
     "${linux_kernel}" \
     "${zephyr_bin}" \
@@ -292,6 +301,27 @@ do
         exit 12
     fi
 done
+
+echo "--- runtime artifact manifest ---"
+sha256sum "${artifact_manifest}" | tee "${evidence_dir}/runtime-artifact-manifest-file-sha256.txt"
+sed 's/^/manifest_entry=/' "${artifact_manifest}" | tee "${evidence_dir}/runtime-artifact-manifest.txt"
+
+echo "--- runtime artifact manifest check ---"
+set +e
+(
+    cd "${repo}"
+    sha256sum --strict --check "${artifact_manifest}"
+) >"${evidence_dir}/runtime-artifact-manifest-check.txt" 2>&1
+manifest_check_status=$?
+set -e
+cat "${evidence_dir}/runtime-artifact-manifest-check.txt"
+if [[ "${manifest_check_status}" -ne 0 ]]; then
+    echo "runtime_artifact_manifest_check=FAIL"
+    echo "manifest=${artifact_manifest}"
+    echo "hint=prepare the exact checked-in known-passing rootfs, Linux kernel, Zephyr binary and host DTB before running QEMU" >&2
+    exit 13
+fi
+echo "runtime_artifact_manifest_check=PASS"
 
 rootfs_source_sha256="$(sha256sum "${rootfs_source_path}" | awk '{print $1}')"
 echo "rootfs_source=${rootfs_source_path}"
