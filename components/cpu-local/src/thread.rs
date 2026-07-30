@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::{CpuAreaRef, ThreadSwitchError};
+use crate::{CpuAreaPrefix, CpuAreaRef, CpuIndex, ThreadSwitchError};
 
 /// Stable opaque identity of one runtime-owned execution context.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -90,8 +90,23 @@ impl CurrentThreadHeader {
     }
 
     /// Returns the raw bound area base used by architecture trap entry.
+    #[inline(always)]
     pub fn cpu_area_base(&self) -> Option<usize> {
-        self.cpu_binding().map(|binding| binding.area.base())
+        self.raw_cpu_binding().map(|(area_base, _)| area_base)
+    }
+
+    /// Returns the immutable logical identity of the bound CPU area.
+    #[inline(always)]
+    pub fn cpu_index(&self) -> Option<CpuIndex> {
+        let area_base = self.cpu_area_base()?;
+        // SAFETY: bind_cpu accepts only a validated shutdown-lifetime
+        // CpuAreaRef. The binding epoch above keeps the selected base coherent,
+        // and the prefix identity is immutable after initialization.
+        Some(
+            unsafe { &*(area_base as *const CpuAreaPrefix) }
+                .header()
+                .cpu_index(),
+        )
     }
 
     pub(crate) unsafe fn bind_cpu(
@@ -143,6 +158,7 @@ impl CurrentThreadHeader {
         Some(CurrentCpuBinding { area, epoch })
     }
 
+    #[inline(always)]
     pub(crate) fn raw_cpu_binding(&self) -> Option<(usize, CpuBindingEpoch)> {
         loop {
             let before = self.binding_epoch.load(Ordering::Acquire);

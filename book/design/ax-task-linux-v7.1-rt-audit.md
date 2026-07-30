@@ -1638,6 +1638,53 @@ panic in the old implementation. It now receives `InvalidHandle`, verifies
 that the binding transaction remains staged, corrects the injected header,
 and completes the same tail successfully.
 
+## Current-head preemption guard fast-path boundary
+
+The runtime lock hook used to reconstruct a full `CpuPin` and
+`ExclusiveCpu` merely to read or update the scheduler's current per-CPU guard
+word. The preemption-exit path also queried the generic IRQ-context helper
+before it had proved that the exiting guard was the outermost depth. That
+helper creates its own `NoPreempt` guard, so moving the query ahead of the
+depth check made a nested guard drop re-enter itself until x86_64 raised a
+double fault.
+
+Linux v7.1 keeps this path deliberately direct:
+
+- `preempt_enable()` calls `preempt_count_dec_and_test()` and reaches
+  `__preempt_schedule()` only when the final nesting level exposes
+  `need_resched`;
+- `hardirq_count()` and `in_hardirq()` read the already-current task's
+  preemption word instead of acquiring another preemption guard; and
+- `preempt_schedule_common()` retains the preemption-disabled ownership proof
+  across `__schedule()` and uses the no-reschedule decrement on its tail.
+
+TGOSKits now exposes a narrow scheduler-only current-thread register read.
+The current thread's validated CPU binding supplies both the immutable logical
+CPU identity and the per-CPU symbol base. ax-runtime uses that path only while
+raw local IRQs are disabled, while the scheduler baton is held, or before an
+offline CPU publishes interrupts. The general `CpuPin` and `ExclusiveCpu`
+interfaces remain the safe boundary for ordinary callers. IRQ-context
+inspection under that existing pin reads the platform's per-CPU publication
+bit directly and cannot recursively invoke the lock runtime.
+
+The deterministic host regression first observed one CPU-base register read
+plus one current-thread register read for a scheduler-current per-CPU access.
+It now observes only the current-thread read. A second regression proves that
+dropping a nested preemption guard invokes neither the IRQ-context nor the
+reschedule query; the buggy ordering failed by entering both callbacks. The
+first QEMU build after the initial reordering reproduced the recursive
+double-fault boot loop, while the corrected state-first ordering boots and
+reaches the Starry shell.
+
+A DHCP-to-shell qperf window confirms that the old CPU-local symbol-offset
+hotspot is gone, but also keeps the remaining performance finding explicit:
+the current branch executes 13,113 sampled instruction intervals in 13.43
+seconds versus dev's 4,606 intervals in 4.99 seconds. The remaining excess is
+concentrated in owner scheduling, remote/policy inbox drains, and preemption
+safe points. It is not evidence against the direct register boundary; it is a
+separate scheduler-work amplification finding that must be resolved before
+the performance milestone is complete.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

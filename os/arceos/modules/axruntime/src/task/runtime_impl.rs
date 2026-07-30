@@ -60,8 +60,8 @@ impl_task_runtime! {
             })
         }
 
-        fn current_cpu_id() -> RuntimeCpuId {
-            let cpu = u32::try_from(ax_hal::percpu::this_cpu_id())
+        unsafe fn current_cpu_id() -> RuntimeCpuId {
+            let cpu = u32::try_from(unsafe { ax_hal::percpu::scheduler_current_cpu_id() })
                 .expect("logical CPU ID must fit the TaskRuntime ABI");
             RuntimeCpuId::new(cpu)
         }
@@ -73,7 +73,9 @@ impl_task_runtime! {
         }
 
         fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus {
-            if cpu != Self::current_cpu_id() {
+            // SAFETY: this hook runs on the IRQ-excluded owner CPU before
+            // scheduler publication.
+            if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
             #[cfg(feature = "irq")]
@@ -82,7 +84,9 @@ impl_task_runtime! {
         }
 
         fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus {
-            if cpu != Self::current_cpu_id() {
+            // SAFETY: this hook runs on the IRQ-excluded owner CPU after
+            // remote admission has closed.
+            if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
             #[cfg(feature = "irq")]

@@ -40,6 +40,7 @@ pub mod __priv {
     };
 
     /// Calculates one symbol's offset from the template prefix.
+    #[inline(always)]
     pub fn symbol_offset(symbol_address: usize) -> usize {
         symbol_address
             .checked_sub(crate::template_base())

@@ -38,6 +38,19 @@ pub fn handle_irq(vector: usize) -> bool {
     handled
 }
 
+/// Tests IRQ-action context while the caller already pins the current CPU.
+///
+/// # Safety
+///
+/// The caller must prevent migration for the complete CPU identity and IRQ
+/// publication observation.
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn in_irq_context_pinned() -> bool {
+    let cpu = CpuId(unsafe { crate::percpu::scheduler_current_cpu_id() });
+    ax_plat::irq::in_irq_context_on(cpu)
+}
+
 /// Installs the default ArceOS IRQ dispatcher into `ax-cpu`'s runtime hook.
 ///
 /// This is intended for runtimes that dispatch traps through

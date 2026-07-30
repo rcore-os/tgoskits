@@ -240,7 +240,8 @@ pub(super) fn execute_switch_plan(
     // previous extension is still the published current task, but after all
     // scheduler locks have been released and the switch decision is final.
     task_runtime::trace_sched_switch(SchedSwitchRecord {
-        cpu: RuntimeCpuId::new(task_runtime::current_cpu_id().as_u32()),
+        // SAFETY: scheduler_frame retains the current CPU's scheduler baton.
+        cpu: RuntimeCpuId::new(unsafe { task_runtime::current_cpu_id() }.as_u32()),
         previous_thread: previous.thread().as_u64(),
         next_thread: next.thread().as_u64(),
         timestamp_ns: now_ns,
