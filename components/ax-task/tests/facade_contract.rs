@@ -1,13 +1,13 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ax_task::{
-    CpuId, FairMode, Nice, SchedulePolicy, SchedulerTickGate, TaskError, TaskSystem,
-    TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState,
-    WakeResult, current_cpu_needs_resched, current_thread_extension, current_thread_id,
-    on_clock_event, on_clock_event_with_scheduler_tick, schedule_current_cpu,
+    CpuId, FairMode, Nice, SchedulePolicy, SchedulerTickGate, SchedulerTickWorkDisposition,
+    TaskError, TaskSystem, TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId,
+    ThreadSpec, ThreadState, WakeResult, current_cpu_needs_resched, current_thread_extension,
+    current_thread_id, on_clock_event, on_clock_event_with_scheduler_tick, schedule_current_cpu,
     take_current_expired_task_deadlines,
     timer::{ExpiredTaskDeadline, TaskDeadlineKind, TaskDeadlineNode},
 };
@@ -16,7 +16,8 @@ mod support;
 
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static SCHEDULER_TICK_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
-static SCHEDULER_TICK_IRQ_ACCOUNTING: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULER_TICK_OBSERVED_NS: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_TICK_RETRIES: AtomicUsize = AtomicUsize::new(0);
 static BLOCKING_TICK_ENTERED: AtomicBool = AtomicBool::new(false);
 static RELEASE_BLOCKING_TICK: AtomicBool = AtomicBool::new(false);
 
@@ -210,22 +211,19 @@ fn scheduler_tick_extension_work_is_deferred_out_of_hard_irq() {
 }
 
 #[test]
-fn scheduler_tick_accounts_every_irq_before_coalescing_task_work() {
+fn scheduler_tick_os_work_is_deferred_with_latest_irq_timestamp() {
     let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
     support::clear_handles();
     SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
-    SCHEDULER_TICK_IRQ_ACCOUNTING.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_OBSERVED_NS.store(0, Ordering::Relaxed);
 
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     let gate = Arc::new(SchedulerTickGate::new());
     gate.set_enabled(true);
     let extension = unsafe {
-        ThreadExtension::new(0, &TEST_EXTENSION_OPS).with_scheduler_tick_accounting_work(
-            gate,
-            count_scheduler_tick_irq_accounting,
-            count_scheduler_tick,
-        )
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, count_scheduler_tick)
     };
     system
         .install_bootstrap_thread(
@@ -244,14 +242,19 @@ fn scheduler_tick_accounts_every_irq_before_coalescing_task_work() {
         on_clock_event_with_scheduler_tick(now_ns, 1, true).unwrap();
         support::set_hard_irq(false);
     }
-    assert_eq!(
-        SCHEDULER_TICK_IRQ_ACCOUNTING.load(Ordering::Acquire),
-        3,
-        "every physical tick must charge the current thread before deferred work coalesces"
-    );
     assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 0);
+    assert_eq!(
+        SCHEDULER_TICK_OBSERVED_NS.load(Ordering::Acquire),
+        0,
+        "hard IRQ must not invoke OS scheduler-tick work"
+    );
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
     assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 1);
+    assert_eq!(
+        SCHEDULER_TICK_OBSERVED_NS.load(Ordering::Acquire),
+        3,
+        "coalesced work must receive the latest IRQ observation boundary"
+    );
 
     support::clear_handles();
 }
@@ -300,6 +303,171 @@ fn scheduler_tick_gate_does_not_replay_work_from_an_old_enable_epoch() {
         1,
         "ticks in one enabled epoch should coalesce into one task-work callback"
     );
+
+    support::clear_handles();
+}
+
+#[test]
+fn scheduler_tick_retry_republishes_one_bounded_task_work_attempt() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_OBSERVED_NS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_RETRIES.store(1, Ordering::Relaxed);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, retry_scheduler_tick_once)
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    on_clock_event_with_scheduler_tick(7, 1, true).unwrap();
+    let first = system.service_deferred_task_work(1).unwrap();
+    assert_eq!(first.processed(), 1);
+    assert_eq!(first.scheduler_tick_callbacks(), 1);
+    assert!(
+        system.deferred_task_work_pending(),
+        "a transient callback conflict must republish task work"
+    );
+
+    let second = system.service_deferred_task_work(1).unwrap();
+    assert_eq!(second.processed(), 1);
+    assert_eq!(second.scheduler_tick_callbacks(), 1);
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 2);
+    assert_eq!(SCHEDULER_TICK_OBSERVED_NS.load(Ordering::Acquire), 7);
+    assert_eq!(
+        system.service_deferred_task_work(1).unwrap().processed(),
+        0,
+        "a completed retry must leave no duplicate intrusive publication"
+    );
+
+    support::clear_handles();
+}
+
+#[test]
+fn newer_tick_owns_delivery_when_it_races_a_callback_retry() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_OBSERVED_NS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_RETRIES.store(1, Ordering::Relaxed);
+    BLOCKING_TICK_ENTERED.store(false, Ordering::Release);
+    RELEASE_BLOCKING_TICK.store(false, Ordering::Release);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(gate, block_then_retry_scheduler_tick_once)
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    on_clock_event_with_scheduler_tick(5, 1, true).unwrap();
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| system.service_deferred_task_work(1).unwrap());
+        while !BLOCKING_TICK_ENTERED.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        on_clock_event_with_scheduler_tick(11, 1, true).unwrap();
+        RELEASE_BLOCKING_TICK.store(true, Ordering::Release);
+        assert_eq!(worker.join().unwrap().processed(), 1);
+    });
+
+    let second = system.service_deferred_task_work(1).unwrap();
+    assert_eq!(second.processed(), 1);
+    assert_eq!(second.scheduler_tick_callbacks(), 1);
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 2);
+    assert_eq!(
+        SCHEDULER_TICK_OBSERVED_NS.load(Ordering::Acquire),
+        11,
+        "the newer IRQ publication must retain the timestamp watermark"
+    );
+    assert_eq!(
+        system.service_deferred_task_work(1).unwrap().processed(),
+        0,
+        "the losing retry must not publish a duplicate delivery"
+    );
+
+    support::clear_handles();
+}
+
+#[test]
+fn scheduler_tick_retry_cannot_cross_a_gate_disable_epoch() {
+    let _test_lock = TEST_LOCK.lock().expect("facade test lock poisoned");
+    support::clear_handles();
+    SCHEDULER_TICK_CALLBACKS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_OBSERVED_NS.store(0, Ordering::Relaxed);
+    SCHEDULER_TICK_RETRIES.store(1, Ordering::Relaxed);
+    BLOCKING_TICK_ENTERED.store(false, Ordering::Release);
+    RELEASE_BLOCKING_TICK.store(false, Ordering::Release);
+
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let gate = Arc::new(SchedulerTickGate::new());
+    gate.set_enabled(true);
+    let extension = unsafe {
+        ThreadExtension::new(0, &TEST_EXTENSION_OPS)
+            .with_scheduler_tick_work(Arc::clone(&gate), block_then_retry_scheduler_tick_once)
+    };
+    system
+        .install_bootstrap_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::default()).with_extension(extension),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    support::install_handles(
+        (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+
+    on_clock_event_with_scheduler_tick(5, 1, true).unwrap();
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| system.service_deferred_task_work(1).unwrap());
+        while !BLOCKING_TICK_ENTERED.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        gate.set_enabled(false);
+        gate.set_enabled(true);
+        RELEASE_BLOCKING_TICK.store(true, Ordering::Release);
+        assert_eq!(worker.join().unwrap().processed(), 1);
+    });
+    assert_eq!(
+        system.service_deferred_task_work(1).unwrap().processed(),
+        0,
+        "Retry must not replay work from the disabled generation"
+    );
+
+    on_clock_event_with_scheduler_tick(13, 1, true).unwrap();
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+    assert_eq!(SCHEDULER_TICK_CALLBACKS.load(Ordering::Acquire), 2);
+    assert_eq!(SCHEDULER_TICK_OBSERVED_NS.load(Ordering::Acquire), 13);
 
     support::clear_handles();
 }
@@ -492,17 +660,66 @@ unsafe extern "Rust" fn no_extension_switch_out(
 
 unsafe extern "Rust" fn no_extension_drop(_data: usize) {}
 
-unsafe extern "Rust" fn count_scheduler_tick(_data: usize, _thread: ThreadId) {
+unsafe extern "Rust" fn count_scheduler_tick(
+    _data: usize,
+    _thread: ThreadId,
+    observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
+    SCHEDULER_TICK_OBSERVED_NS.store(observed_ns, Ordering::Release);
     SCHEDULER_TICK_CALLBACKS.fetch_add(1, Ordering::Release);
+    SchedulerTickWorkDisposition::Complete
 }
 
-unsafe extern "Rust" fn count_scheduler_tick_irq_accounting(_data: usize, _thread: ThreadId) {
-    SCHEDULER_TICK_IRQ_ACCOUNTING.fetch_add(1, Ordering::Release);
+unsafe extern "Rust" fn retry_scheduler_tick_once(
+    _data: usize,
+    _thread: ThreadId,
+    observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
+    SCHEDULER_TICK_OBSERVED_NS.store(observed_ns, Ordering::Release);
+    SCHEDULER_TICK_CALLBACKS.fetch_add(1, Ordering::Release);
+    if SCHEDULER_TICK_RETRIES
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+    {
+        SchedulerTickWorkDisposition::Retry
+    } else {
+        SchedulerTickWorkDisposition::Complete
+    }
 }
 
-unsafe extern "Rust" fn block_scheduler_tick(_data: usize, _thread: ThreadId) {
+unsafe extern "Rust" fn block_then_retry_scheduler_tick_once(
+    _data: usize,
+    _thread: ThreadId,
+    observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
+    SCHEDULER_TICK_OBSERVED_NS.store(observed_ns, Ordering::Release);
+    SCHEDULER_TICK_CALLBACKS.fetch_add(1, Ordering::Release);
+    if SCHEDULER_TICK_RETRIES
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
+    {
+        BLOCKING_TICK_ENTERED.store(true, Ordering::Release);
+        while !RELEASE_BLOCKING_TICK.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        SchedulerTickWorkDisposition::Retry
+    } else {
+        SchedulerTickWorkDisposition::Complete
+    }
+}
+
+unsafe extern "Rust" fn block_scheduler_tick(
+    _data: usize,
+    _thread: ThreadId,
+    _observed_ns: u64,
+) -> SchedulerTickWorkDisposition {
     BLOCKING_TICK_ENTERED.store(true, Ordering::Release);
     while !RELEASE_BLOCKING_TICK.load(Ordering::Acquire) {
         std::thread::yield_now();
     }
+    SchedulerTickWorkDisposition::Complete
 }

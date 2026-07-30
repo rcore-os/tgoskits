@@ -6,10 +6,12 @@ use core::{
     time::Duration,
 };
 
-use ax_kernel_guard::NoPreempt;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_std::os::arceos::task as scheduler;
-use ax_sync::PiMutex;
+use ax_sync::{
+    PiMutex,
+    spin::{SpinNoPreempt, SpinNoPreemptGuard},
+};
 use event_listener::{Event, listener};
 use spin::LazyLock;
 use starry_process::Pid;

@@ -1,19 +1,24 @@
 //! Deferred task-context work and resource reclamation.
 
 use super::*;
+use crate::SchedulerTickWorkDisposition;
 
 impl TaskSystem {
-    pub(crate) fn publish_current_scheduler_tick_work(&self, cpu: &CpuLocal) {
+    pub(crate) fn publish_current_scheduler_tick_work(&self, cpu: &CpuLocal, observed_ns: u64) {
         let Some(core) = cpu.current_core() else {
             return;
         };
-        self.publish_scheduler_tick_work(core);
+        self.publish_scheduler_tick_work(core, observed_ns);
     }
 
-    fn publish_scheduler_tick_work(&self, core: &Arc<ThreadCore>) {
-        if !core.begin_scheduler_tick_work() {
+    fn publish_scheduler_tick_work(&self, core: &Arc<ThreadCore>, observed_ns: u64) {
+        if !core.begin_scheduler_tick_work(observed_ns) {
             return;
         }
+        self.publish_claimed_scheduler_tick_work(core);
+    }
+
+    fn publish_claimed_scheduler_tick_work(&self, core: &Arc<ThreadCore>) {
         if !core.reserve_scheduler_inbox_delivery() {
             core.cancel_scheduler_tick_work();
             return;
@@ -183,16 +188,21 @@ impl TaskSystem {
                 core.cancel_scheduler_tick_work();
                 continue;
             }
-            let work = core.take_scheduler_tick_work();
-            if let Some(work) = work
+            let claim = core.take_scheduler_tick_work();
+            if let Some(claim) = claim
                 && let Some(extension) = core.extension_view()
             {
                 // SAFETY: the inbox delivery reservation prevents extension
                 // reclamation even if the carrier thread exits concurrently.
                 // The gate generation decides whether the process/subsystem
                 // work remains relevant; carrier-thread state does not.
-                unsafe { work.invoke(extension.data(), core.id()) };
+                let disposition = unsafe { claim.invoke(extension.data(), core.id()) };
                 callbacks += 1;
+                if disposition == SchedulerTickWorkDisposition::Retry
+                    && core.retry_scheduler_tick_work(&claim)
+                {
+                    self.publish_claimed_scheduler_tick_work(&core);
+                }
             }
         }
         if batch.pending() {

@@ -20,7 +20,7 @@ pub fn on_clock_event_with_scheduler_tick(
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let charge = system.charge_current_until(cpu.as_mut(), now_ns, 0)?;
     if scheduler_tick {
-        system.publish_current_scheduler_tick_work(&cpu);
+        system.publish_current_scheduler_tick_work(&cpu, now_ns);
     }
     let batch = cpu
         .as_mut()

@@ -22,17 +22,19 @@ impl TimerState {
     }
 }
 
-/// Lock-free CPU accounting updated directly from scheduler switch hooks.
+/// Writer-serialized CPU accounting updated from scheduler switch hooks.
 ///
-/// Hook-side methods perform only bounded atomic operations: they neither
-/// allocate nor acquire a lock nor enqueue a signal. Task-context code takes a
-/// stable snapshot and handles interval timers and RLIMIT_RTTIME delivery.
+/// Hook-side methods acquire one non-sleeping, preemption-disabling writer gate
+/// and then perform only bounded atomic operations. Hard IRQ never acquires
+/// this gate. Readers remain lock-free and use the writer epoch to take a
+/// stable snapshot before handling interval timers and RLIMIT_RTTIME delivery.
 pub struct CpuTimeAccounting {
     user_ns: AtomicU64,
     system_ns: AtomicU64,
     last_account_ns: AtomicU64,
     realtime_continuous_ns: AtomicU64,
     realtime_reset_generation: AtomicU64,
+    writer_gate: SpinNoPreempt<()>,
     writers: AtomicUsize,
     completed_writes: AtomicU64,
     state: AtomicU8,
@@ -54,6 +56,7 @@ impl CpuTimeAccounting {
             last_account_ns: AtomicU64::new(0),
             realtime_continuous_ns: AtomicU64::new(0),
             realtime_reset_generation: AtomicU64::new(0),
+            writer_gate: SpinNoPreempt::new(()),
             writers: AtomicUsize::new(0),
             completed_writes: AtomicU64::new(0),
             state: AtomicU8::new(TimerState::None as u8),
@@ -73,16 +76,18 @@ impl CpuTimeAccounting {
 
     /// Publishes the current user/kernel execution state.
     pub(crate) fn set_state(&self, state: TimerState) -> CpuTimeDelta {
-        let _preempt_guard = NoPreempt::new();
-        self.set_state_at(state, monotonic_time_nanos() as u64)
+        let _writer = self.begin_write();
+        self.set_state_locked(state, monotonic_time_nanos() as u64)
     }
 
     pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool) {
-        self.scheduler_switch_in_at(realtime_policy, monotonic_time_nanos() as u64);
+        let _writer = self.begin_write();
+        self.scheduler_switch_in_locked(realtime_policy, monotonic_time_nanos() as u64);
     }
 
     pub(crate) fn scheduler_switch_out(&self, reason: scheduler::SwitchReason) -> CpuTimeDelta {
-        self.scheduler_switch_out_at(reason, monotonic_time_nanos() as u64)
+        let _writer = self.begin_write();
+        self.scheduler_switch_out_locked(reason, monotonic_time_nanos() as u64)
     }
 
     pub(crate) fn set_realtime_policy(
@@ -90,8 +95,8 @@ impl CpuTimeAccounting {
         realtime_policy: bool,
         leaving_realtime: bool,
     ) -> CpuTimeDelta {
-        let _preempt_guard = NoPreempt::new();
-        self.set_realtime_policy_at(
+        let _writer = self.begin_write();
+        self.set_realtime_policy_locked(
             realtime_policy,
             leaving_realtime,
             monotonic_time_nanos() as u64,
@@ -99,39 +104,54 @@ impl CpuTimeAccounting {
     }
 
     pub(crate) fn account_now(&self) -> CpuTimeDelta {
-        let _preempt_guard = NoPreempt::new();
         let _writer = self.begin_write();
         self.account_now_at(monotonic_time_nanos() as u64)
     }
 
-    /// Charges the current thread from the scheduler-tick IRQ path.
+    /// Charges the scheduler-tick carrier through the IRQ observation boundary.
     ///
-    /// The caller owns the current-thread scheduler context with local IRQs
-    /// disabled, so no additional preemption guard is necessary. The operation
-    /// is bounded to atomic CPU and process accounting updates.
-    pub(crate) fn account_scheduler_tick(&self) -> CpuTimeDelta {
-        let _writer = self.begin_write();
-        self.account_now_at(monotonic_time_nanos() as u64)
+    /// This runs from deferred task work, not hard IRQ. It never spins behind
+    /// a state transition running on another CPU: a conflict returns `None`,
+    /// and ax-task republishes the generation for a later bounded worker pass.
+    /// A later switch-out timestamp is harmless because `fetch_max` makes
+    /// charging monotonic and prevents double accounting.
+    pub(crate) fn try_account_scheduler_tick_at(&self, observed_ns: u64) -> Option<CpuTimeDelta> {
+        let _writer = self.try_begin_write()?;
+        Some(self.account_now_at(observed_ns))
     }
 
     fn account_now_at(&self, now_ns: u64) -> CpuTimeDelta {
         self.account_running_until(now_ns)
     }
 
+    #[cfg(any(test, axtest))]
     fn scheduler_switch_in_at(&self, realtime_policy: bool, now_ns: u64) {
         let _writer = self.begin_write();
+        self.scheduler_switch_in_locked(realtime_policy, now_ns);
+    }
+
+    fn scheduler_switch_in_locked(&self, realtime_policy: bool, now_ns: u64) {
         self.last_account_ns.store(now_ns, Ordering::Release);
         self.realtime_policy
             .store(realtime_policy, Ordering::Release);
         self.running.store(true, Ordering::Release);
     }
 
+    #[cfg(test)]
     fn scheduler_switch_out_at(
         &self,
         reason: scheduler::SwitchReason,
         now_ns: u64,
     ) -> CpuTimeDelta {
         let _writer = self.begin_write();
+        self.scheduler_switch_out_locked(reason, now_ns)
+    }
+
+    fn scheduler_switch_out_locked(
+        &self,
+        reason: scheduler::SwitchReason,
+        now_ns: u64,
+    ) -> CpuTimeDelta {
         let delta = self.account_running_until(now_ns);
         self.running.store(false, Ordering::Release);
         if reason == scheduler::SwitchReason::Blocked {
@@ -140,13 +160,19 @@ impl CpuTimeAccounting {
         delta
     }
 
+    #[cfg(any(test, axtest))]
     fn set_state_at(&self, state: TimerState, now_ns: u64) -> CpuTimeDelta {
         let _writer = self.begin_write();
+        self.set_state_locked(state, now_ns)
+    }
+
+    fn set_state_locked(&self, state: TimerState, now_ns: u64) -> CpuTimeDelta {
         let delta = self.account_running_until(now_ns);
         self.state.store(state as u8, Ordering::Release);
         delta
     }
 
+    #[cfg(test)]
     fn set_realtime_policy_at(
         &self,
         realtime_policy: bool,
@@ -154,6 +180,15 @@ impl CpuTimeAccounting {
         now_ns: u64,
     ) -> CpuTimeDelta {
         let _writer = self.begin_write();
+        self.set_realtime_policy_locked(realtime_policy, leaving_realtime, now_ns)
+    }
+
+    fn set_realtime_policy_locked(
+        &self,
+        realtime_policy: bool,
+        leaving_realtime: bool,
+        now_ns: u64,
+    ) -> CpuTimeDelta {
         let delta = self.account_running_until(now_ns);
         self.realtime_policy
             .store(realtime_policy, Ordering::Release);
@@ -259,13 +294,31 @@ impl CpuTimeAccounting {
     }
 
     fn begin_write(&self) -> CpuTimeWriter<'_> {
-        self.writers.fetch_add(1, Ordering::AcqRel);
-        CpuTimeWriter { accounting: self }
+        self.begin_write_with_gate(self.writer_gate.lock())
+    }
+
+    fn try_begin_write(&self) -> Option<CpuTimeWriter<'_>> {
+        self.writer_gate
+            .try_lock()
+            .map(|gate| self.begin_write_with_gate(gate))
+    }
+
+    fn begin_write_with_gate<'accounting>(
+        &'accounting self,
+        gate: SpinNoPreemptGuard<'accounting, ()>,
+    ) -> CpuTimeWriter<'accounting> {
+        let previous = self.writers.fetch_add(1, Ordering::AcqRel);
+        debug_assert_eq!(previous, 0, "CPU-time accounting has multiple writers");
+        CpuTimeWriter {
+            accounting: self,
+            _gate: gate,
+        }
     }
 }
 
 struct CpuTimeWriter<'accounting> {
     accounting: &'accounting CpuTimeAccounting,
+    _gate: SpinNoPreemptGuard<'accounting, ()>,
 }
 
 impl Drop for CpuTimeWriter<'_> {
@@ -338,7 +391,21 @@ impl ProcessCpuTimeAccounting {
     }
 
     pub(crate) fn record_transition(&self, transition: impl FnOnce() -> CpuTimeDelta) {
-        let delta = transition();
+        self.record_delta(transition());
+    }
+
+    pub(crate) fn try_record_transition(
+        &self,
+        transition: impl FnOnce() -> Option<CpuTimeDelta>,
+    ) -> bool {
+        let Some(delta) = transition() else {
+            return false;
+        };
+        self.record_delta(delta);
+        true
+    }
+
+    fn record_delta(&self, delta: CpuTimeDelta) {
         self.user_ns.fetch_add(delta.user_ns, Ordering::Release);
         self.system_ns.fetch_add(delta.system_ns, Ordering::Release);
     }
@@ -439,6 +506,16 @@ pub(super) fn scheduler_tick_group_accounting_is_aggregate_for_test() -> bool {
             system_ns: 10,
             sampled_at_ns: 10,
         })
+}
+
+#[cfg(axtest)]
+pub(super) fn scheduler_tick_accounting_excludes_state_writer_for_test() -> bool {
+    let accounting = CpuTimeAccounting::new();
+    accounting.set_state_at(TimerState::User, 0);
+    accounting.scheduler_switch_in_at(false, 0);
+
+    let _active_writer = accounting.begin_write();
+    accounting.try_account_scheduler_tick_at(10).is_none()
 }
 
 include!("accounting/tests.rs");

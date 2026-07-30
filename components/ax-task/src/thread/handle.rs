@@ -9,8 +9,8 @@ use core::{
 
 use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
-    SchedulerTickWork, SchedulingKey, SchedulingUrgency, TaskError, ThreadAffinityCompletion,
-    ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
+    SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey, SchedulingUrgency, TaskError,
+    ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
@@ -390,6 +390,7 @@ pub(crate) struct ThreadCore {
     extension: Option<ThreadExtensionView>,
     scheduler_tick_work: Option<SchedulerTickWork>,
     scheduler_tick_work_generation: AtomicU64,
+    scheduler_tick_observed_ns: AtomicU64,
     scheduler_tick_work_node: InboxNode,
     base_policy: AtomicPolicy,
     effective_policy: AtomicPolicy,
@@ -435,6 +436,7 @@ impl ThreadCore {
             extension,
             scheduler_tick_work,
             scheduler_tick_work_generation: AtomicU64::new(0),
+            scheduler_tick_observed_ns: AtomicU64::new(0),
             scheduler_tick_work_node: InboxNode::new(InboxKind::TaskWork),
             base_policy: AtomicPolicy::new(policy),
             effective_policy: AtomicPolicy::new(policy),
@@ -535,20 +537,15 @@ impl ThreadCore {
         self.reap_signal.publish();
     }
 
-    pub(crate) fn begin_scheduler_tick_work(&self) -> bool {
+    pub(crate) fn begin_scheduler_tick_work(&self, observed_ns: u64) -> bool {
         let Some(work) = self.scheduler_tick_work.as_ref() else {
             return false;
         };
         let Some(generation) = work.enabled_generation() else {
             return false;
         };
-        if let Some(extension) = self.extension_view() {
-            // SAFETY: the scheduler owns this current-thread core throughout
-            // the IRQ transaction. `SchedulerTickWork` obtained its callback
-            // from this exact extension, whose construction contract restricts
-            // the hook to bounded hard-IRQ accounting.
-            unsafe { work.account_irq(extension.data(), self.id()) };
-        }
+        self.scheduler_tick_observed_ns
+            .fetch_max(observed_ns, Ordering::AcqRel);
         let mut pending = self.scheduler_tick_work_generation.load(Ordering::Acquire);
         loop {
             if pending == generation {
@@ -575,7 +572,7 @@ impl ThreadCore {
         );
     }
 
-    pub(crate) fn take_scheduler_tick_work(&self) -> Option<SchedulerTickWork> {
+    pub(crate) fn take_scheduler_tick_work(&self) -> Option<SchedulerTickWorkClaim> {
         let generation = self
             .scheduler_tick_work_generation
             .swap(0, Ordering::AcqRel);
@@ -583,10 +580,31 @@ impl ThreadCore {
             generation != 0,
             "scheduler tick work consumption requires a pending publication"
         );
+        // Keep the timestamp as a monotonic watermark instead of consuming it.
+        // A new IRQ may publish after the generation claim but before this
+        // load; retaining the watermark lets both the claimed work and any
+        // newly queued generation observe a valid timestamp.
+        let observed_ns = self.scheduler_tick_observed_ns.load(Ordering::Acquire);
         self.scheduler_tick_work
             .as_ref()
             .filter(|work| work.generation_is_enabled(generation))
             .cloned()
+            .map(|work| SchedulerTickWorkClaim::new(work, generation, observed_ns))
+    }
+
+    /// Reclaims publication ownership after a transient callback conflict.
+    ///
+    /// A tick that arrives after [`Self::take_scheduler_tick_work`] may already
+    /// have installed the same or a newer generation and published a new
+    /// intrusive message. In that case the compare-exchange fails and that
+    /// producer owns delivery. A disabled generation is never replayed.
+    pub(crate) fn retry_scheduler_tick_work(&self, claim: &SchedulerTickWorkClaim) -> bool {
+        if !claim.generation_is_enabled() {
+            return false;
+        }
+        self.scheduler_tick_work_generation
+            .compare_exchange(0, claim.generation(), Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     pub(crate) fn try_claim_reap(&self) -> bool {
