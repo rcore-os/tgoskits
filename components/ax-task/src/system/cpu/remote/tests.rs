@@ -3,23 +3,34 @@ mod scheduler_ipi_tests {
     use std::{sync::mpsc, thread, time::Duration};
 
     use super::*;
+    use crate::{TaskSystem, ThreadSpec};
 
     #[test]
     fn overdue_scheduler_deadline_becomes_sticky_work_instead_of_a_resolution_timer() {
-        let remote = CpuRemote::create(CpuId::new(0));
-        assert!(remote.mark_online());
-        let cpu = CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), Arc::clone(&remote));
-        cpu.replace_scheduler_deadline(Some(100));
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let contender = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(contender.id()).unwrap();
+        system.enqueue(cpu.as_mut(), contender.id(), 0).unwrap();
+        let deadline = cpu
+            .remote()
+            .fair_balance_deadline_ns
+            .load(Ordering::Acquire);
 
         assert_eq!(
-            cpu.next_oneshot_deadline_ns(100, 1),
+            cpu.as_mut().next_oneshot_deadline_ns(deadline, 1),
             None,
             "an overdue scheduler event must not be rearmed at timer resolution"
         );
-        assert_eq!(cpu.scheduler_deadline_ns(), None);
         assert!(
-            remote.needs_reschedule(),
-            "the consumed deadline must remain visible as scheduler work"
+            cpu.remote().needs_reschedule(),
+            "the due deadline must remain visible as scheduler work"
         );
     }
 

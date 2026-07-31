@@ -255,7 +255,6 @@ impl TaskSystem {
             let pending = cpu.has_expired_task_deadlines() || cpu.task_deadline_expiry_due(now_ns);
             cpu.as_mut().finish_deadline_work(pending);
         }
-        cpu.as_mut().refresh_scheduler_deadline(now_ns);
         Ok(processed)
     }
 
@@ -420,7 +419,6 @@ impl TaskSystem {
         entry_now_ns: u64,
     ) -> Result<(), TaskError> {
         let completion_now_ns = Self::scheduler_completion_now_ns(entry_now_ns);
-        cpu.as_mut().refresh_scheduler_deadline(completion_now_ns);
         let resolution_ns = task_runtime::timer_resolution_ns();
         let Some(update) = cpu
             .as_mut()
