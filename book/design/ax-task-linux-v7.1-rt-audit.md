@@ -2415,7 +2415,7 @@ The Loom CPU-offline model still encoded the obsolete three-state
 already entered the lifecycle counter; it did not model the gap between
 reading a route and acquiring publication ownership. That model now uses the
 four-state lifecycle, and a second model covers stale-route carrier fallback.
-The complete ax-task suite passes 231 unit tests, all integration/doc tests,
+The complete ax-task suite passes 232 unit tests, all integration/doc tests,
 and 21 Loom models; ax-runtime's multitask host suite passes 62/62, and both
 affected feature-clippy matrices pass.
 
