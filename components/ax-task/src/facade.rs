@@ -50,11 +50,11 @@ pub use scheduling::{
     schedule_current_cpu, schedule_current_cpu_from_irq_guard_exit,
     schedule_current_cpu_from_preempt_exit, yield_current_cpu,
 };
-use scheduling::{
-    complete_current_context_switch_tail, execute_switch_plan, service_current_task_deadline_work,
-};
+use scheduling::{complete_current_context_switch_tail, execute_switch_plan};
 #[cfg(test)]
-use scheduling::{drain_current_expired_timers, prepare_next_context};
+use scheduling::{
+    drain_current_expired_timers, prepare_next_context, service_scheduler_safe_point_deadlines,
+};
 #[cfg(test)]
 use task_work::{TaskWorkServiceAction, service_task_work_pass, task_work_service_action};
 pub(crate) use task_work::{drain_deferred_reclaims, publish_deferred_reclaim};
@@ -233,7 +233,6 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
         RuntimeSchedulerEntry::Task,
     )?;
     let system = runtime_task_system()?;
-    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
     let (decision, now_ns) = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let must_migrate = system.set_current_affinity(cpu.as_mut(), affinity)?;
@@ -248,6 +247,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
         let thread = cpu.current().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x4558_0020, 0);
         });
+        let now_ns = task_runtime::monotonic_ns();
         let decision = system
             .yield_current(cpu.as_mut(), now_ns)
             .unwrap_or_else(|_| {

@@ -406,7 +406,7 @@ fn active_deadline_job_records_one_miss_at_its_absolute_deadline() {
         deadline.id()
     );
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 0).unwrap().next(),
         idle.id()
     );
 

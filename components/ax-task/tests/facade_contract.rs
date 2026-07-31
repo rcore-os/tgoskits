@@ -71,7 +71,7 @@ fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
         sleeper.id()
     );
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 1).unwrap().next(),
         bootstrap.id()
     );
     assert_eq!(sleeper.wake_handle().wake(), WakeResult::Notified);
@@ -562,7 +562,7 @@ fn scheduler_tick_delivery_pins_extension_across_thread_exit() {
     );
 
     on_clock_event_with_scheduler_tick(1, 1, true).unwrap();
-    system.block_current(cpu.as_mut()).unwrap();
+    system.block_current(cpu.as_mut(), 1).unwrap();
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     let exit_result = std::thread::scope(|scope| {

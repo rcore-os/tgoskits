@@ -24,7 +24,7 @@ fn reclaim_starts_only_after_the_blocked_reservation_zero_lag_time() {
 
     support::set_monotonic_ns(2);
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 2).unwrap().next(),
         reclaimer.id()
     );
     // The donor has q=2 and d=8, so zero-lag is 8 - 2*8/4 = 4.
@@ -112,7 +112,7 @@ fn wake_before_zero_lag_cancels_the_pending_inactive_transition() {
     );
     system.charge_current(cpu.as_mut(), 2, 2, 0).unwrap();
     support::set_monotonic_ns(2);
-    system.block_current(cpu.as_mut()).unwrap();
+    system.block_current(cpu.as_mut(), 2).unwrap();
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     install_runtime_handles(&system, cpu.as_mut());
@@ -304,7 +304,7 @@ fn blocked_deadline_exit_waits_for_owner_member_cleanup() {
         system.schedule(cpu.as_mut(), 0).unwrap().next(),
         thread.id()
     );
-    system.block_current(cpu.as_mut()).unwrap();
+    system.block_current(cpu.as_mut(), 0).unwrap();
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     assert_eq!(system.mark_exited(thread.id()), Err(TaskError::ThreadBusy));

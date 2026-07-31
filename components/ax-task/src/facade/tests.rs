@@ -20,6 +20,27 @@ mod tests {
         system.snapshot(cpu).unwrap()
     }
 
+    fn publish_unrelated_expired_deadline(
+        system: &TaskSystem,
+        mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> ThreadHandle {
+        let unrelated = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        let _registration = cpu
+            .as_mut()
+            .task_deadlines()
+            .arm(
+                unrelated.sleep_timer(),
+                now_ns,
+                TaskDeadlineKind::park_timeout(0),
+            )
+            .unwrap();
+        assert_eq!(on_clock_event(now_ns, 1).unwrap().expired(), 1);
+        unrelated
+    }
+
     static ORDERING_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: assert_address_space_installed,
         on_switch_out: ignore_switch_out,
@@ -150,7 +171,8 @@ mod tests {
         {
             let mut irq = RuntimeIrqGuard::enter();
             assert_eq!(
-                service_current_task_deadline_work(system.as_ref().get_ref(), &mut irq).unwrap(),
+                service_scheduler_safe_point_deadlines(system.as_ref().get_ref(), &mut irq)
+                    .unwrap(),
                 0
             );
         }
@@ -208,6 +230,70 @@ mod tests {
         assert!(
             test_runtime::take_task_deadline_update().is_none(),
             "sched_yield must not republish an unchanged logical clockevent"
+        );
+    }
+
+    #[test]
+    fn current_affinity_update_does_not_service_unrelated_deadlines() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let unrelated =
+            publish_unrelated_expired_deadline(system.as_ref().get_ref(), cpu.as_mut(), 10);
+        test_runtime::reset_monotonic_reads();
+
+        set_current_thread_affinity(CpuSet::all(1)).unwrap();
+
+        assert_eq!(
+            test_runtime::monotonic_reads(),
+            0,
+            "an affinity update that does not migrate must not enter a scheduler safe point"
+        );
+        let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+        assert_eq!(take_current_expired_task_deadlines(&mut expired).unwrap(), 1);
+        assert_eq!(
+            expired[0].thread(),
+            Some(unrelated.id()),
+            "affinity mutation must leave unrelated task deadlines to the safe-point owner"
+        );
+    }
+
+    #[test]
+    fn park_commit_does_not_service_unrelated_deadlines() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let unrelated =
+            publish_unrelated_expired_deadline(system.as_ref().get_ref(), cpu.as_mut(), 10);
+        let permit = acquire_blocking_permit().unwrap();
+        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+            panic!("fresh park must publish PARKING");
+        };
+        let _ = permit;
+        assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
+        test_runtime::reset_monotonic_reads();
+
+        commit_current_park(&mut ticket).unwrap();
+
+        assert_eq!(
+            test_runtime::monotonic_reads(),
+            1,
+            "park commit must use one owner-transition clock sample"
+        );
+        let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+        assert_eq!(take_current_expired_task_deadlines(&mut expired).unwrap(), 1);
+        assert_eq!(
+            expired[0].thread(),
+            Some(unrelated.id()),
+            "park commit must not consume another thread's deadline work"
         );
     }
 
@@ -536,7 +622,7 @@ mod tests {
             exited.id()
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();
-        let exit_decision = system.exit_current(cpu.as_mut()).unwrap();
+        let exit_decision = system.exit_current(cpu.as_mut(), 0).unwrap();
         assert_ne!(exit_decision.next(), exited.id());
         assert_eq!(PARKING_EXIT_CALLBACKS.load(Ordering::Acquire), 0);
 
@@ -627,7 +713,7 @@ mod tests {
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();
         assert_eq!(
-            system.exit_current(cpu.as_mut()).unwrap().next(),
+            system.exit_current(cpu.as_mut(), 0).unwrap().next(),
             bootstrap.id()
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();
@@ -968,6 +1054,78 @@ mod tests {
     }
 
     #[test]
+    fn exit_commit_separates_transition_from_unrelated_deadline_service() {
+        use crate::{
+            ThreadResources,
+            runtime::{ExecutionContextHandle, StackHandle, TlsHandle},
+        };
+
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let current_resources = unsafe {
+            // SAFETY: the unit runtime treats these unique scalar handles as
+            // inert identities for the duration of the switch.
+            ThreadResources::new(
+                ExecutionContextHandle::from_raw(1),
+                StackHandle::from_raw(2),
+                TlsHandle::from_raw(3),
+                AddressSpaceHandle::NONE,
+            )
+        };
+        system
+            .install_bootstrap_thread(cpu.as_mut(), unsafe {
+                ThreadSpec::new(SchedulePolicy::default()).with_resources(current_resources)
+            })
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let next_resources = unsafe {
+            // SAFETY: this bundle owns distinct inert handles.
+            ThreadResources::new(
+                ExecutionContextHandle::from_raw(4),
+                StackHandle::from_raw(5),
+                TlsHandle::from_raw(6),
+                AddressSpaceHandle::NONE,
+            )
+        };
+        let next = system
+            .create_thread(unsafe {
+                ThreadSpec::new(SchedulePolicy::fifo(RtPriority::new(1).unwrap()))
+                    .with_resources(next_resources)
+            })
+            .unwrap();
+        system.make_ready(next.id()).unwrap();
+        system.enqueue(cpu.as_mut(), next.id(), 0).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let unrelated =
+            publish_unrelated_expired_deadline(system.as_ref().get_ref(), cpu.as_mut(), 10);
+        test_runtime::set_monotonic_ns(10);
+        let permit = prepare_current_exit().unwrap();
+        let _context_switch = test_runtime::allow_context_switch();
+        test_runtime::reset_monotonic_reads();
+
+        let exit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            commit_current_exit(permit)
+        }));
+
+        assert!(
+            exit.is_err(),
+            "the unit runtime must reject returning to an exited context"
+        );
+        assert_eq!(
+            test_runtime::monotonic_reads(),
+            2,
+            "exit commit needs one transition timestamp and one completion-time clockevent recheck"
+        );
+        let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+        assert_eq!(take_current_expired_task_deadlines(&mut expired).unwrap(), 1);
+        assert_eq!(
+            expired[0].thread(),
+            Some(unrelated.id()),
+            "exit commit must not consume another thread's deadline work"
+        );
+    }
+
+    #[test]
     fn current_cpu_reference_keeps_its_irq_pin_alive() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -1022,7 +1180,7 @@ mod tests {
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
         assert_eq!(
-            system.block_current(cpu.as_mut()).unwrap().next(),
+            system.block_current(cpu.as_mut(), 0).unwrap().next(),
             idle.id()
         );
         system.complete_context_switch(cpu.as_mut()).unwrap();

@@ -77,7 +77,10 @@ fn cpu_busy_runtime_counts_non_idle_dispatches_only() {
     assert_eq!(system.cpu_busy_runtime_ns(CpuId::new(0)).unwrap(), 4);
 
     support::set_monotonic_ns(7);
-    assert_eq!(system.exit_current(cpu.as_mut()).unwrap().next(), idle.id());
+    assert_eq!(
+        system.exit_current(cpu.as_mut(), 7).unwrap().next(),
+        idle.id()
+    );
     assert_eq!(system.cpu_busy_runtime_ns(CpuId::new(0)).unwrap(), 7);
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
@@ -153,7 +156,7 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), next.id());
     system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(
-        system.exit_current(cpu.as_mut()).unwrap().next(),
+        system.exit_current(cpu.as_mut(), 0).unwrap().next(),
         bootstrap.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();

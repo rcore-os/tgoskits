@@ -207,7 +207,7 @@ fn same_cpu_task_wake_activates_the_owner_without_remote_inbox() {
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 0).unwrap().next(),
         bootstrap.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
@@ -259,7 +259,7 @@ fn guarded_same_cpu_task_wake_retains_the_lock_free_inbox_path() {
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 0).unwrap().next(),
         bootstrap.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
@@ -1263,7 +1263,7 @@ fn last_non_idle_exit_publishes_work_only_after_switch_tail() {
     drop(exiting);
     drop(idle);
 
-    let decision = system.exit_current(cpu.as_mut()).unwrap();
+    let decision = system.exit_current(cpu.as_mut(), 0).unwrap();
     assert_eq!(decision.next(), cpu.idle().unwrap());
     assert!(
         !system.deferred_task_work_pending(),
@@ -1414,7 +1414,7 @@ fn switch_handoff_core_reference_does_not_block_detached_reaping() {
     drop(exiting);
     drop(idle);
 
-    let decision = system.exit_current(cpu.as_mut()).unwrap();
+    let decision = system.exit_current(cpu.as_mut(), 0).unwrap();
     assert_eq!(decision.next(), cpu.idle().unwrap());
     let barrier: &'static crate::task_work::TestPublishBarrier =
         Box::leak(Box::new(crate::task_work::TestPublishBarrier::new()));
@@ -1523,7 +1523,7 @@ fn exited_context_cannot_be_reaped_before_switch_tail() {
 
     let exiting = bootstrap.id();
     drop(bootstrap);
-    let decision = system.exit_current(cpu.as_mut()).unwrap();
+    let decision = system.exit_current(cpu.as_mut(), 0).unwrap();
     assert_ne!(decision.next(), exiting);
     assert_eq!(system.reap_thread(exiting), Err(TaskError::ThreadBusy));
 
@@ -1750,7 +1750,7 @@ fn failed_runtime_switch_tail_keeps_outgoing_context_unreclaimable() {
 
     let exiting = bootstrap.id();
     drop(bootstrap);
-    system.exit_current(cpu.as_mut()).unwrap();
+    system.exit_current(cpu.as_mut(), 0).unwrap();
     crate::test_runtime::configure_context_switch_tail(RuntimeStatus::InvalidHandle);
 
     assert_eq!(
@@ -1787,7 +1787,7 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
     let exiting = bootstrap.id();
     let exiting_core = Arc::clone(&bootstrap.core);
     drop(bootstrap);
-    system.exit_current(cpu.as_mut()).unwrap();
+    system.exit_current(cpu.as_mut(), 0).unwrap();
     crate::test_runtime::configure_context_switch_tail(RuntimeStatus::Success);
 
     exiting_core.sched().lock().placement.inject_detached();
@@ -1840,7 +1840,7 @@ fn switch_tail_defers_exit_callback_until_scheduler_guards_are_released() {
 
     let exiting = bootstrap.id();
     drop(bootstrap);
-    system.exit_current(cpu.as_mut()).unwrap();
+    system.exit_current(cpu.as_mut(), 0).unwrap();
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     assert_eq!(
@@ -2172,7 +2172,10 @@ fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
         .charge_current(cpu.as_mut(), 1_000_000, 1_000_000, 0)
         .unwrap();
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system
+            .block_current(cpu.as_mut(), 1_000_000)
+            .unwrap()
+            .next(),
         idle.id()
     );
     system
@@ -2920,7 +2923,7 @@ fn deadline_pi_boost_overrides_constrained_wake_throttling() {
     system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 0).unwrap().next(),
         idle.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
@@ -3235,7 +3238,7 @@ fn deadline_donor_budget_is_debited_and_overrun_callback_is_deferred() {
     let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 0).unwrap().next(),
         owner.id()
     );
 
@@ -3297,7 +3300,7 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
         .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
         .unwrap();
     assert_ne!(
-        system.block_current(cpu0.as_mut()).unwrap().next(),
+        system.block_current(cpu0.as_mut(), 0).unwrap().next(),
         donor.id()
     );
     system.complete_context_switch(cpu0.as_mut()).unwrap();
@@ -3475,7 +3478,7 @@ fn wake_during_parking_cancels_schedule_out() {
     assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
 
     assert!(matches!(
-        system.commit_park(cpu.as_mut(), &mut ticket).unwrap(),
+        system.commit_park(cpu.as_mut(), &mut ticket, 0).unwrap(),
         ParkCommit::Notified
     ));
     assert_eq!(
@@ -3483,7 +3486,7 @@ fn wake_during_parking_cancels_schedule_out() {
         ThreadState::Running
     );
     assert!(matches!(
-        system.commit_park(cpu.as_mut(), &mut ticket),
+        system.commit_park(cpu.as_mut(), &mut ticket, 0),
         Err(TaskError::StaleThreadId)
     ));
     assert_eq!(
@@ -3535,7 +3538,7 @@ fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
     assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
 
     assert!(matches!(
-        system.commit_park(cpu.as_mut(), &mut ticket).unwrap(),
+        system.commit_park(cpu.as_mut(), &mut ticket, 0).unwrap(),
         ParkCommit::Notified
     ));
     assert_eq!(
