@@ -172,10 +172,10 @@ pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
         RuntimeSchedulerEntry::Task,
     )?;
     let system = runtime_task_system()?;
-    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
+    let now_ns = task_runtime::monotonic_ns();
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
-        system.yield_current_after_deadline_service(cpu.as_mut(), now_ns)?
+        system.yield_current(cpu.as_mut(), now_ns)?
     };
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     Ok(decision)

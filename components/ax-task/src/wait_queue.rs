@@ -385,7 +385,9 @@ mod tests {
             (unsafe { Pin::get_unchecked_mut(cpu.as_mut()) } as *mut crate::CpuLocal)
                 .expose_provenance(),
         );
-        crate::test_runtime::configure_task_deadline_publish(RuntimeStatus::Platform, 2);
+        // Arm succeeds; the next semantic change is cancellation. Unchanged
+        // scheduler tails no longer manufacture an intermediate publication.
+        crate::test_runtime::configure_task_deadline_publish(RuntimeStatus::Platform, 1);
         let _context_switch = crate::test_runtime::allow_context_switch();
         let queue = WaitQueue::new();
 

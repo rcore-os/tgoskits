@@ -2092,10 +2092,47 @@ the same pass.
 
 The deadline service returns its coherent entry clock sample when no work was
 processed and resamples only after actual timer work. Thus the ordinary
-schedule/yield path performs one monotonic read instead of two without using a
-stale timestamp after callbacks. Deterministic regressions proved the prior
-futex yield, idle expiry pass, and double clock read before their respective
-fixes.
+schedule path performs one monotonic read instead of two without using a stale
+timestamp after callbacks. Deterministic regressions proved the prior futex
+yield, idle expiry pass, and double clock read before their respective fixes.
+
+## Current-head forced-yield and clockevent ownership
+
+The forced-yield path previously behaved as another generic scheduler safe
+point. Before applying the scheduling class's yield transition, it drained the
+owner inbox, ran deadline expiry, and serviced deferred callbacks. Its switch
+tail also republished the task deadline to ax-runtime on every yield even when
+neither the earliest deadline nor the deferred-work state changed.
+
+Linux v7.1 keeps forced yield narrower. `do_sched_yield()` acquires the
+runqueue lock, calls the active scheduling class's `yield_task()` operation,
+and enters `schedule()` (`kernel/sched/syscalls.c:1335-1350`). The fair and
+deadline classes update only their own queue/accounting state
+(`kernel/sched/fair.c:9347-9369`,
+`kernel/sched/deadline.c:2377-2394`). Timer expiry and unrelated deferred work
+remain owned by their normal interrupt and safe-point paths.
+
+ax-task now treats forced yield as a scheduling-class transition, not a work
+drain. It commits the current dispatch accounting, consumes the preemption
+request covered by that selection, applies the class-specific yield operation,
+and selects the next thread while preserving unrelated sticky owner work for
+the next safe point. The old deadline-entry wrappers around forced yield were
+removed.
+
+`CpuLocal` also remembers the last successfully published semantic task
+deadline state: `Option<MonotonicDeadline>` plus the deferred-work bit. A
+normal switch tail increments the publication generation and calls ax-runtime
+only when that state changes. Explicit arm, cancel, IRQ, and recovery
+transactions retain forced publications. If a runtime publication fails, the
+cache is invalidated so the next scheduler boundary must reassert the state.
+
+Two deterministic regressions failed on the old implementation: forced yield
+consumed a queued owner-inbox item, and an otherwise unchanged yield produced
+a new clockevent publication. Both now pass. The complete ax-task suite passes
+224 unit tests and 20 loom models, ax-runtime's multitask host suite passes
+62/62, and the x86_64 Starry QEMU suite passes 391/391. The QEMU phase took
+13.72 seconds, matching the previous 13.93-second checkpoint within normal
+run-to-run noise.
 
 ## Completion rules
 

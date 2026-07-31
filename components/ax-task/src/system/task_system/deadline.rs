@@ -422,9 +422,16 @@ impl TaskSystem {
         let completion_now_ns = Self::scheduler_completion_now_ns(entry_now_ns);
         cpu.as_mut().refresh_scheduler_deadline(completion_now_ns);
         let resolution_ns = task_runtime::timer_resolution_ns();
-        let update = cpu
+        let Some(update) = cpu
             .as_mut()
-            .next_task_deadline_update(completion_now_ns, resolution_ns)?;
-        ensure_runtime_success(task_runtime::publish_task_deadline(update))
+            .next_task_deadline_update_if_changed(completion_now_ns, resolution_ns)?
+        else {
+            return Ok(());
+        };
+        let status = task_runtime::publish_task_deadline(update);
+        if status != RuntimeStatus::Success {
+            cpu.as_mut().invalidate_task_deadline_publication();
+        }
+        ensure_runtime_success(status)
     }
 }

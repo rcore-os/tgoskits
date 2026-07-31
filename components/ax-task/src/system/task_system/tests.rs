@@ -2362,6 +2362,39 @@ fn forced_yield_clears_slice_expiration_accounted_by_that_schedule() {
 }
 
 #[test]
+fn forced_yield_does_not_consume_deferred_owner_work() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let contender = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(contender.id()).unwrap();
+    system.enqueue(cpu.as_mut(), contender.id(), 0).unwrap();
+
+    let deferred = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    publish_test_scheduler_work(cpu.remote(), test_inbox_node(&deferred), 7);
+    assert!(cpu.remote().remote_wake_inbox().has_pending());
+
+    system.yield_current(cpu.as_mut(), 1).unwrap();
+
+    assert!(
+        cpu.remote().remote_wake_inbox().has_pending(),
+        "sched_yield must not consume unrelated remote/deferred work"
+    );
+    assert_eq!(
+        system
+            .drain_remote_wakes(cpu.as_mut(), 1)
+            .unwrap()
+            .drained(),
+        1
+    );
+}
+
+#[test]
 fn running_migration_is_published_only_after_switch_tail() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
