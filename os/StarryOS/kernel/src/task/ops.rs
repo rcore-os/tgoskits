@@ -675,21 +675,20 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             terminate_pid_namespace_members(&thr.proc_data, namespace);
         }
 
+        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
+
+        // Linux tears down the exiting task's mm before exit_notify() makes
+        // the zombie waitable. Keep the same publication order here: once a
+        // parent observes the zombie, inherited VMA accounting and other
+        // address-space-owned resources must already be gone.
+        thr.proc_data.release_aspace_slot_if_needed();
+
         // Freeze all Linux-visible exit data in the generation-specific PID
         // identity. This is the sole Live -> Zombie state transition.
         let zombie_cred = thr.cred();
         let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
         let is_clone_child = thr.proc_data.is_clone_child();
         let wait_parent_tid = thr.proc_data.wait_parent_tid();
-
-        // A parent that observes this child as a zombie must not see IPC
-        // resources that still belong to the exiting process. In particular,
-        // a vfork parent resumes only after this cleanup.
-        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
-
-        // Drop memfd inode accounting before waitpid returns (SMP); use
-        // process_slots refcounting — not vm_aspace_shared + clear().
-        thr.proc_data.release_aspace_slot_if_needed();
 
         let zombie_nice = if is_process_leader {
             thr.nice()
