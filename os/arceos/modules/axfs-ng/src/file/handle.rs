@@ -274,6 +274,11 @@ impl File {
         self.access(FileFlags::WRITE)?.write_at(src, offset)
     }
 
+    /// Truncates or extends the file to `len` bytes.
+    pub fn set_len(&self, len: u64) -> VfsResult<()> {
+        self.access(FileFlags::WRITE)?.set_len(len)
+    }
+
     /// Attempts to sync OS-internal file content and metadata to disk.
     ///
     /// If `data_only` is `true`, only the file data is synced, not the

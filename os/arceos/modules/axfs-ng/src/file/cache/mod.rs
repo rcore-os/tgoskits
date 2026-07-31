@@ -1,6 +1,7 @@
 mod readahead;
 #[cfg(feature = "vfs")]
 mod reclaim;
+mod resize;
 mod writeback;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -117,6 +118,11 @@ impl CachedFileShared {
     #[cfg(test)]
     fn listener_lock_is_free_for_test(&self) -> bool {
         self.evict_listeners.try_lock().is_some()
+    }
+
+    #[cfg(test)]
+    fn page_cache_lock_is_free_for_test(&self) -> bool {
+        self.page_cache.try_lock().is_some()
     }
 }
 
@@ -499,6 +505,16 @@ impl CachedFile {
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
         if end > old_len {
+            if !old_len.is_multiple_of(PAGE_SIZE as u64) {
+                let page_number = (old_len / PAGE_SIZE as u64) as u32;
+                let page_start = u64::from(page_number) * PAGE_SIZE as u64;
+                self.zero_partial_page_locked(
+                    file,
+                    page_number,
+                    (old_len - page_start) as usize,
+                    (end - page_start).min(PAGE_SIZE as u64) as usize,
+                )?;
+            }
             file.set_len(end)?;
             self.shared.update_len_max(end);
         }
@@ -547,69 +563,6 @@ impl CachedFile {
         let len = self.shared.len();
         self.write_at_locked(buf, len)
             .map(|written| (written, len + written as u64))
-    }
-
-    /// Truncates or extends the file to `len` bytes.
-    pub fn set_len(&self, len: u64) -> VfsResult<()> {
-        let _io = self.shared.io_lock.lock();
-        let file = self.inner.entry().as_file()?;
-        let old_len = self.shared.len();
-        file.set_len(len)?;
-        self.shared.set_len(len);
-
-        let old_last_page = (old_len / PAGE_SIZE as u64) as u32;
-        let new_last_page = (len / PAGE_SIZE as u64) as u32;
-        if old_len < len {
-            let mut guard = self.shared.page_cache.lock();
-            if let Some(page) = guard.get_mut(&old_last_page) {
-                let page_start = old_last_page as u64 * PAGE_SIZE as u64;
-                let old_page_offset = (old_len - page_start) as usize;
-                let new_page_offset = (len - page_start).min(PAGE_SIZE as u64) as usize;
-                page.data()[old_page_offset..new_page_offset].fill(0);
-                // Mark dirty so the zeroed gap is written back: ext4 `set_len`
-                // only updates `i_size`, it does not clear the bytes on disk, so
-                // a clean eviction + reload would otherwise resurrect stale data.
-                page.dirty = true;
-            }
-        } else if len < old_len {
-            let mut guard = self.shared.page_cache.lock();
-            // Linux `truncate(len)` zeroes the tail of the partial last page, so a
-            // later extend or `mmap` reads those bytes as zero. Without this, a
-            // shrink that leaves a partial last page (e.g. sqlite's
-            // `ftruncate(<-shm>, 3)`) keeps stale bytes there; a subsequent mmap of
-            // the regrown file then sees the stale tail, so a fresh reader trusts a
-            // stale wal-index header instead of recovering (juicefs sqlite WAL
-            // cross-process reopen failure). This branch also covers shrinking
-            // within a single page, where neither old branch ran at all.
-            let tail = (len % PAGE_SIZE as u64) as usize;
-            if tail != 0
-                && let Some(page) = guard.get_mut(&new_last_page)
-            {
-                page.data()[tail..].fill(0);
-                // Mark dirty so the zeroed tail is written back: ext4 `set_len`
-                // updates `i_size` but leaves the on-disk bytes past it intact, so
-                // a clean eviction + reload (or mmap fault) would otherwise reload
-                // the stale tail from disk.
-                page.dirty = true;
-            }
-            // Remove all pages that are wholly beyond the new length.
-            // TODO(mivik): can this be more efficient?
-            let keys = guard
-                .iter()
-                .map(|(k, _)| *k)
-                .filter(|it| *it > new_last_page)
-                .collect::<Vec<_>>();
-            for pn in keys {
-                if let Some(mut page) = guard.pop(&pn)
-                    && !self.in_memory
-                {
-                    // Don't write back pages since they're discarded
-                    page.dirty = false;
-                    self.evict_cache(file, pn, &mut page)?;
-                }
-            }
-        }
-        Ok(())
     }
 
     pub fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
