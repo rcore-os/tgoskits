@@ -432,35 +432,17 @@ impl TaskSystem {
     /// Moves the current thread to its class tail and selects another thread.
     pub fn yield_current(
         &self,
-        cpu: Pin<&mut CpuLocal>,
-        now_ns: u64,
-    ) -> Result<ScheduleDecision, TaskError> {
-        self.yield_current_with_deadline_entry(cpu, now_ns, DeadlineEntry::Service)
-    }
-
-    pub(crate) fn yield_current_after_deadline_service(
-        &self,
-        cpu: Pin<&mut CpuLocal>,
-        now_ns: u64,
-    ) -> Result<ScheduleDecision, TaskError> {
-        self.yield_current_with_deadline_entry(cpu, now_ns, DeadlineEntry::AlreadyServiced)
-    }
-
-    fn yield_current_with_deadline_entry(
-        &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
-        deadline_entry: DeadlineEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
-        self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
-        cpu.as_mut().scheduler_enter();
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        if matches!(deadline_entry, DeadlineEntry::Service) {
-            self.service_deadline_timers(cpu.as_mut(), now_ns)?;
-        }
+        // Forced yield owns the current entity's class transition, not the
+        // general scheduler safe point. Consume the preemption request covered
+        // by this selection while preserving sticky remote/deadline work for
+        // its already-armed delivery.
         cpu.as_mut().scheduler_enter();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();

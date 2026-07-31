@@ -184,6 +184,34 @@ mod tests {
     }
 
     #[test]
+    fn forced_yield_does_not_republish_an_unchanged_clockevent() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        let initial = {
+            let _irq = RuntimeIrqGuard::enter();
+            cpu.as_mut().next_task_deadline_update(0, 1).unwrap()
+        };
+        assert_eq!(
+            task_runtime::publish_task_deadline(initial),
+            RuntimeStatus::Success
+        );
+        assert!(test_runtime::take_task_deadline_update().is_some());
+
+        yield_current_cpu().unwrap();
+
+        assert!(
+            test_runtime::take_task_deadline_update().is_none(),
+            "sched_yield must not republish an unchanged logical clockevent"
+        );
+    }
+
+    #[test]
     fn saturated_park_deadline_remains_notification_only() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

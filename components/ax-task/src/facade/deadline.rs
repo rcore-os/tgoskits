@@ -213,6 +213,8 @@ pub(crate) fn cancel_current_park_deadline(
     };
     let status = task_runtime::publish_task_deadline(update);
     if status != crate::runtime::RuntimeStatus::Success {
+        let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+        cpu.as_mut().invalidate_task_deadline_publication();
         return Err(TaskError::RuntimeFailure(status as u32));
     }
     Ok(removed)

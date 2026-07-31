@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TaskDeadlinePublicationState {
+    deadline: Option<MonotonicDeadline>,
+    deferred_work: bool,
+}
+
 /// Scheduler state that is created explicitly and mutated only by its owner CPU.
 ///
 /// The object is `!Unpin`; runtimes store it in per-CPU pinned allocations and
@@ -28,6 +34,7 @@ pub struct CpuLocal {
     deadline_expired_buffer: Vec<ExpiredTaskDeadline>,
     deadline_expired_count: usize,
     task_deadline_generation: u64,
+    task_deadline_publication: Option<TaskDeadlinePublicationState>,
     fair_balance_interval_ns: u64,
     switch_handoff: Option<SwitchHandoff>,
     batch_limit: usize,
@@ -63,6 +70,7 @@ impl CpuLocal {
             deadline_expired_buffer: vec![ExpiredTaskDeadline::EMPTY; config.batch_limit()],
             deadline_expired_count: 0,
             task_deadline_generation: 0,
+            task_deadline_publication: None,
             fair_balance_interval_ns: config.balance_interval_ns().max(1),
             switch_handoff: None,
             batch_limit: config.batch_limit(),
@@ -544,21 +552,50 @@ impl CpuLocal {
         now_ns: u64,
         timer_resolution_ns: u64,
     ) -> Result<TaskDeadlineUpdate, TaskError> {
+        self.prepare_task_deadline_update(now_ns, timer_resolution_ns, true)?
+            .ok_or(TaskError::InvalidConfiguration)
+    }
+
+    pub(crate) fn next_task_deadline_update_if_changed(
+        self: Pin<&mut Self>,
+        now_ns: u64,
+        timer_resolution_ns: u64,
+    ) -> Result<Option<TaskDeadlineUpdate>, TaskError> {
+        self.prepare_task_deadline_update(now_ns, timer_resolution_ns, false)
+    }
+
+    fn prepare_task_deadline_update(
+        self: Pin<&mut Self>,
+        now_ns: u64,
+        timer_resolution_ns: u64,
+        force: bool,
+    ) -> Result<Option<TaskDeadlineUpdate>, TaskError> {
         let deadline = self
             .as_ref()
             .next_oneshot_deadline_ns(now_ns, timer_resolution_ns)
             .and_then(MonotonicDeadline::from_nanos);
+        let deferred_work = self.remote.deadline_work_pending();
+        let publication = TaskDeadlinePublicationState {
+            deadline,
+            deferred_work,
+        };
         let fields = self.fields_mut();
+        if !force && fields.task_deadline_publication == Some(publication) {
+            return Ok(None);
+        }
         fields.task_deadline_generation = fields
             .task_deadline_generation
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
-        TaskDeadlineUpdate::try_new(
-            fields.task_deadline_generation,
-            deadline,
-            fields.remote.deadline_work_pending(),
-        )
-        .ok_or(TaskError::InvalidConfiguration)
+        let update =
+            TaskDeadlineUpdate::try_new(fields.task_deadline_generation, deadline, deferred_work)
+                .ok_or(TaskError::InvalidConfiguration)?;
+        fields.task_deadline_publication = Some(publication);
+        Ok(Some(update))
+    }
+
+    pub(crate) fn invalidate_task_deadline_publication(self: Pin<&mut Self>) {
+        self.fields_mut().task_deadline_publication = None;
     }
 
     pub(crate) fn deadline_work_pending(&self) -> bool {

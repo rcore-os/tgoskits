@@ -249,7 +249,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
             task_runtime::fatal_invariant(0x4558_0020, 0);
         });
         let decision = system
-            .yield_current_after_deadline_service(cpu.as_mut(), now_ns)
+            .yield_current(cpu.as_mut(), now_ns)
             .unwrap_or_else(|_| {
                 // Affinity publication cannot be rolled back safely after another CPU
                 // may have observed the migration target. Scheduler commit failures are
