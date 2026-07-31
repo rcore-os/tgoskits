@@ -2609,6 +2609,50 @@ The state remains under the existing registry lock and callbacks still run
 outside scheduler locks. This change narrows representable states without
 adding a lock, reference count, or publication on the scheduling path.
 
+## Current-head Deadline callback publication
+
+Deadline overrun dispatch still rediscovered pending callbacks by scanning
+every registry slot. The rotating cursor prevented starvation but did not
+bound lookup work: one callback could inspect every live thread, and a batch
+of callbacks could repeat that scan under the global task-system lock. Moving
+the cursor into a preallocated registry queue would remove the scan but would
+make the owner scheduler acquire the cold registry lock when CBS budget
+exhaustion publishes an event. That violates the owner-runqueue rule that
+progress depends only on `CpuLocal`, the selected thread cell, and lock-free
+deferred publication.
+
+Linux v7.1 `task_work_add()` attaches explicit work to one task instead of
+searching the task list, while `irq_work_queue()` publishes an embedded
+lock-free node and raises the appropriate deferred execution boundary
+(`kernel/task_work.c:59-80`, `193-224`; `kernel/irq_work.c:69-97`,
+`101-125`). The reusable invariant is that the producer transfers one stable
+work identity; the consumer does not discover it with a global scan.
+
+Each `ThreadCore` now embeds a dedicated Deadline callback inbox node.
+Budget-exhaustion commit transfers one retained core reference into a
+lock-free MPSC publication:
+
+- repeated overruns coalesce behind the single physical node while the
+  per-thread overrun count preserves event multiplicity;
+- detaching the node before claiming the record allows a concurrent producer
+  to publish a fresh physical edge, so callback execution cannot lose a new
+  overrun;
+- the task-work consumer validates the generation-bearing `ThreadId`, claims
+  exactly that registry record, and invokes the extension only after dropping
+  registry and scheduler locks; and
+- remaining events republish the same embedded node, while overrun count and
+  the typed callback claim keep the record unreapable throughout the transfer.
+
+The scheduler producer performs no allocation and does not enter the global
+registry lock. The deterministic regression places the only pending Deadline
+thread after 32 unrelated live records: the old implementation visits 33
+records, while the intrusive publication visits exactly one. Existing
+allocation and hard-IRQ contracts continue to prove that collection is
+allocation-free and callbacks never run in hard IRQ context. A second
+deterministic race publishes another overrun while the first callback is
+blocked after its claim; the fresh node delivers the second event exactly
+once after the first callback returns.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

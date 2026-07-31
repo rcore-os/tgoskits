@@ -115,6 +115,7 @@ pub struct TaskSystem {
     pub(super) state: PreemptTicketLock<TaskSystemState>,
     pub(super) root_domain: PreemptTicketLock<RootDomainState>,
     pub(super) deferred_reclaims: SchedulerInbox,
+    pub(super) deferred_deadline_callbacks: SchedulerInbox,
     pub(super) deferred_scheduler_ticks: SchedulerInbox,
     pub(super) task_work: Arc<TaskWorkDoorbell>,
     pub(super) topology_sequence: SequenceCounter,

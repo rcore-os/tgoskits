@@ -41,8 +41,8 @@ pub use outcome::{
 };
 pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};
 use registry::{
-    CpuRegistration, DetachedThreadRecord, PendingResourceRelease, PiRecomputeProof,
-    PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
+    CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, PendingResourceRelease,
+    PiRecomputeProof, PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
 };
 use thread_callbacks::ThreadCallbackState;
 
@@ -152,7 +152,6 @@ impl TaskSystem {
                 pending_resource_releases: Vec::new(),
                 task_work_class_cursor: DeferredTaskWorkClass::Deadline,
                 thread_release_first: true,
-                deadline_callback_cursor: 0,
                 exited_work: ExitedThreadWork::new(),
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
             }),
@@ -160,6 +159,7 @@ impl TaskSystem {
                 online: CpuSet::empty(config.cpu_count()),
             }),
             deferred_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
+            deferred_deadline_callbacks: SchedulerInbox::new(InboxKind::TaskWork),
             deferred_scheduler_ticks: SchedulerInbox::new(InboxKind::TaskWork),
             task_work,
             topology_sequence: SequenceCounter::default(),

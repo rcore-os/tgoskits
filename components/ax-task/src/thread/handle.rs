@@ -415,6 +415,7 @@ pub(crate) struct ThreadCore {
     scheduler_tick_work_generation: AtomicU64,
     scheduler_tick_observed_ns: AtomicU64,
     scheduler_tick_work_node: InboxNode,
+    deadline_callback_node: InboxNode,
     base_policy: AtomicPolicy,
     effective_policy: AtomicPolicy,
     effective_key_sequence: AtomicUsize,
@@ -464,6 +465,7 @@ impl ThreadCore {
             scheduler_tick_work_generation: AtomicU64::new(0),
             scheduler_tick_observed_ns: AtomicU64::new(0),
             scheduler_tick_work_node: InboxNode::new(InboxKind::TaskWork),
+            deadline_callback_node: InboxNode::new(InboxKind::TaskWork),
             base_policy: AtomicPolicy::new(policy),
             effective_policy: AtomicPolicy::new(policy),
             effective_key_sequence: AtomicUsize::new(0),
@@ -560,10 +562,6 @@ impl ThreadCore {
             self.reap_signal.mark_exited();
         }
         self.state.store(state as u8, Ordering::Release);
-    }
-
-    pub(crate) fn publish_task_work(&self) {
-        self.reap_signal.publish();
     }
 
     pub(crate) fn begin_scheduler_tick_work(&self, observed_ns: u64) -> bool {
@@ -893,6 +891,10 @@ impl ThreadCore {
 
     pub(crate) const fn scheduler_tick_work_node(&self) -> &InboxNode {
         &self.scheduler_tick_work_node
+    }
+
+    pub(crate) const fn deadline_callback_node(&self) -> &InboxNode {
+        &self.deadline_callback_node
     }
 
     pub(crate) fn publish_wake(&self) -> bool {
