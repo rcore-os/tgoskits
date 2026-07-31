@@ -201,8 +201,8 @@ impl PiMutexHandoff<'_> {
                 .thread_record(old_owner)
                 .expect("prepared PI owner must retain its thread record");
             let mut sched = record.sched.lock();
-            debug_assert!(sched.blocked_pi_waiters >= active_waiters);
-            sched.blocked_pi_waiters -= active_waiters;
+            debug_assert!(sched.pi.blocked_waiters >= active_waiters);
+            sched.pi.blocked_waiters -= active_waiters;
         }
 
         if let Some(next) = next_owner {
@@ -247,7 +247,8 @@ impl PiMutexHandoff<'_> {
                 .expect("prepared PI next owner must retain its thread record")
                 .sched
                 .lock()
-                .blocked_pi_waiters =
+                .pi
+                .blocked_waiters =
                 next_waiter_count.expect("prepared PI next-owner count must exist");
         }
 
@@ -312,8 +313,8 @@ impl PiMutexRelease<'_> {
                 .thread_record(old_owner)
                 .expect("prepared PI owner must retain its thread record");
             let mut sched = record.sched.lock();
-            debug_assert!(sched.blocked_pi_waiters >= active_waiters);
-            sched.blocked_pi_waiters -= active_waiters;
+            debug_assert!(sched.pi.blocked_waiters >= active_waiters);
+            sched.pi.blocked_waiters -= active_waiters;
         }
 
         let mut selected_registration = state.detach_pi_waiter(selected);
@@ -455,7 +456,8 @@ impl PiMutexClaim<'_> {
             .expect("prepared PI claimant must retain its thread record")
             .sched
             .lock()
-            .blocked_pi_waiters = next_waiter_count;
+            .pi
+            .blocked_waiters = next_waiter_count;
         state.apply_pi_recompute_chain(next_recompute, fair_slice_ns);
     }
 }
@@ -490,23 +492,31 @@ impl TaskSystem {
         state.validate_pi_donor(waiter)?;
         let waiter_urgency = {
             let sched = state.thread_record(waiter)?.sched.lock();
-            sched.entity.scheduling_urgency(sched.policy)
+            sched
+                .policy
+                .effective_entity
+                .scheduling_urgency(sched.policy.effective)
         };
         let (next_waiter_count, owner_urgency, rescue_changes) = {
             let sched = state.thread_record(owner)?.sched.lock();
             let next_waiter_count = sched
-                .blocked_pi_waiters
+                .pi
+                .blocked_waiters
                 .checked_add(1)
                 .ok_or(TaskError::InvalidPiState)?;
-            let owner_urgency = sched.entity.scheduling_urgency(sched.policy);
+            let owner_urgency = sched
+                .policy
+                .effective_entity
+                .scheduling_urgency(sched.policy.effective);
             let should_rescue = sched
-                .entity
+                .policy
+                .effective_entity
                 .deadline()
                 .is_some_and(|deadline| deadline.remaining_runtime_ns() == 0);
             (
                 next_waiter_count,
                 owner_urgency,
-                should_rescue != sched.pi_critical_rescue,
+                should_rescue != sched.pi.critical_rescue,
             )
         };
         // Linux rtmutex keeps every blocked-on edge, but adjusts the owner's
@@ -528,7 +538,7 @@ impl TaskSystem {
                 owner_next: None,
             },
         );
-        state.thread_record(owner)?.sched.lock().blocked_pi_waiters = next_waiter_count;
+        state.thread_record(owner)?.sched.lock().pi.blocked_waiters = next_waiter_count;
         if let Some(recompute) = recompute {
             state.apply_pi_recompute_chain(recompute, self.config.fair_slice_ns());
         }
@@ -627,12 +637,13 @@ impl TaskSystem {
             .thread_record(owner)?
             .sched
             .lock()
-            .blocked_pi_waiters
+            .pi
+            .blocked_waiters
             .checked_sub(1)
             .ok_or(TaskError::InvalidPiState)?;
 
         state.detach_pi_waiter(waiter);
-        state.thread_record(owner)?.sched.lock().blocked_pi_waiters = next_waiter_count;
+        state.thread_record(owner)?.sched.lock().pi.blocked_waiters = next_waiter_count;
         state.apply_pi_recompute_chain(recompute, self.config.fair_slice_ns());
         Ok(())
     }
@@ -669,7 +680,8 @@ impl TaskSystem {
                 .thread_record(old_owner)?
                 .sched
                 .lock()
-                .blocked_pi_waiters
+                .pi
+                .blocked_waiters
                 < active_waiters
         {
             return Err(TaskError::InvalidPiState);
@@ -729,7 +741,8 @@ impl TaskSystem {
             .thread_record(claimant)?
             .sched
             .lock()
-            .blocked_pi_waiters
+            .pi
+            .blocked_waiters
             .checked_add(active_waiters.saturating_sub(1))
             .ok_or(TaskError::InvalidPiState)?;
 
@@ -804,7 +817,8 @@ impl TaskSystem {
                     .thread_record(next)?
                     .sched
                     .lock()
-                    .blocked_pi_waiters
+                    .pi
+                    .blocked_waiters
                     .checked_add(redirected_waiters)
                     .ok_or(TaskError::InvalidPiState)
             })
@@ -813,7 +827,8 @@ impl TaskSystem {
             .thread_record(old_owner)?
             .sched
             .lock()
-            .blocked_pi_waiters
+            .pi
+            .blocked_waiters
             < active_waiters
         {
             return Err(TaskError::InvalidPiState);

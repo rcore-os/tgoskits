@@ -54,9 +54,9 @@ impl TaskSystem {
             {
                 return Err(TaskError::AlreadyQueued);
             }
-            let affinity = &sched.affinity;
+            let affinity = &sched.placement.affinity;
             let load_aware = matches!(
-                sched.policy,
+                sched.policy.effective,
                 SchedulePolicy::Fair {
                     mode: FairMode::Normal | FairMode::Batch,
                     ..
@@ -102,9 +102,9 @@ impl TaskSystem {
             .ok_or(TaskError::NotReady)?;
         let record = state.thread_record(thread)?;
         let mut sched = record.sched.lock();
-        sched.entity = queued.entity;
+        sched.policy.effective_entity = queued.entity;
         if !sched.is_pi_boosted() {
-            sched.base_entity = queued.entity;
+            sched.policy.base_entity = queued.entity;
         }
         sched.placement.set_queued_cpu(None)?;
         drop(sched);
@@ -214,7 +214,7 @@ impl TaskSystem {
     ///
     /// The affinity mask may be updated under the stable thread lock from any
     /// CPU. Runqueue membership and switch-tail state are different: only the
-    /// CPU named by [`SchedulerPlacement`] may mutate them. This is the local
+    /// CPU named by the placement state may mutate them. This is the local
     /// equivalent of Linux taking a task's `pi_lock` together with its owning
     /// runqueue lock before moving a queued task.
     fn reconcile_owner_affinity_update(
@@ -232,11 +232,11 @@ impl TaskSystem {
             .or(queued_cpu)
             .or(on_cpu)
             .or(migration_target)
-            .or(sched.deadline_bandwidth_cpu);
-        let target = if sched.affinity.contains(owner) {
+            .or(sched.deadline.bandwidth_cpu);
+        let target = if sched.placement.affinity.contains(owner) {
             owner
         } else {
-            self.select_allowed_active_cpu(&sched.affinity, Some(owner))
+            self.select_allowed_active_cpu(&sched.placement.affinity, Some(owner))
                 .ok_or(TaskError::InvalidConfiguration)?
         };
         core.set_target_cpu(target);
@@ -276,9 +276,9 @@ impl TaskSystem {
                 .dequeue(core.id())
                 .ok_or(TaskError::NotReady)?;
             Self::detach_owner_deadline_bandwidth_locked(core, &mut sched, cpu.as_mut())?;
-            sched.entity = queued.entity;
+            sched.policy.effective_entity = queued.entity;
             if !sched.is_pi_boosted() {
-                sched.base_entity = queued.entity;
+                sched.policy.base_entity = queued.entity;
             }
             sched.placement.set_migration_target(Some(target))?;
             sched.placement.set_queued_cpu(None)?;
@@ -315,7 +315,7 @@ impl TaskSystem {
             return Ok(());
         }
 
-        if sched.deadline_bandwidth_cpu == Some(owner) && target != owner {
+        if sched.deadline.bandwidth_cpu == Some(owner) && target != owner {
             return Err(TaskError::InvalidConfiguration);
         }
         Ok(())
@@ -451,7 +451,7 @@ impl TaskSystem {
                     });
                 }
                 let mut sched = core.sched().lock();
-                if message.generation() <= sched.deadline_cbs_generation {
+                if message.generation() <= sched.pi.deadline_cbs_generation {
                     Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
                 }
                 continue;
@@ -475,15 +475,15 @@ impl TaskSystem {
                 }
                 let cleanup_deadline_member = {
                     let sched = core.sched().lock();
-                    sched.deadline_cleanup_pending
-                        && sched.deadline_bandwidth_cpu == Some(owner)
+                    sched.deadline.cleanup_pending
+                        && sched.deadline.bandwidth_cpu == Some(owner)
                         && sched.placement.queued_cpu().is_none()
                         && sched.placement.running_cpu().is_none()
                         && sched.placement.on_cpu().is_none()
                 };
                 if cleanup_deadline_member {
                     Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
-                    core.sched().lock().deadline_cleanup_pending = false;
+                    core.sched().lock().deadline.cleanup_pending = false;
                     continue;
                 }
             }
@@ -500,19 +500,19 @@ impl TaskSystem {
                         continue;
                     };
                     let committed_target_accepts_placement = committed_target != owner
-                        && sched.affinity.contains(committed_target)
+                        && sched.placement.affinity.contains(committed_target)
                         && self
                             .cpu_remotes
                             .get(committed_target.as_usize())
                             .is_some_and(|remote| remote.accepts_placement());
-                    let latest_target = if sched.affinity.contains(owner)
+                    let latest_target = if sched.placement.affinity.contains(owner)
                         && (committed_target == owner || !committed_target_accepts_placement)
                     {
                         owner
                     } else if committed_target_accepts_placement {
                         committed_target
                     } else {
-                        self.select_allowed_active_cpu(&sched.affinity, Some(owner))
+                        self.select_allowed_active_cpu(&sched.placement.affinity, Some(owner))
                             .ok_or(TaskError::InvalidConfiguration)?
                     };
                     if latest_target != owner {
@@ -550,8 +550,8 @@ impl TaskSystem {
                 (
                     sched.placement.queued_cpu(),
                     sched.placement.running_cpu(),
-                    sched.policy_generation,
-                    sched.deadline_cbs_borrower.is_some(),
+                    sched.policy.generation,
+                    sched.pi.deadline_cbs_borrower.is_some(),
                 )
             };
             if message.generation() > policy_generation {
@@ -587,8 +587,8 @@ impl TaskSystem {
                 {
                     let mut sched = core.sched().lock();
                     if !sched.is_pi_boosted() {
-                        sched.base_entity = queued.entity;
-                        sched.entity = queued.entity;
+                        sched.policy.base_entity = queued.entity;
+                        sched.policy.effective_entity = queued.entity;
                     }
                     sched.placement.set_queued_cpu(None)?;
                 }
@@ -638,7 +638,7 @@ impl TaskSystem {
                 self.publish_owner_cpu_load_summary(cpu.as_mut());
                 cpu.request_reschedule();
             } else {
-                if core.sched().lock().deadline_bandwidth_cpu == Some(owner) {
+                if core.sched().lock().deadline.bandwidth_cpu == Some(owner) {
                     Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
                 }
                 let applied = self.apply_owner_policy_generation(

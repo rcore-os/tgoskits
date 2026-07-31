@@ -145,9 +145,9 @@ impl TaskSystem {
             .filter_map(|slot| slot.record.as_ref())
             .any(|record| {
                 let sched = record.sched.lock();
-                (matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
-                    || matches!(sched.base_policy, SchedulePolicy::Deadline(_)))
-                    && !sched.affinity.contains(id)
+                (matches!(sched.policy.applied, SchedulePolicy::Deadline(_))
+                    || matches!(sched.policy.requested, SchedulePolicy::Deadline(_)))
+                    && !sched.placement.affinity.contains(id)
             })
         {
             return Err(TaskError::DeadlineAffinity);
@@ -277,14 +277,14 @@ impl TaskSystem {
             if sched.lifecycle.state() == ThreadState::Exited {
                 continue;
             }
-            if fallback_for(&sched.affinity).is_none() {
+            if fallback_for(&sched.placement.affinity).is_none() {
                 return false;
             }
             let physically_owned = sched.placement.queued_cpu() == Some(cpu)
                 || sched.placement.running_cpu() == Some(cpu)
                 || sched.placement.on_cpu() == Some(cpu)
                 || sched.placement.migration_target() == Some(cpu)
-                || sched.deadline_bandwidth_cpu == Some(cpu)
+                || sched.deadline.bandwidth_cpu == Some(cpu)
                 || record.core.sleep_timer_cpu() == Some(cpu);
             if physically_owned {
                 return false;
@@ -293,7 +293,7 @@ impl TaskSystem {
                 || sched.placement.running_cpu().is_some()
                 || sched.placement.on_cpu().is_some()
                 || sched.placement.migration_target().is_some()
-                || sched.deadline_bandwidth_cpu.is_some()
+                || sched.deadline.bandwidth_cpu.is_some()
                 || record.core.sleep_timer_cpu().is_some();
             if record.core.target_cpu() == Some(cpu) && has_other_placement {
                 return false;
@@ -308,7 +308,7 @@ impl TaskSystem {
             if sched.lifecycle.state() == ThreadState::Exited {
                 continue;
             }
-            let Some(fallback) = fallback_for(&sched.affinity) else {
+            let Some(fallback) = fallback_for(&sched.placement.affinity) else {
                 return false;
             };
             record.core.set_target_cpu(fallback);
@@ -343,13 +343,13 @@ impl TaskSystem {
                     let candidate = CpuId::new(index as u32);
                     candidate != cpu
                         && root_domain.online.contains(candidate)
-                        && sched.affinity.contains(candidate)
+                        && sched.placement.affinity.contains(candidate)
                 });
                 let owned_by_cpu = sched.placement.queued_cpu() == Some(cpu)
                     || sched.placement.running_cpu() == Some(cpu)
                     || sched.placement.on_cpu() == Some(cpu)
                     || sched.placement.migration_target() == Some(cpu)
-                    || sched.deadline_bandwidth_cpu == Some(cpu)
+                    || sched.deadline.bandwidth_cpu == Some(cpu)
                     || record.core.sleep_timer_cpu() == Some(cpu)
                     || record.core.target_cpu() == Some(cpu);
                 has_remaining_destination && !owned_by_cpu

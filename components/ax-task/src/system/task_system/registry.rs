@@ -69,10 +69,10 @@ impl TaskSystemState {
                 continue;
             };
             let mut sched = record.sched.lock();
-            if sched.deadline_overrun_events == 0 || record.deadline_callback_claimed {
+            if sched.deadline.overrun_events == 0 || record.deadline_callback_claimed {
                 continue;
             }
-            sched.deadline_overrun_events -= 1;
+            sched.deadline.overrun_events -= 1;
             self.deadline_callback_cursor = (index + 1) % slot_count;
             return Some(record.extension.as_ref().map(|extension| {
                 record.deadline_callback_claimed = true;
@@ -219,10 +219,11 @@ impl TaskSystemState {
             let record = self.thread_record(thread)?;
             let mut sched = record.sched.lock();
             let held = sched
-                .active_deadline_reservation
-                .max(sched.desired_deadline_reservation);
-            sched.active_deadline_reservation = 0;
-            sched.desired_deadline_reservation = 0;
+                .deadline
+                .active_reservation
+                .max(sched.deadline.desired_reservation);
+            sched.deadline.active_reservation = 0;
+            sched.deadline.desired_reservation = 0;
             held
         };
         self.deadline_admission.release(u128::from(held));
@@ -260,9 +261,9 @@ impl TaskSystemState {
                 || sched.placement.running_cpu().is_some()
                 || sched.placement.on_cpu().is_some()
                 || sched.placement.migration_target().is_some()
-                || sched.deadline_bandwidth_cpu.is_some()
-                || sched.deadline_cleanup_pending
-                || sched.deadline_cbs_borrower.is_some()
+                || sched.deadline.bandwidth_cpu.is_some()
+                || sched.deadline.cleanup_pending
+                || sched.pi.deadline_cbs_borrower.is_some()
                 || record.blocked_on.is_some()
                 || record.exit_callback_pending
                 || record.exit_callback_claimed
@@ -274,8 +275,9 @@ impl TaskSystemState {
                 return Err(TaskError::ThreadBusy);
             }
             sched
-                .active_deadline_reservation
-                .max(sched.desired_deadline_reservation)
+                .deadline
+                .active_reservation
+                .max(sched.deadline.desired_reservation)
         };
         let record = slot.record.take().ok_or(TaskError::StaleThreadId)?;
         self.deadline_admission.release(u128::from(held));
@@ -314,10 +316,10 @@ impl TaskSystemState {
             // raw inbox Arc and access to scheduler-owned thread state.
             if sched.placement.on_cpu().is_some()
                 || sched.placement.migration_target().is_some()
-                || sched.deadline_bandwidth_cpu.is_some()
-                || sched.deadline_cleanup_pending
-                || sched.deadline_cbs_borrower.is_some()
-                || sched.deadline_overrun_events != 0
+                || sched.deadline.bandwidth_cpu.is_some()
+                || sched.deadline.cleanup_pending
+                || sched.pi.deadline_cbs_borrower.is_some()
+                || sched.deadline.overrun_events != 0
                 || record.deadline_callback_claimed
                 || record.exit_callback_pending
                 || record.exit_callback_claimed
@@ -347,8 +349,9 @@ impl TaskSystemState {
         let held = {
             let sched = record.sched.lock();
             sched
-                .active_deadline_reservation
-                .max(sched.desired_deadline_reservation)
+                .deadline
+                .active_reservation
+                .max(sched.deadline.desired_reservation)
         };
         self.deadline_admission.release(u128::from(held));
         if advance_thread_slot_generation(slot) {
@@ -381,10 +384,10 @@ impl TaskSystemState {
                 if sched.lifecycle.state() != ThreadState::Exited
                     || sched.placement.on_cpu().is_some()
                     || sched.placement.migration_target().is_some()
-                    || sched.deadline_bandwidth_cpu.is_some()
-                    || sched.deadline_cleanup_pending
-                    || sched.deadline_cbs_borrower.is_some()
-                    || sched.deadline_overrun_events != 0
+                    || sched.deadline.bandwidth_cpu.is_some()
+                    || sched.deadline.cleanup_pending
+                    || sched.pi.deadline_cbs_borrower.is_some()
+                    || sched.deadline.overrun_events != 0
                     || record.deadline_callback_claimed
                     || record.exit_callback_pending
                     || record.exit_callback_claimed
@@ -427,7 +430,7 @@ impl TaskSystemState {
             let sched = record.sched.lock();
             if sched.lifecycle.state() != ThreadState::Exited
                 || sched.placement.on_cpu().is_some()
-                || sched.deadline_overrun_events != 0
+                || sched.deadline.overrun_events != 0
                 || record.deadline_callback_claimed
                 || !record.exit_callback_pending
                 || record.exit_callback_claimed
@@ -585,8 +588,8 @@ impl TaskSystemState {
                         .placement
                         .running_cpu()
                         .or(sched.placement.queued_cpu())
-                        .or(sched.deadline_bandwidth_cpu),
-                    sched.policy_generation,
+                        .or(sched.deadline.bandwidth_cpu),
+                    sched.policy.generation,
                 )
             };
             let Some(cpu) = cpu else {
@@ -624,13 +627,14 @@ impl TaskSystemState {
         let record = self.thread_record(waiter)?;
         let (policy, donor) = {
             let sched = record.sched.lock();
-            (sched.policy, sched.pi_donor.unwrap_or(waiter))
+            (sched.policy.effective, sched.pi.donor.unwrap_or(waiter))
         };
         if matches!(policy, SchedulePolicy::Deadline(_))
             && self
                 .thread_record(donor)?
                 .sched
                 .lock()
+                .policy
                 .base_deadline
                 .is_none()
         {
@@ -648,7 +652,7 @@ impl TaskSystemState {
             let record = self.thread_record(current)?;
             let (blocked_on, dispatch_generation) = {
                 let sched = record.sched.lock();
-                (record.blocked_on, sched.dispatch_generation)
+                (record.blocked_on, sched.policy.dispatch_generation)
             };
             if dispatch_generation == u64::MAX {
                 return Err(TaskError::InvalidConfiguration);
@@ -659,7 +663,7 @@ impl TaskSystemState {
                 self.validate_pi_donor(waiter)?;
                 waiter_count += 1;
             }
-            if waiter_count != self.thread_record(current)?.sched.lock().blocked_pi_waiters {
+            if waiter_count != self.thread_record(current)?.sched.lock().pi.blocked_waiters {
                 return Err(TaskError::InvalidPiState);
             }
             let Some(registration) = blocked_on else {
@@ -694,22 +698,23 @@ impl TaskSystemState {
                     .expect("prepared PI chain must retain every thread record");
                 let sched = record.sched.lock();
                 let base_entity = sched
+                    .policy
                     .base_deadline
-                    .filter(|_| matches!(sched.active_base_policy, SchedulePolicy::Deadline(_)))
+                    .filter(|_| matches!(sched.policy.applied, SchedulePolicy::Deadline(_)))
                     .map(SchedulingEntity::Deadline)
-                    .unwrap_or(sched.base_entity);
+                    .unwrap_or(sched.policy.base_entity);
                 (
                     Arc::clone(&record.core),
-                    sched.active_base_policy,
+                    sched.policy.applied,
                     base_entity,
                     record.blocked_on,
-                    sched.policy,
-                    sched.entity,
-                    sched.pi_donor,
-                    sched.deadline_donor,
-                    sched.blocked_pi_waiters,
-                    sched.pi_critical_rescue,
-                    sched.dispatch_generation,
+                    sched.policy.effective,
+                    sched.policy.effective_entity,
+                    sched.pi.donor,
+                    sched.pi.deadline_donor,
+                    sched.pi.blocked_waiters,
+                    sched.pi.critical_rescue,
+                    sched.policy.dispatch_generation,
                 )
             };
             let mut effective = base;
@@ -729,13 +734,14 @@ impl TaskSystemState {
                     .expect("prepared PI waiter must retain its thread record");
                 let (donor_policy, donor) = {
                     let sched = donor_record.sched.lock();
-                    (sched.policy, sched.pi_donor.unwrap_or(waiter))
+                    (sched.policy.effective, sched.pi.donor.unwrap_or(waiter))
                 };
                 let donor_entity = if matches!(donor_policy, SchedulePolicy::Deadline(_)) {
                     self.thread_record(donor)
                         .expect("prepared PI donor must retain its thread record")
                         .sched
                         .lock()
+                        .policy
                         .base_deadline
                         .map(SchedulingEntity::Deadline)
                         .expect("prepared Deadline PI donor must retain its entity")
@@ -786,30 +792,35 @@ impl TaskSystemState {
             let (rescue_changed, policy, entity) = {
                 let mut sched = current_core.sched().lock();
                 if changed {
-                    sched.policy = effective;
-                    sched.pi_donor = pi_donor;
-                    sched.deadline_donor = deadline_donor;
-                    sched.deadline_donor_core = deadline_donor_core;
-                    sched.entity = effective_entity;
+                    sched.policy.effective = effective;
+                    sched.pi.donor = pi_donor;
+                    sched.pi.deadline_donor = deadline_donor;
+                    sched.pi.deadline_donor_core = deadline_donor_core;
+                    sched.policy.effective_entity = effective_entity;
                 }
                 if rescue_changed {
-                    sched.pi_critical_rescue = should_rescue;
+                    sched.pi.critical_rescue = should_rescue;
                     if should_rescue {
-                        sched.entity.enter_pi_critical_rescue();
+                        sched.policy.effective_entity.enter_pi_critical_rescue();
                     } else {
-                        sched.entity.leave_pi_critical_rescue();
+                        sched.policy.effective_entity.leave_pi_critical_rescue();
                     }
                     if !sched.is_pi_boosted() {
-                        sched.base_entity = sched.entity;
-                        if let SchedulingEntity::Deadline(deadline) = sched.entity {
-                            sched.base_deadline = Some(deadline);
+                        sched.policy.base_entity = sched.policy.effective_entity;
+                        if let SchedulingEntity::Deadline(deadline) = sched.policy.effective_entity
+                        {
+                            sched.policy.base_deadline = Some(deadline);
                         }
                     }
                 }
                 if let Some(generation) = next_dispatch_generation {
-                    sched.dispatch_generation = generation;
+                    sched.policy.dispatch_generation = generation;
                 }
-                (rescue_changed, sched.policy, sched.entity)
+                (
+                    rescue_changed,
+                    sched.policy.effective,
+                    sched.policy.effective_entity,
+                )
             };
             if changed || rescue_changed {
                 current_core.publish_effective_schedule(policy, entity);
@@ -934,6 +945,6 @@ impl ThreadRecord {
     pub(super) fn has_live_pi_edges(&self) -> bool {
         self.blocked_on.is_some()
             || self.pi_waiter_head.is_some()
-            || self.sched.lock().blocked_pi_waiters != 0
+            || self.sched.lock().pi.blocked_waiters != 0
     }
 }

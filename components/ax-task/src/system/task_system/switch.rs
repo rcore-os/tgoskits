@@ -51,21 +51,21 @@ impl TaskSystem {
         let owner = cpu.owner();
         let mut sched = core.sched().lock();
 
-        let migration_requested =
-            sched.placement.migration_target().is_some() || !sched.affinity.contains(owner);
+        let migration_requested = sched.placement.migration_target().is_some()
+            || !sched.placement.affinity.contains(owner);
         if migration_requested {
             let target = sched
                 .placement
                 .migration_target()
                 .filter(|target| {
                     *target != owner
-                        && sched.affinity.contains(*target)
+                        && sched.placement.affinity.contains(*target)
                         && self
                             .cpu_remotes
                             .get(target.as_usize())
                             .is_some_and(|remote| remote.accepts_placement())
                 })
-                .or_else(|| self.select_allowed_active_cpu(&sched.affinity, Some(owner)))
+                .or_else(|| self.select_allowed_active_cpu(&sched.placement.affinity, Some(owner)))
                 .ok_or(TaskError::InvalidConfiguration)?;
             sched.placement.set_migration_target(Some(target))?;
             sched.transition(&core, ThreadState::Ready)?;
@@ -75,13 +75,13 @@ impl TaskSystem {
             return Ok(Some(target));
         }
 
-        if sched.entity.is_deadline_throttled() && !sched.pi_critical_rescue {
-            if let SchedulingEntity::Deadline(deadline) = sched.entity {
+        if sched.policy.effective_entity.is_deadline_throttled() && !sched.pi.critical_rescue {
+            if let SchedulingEntity::Deadline(deadline) = sched.policy.effective_entity {
                 if !sched.is_pi_boosted() {
-                    sched.base_entity = sched.entity;
+                    sched.policy.base_entity = sched.policy.effective_entity;
                 }
-                sched.base_deadline = Some(deadline);
-                sched.deadline_replenish_pending = true;
+                sched.policy.base_deadline = Some(deadline);
+                sched.deadline.replenish_pending = true;
                 Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
             }
             sched.transition(&core, ThreadState::Blocked)?;
@@ -198,7 +198,7 @@ impl TaskSystem {
             let mut sched = core.sched().lock();
             Self::validate_owner_next(&sched, core.id(), owner, outgoing)?;
             let migration_target = if sched.placement.migration_target().is_some()
-                || !sched.affinity.contains(owner)
+                || !sched.placement.affinity.contains(owner)
             {
                 Some(
                     sched
@@ -206,21 +206,23 @@ impl TaskSystem {
                         .migration_target()
                         .filter(|target| {
                             *target != owner
-                                && sched.affinity.contains(*target)
+                                && sched.placement.affinity.contains(*target)
                                 && self
                                     .cpu_remotes
                                     .get(target.as_usize())
                                     .is_some_and(|remote| remote.accepts_placement())
                         })
-                        .or_else(|| self.select_allowed_active_cpu(&sched.affinity, Some(owner)))
+                        .or_else(|| {
+                            self.select_allowed_active_cpu(&sched.placement.affinity, Some(owner))
+                        })
                         .ok_or(TaskError::InvalidConfiguration)?,
                 )
             } else {
                 None
             };
-            sched.entity = queued.entity;
+            sched.policy.effective_entity = queued.entity;
             if !sched.is_pi_boosted() {
-                sched.base_entity = queued.entity;
+                sched.policy.base_entity = queued.entity;
             }
             if let Some(target) = migration_target {
                 let outgoing_candidate =

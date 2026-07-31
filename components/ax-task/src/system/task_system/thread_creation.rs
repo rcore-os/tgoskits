@@ -36,10 +36,6 @@ impl TaskSystem {
         // code. Keep it outside the IRQ-disabled registry domain. The removed
         // slot is a private reservation until the short commit below.
         let entity = SchedulingEntity::new(policy, self.config.fair_slice_ns(), 0);
-        let base_deadline = match entity {
-            SchedulingEntity::Deadline(deadline) => Some(deadline),
-            _ => None,
-        };
         let (extension, resources) = unpublished.into_owned_parts();
         let switch_extension = extension.as_ref().map(ThreadExtension::as_view);
         let scheduler_tick_work = extension
@@ -47,42 +43,14 @@ impl TaskSystem {
             .and_then(ThreadExtension::scheduler_tick_work);
         let sched = Arc::new(ThreadSchedCell::new(
             id,
-            ThreadSchedState {
-                lifecycle: ThreadLifecycle::new(),
-                base_policy: policy,
-                active_base_policy: policy,
+            ThreadSchedState::new(
                 policy,
-                policy_generation: 1,
-                applied_policy_generation: 1,
-                dispatch_generation: 1,
-                affinity: affinity.clone(),
-                affinity_generation: 1,
                 entity,
-                base_entity: entity,
-                base_deadline,
-                deadline_activity: DeadlineActivity::Inactive,
-                deadline_bandwidth_cpu: None,
-                deadline_cleanup_pending: false,
-                deadline_bandwidth_scaled: u64::try_from(reservation).unwrap_or(u64::MAX),
-                active_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
-                desired_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
-                deadline_zero_lag_ns: 0,
-                deadline_cbs_timer: None,
-                deadline_zero_lag_timer: None,
-                placement: SchedulerPlacement::detached(),
-                blocked_pi_waiters: 0,
-                pi_donor: None,
-                deadline_donor: None,
-                deadline_donor_core: None,
-                deadline_cbs_borrower: None,
-                deadline_cbs_generation: 1,
-                pi_critical_rescue: false,
-                deadline_replenish_pending: false,
-                deadline_overrun_events: 0,
-                charged_runtime_ns: 0,
-                context: resources.context(),
-                address_space: resources.address_space(),
-            },
+                affinity.clone(),
+                u64::try_from(reservation).unwrap_or(u64::MAX),
+                resources.context(),
+                resources.address_space(),
+            ),
         ));
         let core = Arc::new(ThreadCore::new(
             id,
@@ -173,10 +141,13 @@ impl TaskSystem {
         let record = state.thread_record(thread)?;
         let mut sched = record.sched.lock();
         if sched.lifecycle.state() == ThreadState::Waking {
-            let base_policy = sched.active_base_policy;
-            sched.base_entity.reset_after_wake(base_policy);
-            let effective_policy = sched.policy;
-            sched.entity.reset_after_wake(effective_policy);
+            let base_policy = sched.policy.applied;
+            sched.policy.base_entity.reset_after_wake(base_policy);
+            let effective_policy = sched.policy.effective;
+            sched
+                .policy
+                .effective_entity
+                .reset_after_wake(effective_policy);
         }
         sched.transition(&record.core, ThreadState::Ready)
     }

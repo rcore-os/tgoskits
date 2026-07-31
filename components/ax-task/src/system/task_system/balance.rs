@@ -119,7 +119,7 @@ impl TaskSystem {
                     .is_some_and(|remote| {
                         remote.accepts_placement()
                             && remote.is_scheduler_ready()
-                            && sched.affinity.contains(target)
+                            && sched.placement.affinity.contains(target)
                     })
             };
             let allowed_target = target.map_or_else(
@@ -132,10 +132,10 @@ impl TaskSystem {
                 target_is_allowed,
             );
             let deadline_covers_online =
-                !matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
+                !matches!(sched.policy.applied, SchedulePolicy::Deadline(_))
                     || self.cpu_remotes.iter().enumerate().all(|(index, remote)| {
                         !remote.accepts_placement()
-                            || sched.affinity.contains(CpuId::new(index as u32))
+                            || sched.placement.affinity.contains(CpuId::new(index as u32))
                     });
             if !allowed_target
                 || sched.placement.queued_cpu() != Some(source)
@@ -238,9 +238,9 @@ impl TaskSystem {
             if FAIL_BALANCE_TRANSFER_AFTER_DETACH.replace(false) {
                 return Err(TaskError::InvalidConfiguration);
             }
-            sched.entity = queued_entity;
+            sched.policy.effective_entity = queued_entity;
             if !sched.is_pi_boosted() {
-                sched.base_entity = queued_entity;
+                sched.policy.base_entity = queued_entity;
             }
             sched.placement.begin_queued_migration(source, target)?;
             core.set_target_cpu(target);
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(sched.lifecycle.state(), ThreadState::Ready);
         assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
         assert_eq!(sched.placement.migration_target(), None);
-        assert_eq!(sched.deadline_bandwidth_cpu, Some(CpuId::new(0)));
+        assert_eq!(sched.deadline.bandwidth_cpu, Some(CpuId::new(0)));
     }
 
     #[test]

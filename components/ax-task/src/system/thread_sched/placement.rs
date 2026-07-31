@@ -1,10 +1,102 @@
 //! Single-owner scheduler placement state machine.
 
-use crate::{CpuId, TaskError};
+use crate::{CpuId, CpuSet, TaskError};
+
+/// CPU eligibility and physical scheduler ownership for one thread.
+#[derive(Debug)]
+pub(in crate::system) struct ThreadPlacementState {
+    pub(in crate::system) affinity: CpuSet,
+    pub(in crate::system) affinity_generation: u64,
+    physical: SchedulerPlacement,
+}
+
+impl ThreadPlacementState {
+    pub(super) const fn new(affinity: CpuSet) -> Self {
+        Self {
+            affinity,
+            affinity_generation: 1,
+            physical: SchedulerPlacement::detached(),
+        }
+    }
+
+    pub(in crate::system) const fn queued_cpu(&self) -> Option<CpuId> {
+        self.physical.queued_cpu()
+    }
+
+    pub(in crate::system) const fn running_cpu(&self) -> Option<CpuId> {
+        self.physical.running_cpu()
+    }
+
+    pub(in crate::system) const fn on_cpu(&self) -> Option<CpuId> {
+        self.physical.on_cpu()
+    }
+
+    pub(in crate::system) const fn migration_target(&self) -> Option<CpuId> {
+        self.physical.migration_target()
+    }
+
+    pub(in crate::system) fn set_queued_cpu(
+        &mut self,
+        cpu: Option<CpuId>,
+    ) -> Result<(), TaskError> {
+        self.physical.set_queued_cpu(cpu)
+    }
+
+    pub(in crate::system) fn set_running_cpu(
+        &mut self,
+        cpu: Option<CpuId>,
+    ) -> Result<(), TaskError> {
+        self.physical.set_running_cpu(cpu)
+    }
+
+    pub(in crate::system) fn set_on_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
+        self.physical.set_on_cpu(cpu)
+    }
+
+    pub(in crate::system) fn set_migration_target(
+        &mut self,
+        target: Option<CpuId>,
+    ) -> Result<(), TaskError> {
+        self.physical.set_migration_target(target)
+    }
+
+    pub(in crate::system) fn begin_queued_migration(
+        &mut self,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<(), TaskError> {
+        self.physical.begin_queued_migration(source, target)
+    }
+
+    pub(in crate::system) fn rollback_queued_migration(
+        &mut self,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<(), TaskError> {
+        self.physical.rollback_queued_migration(source, target)
+    }
+
+    pub(in crate::system) fn mark_exited_awaiting_tail(
+        &mut self,
+        cpu: CpuId,
+    ) -> Result<(), TaskError> {
+        self.physical.mark_exited_awaiting_tail(cpu)
+    }
+
+    #[cfg(test)]
+    pub(in crate::system) fn inject_detached(&mut self) {
+        self.physical.inject_detached();
+    }
+
+    #[cfg(test)]
+    pub(in crate::system) fn inject_exited_awaiting_tail(&mut self, cpu: CpuId) {
+        self.physical.inject_exited_awaiting_tail(cpu);
+    }
+}
 
 /// Destination committed while the outgoing stack is still physically active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::system) enum SwitchDestination {
+enum SwitchDestination {
     Detached,
     Queued(CpuId),
     Migrating(CpuId),
@@ -31,7 +123,7 @@ impl SwitchDestination {
 /// a committed post-switch destination while its outgoing stack remains active,
 /// but it cannot be independently queued and running on unrelated CPUs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::system) enum SchedulerPlacement {
+enum SchedulerPlacement {
     /// Not queued, executing, or in flight between owners.
     Detached,
     /// Physically linked on one owner runqueue.
@@ -56,11 +148,11 @@ pub(in crate::system) enum SchedulerPlacement {
 }
 
 impl SchedulerPlacement {
-    pub(in crate::system) const fn detached() -> Self {
+    const fn detached() -> Self {
         Self::Detached
     }
 
-    pub(in crate::system) const fn queued_cpu(self) -> Option<CpuId> {
+    const fn queued_cpu(self) -> Option<CpuId> {
         match self {
             Self::Queued { cpu, .. }
             | Self::SwitchingOut {
@@ -75,7 +167,7 @@ impl SchedulerPlacement {
         }
     }
 
-    pub(in crate::system) const fn running_cpu(self) -> Option<CpuId> {
+    const fn running_cpu(self) -> Option<CpuId> {
         match self {
             Self::Running { cpu, .. } => Some(cpu),
             Self::Detached
@@ -86,7 +178,7 @@ impl SchedulerPlacement {
         }
     }
 
-    pub(in crate::system) const fn on_cpu(self) -> Option<CpuId> {
+    const fn on_cpu(self) -> Option<CpuId> {
         match self {
             Self::Running { cpu, .. }
             | Self::SwitchingOut { cpu, .. }
@@ -95,7 +187,7 @@ impl SchedulerPlacement {
         }
     }
 
-    pub(in crate::system) const fn migration_target(self) -> Option<CpuId> {
+    const fn migration_target(self) -> Option<CpuId> {
         match self {
             Self::Queued {
                 migration_target, ..
@@ -112,10 +204,7 @@ impl SchedulerPlacement {
         }
     }
 
-    pub(in crate::system) fn set_queued_cpu(
-        &mut self,
-        cpu: Option<CpuId>,
-    ) -> Result<(), TaskError> {
+    fn set_queued_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
         let current = *self;
         *self = match (current, cpu) {
             (Self::Detached, Some(cpu)) => Self::Queued {
@@ -157,10 +246,7 @@ impl SchedulerPlacement {
         Ok(())
     }
 
-    pub(in crate::system) fn set_running_cpu(
-        &mut self,
-        cpu: Option<CpuId>,
-    ) -> Result<(), TaskError> {
+    fn set_running_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
         let current = *self;
         *self = match (current, cpu) {
             (Self::Detached, Some(cpu)) => Self::Running {
@@ -213,7 +299,7 @@ impl SchedulerPlacement {
         Ok(())
     }
 
-    pub(in crate::system) fn set_on_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
+    fn set_on_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
         let current = *self;
         *self = match (current, cpu) {
             (
@@ -229,10 +315,7 @@ impl SchedulerPlacement {
         Ok(())
     }
 
-    pub(in crate::system) fn set_migration_target(
-        &mut self,
-        target: Option<CpuId>,
-    ) -> Result<(), TaskError> {
+    fn set_migration_target(&mut self, target: Option<CpuId>) -> Result<(), TaskError> {
         let current = *self;
         *self = match (current, target) {
             (Self::Detached, Some(target)) => Self::Migrating { target },
@@ -289,11 +372,7 @@ impl SchedulerPlacement {
 
     /// Atomically transfers logical ownership from the source runqueue to a
     /// not-yet-consumed migration carrier.
-    pub(in crate::system) fn begin_queued_migration(
-        &mut self,
-        source: CpuId,
-        target: CpuId,
-    ) -> Result<(), TaskError> {
+    fn begin_queued_migration(&mut self, source: CpuId, target: CpuId) -> Result<(), TaskError> {
         match *self {
             Self::Queued {
                 cpu,
@@ -307,11 +386,7 @@ impl SchedulerPlacement {
     }
 
     /// Restores source ownership when the migration carrier was not published.
-    pub(in crate::system) fn rollback_queued_migration(
-        &mut self,
-        source: CpuId,
-        target: CpuId,
-    ) -> Result<(), TaskError> {
+    fn rollback_queued_migration(&mut self, source: CpuId, target: CpuId) -> Result<(), TaskError> {
         match *self {
             Self::Queued {
                 cpu,
@@ -330,10 +405,7 @@ impl SchedulerPlacement {
         }
     }
 
-    pub(in crate::system) fn mark_exited_awaiting_tail(
-        &mut self,
-        cpu: CpuId,
-    ) -> Result<(), TaskError> {
+    fn mark_exited_awaiting_tail(&mut self, cpu: CpuId) -> Result<(), TaskError> {
         match self {
             Self::Running {
                 cpu: running_cpu, ..
@@ -349,12 +421,12 @@ impl SchedulerPlacement {
     }
 
     #[cfg(test)]
-    pub(in crate::system) fn inject_detached(&mut self) {
+    fn inject_detached(&mut self) {
         *self = Self::Detached;
     }
 
     #[cfg(test)]
-    pub(in crate::system) fn inject_exited_awaiting_tail(&mut self, cpu: CpuId) {
+    fn inject_exited_awaiting_tail(&mut self, cpu: CpuId) {
         *self = Self::ExitedAwaitingTail { cpu };
     }
 }

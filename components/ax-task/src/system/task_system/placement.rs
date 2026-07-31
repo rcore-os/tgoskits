@@ -19,8 +19,9 @@ impl TaskSystem {
         ]
         .into_iter()
         .flatten()
-        .all(|cpu| sched.affinity.contains(cpu));
-        placement_is_allowed && core.publish_affinity_completion(sched.affinity_generation)
+        .all(|cpu| sched.placement.affinity.contains(cpu));
+        placement_is_allowed
+            && core.publish_affinity_completion(sched.placement.affinity_generation)
     }
 
     pub(super) fn publish_owner_migration(
@@ -232,8 +233,8 @@ impl TaskSystem {
         if sched.lifecycle.state() == ThreadState::Exited {
             return Err(TaskError::NotReady);
         }
-        let is_deadline = matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
-            || matches!(sched.base_policy, SchedulePolicy::Deadline(_));
+        let is_deadline = matches!(sched.policy.applied, SchedulePolicy::Deadline(_))
+            || matches!(sched.policy.requested, SchedulePolicy::Deadline(_));
         if is_deadline && !affinity.covers(&root_domain.online) {
             return Err(TaskError::DeadlineAffinity);
         }
@@ -245,11 +246,12 @@ impl TaskSystem {
             .or_else(|| state.select_allowed_cpu(&affinity))
             .ok_or(TaskError::InvalidConfiguration)?;
         let generation = sched
+            .placement
             .affinity_generation
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
-        sched.affinity_generation = generation;
-        sched.affinity = affinity;
+        sched.placement.affinity_generation = generation;
+        sched.placement.affinity = affinity;
         // The affinity mask is task metadata, but physical placement belongs
         // to one runqueue owner. A remote writer only publishes a reconciliation
         // request; it never rewrites Queued/Running/SwitchingOut in place.
@@ -259,9 +261,9 @@ impl TaskSystem {
             .or(sched.placement.queued_cpu())
             .or(sched.placement.on_cpu())
             .or(sched.placement.migration_target())
-            .or(sched.deadline_bandwidth_cpu);
+            .or(sched.deadline.bandwidth_cpu);
         let target = owner
-            .filter(|owner| sched.affinity.contains(*owner))
+            .filter(|owner| sched.placement.affinity.contains(*owner))
             .unwrap_or(target);
         core.set_target_cpu(target);
         let completed = Self::complete_affinity_if_satisfied_locked(&core, &sched);
@@ -307,8 +309,8 @@ impl TaskSystem {
         {
             return Err(TaskError::InvalidConfiguration);
         }
-        let is_deadline = matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
-            || matches!(sched.base_policy, SchedulePolicy::Deadline(_));
+        let is_deadline = matches!(sched.policy.applied, SchedulePolicy::Deadline(_))
+            || matches!(sched.policy.requested, SchedulePolicy::Deadline(_));
         if is_deadline && !affinity.covers(&root_domain.online) {
             return Err(TaskError::DeadlineAffinity);
         }
@@ -322,11 +324,12 @@ impl TaskSystem {
         let owner = cpu.owner();
         let must_migrate = !affinity.contains(owner);
         let generation = sched
+            .placement
             .affinity_generation
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
-        sched.affinity_generation = generation;
-        sched.affinity = affinity;
+        sched.placement.affinity_generation = generation;
+        sched.placement.affinity = affinity;
         sched
             .placement
             .set_migration_target(must_migrate.then_some(target))?;

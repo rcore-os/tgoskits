@@ -27,7 +27,9 @@ impl TaskSystem {
         let state = self.state.lock();
         let record = state.thread_record(thread)?;
         let snapshot = record.core.runtime_snapshot(now_ns);
-        debug_assert!(snapshot.charged_runtime_ns() >= record.sched.lock().charged_runtime_ns);
+        debug_assert!(
+            snapshot.charged_runtime_ns() >= record.sched.lock().runtime.charged_runtime_ns
+        );
         Ok(snapshot)
     }
 
@@ -59,7 +61,7 @@ impl TaskSystem {
             return Err(TaskError::InvalidConfiguration);
         }
         let previous = record.resources.replace_address_space(address_space);
-        sched.address_space = address_space;
+        sched.runtime.address_space = address_space;
         Ok(previous)
     }
 
@@ -111,7 +113,8 @@ impl TaskSystem {
             .thread_record(thread)?
             .sched
             .lock()
-            .base_policy)
+            .policy
+            .requested)
     }
 
     /// Publishes a new base-policy generation for owner-CPU application.
@@ -136,16 +139,17 @@ impl TaskSystem {
             if sched.lifecycle.state() == ThreadState::Exited {
                 return Err(TaskError::NotReady);
             }
-            affinity.copy_from_set(&sched.affinity)?;
-            let active_reservation = u128::from(sched.active_deadline_reservation);
-            let desired_reservation = u128::from(sched.desired_deadline_reservation);
+            affinity.copy_from_set(&sched.placement.affinity)?;
+            let active_reservation = u128::from(sched.deadline.active_reservation);
+            let desired_reservation = u128::from(sched.deadline.desired_reservation);
             let owner = sched
                 .placement
                 .running_cpu()
                 .or(sched.placement.queued_cpu())
-                .or(sched.deadline_bandwidth_cpu);
+                .or(sched.deadline.bandwidth_cpu);
             let generation = sched
-                .policy_generation
+                .policy
+                .generation
                 .checked_add(1)
                 .ok_or(TaskError::InvalidConfiguration)?;
             let owner_publication = owner
@@ -168,9 +172,9 @@ impl TaskSystem {
             } else {
                 state.deadline_admission.release(old_held - new_held);
             }
-            sched.desired_deadline_reservation = u64::try_from(reservation).unwrap_or(u64::MAX);
-            sched.base_policy = policy;
-            sched.policy_generation = generation;
+            sched.deadline.desired_reservation = u64::try_from(reservation).unwrap_or(u64::MAX);
+            sched.policy.requested = policy;
+            sched.policy.generation = generation;
             (core, owner, generation, owner_publication)
         };
         core.publish_base_policy(policy);
@@ -204,6 +208,7 @@ impl TaskSystem {
             .thread_record(thread)?
             .sched
             .lock()
+            .placement
             .affinity
             .clone())
     }
