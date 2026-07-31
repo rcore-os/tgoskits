@@ -56,4 +56,3 @@ pub fn spawn_alarm_task() {
     )
     .unwrap_or_else(|error| panic!("failed to spawn alarm task: {error}"));
 }
-

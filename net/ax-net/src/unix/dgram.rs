@@ -137,12 +137,12 @@ pub struct DgramTransport {
     /// The async channel has no peek primitive, so a peeking receiver pops one
     /// packet, copies it out, and parks it here; the next recv drains this slot
     /// before touching the channel, preserving record boundaries and order.
-    peeked: Mutex<Option<Packet>>,
+    peeked: SpinMutex<Option<Packet>>,
     /// True for `SOCK_SEQPACKET`, which is connection-oriented (bind/listen/
     /// accept/connect) unlike connectionless `SOCK_DGRAM`.
     is_seqpacket: bool,
     /// Connection-request queue installed by a seqpacket listener's bind.
-    conn_rx: Mutex<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
+    conn_rx: SpinMutex<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
     /// Poll set for local state changes.
     poll_state: Arc<PollSet>,
     /// Shared socket options.
@@ -170,9 +170,9 @@ impl DgramTransport {
             data_rx: SpinMutex::new(None),
             connected: RwLock::new(None),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
-            peeked: Mutex::new(None),
+            peeked: SpinMutex::new(None),
             is_seqpacket: socket_type == 5,
-            conn_rx: Mutex::new(None),
+            conn_rx: SpinMutex::new(None),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
             pid,
@@ -189,9 +189,9 @@ impl DgramTransport {
             data_rx: SpinMutex::new(Some(data_rx)),
             connected: RwLock::new(Some(connected)),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
-            peeked: Mutex::new(None),
+            peeked: SpinMutex::new(None),
             is_seqpacket: socket_type == 5,
-            conn_rx: Mutex::new(None),
+            conn_rx: SpinMutex::new(None),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
             pid,

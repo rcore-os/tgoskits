@@ -241,10 +241,6 @@ impl FileBackend {
         }
     }
 
-    pub fn cache(&self) -> &CachedFile {
-        &self.0.cache
-    }
-
     /// Byte offset into the backing file for a virtual address inside this
     /// mapping. Used by `madvise(MADV_REMOVE)` to punch a hole in the backing
     /// (`offset_page * PAGE + (va - mapping_start)`).
