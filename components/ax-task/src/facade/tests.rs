@@ -138,6 +138,52 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_safe_point_does_not_scan_an_idle_deadline_queue() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        {
+            let mut irq = RuntimeIrqGuard::enter();
+            assert_eq!(
+                service_current_task_deadline_work(system.as_ref().get_ref(), &mut irq).unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            cpu.deadline_expire_passes_for_test(),
+            0,
+            "an idle scheduler safe point must not enter the timer expiry engine"
+        );
+    }
+
+    #[test]
+    fn scheduler_safe_point_reuses_its_idle_clock_snapshot() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        test_runtime::reset_monotonic_reads();
+
+        assert!(matches!(
+            schedule_current_cpu().unwrap(),
+            SchedulerOutcome::Quiescent
+        ));
+        assert_eq!(
+            test_runtime::monotonic_reads(),
+            1,
+            "an idle deadline pass and its scheduler decision must share one clock sample"
+        );
+    }
+
+    #[test]
     fn saturated_park_deadline_remains_notification_only() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

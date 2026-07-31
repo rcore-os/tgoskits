@@ -233,9 +233,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
         RuntimeSchedulerEntry::Task,
     )?;
     let system = runtime_task_system()?;
-    let deadline_now_ns = task_runtime::monotonic_ns();
-    service_current_task_deadline_work(system, &mut scheduler_frame, deadline_now_ns)?;
-    let now_ns = task_runtime::monotonic_ns();
+    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
     let (decision, now_ns) = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let must_migrate = system.set_current_affinity(cpu.as_mut(), affinity)?;
@@ -251,7 +249,7 @@ pub fn set_current_thread_affinity(affinity: CpuSet) -> Result<(), TaskError> {
             task_runtime::fatal_invariant(0x4558_0020, 0);
         });
         let decision = system
-            .yield_current(cpu.as_mut(), now_ns)
+            .yield_current_after_deadline_service(cpu.as_mut(), now_ns)
             .unwrap_or_else(|_| {
                 // Affinity publication cannot be rolled back safely after another CPU
                 // may have observed the migration target. Scheduler commit failures are

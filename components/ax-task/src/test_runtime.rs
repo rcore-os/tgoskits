@@ -45,6 +45,7 @@ std::thread_local! {
     static IRQ_EXIT_SCHEDULE_REMAINING: Cell<usize> = const { Cell::new(0) };
     static IRQ_EXIT_SCHEDULE_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static MONOTONIC_NS: Cell<u64> = const { Cell::new(0) };
+    static MONOTONIC_READS: Cell<usize> = const { Cell::new(0) };
     static LAST_TASK_DEADLINE_UPDATE: Cell<Option<TaskDeadlineUpdate>> = const { Cell::new(None) };
     static TASK_DEADLINE_PUBLISH_STATUS: Cell<RuntimeStatus> =
         const { Cell::new(RuntimeStatus::Success) };
@@ -316,6 +317,7 @@ impl TaskRuntime for UnitTestRuntime {
     }
     fn monotonic_ns() -> u64 {
         run_hook_reentry_query();
+        MONOTONIC_READS.with(|reads| reads.set(reads.get() + 1));
         MONOTONIC_NS.with(Cell::get)
     }
     fn timer_resolution_ns() -> u64 {
@@ -670,6 +672,7 @@ pub(crate) fn clear_task_handles() {
     install_task_handles(0, 0);
     reset_cpu_handle_reads();
     MONOTONIC_NS.with(|now| now.set(0));
+    MONOTONIC_READS.with(|reads| reads.set(0));
     LAST_TASK_DEADLINE_UPDATE.with(|observed| observed.set(None));
     CPU_LIFECYCLE_EVENTS.with(|events| events.borrow_mut().clear());
     configure_cpu_lifecycle(RuntimeStatus::Success, RuntimeStatus::Success);
@@ -678,6 +681,14 @@ pub(crate) fn clear_task_handles() {
 
 pub(crate) fn set_monotonic_ns(now_ns: u64) {
     MONOTONIC_NS.with(|now| now.set(now_ns));
+}
+
+pub(crate) fn reset_monotonic_reads() {
+    MONOTONIC_READS.with(|reads| reads.set(0));
+}
+
+pub(crate) fn monotonic_reads() -> usize {
+    MONOTONIC_READS.with(Cell::get)
 }
 
 pub(crate) fn take_task_deadline_update() -> Option<TaskDeadlineUpdate> {

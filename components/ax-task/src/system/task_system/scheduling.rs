@@ -2,6 +2,12 @@
 
 use super::*;
 
+#[derive(Clone, Copy)]
+enum DeadlineEntry {
+    Service,
+    AlreadyServiced,
+}
+
 impl TaskSystem {
     /// Requests one owner-mediated pull from the busiest remote CPU.
     ///
@@ -263,8 +269,17 @@ impl TaskSystem {
     /// Selects the next thread according to strict class precedence.
     pub fn schedule(
         &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<ScheduleDecision, TaskError> {
+        self.schedule_with_deadline_entry(cpu, now_ns, DeadlineEntry::Service)
+    }
+
+    fn schedule_with_deadline_entry(
+        &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
+        deadline_entry: DeadlineEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
@@ -272,10 +287,11 @@ impl TaskSystem {
         self.ensure_owner_cpu_online(&cpu)?;
         cpu.as_mut().scheduler_enter();
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        self.service_deadline_timers(cpu.as_mut(), now_ns)?;
-        // Claim the deadline-work doorbell reasserted by the entry-side
-        // pending check. The Acquire recheck inside `scheduler_enter` keeps
-        // concurrently published inbox or deadline work sticky.
+        if matches!(deadline_entry, DeadlineEntry::Service) {
+            self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        }
+        // Close the publication window after owner work and accounting. The
+        // Acquire recheck keeps concurrently published inbox work sticky.
         cpu.as_mut().scheduler_enter();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
@@ -312,8 +328,25 @@ impl TaskSystem {
     /// Services sticky scheduler work and switches only for a real preemption.
     pub fn schedule_if_requested(
         &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<SchedulerOutcome, TaskError> {
+        self.schedule_if_requested_with_deadline_entry(cpu, now_ns, DeadlineEntry::Service)
+    }
+
+    pub(crate) fn schedule_if_requested_after_deadline_service(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<SchedulerOutcome, TaskError> {
+        self.schedule_if_requested_with_deadline_entry(cpu, now_ns, DeadlineEntry::AlreadyServiced)
+    }
+
+    fn schedule_if_requested_with_deadline_entry(
+        &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
+        deadline_entry: DeadlineEntry,
     ) -> Result<SchedulerOutcome, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
@@ -331,7 +364,9 @@ impl TaskSystem {
         }
         let mut switch_requested = cpu.as_mut().scheduler_enter();
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        if matches!(deadline_entry, DeadlineEntry::Service) {
+            self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        }
         // Work published while this bounded safe point is running must affect
         // this decision. `scheduler_enter` consumes only the request observed
         // on entry; the second exchange closes the publication window without
@@ -397,8 +432,25 @@ impl TaskSystem {
     /// Moves the current thread to its class tail and selects another thread.
     pub fn yield_current(
         &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<ScheduleDecision, TaskError> {
+        self.yield_current_with_deadline_entry(cpu, now_ns, DeadlineEntry::Service)
+    }
+
+    pub(crate) fn yield_current_after_deadline_service(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<ScheduleDecision, TaskError> {
+        self.yield_current_with_deadline_entry(cpu, now_ns, DeadlineEntry::AlreadyServiced)
+    }
+
+    fn yield_current_with_deadline_entry(
+        &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
+        deadline_entry: DeadlineEntry,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
@@ -406,7 +458,9 @@ impl TaskSystem {
         self.ensure_owner_cpu_online(&cpu)?;
         cpu.as_mut().scheduler_enter();
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        if matches!(deadline_entry, DeadlineEntry::Service) {
+            self.service_deadline_timers(cpu.as_mut(), now_ns)?;
+        }
         cpu.as_mut().scheduler_enter();
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();

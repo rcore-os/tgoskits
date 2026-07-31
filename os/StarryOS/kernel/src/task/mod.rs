@@ -59,6 +59,7 @@ pub(crate) use self::{
         posix_timer_stale_expiry_signal_is_suppressed_for_test,
     },
     process_ptrace::inactive_ptrace_syscall_gate_is_lock_free_for_test,
+    scheduler_task::{reset_yield_now_calls_for_test, yield_now_calls_for_test},
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::{
