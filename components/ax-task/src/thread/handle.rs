@@ -208,6 +208,11 @@ impl ThreadWakeHandle {
         self.core.wake()
     }
 
+    #[cfg(test)]
+    pub(crate) fn wake_from_route_snapshot_for_test(&self, target: CpuId) -> WakeResult {
+        self.core.wake_from_route_snapshot(target)
+    }
+
     /// Wakes from ordinary task context.
     ///
     /// The scheduler may use an owner-CPU direct activation path when the
@@ -240,7 +245,11 @@ impl ThreadCore {
         let Some(target) = (cpu != u32::MAX).then(|| CpuId::new(cpu)) else {
             return WakeResult::Unavailable;
         };
-        let Some(cpu) = crate::facade::cpu_local_for_wake(target) else {
+        self.wake_from_route_snapshot(target)
+    }
+
+    fn wake_from_route_snapshot(&self, target: CpuId) -> WakeResult {
+        let Some(carrier) = crate::facade::wake_carrier(target) else {
             return WakeResult::Unavailable;
         };
         // Publish the inbox request and wake-before-park notification as one
@@ -250,7 +259,7 @@ impl ThreadCore {
             // A coalesced wake is also a recovery path for a doorbell claimed
             // concurrently by the owner. Reassert scheduler work even though
             // the first producer still owns the intrusive publication.
-            cpu.kick_scheduler_work();
+            carrier.kick_scheduler_work();
             return WakeResult::AlreadyPending;
         }
         let core = self as *const ThreadCore;
@@ -260,9 +269,12 @@ impl ThreadCore {
         // SAFETY: Arc allocation addresses are stable. The transferred strong
         // count keeps the embedded node alive until owner-side drain.
         let node = unsafe { Pin::new_unchecked(&(*core).remote_wake_node) };
-        let message =
-            InboxMessage::remote_wake_with_payload(self.id, target, core.expose_provenance());
-        match cpu.publish_remote_wake(node, message) {
+        let message = InboxMessage::remote_wake_with_payload(
+            self.id,
+            carrier.owner(),
+            core.expose_provenance(),
+        );
+        match carrier.publish_remote_wake(node, message) {
             PublishResult::Published => WakeResult::Notified,
             PublishResult::AlreadyPending => {
                 // SAFETY: publication did not take ownership of the retained
@@ -289,7 +301,7 @@ pub enum WakeResult {
     AlreadyPending,
     /// The destination thread has exited, so the late wake is ignored.
     Exited,
-    /// The target CPU has not published its scheduler inbox yet.
+    /// No scheduler-ready CPU is currently reachable for wake delivery.
     Unavailable,
 }
 

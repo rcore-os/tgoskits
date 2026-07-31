@@ -114,6 +114,7 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
     let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let remote = &system.cpu_remotes[1];
+    remote.mark_scheduler_ready();
     assert!(remote.mark_online());
     crate::test_runtime::reset_irq_state();
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);

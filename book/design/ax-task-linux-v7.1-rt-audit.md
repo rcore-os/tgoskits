@@ -248,10 +248,12 @@ threads from turning a historical wake-route hint into physical CPU ownership.
 
 The `Online-with-zero-producers -> Inactive` compare-exchange closes new
 placement before dormant routes are redirected to another active CPU. A wake
-producer that already observed the old route can still publish while the CPU
-is inactive; its publication count prevents the exact transition to
-`Draining`. Once every old route has been replaced and every such producer has
-left, `Inactive-with-zero-producers -> Draining` closes the remaining wake and
+producer converts that numeric hint into a typed carrier lease. If the old CPU
+is still inactive, the lease's publication count prevents the exact transition
+to `Draining`; if it is already draining, the producer acquires another
+reachable carrier from the fixed CPU array. Once every old route has been
+replaced and every such producer has left,
+`Inactive-with-zero-producers -> Draining` closes the remaining wake and
 control publication boundary. Only then does the owner check its current/idle
 slot, runqueue, task deadline heap, expired buffer, switch handoff, inboxes,
 IPI claim, and every live thread's physical placement ownership. A failed
@@ -2363,6 +2365,59 @@ generation-bearing handle, and drains the thread into CPU 0's ready queue. A
 lower-level lifecycle test proves that an inactive endpoint rejects placement,
 accepts an in-flight old-route wake, and cannot enter draining until that
 publisher leaves.
+
+## Current-head wake carrier ownership
+
+The four-state CPU lifecycle closed placement before wake reachability, but a
+follow-up audit found that a numeric `target_cpu` snapshot was still mistaken
+for delivery ownership. A hard-IRQ wake could load the old target, be delayed
+while CPU-down redirected that thread and completed `Draining`, then resolve
+the old endpoint. The endpoint correctly rejected publication, but
+`ThreadWakeHandle::wake()` returned `Unavailable` and cleared its sticky wake
+state. Requiring a later wake to observe the replacement route loses the
+current event; `IrqWaitCell` intentionally cannot manufacture another device
+interrupt.
+
+Linux v7.1 avoids this gap by retaining `p->pi_lock` across the task-state and
+CPU-placement part of `try_to_wake_up()`. The remote wake-list path may defer
+activation to an online runqueue, but it does not treat a previously read
+`task_cpu()` value as a lifetime proof.
+
+ax-task keeps hard-IRQ delivery lock-free and uses a typed proof instead:
+
+- `target_cpu` is only the preferred placement hint;
+- `TaskSystem::acquire_wake_carrier()` first attempts that endpoint, then scans
+  the immutable configured CPU array for any scheduler-ready online carrier;
+- `CpuWakeCarrier` owns one packed lifecycle publisher count from before inbox
+  insertion through the physical doorbell decision; and
+- the carrier CPU consumes the wake, reads the latest placement hint under the
+  thread scheduler lock, and forwards the resulting Ready thread when needed.
+
+The fallback scan is bounded by the immutable configured CPU capacity, does
+not allocate, and does not inspect a runqueue or thread list. The last-online
+CPU rule ensures a live task system has a carrier even while another CPU
+finishes draining. The old direct `cpu_local_for_wake()` lookup is removed, and
+the raw `CpuRemote::publish_remote_wake()` entry remains test-only so
+production wake delivery cannot bypass the lease.
+
+The deterministic regression snapshots CPU 1 as a blocked thread's route,
+completes route redirection and CPU 1 offlining, then resumes that exact wake.
+The old implementation returned `Unavailable`; the carrier model publishes
+the event through CPU 0, drains it once, and makes the sleeper Ready. This
+extends the earlier route-redirection test from “a later wake sees the new
+hint” to the actual preemption window that must retain the original event.
+
+The previous tests missed the defect for two concrete reasons. The CPU
+lifecycle regression invoked `wake()` only after offlining and therefore
+loaded the replacement target rather than retaining a pre-offline snapshot.
+The Loom CPU-offline model still encoded the obsolete three-state
+`Online / Draining / Offline` protocol and modeled a publisher that had
+already entered the lifecycle counter; it did not model the gap between
+reading a route and acquiring publication ownership. That model now uses the
+four-state lifecycle, and a second model covers stale-route carrier fallback.
+The complete ax-task suite passes 231 unit tests, all integration/doc tests,
+and 21 Loom models; ax-runtime's multitask host suite passes 62/62, and both
+affected feature-clippy matrices pass.
 
 ## Completion rules
 
