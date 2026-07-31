@@ -1,0 +1,188 @@
+digraph TGOSKitsStack {
+    graph [
+        rankdir=TB,
+        bgcolor="#ffffff",
+        pad="0.35",
+        nodesep="0.55",
+        ranksep="0.58 equally",
+        splines=polyline,
+        fontname="Hiragino Sans GB",
+        fontsize=22,
+        labelloc=t,
+        label="TGOSKits / OpenRace 2026 完整运行栈"
+    ];
+
+    node [
+        shape=box,
+        style="rounded,filled",
+        color="#64748b",
+        fillcolor="#f8fafc",
+        fontcolor="#172033",
+        fontname="Hiragino Sans GB",
+        fontsize=13,
+        margin="0.22,0.14",
+        penwidth=1.2
+    ];
+
+    edge [
+        color="#475569",
+        fontcolor="#475569",
+        fontname="Hiragino Sans GB",
+        fontsize=10,
+        penwidth=1.5,
+        arrowsize=0.8
+    ];
+
+    subgraph cluster_workloads {
+        label="L6  应用与业务层";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        ai [
+            label="AI 推理与协议程序\n模型推理 · 控制参数生成 · 状态分析",
+            fillcolor="#e0f2fe",
+            color="#0284c7"
+        ];
+        control [
+            label="实时控制任务\n周期执行 · 参数应用 · 状态回传",
+            fillcolor="#ffedd5",
+            color="#ea580c"
+        ];
+        { rank=same; ai; control; }
+    }
+
+    subgraph cluster_guest_semantics {
+        label="L5  Guest 系统语义层";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        starry [
+            label="StarryOS Guest\nLinux ABI · 进程/线程 · Syscall · 文件与网络\n（主线可用 Linux Guest 替代）",
+            fillcolor="#dbeafe",
+            color="#2563eb",
+            penwidth=1.8
+        ];
+        rtos [
+            label="RTOS Guest\n实时调度 · IPC · 定时器 · 控制服务",
+            fillcolor="#ffedd5",
+            color="#ea580c",
+            penwidth=1.8
+        ];
+        { rank=same; starry; rtos; }
+    }
+
+    subgraph cluster_guest_foundation {
+        label="L4  Guest 内核基础层";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        starry_base [
+            label="ArceOS 基础能力（StarryOS Guest 内的一份）\nax-std · ax-runtime · ax-hal · ax-task\nax-mm · ax-fs-ng · ax-net · ax-driver",
+            fillcolor="#dcfce7",
+            color="#16a34a"
+        ];
+        rtos_base [
+            label="RTOS 自身内核与 BSP\n调度器 · HAL · IP 协议栈 · VirtIO 驱动",
+            fillcolor="#fff7ed",
+            color="#f97316"
+        ];
+        { rank=same; starry_base; rtos_base; }
+    }
+
+    subgraph cluster_virtual_hardware {
+        label="L3  虚拟硬件边界";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        virtual_hardware [
+            label="vCPU · Guest 内存 · 虚拟中断 · 虚拟定时器\nVirtIO-Net · 虚拟串口 · 虚拟块设备",
+            fillcolor="#f1f5f9",
+            color="#64748b"
+        ];
+    }
+
+    subgraph cluster_hypervisor {
+        label="L2  Type-I Hypervisor";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        axvisor [
+            label="Axvisor\nVM 配置 · 生命周期 · 资源划分 · 管理 Shell",
+            fillcolor="#ede9fe",
+            color="#7c3aed",
+            penwidth=1.8
+        ];
+        axvm [
+            label="虚拟化核心\naxvm · vCPU Backend · Guest 地址空间\nvIRQ · 虚拟设备 · 设备映射",
+            fillcolor="#f5f3ff",
+            color="#8b5cf6"
+        ];
+    }
+
+    subgraph cluster_host_foundation {
+        label="L1  Axvisor 宿主基础层";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        host_arceos [
+            label="ArceOS 基础能力（Axvisor Host 内的一份）\nax-std · ax-runtime · ax-hal · ax-task · ax-mm · ax-driver",
+            fillcolor="#dcfce7",
+            color="#16a34a",
+            penwidth=1.8
+        ];
+
+        shared [
+            label="TGOSKits 共享基础设施\ncomponents · memory · drivers · platforms\nirq-framework · rdif/rdrive · 启动与固件交接",
+            fillcolor="#ecfdf5",
+            color="#059669"
+        ];
+    }
+
+    subgraph cluster_physical {
+        label="L0  物理执行层";
+        color="#cbd5e1";
+        style="rounded,dashed";
+        fontname="Hiragino Sans GB";
+        fontsize=14;
+
+        hardware [
+            label="物理硬件或 QEMU\nCPU · RAM · GIC/PLIC/APIC · Timer\n网卡 · 串口 · 块设备",
+            fillcolor="#e2e8f0",
+            color="#334155",
+            penwidth=1.8
+        ];
+    }
+
+    ai -> starry;
+    control -> rtos;
+    starry -> starry_base;
+    rtos -> rtos_base;
+    starry_base -> virtual_hardware;
+    rtos_base -> virtual_hardware;
+    virtual_hardware -> axvisor;
+    axvisor -> axvm;
+    axvm -> host_arceos;
+    host_arceos -> shared;
+    shared -> hardware;
+
+    rtos_base -> hardware [
+        style=dashed,
+        color="#ea580c",
+        fontcolor="#c2410c",
+        label="裸机 RTOS 对照基线\n绕过 Axvisor",
+        constraint=false,
+        penwidth=1.4
+    ];
+}

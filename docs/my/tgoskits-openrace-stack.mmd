@@ -1,0 +1,76 @@
+flowchart TB
+    subgraph L6["L6 应用与业务层"]
+        direction LR
+        AI["AI 推理与协议程序<br/>模型推理 · 控制参数生成 · 状态分析"]
+        CONTROL["实时控制任务<br/>周期执行 · 参数应用 · 状态回传"]
+    end
+
+    subgraph L5["L5 Guest 系统语义层"]
+        direction LR
+        STARRY["StarryOS Guest<br/>Linux ABI · 进程/线程 · Syscall<br/>文件系统 · 网络<br/>主线可用 Linux Guest 替代"]
+        RTOS["RTOS Guest<br/>实时调度 · IPC · 定时器 · 控制服务"]
+    end
+
+    subgraph L4["L4 Guest 内核基础层"]
+        direction LR
+        STARRY_BASE["ArceOS 基础能力<br/>StarryOS Guest 内的一份<br/>ax-std · ax-runtime · ax-hal · ax-task<br/>ax-mm · ax-fs-ng · ax-net · ax-driver"]
+        RTOS_BASE["RTOS 自身内核与 BSP<br/>调度器 · HAL · IP 协议栈 · VirtIO 驱动"]
+    end
+
+    subgraph L3["L3 虚拟硬件边界"]
+        direction LR
+        VHW["vCPU · Guest 内存 · 虚拟中断 · 虚拟定时器<br/>VirtIO（直通为主）· 虚拟串口 · 虚拟块设备"]
+        IVC["Guest 间通信<br/>vsock · HyperCall（axhvc）"]
+    end
+
+    subgraph L2["L2 Type-I Hypervisor"]
+        AXVISOR["Axvisor<br/>VM 配置 · 生命周期 · 资源划分 · 管理 Shell"]
+        AXVM["虚拟化核心<br/>axvm · vCPU Backend · Guest 地址空间<br/>vIRQ · 虚拟设备 · 设备映射"]
+    end
+
+    subgraph L1["L1 Axvisor 宿主基础层"]
+        HOST_ARCEOS["ArceOS 基础能力<br/>Axvisor Host 内的一份<br/>ax-std · ax-runtime · ax-hal<br/>ax-task · ax-mm · ax-driver"]
+        SHARED["TGOSKits 共享基础设施<br/>components · memory · drivers · platforms<br/>irq-framework · rdif/rdrive · 启动与固件交接"]
+    end
+
+    subgraph L0["L0 物理执行层"]
+        HW["物理硬件或 QEMU<br/>CPU · RAM · GIC/PLIC/APIC · Timer<br/>网卡 · 串口 · 块设备"]
+    end
+
+    AI --> STARRY
+    CONTROL --> RTOS
+
+    STARRY --> STARRY_BASE
+    RTOS --> RTOS_BASE
+
+    STARRY_BASE --> VHW
+    RTOS_BASE --> VHW
+
+    STARRY_BASE <-. "跨客户机通信" .-> IVC
+    RTOS_BASE <-. "跨客户机通信" .-> IVC
+
+    VHW --> AXVISOR
+    IVC --> AXVISOR
+    AXVISOR --> AXVM
+    AXVM --> HOST_ARCEOS
+    HOST_ARCEOS --> SHARED
+    SHARED --> HW
+
+    RTOS_BASE -. "裸机 RTOS 对照基线<br/>绕过 Axvisor" .-> HW
+
+    style AI fill:#e0f2fe,stroke:#0284c7
+    style STARRY fill:#dbeafe,stroke:#2563eb,stroke-width:2px
+    style STARRY_BASE fill:#dcfce7,stroke:#16a34a
+
+    style CONTROL fill:#ffedd5,stroke:#ea580c
+    style RTOS fill:#ffedd5,stroke:#ea580c,stroke-width:2px
+    style RTOS_BASE fill:#fff7ed,stroke:#f97316
+
+    style VHW fill:#f1f5f9,stroke:#64748b
+    style IVC fill:#fef9c3,stroke:#ca8a04,stroke-width:2px
+    style AXVISOR fill:#ede9fe,stroke:#7c3aed,stroke-width:2px
+    style AXVM fill:#f5f3ff,stroke:#8b5cf6
+
+    style HOST_ARCEOS fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    style SHARED fill:#ecfdf5,stroke:#059669
+    style HW fill:#e2e8f0,stroke:#334155,stroke-width:2px
