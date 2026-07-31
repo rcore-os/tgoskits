@@ -3,12 +3,12 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::cmp::Ordering;
 
-use super::queue::QueuedThread;
 #[cfg(test)]
 use super::queue::record_fair_runqueue_visit;
+use super::{queue::QueuedThread, virtual_before, virtual_delta, virtual_min};
 use crate::{FairEntity, ThreadId};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FairQueueKey {
     virtual_deadline: u64,
     sequence: u64,
@@ -23,6 +23,26 @@ impl FairQueueKey {
             sequence: thread.sequence,
             thread: thread.id,
         }
+    }
+}
+
+impl Ord for FairQueueKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.virtual_deadline == other.virtual_deadline {
+            self.sequence
+                .cmp(&other.sequence)
+                .then_with(|| self.thread.cmp(&other.thread))
+        } else if virtual_before(self.virtual_deadline, other.virtual_deadline) {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    }
+}
+
+impl PartialOrd for FairQueueKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -71,10 +91,14 @@ impl FairNode {
         self.height = link_height(&self.left)
             .max(link_height(&self.right))
             .saturating_add(1);
-        self.min_vruntime = fair_entity(self.thread())
-            .vruntime()
-            .min(link_min_vruntime(&self.left))
-            .min(link_min_vruntime(&self.right));
+        let mut min_vruntime = fair_entity(self.thread()).vruntime();
+        if let Some(left) = link_min_vruntime(&self.left) {
+            min_vruntime = virtual_min(min_vruntime, left);
+        }
+        if let Some(right) = link_min_vruntime(&self.right) {
+            min_vruntime = virtual_min(min_vruntime, right);
+        }
+        self.min_vruntime = min_vruntime;
     }
 }
 
@@ -85,8 +109,9 @@ pub(super) struct FairRunQueue {
     root: FairLink,
     spare: FairLink,
     keys: Vec<Option<(u32, FairQueueKey)>>,
-    weighted_vruntime: u128,
-    total_weight: u128,
+    zero_vruntime: u64,
+    sum_weighted_delta: i128,
+    total_weight: i128,
     len: usize,
 }
 
@@ -96,7 +121,8 @@ impl FairRunQueue {
             root: None,
             spare: None,
             keys: Vec::new(),
-            weighted_vruntime: 0,
+            zero_vruntime: 0,
+            sum_weighted_delta: 0,
             total_weight: 0,
             len: 0,
         }
@@ -176,33 +202,52 @@ impl FairRunQueue {
         find_first_matching(self.root.as_deref(), predicate).cloned()
     }
 
-    pub(super) fn weighted_virtual_time(&self, current: Option<FairEntity>) -> Option<u64> {
-        let mut weighted_vruntime = self.weighted_vruntime;
+    pub(super) fn weighted_virtual_time(&mut self, current: Option<FairEntity>) -> Option<u64> {
+        let mut sum_weighted_delta = self.sum_weighted_delta;
         let mut total_weight = self.total_weight;
         if let Some(current) = current {
-            let weight = u128::from(current.weight());
-            weighted_vruntime = weighted_vruntime
-                .saturating_add(u128::from(current.vruntime()).saturating_mul(weight));
-            total_weight = total_weight.saturating_add(weight);
+            let weight = i128::from(current.weight());
+            sum_weighted_delta += self.entity_delta(current) * weight;
+            total_weight += weight;
         }
-        (total_weight != 0)
-            .then(|| u64::try_from(weighted_vruntime / total_weight).unwrap_or(u64::MAX))
+        if total_weight == 0 {
+            return None;
+        }
+
+        // Rust integer division truncates toward zero. EEVDF needs the same
+        // left-biased average as Linux so an entity exactly at V is eligible.
+        if sum_weighted_delta < 0 {
+            sum_weighted_delta -= total_weight - 1;
+        }
+        let delta = sum_weighted_delta / total_weight;
+        let delta = i64::try_from(delta).expect("a weighted mean of i64 deltas must fit in i64");
+        self.rebase(delta);
+        Some(self.zero_vruntime)
     }
 
     fn add_weighted_entity(&mut self, entity: FairEntity) {
-        let weight = u128::from(entity.weight());
-        self.weighted_vruntime = self
-            .weighted_vruntime
-            .saturating_add(u128::from(entity.vruntime()).saturating_mul(weight));
-        self.total_weight = self.total_weight.saturating_add(weight);
+        if self.total_weight == 0 {
+            self.zero_vruntime = entity.vruntime();
+            self.sum_weighted_delta = 0;
+        }
+        let weight = i128::from(entity.weight());
+        self.sum_weighted_delta += self.entity_delta(entity) * weight;
+        self.total_weight += weight;
     }
 
     fn remove_weighted_entity(&mut self, entity: FairEntity) {
-        let weight = u128::from(entity.weight());
-        self.weighted_vruntime = self
-            .weighted_vruntime
-            .saturating_sub(u128::from(entity.vruntime()).saturating_mul(weight));
-        self.total_weight = self.total_weight.saturating_sub(weight);
+        let weight = i128::from(entity.weight());
+        self.sum_weighted_delta -= self.entity_delta(entity) * weight;
+        self.total_weight -= weight;
+    }
+
+    fn entity_delta(&self, entity: FairEntity) -> i128 {
+        i128::from(virtual_delta(entity.vruntime(), self.zero_vruntime))
+    }
+
+    fn rebase(&mut self, delta: i64) {
+        self.sum_weighted_delta -= i128::from(delta) * self.total_weight;
+        self.zero_vruntime = self.zero_vruntime.wrapping_add(delta as u64);
     }
 
     fn recycle_removed(&mut self, mut removed: Box<FairNode>) -> QueuedThread {
@@ -213,7 +258,7 @@ impl FairRunQueue {
         removed.left = None;
         removed.right = self.spare.take();
         removed.height = 1;
-        removed.min_vruntime = u64::MAX;
+        removed.min_vruntime = 0;
         self.spare = Some(removed);
         thread
     }
@@ -221,13 +266,13 @@ impl FairRunQueue {
     #[cfg(test)]
     pub(super) fn assert_invariants(&self) {
         let mut previous = None;
-        let summary = validate_node(self.root.as_deref(), &mut previous);
+        let summary = validate_node(self.root.as_deref(), &mut previous, self.zero_vruntime);
         assert_eq!(summary.count, self.len);
         assert_eq!(
             self.keys.iter().filter(|entry| entry.is_some()).count(),
             self.len
         );
-        assert_eq!(summary.weighted_vruntime, self.weighted_vruntime);
+        assert_eq!(summary.sum_weighted_delta, self.sum_weighted_delta);
         assert_eq!(summary.total_weight, self.total_weight);
     }
 }
@@ -253,8 +298,8 @@ fn link_height(link: &FairLink) -> usize {
     link.as_deref().map_or(0, |node| node.height)
 }
 
-fn link_min_vruntime(link: &FairLink) -> u64 {
-    link.as_deref().map_or(u64::MAX, |node| node.min_vruntime)
+fn link_min_vruntime(link: &FairLink) -> Option<u64> {
+    link.as_deref().map(|node| node.min_vruntime)
 }
 
 fn balance_factor(node: &FairNode) -> isize {
@@ -378,7 +423,7 @@ fn earliest_eligible_key(node: Option<&FairNode>, virtual_time: u64) -> Option<F
     if node
         .left
         .as_deref()
-        .is_some_and(|left| left.min_vruntime <= virtual_time)
+        .is_some_and(|left| !virtual_before(virtual_time, left.min_vruntime))
     {
         return earliest_eligible_key(node.left.as_deref(), virtual_time);
     }
@@ -388,7 +433,7 @@ fn earliest_eligible_key(node: Option<&FairNode>, virtual_time: u64) -> Option<F
     if node
         .right
         .as_deref()
-        .is_some_and(|right| right.min_vruntime <= virtual_time)
+        .is_some_and(|right| !virtual_before(virtual_time, right.min_vruntime))
     {
         return earliest_eligible_key(node.right.as_deref(), virtual_time);
     }
@@ -410,50 +455,48 @@ fn find_first_matching<'queue>(
 struct ValidationSummary {
     count: usize,
     height: usize,
-    min_vruntime: u64,
-    weighted_vruntime: u128,
-    total_weight: u128,
+    min_vruntime: Option<u64>,
+    sum_weighted_delta: i128,
+    total_weight: i128,
 }
 
 #[cfg(test)]
 fn validate_node(
     node: Option<&FairNode>,
     previous: &mut Option<FairQueueKey>,
+    zero_vruntime: u64,
 ) -> ValidationSummary {
     let Some(node) = node else {
         return ValidationSummary {
             count: 0,
             height: 0,
-            min_vruntime: u64::MAX,
-            weighted_vruntime: 0,
+            min_vruntime: None,
+            sum_weighted_delta: 0,
             total_weight: 0,
         };
     };
-    let left = validate_node(node.left.as_deref(), previous);
+    let left = validate_node(node.left.as_deref(), previous, zero_vruntime);
     assert!(previous.is_none_or(|key| key < node.key));
     *previous = Some(node.key);
     let fair = fair_entity(node.thread());
-    let right = validate_node(node.right.as_deref(), previous);
+    let right = validate_node(node.right.as_deref(), previous, zero_vruntime);
     let height = left.height.max(right.height).saturating_add(1);
-    let min_vruntime = fair
-        .vruntime()
-        .min(left.min_vruntime)
-        .min(right.min_vruntime);
+    let min_vruntime = left
+        .min_vruntime
+        .into_iter()
+        .chain(right.min_vruntime)
+        .fold(fair.vruntime(), virtual_min);
     assert_eq!(node.height, height);
     assert_eq!(node.min_vruntime, min_vruntime);
     assert!(left.height.abs_diff(right.height) <= 1);
-    let weight = u128::from(fair.weight());
+    let weight = i128::from(fair.weight());
     ValidationSummary {
         count: left.count.saturating_add(right.count).saturating_add(1),
         height,
-        min_vruntime,
-        weighted_vruntime: left
-            .weighted_vruntime
-            .saturating_add(right.weighted_vruntime)
-            .saturating_add(u128::from(fair.vruntime()).saturating_mul(weight)),
-        total_weight: left
-            .total_weight
-            .saturating_add(right.total_weight)
-            .saturating_add(weight),
+        min_vruntime: Some(min_vruntime),
+        sum_weighted_delta: left.sum_weighted_delta
+            + right.sum_weighted_delta
+            + i128::from(virtual_delta(fair.vruntime(), zero_vruntime)) * weight,
+        total_weight: left.total_weight + right.total_weight + weight,
     }
 }

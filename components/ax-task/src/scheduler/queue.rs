@@ -2,7 +2,7 @@
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
-use super::fair_queue::FairRunQueue;
+use super::{fair_queue::FairRunQueue, virtual_max};
 use crate::{
     FairEntity, FairMode, SchedulePolicy, SchedulingEntity, SchedulingKey, TaskError, ThreadCore,
     ThreadId,
@@ -183,10 +183,10 @@ impl RunQueue {
         let normal_current = current.filter(|entity| entity.mode() != FairMode::Idle);
         let idle_current = current.filter(|entity| entity.mode() == FairMode::Idle);
         if let Some(mean) = self.fair.weighted_virtual_time(normal_current) {
-            self.virtual_time = self.virtual_time.max(mean);
+            self.virtual_time = virtual_max(self.virtual_time, mean);
         }
         if let Some(mean) = self.idle_fair.weighted_virtual_time(idle_current) {
-            self.idle_virtual_time = self.idle_virtual_time.max(mean);
+            self.idle_virtual_time = virtual_max(self.idle_virtual_time, mean);
         }
     }
 
@@ -335,14 +335,22 @@ impl RunQueue {
                 (None, QueueMembershipClass::IdleFair)
             }
             SchedulePolicy::Fair { .. } => {
-                let summary = Self::pushable_summary_for(&entry);
                 self.fair.insert(entry);
+                let summary = self.fair.first().and_then(Self::pushable_summary_for);
                 (summary, QueueMembershipClass::Fair)
             }
         };
         self.len += 1;
         self.register_membership(id, membership_class);
-        self.consider_pushable_summary(pushable_summary);
+        if matches!(membership_class, QueueMembershipClass::Fair)
+            && self
+                .pushable_summary
+                .is_none_or(|summary| summary.key.class_rank() >= policy.class_rank())
+        {
+            self.pushable_summary = pushable_summary;
+        } else {
+            self.consider_pushable_summary(pushable_summary);
+        }
         Ok(queued_entity)
     }
 
@@ -825,6 +833,104 @@ mod tests {
             queue.pick_next_with_rt(true, |_| false).unwrap().id,
             ThreadId::from_parts(1, 1),
             "weighted V must make both vruntime 0 and 4 eligible, then choose vd=8",
+        );
+    }
+
+    #[test]
+    fn fair_deadline_order_survives_virtual_time_wrap() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let virtual_time = u64::MAX - 100;
+        queue.virtual_time = virtual_time;
+        let later = ThreadId::from_parts(0, 1);
+        let earlier = ThreadId::from_parts(1, 1);
+
+        queue
+            .enqueue_test(
+                later,
+                policy,
+                SchedulingEntity::new(policy, 200, virtual_time),
+                0,
+                EnqueueReason::Migrated,
+            )
+            .unwrap();
+        queue
+            .enqueue_test(
+                earlier,
+                policy,
+                SchedulingEntity::new(policy, 110, virtual_time),
+                0,
+                EnqueueReason::Migrated,
+            )
+            .unwrap();
+
+        assert_eq!(
+            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            earlier,
+            "EEVDF must order wrapped virtual deadlines by signed distance",
+        );
+    }
+
+    #[test]
+    fn fair_weighted_virtual_time_includes_current_across_wrap() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let before_wrap = u64::MAX - 100;
+        queue.virtual_time = before_wrap;
+        queue
+            .enqueue_test(
+                ThreadId::from_parts(0, 1),
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    before_wrap,
+                    before_wrap.wrapping_add(100),
+                )),
+                0,
+                EnqueueReason::Migrated,
+            )
+            .unwrap();
+
+        let current =
+            FairEntity::test_state(Nice::ZERO, FairMode::Normal, 20, 20_u64.wrapping_add(100));
+        queue.update_fair_virtual_time(Some(current));
+
+        assert_eq!(
+            queue.virtual_time(),
+            u64::MAX - 40,
+            "the owner-rq mean must use signed deltas and include the running entity",
+        );
+        queue.fair.assert_invariants();
+    }
+
+    #[test]
+    fn fair_pushable_summary_uses_wrapped_runqueue_order() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let virtual_time = u64::MAX - 10;
+        queue.virtual_time = virtual_time;
+        for (slot, deadline) in [(0, 5), (1, u64::MAX - 1)] {
+            queue
+                .enqueue_test(
+                    ThreadId::from_parts(slot, 1),
+                    policy,
+                    SchedulingEntity::Fair(FairEntity::test_state(
+                        Nice::ZERO,
+                        FairMode::Normal,
+                        virtual_time,
+                        deadline,
+                    )),
+                    0,
+                    EnqueueReason::Migrated,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            queue.pushable_key().unwrap().primary(),
+            u64::MAX - 1,
+            "published fair summaries must name the owner runqueue's modular minimum",
         );
     }
 
