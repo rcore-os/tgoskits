@@ -686,8 +686,8 @@ mod tests {
         );
         assert_eq!(
             test_runtime::scheduler_frame_state(),
-            (0, 1, 1),
-            "one scheduling operation must use exactly one scheduler baton"
+            (0, 1, 0),
+            "one scheduling operation must use exactly one scheduler baton without nested IRQ guards"
         );
         assert_eq!(
             test_runtime::irq_guards_at_context_switch(),

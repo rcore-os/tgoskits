@@ -56,7 +56,7 @@ use crate::{
     ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle, ThreadResources,
     ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
-    lock::{IrqScope, IrqTicketLock, SequenceCounter},
+    lock::{IrqScope, PreemptTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
     runtime::{
         ContextThreadBinding, CpuRemoteHandle, RuntimeCpuId, RuntimeStatus, ThreadIdentityV1,
@@ -143,7 +143,7 @@ impl TaskSystem {
         Ok(Self {
             config,
             cpu_remotes,
-            state: IrqTicketLock::new(TaskSystemState {
+            state: PreemptTicketLock::new(TaskSystemState {
                 cpus: cpu_registrations,
                 slots: Vec::new(),
                 free_slots: Vec::new(),
@@ -155,7 +155,7 @@ impl TaskSystem {
                 reap_cursor: 0,
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
             }),
-            root_domain: IrqTicketLock::new(RootDomainState {
+            root_domain: PreemptTicketLock::new(RootDomainState {
                 online: CpuSet::empty(config.cpu_count()),
             }),
             deferred_reclaims: SchedulerInbox::new(InboxKind::Reclaim),

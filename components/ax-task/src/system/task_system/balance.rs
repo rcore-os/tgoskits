@@ -69,11 +69,9 @@ impl TaskSystem {
     pub(super) fn publish_owner_cpu_load_summary(&self, mut cpu: Pin<&mut CpuLocal>) {
         #[cfg(test)]
         LOAD_SUMMARY_PUBLICATIONS.set(LOAD_SUMMARY_PUBLICATIONS.get().saturating_add(1));
-        // Linux protects runqueue load state with the owner rq lock and local
-        // preemption exclusion. Keep the complete owner snapshot transaction
-        // non-preemptible so the sequence cannot remain odd while an interrupt
-        // recursively enters scheduler code on this CPU.
-        let _irq = IrqScope::enter();
+        // Every caller already owns either the scheduler baton or an owner IRQ
+        // guard. Like Linux's rq clock/load update under rq ownership, this
+        // nested publication needs no second IRQ-state transaction.
         let fields = cpu.as_mut().fields_mut();
         let current_key = fields
             .current_dispatch
@@ -89,6 +87,7 @@ impl TaskSystem {
             current_key,
             pushable_key,
             fields.run_queue.len(),
+            workload,
             pushable_key.is_some() && workload > 1,
         );
     }

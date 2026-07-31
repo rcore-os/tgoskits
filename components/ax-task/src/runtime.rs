@@ -93,6 +93,10 @@ opaque_handle!(
     /// Token returned by the nested IRQ guard service.
     IrqGuardToken
 );
+opaque_handle!(
+    /// Token returned by the nested task-preemption guard service.
+    PreemptGuardToken
+);
 
 /// Logical CPU identifier exchanged with the operating-system runtime.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -501,6 +505,26 @@ pub trait TaskRuntime {
     /// must be exited exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn irq_guard_exit(token: IrqGuardToken);
 
+    /// Prevents the current task context from being preempted or migrated.
+    ///
+    /// This capability does not disable hardware interrupts. It is valid only
+    /// in task context or inside an active scheduler frame; hard-IRQ code must
+    /// use IRQ-safe publication instead of task-only scheduler locks.
+    fn preempt_guard_enter() -> PreemptGuardToken;
+
+    /// Leaves one nested task-preemption guard.
+    ///
+    /// The final exit may enter the scheduler when work is pending. When the
+    /// caller already owns a scheduler frame, it must consume only this nested
+    /// depth and preserve the scheduler baton and raw IRQ state.
+    ///
+    /// # Safety
+    ///
+    /// `token` must have been returned by `preempt_guard_enter` on this task
+    /// execution context and must be exited exactly once. Tokens may be exited
+    /// in non-LIFO order.
+    unsafe fn preempt_guard_exit(token: PreemptGuardToken);
+
     /// Reports whether sticky scheduler work for the current CPU has a local
     /// safe point that makes a self-IPI unnecessary.
     ///
@@ -642,8 +666,9 @@ pub trait TaskRuntime {
     ///
     /// The runtime must validate the context handle and install the association
     /// atomically. A failed call must leave the context unbound so construction
-    /// can destroy it. This hook runs under the task registry's IRQ-safe lock;
-    /// it must not allocate, block, invoke callbacks, or re-enter ax-task.
+    /// can destroy it. This hook runs under the task registry's preempt-only
+    /// lock; it must not allocate, block, invoke callbacks, or re-enter
+    /// ax-task.
     ///
     /// Providers without execution contexts still export this capability and
     /// return `Unsupported`, keeping trait-FFI symbol completeness explicit.

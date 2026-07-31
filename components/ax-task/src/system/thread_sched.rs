@@ -9,7 +9,7 @@ pub(super) use placement::SchedulerPlacement;
 use crate::{
     CpuId, CpuSet, DeadlineEntity, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore,
     ThreadId, ThreadLifecycle, ThreadState,
-    lock::{IrqTicketGuard, IrqTicketLock},
+    lock::{PreemptTicketGuard, PreemptTicketLock},
     runtime::{AddressSpaceHandle, ExecutionContextHandle},
     timer::TaskDeadlineRegistration,
 };
@@ -33,14 +33,14 @@ pub enum DeadlineActivity {
 #[derive(Debug)]
 pub(crate) struct ThreadSchedCell {
     id: ThreadId,
-    state: IrqTicketLock<ThreadSchedState>,
+    state: PreemptTicketLock<ThreadSchedState>,
 }
 
 impl ThreadSchedCell {
     pub(super) fn new(id: ThreadId, state: ThreadSchedState) -> Self {
         Self {
             id,
-            state: IrqTicketLock::new(state),
+            state: PreemptTicketLock::new(state),
         }
     }
 
@@ -48,7 +48,7 @@ impl ThreadSchedCell {
         self.id
     }
 
-    pub(super) fn lock(&self) -> IrqTicketGuard<'_, ThreadSchedState> {
+    pub(super) fn lock(&self) -> PreemptTicketGuard<'_, ThreadSchedState> {
         self.state.lock()
     }
 

@@ -30,6 +30,7 @@ impl SchedulingClass {
 pub struct CpuLoadSummary {
     pub(super) epoch: u64,
     pub(super) runnable_count: usize,
+    pub(super) workload_count: usize,
     pub(super) current_key: Option<SchedulingKey>,
     pub(super) pushable_key: Option<SchedulingKey>,
     pub(super) pushable_class: Option<SchedulingClass>,
@@ -75,6 +76,11 @@ impl CpuLoadSummary {
     /// Returns queued non-idle work owned by this CPU.
     pub const fn runnable_count(self) -> usize {
         self.runnable_count
+    }
+
+    /// Returns queued work plus the currently running non-idle thread.
+    pub const fn workload_count(self) -> usize {
+        self.workload_count
     }
 
     /// Returns the effective urgency of the current dispatch, including PI.

@@ -1996,6 +1996,36 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
 }
 
 #[test]
+fn scheduler_internal_locks_do_not_reenter_the_irq_guard() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    for _ in 0..2 {
+        let thread = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+    system.schedule(cpu.as_mut(), 0).unwrap();
+
+    crate::test_runtime::reset_irq_state();
+    crate::test_runtime::reset_preempt_state();
+    system.yield_current(cpu.as_mut(), 1).unwrap();
+
+    assert_eq!(
+        crate::test_runtime::irq_guard_entries(),
+        0,
+        "owner scheduling already runs inside its scheduler frame; internal locks must not repeat \
+         the full IRQ-guard path"
+    );
+    assert!(
+        crate::test_runtime::preempt_guard_entries() > 0,
+        "task-only scheduler locks must still retain the current execution context"
+    );
+}
+
+#[test]
 fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

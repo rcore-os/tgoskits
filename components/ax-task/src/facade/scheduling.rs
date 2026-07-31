@@ -261,7 +261,8 @@ pub(super) fn execute_switch_plan(
     });
     if let Some(extension) = previous.extension() {
         // SAFETY: ThreadExtension construction guarantees callback validity;
-        // TaskSystem released every internal lock and the outer IRQ guard is held.
+        // TaskSystem released every internal lock and the scheduler baton
+        // keeps local IRQs disabled.
         unsafe {
             (extension.ops().on_switch_out)(
                 extension.data(),

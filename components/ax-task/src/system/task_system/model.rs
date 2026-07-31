@@ -112,8 +112,8 @@ pub struct TaskSystem {
     pub(super) cpu_remotes: Vec<Arc<CpuRemote>>,
     // Cold-path order is registry/PI/admission -> root domain -> thread cell.
     // Owner runqueue progress may lock only its CpuLocal and thread cells.
-    pub(super) state: IrqTicketLock<TaskSystemState>,
-    pub(super) root_domain: IrqTicketLock<RootDomainState>,
+    pub(super) state: PreemptTicketLock<TaskSystemState>,
+    pub(super) root_domain: PreemptTicketLock<RootDomainState>,
     pub(super) deferred_reclaims: SchedulerInbox,
     pub(super) deferred_scheduler_ticks: SchedulerInbox,
     pub(super) task_work: Arc<TaskWorkDoorbell>,

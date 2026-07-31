@@ -10,7 +10,7 @@ use crate::{
     CpuSet, SchedulePolicy, SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps,
     ThreadHandle, ThreadId, ThreadResources, ThreadSpec, WaitQueue,
     facade::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system},
-    lock::IrqTicketLock,
+    lock::PreemptTicketLock,
     runtime::{
         AddressSpaceHandle, ExecutionContextHandle, KernelContextRequest, RuntimeStatus,
         StackHandle, StackRequest, TlsHandle, TlsRequest, task_runtime,
@@ -294,7 +294,7 @@ where
 type KernelThreadEntry = Box<dyn FnOnce() + Send + 'static>;
 
 struct KernelThreadData {
-    entry: IrqTicketLock<Option<KernelThreadEntry>>,
+    entry: PreemptTicketLock<Option<KernelThreadEntry>>,
     join_wait: WaitQueue,
     exit_completed: AtomicBool,
     os_extension: Option<ThreadExtension>,
@@ -308,7 +308,7 @@ impl KernelThreadData {
         os_extension: Option<ThreadExtension>,
     ) -> Self {
         Self {
-            entry: IrqTicketLock::new(Some(Box::new(entry))),
+            entry: PreemptTicketLock::new(Some(Box::new(entry))),
             join_wait: WaitQueue::new(),
             exit_completed: AtomicBool::new(false),
             os_extension,

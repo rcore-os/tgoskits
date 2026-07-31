@@ -9,7 +9,7 @@ use crate::{
         acquire_blocking_permit, arm_current_park_deadline, cancel_current_park,
         cancel_current_park_deadline, commit_current_park, prepare_current_park,
     },
-    lock::IrqTicketLock,
+    lock::PreemptTicketLock,
     runtime::task_runtime,
 };
 
@@ -34,14 +34,14 @@ pub fn sleep_until(deadline: Duration) {
 /// that thread fan out notifications here.
 #[derive(Debug)]
 pub struct WaitQueue {
-    waiters: IrqTicketLock<VecDeque<Waiter>>,
+    waiters: PreemptTicketLock<VecDeque<Waiter>>,
 }
 
 impl WaitQueue {
     /// Creates an empty wait queue suitable for static initialization.
     pub const fn new() -> Self {
         Self {
-            waiters: IrqTicketLock::new(VecDeque::new()),
+            waiters: PreemptTicketLock::new(VecDeque::new()),
         }
     }
 
@@ -341,13 +341,16 @@ mod tests {
     #[test]
     fn elapsed_conditional_deadline_checks_predicate_under_the_waiter_lock() {
         crate::test_runtime::reset_irq_state();
+        crate::test_runtime::reset_preempt_state();
         crate::test_runtime::set_monotonic_ns(10);
         let queue = WaitQueue::new();
         let predicate_was_protected = core::cell::Cell::new(false);
 
         let timed_out = queue.wait_until_deadline(Duration::from_nanos(10), || {
             predicate_was_protected.set(
-                crate::test_runtime::active_irq_guards() != 0 && queue.waiters.try_lock().is_none(),
+                crate::test_runtime::active_preempt_guards() != 0
+                    && crate::test_runtime::active_irq_guards() == 0
+                    && queue.waiters.try_lock().is_none(),
             );
             false
         });
@@ -355,9 +358,10 @@ mod tests {
         assert!(timed_out);
         assert!(
             predicate_was_protected.get(),
-            "the timeout boundary must preserve the documented IRQ-disabled waiter-lock contract"
+            "the timeout boundary must hold the task-only waiter lock without disabling IRQs"
         );
         assert_eq!(crate::test_runtime::active_irq_guards(), 0);
+        assert_eq!(crate::test_runtime::active_preempt_guards(), 0);
     }
 
     #[test]

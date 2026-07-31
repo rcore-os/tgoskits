@@ -3,7 +3,7 @@
 use core::fmt;
 
 use super::*;
-use crate::lock::IrqTicketGuard;
+use crate::lock::PreemptTicketGuard;
 
 impl TaskSystemState {
     fn attach_pi_waiter(&mut self, waiter: ThreadId, mut registration: PiWaitRegistration) {
@@ -151,7 +151,7 @@ impl TaskSystemState {
 /// publication.
 #[must_use = "a prepared PI handoff must be committed after local publication or dropped"]
 pub struct PiMutexHandoff<'system> {
-    state: IrqTicketGuard<'system, TaskSystemState>,
+    state: PreemptTicketGuard<'system, TaskSystemState>,
     fair_slice_ns: u64,
     lock: PiLockId,
     old_owner: ThreadId,
@@ -266,7 +266,7 @@ impl PiMutexHandoff<'_> {
 /// later [`PiMutexClaim`] transaction.
 #[must_use = "a prepared PI release must be committed after local publication or dropped"]
 pub struct PiMutexRelease<'system> {
-    state: IrqTicketGuard<'system, TaskSystemState>,
+    state: PreemptTicketGuard<'system, TaskSystemState>,
     fair_slice_ns: u64,
     lock: PiLockId,
     old_owner: ThreadId,
@@ -368,7 +368,7 @@ impl PiMutexRelease<'_> {
 /// Prepared scheduler half of claiming an ownerless PI mutex.
 #[must_use = "a prepared PI claim must be committed after local ownership publication or dropped"]
 pub struct PiMutexClaim<'system> {
-    state: IrqTicketGuard<'system, TaskSystemState>,
+    state: PreemptTicketGuard<'system, TaskSystemState>,
     fair_slice_ns: u64,
     lock: PiLockId,
     pending_head: ThreadId,

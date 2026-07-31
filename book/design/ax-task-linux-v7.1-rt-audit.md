@@ -1772,6 +1772,29 @@ kept as evidence of instrumentation-sensitive scheduler work, not used as an
 end-to-end wall-time claim. A later plugin run that missed both workload
 markers was rejected rather than compared with valid DHCP-to-shell windows.
 
+The x86_64 full-system workload now provides a stronger counterexample to that
+boot-only result. Against the same latest-dev CI lane, 388 common tests show
+large workload-specific regressions: ext4 inode creation takes 159 seconds
+instead of 76, page-cache population 112 instead of 55, SMP futex wake-op 46
+instead of 4, and the AVX forced-context-switch test 44 instead of 2. Network
+dataplane remains 63 seconds in both runs, so the result is not a uniform QEMU
+host slowdown. The common signature is high-frequency wake, yield, or
+multi-CPU runnable work. This supersedes DHCP-to-shell as the scheduler
+performance acceptance signal; the placement and owner-scheduling paths
+remain open until those common subcases are near the dev baseline.
+
+The first scheduler hot-path correction separates cross-CPU serialization from
+hard-IRQ exclusion. A deterministic yield regression observed eight nested
+runtime IRQ-guard entries while the owner already held its scheduler baton.
+The task registry, thread scheduler state, wait queues, and kernel-thread entry
+are not acquired by the hard-IRQ deadline or IPI paths, so they now use a
+runtime-provided preempt-only ticket lock. Hard IRQ publication retains the
+bounded `IrqScope` protocol. The same yield performs zero nested IRQ entries
+while retaining balanced preemption depth, matching PREEMPT_RT's distinction
+between task-only scheduler metadata and IRQ-owned publication. Initial Fair
+placement also accounts for the running dispatch and in-flight migrations so
+new work does not remain concentrated on the spawning CPU.
+
 ## Current-head typed Deadline event closure
 
 The earlier bounded `deadline_members` scan fixed a finite-pass livelock but

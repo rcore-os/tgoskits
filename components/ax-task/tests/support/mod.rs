@@ -27,6 +27,7 @@ std::thread_local! {
     static DEALLOCATED_STACKS: Cell<usize> = const { Cell::new(0) };
     static DEALLOCATED_TLS: Cell<usize> = const { Cell::new(0) };
     static ACTIVE_IRQ_TOKENS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_PREEMPT_TOKENS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static CURRENT_CPU: Cell<u32> = const { Cell::new(0) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
     static LAST_ONESHOT_NS: Cell<u64> = const { Cell::new(0) };
@@ -119,6 +120,29 @@ impl_trait! {
                     .iter()
                     .position(|active| *active == token.into_raw())
                     .expect("integration IRQ token must be active");
+                tokens.swap_remove(index);
+            });
+        }
+
+        fn preempt_guard_enter() -> PreemptGuardToken {
+            let token = NEXT_TOKEN.with(|next| {
+                let token = next.get();
+                next.set(token.wrapping_add(1).max(1));
+                token
+            });
+            ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow_mut().push(token));
+            // SAFETY: the token remains active until the matching fake-runtime
+            // exit consumes it on this host execution context.
+            unsafe { PreemptGuardToken::from_raw(token) }
+        }
+
+        unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
+            ACTIVE_PREEMPT_TOKENS.with(|tokens| {
+                let mut tokens = tokens.borrow_mut();
+                let index = tokens
+                    .iter()
+                    .position(|active| *active == token.into_raw())
+                    .expect("integration preempt token must be active");
                 tokens.swap_remove(index);
             });
         }

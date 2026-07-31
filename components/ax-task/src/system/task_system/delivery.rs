@@ -20,10 +20,11 @@ impl TaskSystem {
 
     /// Places a newly ready thread on an allowed online CPU.
     ///
-    /// If `cpu` is allowed, placement is a normal local enqueue. Otherwise the
-    /// thread is transferred directly to the least-loaded allowed CPU through
-    /// its owner-only migration inbox. This avoids ever publishing a pinned
-    /// thread on a disallowed run queue while keeping [`Self::enqueue`] strict.
+    /// Ordinary fair work is placed on the least-loaded allowed CPU, including
+    /// its current non-idle dispatch and migrations not yet consumed by the
+    /// destination owner. Other classes preserve owner-local placement unless
+    /// affinity requires a transfer. Remote placement uses the owner-only
+    /// migration inbox and never mutates another CPU's runqueue.
     ///
     /// # Errors
     ///
@@ -41,32 +42,44 @@ impl TaskSystem {
         let migration = {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
-            let affinity = state.thread_record(thread)?.sched.lock().affinity.clone();
-            if affinity.contains(owner) {
-                let core = Arc::clone(&state.thread_record(thread)?.core);
+            let record = state.thread_record(thread)?;
+            let mut sched = record.sched.lock();
+            if sched.lifecycle.state() != ThreadState::Ready {
+                return Err(TaskError::NotReady);
+            }
+            if sched.placement.queued_cpu().is_some()
+                || sched.placement.running_cpu().is_some()
+                || sched.placement.on_cpu().is_some()
+                || sched.placement.migration_target().is_some()
+            {
+                return Err(TaskError::AlreadyQueued);
+            }
+            let affinity = &sched.affinity;
+            let load_aware = matches!(
+                sched.policy,
+                SchedulePolicy::Fair {
+                    mode: FairMode::Normal | FairMode::Batch,
+                    ..
+                }
+            );
+            let target = if load_aware {
+                state.select_initial_fair_cpu(affinity, owner)
+            } else if affinity.contains(owner) {
+                Some(owner)
+            } else {
+                state.select_allowed_cpu(affinity)
+            }
+            .ok_or(TaskError::InvalidConfiguration)?;
+            let core = Arc::clone(&record.core);
+            if target == owner {
+                drop(sched);
                 drop(state);
                 self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)?;
                 None
             } else {
-                let target = state
-                    .select_allowed_cpu(&affinity)
-                    .ok_or(TaskError::InvalidConfiguration)?;
-                let core = {
-                    let record = state.thread_record(thread)?;
-                    let mut sched = record.sched.lock();
-                    if sched.lifecycle.state() != ThreadState::Ready {
-                        return Err(TaskError::NotReady);
-                    }
-                    if sched.placement.queued_cpu().is_some()
-                        || sched.placement.running_cpu().is_some()
-                        || sched.placement.on_cpu().is_some()
-                    {
-                        return Err(TaskError::AlreadyQueued);
-                    }
-                    sched.placement.set_migration_target(Some(target))?;
-                    record.core.set_target_cpu(target);
-                    Arc::clone(&record.core)
-                };
+                sched.placement.set_migration_target(Some(target))?;
+                record.core.set_target_cpu(target);
+                drop(sched);
                 Some((core, target))
             }
         };
@@ -328,6 +341,12 @@ impl TaskSystem {
         };
         let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
         detached[..drained].copy_from_slice(&cpu.migration_buffer[..drained]);
+        let completed_incoming_migrations = detached[..drained]
+            .iter()
+            .filter(|message| message.operation() == InboxOperation::Migration)
+            .count();
+        cpu.remote()
+            .complete_incoming_migrations(completed_incoming_migrations);
         let mut messages = DetachedOwnerMessageBatch::new(
             &detached[..drained],
             DetachedPayloadKind::SchedulerDelivery,

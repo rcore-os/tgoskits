@@ -11,10 +11,11 @@ use ax_task::{
     CpuId, CpuRemote, TaskSystem, impl_trait as impl_task_runtime,
     runtime::{
         AddressSpaceHandle, ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle,
-        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, RuntimeCpuId,
-        RuntimeHandleResult, RuntimeScheduleOrigin, RuntimeSchedulerEntry, RuntimeSchedulerReturn,
-        RuntimeStatus, SchedSwitchRecord, StackHandle, StackRequest, TaskDeadlineUpdate,
-        TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest, UserContextRequest,
+        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, PreemptGuardToken,
+        RuntimeCpuId, RuntimeHandleResult, RuntimeScheduleOrigin, RuntimeSchedulerEntry,
+        RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord, StackHandle, StackRequest,
+        TaskDeadlineUpdate, TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest,
+        UserContextRequest,
     },
 };
 
@@ -95,6 +96,17 @@ impl_task_runtime! {
             unsafe { IrqGuardToken::from_raw(1) }
         }
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
+
+        fn preempt_guard_enter() -> PreemptGuardToken {
+            PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
+            // SAFETY: the test runtime models a balanced scalar preemption
+            // token with PREEMPT_DEPTH.
+            unsafe { PreemptGuardToken::from_raw(1) }
+        }
+
+        unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {
+            assert!(PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) > 0);
+        }
 
         fn local_scheduler_work_is_self_serviced() -> bool {
             false
