@@ -22,7 +22,7 @@ artifact state to the final Quancheng Lab submission.
 | Item | Status | Link or branch |
 | --- | --- | --- |
 | Contest artifact PR | SUBMITTED | `rcore-os/tgoskits#1703`, branch `contest/axvisor-2026` |
-| Core vTimer PR | SUBMITTED | `rcore-os/tgoskits#1770`, head `e21208e94654a7f750f23fbf3f7aa8e189496ba4` |
+| Core vTimer PR | SUBMITTED | `rcore-os/tgoskits#1770`, head `76d5fcfa0d118febefea0485812348f4c126c255` |
 | StarryOS bonus branch | READY | `irinaparchina-art:contest/starry-redcola-ai-bonus-rebased-20260730`, head `db121505f0659d6370e75a72ce0faf56d2c61d2c` |
 
 ## Artifact PR Preflight
