@@ -121,8 +121,11 @@ mod tests {
                 PhysAddr::from_usize(addr.as_usize())
             }
 
-            fn mem_make_dma_coherent_uncached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
+            fn mem_make_dma_coherent_uncached(
+                _addr: VirtAddr,
+                _size: usize,
+            ) -> axklib::DmaCoherentMappingOutcome {
+                axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
             }
 
             fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {

@@ -110,9 +110,10 @@ impl DmaOp for TrackingDmaOp {
         unsafe { self.alloc_handle(constraints, layout) }
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         self.dealloc_coherent.fetch_add(1, Ordering::SeqCst);
         unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        Ok(())
     }
 
     unsafe fn map_streaming(

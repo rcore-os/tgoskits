@@ -679,7 +679,6 @@ version = "0.7.5"
 dependencies = [
  "ax-alloc",
  "ax-display",
- "ax-dma",
  "ax-errno 0.6.1",
  "ax-fs-ng",
  "ax-hal",
@@ -691,7 +690,9 @@ dependencies = [
  "ax-runtime",
  "ax-sync",
  "ax-task",
+ "axklib",
  "axpoll",
+ "dma-api",
 ]
 
 [[package]]
@@ -773,19 +774,6 @@ dependencies = [
  "irq-framework",
  "log",
  "rdif-display",
-]
-
-[[package]]
-name = "ax-dma"
-version = "0.6.13"
-dependencies = [
- "ax-alloc",
- "ax-allocator",
- "ax-hal",
- "ax-kspin",
- "ax-memory-addr",
- "ax-mm",
- "log",
 ]
 
 [[package]]
@@ -7660,10 +7648,11 @@ dependencies = [
 name = "sg2002-tpu"
 version = "0.3.8"
 dependencies = [
- "ax-dma",
  "ax-errno 0.6.1",
  "ax-kspin",
  "ax-memory-addr",
+ "axklib",
+ "dma-api",
  "log",
 ]
 
@@ -8021,7 +8010,6 @@ dependencies = [
  "ax-cpumask",
  "ax-crate-interface",
  "ax-display",
- "ax-dma",
  "ax-driver",
  "ax-errno 0.6.1",
  "ax-fs-ng",

@@ -376,7 +376,8 @@ mod tests {
     use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 
     use dma_api::{
-        DmaAddr, DmaAllocHandle, DmaConstraints, DmaDirection, DmaMapHandle, DmaOp, PreparedDma,
+        DmaAddr, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+        PreparedDma,
     };
 
     use super::*;
@@ -413,7 +414,9 @@ mod tests {
             None
         }
 
-        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {}
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) -> Result<(), DmaError> {
+            Ok(())
+        }
 
         unsafe fn map_streaming(
             &self,

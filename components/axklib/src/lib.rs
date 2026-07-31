@@ -83,6 +83,21 @@ pub fn IrqNumber(raw: usize) -> Result<IrqId, IrqError> {
     legacy_irq(raw)
 }
 
+/// Outcome of converting newly allocated coherent pages to an uncached mapping.
+#[must_use = "the outcome determines whether coherent pages can be reclaimed or must be quarantined"]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DmaCoherentMappingOutcome {
+    /// The mapping update and required cross-CPU synchronization completed.
+    Updated,
+    /// The mapping transaction did not start, so the allocated pages remain safe to reclaim.
+    NotStarted(AxError),
+    /// The mapping transaction started but its final cross-CPU state cannot be proven.
+    ///
+    /// Callers must quarantine the associated pages instead of returning them
+    /// to the allocator.
+    StateUncertain(AxError),
+}
+
 pub mod dma;
 pub mod mmio;
 
@@ -119,8 +134,13 @@ pub trait Klib {
     /// exposed to another CPU, mapping, or device.
     ///
     /// Implementations must perform the required cache maintenance, TLB
-    /// invalidation, and ordering barriers internally.
-    fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult;
+    /// invalidation, and ordering barriers internally. They must return
+    /// [`DmaCoherentMappingOutcome::NotStarted`] only when no mapping update
+    /// occurred and the pages remain safe to reclaim. Once an update may have
+    /// started, failures must return
+    /// [`DmaCoherentMappingOutcome::StateUncertain`] so callers quarantine the
+    /// pages.
+    fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> DmaCoherentMappingOutcome;
 
     /// Restores DMA-coherent pages to a normal cacheable kernel mapping.
     ///

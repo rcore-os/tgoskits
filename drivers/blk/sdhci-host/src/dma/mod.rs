@@ -504,7 +504,9 @@ fn command_needs_stop(cmd: &Command, block_count: u32) -> bool {
 
 pub(crate) fn map_dma_error(err: dma_api::DmaError) -> Error {
     match err {
-        dma_api::DmaError::NoMemory => Error::BusError(ErrorContext::new(Phase::DataRead)),
+        dma_api::DmaError::NoMemory | dma_api::DmaError::CoherentReleaseFailed => {
+            Error::BusError(ErrorContext::new(Phase::DataRead))
+        }
         dma_api::DmaError::LayoutError(_)
         | dma_api::DmaError::DmaMaskNotMatch { .. }
         | dma_api::DmaError::AlignMismatch { .. }

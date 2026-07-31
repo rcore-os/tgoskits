@@ -52,7 +52,6 @@ fs = [
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:spin",
-  "dep:dma-api",
   "dep:rdif-block",
   "ax-driver/block",
 ]
@@ -116,7 +115,7 @@ axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
-dma-api = { workspace = true, optional = true }
+dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }

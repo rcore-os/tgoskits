@@ -57,8 +57,10 @@ pub trait DmaOp: Sync + Send + 'static {
 
     /// # Safety
     ///
-    /// Must be paired with `alloc_coherent`.
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle);
+    /// Must be paired with `alloc_coherent`. The handle is consumed even when
+    /// this operation fails. On failure the implementation must quarantine the
+    /// allocation instead of returning its storage to the allocator.
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError>;
 
     /// Maps an existing caller-owned buffer for streaming DMA.
     ///

@@ -163,6 +163,7 @@ fn map_init_dma_error(error: DmaError) -> Error {
         DmaError::AlignMismatch { .. } | DmaError::BoundaryCross { .. } => Error::Misaligned,
         DmaError::ZeroSizedBuffer | DmaError::LayoutError(_) => Error::InvalidArgument,
         DmaError::NoMemory
+        | DmaError::CoherentReleaseFailed
         | DmaError::DmaMaskNotMatch { .. }
         | DmaError::SegmentTooLarge { .. }
         | DmaError::NullPointer => Error::BusError(ErrorContext::new(Phase::Init)),

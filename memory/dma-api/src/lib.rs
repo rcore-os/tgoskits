@@ -113,13 +113,18 @@ impl DeviceDma {
         match self.check_alloc_handle(&res, constraints) {
             Ok(()) => Ok(res),
             Err(e) => {
-                unsafe { self.op.dealloc_coherent(res) };
+                if let Err(release_err) = unsafe { self.op.dealloc_coherent(res) } {
+                    log::error!(
+                        "failed to release invalid coherent DMA allocation; allocation \
+                         quarantined: {release_err}"
+                    );
+                }
                 Err(e)
             }
         }
     }
 
-    pub(crate) unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    pub(crate) unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         unsafe { self.op.dealloc_coherent(handle) }
     }
 

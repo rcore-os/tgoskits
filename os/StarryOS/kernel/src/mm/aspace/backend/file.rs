@@ -154,7 +154,13 @@ impl FileBackendInner {
                         );
                         return false;
                     }
-                    flush_tlb_range_sync(vaddr, PAGE_SIZE_4K);
+                    if let Err(err) = flush_tlb_range_sync(vaddr, PAGE_SIZE_4K) {
+                        warn!(
+                            "Failed to invalidate dirty mmap page {:?} on all CPUs: {:?}",
+                            vaddr, err
+                        );
+                        return false;
+                    }
                 }
                 true
             }

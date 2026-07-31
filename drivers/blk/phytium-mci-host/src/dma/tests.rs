@@ -70,8 +70,12 @@ impl dma_api::DmaOp for TestDma {
         Some(unsafe { dma_api::DmaAllocHandle::new(ptr, (ptr.as_ptr() as u64).into(), layout) })
     }
 
-    unsafe fn dealloc_coherent(&self, handle: dma_api::DmaAllocHandle) {
+    unsafe fn dealloc_coherent(
+        &self,
+        handle: dma_api::DmaAllocHandle,
+    ) -> Result<(), dma_api::DmaError> {
         unsafe { alloc::dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        Ok(())
     }
 
     unsafe fn map_streaming(

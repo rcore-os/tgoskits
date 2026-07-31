@@ -64,7 +64,6 @@ graph LR
 - `ax-allocator`
 - `axbacktrace`
 - `ax-cpu`
-- `ax-dma`
 - `rdrive`
 - `rdif-block`
 - 另外还有 `37` 个同类项未在此展开

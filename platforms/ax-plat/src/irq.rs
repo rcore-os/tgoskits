@@ -103,8 +103,7 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn cpu_online(&self, cpu: CpuId) -> bool {
-        cpu.0 < usize::BITS as usize
-            && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu.0)) != 0
+        is_cpu_online(cpu.0)
     }
 
     fn in_irq_context(&self) -> bool {
@@ -252,6 +251,11 @@ pub fn cpu_online(cpu: usize) -> Result<(), IrqError> {
     }
     ONLINE_CPUS.fetch_or(1usize << cpu, Ordering::AcqRel);
     registry().cpu_online(CpuId(cpu))
+}
+
+/// Returns whether a CPU has entered the platform IRQ runtime.
+pub fn is_cpu_online(cpu: usize) -> bool {
+    cpu < usize::BITS as usize && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu)) != 0
 }
 
 /// Prepares CPU-local runtime state before the common IRQ guard is entered.

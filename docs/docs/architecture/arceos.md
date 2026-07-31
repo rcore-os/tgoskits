@@ -95,7 +95,6 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-net` | `net` | 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP，基于 smoltcp） |
 | `ax-display` | `display` | 图形显示（帧缓冲） |
 | `ax-input` | `input` | 输入设备管理 |
-| `ax-dma` | `dma` | DMA 内存分配与管理（依赖 `paging`） |
 | `ax-ipi` | `ipi` | 处理器间中断管理 |
 
 ### 模块总览
@@ -115,7 +114,6 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-net` | `net/ax-net` | 统一网络栈、socket 抽象 | `rd-net`、`rdif-vsock`、`smoltcp` |
 | `ax-log` | `modules/axlog` | 多级日志与格式化输出 | 所有模块 |
 | `ax-fs-ng` | `modules/axfs-ng` | 下一代文件系统 | `ax-driver` |
-| `ax-dma` | `modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`ax-mm` |
 | `ax-ipi` | `modules/axipi` | 处理器间中断管理 | `ax-hal` |
 | `ax-input` | `modules/axinput` | 输入设备管理与事件分发 | `ax-driver` |
 | `ax-display` | `modules/axdisplay` | 图形显示（帧缓冲） | `ax-driver` |
@@ -156,8 +154,7 @@ flowchart TD
 ```toml
 [features]
 alloc = ["dep:ax-alloc"]
-paging = ["ax-hal/paging", "dep:ax-mm", "dep:axklib"]
-dma = ["paging"]
+paging = ["ax-hal/paging", "dep:ax-mm"]
 multitask = ["ax-task/multitask"]
 smp = ["alloc", "ax-hal/smp", "ax-task?/smp"]
 irq = ["ax-hal/irq", "ax-task?/irq", "dep:ax-percpu"]
@@ -165,6 +162,10 @@ fs = ["ax-driver", "dep:ax-fs"]
 net = ["ax-driver", "dep:ax-net"]
 display = ["ax-driver", "dep:ax-display"]
 ```
+
+DMA 是必编译基础能力：`dma-api` 提供 owned DMA 类型和约束检查，`axklib`
+提供平台 allocator/cache glue。设备驱动仍由各自 feature 选择；未启用
+`paging` 时 coherent 映射属性切换会明确返回 `Unsupported`。
 
 ### API 封装策略
 

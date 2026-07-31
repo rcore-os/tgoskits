@@ -61,7 +61,6 @@ os/arceos/
 │   ├── axsync/       # 同步原语
 │   ├── axmm/         # 页表/内存管理
 │   ├── axdisplay/    # 图形显示
-│   ├── axdma/        # DMA 支持
 │   ├── axinput/      # 输入设备
 │   ├── axipi/        # 核间中断
 │   ├── axruntime/    # 运行时初始化，调用 main()

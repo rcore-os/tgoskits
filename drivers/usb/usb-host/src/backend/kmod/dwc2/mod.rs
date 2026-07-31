@@ -2385,6 +2385,7 @@ mod tests {
             // `alloc_coherent`, so they must be released through the same mock
             // deallocation path.
             unsafe { self.dealloc_coherent(handle) }
+                .expect("test coherent DMA release must succeed")
         }
 
         unsafe fn alloc_coherent(
@@ -2407,11 +2408,12 @@ mod tests {
             Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
         }
 
-        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
             // SAFETY: The mock only creates coherent handles from
             // `alloc_zeroed` with the stored layout, so deallocating with the
             // same layout releases exactly that allocation.
-            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) }
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
         }
 
         unsafe fn map_streaming(

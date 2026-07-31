@@ -70,21 +70,19 @@ input = ["dep:ax-input", "ax-runtime/input"]
 ipi = ["ax-runtime/ipi"]
 loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
-rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
-jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
-rga = ["ax-driver/rga", "dep:rockchip-rga", "dep:ax-dma"]
+rknpu = ["ax-driver/rknpu"]
+jpeg = ["ax-driver/jpeg"]
+rga = ["ax-driver/rga", "dep:rockchip-rga"]
 rk3588-pwm = [
     "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
 ]
-k230-kpu = ["ax-hal/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
+k230-kpu = ["ax-hal/xuantie-c9xx", "dep:k230-kpu"]
 vsock = ["ax-runtime/vsock"]
 dynamic_debug = ["ipi"]
 sg2002 = [
     "ax-runtime/irq",
     "ax-driver/usb",
-    "dep:ax-dma",
-    "dep:axklib",
     "dep:rdif-pwm",
     "dep:sg2002-tpu",
     "dep:some-serial",
@@ -101,7 +99,6 @@ sg2002-wifi = [
 sg2002-cvi-usb-camera = [
     "sg2002",
     "dep:cvi-vdec-uapi",
-    "dep:dma-api",
     "dep:sg200x-jpu",
 ]
 smp = ["ax-std/smp"]
@@ -125,7 +122,7 @@ ax-log.workspace = true
 ax-mm.workspace = true
 ax-net = { workspace = true }
 ax-driver = { workspace = true, features = ["usb"] }
-axklib = { workspace = true, optional = true }
+axklib.workspace = true
 axplat-dyn.workspace = true
 ax-runtime = { workspace = true, features = [
     "irq",
@@ -144,7 +141,6 @@ ax-task = { workspace = true, features = [
     "sched-rr",
     "axtest",
 ] }
-ax-dma = { workspace = true, optional = true }
 rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
@@ -219,7 +215,7 @@ lwprintf-rs = "0.3"
 some-serial = { workspace = true, optional = true }
 sg200x-bsp = { workspace = true, optional = true, features = ["c906", "cv182x-host"] }
 cvi-vdec-uapi = { workspace = true, optional = true }
-dma-api = { workspace = true, optional = true }
+dma-api.workspace = true
 sg200x-jpu = { workspace = true, optional = true }
 # 0.10 to match sg200x-bsp 0.7.x's internal tock-registers; the Writeable trait
 # must come from the same version as sg200x-bsp's ReadWrite types.

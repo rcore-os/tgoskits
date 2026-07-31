@@ -75,7 +75,12 @@ mod tests {
             None
         }
 
-        unsafe fn dealloc_coherent(&self, _handle: dma_api::DmaAllocHandle) {}
+        unsafe fn dealloc_coherent(
+            &self,
+            _handle: dma_api::DmaAllocHandle,
+        ) -> Result<(), dma_api::DmaError> {
+            Ok(())
+        }
 
         unsafe fn map_streaming(
             &self,

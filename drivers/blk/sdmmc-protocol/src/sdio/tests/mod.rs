@@ -453,8 +453,12 @@ impl dma_api::DmaOp for TestDmaOp {
         unsafe { self.alloc_contiguous(constraints, layout) }
     }
 
-    unsafe fn dealloc_coherent(&self, handle: dma_api::DmaAllocHandle) {
+    unsafe fn dealloc_coherent(
+        &self,
+        handle: dma_api::DmaAllocHandle,
+    ) -> Result<(), dma_api::DmaError> {
         unsafe { self.dealloc_contiguous(handle) };
+        Ok(())
     }
 
     unsafe fn map_streaming(

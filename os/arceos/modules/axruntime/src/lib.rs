@@ -50,6 +50,8 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
+#[cfg(feature = "paging")]
+mod kernel_mapping;
 mod klib;
 
 mod devices;
