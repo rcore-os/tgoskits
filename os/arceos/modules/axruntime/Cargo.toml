@@ -136,4 +136,5 @@ thiserror.workspace = true
 quote = { workspace = true }
 
 [dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }
 cpu-local = { workspace = true, features = ["host-test"] }
