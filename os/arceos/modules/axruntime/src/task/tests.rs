@@ -222,6 +222,7 @@ fn matching_runtime_ops_reject_malformed_extension_data() {
         exit_completed: AtomicBool::new(false),
         join_wait: WaitQueue::new(),
         os_extension: None,
+        start: Arc::new(RuntimeThreadStart::new()),
         _name: String::new(),
     };
     assert_eq!(

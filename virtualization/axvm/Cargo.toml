@@ -16,6 +16,7 @@ host-test = [
     "ax-hal/host-test",
     "ax-kspin/host-test",
     "ax-kernel-guard/host-test",
+    "ax-std/host-test",
     "axdevice/host-test",
 ]
 sstc = ["riscv_vcpu/sstc"]

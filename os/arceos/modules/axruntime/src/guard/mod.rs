@@ -139,7 +139,7 @@ pub(crate) fn exit_irq(owner: &'static str) {
     }
 }
 
-#[cfg(feature = "multitask")]
+#[cfg(all(feature = "multitask", not(test)))]
 pub(crate) fn local_scheduler_work_is_self_serviced() -> bool {
     assert!(
         !ax_hal::asm::irqs_enabled(),
@@ -408,15 +408,21 @@ fn current_preempt_depth() -> u32 {
 fn current_thread_operation<R>(
     operation: impl FnOnce(&ax_hal::percpu::CurrentThreadHeader) -> R,
 ) -> R {
+    try_current_thread_operation(operation).expect("current-thread guard state is invalid")
+}
+
+#[inline(always)]
+fn try_current_thread_operation<R>(
+    operation: impl FnOnce(&ax_hal::percpu::CurrentThreadHeader) -> R,
+) -> Option<R> {
     // SAFETY: the architecture current-thread register points at pinned
     // runtime-owned storage. The callback cannot let the borrow escape, and a
     // task may migrate only by suspending this execution before it resumes on
     // the same stable header. Atomic preemption state also remains coherent
     // when a hard IRQ nests between register read and update.
     let current = unsafe { ax_hal::percpu::current_thread_raw() };
-    let current =
-        core::ptr::NonNull::new(current.cast_mut()).expect("current-thread guard state is invalid");
-    operation(unsafe { current.as_ref() })
+    let current = core::ptr::NonNull::new(current.cast_mut())?;
+    Some(operation(unsafe { current.as_ref() }))
 }
 
 fn with_guard_state<R>(operation: impl for<'value> FnOnce(&'value RuntimeGuardState) -> R) -> R {
@@ -446,13 +452,24 @@ struct KernelGuardIfImpl;
 #[ax_crate_interface::impl_interface]
 impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
     fn disable_preempt() {
-        current_thread_operation(ax_hal::percpu::CurrentThreadHeader::enter_preempt_guard);
+        if try_current_thread_operation(ax_hal::percpu::CurrentThreadHeader::enter_preempt_guard)
+            .is_none()
+        {
+            #[cfg(not(feature = "host-test"))]
+            panic!("current-thread guard state is invalid while disabling preemption");
+        }
     }
 
     fn enable_preempt() {
-        match current_thread_operation(
+        let Some(exit) = try_current_thread_operation(
             ax_hal::percpu::CurrentThreadHeader::prepare_preempt_guard_exit,
-        ) {
+        ) else {
+            #[cfg(not(feature = "host-test"))]
+            panic!("current-thread guard state is invalid while enabling preemption");
+            #[cfg(feature = "host-test")]
+            return;
+        };
+        match exit {
             ax_hal::percpu::CurrentPreemptExit::NestedConsumed
             | ax_hal::percpu::CurrentPreemptExit::FinalConsumed => return,
             ax_hal::percpu::CurrentPreemptExit::FinalPending => {}
