@@ -11,7 +11,7 @@ use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
 use starry_vm::vm_read_slice;
 
 use super::{
-    AsThread, ProcessData, RttimeLimitAction, Thread, current_user_task, do_exit, get_process_data,
+    ProcessData, RttimeLimitAction, Thread, current_user_task, do_exit, get_process_data,
     get_process_group, get_task, is_zombie_pid, signal_publication::publish_before_release,
 };
 use crate::task::future::{UserWaitOutcome, block_on, block_on_user};
