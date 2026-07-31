@@ -22,8 +22,8 @@ artifact state to the final Quancheng Lab submission.
 | Item | Status | Link or branch |
 | --- | --- | --- |
 | Contest artifact PR | SUBMITTED | `rcore-os/tgoskits#1703`, branch `contest/axvisor-2026` |
-| Core vTimer PR | SUBMITTED | `rcore-os/tgoskits#1770`, head `76d5fcfa0d118febefea0485812348f4c126c255` |
-| StarryOS bonus branch | READY | `irinaparchina-art:contest/starry-redcola-ai-bonus-rebased-20260730`, head `db121505f0659d6370e75a72ce0faf56d2c61d2c` |
+| Core vTimer PR | MERGED | `rcore-os/tgoskits#1770`, upstream commit `024ecca10a4240a84b2c24bed2dc2361a6043d3e` |
+| StarryOS bonus branch | READY | `irinaparchina-art:contest/starry-redcola-ai-bonus-clean-20260731`, head `a820e7fa8c92fbd5c3e5496c4aeccd9a907de9e7` |
 
 ## Artifact PR Preflight
 
@@ -65,11 +65,11 @@ apps/starry/qemu/redcola-ai-control/
 It has a StarryOS AArch64 QEMU PASS log with a fixed-point MLP policy:
 
 ```text
-EVDIR=/home/kali/qc-evidence/starry-qemu-redcola-ai-control-mlp-finalhead-20260731_033205
-HEAD=db121505f0659d6370e75a72ce0faf56d2c61d2c
-LOG_SHA256=56f604f15082ccd30e2bf49421b2ad64aa771e42b3ca90bcd70f4989b21bec2c
-REDCOLA_STARRY_CONTROL_SUMMARY manual_abs_error=1013 ai_abs_error=0 max_ai_error=0 mean_infer_us=58
-REDCOLA_STARRY_AI_CONTROL_PASS samples=8 manual_abs_error=1013 ai_abs_error=0 mean_infer_us=58
+EVDIR=/home/kali/qc-evidence/starry-qemu-redcola-ai-control-clean-20260731_230931
+HEAD=a820e7fa8c92fbd5c3e5496c4aeccd9a907de9e7
+LOG_SHA256=338fbaef4f09d834d03959d3da7736ee7c0b6f4807b85f313be874b92748a1d9
+REDCOLA_STARRY_CONTROL_SUMMARY manual_abs_error=1013 ai_abs_error=0 max_ai_error=0 mean_infer_us=74
+REDCOLA_STARRY_AI_CONTROL_PASS samples=8 manual_abs_error=1013 ai_abs_error=0 mean_infer_us=74
 REDCOLA_STARRY_AI_DONE
 RESULT=PASS
 ```
