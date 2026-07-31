@@ -237,6 +237,7 @@ impl TaskSystem {
                 record.exit_callback_pending = record.extension.is_some();
                 record.exit_callback_claimed = false;
             }
+            state.queue_exited_thread(previous);
             state.release_deadline_reservation_on_exit(previous)?;
             cpu.as_mut().clear_current();
             let next = self.pick_owner_next(cpu.as_mut(), now_ns, Some(previous))?;

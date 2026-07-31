@@ -6,6 +6,7 @@ mod deadline;
 mod deferred_work;
 mod delivery;
 mod dispatch;
+mod exited_work;
 mod lifecycle;
 mod model;
 mod outcome;
@@ -25,6 +26,7 @@ use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
+use exited_work::ExitedThreadWork;
 use model::{
     BalanceReason, DeferredTaskWorkClass, DetachedOwnerMessageBatch, DetachedPayloadKind,
     FAIR_BALANCE_BALANCED_BACKOFF_FACTOR, FAIR_BALANCE_CONSTRAINED_BACKOFF_FACTOR,
@@ -149,8 +151,7 @@ impl TaskSystem {
                 task_work_class_cursor: DeferredTaskWorkClass::Deadline,
                 thread_release_first: true,
                 deadline_callback_cursor: 0,
-                exit_callback_cursor: 0,
-                reap_cursor: 0,
+                exited_work: ExitedThreadWork::new(),
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
             }),
             root_domain: PreemptTicketLock::new(RootDomainState {

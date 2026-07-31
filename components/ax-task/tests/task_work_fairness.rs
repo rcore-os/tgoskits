@@ -29,7 +29,7 @@ fn service_batch_limit_is_shared_by_exit_and_reap() {
 }
 
 #[test]
-fn exit_callback_cursor_skips_a_reused_low_slot() {
+fn exit_candidate_rotation_preserves_older_generation_before_reused_slot() {
     let _serial = serial_test();
     prepare_test_runtime();
     LAST_EXIT_MARKER.store(0, Ordering::Release);
@@ -60,7 +60,7 @@ fn exit_callback_cursor_skips_a_reused_low_slot() {
 }
 
 #[test]
-fn reap_cursor_skips_a_reused_low_slot() {
+fn reap_candidate_rotation_preserves_older_generation_before_reused_slot() {
     let _serial = serial_test();
     prepare_test_runtime();
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();

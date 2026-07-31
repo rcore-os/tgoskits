@@ -64,6 +64,7 @@ impl TaskSystem {
                 record.exit_callback_claimed = false;
                 exited_core
             };
+            state.queue_exited_thread(thread);
             state.release_deadline_reservation_on_exit(thread)?;
             exited_core
         };

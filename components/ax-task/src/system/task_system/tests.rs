@@ -1239,6 +1239,58 @@ fn detached_reaper_waits_for_the_last_external_handle() {
 }
 
 #[test]
+fn detached_reaper_visits_only_exited_candidates() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let live = (0..32)
+        .map(|_| {
+            system
+                .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let exited = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.mark_exited(exited.id()).unwrap();
+    drop(exited);
+
+    registry::reset_reaper_record_visits();
+    assert_eq!(system.reap_unreferenced_exited(1).unwrap(), 1);
+    assert_eq!(
+        registry::reaper_record_visits(),
+        1,
+        "unrelated live threads must not participate in detached reaping"
+    );
+
+    drop(live);
+}
+
+#[test]
+fn thread_creation_preallocates_exit_candidate_capacity() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let threads = (0..64)
+        .map(|_| {
+            system
+                .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let reserved_capacity = system.state.lock().exited_work.capacity();
+    assert!(reserved_capacity >= threads.len());
+
+    for thread in &threads {
+        system.mark_exited(thread.id()).unwrap();
+    }
+    let state = system.state.lock();
+    assert_eq!(state.exited_work.candidate_count(), threads.len());
+    assert_eq!(
+        state.exited_work.capacity(),
+        reserved_capacity,
+        "thread exit and switch-tail publication must not grow storage"
+    );
+}
+
+#[test]
 fn last_non_idle_exit_publishes_work_only_after_switch_tail() {
     EXIT_CALLBACK_INVOCATIONS.store(0, Ordering::Release);
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
