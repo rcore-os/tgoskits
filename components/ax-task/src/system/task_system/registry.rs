@@ -7,6 +7,9 @@ std::thread_local! {
     static PI_DONOR_RECORD_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
+    static REAPER_RECORD_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
 }
 
 #[cfg(test)]
@@ -19,6 +22,16 @@ pub(super) fn pi_donor_record_visits() -> usize {
     PI_DONOR_RECORD_VISITS.get()
 }
 
+#[cfg(test)]
+pub(super) fn reset_reaper_record_visits() {
+    REAPER_RECORD_VISITS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn reaper_record_visits() -> usize {
+    REAPER_RECORD_VISITS.get()
+}
+
 #[derive(Debug)]
 pub(super) struct TaskSystemState {
     pub(super) cpus: Vec<CpuRegistration>,
@@ -28,8 +41,7 @@ pub(super) struct TaskSystemState {
     pub(super) task_work_class_cursor: DeferredTaskWorkClass,
     pub(super) thread_release_first: bool,
     pub(super) deadline_callback_cursor: usize,
-    pub(super) exit_callback_cursor: usize,
-    pub(super) reap_cursor: usize,
+    pub(super) exited_work: ExitedThreadWork,
     pub(super) deadline_admission: DeadlineAdmission,
 }
 
@@ -122,12 +134,19 @@ impl TaskSystemState {
         } else {
             let slot =
                 u32::try_from(self.slots.len()).map_err(|_| TaskError::InvalidConfiguration)?;
+            let required_capacity = self.slots.len().saturating_add(1);
+            self.exited_work.reserve_slot_capacity(required_capacity);
             self.slots.push(ThreadSlot {
                 generation: 1,
                 record: None,
             });
             Ok((slot, 1))
         }
+    }
+
+    /// Publishes one generation-bearing exit candidate without allocating.
+    pub(super) fn queue_exited_thread(&mut self, thread: ThreadId) {
+        self.exited_work.publish(thread, self.slots.len());
     }
 
     pub(super) fn thread_record(&self, thread: ThreadId) -> Result<&ThreadRecord, TaskError> {
@@ -357,6 +376,7 @@ impl TaskSystemState {
         if advance_thread_slot_generation(slot) {
             self.free_slots.push(thread.slot());
         }
+        self.exited_work.remove(thread);
         Ok(record)
     }
 
@@ -368,89 +388,64 @@ impl TaskSystemState {
     }
 
     pub(super) fn take_unreferenced_exited(&mut self) -> Result<Option<ThreadRecord>, TaskError> {
-        let slot_count = self.slots.len();
-        if slot_count == 0 {
-            return Ok(None);
-        }
-        let start = self.reap_cursor % slot_count;
-        for offset in 0..slot_count {
-            let index = (start + offset) % slot_count;
-            let thread = {
-                let slot = &self.slots[index];
-                let Some(record) = slot.record.as_ref() else {
-                    continue;
-                };
-                let sched = record.sched.lock();
-                if sched.lifecycle.state() != ThreadState::Exited
-                    || sched.placement.on_cpu().is_some()
-                    || sched.placement.migration_target().is_some()
-                    || sched.deadline.bandwidth_cpu.is_some()
-                    || sched.deadline.cleanup_pending
-                    || sched.pi.deadline_cbs_borrower.is_some()
-                    || sched.deadline.overrun_events != 0
-                    || record.deadline_callback_claimed
-                    || record.exit_callback_pending
-                    || record.exit_callback_claimed
-                    || record.core.scheduler_inbox_delivery_count() != 0
-                    || record.core.sleep_timer_cpu().is_some()
-                {
-                    continue;
-                }
-                let slot_index = u32::try_from(index)
-                    .expect("thread registry slot must fit the ThreadId representation");
-                ThreadId::from_parts(slot_index, slot.generation)
-            };
+        let candidate_count = self.exited_work.candidate_count();
+        for _ in 0..candidate_count {
+            let thread = self
+                .exited_work
+                .next_candidate()
+                .expect("exit candidate count must match the queue");
+            #[cfg(test)]
+            REAPER_RECORD_VISITS.set(REAPER_RECORD_VISITS.get().saturating_add(1));
             match self.remove_exited_thread_with_lease_count(thread, 0, None) {
-                Ok(record) => {
-                    self.reap_cursor = (index + 1) % slot_count;
-                    return Ok(Some(record));
-                }
-                Err(TaskError::ThreadBusy) => continue,
+                Ok(record) => return Ok(Some(record)),
+                Err(TaskError::ThreadBusy) => {}
+                Err(TaskError::StaleThreadId) => self.exited_work.remove(thread),
                 Err(error) => return Err(error),
             }
         }
-        self.reap_cursor = (start + 1) % slot_count;
         Ok(None)
     }
 
     pub(super) fn claim_pending_exit_callback(
         &mut self,
     ) -> Result<Option<(ThreadExtensionView, ThreadId)>, TaskError> {
-        let slot_count = self.slots.len();
-        if slot_count == 0 {
-            return Ok(None);
-        }
-        let start = self.exit_callback_cursor % slot_count;
-        for offset in 0..slot_count {
-            let index = (start + offset) % slot_count;
-            let slot = &mut self.slots[index];
-            let Some(record) = slot.record.as_mut() else {
-                continue;
+        let candidate_count = self.exited_work.candidate_count();
+        for _ in 0..candidate_count {
+            let thread = self
+                .exited_work
+                .next_candidate()
+                .expect("exit candidate count must match the queue");
+            let extension = match self.thread_record_mut(thread) {
+                Ok(record) => {
+                    let sched = record.sched.lock();
+                    if sched.lifecycle.state() != ThreadState::Exited
+                        || sched.placement.on_cpu().is_some()
+                        || sched.deadline.overrun_events != 0
+                        || record.deadline_callback_claimed
+                        || !record.exit_callback_pending
+                        || record.exit_callback_claimed
+                    {
+                        None
+                    } else {
+                        let extension = record
+                            .extension
+                            .as_ref()
+                            .ok_or(TaskError::InvalidConfiguration)?
+                            .as_view();
+                        record.exit_callback_claimed = true;
+                        Some(extension)
+                    }
+                }
+                Err(TaskError::StaleThreadId) => {
+                    self.exited_work.remove(thread);
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
-            let sched = record.sched.lock();
-            if sched.lifecycle.state() != ThreadState::Exited
-                || sched.placement.on_cpu().is_some()
-                || sched.deadline.overrun_events != 0
-                || record.deadline_callback_claimed
-                || !record.exit_callback_pending
-                || record.exit_callback_claimed
-            {
-                continue;
+            if let Some(extension) = extension {
+                return Ok(Some((extension, thread)));
             }
-            let extension = record
-                .extension
-                .as_ref()
-                .ok_or(TaskError::InvalidConfiguration)?
-                .as_view();
-            record.exit_callback_claimed = true;
-            let slot_index = u32::try_from(index).map_err(|_| TaskError::InvalidConfiguration)?;
-            self.exit_callback_cursor = (index + 1) % slot_count;
-            return Ok(Some((
-                extension,
-                ThreadId::from_parts(slot_index, slot.generation),
-            )));
         }
-        self.exit_callback_cursor = (start + 1) % slot_count;
         Ok(None)
     }
 

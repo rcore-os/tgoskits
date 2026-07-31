@@ -2551,6 +2551,44 @@ This is a behavior-preserving ownership refactor and therefore does not add a
 red regression. It is accepted only with the complete ax-task and ax-runtime
 host suites plus both feature-clippy matrices.
 
+## Current-head exited-work ownership
+
+The detached reaper and exit-callback dispatcher previously rediscovered work
+by walking every occupied registry slot under the global task-system lock.
+Each candidate inspection also took its `ThreadSchedCell` lock, and a
+successful reap repeated the complete predicate under the same lock. Reaping
+one zombie therefore scaled with all live threads and could wait behind an
+unrelated thread-state critical section.
+
+Linux v7.1 does not rediscover dead tasks with a global task-list scan.
+`exit_notify()` changes exit state while holding `tasklist_lock`, links only
+the autoreap tasks into its local `dead` list, releases the global lock, and
+calls `release_task()` for those explicit identities
+(`kernel/exit.c:738-779`). `release_task()` unhashes the selected task under
+the task-list lock, performs the longer teardown after releasing it, and
+defers the final task-structure put through RCU
+(`kernel/exit.c:128-141`, `223-280`). The relevant invariant is explicit dead
+work ownership, not Linux's exact process-list representation.
+
+ax-task now publishes one generation-bearing `ThreadId` to
+`ExitedThreadWork` when lifecycle commits `Exited`. The same typed candidate
+set feeds exit callbacks and detached reaping:
+
+- storage capacity is reserved when a thread slot is created, so ordinary
+  exit and switch-tail publication cannot allocate;
+- busy candidates rotate to the back, preventing one retained handle or
+  in-flight timer from starving later zombies;
+- explicit reap removes the exact generation before slot reuse, so a stale
+  candidate cannot target the next occupant; and
+- final resource release remains outside the registry lock and keeps the
+  existing retry-owned resource bundle.
+
+The deterministic regression creates 32 unrelated live threads before one
+unreferenced exited thread. The old registry scan visited 33 records to reap
+that one zombie; the explicit candidate path visits exactly one. A second
+test proves that publishing exits for every allocated slot does not grow the
+preallocated candidate storage.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest
