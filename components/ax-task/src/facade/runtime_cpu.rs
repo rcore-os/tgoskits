@@ -1,5 +1,42 @@
 use super::*;
 
+pub(crate) fn try_wake_current_cpu_from_task(core: &Arc<ThreadCore>) -> Option<WakeResult> {
+    if core.state() == ThreadState::Exited
+        || task_runtime::validate_schedule_context(RuntimeScheduleOrigin::Preempt)
+            != RuntimeStatus::Success
+    {
+        return None;
+    }
+    let target = core.target_cpu()?;
+    let system = runtime_task_system().ok()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq).ok()?;
+    if cpu.owner() != target {
+        return None;
+    }
+
+    // Publish before touching scheduler-owned lifecycle state so a concurrent
+    // park observes the same wake-before-park notification as the IRQ path.
+    if core.publish_wake() {
+        // The first publisher owns an intrusive inbox node and its transferred
+        // Arc count. Do not consume that publication out of band; make the
+        // owner safe point drain the existing node instead.
+        cpu.request_scheduler_work();
+        return Some(WakeResult::AlreadyPending);
+    }
+
+    let now_ns = task_runtime::monotonic_ns();
+    if system
+        .wake_owner_thread_local(cpu.as_mut(), Arc::clone(core), now_ns)
+        .is_err()
+    {
+        // The wake publication is externally visible and has no recoverable
+        // rollback after owner lifecycle or placement processing begins.
+        task_runtime::fatal_invariant(0x574b_0001, core.id().as_u64() as usize);
+    }
+    Some(WakeResult::Notified)
+}
+
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {
     // SAFETY: the linked TaskRuntime provider is the platform trust root and
     // must publish only the pinned, shutdown-lifetime TaskSystem it owns.
@@ -228,9 +265,9 @@ impl RuntimeSchedulerFrameGuard {
             });
         }
         let return_to = match entry {
-            RuntimeSchedulerEntry::Task | RuntimeSchedulerEntry::PreemptExit => {
-                RuntimeSchedulerReturn::Task
-            }
+            RuntimeSchedulerEntry::Task
+            | RuntimeSchedulerEntry::PreemptExit
+            | RuntimeSchedulerEntry::IrqGuardExit => RuntimeSchedulerReturn::Task,
             RuntimeSchedulerEntry::IrqReturn => RuntimeSchedulerReturn::IrqReturn,
         };
         Ok(Self {

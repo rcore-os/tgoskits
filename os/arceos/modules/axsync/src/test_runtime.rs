@@ -95,6 +95,10 @@ impl_task_runtime! {
             unsafe { IrqGuardToken::from_raw(1) }
         }
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
+
+        fn local_scheduler_work_is_self_serviced() -> bool {
+            false
+        }
         fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
         fn finish_initial_context_switch() {}
         fn scheduler_frame_guard_enter(

@@ -136,29 +136,65 @@ impl TaskSystem {
             if core.id() != message.thread_id() {
                 continue;
             }
-            if Self::consume_owner_wake(&core)? {
-                let owner = cpu.owner();
-                let target = core.target_cpu().unwrap_or(owner);
-                if target == owner {
-                    self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)?;
-                } else {
-                    // Affinity may change after an IRQ publishes into the old
-                    // target inbox. The old owner consumes the wake transition
-                    // but hands the ready thread to the latest target instead
-                    // of losing it on an affinity-invalid local enqueue.
-                    Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
-                    core.sched()
-                        .lock()
-                        .placement
-                        .set_migration_target(Some(target))?;
-                    self.publish_owner_migration(&core, target, owner, target)?;
-                }
-            }
+            self.consume_and_place_owner_wake(cpu.as_mut(), core, now_ns)?;
         }
         if pending {
             cpu.request_scheduler_work();
         }
         Ok(RemoteWakeDrain { drained, pending })
+    }
+
+    /// Consumes one locally published task-context wake and refreshes the
+    /// owner CPU's complete scheduler deadline state.
+    ///
+    /// The caller must own `cpu` under task-context IRQ exclusion. Hard IRQ
+    /// and remote producers instead publish to the lock-free wake inbox and
+    /// let the owner consume it at an IRQ-return scheduler safe point.
+    pub(crate) fn wake_owner_thread_local(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
+        if Self::consume_owner_task_wake(&core)? {
+            self.place_consumed_owner_wake(cpu.as_mut(), core, now_ns)?;
+        }
+        Self::program_local_timer(cpu, now_ns)
+    }
+
+    fn consume_and_place_owner_wake(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
+        if !Self::consume_owner_wake(&core)? {
+            return Ok(());
+        }
+        self.place_consumed_owner_wake(cpu, core, now_ns)
+    }
+
+    fn place_consumed_owner_wake(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: Arc<ThreadCore>,
+        now_ns: u64,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let target = core.target_cpu().unwrap_or(owner);
+        if target == owner {
+            return self.enqueue_owner_thread(cpu, core, now_ns, EnqueueReason::Wake);
+        }
+
+        // Affinity may change after a producer selected this CPU. The old
+        // owner consumes the lifecycle transition, then hands the ready thread
+        // to the latest target instead of placing it on an invalid runqueue.
+        Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
+        core.sched()
+            .lock()
+            .placement
+            .set_migration_target(Some(target))?;
+        self.publish_owner_migration(&core, target, owner, target)
     }
 
     /// Reconciles task metadata written by a remote affinity setter with the

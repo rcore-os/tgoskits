@@ -106,7 +106,15 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     support::set_hard_irq(true);
     let thread_wake_audit = audit(|| wake.wake());
     assert_zero_allocator_activity(thread_wake_audit);
-    assert_eq!(support::ipi_count(0), 1);
+    assert_eq!(
+        support::ipi_count(0),
+        0,
+        "same-CPU IRQ wake must be consumed from IRQ return without a self-IPI"
+    );
+    assert!(
+        cpu.has_remote_work(),
+        "skipping the self-IPI must retain the wake publication for the owner safe point"
+    );
 
     let inbox = SchedulerInbox::new(InboxKind::RemoteWake);
     let inbox_node = OwnedInboxNode::new(InboxKind::RemoteWake);
@@ -134,6 +142,13 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     assert_eq!(timer_audit.value.expired(), 1);
     assert_zero_allocator_activity(timer_audit);
     support::set_hard_irq(false);
+    assert_eq!(
+        system
+            .drain_remote_wakes(cpu.as_mut(), 0)
+            .expect("IRQ-return safe point must drain the retained wake")
+            .drained(),
+        1
+    );
 
     let executor = LocalExecutor::new(executor_thread.wake_handle())
         .expect("executor owner identity must match");

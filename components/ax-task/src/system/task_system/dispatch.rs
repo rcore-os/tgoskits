@@ -4,8 +4,25 @@ use super::*;
 
 impl TaskSystem {
     pub(super) fn consume_owner_wake(core: &Arc<ThreadCore>) -> Result<bool, TaskError> {
+        Self::consume_owner_wake_inner(core, false)
+    }
+
+    pub(super) fn consume_owner_task_wake(core: &Arc<ThreadCore>) -> Result<bool, TaskError> {
+        Self::consume_owner_wake_inner(core, true)
+    }
+
+    fn consume_owner_wake_inner(
+        core: &Arc<ThreadCore>,
+        preserve_running_notification: bool,
+    ) -> Result<bool, TaskError> {
         let mut sched = core.sched().lock();
         let lifecycle = sched.lifecycle.state();
+        if preserve_running_notification && lifecycle == ThreadState::Running {
+            // A local task may publish immediately before parking. With no
+            // physical inbox node to consume later, retain both wake bits so
+            // prepare_park observes the notification exactly once.
+            return Ok(false);
+        }
         if !core.consume_wake(lifecycle == ThreadState::Parking) || lifecycle == ThreadState::Exited
         {
             return Ok(false);

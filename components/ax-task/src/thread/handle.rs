@@ -208,6 +208,17 @@ impl ThreadWakeHandle {
         self.core.wake()
     }
 
+    /// Wakes from ordinary task context.
+    ///
+    /// The scheduler may use an owner-CPU direct activation path when the
+    /// target is local. Hard IRQ, guarded task context, and remote callers
+    /// automatically retain the bounded inbox publication path so direct
+    /// runqueue locks never nest inside an unrelated lock domain.
+    pub fn wake_from_task(&self) -> WakeResult {
+        crate::facade::try_wake_current_cpu_from_task(&self.core)
+            .unwrap_or_else(|| self.core.wake())
+    }
+
     /// Returns the thread that owns this wake header.
     pub fn thread_id(&self) -> ThreadId {
         self.core.id

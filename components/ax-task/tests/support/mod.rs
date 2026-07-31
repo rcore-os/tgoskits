@@ -123,6 +123,10 @@ impl_trait! {
             });
         }
 
+        fn local_scheduler_work_is_self_serviced() -> bool {
+            false
+        }
+
         fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
 
         fn finish_initial_context_switch() {

@@ -97,11 +97,39 @@ pub(crate) fn enter_irq() {
 
 #[cfg(feature = "multitask")]
 pub(crate) fn exit_irq(owner: &'static str) {
-    let restore_irqs = with_guard_state_mut(|state| state.exit_irq(owner));
+    let (must_schedule, restore_irqs) = with_guard_state_mut(|state| {
+        if irq_guard_exit_needs_schedule(state, in_hard_irq_pinned, || {
+            // SAFETY: raw IRQ exclusion retains the same CPU while this
+            // query observes the current CpuRemote's sticky request.
+            unsafe { ax_task::current_needs_reschedule_pinned() }.unwrap_or(false)
+        }) {
+            (true, false)
+        } else {
+            (false, state.exit_irq(owner))
+        }
+    });
+
+    if must_schedule {
+        // SAFETY: the final task-context IRQ guard and raw IRQ exclusion stay
+        // live until scheduler-frame entry atomically consumes that depth.
+        if let Err(error) = unsafe { ax_task::schedule_current_cpu_from_irq_guard_exit() } {
+            panic!("IRQ-guard-exit scheduler entry failed: {error}");
+        }
+        return;
+    }
 
     if restore_irqs {
         ax_hal::asm::enable_irqs();
     }
+}
+
+#[cfg(feature = "multitask")]
+pub(crate) fn local_scheduler_work_is_self_serviced() -> bool {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "local scheduler-work query requires an IRQ publication guard"
+    );
+    in_hard_irq_pinned() || read_state().local_scheduler_work_is_self_serviced()
 }
 
 #[cfg(feature = "multitask")]
@@ -198,6 +226,19 @@ fn preempt_exit_needs_schedule(
         && needs_reschedule()
 }
 
+#[cfg(any(feature = "multitask", test))]
+fn irq_guard_exit_needs_schedule(
+    state: &RuntimeGuardState,
+    in_hard_irq: impl FnOnce() -> bool,
+    needs_reschedule: impl FnOnce() -> bool,
+) -> bool {
+    state.irq.depth == 1
+        && state.irq.outer_irqs_enabled
+        && state.preempt.is_clear()
+        && !in_hard_irq()
+        && needs_reschedule()
+}
+
 #[cfg(feature = "multitask")]
 pub(crate) fn enter_scheduler_frame_guard(
     _origin: ax_task::runtime::RuntimeScheduleOrigin,
@@ -208,7 +249,9 @@ pub(crate) fn enter_scheduler_frame_guard(
     let irqs_enabled = ax_hal::asm::irqs_enabled();
     let raw_state_valid = match entry {
         RuntimeSchedulerEntry::Task => irqs_enabled,
-        RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => !irqs_enabled,
+        RuntimeSchedulerEntry::PreemptExit
+        | RuntimeSchedulerEntry::IrqReturn
+        | RuntimeSchedulerEntry::IrqGuardExit => !irqs_enabled,
     };
     if !raw_state_valid || in_hard_irq() {
         return RuntimeStatus::UnsafeContext;
@@ -220,6 +263,7 @@ pub(crate) fn enter_scheduler_frame_guard(
         RuntimeSchedulerEntry::PreemptExit | RuntimeSchedulerEntry::IrqReturn => {
             state.claim_preempt_exit_scheduler()
         }
+        RuntimeSchedulerEntry::IrqGuardExit => state.claim_irq_exit_scheduler(),
     });
     if !claimed {
         if irqs_enabled {

@@ -35,6 +35,17 @@ pub unsafe fn schedule_current_cpu_from_preempt_exit(
     schedule_current_cpu_with_entry(entry)
 }
 
+/// Services the final task-context IRQ publication guard exit without
+/// restoring IRQs before the scheduler owns its CPU-local baton.
+///
+/// # Safety
+///
+/// The caller must own the final runtime IRQ-guard depth, have entered it from
+/// ordinary task context with IRQs enabled, and retain raw IRQ exclusion.
+pub unsafe fn schedule_current_cpu_from_irq_guard_exit() -> Result<SchedulerOutcome, TaskError> {
+    schedule_current_cpu_with_entry(RuntimeSchedulerEntry::IrqGuardExit)
+}
+
 fn schedule_current_cpu_with_entry(
     entry: RuntimeSchedulerEntry,
 ) -> Result<SchedulerOutcome, TaskError> {

@@ -1,6 +1,6 @@
 //! Runtime-backed scheduler facade for crates below `ax-runtime`.
 
-use alloc::{boxed::Box, string::String};
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
     IrqUnregisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit,
     ParkPrepare, PiLockId, PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority,
     ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
-    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
+    ThreadCore, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
     ThreadWakeHandle, WaitQueue, WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
@@ -43,11 +43,12 @@ use runtime_cpu::{
 };
 pub(crate) use runtime_cpu::{
     RuntimeIrqGuard, cpu_local_for_wake, current_cpu_remote, runtime_current_cpu_mut,
-    runtime_task_system,
+    runtime_task_system, try_wake_current_cpu_from_task,
 };
 pub use scheduling::{
     ExitPermit, commit_current_exit, exit_current_thread, prepare_current_exit,
-    schedule_current_cpu, schedule_current_cpu_from_preempt_exit, yield_current_cpu,
+    schedule_current_cpu, schedule_current_cpu_from_irq_guard_exit,
+    schedule_current_cpu_from_preempt_exit, yield_current_cpu,
 };
 use scheduling::{
     complete_current_context_switch_tail, execute_switch_plan, service_current_task_deadline_work,
