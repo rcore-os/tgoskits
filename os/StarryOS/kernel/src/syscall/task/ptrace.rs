@@ -301,15 +301,19 @@ fn ptrace_cont(pid: usize, data: usize) -> AxResult<isize> {
 fn ptrace_kill(pid: usize) -> AxResult<isize> {
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
+    let was_ptraced = tracee.is_ptrace_traceme() || tracee.is_ptrace_attached();
+    use starry_signal::SignalInfo;
+
+    use crate::task::send_signal_to_process;
+    // Keep the event stop published until SIGKILL selects and interrupts its
+    // exact blocked thread. Clearing it first can resume the tracee before the
+    // fatal signal is visible, allowing it to execute another user instruction.
+    let _ = send_signal_to_process(tracee_pid, Some(SignalInfo::new_kernel(Signo::SIGKILL)));
+    if was_ptraced {
         tracee.clear_ptrace_stop();
         tracee.clear_ptrace_traceme();
         tracee.clear_ptrace_attached();
     }
-    use starry_signal::SignalInfo;
-
-    use crate::task::send_signal_to_process;
-    let _ = send_signal_to_process(tracee_pid, Some(SignalInfo::new_kernel(Signo::SIGKILL)));
     Ok(0)
 }
 
