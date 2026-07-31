@@ -2,22 +2,22 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::BTreeMap};
 #[cfg(test)]
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
+use alloc::{boxed::Box, collections::BTreeMap};
 #[cfg(test)]
 use core::sync::atomic::AtomicU64;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard};
 
 use ax_kernel_guard::NoPreempt;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
-#[cfg(test)]
-use spin::Mutex;
 
 #[cfg(not(test))]
 use crate::host::task;
@@ -247,18 +247,23 @@ fn current_cpu_id() -> usize {
 }
 
 #[cfg(test)]
+fn lock_test_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().expect("AxVM timer test mutex poisoned")
+}
+
+#[cfg(test)]
 fn rearm_host_timer(next_deadline: Option<TimeValue>) {
     let deadline = next_deadline.or_else(|| {
         Some(parked_host_timer_deadline(TimeValue::from_nanos(
             TEST_NOW_NS.load(Ordering::Acquire),
         )))
     });
-    TEST_REARMS.lock().push((current_cpu_id(), deadline));
+    lock_test_mutex(&TEST_REARMS).push((current_cpu_id(), deadline));
 }
 
 #[cfg(test)]
 fn rearm_remote_owner_host_timer(owner_cpu: usize) {
-    TEST_REMOTE_REARMS.lock().push(owner_cpu);
+    lock_test_mutex(&TEST_REMOTE_REARMS).push(owner_cpu);
     let previous_cpu = TEST_CURRENT_CPU.swap(owner_cpu, Ordering::AcqRel);
     rearm_current_host_timer_from_wheel();
     TEST_CURRENT_CPU.store(previous_cpu, Ordering::Release);
@@ -272,8 +277,8 @@ mod tests {
 
     fn reset_global_timer_state() {
         with_timer_wheels(|timer_wheels| *timer_wheels = TimerWheels::new());
-        TEST_REARMS.lock().clear();
-        TEST_REMOTE_REARMS.lock().clear();
+        lock_test_mutex(&TEST_REARMS).clear();
+        lock_test_mutex(&TEST_REMOTE_REARMS).clear();
         TEST_CURRENT_CPU.store(0, Ordering::Release);
         TEST_NOW_NS.store(0, Ordering::Release);
     }
@@ -355,31 +360,31 @@ mod tests {
 
     #[test]
     fn remote_cancel_reprograms_owner_cpu_timer() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = lock_test_mutex(&TEST_LOCK);
         reset_global_timer_state();
 
         set_current_cpu_for_test(0);
         let early_token = register_timer(10_000_000, Box::new(|_| {}));
         let late_token = register_timer(20_000_000, Box::new(|_| {}));
-        assert_eq!(TEST_REARMS.lock().len(), 2);
+        assert_eq!(lock_test_mutex(&TEST_REARMS).len(), 2);
 
-        TEST_REARMS.lock().clear();
+        lock_test_mutex(&TEST_REARMS).clear();
         set_current_cpu_for_test(1);
         cancel_timer(early_token);
 
-        assert_eq!(*TEST_REMOTE_REARMS.lock(), vec![0]);
+        assert_eq!(lock_test_mutex(&TEST_REMOTE_REARMS).as_slice(), &[0]);
         assert_eq!(
-            *TEST_REARMS.lock(),
-            vec![(0, Some(Duration::from_nanos(20_000_000)))]
+            lock_test_mutex(&TEST_REARMS).as_slice(),
+            &[(0, Some(Duration::from_nanos(20_000_000)))]
         );
 
-        TEST_REARMS.lock().clear();
+        lock_test_mutex(&TEST_REARMS).clear();
         cancel_timer(late_token);
 
-        assert_eq!(*TEST_REMOTE_REARMS.lock(), vec![0, 0]);
+        assert_eq!(lock_test_mutex(&TEST_REMOTE_REARMS).as_slice(), &[0, 0]);
         assert_eq!(
-            *TEST_REARMS.lock(),
-            vec![(0, Some(Duration::from_nanos(1_000_000_000)))]
+            lock_test_mutex(&TEST_REARMS).as_slice(),
+            &[(0, Some(Duration::from_nanos(1_000_000_000)))]
         );
     }
 }

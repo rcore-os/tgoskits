@@ -20,6 +20,8 @@
 //! - [`AxVM`]: The main structure representing a VM.
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 #[macro_use]
 extern crate log;
 
