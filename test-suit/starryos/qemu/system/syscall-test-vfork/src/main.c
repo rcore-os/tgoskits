@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <signal.h>
@@ -129,8 +131,53 @@ int test_vfork_clone_child_stack_blocking(void) {
     return (elapsed_ms >= 1500) ? 1 : 0;
 }
 
+/* Test 4: do_exit releases a vfork child's SysV SHM attachment before the
+ * blocked parent is allowed to return from vfork(). */
+int test_vfork_child_shm_cleanup(void) {
+    int shmid = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600);
+    if (shmid < 0) {
+        perror("shmget failed");
+        return -1;
+    }
+
+    void *parent_addr = shmat(shmid, NULL, 0);
+    if (parent_addr == (void *)-1) {
+        perror("parent shmat failed");
+        shmctl(shmid, IPC_RMID, NULL);
+        return -1;
+    }
+
+    pid_t child = do_vfork();
+    if (child < 0) {
+        perror("vfork failed");
+        shmdt(parent_addr);
+        shmctl(shmid, IPC_RMID, NULL);
+        return -1;
+    }
+    if (child == 0) {
+        if (shmat(shmid, NULL, 0) == (void *)-1) {
+            _exit(1);
+        }
+        _exit(0);
+    }
+
+    struct shmid_ds segment;
+    int status = 0;
+    int cleanup_observed = shmctl(shmid, IPC_STAT, &segment) == 0
+        && (segment.shm_nattch & 0xffffUL) == 1UL;
+    int child_reaped = waitpid(child, &status, 0) == child
+        && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    int resources_removed = 1;
+
+    if (shmdt(parent_addr) != 0 || shmctl(shmid, IPC_RMID, NULL) != 0) {
+        resources_removed = 0;
+    }
+    return cleanup_observed && child_reaped && resources_removed;
+}
+
 int main(void) {
-    int vfork_mem_pass = 0, vfork_exec_pass = 0, clone_stack_pass = 0;
+    int vfork_mem_pass = 0, vfork_exec_pass = 0, clone_stack_pass = 0,
+        shm_cleanup_pass = 0;
 
     /* Test 1: vfork memory sharing */
     vfork_mem_pass = test_vfork_memory_sniff();
@@ -140,6 +187,9 @@ int main(void) {
 
     /* Test 3: CLONE_VFORK with a private child stack still blocks parent */
     clone_stack_pass = test_vfork_clone_child_stack_blocking();
+
+    /* Test 4: vfork return observes do_exit's process-resource cleanup. */
+    shm_cleanup_pass = test_vfork_child_shm_cleanup();
 
     /* Report results */
     if (vfork_mem_pass > 0) {
@@ -160,8 +210,15 @@ int main(void) {
         printf("VFORK: FAIL (Child stack clone did NOT block parent)\n");
     }
 
+    if (shm_cleanup_pass > 0) {
+        printf("VFORK: PASS (Child SHM cleanup precedes parent resume)\n");
+    } else {
+        printf("VFORK: FAIL (Child SHM remained attached after parent resume)\n");
+    }
+
     /* Return success only if all vfork-related tests pass */
-    if (vfork_mem_pass > 0 && vfork_exec_pass > 0 && clone_stack_pass > 0) {
+    if (vfork_mem_pass > 0 && vfork_exec_pass > 0 && clone_stack_pass > 0
+        && shm_cleanup_pass > 0) {
         printf("VFORK TEST: ALL TESTS PASSED\n");
         return 0;
     } else {

@@ -343,10 +343,6 @@ pub fn decode_wait_status_rules_hold() -> bool {
     super::task::decode_wait_status_rules_hold_for_test()
 }
 
-pub fn process_resources_are_released_before_zombie_publication() -> bool {
-    super::task::process_resources_are_released_before_zombie_publication_for_test()
-}
-
 pub fn xattr_name_and_value_validation_rules_hold() -> bool {
     super::syscall::xattr_name_and_value_validation_rules_hold_for_test()
 }

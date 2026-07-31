@@ -132,11 +132,6 @@ fn decode_wait_status_rules_hold() {
 }
 
 #[axtest]
-fn process_resources_are_released_before_zombie_publication() {
-    ax_assert!(axtest_exports::process_resources_are_released_before_zombie_publication());
-}
-
-#[axtest]
 fn xattr_name_and_value_validation_rules_hold() {
     ax_assert!(axtest_exports::xattr_name_and_value_validation_rules_hold());
 }

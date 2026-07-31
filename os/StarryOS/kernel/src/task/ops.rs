@@ -488,25 +488,24 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
         let is_clone_child = thr.proc_data.is_clone_child();
         let wait_parent_tid = thr.proc_data.wait_parent_tid;
-        publish_zombie_after_releasing_process_resources(
-            || {
-                crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
 
-                // Drop memfd inode accounting before waitpid returns (SMP); use
-                // process_slots refcounting — not vm_aspace_shared + clear().
-                thr.proc_data.release_aspace_slot_if_needed();
-            },
-            || {
-                publish_zombie(
-                    &thr.proc_data,
-                    ZombieSnapshot {
-                        cred: zombie_cred,
-                        ptrace_tracer_pid,
-                        is_clone_child,
-                        wait_parent_tid,
-                        cpu_time: process_cpu_time,
-                    },
-                )
+        // A parent that observes this child as a zombie must not see IPC
+        // resources that still belong to the exiting process. In particular,
+        // a vfork parent resumes only after this cleanup.
+        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
+
+        // Drop memfd inode accounting before waitpid returns (SMP); use
+        // process_slots refcounting — not vm_aspace_shared + clear().
+        thr.proc_data.release_aspace_slot_if_needed();
+
+        publish_zombie(
+            &thr.proc_data,
+            ZombieSnapshot {
+                cred: zombie_cred,
+                ptrace_tracer_pid,
+                is_clone_child,
+                wait_parent_tid,
+                cpu_time: process_cpu_time,
             },
         )
         .expect("last process thread must own one live PID identity");
@@ -598,14 +597,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     thr.set_exit();
 }
 
-fn publish_zombie_after_releasing_process_resources<T>(
-    release_process_resources: impl FnOnce(),
-    publish_zombie: impl FnOnce() -> T,
-) -> T {
-    release_process_resources();
-    publish_zombie()
-}
-
 /// Rebinds a task's user-visible TID in [`TASK_TABLE`] from `old_tid` to
 /// `new_tid`.
 ///
@@ -674,15 +665,4 @@ pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
     assert!(code == CLD_DUMPED as i32 && status == 9);
 
     true
-}
-
-#[cfg(axtest)]
-pub(crate) fn process_resources_are_released_before_zombie_publication_for_test() -> bool {
-    use core::cell::Cell;
-
-    let resources_released = Cell::new(false);
-    publish_zombie_after_releasing_process_resources(
-        || resources_released.set(true),
-        || resources_released.get(),
-    )
 }
