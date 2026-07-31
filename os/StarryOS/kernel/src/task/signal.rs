@@ -304,7 +304,7 @@ pub fn check_signals(
     restart_info: Option<&SyscallRestartInfo>,
 ) -> bool {
     queue_rttime_limit_signal(thr);
-    if current_user_task().take_deadline_overrun() {
+    if thr.take_deadline_overrun() {
         let _result = thr
             .signal()
             .send_signal(SignalInfo::new_kernel(Signo::SIGXCPU));
@@ -493,10 +493,6 @@ fn do_job_stop(thr: &Thread, signo: Signo) {
 
 pub fn block_next_signal() {
     current_user_task().as_thread().block_next_signal_check();
-}
-
-pub fn unblock_next_signal() -> bool {
-    current_user_task().as_thread().unblock_next_signal_check()
 }
 
 pub fn with_blocked_signals<R>(

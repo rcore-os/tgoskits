@@ -82,6 +82,9 @@ impl<T> Drop for PreemptTicketGuard<'_, T> {
         // Publish the protected state before the final preemption exit can
         // enter the scheduler and expose it to another CPU.
         drop(self.raw.take());
+        if self.token.is_none() {
+            return;
+        }
         // SAFETY: construction received this token on the current task
         // context, the !Send marker prevents migration, and Drop consumes it
         // exactly once. The runtime accepts non-LIFO nested exits.

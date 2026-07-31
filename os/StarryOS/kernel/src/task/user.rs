@@ -6,8 +6,8 @@ use syscalls::Sysno;
 
 use super::{
     SyscallRestartInfo, SyscallTraceState, TimerState, check_signals, current_user_task,
-    poll_process_timer, ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal,
-    set_timer_state, unblock_next_signal, wait_existing_ptrace_stop_current,
+    poll_process_timers, ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal,
+    set_timer_state, wait_existing_ptrace_stop_current,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
@@ -74,7 +74,7 @@ pub fn new_user_task(
 
             let reason = uctx.run();
 
-            set_timer_state(&curr, TimerState::Kernel);
+            set_timer_state(thr, TimerState::Kernel);
 
             let saved_a0 = uctx.arg0();
             let saved_sysno = uctx.sysno();
@@ -83,44 +83,54 @@ pub fn new_user_task(
             match reason {
                 ReturnReason::Syscall => {
                     let tid = thr.tid();
-                    let trace_state = thr.proc_data.take_ptrace_syscall_trace_for(tid);
-                    if matches!(trace_state, SyscallTraceState::Entry)
-                        && ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
-                    {
-                        match thr.proc_data.take_ptrace_syscall_trace_for(tid) {
-                            SyscallTraceState::Entry | SyscallTraceState::Exit => thr
-                                .proc_data
-                                .set_ptrace_syscall_trace_state_for(tid, SyscallTraceState::Exit),
-                            SyscallTraceState::None => {}
+                    let ptrace_trace = thr.proc_data.ptrace.take_syscall_trace_if_active(tid);
+                    if let Some(trace_state) = ptrace_trace {
+                        if matches!(trace_state, SyscallTraceState::Entry)
+                            && ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
+                        {
+                            match thr.proc_data.take_ptrace_syscall_trace_for(tid) {
+                                SyscallTraceState::Entry | SyscallTraceState::Exit => {
+                                    thr.proc_data.set_ptrace_syscall_trace_state_for(
+                                        tid,
+                                        SyscallTraceState::Exit,
+                                    )
+                                }
+                                SyscallTraceState::None => {}
+                            }
+                        }
+
+                        if let Some(exit_code) = ptrace_exit_event_code(saved_sysno, saved_a0)
+                            && crate::syscall::ptrace_notify_exit(
+                                thr.proc_data.proc.pid(),
+                                exit_code,
+                            )
+                        {
+                            let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
                         }
                     }
 
-                    if let Some(exit_code) = ptrace_exit_event_code(saved_sysno, saved_a0)
-                        && crate::syscall::ptrace_notify_exit(thr.proc_data.proc.pid(), exit_code)
-                    {
-                        let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
-                    }
-
-                    handle_syscall(&mut uctx);
-                    if thr.proc_data.has_ptrace_pending_event_for(tid)
-                        && let Some(_resume_sig) =
-                            ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
-                    {
-                        continue;
-                    }
-                    if matches!(
-                        thr.proc_data.take_ptrace_syscall_trace_for(tid),
-                        SyscallTraceState::Exit
-                    ) {
-                        let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
-                    }
-                    if thr.proc_data.take_ptrace_exec_stop_pending() {
-                        let _is_event =
-                            crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
-                        if let Some(_resume_sig) =
-                            ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                    handle_syscall(thr, &mut uctx);
+                    if ptrace_trace.is_some() {
+                        if thr.proc_data.has_ptrace_pending_event_for(tid)
+                            && let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                         {
                             continue;
+                        }
+                        if matches!(
+                            thr.proc_data.take_ptrace_syscall_trace_for(tid),
+                            SyscallTraceState::Exit
+                        ) {
+                            let _ = ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                        }
+                        if thr.proc_data.take_ptrace_exec_stop_pending() {
+                            let _is_event =
+                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
+                            if let Some(_resume_sig) =
+                                ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                            {
+                                continue;
+                            }
                         }
                     }
                 }
@@ -302,7 +312,7 @@ pub fn new_user_task(
                 }
             }
 
-            if !unblock_next_signal() {
+            if !thr.unblock_next_signal_check() {
                 // POSIX timers are also driven by the alarm task, but polling
                 // here closes the window where an expired timer is only noticed
                 // after the current syscall returns to userspace.
@@ -332,7 +342,7 @@ pub fn new_user_task(
                     // wake reason for a subsequent interruptible syscall.
                     let interrupt_snapshot = thr.interrupt_snapshot();
                     if poll_timer {
-                        poll_process_timer(thr.proc_data.proc.pid());
+                        poll_process_timers(&thr.proc_data);
                         poll_timer = false;
                     }
                     while check_signals(thr, &mut uctx, None, pending_restart) {
@@ -345,7 +355,7 @@ pub fn new_user_task(
                 }
             }
 
-            set_timer_state(&curr, TimerState::User);
+            set_timer_state(thr, TimerState::User);
         }
     }
 }

@@ -58,6 +58,7 @@ pub(crate) use self::{
         posix_timer_saturating_timespec_rules_hold_for_test,
         posix_timer_stale_expiry_signal_is_suppressed_for_test,
     },
+    process_ptrace::inactive_ptrace_syscall_gate_is_lock_free_for_test,
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::{

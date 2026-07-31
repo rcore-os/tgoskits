@@ -232,6 +232,21 @@ pub(crate) fn enter_preempt() {
     current_thread_operation(ax_hal::percpu::CurrentThreadHeader::enter_preempt_guard);
 }
 
+/// Enters an ordinary lock-preemption scope unless a stronger owner scope is active.
+///
+/// Scheduler frames and runtime IRQ guards already retain this CPU with raw
+/// local IRQs disabled. Reusing that ownership matches Linux rq locking: one
+/// outer rq/IRQ transaction covers its internal task-state locks, so those
+/// locks must not repeatedly mutate the suspended task's preemption word.
+#[cfg(feature = "multitask")]
+pub(crate) fn enter_lock_preempt() -> bool {
+    if !ax_hal::asm::irqs_enabled() && read_state().owns_cpu_context() {
+        return false;
+    }
+    enter_preempt();
+    true
+}
+
 #[cfg(feature = "multitask")]
 pub(crate) fn exit_preempt() {
     let exit =

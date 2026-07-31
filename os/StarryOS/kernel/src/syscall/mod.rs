@@ -21,7 +21,7 @@ pub use self::{
     fs::*, io_mpx::*, ipc::*, mm::*, net::*, ns::*, resources::*, signal::*, sync::*, sys::*,
     task::*, time::*,
 };
-use crate::task::{SeccompDecision, do_exit, seccomp_errno};
+use crate::task::{SeccompDecision, Thread, do_exit, seccomp_errno};
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     // Per signal(7), only the System V message-queue blocking calls (msgsnd /
@@ -47,17 +47,13 @@ pub fn sysno(id: usize) -> Option<Sysno> {
     Some(sysno)
 }
 
-pub fn handle_syscall(uctx: &mut UserContext) {
+pub fn handle_syscall(thread: &Thread, uctx: &mut UserContext) {
     let Some(sysno) = sysno(uctx.sysno()) else {
         uctx.set_retval(-LinuxError::ENOSYS.code() as _);
         return;
     };
     trace!("Syscall {sysno:?}");
-    match crate::task::current_user_task()
-        .as_thread()
-        .seccomp_state()
-        .evaluate(uctx)
-    {
+    match thread.evaluate_seccomp(uctx) {
         SeccompDecision::Allow => {}
         SeccompDecision::Errno(errno) => {
             uctx.set_retval(seccomp_errno(errno));

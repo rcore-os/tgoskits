@@ -5,15 +5,15 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize
 
 use ax_errno::AxResult;
 use ax_kernel_guard::NoPreemptIrqSave;
-use ax_runtime::hal::percpu::CpuPin;
+use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
-    CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompState, SockFilter,
-    TimerState,
+    CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompDecision,
+    SeccompState, SeccompStateStore, SockFilter, TimerState,
     bounded_stack::BoundedStack,
     interruption::{InterruptSnapshot, InterruptState},
     ops,
@@ -126,6 +126,7 @@ struct ThreadLifecycle {
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
     exit_request: AtomicBool,
+    deadline_overrun: AtomicBool,
     rseq_area: AtomicUsize,
     rseq_signature: AtomicU32,
 }
@@ -142,6 +143,7 @@ impl ThreadLifecycle {
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
             exit_request: AtomicBool::new(false),
+            deadline_overrun: AtomicBool::new(false),
             rseq_area: AtomicUsize::new(0),
             rseq_signature: AtomicU32::new(0),
         }
@@ -172,7 +174,7 @@ struct ThreadSecurity {
     oom_score_adj: AtomicI32,
     pdeathsig: AtomicU32,
     no_new_privs: AtomicBool,
-    seccomp: PiMutex<Arc<SeccompState>>,
+    seccomp: SeccompStateStore,
     cred: PiMutex<Arc<Cred>>,
     uid_map_written: AtomicBool,
     gid_map_written: AtomicBool,
@@ -185,7 +187,7 @@ impl ThreadSecurity {
             oom_score_adj: AtomicI32::new(200),
             pdeathsig: AtomicU32::new(0),
             no_new_privs: AtomicBool::new(false),
-            seccomp: PiMutex::new(Arc::new(SeccompState::default())),
+            seccomp: SeccompStateStore::new(),
             cred: PiMutex::new(parent_cred.unwrap_or_else(|| Arc::new(Cred::root()))),
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
@@ -457,6 +459,18 @@ impl Thread {
         self.lifecycle.exit_request.store(true, Ordering::Release);
     }
 
+    pub(super) fn publish_deadline_overrun(&self) {
+        self.lifecycle
+            .deadline_overrun
+            .store(true, Ordering::Release);
+    }
+
+    pub(super) fn take_deadline_overrun(&self) -> bool {
+        self.lifecycle
+            .deadline_overrun
+            .swap(false, Ordering::AcqRel)
+    }
+
     pub(crate) fn enter_user_memory_access(&self) -> UserMemoryAccessGuard<'_> {
         self.lifecycle.user_memory_access.enter()
     }
@@ -559,26 +573,29 @@ impl Thread {
 
     /// Returns a snapshot of the seccomp state.
     pub fn seccomp_state(&self) -> Arc<SeccompState> {
-        self.security.seccomp.lock().clone()
+        self.security.seccomp.snapshot()
+    }
+
+    /// Evaluates the immutable seccomp snapshot published for this thread.
+    pub(crate) fn evaluate_seccomp(&self, uctx: &UserContext) -> SeccompDecision {
+        self.security.seccomp.evaluate(uctx)
     }
 
     /// Replaces inherited seccomp state.
     pub fn set_seccomp_state(&self, state: Arc<SeccompState>) {
-        let previous = {
-            let mut current = self.security.seccomp.lock();
-            core::mem::replace(&mut *current, state)
-        };
-        drop(previous);
+        self.security.seccomp.replace(state);
     }
 
     /// Enables strict seccomp mode.
     pub fn install_seccomp_strict(&self) -> AxResult<()> {
-        Arc::make_mut(&mut self.security.seccomp.lock()).install_strict()
+        self.security.seccomp.update(SeccompState::install_strict)
     }
 
     /// Appends one seccomp filter program.
     pub fn append_seccomp_filter(&self, insns: Vec<SockFilter>) -> AxResult<()> {
-        Arc::make_mut(&mut self.security.seccomp.lock()).append_filter(insns)
+        self.security
+            .seccomp
+            .update(move |state| state.append_filter(insns))
     }
 
     /// Returns a credential snapshot.
@@ -683,12 +700,14 @@ mod tests {
     use ax_sync::PiMutex;
 
     use super::{NextSignalCheckBlock, ThreadSecurity};
+    use crate::task::SeccompStateStore;
 
     #[test]
-    fn thread_security_heap_state_uses_sleepable_pi_locks() {
+    fn seccomp_reads_use_an_immutable_snapshot_store() {
         fn assert_pi_mutex<T>(_: &PiMutex<T>) {}
+        fn assert_seccomp_store(_: &SeccompStateStore) {}
         fn assert_security_lock_types(security: &ThreadSecurity) {
-            assert_pi_mutex(&security.seccomp);
+            assert_seccomp_store(&security.seccomp);
             assert_pi_mutex(&security.cred);
         }
 
