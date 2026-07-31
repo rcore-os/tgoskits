@@ -150,6 +150,12 @@ impl ThreadSchedState {
         Ok(())
     }
 
+    pub(super) fn throttle_ready_deadline(&mut self, core: &ThreadCore) -> Result<(), TaskError> {
+        self.lifecycle.throttle_ready_deadline()?;
+        core.publish_state(ThreadState::Blocked);
+        Ok(())
+    }
+
     pub(super) fn is_pi_boosted_rt_owner(&self) -> bool {
         self.blocked_pi_waiters != 0
             && self.is_pi_boosted()

@@ -283,6 +283,34 @@ fn early_deadline_replenishment_keeps_the_throttled_job_blocked() {
 }
 
 #[test]
+fn constrained_deadline_wake_after_deadline_waits_for_next_release() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let idle = system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let deadline = ready_thread(
+        &system,
+        SchedulePolicy::deadline(deadline_policy(2, 5, 10, DeadlineFlags::NONE)),
+    );
+    system.enqueue(cpu.as_mut(), deadline.id(), 0).unwrap();
+    system.dequeue(cpu.as_mut(), deadline.id()).unwrap();
+
+    system.enqueue(cpu.as_mut(), deadline.id(), 9).unwrap();
+
+    assert_eq!(deadline.state(), ThreadState::Blocked);
+    assert_eq!(system.schedule(cpu.as_mut(), 9).unwrap().next(), idle.id());
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 10).unwrap().next(),
+        deadline.id()
+    );
+}
+
+#[test]
 fn saturated_deadline_timer_does_not_enqueue_an_unreplenished_job() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

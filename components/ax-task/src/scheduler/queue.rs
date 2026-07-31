@@ -268,7 +268,6 @@ impl RunQueue {
         policy: SchedulePolicy,
         entity: SchedulingEntity,
         core: Arc<ThreadCore>,
-        now_ns: u64,
         reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
         if self.contains(id) {
@@ -303,9 +302,6 @@ impl RunQueue {
         let queued_entity = entry.entity;
         let (pushable_summary, membership_class) = match policy {
             SchedulePolicy::Deadline(_) => {
-                if reason == EnqueueReason::Wake {
-                    entry.entity.activate_deadline(now_ns);
-                }
                 if entry.entity.deadline().is_none_or(|deadline| {
                     deadline.absolute_deadline_ns() == 0 || deadline.is_throttled()
                 }) {
@@ -360,12 +356,12 @@ impl RunQueue {
         id: ThreadId,
         policy: SchedulePolicy,
         entity: SchedulingEntity,
-        now_ns: u64,
+        _now_ns: u64,
         reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
         let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
         let core = Arc::new(ThreadCore::new(id, policy, sched, None, None, None));
-        self.enqueue(id, policy, entity, core, now_ns, reason)
+        self.enqueue(id, policy, entity, core, reason)
     }
 
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
@@ -705,11 +701,13 @@ mod tests {
                 EnqueueReason::Wake,
             )
             .unwrap();
+        let mut deadline_entity = SchedulingEntity::new(deadline, 1, 0);
+        deadline_entity.activate_deadline(0);
         queue
             .enqueue_test(
                 ThreadId::from_parts(2, 1),
                 deadline,
-                SchedulingEntity::new(deadline, 1, 0),
+                deadline_entity,
                 0,
                 EnqueueReason::Wake,
             )
@@ -977,14 +975,12 @@ mod tests {
             .unwrap();
         assert_eq!(queue.pushable_key(), None);
         for (id, policy) in [(fair_id, fair), (rt_id, rt), (deadline_id, deadline)] {
+            let mut entity = SchedulingEntity::new(policy, 1, 0);
+            if matches!(policy, SchedulePolicy::Deadline(_)) {
+                entity.activate_deadline(0);
+            }
             queue
-                .enqueue_test(
-                    id,
-                    policy,
-                    SchedulingEntity::new(policy, 1, 0),
-                    0,
-                    EnqueueReason::Wake,
-                )
+                .enqueue_test(id, policy, entity, 0, EnqueueReason::Wake)
                 .unwrap();
         }
         assert_eq!(queue.pushable_key().unwrap().class_rank(), 0);

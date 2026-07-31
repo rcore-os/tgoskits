@@ -311,15 +311,38 @@ impl DeadlineEntity {
 
     /// Applies the CBS wake-up rule and activates a fresh job when required.
     pub fn activate(&mut self, now_ns: u64) {
-        let reset = self.absolute_deadline_ns == 0
-            || now_ns >= self.absolute_deadline_ns
-            || self.remaining_runtime_ns <= 0
-            || density_exceeds_reservation(
-                self.remaining_runtime_ns as u128,
-                self.absolute_deadline_ns.saturating_sub(now_ns),
-                self.policy,
-            );
-        if reset {
+        if self.absolute_deadline_ns == 0 || now_ns >= self.next_period_ns {
+            self.start_fresh_job(now_ns);
+            return;
+        }
+        if self.throttled {
+            return;
+        }
+
+        let constrained = self.policy.deadline_ns() < self.policy.period_ns();
+        if constrained && now_ns >= self.absolute_deadline_ns {
+            self.remaining_runtime_ns = 0;
+            self.throttled = true;
+            self.yielded = false;
+            return;
+        }
+        if self.remaining_runtime_ns <= 0 {
+            self.throttled = true;
+            return;
+        }
+        let time_to_deadline_ns = self.absolute_deadline_ns - now_ns;
+        if !density_exceeds_reservation(
+            self.remaining_runtime_ns as u128,
+            time_to_deadline_ns,
+            self.policy,
+        ) {
+            return;
+        }
+
+        if constrained {
+            self.remaining_runtime_ns = revised_wakeup_runtime(time_to_deadline_ns, self.policy);
+            self.throttled = self.remaining_runtime_ns == 0;
+        } else {
             self.start_fresh_job(now_ns);
         }
     }
@@ -528,8 +551,14 @@ fn density_exceeds_reservation(
     time_to_deadline_ns: u64,
     policy: DeadlinePolicy,
 ) -> bool {
-    remaining_runtime_ns.saturating_mul(policy.period_ns() as u128)
+    remaining_runtime_ns.saturating_mul(policy.deadline_ns() as u128)
         > (policy.runtime_ns() as u128).saturating_mul(time_to_deadline_ns as u128)
+}
+
+fn revised_wakeup_runtime(time_to_deadline_ns: u64, policy: DeadlinePolicy) -> i128 {
+    let runtime_ns = (policy.runtime_ns() as u128).saturating_mul(time_to_deadline_ns as u128)
+        / policy.deadline_ns() as u128;
+    runtime_ns as i128
 }
 
 /// Scheduler-class urgency without an identity or queue-order tie-break.
@@ -670,8 +699,8 @@ mod tests {
 
         entity.activate(4);
 
-        assert_eq!(entity.absolute_deadline_ns(), 12);
-        assert_eq!(entity.remaining_runtime_ns(), 4);
+        assert_eq!(entity.absolute_deadline_ns(), 8);
+        assert_eq!(entity.remaining_runtime_ns(), 2);
     }
 
     #[test]
@@ -688,15 +717,23 @@ mod tests {
     }
 
     #[test]
-    fn deadline_wake_after_the_scheduling_deadline_starts_a_fresh_job() {
+    fn constrained_deadline_wake_waits_until_the_next_release() {
         let policy = DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap();
         let mut entity = DeadlineEntity::new(policy);
         entity.activate(0);
         assert!(!entity.charge(1, 0));
 
-        entity.activate(8);
+        entity.activate(9);
 
-        assert_eq!(entity.absolute_deadline_ns(), 16);
+        assert!(entity.is_throttled());
+        assert_eq!(entity.absolute_deadline_ns(), 8);
+        assert_eq!(entity.next_scheduler_event_ns(), 10);
+        assert_eq!(entity.remaining_runtime_ns(), 0);
+
+        entity.activate(10);
+
+        assert!(!entity.is_throttled());
+        assert_eq!(entity.absolute_deadline_ns(), 18);
         assert_eq!(entity.remaining_runtime_ns(), 4);
     }
 
