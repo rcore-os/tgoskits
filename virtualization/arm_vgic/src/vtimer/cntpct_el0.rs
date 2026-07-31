@@ -30,7 +30,7 @@ const CNTPCT_EL0_ADDR: u32 = SystemRegType::CNTPCT_EL0 as u32;
 impl SysCntpctEl0 {
     /// Reads CNTPCT_EL0.
     pub fn read_register(&self, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(self.backend.current_time_nanos() as usize)
+        Ok(self.backend.current_counter_value() as usize)
     }
 
     /// Ignores guest writes to the read-only CNTPCT_EL0 register.

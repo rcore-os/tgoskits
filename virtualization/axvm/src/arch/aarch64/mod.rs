@@ -434,6 +434,20 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
         default_host().monotonic_time().as_nanos() as u64
     }
 
+    fn current_counter_value() -> u64 {
+        let value: u64;
+        // SAFETY: CNTPCT_EL0 is read-only and has no memory or ownership preconditions.
+        unsafe { core::arch::asm!("mrs {value}, CNTPCT_EL0", value = out(reg) value) };
+        value
+    }
+
+    fn counter_frequency_hz() -> u64 {
+        let frequency: u64;
+        // SAFETY: CNTFRQ_EL0 is read-only and has no memory or ownership preconditions.
+        unsafe { core::arch::asm!("mrs {frequency}, CNTFRQ_EL0", frequency = out(reg) frequency) };
+        frequency
+    }
+
     fn register_timer(
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,

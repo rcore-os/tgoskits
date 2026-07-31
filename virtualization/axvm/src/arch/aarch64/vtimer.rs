@@ -8,7 +8,8 @@
 use alloc::sync::Arc;
 
 use arm_vgic::vtimer::{
-    HostVtimerBackend, SysCntpCtlEl0, SysCntpTvalEl0, SysCntpctEl0, VtimerBackend, VtimerState,
+    HostVtimerBackend, SysCntpCtlEl0, SysCntpCvalEl0, SysCntpTvalEl0, SysCntpctEl0, VtimerBackend,
+    VtimerState,
 };
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceLifecycle, DeviceManagerResult,
@@ -58,7 +59,7 @@ impl Drop for VtimerLifecycle {
 }
 
 impl Aarch64VtimerFactory {
-    /// Builds the three CNT* system-register device contributions.
+    /// Builds the CNT* system-register device contributions.
     fn build_bundle(&self) -> DeviceManagerResult<DeviceBundle> {
         let backend: Arc<dyn VtimerBackend> = Arc::new(HostVtimerBackend);
         let state = Arc::new(VtimerState::new());
@@ -70,6 +71,10 @@ impl Aarch64VtimerFactory {
         let bundle = DeviceBundle::from_registration(DeviceRegistration::Device(Arc::new(
             SysCntpCtlEl0::new(Arc::clone(&state), Arc::clone(&backend)),
         )))
+        .with_registration(DeviceRegistration::Device(Arc::new(SysCntpCvalEl0::new(
+            Arc::clone(&state),
+            Arc::clone(&backend),
+        ))))
         .with_registration(DeviceRegistration::Device(Arc::new(SysCntpctEl0::new(
             Arc::clone(&backend),
         ))))

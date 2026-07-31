@@ -29,6 +29,12 @@ pub trait ArmVgicHostIf {
     /// Current monotonic host time in nanoseconds.
     fn current_time_nanos() -> u64;
 
+    /// Current architectural physical counter value.
+    fn current_counter_value() -> u64;
+
+    /// Architectural physical counter frequency in hertz.
+    fn counter_frequency_hz() -> u64;
+
     /// Register a timer callback.
     fn register_timer(
         deadline: Duration,
@@ -93,6 +99,14 @@ pub(crate) fn current_vm_id() -> usize {
 
 pub(crate) fn current_time_nanos() -> u64 {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_time_nanos())
+}
+
+pub(crate) fn current_counter_value() -> u64 {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::current_counter_value())
+}
+
+pub(crate) fn counter_frequency_hz() -> u64 {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::counter_frequency_hz())
 }
 
 pub(crate) fn register_timer(

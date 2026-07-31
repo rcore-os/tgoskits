@@ -30,7 +30,7 @@ const CNTP_CTL_EL0_ADDR: u32 = SystemRegType::CNTP_CTL_EL0 as u32;
 impl SysCntpCtlEl0 {
     /// Reads CNTP_CTL_EL0.
     pub fn read_register(&self, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(self.state.control(self.backend.current_time_nanos()) as usize)
+        Ok(self.state.control(self.backend.current_counter_value()) as usize)
     }
 
     /// Writes CNTP_CTL_EL0.
