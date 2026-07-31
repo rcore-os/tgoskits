@@ -139,15 +139,7 @@ pub fn prepare_subscribe_channel(
             )
         ));
     }
-    if channel.has_subscriber(subscriber_vm_id) {
-        return Err(ax_err_type!(
-            AlreadyExists,
-            format!(
-                "VM[{}] has already subscribed to publisher VM[{}] Key {:#x}",
-                subscriber_vm_id, publisher_vm_id, key
-            )
-        ));
-    }
+    channel.ensure_subscriber_available(subscriber_vm_id)?;
 
     Ok(channel.size())
 }
@@ -179,17 +171,10 @@ pub fn subscribe_to_channel_of_publisher(
             )
         ));
     }
-    if channel.has_subscriber(subscriber_vm_id) {
-        return Err(ax_err_type!(
-            AlreadyExists,
-            format!(
-                "VM[{}] has already subscribed to publisher VM[{}] Key {:#x}",
-                subscriber_vm_id, publisher_vm_id, key
-            )
-        ));
-    }
-    // Add the subscriber VM ID to the channel.
-    channel.add_subscriber(subscriber_vm_id, subscriber_gpa);
+    // Register while holding the channel-table lock. This final check closes
+    // the gap after `prepare_subscribe_channel()` and preserves the SPSC
+    // protocol's one-subscriber invariant.
+    channel.add_subscriber(subscriber_vm_id, subscriber_gpa)?;
     Ok((channel.base_hpa(), channel.size()))
 }
 
@@ -226,7 +211,7 @@ pub fn unsubscribe_from_channel_of_publisher(
     // remove it from the global map.
     if channels
         .get(&(publisher_vm_id, key))
-        .is_some_and(|c| c.subscribers().is_empty() && c.is_unpublished())
+        .is_some_and(|c| !c.has_subscribers() && c.is_unpublished())
     {
         channels.remove(&(publisher_vm_id, key));
     }
@@ -284,13 +269,21 @@ pub fn prepare_notify_channel(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IvcSubscriberBinding {
+    vm_id: usize,
+    base_gpa: GuestPhysAddr,
+}
+
 pub struct IVCChannel<H: PagingHandler> {
     publisher_vm_id: usize,
     key: usize,
-    /// A list of subscriber VM IDs that are subscribed to this channel.
-    /// The key is the subscriber VM ID, and the value is the base address of the shared region in
-    /// guest physical address of the subscriber VM.
-    subscriber_vms: BTreeMap<usize, GuestPhysAddr>,
+    /// The guest mapping attached to the channel's sole subscriber.
+    ///
+    /// The current guest-visible protocol uses one SPSC ring in each
+    /// direction, so attaching a second subscriber would create multiple
+    /// producers and consumers for those rings.
+    subscriber: Option<IvcSubscriberBinding>,
     shared_region_base: HostPhysAddr,
     shared_region_size: usize,
     /// The base address of the shared memory region in guest physical address of the publisher VM.
@@ -349,9 +342,9 @@ impl<H: PagingHandler> std::fmt::Debug for IVCChannel<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IVCChannel(publisher[{}], subscribers {:?}, base: {:?}, size: {:#x}, gpa: {:?})",
+            "IVCChannel(publisher[{}], subscriber {:?}, base: {:?}, size: {:#x}, gpa: {:?})",
             self.publisher_vm_id,
-            self.subscriber_vms,
+            self.subscriber,
             self.shared_region_base,
             self.shared_region_size,
             self.base_gpa
@@ -399,7 +392,7 @@ impl<H: PagingHandler> IVCChannel<H> {
         let mut channel = IVCChannel {
             publisher_vm_id,
             key,
-            subscriber_vms: BTreeMap::new(),
+            subscriber: None,
             shared_region_base,
             shared_region_size,
             base_gpa: Some(base_gpa),
@@ -436,27 +429,59 @@ impl<H: PagingHandler> IVCChannel<H> {
         self.shared_region_size / PAGE_SIZE_4K
     }
 
-    pub fn add_subscriber(&mut self, subscriber_vm_id: usize, subscriber_gpa: GuestPhysAddr) {
-        self.subscriber_vms.insert(subscriber_vm_id, subscriber_gpa);
+    pub fn add_subscriber(
+        &mut self,
+        subscriber_vm_id: usize,
+        subscriber_gpa: GuestPhysAddr,
+    ) -> AxVmResult<()> {
+        self.ensure_subscriber_available(subscriber_vm_id)?;
+        self.subscriber = Some(IvcSubscriberBinding {
+            vm_id: subscriber_vm_id,
+            base_gpa: subscriber_gpa,
+        });
+        Ok(())
     }
 
     pub fn remove_subscriber(&mut self, subscriber_vm_id: usize) -> Option<GuestPhysAddr> {
-        self.subscriber_vms.remove(&subscriber_vm_id)
-    }
-
-    pub fn subscribers(&self) -> Vec<(usize, GuestPhysAddr)> {
-        self.subscriber_vms
-            .iter()
-            .map(|(vm_id, gpa)| (*vm_id, *gpa))
-            .collect()
+        let binding = self
+            .subscriber
+            .filter(|binding| binding.vm_id == subscriber_vm_id)?;
+        self.subscriber = None;
+        Some(binding.base_gpa)
     }
 
     pub fn has_subscribers(&self) -> bool {
-        !self.subscriber_vms.is_empty()
+        self.subscriber.is_some()
     }
 
     pub fn has_subscriber(&self, subscriber_vm_id: usize) -> bool {
-        self.subscriber_vms.contains_key(&subscriber_vm_id)
+        self.subscriber
+            .is_some_and(|binding| binding.vm_id == subscriber_vm_id)
+    }
+
+    fn ensure_subscriber_available(&self, subscriber_vm_id: usize) -> AxVmResult<()> {
+        let Some(binding) = self.subscriber else {
+            return Ok(());
+        };
+
+        if binding.vm_id == subscriber_vm_id {
+            Err(ax_err_type!(
+                AlreadyExists,
+                format!(
+                    "VM[{}] has already subscribed to publisher VM[{}] Key {:#x}",
+                    subscriber_vm_id, self.publisher_vm_id, self.key
+                )
+            ))
+        } else {
+            Err(ax_err_type!(
+                AlreadyExists,
+                format!(
+                    "IVC channel publisher VM[{}] Key {:#x} already has subscriber VM[{}]; the \
+                     SPSC protocol permits only one subscriber",
+                    self.publisher_vm_id, self.key, binding.vm_id
+                )
+            ))
+        }
     }
 
     pub fn mark_unpublished(&mut self) {
@@ -602,5 +627,47 @@ mod tests {
             GuestPhysAddr::from_usize(0x7000_3000),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_second_subscriber_for_spsc_channel() {
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x104,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_4000),
+        )
+        .unwrap();
+
+        channel
+            .add_subscriber(2, GuestPhysAddr::from_usize(0x7100_0000))
+            .unwrap();
+        assert!(channel.ensure_subscriber_available(3).is_err());
+        let second = channel.add_subscriber(3, GuestPhysAddr::from_usize(0x7200_0000));
+
+        assert!(second.is_err());
+        assert!(channel.has_subscriber(2));
+        assert!(!channel.has_subscriber(3));
+    }
+
+    #[test]
+    fn accepts_new_subscriber_after_current_subscriber_detaches() {
+        let mut channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x105,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_5000),
+        )
+        .unwrap();
+        let first_gpa = GuestPhysAddr::from_usize(0x7100_0000);
+
+        channel.add_subscriber(2, first_gpa).unwrap();
+        assert_eq!(channel.remove_subscriber(2), Some(first_gpa));
+        channel
+            .add_subscriber(3, GuestPhysAddr::from_usize(0x7200_0000))
+            .unwrap();
+
+        assert!(!channel.has_subscriber(2));
+        assert!(channel.has_subscriber(3));
     }
 }

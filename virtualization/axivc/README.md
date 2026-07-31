@@ -70,8 +70,9 @@ A publisher typically:
 1. Calls `axhvc::ivc::publish_channel`.
 2. Maps the returned shared-memory GPA.
 3. Initializes the mapped memory with `IvcRegion::initialize`.
-4. Sends requests with `IvcRegion::send_request`.
-5. Optionally receives acknowledgements with `IvcRegion::try_recv_ack`.
+4. Attaches `IvcRegion::publisher_endpoints` exactly once and splits the result
+   with `IvcEndpoints::into_parts`.
+5. Sends through the producer and receives through the consumer.
 6. Optionally notifies the peer through `axhvc`.
 
 A subscriber typically:
@@ -79,8 +80,9 @@ A subscriber typically:
 1. Calls `axhvc::ivc::subscribe_channel`.
 2. Maps the returned shared-memory GPA.
 3. Validates `channel_header_matches` and `protocol_header_matches`.
-4. Receives requests with `IvcRegion::try_recv_request`.
-5. Optionally replies with `IvcRegion::send_ack`.
+4. Attaches `IvcRegion::subscriber_endpoints` exactly once and splits the
+   result with `IvcEndpoints::into_parts`.
+5. Receives through the consumer and replies through the producer.
 6. Optionally notifies the peer through `axhvc`.
 
 For blocking-style receive paths, guest IRQ code can call `record_peer_event`
@@ -93,7 +95,10 @@ polling when an interrupt is missed or not yet wired.
 - The region layout fits in one 4 KiB page; AxVisor IVC channels may be larger
   (up to the hypervisor's `MAX_IVC_CHANNEL_SIZE`), and the extra space is
   currently unused by this protocol.
-- Rings are single-producer/single-consumer.
+- Each HVC channel currently admits one publisher and one subscriber because
+  both rings are single-producer/single-consumer. Multi-peer support is tracked
+  in [tgoskits#1238](https://github.com/rcore-os/tgoskits/issues/1238) and will
+  require a versioned per-peer memory layout.
 - Payload slots are fixed size.
 - OS IRQ registration and hypervisor notification hypercalls are outside this
   crate.

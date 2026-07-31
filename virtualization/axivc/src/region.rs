@@ -13,9 +13,10 @@ const SUBSCRIBER_TO_PUBLISHER_RING_OFFSET: u32 =
     core::mem::offset_of!(IvcRegion, subscriber_to_publisher) as u32;
 const IVC_REGION_FEATURE_SPSC_FIXED_SLOTS: u32 = 1;
 
-/// Full fixed-slot IVC region.
+/// Full fixed-slot IVC region for one publisher/subscriber pair.
 ///
-/// The first two fields intentionally match `axvm::runtime::ivc::IVCChannelHeader`.
+/// Axvisor enforces at most one subscriber for the current SPSC protocol. The
+/// first two fields intentionally match `axvm::runtime::ivc::IVCChannelHeader`.
 /// Axvisor initializes them when the host-side channel is created. The remaining
 /// fields are owned by this shared-memory protocol.
 #[repr(C, align(64))]
@@ -27,12 +28,12 @@ pub struct IvcRegion {
     subscriber_to_publisher: IvcRing,
 }
 
-// SAFETY: The two rings are independent SPSC rings. Mutable ring state is
-// only reachable through `IvcProducer`/`IvcConsumer` endpoints with `&mut`
-// methods, and the `unsafe` endpoint constructors require callers to keep one
-// endpoint per ring role. The header fields are initialized once before
-// sharing or are atomic, so concurrent &IvcRegion access across threads is
-// sound.
+// SAFETY: The two rings are independent SPSC rings. Axvisor admits only one
+// subscriber per channel, mutable ring state is reachable only through
+// `IvcProducer`/`IvcConsumer` endpoints with `&mut` methods, and the `unsafe`
+// endpoint constructors require callers to keep one endpoint per ring role.
+// The header fields are initialized once before sharing or are atomic, so
+// concurrent &IvcRegion access across threads is sound.
 unsafe impl Sync for IvcRegion {}
 
 impl IvcRegion {

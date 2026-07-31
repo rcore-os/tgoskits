@@ -54,8 +54,9 @@ publisher 通常执行：
 1. 调用 `axhvc::ivc::publish_channel`。
 2. 映射返回的共享内存 GPA。
 3. 使用 `IvcRegion::initialize` 初始化映射区域。
-4. 使用 `IvcRegion::send_request` 发送请求。
-5. 可选使用 `IvcRegion::try_recv_ack` 接收确认。
+4. 仅调用一次 `IvcRegion::publisher_endpoints`，并通过
+   `IvcEndpoints::into_parts` 拆分端点。
+5. 通过 producer 发送，通过 consumer 接收。
 6. 可选通过 `axhvc` 通知对端。
 
 subscriber 通常执行：
@@ -63,8 +64,9 @@ subscriber 通常执行：
 1. 调用 `axhvc::ivc::subscribe_channel`。
 2. 映射返回的共享内存 GPA。
 3. 校验 `channel_header_matches` 和 `protocol_header_matches`。
-4. 使用 `IvcRegion::try_recv_request` 接收请求。
-5. 可选使用 `IvcRegion::send_ack` 回复确认。
+4. 仅调用一次 `IvcRegion::subscriber_endpoints`，并通过
+   `IvcEndpoints::into_parts` 拆分端点。
+5. 通过 consumer 接收，通过 producer 回复。
 6. 可选通过 `axhvc` 通知对端。
 
 对于需要等待消息的路径，客户机 IRQ 代码可以在 AxVisor 注入 notify IRQ 时调用 `record_peer_event`。接收路径再使用 `IvcPeerEventWaiter` 和 `fallback_poll`，组合 IRQ 唤醒和有界轮询，以覆盖中断丢失或 IRQ 尚未接好时的场景。
@@ -73,7 +75,10 @@ subscriber 通常执行：
 
 - 区域布局可放在一个 4 KiB 页内；AxVisor IVC channel 可以更大（上限为 hypervisor 的
   `MAX_IVC_CHANNEL_SIZE`），超出部分当前协议暂未使用。
-- ring 是单生产者、单消费者。
+- 当前每个 HVC channel 只允许一个 publisher 和一个 subscriber，因为两个
+  ring 都是单生产者、单消费者。多 peer 支持由
+  [tgoskits#1238](https://github.com/rcore-os/tgoskits/issues/1238) 跟踪，后续需要
+  引入版本化的 per-peer 内存布局。
 - payload slot 大小固定。
 - OS IRQ 注册和 hypervisor notify hypercall 不属于本 crate。
 - 访问控制、配额和 channel 生命周期仍由 AxVisor 或客户机策略负责。
