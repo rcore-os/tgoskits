@@ -45,7 +45,9 @@ impl TaskSystem {
             .cpu_remotes
             .iter()
             .enumerate()
-            .filter(|(index, remote)| remote.is_online() && CpuId::new(*index as u32) != target)
+            .filter(|(index, remote)| {
+                remote.accepts_placement() && CpuId::new(*index as u32) != target
+            })
             .filter_map(|(index, local)| {
                 let source = CpuId::new(index as u32);
                 let summary = local.try_load_summary()?;
@@ -136,7 +138,9 @@ impl TaskSystem {
             .cpu_remotes
             .iter()
             .enumerate()
-            .filter(|(index, remote)| remote.is_online() && CpuId::new(*index as u32) != source)
+            .filter(|(index, remote)| {
+                remote.accepts_placement() && CpuId::new(*index as u32) != source
+            })
             .filter_map(|(index, remote)| {
                 let target = CpuId::new(index as u32);
                 let target_summary = remote.try_load_summary()?;

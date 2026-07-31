@@ -12,12 +12,12 @@ impl TaskSystem {
         Ok(CpuLocal::create(cpu, self.config, remote))
     }
 
-    /// Returns the stable remote-publication endpoint of an online CPU.
+    /// Returns the stable remote-publication endpoint of a placement-active CPU.
     pub fn cpu_remote(&self, cpu: CpuId) -> Option<&CpuRemote> {
         self.cpu_remotes
             .get(cpu.as_usize())
             .map(Arc::as_ref)
-            .filter(|remote| remote.is_online())
+            .filter(|remote| remote.accepts_placement())
     }
 
     /// Returns the opaque runtime endpoint for a configured CPU.
@@ -177,7 +177,7 @@ impl TaskSystem {
         }
         match remote.lifecycle_state() {
             crate::CpuLifecycleState::Offline => return Err(TaskError::CpuOffline(id.as_u32())),
-            crate::CpuLifecycleState::Draining => {
+            crate::CpuLifecycleState::Inactive | crate::CpuLifecycleState::Draining => {
                 return Err(TaskError::CpuNotQuiescent(id.as_u32()));
             }
             crate::CpuLifecycleState::Online => {}
@@ -187,7 +187,12 @@ impl TaskSystem {
         }
 
         self.topology_sequence.write_begin();
-        let result = if !remote.try_begin_draining() {
+        let result = if !remote.try_deactivate() {
+            Err(TaskError::CpuNotQuiescent(id.as_u32()))
+        } else if !Self::prepare_thread_routes_for_cpu_offline(&state, &root_domain, id)
+            || !remote.try_begin_draining()
+        {
+            remote.cancel_deactivation();
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
         } else if !cpu.is_quiescent_for_offline()
             || !Self::threads_allow_cpu_offline(&state, &root_domain, id)
@@ -211,6 +216,86 @@ impl TaskSystem {
         };
         self.topology_sequence.write_end();
         result
+    }
+
+    /// Stops dormant threads from retaining a wake route to an inactive CPU.
+    ///
+    /// Placement was closed before this pass, while old-route wake publishers
+    /// remain accepted. A producer that read the old route either completes
+    /// before final draining (making the CPU non-quiescent) or observes the new
+    /// route. This is the same active-before-online split used by Linux CPU
+    /// hotplug around `task_cpu()` routing.
+    fn prepare_thread_routes_for_cpu_offline(
+        state: &TaskSystemState,
+        root_domain: &RootDomainState,
+        cpu: CpuId,
+    ) -> bool {
+        let fallback_for = |affinity: &CpuSet| {
+            state
+                .cpus
+                .iter()
+                .enumerate()
+                .map(|(index, registration)| (CpuId::new(index as u32), registration))
+                .find(|(candidate, registration)| {
+                    *candidate != cpu
+                        && root_domain.online.contains(*candidate)
+                        && registration.remote.accepts_placement()
+                        && affinity.contains(*candidate)
+                })
+                .map(|(candidate, _)| candidate)
+        };
+
+        for record in state.slots.iter().filter_map(|slot| slot.record.as_ref()) {
+            let id = record.core.id();
+            let is_idle = state
+                .cpus
+                .iter()
+                .any(|registration| registration.remote.idle_thread() == Some(id));
+            if is_idle {
+                continue;
+            }
+
+            let sched = record.sched.lock();
+            if sched.lifecycle.state() == ThreadState::Exited {
+                continue;
+            }
+            if fallback_for(&sched.affinity).is_none() {
+                return false;
+            }
+            let physically_owned = sched.placement.queued_cpu() == Some(cpu)
+                || sched.placement.running_cpu() == Some(cpu)
+                || sched.placement.on_cpu() == Some(cpu)
+                || sched.placement.migration_target() == Some(cpu)
+                || sched.deadline_bandwidth_cpu == Some(cpu)
+                || record.core.sleep_timer_cpu() == Some(cpu);
+            if physically_owned {
+                return false;
+            }
+            let has_other_placement = sched.placement.queued_cpu().is_some()
+                || sched.placement.running_cpu().is_some()
+                || sched.placement.on_cpu().is_some()
+                || sched.placement.migration_target().is_some()
+                || sched.deadline_bandwidth_cpu.is_some()
+                || record.core.sleep_timer_cpu().is_some();
+            if record.core.target_cpu() == Some(cpu) && has_other_placement {
+                return false;
+            }
+        }
+
+        for record in state.slots.iter().filter_map(|slot| slot.record.as_ref()) {
+            if record.core.target_cpu() != Some(cpu) {
+                continue;
+            }
+            let sched = record.sched.lock();
+            if sched.lifecycle.state() == ThreadState::Exited {
+                continue;
+            }
+            let Some(fallback) = fallback_for(&sched.affinity) else {
+                return false;
+            };
+            record.core.set_target_cpu(fallback);
+        }
+        true
     }
 
     fn threads_allow_cpu_offline(
@@ -247,6 +332,7 @@ impl TaskSystem {
                     || sched.placement.on_cpu() == Some(cpu)
                     || sched.placement.migration_target() == Some(cpu)
                     || sched.deadline_bandwidth_cpu == Some(cpu)
+                    || record.core.sleep_timer_cpu() == Some(cpu)
                     || record.core.target_cpu() == Some(cpu);
                 has_remaining_destination && !owned_by_cpu
             })
@@ -264,5 +350,66 @@ impl TaskSystem {
         let core = Arc::clone(&state.thread_record(thread)?.core);
         cpu.as_mut().set_idle(thread, core);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+
+    use super::*;
+    use crate::{FairMode, Nice, ThreadSpec};
+
+    #[test]
+    fn blocked_thread_route_does_not_pin_an_idle_cpu_online() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        for cpu in [&mut cpu0, &mut cpu1] {
+            system
+                .register_idle_thread(
+                    cpu.as_mut(),
+                    ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+                )
+                .unwrap();
+            system.bring_cpu_online(cpu.as_mut()).unwrap();
+        }
+
+        let sleeper = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(sleeper.id()).unwrap();
+        system.enqueue(cpu1.as_mut(), sleeper.id(), 0).unwrap();
+        assert_eq!(
+            system.schedule(cpu1.as_mut(), 0).unwrap().next(),
+            sleeper.id()
+        );
+        system.complete_context_switch(cpu1.as_mut()).unwrap();
+        assert_ne!(
+            system.block_current(cpu1.as_mut(), 0).unwrap().next(),
+            sleeper.id()
+        );
+        system.complete_context_switch(cpu1.as_mut()).unwrap();
+        assert_eq!(sleeper.state(), ThreadState::Blocked);
+        assert_eq!(sleeper.wake_handle().target_cpu(), Some(CpuId::new(1)));
+
+        system.take_cpu_offline(cpu1.as_mut()).unwrap();
+
+        assert_eq!(
+            sleeper.wake_handle().target_cpu(),
+            Some(CpuId::new(0)),
+            "hotplug preparation must publish a live wake route before closing the old CPU"
+        );
+        crate::test_runtime::install_task_handles(
+            (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
+            // SAFETY: the test keeps this owner object pinned and clears the
+            // runtime handles before resuming direct CpuLocal access.
+            (unsafe { Pin::get_unchecked_mut(cpu0.as_mut()) } as *mut CpuLocal).expose_provenance(),
+        );
+        assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+        crate::test_runtime::clear_task_handles();
+        system.drain_remote_wakes(cpu0.as_mut(), 1).unwrap();
+        assert_eq!(sleeper.state(), ThreadState::Ready);
+        assert_eq!(system.snapshot(cpu0.as_ref()).unwrap().runnable(), 1);
     }
 }

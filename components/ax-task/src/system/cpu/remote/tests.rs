@@ -83,4 +83,35 @@ mod scheduler_ipi_tests {
         assert!(remote.needs_reschedule());
         remote.finish_idle_wait();
     }
+
+    #[test]
+    fn inactive_cpu_accepts_old_wake_routes_but_rejects_new_placement() {
+        let remote = CpuRemote::create(CpuId::new(1));
+        assert!(remote.mark_online());
+        assert!(remote.try_deactivate());
+        assert_eq!(remote.lifecycle_state(), CpuLifecycleState::Inactive);
+        assert!(remote.is_online());
+        assert!(!remote.accepts_placement());
+
+        assert!(
+            remote.begin_publication().is_none(),
+            "placement publication must close at the inactive boundary"
+        );
+        let wake_publication = remote
+            .begin_online_publication()
+            .expect("an old wake route must remain publishable while inactive");
+        assert!(
+            !remote.try_begin_draining(),
+            "final draining must wait for the in-flight wake publisher"
+        );
+        remote.cancel_deactivation();
+        drop(wake_publication);
+        assert_eq!(remote.lifecycle_state(), CpuLifecycleState::Online);
+
+        assert!(remote.try_deactivate());
+        assert!(remote.try_begin_draining());
+        assert!(remote.begin_online_publication().is_none());
+        remote.finish_offline();
+        assert_eq!(remote.lifecycle_state(), CpuLifecycleState::Offline);
+    }
 }

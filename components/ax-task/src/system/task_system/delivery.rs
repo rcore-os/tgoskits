@@ -18,7 +18,7 @@ impl TaskSystem {
         Self::program_local_timer(cpu.as_mut(), now_ns)
     }
 
-    /// Places a newly ready thread on an allowed online CPU.
+    /// Places a newly ready thread on an allowed active CPU.
     ///
     /// Ordinary fair work is placed on the least-loaded allowed CPU, including
     /// its current non-idle dispatch and migrations not yet consumed by the
@@ -236,7 +236,7 @@ impl TaskSystem {
         let target = if sched.affinity.contains(owner) {
             owner
         } else {
-            self.select_allowed_online_cpu(&sched.affinity, Some(owner))
+            self.select_allowed_active_cpu(&sched.affinity, Some(owner))
                 .ok_or(TaskError::InvalidConfiguration)?
         };
         core.set_target_cpu(target);
@@ -499,20 +499,20 @@ impl TaskSystem {
                     let Some(committed_target) = sched.placement.migration_target() else {
                         continue;
                     };
-                    let committed_target_is_online = committed_target != owner
+                    let committed_target_accepts_placement = committed_target != owner
                         && sched.affinity.contains(committed_target)
                         && self
                             .cpu_remotes
                             .get(committed_target.as_usize())
-                            .is_some_and(|remote| remote.is_online());
+                            .is_some_and(|remote| remote.accepts_placement());
                     let latest_target = if sched.affinity.contains(owner)
-                        && (committed_target == owner || !committed_target_is_online)
+                        && (committed_target == owner || !committed_target_accepts_placement)
                     {
                         owner
-                    } else if committed_target_is_online {
+                    } else if committed_target_accepts_placement {
                         committed_target
                     } else {
-                        self.select_allowed_online_cpu(&sched.affinity, Some(owner))
+                        self.select_allowed_active_cpu(&sched.affinity, Some(owner))
                             .ok_or(TaskError::InvalidConfiguration)?
                     };
                     if latest_target != owner {

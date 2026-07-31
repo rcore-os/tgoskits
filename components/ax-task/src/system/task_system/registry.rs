@@ -500,13 +500,14 @@ impl TaskSystemState {
             .iter()
             .enumerate()
             .filter(|(index, registration)| {
-                registration.remote.is_online() && affinity.contains(CpuId::new(*index as u32))
+                registration.remote.accepts_placement()
+                    && affinity.contains(CpuId::new(*index as u32))
             })
             .filter_map(|(index, registration)| {
                 let cpu = CpuId::new(index as u32);
                 registration
                     .remote
-                    .is_online()
+                    .accepts_placement()
                     .then_some(cpu)
                     .and_then(|cpu| {
                         registration
@@ -529,7 +530,7 @@ impl TaskSystemState {
             .enumerate()
             .filter_map(|(index, registration)| {
                 let cpu = CpuId::new(index as u32);
-                if !registration.remote.is_online() || !affinity.contains(cpu) {
+                if !registration.remote.accepts_placement() || !affinity.contains(cpu) {
                     return None;
                 }
                 registration

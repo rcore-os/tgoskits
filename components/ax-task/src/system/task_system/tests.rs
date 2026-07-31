@@ -616,6 +616,7 @@ fn migration_publication_recovers_through_source_when_target_starts_draining() {
 
     // Model the hotplug race after CPU 1 was selected but before the source
     // committed and published the detached migration.
+    assert!(cpu1.remote().try_deactivate());
     assert!(cpu1.remote().try_begin_draining());
     {
         let mut sched = thread.core.sched().lock();
