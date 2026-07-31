@@ -63,18 +63,6 @@ impl TaskSystem {
         Ok(previous)
     }
 
-    /// Attempts a non-waiting state query.
-    ///
-    /// Returns `Ok(None)` when another CPU owns the registry critical section.
-    pub fn try_thread_state(&self, thread: ThreadId) -> Result<Option<ThreadState>, TaskError> {
-        let Some(state) = self.state.try_lock() else {
-            return Ok(None);
-        };
-        Ok(Some(
-            state.thread_record(thread)?.sched.lock().lifecycle.state(),
-        ))
-    }
-
     /// Acquires a strong handle for a generation-valid registry entry.
     pub fn thread_handle(&self, thread: ThreadId) -> Result<ThreadHandle, TaskError> {
         let state = self.state.lock();
