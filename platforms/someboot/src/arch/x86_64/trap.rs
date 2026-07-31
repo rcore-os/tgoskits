@@ -33,6 +33,7 @@ const LAPIC_BASE_MASK: u64 = 0xffff_f000;
 const IA32_APIC_BASE_ENABLE: u64 = 1 << 11;
 const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 const LAPIC_TIMER_DIVIDE_BY_16: u32 = 0b0011;
+const LAPIC_TIMER_MIN_DELTA_TICKS: u32 = 0x0f;
 const IA32_X2APIC_EOI: u32 = 0x80b;
 const IA32_X2APIC_SIVR: u32 = 0x80f;
 const IA32_X2APIC_LVT_TIMER: u32 = 0x832;
@@ -126,12 +127,12 @@ pub fn timer_set_deadline_in_ticks(ticks: usize) {
     ensure_lapic_ready();
     if has_tsc_deadline() {
         let now = ticks_now();
-        let deadline = now.saturating_add(ticks.max(1) as u64);
+        let deadline = now.saturating_add(ticks.max(LAPIC_TIMER_MIN_DELTA_TICKS as usize) as u64);
         unsafe {
             wrmsr(msr::IA32_TSC_DEADLINE, deadline);
         }
     } else {
-        let counts = ticks_to_apic_counts(ticks.max(1) as u64);
+        let counts = ticks_to_apic_counts(ticks.max(LAPIC_TIMER_MIN_DELTA_TICKS as usize) as u64);
         write_lapic_reg(LAPIC_REG_TIMER_INIT_COUNT, counts);
     }
 }
@@ -435,7 +436,7 @@ fn ticks_to_apic_counts(ticks: u64) -> u32 {
     let q32 = APIC_COUNTS_PER_TSC_Q32.load(Ordering::Acquire);
     let q32 = if q32 == 0 { 1u64 << 32 } else { q32 };
     let counts = ((ticks as u128 * q32 as u128) >> 32).max(1);
-    counts.min(u32::MAX as u128) as u32
+    counts.clamp(LAPIC_TIMER_MIN_DELTA_TICKS as u128, u32::MAX as u128) as u32
 }
 
 fn read_lapic_reg(offset: u32) -> u32 {
@@ -661,4 +662,14 @@ pub(crate) fn trap_msr_and_efer_constants_hold_for_test() -> bool {
     assert!(IA32_EFER_NXE == (1 << 11));
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ticks_to_apic_counts;
+
+    #[test]
+    fn legacy_lapic_clamps_overdue_events_to_the_device_minimum() {
+        assert_eq!(ticks_to_apic_counts(1), 0x0f);
+    }
 }
