@@ -146,7 +146,6 @@ pub struct CpuRemote {
     load_summary_pushable_sequence: AtomicU64,
     idle_pull_state: AtomicU64,
     pub(super) fair_balance_deadline_ns: AtomicU64,
-    pub(super) scheduler_deadline_ns: AtomicU64,
     remote_wake_inbox: SchedulerInbox,
     migration_inbox: SchedulerInbox,
     balance_request_node: InboxNode,
@@ -180,7 +179,6 @@ impl CpuRemote {
             // duration here as an absolute deadline makes every CPU brought
             // online after that duration immediately overdue.
             fair_balance_deadline_ns: AtomicU64::new(u64::MAX),
-            scheduler_deadline_ns: AtomicU64::new(0),
             remote_wake_inbox: SchedulerInbox::new(InboxKind::RemoteWake),
             migration_inbox: SchedulerInbox::new(InboxKind::Migration),
             balance_request_node: InboxNode::new(InboxKind::Migration),
@@ -323,7 +321,6 @@ impl CpuRemote {
         self.park_preempt_deferred.store(false, Ordering::Relaxed);
         self.fair_balance_deadline_ns
             .store(u64::MAX, Ordering::Relaxed);
-        self.scheduler_deadline_ns.store(0, Ordering::Relaxed);
         if self
             .lifecycle
             .compare_exchange(

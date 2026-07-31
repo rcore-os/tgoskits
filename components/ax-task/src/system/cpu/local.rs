@@ -244,7 +244,6 @@ impl CpuLocal {
         {
             fields.request_reschedule();
         }
-        fields.recompute_scheduler_deadline(now_ns);
         Ok(charge)
     }
 
@@ -468,46 +467,22 @@ impl CpuLocal {
         }
     }
 
-    pub(crate) fn replace_scheduler_deadline(&self, deadline_ns: Option<u64>) {
-        self.remote
-            .scheduler_deadline_ns
-            .store(deadline_ns.unwrap_or(0), Ordering::Release);
-    }
-
-    pub(crate) fn take_due_scheduler_deadline(&self, now_ns: u64) -> bool {
-        let mut current = self.remote.scheduler_deadline_ns.load(Ordering::Acquire);
-        loop {
-            if current == 0 || current > now_ns {
-                return false;
-            }
-            match self.remote.scheduler_deadline_ns.compare_exchange_weak(
-                current,
-                0,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    pub(crate) fn scheduler_deadline_ns(&self) -> Option<u64> {
-        let deadline_ns = self.remote.scheduler_deadline_ns.load(Ordering::Acquire);
-        (deadline_ns != 0).then_some(deadline_ns)
-    }
-
-    pub(crate) fn refresh_scheduler_deadline(self: Pin<&mut Self>, now_ns: u64) {
-        self.fields_mut().recompute_scheduler_deadline(now_ns);
+    pub(crate) fn scheduler_deadline_due(self: Pin<&mut Self>, now_ns: u64) -> bool {
+        self.fields_mut()
+            .scheduler_deadline_ns(now_ns)
+            .is_some_and(|deadline| deadline <= now_ns)
     }
 
     pub(crate) fn next_oneshot_deadline_ns(
-        &self,
+        self: Pin<&mut Self>,
         now_ns: u64,
         timer_resolution_ns: u64,
     ) -> Option<u64> {
-        let deferred_timer_backlog = self.remote.deadline_work_pending()
-            && self.task_deadlines.has_immediately_actionable_entry(now_ns);
+        let fields = self.fields_mut();
+        let deferred_timer_backlog = fields.remote.deadline_work_pending()
+            && fields
+                .task_deadlines
+                .has_immediately_actionable_entry(now_ns);
         let timer = if deferred_timer_backlog {
             // A bounded hard-IRQ pass already published sticky owner work and
             // need_resched. Re-arming the overdue heap head at the hardware
@@ -517,23 +492,21 @@ impl CpuLocal {
             // source remain the failsafe clockevent.
             None
         } else {
-            self.task_deadlines
+            fields
+                .task_deadlines
                 .next_deadline_ns(now_ns, timer_resolution_ns)
         };
         let earliest_future_ns = now_ns
             .checked_add(timer_resolution_ns.max(1))
             .or_else(|| now_ns.checked_add(1));
-        let scheduler = match self.scheduler_deadline_ns() {
+        let scheduler = match fields.scheduler_deadline_ns(now_ns) {
             Some(deadline) if deadline <= now_ns => {
                 // Linux does not start a scheduler hrtimer whose expiry has
                 // already passed: the owning runqueue handles that state
-                // immediately. Preserve the same boundary here. Consuming the
-                // atomic deadline also clears any matching deferred owner
-                // event; sticky work then forces a scheduler safe point
-                // without manufacturing a resolution-rate interrupt loop.
-                if self.take_due_scheduler_deadline(now_ns) {
-                    self.request_scheduler_work();
-                }
+                // immediately. The owner state remains the only deadline
+                // authority; sticky work forces a scheduler safe point without
+                // manufacturing a resolution-rate interrupt loop.
+                fields.request_scheduler_work();
                 None
             }
             Some(deadline) => earliest_future_ns.map(|earliest| deadline.max(earliest)),
@@ -565,13 +538,13 @@ impl CpuLocal {
     }
 
     fn prepare_task_deadline_update(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         now_ns: u64,
         timer_resolution_ns: u64,
         force: bool,
     ) -> Result<Option<TaskDeadlineUpdate>, TaskError> {
         let deadline = self
-            .as_ref()
+            .as_mut()
             .next_oneshot_deadline_ns(now_ns, timer_resolution_ns)
             .and_then(MonotonicDeadline::from_nanos);
         let deferred_work = self.remote.deadline_work_pending();
@@ -611,7 +584,7 @@ impl CpuLocal {
         self.fields_mut().task_deadline_generation = generation;
     }
 
-    fn recompute_scheduler_deadline(&mut self, now_ns: u64) {
+    fn scheduler_deadline_ns(&mut self, now_ns: u64) -> Option<u64> {
         let mut next_deadline_ns = None;
         if let Some(deadline) = self.run_queue.earliest_deadline_event_ns() {
             next_deadline_ns = earliest(next_deadline_ns, deadline);
@@ -657,7 +630,7 @@ impl CpuLocal {
                 self.remote.fair_balance_deadline_ns.load(Ordering::Acquire),
             );
         }
-        self.replace_scheduler_deadline(next_deadline_ns);
+        next_deadline_ns
     }
 
     /// Attempts to return a coherent remotely observable scheduling snapshot.

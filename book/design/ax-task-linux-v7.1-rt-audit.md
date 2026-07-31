@@ -2134,6 +2134,39 @@ a new clockevent publication. Both now pass. The complete ax-task suite passes
 13.72 seconds, matching the previous 13.93-second checkpoint within normal
 run-to-run noise.
 
+## Current-head scheduler deadline authority
+
+`CpuLocal` previously derived the next scheduler clockevent from its current
+dispatch, runqueue, RT bandwidth, and fair-balance state, then copied the
+result into `CpuRemote::scheduler_deadline_ns`. Later timer selection and hard
+IRQ expiry consumed that atomic mirror instead of the owner state. The mirror
+was refreshed at selected scheduler tails, not at every dequeue, policy, PI,
+and migration mutation. It could therefore retain a removed event or omit a
+new earlier event until an unrelated safe point refreshed it.
+
+Linux v7.1 does not publish a second cross-CPU copy of the runqueue hrtick
+deadline. `hrtick_start()` and `hrtick_clear()` operate while the owning
+runqueue is locked, and remote requests are delivered to that owner CPU
+(`kernel/sched/core.c:907-972`). Deadline ordering remains in the owner
+runqueue's augmented state (`kernel/sched/deadline.c:578-610`).
+
+ax-task now follows the same ownership boundary. `CpuRemote` contains no
+scheduler-deadline scalar. The owner selects each logical clockevent directly
+from the cached runqueue minimum, current dispatch budget, RT quota period, and
+fair-balance deadline. The query may advance owner-local RT quota state, so it
+requires a pinned mutable `CpuLocal`; remote producers cannot inspect or
+modify it. A due scheduler event is observed rather than destructively
+consumed, publishes sticky scheduler work, and disappears only when the
+corresponding owner state transition commits.
+
+The deterministic regression first armed the fair scheduler event for a
+current thread plus one queued contender, removed that sole contender, and
+observed the old mirror still returning a 1 ms clockevent. With the mirror
+deleted, the same owner query immediately returns no scheduler deadline. The
+complete ax-task suite passes 225 unit tests and 20 loom models, ax-runtime's
+multitask host suite passes 62/62, both feature-clippy matrices pass, and the
+x86_64 Starry QEMU suite passes 391/391 in 13.61 seconds.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

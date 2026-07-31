@@ -2395,6 +2395,33 @@ fn forced_yield_does_not_consume_deferred_owner_work() {
 }
 
 #[test]
+fn dequeue_removes_obsolete_scheduler_clockevent() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let contender = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(contender.id()).unwrap();
+    system.enqueue(cpu.as_mut(), contender.id(), 0).unwrap();
+
+    assert!(
+        cpu.as_mut().next_oneshot_deadline_ns(0, 1).is_some(),
+        "two fair entities require a scheduler clockevent"
+    );
+    system.dequeue(cpu.as_mut(), contender.id()).unwrap();
+
+    assert_eq!(
+        cpu.as_mut().next_oneshot_deadline_ns(0, 1),
+        None,
+        "removing the only queued contender must remove the obsolete scheduler clockevent"
+    );
+}
+
+#[test]
 fn running_migration_is_published_only_after_switch_tail() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
