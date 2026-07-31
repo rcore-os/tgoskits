@@ -172,7 +172,7 @@ impl TaskSystem {
         }
         if record.blocked_on.is_some()
             || record.pi_waiter_head.is_some()
-            || sched.blocked_pi_waiters != 0
+            || sched.pi.blocked_waiters != 0
         {
             return Err(TaskError::InvalidPiState);
         }
@@ -306,12 +306,12 @@ impl TaskSystem {
             let mut sched = handoff.previous.sched().lock();
             let (migration_target, previous_exited) =
                 self.validate_switch_handoff_state(owner, bandwidth, &handoff, &sched)?;
-            if migration_target.is_some() && sched.deadline_bandwidth_cpu.is_some() {
+            if migration_target.is_some() && sched.deadline.bandwidth_cpu.is_some() {
                 cpu.as_mut().remove_deadline_bandwidth(
-                    sched.deadline_bandwidth_scaled,
-                    sched.deadline_activity != DeadlineActivity::Inactive,
+                    sched.deadline.bandwidth_scaled,
+                    sched.deadline.activity != DeadlineActivity::Inactive,
                 )?;
-                sched.deadline_bandwidth_cpu = None;
+                sched.deadline.bandwidth_cpu = None;
                 cpu.as_mut().unregister_deadline_member(&handoff.previous);
             }
             sched.placement.set_on_cpu(None)?;
@@ -371,16 +371,16 @@ impl TaskSystem {
                 if self.cpu_remote(target).is_none() {
                     return Err(TaskError::CpuOffline(target.as_u32()));
                 }
-                if let Some(assigned) = sched.deadline_bandwidth_cpu {
+                if let Some(assigned) = sched.deadline.bandwidth_cpu {
                     if assigned != owner {
                         return Err(TaskError::CpuOwnerMismatch {
                             expected: assigned.as_u32(),
                             actual: owner.as_u32(),
                         });
                     }
-                    if bandwidth.this_bw_scaled() < sched.deadline_bandwidth_scaled
-                        || (sched.deadline_activity != DeadlineActivity::Inactive
-                            && bandwidth.running_bw_scaled() < sched.deadline_bandwidth_scaled)
+                    if bandwidth.this_bw_scaled() < sched.deadline.bandwidth_scaled
+                        || (sched.deadline.activity != DeadlineActivity::Inactive
+                            && bandwidth.running_bw_scaled() < sched.deadline.bandwidth_scaled)
                     {
                         return Err(TaskError::InvalidConfiguration);
                     }

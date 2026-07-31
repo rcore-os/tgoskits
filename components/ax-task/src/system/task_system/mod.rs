@@ -42,9 +42,7 @@ use registry::{
     PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
 };
 
-use super::thread_sched::{
-    DeadlineActivity, SchedulerPlacement, ThreadSchedCell, ThreadSchedState,
-};
+use super::thread_sched::{DeadlineActivity, ThreadSchedCell, ThreadSchedState};
 #[cfg(test)]
 use crate::runtime::ExecutionContextHandle;
 use crate::{
@@ -53,8 +51,8 @@ use crate::{
     EnqueueReason, FairMode, ParkCommit, ParkPrepare, ParkTicket, PiLockId, PiWaitToken,
     QueuedThread, SchedulePolicy, SchedulingClass, SchedulingEntity, SwitchReason, TaskError,
     TaskSystemConfig, ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow,
-    ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle,
-    ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
+    ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources,
+    ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, PreemptTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,

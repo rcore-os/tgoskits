@@ -1308,13 +1308,15 @@ fn deadline_task_work_rotates_across_registry_slots() {
             .unwrap()
             .sched
             .lock()
-            .deadline_overrun_events = 1;
+            .deadline
+            .overrun_events = 1;
         state
             .thread_record(high_slot_id)
             .unwrap()
             .sched
             .lock()
-            .deadline_overrun_events = 1;
+            .deadline
+            .overrun_events = 1;
     }
     system.mark_exited(high_slot_id).unwrap();
     drop(high_slot);
@@ -1328,7 +1330,8 @@ fn deadline_task_work_rotates_across_registry_slots() {
             .unwrap()
             .sched
             .lock()
-            .deadline_overrun_events += 1;
+            .deadline
+            .overrun_events += 1;
     }
 
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
@@ -2060,7 +2063,8 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap()
         .sched
         .lock()
-        .entity
+        .policy
+        .effective_entity
         .fair()
         .unwrap();
     let lag =
@@ -2087,7 +2091,8 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap()
         .sched
         .lock()
-        .entity
+        .policy
+        .effective_entity
         .fair()
         .unwrap();
     assert_eq!(batch.vruntime(), reweighted.vruntime());
@@ -2110,7 +2115,8 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap()
         .sched
         .lock()
-        .entity
+        .policy
+        .effective_entity
         .fair()
         .unwrap();
     assert_eq!(idle.nice(), Nice::LOWEST);
@@ -2201,7 +2207,8 @@ fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
         .unwrap()
         .sched
         .lock()
-        .entity
+        .policy
+        .effective_entity
         .fair()
         .unwrap();
     assert_eq!(
@@ -2233,8 +2240,8 @@ fn running_normal_to_idle_transition_settles_then_rebases_lag() {
     let state = system.state.lock();
     let record = state.thread_record(normal.id()).unwrap();
     let sched = record.sched.lock();
-    let transitioned = sched.entity.fair().unwrap();
-    assert_eq!(sched.charged_runtime_ns, 1_000_000);
+    let transitioned = sched.policy.effective_entity.fair().unwrap();
+    assert_eq!(sched.runtime.charged_runtime_ns, 1_000_000);
     assert_eq!(transitioned.mode(), FairMode::Idle);
     assert_eq!(
         transitioned.vruntime(),
@@ -2591,7 +2598,7 @@ fn schedule_out_rechecks_affinity_under_the_thread_lock() {
     assert!(target_only.insert(CpuId::new(1)));
     {
         let mut sched = running.core.sched().lock();
-        sched.affinity = target_only;
+        sched.placement.affinity = target_only;
         sched.placement.set_migration_target(None).unwrap();
     }
     running.core.set_target_cpu(CpuId::new(1));
@@ -2688,10 +2695,10 @@ fn affinity_update_preserves_an_in_flight_switch_handoff() {
         .unwrap();
     assert_eq!(initial_target, None);
     {
-        let placement = running.core.sched().lock().placement;
-        assert_eq!(placement.queued_cpu(), Some(CpuId::new(0)));
-        assert_eq!(placement.on_cpu(), Some(CpuId::new(0)));
-        assert_eq!(placement.migration_target(), None);
+        let sched = running.core.sched().lock();
+        assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
+        assert_eq!(sched.placement.on_cpu(), Some(CpuId::new(0)));
+        assert_eq!(sched.placement.migration_target(), None);
     }
 
     // The remote setter may update task metadata now, but it must not rewrite
@@ -2700,10 +2707,10 @@ fn affinity_update_preserves_an_in_flight_switch_handoff() {
     assert!(cpu1_only.insert(CpuId::new(1)));
     system.set_affinity(running.id(), cpu1_only).unwrap();
     {
-        let placement = running.core.sched().lock().placement;
-        assert_eq!(placement.queued_cpu(), Some(CpuId::new(0)));
-        assert_eq!(placement.on_cpu(), Some(CpuId::new(0)));
-        assert_eq!(placement.migration_target(), None);
+        let sched = running.core.sched().lock();
+        assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
+        assert_eq!(sched.placement.on_cpu(), Some(CpuId::new(0)));
+        assert_eq!(sched.placement.migration_target(), None);
     }
 
     let next = system
@@ -2976,12 +2983,18 @@ fn effective_rt_entity_never_replaces_the_base_rr_accounting() {
     let state = system.state.lock();
     let sched = state.thread_record(owner.id()).unwrap().sched.lock();
     assert!(
-        sched.base_entity.matches_policy(base),
+        sched.policy.base_entity.matches_policy(base),
         "PI effective entity must not become base RR accounting"
     );
-    assert!(matches!(sched.policy, SchedulePolicy::Fifo { .. }));
+    assert!(matches!(
+        sched.policy.effective,
+        SchedulePolicy::Fifo { .. }
+    ));
     assert!(
-        sched.entity.matches_policy(sched.policy),
+        sched
+            .policy
+            .effective_entity
+            .matches_policy(sched.policy.effective),
         "effective policy and entity must be published as one coherent snapshot"
     );
 }
@@ -3105,6 +3118,7 @@ fn failed_pi_registration_does_not_publish_a_partial_edge() {
             .unwrap()
             .sched
             .lock()
+            .policy
             .dispatch_generation = u64::MAX;
     }
 
@@ -3119,7 +3133,8 @@ fn failed_pi_registration_does_not_publish_a_partial_edge() {
             .unwrap()
             .sched
             .lock()
-            .blocked_pi_waiters,
+            .pi
+            .blocked_waiters,
         0
     );
 }
@@ -3144,6 +3159,7 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
             .unwrap()
             .sched
             .lock()
+            .policy
             .dispatch_generation = u64::MAX;
     }
 
@@ -3171,7 +3187,8 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
             .unwrap()
             .sched
             .lock()
-            .blocked_pi_waiters,
+            .pi
+            .blocked_waiters,
         1
     );
 }
@@ -3213,7 +3230,8 @@ fn dropped_pi_handoff_preparation_leaves_the_wait_transaction_intact() {
             .unwrap()
             .sched
             .lock()
-            .blocked_pi_waiters,
+            .pi
+            .blocked_waiters,
         1
     );
 }
@@ -3314,10 +3332,11 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
     let (borrowed_generation, budget_before_timer) = {
         let state = system.state.lock();
         let sched = state.thread_record(donor.id()).unwrap().sched.lock();
-        assert_eq!(sched.deadline_cbs_borrower, Some(owner.id()));
+        assert_eq!(sched.pi.deadline_cbs_borrower, Some(owner.id()));
         (
-            sched.deadline_cbs_generation,
+            sched.pi.deadline_cbs_generation,
             sched
+                .policy
                 .base_deadline
                 .expect("Deadline donor must retain CBS state"),
         )
@@ -3326,11 +3345,11 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
     {
         let state = system.state.lock();
         let sched = state.thread_record(donor.id()).unwrap().sched.lock();
-        assert_eq!(sched.deadline_cbs_borrower, Some(owner.id()));
-        assert_eq!(sched.deadline_cbs_generation, borrowed_generation);
-        assert_eq!(sched.base_deadline, Some(budget_before_timer));
+        assert_eq!(sched.pi.deadline_cbs_borrower, Some(owner.id()));
+        assert_eq!(sched.pi.deadline_cbs_generation, borrowed_generation);
+        assert_eq!(sched.policy.base_deadline, Some(budget_before_timer));
         assert!(
-            sched.deadline_cbs_timer.is_none(),
+            sched.deadline.cbs_timer.is_none(),
             "the expired donor CBS event must stay detached while the borrower owns the baton"
         );
     }
@@ -3354,10 +3373,11 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
     {
         let state = system.state.lock();
         let sched = state.thread_record(donor.id()).unwrap().sched.lock();
-        assert_eq!(sched.deadline_cbs_borrower, None);
-        assert!(sched.deadline_cbs_generation > borrowed_generation);
+        assert_eq!(sched.pi.deadline_cbs_borrower, None);
+        assert!(sched.pi.deadline_cbs_generation > borrowed_generation);
         assert_eq!(
             sched
+                .policy
                 .base_deadline
                 .expect("committed donor budget must remain Deadline")
                 .remaining_runtime_ns(),
@@ -3387,10 +3407,10 @@ fn coalesced_old_deadline_refresh_reconciles_the_latest_cbs_state() {
     let latest_generation = {
         let mut sched = core.sched().lock();
         TaskSystem::cancel_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut()).unwrap();
-        sched.deadline_cbs_generation += 2;
-        sched.deadline_cbs_generation
+        sched.pi.deadline_cbs_generation += 2;
+        sched.pi.deadline_cbs_generation
     };
-    assert!(core.sched().lock().deadline_cbs_timer.is_none());
+    assert!(core.sched().lock().deadline.cbs_timer.is_none());
 
     system
         .publish_owner_deadline_refresh(&core, CpuId::new(0), latest_generation - 1)
@@ -3407,7 +3427,7 @@ fn coalesced_old_deadline_refresh_reconciles_the_latest_cbs_state() {
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
 
     assert!(
-        core.sched().lock().deadline_cbs_timer.is_some(),
+        core.sched().lock().deadline.cbs_timer.is_some(),
         "the retained old message must reconcile current CBS state rather than replay old state"
     );
     assert_eq!(core.scheduler_inbox_delivery_count(), 0);

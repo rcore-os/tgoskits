@@ -103,11 +103,11 @@ impl SwitchEndpoint {
         (
             Self {
                 thread: core.id(),
-                context: sched.context,
-                address_space: sched.address_space,
+                context: sched.runtime.context,
+                address_space: sched.runtime.address_space,
                 extension: core.extension_view(),
             },
-            sched.active_base_policy,
+            sched.policy.applied,
         )
     }
 

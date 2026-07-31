@@ -189,7 +189,7 @@ impl TaskSystem {
         };
         {
             let mut sched = core.sched().lock();
-            let mut deadline = sched.base_deadline.ok_or(TaskError::NotReady)?;
+            let mut deadline = sched.policy.base_deadline.ok_or(TaskError::NotReady)?;
             deadline.replenish(now_ns);
             if deadline.is_throttled() {
                 return Err(TaskError::NotReady);
@@ -203,12 +203,12 @@ impl TaskSystem {
                 ThreadState::Ready => {}
                 _ => return Err(TaskError::NotReady),
             }
-            sched.base_deadline = Some(deadline);
-            sched.base_entity = SchedulingEntity::Deadline(deadline);
+            sched.policy.base_deadline = Some(deadline);
+            sched.policy.base_entity = SchedulingEntity::Deadline(deadline);
             if !sched.is_pi_boosted() {
-                sched.entity = sched.base_entity;
+                sched.policy.effective_entity = sched.policy.base_entity;
             }
-            sched.deadline_replenish_pending = false;
+            sched.deadline.replenish_pending = false;
         }
         self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Replenished)?;
         Self::program_local_timer(cpu.as_mut(), now_ns)
@@ -454,18 +454,18 @@ impl TaskSystem {
         if let Some(core) = previous_core.as_ref() {
             let deadline_job_ended = {
                 let mut sched = core.sched().lock();
-                if matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
+                if matches!(sched.policy.applied, SchedulePolicy::Deadline(_))
                     && !sched.is_pi_boosted()
                 {
-                    if !sched.entity.yield_deadline_job() {
+                    if !sched.policy.effective_entity.yield_deadline_job() {
                         return Err(TaskError::InvalidConfiguration);
                     }
-                    if let SchedulingEntity::Deadline(deadline) = sched.entity {
-                        sched.base_entity = sched.entity;
-                        sched.base_deadline = Some(deadline);
+                    if let SchedulingEntity::Deadline(deadline) = sched.policy.effective_entity {
+                        sched.policy.base_entity = sched.policy.effective_entity;
+                        sched.policy.base_deadline = Some(deadline);
                     }
                     sched.placement.set_running_cpu(None)?;
-                    sched.deadline_replenish_pending = true;
+                    sched.deadline.replenish_pending = true;
                     sched.transition(core, ThreadState::Blocked)?;
                     Self::refresh_owner_deadline_timers_locked(core, &mut sched, cpu.as_mut())?;
                     true

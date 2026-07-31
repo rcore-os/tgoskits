@@ -19,15 +19,15 @@ impl TaskSystem {
                 }
                 if record.blocked_on.is_some()
                     || record.pi_waiter_head.is_some()
-                    || sched.blocked_pi_waiters != 0
+                    || sched.pi.blocked_waiters != 0
                 {
                     return Err(TaskError::InvalidPiState);
                 }
-                if sched.deadline_cbs_borrower.is_some() {
+                if sched.pi.deadline_cbs_borrower.is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
-                if sched.deadline_bandwidth_cpu.is_some() {
-                    sched.deadline_cleanup_pending = true;
+                if sched.deadline.bandwidth_cpu.is_some() {
+                    sched.deadline.cleanup_pending = true;
                     true
                 } else {
                     false
@@ -49,12 +49,12 @@ impl TaskSystem {
                 {
                     return Err(TaskError::AlreadyQueued);
                 }
-                if sched.placement.on_cpu().is_some() || sched.deadline_cbs_borrower.is_some() {
+                if sched.placement.on_cpu().is_some() || sched.pi.deadline_cbs_borrower.is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
                 if record.blocked_on.is_some()
                     || record.pi_waiter_head.is_some()
-                    || sched.blocked_pi_waiters != 0
+                    || sched.pi.blocked_waiters != 0
                 {
                     return Err(TaskError::InvalidPiState);
                 }

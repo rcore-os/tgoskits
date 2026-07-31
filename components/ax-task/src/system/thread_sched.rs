@@ -1,10 +1,12 @@
 //! Per-thread scheduler state owned independently from the generation registry.
 
+mod deadline_state;
+mod pi_state;
 mod placement;
+mod policy_state;
+mod runtime_state;
 
 use alloc::sync::Weak;
-
-pub(super) use placement::SchedulerPlacement;
 
 use crate::{
     CpuId, CpuSet, DeadlineEntity, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore,
@@ -61,42 +63,14 @@ impl ThreadSchedCell {
         let entity = SchedulingEntity::new(policy, 1, 0);
         Self::new(
             id,
-            ThreadSchedState {
-                lifecycle: ThreadLifecycle::new(),
-                base_policy: policy,
-                active_base_policy: policy,
+            ThreadSchedState::new(
                 policy,
-                policy_generation: 1,
-                applied_policy_generation: 1,
-                dispatch_generation: 1,
-                affinity: CpuSet::all(1),
-                affinity_generation: 1,
                 entity,
-                base_entity: entity,
-                base_deadline: entity.deadline(),
-                deadline_activity: DeadlineActivity::Inactive,
-                deadline_bandwidth_cpu: None,
-                deadline_cleanup_pending: false,
-                deadline_bandwidth_scaled: 0,
-                active_deadline_reservation: 0,
-                desired_deadline_reservation: 0,
-                deadline_zero_lag_ns: 0,
-                deadline_cbs_timer: None,
-                deadline_zero_lag_timer: None,
-                placement: SchedulerPlacement::detached(),
-                blocked_pi_waiters: 0,
-                pi_donor: None,
-                deadline_donor: None,
-                deadline_donor_core: None,
-                deadline_cbs_borrower: None,
-                deadline_cbs_generation: 1,
-                pi_critical_rescue: false,
-                deadline_replenish_pending: false,
-                deadline_overrun_events: 0,
-                charged_runtime_ns: 0,
-                context: ExecutionContextHandle::NONE,
-                address_space: AddressSpaceHandle::NONE,
-            },
+                CpuSet::all(1),
+                0,
+                ExecutionContextHandle::NONE,
+                AddressSpaceHandle::NONE,
+            ),
         )
     }
 }
@@ -104,42 +78,32 @@ impl ThreadSchedCell {
 #[derive(Debug)]
 pub(super) struct ThreadSchedState {
     pub(super) lifecycle: ThreadLifecycle,
-    pub(super) base_policy: SchedulePolicy,
-    pub(super) active_base_policy: SchedulePolicy,
-    pub(super) policy: SchedulePolicy,
-    pub(super) policy_generation: u64,
-    pub(super) applied_policy_generation: u64,
-    pub(super) dispatch_generation: u64,
-    pub(super) affinity: CpuSet,
-    pub(super) affinity_generation: u64,
-    pub(super) entity: SchedulingEntity,
-    pub(super) base_entity: SchedulingEntity,
-    pub(super) base_deadline: Option<DeadlineEntity>,
-    pub(super) deadline_activity: DeadlineActivity,
-    pub(super) deadline_bandwidth_cpu: Option<CpuId>,
-    pub(super) deadline_cleanup_pending: bool,
-    pub(super) deadline_bandwidth_scaled: u64,
-    pub(super) active_deadline_reservation: u64,
-    pub(super) desired_deadline_reservation: u64,
-    pub(super) deadline_zero_lag_ns: u64,
-    pub(super) deadline_cbs_timer: Option<TaskDeadlineRegistration>,
-    pub(super) deadline_zero_lag_timer: Option<TaskDeadlineRegistration>,
-    pub(super) placement: SchedulerPlacement,
-    pub(super) blocked_pi_waiters: usize,
-    pub(super) pi_donor: Option<ThreadId>,
-    pub(super) deadline_donor: Option<ThreadId>,
-    pub(super) deadline_donor_core: Option<Weak<ThreadCore>>,
-    pub(super) deadline_cbs_borrower: Option<ThreadId>,
-    pub(super) deadline_cbs_generation: u64,
-    pub(super) pi_critical_rescue: bool,
-    pub(super) deadline_replenish_pending: bool,
-    pub(super) deadline_overrun_events: u64,
-    pub(super) charged_runtime_ns: u64,
-    pub(super) context: ExecutionContextHandle,
-    pub(super) address_space: AddressSpaceHandle,
+    pub(super) policy: policy_state::ThreadPolicyState,
+    pub(super) placement: placement::ThreadPlacementState,
+    pub(super) deadline: deadline_state::ThreadDeadlineState,
+    pub(super) pi: pi_state::ThreadPiState,
+    pub(super) runtime: runtime_state::ThreadRuntimeState,
 }
 
 impl ThreadSchedState {
+    pub(super) const fn new(
+        policy: SchedulePolicy,
+        entity: SchedulingEntity,
+        affinity: CpuSet,
+        deadline_reservation: u64,
+        context: ExecutionContextHandle,
+        address_space: AddressSpaceHandle,
+    ) -> Self {
+        Self {
+            lifecycle: ThreadLifecycle::new(),
+            policy: policy_state::ThreadPolicyState::new(policy, entity),
+            placement: placement::ThreadPlacementState::new(affinity),
+            deadline: deadline_state::ThreadDeadlineState::new(deadline_reservation),
+            pi: pi_state::ThreadPiState::new(),
+            runtime: runtime_state::ThreadRuntimeState::new(context, address_space),
+        }
+    }
+
     pub(super) fn transition(
         &mut self,
         core: &ThreadCore,
@@ -157,15 +121,15 @@ impl ThreadSchedState {
     }
 
     pub(super) fn is_pi_boosted_rt_owner(&self) -> bool {
-        self.blocked_pi_waiters != 0
+        self.pi.blocked_waiters != 0
             && self.is_pi_boosted()
             && matches!(
-                self.policy,
+                self.policy.effective,
                 SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
             )
     }
 
     pub(super) const fn is_pi_boosted(&self) -> bool {
-        self.pi_donor.is_some()
+        self.pi.donor.is_some()
     }
 }

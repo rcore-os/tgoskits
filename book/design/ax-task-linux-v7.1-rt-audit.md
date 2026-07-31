@@ -2508,6 +2508,49 @@ red regression. Its acceptance criterion is unchanged scheduler behavior
 under the complete unit, integration, hard-IRQ allocation, Loom, ax-runtime,
 and feature-clippy suites.
 
+## Current-head per-thread scheduler state boundaries
+
+`ThreadSchedState` previously exposed 34 unrelated fields in one flat lock
+domain. Lifecycle, requested and owner-applied policy, PI-effective policy,
+CPU affinity, physical placement, Deadline admission and timers, PI lending,
+runtime accounting, execution context, and address-space ownership could all
+be reached without crossing a named state boundary. Several names also
+preserved obsolete ambiguity: `base_policy`, `active_base_policy`, and
+`policy` meant requested, runqueue-owner-applied, and PI-effective policy
+respectively.
+
+Linux v7.1 keeps a stable `task_struct`, but composes scheduler-class state as
+`sched_entity`, `sched_rt_entity`, and `sched_dl_entity`
+(`include/linux/sched.h:575-620`, `include/linux/sched.h:849-865`). Physical
+runqueue/CPU ownership, affinity, PI state protected by `pi_lock`, and memory
+ownership remain distinct domains rather than duplicated caches
+(`include/linux/sched.h:1218-1250`). The PREEMPT_RT model changes lock
+implementation where sleeping is legal; it does not merge those ownership
+domains or make scheduler state sleepable.
+
+ax-task now keeps one `ThreadSchedCell` and composes six focused states:
+
+- lifecycle is the only source of task-state transitions;
+- policy records explicitly named requested, owner-applied, and PI-effective
+  policy/entity generations;
+- placement owns CPU affinity and its generation together with the existing
+  single physical `SchedulerPlacement` state machine;
+- Deadline owns admission, GRUB/CBS activity, typed timer registrations, and
+  overrun publication;
+- PI owns donor edges, CBS lending, and critical-rescue state; and
+- runtime owns committed CPU accounting plus context and address-space
+  handles.
+
+Thread creation now goes through one constructor, so no caller can initialize
+only a subset of these invariants. The physical placement enum is private to
+its domain and remains the sole source for queued, running, switching-out,
+migrating, and exit-tail ownership. This phase removes flat and ambiguous
+state; it does not add wrapper mirrors or change scheduling behavior.
+
+This is a behavior-preserving ownership refactor and therefore does not add a
+red regression. It is accepted only with the complete ax-task and ax-runtime
+host suites plus both feature-clippy matrices.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest
