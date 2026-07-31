@@ -223,7 +223,7 @@ fn exit_lock_preempt(irq_return: bool) {
     }
 }
 
-#[cfg(feature = "multitask")]
+#[cfg(any(feature = "multitask", test))]
 pub(crate) fn enter_preempt() {
     ax_hal::percpu::scheduler_enter_preempt_guard().expect("CPU-local preemption state is invalid");
 }
@@ -243,7 +243,7 @@ pub(crate) fn enter_lock_preempt() -> bool {
     true
 }
 
-#[cfg(feature = "multitask")]
+#[cfg(any(feature = "multitask", test))]
 pub(crate) fn exit_preempt() {
     let exit = ax_hal::percpu::scheduler_prepare_preempt_guard_exit()
         .expect("CPU-local preemption state is invalid");
