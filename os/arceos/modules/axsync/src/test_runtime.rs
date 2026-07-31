@@ -129,9 +129,7 @@ impl_task_runtime! {
         fn validate_owner_cpu_context() -> RuntimeStatus { RuntimeStatus::Success }
         fn monotonic_ns() -> u64 { 0 }
         fn timer_resolution_ns() -> u64 { 1 }
-        fn publish_task_deadline(_update: TaskDeadlineUpdate) -> RuntimeStatus {
-            RuntimeStatus::Success
-        }
+        fn publish_task_deadline(_update: TaskDeadlineUpdate) {}
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
             LAST_SCHEDULER_IPI_CPU.store(cpu.as_u32() as usize, Ordering::Release);
             SCHEDULER_IPIS.fetch_add(1, Ordering::AcqRel);

@@ -183,13 +183,12 @@ impl_trait! {
         }
         fn monotonic_ns() -> u64 { MONOTONIC_NS.with(Cell::get) }
         fn timer_resolution_ns() -> u64 { TIMER_RESOLUTION_NS.with(Cell::get) }
-        fn publish_task_deadline(update: TaskDeadlineUpdate) -> RuntimeStatus {
+        fn publish_task_deadline(update: TaskDeadlineUpdate) {
             LAST_ONESHOT_NS.with(|deadline| {
                 deadline.set(update.deadline().map_or(0, MonotonicDeadline::as_nanos))
             });
             LAST_DEADLINE_GENERATION.with(|generation| generation.set(update.generation()));
             LAST_DEFERRED_WORK.with(|pending| pending.set(update.deferred_work()));
-            RuntimeStatus::Success
         }
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
             IPI_PENDING.with(|pending| {

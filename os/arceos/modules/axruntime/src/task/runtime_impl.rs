@@ -226,18 +226,8 @@ impl_task_runtime! {
             crate::clock_event_runtime::timer_resolution_from_frequency(frequency_hz)
         }
 
-        fn publish_task_deadline(
-            update: ax_task::runtime::TaskDeadlineUpdate,
-        ) -> RuntimeStatus {
-            #[cfg(feature = "irq")]
-            {
-                crate::clock_event_runtime::publish_local_task_deadline(update)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                let _ = update;
-                RuntimeStatus::Unsupported
-            }
+        fn publish_task_deadline(update: ax_task::runtime::TaskDeadlineUpdate) {
+            crate::clock_event_runtime::publish_local_task_deadline(update);
         }
 
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {

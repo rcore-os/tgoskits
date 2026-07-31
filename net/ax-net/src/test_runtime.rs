@@ -88,9 +88,7 @@ impl_task_runtime! {
         fn validate_owner_cpu_context() -> RuntimeStatus { RuntimeStatus::Success }
         fn monotonic_ns() -> u64 { ax_hal::time::monotonic_time_nanos() }
         fn timer_resolution_ns() -> u64 { 1 }
-        fn publish_task_deadline(_update: TaskDeadlineUpdate) -> RuntimeStatus {
-            RuntimeStatus::Success
-        }
+        fn publish_task_deadline(_update: TaskDeadlineUpdate) {}
         fn send_scheduler_ipi(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn wait_for_interrupt() {}
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {

@@ -2024,11 +2024,11 @@ cooked and raw callbacks through the new atomic gate.
 Starry clone previously inserted the child into its public task and process
 identity registries and only then called the fallible scheduler
 `make_ready()`/`place_ready()` path. CPU placement, Deadline timer capacity, or
-runtime clockevent failure could therefore expose a live PID/TID to concurrent
-lookup and later remove it while returning a clone error. The PID publication
-mutex serialized clone against namespace shutdown, but ordinary task, signal,
-ptrace, pidfd, and process readers do not acquire that mutex, so it did not
-make the visible-then-rollback window atomic.
+another scheduler staging failure could therefore expose a live PID/TID to
+concurrent lookup and later remove it while returning a clone error. The PID
+publication mutex serialized clone against namespace shutdown, but ordinary
+task, signal, ptrace, pidfd, and process readers do not acquire that mutex, so
+it did not make the visible-then-rollback window atomic.
 
 Linux v7.1 performs cgroup and scheduler preparation before task visibility
 (`kernel/fork.c:2368-2383`). After the last PID-namespace and fatal-signal
@@ -2123,8 +2123,7 @@ removed.
 deadline state: `Option<MonotonicDeadline>` plus the deferred-work bit. A
 normal switch tail increments the publication generation and calls ax-runtime
 only when that state changes. Explicit arm, cancel, IRQ, and recovery
-transactions retain forced publications. If a runtime publication fails, the
-cache is invalidated so the next scheduler boundary must reassert the state.
+transactions retain forced publications.
 
 Two deterministic regressions failed on the old implementation: forced yield
 consumed a queued owner-inbox item, and an otherwise unchanged yield produced
@@ -2209,6 +2208,51 @@ clockevent completion recheck—and leaves the unrelated event for the next
 real safe point. The complete ax-task suite passes 228 unit tests and 20 loom
 models, ax-runtime's multitask host suite passes 62/62, both targeted clippy
 matrices pass, and the x86_64 Starry QEMU suite passes 391/391 in 13.67 seconds.
+
+## Current-head task-deadline cancellation transaction
+
+Park-timeout cancellation previously removed the generation-bearing heap
+entry, cleared the thread's sleep-timer owner, and consumed the move-only
+`ParkTicket` before deriving and publishing the replacement clockevent state.
+If deadline-publication generation was exhausted, the function returned an
+error after all three logical owners had already been destroyed. The runtime
+hook also returned `RuntimeStatus`, pretending that a physical clockevent
+commit could be rolled back after the runtime had potentially touched the
+device.
+
+Linux v7.1 keeps timer removal and reprogramming under the same CPU-base
+ownership. `hrtimer_cancel()` retains ownership while an expiry callback is in
+flight (`kernel/time/hrtimer.c:1636-1655`), and the hrtimer interrupt
+re-evaluates the queue before forcing the next clockevent program
+(`kernel/time/hrtimer.c:2026-2076`,
+`kernel/time/clockevents.c:339-382`). An hrtimer caller does not receive a
+recoverable device-programming error after its timer has been half removed.
+
+ax-task now represents heap removal as a `TaskDeadlineCancelTxn`. Deriving the
+new generation may commit that transaction or restore the exact value-owned
+entry, including its original token and reserved class capacity. A deadline
+that the hard IRQ already moved into the bounded expired buffer is a distinct
+terminal owner state: cancellation consumes the matching ticket but leaves
+the buffered value for the scheduler safe point to reject by generation.
+Missing from both the heap and the expired buffer is an invariant violation.
+
+`TaskRuntime::publish_task_deadline` is now infallible by type. ax-runtime is
+the sole physical clockevent owner and already commits its local state and
+hardware action under one IRQ-excluded transaction; an unusable clockevent is
+a runtime-fatal device invariant, not a scheduler API error. This removes the
+old rollback branch and its test-only fallible publication state.
+
+The deterministic regression forced task-deadline publication generation
+exhaustion during cancellation. The old implementation consumed the ticket
+and heap entry before returning `InvalidConfiguration`; the new implementation
+restores the same registration and can complete cancellation after generation
+state is made valid again. A queue-level regression additionally proves exact
+token and capacity restoration. The pre-existing expiry-vs-cancel regression
+proves that a buffered IRQ expiration remains a valid third ownership state.
+The complete ax-task suite passes 228 unit tests and 20 loom models,
+ax-runtime's multitask host suite passes 62/62, all affected feature-clippy
+matrices pass, and the x86_64 Starry QEMU suite passes 391/391 in 13.73
+seconds.
 
 ## Completion rules
 

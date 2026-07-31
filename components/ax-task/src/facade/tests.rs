@@ -219,10 +219,7 @@ mod tests {
             let _irq = RuntimeIrqGuard::enter();
             cpu.as_mut().next_task_deadline_update(0, 1).unwrap()
         };
-        assert_eq!(
-            task_runtime::publish_task_deadline(initial),
-            RuntimeStatus::Success
-        );
+        task_runtime::publish_task_deadline(initial);
         assert!(test_runtime::take_task_deadline_update().is_some());
 
         yield_current_cpu().unwrap();
@@ -561,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_cancel_update_consumes_the_physically_removed_deadline_ticket() {
+    fn failed_cancel_update_preserves_the_live_deadline_transaction() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         let running = system
@@ -582,12 +579,17 @@ mod tests {
             Err(TaskError::InvalidConfiguration)
         );
         assert!(
-            !ticket.has_deadline(),
-            "a physically removed timer must not remain represented by a live ticket"
+            ticket.has_deadline(),
+            "a failed publication-state update must roll back the queue cancellation"
         );
-        assert_eq!(running.core.sleep_timer_cpu(), None);
-        assert_eq!(cpu.as_mut().task_deadlines().next_deadline_ns(0, 1), None);
+        assert_eq!(running.core.sleep_timer_cpu(), Some(CpuId::new(0)));
+        assert_eq!(
+            cpu.as_mut().task_deadlines().next_deadline_ns(0, 1),
+            Some(10)
+        );
 
+        cpu.as_mut().set_task_deadline_generation_for_test(1);
+        assert!(cancel_current_park_deadline(&running, &mut ticket).unwrap());
         cancel_current_park(&mut ticket).unwrap();
     }
 
@@ -1244,7 +1246,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let _status = task_runtime::publish_task_deadline(update);
+        task_runtime::publish_task_deadline(update);
         assert_eq!(
             test_runtime::take_hook_reentry_error(),
             Some(TaskError::CpuOwnerBorrowed)

@@ -766,6 +766,18 @@ impl CpuLocal {
         self.deadline_expired_count != 0
     }
 
+    pub(crate) fn owns_buffered_expiration(&self, registration: &TaskDeadlineRegistration) -> bool {
+        self.deadline_expired_buffer[..self.deadline_expired_count]
+            .iter()
+            .copied()
+            .any(|event| {
+                event.thread() == Some(registration.thread())
+                    && event.token() == registration.token()
+                    && event.deadline_ns() == registration.deadline_ns()
+                    && event.kind() == Some(registration.kind())
+            })
+    }
+
     fn take_expired_task_deadline_matching(
         self: Pin<&mut Self>,
         matches: impl Fn(ExpiredTaskDeadline) -> bool,
