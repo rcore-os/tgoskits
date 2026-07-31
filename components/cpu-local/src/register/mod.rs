@@ -44,6 +44,50 @@ use x86_64 as imp;
 ))]
 compile_error!("cpu-local supports x86_64, AArch64, RISC-V, and LoongArch64 only");
 
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn current_preempt_state(current: &CurrentThreadHeader) -> u32 {
+    unsafe { imp::current_preempt_state(current) }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn enter_current_preempt_guard(current: &CurrentThreadHeader) {
+    unsafe { imp::enter_current_preempt_guard(current) };
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn exit_nested_current_preempt_guard(current: &CurrentThreadHeader) {
+    unsafe { imp::exit_nested_current_preempt_guard(current) };
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn try_consume_final_current_preempt_guard(
+    current: &CurrentThreadHeader,
+) -> bool {
+    unsafe { imp::try_consume_final_current_preempt_guard(current) }
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn consume_final_current_preempt_guard(current: &CurrentThreadHeader) {
+    unsafe { imp::consume_final_current_preempt_guard(current) };
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn set_current_preempt_need_resched(current: &CurrentThreadHeader) {
+    unsafe { imp::set_current_preempt_need_resched(current) };
+}
+
+#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[inline(always)]
+pub(crate) unsafe fn clear_current_preempt_need_resched(current: &CurrentThreadHeader) {
+    unsafe { imp::clear_current_preempt_need_resched(current) };
+}
+
 #[cfg(feature = "host-test")]
 pub(crate) mod host_test {
     /// Number of modeled architecture register reads since the last reset.

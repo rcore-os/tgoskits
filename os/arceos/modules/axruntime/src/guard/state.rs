@@ -26,7 +26,6 @@ impl RuntimeIrqState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RuntimePreemptState {
-    pub(super) lock_depth: u32,
     pub(super) scheduler_baton: SchedulerBatonState,
 }
 
@@ -42,41 +41,30 @@ pub(super) enum SchedulerBatonState {
 impl RuntimePreemptState {
     pub(super) const fn new() -> Self {
         Self {
-            lock_depth: 0,
             scheduler_baton: SchedulerBatonState::Finished,
         }
     }
 
     #[cfg(any(feature = "fs", feature = "multitask", test))]
     pub(super) const fn is_clear(self) -> bool {
-        self.lock_depth == 0 && matches!(self.scheduler_baton, SchedulerBatonState::Finished)
+        matches!(self.scheduler_baton, SchedulerBatonState::Finished)
     }
 
     #[cfg(any(feature = "multitask", test))]
     pub(super) const fn has_one_scheduler_frame(self) -> bool {
-        self.lock_depth == 0 && !matches!(self.scheduler_baton, SchedulerBatonState::Finished)
+        !matches!(self.scheduler_baton, SchedulerBatonState::Finished)
     }
 
     #[cfg(any(feature = "multitask", test))]
     pub(super) const fn has_active_scheduler_baton(self) -> bool {
-        self.lock_depth == 0 && matches!(self.scheduler_baton, SchedulerBatonState::Active)
+        matches!(self.scheduler_baton, SchedulerBatonState::Active)
     }
 
     #[cfg(any(feature = "multitask", test))]
-    pub(super) fn claim_task_scheduler(&mut self) -> bool {
-        if !self.is_clear() {
+    pub(super) fn claim_scheduler(&mut self) -> bool {
+        if !matches!(self.scheduler_baton, SchedulerBatonState::Finished) {
             return false;
         }
-        self.scheduler_baton = SchedulerBatonState::Active;
-        true
-    }
-
-    #[cfg(any(feature = "multitask", test))]
-    pub(super) fn claim_preempt_exit_scheduler(&mut self) -> bool {
-        if self.lock_depth != 1 || !matches!(self.scheduler_baton, SchedulerBatonState::Finished) {
-            return false;
-        }
-        self.lock_depth = 0;
         self.scheduler_baton = SchedulerBatonState::Active;
         true
     }
@@ -135,17 +123,21 @@ impl RuntimeGuardState {
     }
 
     #[cfg(any(feature = "multitask", test))]
-    pub(super) fn claim_irq_exit_scheduler(&mut self) -> bool {
-        if self.irq.depth != 1 || !self.irq.outer_irqs_enabled || !self.preempt.is_clear() {
+    pub(super) fn claim_irq_exit_scheduler(&mut self, preempt_depth: u32) -> bool {
+        if self.irq.depth != 1
+            || !self.irq.outer_irqs_enabled
+            || preempt_depth != 0
+            || !self.preempt.is_clear()
+        {
             return false;
         }
         self.irq = RuntimeIrqState::new();
-        self.preempt.claim_task_scheduler()
+        self.preempt.claim_scheduler()
     }
 
     #[cfg(any(feature = "multitask", test))]
-    pub(super) const fn local_scheduler_work_is_self_serviced(self) -> bool {
-        !self.irq.is_clear() && (self.irq.outer_irqs_enabled || !self.preempt.is_clear())
+    pub(super) const fn local_scheduler_work_is_self_serviced(self, preempt_depth: u32) -> bool {
+        !self.irq.is_clear() && (self.irq.outer_irqs_enabled || preempt_depth != 0)
     }
 
     #[cfg(any(feature = "multitask", test))]
@@ -153,30 +145,14 @@ impl RuntimeGuardState {
         !self.irq.is_clear() || self.preempt.has_one_scheduler_frame()
     }
 
-    pub(super) fn enter_lock_preempt(&mut self) {
-        self.preempt.lock_depth = self
-            .preempt
-            .lock_depth
-            .checked_add(1)
-            .expect("runtime lock preemption guard nesting overflow");
-    }
-
-    pub(super) fn exit_lock_preempt(&mut self) {
-        assert!(
-            self.preempt.lock_depth > 0,
-            "unbalanced runtime lock preemption guard exit"
-        );
-        self.preempt.lock_depth -= 1;
+    #[cfg(any(feature = "multitask", test))]
+    pub(super) fn claim_task_scheduler(&mut self, preempt_depth: u32) -> bool {
+        self.irq.is_clear() && preempt_depth == 0 && self.preempt.claim_scheduler()
     }
 
     #[cfg(any(feature = "multitask", test))]
-    pub(super) fn claim_task_scheduler(&mut self) -> bool {
-        self.irq.is_clear() && self.preempt.claim_task_scheduler()
-    }
-
-    #[cfg(any(feature = "multitask", test))]
-    pub(super) fn claim_preempt_exit_scheduler(&mut self) -> bool {
-        self.irq.is_clear() && self.preempt.claim_preempt_exit_scheduler()
+    pub(super) fn claim_preempt_exit_scheduler(&mut self, preempt_depth: u32) -> bool {
+        self.irq.is_clear() && preempt_depth == 1 && self.preempt.claim_scheduler()
     }
 
     #[cfg(any(feature = "multitask", test))]
@@ -204,7 +180,7 @@ impl RuntimeGuardState {
     }
 
     #[cfg(feature = "fs")]
-    pub(super) const fn has_context_guard(self) -> bool {
-        !self.irq.is_clear() || !self.preempt.is_clear()
+    pub(super) const fn has_context_guard(self, preempt_depth: u32) -> bool {
+        !self.irq.is_clear() || preempt_depth != 0 || !self.preempt.is_clear()
     }
 }

@@ -23,8 +23,8 @@ fn final_task_irq_guard_converts_directly_into_scheduler_baton() {
     let mut state = RuntimeGuardState::new();
     state.enter_irq(true);
 
-    assert!(state.local_scheduler_work_is_self_serviced());
-    assert!(state.claim_irq_exit_scheduler());
+    assert!(state.local_scheduler_work_is_self_serviced(0));
+    assert!(state.claim_irq_exit_scheduler(0));
     assert!(state.irq.is_clear());
     assert!(state.preempt.has_active_scheduler_baton());
 
@@ -37,35 +37,22 @@ fn disabled_task_irq_guard_cannot_promise_a_local_scheduler_entry() {
     let mut state = RuntimeGuardState::new();
     state.enter_irq(false);
 
-    assert!(!state.local_scheduler_work_is_self_serviced());
-    assert!(!state.claim_irq_exit_scheduler());
+    assert!(!state.local_scheduler_work_is_self_serviced(0));
+    assert!(!state.claim_irq_exit_scheduler(0));
     assert!(!state.exit_irq("test"));
-}
-
-#[test]
-fn lock_preempt_exit_reports_only_the_outermost_transition() {
-    let mut state = RuntimeGuardState::new();
-    state.enter_lock_preempt();
-    state.enter_lock_preempt();
-
-    state.exit_lock_preempt();
-    assert_eq!(state.preempt.lock_depth, 1);
-    state.exit_lock_preempt();
-    assert!(state.preempt.is_clear());
 }
 
 #[test]
 fn nested_preempt_exit_does_not_reenter_context_queries() {
     use core::cell::Cell;
 
-    let mut state = RuntimeGuardState::new();
-    state.enter_lock_preempt();
-    state.enter_lock_preempt();
+    let state = RuntimeGuardState::new();
     let irq_queries = Cell::new(0);
     let reschedule_queries = Cell::new(0);
 
     assert!(!preempt_exit_needs_schedule(
         &state,
+        2,
         true,
         false,
         || {
@@ -96,6 +83,7 @@ fn nested_irq_exit_does_not_reenter_context_queries() {
 
     assert!(!irq_guard_exit_needs_schedule(
         &state,
+        0,
         || {
             irq_queries.set(irq_queries.get() + 1);
             false
@@ -115,7 +103,7 @@ fn nested_irq_exit_does_not_reenter_context_queries() {
 #[test]
 fn scheduler_baton_is_exactly_one_cpu_local_frame() {
     let mut state = RuntimeGuardState::new();
-    assert!(state.claim_task_scheduler());
+    assert!(state.claim_task_scheduler(0));
     assert!(state.preempt.has_one_scheduler_frame());
     assert_eq!(state.preempt.scheduler_baton, SchedulerBatonState::Active);
 
@@ -131,21 +119,19 @@ fn scheduler_baton_is_exactly_one_cpu_local_frame() {
 }
 
 #[test]
-#[should_panic(expected = "unbalanced runtime lock preemption guard exit")]
-fn lock_exit_cannot_consume_a_scheduler_frame() {
+fn preempt_exit_cannot_replace_an_active_scheduler_frame() {
     let mut state = RuntimeGuardState::new();
-    assert!(state.claim_task_scheduler());
+    assert!(state.claim_task_scheduler(0));
 
-    state.exit_lock_preempt();
+    assert!(!state.claim_preempt_exit_scheduler(1));
 }
 
 #[test]
 fn scheduler_frame_cannot_cross_a_live_lock_guard() {
     let mut state = RuntimeGuardState::new();
-    state.enter_lock_preempt();
 
-    assert!(!state.claim_task_scheduler());
-    assert!(state.claim_preempt_exit_scheduler());
+    assert!(!state.claim_task_scheduler(1));
+    assert!(state.claim_preempt_exit_scheduler(1));
 }
 
 #[test]
@@ -153,7 +139,7 @@ fn scheduler_frame_cannot_enter_inside_an_ordinary_irq_guard() {
     let mut state = RuntimeGuardState::new();
     state.enter_irq(true);
 
-    assert!(!state.claim_task_scheduler());
+    assert!(!state.claim_task_scheduler(0));
 }
 
 #[test]
@@ -161,19 +147,17 @@ fn owner_cpu_context_requires_irq_pin_or_scheduler_baton() {
     let mut state = RuntimeGuardState::new();
     assert!(!state.owns_cpu_context());
 
-    state.enter_lock_preempt();
     assert!(
         !state.owns_cpu_context(),
         "a lock-local preemption depth cannot stand in for rq ownership"
     );
-    state.exit_lock_preempt();
 
     state.enter_irq(true);
     assert!(state.owns_cpu_context());
     assert!(state.exit_irq("test"));
     assert!(!state.owns_cpu_context());
 
-    assert!(state.claim_task_scheduler());
+    assert!(state.claim_task_scheduler(0));
     assert!(state.owns_cpu_context());
     state.transfer_scheduler_preempt();
     assert!(state.owns_cpu_context());
@@ -185,7 +169,7 @@ fn owner_cpu_context_requires_irq_pin_or_scheduler_baton() {
 #[should_panic(expected = "test scheduler frame exited with live IRQ guard depth=1")]
 fn scheduler_frame_cannot_cross_a_live_irq_guard() {
     let mut state = RuntimeGuardState::new();
-    assert!(state.claim_task_scheduler());
+    assert!(state.claim_task_scheduler(0));
     state.enter_irq(true);
 
     state.exit_scheduler_preempt("test scheduler frame");
@@ -195,18 +179,16 @@ fn scheduler_frame_cannot_cross_a_live_irq_guard() {
 #[cfg(feature = "fs")]
 fn context_guard_state_rejects_sleep_until_every_depth_is_released() {
     let mut state = RuntimeGuardState::new();
-    assert!(!state.has_context_guard());
+    assert!(!state.has_context_guard(0));
 
-    state.enter_lock_preempt();
-    assert!(state.has_context_guard());
-    state.exit_lock_preempt();
-    assert!(!state.has_context_guard());
+    assert!(state.has_context_guard(1));
+    assert!(!state.has_context_guard(0));
 }
 
 #[test]
 fn initial_context_entry_consumes_the_scheduler_baton() {
     let mut state = RuntimeGuardState::new();
-    assert!(state.claim_task_scheduler());
+    assert!(state.claim_task_scheduler(0));
 
     state.exit_scheduler_preempt("test scheduler frame");
     assert!(state.preempt.is_clear());

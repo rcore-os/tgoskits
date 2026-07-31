@@ -1,5 +1,8 @@
 use super::*;
-use crate::{CPU_AREA_CURRENT_THREAD_OFFSET, CPU_AREA_SELF_BASE_OFFSET};
+use crate::{
+    CPU_AREA_CURRENT_THREAD_OFFSET, CPU_AREA_SELF_BASE_OFFSET, CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+    CurrentThreadHeader, PREEMPT_NO_RESCHED,
+};
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
 #[cfg(feature = "tls")]
@@ -52,6 +55,104 @@ pub(super) unsafe fn read_current_thread(_area_base: usize) -> usize {
 // publication is therefore the architecture commit; there is no second task
 // pointer register to update.
 pub(super) unsafe fn write_current_thread(_value: usize) {}
+
+#[inline(always)]
+pub(super) unsafe fn current_preempt_state(current: &CurrentThreadHeader) -> u32 {
+    let state: u32;
+    unsafe {
+        core::arch::asm!(
+            "mov {state:e}, dword ptr [{current} + {offset}]",
+            state = out(reg) state,
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            options(nostack, preserves_flags, readonly),
+        );
+    }
+    state
+}
+
+#[inline(always)]
+pub(super) unsafe fn enter_current_preempt_guard(current: &CurrentThreadHeader) {
+    unsafe {
+        core::arch::asm!(
+            "inc dword ptr [{current} + {offset}]",
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            options(nostack),
+        );
+    }
+}
+
+#[inline(always)]
+pub(super) unsafe fn exit_nested_current_preempt_guard(current: &CurrentThreadHeader) {
+    unsafe {
+        core::arch::asm!(
+            "dec dword ptr [{current} + {offset}]",
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            options(nostack),
+        );
+    }
+}
+
+#[inline(always)]
+pub(super) unsafe fn try_consume_final_current_preempt_guard(
+    current: &CurrentThreadHeader,
+) -> bool {
+    let expected = PREEMPT_NO_RESCHED | 1;
+    let mut observed = expected;
+    let replacement = PREEMPT_NO_RESCHED;
+    unsafe {
+        core::arch::asm!(
+            "cmpxchg dword ptr [{current} + {offset}], {replacement:e}",
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            replacement = in(reg) replacement,
+            inout("eax") observed,
+            options(nostack),
+        );
+    }
+    observed == expected
+}
+
+#[inline(always)]
+pub(super) unsafe fn consume_final_current_preempt_guard(current: &CurrentThreadHeader) {
+    unsafe {
+        core::arch::asm!(
+            "mov dword ptr [{current} + {offset}], 0",
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            options(nostack),
+        );
+    }
+}
+
+#[inline(always)]
+pub(super) unsafe fn set_current_preempt_need_resched(current: &CurrentThreadHeader) {
+    let mask = !PREEMPT_NO_RESCHED;
+    unsafe {
+        core::arch::asm!(
+            "and dword ptr [{current} + {offset}], {mask:e}",
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            mask = in(reg) mask,
+            options(nostack),
+        );
+    }
+}
+
+#[inline(always)]
+pub(super) unsafe fn clear_current_preempt_need_resched(current: &CurrentThreadHeader) {
+    unsafe {
+        core::arch::asm!(
+            "or dword ptr [{current} + {offset}], {mask:e}",
+            current = in(reg) current,
+            offset = const CURRENT_THREAD_PREEMPT_STATE_OFFSET,
+            mask = in(reg) PREEMPT_NO_RESCHED,
+            options(nostack),
+        );
+    }
+}
 
 #[cfg(feature = "tls")]
 pub(super) unsafe fn read_kernel_tls() -> usize {
