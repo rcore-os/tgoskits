@@ -104,7 +104,13 @@ def main() -> int:
 
             time.sleep(args.interval)
 
-        status_ok = request_status(sock, peer, args.count + 2000, args.timeout)
+        status_ok = request_status(
+            sock,
+            peer,
+            args.count + 2000,
+            args.timeout,
+            expected_last_seq=args.count,
+        )
 
     print(
         f"ai_summary requested={args.count} successes={successes} failures={failures} "

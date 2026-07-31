@@ -37,6 +37,7 @@ cache_dir=/tmp/qc_pycompile_cache_$$
 PYTHONPYCACHEPREFIX=$cache_dir python3 -m py_compile scripts/*.py linux/*.py
 rm -rf $cache_dir
 python3 scripts/qc_qcz1_guest_status_negative_selftest.py
+python3 linux/qc_reliable_udp_client.py --selftest-status-validation
 bash -n scripts/*.sh linux/*.sh
 find . \( -name '*.img' -o -name '*.qcow2' -o -name '*.iso' -o -name '*.elf' -o -name '*.o' -o -name '*.bin' -o -name '__pycache__' -o -name '*.pyc' -o -name '*.log' -o -name '*.tar.gz' \) -print | sort
 cd "${REPO}"

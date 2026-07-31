@@ -215,7 +215,7 @@ The runner enforces the checked-in `runtime-artifacts-known-passing.sha256` mani
 
 The preparation script is the clean-environment entry point for the integrated QEMU path. It uses a fixed archive URL and SHA256, validates the archive member list before extraction, then runs the checked-in manifest over the rootfs registry, rootfs image, Linux kernel, Zephyr RTOS binary and host DTB. The runner keeps enforcing the same manifest and exits before QEMU if any artifact is missing or mismatched. After the manifest check passes, the runner copies the rootfs into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/` and passes that copy to `cargo xtask axvisor qemu --rootfs`; this path is intentionally outside axbuild image storage so the QEMU launch treats it as a caller-managed runtime artifact and does not re-enter image-manager download/sync logic after verification. The stress and long-sample commands below assume `scripts/prepare_dual_guest_runtime_artifacts.sh` has already completed successfully.
 
-The script prints `result=PASS` only after the pre-QEMU QCZ1 STATUS negative selftest passes and QEMU emits plain UDP, reliable QCZ1, AI control, Linux guest periodic, RTOS guest periodic and final Linux init PASS markers.
+The script prints `result=PASS` only after the pre-QEMU QCZ1 C guest STATUS negative selftest passes and QEMU emits plain UDP, reliable QCZ1, AI control, Linux guest periodic, RTOS guest periodic and final Linux init PASS markers. The Linux-side Python client also includes `--selftest-status-validation` so reviewer-local UDP STATUS counterexamples cannot be accepted as PASS.
 
 For the 0-worker long-sample baseline used as the no-pressure comparison point:
 

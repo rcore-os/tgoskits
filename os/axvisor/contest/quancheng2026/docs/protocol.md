@@ -110,7 +110,7 @@ Current error codes:
 - ACK sequence validation
 - bad response reporting
 - duplicate packet test support
-- final status query
+- final status query with response frame sequence, `last_seq`, `status == OK`, and `error_count == 0` validation
 - latency summary
 
 The current 10-round campaign validated `200/200` reliable control messages and `40` duplicate ACK responses.

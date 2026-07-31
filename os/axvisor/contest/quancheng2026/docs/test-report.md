@@ -165,10 +165,11 @@ Current contest-directory preflight:
 ```text
 python3 -m py_compile scripts/*.py linux/*.py: PASS
 bash -n scripts/*.sh linux/*.sh: PASS
-QCZ1 STATUS negative selftest via documented runner/preflight path: PASS
+QCZ1 C guest STATUS negative selftest via documented runner/preflight path: PASS
+QCZ1 Python client STATUS negative selftest: PASS
 artifact scan for images/logs/pyc/tarballs: 0
 git diff --check: PASS
-dry-run staged path count: 38
+dry-run staged path count: 42
 outside contest dry-run path count: 0
 ```
 
