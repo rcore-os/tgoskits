@@ -179,12 +179,17 @@ mod tests {
 
     #[test]
     fn scheduler_current_thread_rejects_an_uninstalled_host_area() {
-        let rejected = std::thread::spawn(|| {
+        #[cfg(feature = "tls")]
+        let expected_error = CpuLocalError::AreaNotInstalled;
+        #[cfg(not(feature = "tls"))]
+        let expected_error = CpuLocalError::CurrentThreadMismatch;
+
+        let rejected = std::thread::spawn(move || {
             // SAFETY: the fresh host thread has no installed CPU area, so no
             // scheduler-owned pointer can be returned.
             matches!(
                 unsafe { scheduler_current_thread() },
-                Err(CpuLocalError::CurrentThreadMismatch)
+                Err(error) if error == expected_error
             )
         })
         .join()
