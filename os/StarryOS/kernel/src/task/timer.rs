@@ -2,16 +2,14 @@
 
 use alloc::{borrow::ToOwned, collections::binary_heap::BinaryHeap, sync::Arc};
 use core::{
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
+use ax_kernel_guard::NoPreempt;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
 use ax_std::os::arceos::task as scheduler;
-use ax_sync::{
-    PiMutex,
-    spin::{SpinNoPreempt, SpinNoPreemptGuard},
-};
+use ax_sync::PiMutex;
 use event_listener::{Event, listener};
 use spin::LazyLock;
 use starry_process::Pid;

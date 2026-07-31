@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use super::*;
 
 static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: ignore_extension_thread_event,
+    on_switch_in: ignore_extension_switch_in,
     on_switch_out: ignore_extension_switch_out,
     on_exit: ignore_extension_thread_event,
     on_deadline_overrun: ignore_extension_thread_event,
@@ -261,6 +261,35 @@ fn runtime_outer_extension_forwards_os_scheduler_tick_work() {
         unsafe { outer.forward_scheduler_tick_work(ThreadId::from_parts(1, 1), 42) },
         Some(SchedulerTickWorkDisposition::Complete)
     );
+    assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    drop(outer);
+}
+
+#[test]
+fn runtime_outer_extension_forwards_running_policy_observations() {
+    let callbacks = AtomicUsize::new(0);
+    let callback_data = (&callbacks as *const AtomicUsize).expose_provenance();
+    let os_extension = unsafe {
+        ThreadExtension::new(callback_data, &TEST_EXTENSION_OPS)
+            .with_running_policy_applied_hook(count_policy_applied)
+    };
+    let data = Box::into_raw(Box::new(RuntimeThreadData::new(
+        Box::new(|| {}),
+        String::from("policy-forwarding"),
+        Some(os_extension),
+        Arc::new(RuntimeThreadStart::new()),
+    )))
+    .expose_provenance();
+    let outer = unsafe { runtime_thread_extension(data) };
+
+    assert!(outer.running_policy_applied_hook().is_some());
+    assert!(unsafe {
+        outer.forward_running_policy_applied(
+            ThreadId::from_parts(1, 1),
+            SchedulePolicy::default(),
+            42,
+        )
+    });
     assert_eq!(callbacks.load(Ordering::Acquire), 1);
     drop(outer);
 }
@@ -536,6 +565,13 @@ fn bootstrap_thread_rejects_a_missing_tls_resource() {
 
 unsafe extern "Rust" fn ignore_extension_thread_event(_data: usize, _thread: ThreadId) {}
 
+unsafe extern "Rust" fn ignore_extension_switch_in(
+    _data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+) {
+}
+
 unsafe extern "Rust" fn ignore_extension_switch_out(
     _data: usize,
     _thread: ThreadId,
@@ -562,4 +598,14 @@ unsafe extern "Rust" fn count_scheduler_tick_work(
     let callbacks = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
     callbacks.fetch_add(1, Ordering::Release);
     SchedulerTickWorkDisposition::Complete
+}
+
+unsafe extern "Rust" fn count_policy_applied(
+    data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+    _observed_ns: u64,
+) {
+    let callbacks = unsafe { &*ptr::with_exposed_provenance::<AtomicUsize>(data) };
+    callbacks.fetch_add(1, Ordering::Release);
 }

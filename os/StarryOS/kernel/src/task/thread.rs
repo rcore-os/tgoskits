@@ -365,11 +365,11 @@ impl Thread {
             .record_cpu_time_transition(|| self.accounting.cpu_time.set_state(state));
     }
 
-    pub(crate) fn set_cpu_time_policy(&self, realtime_policy: bool, leaving_realtime: bool) {
+    pub(crate) fn apply_cpu_time_policy(&self, realtime_policy: bool, observed_ns: u64) {
         self.proc_data.record_cpu_time_transition(|| {
             self.accounting
                 .cpu_time
-                .set_realtime_policy(realtime_policy, leaving_realtime)
+                .apply_realtime_policy(realtime_policy, observed_ns)
         });
     }
 
@@ -378,12 +378,12 @@ impl Thread {
             .record_cpu_time_transition(|| self.accounting.cpu_time.account_now());
     }
 
-    pub(super) fn try_account_scheduler_tick_cpu_time(&self, observed_ns: u64) -> bool {
-        self.proc_data.try_record_cpu_time_transition(|| {
+    pub(super) fn sample_scheduler_tick_cpu_time(&self, observed_ns: u64) {
+        self.proc_data.record_cpu_time_transition(|| {
             self.accounting
                 .cpu_time
-                .try_account_scheduler_tick_at(observed_ns)
-        })
+                .sample_scheduler_tick_at(observed_ns)
+        });
     }
 
     pub(crate) fn cpu_time(&self) -> &CpuTimeAccounting {

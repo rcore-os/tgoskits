@@ -561,8 +561,16 @@ impl TaskSystem {
         let released = previous_held.saturating_sub(sched.desired_deadline_reservation);
         let effective_policy = sched.policy;
         let effective_entity = sched.entity;
+        let running_policy_changed = sched.placement.running_cpu().is_some();
         core.publish_effective_schedule(effective_policy, effective_entity);
         drop(sched);
+        if running_policy_changed && let Some(extension) = core.extension_view() {
+            // SAFETY: the thread-state lock is released. A running update
+            // executes on the placement owner while it retains the scheduler
+            // baton. Construction guarantees that the callback is bounded and
+            // valid for this retained ThreadCore.
+            unsafe { extension.notify_running_policy_applied(core.id(), base_policy, now_ns) };
+        }
         self.defer_deadline_admission_release(released)?;
         Ok(true)
     }

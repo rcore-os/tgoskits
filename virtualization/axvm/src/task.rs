@@ -10,7 +10,8 @@ use core::ptr;
 
 use crate::{
     host::task::{
-        SwitchReason, TaskHandle, ThreadExtension, ThreadExtensionOps, ThreadId, task_extension,
+        SchedulePolicy, SwitchReason, TaskHandle, ThreadExtension, ThreadExtensionOps, ThreadId,
+        task_extension,
     },
     vm::{AxVCpuRef, AxVMRef},
 };
@@ -59,7 +60,12 @@ static VCPU_TASK_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     drop: drop_vcpu_task,
 };
 
-unsafe extern "Rust" fn vcpu_task_switch_in(_data: usize, _thread: ThreadId) {}
+unsafe extern "Rust" fn vcpu_task_switch_in(
+    _data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+) {
+}
 
 unsafe extern "Rust" fn vcpu_task_switch_out(
     _data: usize,

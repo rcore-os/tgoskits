@@ -216,8 +216,9 @@ impl CpuSet {
 #[repr(C)]
 #[derive(Debug)]
 pub struct ThreadExtensionOps {
-    /// Invoked before the thread becomes the current execution context.
-    pub on_switch_in: unsafe extern "Rust" fn(data: usize, thread: ThreadId),
+    /// Invoked with the applied base policy before the thread becomes current.
+    pub on_switch_in:
+        unsafe extern "Rust" fn(data: usize, thread: ThreadId, policy: SchedulePolicy),
     /// Invoked after the thread stops being the current execution context.
     pub on_switch_out: unsafe extern "Rust" fn(data: usize, thread: ThreadId, reason: SwitchReason),
     /// Invoked in task context after the thread exits.
@@ -228,11 +229,20 @@ pub struct ThreadExtensionOps {
     pub drop: unsafe extern "Rust" fn(data: usize),
 }
 
+/// Bounded OS hook invoked when the owner changes a running thread's base policy.
+pub type RunningPolicyAppliedHook = unsafe extern "Rust" fn(
+    data: usize,
+    thread: ThreadId,
+    base_policy: SchedulePolicy,
+    observed_ns: u64,
+);
+
 /// Opaque OS-specific data attached to a thread.
 #[derive(Debug)]
 pub struct ThreadExtension {
     data: usize,
     ops: &'static ThreadExtensionOps,
+    running_policy_applied_hook: Option<RunningPolicyAppliedHook>,
     scheduler_tick_work: Option<SchedulerTickWork>,
 }
 
@@ -250,8 +260,30 @@ impl ThreadExtension {
         Self {
             data,
             ops,
+            running_policy_applied_hook: None,
             scheduler_tick_work: None,
         }
+    }
+
+    /// Adds a bounded callback for base-policy changes applied to a running thread.
+    ///
+    /// The callback runs after the scheduler releases the thread-state lock.
+    /// The current CPU still owns the scheduler baton, so the callback is
+    /// serialized with switch hooks for the same thread. Queued and inactive
+    /// base-policy changes are observed through the policy snapshot passed to
+    /// the next switch-in instead. PI donation does not change this value.
+    ///
+    /// # Safety
+    ///
+    /// `callback` must interpret `data` according to this extension, remain
+    /// valid for its complete lifetime, and perform only bounded operations.
+    /// It must not allocate, block, or re-enter the scheduler.
+    pub unsafe fn with_running_policy_applied_hook(
+        mut self,
+        callback: RunningPolicyAppliedHook,
+    ) -> Self {
+        self.running_policy_applied_hook = Some(callback);
+        self
     }
 
     /// Adds task-context work gated by scheduler tick interest.
@@ -284,6 +316,33 @@ impl ThreadExtension {
     /// Returns the callback table used as the extension type identity.
     pub const fn ops(&self) -> &'static ThreadExtensionOps {
         self.ops
+    }
+
+    /// Returns the callback used to observe running-thread base-policy changes.
+    pub const fn running_policy_applied_hook(&self) -> Option<RunningPolicyAppliedHook> {
+        self.running_policy_applied_hook
+    }
+
+    /// Forwards a running-thread base-policy change to this extension.
+    ///
+    /// Returns `false` when this extension did not register such a hook.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain this extension, invoke the callback only after
+    /// scheduler metadata locks are released, and preserve the hook's bounded,
+    /// non-blocking context contract.
+    pub unsafe fn forward_running_policy_applied(
+        &self,
+        thread: ThreadId,
+        base_policy: SchedulePolicy,
+        observed_ns: u64,
+    ) -> bool {
+        let Some(callback) = self.running_policy_applied_hook else {
+            return false;
+        };
+        unsafe { callback(self.data, thread, base_policy, observed_ns) };
+        true
     }
 
     /// Clones the gate used to select scheduler-tick task work.
@@ -320,6 +379,7 @@ impl ThreadExtension {
         ThreadExtensionView {
             data: self.data,
             ops: self.ops,
+            running_policy_applied_hook: self.running_policy_applied_hook,
         }
     }
 
@@ -341,6 +401,7 @@ impl Drop for ThreadExtension {
 pub struct ThreadExtensionView {
     data: usize,
     ops: &'static ThreadExtensionOps,
+    running_policy_applied_hook: Option<RunningPolicyAppliedHook>,
 }
 
 /// Extension identity borrowed for exactly as long as a strong thread handle.
@@ -433,6 +494,17 @@ impl ThreadExtensionView {
     /// Returns the callback table used as the extension type identity.
     pub const fn ops(self) -> &'static ThreadExtensionOps {
         self.ops
+    }
+
+    pub(crate) unsafe fn notify_running_policy_applied(
+        self,
+        thread: ThreadId,
+        base_policy: SchedulePolicy,
+        observed_ns: u64,
+    ) {
+        if let Some(callback) = self.running_policy_applied_hook {
+            unsafe { callback(self.data, thread, base_policy, observed_ns) };
+        }
     }
 }
 

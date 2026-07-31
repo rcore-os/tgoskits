@@ -82,8 +82,8 @@ fn scheduler_ticks_publish_process_cpu_time_without_sibling_scans() {
 }
 
 #[axtest]
-fn scheduler_tick_accounting_excludes_an_active_state_writer() {
-    ax_assert!(axtest_exports::scheduler_tick_accounting_excludes_state_writer());
+fn scheduler_tick_sampling_is_read_only() {
+    ax_assert!(axtest_exports::scheduler_tick_sampling_avoids_owner_writer());
 }
 
 #[axtest]

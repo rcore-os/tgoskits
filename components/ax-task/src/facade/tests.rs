@@ -29,7 +29,7 @@ mod tests {
     };
 
     static PARKING_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: ignore_thread_event,
+        on_switch_in: ignore_switch_in,
         on_switch_out: ignore_switch_out,
         on_exit: count_parking_exit,
         on_deadline_overrun: ignore_thread_event,
@@ -37,7 +37,7 @@ mod tests {
     };
 
     static REENTRANT_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: ignore_thread_event,
+        on_switch_in: ignore_switch_in,
         on_switch_out: ignore_switch_out,
         on_exit: count_reentrant_exit,
         on_deadline_overrun: ignore_thread_event,
@@ -45,7 +45,7 @@ mod tests {
     };
 
     static TRACE_ORDER_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: ignore_thread_event,
+        on_switch_in: ignore_switch_in,
         on_switch_out: record_switch_out,
         on_exit: ignore_thread_event,
         on_deadline_overrun: ignore_thread_event,
@@ -64,6 +64,7 @@ mod tests {
         prepare_next_context(
             AddressSpaceHandle::NONE,
             ThreadId::from_parts(1, 1),
+            SchedulePolicy::default(),
             Some(extension.as_view()),
         );
 
@@ -768,7 +769,11 @@ mod tests {
         );
     }
 
-    unsafe extern "Rust" fn assert_address_space_installed(data: usize, _thread: ThreadId) {
+    unsafe extern "Rust" fn assert_address_space_installed(
+        data: usize,
+        _thread: ThreadId,
+        _policy: SchedulePolicy,
+    ) {
         assert_eq!(test_runtime::installed_address_space(), Some(data));
     }
 
@@ -788,6 +793,13 @@ mod tests {
     }
 
     unsafe extern "Rust" fn ignore_thread_event(_data: usize, _thread: ThreadId) {}
+
+    unsafe extern "Rust" fn ignore_switch_in(
+        _data: usize,
+        _thread: ThreadId,
+        _policy: SchedulePolicy,
+    ) {
+    }
 
     unsafe extern "Rust" fn count_parking_exit(_data: usize, _thread: ThreadId) {
         PARKING_EXIT_CALLBACKS.fetch_add(1, Ordering::AcqRel);

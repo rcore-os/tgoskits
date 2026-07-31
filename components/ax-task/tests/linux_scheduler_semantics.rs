@@ -536,7 +536,7 @@ fn deadline_policy(
 static DEADLINE_OVERRUNS: AtomicUsize = AtomicUsize::new(0);
 
 static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: no_extension_hook,
+    on_switch_in: no_extension_switch_in,
     on_switch_out: no_extension_switch_out,
     on_exit: no_extension_hook,
     on_deadline_overrun: count_deadline_overrun,
@@ -544,6 +544,13 @@ static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
 };
 
 unsafe extern "Rust" fn no_extension_hook(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn no_extension_switch_in(
+    _data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+) {
+}
 
 unsafe extern "Rust" fn no_extension_switch_out(
     _data: usize,

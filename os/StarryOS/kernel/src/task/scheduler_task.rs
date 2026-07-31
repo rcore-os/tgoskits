@@ -158,15 +158,6 @@ impl UserTaskRef {
             .store(reset, Ordering::Release);
     }
 
-    /// Synchronizes Linux RT-class accounting after a scheduler policy update.
-    pub(crate) fn set_accounting_policy(&self, policy: scheduler::SchedulePolicy) {
-        let data = self.extension();
-        let realtime_policy = is_realtime_policy(policy);
-        let previous = data.realtime_policy.swap(realtime_policy, Ordering::AcqRel);
-        data.thread
-            .set_cpu_time_policy(realtime_policy, previous && !realtime_policy);
-    }
-
     /// Commits an exec-time page-table replacement for the running thread.
     pub fn switch_page_table(&self, root: ax_memory_addr::PhysAddr) {
         assert_eq!(
@@ -608,13 +599,13 @@ where
         name: PiMutex::new(Arc::from(name.as_str())),
         irq_identity,
         reset_on_fork: AtomicBool::new(context_state.reset_on_fork),
-        realtime_policy: AtomicBool::new(is_realtime_policy(context_state.policy)),
     })) as usize;
     // SAFETY: `data` is a uniquely owned `Box<StarryUserTaskExtension>`. The
     // runtime takes that ownership even when scheduler creation fails and
     // invokes `starry_user_task_drop` exactly once from task/reaper context.
     let extension = unsafe {
         scheduler::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
+            .with_running_policy_applied_hook(starry_user_task_policy_applied)
             .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
     };
     let Some(address_space) = context_state.address_space else {
@@ -677,7 +668,6 @@ struct StarryUserTaskExtension {
     name: PiMutex<Arc<str>>,
     irq_identity: IrqTaskIdentity,
     reset_on_fork: AtomicBool,
-    realtime_policy: AtomicBool,
 }
 
 struct IrqTaskIdentity {
@@ -741,18 +731,33 @@ static STARRY_USER_TASK_EXTENSION_OPS: scheduler::ThreadExtensionOps =
         drop: starry_user_task_drop,
     };
 
-unsafe extern "Rust" fn starry_user_task_switch_in(data: usize, thread: scheduler::ThreadId) {
+unsafe extern "Rust" fn starry_user_task_policy_applied(
+    data: usize,
+    _thread: scheduler::ThreadId,
+    base_policy: scheduler::SchedulePolicy,
+    observed_ns: u64,
+) {
+    let extension = unsafe { extension_data_from_raw(data) };
+    let realtime_policy = is_realtime_policy(base_policy);
+    extension
+        .thread
+        .apply_cpu_time_policy(realtime_policy, observed_ns);
+}
+
+unsafe extern "Rust" fn starry_user_task_switch_in(
+    data: usize,
+    thread: scheduler::ThreadId,
+    base_policy: scheduler::SchedulePolicy,
+) {
     let extension = unsafe { extension_data_from_raw(data) };
     // SAFETY: scheduler extension hooks run with local IRQs disabled from the
     // final switch baton, which pins this scoped callback to the owner CPU.
     unsafe {
         ax_runtime::hal::percpu::with_cpu_pin(|pin| {
             CURRENT_USER_EXTENSION.write_current(pin, data);
-            extension.thread.scheduler_switch_in(
-                thread,
-                extension.realtime_policy.load(Ordering::Acquire),
-                pin,
-            );
+            extension
+                .thread
+                .scheduler_switch_in(thread, is_realtime_policy(base_policy), pin);
         })
         .unwrap_or_else(|_| panic!("Starry switch-in has no bound per-CPU area"));
     }
@@ -804,12 +809,7 @@ unsafe extern "Rust" fn starry_user_task_scheduler_tick(
     observed_ns: u64,
 ) -> scheduler::SchedulerTickWorkDisposition {
     let extension = unsafe { extension_data_from_raw(data) };
-    if !extension
-        .thread
-        .try_account_scheduler_tick_cpu_time(observed_ns)
-    {
-        return scheduler::SchedulerTickWorkDisposition::Retry;
-    }
+    extension.thread.sample_scheduler_tick_cpu_time(observed_ns);
     super::poll_process_cpu_timers_from_scheduler_tick(&extension.thread.proc_data);
     scheduler::SchedulerTickWorkDisposition::Complete
 }
@@ -881,7 +881,7 @@ mod tests {
     use super::*;
 
     static FOREIGN_EXTENSION_OPS: scheduler::ThreadExtensionOps = scheduler::ThreadExtensionOps {
-        on_switch_in: foreign_thread_hook,
+        on_switch_in: foreign_thread_switch_in,
         on_switch_out: foreign_thread_switch_out,
         on_exit: foreign_thread_hook,
         on_deadline_overrun: foreign_thread_hook,
@@ -963,6 +963,13 @@ mod tests {
     }
 
     unsafe extern "Rust" fn foreign_thread_hook(_data: usize, _thread: scheduler::ThreadId) {}
+
+    unsafe extern "Rust" fn foreign_thread_switch_in(
+        _data: usize,
+        _thread: scheduler::ThreadId,
+        _policy: scheduler::SchedulePolicy,
+    ) {
+    }
 
     unsafe extern "Rust" fn foreign_thread_switch_out(
         _data: usize,

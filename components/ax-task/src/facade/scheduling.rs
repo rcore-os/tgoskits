@@ -271,7 +271,12 @@ pub(super) fn execute_switch_plan(
             )
         };
     }
-    prepare_next_context(next.address_space(), next.thread(), next.extension());
+    prepare_next_context(
+        next.address_space(),
+        next.thread(),
+        decision.next_base_policy(),
+        next.extension(),
+    );
     // SAFETY: the scheduler committed both endpoint states before releasing its
     // locks. Runtime handles remain live, and local IRQs stay disabled here.
     unsafe { task_runtime::switch_context(previous.context(), next.context()) };
@@ -291,13 +296,14 @@ fn install_next_address_space(address_space: crate::runtime::AddressSpaceHandle,
 pub(super) fn prepare_next_context(
     address_space: crate::runtime::AddressSpaceHandle,
     thread: ThreadId,
+    policy: crate::SchedulePolicy,
     extension: Option<crate::ThreadExtensionView>,
 ) {
     install_next_address_space(address_space, thread);
     if let Some(extension) = extension {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // the address space is now active and no scheduler lock is held.
-        unsafe { (extension.ops().on_switch_in)(extension.data(), thread) };
+        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy) };
     }
 }
 

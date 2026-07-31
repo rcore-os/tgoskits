@@ -108,9 +108,10 @@ pub(crate) type ArceOsTaskHandle = modules::ax_runtime::task::ThreadHandle;
 pub(crate) type ArceOsWaitQueue = modules::ax_runtime::task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use modules::ax_runtime::task::{
-    CpuId as ArceOsTaskCpuId, CpuSet as ArceOsTaskCpuSet, SwitchReason as ArceOsSwitchReason,
-    TaskError as ArceOsTaskError, ThreadExtension as ArceOsThreadExtension,
-    ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
+    CpuId as ArceOsTaskCpuId, CpuSet as ArceOsTaskCpuSet, SchedulePolicy as ArceOsSchedulePolicy,
+    SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
+    ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
+    ThreadId as ArceOsThreadId,
 };
 
 pub(crate) fn current_task() -> ArceOsTaskHandle {

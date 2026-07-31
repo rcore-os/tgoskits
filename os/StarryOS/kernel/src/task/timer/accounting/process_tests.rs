@@ -157,12 +157,16 @@ mod process_tests {
         );
 
         process.record_transition(|| {
-            let _writer = first.begin_write();
-            first.account_now_at(10)
+            let writer = first.begin_owner_write();
+            first.account_now_at(10);
+            drop(writer);
+            first.publish_committed_delta()
         });
         process.record_transition(|| {
-            let _writer = second.begin_write();
-            second.account_now_at(10)
+            let writer = second.begin_owner_write();
+            second.account_now_at(10);
+            drop(writer);
+            second.publish_committed_delta()
         });
         assert_eq!(
             process.snapshot_committed_at(10),
