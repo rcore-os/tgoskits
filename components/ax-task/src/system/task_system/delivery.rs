@@ -96,7 +96,7 @@ impl TaskSystem {
         state.ensure_cpu_online(&cpu)?;
         let queued = cpu
             .as_mut()
-            .fields_mut()
+            .dispatch_state_mut()
             .run_queue
             .dequeue(thread)
             .ok_or(TaskError::NotReady)?;
@@ -122,15 +122,15 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
         let (drained, pending) = {
-            let fields = cpu.as_mut().fields_mut();
-            let limit = fields.batch_limit();
-            let remote = Arc::clone(fields.remote());
-            let buffer = &mut fields.remote_wake_buffer;
+            let remote = Arc::clone(cpu.remote());
+            let scratch = cpu.as_mut().drain_state_mut();
+            let limit = scratch.batch_limit();
+            let buffer = &mut scratch.remote_wake_buffer;
             let batch = remote.remote_wake_inbox().drain(limit, buffer);
             (batch.drained(), batch.pending())
         };
         let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
-        detached[..drained].copy_from_slice(&cpu.remote_wake_buffer[..drained]);
+        detached[..drained].copy_from_slice(&cpu.drain_state().remote_wake_buffer[..drained]);
         let mut messages =
             DetachedOwnerMessageBatch::new(&detached[..drained], DetachedPayloadKind::RemoteWake);
         while let Some(message) = messages.next() {
@@ -271,7 +271,7 @@ impl TaskSystem {
             }
             let queued = cpu
                 .as_mut()
-                .fields_mut()
+                .dispatch_state_mut()
                 .run_queue
                 .dequeue(core.id())
                 .ok_or(TaskError::NotReady)?;
@@ -330,16 +330,16 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
         let (drained, pending) = {
-            let fields = cpu.as_mut().fields_mut();
-            let limit = fields.batch_limit();
-            let remote = Arc::clone(fields.remote());
+            let remote = Arc::clone(cpu.remote());
+            let scratch = cpu.as_mut().drain_state_mut();
+            let limit = scratch.batch_limit();
             let batch = remote
                 .owner_control_inbox()
-                .drain(limit, &mut fields.migration_buffer);
+                .drain(limit, &mut scratch.owner_control_buffer);
             (batch.drained(), batch.pending())
         };
         let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
-        detached[..drained].copy_from_slice(&cpu.migration_buffer[..drained]);
+        detached[..drained].copy_from_slice(&cpu.drain_state().owner_control_buffer[..drained]);
         let completed_incoming_migrations = detached[..drained]
             .iter()
             .filter(|message| message.operation() == InboxOperation::Migration)
@@ -567,11 +567,11 @@ impl TaskSystem {
                 continue;
             }
             if queued_cpu == Some(owner) {
-                if cpu.as_ref().get_ref().current_dispatch.is_some() {
+                if cpu.dispatch_state().current_dispatch.is_some() {
                     cpu.as_mut().settle_current_dispatch(now_ns, 0)?;
                 } else {
                     cpu.as_mut()
-                        .fields_mut()
+                        .dispatch_state_mut()
                         .run_queue
                         .update_fair_virtual_time(None);
                 }
@@ -579,7 +579,7 @@ impl TaskSystem {
                     Self::owner_fair_policy_placement(cpu.as_ref().get_ref(), &core);
                 let queued = cpu
                     .as_mut()
-                    .fields_mut()
+                    .dispatch_state_mut()
                     .run_queue
                     .dequeue(core.id())
                     .ok_or(TaskError::NotReady)?;

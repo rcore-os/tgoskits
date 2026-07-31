@@ -109,7 +109,7 @@ impl TaskSystem {
             core.set_target_cpu(owner);
             return Ok(false);
         }
-        let fields = cpu.as_mut().fields_mut();
+        let fields = cpu.as_mut().dispatch_state_mut();
         let queued_entity =
             fields
                 .run_queue
@@ -146,13 +146,12 @@ impl TaskSystem {
         reason: EnqueueReason,
         preempts_current: bool,
     ) {
-        let fields = cpu.as_mut().fields_mut();
         if matches!(
             reason,
             EnqueueReason::Wake | EnqueueReason::Replenished | EnqueueReason::Migrated
         ) && preempts_current
         {
-            fields.request_reschedule();
+            cpu.request_reschedule();
         }
         self.publish_owner_cpu_load_summary(cpu.as_mut());
     }
@@ -166,11 +165,10 @@ impl TaskSystem {
         if !matches!(sched.active_base_policy, SchedulePolicy::Deadline(_)) {
             return Ok(());
         }
-        let member_registered = cpu.as_mut().fields_mut().register_deadline_member(core)?;
+        let member_registered = cpu.as_mut().register_deadline_member(core)?;
         let bandwidth_result = match sched.deadline_bandwidth_cpu {
             None => cpu
                 .as_mut()
-                .fields_mut()
                 .add_deadline_bandwidth(sched.deadline_bandwidth_scaled, true),
             Some(assigned) if assigned != owner => Err(TaskError::CpuOwnerMismatch {
                 expected: assigned.as_u32(),
@@ -178,13 +176,12 @@ impl TaskSystem {
             }),
             Some(_) if sched.deadline_activity == DeadlineActivity::Inactive => cpu
                 .as_mut()
-                .fields_mut()
                 .activate_deadline_bandwidth(sched.deadline_bandwidth_scaled),
             Some(_) => Ok(()),
         };
         if let Err(error) = bandwidth_result {
             if member_registered {
-                cpu.as_mut().fields_mut().unregister_deadline_member(core);
+                cpu.as_mut().unregister_deadline_member(core);
             }
             return Err(error);
         }
@@ -218,12 +215,12 @@ impl TaskSystem {
             });
         }
         Self::cancel_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
-        cpu.as_mut().fields_mut().remove_deadline_bandwidth(
+        cpu.as_mut().remove_deadline_bandwidth(
             sched.deadline_bandwidth_scaled,
             sched.deadline_activity != DeadlineActivity::Inactive,
         )?;
         sched.deadline_bandwidth_cpu = None;
-        cpu.as_mut().fields_mut().unregister_deadline_member(core);
+        cpu.as_mut().unregister_deadline_member(core);
         Ok(())
     }
 
@@ -236,11 +233,10 @@ impl TaskSystem {
         if !matches!(sched.active_base_policy, SchedulePolicy::Deadline(_)) {
             return Ok(());
         }
-        let member_registered = cpu.as_mut().fields_mut().register_deadline_member(core)?;
+        let member_registered = cpu.as_mut().register_deadline_member(core)?;
         let bandwidth_result = match sched.deadline_bandwidth_cpu {
             None => cpu
                 .as_mut()
-                .fields_mut()
                 .add_deadline_bandwidth(sched.deadline_bandwidth_scaled, false),
             Some(assigned) if assigned != owner => Err(TaskError::CpuOwnerMismatch {
                 expected: assigned.as_u32(),
@@ -250,7 +246,7 @@ impl TaskSystem {
         };
         if let Err(error) = bandwidth_result {
             if member_registered {
-                cpu.as_mut().fields_mut().unregister_deadline_member(core);
+                cpu.as_mut().unregister_deadline_member(core);
             }
             return Err(error);
         }
@@ -281,7 +277,6 @@ impl TaskSystem {
         let zero_lag_ns = deadline_zero_lag_ns(deadline);
         if zero_lag_ns <= now_ns {
             cpu.as_mut()
-                .fields_mut()
                 .deactivate_deadline_bandwidth(sched.deadline_bandwidth_scaled)?;
             sched.deadline_activity = DeadlineActivity::Inactive;
             sched.deadline_zero_lag_ns = 0;
@@ -306,8 +301,14 @@ impl TaskSystem {
             .fair()
             .map_or(destination_mode, |fair| fair.mode());
         Some(FairPolicyPlacement {
-            source_virtual_time: cpu.run_queue.virtual_time_for_mode(source_mode),
-            destination_virtual_time: cpu.run_queue.virtual_time_for_mode(destination_mode),
+            source_virtual_time: cpu
+                .dispatch_state()
+                .run_queue
+                .virtual_time_for_mode(source_mode),
+            destination_virtual_time: cpu
+                .dispatch_state()
+                .run_queue
+                .virtual_time_for_mode(destination_mode),
         })
     }
 
@@ -388,7 +389,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        if cpu.as_ref().get_ref().current_dispatch.is_none() {
+        if cpu.dispatch_state().current_dispatch.is_none() {
             return Ok(());
         }
         let _charge = cpu.as_mut().settle_current_dispatch(now_ns, 0)?;

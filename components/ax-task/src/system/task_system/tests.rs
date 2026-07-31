@@ -1629,7 +1629,7 @@ fn remote_deadline_policy_published_after_exit_drain_cannot_create_a_zombie() {
 
     system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
     assert!(
-        cpu0.deadline_members.is_empty(),
+        cpu0.deadline_members_are_empty_for_test(),
         "late policy delivery must not register an exited Deadline member"
     );
     let core = exiting_core
@@ -2034,6 +2034,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap();
 
     let before = cpu
+        .dispatch_state()
         .current_dispatch
         .as_ref()
         .unwrap()
@@ -2042,7 +2043,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap();
     assert_eq!(before.vruntime(), 650_000);
     assert_eq!(before.remaining_request_ns(), 350_000);
-    let virtual_time = cpu.run_queue.virtual_time();
+    let virtual_time = cpu.dispatch_state().run_queue.virtual_time();
     assert_eq!(virtual_time, 825_000);
 
     let nice = Nice::new(5).unwrap();
@@ -2184,7 +2185,7 @@ fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
         .charge_current(cpu.as_mut(), 1_001_000, 1_000, 0)
         .unwrap();
 
-    let normal_virtual_time = cpu.run_queue.virtual_time();
+    let normal_virtual_time = cpu.dispatch_state().run_queue.virtual_time();
     assert_eq!(normal_virtual_time, 1_000_000);
     system
         .set_thread_policy(idle.id(), SchedulePolicy::default())
@@ -2237,7 +2238,9 @@ fn running_normal_to_idle_transition_settles_then_rebases_lag() {
     assert_eq!(transitioned.mode(), FairMode::Idle);
     assert_eq!(
         transitioned.vruntime(),
-        cpu.run_queue.virtual_time_for_mode(FairMode::Idle),
+        cpu.dispatch_state()
+            .run_queue
+            .virtual_time_for_mode(FairMode::Idle),
         "settled zero lag must be expressed relative to the destination V domain",
     );
 }
@@ -3338,7 +3341,6 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
     );
 
     cpu1.as_mut()
-        .fields_mut()
         .add_deadline_bandwidth(500_000_000, false)
         .unwrap();
     system.charge_current(cpu1.as_mut(), 5, 5, 0).unwrap();
