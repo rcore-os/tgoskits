@@ -33,6 +33,8 @@
 ### 1.3 关键数据结构与全局对象
 - `BOOTARG`：保存引导阶段传入的参数，后续由 DTB/FDT 解析流程读取。
 - `ALL_MEM_REGIONS`：统一后的物理内存区域视图，是 `ax-alloc`、`ax-runtime` 等模块做内存初始化的基础。
+- `CpuRuntimeAnchor`：固定在 CPU 区域前缀中的运行时状态，持有当前线程发布槽、
+  普通 preemption depth 和本 CPU `need_resched` 位。
 - `CurrentThreadHeader`：由 `cpu-local` 统一定义的当前线程发布头；调度切换通过 CPU 区域前缀发布，不再维护第二份 per-CPU 任务指针。
 - `IRQ_HOOK`：可注册的 IRQ 钩子，用于平台 IRQ 分发前后的附加处理。
 - `CPU_NUM`：在 `smp` 场景下，由平台运行时发现结果决定最终可用 CPU 数。

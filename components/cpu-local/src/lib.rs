@@ -27,8 +27,10 @@ pub use register::install_kernel_tls;
 pub use register::kernel_tls;
 #[doc(hidden)]
 pub use register::{
-    install_bootstrap_thread, install_cpu_area, scheduler_current_cpu_index,
-    scheduler_current_thread,
+    install_bootstrap_thread, install_cpu_area, scheduler_clear_preempt_need_resched,
+    scheduler_consume_final_preempt_guard, scheduler_current_cpu_index, scheduler_current_thread,
+    scheduler_enter_preempt_guard, scheduler_preempt_guard_depth,
+    scheduler_prepare_preempt_guard_exit, scheduler_set_preempt_need_resched,
 };
 pub use switch::{PreparedThreadSwitch, PreviousThreadBinding, prepare_thread_switch};
 #[doc(hidden)]

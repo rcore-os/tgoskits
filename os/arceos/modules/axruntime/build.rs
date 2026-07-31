@@ -12,6 +12,7 @@ const EXT_LINKER_SCRIPT_NAME: &str = "runtime.x";
 const BUILD_INFO_NAME: &str = "build_info.rs";
 const AXTEST_COVERAGE_RUNTIME_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_RUNTIME_SECTIONS%";
 const AXTEST_COVERAGE_OUTPUT_SECTIONS_PLACEHOLDER: &str = "%AXTEST_COVERAGE_OUTPUT_SECTIONS%";
+const HOST_TEST_LINKER_SCRIPT_NAME: &str = "host-test.ld";
 const DEFAULT_CPU_CAPACITY: usize = 16;
 const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
 const DEFAULT_TICKS_PER_SEC: usize = 100;
@@ -22,6 +23,14 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed=DWARF");
     println!("cargo:rerun-if-env-changed=AXTEST_COVERAGE");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_HOST_TEST");
+
+    if cfg!(target_os = "linux") && env::var_os("CARGO_FEATURE_HOST_TEST").is_some() {
+        let host_linker_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join(HOST_TEST_LINKER_SCRIPT_NAME);
+        println!("cargo:rerun-if-changed={}", host_linker_path.display());
+        println!("cargo:rustc-link-arg=-T{}", host_linker_path.display());
+    }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let ld_content = fs::read_to_string(LINKER_TEMPLATE_NAME)?

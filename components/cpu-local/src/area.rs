@@ -1,17 +1,37 @@
 use core::{
     mem::{MaybeUninit, align_of, offset_of, size_of},
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
 use crate::{CpuIndex, CpuLocalError, CurrentThreadHeader};
+
+pub(crate) const PREEMPT_NO_RESCHED: u32 = 1 << 31;
+#[cfg(any(not(target_arch = "x86_64"), feature = "host-test", test))]
+const PREEMPT_DEPTH_MASK: u32 = !PREEMPT_NO_RESCHED;
+
+const fn runtime_anchor_reserved_size() -> usize {
+    64 - 5 * size_of::<usize>() - size_of::<u32>()
+}
+
+/// Outcome of preparing one CPU-local preemption-guard exit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuPreemptExit {
+    /// A nested depth was consumed without exposing a preemptible context.
+    NestedConsumed,
+    /// The final depth was consumed because no scheduler work is pending.
+    FinalConsumed,
+    /// The final depth remains published for scheduler-baton conversion.
+    FinalPending,
+}
 
 /// CPU-local scalar state shared by trap entry and scheduler publication.
 #[repr(C, align(64))]
 pub struct CpuRuntimeAnchor {
     current_thread: AtomicUsize,
     architecture_state: [AtomicUsize; 4],
-    reserved: [u8; 64 - 5 * size_of::<usize>()],
+    preempt_state: AtomicU32,
+    reserved: [u8; runtime_anchor_reserved_size()],
 }
 
 impl CpuRuntimeAnchor {
@@ -19,7 +39,8 @@ impl CpuRuntimeAnchor {
         Self {
             current_thread: AtomicUsize::new(boot_thread),
             architecture_state: [const { AtomicUsize::new(0) }; 4],
-            reserved: [0; 64 - 5 * size_of::<usize>()],
+            preempt_state: AtomicU32::new(PREEMPT_NO_RESCHED),
+            reserved: [0; runtime_anchor_reserved_size()],
         }
     }
 
@@ -30,6 +51,82 @@ impl CpuRuntimeAnchor {
 
     pub(crate) const fn current_thread_slot(&self) -> &AtomicUsize {
         &self.current_thread
+    }
+}
+
+#[cfg(any(not(target_arch = "x86_64"), feature = "host-test", test))]
+impl CpuRuntimeAnchor {
+    #[inline(always)]
+    pub(crate) fn preempt_guard_depth(&self) -> u32 {
+        self.preempt_state.load(Ordering::Relaxed) & PREEMPT_DEPTH_MASK
+    }
+
+    #[cfg(test)]
+    #[inline(always)]
+    pub(crate) fn preempt_need_resched(&self) -> bool {
+        self.preempt_state.load(Ordering::Relaxed) & PREEMPT_NO_RESCHED == 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_preempt_need_resched(&self) {
+        self.preempt_state
+            .fetch_and(PREEMPT_DEPTH_MASK, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub(crate) fn clear_preempt_need_resched(&self) {
+        self.preempt_state
+            .fetch_or(PREEMPT_NO_RESCHED, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub(crate) fn enter_preempt_guard(&self) {
+        let previous = self.preempt_state.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(
+            previous & PREEMPT_DEPTH_MASK,
+            PREEMPT_DEPTH_MASK,
+            "CPU-local preemption guard nesting overflow"
+        );
+    }
+
+    pub(crate) fn prepare_preempt_guard_exit(&self) -> CpuPreemptExit {
+        loop {
+            let state = self.preempt_state.load(Ordering::Relaxed);
+            let depth = state & PREEMPT_DEPTH_MASK;
+            assert!(depth > 0, "unbalanced CPU-local preemption guard exit");
+            if depth == 1 {
+                if state & PREEMPT_NO_RESCHED == 0 {
+                    return CpuPreemptExit::FinalPending;
+                }
+                if self
+                    .preempt_state
+                    .compare_exchange_weak(
+                        state,
+                        PREEMPT_NO_RESCHED,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    return CpuPreemptExit::FinalConsumed;
+                }
+                continue;
+            }
+            if self
+                .preempt_state
+                .compare_exchange_weak(state, state - 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return CpuPreemptExit::NestedConsumed;
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn consume_final_preempt_guard(&self) -> bool {
+        self.preempt_state
+            .compare_exchange(1, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
 }
 
@@ -231,6 +328,10 @@ pub const CPU_AREA_ARCH_STATE_OFFSET: usize =
     CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, architecture_state);
 /// Reserved bytes available to the architecture-owned CPU trap state.
 pub const CPU_AREA_ARCH_STATE_SIZE: usize = 4 * size_of::<usize>();
+/// Byte offset of CPU-local preemption depth and reschedule state.
+#[doc(hidden)]
+pub const CPU_AREA_PREEMPT_STATE_OFFSET: usize =
+    CPU_AREA_RUNTIME_ANCHOR_OFFSET + offset_of!(CpuRuntimeAnchor, preempt_state);
 
 const _: () = {
     assert!(size_of::<CpuAreaHeader>() == 64);
@@ -256,3 +357,64 @@ pub static mut __CPU_LOCAL_AREA_PREFIX: MaybeUninit<CpuAreaPrefix> = MaybeUninit
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".percpu.template.end")]
 pub static __CPU_LOCAL_TEMPLATE_END: u8 = 0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime_anchor() -> CpuRuntimeAnchor {
+        CpuRuntimeAnchor::for_boot_thread(64)
+    }
+
+    #[test]
+    fn nested_preempt_exit_consumes_only_one_depth() {
+        let anchor = runtime_anchor();
+        anchor.enter_preempt_guard();
+        anchor.enter_preempt_guard();
+
+        assert_eq!(
+            anchor.prepare_preempt_guard_exit(),
+            CpuPreemptExit::NestedConsumed
+        );
+        assert_eq!(anchor.preempt_guard_depth(), 1);
+    }
+
+    #[test]
+    fn final_preempt_exit_without_work_becomes_preemptible() {
+        let anchor = runtime_anchor();
+        anchor.enter_preempt_guard();
+
+        assert_eq!(
+            anchor.prepare_preempt_guard_exit(),
+            CpuPreemptExit::FinalConsumed
+        );
+        assert_eq!(anchor.preempt_guard_depth(), 0);
+    }
+
+    #[test]
+    fn final_preempt_exit_retains_depth_until_baton_conversion() {
+        let anchor = runtime_anchor();
+        anchor.enter_preempt_guard();
+        anchor.set_preempt_need_resched();
+
+        assert_eq!(
+            anchor.prepare_preempt_guard_exit(),
+            CpuPreemptExit::FinalPending
+        );
+        assert_eq!(anchor.preempt_guard_depth(), 1);
+        assert!(anchor.consume_final_preempt_guard());
+        assert_eq!(anchor.preempt_guard_depth(), 0);
+        assert!(anchor.preempt_need_resched());
+
+        anchor.clear_preempt_need_resched();
+        assert!(!anchor.preempt_need_resched());
+        assert!(!anchor.consume_final_preempt_guard());
+    }
+
+    #[test]
+    #[should_panic(expected = "unbalanced CPU-local preemption guard exit")]
+    fn unbalanced_preempt_exit_panics() {
+        let anchor = runtime_anchor();
+        let _ = anchor.prepare_preempt_guard_exit();
+    }
+}
