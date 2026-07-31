@@ -307,14 +307,12 @@ impl TaskSystem {
             let (migration_target, previous_exited) =
                 self.validate_switch_handoff_state(owner, bandwidth, &handoff, &sched)?;
             if migration_target.is_some() && sched.deadline_bandwidth_cpu.is_some() {
-                cpu.as_mut().fields_mut().remove_deadline_bandwidth(
+                cpu.as_mut().remove_deadline_bandwidth(
                     sched.deadline_bandwidth_scaled,
                     sched.deadline_activity != DeadlineActivity::Inactive,
                 )?;
                 sched.deadline_bandwidth_cpu = None;
-                cpu.as_mut()
-                    .fields_mut()
-                    .unregister_deadline_member(&handoff.previous);
+                cpu.as_mut().unregister_deadline_member(&handoff.previous);
             }
             sched.placement.set_on_cpu(None)?;
             if let Some(target) = migration_target {

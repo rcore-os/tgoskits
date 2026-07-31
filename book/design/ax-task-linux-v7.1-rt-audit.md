@@ -2464,6 +2464,50 @@ integration/doc test, the hard-IRQ allocation contract, and all 21 Loom
 models. ax-runtime's multitask host suite passes 62/62, and the ax-task 1-check
 plus ax-runtime 26-check feature-clippy matrices pass.
 
+## Current-head owner runqueue state boundaries
+
+`CpuLocal` previously kept current/idle dispatch, every scheduling-class
+queue, Deadline admission, the task-deadline heap, remote-drain scratch, and
+switch-tail ownership in one flat structure. More importantly,
+`fields_mut()` returned mutable access to that entire pinned object. This made
+an owner-side wake drain or balance change able to modify unrelated timer,
+admission, and switch-tail state, even though each call held the correct CPU
+ownership token.
+
+Linux v7.1 also has one stable `struct rq` per CPU, but it makes the owned
+substates explicit: current and idle execution identity, embedded CFS/RT/DL
+runqueues, the remote `ttwu_pending` protocol, and per-runqueue timing state
+(`kernel/sched/sched.h:1131-1205`). Remote wake-list consumption mutates the
+target runqueue only after taking its owner lock, then clears
+`ttwu_pending` after activation has made runnable state visible
+(`kernel/sched/core.c:3792-3833`). Under PREEMPT_RT that scheduler lock remains
+a raw non-sleeping lock; it is not converted into an ordinary sleepable
+mutex.
+
+ax-task now keeps the stable pinned `CpuLocal` identity but composes four
+owner-only domains:
+
+- `OwnerDispatchState` owns current/idle execution, the class runqueue, RT
+  throttling, fair-balance cadence, and switch-tail handoff;
+- `DeadlineClassState` owns Deadline membership and GRUB/CBS admission;
+- `LocalTaskDeadlineState` owns the typed deadline heap, bounded expiry
+  buffer, and generation-bearing clockevent publication; and
+- `OwnerDrainScratch` owns only the preallocated remote-wake and owner-control
+  drain buffers.
+
+The former whole-object mutable escape has been removed. Scheduler operations
+receive only the state domain they need, while cross-domain operations remain
+named `CpuLocal` transitions that sequence narrow borrows and remote
+publication explicitly. Pin projections are private and document why
+accessing a composed state cannot move the `!Unpin` CPU identity. The old
+`migration_buffer` terminology is gone with the remote inbox cleanup; the
+buffer is now named for the owner-control protocol it actually drains.
+
+This is a behavior-preserving ownership refactor and therefore does not add a
+red regression. Its acceptance criterion is unchanged scheduler behavior
+under the complete unit, integration, hard-IRQ allocation, Loom, ax-runtime,
+and feature-clippy suites.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

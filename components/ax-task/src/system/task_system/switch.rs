@@ -176,9 +176,9 @@ impl TaskSystem {
         let mut reconciled = 0;
         let core = loop {
             let queued = {
-                let fields = cpu.as_mut().fields_mut();
-                let ordinary_rt_may_run = fields.rt_bandwidth.may_run(now_ns, false);
-                fields
+                let dispatch = cpu.as_mut().dispatch_state_mut();
+                let ordinary_rt_may_run = dispatch.rt_bandwidth.may_run(now_ns, false);
+                dispatch
                     .run_queue
                     .pick_next_with_rt(ordinary_rt_may_run, |queued| {
                         queued.core.sched().lock().is_pi_boosted_rt_owner()
@@ -188,6 +188,7 @@ impl TaskSystem {
                 break cpu
                     .as_ref()
                     .get_ref()
+                    .dispatch_state()
                     .idle_core
                     .as_ref()
                     .cloned()
@@ -246,6 +247,7 @@ impl TaskSystem {
                     break cpu
                         .as_ref()
                         .get_ref()
+                        .dispatch_state()
                         .idle_core
                         .as_ref()
                         .cloned()

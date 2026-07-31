@@ -66,27 +66,28 @@ impl TaskSystem {
         }
     }
 
-    pub(super) fn publish_owner_cpu_load_summary(&self, mut cpu: Pin<&mut CpuLocal>) {
+    pub(super) fn publish_owner_cpu_load_summary(&self, cpu: Pin<&mut CpuLocal>) {
         #[cfg(test)]
         LOAD_SUMMARY_PUBLICATIONS.set(LOAD_SUMMARY_PUBLICATIONS.get().saturating_add(1));
         // Every caller already owns either the scheduler baton or an owner IRQ
         // guard. Like Linux's rq clock/load update under rq ownership, this
         // nested publication needs no second IRQ-state transaction.
-        let fields = cpu.as_mut().fields_mut();
-        let current_key = fields
+        let state = cpu.dispatch_state();
+        let current_key = state
             .current_dispatch
             .as_ref()
             .map(CurrentDispatch::scheduling_key);
-        let current_non_idle = fields.current.is_some() && fields.current != fields.idle;
-        let pushable_key = fields.run_queue.pushable_key();
-        let workload = fields
+        let current_non_idle = state.current.is_some() && state.current != state.idle;
+        let pushable_key = state.run_queue.pushable_key();
+        let runnable = state.run_queue.len();
+        let workload = state
             .run_queue
             .len()
             .saturating_add(usize::from(current_non_idle));
-        fields.publish_load_summary(
+        cpu.publish_load_summary(
             current_key,
             pushable_key,
-            fields.run_queue.len(),
+            runnable,
             workload,
             pushable_key.is_some() && workload > 1,
         );
@@ -100,14 +101,15 @@ impl TaskSystem {
         reason: BalanceReason,
     ) -> Option<QueuedThread> {
         let source = cpu.owner();
-        let current_policy = cpu
+        let state = cpu.dispatch_state();
+        let current_policy = state
             .current_dispatch
             .as_ref()
             .map(CurrentDispatch::schedule_policy);
-        let queued_top_rt = cpu.run_queue.highest_rt_priority();
+        let queued_top_rt = state.run_queue.highest_rt_priority();
         let top_rt_count =
-            queued_top_rt.map_or(0, |priority| cpu.run_queue.rt_count_at_priority(priority));
-        cpu.run_queue.balance_candidate(|candidate| {
+            queued_top_rt.map_or(0, |priority| state.run_queue.rt_count_at_priority(priority));
+        state.run_queue.balance_candidate(|candidate| {
             #[cfg(test)]
             BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
             let sched = candidate.core.sched().lock();
@@ -225,7 +227,7 @@ impl TaskSystem {
         }
         let detached = cpu
             .as_mut()
-            .fields_mut()
+            .dispatch_state_mut()
             .run_queue
             .detach_for_transfer(core.id())
             .ok_or(TaskError::NotReady)?;
@@ -299,7 +301,7 @@ impl TaskSystem {
             }
         };
         cpu.as_mut()
-            .fields_mut()
+            .dispatch_state_mut()
             .run_queue
             .restore_detached(detached);
         self.publish_owner_cpu_load_summary(cpu);

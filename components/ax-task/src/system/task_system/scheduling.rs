@@ -265,7 +265,7 @@ impl TaskSystem {
         self.ensure_owner_cpu_online(&cpu)?;
         Ok(cpu
             .as_mut()
-            .fields_mut()
+            .dispatch_state_mut()
             .rt_bandwidth
             .may_run(now_ns, pi_boosted_owner))
     }

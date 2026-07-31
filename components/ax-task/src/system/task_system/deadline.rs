@@ -361,7 +361,7 @@ impl TaskSystem {
         if let Some(entity) = update_queued
             && !cpu
                 .as_mut()
-                .fields_mut()
+                .dispatch_state_mut()
                 .run_queue
                 .update_deadline_entity(core.id(), entity)
         {
@@ -393,7 +393,6 @@ impl TaskSystem {
             && event.deadline_ns() >= sched.deadline_zero_lag_ns
         {
             cpu.as_mut()
-                .fields_mut()
                 .deactivate_deadline_bandwidth(sched.deadline_bandwidth_scaled)?;
             sched.deadline_activity = DeadlineActivity::Inactive;
             sched.deadline_zero_lag_ns = 0;
