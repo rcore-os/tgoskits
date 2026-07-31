@@ -1,5 +1,12 @@
 use super::*;
 
+#[cfg(feature = "host-test")]
+#[test]
+fn host_spin_guard_before_runtime_bootstrap_is_noop() {
+    let lock = ax_kspin::SpinNoIrq::new(());
+    let _guard = lock.lock();
+}
+
 #[test]
 fn nested_irq_exits_restore_only_the_outer_state() {
     let mut state = RuntimeGuardState::new();

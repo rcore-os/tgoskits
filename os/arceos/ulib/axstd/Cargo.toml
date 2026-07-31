@@ -20,6 +20,7 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 default = ["alloc", "tls", "fd"]
+host-test = ["ax-runtime/host-test"]
 
 # Baseline required by every ArceOS Rust application. Applications enable this
 # through their own `arceos` feature instead of axbuild completing it at runtime.
