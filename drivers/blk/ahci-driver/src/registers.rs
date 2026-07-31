@@ -393,9 +393,8 @@ impl PortRegisters {
         self.registers().interrupt_status.get()
     }
 
-    fn acknowledge_interrupts(&self, status: u32) {
+    fn acknowledge_port_interrupts(&self, status: u32) {
         self.registers().interrupt_status.set(status);
-        self.hba.acknowledge_interrupts(1_u32 << self.index);
     }
 
     fn registers(&self) -> &PortRegisterBlock {
@@ -459,7 +458,7 @@ impl SharedHardIrqHandler for AhciHostIrq {
             let status = route.port.pending_interrupts();
             let relevant = status & PORT_IRQ_ENABLE;
             route.port.set_interrupts_enabled(false);
-            route.port.acknowledge_interrupts(status);
+            route.port.acknowledge_port_interrupts(status);
             if relevant == 0 {
                 continue;
             }
@@ -474,9 +473,9 @@ impl SharedHardIrqHandler for AhciHostIrq {
         }
 
         let unrouted = asserted & !routed_ports;
-        if unrouted != 0 {
-            self.hba.acknowledge_interrupts(unrouted);
-        }
+        // HBA IS is W1C. Confirm the exact snapshot once after every routed
+        // port has acknowledged its PxIS so no asserted port is lost.
+        self.hba.acknowledge_interrupts(asserted);
         if handled || unrouted != 0 {
             IrqDisposition::Cleared
         } else {
@@ -523,11 +522,11 @@ mod tests {
     }
 
     #[test]
-    fn one_irq_fans_out_two_ports_without_rechecking_global_status() {
+    fn one_irq_fans_out_two_ports_and_acknowledges_the_initial_global_status() {
         let mut words = vec![0_u32; TEST_WORDS];
         let hba = HbaRegisters::from_words(&mut words);
         words[0] = (1 << 30) | (31 << 8) | 1;
-        words[2] = 0b11;
+        words[2] = 0b111;
         let port0 = hba.port(0).expect("port zero");
         let port1 = hba.port(1).expect("port one");
         words[(PORT_BASE + 0x10) / 4] = 1;
@@ -549,6 +548,10 @@ mod tests {
         assert_eq!(events.0[1].target(), rdif_block::GroupIrqTarget::Member(1));
         assert_eq!(first.load(Ordering::Acquire), 1);
         assert_eq!(second.load(Ordering::Acquire), 1 << 3);
+        assert_eq!(
+            words[2], 0b111,
+            "the final HBA IS write must acknowledge routed and unrouted bits from one snapshot"
+        );
     }
 
     #[test]
