@@ -87,6 +87,11 @@ fn scheduler_tick_accounting_excludes_an_active_state_writer() {
 }
 
 #[axtest]
+fn untraced_syscall_boundary_skips_ptrace_maps() {
+    ax_assert!(axtest_exports::inactive_ptrace_syscall_gate_is_lock_free());
+}
+
+#[axtest]
 fn futex_empty_wake_op_avoids_entry_allocation() {
     ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
 }

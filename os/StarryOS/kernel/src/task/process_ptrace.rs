@@ -72,6 +72,25 @@ impl ProcessPtraceState {
             stop_fp_data: PiMutex::new(BTreeMap::new()),
         }
     }
+
+    /// Starts one syscall-boundary ptrace transaction.
+    ///
+    /// `None` is the lock-free fast path for an untraced process. A present
+    /// value means ptrace owns this boundary and carries the per-thread entry
+    /// or exit state consumed from the slow-path map.
+    pub(super) fn take_syscall_trace_if_active(&self, tid: u32) -> Option<SyscallTraceState> {
+        if !self.traceme.load(Ordering::Acquire) && !self.attached.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(self.syscall_trace.lock().remove(&tid).unwrap_or_default())
+    }
+}
+
+#[cfg(axtest)]
+pub(crate) fn inactive_ptrace_syscall_gate_is_lock_free_for_test() -> bool {
+    ProcessPtraceState::new()
+        .take_syscall_trace_if_active(1)
+        .is_none()
 }
 
 #[cfg(target_arch = "riscv64")]

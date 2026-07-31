@@ -510,6 +510,12 @@ pub trait TaskRuntime {
     /// This capability does not disable hardware interrupts. It is valid only
     /// in task context or inside an active scheduler frame; hard-IRQ code must
     /// use IRQ-safe publication instead of task-only scheduler locks.
+    ///
+    /// When an enclosing scheduler frame or runtime IRQ guard already owns the
+    /// CPU for the complete lock scope, the runtime returns
+    /// [`PreemptGuardToken::NONE`]. The matching lock guard then releases only
+    /// its raw lock; it must not manufacture another ordinary preemption depth
+    /// inside the existing owner transaction.
     fn preempt_guard_enter() -> PreemptGuardToken;
 
     /// Leaves one nested task-preemption guard.
@@ -520,9 +526,9 @@ pub trait TaskRuntime {
     ///
     /// # Safety
     ///
-    /// `token` must have been returned by `preempt_guard_enter` on this task
-    /// execution context and must be exited exactly once. Tokens may be exited
-    /// in non-LIFO order.
+    /// A non-`NONE` `token` must have been returned by
+    /// `preempt_guard_enter` on this task execution context and must be exited
+    /// exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn preempt_guard_exit(token: PreemptGuardToken);
 
     /// Reports whether sticky scheduler work for the current CPU has a local

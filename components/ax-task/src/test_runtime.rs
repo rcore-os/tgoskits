@@ -211,6 +211,11 @@ impl TaskRuntime for UnitTestRuntime {
     }
 
     fn preempt_guard_enter() -> PreemptGuardToken {
+        let owner_scope = ACTIVE_IRQ_TOKENS.with(|tokens| !tokens.borrow().is_empty())
+            || SCHEDULER_FRAME_DEPTH.with(|depth| depth.get() != 0);
+        if owner_scope {
+            return PreemptGuardToken::NONE;
+        }
         PREEMPT_GUARD_ENTRIES.with(|entries| entries.set(entries.get() + 1));
         let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
         ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow_mut().push(token));
@@ -220,6 +225,10 @@ impl TaskRuntime for UnitTestRuntime {
     }
 
     unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
+        assert!(
+            !token.is_none(),
+            "an inherited owner scope must not be exited as an ordinary preemption guard"
+        );
         ACTIVE_PREEMPT_TOKENS.with(|tokens| {
             let mut tokens = tokens.borrow_mut();
             let index = tokens
@@ -506,6 +515,10 @@ pub(crate) fn reset_irq_state() {
     IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
 }
 
+pub(crate) fn reset_irq_guard_entries() {
+    IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
+}
+
 pub(crate) fn active_irq_guards() -> usize {
     ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().len())
 }
@@ -516,6 +529,10 @@ pub(crate) fn irq_guard_entries() -> usize {
 
 pub(crate) fn reset_preempt_state() {
     ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow_mut().clear());
+    PREEMPT_GUARD_ENTRIES.with(|entries| entries.set(0));
+}
+
+pub(crate) fn reset_preempt_guard_entries() {
     PREEMPT_GUARD_ENTRIES.with(|entries| entries.set(0));
 }
 

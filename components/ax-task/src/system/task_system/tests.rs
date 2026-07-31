@@ -1997,7 +1997,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
 
 #[test]
 fn scheduler_internal_locks_do_not_reenter_the_irq_guard() {
-    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     for _ in 0..2 {
@@ -2009,8 +2009,9 @@ fn scheduler_internal_locks_do_not_reenter_the_irq_guard() {
     }
     system.schedule(cpu.as_mut(), 0).unwrap();
 
-    crate::test_runtime::reset_irq_state();
-    crate::test_runtime::reset_preempt_state();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    crate::test_runtime::reset_irq_guard_entries();
+    crate::test_runtime::reset_preempt_guard_entries();
     system.yield_current(cpu.as_mut(), 1).unwrap();
 
     assert_eq!(
@@ -2019,9 +2020,11 @@ fn scheduler_internal_locks_do_not_reenter_the_irq_guard() {
         "owner scheduling already runs inside its scheduler frame; internal locks must not repeat \
          the full IRQ-guard path"
     );
-    assert!(
-        crate::test_runtime::preempt_guard_entries() > 0,
-        "task-only scheduler locks must still retain the current execution context"
+    assert_eq!(
+        crate::test_runtime::preempt_guard_entries(),
+        0,
+        "the scheduler/IRQ owner baton already retains the CPU; internal task-state locks must \
+         reuse that ownership instead of nesting ordinary preemption guards"
     );
 }
 

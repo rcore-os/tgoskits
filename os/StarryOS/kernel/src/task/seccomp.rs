@@ -7,10 +7,12 @@
 //! compact classic-BPF interpreter for `struct seccomp_data`; unsupported or
 //! malformed programs fail closed by returning a kill decision.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
+use ax_sync::PiMutex;
 use syscalls::Sysno;
 
 const BPF_MAXINSNS: usize = 4096;
@@ -116,6 +118,74 @@ pub struct SockFprog {
 pub struct SeccompState {
     mode: SeccompMode,
     filters: Vec<SeccompFilter>,
+}
+
+/// Append-only publication store for immutable per-thread seccomp snapshots.
+///
+/// Linux evaluates seccomp from an immutable filter chain without taking an
+/// rtmutex on every syscall. StarryOS follows the same lifetime model: writers
+/// serialize rare policy updates, publish the fully built snapshot with
+/// release ordering, and retain every published allocation until the owning
+/// thread is destroyed. Readers can therefore borrow the acquire-loaded
+/// snapshot without locking or reference-count traffic.
+pub(crate) struct SeccompStateStore {
+    current: AtomicPtr<SeccompState>,
+    snapshots: PiMutex<Vec<Arc<SeccompState>>>,
+}
+
+impl SeccompStateStore {
+    pub(crate) fn new() -> Self {
+        let initial = Arc::new(SeccompState::default());
+        let current = Arc::as_ptr(&initial).cast_mut();
+        Self {
+            current: AtomicPtr::new(current),
+            snapshots: PiMutex::new(vec![initial]),
+        }
+    }
+
+    fn current(&self) -> &SeccompState {
+        let current = self.current.load(Ordering::Acquire);
+        // SAFETY: `current` is initialized from the first element in
+        // `snapshots`. Writers append before publishing and never remove a
+        // snapshot, so every published allocation remains alive for `self`.
+        unsafe { &*current }
+    }
+
+    pub(crate) fn evaluate(&self, uctx: &UserContext) -> SeccompDecision {
+        self.current().evaluate(uctx)
+    }
+
+    pub(crate) fn snapshot(&self) -> Arc<SeccompState> {
+        let current = self.current.load(Ordering::Acquire);
+        // SAFETY: the append-only owner list keeps `current` alive while
+        // `self` is borrowed. Incrementing before constructing the Arc gives
+        // the caller an independent strong reference.
+        unsafe {
+            Arc::increment_strong_count(current);
+            Arc::from_raw(current)
+        }
+    }
+
+    pub(crate) fn replace(&self, state: Arc<SeccompState>) {
+        let mut snapshots = self.snapshots.lock();
+        let current = Arc::as_ptr(&state).cast_mut();
+        snapshots.push(state);
+        self.current.store(current, Ordering::Release);
+    }
+
+    pub(crate) fn update(
+        &self,
+        operation: impl FnOnce(&mut SeccompState) -> AxResult<()>,
+    ) -> AxResult<()> {
+        let mut snapshots = self.snapshots.lock();
+        let mut next = self.current().clone();
+        operation(&mut next)?;
+        let next = Arc::new(next);
+        let current = Arc::as_ptr(&next).cast_mut();
+        snapshots.push(next);
+        self.current.store(current, Ordering::Release);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -240,13 +240,6 @@ impl UserTaskRef {
             .unwrap_or_else(|error| panic!("failed to join Starry task: {error}"))
     }
 
-    /// Returns and clears a pending Deadline-overrun notification.
-    pub fn take_deadline_overrun(&self) -> bool {
-        self.extension()
-            .deadline_overrun
-            .swap(false, Ordering::AcqRel)
-    }
-
     fn extension(&self) -> &StarryUserTaskExtension {
         // SAFETY: construction validates this value and retains the scheduler
         // handle that owns the enclosing runtime extension for `self`'s whole
@@ -614,7 +607,6 @@ where
         thread,
         name: PiMutex::new(Arc::from(name.as_str())),
         irq_identity,
-        deadline_overrun: AtomicBool::new(false),
         reset_on_fork: AtomicBool::new(context_state.reset_on_fork),
         realtime_policy: AtomicBool::new(is_realtime_policy(context_state.policy)),
     })) as usize;
@@ -684,7 +676,6 @@ struct StarryUserTaskExtension {
     thread: Box<Thread>,
     name: PiMutex<Arc<str>>,
     irq_identity: IrqTaskIdentity,
-    deadline_overrun: AtomicBool,
     reset_on_fork: AtomicBool,
     realtime_policy: AtomicBool,
 }
@@ -804,7 +795,7 @@ unsafe extern "Rust" fn starry_user_task_deadline_overrun(
     _thread: scheduler::ThreadId,
 ) {
     let data = unsafe { extension_data_from_raw(data) };
-    data.deadline_overrun.store(true, Ordering::Release);
+    data.thread.publish_deadline_overrun();
 }
 
 unsafe extern "Rust" fn starry_user_task_scheduler_tick(

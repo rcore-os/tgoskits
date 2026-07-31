@@ -133,13 +133,20 @@ impl_task_runtime! {
             }
             #[cfg(not(test))]
             {
-                crate::guard::enter_preempt();
-                // SAFETY: enter_preempt established the matching live depth.
-                unsafe { PreemptGuardToken::from_raw(1) }
+                if crate::guard::enter_lock_preempt() {
+                    // SAFETY: enter_lock_preempt established one matching live depth.
+                    unsafe { PreemptGuardToken::from_raw(1) }
+                } else {
+                    PreemptGuardToken::NONE
+                }
             }
         }
 
-        unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {
+        unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
+            assert!(
+                !token.is_none(),
+                "inherited owner scope passed to ordinary preemption exit"
+            );
             #[cfg(not(test))]
             crate::guard::exit_preempt();
         }

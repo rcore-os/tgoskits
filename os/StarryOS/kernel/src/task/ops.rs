@@ -344,15 +344,14 @@ pub(crate) fn poll_process_cpu_timers_from_scheduler_tick(proc_data: &ProcessDat
     }
 }
 
-/// Poll process interval timers and POSIX timers.
-pub fn poll_process_timer(pid: Pid) {
-    if let Ok(proc_data) = get_process_data(pid) {
-        poll_interval_timers(&proc_data, None);
-        if proc_data.posix_timers().has_armed_timers() {
-            proc_data.posix_timers().poll_expired(pid, |sig| {
-                let _ = send_signal_to_process(pid, Some(sig));
-            });
-        }
+/// Poll process interval timers and POSIX timers from a retained process view.
+pub(crate) fn poll_process_timers(proc_data: &ProcessData) {
+    poll_interval_timers(proc_data, None);
+    if proc_data.posix_timers().has_armed_timers() {
+        let pid = proc_data.proc.pid();
+        proc_data.posix_timers().poll_expired(pid, |sig| {
+            let _ = send_signal_to_process(pid, Some(sig));
+        });
     }
 }
 
@@ -367,9 +366,8 @@ pub(crate) fn poll_process_timer_for_alarm(pid: Pid, token: &AlarmToken) {
     }
 }
 
-/// Sets the timer state.
-pub fn set_timer_state(task: &UserTaskRef, state: TimerState) {
-    let thr = task.as_thread();
+/// Sets the current thread's user/kernel accounting state.
+pub(crate) fn set_timer_state(thr: &Thread, state: TimerState) {
     thr.set_cpu_time_state(state);
     poll_interval_timers(&thr.proc_data, None);
 }
