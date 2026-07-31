@@ -5,13 +5,6 @@ import subprocess
 import sys
 
 
-def choose_path(*candidates: Path) -> str:
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return str(candidates[-1])
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', default='127.0.0.1')
@@ -24,15 +17,11 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
-    echo_probe = choose_path(root / 'scripts' / 'qc_udp_echo_probe.py',
-                             Path('/tmp/qc-udp-echo-probe.py'))
-    ai_demo = choose_path(
-        root / 'linux' / 'qc_ai_control_demo.py',
-        Path('/home/kali/qc-zephyrproject/apps/echo_server_native_zsock_20260726/tools/qc_ai_control_demo.py'),
-    )
+    echo_probe = root / 'scripts' / 'qc_udp_echo_probe.py'
+    ai_demo = root / 'linux' / 'qc_ai_control_demo.py'
 
     echo_cmd = [
-        sys.executable, echo_probe,
+        sys.executable, str(echo_probe),
         '--host', args.host,
         '--port', str(args.port),
         '--count', '5',
@@ -43,7 +32,7 @@ def main() -> int:
     ]
     ai_cmd = [
         sys.executable,
-        ai_demo,
+        str(ai_demo),
         '--host', args.host,
         '--port', str(args.port),
         '--count', str(args.count),

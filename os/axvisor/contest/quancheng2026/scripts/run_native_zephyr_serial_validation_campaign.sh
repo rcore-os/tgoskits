@@ -2,12 +2,13 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace="${1:-/home/kali/qc-zephyrproject}"
 rounds="${2:-6}"
 duration_seconds="${3:-24}"
 stamp_prefix="${4:-$(date +%Y-%m-%d)-native-zsock}"
-runner="${5:-/tmp/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh}"
-udp_probe="${6:-/tmp/qc-udp-echo-probe.py}"
+runner="${5:-${script_dir}/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh}"
+udp_probe="${6:-${script_dir}/qc_udp_echo_probe.py}"
 build_dir="${7:-${workspace}/build/echo_server_virtio_net_bus23_fixed_0x90000000_mgmt_stack_2048_native_zsock}"
 summary_log="${8:-/tmp/${stamp_prefix}-campaign-summary.tsv}"
 gdb_base_port="${9:-}"

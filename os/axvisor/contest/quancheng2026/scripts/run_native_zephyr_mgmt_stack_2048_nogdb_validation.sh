@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace="${1:-/home/kali/qc-zephyrproject}"
-udp_probe="${2:-/tmp/qc-udp-echo-probe.py}"
+udp_probe="${2:-${script_dir}/qc_udp_echo_probe.py}"
 duration_seconds="${3:-35}"
 stamp="${4:-$(date +%Y-%m-%d_%H-%M-%S)-$$}"
 host_udp_port="${5:-14242}"

@@ -17,7 +17,8 @@ From the Zephyr echo-server app:
 
 ```bash
 cd /home/kali/qc-zephyrproject/apps/echo_server_native_zsock_20260726
-patch -p1 < /path/to/tgoskits/os/axvisor/contest/quancheng2026/rtos/zephyr_udp_qc_protocol.patch
+REPO=/path/to/tgoskits
+patch -p1 < "${REPO}/os/axvisor/contest/quancheng2026/rtos/zephyr_udp_qc_protocol.patch"
 ```
 
 For the current experiment workspace, the full patched file is also stored as:
@@ -57,7 +58,7 @@ The build directory already records:
 ```text
 BOARD=qemu_cortex_a53
 DTC_OVERLAY_FILE=${REPO}/os/axvisor/tmp/configs/2026-07-24_zephyr-qemu-cortex-a53-virtio-net-bus23-sram-0x90000000.overlay
-EXTRA_CONF_FILE=/tmp/2026-07-26_zephyr-echo-ipv4only-udp-mgmt12288.conf
+EXTRA_CONF_FILE=${REPO}/os/axvisor/contest/quancheng2026/rtos/zephyr_ipv4only_udp_mgmt12288.conf
 ```
 
 For a clean rebuild, pass the same board, overlay and extra config explicitly.
@@ -67,9 +68,12 @@ For a clean rebuild, pass the same board, overlay and extra config explicitly.
 Reliable UDP control:
 
 ```bash
-/tmp/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh \
+REPO=/path/to/tgoskits
+SCRIPT_DIR="${REPO}/os/axvisor/contest/quancheng2026/scripts"
+
+"${SCRIPT_DIR}/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh" \
   /home/kali/qc-zephyrproject \
-  /path/to/scripts/qc_reliable_udp_combined_probe.py \
+  "${SCRIPT_DIR}/qc_reliable_udp_combined_probe.py" \
   45 \
   2026-07-26-reliable-udp-control-smoke \
   15242 \
@@ -80,9 +84,12 @@ Reliable UDP control:
 AI closed-loop smoke:
 
 ```bash
-/tmp/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh \
+REPO=/path/to/tgoskits
+SCRIPT_DIR="${REPO}/os/axvisor/contest/quancheng2026/scripts"
+
+"${SCRIPT_DIR}/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh" \
   /home/kali/qc-zephyrproject \
-  /path/to/scripts/qc_ai_control_combined_probe.py \
+  "${SCRIPT_DIR}/qc_ai_control_combined_probe.py" \
   45 \
   2026-07-26-ai-control-smoke \
   16242 \
@@ -95,13 +102,16 @@ AI closed-loop smoke:
 Reliable UDP 10-round campaign:
 
 ```bash
-/tmp/run_native_zephyr_serial_validation_campaign.sh \
+REPO=/path/to/tgoskits
+SCRIPT_DIR="${REPO}/os/axvisor/contest/quancheng2026/scripts"
+
+"${SCRIPT_DIR}/run_native_zephyr_serial_validation_campaign.sh" \
   /home/kali/qc-zephyrproject \
   10 \
   45 \
   2026-07-26-reliable-udp-control-c10 \
-  /tmp/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh \
-  /path/to/scripts/qc_reliable_udp_combined_probe.py \
+  "${SCRIPT_DIR}/run_native_zephyr_mgmt_stack_2048_nogdb_validation.sh" \
+  "${SCRIPT_DIR}/qc_reliable_udp_combined_probe.py" \
   /home/kali/qc-zephyrproject/build/echo_server_virtio_net_bus23_fixed_0x90000000_ipv4only_udp_mgmt12288
 ```
 
