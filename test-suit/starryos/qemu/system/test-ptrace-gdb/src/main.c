@@ -343,6 +343,42 @@ static int fail(const char *msg)
     return 1;
 }
 
+static volatile sig_atomic_t waitpid_timed_out;
+
+static void waitpid_timeout_handler(int signo)
+{
+    (void)signo;
+    waitpid_timed_out = 1;
+}
+
+static pid_t waitpid_timeout(pid_t pid, int *status, int options,
+                             unsigned int timeout_seconds)
+{
+    const struct sigaction action = {
+        .sa_handler = waitpid_timeout_handler,
+    };
+    struct sigaction old_action;
+    if (sigaction(SIGALRM, &action, &old_action) != 0) {
+        return -1;
+    }
+
+    waitpid_timed_out = 0;
+    alarm(timeout_seconds);
+    pid_t waited;
+    do {
+        waited = waitpid(pid, status, options);
+    } while (waited < 0 && errno == EINTR && !waitpid_timed_out);
+    int saved_errno = errno;
+    alarm(0);
+    sigaction(SIGALRM, &old_action, NULL);
+
+    if (waited < 0 && waitpid_timed_out) {
+        saved_errno = ETIMEDOUT;
+    }
+    errno = saved_errno;
+    return waited;
+}
+
 static int get_regs(pid_t pid, arch_user_regs *regs)
 {
     struct iovec iov = {.iov_base = regs, .iov_len = sizeof(*regs)};
@@ -2304,8 +2340,10 @@ static int test_sigkill_event_stopped_tracee(void)
     }
 
     int status = 0;
-    if (waitpid(pid, &status, WUNTRACED) != pid || !WIFSTOPPED(status)) {
+    if (waitpid_timeout(pid, &status, WUNTRACED, 5) != pid
+        || !WIFSTOPPED(status)) {
         printf("FAIL: initial event-kill stop status=%#x\n", status);
+        kill(pid, SIGKILL);
         return 1;
     }
     if (ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(long)PTRACE_O_TRACEFORK) != 0) {
@@ -2314,9 +2352,10 @@ static int test_sigkill_event_stopped_tracee(void)
     if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
         return fail("cont to event-kill fork event");
     }
-    if (waitpid(pid, &status, 0) != pid || !WIFSTOPPED(status)
+    if (waitpid_timeout(pid, &status, 0, 5) != pid || !WIFSTOPPED(status)
         || ((status >> 16) & 0xff) != PTRACE_EVENT_FORK) {
         printf("FAIL: expected fork event before event-kill, status=%#x\n", status);
+        kill(pid, SIGKILL);
         return 1;
     }
 
@@ -2328,7 +2367,9 @@ static int test_sigkill_event_stopped_tracee(void)
         ptrace(PTRACE_KILL, (pid_t)event_msg, NULL, NULL);
     }
     kill(pid, SIGKILL);
-    if (waitpid(pid, &status, 0) != pid) {
+    if (waitpid_timeout(pid, &status, 0, 5) != pid) {
+        printf("FAIL: event-stopped SIGKILL timed out waiting for pid=%d\n", pid);
+        kill(pid, SIGKILL);
         return fail("wait event-stopped SIGKILL result");
     }
     if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) {
