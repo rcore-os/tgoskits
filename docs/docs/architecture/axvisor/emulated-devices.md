@@ -243,13 +243,13 @@ flowchart LR
 
 ### 服务注册
 
-`DeviceServices` 是设备贡献协作能力的类型化 registry，定义在 `virtualization/axdevice/src/services.rs` 并由 `DeviceBundle::with_service()` 写入。调用方通过 `ServiceKey` 查询明确的 trait service，而不是在生产路径中对 `Arc<dyn Device>` 做 downcast。
+`DeviceServices` 是设备贡献协作能力的类型化 registry，定义在 `virtualization/axdevice/src/service.rs` 并由 `DeviceBundle::with_service()` 写入。调用方通过 `ServiceKey` 查询明确的 trait service，而不是在生产路径中对 `Arc<dyn Device>` 做 downcast。
 
 | 服务机制 | 代码锚点 | 作用 |
 | --- | --- | --- |
-| `ServiceKey` | `virtualization/axdevice/src/services.rs` | 声明 service 类型、名称和基数 |
-| `DeviceServices::require()` | `virtualization/axdevice/src/services.rs` | 获取单例必需服务，不存在时报错 |
-| `DeviceServices::all()` | `virtualization/axdevice/src/services.rs` | 获取多例服务快照 |
+| `ServiceKey` | `virtualization/axdevice/src/service.rs` | 声明 service 类型、名称和基数 |
+| `DeviceServices::require()` | `virtualization/axdevice/src/service.rs` | 获取单例必需服务，不存在时报错 |
+| `DeviceServices::all()` | `virtualization/axdevice/src/service.rs` | 获取多例服务快照 |
 | `DeviceBundle::with_service()` | `virtualization/axdevice/src/registration.rs` | 由 factory 将服务贡献给 runtime |
 
 typed service 的维护收益是减少架构层对具体设备类型的认识。例如 IVC 只需要 `GuestRangeAllocatorKey`，不需要 `DeviceRuntime` 保存一个具名 `ivc_channel` 字段；后续 vPCI 或中断域服务也可以按相同方式扩展，而不是向中心 enum 增加分支。
