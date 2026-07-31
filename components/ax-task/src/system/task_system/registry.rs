@@ -519,6 +519,28 @@ impl TaskSystemState {
             .map(|(_, cpu)| cpu)
     }
 
+    pub(super) fn select_initial_fair_cpu(
+        &self,
+        affinity: &CpuSet,
+        preferred: CpuId,
+    ) -> Option<CpuId> {
+        self.cpus
+            .iter()
+            .enumerate()
+            .filter_map(|(index, registration)| {
+                let cpu = CpuId::new(index as u32);
+                if !registration.remote.is_online() || !affinity.contains(cpu) {
+                    return None;
+                }
+                registration
+                    .remote
+                    .try_placement_load()
+                    .map(|load| (load, cpu != preferred, cpu))
+            })
+            .min_by_key(|(load, not_preferred, cpu)| (*load, *not_preferred, cpu.as_u32()))
+            .map(|(_, _, cpu)| cpu)
+    }
+
     pub(super) fn publish_affinity_update(
         &self,
         core: &Arc<ThreadCore>,

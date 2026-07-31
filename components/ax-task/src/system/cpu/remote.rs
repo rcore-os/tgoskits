@@ -1,4 +1,5 @@
 use super::*;
+use crate::inbox::InboxOperation;
 
 const IPI_CLAIMED: u64 = 1;
 const CPU_LIFECYCLE_OFFLINE: usize = 1 << (usize::BITS - 1);
@@ -7,6 +8,8 @@ const CPU_LIFECYCLE_MASK: usize = CPU_LIFECYCLE_OFFLINE | CPU_LIFECYCLE_DRAINING
 const CPU_PUBLICATION_COUNT_MASK: usize = !CPU_LIFECYCLE_MASK;
 const CPU_PUBLICATION_OVERFLOW_INVARIANT: u32 = 0x4350_5542;
 const CPU_PUBLICATION_RELEASE_INVARIANT: u32 = 0x4350_5544;
+const INCOMING_MIGRATION_OVERFLOW_INVARIANT: u32 = 0x4d49_474f;
+const INCOMING_MIGRATION_RELEASE_INVARIANT: u32 = 0x4d49_4752;
 const IDLE_PULL_PHASE_MASK: u64 = 0b11;
 const IDLE_PULL_IDLE: u64 = 0;
 const IDLE_PULL_PENDING: u64 = 1;
@@ -131,6 +134,8 @@ pub struct CpuRemote {
     busy_runtime_ns: AtomicU64,
     load_summary_sequence: AtomicU64,
     load_summary_runnable: AtomicUsize,
+    load_summary_workload: AtomicUsize,
+    incoming_migrations: AtomicUsize,
     load_summary_flags: AtomicU8,
     load_summary_current_primary: AtomicU64,
     load_summary_current_sequence: AtomicU64,
@@ -163,6 +168,8 @@ impl CpuRemote {
             busy_runtime_ns: AtomicU64::new(0),
             load_summary_sequence: AtomicU64::new(0),
             load_summary_runnable: AtomicUsize::new(0),
+            load_summary_workload: AtomicUsize::new(0),
+            incoming_migrations: AtomicUsize::new(0),
             load_summary_flags: AtomicU8::new(0),
             load_summary_current_primary: AtomicU64::new(0),
             load_summary_current_sequence: AtomicU64::new(0),
@@ -576,9 +583,26 @@ impl CpuRemote {
     ) -> PublishResult {
         let _irq = IrqScope::enter();
         let _idle_pull_work = self.begin_idle_pull_work();
+        let migration = message.operation() == InboxOperation::Migration;
+        if migration
+            && self
+                .incoming_migrations
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_add(1)
+                })
+                .is_err()
+        {
+            task_runtime::fatal_invariant(
+                INCOMING_MIGRATION_OVERFLOW_INVARIANT,
+                self.owner.as_u32() as usize,
+            );
+        }
         let (result, _head_became_non_empty) = self
             .migration_inbox
             .publish_with_head_transition(node, message);
+        if migration && result != PublishResult::Published {
+            self.complete_incoming_migrations(1);
+        }
         if matches!(
             result,
             PublishResult::Published | PublishResult::AlreadyPending
@@ -719,12 +743,15 @@ impl CpuRemote {
         current_key: Option<SchedulingKey>,
         pushable_key: Option<SchedulingKey>,
         runnable_count: usize,
+        workload_count: usize,
         overloaded: bool,
     ) {
         let write_sequence = self.load_summary_sequence.fetch_add(1, Ordering::AcqRel);
         debug_assert_eq!(write_sequence & 1, 0, "load summary has one owner writer");
         self.load_summary_runnable
             .store(runnable_count, Ordering::Relaxed);
+        self.load_summary_workload
+            .store(workload_count, Ordering::Relaxed);
         let mut flags = 0;
         if let Some(key) = current_key {
             flags |= SUMMARY_CURRENT_PRESENT;
@@ -763,6 +790,7 @@ impl CpuRemote {
                 continue;
             }
             let runnable_count = self.load_summary_runnable.load(Ordering::Relaxed);
+            let workload_count = self.load_summary_workload.load(Ordering::Relaxed);
             let flags = self.load_summary_flags.load(Ordering::Relaxed);
             let current_primary = self.load_summary_current_primary.load(Ordering::Relaxed);
             let current_sequence = self.load_summary_current_sequence.load(Ordering::Relaxed);
@@ -776,6 +804,7 @@ impl CpuRemote {
             return Some(CpuLoadSummary {
                 epoch,
                 runnable_count,
+                workload_count,
                 current_key: (flags & SUMMARY_CURRENT_PRESENT != 0)
                     .then(|| SchedulingKey::new(current_rank, current_primary, current_sequence)),
                 pushable_key: (flags & SUMMARY_PUSHABLE_PRESENT != 0).then(|| {
@@ -792,6 +821,27 @@ impl CpuRemote {
     /// Attempts to return the remotely observable queued runnable count.
     pub fn try_runnable_summary(&self) -> Option<usize> {
         self.try_load_summary().map(CpuLoadSummary::runnable_count)
+    }
+
+    pub(crate) fn try_placement_load(&self) -> Option<usize> {
+        self.try_load_summary().map(|summary| {
+            summary
+                .workload_count()
+                .saturating_add(self.incoming_migrations.load(Ordering::Acquire))
+        })
+    }
+
+    pub(crate) fn complete_incoming_migrations(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let previous = self.incoming_migrations.fetch_sub(count, Ordering::AcqRel);
+        if previous < count {
+            task_runtime::fatal_invariant(
+                INCOMING_MIGRATION_RELEASE_INVARIANT,
+                self.owner.as_u32() as usize,
+            );
+        }
     }
 
     pub(crate) fn fair_balance_due(&self, now_ns: u64) -> bool {

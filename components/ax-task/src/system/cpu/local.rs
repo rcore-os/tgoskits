@@ -363,10 +363,16 @@ impl CpuLocal {
         current_key: Option<SchedulingKey>,
         pushable_key: Option<SchedulingKey>,
         runnable_count: usize,
+        workload_count: usize,
         overloaded: bool,
     ) {
-        self.remote
-            .publish_load_summary(current_key, pushable_key, runnable_count, overloaded);
+        self.remote.publish_load_summary(
+            current_key,
+            pushable_key,
+            runnable_count,
+            workload_count,
+            overloaded,
+        );
     }
 
     pub(crate) fn add_deadline_bandwidth(

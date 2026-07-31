@@ -8,6 +8,7 @@ use ax_task::{
 };
 
 static NEXT_IRQ_TOKEN: AtomicUsize = AtomicUsize::new(1);
+static NEXT_PREEMPT_TOKEN: AtomicUsize = AtomicUsize::new(1);
 static TASK_SYSTEM: AtomicUsize = AtomicUsize::new(0);
 static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
 static CPU_REMOTE: AtomicUsize = AtomicUsize::new(0);
@@ -60,6 +61,15 @@ impl_task_runtime! {
             }
         }
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
+
+        fn preempt_guard_enter() -> PreemptGuardToken {
+            // SAFETY: the monotonically issued token remains live until the
+            // matching no-op test exit consumes its modeled guard scope.
+            unsafe {
+                PreemptGuardToken::from_raw(NEXT_PREEMPT_TOKEN.fetch_add(1, Ordering::Relaxed))
+            }
+        }
+        unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {}
 
         fn local_scheduler_work_is_self_serviced() -> bool {
             false

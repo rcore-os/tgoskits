@@ -12,6 +12,9 @@ static INSTALLED_ADDRESS_SPACE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 std::thread_local! {
     static ACTIVE_IRQ_TOKENS: RefCell<std::vec::Vec<usize>> = const { RefCell::new(std::vec::Vec::new()) };
+    static IRQ_GUARD_ENTRIES: Cell<usize> = const { Cell::new(0) };
+    static ACTIVE_PREEMPT_TOKENS: RefCell<std::vec::Vec<usize>> = const { RefCell::new(std::vec::Vec::new()) };
+    static PREEMPT_GUARD_ENTRIES: Cell<usize> = const { Cell::new(0) };
     static TASK_SYSTEM_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCAL_HANDLE: Cell<usize> = const { Cell::new(0) };
     static CURRENT_CPU_REMOTE_HANDLE: Cell<usize> = const { Cell::new(0) };
@@ -167,6 +170,7 @@ impl TaskRuntime for UnitTestRuntime {
     }
 
     fn irq_guard_enter() -> IrqGuardToken {
+        IRQ_GUARD_ENTRIES.with(|entries| entries.set(entries.get() + 1));
         let scheduler_depth = SCHEDULER_FRAME_DEPTH.with(Cell::get);
         IRQ_ENTER_SCHEDULER_FRAME_DEPTH
             .with(|observed| observed.set(observed.get().max(scheduler_depth)));
@@ -204,6 +208,26 @@ impl TaskRuntime for UnitTestRuntime {
                 .expect("configured IRQ-exit scheduler reentry must reach a safe point");
             IRQ_EXIT_SCHEDULE_ACTIVE.with(|active| active.set(false));
         }
+    }
+
+    fn preempt_guard_enter() -> PreemptGuardToken {
+        PREEMPT_GUARD_ENTRIES.with(|entries| entries.set(entries.get() + 1));
+        let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+        ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow_mut().push(token));
+        // SAFETY: the token remains active until the matching exit consumes
+        // it in this single-threaded fake execution context.
+        unsafe { PreemptGuardToken::from_raw(token) }
+    }
+
+    unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
+        ACTIVE_PREEMPT_TOKENS.with(|tokens| {
+            let mut tokens = tokens.borrow_mut();
+            let index = tokens
+                .iter()
+                .position(|active| *active == token.into_raw())
+                .expect("test preempt token must be active");
+            tokens.swap_remove(index);
+        });
     }
 
     fn local_scheduler_work_is_self_serviced() -> bool {
@@ -479,10 +503,28 @@ pub(crate) fn idle_wait_observation() -> (usize, bool) {
 
 pub(crate) fn reset_irq_state() {
     ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow_mut().clear());
+    IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
 }
 
 pub(crate) fn active_irq_guards() -> usize {
     ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().len())
+}
+
+pub(crate) fn irq_guard_entries() -> usize {
+    IRQ_GUARD_ENTRIES.with(Cell::get)
+}
+
+pub(crate) fn reset_preempt_state() {
+    ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow_mut().clear());
+    PREEMPT_GUARD_ENTRIES.with(|entries| entries.set(0));
+}
+
+pub(crate) fn active_preempt_guards() -> usize {
+    ACTIVE_PREEMPT_TOKENS.with(|tokens| tokens.borrow().len())
+}
+
+pub(crate) fn preempt_guard_entries() -> usize {
+    PREEMPT_GUARD_ENTRIES.with(Cell::get)
 }
 
 pub(crate) fn reset_installed_address_space() {

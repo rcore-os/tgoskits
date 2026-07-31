@@ -227,6 +227,24 @@ fn exit_lock_preempt(irq_return: bool) {
     }
 }
 
+#[cfg(feature = "multitask")]
+pub(crate) fn enter_preempt() {
+    current_thread_operation(ax_hal::percpu::CurrentThreadHeader::enter_preempt_guard);
+}
+
+#[cfg(feature = "multitask")]
+pub(crate) fn exit_preempt() {
+    let exit =
+        current_thread_operation(ax_hal::percpu::CurrentThreadHeader::prepare_preempt_guard_exit);
+    match exit {
+        ax_hal::percpu::CurrentPreemptExit::NestedConsumed
+        | ax_hal::percpu::CurrentPreemptExit::FinalConsumed => {}
+        ax_hal::percpu::CurrentPreemptExit::FinalPending => {
+            exit_lock_preempt(!ax_hal::asm::irqs_enabled());
+        }
+    }
+}
+
 #[cfg(any(feature = "multitask", test))]
 fn preempt_exit_needs_schedule(
     state: &RuntimeGuardState,

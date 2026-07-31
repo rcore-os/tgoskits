@@ -162,6 +162,70 @@ fn load_summary_publishes_effective_current_and_top_pushable_keys() {
 }
 
 #[test]
+fn initial_fair_placement_uses_an_idle_allowed_cpu() {
+    let (system, mut cpu0, mut cpu1, idle1) = online_pair();
+    let running = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu0.as_mut(), running.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu0.as_mut(), 0).unwrap().next(),
+        running.id()
+    );
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 0).unwrap().next(),
+        idle1.id()
+    );
+    assert_eq!(cpu0.try_runnable_summary(), Some(0));
+    assert_eq!(cpu1.try_runnable_summary(), Some(0));
+    assert_eq!(cpu0.try_load_summary().unwrap().workload_count(), 1);
+    assert_eq!(cpu1.try_load_summary().unwrap().workload_count(), 0);
+
+    let placed = ready_thread(&system, SchedulePolicy::default());
+    system.place_ready(cpu0.as_mut(), placed.id(), 1).unwrap();
+
+    assert!(
+        cpu1.has_remote_work(),
+        "a new fair thread must use an idle allowed CPU instead of stacking behind its creator"
+    );
+    system.drain_policy_updates(cpu1.as_mut(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 1).unwrap().next(),
+        placed.id()
+    );
+}
+
+#[test]
+fn initial_fair_placement_accounts_for_in_flight_migrations() {
+    let (system, mut cpu0, mut cpu1, idle1) = online_pair();
+    let running = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu0.as_mut(), running.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu0.as_mut(), 0).unwrap().next(),
+        running.id()
+    );
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 0).unwrap().next(),
+        idle1.id()
+    );
+
+    let placed = (0..4)
+        .map(|_| {
+            let thread = ready_thread(&system, SchedulePolicy::default());
+            system.place_ready(cpu0.as_mut(), thread.id(), 1).unwrap();
+            thread
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        cpu0.try_runnable_summary(),
+        Some(2),
+        "unconsumed remote placements must participate in subsequent CPU selection"
+    );
+    system.drain_policy_updates(cpu1.as_mut(), 1).unwrap();
+    assert_eq!(cpu1.try_runnable_summary(), Some(2));
+    drop(placed);
+}
+
+#[test]
 fn rt_push_keeps_the_more_urgent_current_task_on_its_owner() {
     let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
     let current = ready_thread(&system, SchedulePolicy::fifo(RtPriority::new(90).unwrap()));

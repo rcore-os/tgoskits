@@ -1,5 +1,7 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use ax_task::runtime::PreemptGuardToken;
+
 use super::*;
 
 static SCHED_SWITCH_TRACE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -121,6 +123,25 @@ impl_task_runtime! {
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {
             #[cfg(not(test))]
             crate::guard::exit_irq("task runtime");
+        }
+
+        fn preempt_guard_enter() -> PreemptGuardToken {
+            #[cfg(test)]
+            {
+                // SAFETY: test mode models one balanced runtime preemption token.
+                unsafe { PreemptGuardToken::from_raw(1) }
+            }
+            #[cfg(not(test))]
+            {
+                crate::guard::enter_preempt();
+                // SAFETY: enter_preempt established the matching live depth.
+                unsafe { PreemptGuardToken::from_raw(1) }
+            }
+        }
+
+        unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {
+            #[cfg(not(test))]
+            crate::guard::exit_preempt();
         }
 
         fn local_scheduler_work_is_self_serviced() -> bool {
