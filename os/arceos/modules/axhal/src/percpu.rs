@@ -8,8 +8,8 @@ pub use ax_plat::percpu::{
     init_primary, this_cpu_id, this_cpu_id_pinned, this_cpu_is_bsp, this_cpu_is_bsp_pinned,
 };
 pub use cpu_local::{
-    CpuAreaRef, CpuLocalError, CpuPin, CurrentContext, CurrentThreadHeader, ExclusiveCpu,
-    PreparedThreadSwitch, PreviousThreadBinding, ThreadSwitchError, with_cpu_pin,
+    CpuAreaRef, CpuLocalError, CpuPin, CurrentContext, CurrentPreemptExit, CurrentThreadHeader,
+    ExclusiveCpu, PreparedThreadSwitch, PreviousThreadBinding, ThreadSwitchError, with_cpu_pin,
     with_exclusive_cpu,
 };
 
