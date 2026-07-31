@@ -58,6 +58,25 @@ fn software_list_registers_use_the_architectural_bit_positions() {
 }
 
 #[test]
+fn software_list_registers_round_trip_every_valid_state() {
+    for state in [
+        IchLrState::Pending,
+        IchLrState::Active,
+        IchLrState::ActivePending,
+    ] {
+        let entry = IchLrEntry::Software {
+            intid: ArmVirtualIntId::new(1019).unwrap(),
+            state,
+            priority: 0x80,
+            group1: false,
+            eoi: true,
+        };
+
+        assert_eq!(IchLrEntry::decode(15, entry.encode()), Ok(entry));
+    }
+}
+
+#[test]
 fn invalid_list_registers_ignore_residual_identity_fields() {
     let raw = u32::MAX as u64 | (1 << 61) | (1 << 41);
     assert_eq!(IchLrEntry::decode(0, raw), Ok(IchLrEntry::Invalid));
@@ -110,5 +129,48 @@ fn direct_injection_requires_elrsr_and_invalid_state_to_agree() {
     assert_eq!(
         plan_direct_injection(requested, 0b11, &[occupied, 0]),
         Ok(IchDirectInjection::Vacant(1))
+    );
+}
+
+#[test]
+fn direct_injection_folds_an_existing_software_intid() {
+    let requested = ArmVirtualIntId::new(40).unwrap();
+    let resident = IchLrEntry::Software {
+        intid: requested,
+        state: IchLrState::ActivePending,
+        priority: 0,
+        group1: true,
+        eoi: false,
+    }
+    .encode();
+
+    assert_eq!(
+        plan_direct_injection(requested, 0b10, &[resident, 0]),
+        Ok(IchDirectInjection::AlreadyPresent)
+    );
+}
+
+#[test]
+fn direct_injection_skips_hardware_list_registers() {
+    let requested = ArmVirtualIntId::new(40).unwrap();
+    let hardware_pending = (1_u64 << 62) | (1 << 61) | requested.as_u32() as u64;
+
+    assert_eq!(
+        plan_direct_injection(requested, 0b10, &[hardware_pending, 0]),
+        Ok(IchDirectInjection::Vacant(1))
+    );
+}
+
+#[test]
+fn direct_injection_rejects_invalid_list_register_counts() {
+    let requested = ArmVirtualIntId::new(40).unwrap();
+
+    assert_eq!(
+        plan_direct_injection(requested, 0, &[]),
+        Err(ArmVcpuError::InvalidListRegisterCount { count: 0 })
+    );
+    assert_eq!(
+        plan_direct_injection(requested, 0, &[0; 17]),
+        Err(ArmVcpuError::InvalidListRegisterCount { count: 17 })
     );
 }
