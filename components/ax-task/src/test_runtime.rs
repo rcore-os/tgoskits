@@ -29,7 +29,9 @@ std::thread_local! {
     static SCHEDULER_FRAME_ENTER_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static SCHEDULER_IPI_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static SCHEDULER_IPI_BUSY_REMAINING: Cell<usize> = const { Cell::new(0) };
+    static SCHEDULER_IPI_DOORBELL_PENDING: Cell<bool> = const { Cell::new(false) };
     static SCHEDULER_IPI_SEND_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SCHEDULER_IPI_NOTIFICATION_COUNT: Cell<usize> = const { Cell::new(0) };
     static SCHEDULER_IPI_IRQ_GUARDS: Cell<usize> = const { Cell::new(usize::MAX) };
     static IDLE_WAIT_CALLS: Cell<usize> = const { Cell::new(0) };
     static IDLE_WAIT_OBSERVED_POLLING: Cell<bool> = const { Cell::new(false) };
@@ -356,10 +358,23 @@ impl TaskRuntime for UnitTestRuntime {
             }
         });
         if busy {
-            RuntimeStatus::Busy
-        } else {
-            SCHEDULER_IPI_STATUS.with(Cell::get)
+            SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.set(true));
+            return RuntimeStatus::Busy;
         }
+        if SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.replace(true)) {
+            return RuntimeStatus::Busy;
+        }
+        let status = SCHEDULER_IPI_STATUS.with(Cell::get);
+        match status {
+            RuntimeStatus::Success => {
+                SCHEDULER_IPI_NOTIFICATION_COUNT.with(|count| count.set(count.get() + 1));
+            }
+            RuntimeStatus::Busy => {}
+            _ => {
+                SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.set(false));
+            }
+        }
+        status
     }
     fn wait_for_interrupt() {
         IDLE_WAIT_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -478,7 +493,9 @@ pub(crate) fn context_switch_tail_count() -> usize {
 pub(crate) fn configure_scheduler_ipi(status: RuntimeStatus, busy_before_status: usize) {
     SCHEDULER_IPI_STATUS.with(|current| current.set(status));
     SCHEDULER_IPI_BUSY_REMAINING.with(|remaining| remaining.set(busy_before_status));
+    SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.set(false));
     SCHEDULER_IPI_SEND_COUNT.with(|count| count.set(0));
+    SCHEDULER_IPI_NOTIFICATION_COUNT.with(|count| count.set(0));
     SCHEDULER_IPI_IRQ_GUARDS.with(|observed| observed.set(usize::MAX));
 }
 
@@ -493,6 +510,14 @@ pub(crate) fn configure_task_deadline_publish(
 
 pub(crate) fn scheduler_ipi_send_count() -> usize {
     SCHEDULER_IPI_SEND_COUNT.with(Cell::get)
+}
+
+pub(crate) fn scheduler_ipi_notification_count() -> usize {
+    SCHEDULER_IPI_NOTIFICATION_COUNT.with(Cell::get)
+}
+
+pub(crate) fn consume_scheduler_ipi() -> bool {
+    SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.replace(false))
 }
 
 pub(crate) fn scheduler_ipi_irq_guards() -> usize {

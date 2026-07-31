@@ -290,36 +290,23 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     Ok(runtime_current_cpu()?.needs_reschedule())
 }
 
-/// Acknowledges the current CPU's coalesced scheduler IPI epoch.
-///
-/// Any scheduler work visible after the epoch claim is released is promoted
-/// to owner-local preemption before returning to the runtime IRQ handler.
-pub fn acknowledge_current_scheduler_ipi() -> Result<(), TaskError> {
-    let cpu = runtime_current_cpu()?;
-    cpu.acknowledge_scheduler_ipi();
-    if cpu.needs_reschedule() {
-        cpu.request_reschedule();
-    }
-    Ok(())
-}
-
 /// Executes one lossless idle publication/recheck/WFI iteration.
 pub fn idle_current_cpu_once() -> Result<(), TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
-    let (owner, may_wait) = {
+    let may_wait = {
         let cpu = runtime_current_cpu()?;
-        cpu.acknowledge_scheduler_ipi();
         let may_wait = cpu.prepare_idle_wait();
-        if !may_wait {
+        if may_wait {
+            // Linux clears TIF_POLLING_NRFLAG before the architecture sleep
+            // commit. Work published before this transition is observed by
+            // the runtime's final IRQ-disabled recheck; work published after
+            // it must create a physical interrupt edge.
             cpu.finish_idle_wait();
         }
-        (cpu.owner(), may_wait)
+        may_wait
     };
     if may_wait {
         task_runtime::wait_for_interrupt();
-        cpu_local_for_wake(owner)
-            .ok_or(TaskError::NotInitialized)?
-            .finish_idle_wait();
     }
     Ok(())
 }

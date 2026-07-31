@@ -53,33 +53,23 @@ mod scheduler_ipi_tests {
     }
 
     #[test]
-    fn stale_coalesced_completion_cannot_clear_a_newer_doorbell_epoch() {
-        let remote = CpuRemote::create(CpuId::new(0));
-        let old = remote.claim_scheduler_ipi().unwrap();
+    fn polling_idle_owner_observes_work_without_a_physical_ipi() {
+        let remote = CpuRemote::create(CpuId::new(1));
+        assert!(remote.mark_online());
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
 
-        // A safe point may consume the old reason before its transport call
-        // reports that an older physical delivery covers it. A later producer
-        // can then own a new epoch, which the stale completion must not clear.
-        remote.acknowledge_scheduler_ipi();
-        let new = remote.claim_scheduler_ipi().unwrap();
-        remote.finish_scheduler_ipi_send(old, RuntimeStatus::Busy);
-
-        assert_eq!(remote.scheduler_ipi_pending.load(Ordering::Acquire), new.0);
-        assert_ne!(new.0 & IPI_CLAIMED, 0);
-    }
-
-    #[test]
-    fn coalesced_scheduler_ipi_keeps_the_inflight_delivery_claimed() {
-        let remote = CpuRemote::create(CpuId::new(0));
-        remote.request_scheduler_work();
-        let claim = remote.claim_scheduler_ipi().unwrap();
-
-        remote.finish_scheduler_ipi_send(claim, RuntimeStatus::Busy);
+        assert!(
+            remote.prepare_idle_wait(),
+            "the empty owner must publish polling before the producer races"
+        );
+        assert!(remote.kick_scheduler_work());
 
         assert_eq!(
-            remote.scheduler_ipi_pending.load(Ordering::Acquire),
-            claim.0,
-            "Busy means an older physical delivery covers this coalesced epoch"
+            crate::test_runtime::scheduler_ipi_send_count(),
+            0,
+            "a polling owner will observe sticky work in its final recheck"
         );
+        assert!(remote.needs_reschedule());
+        remote.finish_idle_wait();
     }
 }

@@ -122,10 +122,13 @@ impl ThreadResourceBackend for InjectedResourceBackend {
 fn scheduler_ipi_doorbell_coalesces_and_consumes_publication() {
     let doorbell = SchedulerIpiDoorbell::new();
 
+    assert!(!doorbell.is_pending());
     assert!(!doorbell.consume());
     assert!(doorbell.publish());
+    assert!(doorbell.is_pending());
     assert!(!doorbell.publish());
     assert!(doorbell.consume());
+    assert!(!doorbell.is_pending());
     assert!(!doorbell.consume());
 }
 

@@ -121,7 +121,6 @@ impl TaskSystem {
     ) -> Result<RemoteWakeDrain, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
-        cpu.acknowledge_scheduler_ipi();
         let (drained, pending) = {
             let fields = cpu.as_mut().fields_mut();
             let limit = fields.batch_limit();
@@ -665,29 +664,22 @@ impl TaskSystem {
     ///
     /// The inboxes, rather than `need_resched`, are the source of truth for
     /// remote scheduler work. Forced scheduling operations call this before
-    /// claiming their doorbell so object-API users cannot accidentally clear a
-    /// wake, migration, or policy update without first making it visible to the
-    /// owner run queue. Work racing after this batch is retained by
-    /// [`CpuLocal::scheduler_enter`]'s post-claim inbox recheck.
+    /// claiming their sticky request so object-API users cannot accidentally
+    /// clear a wake, migration, or policy update without first making it
+    /// visible to the owner run queue. A bounded remainder is assigned a fresh
+    /// runtime doorbell before this safe point returns.
     pub(super) fn drain_owner_work(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        let (wake_pending, policy_pending, reclaim_pending) = {
+        let (wake_pending, policy_pending) = {
             let remote = cpu.remote();
             (
                 remote.remote_wake_inbox().has_pending(),
                 remote.migration_inbox().has_pending(),
-                remote.reclaim_inbox().has_pending(),
             )
         };
-        if !wake_pending && (policy_pending || reclaim_pending) {
-            // A non-wake safe point may beat its physical IPI. Release the
-            // delivered epoch before consuming work so a concurrent producer
-            // can ring a fresh edge, just as the wake drain does below.
-            cpu.acknowledge_scheduler_ipi();
-        }
         if wake_pending {
             self.drain_remote_wakes(cpu.as_mut(), now_ns)?;
         }
@@ -695,13 +687,7 @@ impl TaskSystem {
             self.drain_policy_updates(cpu.as_mut(), now_ns)?;
         }
         if cpu.has_remote_work() {
-            cpu.request_scheduler_work();
-            // One safe point consumes at most one batch from each inbox. A
-            // self-IPI carries the remainder into a later IRQ-return instead
-            // of turning this safe point into an unbounded drain loop or
-            // relying on a future periodic tick.
-            let remote = Arc::clone(cpu.remote());
-            remote.kick_scheduler_work();
+            cpu.defer_scheduler_work();
         }
         Ok(())
     }

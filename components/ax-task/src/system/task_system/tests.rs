@@ -347,7 +347,7 @@ fn policy_update_doorbell_runs_outside_cold_irq_lock_domains() {
 }
 
 #[test]
-fn coalesced_busy_ipi_drains_real_payloads_and_accepts_new_epoch() {
+fn runtime_doorbell_coalesces_payloads_and_accepts_a_fresh_delivery() {
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     let running = system
@@ -367,20 +367,40 @@ fn coalesced_busy_ipi_drains_real_payloads_and_accepts_new_epoch() {
         thread.core.set_target_cpu(CpuId::new(0));
     }
 
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 1);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
     assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
     assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+    assert_eq!(crate::test_runtime::scheduler_ipi_notification_count(), 1);
 
     assert_eq!(coalesced.wake_handle().wake(), crate::WakeResult::Notified);
     assert_eq!(
         crate::test_runtime::scheduler_ipi_send_count(),
         1,
-        "an in-flight Busy delivery must cover payloads in the same epoch"
+        "only the empty-to-nonempty inbox transition must ring the runtime doorbell"
+    );
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_notification_count(),
+        1,
+        "the runtime doorbell must coalesce work behind its in-flight edge"
     );
 
-    let first = system.drain_remote_wakes(cpu.as_mut(), 1).unwrap();
-    assert_eq!(first.drained(), 1);
-    assert!(first.pending());
+    assert!(crate::test_runtime::consume_scheduler_ipi());
+    assert!(
+        system
+            .schedule_if_requested(cpu.as_mut(), 1)
+            .unwrap()
+            .owner_work_pending()
+    );
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_notification_count(),
+        2,
+        "a bounded drain remainder must create a fresh physical edge after handler consumption"
+    );
+    assert!(crate::test_runtime::consume_scheduler_ipi());
+    assert!(matches!(
+        system.schedule_if_requested(cpu.as_mut(), 2).unwrap(),
+        SchedulerOutcome::Quiescent
+    ));
 
     assert_eq!(
         newer_epoch.wake_handle().wake(),
@@ -388,18 +408,21 @@ fn coalesced_busy_ipi_drains_real_payloads_and_accepts_new_epoch() {
     );
     assert_eq!(
         crate::test_runtime::scheduler_ipi_send_count(),
-        2,
-        "publication after handler acknowledgement must claim a new epoch"
+        3,
+        "publication after handler consumption must reach the runtime again"
+    );
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_notification_count(),
+        3,
+        "publication after handler consumption must create a fresh physical edge"
     );
 
-    let second = system.drain_remote_wakes(cpu.as_mut(), 2).unwrap();
+    assert!(crate::test_runtime::consume_scheduler_ipi());
+    let second = system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
     assert_eq!(second.drained(), 1);
-    assert!(second.pending());
-    let third = system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
-    assert_eq!(third.drained(), 1);
-    assert!(!third.pending());
+    assert!(!second.pending());
     assert!(matches!(
-        system.schedule_if_requested(cpu.as_mut(), 3).unwrap(),
+        system.schedule_if_requested(cpu.as_mut(), 4).unwrap(),
         SchedulerOutcome::Quiescent
     ));
 }
@@ -541,6 +564,33 @@ fn pending_remote_publication_prevents_cpu_offline() {
         Err(TaskError::CpuNotQuiescent(1))
     );
     assert!(cpu1.is_online(), "a rejected transition must roll back");
+    assert_eq!(system.online_cpu_count(), 2);
+}
+
+#[test]
+fn pending_local_scheduler_work_prevents_cpu_offline() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    cpu1.request_scheduler_work();
+
+    assert_eq!(
+        system.take_cpu_offline(cpu1.as_mut()),
+        Err(TaskError::CpuNotQuiescent(1)),
+        "CPU hotplug must not erase scheduler work that has not reached a safe point"
+    );
+    assert!(cpu1.is_online(), "a rejected transition must roll back");
+    assert!(cpu1.needs_reschedule());
     assert_eq!(system.online_cpu_count(), 2);
 }
 
@@ -1873,7 +1923,7 @@ fn policy_only_safe_point_skips_the_empty_wake_inbox() {
     );
     assert!(
         !cpu.remote().migration_inbox().has_pending(),
-        "the policy delivery must not be stranded behind its consumed IPI epoch"
+        "the policy delivery must not remain stranded after its owner safe point"
     );
 }
 

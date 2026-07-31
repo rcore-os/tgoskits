@@ -4,7 +4,7 @@
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(any(feature = "irq", feature = "ipi", feature = "wake-ipi"))]
+#[cfg(feature = "irq")]
 use ax_task::TaskError;
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
 use ax_task::runtime::RuntimeStatus;
@@ -21,8 +21,8 @@ static TASK_TIMER_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Allocation-free transport ownership for the shared physical IPI vector.
 ///
 /// Scheduler work is published in ax-task before this bit is set. The target
-/// CPU consumes the bit before acknowledging the matching scheduler epoch, so
-/// an unrelated callback IPI cannot clear scheduler delivery state.
+/// CPU consumes the bit at IPI entry, so a concurrent producer can publish a
+/// fresh edge while callbacks are being drained.
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(super) struct SchedulerIpiDoorbell {
     pending: AtomicBool,
@@ -45,6 +45,10 @@ impl SchedulerIpiDoorbell {
 
     pub(super) fn consume(&self) -> bool {
         self.pending.swap(false, Ordering::AcqRel)
+    }
+
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
     }
 }
 
@@ -86,16 +90,6 @@ fn account_clock_event(now_ns: u64, scheduler_tick: bool) -> Option<TaskDeadline
     }
 }
 
-/// Consumes the delivered scheduler doorbell before rechecking owner work.
-#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
-pub(crate) fn on_scheduler_ipi() {
-    match ax_task::acknowledge_current_scheduler_ipi() {
-        Ok(()) => {}
-        Err(TaskError::NotInitialized | TaskError::CpuOffline(_)) => {}
-        Err(error) => panic!("scheduler IPI acknowledgement failed: {error}"),
-    }
-}
-
 /// Consumes scheduler delivery ownership from the shared physical IPI vector.
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(crate) fn consume_scheduler_ipi_doorbell() -> bool {
@@ -103,6 +97,16 @@ pub(crate) fn consume_scheduler_ipi_doorbell() -> bool {
     unsafe {
         with_current_cpu_pin(|pin| {
             SCHEDULER_IPI_DOORBELL.with_current(pin, SchedulerIpiDoorbell::consume)
+        })
+    }
+}
+
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+pub(crate) fn current_scheduler_ipi_doorbell_pending() -> bool {
+    // SAFETY: CPU-offline preparation owns the IRQ-excluded current CPU.
+    unsafe {
+        with_current_cpu_pin(|pin| {
+            SCHEDULER_IPI_DOORBELL.with_current(pin, SchedulerIpiDoorbell::is_pending)
         })
     }
 }

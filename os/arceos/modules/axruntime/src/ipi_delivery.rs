@@ -15,33 +15,23 @@ pub(crate) unsafe fn run_on_cpu_sync(
 fn dispatch_shared_ipi(
     drain_callbacks: impl FnOnce(),
     consume_scheduler_delivery: impl FnOnce() -> bool,
-    acknowledge_scheduler_delivery: impl FnOnce(),
 ) {
-    if consume_scheduler_delivery() {
-        acknowledge_scheduler_delivery();
-    }
+    consume_scheduler_delivery();
     drain_callbacks();
 }
 
 #[cfg(all(feature = "irq", feature = "ipi"))]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
-    dispatch_shared_ipi(
-        ax_ipi::ipi_handler,
-        || {
-            #[cfg(feature = "multitask")]
-            {
-                crate::task::consume_scheduler_ipi_doorbell()
-            }
-            #[cfg(not(feature = "multitask"))]
-            {
-                false
-            }
-        },
-        || {
-            #[cfg(feature = "multitask")]
-            crate::task::on_scheduler_ipi();
-        },
-    );
+    dispatch_shared_ipi(ax_ipi::ipi_handler, || {
+        #[cfg(feature = "multitask")]
+        {
+            crate::task::consume_scheduler_ipi_doorbell()
+        }
+        #[cfg(not(feature = "multitask"))]
+        {
+            false
+        }
+    });
     ax_hal::irq::IrqReturn::Handled
 }
 
@@ -58,10 +48,6 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
             {
                 false
             }
-        },
-        || {
-            #[cfg(feature = "multitask")]
-            crate::task::on_scheduler_ipi();
         },
     );
     ax_hal::irq::IrqReturn::Handled
@@ -81,10 +67,9 @@ mod tests {
                 events.borrow_mut().push("consume");
                 true
             },
-            || events.borrow_mut().push("acknowledge"),
         );
 
-        assert_eq!(*events.borrow(), ["consume", "acknowledge", "callbacks"]);
+        assert_eq!(*events.borrow(), ["consume", "callbacks"]);
     }
 
     #[test]
@@ -99,8 +84,10 @@ mod tests {
                 );
                 scheduler_epoch_claimed.set(true);
             },
-            || true,
-            || scheduler_epoch_claimed.set(false),
+            || {
+                scheduler_epoch_claimed.set(false);
+                true
+            },
         );
 
         assert!(
@@ -110,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_shared_ipi_does_not_acknowledge_scheduler_delivery() {
+    fn unrelated_shared_ipi_only_checks_the_scheduler_doorbell() {
         let events = RefCell::new(alloc::vec::Vec::new());
 
         super::dispatch_shared_ipi(
@@ -119,7 +106,6 @@ mod tests {
                 events.borrow_mut().push("consume");
                 false
             },
-            || events.borrow_mut().push("acknowledge"),
         );
 
         assert_eq!(*events.borrow(), ["consume", "callbacks"]);
