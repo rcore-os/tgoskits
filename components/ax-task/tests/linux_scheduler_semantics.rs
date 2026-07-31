@@ -274,8 +274,10 @@ fn early_deadline_replenishment_keeps_the_throttled_job_blocked() {
         Err(TaskError::NotReady)
     );
     assert_eq!(deadline.state(), ThreadState::Blocked);
+    assert_eq!(system.schedule(cpu.as_mut(), 10).unwrap().next(), idle.id());
+    assert_eq!(deadline.state(), ThreadState::Blocked);
     assert_eq!(
-        system.schedule(cpu.as_mut(), 10).unwrap().next(),
+        system.schedule(cpu.as_mut(), 20).unwrap().next(),
         deadline.id()
     );
 }

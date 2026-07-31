@@ -182,9 +182,18 @@ fn throttled_wake_cannot_restore_cbs_budget_before_replenishment() {
         assert_ne!(decision.next(), thread.id());
     }
     assert_eq!(thread.state(), ThreadState::Blocked);
-    // Ordinary CBS depletion replenishes at the current scheduling deadline;
-    // only explicit sched_yield waits until the next period boundary.
-    let decision = system.schedule(cpu.as_mut(), 10).unwrap();
+    // CBS depletion waits for the next release. For constrained D<P
+    // reservations, replenishing at the scheduling deadline would provide a
+    // second budget inside the same period.
+    if let Some(decision) = system
+        .schedule_if_requested(cpu.as_mut(), 10)
+        .unwrap()
+        .decision()
+    {
+        assert_ne!(decision.next(), thread.id());
+    }
+    assert_eq!(thread.state(), ThreadState::Blocked);
+    let decision = system.schedule(cpu.as_mut(), 20).unwrap();
     assert_eq!(decision.next(), thread.id());
     assert_eq!(
         system
