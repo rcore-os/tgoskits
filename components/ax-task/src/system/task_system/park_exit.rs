@@ -21,16 +21,19 @@ impl TaskSystem {
     }
 
     /// Rechecks a prepared park and either cancels it or commits schedule-out.
+    ///
+    /// `now_ns` is the single monotonic snapshot for this owner transition.
+    /// The caller must sample it after acquiring scheduler ownership.
     pub fn commit_park(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         token: &mut ParkTicket,
+        now_ns: u64,
     ) -> Result<ParkCommit, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         if token.is_resolved() {
             return Err(TaskError::StaleThreadId);
         }
-        let now_ns = task_runtime::monotonic_ns();
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
         if cpu.current() != Some(token.thread()) {
@@ -108,14 +111,18 @@ impl TaskSystem {
     }
 
     /// Parks the current thread and selects its replacement.
+    ///
+    /// `now_ns` is the single monotonic snapshot for the complete
+    /// prepare-to-commit transaction.
     pub fn block_current(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         match self.prepare_park(cpu.as_mut())? {
             ParkPrepare::Prepared(mut ticket) => {
-                match self.commit_park(cpu.as_mut(), &mut ticket)? {
+                match self.commit_park(cpu.as_mut(), &mut ticket, now_ns)? {
                     ParkCommit::Blocked(decision) => Ok(decision),
                     ParkCommit::Notified => {
                         let core = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
@@ -181,10 +188,16 @@ impl TaskSystem {
     }
 
     /// Commits current-thread exit and selects a replacement.
-    pub fn exit_current(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ScheduleDecision, TaskError> {
+    ///
+    /// `now_ns` is the single monotonic snapshot shared by dispatch
+    /// accounting, successor selection, tracing, and the runtime switch.
+    pub fn exit_current(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
-        let now_ns = task_runtime::monotonic_ns();
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.commit_current_exit_after_owner_drain(cpu, now_ns)
     }

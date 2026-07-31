@@ -485,7 +485,7 @@ fn remote_wake_sent_to_old_cpu_follows_latest_affinity() {
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
     }
-    system.block_current(cpu0.as_mut()).unwrap();
+    system.block_current(cpu0.as_mut(), 0).unwrap();
     system.complete_context_switch(cpu0.as_mut()).unwrap();
 
     support::install_handles(

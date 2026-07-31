@@ -136,7 +136,7 @@ fn blocking_fifo_reprograms_the_fair_successor_deadline() {
 
     support::set_monotonic_ns(200);
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 200).unwrap().next(),
         fair.id()
     );
     assert_eq!(
@@ -178,7 +178,10 @@ fn exiting_fifo_reprograms_the_fair_successor_deadline() {
     assert_eq!(support::last_oneshot_ns(), 10_000_000);
 
     support::set_monotonic_ns(200);
-    assert_eq!(system.exit_current(cpu.as_mut()).unwrap().next(), fair.id());
+    assert_eq!(
+        system.exit_current(cpu.as_mut(), 200).unwrap().next(),
+        fair.id()
+    );
     assert_eq!(support::last_oneshot_ns(), 1_000_200);
 }
 

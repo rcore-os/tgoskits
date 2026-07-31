@@ -124,7 +124,7 @@ fn fifo_preemption_preserves_position_and_yield_moves_to_tail() {
         higher.id()
     );
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 1).unwrap().next(),
         first.id()
     );
     assert_eq!(
@@ -156,7 +156,7 @@ fn round_robin_preserves_partial_quantum_then_resets_after_rotation() {
         higher.id()
     );
     assert_eq!(
-        system.block_current(cpu.as_mut()).unwrap().next(),
+        system.block_current(cpu.as_mut(), 2).unwrap().next(),
         first.id()
     );
     assert!(
@@ -249,10 +249,10 @@ fn repeated_smp_wake_coalesces_to_one_ipi_epoch() {
         first.id()
     );
     assert_eq!(
-        system.block_current(cpu1.as_mut()).unwrap().next(),
+        system.block_current(cpu1.as_mut(), 0).unwrap().next(),
         second.id()
     );
-    system.block_current(cpu1.as_mut()).unwrap();
+    system.block_current(cpu1.as_mut(), 0).unwrap();
     assert_eq!(first.state(), ThreadState::Blocked);
     assert_eq!(second.state(), ThreadState::Blocked);
     support::install_handles(

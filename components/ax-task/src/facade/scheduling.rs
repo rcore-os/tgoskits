@@ -52,7 +52,7 @@ fn schedule_current_cpu_with_entry(
     let mut scheduler_frame =
         RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
     let system = runtime_task_system()?;
-    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
+    let now_ns = service_scheduler_safe_point_deadlines(system, &mut scheduler_frame)?;
     let outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let current_state = cpu.current_lifecycle_state();
@@ -106,7 +106,7 @@ pub(super) fn drain_current_expired_timers(
     Ok(drained)
 }
 
-pub(super) fn service_current_task_deadline_work(
+pub(super) fn service_scheduler_safe_point_deadlines(
     system: &TaskSystem,
     pin: &mut impl RuntimeCpuPin,
 ) -> Result<u64, TaskError> {
@@ -221,10 +221,7 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
     let system = runtime_task_system().unwrap_or_else(|_| {
         task_runtime::fatal_invariant(0x4558_0011, permit.thread.as_u64() as _)
     });
-    let now_ns =
-        service_current_task_deadline_work(system, &mut scheduler_frame).unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x4558_0012, permit.thread.as_u64() as _)
-        });
+    let now_ns = task_runtime::monotonic_ns();
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x4558_0013, permit.thread.as_u64() as _)
@@ -232,9 +229,11 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
         if cpu.current() != Some(permit.thread) {
             task_runtime::fatal_invariant(0x4558_0014, permit.thread.as_u64() as _);
         }
-        system.exit_current(cpu.as_mut()).unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x4558_0015, permit.thread.as_u64() as _)
-        })
+        system
+            .exit_current(cpu.as_mut(), now_ns)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x4558_0015, permit.thread.as_u64() as _)
+            })
     };
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     // An exited context is never re-enqueued, so returning here indicates a

@@ -2167,6 +2167,49 @@ complete ax-task suite passes 225 unit tests and 20 loom models, ax-runtime's
 multitask host suite passes 62/62, both feature-clippy matrices pass, and the
 x86_64 Starry QEMU suite passes 391/391 in 13.61 seconds.
 
+## Current-head forced transition boundary
+
+Affinity migration, park commit, and exit commit still entered the generic
+deadline safe-point service before applying their own state transition. This
+made a local affinity no-op consume unrelated expired timers, made park
+completion wake unrelated threads, and let exit service arbitrary deadline
+work after the OS had already prepared a non-returning teardown. Park and exit
+also sampled the clock again inside `TaskSystem`, so the scheduler committed
+dispatch state at a later timestamp than the facade supplied to switch tracing
+and runtime completion.
+
+Linux v7.1 keeps these ownership classes separate. Affinity changes update the
+task's allowed-CPU state under scheduler locking
+(`kernel/sched/syscalls.c:1136-1194`); blocking submits only work required by
+the sleeping task before `__schedule_loop()` (`kernel/sched/core.c:7215-7286`);
+and final exit performs teardown before `do_task_dead()` publishes
+`TASK_DEAD` and enters `__schedule()` (`kernel/exit.c:896-1018`,
+`kernel/sched/core.c:7199-7208`). Generic return-to-task work remains in its
+own scheduler/entry loop rather than being replayed by each forced transition.
+
+ax-task now gives each forced transition one explicit owner timestamp:
+
+- a current-affinity update does not read the scheduler clock unless the new
+  mask requires an immediate migration;
+- park commit samples once after acquiring the scheduler frame and passes that
+  value through owner-work drain, dispatch commit, and successor selection;
+- exit commit does the same, while retaining the distinct completion-time
+  clock read needed to avoid programming a stale one-shot after selection; and
+- the generic task-deadline service is named and called only from the scheduler
+  safe-point entry.
+
+The low-level `TaskSystem::{commit_park, block_current, exit_current}` APIs now
+require the owner timestamp instead of hiding an additional runtime clock
+read. Deterministic regressions first observed two clock reads for an affinity
+no-op, three for a notified park, and four for exit with buffered unrelated
+deadline work. They also observed each forced transition consuming that
+unrelated event. The new boundary performs zero, one, and two reads
+respectively—the exit pair is one transition snapshot plus the intentional
+clockevent completion recheck—and leaves the unrelated event for the next
+real safe point. The complete ax-task suite passes 228 unit tests and 20 loom
+models, ax-runtime's multitask host suite passes 62/62, both targeted clippy
+matrices pass, and the x86_64 Starry QEMU suite passes 391/391 in 13.67 seconds.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

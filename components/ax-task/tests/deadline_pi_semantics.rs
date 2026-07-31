@@ -19,14 +19,14 @@ fn pi_orders_equal_relative_deadlines_by_the_active_absolute_job_deadline() {
 
     system.enqueue(cpu.as_mut(), early.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), early.id());
-    system.block_current(cpu.as_mut()).unwrap();
+    system.block_current(cpu.as_mut(), 0).unwrap();
 
     system.enqueue(cpu.as_mut(), late.id(), 100).unwrap();
     assert_eq!(
         system.schedule(cpu.as_mut(), 100).unwrap().next(),
         late.id()
     );
-    system.block_current(cpu.as_mut()).unwrap();
+    system.block_current(cpu.as_mut(), 100).unwrap();
 
     assert!(early.effective_scheduling_key() < late.effective_scheduling_key());
     let late_wait = system.pi_wait_start(lock, late.id(), owner.id()).unwrap();
