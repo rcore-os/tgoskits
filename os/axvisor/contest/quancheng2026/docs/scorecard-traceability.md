@@ -11,7 +11,7 @@ the final PR, weekly report and demo can point to one compact source of truth.
 | Task One realtime | PASS | `docs/realtime-evaluation.md`, `results/realtime-comparison.csv`, native Zephyr latency baseline and 0/1/2/4-worker dual-guest runs |
 | Task Two IP communication | PASS | `docs/protocol.md`, `docs/network-topology.md`, Linux client scripts, Zephyr e1000 RTOS path, tcpdump counters |
 | Task Three AI closed loop | PASS | `docs/ai-control-evaluation.md`, `linux/qc_ai_control_demo.py`, integrated QCZ1 AI run summaries |
-| Reproducibility | PASS | `docs/reproduce.md`, prepared-artifact integrated runner, analyzer scripts, SHA256 evidence records |
+| Reproducibility | PASS | `docs/reproduce.md`, downloadable-artifact integrated runner, analyzer scripts, SHA256 evidence records |
 | Submission boundary | READY | `docs/commit-plan.md`, `docs/pr-boundary.md`, contest dry-run path check |
 
 ## Task One: Realtime Modification and Validation
@@ -43,7 +43,7 @@ the final PR, weekly report and demo can point to one compact source of truth.
 | Deploy neural-network inference in Linux guest | Linux-side AI control demo uses a deterministic small MLP implemented in the static guest demo/client path. | The model is intentionally lightweight and reproducible for the contest demo. |
 | Send model output to RTOS over Task Two protocol | AI output `ai_score_milli` is carried in QCZ1 AI/control payloads over IPv4/UDP. | See `docs/ai-control-evaluation.md` and `docs/protocol.md`. |
 | RTOS adjusts observable control parameter or strategy | RTOS applies `output_milli = setpoint_milli * ai_score_milli / 1000` and reports state back. | Current observable output is logs/state response; it can be extended to LED/PWM on hardware. |
-| Demonstrate closed loop | Integrated run includes AI input, inference, QCZ1 network transfer, RTOS control output and state reply. | The prepared-artifact runner requires `QC_AI_CONTROL_RESULT=PASS`. |
+| Demonstrate closed loop | Integrated run includes AI input, inference, QCZ1 network transfer, RTOS control output and state reply. | The downloadable-artifact runner requires `QC_AI_CONTROL_RESULT=PASS`. |
 | Measure end-to-end latency | Clean run reports AI end-to-end mean `2.186 ms`, max `3.389 ms`; 4-worker overcommit run reports mean `8.140 ms`, max `39.642 ms`. | Measurement method and precision notes are in `docs/ai-control-evaluation.md`. |
 | Compare against fixed manual baseline with at least two metrics | Manual fixed-gain baseline uses `manual_score_milli = 800`; comparison uses latency and control error/output tracking. | Representative values are in `docs/ai-control-evaluation.md`. |
 
@@ -64,7 +64,7 @@ the final PR, weekly report and demo can point to one compact source of truth.
 | --- | --- |
 | Technical innovation 30% | Mixed Linux/RTOS AxVisor deployment, Zephyr e1000 guest networking, reliable QCZ1 protocol, AI control loop and separated core patch candidates. |
 | Completeness 30% | Covers realtime, IP communication, AI linkage, reproducibility, static checks, evidence SHA256 and demo script. |
-| Landing feasibility 25% | Uses a prepared-artifact QEMU reproduction path, explicit topology, deterministic model and clear first-stage/core-patch separation. |
+| Landing feasibility 25% | Uses a downloadable-artifact QEMU reproduction path, explicit topology, deterministic model and clear first-stage/core-patch separation. |
 | Team capability 15% | Provides runnable code, measured results under stress, stability evidence, risk notes and PR-ready staging discipline. |
 
 ## Remaining Actions Before Final Submission

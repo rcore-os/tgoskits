@@ -17,7 +17,7 @@ Recommended terminal layout:
   `/tmp/qc_demo_final_evidence`.
 - Before recording, prepare the rootfs, Linux kernel, Zephyr RTOS binary and
   host DTB exactly as listed in `docs/reproduce.md`; the live command below is
-  a prepared-artifact reproduction command, not a repository bootstrap.
+  a downloadable runtime-artifact preparation plus reproduction command.
 
 Main command:
 

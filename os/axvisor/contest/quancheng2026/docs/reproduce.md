@@ -243,24 +243,36 @@ metrics are parsed, and no QEMU process remains after timeout cleanup.
 
 ## AxVisor Dual-Guest QCZ1 and AI Reproduction
 
-The integrated task-two and task-three path is reproduced after preparing the runtime artifacts that are intentionally not checked into this first-stage contest PR:
+The integrated task-two and task-three path is reproduced by first preparing
+version-fixed runtime artifacts, then running the dual-guest script:
 
 ```bash
 REPO=/path/to/tgoskits
-cd "${REPO}"
-cargo xtask image pull --arch aarch64 -S tmp/axbuild/rootfs
-
-install -D /path/to/linux-qemu \
-  os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu
-install -D /path/to/zephyr.bin \
-  os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin
-install -D /path/to/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb \
-  os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb
-
-cd os/axvisor/contest/quancheng2026
+cd "${REPO}/os/axvisor/contest/quancheng2026"
+./scripts/prepare_dual_guest_runtime_artifacts.sh --repo "${REPO}"
 sudo -v
 ./scripts/run_axvisor_dual_guest_qcz1_ai.sh
 ```
+
+The preparation script downloads this public runtime artifact archive:
+
+```text
+https://raw.githubusercontent.com/irinaparchina-art/tgoskits/contest/quancheng2026-runtime-artifacts/quancheng2026-dual-guest-runtime-v1.tar.xz
+```
+
+Archive SHA256:
+
+```text
+656687bab1f6e055a6be411ee5e4c4a83ccc9366f37c8df9fed0ff5457777283
+```
+
+The archive contains the Linux guest kernel, Zephyr QCZ1/e1000 RTOS binary and
+host DTB at their final repository-relative paths. The script validates the
+archive SHA256 and exact member list before extraction, installs the checked-in
+`tgosimages` registry template, pulls the AArch64 Alpine rootfs with
+`cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64`,
+and runs `sha256sum --strict --check runtime-artifacts-known-passing.sha256`.
+Only after that manifest check passes should the QEMU runner be started.
 
 The default tap mode creates per-run bridge/TAP devices and starts tcpdump, so sudo authentication is deliberately supplied by the caller with sudo -v; the repository does not store a sudo password or use stdin password mode. Use --prepare-only to validate artifact preparation without creating host network devices.
 
@@ -278,15 +290,13 @@ Runtime artifact contract for the integrated dual-guest runner:
 | --- | --- | --- | --- |
 | AArch64 Alpine rootfs image | `tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img` | `cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64` | `dc7540d3140fcaacc9c942fe1340a9a4d2c14e319fbad3aadf34261e85446424` |
 | Rootfs image registry metadata | `tmp/axbuild/rootfs/images.toml` | Copied from checked-in `runtime-rootfs-images-known-passing.toml` when absent | `682b389cdff44b89486019aef0c356a7db37a30bbd5c365f869c9c0eabd1203a` |
-| Linux guest kernel | `os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu` | Matching local AxVisor image/build output | `f262d305daa57a8f59d848d530e0d24f0b48f9d0b39f86eeb27f4114845bef17` |
-| Zephyr RTOS guest binary | `os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin` | Matching local Zephyr/e1000 RTOS build output | `0baf6b4a08dc13a69ed739afd5c58bb138f7ae23cbc46921e864cdb4cc660f86` |
-| Host DTB | `os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb` | Matching local AxVisor host-device-tree output | `0f840bc4c162c2c0bd8f871d97c2124c9083ebe7d6d2063855e0ade5a8aa90bc` |
+| Linux guest kernel | `os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `f262d305daa57a8f59d848d530e0d24f0b48f9d0b39f86eeb27f4114845bef17` |
+| Zephyr RTOS guest binary | `os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `0baf6b4a08dc13a69ed739afd5c58bb138f7ae23cbc46921e864cdb4cc660f86` |
+| Host DTB | `os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `0f840bc4c162c2c0bd8f871d97c2124c9083ebe7d6d2063855e0ade5a8aa90bc` |
 
 The runner enforces the checked-in `runtime-artifacts-known-passing.sha256` manifest with `sha256sum --strict --check` before QEMU is started. The current manifest records the runtime artifact set used by the current-head TAP/tcpdump validation on 2026-07-29. The runner records the manifest file hash and the manifest check output in the evidence directory, and exits non-zero with `runtime_artifact_manifest_check=FAIL` if any runtime artifact is missing or does not match the known-passing contract. If the local rootfs registry metadata is absent, the runner restores it from the checked-in `runtime-rootfs-images-known-passing.toml` template before the manifest check; an existing mismatched registry is not overwritten and fails the check. Alternate runtime artifacts require updating this manifest in review together with the corresponding run evidence.
 
-The runner uses the extracted rootfs image from `cargo xtask image pull`; if the image is absent, it attempts that image-manager pull with auto-sync disabled before checking the rest of the runtime artifact contract and manifest. After the manifest check passes, the rootfs used by QEMU is copied into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/`, outside axbuild image storage, so `cargo xtask axvisor qemu --rootfs` treats it as a caller-managed runtime artifact and does not perform another image-manager sync or download after verification. The Linux kernel, Zephyr RTOS binary and host DTB paths above are not stored in this first-stage contest PR; they must be supplied from the matching local AxVisor image/build output before running the integrated QEMU path. If those runtime artifacts are absent, the runner exits before QEMU with `missing_required_path=...`; in that state the PR only supports static validation and documentation review for this integrated path. The stress and long-sample commands later in this section assume the same runtime artifacts have already been prepared.
-
-Current limitation: this PR does not claim that the Linux kernel, Zephyr RTOS binary or host DTB can be regenerated from this PR alone. The integrated QEMU path is a prepared-artifact reproduction path; generation of those runtime artifacts is kept outside this first-stage contest artifact PR and should be reviewed as a separate follow-up if needed.
+The runner uses the extracted rootfs image from the preparation step. If the image is absent, it attempts the same image-manager pull with auto-sync disabled before checking the rest of the runtime artifact contract and manifest. After the manifest check passes, the rootfs used by QEMU is copied into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/`, outside axbuild image storage, so `cargo xtask axvisor qemu --rootfs` treats it as a caller-managed runtime artifact and does not perform another image-manager sync or download after verification. The Linux kernel, Zephyr RTOS binary and host DTB are provided by the fixed public runtime archive above rather than by reviewer-local `/path/to/...` inputs. If any runtime artifact is absent or has the wrong SHA256, the preparation script and runner both exit before QEMU. The stress and long-sample commands later in this section assume `scripts/prepare_dual_guest_runtime_artifacts.sh` has already completed successfully.
 
 The default topology is:
 

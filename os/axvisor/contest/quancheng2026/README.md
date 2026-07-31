@@ -23,7 +23,7 @@ Main evidence as of 2026-07-27:
 - AI control smoke: `20/20` AI control messages, inference mean `0.0293 ms`, end-to-end mean `1.118 ms`.
 - Zephyr native latency baseline: `qemu_cortex_a53`, `47` reported metrics, context switch `2400 ns`, ISR return `1071/1359 ns`, semaphore context switch `3440/3967 ns`, maximum reported primitive latency `46703 ns`, final marker `PROJECT EXECUTION SUCCESSFUL`.
 - AxVisor + Zephyr e1000 strict probe: `20/20 PASS`, UDP success rate `1.000000`, RTT mean `1.070 ms`, QEMU monitor confirms `model=e1000`.
-- AxVisor dual guest Linux/Zephyr QCZ1 + AI prepared-artifact reproduction: Linux guest has `2` vCPUs online, plain UDP `20/20 PASS` with RTT mean `2.943 ms` and max `19.039 ms`, reliable UDP `10/10 PASS`, duplicate ACK `2`, retransmits `0`, AI control `10/10 PASS`, AI end-to-end mean `2.186 ms` and max `3.389 ms`, Linux guest periodic probe `2000` samples at `1 ms` period with mean lateness `0.829 ms`, p99 `4.455 ms` and max `10.167 ms`, RTOS guest periodic probe `1000` samples at `1 ms` period with mean lateness `0.110 ms`, p99 `0.887 ms` and max `5.156 ms`, tcpdump captures `88` packets with `0` kernel drops, final markers `QC_RTOS_PERIODIC_RESULT=PASS` and `QC_DUAL_GUEST_LINUX_INIT=PASS`.
+- AxVisor dual guest Linux/Zephyr QCZ1 + AI downloadable-runtime reproduction: Linux guest has `2` vCPUs online, plain UDP `20/20 PASS` with RTT mean `2.943 ms` and max `19.039 ms`, reliable UDP `10/10 PASS`, duplicate ACK `2`, retransmits `0`, AI control `10/10 PASS`, AI end-to-end mean `2.186 ms` and max `3.389 ms`, Linux guest periodic probe `2000` samples at `1 ms` period with mean lateness `0.829 ms`, p99 `4.455 ms` and max `10.167 ms`, RTOS guest periodic probe `1000` samples at `1 ms` period with mean lateness `0.110 ms`, p99 `0.887 ms` and max `5.156 ms`, tcpdump captures `88` packets with `0` kernel drops, final markers `QC_RTOS_PERIODIC_RESULT=PASS` and `QC_DUAL_GUEST_LINUX_INIT=PASS`.
 - AxVisor dual guest Linux/Zephyr 0-worker long-sample reproduction: Linux guest stress workers `0`, Linux periodic probe `10000` samples at `1 ms` period with mean lateness `0.859 ms`, p99 `2.789 ms` and max `12.764 ms`, RTOS guest periodic probe `1000` samples at `1 ms` period with mean lateness `0.088 ms`, p99 `0.613 ms` and max `5.329 ms`, plain UDP `20/20 PASS`, reliable UDP `10/10 PASS`, duplicate ACK `2`, retransmits `0`, AI control `10/10 PASS`, AI end-to-end mean `1.668 ms` and max `1.925 ms`, tcpdump captures `88` packets with `0` kernel drops.
 - AxVisor dual guest Linux/Zephyr 1-worker long/stress reproduction: Linux guest stress workers `1`, Linux periodic probe `10000` samples at `1 ms` period with mean lateness `0.828 ms`, p99 `2.559 ms` and max `9.586 ms`, RTOS guest periodic probe `1000` samples at `1 ms` period with mean lateness `0.123 ms`, p99 `1.228 ms` and max `4.352 ms`, plain UDP `20/20 PASS`, reliable UDP `10/10 PASS`, duplicate ACK `2`, retransmits `0`, AI control `10/10 PASS`, AI end-to-end mean `1.996 ms` and max `5.333 ms`, tcpdump captures `88` packets with `0` kernel drops.
 - AxVisor dual guest Linux/Zephyr 2-worker long/stress reproduction: Linux guest stress workers `2`, Linux periodic probe `10000` samples at `1 ms` period with mean lateness `0.895 ms`, p99 `4.347 ms` and max `9.145 ms`, RTOS guest periodic probe `1000` samples at `1 ms` period with mean lateness `0.099 ms`, p99 `0.727 ms` and max `3.677 ms`, plain UDP `20/20 PASS`, reliable UDP `10/10 PASS`, duplicate ACK `2`, retransmits `0`, AI control `10/10 PASS`, AI end-to-end mean `4.964 ms` and max `21.059 ms`, tcpdump captures `88` packets with `0` kernel drops.
@@ -163,24 +163,33 @@ For the passing run, Linux uses a 2-vCPU guest pinned to pCPU 1-2 and Zephyr use
 The detailed network boundary is documented in `docs/network-topology.md`.
 The AI/manual baseline comparison is documented in `docs/ai-control-evaluation.md`.
 
-Prepare the runtime artifacts, then run:
+Prepare the reviewed runtime artifacts, then run:
 
 ```bash
 REPO=/path/to/tgoskits
-cd "${REPO}"
-cargo xtask image pull --arch aarch64 -S tmp/axbuild/rootfs
-
-install -D /path/to/linux-qemu \
-  os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu
-install -D /path/to/zephyr.bin \
-  os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin
-install -D /path/to/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb \
-  os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb
-
-cd os/axvisor/contest/quancheng2026
+cd "${REPO}/os/axvisor/contest/quancheng2026"
+./scripts/prepare_dual_guest_runtime_artifacts.sh --repo "${REPO}"
 sudo -v
 ./scripts/run_axvisor_dual_guest_qcz1_ai.sh
 ```
+
+The preparation script downloads the fixed public runtime archive:
+
+```text
+https://raw.githubusercontent.com/irinaparchina-art/tgoskits/contest/quancheng2026-runtime-artifacts/quancheng2026-dual-guest-runtime-v1.tar.xz
+```
+
+Archive SHA256:
+
+```text
+656687bab1f6e055a6be411ee5e4c4a83ccc9366f37c8df9fed0ff5457777283
+```
+
+It also installs the checked-in tgosimages registry template, pulls the AArch64
+Alpine rootfs with `cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull
+--arch aarch64`, extracts only the expected Linux kernel, Zephyr binary and host
+DTB paths, and verifies `runtime-artifacts-known-passing.sha256` before the
+runner starts QEMU.
 
 The default tap mode creates per-run bridge/TAP devices and starts tcpdump, so sudo authentication is deliberately supplied by the caller with sudo -v; the repository does not store a sudo password or use stdin password mode. Use --prepare-only to validate artifact preparation without creating host network devices.
 
@@ -198,15 +207,13 @@ Runtime artifact contract for the integrated dual-guest runner:
 | --- | --- | --- | --- |
 | AArch64 Alpine rootfs image | `tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img` | `cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64` | `dc7540d3140fcaacc9c942fe1340a9a4d2c14e319fbad3aadf34261e85446424` |
 | Rootfs image registry metadata | `tmp/axbuild/rootfs/images.toml` | Copied from checked-in `runtime-rootfs-images-known-passing.toml` when absent | `682b389cdff44b89486019aef0c356a7db37a30bbd5c365f869c9c0eabd1203a` |
-| Linux guest kernel | `os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu` | Matching local AxVisor image/build output | `f262d305daa57a8f59d848d530e0d24f0b48f9d0b39f86eeb27f4114845bef17` |
-| Zephyr RTOS guest binary | `os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin` | Matching local Zephyr/e1000 RTOS build output | `0baf6b4a08dc13a69ed739afd5c58bb138f7ae23cbc46921e864cdb4cc660f86` |
-| Host DTB | `os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb` | Matching local AxVisor host-device-tree output | `0f840bc4c162c2c0bd8f871d97c2124c9083ebe7d6d2063855e0ade5a8aa90bc` |
+| Linux guest kernel | `os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `f262d305daa57a8f59d848d530e0d24f0b48f9d0b39f86eeb27f4114845bef17` |
+| Zephyr RTOS guest binary | `os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `0baf6b4a08dc13a69ed739afd5c58bb138f7ae23cbc46921e864cdb4cc660f86` |
+| Host DTB | `os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `0f840bc4c162c2c0bd8f871d97c2124c9083ebe7d6d2063855e0ade5a8aa90bc` |
 
 The runner enforces the checked-in `runtime-artifacts-known-passing.sha256` manifest with `sha256sum --strict --check` before QEMU is started. The current manifest records the runtime artifact set used by the current-head TAP/tcpdump validation on 2026-07-29. The runner records the manifest file hash and the manifest check output in the evidence directory, and exits non-zero with `runtime_artifact_manifest_check=FAIL` if any runtime artifact is missing or does not match the known-passing contract. If the local rootfs registry metadata is absent, the runner restores it from the checked-in `runtime-rootfs-images-known-passing.toml` template before the manifest check; an existing mismatched registry is not overwritten and fails the check. Alternate runtime artifacts require updating this manifest in review together with the corresponding run evidence.
 
-The runner uses the rootfs produced by `cargo xtask image pull` at the extracted image path above. If that rootfs image is absent, it attempts an image-manager pull with auto-sync disabled so the checked-in registry template remains the reviewed source of image metadata. After the manifest check passes, the runner copies the rootfs into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/` and passes that copy to `cargo xtask axvisor qemu --rootfs`; this path is intentionally outside axbuild image storage so the QEMU launch treats it as a caller-managed runtime artifact and does not re-enter image-manager download/sync logic after verification. The Linux kernel, Zephyr RTOS binary and host DTB are intentionally not checked into this first-stage contest PR. If those artifacts are absent, the runner stops before QEMU with `missing_required_path=...`; in that state only the static checks and prepared-artifact documentation can be validated until the matching local build outputs are supplied. The stress and long-sample commands below assume the same runtime artifacts have already been prepared.
-
-Current limitation: this PR does not claim that the Linux kernel, Zephyr RTOS binary or host DTB can be regenerated from this PR alone. The integrated QEMU path is a prepared-artifact reproduction path; generation of those runtime artifacts is kept outside this first-stage contest artifact PR and should be reviewed as a separate follow-up if needed.
+The preparation script is the clean-environment entry point for the integrated QEMU path. It uses a fixed archive URL and SHA256, validates the archive member list before extraction, then runs the checked-in manifest over the rootfs registry, rootfs image, Linux kernel, Zephyr RTOS binary and host DTB. The runner keeps enforcing the same manifest and exits before QEMU if any artifact is missing or mismatched. After the manifest check passes, the runner copies the rootfs into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/` and passes that copy to `cargo xtask axvisor qemu --rootfs`; this path is intentionally outside axbuild image storage so the QEMU launch treats it as a caller-managed runtime artifact and does not re-enter image-manager download/sync logic after verification. The stress and long-sample commands below assume `scripts/prepare_dual_guest_runtime_artifacts.sh` has already completed successfully.
 
 The script prints `result=PASS` only after the pre-QEMU QCZ1 STATUS negative selftest passes and QEMU emits plain UDP, reliable QCZ1, AI control, Linux guest periodic, RTOS guest periodic and final Linux init PASS markers.
 
