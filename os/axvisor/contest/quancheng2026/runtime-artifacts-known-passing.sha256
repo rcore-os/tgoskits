@@ -1,4 +1,4 @@
-dc7540d3140fcaacc9c942fe1340a9a4d2c14e319fbad3aadf34261e85446424  tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+5009e544c1f1e941034475c2757ac47997d323855429a95686049c815a849975  tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
 682b389cdff44b89486019aef0c356a7db37a30bbd5c365f869c9c0eabd1203a  tmp/axbuild/rootfs/images.toml
 f262d305daa57a8f59d848d530e0d24f0b48f9d0b39f86eeb27f4114845bef17  os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu
 0baf6b4a08dc13a69ed739afd5c58bb138f7ae23cbc46921e864cdb4cc660f86  os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin

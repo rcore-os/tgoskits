@@ -288,15 +288,15 @@ Runtime artifact contract for the integrated dual-guest runner:
 
 | Artifact | Expected path under repo root | Preparation source | Known passing SHA256 |
 | --- | --- | --- | --- |
-| AArch64 Alpine rootfs image | `tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img` | `cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64` | `dc7540d3140fcaacc9c942fe1340a9a4d2c14e319fbad3aadf34261e85446424` |
+| AArch64 Alpine rootfs image | `tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img` | `cargo xtask image --no-auto-sync -S tmp/axbuild/rootfs pull --arch aarch64` | `5009e544c1f1e941034475c2757ac47997d323855429a95686049c815a849975` |
 | Rootfs image registry metadata | `tmp/axbuild/rootfs/images.toml` | Copied from checked-in `runtime-rootfs-images-known-passing.toml` when absent | `682b389cdff44b89486019aef0c356a7db37a30bbd5c365f869c9c0eabd1203a` |
 | Linux guest kernel | `os/axvisor/tmp/images/qemu-aarch64/linux/linux-qemu` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `f262d305daa57a8f59d848d530e0d24f0b48f9d0b39f86eeb27f4114845bef17` |
 | Zephyr RTOS guest binary | `os/axvisor/tmp/images/qemu-aarch64/zephyr-e1000-0x90000000-qcz1/zephyr.bin` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `0baf6b4a08dc13a69ed739afd5c58bb138f7ae23cbc46921e864cdb4cc660f86` |
 | Host DTB | `os/axvisor/tmp/configs/2026-07-24_qemu-aarch64-host-reserve-zephyr-0x90000000.dtb` | Public runtime archive prepared by `scripts/prepare_dual_guest_runtime_artifacts.sh` | `0f840bc4c162c2c0bd8f871d97c2124c9083ebe7d6d2063855e0ade5a8aa90bc` |
 
-The runner enforces the checked-in `runtime-artifacts-known-passing.sha256` manifest with `sha256sum --strict --check` before QEMU is started. The current manifest records the runtime artifact set used by the current-head TAP/tcpdump validation on 2026-07-29. The runner records the manifest file hash and the manifest check output in the evidence directory, and exits non-zero with `runtime_artifact_manifest_check=FAIL` if any runtime artifact is missing or does not match the known-passing contract. If the local rootfs registry metadata is absent, the runner restores it from the checked-in `runtime-rootfs-images-known-passing.toml` template before the manifest check; an existing mismatched registry is not overwritten and fails the check. Alternate runtime artifacts require updating this manifest in review together with the corresponding run evidence.
+The runner enforces the checked-in `runtime-artifacts-known-passing.sha256` manifest with `sha256sum --strict --check` before QEMU is started. The current manifest records the runtime artifact set used by the post-rebase current-head validation on 2026-07-31. The runner records the manifest file hash and the manifest check output in the evidence directory, and exits non-zero with `runtime_artifact_manifest_check=FAIL` if any runtime artifact is missing or does not match the known-passing contract. If the local rootfs registry metadata is absent, the runner restores it from the checked-in `runtime-rootfs-images-known-passing.toml` template before the manifest check; an existing mismatched registry is not overwritten and fails the check. Alternate runtime artifacts require updating this manifest in review together with the corresponding run evidence.
 
-The runner uses the extracted rootfs image from the preparation step. If the image is absent, it attempts the same image-manager pull with auto-sync disabled before checking the rest of the runtime artifact contract and manifest. After the manifest check passes, the rootfs used by QEMU is copied into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/`, outside axbuild image storage, so `cargo xtask axvisor qemu --rootfs` treats it as a caller-managed runtime artifact and does not perform another image-manager sync or download after verification. The Linux kernel, Zephyr RTOS binary and host DTB are provided by the fixed public runtime archive above rather than by reviewer-local `/path/to/...` inputs. If any runtime artifact is absent or has the wrong SHA256, the preparation script and runner both exit before QEMU. The stress and long-sample commands later in this section assume `scripts/prepare_dual_guest_runtime_artifacts.sh` has already completed successfully.
+The runner uses the extracted rootfs image from the preparation step. If the image is absent, it attempts the same image-manager pull with auto-sync disabled before checking the rest of the runtime artifact contract and manifest. After the manifest check passes, the rootfs is copied twice into `tmp/quancheng2026-dual-guest-qcz1-ai-build/rootfs/`, outside axbuild image storage. The clean host copy is attached to AxVisor through NVMe and passed to `cargo xtask axvisor qemu --rootfs`; the separate Linux guest copy is injected with `/qc-dual-net.sh`, `/qc-udp-probe`, `/qc-qcz1-demo` and `/qc-rt-probe`, then exposed to the Linux guest as virtio-blk `/dev/vda`. This keeps the latest-dev AxVisor host storage path aligned with NVMe while preserving the Linux guest boot contract. The Linux kernel, Zephyr RTOS binary and host DTB are provided by the fixed public runtime archive above rather than by reviewer-local `/path/to/...` inputs. If any runtime artifact is absent or has the wrong SHA256, the preparation script and runner both exit before QEMU. The stress and long-sample commands later in this section assume `scripts/prepare_dual_guest_runtime_artifacts.sh` has already completed successfully.
 
 The default topology is:
 
@@ -342,17 +342,18 @@ The script performs these steps:
 1. Compile linux/qc_dual_guest_udp_echo_probe.c as a freestanding static AArch64 ELF.
 2. Compile linux/qc_qcz1_guest_demo.c as a freestanding static AArch64 ELF.
 3. Compile linux/qc_periodic_latency_probe.c as a freestanding static AArch64 ELF.
-4. Copy the canonical axbuild rootfs image produced by the image manager into the contest build directory.
-5. Run e2fsck -fy before debugfs injection to replay and clear the ext4 journal.
-6. Inject /qc-dual-net.sh, /qc-udp-probe, /qc-qcz1-demo and /qc-rt-probe.
-7. Run e2fsck -fy after injection so the guest does not replay stale metadata.
-8. Generate runtime, Linux VM and Zephyr VM TOML configs into the evidence directory.
-9. Create per-run bridge/TAP objects and record their exact names in bridge.txt.
-10. Run root-level cargo xtask axvisor qemu with both VM configs.
-11. Capture qemu.log, tcpdump.log, summary.txt, realtime-report.md and SHA256 records.
+4. Copy the canonical axbuild rootfs image into separate host and Linux guest images in the contest build directory.
+5. Run e2fsck -fy on the clean host rootfs used by AxVisor NVMe.
+6. Run e2fsck -fy on the Linux guest rootfs before debugfs injection to replay and clear the ext4 journal.
+7. Inject /qc-dual-net.sh, /qc-udp-probe, /qc-qcz1-demo and /qc-rt-probe into the Linux guest rootfs.
+8. Run e2fsck -fy after injection so the guest does not replay stale metadata.
+9. Generate runtime, Linux VM and Zephyr VM TOML configs into the evidence directory.
+10. Create per-run bridge/TAP objects and record their exact names in bridge.txt.
+11. Run root-level cargo xtask axvisor qemu with both VM configs.
+12. Capture qemu.log, tcpdump.log, summary.txt, realtime-report.md and SHA256 records.
 ```
 
-The rootfs journal cleanup is important. Without the first `e2fsck -fy`, `debugfs` writes can appear to succeed but then be reverted when the Linux guest replays the ext4 journal on boot. The runner first copies the canonical axbuild rootfs image into the contest build directory and only modifies that copy.
+The rootfs journal cleanup is important. Without the first `e2fsck -fy`, `debugfs` writes can appear to succeed but then be reverted when the Linux guest replays the ext4 journal on boot. The runner modifies only the Linux guest rootfs copy; the AxVisor host rootfs remains a separate fsck-clean image attached through NVMe.
 
 The script reports `result=PASS` only if all required markers are present:
 

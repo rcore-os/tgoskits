@@ -122,6 +122,7 @@ build_dir="${repo}/tmp/quancheng2026-dual-guest-qcz1-ai-build"
 # Keep the QEMU rootfs copy outside axbuild image storage so --rootfs is
 # treated as a caller-managed artifact after the manifest check.
 rootfs_dir="${build_dir}/rootfs"
+host_rootfs_img="${rootfs_dir}/host-rootfs-aarch64-alpine.img"
 rootfs_img="${rootfs_dir}/rootfs-aarch64-alpine.img"
 config_dir="${build_dir}/configs"
 binary_dir="${build_dir}/bin"
@@ -384,12 +385,17 @@ sha256sum \
     "${init_normalized}" \
     | tee "${evidence_dir}/artifact-sha256.txt"
 
-rm -f "${rootfs_img}"
+rm -f "${rootfs_img}" "${host_rootfs_img}"
+cp "${rootfs_image_source}" "${host_rootfs_img}"
 cp "${rootfs_image_source}" "${rootfs_img}"
-if [[ ! -f "${rootfs_img}" ]]; then
-    echo "rootfs preparation did not create ${rootfs_img}" >&2
+if [[ ! -f "${host_rootfs_img}" || ! -f "${rootfs_img}" ]]; then
+    echo "rootfs preparation did not create the required host and Linux guest images" >&2
     exit 14
 fi
+
+echo "--- fsck host rootfs ---"
+run_fsck "${host_rootfs_img}" "${evidence_dir}/host-rootfs-fsck.log"
+sha256sum "${host_rootfs_img}" | tee "${evidence_dir}/host-rootfs-sha256.txt"
 
 echo "--- fsck before injection ---"
 run_fsck "${rootfs_img}" "${evidence_dir}/rootfs-fsck-before.log"
@@ -431,7 +437,7 @@ sha256sum "${rootfs_img}" | tee "${evidence_dir}/rootfs-sha256.txt"
 
 cat >"${config_dir}/qemu-aarch64.toml" <<'EOF'
 features = [
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "fs",
 ]
 log = "Info"
@@ -463,9 +469,13 @@ args = [
   "-smp",
   "4",
   "-device",
-  "virtio-blk-device,drive=disk0,bus=virtio-mmio-bus.15",
+  "nvme,serial=quancheng-rootfs,drive=hostdisk0,addr=0x2,max_ioqpairs=64,msix_qsize=65",
   "-drive",
-  "id=disk0,if=none,format=raw,file=${rootfs_img}",
+  "id=hostdisk0,if=none,format=raw,file=${host_rootfs_img}",
+  "-device",
+  "virtio-blk-device,drive=linuxdisk0,bus=virtio-mmio-bus.15",
+  "-drive",
+  "id=linuxdisk0,if=none,format=raw,file=${rootfs_img}",
   "-append",
   "root=/dev/vda rw init=/qc-dual-net.sh noirqdebug",
   "-m",
@@ -554,6 +564,7 @@ EOF
 
 cp "${config_dir}"/*.toml "${evidence_dir}/"
 
+echo "host_rootfs_image=${host_rootfs_img}"
 echo "rootfs_image=${rootfs_img}"
 echo "config_dir=${config_dir}"
 
@@ -627,7 +638,7 @@ set +e
         --qemu-config "${config_dir}/runtime.toml" \
         --vmconfigs "${config_dir}/zephyr-e1000-qcz1-vm.toml" \
         --vmconfigs "${config_dir}/linux-smp2-gppt-gicd-vm.toml" \
-        --rootfs "${rootfs_img}"
+        --rootfs "${host_rootfs_img}"
 ) >"${evidence_dir}/qemu.log" 2>&1
 qemu_status=$?
 set -e
