@@ -289,6 +289,121 @@ fw_cfg 是启动期 payload 与模拟设备结合的典型例子。`AxVM::add_fw
 
 对 IVC 改造成 Jailhouse 或 rust-shyper 风格 ivshmem/vPCI 设备时，首先需要补 PCI host bridge、PCI config dispatch、BAR 分配、MSI/MSI-X 和 guest DTB/ACPI 描述。完成这些基础设施后，ivshmem 设备应仍然通过 `EmulatedDeviceConfig → DeviceFactory → DeviceBundle → DeviceRuntime` 进入框架。
 
+## 设备清单与实操流程
+
+模拟设备框架的日常使用可以分成三件事：先确认当前设备类型是否已经有 factory 支持，再在 VM 配置中填写 `emu_devices`，最后通过测试或 guest 行为确认设备确实进入了 `DeviceRuntime` 并走统一访问路径。本章从实操视角补齐这条链路，避免把“配置层认识某个类型”和“当前框架已经实现该设备”混在一起。
+
+### 已支持设备
+
+当前配置层的设备类型定义在 `virtualization/axvm-types/src/lib.rs` 的 `EmulatedDeviceType`，而真正能被框架构建的设备取决于是否注册了对应的 `DeviceFactory`。下表列出当前已经由内置 factory 或架构 factory 接入 `DeviceRuntime` 的设备，以及它们在框架中呈现的资源类型和用途。
+
+| 设备类型 | 类型值 | 主要资源 | 支持架构 | 说明 |
+| --- | ---: | --- | --- | --- |
+| `Dummy` | `0x0` | 无资源 | 通用 | 元设备或占位设备，由 `MetaDeviceFactory` 返回空 `DeviceBundle`，常用于测试配置到 factory 的最小路径 |
+| `IVCChannel` | `0xA` | service-only | 通用 | 不创建 MMIO/PIO 设备，而是通过 `IvcChannelFactory` 注册 `GuestRangeAllocatorKey`，供 IVC hypercall 在静态保留 GPA 窗口内分配 channel |
+| `FwCfg` | `0x3` | MMIO + DMA grant | 当前主要用于启动载荷路径 | QEMU 兼容 fw_cfg 设备，由 `FwCfgPayloadFactory` 构建 `FwCfgDmaDevice`，向 guest 暴露 kernel、initrd、cmdline、ACPI/SMBIOS 等启动配置 |
+| `Console` | `0x2` | Port I/O | x86_64 | 当前由 `X86SerialFactory` 构建 COM1 串口设备，并注册 `X86SerialServiceKey` 供 x86 运行时输入轮询使用 |
+| `X86IoApic` | `0x23` | MMIO + IRQ domain | x86_64 | x86 虚拟 IOAPIC，负责 GSI 路由、mask/unmask、EOI 等中断控制语义 |
+| `X86Pit` | `0x24` | Port I/O + IRQ | x86_64 | x86 PIT/8254 定时器，通过端口寄存器模拟 timer 语义，并向中断域触发对应 IRQ |
+| `X86PortPassthrough` | `0x26` | Port I/O | x86_64 | 将指定 host I/O port range 作为模拟设备资源注册，guest 访问该范围时由 `HostPortPassthroughDeviceFactory` 处理 |
+| `InterruptController` | `0x1` | MMIO | AArch64 | AArch64 vGIC 控制器入口，由架构 factory 包装预创建的 vGIC 后端并注册为客户机可见设备 |
+| `GPPTRedistributor` | `0x20` | MMIO | AArch64 | GIC partial passthrough redistributor 设备，按配置暴露 redistributor 相关窗口 |
+| `GPPTDistributor` | `0x21` | MMIO | AArch64 | GIC partial passthrough distributor 设备，暴露 distributor 相关窗口 |
+| `GPPTITS` | `0x22` | MMIO | AArch64 | GIC ITS partial passthrough 设备，用于 ITS 相关窗口或平台能力暴露 |
+| `Aarch64Vtimer` | `0x27` | SysReg | AArch64 | AArch64 CNT* 虚拟 timer 系统寄存器块，由 `Aarch64VtimerFactory` 注册到 SysReg resource index |
+| `LoongArchPchPic` | `0x25` | MMIO | LoongArch64 | LoongArch PCH-PIC 虚拟中断控制器，通过 `LoongArchPchPicFactory` 接入设备框架 |
+| `PPPTGlobal` | `0x30` | MMIO + IRQ sink | RISC-V | RISC-V vPLIC/PLIC partial passthrough global 设备，由 `RiscvPlicFactory` 构建，并作为 `InterruptFabric` 的后端 sink |
+
+
+### 配置到运行
+
+从实操角度看，模拟设备有一条很明确的分界线：VM prepare 阶段是“注册期”，负责把配置变成 sealed `DeviceRuntime`；guest 开始执行以后是“运行期”，负责把 VM exit 分派给已经注册好的设备。配置文件只影响注册期，运行期不会重新解析 TOML，也不会根据设备类型临时创建设备。
+
+```toml
+# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+emu_devices = [
+  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, []],
+  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
+  ["x86-pit", 0x40, 0x22, 0x0, 0x24, []],
+]
+```
+
+这个示例来自 x86 QEMU 配置的典型形态。每一行会被解析成一个 `EmulatedDeviceConfig`：`name` 用于诊断，`base_gpa` 和 `length` 描述设备窗口，`irq_id` 表达设备可能使用的虚拟中断线，`emu_type` 选择 factory，`cfg_list` 留给具体设备解析额外参数。
+
+注册期发生在 VM prepare 流程中，核心代码路径是 `PreparedDevices::build_common_with_extra()` 调用 `DeviceRuntime::build_with_factories_and_ports()`。这个阶段会注册 factory、构建 bundle、检查资源冲突、绑定 grant 和 service，最后调用 `seal()` 封存拓扑；到这里为止，设备已经“注册完成”，但还没有处理任何 guest 访问。
+
+```mermaid
+flowchart TB
+    Toml["VM TOML: emu_devices"]
+    Parse["parse into EmulatedDeviceConfig"]
+    Arch["arch prepare registers factories"]
+    Common["PreparedDevices::build_common_with_extra"]
+    Factory["DeviceFactoryRegistry::build"]
+    Bundle["DeviceFactory::build returns DeviceBundle"]
+    Register["DeviceRuntime::register_bundle"]
+    Index["resource/service/grant indices"]
+    Seal["DeviceRuntime::seal"]
+
+    Toml --> Parse
+    Parse --> Arch
+    Arch --> Common
+    Common --> Factory
+    Factory --> Bundle
+    Bundle --> Register
+    Register --> Index
+    Index --> Seal
+```
+
+这张图里的 `DeviceRuntime::register_bundle()` 就是注册动作真正落地的位置。它会把 `Device::resources()` 写入 MMIO、PIO、SysReg 或 IRQ 索引，把 `DeviceBundle` 里的 typed service 合并到 `DeviceServices`，并把 `DmaGrant`、`TimerGrant`、`WakeGrant`、`StopGrant` 从 bundle-local index 绑定到最终的 `DeviceId`。
+
+运行期从 guest 访问设备资源开始。客户机访问 MMIO、PIO 或系统寄存器后触发 VM exit，架构层只把这个 exit 转成 `BusAccess`，随后进入 `DeviceRuntime` 的 lookup 和 dispatch；设备是否是串口、PIT、fw_cfg 或 vtimer，不应由架构 exit switch 判断。
+
+```mermaid
+flowchart TB
+    Guest["guest MMIO/PIO/SysReg access"]
+    Exit["architecture VM exit"]
+    Axvm["AxVM handle_* facade"]
+    Runtime["sealed DeviceRuntime"]
+    Lookup["lookup registered Resource"]
+    Context["create RuntimeDeviceAccess"]
+    Access["Device::access"]
+    Response["BusResponse or DeviceError"]
+
+    Guest --> Exit
+    Exit --> Axvm
+    Axvm --> Runtime
+    Runtime --> Lookup
+    Lookup --> Context
+    Context --> Access
+    Access --> Response
+```
+
+普通设备和 DMA 设备在运行期的差异主要体现在 `DeviceAccess` 是否带有客户机内存端口。普通设备只使用 `DeviceRuntime::dispatch()` 创建的上下文；DMA 设备仍然走同一个设备对象和同一个 `Device::access()`，但命中拥有 `DmaGrant` 的 MMIO write 时，`AxVM::handle_mmio_write()` 会额外创建 `VmDmaAccess` 并调用 `handle_mmio_write_with_memory()`。
+
+| 设备形态 | 配置侧 | Factory 侧 | 运行期使用 |
+| --- | --- | --- | --- |
+| 普通 MMIO/PIO/SysReg 设备 | 填写 `name/base_gpa/length/irq_id/emu_type/cfg_list` | 创建 `Device`，声明 `Resource`，放入 `DeviceBundle` | `dispatch()` 直接调用 `Device::access()`，无 guest memory port |
+| IRQ 设备 | 同普通设备，`irq_id` 或 `cfg_list` 由 factory 解释 | 通过 `DeviceBuildContext` 获取 `IrqLine` 或架构中断服务 | 设备状态变化后触发 `IrqLine`，不直接操作架构控制器 |
+| DMA 设备 | 通常仍表现为 MMIO 设备，例如 fw_cfg DMA register | 创建 `DmaGrant`，使用 `with_guest_memory_device_grant()` 绑定设备 | `handle_mmio_write_with_memory()` 创建带 `VmDmaAccess` 的上下文，设备用 grant 读写 guest memory |
+| service-only 设备 | 配置声明静态范围或能力，例如 IVC reserved window | 不创建 bus device，只通过 `with_service()` 贡献 typed service | runtime/hypercall 查询 service；不参与 MMIO/PIO dispatch |
+
+fw_cfg 是 DMA 设备的代表路径。启动代码先通过 `AxVM::add_fw_cfg_device()` 暂存 boot payload，prepare 阶段调用 `register_boot_payload_factories()` 注册 `FwCfgPayloadFactory`，factory 构建 `FwCfgDmaDevice` 并在 bundle 中绑定 `DmaGrant`；运行期 guest 写 fw_cfg DMA 寄存器时，设备才通过本次访问的 `DeviceAccess` 临时获得客户机内存读写能力。
+
+### 调试验证
+
+新增或修改模拟设备后，验证重点不是只看 guest 是否启动，而是确认设备确实走了统一构建路径、资源被 runtime 接管、敏感能力被 grant 控制。最小验证可以从日志、单元测试和 guest 行为三层展开；如果设备涉及中断、DMA 或架构后端，还需要补对应架构的 QEMU smoke 或行为等价测试。
+
+| 验证点 | 推荐方法 | 失败时优先检查 |
+| --- | --- | --- |
+| factory 是否注册 | 单测调用 `DeviceFactoryRegistry::get()` 或启动日志观察 build 错误 | 架构 prepare 是否调用了对应 `register_device_factories()`，设备类型值是否匹配 |
+| bundle 是否成功注册 | 单测调用 `DeviceRuntime::build_with_factories_and_ports()` | resource 是否零长度、溢出、重叠，grant 的 bundle-local index 是否越界 |
+| 资源是否命中 | 单测调用 `handle_mmio_read/write`、`handle_port_read/write` 或 `handle_sys_reg_read/write` | `base_gpa/length` 是否与设备实际 bus 类型一致，访问宽度是否跨出窗口 |
+| DMA 是否受控 | 使用错误 grant、未授权设备或无 memory port 的测试 | 设备是否在 bundle 中绑定 `DmaGrant`，是否只在 MMIO write access 中请求 DMA |
+| 中断是否到达 | guest 日志、设备行为测试或架构 IRQ 单测 | `InterruptFabric` 是否有 backend，IRQ line 是否与 guest 描述和控制器配置一致 |
+| 拓扑是否封存 | prepare 后尝试 `register_bundle()` 的结构性测试 | 是否仍有运行期注册普通客户机可见设备的旧路径 |
+
+调试时应优先沿“配置解析、factory 构建、bundle 注册、resource lookup、设备 access、grant/IRQ 后端”顺序排查。不要为了快速验证在 `AxVM` 或架构 exit switch 中增加设备类型特判；一旦新设备需要这种特判，通常说明它缺少合适的 `Resource`、typed service、`IrqLine` 或访问期 grant。
+
 ## 新增设备
 
 新增一个普通模拟设备的目标路径很短：写私有参数解析，注册一个 factory，实现一个 `Device`，补测试。只要设备不需要新增架构后端或新 bus 类型，就不应该修改架构 exit switch、`AxVM` 的具体设备字段或 `DeviceRuntime` 的设备类型分支。
