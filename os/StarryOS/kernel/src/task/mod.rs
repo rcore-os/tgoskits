@@ -8,6 +8,7 @@ mod process_identity;
 mod resources;
 mod seccomp;
 mod signal;
+mod signal_publication;
 mod stat;
 mod timer;
 mod user;
