@@ -2050,6 +2050,41 @@ with the runtime gate. A second regression drops a staged token, waits for its
 logical scheduler exit through an independently retained handle, and proves
 that abort never consumes the caller entry.
 
+## Current-head futex wake and deadline safe-point hot paths
+
+Starry previously called `yield_current_cpu()` after every successful
+`FUTEX_WAKE`, and after requeue or wake-op whenever any waiter was woken.
+Linux v7.1 instead builds the wake queue while holding the futex hash-bucket
+lock and invokes `wake_up_q()` after unlocking
+(`kernel/futex/waitwake.c:155-199`). The woken task's scheduler publication
+sets the owning runqueue's reschedule state; the syscall does not add an
+unconditional second scheduling point. Starry now follows that ownership
+boundary for wake, requeue, and wake-op. Fault and atomic-retry paths retain
+their explicit retry yield.
+
+The old ax-task scheduler facade also entered `expire_task_deadlines()` on
+every schedule, yield, park, affinity, and exit safe point, then entered the
+same expiry engine again inside `TaskSystem`. Linux runs hrtimer queues from
+the clockevent interrupt (`kernel/time/hrtimer.c:2083-2138`); scheduler entry
+consumes already-published work and uses the timer state only as a lost-edge
+recovery predicate.
+
+ax-task now checks the sticky deadline-work bit and the owner heap's cached
+minimum before entering expiry. Empty and future-only queues perform no expiry
+pass. The clockevent remains the normal expiry owner; an overdue cached head
+allows exactly one bounded recovery pass at a scheduler safe point. A full IRQ
+buffer is drained before that pass so each safe point still makes progress.
+Typed `DeadlineEntry::{Service, AlreadyServiced}` entry paths preserve direct
+`TaskSystem` runtimes while preventing the ax-runtime facade from repeating
+the same pass.
+
+The deadline service returns its coherent entry clock sample when no work was
+processed and resamples only after actual timer work. Thus the ordinary
+schedule/yield path performs one monotonic read instead of two without using a
+stale timestamp after callbacks. Deterministic regressions proved the prior
+futex yield, idle expiry pass, and double clock read before their respective
+fixes.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

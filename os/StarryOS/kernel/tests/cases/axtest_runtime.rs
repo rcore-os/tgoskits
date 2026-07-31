@@ -97,6 +97,11 @@ fn futex_empty_wake_op_avoids_entry_allocation() {
 }
 
 #[axtest]
+fn futex_wake_completion_is_scheduler_driven() {
+    ax_assert!(axtest_exports::futex_wake_completion_is_scheduler_driven());
+}
+
+#[axtest]
 fn nofault_user_access_rejects_unmapped_word() {
     ax_assert!(axtest_exports::nofault_user_access_rejects_unmapped_word());
 }

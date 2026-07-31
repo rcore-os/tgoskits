@@ -52,9 +52,7 @@ fn schedule_current_cpu_with_entry(
     let mut scheduler_frame =
         RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
     let system = runtime_task_system()?;
-    let deadline_now_ns = task_runtime::monotonic_ns();
-    service_current_task_deadline_work(system, &mut scheduler_frame, deadline_now_ns)?;
-    let now_ns = task_runtime::monotonic_ns();
+    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
     let outcome = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         let current_state = cpu.current_lifecycle_state();
@@ -65,7 +63,7 @@ fn schedule_current_cpu_with_entry(
                 SchedulerOutcome::Quiescent
             }
         } else {
-            system.schedule_if_requested(cpu.as_mut(), now_ns)?
+            system.schedule_if_requested_after_deadline_service(cpu.as_mut(), now_ns)?
         }
     };
     if let Some(decision) = outcome.decision() {
@@ -111,36 +109,42 @@ pub(super) fn drain_current_expired_timers(
 pub(super) fn service_current_task_deadline_work(
     system: &TaskSystem,
     pin: &mut impl RuntimeCpuPin,
-    now_ns: u64,
-) -> Result<usize, TaskError> {
+) -> Result<u64, TaskError> {
+    let now_ns = task_runtime::monotonic_ns();
     let should_run = {
         let mut cpu = runtime_current_cpu_mut(pin)?;
-        // The physical clockevent is only an acceleration mechanism. A lost,
-        // late, or stopped device edge must not strand an already-due task
-        // deadline while another scheduler condition keeps the CPU out of its
-        // final idle wait. Promote one bounded batch before claiming the
-        // sticky owner-work doorbell so every scheduler entry is also a
-        // deadline recovery safe point.
-        let budget = cpu.batch_limit();
-        cpu.as_mut()
-            .expire_task_deadlines(now_ns, task_runtime::timer_resolution_ns(), budget);
-        cpu.as_mut().begin_deadline_work()
+        let expiry_due = cpu.task_deadline_expiry_due(now_ns);
+        if !cpu.deadline_work_pending() && !expiry_due {
+            return Ok(now_ns);
+        }
+        cpu.as_mut().begin_deadline_work() || expiry_due
     };
     if !should_run {
-        return Ok(0);
+        return Ok(now_ns);
     }
 
     let result = (|| {
+        // Empty the bounded IRQ buffer before promoting another batch. This
+        // guarantees progress even when the clockevent filled every slot,
+        // while still entering the heap expiry engine at most once per safe
+        // point.
         let mut drained = drain_current_expired_timers(system, pin)?;
-        let batch = {
+        let batch_pending = {
             let mut cpu = runtime_current_cpu_mut(pin)?;
-            let budget = cpu.batch_limit();
-            cpu.as_mut()
-                .expire_task_deadlines(now_ns, task_runtime::timer_resolution_ns(), budget)
+            if cpu.task_deadline_expiry_due(now_ns) {
+                let budget = cpu.batch_limit();
+                cpu.as_mut()
+                    .expire_task_deadlines(now_ns, task_runtime::timer_resolution_ns(), budget)
+                    .pending()
+            } else {
+                false
+            }
         };
         drained += drain_current_expired_timers(system, pin)?;
         let mut cpu = runtime_current_cpu_mut(pin)?;
-        let pending = batch.pending() || cpu.has_expired_task_deadlines();
+        let pending = batch_pending
+            || cpu.has_expired_task_deadlines()
+            || cpu.task_deadline_expiry_due(now_ns);
         cpu.as_mut().finish_deadline_work(pending);
         Ok(drained)
     })();
@@ -148,7 +152,16 @@ pub(super) fn service_current_task_deadline_work(
         let mut cpu = runtime_current_cpu_mut(pin)?;
         cpu.as_mut().finish_deadline_work(true);
     }
-    result
+    let drained = result?;
+    let scheduler_events = {
+        let mut cpu = runtime_current_cpu_mut(pin)?;
+        system.service_pending_deadline_timers(cpu.as_mut(), now_ns)?
+    };
+    if drained + scheduler_events == 0 {
+        Ok(now_ns)
+    } else {
+        Ok(task_runtime::monotonic_ns().max(now_ns))
+    }
 }
 
 /// Yields the calling thread and executes the resulting context switch.
@@ -159,12 +172,10 @@ pub fn yield_current_cpu() -> Result<ScheduleDecision, TaskError> {
         RuntimeSchedulerEntry::Task,
     )?;
     let system = runtime_task_system()?;
-    let deadline_now_ns = task_runtime::monotonic_ns();
-    service_current_task_deadline_work(system, &mut scheduler_frame, deadline_now_ns)?;
-    let now_ns = task_runtime::monotonic_ns();
+    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
-        system.yield_current(cpu.as_mut(), now_ns)?
+        system.yield_current_after_deadline_service(cpu.as_mut(), now_ns)?
     };
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     Ok(decision)
@@ -210,12 +221,10 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
     let system = runtime_task_system().unwrap_or_else(|_| {
         task_runtime::fatal_invariant(0x4558_0011, permit.thread.as_u64() as _)
     });
-    let deadline_now_ns = task_runtime::monotonic_ns();
-    service_current_task_deadline_work(system, &mut scheduler_frame, deadline_now_ns)
-        .unwrap_or_else(|_| {
+    let now_ns =
+        service_current_task_deadline_work(system, &mut scheduler_frame).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x4558_0012, permit.thread.as_u64() as _)
         });
-    let now_ns = task_runtime::monotonic_ns();
     let decision = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x4558_0013, permit.thread.as_u64() as _)

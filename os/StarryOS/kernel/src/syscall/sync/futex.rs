@@ -241,6 +241,13 @@ fn futex_wait_timeout(op: &ParsedFutexOp, timeout: *const timespec) -> AxResult<
     Ok(Some(timeout.saturating_sub(now)))
 }
 
+fn complete_futex_wake(count: usize) -> AxResult<isize> {
+    // Waker publication makes the target runnable and lets ax-task set the
+    // owner CPU's sticky preemption state. Mirroring Linux wake_q completion,
+    // the futex syscall must not add a second, unconditional scheduling point.
+    Ok(count as isize)
+}
+
 pub fn sys_futex(
     uaddr: *const u32,
     futex_op: u32,
@@ -320,8 +327,7 @@ pub fn sys_futex(
                 };
                 count = futex.wq.wake(wake_count, bitset);
             }
-            crate::task::yield_now();
-            Ok(count as _)
+            complete_futex_wake(count)
         }
         FutexCommand::Requeue | FutexCommand::CmpRequeue => {
             let wake_count = assert_non_negative_i32(value)? as usize;
@@ -371,10 +377,7 @@ pub fn sys_futex(
                 }
             };
 
-            if count > 0 {
-                crate::task::yield_now();
-            }
-            Ok(count as _)
+            complete_futex_wake(count)
         }
         FutexCommand::WakeOp => {
             let wake_count = value as usize;
@@ -418,10 +421,7 @@ pub fn sys_futex(
                 }
             };
 
-            if count > 0 {
-                crate::task::yield_now();
-            }
-            Ok(count as _)
+            complete_futex_wake(count)
         }
     }
 }
@@ -485,4 +485,11 @@ pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
     assert!(compare_futex_wake_op(0, 0xFFFF, 0).is_err()); // unsupported cmp
 
     true
+}
+
+#[cfg(axtest)]
+pub(crate) fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
+    crate::task::reset_yield_now_calls_for_test();
+    let result = complete_futex_wake(1);
+    result == Ok(1) && crate::task::yield_now_calls_for_test() == 0
 }

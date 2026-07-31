@@ -31,6 +31,8 @@ pub struct CpuLocal {
     fair_balance_interval_ns: u64,
     switch_handoff: Option<SwitchHandoff>,
     batch_limit: usize,
+    #[cfg(test)]
+    deadline_expire_passes: usize,
     _pinned: PhantomPinned,
 }
 
@@ -64,6 +66,8 @@ impl CpuLocal {
             fair_balance_interval_ns: config.balance_interval_ns().max(1),
             switch_handoff: None,
             batch_limit: config.batch_limit(),
+            #[cfg(test)]
+            deadline_expire_passes: 0,
             _pinned: PhantomPinned,
         })
     }
@@ -553,6 +557,14 @@ impl CpuLocal {
         .ok_or(TaskError::InvalidConfiguration)
     }
 
+    pub(crate) fn deadline_work_pending(&self) -> bool {
+        self.remote.deadline_work_pending()
+    }
+
+    pub(crate) fn task_deadline_expiry_due(&self, now_ns: u64) -> bool {
+        self.task_deadlines.has_immediately_actionable_entry(now_ns)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_task_deadline_generation_for_test(self: Pin<&mut Self>, generation: u64) {
         self.fields_mut().task_deadline_generation = generation;
@@ -662,6 +674,10 @@ impl CpuLocal {
         budget: usize,
     ) -> TaskDeadlineExpireBatch {
         let fields = self.fields_mut();
+        #[cfg(test)]
+        {
+            fields.deadline_expire_passes += 1;
+        }
         let available = fields
             .deadline_expired_buffer
             .len()
@@ -678,6 +694,11 @@ impl CpuLocal {
             fields.remote.publish_deadline_work();
         }
         batch
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn deadline_expire_passes_for_test(&self) -> usize {
+        self.deadline_expire_passes
     }
 
     pub(crate) fn begin_deadline_work(self: Pin<&mut Self>) -> bool {

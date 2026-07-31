@@ -139,6 +139,10 @@ pub fn futex_empty_wake_op_avoids_entry_allocation() -> bool {
     super::task::empty_wake_op_entry_allocations_for_test() == 0
 }
 
+pub fn futex_wake_completion_is_scheduler_driven() -> bool {
+    super::syscall::futex_wake_completion_is_scheduler_driven_for_test()
+}
+
 pub fn nofault_user_access_rejects_unmapped_word() -> bool {
     use ax_runtime::hal::cpu::{
         UserAccessError, UserAtomicError, UserAtomicU32Op, user_atomic_u32, user_read_u32,

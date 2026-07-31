@@ -217,12 +217,27 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        let budget = cpu.batch_limit();
-        let batch =
+        let _processed = self.service_pending_deadline_timers(cpu.as_mut(), now_ns)?;
+        if cpu.task_deadline_expiry_due(now_ns) {
+            // Direct TaskSystem users retain the facade's lost-clockevent
+            // recovery. Runtime scheduling enters through the facade and does
+            // not call this promotion path a second time.
+            let budget = cpu.batch_limit();
             cpu.as_mut()
                 .expire_task_deadlines(now_ns, task_runtime::timer_resolution_ns(), budget);
+        }
+        let _processed = self.service_pending_deadline_timers(cpu, now_ns)?;
+        Ok(())
+    }
+
+    pub(crate) fn service_pending_deadline_timers(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<usize, TaskError> {
+        let mut processed = 0;
         if cpu.as_mut().begin_deadline_work() {
-            let mut processed = 0;
+            let budget = cpu.batch_limit();
             let service = (|| {
                 while processed < budget {
                     let Some(event) = cpu.as_mut().take_expired_scheduler_deadline() else {
@@ -237,11 +252,11 @@ impl TaskSystem {
                 cpu.as_mut().finish_deadline_work(true);
                 return Err(error);
             }
-            let pending = batch.pending() || cpu.has_expired_task_deadlines();
+            let pending = cpu.has_expired_task_deadlines() || cpu.task_deadline_expiry_due(now_ns);
             cpu.as_mut().finish_deadline_work(pending);
         }
         cpu.as_mut().refresh_scheduler_deadline(now_ns);
-        Ok(())
+        Ok(processed)
     }
 
     fn service_expired_scheduler_deadline(

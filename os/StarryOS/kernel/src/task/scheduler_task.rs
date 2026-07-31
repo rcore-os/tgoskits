@@ -1,6 +1,8 @@
 //! Starry ownership adapter for runtime-backed scheduler threads.
 
 use alloc::{boxed::Box, string::String, sync::Arc};
+#[cfg(axtest)]
+use core::sync::atomic::AtomicUsize;
 use core::{
     ptr,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -441,8 +443,23 @@ pub const fn default_task_stack_size() -> usize {
 
 /// Yields the calling scheduler thread.
 pub fn yield_now() {
+    #[cfg(axtest)]
+    YIELD_NOW_CALLS.fetch_add(1, Ordering::Relaxed);
     scheduler::yield_current_cpu()
         .unwrap_or_else(|error| panic!("failed to yield current scheduler thread: {error}"));
+}
+
+#[cfg(axtest)]
+static YIELD_NOW_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(axtest)]
+pub(crate) fn reset_yield_now_calls_for_test() {
+    YIELD_NOW_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(axtest)]
+pub(crate) fn yield_now_calls_for_test() -> usize {
+    YIELD_NOW_CALLS.load(Ordering::Relaxed)
 }
 
 /// Sleeps the calling scheduler thread for at least `duration`.

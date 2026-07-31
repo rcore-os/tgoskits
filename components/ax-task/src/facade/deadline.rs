@@ -68,9 +68,7 @@ pub(crate) fn commit_current_park(ticket: &mut crate::ParkTicket) -> Result<(), 
         RuntimeSchedulerEntry::Task,
     )?;
     let system = runtime_task_system()?;
-    let deadline_now_ns = task_runtime::monotonic_ns();
-    service_current_task_deadline_work(system, &mut scheduler_frame, deadline_now_ns)?;
-    let now_ns = task_runtime::monotonic_ns();
+    let now_ns = service_current_task_deadline_work(system, &mut scheduler_frame)?;
     let commit = {
         let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
         system.commit_park(cpu.as_mut(), ticket)?
