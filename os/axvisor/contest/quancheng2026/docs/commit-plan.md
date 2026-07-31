@@ -131,6 +131,7 @@ find . -type d -name __pycache__ -prune -exec rm -rf {} +
 cache_dir=/tmp/qc_pycompile_cache_$$
 PYTHONPYCACHEPREFIX=$cache_dir python3 -m py_compile scripts/*.py linux/*.py
 rm -rf $cache_dir
+python3 scripts/qc_qcz1_guest_status_negative_selftest.py
 bash -n scripts/*.sh linux/*.sh
 find . \( -name '*.img' -o -name '*.qcow2' -o -name '*.iso' -o -name '*.elf' -o -name '*.o' -o -name '*.bin' -o -name '__pycache__' -o -name '*.pyc' -o -name '*.log' -o -name '*.tar.gz' \) -print | sort
 grep -R -E '[$][(]@|@[{]' README.md docs results scripts linux || true
@@ -198,6 +199,7 @@ Add redcola contest materials for the Quancheng Lab 2026 AxVisor task:
 
 Validation:
 - PYTHONPYCACHEPREFIX=/tmp/qc_pycompile_cache python3 -m py_compile scripts/*.py linux/*.py
+- python3 scripts/qc_qcz1_guest_status_negative_selftest.py
 - bash -n scripts/*.sh linux/*.sh
 - cargo fmt --check -p arm_vcpu -p arm_vgic -p axvmconfig -p axvm -p axbuild
 - cargo test -p axvmconfig -p axvm -p arm_vgic --lib

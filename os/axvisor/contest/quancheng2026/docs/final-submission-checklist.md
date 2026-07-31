@@ -22,7 +22,7 @@ artifact state to the final Quancheng Lab submission.
 | Item | Status | Link or branch |
 | --- | --- | --- |
 | Contest artifact PR | SUBMITTED | `rcore-os/tgoskits#1703`, branch `contest/axvisor-2026` |
-| Core vTimer PR | SUBMITTED | `rcore-os/tgoskits#1770`, head `40fa4b6e63258a5f452ad8cc74b61b0084c6d7c0` |
+| Core vTimer PR | SUBMITTED | `rcore-os/tgoskits#1770`, head `e21208e94654a7f750f23fbf3f7aa8e189496ba4` |
 | StarryOS bonus branch | READY | `irinaparchina-art:contest/starry-redcola-ai-bonus-rebased-20260730`, head `db121505f0659d6370e75a72ce0faf56d2c61d2c` |
 
 ## Artifact PR Preflight
@@ -36,6 +36,7 @@ find . -type d -name __pycache__ -prune -exec rm -rf {} +
 cache_dir=/tmp/qc_pycompile_cache_$$
 PYTHONPYCACHEPREFIX=$cache_dir python3 -m py_compile scripts/*.py linux/*.py
 rm -rf $cache_dir
+python3 scripts/qc_qcz1_guest_status_negative_selftest.py
 bash -n scripts/*.sh linux/*.sh
 find . \( -name '*.img' -o -name '*.qcow2' -o -name '*.iso' -o -name '*.elf' -o -name '*.o' -o -name '*.bin' -o -name '__pycache__' -o -name '*.pyc' -o -name '*.log' -o -name '*.tar.gz' \) -print | sort
 cd "${REPO}"

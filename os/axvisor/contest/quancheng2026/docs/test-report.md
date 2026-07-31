@@ -165,6 +165,7 @@ Current contest-directory preflight:
 ```text
 python3 -m py_compile scripts/*.py linux/*.py: PASS
 bash -n scripts/*.sh linux/*.sh: PASS
+QCZ1 STATUS negative selftest via documented runner/preflight path: PASS
 artifact scan for images/logs/pyc/tarballs: 0
 git diff --check: PASS
 dry-run staged path count: 38
@@ -178,32 +179,35 @@ QEMU hub mode:
 command:
   os/axvisor/contest/quancheng2026/scripts/run_axvisor_dual_guest_qcz1_ai.sh
   --repo /path/to/tgoskits
-  --evidence-dir /home/kali/qc-evidence/qc_pr1703_current_local_hub_recheck_20260728_035343
-  --timeout 150
+  --evidence-dir /home/kali/qc-evidence/qc_pr1703_status_selftest_runner_hub_20260731_092251
+  --timeout 300
   --linux-rt-samples 2000
   --net-mode hub
+QC_QCZ1_STATUS_NEGATIVE_SELFTEST=PASS
 qemu_status=0
 net_mode=hub
 QC_RTOS_PERIODIC_RESULT=PASS
 QC_RT_PERIODIC_RESULT=PASS
 QC_DUAL_GUEST_UDP_ECHO_RESULT=PASS
+QC_QCZ1_RELIABLE_STATUS_OK=1
 QC_QCZ1_RELIABLE_RESULT=PASS
+QC_AI_STATUS_OK=1
 QC_AI_CONTROL_RESULT=PASS
 QC_QCZ1_GUEST_DEMO=PASS
 QC_DUAL_GUEST_LINUX_INIT=PASS
 result=PASS
-analysis_result=PASS
 QC_UDP_SUCCESSES=20
-QC_QCZ1_LATENCY_MEAN_US=1997
-QC_AI_E2E_MEAN_US=3046
-QC_AI_E2E_MAX_US=7409
+QC_QCZ1_LATENCY_MEAN_US=4957
+QC_AI_E2E_MEAN_US=3714
+QC_AI_E2E_MAX_US=18067
 ```
 
 This current-head run uses QEMU `hubport` to avoid requiring privileged TAP
 and bridge setup in the remote validation session. It validates the same
-Linux/RTOS guest IP path, QCZ1 application protocol, AI control loop, and guest
-marker sequence. TAP bridge state and tcpdump packet-capture counters are not
-claimed for this unprivileged current-head run.
+Linux/RTOS guest IP path, QCZ1 application protocol, AI control loop, guest
+marker sequence, and the pre-QEMU STATUS timeout/malformed negative selftest.
+TAP bridge state and tcpdump packet-capture counters are not claimed for this
+unprivileged current-head run.
 
 The first-stage commit boundary remains:
 

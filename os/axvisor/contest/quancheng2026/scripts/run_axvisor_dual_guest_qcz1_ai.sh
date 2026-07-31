@@ -130,6 +130,7 @@ echo_probe_src="${contest_dir}/linux/qc_dual_guest_udp_echo_probe.c"
 qcz1_demo_src="${contest_dir}/linux/qc_qcz1_guest_demo.c"
 rt_probe_src="${contest_dir}/linux/qc_periodic_latency_probe.c"
 init_src="${contest_dir}/linux/qc_dual_guest_qcz1_ai_init.sh"
+status_selftest="${contest_dir}/scripts/qc_qcz1_guest_status_negative_selftest.py"
 echo_probe_obj="${binary_dir}/qc-udp-probe.o"
 echo_probe_bin="${binary_dir}/qc-udp-probe"
 qcz1_demo_obj="${binary_dir}/qc-qcz1-demo.o"
@@ -254,6 +255,7 @@ echo "runtime_artifact_manifest_policy=checked-in known-passing manifest; altern
 for required in \
     clang \
     readelf \
+    python3 \
     debugfs \
     e2fsck \
     timeout \
@@ -273,6 +275,14 @@ if [[ -z "${lld}" || ! -x "${lld}" ]]; then
     exit 11
 fi
 
+if [[ ! -f "${status_selftest}" ]]; then
+    echo "missing_required_path=${status_selftest}" >&2
+    exit 12
+fi
+
+echo "--- QCZ1 STATUS negative selftest ---"
+python3 "${status_selftest}" | tee "${evidence_dir}/qcz1-status-negative-selftest.log"
+echo "qcz1_status_negative_selftest_log=${evidence_dir}/qcz1-status-negative-selftest.log"
 if [[ ! -f "${rootfs_registry_source}" ]]; then
     echo "missing_required_path=${rootfs_registry_source}" >&2
     exit 12

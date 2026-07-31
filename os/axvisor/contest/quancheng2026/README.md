@@ -190,7 +190,7 @@ For reviewer machines where creating host TAP devices is not available, the same
 ./scripts/run_axvisor_dual_guest_qcz1_ai.sh --net-mode hub
 ```
 
-This mode still requires the runtime artifacts above and still checks the Linux guest, Zephyr guest, plain UDP, QCZ1 reliable UDP, AI control and realtime markers before printing `result=PASS`. It intentionally skips host bridge/TAP creation and tcpdump capture, so the default tap mode remains the host-network lifecycle evidence.
+This mode still requires the runtime artifacts above and still checks the Linux guest, Zephyr guest, plain UDP, QCZ1 reliable UDP, AI control and realtime markers before printing `result=PASS`. The runner also executes `scripts/qc_qcz1_guest_status_negative_selftest.py` before QEMU setup, so STATUS timeout and malformed STATUS responses are covered by the same documented runner entry. It intentionally skips host bridge/TAP creation and tcpdump capture, so the default tap mode remains the host-network lifecycle evidence.
 
 Runtime artifact contract for the integrated dual-guest runner:
 
@@ -208,7 +208,7 @@ The runner uses the rootfs produced by `cargo xtask image pull` at the extracted
 
 Current limitation: this PR does not claim that the Linux kernel, Zephyr RTOS binary or host DTB can be regenerated from this PR alone. The integrated QEMU path is a prepared-artifact reproduction path; generation of those runtime artifacts is kept outside this first-stage contest artifact PR and should be reviewed as a separate follow-up if needed.
 
-The script prints `result=PASS` only after it sees plain UDP, reliable QCZ1, AI control, Linux guest periodic, RTOS guest periodic and final Linux init PASS markers.
+The script prints `result=PASS` only after the pre-QEMU QCZ1 STATUS negative selftest passes and QEMU emits plain UDP, reliable QCZ1, AI control, Linux guest periodic, RTOS guest periodic and final Linux init PASS markers.
 
 For the 0-worker long-sample baseline used as the no-pressure comparison point:
 
