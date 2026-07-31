@@ -29,6 +29,14 @@ int main(int argc, char **argv) {{
         qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_TIMEOUT;
     }} else if (strcmp(argv[1], "status-malformed") == 0) {{
         qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_MALFORMED;
+    }} else if (strcmp(argv[1], "status-stale-frame-seq") == 0) {{
+        qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_STALE_FRAME_SEQ;
+    }} else if (strcmp(argv[1], "status-stale-last-seq") == 0) {{
+        qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_STALE_LAST_SEQ;
+    }} else if (strcmp(argv[1], "status-unhealthy") == 0) {{
+        qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_UNHEALTHY;
+    }} else if (strcmp(argv[1], "status-error-count") == 0) {{
+        qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_ERROR_COUNT;
     }} else {{
         return 101;
     }}
@@ -103,6 +111,31 @@ def main() -> int:
         require("QC_QCZ1_RELIABLE_STATUS_OK=0" in malformed.stdout, "malformed_missing_status_zero", malformed.stdout)
         require("QC_QCZ1_GUEST_DEMO=FAIL" in malformed.stdout, "malformed_missing_fail", malformed.stdout)
         require("QC_QCZ1_GUEST_DEMO=PASS" not in malformed.stdout, "malformed_unexpected_pass", malformed.stdout)
+
+        for mode, marker in [
+            ("status-stale-frame-seq", "QC_QCZ1_STATUS_VALIDATION=SEQ_MISMATCH"),
+            ("status-stale-last-seq", "QC_QCZ1_STATUS_VALIDATION=LAST_SEQ_MISMATCH"),
+            ("status-unhealthy", "QC_QCZ1_STATUS_VALIDATION=STATUS_UNHEALTHY"),
+            ("status-error-count", "QC_QCZ1_STATUS_VALIDATION=ERROR_COUNT_NONZERO"),
+        ]:
+            result = run_case(binary, mode)
+            require(result.returncode != 0, f"{mode}_case_zero", result.stdout)
+            require(marker in result.stdout, f"{mode}_missing_validation_marker", result.stdout)
+            require(
+                "QC_QCZ1_RELIABLE_STATUS_OK=0" in result.stdout,
+                f"{mode}_missing_reliable_status_zero",
+                result.stdout,
+            )
+            require(
+                "QC_QCZ1_GUEST_DEMO=FAIL" in result.stdout,
+                f"{mode}_missing_fail",
+                result.stdout,
+            )
+            require(
+                "QC_QCZ1_GUEST_DEMO=PASS" not in result.stdout,
+                f"{mode}_unexpected_pass",
+                result.stdout,
+            )
 
     print("QC_QCZ1_STATUS_NEGATIVE_SELFTEST=PASS")
     return 0

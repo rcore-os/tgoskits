@@ -46,6 +46,7 @@ enum {
     QCZ1_FLAG_DUPLICATE = 1,
     QCZ1_STATUS_OK = 0,
     QCZ1_STATUS_DUPLICATE = 1,
+    QCZ1_STATUS_BAD_CHECKSUM = 102,
 };
 
 struct timespec {
@@ -98,6 +99,10 @@ enum {
     QCZ1_SELFTEST_STATUS_OK = 0,
     QCZ1_SELFTEST_STATUS_TIMEOUT = 1,
     QCZ1_SELFTEST_STATUS_MALFORMED = 2,
+    QCZ1_SELFTEST_STATUS_STALE_FRAME_SEQ = 3,
+    QCZ1_SELFTEST_STATUS_STALE_LAST_SEQ = 4,
+    QCZ1_SELFTEST_STATUS_UNHEALTHY = 5,
+    QCZ1_SELFTEST_STATUS_ERROR_COUNT = 6,
 };
 
 static int qcz1_selftest_status_mode = QCZ1_SELFTEST_STATUS_OK;
@@ -128,6 +133,7 @@ static long qcz1_selftest_recvfrom(u8 *response, usize response_len) {
     u8 msg_type;
     u32 seq;
     u32 status = QCZ1_STATUS_OK;
+    u32 saved_last_seq;
 
     if (qcz1_selftest_last_frame_len < QCZ1_HEADER_LEN || response_len < 64) {
         return -1;
@@ -165,7 +171,24 @@ static long qcz1_selftest_recvfrom(u8 *response, usize response_len) {
             response[3] = 3;
             return 4;
         }
-        qcz1_selftest_put_status_payload(payload, QCZ1_STATUS_OK);
+        if (qcz1_selftest_status_mode == QCZ1_SELFTEST_STATUS_STALE_FRAME_SEQ) {
+            seq--;
+        }
+        if (qcz1_selftest_status_mode == QCZ1_SELFTEST_STATUS_UNHEALTHY) {
+            status = QCZ1_STATUS_BAD_CHECKSUM;
+        }
+        if (qcz1_selftest_status_mode == QCZ1_SELFTEST_STATUS_ERROR_COUNT) {
+            qcz1_selftest_error_count++;
+        }
+
+        saved_last_seq = qcz1_selftest_last_seq;
+        if (qcz1_selftest_status_mode == QCZ1_SELFTEST_STATUS_STALE_LAST_SEQ
+            && qcz1_selftest_last_seq > 0) {
+            qcz1_selftest_last_seq--;
+        }
+        qcz1_selftest_put_status_payload(payload, status);
+        qcz1_selftest_last_seq = saved_last_seq;
+
         return (long)qcz1_build_frame(response, QCZ1_MSG_STATUS, seq, payload, 32);
     }
 
@@ -566,7 +589,12 @@ static int send_control_with_retry(
     return 1;
 }
 
-static int request_status(long socket_fd, const struct sockaddr_in *target, u32 seq) {
+static int request_status(
+    long socket_fd,
+    const struct sockaddr_in *target,
+    u32 seq,
+    u32 expected_last_seq
+) {
     u8 frame[64];
     u8 response[256];
     long received_len = 0;
@@ -625,8 +653,26 @@ static int request_status(long socket_fd, const struct sockaddr_in *target, u32 
             cursor = append_u64(cursor, errors);
             *cursor++ = '\n';
             write_bytes(line, (usize)(cursor - line));
+
+            if (parsed.seq != seq) {
+                write_text("QC_QCZ1_STATUS_VALIDATION=SEQ_MISMATCH\n");
+                return 1;
+            }
+            if (last_seq != expected_last_seq) {
+                write_text("QC_QCZ1_STATUS_VALIDATION=LAST_SEQ_MISMATCH\n");
+                return 1;
+            }
+            if (status != QCZ1_STATUS_OK) {
+                write_text("QC_QCZ1_STATUS_VALIDATION=STATUS_UNHEALTHY\n");
+                return 1;
+            }
+            if (errors != 0) {
+                write_text("QC_QCZ1_STATUS_VALIDATION=ERROR_COUNT_NONZERO\n");
+                return 1;
+            }
         }
     }
+    write_text("QC_QCZ1_STATUS_VALIDATION=OK\n");
     return 0;
 }
 
@@ -850,7 +896,7 @@ static int run_demo(void) {
         write_name_u64("QC_QCZ1_LATENCY_MEAN_US=", latency_sum / reliable_success);
         write_name_u64("QC_QCZ1_LATENCY_MAX_US=", latency_max);
     }
-    reliable_status_ok = request_status(socket_fd, &target, 1010) == 0;
+    reliable_status_ok = request_status(socket_fd, &target, 1010, 10) == 0;
     write_name_u64("QC_QCZ1_RELIABLE_STATUS_OK=", reliable_status_ok ? 1 : 0);
     write_text(
         reliable_success == 10 && reliable_failure == 0 && duplicate_acks == 2 && reliable_status_ok
@@ -936,7 +982,7 @@ static int run_demo(void) {
     write_name_u64("QC_AI_E2E_MAX_US=", ai_e2e_max);
     write_name_u64("QC_AI_CONTROL_ERROR_MEAN=", ai_error_sum / 10);
     write_name_u64("QC_MANUAL_CONTROL_ERROR_MEAN=", manual_error_sum / 10);
-    ai_status_ok = request_status(socket_fd, &target, 2010) == 0;
+    ai_status_ok = request_status(socket_fd, &target, 2010, 1010) == 0;
     write_name_u64("QC_AI_STATUS_OK=", ai_status_ok ? 1 : 0);
     write_text(
         ai_success == 10 && ai_failure == 0 && ai_status_ok
