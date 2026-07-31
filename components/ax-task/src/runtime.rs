@@ -629,7 +629,13 @@ pub trait TaskRuntime {
     /// status is an unrecoverable violation of the scheduler delivery contract.
     fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus;
 
-    /// Waits for a local interrupt after the scheduler's idle handshake.
+    /// Commits one local interrupt wait after the scheduler clears polling.
+    ///
+    /// The implementation must disable local interrupts, recheck sticky task
+    /// work and physical clockevent state, and use the architecture's atomic
+    /// IRQ-enable-and-wait primitive only when both remain idle. Work published
+    /// before polling was cleared is observed by this final recheck; work
+    /// published afterwards owns a physical interrupt edge.
     fn wait_for_interrupt();
 
     /// Allocates a guarded stack satisfying `request`.

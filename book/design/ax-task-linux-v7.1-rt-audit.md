@@ -89,7 +89,7 @@ disposition of every row is:
 | Area | Current disposition |
 | --- | --- |
 | Scheduler placement | Closed by the single `SchedulerPlacement` state machine, owner-scoped runqueue operations, switch-tail retention, and the offline-target recovery carrier. |
-| Remote delivery | Closed by generation-bearing scheduler work, claim-before-drain acknowledgement, publish-before-IPI ordering, and re-kick after a newer epoch. |
+| Remote delivery | Closed by sticky scheduler work, publish-before-sticky ordering, empty-to-nonempty runtime-doorbell ownership, and consumption-before-callback rearming. |
 | CPU lifecycle | Closed at the scheduler/runtime boundary by producer draining, quiescence validation, clockevent offline/online hooks, and `min(platform_cpu_count, CPU_CAPACITY)` admission. A complete platform CPU hot-unplug service remains a stated non-goal. |
 | Task deadlines | Closed by three generation-checked per-thread timer classes: park timeout, CBS/miss/replenishment, and GRUB zero-lag. Hard IRQ copies only typed values; owner safe points validate the exact registration before changing task state. |
 | Physical clockevent | Closed by the sole per-CPU `Offline / Idle / Armed / Firing` owner, typed finite deadlines, saturating tick conversion, overdue recovery, and one hardware commit per transaction. |
@@ -1528,22 +1528,22 @@ and a retry cannot both publish the intrusive node, while
 `scheduler_tick_retry_cannot_cross_a_gate_disable_epoch` proves that retry
 cannot resurrect disabled work. The corresponding loom model checks the
 single delivery owner, and the coalescing model checks the timestamp's
-publish-before-claim edge. The complete ax-task suite has 220 unit tests, all
+publish-before-claim edge. The complete ax-task suite has 222 unit tests, all
 integration/doc tests, and 20 loom models; the ax-runtime host IRQ/multitask
-suite has 62 tests. The post-fix x86_64 Starry axtest run passed all 390 cases
+suite has 62 tests. The post-fix x86_64 Starry axtest run passed all 391 cases
 with `AXTEST_SUITE_OK`; all 25 `starry-kernel` clippy configurations pass.
 These results are not inferred from host linking, whose
 bare-metal symbols are intentionally supplied only by the xtask build.
 
-## Current-head reschedule ownership closure
+## Current-head reschedule and physical-doorbell ownership
 
 The runtime timer and IPI adapters used to complete owner-local scheduler
 state transitions themselves. The timer adapter interpreted four
 `TaskClockEventOutcome` fields and called `CpuRemote::request_reschedule()`;
-the IPI adapter acknowledged the ax-task epoch and then made the same direct
-write. That public method only set sticky owner state. It did not ring a remote
-doorbell, so a caller holding another CPU's public `CpuRemote` could create a
-permanently sleeping reschedule request.
+the IPI adapter acknowledged an ax-task epoch and then made the same direct
+write. Later revisions retained that ax-task epoch after ax-runtime had gained
+its own per-CPU physical doorbell, leaving two coalescing state machines and
+multiple acknowledgement sites.
 
 Linux v7.1 keeps this distinction inside `__resched_curr()`:
 
@@ -1553,31 +1553,45 @@ Linux v7.1 keeps this distinction inside `__resched_curr()`:
 - `sched_tick()` owns the current runqueue lock while scheduling-class tick
   logic decides whether to call that boundary.
 
-TGOSKits now applies the same ownership rule. The ax-task clockevent facade
-publishes owner preemption before returning when class accounting, a task
-deadline, bounded backlog, or a scheduler deadline requires a safe point.
-Scheduler IPI acknowledgement releases the delivered epoch and promotes any
-remaining owner work to preemption in the same core facade. ax-runtime now
-transports only the physical clockevent update and IPI edge; it no longer
-interprets scheduler policy or writes `CpuRemote`. The owner-only
-`request_reschedule()` and `acknowledge_scheduler_ipi()` methods are
-crate-private, while remote wake, migration, and policy producers continue to
-use the payload-before-sticky-before-IPI publication state machine.
+TGOSKits now keeps policy and transport ownership separate:
 
-Both ownership gaps were captured before the fix:
+- ax-task publishes payload first and then sets sticky scheduler work;
+- an inbox rings only on its empty-to-nonempty transition, while a repeated
+  publication of the same intrusive wake can reassert sticky work;
+- ordinary scheduler work enters the owner safe point but does not set the
+  distinct `preempt_requested` policy bit;
+- a bounded owner-inbox remainder rearms a fresh physical doorbell before the
+  safe point returns, instead of relying on a later tick or unrelated guard
+  exit to rediscover its sticky bit;
+- ax-runtime's per-CPU `SchedulerIpiDoorbell` is the only physical delivery
+  coalescer and is consumed at IPI entry before generic callbacks drain; and
+- CPU-offline preparation rejects a still-pending physical doorbell after
+  ax-task has closed remote producer admission, while ax-task itself rejects
+  offline if local sticky scheduler work has not reached a safe point.
 
-- a due deferred scheduler deadline returned `pending` without publishing
-  current-CPU preemption; and
-- acknowledging a scheduler IPI with sticky work left
-  `preempt_requested == false` unless ax-runtime performed a second write.
+ax-task no longer has a second claimed/epoch scalar or an IPI acknowledgement
+API. `RuntimeStatus::Busy` means the runtime-owned physical edge is still in
+flight. Removing the core epoch also removes stale completion logic that could
+not identify which physical interrupt it represented.
 
-The two deterministic tests are green after the ownership transfer. The
-complete ax-task suite now passes 190 unit tests, all integration/doc tests,
-and 17 loom models. The ax-runtime IRQ/multitask unit configuration passes all
-50 tests, and the full ax-task plus 25-combination ax-runtime feature-clippy
-matrices pass with warnings denied. The timer-expiry facade regression also
-asserts that the resulting scheduler decision preserves the current execution
-context when no runnable peer exists.
+The local work and idle-polling flags now share one atomic scheduler-state
+word. A producer's `fetch_or(WORK_PENDING)` either observes
+`IDLE_POLLING` and omits the IPI, or owns the runtime doorbell attempt. Idle
+clears polling before the runtime's IRQ-disabled final recheck: work published
+before that RMW is observed by the recheck, and work published afterwards must
+create a physical edge. This is the local equivalent of Linux
+`set_nr_and_not_polling()` plus the polling-idle exit protocol.
+
+Deterministic regressions first observed one physical IPI to a polling owner,
+an unconditional promotion of scheduler work into task preemption, two
+runtime-doorbell calls for two nodes in one nonempty inbox generation, no
+replacement edge after a bounded drain consumed the in-flight edge, and CPU
+offline erasing local sticky scheduler work. All five are now eliminated.
+Loom models cover the polling-clear/final-recheck race, empty-to-nonempty ring
+ownership, and consumption-before-fresh-edge ordering.
+
+The current x86_64 Starry axtest run passes all 391 cases with
+`AXTEST_SUITE_OK`.
 
 ## Current-head wake-consumption boundary closure
 
@@ -1714,19 +1728,17 @@ Linux v7.1 uses the cheaper predicate at the equivalent boundary:
 empty. When work exists, it still owns the runqueue transaction, updates the
 runqueue clock, and activates every detached wake before clearing
 `ttwu_pending`. ax-task now applies only that empty-list optimization. The
-owner samples the wake, policy, and reclaim inbox heads, enters a bounded drain
-only for a present wake or policy publication, and keeps the existing
-claim-before-drain acknowledgement for policy-only or reclaim-only work.
-Publication racing the snapshot remains visible in the final inbox recheck and
-is carried by a fresh or retained scheduler doorbell.
+owner samples the wake and policy inbox heads and enters a bounded drain only
+for a present publication. Deferred reclaim has its own task-work queue; the
+unused per-CPU reclaim inbox was removed. Publication racing the snapshot
+remains visible in the final inbox and sticky-work recheck. The physical
+doorbell is consumed only by ax-runtime's IPI entry, never by an arbitrary
+inbox drain.
 
 The deterministic regression first observed one wake-inbox drain and one
 policy-inbox drain for a synthetic scheduler-only request. Both counts are now
 unchanged. A companion policy-only regression proves that the policy inbox is
-still drained exactly once, the empty wake inbox is not entered, and the
-delivery is not stranded behind its consumed IPI epoch. The complete ax-task
-suite passes 191 unit tests, every integration and documentation test, and 20
-loom models; the package clippy check also passes with warnings denied.
+still drained exactly once and the empty wake inbox is not entered.
 
 This optimization deliberately does not skip dispatch commit, Deadline
 service, or dispatch reinstallation merely because the final selection keeps

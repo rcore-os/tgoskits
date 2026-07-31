@@ -1,13 +1,15 @@
 use super::*;
 use crate::inbox::InboxOperation;
 
-const IPI_CLAIMED: u64 = 1;
+const SCHEDULER_WORK_PENDING: u8 = 1 << 0;
+const SCHEDULER_IDLE_POLLING: u8 = 1 << 1;
 const CPU_LIFECYCLE_OFFLINE: usize = 1 << (usize::BITS - 1);
 const CPU_LIFECYCLE_DRAINING: usize = 1 << (usize::BITS - 2);
 const CPU_LIFECYCLE_MASK: usize = CPU_LIFECYCLE_OFFLINE | CPU_LIFECYCLE_DRAINING;
 const CPU_PUBLICATION_COUNT_MASK: usize = !CPU_LIFECYCLE_MASK;
 const CPU_PUBLICATION_OVERFLOW_INVARIANT: u32 = 0x4350_5542;
 const CPU_PUBLICATION_RELEASE_INVARIANT: u32 = 0x4350_5544;
+const DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT: u32 = 0x4453_574f;
 const INCOMING_MIGRATION_OVERFLOW_INVARIANT: u32 = 0x4d49_474f;
 const INCOMING_MIGRATION_RELEASE_INVARIANT: u32 = 0x4d49_4752;
 const IDLE_PULL_PHASE_MASK: u64 = 0b11;
@@ -25,7 +27,10 @@ const IDLE_PULL_GENERATION_MASK: u64 = !(IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLIS
 const IDLE_PULL_PUBLISHER_OVERFLOW_INVARIANT: u32 = 0x4944_4c50;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SchedulerIpiClaim(u64);
+enum SchedulerWorkPublication {
+    PollingOwner,
+    DoorbellRequired,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IdlePullReservation {
@@ -123,12 +128,10 @@ pub struct CpuRemote {
     /// Top bits encode [`CpuLifecycleState`]; low bits count active publishers.
     lifecycle: AtomicUsize,
     scheduler_ready: AtomicBool,
-    need_resched: AtomicBool,
+    scheduler_state: AtomicU8,
     deadline_work_pending: AtomicBool,
     preempt_requested: AtomicBool,
     park_preempt_deferred: AtomicBool,
-    scheduler_ipi_pending: AtomicU64,
-    idle_polling: AtomicBool,
     current_thread: AtomicU64,
     idle_thread: AtomicU64,
     busy_runtime_ns: AtomicU64,
@@ -146,7 +149,6 @@ pub struct CpuRemote {
     pub(super) scheduler_deadline_ns: AtomicU64,
     remote_wake_inbox: SchedulerInbox,
     migration_inbox: SchedulerInbox,
-    reclaim_inbox: SchedulerInbox,
     balance_request_node: InboxNode,
 }
 
@@ -157,12 +159,10 @@ impl CpuRemote {
             owner_claimed: AtomicBool::new(false),
             lifecycle: AtomicUsize::new(CPU_LIFECYCLE_OFFLINE),
             scheduler_ready: AtomicBool::new(false),
-            need_resched: AtomicBool::new(false),
+            scheduler_state: AtomicU8::new(0),
             deadline_work_pending: AtomicBool::new(false),
             preempt_requested: AtomicBool::new(false),
             park_preempt_deferred: AtomicBool::new(false),
-            scheduler_ipi_pending: AtomicU64::new(0),
-            idle_polling: AtomicBool::new(false),
             current_thread: AtomicU64::new(0),
             idle_thread: AtomicU64::new(0),
             busy_runtime_ns: AtomicU64::new(0),
@@ -183,7 +183,6 @@ impl CpuRemote {
             scheduler_deadline_ns: AtomicU64::new(0),
             remote_wake_inbox: SchedulerInbox::new(InboxKind::RemoteWake),
             migration_inbox: SchedulerInbox::new(InboxKind::Migration),
-            reclaim_inbox: SchedulerInbox::new(InboxKind::Reclaim),
             balance_request_node: InboxNode::new(InboxKind::Migration),
         })
     }
@@ -318,12 +317,10 @@ impl CpuRemote {
     }
 
     pub(crate) fn finish_offline(&self) {
-        self.need_resched.store(false, Ordering::Relaxed);
+        self.scheduler_state.store(0, Ordering::Relaxed);
         self.deadline_work_pending.store(false, Ordering::Relaxed);
         self.preempt_requested.store(false, Ordering::Relaxed);
         self.park_preempt_deferred.store(false, Ordering::Relaxed);
-        self.scheduler_ipi_pending.store(0, Ordering::Relaxed);
-        self.idle_polling.store(false, Ordering::Relaxed);
         self.fair_balance_deadline_ns
             .store(u64::MAX, Ordering::Relaxed);
         self.scheduler_deadline_ns.store(0, Ordering::Relaxed);
@@ -372,8 +369,8 @@ impl CpuRemote {
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         self.lifecycle.load(Ordering::Acquire) == CPU_LIFECYCLE_DRAINING
             && !self.deadline_work_pending()
+            && !self.needs_reschedule()
             && !self.has_remote_work()
-            && self.scheduler_ipi_pending.load(Ordering::Acquire) & IPI_CLAIMED == 0
             && !self.is_idle_polling()
             && self.idle_pull_state.load(Ordering::Acquire)
                 & (IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK)
@@ -398,7 +395,7 @@ impl CpuRemote {
 
     fn request_reschedule_owned(&self) {
         self.preempt_requested.store(true, Ordering::Release);
-        self.need_resched.store(true, Ordering::Release);
+        let _ = self.request_scheduler_work_owned();
     }
 
     pub(crate) fn request_scheduler_work(&self) {
@@ -408,13 +405,20 @@ impl CpuRemote {
         self.request_scheduler_work_owned();
     }
 
-    fn request_scheduler_work_owned(&self) {
-        self.need_resched.store(true, Ordering::Release);
+    fn request_scheduler_work_owned(&self) -> SchedulerWorkPublication {
+        let previous = self
+            .scheduler_state
+            .fetch_or(SCHEDULER_WORK_PENDING, Ordering::AcqRel);
+        if previous & SCHEDULER_IDLE_POLLING != 0 {
+            SchedulerWorkPublication::PollingOwner
+        } else {
+            SchedulerWorkPublication::DoorbellRequired
+        }
     }
 
     pub(super) fn publish_deadline_work(&self) {
         self.deadline_work_pending.store(true, Ordering::Release);
-        self.request_scheduler_work_owned();
+        let _ = self.request_scheduler_work_owned();
     }
 
     pub(crate) fn deadline_work_pending(&self) -> bool {
@@ -432,7 +436,7 @@ impl CpuRemote {
         // interval and may replace the sticky bit with its actual remainder.
         self.deadline_work_pending.store(pending, Ordering::Release);
         if pending {
-            self.request_scheduler_work_owned();
+            let _ = self.request_scheduler_work_owned();
         }
     }
 
@@ -445,15 +449,45 @@ impl CpuRemote {
     }
 
     fn kick_scheduler_work_owned(&self) -> bool {
+        let publication = self.request_scheduler_work_owned();
+        self.deliver_scheduler_work_owned(publication)
+    }
+
+    /// Rearms the physical doorbell after an owner-side bounded drain.
+    ///
+    /// Unlike producer delivery, this must not suppress a local notification:
+    /// the current scheduler safe point has already consumed its delivery
+    /// edge and is about to return. A remaining batch therefore needs a fresh
+    /// interrupt even when the owner itself is the current CPU.
+    pub(crate) fn defer_scheduler_work(&self) {
+        let Some(_publication) = self.begin_publication() else {
+            task_runtime::fatal_invariant(
+                DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT,
+                self.owner.as_u32() as usize,
+            );
+        };
+        let _irq = IrqScope::enter();
         self.request_scheduler_work_owned();
-        if self.current_cpu_will_service_local_work() {
+        self.ring_scheduler_doorbell();
+    }
+
+    fn deliver_scheduler_work_owned(&self, publication: SchedulerWorkPublication) -> bool {
+        if publication == SchedulerWorkPublication::PollingOwner
+            || self.current_cpu_will_service_local_work()
+        {
             return true;
         }
-        let Some(claim) = self.claim_scheduler_ipi() else {
-            return false;
-        };
-        self.send_claimed_scheduler_ipi(claim);
-        true
+        self.ring_scheduler_doorbell()
+    }
+
+    fn ring_scheduler_doorbell(&self) -> bool {
+        match task_runtime::send_scheduler_ipi(RuntimeCpuId::new(self.owner.as_u32())) {
+            RuntimeStatus::Success | RuntimeStatus::Busy => true,
+            status => task_runtime::fatal_invariant(
+                0x4950_4900 | status as u32,
+                self.owner.as_u32() as usize,
+            ),
+        }
     }
 
     fn current_cpu_will_service_local_work(&self) -> bool {
@@ -470,54 +504,14 @@ impl CpuRemote {
         task_runtime::in_hard_irq() || task_runtime::local_scheduler_work_is_self_serviced()
     }
 
-    fn claim_scheduler_ipi(&self) -> Option<SchedulerIpiClaim> {
-        let mut current = self.scheduler_ipi_pending.load(Ordering::Acquire);
-        loop {
-            if current & IPI_CLAIMED != 0 {
-                return None;
-            }
-            let next = current.wrapping_add(2) | IPI_CLAIMED;
-            match self.scheduler_ipi_pending.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Some(SchedulerIpiClaim(next)),
-                Err(actual) => current = actual,
-            }
-        }
-    }
-
-    fn finish_scheduler_ipi_send(&self, _claim: SchedulerIpiClaim, status: RuntimeStatus) {
-        match status {
-            RuntimeStatus::Success => {}
-            // Like Linux's CSD `-EBUSY`, this status means an older physical
-            // delivery is still in flight and covers the newly published work.
-            // The target handler owns and clears the claim; clearing it here
-            // would replace a guaranteed interrupt with wake-less retry state.
-            RuntimeStatus::Busy => {}
-            status => task_runtime::fatal_invariant(
-                0x4950_4900 | status as u32,
-                self.owner.as_u32() as usize,
-            ),
-        }
-    }
-
-    /// Completes one already-claimed doorbell transaction and always feeds the
-    /// typed transport result back into the coalescing/retry state machine.
-    fn send_claimed_scheduler_ipi(&self, claim: SchedulerIpiClaim) {
-        let status = task_runtime::send_scheduler_ipi(RuntimeCpuId::new(self.owner.as_u32()));
-        self.finish_scheduler_ipi_send(claim, status);
-    }
-
     /// Tests the sticky reschedule request without consuming it.
     pub fn needs_reschedule(&self) -> bool {
-        self.need_resched.load(Ordering::Acquire)
+        self.scheduler_state.load(Ordering::Acquire) & SCHEDULER_WORK_PENDING != 0
     }
 
     pub(crate) fn scheduler_enter(&self) -> bool {
-        self.need_resched.swap(false, Ordering::AcqRel);
+        self.scheduler_state
+            .fetch_and(!SCHEDULER_WORK_PENDING, Ordering::AcqRel);
         let preempt_requested = self.preempt_requested.swap(false, Ordering::AcqRel);
         if self.deadline_work_pending() || self.has_remote_work() {
             self.request_scheduler_work();
@@ -553,14 +547,17 @@ impl CpuRemote {
         };
         let _irq = IrqScope::enter();
         let _idle_pull_work = self.begin_idle_pull_work();
-        let (result, _head_became_non_empty) = self
+        let (result, head_became_non_empty) = self
             .remote_wake_inbox
             .publish_with_head_transition(node, message);
         if matches!(
             result,
             PublishResult::Published | PublishResult::AlreadyPending
         ) {
-            self.kick_scheduler_work_owned();
+            let publication = self.request_scheduler_work_owned();
+            if head_became_non_empty {
+                self.deliver_scheduler_work_owned(publication);
+            }
         }
         result
     }
@@ -597,7 +594,7 @@ impl CpuRemote {
                 self.owner.as_u32() as usize,
             );
         }
-        let (result, _head_became_non_empty) = self
+        let (result, head_became_non_empty) = self
             .migration_inbox
             .publish_with_head_transition(node, message);
         if migration && result != PublishResult::Published {
@@ -607,7 +604,10 @@ impl CpuRemote {
             result,
             PublishResult::Published | PublishResult::AlreadyPending
         ) {
-            self.kick_scheduler_work_owned();
+            let publication = self.request_scheduler_work_owned();
+            if head_became_non_empty {
+                self.deliver_scheduler_work_owned(publication);
+            }
         }
         result
     }
@@ -861,55 +861,32 @@ impl CpuRemote {
         &self.migration_inbox
     }
 
-    pub(crate) fn reclaim_inbox(&self) -> &SchedulerInbox {
-        &self.reclaim_inbox
-    }
-
     pub(crate) fn has_remote_work(&self) -> bool {
-        self.remote_wake_inbox.has_pending()
-            || self.migration_inbox.has_pending()
-            || self.reclaim_inbox.has_pending()
-    }
-
-    /// Acknowledges one coalesced scheduler IPI epoch and rechecks publication.
-    pub(crate) fn acknowledge_scheduler_ipi(&self) {
-        let mut current = self.scheduler_ipi_pending.load(Ordering::Acquire);
-        while current & IPI_CLAIMED != 0 {
-            match self.scheduler_ipi_pending.compare_exchange_weak(
-                current,
-                current & !IPI_CLAIMED,
-                Ordering::Release,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
-        }
-        core::sync::atomic::fence(Ordering::SeqCst);
-        if self.deadline_work_pending() || self.has_remote_work() {
-            self.request_scheduler_work();
-        }
+        self.remote_wake_inbox.has_pending() || self.migration_inbox.has_pending()
     }
 
     pub(crate) fn prepare_idle_wait(&self) -> bool {
-        self.idle_polling.store(true, Ordering::Release);
-        core::sync::atomic::fence(Ordering::SeqCst);
-        let may_wait = !self.needs_reschedule()
+        let previous = self
+            .scheduler_state
+            .fetch_or(SCHEDULER_IDLE_POLLING, Ordering::AcqRel);
+        let may_wait = previous & SCHEDULER_WORK_PENDING == 0
+            && !self.needs_reschedule()
             && !self.deadline_work_pending()
             && !self.has_remote_work()
             && self.try_runnable_summary() == Some(0);
         if !may_wait {
-            self.idle_polling.store(false, Ordering::Release);
+            self.finish_idle_wait();
         }
         may_wait
     }
 
     pub(crate) fn finish_idle_wait(&self) {
-        self.idle_polling.store(false, Ordering::Release);
+        self.scheduler_state
+            .fetch_and(!SCHEDULER_IDLE_POLLING, Ordering::Release);
     }
 
     pub(crate) fn is_idle_polling(&self) -> bool {
-        self.idle_polling.load(Ordering::Acquire)
+        self.scheduler_state.load(Ordering::Acquire) & SCHEDULER_IDLE_POLLING != 0
     }
 }
 

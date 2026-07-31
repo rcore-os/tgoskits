@@ -81,8 +81,8 @@ impl SchedulerInbox {
 
     /// Publishes and reports an empty-head to non-empty-head transition.
     ///
-    /// The transition is the producer-side scheduler-IPI epoch, analogous to
-    /// Linux `llist_add()` returning whether the lock-free list was empty.
+    /// The transition owns the runtime-doorbell attempt, analogous to Linux
+    /// `llist_add()` returning whether the lock-free list was empty.
     pub(crate) fn publish_with_head_transition(
         &self,
         node: core::pin::Pin<&'static InboxNode>,

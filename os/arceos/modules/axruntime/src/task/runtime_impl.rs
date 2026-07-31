@@ -101,6 +101,10 @@ impl_task_runtime! {
             if cpu != unsafe { Self::current_cpu_id() } {
                 return RuntimeStatus::InvalidArgument;
             }
+            #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+            if current_scheduler_ipi_doorbell_pending() {
+                return RuntimeStatus::Busy;
+            }
             #[cfg(feature = "irq")]
             crate::clock_event_runtime::take_current_clock_event_offline();
             RuntimeStatus::Success

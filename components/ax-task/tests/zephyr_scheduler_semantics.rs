@@ -268,6 +268,7 @@ fn repeated_smp_wake_coalesces_to_one_ipi_epoch() {
     assert_eq!(second_wake.wake(), WakeResult::Notified);
     assert_eq!(first_wake.wake(), WakeResult::AlreadyPending);
     assert_eq!(support::ipi_count(1), 1);
+    assert!(support::consume_ipi(1));
     let drained = system.drain_remote_wakes(cpu1.as_mut(), 1).unwrap();
     assert_eq!(drained.drained(), 2);
     assert!(!drained.pending());

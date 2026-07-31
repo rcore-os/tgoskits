@@ -80,7 +80,9 @@ use scheduler_events::SchedulerIpiDoorbell;
 use scheduler_events::publish_then_notify_scheduler_ipi;
 pub use scheduler_events::timer_irq_count;
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
-pub(crate) use scheduler_events::{consume_scheduler_ipi_doorbell, on_scheduler_ipi};
+pub(crate) use scheduler_events::{
+    consume_scheduler_ipi_doorbell, current_scheduler_ipi_doorbell_pending,
+};
 #[cfg(feature = "irq")]
 pub(crate) use scheduler_events::{on_clock_event, recover_clock_event};
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]

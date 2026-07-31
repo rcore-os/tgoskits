@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_ipi_acknowledgement_promotes_owner_preemption() {
+    fn scheduler_work_preserves_owner_preemption_policy() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         system
@@ -278,11 +278,10 @@ mod tests {
 
         cpu.request_scheduler_work();
         assert!(!cpu.remote().take_preempt_requested());
-        acknowledge_current_scheduler_ipi().unwrap();
 
         assert!(
-            cpu.remote().take_preempt_requested(),
-            "the core IPI boundary must request preemption without a runtime-side CpuRemote write"
+            !cpu.remote().take_preempt_requested(),
+            "delivery must enter the owner safe point without forcing a task switch"
         );
     }
 
@@ -981,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_wait_keeps_polling_published_through_the_runtime_final_recheck() {
+    fn idle_wait_clears_polling_before_the_runtime_sleep_commit() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         system
@@ -1006,8 +1005,8 @@ mod tests {
 
         assert_eq!(
             test_runtime::idle_wait_observation(),
-            (1, true),
-            "the runtime final recheck must run while polling is still published"
+            (1, false),
+            "a producer after the final recheck must send a physical wake edge"
         );
         assert!(
             !cpu.is_idle_polling(),

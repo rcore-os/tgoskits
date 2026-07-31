@@ -22,6 +22,7 @@ std::thread_local! {
     static CPU_LOCALS: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
     static CPU_REMOTES: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
     static IPI_COUNTS: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
+    static IPI_PENDING: RefCell<[bool; MAX_TEST_CPUS]> = const { RefCell::new([false; MAX_TEST_CPUS]) };
     static ONLINE_CPU_COUNT: Cell<usize> = const { Cell::new(1) };
     static DESTROYED_CONTEXTS: Cell<usize> = const { Cell::new(0) };
     static DEALLOCATED_STACKS: Cell<usize> = const { Cell::new(0) };
@@ -191,13 +192,22 @@ impl_trait! {
             RuntimeStatus::Success
         }
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
-            IPI_COUNTS.with(|counts| {
+            IPI_PENDING.with(|pending| {
+                let mut pending = pending.borrow_mut();
+                let Some(pending) = pending.get_mut(cpu.as_u32() as usize) else {
+                    return RuntimeStatus::InvalidArgument;
+                };
+                if core::mem::replace(pending, true) {
+                    return RuntimeStatus::Busy;
+                }
+                IPI_COUNTS.with(|counts| {
                 let mut counts = counts.borrow_mut();
                 let Some(count) = counts.get_mut(cpu.as_u32() as usize) else {
                     return RuntimeStatus::InvalidArgument;
                 };
                 *count = count.checked_add(1).expect("integration IPI count overflow");
                 RuntimeStatus::Success
+                })
             })
         }
         fn wait_for_interrupt() {}
@@ -312,6 +322,13 @@ pub fn ipi_count(cpu: u32) -> usize {
     IPI_COUNTS.with(|counts| counts.borrow()[cpu as usize])
 }
 
+pub fn consume_ipi(cpu: u32) -> bool {
+    IPI_PENDING.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        core::mem::replace(&mut pending[cpu as usize], false)
+    })
+}
+
 pub fn resource_release_counts() -> (usize, usize, usize) {
     (
         DESTROYED_CONTEXTS.with(Cell::get),
@@ -352,6 +369,7 @@ pub fn clear_handles() {
         install_cpu_raw(cpu, 0);
         install_cpu_remote_raw(cpu, 0);
         IPI_COUNTS.with(|counts| counts.borrow_mut()[cpu as usize] = 0);
+        let _cleared_delivery = consume_ipi(cpu);
         let _cleared = ipi_count(cpu);
     }
     CURRENT_CPU.with(|cpu| cpu.set(0));

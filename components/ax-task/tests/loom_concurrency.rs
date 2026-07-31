@@ -523,62 +523,79 @@ fn coalesced_scheduler_tick_publishes_its_timestamp_before_claim() {
 }
 
 #[test]
-fn inbox_empty_transition_owns_the_scheduler_ipi_epoch() {
+fn runtime_doorbell_consumption_allows_a_fresh_physical_edge() {
     loom::model(|| {
-        let inbox_head = Arc::new(AtomicBool::new(false));
-        let work_pending = Arc::new(AtomicBool::new(false));
-        let ipi_epoch = Arc::new(AtomicUsize::new(0));
-        let consumed = Arc::new(AtomicBool::new(false));
+        let doorbell_pending = Arc::new(AtomicBool::new(true));
+        let delivery_consumed = Arc::new(AtomicBool::new(false));
+        let fresh_notification = Arc::new(AtomicBool::new(false));
 
+        let handler = {
+            let doorbell_pending = Arc::clone(&doorbell_pending);
+            let delivery_consumed = Arc::clone(&delivery_consumed);
+            thread::spawn(move || {
+                assert!(doorbell_pending.swap(false, Ordering::AcqRel));
+                delivery_consumed.store(true, Ordering::Release);
+            })
+        };
         let producer = {
-            let inbox_head = Arc::clone(&inbox_head);
-            let work_pending = Arc::clone(&work_pending);
-            let ipi_epoch = Arc::clone(&ipi_epoch);
+            let doorbell_pending = Arc::clone(&doorbell_pending);
+            let delivery_consumed = Arc::clone(&delivery_consumed);
+            let fresh_notification = Arc::clone(&fresh_notification);
             thread::spawn(move || {
-                work_pending.store(true, Ordering::Release);
-                inbox_head.store(true, Ordering::Release);
-                let mut current = ipi_epoch.load(Ordering::Acquire);
-                while current & 1 == 0 {
-                    match ipi_epoch.compare_exchange_weak(
-                        current,
-                        current.wrapping_add(2) | 1,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
-                        Ok(_) => break,
-                        Err(actual) => current = actual,
-                    }
+                while !delivery_consumed.load(Ordering::Acquire) {
+                    thread::yield_now();
                 }
-            })
-        };
-        let owner = {
-            let inbox_head = Arc::clone(&inbox_head);
-            let work_pending = Arc::clone(&work_pending);
-            let ipi_epoch = Arc::clone(&ipi_epoch);
-            let consumed = Arc::clone(&consumed);
-            thread::spawn(move || {
-                let epoch = ipi_epoch.load(Ordering::Acquire);
-                if epoch & 1 != 0
-                    && ipi_epoch
-                        .compare_exchange(epoch, epoch & !1, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    inbox_head.store(false, Ordering::Release);
-                    if work_pending.swap(false, Ordering::AcqRel) {
-                        consumed.store(true, Ordering::Release);
-                    }
+                if !doorbell_pending.swap(true, Ordering::AcqRel) {
+                    fresh_notification.store(true, Ordering::Release);
                 }
             })
         };
 
+        handler.join().unwrap();
         producer.join().unwrap();
-        owner.join().unwrap();
+        assert!(doorbell_pending.load(Ordering::Acquire));
         assert!(
-            consumed.load(Ordering::Acquire)
-                || work_pending.load(Ordering::Acquire)
-                || inbox_head.load(Ordering::Acquire)
-                || ipi_epoch.load(Ordering::Acquire) & 1 != 0,
-            "published work must be consumed or retain an inbox/IPI owner"
+            fresh_notification.load(Ordering::Acquire),
+            "publication after handler consumption must own a fresh edge"
+        );
+    });
+}
+
+#[test]
+fn inbox_empty_transition_owns_one_runtime_doorbell_ring() {
+    loom::model(|| {
+        let inbox_nonempty = Arc::new(AtomicBool::new(false));
+        let published = Arc::new(AtomicUsize::new(0));
+        let doorbell_rings = Arc::new(AtomicUsize::new(0));
+
+        let publish = |inbox_nonempty: Arc<AtomicBool>,
+                       published: Arc<AtomicUsize>,
+                       doorbell_rings: Arc<AtomicUsize>| {
+            thread::spawn(move || {
+                published.fetch_add(1, Ordering::Release);
+                if !inbox_nonempty.swap(true, Ordering::AcqRel) {
+                    doorbell_rings.fetch_add(1, Ordering::Release);
+                }
+            })
+        };
+        let first = publish(
+            Arc::clone(&inbox_nonempty),
+            Arc::clone(&published),
+            Arc::clone(&doorbell_rings),
+        );
+        let second = publish(
+            Arc::clone(&inbox_nonempty),
+            Arc::clone(&published),
+            Arc::clone(&doorbell_rings),
+        );
+
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(published.load(Ordering::Acquire), 2);
+        assert_eq!(
+            doorbell_rings.load(Ordering::Acquire),
+            1,
+            "one nonempty inbox generation needs one runtime doorbell ring"
         );
     });
 }
@@ -724,59 +741,6 @@ fn new_generation_publishers_do_not_delay_retired_head_grace() {
         publisher.join().unwrap();
         consumer.join().unwrap();
         assert_eq!(slot_publishers[1].load(Ordering::SeqCst), 0);
-    });
-}
-
-#[test]
-fn stale_ipi_failure_cannot_clear_a_new_generation() {
-    loom::model(|| {
-        let epoch = Arc::new(AtomicUsize::new(1));
-        let acknowledged = Arc::new(AtomicBool::new(false));
-        let new_claimed = Arc::new(AtomicBool::new(false));
-
-        let owner = {
-            let epoch = Arc::clone(&epoch);
-            let acknowledged = Arc::clone(&acknowledged);
-            thread::spawn(move || {
-                epoch
-                    .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
-                    .unwrap();
-                acknowledged.store(true, Ordering::Release);
-            })
-        };
-        let producer = {
-            let epoch = Arc::clone(&epoch);
-            let acknowledged = Arc::clone(&acknowledged);
-            let new_claimed = Arc::clone(&new_claimed);
-            thread::spawn(move || {
-                while !acknowledged.load(Ordering::Acquire) {
-                    thread::yield_now();
-                }
-                epoch
-                    .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire)
-                    .unwrap();
-                new_claimed.store(true, Ordering::Release);
-            })
-        };
-        let stale_sender = {
-            let epoch = Arc::clone(&epoch);
-            let new_claimed = Arc::clone(&new_claimed);
-            thread::spawn(move || {
-                while !new_claimed.load(Ordering::Acquire) {
-                    thread::yield_now();
-                }
-                assert!(
-                    epoch
-                        .compare_exchange(1, 0, Ordering::Release, Ordering::Acquire)
-                        .is_err()
-                );
-            })
-        };
-
-        owner.join().unwrap();
-        producer.join().unwrap();
-        stale_sender.join().unwrap();
-        assert_eq!(epoch.load(Ordering::Acquire), 3);
     });
 }
 
@@ -1193,59 +1157,55 @@ fn stale_irq_wait_generation_cannot_detach_a_rearmed_waiter() {
 #[test]
 fn idle_commit_cannot_lose_work_published_across_the_final_recheck() {
     loom::model(|| {
-        let polling = Arc::new(AtomicBool::new(false));
-        let work = Arc::new(AtomicBool::new(false));
-        let irq_pending = Arc::new(AtomicBool::new(false));
+        const WORK_PENDING: usize = 1 << 0;
+        const IDLE_POLLING: usize = 1 << 1;
+
+        let scheduler_state = Arc::new(AtomicUsize::new(0));
+        let inbox_pending = Arc::new(AtomicBool::new(false));
+        let physical_ipi = Arc::new(AtomicBool::new(false));
         let sleeping = Arc::new(AtomicBool::new(false));
-        let wake_observed = Arc::new(AtomicBool::new(false));
 
         let idle = {
-            let polling = Arc::clone(&polling);
-            let work = Arc::clone(&work);
-            let irq_pending = Arc::clone(&irq_pending);
+            let scheduler_state = Arc::clone(&scheduler_state);
+            let inbox_pending = Arc::clone(&inbox_pending);
             let sleeping = Arc::clone(&sleeping);
-            let wake_observed = Arc::clone(&wake_observed);
             thread::spawn(move || {
-                polling.store(true, Ordering::Release);
-                loom::sync::atomic::fence(Ordering::SeqCst);
-                if work.load(Ordering::Acquire) {
-                    polling.store(false, Ordering::Release);
+                let previous = scheduler_state.fetch_or(IDLE_POLLING, Ordering::AcqRel);
+                if previous & WORK_PENDING != 0 || inbox_pending.load(Ordering::Acquire) {
+                    scheduler_state.fetch_and(!IDLE_POLLING, Ordering::Release);
                     return;
                 }
 
-                // Models the architecture's atomic IRQ-unmask-and-wait commit:
-                // a prior hardware notification is consumed here, while a
-                // later producer observes `sleeping` and wakes the CPU.
-                sleeping.store(true, Ordering::SeqCst);
-                if irq_pending.swap(false, Ordering::SeqCst) {
-                    sleeping.store(false, Ordering::SeqCst);
-                    wake_observed.store(true, Ordering::Release);
+                // Clear polling before the runtime's IRQ-disabled final
+                // recheck. A producer before this RMW is observed below; a
+                // producer after it must publish a physical edge.
+                scheduler_state.fetch_and(!IDLE_POLLING, Ordering::AcqRel);
+                if scheduler_state.load(Ordering::Acquire) & WORK_PENDING == 0
+                    && !inbox_pending.load(Ordering::Acquire)
+                {
+                    sleeping.store(true, Ordering::Release);
                 }
-                polling.store(false, Ordering::Release);
             })
         };
         let producer = {
-            let work = Arc::clone(&work);
-            let irq_pending = Arc::clone(&irq_pending);
-            let sleeping = Arc::clone(&sleeping);
-            let wake_observed = Arc::clone(&wake_observed);
+            let scheduler_state = Arc::clone(&scheduler_state);
+            let inbox_pending = Arc::clone(&inbox_pending);
+            let physical_ipi = Arc::clone(&physical_ipi);
             thread::spawn(move || {
-                work.store(true, Ordering::Release);
-                irq_pending.store(true, Ordering::SeqCst);
-                if sleeping.swap(false, Ordering::SeqCst) {
-                    wake_observed.store(true, Ordering::Release);
+                inbox_pending.store(true, Ordering::Release);
+                let previous = scheduler_state.fetch_or(WORK_PENDING, Ordering::AcqRel);
+                if previous & IDLE_POLLING == 0 {
+                    physical_ipi.store(true, Ordering::Release);
                 }
             })
         };
 
         idle.join().unwrap();
         producer.join().unwrap();
-        assert!(work.load(Ordering::Acquire));
+        assert_ne!(scheduler_state.load(Ordering::Acquire) & WORK_PENDING, 0);
         assert!(
-            !sleeping.load(Ordering::Acquire)
-                || irq_pending.load(Ordering::Acquire)
-                || wake_observed.load(Ordering::Acquire),
-            "published work must wake the CPU or remain as a hardware-pending interrupt"
+            !sleeping.load(Ordering::Acquire) || physical_ipi.load(Ordering::Acquire),
+            "work published after polling clears must retain a physical wake edge"
         );
     });
 }

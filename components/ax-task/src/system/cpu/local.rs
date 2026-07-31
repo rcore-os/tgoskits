@@ -136,6 +136,10 @@ impl CpuLocal {
         self.remote.request_scheduler_work();
     }
 
+    pub(crate) fn defer_scheduler_work(&self) {
+        self.remote.defer_scheduler_work();
+    }
+
     /// Tests the sticky reschedule request without clearing it.
     pub fn needs_reschedule(&self) -> bool {
         self.remote.needs_reschedule()
@@ -774,19 +778,9 @@ impl CpuLocal {
         self.remote.migration_inbox()
     }
 
-    /// Returns the deferred-reclaim publication endpoint for remote CPUs.
-    pub fn reclaim_inbox(&self) -> &SchedulerInbox {
-        self.remote.reclaim_inbox()
-    }
-
     /// Reports pending remote work before idle or scheduler exit.
     pub fn has_remote_work(&self) -> bool {
         self.remote.has_remote_work()
-    }
-
-    /// Acknowledges one coalesced scheduler IPI epoch and rechecks publication.
-    pub fn acknowledge_scheduler_ipi(&self) {
-        self.remote.acknowledge_scheduler_ipi();
     }
 
     /// Publishes the idle/polling state and performs the final WFI recheck.
