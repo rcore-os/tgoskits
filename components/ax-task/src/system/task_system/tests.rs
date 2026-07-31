@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
 use crate::PiLockIdentity;
@@ -1046,7 +1046,7 @@ fn rejected_thread_releases_runtime_resources_before_extension() {
     use crate::test_runtime::ResourceReleaseEvent;
 
     static RELEASE_ORDER_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: no_extension_hook,
+        on_switch_in: no_extension_switch_in,
         on_switch_out: no_extension_switch_out,
         on_exit: no_extension_hook,
         on_deadline_overrun: no_extension_hook,
@@ -1095,7 +1095,7 @@ fn rejected_thread_retains_extension_until_resource_release_retry() {
     use crate::test_runtime::ResourceReleaseEvent;
 
     static RETRY_RELEASE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: no_extension_hook,
+        on_switch_in: no_extension_switch_in,
         on_switch_out: no_extension_switch_out,
         on_exit: no_extension_hook,
         on_deadline_overrun: no_extension_hook,
@@ -1875,6 +1875,75 @@ fn policy_only_safe_point_skips_the_empty_wake_inbox() {
         !cpu.remote().migration_inbox().has_pending(),
         "the policy delivery must not be stranded behind its consumed IPI epoch"
     );
+}
+
+#[test]
+fn owner_policy_apply_notifies_extension_at_the_owner_timestamp() {
+    POLICY_APPLIED_CALLBACKS.store(0, Ordering::Release);
+    POLICY_APPLIED_AT_NS.store(0, Ordering::Release);
+
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let extension = unsafe {
+        // SAFETY: the static callbacks retain no data and run synchronously
+        // while this TaskSystem owns the extension.
+        ThreadExtension::new(0, &DEADLINE_TEST_EXTENSION_OPS)
+            .with_running_policy_applied_hook(record_policy_applied)
+    };
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_extension(extension))
+        .unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 0).unwrap().next(),
+        thread.id()
+    );
+
+    system
+        .set_thread_policy(
+            thread.id(),
+            SchedulePolicy::fair(Nice::new(5).unwrap(), FairMode::Normal),
+        )
+        .unwrap();
+    system
+        .drain_policy_updates(cpu.as_mut(), 1_050_000)
+        .unwrap();
+
+    assert_eq!(POLICY_APPLIED_CALLBACKS.load(Ordering::Acquire), 1);
+    assert_eq!(POLICY_APPLIED_AT_NS.load(Ordering::Acquire), 1_050_000);
+}
+
+#[test]
+fn inactive_policy_apply_does_not_invoke_an_execution_owner_hook() {
+    POLICY_APPLIED_CALLBACKS.store(0, Ordering::Release);
+
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let extension = unsafe {
+        // SAFETY: the static callbacks retain no data and run synchronously
+        // while this TaskSystem owns the extension.
+        ThreadExtension::new(0, &DEADLINE_TEST_EXTENSION_OPS)
+            .with_running_policy_applied_hook(record_policy_applied)
+    };
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_extension(extension))
+        .unwrap();
+    let updated_policy = SchedulePolicy::fair(Nice::new(5).unwrap(), FairMode::Normal);
+
+    system
+        .set_thread_policy(thread.id(), updated_policy)
+        .unwrap();
+
+    assert_eq!(POLICY_APPLIED_CALLBACKS.load(Ordering::Acquire), 0);
+
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    system.make_ready(thread.id()).unwrap();
+    system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    let decision = system.schedule(cpu.as_mut(), 0).unwrap();
+
+    assert_eq!(decision.next_base_policy(), updated_policy);
 }
 
 #[test]
@@ -3390,17 +3459,20 @@ fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
 }
 
 static DEADLINE_TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: no_extension_hook,
+    on_switch_in: no_extension_switch_in,
     on_switch_out: no_extension_switch_out,
     on_exit: no_extension_hook,
     on_deadline_overrun: count_deadline_overrun,
     drop: no_extension_drop,
 };
 
+static POLICY_APPLIED_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static POLICY_APPLIED_AT_NS: AtomicU64 = AtomicU64::new(0);
+
 static ROTATING_DEADLINE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
 static ROTATING_DEADLINE_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: no_extension_hook,
+    on_switch_in: no_extension_switch_in,
     on_switch_out: no_extension_switch_out,
     on_exit: no_extension_hook,
     on_deadline_overrun: count_rotating_deadline_overrun,
@@ -3410,7 +3482,7 @@ static ROTATING_DEADLINE_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
 static EXIT_CALLBACK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 static EXIT_CALLBACK_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: no_extension_hook,
+    on_switch_in: no_extension_switch_in,
     on_switch_out: no_extension_switch_out,
     on_exit: count_exit_callback,
     on_deadline_overrun: no_extension_hook,
@@ -3418,6 +3490,13 @@ static EXIT_CALLBACK_TEST_OPS: ThreadExtensionOps = ThreadExtensionOps {
 };
 
 unsafe extern "Rust" fn no_extension_hook(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn no_extension_switch_in(
+    _data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+) {
+}
 
 unsafe extern "Rust" fn no_extension_switch_out(
     _data: usize,
@@ -3428,6 +3507,16 @@ unsafe extern "Rust" fn no_extension_switch_out(
 
 unsafe extern "Rust" fn count_deadline_overrun(_data: usize, _thread: ThreadId) {
     DEADLINE_OVERRUN_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+unsafe extern "Rust" fn record_policy_applied(
+    _data: usize,
+    _thread: ThreadId,
+    _policy: SchedulePolicy,
+    observed_ns: u64,
+) {
+    POLICY_APPLIED_AT_NS.store(observed_ns, Ordering::Release);
+    POLICY_APPLIED_CALLBACKS.fetch_add(1, Ordering::Release);
 }
 
 unsafe extern "Rust" fn count_rotating_deadline_overrun(_data: usize, _thread: ThreadId) {

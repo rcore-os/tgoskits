@@ -434,7 +434,7 @@ fn test_address_space(raw: usize) -> AddressSpaceHandle {
 }
 
 static DROP_COUNT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: ignore_thread_event,
+    on_switch_in: ignore_switch_in,
     on_switch_out: ignore_switch_out,
     on_exit: ignore_thread_event,
     on_deadline_overrun: ignore_thread_event,
@@ -444,6 +444,9 @@ static DROP_COUNT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
 static DROP_COUNTS: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 
 unsafe extern "Rust" fn ignore_thread_event(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn ignore_switch_in(_data: usize, _thread: ThreadId, _policy: SchedulePolicy) {
+}
 
 unsafe extern "Rust" fn ignore_switch_out(_data: usize, _thread: ThreadId, _reason: SwitchReason) {}
 
@@ -455,7 +458,7 @@ static MARK_EXIT_CALLBACK_ENTERED: AtomicBool = AtomicBool::new(false);
 static MARK_EXIT_CALLBACK_RELEASE: AtomicBool = AtomicBool::new(false);
 static MARK_EXIT_DROPS: AtomicUsize = AtomicUsize::new(0);
 static MARK_EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: ignore_thread_event,
+    on_switch_in: ignore_switch_in,
     on_switch_out: ignore_switch_out,
     on_exit: block_mark_exit_callback,
     on_deadline_overrun: ignore_thread_event,

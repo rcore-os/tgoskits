@@ -307,11 +307,13 @@ impl TaskSystem {
         next: &Arc<ThreadCore>,
         switch_reason: SwitchReason,
     ) -> ScheduleDecision {
+        let (next_endpoint, next_base_policy) = SwitchEndpoint::from_core(next);
         ScheduleDecision {
             previous: previous.map(|core| core.id()),
             next: next.id(),
-            previous_endpoint: previous.map(|core| SwitchEndpoint::from_core(core)),
-            next_endpoint: SwitchEndpoint::from_core(next),
+            previous_endpoint: previous.map(|core| SwitchEndpoint::from_core(core).0),
+            next_endpoint,
+            next_base_policy,
             switch_reason,
         }
     }

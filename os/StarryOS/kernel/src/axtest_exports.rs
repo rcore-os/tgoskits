@@ -226,8 +226,8 @@ pub fn scheduler_tick_group_accounting_is_aggregate() -> bool {
     super::task::scheduler_tick_group_accounting_is_aggregate_for_test()
 }
 
-pub fn scheduler_tick_accounting_excludes_state_writer() -> bool {
-    super::task::scheduler_tick_accounting_excludes_state_writer_for_test()
+pub fn scheduler_tick_sampling_avoids_owner_writer() -> bool {
+    super::task::scheduler_tick_sampling_avoids_owner_writer_for_test()
 }
 
 pub fn inactive_ptrace_syscall_gate_is_lock_free() -> bool {

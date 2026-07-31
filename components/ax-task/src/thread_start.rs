@@ -325,11 +325,15 @@ static KERNEL_THREAD_OPS: ThreadExtensionOps = ThreadExtensionOps {
     drop: kernel_thread_drop,
 };
 
-unsafe extern "Rust" fn kernel_thread_switch_in(data: usize, thread: ThreadId) {
+unsafe extern "Rust" fn kernel_thread_switch_in(
+    data: usize,
+    thread: ThreadId,
+    policy: SchedulePolicy,
+) {
     let data = unsafe { kernel_thread_data_from_raw(data) };
     if let Some(extension) = data.os_extension.as_ref() {
         // SAFETY: the outer extension owns and forwards the inner callback.
-        unsafe { (extension.ops().on_switch_in)(extension.data(), thread) };
+        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy) };
     }
 }
 
@@ -570,7 +574,7 @@ mod tests {
     use super::*;
 
     static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: test_extension_hook,
+        on_switch_in: test_extension_switch_in,
         on_switch_out: test_extension_switch_out,
         on_exit: test_extension_hook,
         on_deadline_overrun: test_extension_hook,
@@ -621,6 +625,13 @@ mod tests {
     }
 
     unsafe extern "Rust" fn test_extension_hook(_data: usize, _thread: ThreadId) {}
+
+    unsafe extern "Rust" fn test_extension_switch_in(
+        _data: usize,
+        _thread: ThreadId,
+        _policy: SchedulePolicy,
+    ) {
+    }
 
     unsafe extern "Rust" fn test_extension_switch_out(
         _data: usize,

@@ -158,7 +158,7 @@ fn create_detached_extended_thread(system: &TaskSystem, marker: usize) -> Thread
 }
 
 static EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: ignore_thread_event,
+    on_switch_in: ignore_switch_in,
     on_switch_out: ignore_switch_out,
     on_exit: record_exit_marker,
     on_deadline_overrun: ignore_thread_event,
@@ -166,6 +166,9 @@ static EXIT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
 };
 
 unsafe extern "Rust" fn ignore_thread_event(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn ignore_switch_in(_data: usize, _thread: ThreadId, _policy: SchedulePolicy) {
+}
 
 unsafe extern "Rust" fn ignore_switch_out(
     _data: usize,

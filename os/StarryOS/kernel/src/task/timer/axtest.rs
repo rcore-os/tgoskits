@@ -127,8 +127,8 @@ pub(crate) fn scheduler_tick_group_accounting_is_aggregate_for_test() -> bool {
 }
 
 #[cfg(axtest)]
-pub(crate) fn scheduler_tick_accounting_excludes_state_writer_for_test() -> bool {
-    accounting::scheduler_tick_accounting_excludes_state_writer_for_test()
+pub(crate) fn scheduler_tick_sampling_avoids_owner_writer_for_test() -> bool {
+    accounting::scheduler_tick_sampling_avoids_owner_writer_for_test()
 }
 
 #[cfg(axtest)]

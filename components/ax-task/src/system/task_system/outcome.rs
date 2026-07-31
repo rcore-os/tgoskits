@@ -2,7 +2,7 @@
 
 use super::super::thread_sched::DeadlineActivity;
 use crate::{
-    CpuId, SwitchReason, ThreadCore, ThreadExtensionView, ThreadId,
+    CpuId, SchedulePolicy, SwitchReason, ThreadCore, ThreadExtensionView, ThreadId,
     runtime::{AddressSpaceHandle, ExecutionContextHandle},
 };
 
@@ -13,6 +13,7 @@ pub struct ScheduleDecision {
     pub(super) next: ThreadId,
     pub(super) previous_endpoint: Option<SwitchEndpoint>,
     pub(super) next_endpoint: SwitchEndpoint,
+    pub(super) next_base_policy: SchedulePolicy,
     pub(super) switch_reason: SwitchReason,
 }
 
@@ -82,6 +83,10 @@ impl ScheduleDecision {
     pub(crate) const fn next_endpoint(self) -> SwitchEndpoint {
         self.next_endpoint
     }
+
+    pub(crate) const fn next_base_policy(self) -> SchedulePolicy {
+        self.next_base_policy
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,14 +98,17 @@ pub(crate) struct SwitchEndpoint {
 }
 
 impl SwitchEndpoint {
-    pub(super) fn from_core(core: &ThreadCore) -> Self {
+    pub(super) fn from_core(core: &ThreadCore) -> (Self, SchedulePolicy) {
         let sched = core.sched().lock();
-        Self {
-            thread: core.id(),
-            context: sched.context,
-            address_space: sched.address_space,
-            extension: core.extension_view(),
-        }
+        (
+            Self {
+                thread: core.id(),
+                context: sched.context,
+                address_space: sched.address_space,
+                extension: core.extension_view(),
+            },
+            sched.active_base_policy,
+        )
     }
 
     pub(crate) const fn thread(self) -> ThreadId {

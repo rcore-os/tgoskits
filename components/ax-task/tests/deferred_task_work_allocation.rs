@@ -61,7 +61,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
 
 static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: ignore_thread_event,
+    on_switch_in: ignore_switch_in,
     on_switch_out: ignore_switch_out,
     on_exit: ignore_thread_event,
     on_deadline_overrun: ignore_thread_event,
@@ -69,7 +69,7 @@ static DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
 };
 
 static HARD_IRQ_DEADLINE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-    on_switch_in: ignore_thread_event,
+    on_switch_in: ignore_switch_in,
     on_switch_out: ignore_switch_out,
     on_exit: ignore_thread_event,
     on_deadline_overrun: record_deadline_overrun,
@@ -193,6 +193,9 @@ fn assert_no_alloc<T>(operation: impl FnOnce() -> T) -> T {
 }
 
 unsafe extern "Rust" fn ignore_thread_event(_data: usize, _thread: ThreadId) {}
+
+unsafe extern "Rust" fn ignore_switch_in(_data: usize, _thread: ThreadId, _policy: SchedulePolicy) {
+}
 
 unsafe extern "Rust" fn record_deadline_overrun(_data: usize, _thread: ThreadId) {
     DEADLINE_CALLBACKS.fetch_add(1, Ordering::AcqRel);

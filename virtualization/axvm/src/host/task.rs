@@ -8,9 +8,10 @@ pub(crate) type TaskExtensionBorrow<'task> =
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{
-    ArceOsSwitchReason as SwitchReason, ArceOsTaskCpuSet as TaskCpuSet,
-    ArceOsTaskError as TaskError, ArceOsThreadExtension as ThreadExtension,
-    ArceOsThreadExtensionOps as ThreadExtensionOps, ArceOsThreadId as ThreadId,
+    ArceOsSchedulePolicy as SchedulePolicy, ArceOsSwitchReason as SwitchReason,
+    ArceOsTaskCpuSet as TaskCpuSet, ArceOsTaskError as TaskError,
+    ArceOsThreadExtension as ThreadExtension, ArceOsThreadExtensionOps as ThreadExtensionOps,
+    ArceOsThreadId as ThreadId,
 };
 
 pub(crate) fn current_task() -> TaskHandle {
