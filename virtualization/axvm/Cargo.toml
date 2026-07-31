@@ -85,3 +85,8 @@ arm_vgic = { workspace = true, features = ["vgicv3"] }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
+
+[dev-dependencies]
+ax-hal = { workspace = true, features = ["host-test"] }
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
+ax-kspin = { workspace = true, features = ["host-test"] }
