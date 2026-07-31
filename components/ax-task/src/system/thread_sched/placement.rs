@@ -287,6 +287,49 @@ impl SchedulerPlacement {
         Ok(())
     }
 
+    /// Atomically transfers logical ownership from the source runqueue to a
+    /// not-yet-consumed migration carrier.
+    pub(in crate::system) fn begin_queued_migration(
+        &mut self,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<(), TaskError> {
+        match *self {
+            Self::Queued {
+                cpu,
+                migration_target: None,
+            } if cpu == source => {
+                *self = Self::Migrating { target };
+                Ok(())
+            }
+            _ => Err(TaskError::InvalidConfiguration),
+        }
+    }
+
+    /// Restores source ownership when the migration carrier was not published.
+    pub(in crate::system) fn rollback_queued_migration(
+        &mut self,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<(), TaskError> {
+        match *self {
+            Self::Queued {
+                cpu,
+                migration_target: None,
+            } if cpu == source => Ok(()),
+            Self::Migrating {
+                target: migration_target,
+            } if migration_target == target => {
+                *self = Self::Queued {
+                    cpu: source,
+                    migration_target: None,
+                };
+                Ok(())
+            }
+            _ => Err(TaskError::InvalidConfiguration),
+        }
+    }
+
     pub(in crate::system) fn mark_exited_awaiting_tail(
         &mut self,
         cpu: CpuId,

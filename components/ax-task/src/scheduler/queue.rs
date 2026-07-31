@@ -104,6 +104,25 @@ struct QueueMembership {
     class: QueueMembershipClass,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueueRestorePoint {
+    Deadline(usize),
+    Realtime { priority: u8, position: usize },
+    Fair,
+    IdleFair,
+}
+
+/// A runqueue entry detached for an owner-controlled transfer.
+///
+/// The restore point retains the exact FIFO position so a failed migration can
+/// put the entry back without changing scheduling order.
+#[derive(Debug)]
+#[must_use = "a detached runqueue entry must be published or restored"]
+pub(crate) struct DetachedQueueEntry {
+    pub(crate) thread: QueuedThread,
+    restore_point: QueueRestorePoint,
+}
+
 #[derive(Debug)]
 pub(crate) struct RunQueue {
     deadline: Vec<QueuedThread>,
@@ -369,6 +388,88 @@ impl RunQueue {
             self.recompute_pushable_summary();
         }
         Some(removed)
+    }
+
+    pub(crate) fn detach_for_transfer(&mut self, id: ThreadId) -> Option<DetachedQueueEntry> {
+        let class = self.membership_class(id)?;
+        let (thread, restore_point) = match class {
+            QueueMembershipClass::Deadline => {
+                let position = self.deadline.iter().position(|thread| thread.id == id)?;
+                (
+                    self.deadline.remove(position),
+                    QueueRestorePoint::Deadline(position),
+                )
+            }
+            QueueMembershipClass::Realtime(priority) => {
+                let index = (priority - 1) as usize;
+                let position = self.rt[index].iter().position(|thread| thread.id == id)?;
+                let thread = self.rt[index]
+                    .remove(position)
+                    .expect("indexed RT transfer entry must remain linked");
+                if self.rt[index].is_empty() {
+                    self.rt_bitmap &= !(1_u128 << index);
+                }
+                (thread, QueueRestorePoint::Realtime { priority, position })
+            }
+            QueueMembershipClass::Fair => (self.fair.remove(id)?, QueueRestorePoint::Fair),
+            QueueMembershipClass::IdleFair => {
+                (self.idle_fair.remove(id)?, QueueRestorePoint::IdleFair)
+            }
+        };
+        self.len -= 1;
+        self.unregister_membership(thread.id);
+        if matches!(class, QueueMembershipClass::Deadline) {
+            self.recompute_earliest_deadline_event();
+        }
+        if self
+            .pushable_summary
+            .is_some_and(|summary| summary.thread == thread.id)
+        {
+            self.recompute_pushable_summary();
+        }
+        Some(DetachedQueueEntry {
+            thread,
+            restore_point,
+        })
+    }
+
+    pub(crate) fn restore_detached(&mut self, detached: DetachedQueueEntry) {
+        let DetachedQueueEntry {
+            thread,
+            restore_point,
+        } = detached;
+        let id = thread.id;
+        assert!(
+            !self.contains(id),
+            "a detached transfer entry must not already be queued"
+        );
+        let membership_class = match restore_point {
+            QueueRestorePoint::Deadline(position) => {
+                self.deadline
+                    .insert(position.min(self.deadline.len()), thread);
+                QueueMembershipClass::Deadline
+            }
+            QueueRestorePoint::Realtime { priority, position } => {
+                let index = (priority - 1) as usize;
+                self.rt[index].insert(position.min(self.rt[index].len()), thread);
+                self.rt_bitmap |= 1_u128 << index;
+                QueueMembershipClass::Realtime(priority)
+            }
+            QueueRestorePoint::Fair => {
+                self.fair.insert(thread);
+                QueueMembershipClass::Fair
+            }
+            QueueRestorePoint::IdleFair => {
+                self.idle_fair.insert(thread);
+                QueueMembershipClass::IdleFair
+            }
+        };
+        self.len += 1;
+        self.register_membership(id, membership_class);
+        if matches!(membership_class, QueueMembershipClass::Deadline) {
+            self.recompute_earliest_deadline_event();
+        }
+        self.recompute_pushable_summary();
     }
 
     pub(crate) fn pick_next_with_rt(

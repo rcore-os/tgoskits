@@ -57,7 +57,7 @@ impl TaskSystem {
             .get(inbox_cpu.as_usize())
             .ok_or(TaskError::InvalidCpu(inbox_cpu.as_u32()))?;
         if !core.reserve_scheduler_inbox_delivery() {
-            return Ok(true);
+            return Ok(false);
         }
         let pointer = Arc::as_ptr(core);
         unsafe {
