@@ -114,6 +114,25 @@ pub struct TaskDeadlineQueue {
     class_counts: [usize; TASK_DEADLINE_CLASS_COUNT],
 }
 
+/// Reversible removal of one task-deadline queue entry.
+///
+/// The owner CPU keeps this transaction while it derives and publishes the
+/// replacement clockevent state. A pre-publication failure can therefore
+/// restore the exact generation-bearing entry without allocating a new slot or
+/// consuming another timer generation.
+#[must_use = "a task-deadline cancellation must be committed or rolled back"]
+pub(crate) struct TaskDeadlineCancelTxn {
+    entry: TimerEntry,
+}
+
+impl TaskDeadlineCancelTxn {
+    pub(crate) const fn commit(self) {}
+
+    pub(crate) fn rollback(self, queue: &mut TaskDeadlineQueue) {
+        queue.restore_cancelled(self.entry);
+    }
+}
+
 impl TaskDeadlineQueue {
     /// Preallocates `capacity` independent slots for each typed timer class.
     pub fn new(capacity: usize) -> Self {
@@ -189,18 +208,38 @@ impl TaskDeadlineQueue {
     /// Unlike lazy tombstoning, physical removal releases capacity immediately
     /// and makes the registration terminal as soon as this method returns.
     pub fn cancel(&mut self, registration: &TaskDeadlineRegistration) -> bool {
-        let removed = self
-            .heap
-            .remove(
-                registration.thread(),
-                registration.token(),
-                registration.kind(),
-            )
-            .is_some();
-        if removed {
-            self.class_counts[registration.kind().class().index()] -= 1;
-        }
-        removed
+        let Some(cancellation) = self.begin_cancel(registration) else {
+            return false;
+        };
+        cancellation.commit();
+        true
+    }
+
+    pub(crate) fn begin_cancel(
+        &mut self,
+        registration: &TaskDeadlineRegistration,
+    ) -> Option<TaskDeadlineCancelTxn> {
+        let entry = self.heap.remove(
+            registration.thread(),
+            registration.token(),
+            registration.kind(),
+        )?;
+        self.class_counts[registration.kind().class().index()] -= 1;
+        Some(TaskDeadlineCancelTxn { entry })
+    }
+
+    fn restore_cancelled(&mut self, entry: TimerEntry) {
+        let class = entry.kind().class();
+        assert!(
+            !self.heap.contains_node(entry.token().node()),
+            "cancelled task deadline node was reused before transaction completion"
+        );
+        assert!(
+            self.class_counts[class.index()] < self.capacity_per_class,
+            "cancelled task deadline class lost its reserved rollback capacity"
+        );
+        self.class_counts[class.index()] += 1;
+        self.heap.push(entry);
     }
 
     /// Returns the earliest representable one-shot deadline without mutating the queue.

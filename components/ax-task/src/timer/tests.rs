@@ -169,6 +169,42 @@ fn cancellation_removes_entry_and_reclaims_capacity_immediately() {
 }
 
 #[test]
+fn cancellation_transaction_restores_the_exact_registration_and_capacity() {
+    let first = timer(12);
+    let second = timer(24);
+    let mut timers = TaskDeadlineQueue::new(1);
+    let registration = timers.arm(first.as_ref(), 10, park(1)).unwrap();
+    let token = registration.token();
+
+    let cancellation = timers
+        .begin_cancel(&registration)
+        .expect("the live registration must begin a cancellation transaction");
+    assert!(timers.is_empty());
+    cancellation.rollback(&mut timers);
+    assert_eq!(timers.len(), 1);
+    assert_eq!(timers.next_deadline_ns(0, 1), Some(10));
+    assert_eq!(
+        timers.arm(second.as_ref(), 20, park(2)),
+        Err(TaskDeadlineError::Capacity),
+        "rollback must restore the cancelled entry's class capacity"
+    );
+
+    let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+    assert_eq!(
+        timers
+            .expire(TaskDeadlineExpireRequest::new(10, 1, 1), &mut expired)
+            .expired(),
+        1
+    );
+    assert_eq!(
+        expired[0].token(),
+        token,
+        "rollback must not manufacture a new timer generation"
+    );
+    assert!(timers.is_empty());
+}
+
+#[test]
 fn cancellation_rejects_the_non_arm_token() {
     let node = timer(23);
     let mut timers = TaskDeadlineQueue::new(1);

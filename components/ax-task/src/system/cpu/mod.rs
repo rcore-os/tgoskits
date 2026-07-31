@@ -37,5 +37,6 @@ use crate::{
     thread::ThreadCore,
     timer::{
         ExpiredTaskDeadline, TaskDeadlineExpireBatch, TaskDeadlineExpireRequest, TaskDeadlineQueue,
+        TaskDeadlineRegistration,
     },
 };

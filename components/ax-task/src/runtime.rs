@@ -608,7 +608,7 @@ pub trait TaskRuntime {
     /// Returns the smallest programmable timer interval in nanoseconds.
     fn timer_resolution_ns() -> u64;
 
-    /// Publishes the current CPU's complete task-deadline state.
+    /// Commits the current CPU's complete task-deadline state.
     ///
     /// The runtime owns the physical clockevent. It must ignore generations
     /// older than the most recently accepted update and merge the accepted
@@ -616,7 +616,14 @@ pub trait TaskRuntime {
     /// hook is callable from ordinary task context, so the runtime must hold
     /// local IRQ exclusion across both state publication and hardware
     /// programming instead of relying on an implicit caller-side guard.
-    fn publish_task_deadline(update: TaskDeadlineUpdate) -> RuntimeStatus;
+    ///
+    /// This is an infallible ownership boundary, like Linux's hrtimer-to-
+    /// clockevent rearm path. A runtime must absorb an expired hardware
+    /// deadline with its minimum-delta fallback and treat a device that cannot
+    /// retain a wakeup source as a runtime-fatal invariant. Returning a
+    /// recoverable error here would leave the scheduler queue and physical
+    /// clockevent in an unknowable half-committed state.
+    fn publish_task_deadline(update: TaskDeadlineUpdate);
 
     /// Sends a coalescible scheduler IPI directly to `cpu`.
     ///

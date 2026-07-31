@@ -205,9 +205,7 @@ pub(crate) fn recover_overdue_local_clock_event(now_ns: u64) -> bool {
 }
 
 #[cfg(all(feature = "irq", feature = "multitask"))]
-pub(crate) fn publish_local_task_deadline(
-    update: ax_task::runtime::TaskDeadlineUpdate,
-) -> ax_task::runtime::RuntimeStatus {
+pub(crate) fn publish_local_task_deadline(update: ax_task::runtime::TaskDeadlineUpdate) {
     commit_local_clock_event(|clockevent| {
         (
             (),
@@ -220,7 +218,6 @@ pub(crate) fn publish_local_task_deadline(
             ),
         )
     });
-    ax_task::runtime::RuntimeStatus::Success
 }
 
 #[cfg(feature = "irq")]

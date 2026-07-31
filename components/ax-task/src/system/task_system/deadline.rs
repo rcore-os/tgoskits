@@ -426,10 +426,7 @@ impl TaskSystem {
         else {
             return Ok(());
         };
-        let status = task_runtime::publish_task_deadline(update);
-        if status != RuntimeStatus::Success {
-            cpu.as_mut().invalidate_task_deadline_publication();
-        }
-        ensure_runtime_success(status)
+        task_runtime::publish_task_deadline(update);
+        Ok(())
     }
 }

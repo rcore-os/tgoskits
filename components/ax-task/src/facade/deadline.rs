@@ -144,22 +144,7 @@ pub(crate) fn arm_current_park_deadline(
         };
         (registration, update)
     };
-    let status = task_runtime::publish_task_deadline(update);
-    if status != crate::runtime::RuntimeStatus::Success {
-        let token = registration.token();
-        let rollback = {
-            let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-            let _removed = cpu.as_mut().task_deadlines().cancel(&registration);
-            thread.core.complete_sleep_timer(token.generation());
-            cpu.as_mut()
-                .next_task_deadline_update(now_ns, resolution_ns)?
-        };
-        let rollback_status = task_runtime::publish_task_deadline(rollback);
-        if rollback_status != crate::runtime::RuntimeStatus::Success {
-            task_runtime::fatal_invariant(0x5444_0001, rollback_status as usize);
-        }
-        return Err(TaskError::RuntimeFailure(status as u32));
-    }
+    task_runtime::publish_task_deadline(update);
     if ticket.attach_deadline(registration).is_err() {
         task_runtime::fatal_invariant(0x5444_0002, thread.id().as_u64() as usize);
     }
@@ -195,29 +180,44 @@ pub(crate) fn cancel_current_park_deadline(
     }
     let now_ns = task_runtime::monotonic_ns();
     let resolution_ns = task_runtime::timer_resolution_ns();
-    let (removed, update) = {
+    let (cancellation, update) = {
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-        let removed = cpu.as_mut().task_deadlines().cancel(
-            ticket
-                .deadline()
-                .expect("the deadline registration remains owned until cancellation"),
-        );
-        thread.core.complete_sleep_timer(token.generation());
-        if !ticket.clear_deadline(token) {
-            task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
-        }
-        let update = cpu
+        let registration = ticket
+            .deadline()
+            .expect("the deadline registration remains owned until cancellation");
+        let cancellation = match cpu.as_mut().task_deadlines().begin_cancel(registration) {
+            Some(cancellation) => cancellation,
+            None if cpu.owns_buffered_expiration(registration) => {
+                if !thread.core.complete_sleep_timer(token.generation())
+                    || !ticket.clear_deadline(token)
+                {
+                    task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
+                }
+                return Ok(false);
+            }
+            None => {
+                task_runtime::fatal_invariant(0x5444_0006, thread.id().as_u64() as usize);
+            }
+        };
+        let update = match cpu
             .as_mut()
-            .next_task_deadline_update(now_ns, resolution_ns)?;
-        (removed, update)
+            .next_task_deadline_update(now_ns, resolution_ns)
+        {
+            Ok(update) => update,
+            Err(error) => {
+                cancellation.rollback(cpu.as_mut().task_deadlines());
+                cpu.as_mut().invalidate_task_deadline_publication();
+                return Err(error);
+            }
+        };
+        (cancellation, update)
     };
-    let status = task_runtime::publish_task_deadline(update);
-    if status != crate::runtime::RuntimeStatus::Success {
-        let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-        cpu.as_mut().invalidate_task_deadline_publication();
-        return Err(TaskError::RuntimeFailure(status as u32));
+    task_runtime::publish_task_deadline(update);
+    cancellation.commit();
+    if !thread.core.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {
+        task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
     }
-    Ok(removed)
+    Ok(true)
 }
 
 /// Bounded task-clockevent result consumed by the runtime clockevent owner.

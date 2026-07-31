@@ -327,16 +327,8 @@ fn sleep_until_ns(deadline_ns: u64) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
-    use core::pin::Pin;
-
     use super::*;
-    use crate::{
-        FairMode, Nice, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadResources, ThreadSpec,
-        runtime::{
-            AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle,
-        },
-    };
+    use crate::{SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
 
     #[test]
     fn elapsed_conditional_deadline_checks_predicate_under_the_waiter_lock() {
@@ -362,46 +354,6 @@ mod tests {
         );
         assert_eq!(crate::test_runtime::active_irq_guards(), 0);
         assert_eq!(crate::test_runtime::active_preempt_guards(), 0);
-    }
-
-    #[test]
-    fn failed_deadline_publication_does_not_leave_a_waiter_registered() {
-        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
-        let mut cpu = system.create_cpu_local(crate::CpuId::new(0)).unwrap();
-        let _running = system
-            .install_bootstrap_thread(cpu.as_mut(), unsafe {
-                ThreadSpec::new(SchedulePolicy::default()).with_resources(test_resources(1))
-            })
-            .unwrap();
-        system
-            .register_idle_thread(cpu.as_mut(), unsafe {
-                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
-                    .with_resources(test_resources(4))
-            })
-            .unwrap();
-        system.bring_cpu_online(cpu.as_mut()).unwrap();
-        crate::test_runtime::install_task_handles(
-            (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
-            (unsafe { Pin::get_unchecked_mut(cpu.as_mut()) } as *mut crate::CpuLocal)
-                .expose_provenance(),
-        );
-        // Arm succeeds; the next semantic change is cancellation. Unchanged
-        // scheduler tails no longer manufacture an intermediate publication.
-        crate::test_runtime::configure_task_deadline_publish(RuntimeStatus::Platform, 1);
-        let _context_switch = crate::test_runtime::allow_context_switch();
-        let queue = WaitQueue::new();
-
-        let result = queue.wait_once(Some(10));
-
-        assert_eq!(
-            result,
-            Err(TaskError::RuntimeFailure(RuntimeStatus::Platform as u32))
-        );
-        assert!(
-            queue.waiters.lock().is_empty(),
-            "a failed clockevent update must not retain the running thread's waiter node"
-        );
-        crate::test_runtime::clear_task_handles();
     }
 
     #[test]
@@ -438,16 +390,5 @@ mod tests {
         crate::test_runtime::set_hard_irq(false);
 
         assert!(result.is_err());
-    }
-
-    unsafe fn test_resources(base: usize) -> ThreadResources {
-        unsafe {
-            ThreadResources::new(
-                ExecutionContextHandle::from_raw(base),
-                StackHandle::from_raw(base + 1),
-                TlsHandle::from_raw(base + 2),
-                AddressSpaceHandle::NONE,
-            )
-        }
     }
 }

@@ -49,9 +49,6 @@ std::thread_local! {
     static MONOTONIC_NS: Cell<u64> = const { Cell::new(0) };
     static MONOTONIC_READS: Cell<usize> = const { Cell::new(0) };
     static LAST_TASK_DEADLINE_UPDATE: Cell<Option<TaskDeadlineUpdate>> = const { Cell::new(None) };
-    static TASK_DEADLINE_PUBLISH_STATUS: Cell<RuntimeStatus> =
-        const { Cell::new(RuntimeStatus::Success) };
-    static TASK_DEADLINE_PUBLISH_SUCCESS_REMAINING: Cell<usize> = const { Cell::new(0) };
     static CPU_ONLINE_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static CPU_OFFLINE_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static CPU_LIFECYCLE_EVENTS: RefCell<std::vec::Vec<CpuLifecycleEvent>> =
@@ -325,23 +322,9 @@ impl TaskRuntime for UnitTestRuntime {
     fn timer_resolution_ns() -> u64 {
         1
     }
-    fn publish_task_deadline(update: TaskDeadlineUpdate) -> RuntimeStatus {
+    fn publish_task_deadline(update: TaskDeadlineUpdate) {
         run_hook_reentry_query();
         LAST_TASK_DEADLINE_UPDATE.with(|observed| observed.set(Some(update)));
-        let publish_succeeds = TASK_DEADLINE_PUBLISH_SUCCESS_REMAINING.with(|remaining| {
-            let current = remaining.get();
-            if current == 0 {
-                false
-            } else {
-                remaining.set(current - 1);
-                true
-            }
-        });
-        if publish_succeeds {
-            RuntimeStatus::Success
-        } else {
-            TASK_DEADLINE_PUBLISH_STATUS.with(Cell::get)
-        }
     }
     fn send_scheduler_ipi(_cpu: RuntimeCpuId) -> RuntimeStatus {
         run_hook_reentry_query();
@@ -497,15 +480,6 @@ pub(crate) fn configure_scheduler_ipi(status: RuntimeStatus, busy_before_status:
     SCHEDULER_IPI_SEND_COUNT.with(|count| count.set(0));
     SCHEDULER_IPI_NOTIFICATION_COUNT.with(|count| count.set(0));
     SCHEDULER_IPI_IRQ_GUARDS.with(|observed| observed.set(usize::MAX));
-}
-
-pub(crate) fn configure_task_deadline_publish(
-    status: RuntimeStatus,
-    successful_before_status: usize,
-) {
-    TASK_DEADLINE_PUBLISH_STATUS.with(|current| current.set(status));
-    TASK_DEADLINE_PUBLISH_SUCCESS_REMAINING
-        .with(|remaining| remaining.set(successful_before_status));
 }
 
 pub(crate) fn scheduler_ipi_send_count() -> usize {
@@ -701,7 +675,6 @@ pub(crate) fn clear_task_handles() {
     LAST_TASK_DEADLINE_UPDATE.with(|observed| observed.set(None));
     CPU_LIFECYCLE_EVENTS.with(|events| events.borrow_mut().clear());
     configure_cpu_lifecycle(RuntimeStatus::Success, RuntimeStatus::Success);
-    configure_task_deadline_publish(RuntimeStatus::Success, 0);
 }
 
 pub(crate) fn set_monotonic_ns(now_ns: u64) {
