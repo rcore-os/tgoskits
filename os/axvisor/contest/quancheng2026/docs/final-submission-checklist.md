@@ -47,7 +47,7 @@ git diff --name-only upstream/dev...HEAD | grep -v '^os/axvisor/contest/quanchen
 Expected artifact PR result:
 
 ```text
-tracked paths: 38
+tracked paths: 41
 outside contest paths: 0
 forbidden generated artifacts: 0
 ```
