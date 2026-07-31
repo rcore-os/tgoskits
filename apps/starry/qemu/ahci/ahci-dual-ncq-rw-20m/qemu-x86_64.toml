@@ -1,0 +1,62 @@
+args = [
+  "-machine",
+  "q35",
+  "-nographic",
+  "-m",
+  "768M",
+  "-smp",
+  "4",
+  "-drive",
+  "if=ide,index=0,id=disk0,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img,snapshot=on",
+  "-drive",
+  "if=ide,index=1,format=raw,file=fat:rw:${workspace}/tmp/axbuild/ahci-dual-ncq-rw-20m-data",
+]
+uefi = true
+to_bin = true
+snapshot = false
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+fail() {
+    echo 'AHCI_DUAL_NCQ_RW_20M_FAILED'
+    exit 1
+}
+
+attempt=0
+while [ ! -d /partition ] && [ "$attempt" -lt 5 ]; do
+    sleep 1
+    attempt=$((attempt + 1))
+done
+[ -d /partition ] || fail
+
+exercise_disk() {
+    path=$1
+    source="$path/source.bin"
+    copy="$path/copy.bin"
+    mkdir -p "$path" || return 1
+    dd if=/dev/zero of="$source" bs=1048576 count=20 || return 1
+    sync || return 1
+    dd if="$source" of="$copy" bs=1048576 || return 1
+    sync || return 1
+    [ "$(wc -c < "$copy" | tr -d ' ')" = "20971520" ] || return 1
+    [ "$(sha256sum "$source" | awk '{print $1}')" = "$(sha256sum "$copy" | awk '{print $1}')" ]
+}
+
+exercise_disk /root/ahci-port0 &
+port0_pid=$!
+exercise_disk /partition/ahci-port1 &
+port1_pid=$!
+wait "$port0_pid" || fail
+wait "$port1_pid" || fail
+echo 'AHCI_DUAL_NCQ_RW_20M_PASSED'
+'''
+success_regex = [
+  "(?m)^AHCI_DUAL_NCQ_RW_20M_PASSED\\s*$",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?m)ahci-pci-.*-p0: ready with .* NCQ depth 1\\s*$",
+  "(?m)ahci-pci-.*-p1: ready with .* NCQ depth 1\\s*$",
+  "(?m)^AHCI_DUAL_NCQ_RW_20M_FAILED\\s*$",
+]
+timeout = 900

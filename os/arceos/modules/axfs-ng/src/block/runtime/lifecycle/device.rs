@@ -305,6 +305,33 @@ impl DeviceInner {
         Ok(registration)
     }
 
+    pub(super) fn group_irq_target(
+        &self,
+        member_id: usize,
+        source_id: usize,
+    ) -> GroupIrqMemberTarget {
+        let hctxs = self.hctxs.lock();
+        let targets = hctxs
+            .iter()
+            .map(|hctx| hctx.irq_target(source_id))
+            .collect();
+        GroupIrqMemberTarget::new(
+            member_id,
+            targets,
+            Some(self.controller.irq_target(source_id)),
+        )
+    }
+
+    pub(super) fn first_hctx_cpu(&self) -> Option<usize> {
+        self.hctxs.lock().first().map(|hctx| hctx.cpu())
+    }
+
+    pub(super) fn prepare_group_shutdown(&self) {
+        self.accepting.store(false, Ordering::Release);
+        self.notify_all_barrier_waiters();
+        let _ = self.controller.call(ControllerEvent::QuiesceIrqs);
+    }
+
     pub(super) fn wait_until_ready(&self, timeout: Duration) -> Result<(), BlkError> {
         let deadline = wall_time().saturating_add(timeout);
         loop {

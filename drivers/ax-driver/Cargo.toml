@@ -33,8 +33,9 @@ virtio-input = ["input", "virtio", "pci"]
 virtio-socket = ["vsock", "virtio", "pci"]
 
 ls2k1000-gmac = ["net", "dep:ax-kspin"]
-ahci = ["block", "pci"]
-ls2k1000-ahci = ["block"]
+ahci = ["block", "pci", "dep:ahci-driver"]
+ahci-fdt = ["block", "dep:ahci-driver"]
+ls2k1000-ahci = ["ahci-fdt"]
 nvme = ["block", "pci", "dep:nvme-driver"]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
@@ -145,6 +146,7 @@ pci-list-devices = ["list-pci-devices"]
 [dependencies]
 axtest = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
+ahci-driver = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
 ax-alloc = { workspace = true, optional = true }

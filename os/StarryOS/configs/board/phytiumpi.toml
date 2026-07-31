@@ -2,6 +2,7 @@
 target = "aarch64-unknown-none-softfloat"
 features = [
   "ax-driver/serial",
+  "ax-driver/ahci-fdt",
   "ax-driver/phytium-mci",
 ]
 log = "Info"

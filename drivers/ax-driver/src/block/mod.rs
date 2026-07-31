@@ -4,7 +4,7 @@
 //! `BlockController`/`HardwareQueue` contract. Low-level driver crates that
 //! have not migrated remain unreachable from `ax-driver`.
 
-#[cfg(any(feature = "ahci", feature = "ls2k1000-ahci"))]
+#[cfg(any(feature = "ahci", feature = "ahci-fdt"))]
 mod ahci;
 mod binding;
 mod irq_bound;

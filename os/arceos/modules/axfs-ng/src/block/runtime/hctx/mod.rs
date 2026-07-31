@@ -578,17 +578,20 @@ fn refresh_queue_info(queue: &dyn HardwareQueue, state: &HctxState) -> Result<()
     let observed = queue.info();
     let mut published = state.info.lock();
     // Channel capacity and preallocated submission scratch are fixed when the
-    // hctx starts. Identification may publish transfer and command
-    // capabilities, but it must not change these scheduling dimensions or the
-    // queue identity underneath the runtime.
-    if observed.id != published.id
-        || observed.limits.max_inflight != published.limits.max_inflight
-        || observed.limits.max_submit_batch != published.limits.max_submit_batch
-    {
+    // hctx starts. Identification may shrink a conservatively provisioned
+    // queue to the device's negotiated depth, but it must never grow beyond
+    // that allocation or change the queue identity.
+    if !queue_info_fits_provisioned(*published, observed) {
         return Err(BlkError::InvalidRequest);
     }
     *published = observed;
     Ok(())
+}
+
+fn queue_info_fits_provisioned(provisioned: QueueInfo, observed: QueueInfo) -> bool {
+    observed.id == provisioned.id
+        && observed.limits.max_inflight <= provisioned.limits.max_inflight
+        && observed.limits.max_submit_batch <= provisioned.limits.max_submit_batch
 }
 
 fn set_hctx_fatal(state: &HctxState, fatal_error: &mut Option<BlkError>, error: BlkError) {

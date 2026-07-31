@@ -12,7 +12,7 @@ use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
     block::{
         FsBlockDevice, boxed_native_handle_block_device,
-        runtime::{BlockRuntime, RdifBlockDevice},
+        runtime::{BlockRuntime, RdifBlockDevice, RdifBlockGroup},
     },
     detect_filesystem, fs, init_detected_filesystem, init_filesystem,
     volume::{
@@ -199,7 +199,8 @@ pub fn init_root(
         .position(|disk| disk.disk_index == selected_disk_index)
         .unwrap_or_else(|| panic!("selected root disk disappeared during initialization"));
     let selected = disks.swap_remove(selected_disk_pos);
-    ROOT_BLOCK_IDENTITY.call_once(|| block_identity(selected.handle.device_info()));
+    ROOT_BLOCK_IDENTITY
+        .call_once(|| block_identity(selected.handle.device_info(), selected.disk_index));
     let selected_partition_info = selected_partition.and_then(|part_index| {
         selected
             .partitions
@@ -207,7 +208,11 @@ pub fn init_root(
             .find(|partition| partition.info.index == part_index)
     });
     let description = describe_selection(selected.disk_index, selected_partition_info);
-    let default_source = default_root_source(selected.handle.device_info(), selected_partition);
+    let default_source = default_root_source(
+        selected.handle.device_info(),
+        selected.disk_index,
+        selected_partition,
+    );
     let source = bootargs
         .and_then(root_value)
         .unwrap_or(default_source.as_str());
@@ -222,14 +227,29 @@ pub fn init_root(
         init_filesystem(selected.handle.clone(), region, &description, source)
     };
     mount_additional_partitions(&root, &selected, selected_partition);
+    for disk in &disks {
+        mount_additional_partitions(&root, disk, None);
+    }
 }
 
-fn block_identity(info: rdif_block::DeviceInfo) -> RootBlockIdentity {
+const SD_NAMES: [&str; 26] = [
+    "sda", "sdb", "sdc", "sdd", "sde", "sdf", "sdg", "sdh", "sdi", "sdj", "sdk", "sdl", "sdm",
+    "sdn", "sdo", "sdp", "sdq", "sdr", "sds", "sdt", "sdu", "sdv", "sdw", "sdx", "sdy", "sdz",
+];
+
+fn block_identity(info: rdif_block::DeviceInfo, disk_index: usize) -> RootBlockIdentity {
     match info.name {
         Some("nvme") => RootBlockIdentity {
             name: "nvme0n1",
             major: 259,
             minor: 0,
+        },
+        Some("ahci") => RootBlockIdentity {
+            name: SD_NAMES.get(disk_index).copied().unwrap_or("sdz"),
+            major: 8,
+            minor: u32::try_from(disk_index)
+                .unwrap_or(u32::MAX / 16)
+                .saturating_mul(16),
         },
         Some("rockchip-sdhci") => RootBlockIdentity {
             name: "mmcblk0",
@@ -240,11 +260,21 @@ fn block_identity(info: rdif_block::DeviceInfo) -> RootBlockIdentity {
     }
 }
 
-fn default_root_source(info: rdif_block::DeviceInfo, partition_index: Option<usize>) -> String {
-    let identity = block_identity(info);
+fn default_root_source(
+    info: rdif_block::DeviceInfo,
+    disk_index: usize,
+    partition_index: Option<usize>,
+) -> String {
+    let identity = block_identity(info, disk_index);
     partition_index.map_or_else(
         || format!("/dev/{}", identity.name),
-        |index| format!("/dev/{}p{}", identity.name, index + 1),
+        |index| {
+            if identity.name.starts_with("sd") {
+                format!("/dev/{}{}", identity.name, index + 1)
+            } else {
+                format!("/dev/{}p{}", identity.name, index + 1)
+            }
+        },
     )
 }
 
@@ -253,6 +283,15 @@ pub fn init_root_from_rdif(
     bootargs: Option<&str>,
 ) {
     let runtime = BlockRuntime::install_from_rdif_devices(block_devs);
+    init_root(runtime.devices().iter().cloned(), bootargs);
+}
+
+pub fn init_root_from_rdif_sources(
+    block_devs: impl IntoIterator<Item = RdifBlockDevice>,
+    block_groups: impl IntoIterator<Item = RdifBlockGroup>,
+    bootargs: Option<&str>,
+) {
+    let runtime = BlockRuntime::install_from_rdif_sources(block_devs, block_groups);
     init_root(runtime.devices().iter().cloned(), bootargs);
 }
 
@@ -1331,10 +1370,16 @@ mod tests {
             name: Some("rockchip-sdhci"),
             ..DeviceInfo::new(16, 512)
         };
+        let ahci = DeviceInfo {
+            name: Some("ahci"),
+            ..DeviceInfo::new(16, 512)
+        };
 
-        assert_eq!(default_root_source(nvme, None), "/dev/nvme0n1");
-        assert_eq!(default_root_source(nvme, Some(1)), "/dev/nvme0n1p2");
-        assert_eq!(default_root_source(emmc, None), "/dev/mmcblk0");
-        assert_eq!(default_root_source(emmc, Some(0)), "/dev/mmcblk0p1");
+        assert_eq!(default_root_source(nvme, 0, None), "/dev/nvme0n1");
+        assert_eq!(default_root_source(nvme, 0, Some(1)), "/dev/nvme0n1p2");
+        assert_eq!(default_root_source(emmc, 0, None), "/dev/mmcblk0");
+        assert_eq!(default_root_source(emmc, 0, Some(0)), "/dev/mmcblk0p1");
+        assert_eq!(default_root_source(ahci, 0, None), "/dev/sda");
+        assert_eq!(default_root_source(ahci, 1, Some(0)), "/dev/sdb1");
     }
 }

@@ -49,6 +49,7 @@ sstc = ["axvm/sstc"]
 rockchip-soc = ["ax-driver/rockchip-soc"]
 rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
 phytium-mci = ["ax-driver/phytium-mci"]
+ahci-fdt = ["ax-driver/ahci-fdt"]
 sdmmc = [
     "ax-driver/rockchip-sdhci",
     "ax-driver/rockchip-soc",

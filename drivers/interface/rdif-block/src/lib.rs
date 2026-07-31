@@ -3,6 +3,7 @@
 extern crate alloc;
 
 mod error;
+mod group;
 mod hardware;
 mod info;
 mod irq;
@@ -14,6 +15,11 @@ pub mod axtest;
 
 pub use dma_api;
 pub use error::BlkError;
+pub use group::{
+    BBlockControllerGroup, BlockControllerGroup, BlockGroupMember, GroupControllerEvent,
+    GroupControllerUpdate, GroupIrqEvent, GroupIrqSink, GroupIrqTarget, SharedHardIrqHandler,
+    SharedIrqEndpoint,
+};
 pub use hardware::{
     BBlockController, BHardwareQueue, BatchSubmitDisposition, BatchSubmitResult, BlockController,
     CompletionSink, ControlEvent, ControllerEvent, ControllerState, ControllerUpdate,

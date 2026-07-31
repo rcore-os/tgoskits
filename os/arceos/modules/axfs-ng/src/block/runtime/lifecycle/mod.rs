@@ -22,9 +22,10 @@ use irq_framework::IrqId;
 #[cfg(feature = "ext4")]
 use rdif_block::RequestFlags;
 use rdif_block::{
-    BatchSubmitError, BlkError, BlockController, ControllerEvent, ControllerState,
-    ControllerUpdate, DeviceInfo, HardwareQueue, IrqEndpoint, OwnedRequest, OwnedRequestBatch,
-    QueueInfo, RequestOp, SubmitError, validate_owned_request,
+    BatchSubmitError, BlkError, BlockController, BlockControllerGroup, BlockGroupMember,
+    ControllerEvent, ControllerState, ControllerUpdate, DeviceInfo, GroupControllerEvent,
+    GroupControllerUpdate, HardwareQueue, IrqEndpoint, OwnedRequest, OwnedRequestBatch, QueueInfo,
+    RequestOp, SharedIrqEndpoint, SubmitError, validate_owned_request,
 };
 use spin::Once;
 
@@ -33,7 +34,8 @@ use super::{
     completion::{CompletionGroup, CompletionSubscription},
     hctx::{ControllerEventPort, Hctx, HctxObserver, Submission, request_is_nowait},
     irq::{
-        BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, IrqTarget, LatchedControllerIrq,
+        BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, GroupIrqMemberTarget, IrqTarget,
+        LatchedControllerIrq,
     },
     waiters::TaskWaiters,
 };
@@ -82,6 +84,13 @@ pub struct RdifBlockDevice {
     controller: Box<dyn BlockController>,
 }
 
+/// Portable controller group plus its one-or-more platform IRQ bindings.
+pub struct RdifBlockGroup {
+    name: String,
+    irqs: Vec<BlockIrqSource>,
+    controller: Box<dyn BlockControllerGroup>,
+}
+
 impl RdifBlockDevice {
     pub fn new_with_irqs(
         name: impl Into<String>,
@@ -96,9 +105,24 @@ impl RdifBlockDevice {
     }
 }
 
+impl RdifBlockGroup {
+    pub fn new_with_irqs(
+        name: impl Into<String>,
+        irqs: impl IntoIterator<Item = BlockIrqSource>,
+        controller: Box<dyn BlockControllerGroup>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            irqs: irqs.into_iter().collect(),
+            controller,
+        }
+    }
+}
+
 /// Installed IRQ-driven block runtime.
 pub struct BlockRuntime {
     devices: Vec<Arc<BlockDeviceHandle>>,
+    groups: Vec<BlockGroupHandle>,
 }
 
 impl BlockRuntime {
@@ -114,13 +138,42 @@ impl BlockRuntime {
         }
         Self {
             devices: registered,
+            groups: Vec::new(),
         }
+    }
+
+    pub fn from_rdif_sources(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+        groups: impl IntoIterator<Item = RdifBlockGroup>,
+    ) -> Self {
+        let mut runtime = Self::from_rdif_devices(devices);
+        for group in groups {
+            match BlockGroupHandle::start(group) {
+                Ok(group) => {
+                    runtime.devices.extend(group.members.iter().cloned());
+                    runtime.groups.push(group);
+                }
+                Err(error) => {
+                    warn!("failed to start IRQ-shared block controller group: {error:?}");
+                }
+            }
+        }
+        runtime
     }
 
     pub fn install_from_rdif_devices(
         devices: impl IntoIterator<Item = RdifBlockDevice>,
     ) -> Arc<Self> {
         let runtime = Arc::new(Self::from_rdif_devices(devices));
+        BLOCK_RUNTIME.call_once(|| Arc::clone(&runtime));
+        runtime
+    }
+
+    pub fn install_from_rdif_sources(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+        groups: impl IntoIterator<Item = RdifBlockGroup>,
+    ) -> Arc<Self> {
+        let runtime = Arc::new(Self::from_rdif_sources(devices, groups));
         BLOCK_RUNTIME.call_once(|| Arc::clone(&runtime));
         runtime
     }
@@ -137,7 +190,276 @@ impl BlockRuntime {
     }
 
     fn release_irqs_for_passthrough(&self) -> usize {
-        self.devices.iter().map(|device| device.shutdown()).sum()
+        let group_irqs: usize = self.groups.iter().map(BlockGroupHandle::shutdown).sum();
+        group_irqs
+            + self
+                .devices
+                .iter()
+                .map(|device| device.shutdown())
+                .sum::<usize>()
+    }
+}
+
+struct BlockGroupHandle {
+    name: String,
+    controller: IrqMutex<Option<Box<dyn BlockControllerGroup>>>,
+    registrations: IrqMutex<Vec<Box<dyn BlockIrqRegistration>>>,
+    members: Vec<Arc<BlockDeviceHandle>>,
+    stopped: AtomicBool,
+}
+
+struct StartedGroup {
+    members: Vec<BlockGroupMember>,
+    endpoints: Vec<SharedIrqEndpoint>,
+}
+
+impl BlockGroupHandle {
+    fn start(group: RdifBlockGroup) -> Result<Self, BlkError> {
+        let RdifBlockGroup {
+            name,
+            irqs,
+            mut controller,
+        } = group;
+        let StartedGroup { members, endpoints } =
+            match start_group_controller(&mut *controller, CONTROLLER_TRANSITION_TIMEOUT) {
+                Ok(started) => started,
+                Err(error) => {
+                    let _ = drive_group_transition(
+                        &mut *controller,
+                        GroupControllerEvent::Shutdown,
+                        CONTROLLER_TRANSITION_TIMEOUT,
+                    );
+                    return Err(error);
+                }
+            };
+        let mut bootstrapped = Vec::new();
+        for member in members {
+            let (member_id, member_controller) = member.into_parts();
+            let member_name = member_controller.name().into();
+            match BlockDeviceHandle::bootstrap_group_member(member_name, member_controller) {
+                Ok(handle) => bootstrapped.push((member_id, handle)),
+                Err(error) => {
+                    warn!("{name}: failed to bootstrap block member {member_id}: {error:?}");
+                }
+            }
+        }
+        if bootstrapped.is_empty() {
+            let _ = drive_group_transition(
+                &mut *controller,
+                GroupControllerEvent::Shutdown,
+                CONTROLLER_TRANSITION_TIMEOUT,
+            );
+            return Err(BlkError::NotSupported);
+        }
+
+        let mut registrations = Vec::new();
+        let mut endpoint_sources = Vec::new();
+        let setup_result = (|| {
+            if endpoints.is_empty() {
+                return Err(BlkError::NotSupported);
+            }
+            for endpoint in endpoints {
+                let source_id = endpoint.source_id();
+                let irq = irqs
+                    .iter()
+                    .find(|source| source.source_id == source_id)
+                    .map(|source| source.irq)
+                    .ok_or(BlkError::NotSupported)?;
+                let targets = bootstrapped
+                    .iter()
+                    .map(|(member_id, member)| member.inner.group_irq_target(*member_id, source_id))
+                    .collect();
+                let cpu = bootstrapped
+                    .first()
+                    .and_then(|(_, member)| member.inner.first_hctx_cpu())
+                    .unwrap_or(0);
+                let registration = register_block_irq(
+                    format!("{name}/irq-{source_id}"),
+                    irq,
+                    cpu,
+                    BlockIrqAction::new_group(endpoint.into_handler(), None, targets),
+                )
+                .map_err(|_| BlkError::Io)?;
+                registrations.push(registration);
+                endpoint_sources.push(source_id);
+            }
+
+            for source_id in &endpoint_sources {
+                for (_, member) in &bootstrapped {
+                    member.inner.controller.call(ControllerEvent::Rearm {
+                        source_id: *source_id,
+                    })?;
+                }
+                drive_group_transition(
+                    &mut *controller,
+                    GroupControllerEvent::Rearm {
+                        source_id: *source_id,
+                    },
+                    CONTROLLER_TRANSITION_TIMEOUT,
+                )?;
+            }
+            for registration in &registrations {
+                registration.enable().map_err(|_| BlkError::Io)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = setup_result {
+            abort_group_start(&mut *controller, &bootstrapped, registrations);
+            return Err(error);
+        }
+
+        let mut ready = Vec::new();
+        for (member_id, member) in bootstrapped {
+            match member.finish_group_start() {
+                Ok(()) => ready.push(member),
+                Err(error) => {
+                    warn!("{name}: block member {member_id} failed to become ready: {error:?}");
+                    member.shutdown();
+                }
+            }
+        }
+        if ready.is_empty() {
+            disable_registrations(&registrations);
+            let _ = drive_group_transition(
+                &mut *controller,
+                GroupControllerEvent::Shutdown,
+                CONTROLLER_TRANSITION_TIMEOUT,
+            );
+            return Err(BlkError::NotSupported);
+        }
+        Ok(Self {
+            name,
+            controller: IrqMutex::new(Some(controller)),
+            registrations: IrqMutex::new(registrations),
+            members: ready,
+            stopped: AtomicBool::new(false),
+        })
+    }
+
+    fn shutdown(&self) -> usize {
+        if self.stopped.swap(true, Ordering::AcqRel) {
+            return 0;
+        }
+        for member in &self.members {
+            member.inner.prepare_group_shutdown();
+        }
+        if let Some(controller) = self.controller.lock().as_deref_mut() {
+            let _ = drive_group_transition(
+                controller,
+                GroupControllerEvent::QuiesceIrqs,
+                CONTROLLER_TRANSITION_TIMEOUT,
+            );
+        }
+        let registrations = core::mem::take(&mut *self.registrations.lock());
+        let count = registrations.len();
+        disable_registrations(&registrations);
+        drop(registrations);
+        for member in &self.members {
+            member.shutdown();
+        }
+        if let Some(mut controller) = self.controller.lock().take()
+            && let Err(error) = drive_group_transition(
+                &mut *controller,
+                GroupControllerEvent::Shutdown,
+                CONTROLLER_TRANSITION_TIMEOUT,
+            )
+        {
+            warn!("{}: block group shutdown failed: {error:?}", self.name);
+        }
+        count
+    }
+}
+
+fn abort_group_start(
+    controller: &mut dyn BlockControllerGroup,
+    members: &[(usize, Arc<BlockDeviceHandle>)],
+    registrations: Vec<Box<dyn BlockIrqRegistration>>,
+) {
+    let _ = drive_group_transition(
+        controller,
+        GroupControllerEvent::QuiesceIrqs,
+        CONTROLLER_TRANSITION_TIMEOUT,
+    );
+    disable_registrations(&registrations);
+    drop(registrations);
+    for (_, member) in members {
+        member.shutdown();
+    }
+    let _ = drive_group_transition(
+        controller,
+        GroupControllerEvent::Shutdown,
+        CONTROLLER_TRANSITION_TIMEOUT,
+    );
+}
+
+impl Drop for BlockGroupHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn start_group_controller(
+    controller: &mut dyn BlockControllerGroup,
+    timeout: Duration,
+) -> Result<StartedGroup, BlkError> {
+    let mut members = Vec::new();
+    let mut endpoints = Vec::new();
+    let mut event = GroupControllerEvent::Start;
+    let deadline = wall_time().saturating_add(timeout);
+    loop {
+        let mut update = controller.advance(event)?;
+        members.extend(update.take_members());
+        endpoints.extend(update.take_irq_endpoints());
+        match update.controller_state() {
+            ControllerState::Ready => return Ok(StartedGroup { members, endpoints }),
+            ControllerState::RegisterPending { retry_after } => {
+                wait_for_group_retry(deadline, retry_after)?;
+                event = GroupControllerEvent::RegisterRetry;
+            }
+            ControllerState::WaitingForIrq | ControllerState::Shutdown => {
+                return Err(BlkError::Io);
+            }
+        }
+    }
+}
+
+fn drive_group_transition(
+    controller: &mut dyn BlockControllerGroup,
+    mut event: GroupControllerEvent,
+    timeout: Duration,
+) -> Result<ControllerState, BlkError> {
+    let deadline = wall_time().saturating_add(timeout);
+    loop {
+        let update: GroupControllerUpdate = controller.advance(event)?;
+        match update.controller_state() {
+            ControllerState::RegisterPending { retry_after } => {
+                wait_for_group_retry(deadline, retry_after)?;
+                event = GroupControllerEvent::RegisterRetry;
+            }
+            state => return Ok(state),
+        }
+    }
+}
+
+fn wait_for_group_retry(deadline: Duration, retry_after: Duration) -> Result<(), BlkError> {
+    let now = wall_time();
+    if now >= deadline {
+        return Err(BlkError::TimedOut);
+    }
+    let delay = if retry_after.is_zero() {
+        Duration::from_micros(1)
+    } else {
+        retry_after
+    };
+    let wait = delay.min(deadline - now);
+    runtime_ops()
+        .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
+        .notification()
+        .wait_timeout(wait);
+    if wall_time() >= deadline {
+        Err(BlkError::TimedOut)
+    } else {
+        Ok(())
     }
 }
 
@@ -219,6 +541,23 @@ impl BlockDeviceHandle {
             irqs,
             controller,
         } = device;
+        let handle = Self::bootstrap(name, irqs, controller)?;
+        handle.finish_group_start()?;
+        Ok(handle)
+    }
+
+    fn bootstrap_group_member(
+        name: String,
+        controller: Box<dyn BlockController>,
+    ) -> Result<Arc<Self>, BlkError> {
+        Self::bootstrap(name, Vec::new(), controller)
+    }
+
+    fn bootstrap(
+        name: String,
+        irqs: Vec<BlockIrqSource>,
+        controller: Box<dyn BlockController>,
+    ) -> Result<Arc<Self>, BlkError> {
         let info = controller.device_info();
         let max_io_queues = controller.max_io_queues().min(MAX_RUNTIME_HCTX);
         if max_io_queues == 0 {
@@ -278,23 +617,27 @@ impl BlockDeviceHandle {
                 return Err(error);
             }
         };
-        if state != ControllerState::Ready
-            && let Err(error) = handle.inner.wait_until_ready(CONTROLLER_TRANSITION_TIMEOUT)
-        {
-            handle.inner.shutdown();
-            return Err(error);
-        }
         if handle.inner.hctxs.lock().is_empty() {
             handle.shutdown();
             return Err(BlkError::Other(
                 "controller reported ready without an I/O hardware queue",
             ));
         }
-        if !handle.inner.mark_ready() {
+        if state == ControllerState::Ready && !handle.inner.mark_ready() {
             handle.inner.shutdown();
             return Err(BlkError::Io);
         }
         Ok(handle)
+    }
+
+    fn finish_group_start(&self) -> Result<(), BlkError> {
+        if self.inner.state.load(Ordering::Acquire) != DEVICE_READY {
+            self.inner.wait_until_ready(CONTROLLER_TRANSITION_TIMEOUT)?;
+        }
+        if self.inner.hctxs.lock().is_empty() || !self.inner.mark_ready() {
+            return Err(BlkError::Io);
+        }
+        Ok(())
     }
 
     pub fn name(&self) -> &str {

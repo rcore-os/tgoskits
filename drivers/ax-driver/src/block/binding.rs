@@ -6,7 +6,7 @@ use alloc::{
 
 use ax_errno::AxError;
 use log::warn;
-use rdif_block::BlockController;
+use rdif_block::{BlockController, BlockControllerGroup};
 use rdrive::{Device, probe::OnProbeError};
 
 use crate::{
@@ -23,6 +23,13 @@ pub struct PlatformBlockDevice {
     info: BindingInfo,
 }
 
+/// Registered platform object that owns one shared multi-device controller.
+pub struct PlatformBlockGroup {
+    name: String,
+    controller: Option<Box<dyn BlockControllerGroup>>,
+    info: BindingInfo,
+}
+
 /// A controller removed from `rdrive` and ready for the block runtime.
 pub struct RdifBlockDevice {
     name: String,
@@ -30,8 +37,25 @@ pub struct RdifBlockDevice {
     controller: Box<dyn BlockController>,
 }
 
+/// A controller group removed from `rdrive` and ready for the block runtime.
+pub struct RdifBlockGroup {
+    name: String,
+    irqs: Vec<crate::BindingIrqBinding>,
+    controller: Box<dyn BlockControllerGroup>,
+}
+
 impl PlatformBlockDevice {
     fn new(name: String, controller: Box<dyn BlockController>, info: BindingInfo) -> Self {
+        Self {
+            name,
+            controller: Some(controller),
+            info,
+        }
+    }
+}
+
+impl PlatformBlockGroup {
+    fn new(name: String, controller: Box<dyn BlockControllerGroup>, info: BindingInfo) -> Self {
         Self {
             name,
             controller: Some(controller),
@@ -46,7 +70,19 @@ impl rdrive::DriverGeneric for PlatformBlockDevice {
     }
 }
 
+impl rdrive::DriverGeneric for PlatformBlockGroup {
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 impl BoundDevice for PlatformBlockDevice {
+    fn binding_info(&self) -> &BindingInfo {
+        &self.info
+    }
+}
+
+impl BoundDevice for PlatformBlockGroup {
     fn binding_info(&self) -> &BindingInfo {
         &self.info
     }
@@ -109,6 +145,35 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     }
 }
 
+impl RdifBlockGroup {
+    /// Splits platform metadata from the portable controller group.
+    pub fn into_parts(
+        self,
+    ) -> (
+        String,
+        Vec<crate::BindingIrqBinding>,
+        Box<dyn BlockControllerGroup>,
+    ) {
+        (self.name, self.irqs, self.controller)
+    }
+}
+
+impl TryFrom<Device<PlatformBlockGroup>> for RdifBlockGroup {
+    type Error = AxError;
+
+    fn try_from(base: Device<PlatformBlockGroup>) -> Result<Self, Self::Error> {
+        let mut group = base.lock().map_err(|_| AxError::BadState)?;
+        let name = group.name.clone();
+        let irqs = group.info.irq_sources().to_vec();
+        let controller = group.controller.take().ok_or(AxError::BadState)?;
+        Ok(Self {
+            name,
+            irqs,
+            controller,
+        })
+    }
+}
+
 /// Registers a portable block controller discovered by a platform probe.
 pub trait PlatformDeviceBlock {
     /// Registers a controller without platform metadata.
@@ -152,6 +217,26 @@ impl PlatformDeviceBlock for rdrive::PlatformDevice {
     }
 }
 
+/// Registers a portable multi-device block controller discovered by a probe.
+pub trait PlatformDeviceBlockGroup {
+    /// Registers a controller group with resolved platform IRQ metadata.
+    fn register_block_group_with_info<T: BlockControllerGroup>(
+        self,
+        controller: T,
+        info: BindingInfo,
+    ) -> Option<usize>;
+}
+
+impl PlatformDeviceBlockGroup for rdrive::PlatformDevice {
+    fn register_block_group_with_info<T: BlockControllerGroup>(
+        self,
+        controller: T,
+        info: BindingInfo,
+    ) -> Option<usize> {
+        register_block_group_with_info(self, controller, info)
+    }
+}
+
 /// Registers a portable block controller from an FDT probe.
 pub trait ProbeFdtBlock {
     /// Resolves FDT bindings and registers the controller.
@@ -168,6 +253,29 @@ impl ProbeFdtBlock for rdrive::probe::fdt::ProbeFdt<'_> {
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_fdt(self.info())?;
         Ok(register_block_with_info(
+            self.into_platform_device(),
+            controller,
+            info,
+        ))
+    }
+}
+
+/// Registers a portable multi-device block controller from an FDT probe.
+pub trait ProbeFdtBlockGroup {
+    /// Resolves FDT bindings and registers the controller group.
+    fn register_block_group<T: BlockControllerGroup>(
+        self,
+        controller: T,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+impl ProbeFdtBlockGroup for rdrive::probe::fdt::ProbeFdt<'_> {
+    fn register_block_group<T: BlockControllerGroup>(
+        self,
+        controller: T,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_fdt(self.info())?;
+        Ok(register_block_group_with_info(
             self.into_platform_device(),
             controller,
             info,
@@ -225,6 +333,33 @@ impl ProbePciBlock for rdrive::probe::pci::ProbePci<'_> {
     }
 }
 
+/// Registers a portable multi-device block controller from a PCI probe.
+#[cfg(feature = "pci")]
+pub trait ProbePciBlockGroup {
+    /// Resolves the requested PCI IRQ and registers the controller group.
+    fn register_block_group<T: BlockControllerGroup>(
+        self,
+        controller: T,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+#[cfg(feature = "pci")]
+impl ProbePciBlockGroup for rdrive::probe::pci::ProbePci<'_> {
+    fn register_block_group<T: BlockControllerGroup>(
+        self,
+        controller: T,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_pci(self.info(), requirement)?;
+        Ok(register_block_group_with_info(
+            self.into_platform_device(),
+            controller,
+            info,
+        ))
+    }
+}
+
 fn register_block_with_info<T: BlockController>(
     platform: rdrive::PlatformDevice,
     controller: T,
@@ -237,6 +372,18 @@ fn register_block_with_info<T: BlockController>(
     )
 }
 
+fn register_block_group_with_info<T: BlockControllerGroup>(
+    platform: rdrive::PlatformDevice,
+    controller: T,
+    info: BindingInfo,
+) -> Option<usize> {
+    let name = controller.name().to_string();
+    register_bound_device(
+        platform,
+        PlatformBlockGroup::new(name, Box::new(controller), info),
+    )
+}
+
 /// Removes every registered block controller from `rdrive`.
 pub fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
     rdrive::get_list::<PlatformBlockDevice>()
@@ -245,6 +392,20 @@ pub fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
             Ok(block) => Some(block),
             Err(error) => {
                 warn!("failed to take block controller: {error:?}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// Removes every registered multi-device block controller from `rdrive`.
+pub fn take_rdif_block_groups() -> Vec<RdifBlockGroup> {
+    rdrive::get_list::<PlatformBlockGroup>()
+        .into_iter()
+        .filter_map(|device| match RdifBlockGroup::try_from(device) {
+            Ok(group) => Some(group),
+            Err(error) => {
+                warn!("failed to take block controller group: {error:?}");
                 None
             }
         })

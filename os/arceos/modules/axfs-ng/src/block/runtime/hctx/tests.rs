@@ -396,6 +396,22 @@ fn test_queue_info(depth: usize) -> QueueInfo {
     }
 }
 
+#[test]
+fn negotiated_queue_depth_may_shrink_but_never_grow() {
+    assert!(queue_info_fits_provisioned(
+        test_queue_info(32),
+        test_queue_info(8)
+    ));
+    assert!(queue_info_fits_provisioned(
+        test_queue_info(32),
+        test_queue_info(32)
+    ));
+    assert!(!queue_info_fits_provisioned(
+        test_queue_info(8),
+        test_queue_info(32)
+    ));
+}
+
 fn flush_submission() -> (CompletionSubscription, Submission) {
     flush_submission_at(0)
 }

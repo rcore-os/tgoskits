@@ -2,6 +2,7 @@ use alloc::{collections::VecDeque, vec::Vec};
 use core::iter::Peekable;
 
 use ax_errno::{AxError, AxResult};
+use log::warn;
 use rdif_block::{
     BlkError, CompletedRequest, OwnedRequest, OwnedRequestBatch, QueueInfo, RequestFlags,
     RequestOp, TransferChunk, TransferPlan, TransferPlanner, TransferRuntimeCaps,
@@ -223,14 +224,28 @@ fn complete_read_window(
     let mut first_error = None;
     for (chunk, completion) in chunks.iter().zip(completions) {
         if let Err(error) = completion.result {
+            warn!(
+                "block Read completion at LBA {} reported {error:?}",
+                chunk.lba
+            );
             first_error.get_or_insert((chunk.lba, error));
             continue;
         }
         let Some(data) = completion.data else {
+            warn!(
+                "block Read completion at LBA {} returned no DMA data",
+                chunk.lba
+            );
             first_error.get_or_insert((chunk.lba, BlkError::Io));
             continue;
         };
         if data.len().get() != chunk.byte_len {
+            warn!(
+                "block Read completion at LBA {} returned {} bytes, expected {}",
+                chunk.lba,
+                data.len(),
+                chunk.byte_len
+            );
             first_error.get_or_insert((chunk.lba, BlkError::Io));
             continue;
         }

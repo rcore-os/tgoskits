@@ -6,7 +6,7 @@ use core::{
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
-    block::runtime::{BlockIrqAction, BlockIrqSource, RdifBlockDevice},
+    block::runtime::{BlockIrqAction, BlockIrqSource, RdifBlockDevice, RdifBlockGroup},
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockNotification,
         BlockRuntimeOps, BlockThread, BlockTimeProvider, FsPage, FsPageProvider,
@@ -221,7 +221,11 @@ pub(super) fn init(bootargs: Option<&str>) {
         axklib::dma::op(),
         irq_registrar(),
     );
-    ax_fs_ng::root::init_root_from_rdif(take_rdif_block_devices(), bootargs);
+    ax_fs_ng::root::init_root_from_rdif_sources(
+        take_rdif_block_devices(),
+        take_rdif_block_groups(),
+        bootargs,
+    );
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -249,6 +253,17 @@ fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
             let (name, bindings, controller) = block.into_parts();
             let irqs = resolve_block_irqs(bindings);
             RdifBlockDevice::new_with_irqs(name, irqs, controller)
+        })
+        .collect()
+}
+
+fn take_rdif_block_groups() -> Vec<RdifBlockGroup> {
+    ax_driver::block::take_rdif_block_groups()
+        .into_iter()
+        .map(|group| {
+            let (name, bindings, controller) = group.into_parts();
+            let irqs = resolve_block_irqs(bindings);
+            RdifBlockGroup::new_with_irqs(name, irqs, controller)
         })
         .collect()
 }

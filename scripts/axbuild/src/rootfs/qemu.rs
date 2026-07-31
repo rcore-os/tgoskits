@@ -47,9 +47,9 @@ impl RootfsQemuWiring {
     }
 
     fn block_device_matches(self, value: &str) -> bool {
-        let mut parts = value.split(',');
-        parts.next() == Some("nvme")
-            && parts.any(|part| part.strip_prefix("drive=") == Some(self.disk_id))
+        value
+            .split(',')
+            .any(|part| part.strip_prefix("drive=") == Some(self.disk_id))
     }
 
     fn net_device_matches(self, value: &str) -> bool {
@@ -142,6 +142,10 @@ fn drive_if_value(drive_arg: &str) -> Option<&str> {
         .find_map(|part| part.strip_prefix("if="))
 }
 
+fn drive_interface_attaches_block_device(interface: &str) -> bool {
+    matches!(interface, "ide" | "scsi" | "sd" | "virtio")
+}
+
 fn drive_ref_value(device_arg: &str) -> Option<&str> {
     device_arg
         .split(',')
@@ -231,11 +235,14 @@ fn ensure_disk_boot_net_args(qemu: &mut QemuConfig, disk_img: &Path) {
                 if value.starts_with(&drive_prefix) {
                     *value = disk_value.clone();
                     has_drive = true;
-                } else if drive_if_value(value) == Some("sd") && drive_file_value(value).is_some() {
+                } else if !has_drive
+                    && drive_if_value(value).is_some_and(drive_interface_attaches_block_device)
+                    && drive_file_value(value).is_some()
+                {
                     *value = replace_drive_file_arg(value, disk_img);
                     has_blk_device = true;
                     has_drive = true;
-                    has_direct_sd_rootfs = true;
+                    has_direct_sd_rootfs = drive_if_value(value) == Some("sd");
                 } else if let (Some(drive_id), Some(_)) =
                     (drive_id_value(value), drive_file_value(value))
                 {
@@ -425,6 +432,100 @@ mod tests {
                 "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
                 "-device".to_string(),
                 "virtio-net-device,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_preserves_existing_ahci_device() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-device".to_string(),
+                "ich9-ahci,id=ahci".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+                "-device".to_string(),
+                "ide-hd,bus=ahci.0,drive=disk0".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-device".to_string(),
+                "ich9-ahci,id=ahci".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
+                "-device".to_string(),
+                "ide-hd,bus=ahci.0,drive=disk0".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_preserves_manually_configured_ide_drive() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "if=ide,index=0,format=raw,file=/tmp/old-rootfs.img,snapshot=on".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                "if=ide,index=0,format=raw,file=/tmp/new-rootfs.img,snapshot=on".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
+                "-netdev".to_string(),
+                "user,id=net0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_disk_boot_net_only_rewrites_first_direct_block_drive() {
+        let rootfs = Path::new("/tmp/new-rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-drive".to_string(),
+                "if=ide,index=0,format=raw,file=/tmp/old-rootfs.img,snapshot=on".to_string(),
+                "-drive".to_string(),
+                "if=ide,index=1,format=raw,file=fat:rw:/tmp/data,snapshot=on".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-drive".to_string(),
+                "if=ide,index=0,format=raw,file=/tmp/new-rootfs.img,snapshot=on".to_string(),
+                "-drive".to_string(),
+                "if=ide,index=1,format=raw,file=fat:rw:/tmp/data,snapshot=on".to_string(),
+                "-device".to_string(),
+                "virtio-net-pci,netdev=net0".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0".to_string(),
             ]

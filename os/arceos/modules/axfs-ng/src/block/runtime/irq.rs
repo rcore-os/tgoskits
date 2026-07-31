@@ -1,13 +1,28 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use rdif_block::{ControlEvent, HardIrqHandler, IrqDisposition};
+use rdif_block::{
+    ControlEvent, GroupIrqEvent, GroupIrqSink, GroupIrqTarget, HardIrqHandler, IrqDisposition,
+    IrqQueueMask, SharedHardIrqHandler,
+};
 
 use crate::os::{BlockIrqOutcome, BlockNotification};
 
 /// Preallocated hard-IRQ action owning exactly one boxed device handler.
 pub struct BlockIrqAction {
-    handler: Box<dyn HardIrqHandler>,
+    handler: BlockIrqHandler,
+    targets: Vec<IrqTarget>,
+    controller_target: Option<ControllerIrqTarget>,
+    group_targets: Vec<GroupIrqMemberTarget>,
+}
+
+enum BlockIrqHandler {
+    Device(Box<dyn HardIrqHandler>),
+    Group(Box<dyn SharedHardIrqHandler>),
+}
+
+pub(super) struct GroupIrqMemberTarget {
+    member_id: usize,
     targets: Vec<IrqTarget>,
     controller_target: Option<ControllerIrqTarget>,
 }
@@ -52,9 +67,23 @@ pub(super) struct LatchedControllerIrq {
 impl BlockIrqAction {
     pub(super) fn new(handler: Box<dyn HardIrqHandler>, targets: Vec<IrqTarget>) -> Self {
         Self {
-            handler,
+            handler: BlockIrqHandler::Device(handler),
             targets,
             controller_target: None,
+            group_targets: Vec::new(),
+        }
+    }
+
+    pub(super) fn new_group(
+        handler: Box<dyn SharedHardIrqHandler>,
+        controller_target: Option<ControllerIrqTarget>,
+        group_targets: Vec<GroupIrqMemberTarget>,
+    ) -> Self {
+        Self {
+            handler: BlockIrqHandler::Group(handler),
+            targets: Vec::new(),
+            controller_target,
+            group_targets,
         }
     }
 
@@ -69,44 +98,146 @@ impl BlockIrqAction {
     /// drain, DMA copy, registry lookup, filesystem access, or business-task
     /// wakeup.
     pub fn run(&mut self) -> BlockIrqOutcome {
-        let ack = self.handler.ack();
-        if ack.is_spurious() {
-            return BlockIrqOutcome::Unhandled;
-        }
-
-        let queues = ack.queues();
-        let control = ack.control_event();
-        let needs_rearm = matches!(ack.disposition(), IrqDisposition::MaskedNeedsRearm);
-        let mut activated = false;
-        let mut control_deferred = false;
-        for target in &self.targets {
-            if !queues.contains(target.queue_id) {
-                continue;
+        match &mut self.handler {
+            BlockIrqHandler::Device(handler) => {
+                run_device_irq(handler, &self.targets, self.controller_target.as_ref())
             }
-            // A controller transition may depend on queue-owned state produced
-            // while draining this same acknowledged IRQ. Route its control
-            // event through exactly one matching hctx so the queue observes
-            // the hardware event before the controller state machine. Other
-            // matching hctxs still receive their queue-ready and rearm state.
-            let control_bits = if control_deferred { 0 } else { control.bits() };
-            target.latch.publish(true, needs_rearm, control_bits);
-            target.notification.notify_from_irq();
-            activated = true;
-            control_deferred |= control_bits != 0;
+            BlockIrqHandler::Group(handler) => {
+                let mut sink = RuntimeGroupIrqSink {
+                    controller_target: self.controller_target.as_ref(),
+                    member_targets: &self.group_targets,
+                    activated: false,
+                    published: false,
+                };
+                let disposition = handler.ack(&mut sink);
+                debug_assert!(
+                    !matches!(disposition, IrqDisposition::Spurious) || !sink.published,
+                    "a spurious shared IRQ must not publish events"
+                );
+                irq_outcome(disposition, sink.activated)
+            }
         }
-        if !control_deferred
-            && !control.is_empty()
-            && let Some(target) = &self.controller_target
-        {
-            target.latch.publish(needs_rearm, control.bits());
-            target.notification.notify_from_irq();
-            activated = true;
+    }
+}
+
+impl GroupIrqMemberTarget {
+    pub(super) fn new(
+        member_id: usize,
+        targets: Vec<IrqTarget>,
+        controller_target: Option<ControllerIrqTarget>,
+    ) -> Self {
+        Self {
+            member_id,
+            targets,
+            controller_target,
         }
-        if activated {
-            BlockIrqOutcome::Wake
-        } else {
-            BlockIrqOutcome::Handled
+    }
+}
+
+struct RuntimeGroupIrqSink<'a> {
+    controller_target: Option<&'a ControllerIrqTarget>,
+    member_targets: &'a [GroupIrqMemberTarget],
+    activated: bool,
+    published: bool,
+}
+
+impl GroupIrqSink for RuntimeGroupIrqSink<'_> {
+    fn publish(&mut self, event: GroupIrqEvent) {
+        self.published = true;
+        self.activated |= match event.target() {
+            GroupIrqTarget::Controller => publish_controller_event(self.controller_target, event),
+            GroupIrqTarget::Member(member_id) => self
+                .member_targets
+                .iter()
+                .find(|target| target.member_id == member_id)
+                .is_some_and(|target| publish_member_event(target, event)),
+        };
+    }
+}
+
+fn run_device_irq(
+    handler: &mut Box<dyn HardIrqHandler>,
+    targets: &[IrqTarget],
+    controller_target: Option<&ControllerIrqTarget>,
+) -> BlockIrqOutcome {
+    let ack = handler.ack();
+    if ack.is_spurious() {
+        return BlockIrqOutcome::Unhandled;
+    }
+    let activated = publish_device_event(
+        targets,
+        controller_target,
+        ack.queues(),
+        ack.control_event(),
+        ack.disposition(),
+    );
+    irq_outcome(ack.disposition(), activated)
+}
+
+fn publish_member_event(target: &GroupIrqMemberTarget, event: GroupIrqEvent) -> bool {
+    publish_device_event(
+        &target.targets,
+        target.controller_target.as_ref(),
+        event.queues(),
+        event.control(),
+        event.disposition(),
+    )
+}
+
+fn publish_controller_event(target: Option<&ControllerIrqTarget>, event: GroupIrqEvent) -> bool {
+    let Some(target) = target else {
+        return false;
+    };
+    let control = event.control();
+    let needs_rearm = matches!(event.disposition(), IrqDisposition::MaskedNeedsRearm);
+    if control.is_empty() && !needs_rearm {
+        return false;
+    }
+    target.latch.publish(needs_rearm, control.bits());
+    target.notification.notify_from_irq();
+    true
+}
+
+fn publish_device_event(
+    targets: &[IrqTarget],
+    controller_target: Option<&ControllerIrqTarget>,
+    queues: IrqQueueMask,
+    control: ControlEvent,
+    disposition: IrqDisposition,
+) -> bool {
+    let needs_rearm = matches!(disposition, IrqDisposition::MaskedNeedsRearm);
+    let mut activated = false;
+    let mut control_deferred = false;
+    for target in targets {
+        if !queues.contains(target.queue_id) {
+            continue;
         }
+        // Queue state is published before controller rearm state so the task
+        // drains the completion source before the controller observes it.
+        let control_bits = if control_deferred { 0 } else { control.bits() };
+        target.latch.publish(true, needs_rearm, control_bits);
+        target.notification.notify_from_irq();
+        activated = true;
+        control_deferred |= control_bits != 0;
+    }
+    if !control_deferred
+        && (!control.is_empty() || needs_rearm)
+        && let Some(target) = controller_target
+    {
+        target.latch.publish(needs_rearm, control.bits());
+        target.notification.notify_from_irq();
+        activated = true;
+    }
+    activated
+}
+
+const fn irq_outcome(disposition: IrqDisposition, activated: bool) -> BlockIrqOutcome {
+    if matches!(disposition, IrqDisposition::Spurious) {
+        BlockIrqOutcome::Unhandled
+    } else if activated {
+        BlockIrqOutcome::Wake
+    } else {
+        BlockIrqOutcome::Handled
     }
 }
 
@@ -196,7 +327,10 @@ mod tests {
     use alloc::{boxed::Box, sync::Arc, vec};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use rdif_block::{ControlEvent, HardIrqHandler, IrqAck, IrqQueueMask};
+    use rdif_block::{
+        ControlEvent, GroupIrqEvent, GroupIrqSink, HardIrqHandler, IrqAck, IrqDisposition,
+        IrqQueueMask, SharedHardIrqHandler,
+    };
 
     use super::*;
 
@@ -225,6 +359,29 @@ mod tests {
     impl HardIrqHandler for FixedHandler {
         fn ack(&mut self) -> IrqAck {
             self.ack
+        }
+    }
+
+    struct TwoMemberHandler {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SharedHardIrqHandler for TwoMemberHandler {
+        fn ack(&mut self, sink: &mut dyn GroupIrqSink) -> IrqDisposition {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            sink.publish(GroupIrqEvent::member(
+                2,
+                IrqDisposition::Cleared,
+                IrqQueueMask::from_queue(0),
+                ControlEvent::new(0, 0x10),
+            ));
+            sink.publish(GroupIrqEvent::member(
+                5,
+                IrqDisposition::Cleared,
+                IrqQueueMask::from_queue(0),
+                ControlEvent::new(0, 0x20),
+            ));
+            IrqDisposition::Cleared
         }
     }
 
@@ -341,5 +498,60 @@ mod tests {
                 control: ControlEvent::new(11, 0),
             }
         );
+    }
+
+    #[test]
+    fn one_shared_handler_fans_out_to_two_member_devices() {
+        let first_latch = Arc::new(IrqEventLatch::new(0));
+        let first_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let second_latch = Arc::new(IrqEventLatch::new(0));
+        let second_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler = TwoMemberHandler {
+            calls: Arc::clone(&calls),
+        };
+        let mut action = BlockIrqAction::new_group(
+            Box::new(handler),
+            None,
+            vec![
+                GroupIrqMemberTarget::new(
+                    2,
+                    vec![IrqTarget::new(
+                        0,
+                        Arc::clone(&first_latch),
+                        first_notification.clone(),
+                    )],
+                    None,
+                ),
+                GroupIrqMemberTarget::new(
+                    5,
+                    vec![IrqTarget::new(
+                        0,
+                        Arc::clone(&second_latch),
+                        second_notification.clone(),
+                    )],
+                    None,
+                ),
+            ],
+        );
+
+        assert_eq!(action.run(), BlockIrqOutcome::Wake);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            first_notification.irq_notifications.load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            second_notification
+                .irq_notifications
+                .load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(first_latch.take().control.bits(), 0x10);
+        assert_eq!(second_latch.take().control.bits(), 0x20);
     }
 }
