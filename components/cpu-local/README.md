@@ -18,6 +18,13 @@ the scheduler.
 LoongArch KS4 and KS5 are deliberately outside this contract and remain
 available to vCPU scratch state.
 
+Ordinary preemption depth and the local `need_resched` bit belong to the fixed
+`CpuRuntimeAnchor`, not to `CurrentThreadHeader`. This matches the Linux
+per-CPU `preempt_count` ownership model: task migration is impossible while
+the depth is nonzero, a context switch does not move the CPU guard word, and
+the final pending depth is converted to the scheduler baton while local IRQs
+remain disabled.
+
 The `tls` feature selects the TLS-owning image mode; without it the current
 thread occupies the architecture task-pointer register. `host-test` provides a
 thread-local register model for host-side tests. These are the crate's only

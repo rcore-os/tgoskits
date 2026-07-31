@@ -2,7 +2,9 @@
 
 use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 
-use crate::{CpuAreaRef, CpuLocalError, CpuPin, CurrentThreadHeader, ThreadSwitchError};
+use crate::{
+    CpuAreaRef, CpuLocalError, CpuPin, CpuPreemptExit, CurrentThreadHeader, ThreadSwitchError,
+};
 
 #[cfg(all(not(feature = "host-test"), target_arch = "aarch64"))]
 mod aarch64;
@@ -44,48 +46,99 @@ use x86_64 as imp;
 ))]
 compile_error!("cpu-local supports x86_64, AArch64, RISC-V, and LoongArch64 only");
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+/// Reads ordinary preemption nesting from the fixed current CPU anchor.
+#[doc(hidden)]
 #[inline(always)]
-pub(crate) unsafe fn current_preempt_state(current: &CurrentThreadHeader) -> u32 {
-    unsafe { imp::current_preempt_state(current) }
+pub fn scheduler_preempt_guard_depth() -> Result<u32, CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        Ok(unsafe { imp::preempt_guard_depth() })
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        Ok(scheduler_runtime_anchor()?.preempt_guard_depth())
+    }
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+/// Publishes scheduler work into the current CPU preemption word.
+#[doc(hidden)]
 #[inline(always)]
-pub(crate) unsafe fn enter_current_preempt_guard(current: &CurrentThreadHeader) {
-    unsafe { imp::enter_current_preempt_guard(current) };
+pub fn scheduler_set_preempt_need_resched() -> Result<(), CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    unsafe {
+        imp::set_preempt_need_resched();
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    scheduler_runtime_anchor()?.set_preempt_need_resched();
+    Ok(())
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+/// Clears scheduler work after the current CPU safe point drains its queues.
+#[doc(hidden)]
 #[inline(always)]
-pub(crate) unsafe fn exit_nested_current_preempt_guard(current: &CurrentThreadHeader) {
-    unsafe { imp::exit_nested_current_preempt_guard(current) };
+pub fn scheduler_clear_preempt_need_resched() -> Result<(), CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    unsafe {
+        imp::clear_preempt_need_resched();
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    scheduler_runtime_anchor()?.clear_preempt_need_resched();
+    Ok(())
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+/// Enters one ordinary preemption guard on the fixed current CPU anchor.
+#[doc(hidden)]
 #[inline(always)]
-pub(crate) unsafe fn try_consume_final_current_preempt_guard(
-    current: &CurrentThreadHeader,
-) -> bool {
-    unsafe { imp::try_consume_final_current_preempt_guard(current) }
+pub fn scheduler_enter_preempt_guard() -> Result<(), CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    unsafe {
+        imp::enter_preempt_guard();
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    scheduler_runtime_anchor()?.enter_preempt_guard();
+    Ok(())
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+/// Consumes a nested guard or retains the final depth for baton conversion.
+#[doc(hidden)]
 #[inline(always)]
-pub(crate) unsafe fn consume_final_current_preempt_guard(current: &CurrentThreadHeader) {
-    unsafe { imp::consume_final_current_preempt_guard(current) };
+pub fn scheduler_prepare_preempt_guard_exit() -> Result<CpuPreemptExit, CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        Ok(unsafe { imp::prepare_preempt_guard_exit() })
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        Ok(scheduler_runtime_anchor()?.prepare_preempt_guard_exit())
+    }
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+/// Converts the exact final ordinary guard into scheduler-owned state.
+#[doc(hidden)]
 #[inline(always)]
-pub(crate) unsafe fn set_current_preempt_need_resched(current: &CurrentThreadHeader) {
-    unsafe { imp::set_current_preempt_need_resched(current) };
+pub fn scheduler_consume_final_preempt_guard() -> Result<bool, CpuLocalError> {
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        Ok(unsafe { imp::consume_final_preempt_guard() })
+    }
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        Ok(scheduler_runtime_anchor()?.consume_final_preempt_guard())
+    }
 }
 
-#[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+#[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
 #[inline(always)]
-pub(crate) unsafe fn clear_current_preempt_need_resched(current: &CurrentThreadHeader) {
-    unsafe { imp::clear_current_preempt_need_resched(current) };
+fn scheduler_runtime_anchor() -> Result<&'static crate::CpuRuntimeAnchor, CpuLocalError> {
+    let area_base = unsafe { imp::read_cpu_base()? };
+    if area_base == 0 {
+        return Err(CpuLocalError::AreaNotInstalled);
+    }
+    // SAFETY: install_cpu_area is the only writer of the architecture CPU
+    // base and requires the initialized area to remain mapped until shutdown.
+    Ok(unsafe {
+        &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
+    })
 }
 
 #[cfg(feature = "host-test")]

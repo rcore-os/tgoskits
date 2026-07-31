@@ -7,6 +7,22 @@ fn host_spin_guard_before_runtime_bootstrap_is_noop() {
     let _guard = lock.lock();
 }
 
+#[cfg(feature = "host-test")]
+#[test]
+fn ordinary_preempt_guard_does_not_lookup_current_thread() {
+    ax_hal::percpu::initialize_host_test_cpu();
+    cpu_local::host_test::reset_register_read_counts();
+
+    enter_preempt();
+    exit_preempt();
+
+    assert_eq!(
+        cpu_local::host_test::register_read_counts().current_thread,
+        0,
+        "ordinary preemption state must be owned by the fixed CPU anchor"
+    );
+}
+
 #[test]
 fn nested_irq_exits_restore_only_the_outer_state() {
     let mut state = RuntimeGuardState::new();
@@ -55,27 +71,25 @@ fn nested_preempt_exit_does_not_reenter_context_queries() {
 
     let state = RuntimeGuardState::new();
     let irq_queries = Cell::new(0);
-    let reschedule_queries = Cell::new(0);
 
-    assert!(!preempt_exit_needs_schedule(
-        &state,
-        2,
-        true,
-        false,
-        || {
-            irq_queries.set(irq_queries.get() + 1);
-            false
-        },
-        || {
-            reschedule_queries.set(reschedule_queries.get() + 1);
-            false
-        },
-    ));
+    assert!(!preempt_exit_needs_schedule(&state, 2, true, false, || {
+        irq_queries.set(irq_queries.get() + 1);
+        false
+    },));
     assert_eq!(
-        (irq_queries.get(), reschedule_queries.get()),
-        (0, 0),
-        "a nested NoPreempt drop must not recursively query IRQ or scheduler state"
+        irq_queries.get(),
+        0,
+        "a nested NoPreempt drop must not recursively query IRQ state"
     );
+}
+
+#[test]
+fn final_preempt_exit_does_not_requery_the_reschedule_endpoint() {
+    let state = RuntimeGuardState::new();
+
+    assert!(preempt_exit_needs_schedule(&state, 1, false, true, || {
+        false
+    },));
 }
 
 #[test]
