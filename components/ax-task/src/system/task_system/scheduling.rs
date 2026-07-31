@@ -12,7 +12,7 @@ impl TaskSystem {
     /// Requests one owner-mediated pull from the busiest remote CPU.
     ///
     /// The target never locks or mutates the source runqueue. Its pinned request
-    /// node is published to the source migration inbox and the source owner
+    /// node is published to the source owner-control inbox and the source owner
     /// selects and hands off one affinity-compatible thread at a safe point.
     pub fn request_idle_pull(&self, cpu: Pin<&CpuLocal>) -> Result<bool, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -80,7 +80,7 @@ impl TaskSystem {
             return Err(TaskError::CpuOffline(source.as_u32()));
         };
         let message = InboxMessage::balance_request(source, target, reservation);
-        let result = source_local.publish_migration(cpu.balance_request_node(), message);
+        let result = source_local.publish_owner_control(cpu.balance_request_node(), message);
         match result {
             PublishResult::Published => Ok(true),
             PublishResult::AlreadyPending => {

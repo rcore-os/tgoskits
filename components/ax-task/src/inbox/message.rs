@@ -8,8 +8,8 @@ use crate::{CpuId, ThreadId};
 pub enum InboxKind {
     /// Make a sleeping or remotely queued thread runnable.
     RemoteWake,
-    /// Transfer ownership after affinity or balancing selection.
-    Migration,
+    /// Reconcile placement, policy, deadlines, or balancing on the owner CPU.
+    OwnerControl,
     /// Reap a thread, coroutine, context, or other deferred resource.
     Reclaim,
     /// Run one typed extension callback in ordinary task context.
@@ -106,7 +106,7 @@ impl InboxMessage {
         payload: usize,
     ) -> Self {
         Self {
-            kind: InboxKind::Migration,
+            kind: InboxKind::OwnerControl,
             operation: InboxOperation::Migration,
             thread_id,
             source_cpu: source_cpu.as_u32(),
@@ -124,7 +124,7 @@ impl InboxMessage {
         payload: usize,
     ) -> Self {
         Self {
-            kind: InboxKind::Migration,
+            kind: InboxKind::OwnerControl,
             operation: InboxOperation::PolicyUpdate,
             thread_id,
             source_cpu: owner.as_u32(),
@@ -142,7 +142,7 @@ impl InboxMessage {
         payload: usize,
     ) -> Self {
         Self {
-            kind: InboxKind::Migration,
+            kind: InboxKind::OwnerControl,
             operation: InboxOperation::AffinityUpdate,
             thread_id,
             source_cpu: owner.as_u32(),
@@ -164,7 +164,7 @@ impl InboxMessage {
         payload: usize,
     ) -> Self {
         Self {
-            kind: InboxKind::Migration,
+            kind: InboxKind::OwnerControl,
             operation: InboxOperation::DeadlineRefresh,
             thread_id,
             source_cpu: owner.as_u32(),
@@ -177,7 +177,7 @@ impl InboxMessage {
     /// Creates an idle-pull request sent to a remote runqueue owner.
     pub const fn balance_request(source_cpu: CpuId, target_cpu: CpuId, reservation: u64) -> Self {
         Self {
-            kind: InboxKind::Migration,
+            kind: InboxKind::OwnerControl,
             operation: InboxOperation::BalanceRequest,
             thread_id: ThreadId::from_parts(0, 0),
             source_cpu: source_cpu.as_u32(),

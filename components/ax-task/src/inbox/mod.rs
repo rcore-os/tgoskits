@@ -58,7 +58,7 @@ pub struct SchedulerInbox {
 }
 
 impl SchedulerInbox {
-    /// Creates an empty remote-wake, migration, or reclaim inbox.
+    /// Creates an empty remote-wake, owner-control, or reclaim inbox.
     pub const fn new(kind: InboxKind) -> Self {
         Self {
             kind,

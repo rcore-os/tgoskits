@@ -625,10 +625,7 @@ impl CpuLocal {
                 .saturating_add(usize::from(current_non_idle))
                 > 1
         {
-            next_deadline_ns = earliest(
-                next_deadline_ns,
-                self.remote.fair_balance_deadline_ns.load(Ordering::Acquire),
-            );
+            next_deadline_ns = earliest(next_deadline_ns, self.remote.fair_balance_deadline_ns());
         }
         next_deadline_ns
     }
@@ -795,9 +792,9 @@ impl CpuLocal {
         ))
     }
 
-    /// Returns the migration publication endpoint for remote CPUs.
-    pub fn migration_inbox(&self) -> &SchedulerInbox {
-        self.remote.migration_inbox()
+    /// Returns the owner-control publication endpoint for remote CPUs.
+    pub fn owner_control_inbox(&self) -> &SchedulerInbox {
+        self.remote.owner_control_inbox()
     }
 
     /// Reports pending remote work before idle or scheduler exit.
