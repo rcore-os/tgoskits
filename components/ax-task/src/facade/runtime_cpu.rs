@@ -153,12 +153,8 @@ pub(crate) fn runtime_current_cpu_mut<'pin>(
     })
 }
 
-pub(crate) fn cpu_local_for_wake(cpu: crate::CpuId) -> Option<&'static CpuRemote> {
-    // SAFETY: the linked runtime guarantees that this typed endpoint is the
-    // Arc-backed CpuRemote for `cpu` and keeps it alive until shutdown.
-    let handle =
-        unsafe { task_runtime::cpu_remote_handle(crate::runtime::RuntimeCpuId::new(cpu.as_u32())) };
-    cpu_remote_from_handle(handle)
+pub(crate) fn wake_carrier(cpu: crate::CpuId) -> Option<CpuWakeCarrier<'static>> {
+    runtime_task_system().ok()?.acquire_wake_carrier(cpu)
 }
 
 pub(crate) fn current_cpu_remote() -> Option<&'static CpuRemote> {

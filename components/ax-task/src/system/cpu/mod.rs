@@ -25,7 +25,7 @@ use load::{
 pub use local::CpuLocal;
 use local::{earliest, nonzero_deadline};
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
-pub(crate) use remote::{CpuRemotePublication, IdlePullReservation};
+pub(crate) use remote::{CpuRemotePublication, CpuWakeCarrier, IdlePullReservation};
 pub use snapshot::CpuSnapshot;
 
 use crate::{

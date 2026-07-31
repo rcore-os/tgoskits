@@ -4,7 +4,7 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
-    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult,
+    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CpuWakeCarrier, IrqRegisterResult,
     IrqUnregisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit,
     ParkPrepare, PiLockId, PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority,
     ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
@@ -43,8 +43,8 @@ use runtime_cpu::{
     validate_task_context,
 };
 pub(crate) use runtime_cpu::{
-    RuntimeIrqGuard, cpu_local_for_wake, current_cpu_remote, runtime_current_cpu_mut,
-    runtime_task_system, try_wake_current_cpu_from_task,
+    RuntimeIrqGuard, current_cpu_remote, runtime_current_cpu_mut, runtime_task_system,
+    try_wake_current_cpu_from_task, wake_carrier,
 };
 pub use scheduling::{
     ExitPermit, commit_current_exit, exit_current_thread, prepare_current_exit,

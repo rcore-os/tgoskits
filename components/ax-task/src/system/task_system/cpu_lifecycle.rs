@@ -20,6 +20,24 @@ impl TaskSystem {
             .filter(|remote| remote.accepts_placement())
     }
 
+    /// Acquires a reachable CPU that can carry one lock-free wake publication.
+    ///
+    /// The placement hint is the common fast path. If CPU-down already closed
+    /// that endpoint, the fixed CPU array supplies another online carrier; the
+    /// carrier owner revalidates placement after consuming the wake.
+    pub(crate) fn acquire_wake_carrier(&self, preferred: CpuId) -> Option<CpuWakeCarrier<'_>> {
+        self.cpu_remotes
+            .get(preferred.as_usize())
+            .and_then(|remote| remote.begin_wake_carrier())
+            .or_else(|| {
+                self.cpu_remotes
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != preferred.as_usize())
+                    .find_map(|(_, remote)| remote.begin_wake_carrier())
+            })
+    }
+
     /// Returns the opaque runtime endpoint for a configured CPU.
     ///
     /// This bootstrap capability is available before online publication so a
@@ -391,12 +409,16 @@ mod tests {
         );
         system.complete_context_switch(cpu1.as_mut()).unwrap();
         assert_eq!(sleeper.state(), ThreadState::Blocked);
-        assert_eq!(sleeper.wake_handle().target_cpu(), Some(CpuId::new(1)));
+        let wake = sleeper.wake_handle();
+        let stale_route = wake
+            .target_cpu()
+            .expect("the blocked thread retains its previous direct-wake route");
+        assert_eq!(stale_route, CpuId::new(1));
 
         system.take_cpu_offline(cpu1.as_mut()).unwrap();
 
         assert_eq!(
-            sleeper.wake_handle().target_cpu(),
+            wake.target_cpu(),
             Some(CpuId::new(0)),
             "hotplug preparation must publish a live wake route before closing the old CPU"
         );
@@ -406,7 +428,11 @@ mod tests {
             // runtime handles before resuming direct CpuLocal access.
             (unsafe { Pin::get_unchecked_mut(cpu0.as_mut()) } as *mut CpuLocal).expose_provenance(),
         );
-        assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+        assert_eq!(
+            wake.wake_from_route_snapshot_for_test(stale_route),
+            crate::WakeResult::Notified,
+            "a wake that sampled the route before CPU-down must not lose that event"
+        );
         crate::test_runtime::clear_task_handles();
         system.drain_remote_wakes(cpu0.as_mut(), 1).unwrap();
         assert_eq!(sleeper.state(), ThreadState::Ready);

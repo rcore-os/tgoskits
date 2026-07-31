@@ -437,6 +437,13 @@ impl CpuRemote {
         }
     }
 
+    pub(crate) fn begin_wake_carrier(&self) -> Option<CpuWakeCarrier<'_>> {
+        self.is_scheduler_ready()
+            .then(|| self.begin_online_publication())
+            .flatten()
+            .map(|publication| CpuWakeCarrier { publication })
+    }
+
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         self.lifecycle.load(Ordering::Acquire) == CPU_LIFECYCLE_DRAINING
             && !self.deadline_work_pending()
@@ -608,14 +615,23 @@ impl CpuRemote {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_remote_wake(
         &self,
         node: Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
-        let Some(_remote_publication) = self.begin_online_publication() else {
+        let Some(carrier) = self.begin_wake_carrier() else {
             return PublishResult::WrongKind;
         };
+        carrier.publish_remote_wake(node, message)
+    }
+
+    fn publish_remote_wake_owned(
+        &self,
+        node: Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> PublishResult {
         let _irq = IrqScope::enter();
         let _idle_pull_work = self.begin_idle_pull_work();
         let (result, head_became_non_empty) = self
@@ -963,6 +979,37 @@ impl CpuRemote {
 
 pub(crate) struct CpuRemotePublication<'remote> {
     remote: &'remote CpuRemote,
+}
+
+/// One bounded wake-delivery lease on an online CPU.
+///
+/// The carrier need not match the thread's latest placement hint. Its owner
+/// CPU revalidates that hint after consuming the wake and forwards the ready
+/// thread when placement changed. Retaining this lease prevents CPU draining
+/// from closing the inbox between payload publication and its doorbell.
+pub(crate) struct CpuWakeCarrier<'remote> {
+    publication: CpuRemotePublication<'remote>,
+}
+
+impl CpuWakeCarrier<'_> {
+    pub(crate) fn owner(&self) -> CpuId {
+        self.publication.remote.owner
+    }
+
+    pub(crate) fn kick_scheduler_work(&self) {
+        let _irq = IrqScope::enter();
+        self.publication.remote.kick_scheduler_work_owned();
+    }
+
+    pub(crate) fn publish_remote_wake(
+        self,
+        node: Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> PublishResult {
+        self.publication
+            .remote
+            .publish_remote_wake_owned(node, message)
+    }
 }
 
 impl CpuRemotePublication<'_> {
