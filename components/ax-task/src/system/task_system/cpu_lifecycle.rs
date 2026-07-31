@@ -378,8 +378,12 @@ mod tests {
     use super::*;
     use crate::{FairMode, Nice, ThreadSpec};
 
-    #[test]
-    fn blocked_thread_route_does_not_pin_an_idle_cpu_online() {
+    fn blocked_thread_fixture() -> (
+        Pin<Box<TaskSystem>>,
+        Pin<Box<CpuLocal>>,
+        Pin<Box<CpuLocal>>,
+        ThreadHandle,
+    ) {
         let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
         let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
         let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
@@ -409,11 +413,14 @@ mod tests {
         );
         system.complete_context_switch(cpu1.as_mut()).unwrap();
         assert_eq!(sleeper.state(), ThreadState::Blocked);
+        (system, cpu0, cpu1, sleeper)
+    }
+
+    #[test]
+    fn blocked_thread_route_is_redirected_before_cpu_offline() {
+        let (system, _cpu0, mut cpu1, sleeper) = blocked_thread_fixture();
         let wake = sleeper.wake_handle();
-        let stale_route = wake
-            .target_cpu()
-            .expect("the blocked thread retains its previous direct-wake route");
-        assert_eq!(stale_route, CpuId::new(1));
+        assert_eq!(wake.target_cpu(), Some(CpuId::new(1)));
 
         system.take_cpu_offline(cpu1.as_mut()).unwrap();
 
@@ -422,6 +429,19 @@ mod tests {
             Some(CpuId::new(0)),
             "hotplug preparation must publish a live wake route before closing the old CPU"
         );
+    }
+
+    #[test]
+    fn wake_sampled_before_cpu_offline_uses_a_live_carrier() {
+        let (system, mut cpu0, mut cpu1, sleeper) = blocked_thread_fixture();
+        let wake = sleeper.wake_handle();
+        let stale_route = wake
+            .target_cpu()
+            .expect("the blocked thread retains its previous direct-wake route");
+        assert_eq!(stale_route, CpuId::new(1));
+
+        system.take_cpu_offline(cpu1.as_mut()).unwrap();
+
         crate::test_runtime::install_task_handles(
             (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
             // SAFETY: the test keeps this owner object pinned and clears the
