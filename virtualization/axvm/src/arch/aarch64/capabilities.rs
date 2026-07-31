@@ -9,7 +9,13 @@ use crate::{
     ax_err_type,
 };
 
-impl HostTimePlatform for Aarch64Arch {}
+impl HostTimePlatform for Aarch64Arch {
+    fn register_timer_callback() {
+        ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| {
+            crate::check_timer_events();
+        });
+    }
+}
 
 impl BootImagePlatform for Aarch64Arch {
     fn load_guest_dtb(

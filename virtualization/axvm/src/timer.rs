@@ -20,8 +20,7 @@ use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 #[cfg(not(test))]
-use crate::host::task;
-use crate::host::{HostTime, default_host};
+use crate::host::{HostTime, default_host, task};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
 const HOST_TIMER_PARK_DELAY: Duration = Duration::from_secs(1);
@@ -140,7 +139,7 @@ pub(crate) fn cancel_timer(token: usize) {
 
 pub(crate) fn check_events() {
     loop {
-        let now = default_host().monotonic_time();
+        let now = current_host_time();
         let (expired, next_deadline) = with_current_timer_wheels(|cpu_id, timer_wheels| {
             let expired = timer_wheels.expire_one(cpu_id, now);
             let next_deadline = if expired.is_none() {
@@ -158,6 +157,16 @@ pub(crate) fn check_events() {
             break;
         }
     }
+}
+
+#[cfg(not(test))]
+fn current_host_time() -> TimeValue {
+    default_host().monotonic_time()
+}
+
+#[cfg(test)]
+fn current_host_time() -> TimeValue {
+    TimeValue::from_nanos(TEST_NOW_NS.load(Ordering::Acquire))
 }
 
 fn rearm_owner_host_timer(owner_cpu: usize, current_cpu: usize, next_deadline: Option<TimeValue>) {
@@ -287,8 +296,41 @@ mod tests {
         TEST_CURRENT_CPU.store(cpu_id, Ordering::Release);
     }
 
+    static TEST_CALLBACK_NOW_NS: AtomicU64 = AtomicU64::new(0);
+
     fn event(token: usize) -> VmTimerEvent {
         VmTimerEvent::new(token, |_| {})
+    }
+
+    #[test]
+    fn host_timer_callback_path_dispatches_registered_event_once() {
+        let _guard = lock_test_mutex(&TEST_LOCK);
+        reset_global_timer_state();
+        TEST_CALLBACK_NOW_NS.store(0, Ordering::Release);
+
+        set_current_cpu_for_test(0);
+        TEST_NOW_NS.store(1_000_000, Ordering::Release);
+        let token = register_timer(
+            10_000_000,
+            Box::new(|now| {
+                TEST_CALLBACK_NOW_NS.store(now.as_nanos() as u64, Ordering::Release);
+            }),
+        );
+
+        check_events();
+        assert_eq!(TEST_CALLBACK_NOW_NS.load(Ordering::Acquire), 0);
+        assert_eq!(
+            lock_test_mutex(&TEST_REARMS).last().copied(),
+            Some((0, Some(Duration::from_nanos(10_000_000))))
+        );
+
+        TEST_NOW_NS.store(10_000_000, Ordering::Release);
+        check_events();
+        assert_eq!(TEST_CALLBACK_NOW_NS.load(Ordering::Acquire), 10_000_000);
+        assert_eq!(
+            with_timer_wheels(|timer_wheels| timer_wheels.cancel(token)),
+            None
+        );
     }
 
     #[test]
