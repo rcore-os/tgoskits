@@ -5,14 +5,23 @@ artifact directory. The goal is to make the final PR reviewable: contest
 sources and evidence can land first, while the core scheduler, interrupt,
 timer, and tooling changes can be reviewed as smaller follow-up patches.
 
-## Recommended Order
+## Current Upstream Status
+
+As of the current `upstream/dev` head used by PR #1703, the functional AArch64
+physical-timer, GIC EOI-mode and explicit passthrough IRQ work is already present
+upstream through the AxVisor core history, including PR #1770. The patch notes
+below are kept as traceability for the contest evidence and for reviewers who
+want to connect the measured dual-guest behavior back to the core changes that
+made it reliable.
+
+## Remaining Patch Guidance
 
 1. Commit `os/axvisor/contest/quancheng2026/` only.
-2. Review and commit the functional VM config and vTimer patch.
-3. Review the GIC EOI-mode change as a small interrupt-path patch.
-4. Keep bounded diagnostics optional; include them only if reviewer evidence or
+2. Treat VM config, vTimer and GIC EOI-mode entries below as already-landed
+   traceability unless a reviewer asks for additional split-out evidence.
+3. Keep bounded diagnostics optional; include them only if reviewer evidence or
    later experiments still need them.
-5. Keep `axbuild image` and `quick-start.sh` helper changes separate from the
+4. Keep `axbuild image` and `quick-start.sh` helper changes separate from the
    contest result path.
 
 ## Patch Candidate 1: VM Config And vTimer

@@ -53,10 +53,10 @@ the final PR, weekly report and demo can point to one compact source of truth.
 | --- | --- | --- |
 | Design document | `docs/design.md` plus linked protocol/topology/realtime docs | READY |
 | Test document | `docs/test-report.md` plus `results/realtime-comparison.csv` and stability summary | READY |
-| Source code | Artifact PR `#1703`; core vTimer PR `#1770`; StarryOS bonus branch prepared separately | SUBMITTED / READY |
+| Source code | Artifact PR `#1703`; core vTimer/GIC/IRQ support in upstream via PR `#1770`; StarryOS bonus clean branch prepared separately | SUBMITTED / READY |
 | Reproduction instructions | `docs/reproduce.md` | READY |
 | Demo video | `docs/demo-video-script.md` | SCRIPT READY; recording still needs user-side capture |
-| PR form | `docs/commit-plan.md`, `docs/pr-boundary.md`, PR `#1703`, PR `#1770` | SUBMITTED |
+| PR form | `docs/commit-plan.md`, `docs/pr-boundary.md`, PR `#1703`, merged core PR `#1770` | SUBMITTED |
 
 ## Award-Oriented Positioning
 
@@ -69,7 +69,7 @@ the final PR, weekly report and demo can point to one compact source of truth.
 
 ## Remaining Actions Before Final Submission
 
-1. Wait for review/CI on artifact PR `#1703` and core vTimer PR `#1770`.
-2. Open the StarryOS bonus PR from `contest/starry-redcola-ai-bonus-rebased-20260730` if the contest reviewers want the StarryOS add-on as a separate review unit.
+1. Wait for review/CI refresh on artifact PR `#1703` after the latest runtime-contract fix.
+2. Open the StarryOS bonus PR from `contest/starry-redcola-ai-bonus-clean-20260731` as the separate StarryOS add-on review unit.
 3. Record the 5-minute demo video using `docs/demo-video-script.md`.
 4. Package the final platform submission with PR links, design/test/reproduce docs, evidence SHA256 values and the demo video.
