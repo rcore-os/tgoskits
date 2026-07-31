@@ -208,6 +208,14 @@ pub(super) fn validate_schedule_context(origin: RuntimeScheduleOrigin) -> Result
     }
 }
 
+pub(super) fn validate_task_context() -> Result<(), TaskError> {
+    if task_runtime::in_hard_irq() {
+        Err(TaskError::UnsafeContext)
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) struct RuntimeIrqGuard {
     token: IrqGuardToken,
     cpu: RuntimeCpuHandles,

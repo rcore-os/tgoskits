@@ -995,6 +995,29 @@ mod tests {
     }
 
     #[test]
+    fn hard_irq_cannot_publish_policy_update() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let replacement = SchedulePolicy::fifo(RtPriority::new(1).unwrap());
+        test_runtime::set_hard_irq(true);
+
+        let result = set_thread_policy(running.id(), replacement);
+
+        test_runtime::set_hard_irq(false);
+        assert_eq!(result, Err(TaskError::UnsafeContext));
+        assert_eq!(
+            system.thread_policy(running.id()).unwrap(),
+            SchedulePolicy::default(),
+            "a hard-IRQ caller must not partially publish scheduler policy"
+        );
+    }
+
+    #[test]
     fn affinity_is_not_published_before_the_scheduler_frame_is_owned() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(2)).unwrap());
         let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();

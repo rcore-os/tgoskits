@@ -40,6 +40,7 @@ pub use pi::{
 };
 use runtime_cpu::{
     RuntimeCpuPin, RuntimeSchedulerFrameGuard, runtime_current_cpu, validate_schedule_context,
+    validate_task_context,
 };
 pub(crate) use runtime_cpu::{
     RuntimeIrqGuard, cpu_local_for_wake, current_cpu_remote, runtime_current_cpu_mut,
@@ -158,9 +159,7 @@ pub fn current_thread_extension() -> Result<Option<ThreadExtensionLease>, TaskEr
 pub fn replace_current_address_space(
     address_space: AddressSpaceHandle,
 ) -> Result<AddressSpaceHandle, TaskError> {
-    if task_runtime::in_hard_irq() {
-        return Err(TaskError::UnsafeContext);
-    }
+    validate_task_context()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     runtime_task_system()?.replace_current_address_space(cpu.as_mut(), address_space)
@@ -186,8 +185,15 @@ pub fn cpu_busy_runtime_ns(cpu: CpuId) -> Result<u64, TaskError> {
     runtime_task_system()?.cpu_busy_runtime_ns(cpu)
 }
 
-/// Updates a non-queued thread scheduling policy.
+/// Updates a thread scheduling policy through its owner CPU.
+///
+/// # Errors
+///
+/// Returns [`TaskError::UnsafeContext`] in hard IRQ context and propagates
+/// policy validation, Deadline admission, identity, and CPU publication
+/// failures.
 pub fn set_thread_policy(thread: ThreadId, policy: SchedulePolicy) -> Result<(), TaskError> {
+    validate_task_context()?;
     runtime_task_system()?.set_thread_policy(thread, policy)
 }
 
@@ -198,9 +204,7 @@ pub fn thread_affinity(thread: ThreadId) -> Result<CpuSet, TaskError> {
 
 /// Updates a thread CPU affinity after Deadline root-domain validation.
 pub fn set_thread_affinity(thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
-    if task_runtime::in_hard_irq() {
-        return Err(TaskError::UnsafeContext);
-    }
+    validate_task_context()?;
     runtime_task_system()?.set_affinity(thread, affinity)
 }
 
@@ -324,9 +328,7 @@ pub fn idle_current_cpu_once() -> Result<(), TaskError> {
 /// context. Exactly one scheduler IRQ guard must be inherited on this CPU, and
 /// this function must be called exactly once for that context's first entry.
 pub unsafe fn finish_initial_context_switch() -> Result<(), TaskError> {
-    if task_runtime::in_hard_irq() {
-        return Err(TaskError::UnsafeContext);
-    }
+    validate_task_context()?;
     let mut irq = RuntimeIrqGuard::enter();
     complete_current_context_switch_tail(&mut irq)?;
     drop(irq);

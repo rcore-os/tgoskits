@@ -46,9 +46,7 @@ pub fn on_clock_event_with_scheduler_tick(
 pub fn take_current_expired_task_deadlines(
     output: &mut [ExpiredTaskDeadline],
 ) -> Result<usize, TaskError> {
-    if task_runtime::in_hard_irq() {
-        return Err(TaskError::UnsafeContext);
-    }
+    validate_task_context()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     Ok(cpu.as_mut().take_expired_task_deadlines(output))

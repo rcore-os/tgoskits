@@ -2254,6 +2254,46 @@ ax-runtime's multitask host suite passes 62/62, all affected feature-clippy
 matrices pass, and the x86_64 Starry QEMU suite passes 391/391 in 13.73
 seconds.
 
+## Current-head task-control context authority
+
+The runtime-backed policy facade previously exposed a different context
+contract from the adjacent affinity and address-space operations.
+`set_thread_policy()` could enter registry, root-domain admission, PI
+recomputation, and owner-CPU publication directly from hard IRQ, while
+`set_thread_affinity()` rejected that context before touching scheduler state.
+The mismatch made the facade path, rather than the scheduler core, the
+accidental authority for whether a task-control transaction was safe.
+
+Linux v7.1 keeps scheduling-policy mutation in task/scheduler control context.
+`__sched_setscheduler()` explicitly rejects its PI-aware path from interrupt
+context before it takes the task runqueue and PI locks
+(`kernel/sched/syscalls.c:493-510`), then performs the policy and runqueue
+transition under the task-rq transaction
+(`kernel/sched/syscalls.c:557-724`). PREEMPT_RT may thread device IRQ work, but
+that does not make a hard-IRQ handler a scheduler-policy caller.
+
+ax-task now has one facade-owned `validate_task_context()` capability check.
+Policy updates, affinity updates, current address-space replacement, expired
+deadline draining, and initial switch-tail completion all use that same
+hard-IRQ exclusion boundary. The lower `TaskSystem` methods remain usable by
+deterministic runtimes that explicitly own scheduler context, while every
+runtime-backed OS entry is checked before it can mutate scheduler state.
+
+The deterministic regression enters the real facade with the runtime reporting
+hard IRQ and attempts to replace the running thread's Fair policy with FIFO.
+The old implementation returned success and published the new policy; the new
+boundary returns `UnsafeContext` and leaves the original policy unchanged.
+
+The unused `TaskSystem::try_thread_state()` escape hatch was removed at the
+same boundary. It had no repository caller and weakened registry lookup into
+an ambiguous `Ok(None)` on contention. Its private ticket-lock try-acquisition
+support is now compiled only for lock-contract tests, so production scheduler
+code has no unused non-waiting registry API.
+
+The complete ax-task suite passes 229 unit tests and 20 loom models,
+ax-runtime's multitask host suite passes 62/62, and both affected
+feature-clippy matrices pass.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

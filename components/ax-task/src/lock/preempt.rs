@@ -34,6 +34,7 @@ impl<T> PreemptTicketLock<T> {
     }
 
     /// Attempts acquisition and restores preemption state on failure.
+    #[cfg(test)]
     pub(crate) fn try_lock(&self) -> Option<PreemptTicketGuard<'_, T>> {
         let token = task_runtime::preempt_guard_enter();
         match self.raw.try_lock() {
