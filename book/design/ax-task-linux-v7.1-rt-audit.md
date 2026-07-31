@@ -2589,6 +2589,26 @@ that one zombie; the explicit candidate path visits exactly one. A second
 test proves that publishing exits for every allocated slot does not grow the
 preallocated candidate storage.
 
+## Current-head typed callback claims
+
+`ThreadRecord` previously represented exit callback ownership with independent
+`pending` and `claimed` booleans, plus a third Deadline callback claim
+boolean. Combinations such as claimed-without-pending were representable and
+every reap predicate had to remember all three fields. This was stale after
+the exited-work queue made callback and reap ordering an explicit protocol.
+
+`ThreadCallbackState` now owns the two typed transactions. Exit follows the
+only valid `Absent -> Pending -> Claimed -> Absent` path, while threads
+without an exit hook remain `Absent`. A Deadline callback has one claim and
+one matching finish. Registry removal asks the state object whether any
+callback owns the record instead of reconstructing validity from unrelated
+flags. Focused state-machine tests reject duplicate exit preparation,
+duplicate claim, and unmatched completion.
+
+The state remains under the existing registry lock and callbacks still run
+outside scheduler locks. This change narrows representable states without
+adding a lock, reference count, or publication on the scheduling path.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

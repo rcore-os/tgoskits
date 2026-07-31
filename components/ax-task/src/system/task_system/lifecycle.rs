@@ -60,8 +60,7 @@ impl TaskSystem {
                 }
                 sched.placement.set_migration_target(None)?;
                 sched.transition(&record.core, ThreadState::Exited)?;
-                record.exit_callback_pending = record.extension.is_some();
-                record.exit_callback_claimed = false;
+                record.callbacks.prepare_exit(record.extension.is_some())?;
                 exited_core
             };
             state.queue_exited_thread(thread);

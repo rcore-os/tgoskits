@@ -81,15 +81,19 @@ impl TaskSystemState {
                 continue;
             };
             let mut sched = record.sched.lock();
-            if sched.deadline.overrun_events == 0 || record.deadline_callback_claimed {
+            if sched.deadline.overrun_events == 0 || record.callbacks.deadline_is_claimed() {
                 continue;
             }
             sched.deadline.overrun_events -= 1;
             self.deadline_callback_cursor = (index + 1) % slot_count;
-            return Some(record.extension.as_ref().map(|extension| {
-                record.deadline_callback_claimed = true;
-                (extension.as_view(), record.core.id())
-            }));
+            let callback = record
+                .extension
+                .as_ref()
+                .map(|extension| (extension.as_view(), record.core.id()));
+            if callback.is_some() {
+                record.callbacks.claim_deadline();
+            }
+            return Some(callback);
         }
         None
     }
@@ -284,9 +288,7 @@ impl TaskSystemState {
                 || sched.deadline.cleanup_pending
                 || sched.pi.deadline_cbs_borrower.is_some()
                 || record.blocked_on.is_some()
-                || record.exit_callback_pending
-                || record.exit_callback_claimed
-                || record.deadline_callback_claimed
+                || record.callbacks.blocks_reap()
                 || record.core.scheduler_inbox_delivery_count() != 0
                 || record.core.sleep_timer_cpu().is_some()
                 || record.core.external_lease_count() != 1
@@ -339,9 +341,7 @@ impl TaskSystemState {
                 || sched.deadline.cleanup_pending
                 || sched.pi.deadline_cbs_borrower.is_some()
                 || sched.deadline.overrun_events != 0
-                || record.deadline_callback_claimed
-                || record.exit_callback_pending
-                || record.exit_callback_claimed
+                || record.callbacks.blocks_reap()
                 || record.core.scheduler_inbox_delivery_count() != 0
             {
                 return Err(TaskError::ThreadBusy);
@@ -421,9 +421,8 @@ impl TaskSystemState {
                     if sched.lifecycle.state() != ThreadState::Exited
                         || sched.placement.on_cpu().is_some()
                         || sched.deadline.overrun_events != 0
-                        || record.deadline_callback_claimed
-                        || !record.exit_callback_pending
-                        || record.exit_callback_claimed
+                        || record.callbacks.deadline_is_claimed()
+                        || !record.callbacks.exit_is_pending()
                     {
                         None
                     } else {
@@ -432,7 +431,7 @@ impl TaskSystemState {
                             .as_ref()
                             .ok_or(TaskError::InvalidConfiguration)?
                             .as_view();
-                        record.exit_callback_claimed = true;
+                        record.callbacks.claim_exit()?;
                         Some(extension)
                     }
                 }
@@ -452,25 +451,15 @@ impl TaskSystemState {
     pub(super) fn finish_exit_callback(&mut self, thread: ThreadId) -> Result<(), TaskError> {
         let record = self.thread_record_mut(thread)?;
         let sched = record.sched.lock();
-        if sched.lifecycle.state() != ThreadState::Exited
-            || sched.placement.on_cpu().is_some()
-            || !record.exit_callback_pending
-            || !record.exit_callback_claimed
-        {
+        if sched.lifecycle.state() != ThreadState::Exited || sched.placement.on_cpu().is_some() {
             return Err(TaskError::InvalidConfiguration);
         }
-        record.exit_callback_pending = false;
-        record.exit_callback_claimed = false;
-        Ok(())
+        record.callbacks.finish_exit()
     }
 
     pub(super) fn finish_deadline_callback(&mut self, thread: ThreadId) -> Result<(), TaskError> {
         let record = self.thread_record_mut(thread)?;
-        if !record.deadline_callback_claimed {
-            return Err(TaskError::InvalidConfiguration);
-        }
-        record.deadline_callback_claimed = false;
-        Ok(())
+        record.callbacks.finish_deadline()
     }
 
     pub(super) fn ensure_pi_acyclic(
@@ -861,9 +850,7 @@ pub(super) struct ThreadRecord {
     pub(super) extension: Option<ThreadExtension>,
     pub(super) blocked_on: Option<PiWaitRegistration>,
     pub(super) pi_waiter_head: Option<ThreadId>,
-    pub(super) exit_callback_pending: bool,
-    pub(super) exit_callback_claimed: bool,
-    pub(super) deadline_callback_claimed: bool,
+    pub(super) callbacks: ThreadCallbackState,
 }
 
 #[derive(Debug)]
