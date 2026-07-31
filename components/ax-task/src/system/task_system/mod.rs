@@ -49,12 +49,12 @@ use super::thread_sched::{
 use crate::runtime::ExecutionContextHandle;
 use crate::{
     CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot, DeadlineAdmission,
-    DeadlineBandwidthSnapshot, DeadlineEntity, EnqueueReason, FairMode, ParkCommit, ParkPrepare,
-    ParkTicket, PiLockId, PiWaitToken, QueuedThread, SchedulePolicy, SchedulingClass,
-    SchedulingEntity, SwitchReason, TaskError, TaskSystemConfig, ThreadAffinityChange, ThreadCore,
-    ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView,
-    ThreadHandle, ThreadId, ThreadLifecycle, ThreadResources, ThreadRuntimeSnapshot, ThreadSpec,
-    ThreadState,
+    DeadlineBandwidthSnapshot, DeadlineEntity, DetachedQueueEntry, EnqueueReason, FairMode,
+    ParkCommit, ParkPrepare, ParkTicket, PiLockId, PiWaitToken, QueuedThread, SchedulePolicy,
+    SchedulingClass, SchedulingEntity, SwitchReason, TaskError, TaskSystemConfig,
+    ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease,
+    ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle, ThreadResources,
+    ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,

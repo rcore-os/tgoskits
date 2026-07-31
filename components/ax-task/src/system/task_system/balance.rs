@@ -10,6 +10,12 @@ std::thread_local! {
     static LOAD_SUMMARY_PUBLICATIONS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
+    static FAIL_BALANCE_TRANSFER_AFTER_DETACH: core::cell::Cell<bool> = const {
+        core::cell::Cell::new(false)
+    };
+    static FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION: core::cell::Cell<bool> = const {
+        core::cell::Cell::new(false)
+    };
 }
 
 #[cfg(test)]
@@ -30,6 +36,16 @@ pub(super) fn reset_load_summary_publications() {
 #[cfg(test)]
 pub(super) fn load_summary_publications() -> usize {
     LOAD_SUMMARY_PUBLICATIONS.get()
+}
+
+#[cfg(test)]
+fn fail_next_balance_transfer_after_detach() {
+    FAIL_BALANCE_TRANSFER_AFTER_DETACH.set(true);
+}
+
+#[cfg(test)]
+fn fail_next_balance_transfer_publication_reservation() {
+    FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION.set(true);
 }
 
 impl TaskSystem {
@@ -183,6 +199,7 @@ impl TaskSystem {
         reason: BalanceReason,
     ) -> Result<Option<ThreadId>, TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
+        let _irq = IrqScope::enter();
         self.cpu_remote(target)
             .ok_or(TaskError::CpuOffline(target.as_u32()))?;
         let source = cpu.owner();
@@ -198,37 +215,95 @@ impl TaskSystem {
             return Ok(None);
         };
         let core = Arc::clone(&candidate.core);
-        let queued = cpu
+        let mut sched = core.sched().lock();
+        if sched.lifecycle.state() != ThreadState::Ready
+            || sched.placement.queued_cpu() != Some(source)
+            || sched.placement.migration_target().is_some()
+            || sched.placement.on_cpu().is_some()
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let detached = cpu
             .as_mut()
             .fields_mut()
             .run_queue
-            .dequeue(core.id())
+            .detach_for_transfer(core.id())
             .ok_or(TaskError::NotReady)?;
-        Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
-        {
-            let mut sched = core.sched().lock();
-            if sched.lifecycle.state() != ThreadState::Ready
-                || sched.placement.queued_cpu() != Some(source)
-            {
+        let queued_entity = detached.thread.entity;
+        let prepare_result = (|| {
+            Self::detach_owner_deadline_bandwidth_locked(&core, &mut sched, cpu.as_mut())?;
+            #[cfg(test)]
+            if FAIL_BALANCE_TRANSFER_AFTER_DETACH.replace(false) {
                 return Err(TaskError::InvalidConfiguration);
             }
-            sched.entity = queued.entity;
+            sched.entity = queued_entity;
             if !sched.is_pi_boosted() {
-                sched.base_entity = queued.entity;
+                sched.base_entity = queued_entity;
             }
-            sched.placement.set_queued_cpu(None)?;
-            sched.placement.set_migration_target(Some(target))?;
+            sched.placement.begin_queued_migration(source, target)?;
             core.set_target_cpu(target);
+            Ok(())
+        })();
+        drop(sched);
+        if let Err(error) = prepare_result {
+            self.rollback_owner_balance_transfer(cpu.as_mut(), &core, detached, source, target)?;
+            return Err(error);
         }
         let migrated_fair = matches!(candidate.policy, SchedulePolicy::Fair { .. });
+        #[cfg(test)]
+        let publication_exit = FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION
+            .replace(false)
+            .then(|| {
+                core.try_scheduler_exit()
+                    .expect("failure injection requires a quiescent scheduler activity gate")
+            });
+        let publication_result = self.publish_owner_migration(&core, target, source, target);
+        #[cfg(test)]
+        drop(publication_exit);
+        if let Err(error) = publication_result {
+            self.rollback_owner_balance_transfer(cpu.as_mut(), &core, detached, source, target)?;
+            return Err(error);
+        }
         self.publish_owner_cpu_load_summary(cpu.as_mut());
-        self.publish_owner_migration(&core, target, source, target)?;
         if migrated_fair && reason != BalanceReason::FairPeriodic {
             let completion_now_ns = Self::scheduler_completion_now_ns(now_ns);
             cpu.as_mut()
                 .reset_fair_balance(completion_now_ns, self.config.balance_interval_ns());
         }
         Ok(Some(core.id()))
+    }
+
+    fn rollback_owner_balance_transfer(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: &Arc<ThreadCore>,
+        detached: DetachedQueueEntry,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<(), TaskError> {
+        let state_result = {
+            let mut sched = core.sched().lock();
+            match sched.placement.rollback_queued_migration(source, target) {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    core.set_target_cpu(source);
+                    Self::activate_owner_deadline_bandwidth(core, &mut sched, cpu.as_mut(), source)
+                        .and_then(|()| {
+                            Self::refresh_owner_deadline_timers_locked(
+                                core,
+                                &mut sched,
+                                cpu.as_mut(),
+                            )
+                        })
+                }
+            }
+        };
+        cpu.as_mut()
+            .fields_mut()
+            .run_queue
+            .restore_detached(detached);
+        self.publish_owner_cpu_load_summary(cpu);
+        state_result
     }
 
     pub(super) fn balance_after_schedule(
@@ -333,5 +408,129 @@ impl TaskSystem {
             }
         }
         Ok(result.migrated())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+
+    use super::*;
+    use crate::{DeadlineFlags, DeadlinePolicy, Nice, RtPriority, ThreadSpec};
+
+    fn online_pair() -> (TaskSystem, Pin<Box<CpuLocal>>, Pin<Box<CpuLocal>>) {
+        let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+        let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+        for cpu in [&mut cpu0, &mut cpu1] {
+            system
+                .register_idle_thread(
+                    cpu.as_mut(),
+                    ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+                )
+                .unwrap();
+            system.bring_cpu_online(cpu.as_mut()).unwrap();
+        }
+        (system, cpu0, cpu1)
+    }
+
+    #[test]
+    fn failed_balance_transfer_restores_source_ownership_and_deadline_bandwidth() {
+        let (system, mut cpu0, cpu1) = online_pair();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(2, 10, 20, DeadlineFlags::NONE).unwrap());
+        let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        let second = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        for thread in [&first, &second] {
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+        }
+        let bandwidth_before = cpu0.deadline_bandwidth();
+
+        fail_next_balance_transfer_after_detach();
+        assert_eq!(
+            system.transfer_owner_balance_candidate(
+                cpu0.as_mut(),
+                CpuId::new(1),
+                0,
+                BalanceReason::RtDeadlinePush,
+            ),
+            Err(TaskError::InvalidConfiguration)
+        );
+
+        assert_eq!(
+            cpu0.runnable_count(),
+            2,
+            "a failed transfer must restore physical source runqueue ownership"
+        );
+        assert_eq!(cpu1.runnable_count(), 0);
+        assert_eq!(
+            cpu0.deadline_bandwidth(),
+            bandwidth_before,
+            "a failed transfer must restore the source Deadline bandwidth ledger"
+        );
+        let sched = first.core.sched().lock();
+        assert_eq!(sched.lifecycle.state(), ThreadState::Ready);
+        assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
+        assert_eq!(sched.placement.migration_target(), None);
+        assert_eq!(sched.deadline_bandwidth_cpu, Some(CpuId::new(0)));
+    }
+
+    #[test]
+    fn failed_balance_transfer_preserves_rt_fifo_position() {
+        let (system, mut cpu0, _cpu1) = online_pair();
+        let policy = SchedulePolicy::fifo(RtPriority::new(50).unwrap());
+        let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        let second = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        for thread in [&first, &second] {
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+        }
+
+        fail_next_balance_transfer_after_detach();
+        assert_eq!(
+            system.transfer_owner_balance_candidate(
+                cpu0.as_mut(),
+                CpuId::new(1),
+                0,
+                BalanceReason::RtDeadlinePush,
+            ),
+            Err(TaskError::InvalidConfiguration)
+        );
+
+        assert_eq!(
+            system.schedule(cpu0.as_mut(), 0).unwrap().next(),
+            first.id(),
+            "rollback must restore the candidate at its original FIFO position"
+        );
+    }
+
+    #[test]
+    fn failed_migration_reservation_restores_the_source_carrier() {
+        let (system, mut cpu0, _cpu1) = online_pair();
+        let policy = SchedulePolicy::fifo(RtPriority::new(50).unwrap());
+        let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        let second = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        for thread in [&first, &second] {
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+        }
+
+        fail_next_balance_transfer_publication_reservation();
+        assert_eq!(
+            system.transfer_owner_balance_candidate(
+                cpu0.as_mut(),
+                CpuId::new(1),
+                0,
+                BalanceReason::RtDeadlinePush,
+            ),
+            Err(TaskError::CpuOffline(1))
+        );
+
+        assert_eq!(cpu0.runnable_count(), 2);
+        let sched = first.core.sched().lock();
+        assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
+        assert_eq!(sched.placement.migration_target(), None);
+        assert_eq!(first.wake_handle().target_cpu(), Some(CpuId::new(0)));
     }
 }
