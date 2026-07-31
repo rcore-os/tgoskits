@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::VecDeque, format};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, VecDeque, btree_map::Entry},
+    format,
+};
 use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::Duration,
@@ -31,6 +35,7 @@ const WORK_BUDGET: usize = 64;
 const WORKER_STACK_SIZE: usize = 0x40000;
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
+static TIMER_ROUTES: LazyInit<VmTimerRoutes> = LazyInit::new();
 
 struct VmTimerEvent {
     token: usize,
@@ -45,6 +50,7 @@ impl VmTimerEvent {
 
 impl TimerEvent for VmTimerEvent {
     fn callback(self, now: TimeValue) {
+        timer_routes().retire(self.token);
         (self.callback)(now);
     }
 }
@@ -78,6 +84,52 @@ struct VmTimerState {
     command_space: WaitQueue,
     publication_generation: AtomicU64,
     wake: IrqWaitCell,
+}
+
+struct VmTimerRoutes {
+    owners: PiMutex<BTreeMap<usize, &'static VmTimerState>>,
+}
+
+impl VmTimerRoutes {
+    fn new() -> Self {
+        Self {
+            owners: PiMutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn register(&self, token: usize, owner: &'static VmTimerState) {
+        let inserted = insert_timer_route(&mut self.owners.lock(), token, owner);
+        assert!(inserted, "VM timer token must have exactly one owner");
+    }
+
+    fn take(&self, token: usize) -> Option<&'static VmTimerState> {
+        take_timer_route(&mut self.owners.lock(), token)
+    }
+
+    fn retire(&self, token: usize) {
+        let _ = self.take(token);
+    }
+}
+
+fn insert_timer_route(
+    routes: &mut BTreeMap<usize, &'static VmTimerState>,
+    token: usize,
+    owner: &'static VmTimerState,
+) -> bool {
+    match routes.entry(token) {
+        Entry::Vacant(entry) => {
+            entry.insert(owner);
+            true
+        }
+        Entry::Occupied(_) => false,
+    }
+}
+
+fn take_timer_route(
+    routes: &mut BTreeMap<usize, &'static VmTimerState>,
+    token: usize,
+) -> Option<&'static VmTimerState> {
+    routes.remove(&token)
 }
 
 impl VmTimerState {
@@ -157,12 +209,15 @@ pub(crate) fn register_timer(
     deadline_ns: u64,
     callback: Box<dyn FnOnce(Duration) + Send + 'static>,
 ) -> usize {
+    assert_timer_task_context();
     let token = TOKEN
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |token| {
             token.checked_add(1)
         })
         .expect("VM timer token space exhausted");
-    current_timer_state().publish(VmTimerCommand::Arm {
+    let owner = current_timer_state();
+    timer_routes().register(token, owner);
+    owner.publish(VmTimerCommand::Arm {
         deadline: TimeValue::from_nanos(deadline_ns),
         event: VmTimerEvent::new(token, callback),
     });
@@ -170,7 +225,17 @@ pub(crate) fn register_timer(
 }
 
 pub(crate) fn cancel_timer(token: usize) {
-    current_timer_state().publish(VmTimerCommand::Cancel { token });
+    assert_timer_task_context();
+    if let Some(owner) = timer_routes().take(token) {
+        owner.publish(VmTimerCommand::Cancel { token });
+    }
+}
+
+fn assert_timer_task_context() {
+    assert!(
+        !ax_hal::irq::in_irq_context(),
+        "VM timer commands must be published from task context"
+    );
 }
 
 /// Publishes a bounded wake for the current CPU's timer worker.
@@ -302,6 +367,10 @@ fn current_timer_state() -> &'static VmTimerState {
     })
 }
 
+fn timer_routes() -> &'static VmTimerRoutes {
+    TIMER_ROUTES.get_or_init(VmTimerRoutes::new)
+}
+
 fn with_current_timer_state_slot<R>(
     operation: impl FnOnce(&LazyInit<&'static VmTimerState>) -> R,
 ) -> R {
@@ -315,11 +384,16 @@ fn with_current_timer_state_slot<R>(
 mod tests {
     extern crate std;
 
-    use alloc::collections::VecDeque;
+    use alloc::{
+        boxed::Box,
+        collections::{BTreeMap, VecDeque},
+    };
     use core::sync::atomic::Ordering;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use super::{VmTimerCommand, VmTimerState, try_push_command};
+    use super::{
+        VmTimerCommand, VmTimerState, insert_timer_route, take_timer_route, try_push_command,
+    };
 
     #[test]
     fn irq_signal_generation_wraps_without_panicking() {
@@ -358,5 +432,20 @@ mod tests {
         );
         assert!(overflow.unwrap().is_err());
         assert_eq!(commands.len(), capacity);
+    }
+
+    #[test]
+    fn cancellation_routes_to_the_registration_worker() {
+        let registration_worker = Box::leak(Box::new(VmTimerState::new()));
+        let unrelated_worker = Box::leak(Box::new(VmTimerState::new()));
+        let mut routes = BTreeMap::new();
+        assert!(insert_timer_route(&mut routes, 7, registration_worker));
+        assert!(!insert_timer_route(&mut routes, 7, unrelated_worker));
+
+        let owner =
+            take_timer_route(&mut routes, 7).expect("registered token must retain its owner");
+        assert!(core::ptr::eq(owner, registration_worker));
+        assert!(!core::ptr::eq(owner, unrelated_worker));
+        assert!(take_timer_route(&mut routes, 7).is_none());
     }
 }

@@ -298,26 +298,21 @@ fn host_time_trait_only_exposes_common_clock_capabilities() {
 }
 
 #[test]
-fn aarch64_host_time_registers_axvm_timer_callback() {
+fn aarch64_timer_delivery_uses_the_task_worker() {
     let capabilities = include_str!("../src/arch/aarch64/capabilities.rs");
-    let (_, impl_and_rest) = capabilities
-        .split_once("impl HostTimePlatform for Aarch64Arch")
-        .expect("AArch64 must implement HostTimePlatform explicitly");
-    let (impl_body, _) = impl_and_rest
-        .split_once("impl BootImagePlatform for Aarch64Arch")
-        .expect("AArch64 HostTimePlatform implementation must precede BootImagePlatform");
+    let timer = include_str!("../src/timer.rs");
 
     assert!(
-        impl_body.contains("fn register_timer_callback()"),
-        "AArch64 HostTimePlatform must override the empty default timer callback hook"
+        !capabilities.contains("register_timer_callback"),
+        "AArch64 must not run arbitrary AxVM timer callbacks from the host timer IRQ"
     );
     assert!(
-        impl_body.contains("ax_task::register_timer_callback"),
-        "AArch64 must register with the host task timer callback path"
+        timer.contains("fn timer_worker(") && timer.contains("wait_until_deadline"),
+        "AxVM timers must expire in the CPU-affine task worker"
     );
     assert!(
-        impl_body.contains("crate::check_timer_events();"),
-        "AArch64 host timer callback must drain the AxVM timer wheel"
+        timer.contains("current_timer_state().signal();"),
+        "the hard-IRQ boundary must only publish a bounded worker wake"
     );
 }
 
