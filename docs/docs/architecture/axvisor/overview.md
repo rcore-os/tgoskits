@@ -1,6 +1,6 @@
 ---
-sidebar_position: 4
-sidebar_label: "Axvisor"
+sidebar_position: 1
+sidebar_label: "概览"
 ---
 
 # Axvisor 架构

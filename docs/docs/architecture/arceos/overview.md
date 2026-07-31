@@ -1,6 +1,6 @@
 ---
-sidebar_position: 2
-sidebar_label: "ArceOS"
+sidebar_position: 1
+sidebar_label: "概览"
 ---
 
 # ArceOS 架构
