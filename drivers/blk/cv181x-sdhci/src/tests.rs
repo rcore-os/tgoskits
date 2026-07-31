@@ -3,6 +3,7 @@ extern crate std;
 use core::ptr::NonNull;
 
 use sdio_host2::{BusWidth, ClockSpeed, ProgressCause, RequestProgress, SignalVoltage};
+use tock_registers::interfaces::{Readable, Writeable};
 
 use super::*;
 use crate::platform::*;
@@ -50,12 +51,9 @@ fn complete_register_bus_op(
 fn power_on_sequence_configures_3v3_pads_io_and_ds_hs_phy() {
     let mut core = FakeMmio::new();
     let mut syscon = FakeMmio::new();
-    write_u32(syscon.base(), TOP_SD_PWRSW_CTRL, 0xa5a5_a5a0);
-    write_u8(
-        unsafe { NonNull::new_unchecked(syscon.base().as_ptr().add(SYSCON_PINMUX_OFFSET)) },
-        PINMUX_SDIO0_PWR_EN,
-        0x7,
-    );
+    let mmio = Cv181xMmio::new(core.base(), syscon.base());
+    mmio.syscon_registers().sd_powersw_ctrl.set(0xa5a5_a5a0);
+    mmio.syscon_registers().sdio0_power_enable_mux.set(0x7);
 
     let mut host = new_host(
         &mut core,
@@ -67,28 +65,25 @@ fn power_on_sequence_configures_3v3_pads_io_and_ds_hs_phy() {
     );
     host.configure_sd_power_on();
 
-    let pinmux =
-        unsafe { NonNull::new_unchecked(syscon.base().as_ptr().add(SYSCON_PINMUX_OFFSET)) };
+    let registers = mmio.syscon_registers();
     assert_eq!(
-        read_u32(syscon.base(), TOP_SD_PWRSW_CTRL),
+        registers.sd_powersw_ctrl.get(),
         0xa5a5_a5a0 | TOP_SD_PWRSW_3V3
     );
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CD), PINMUX_FUNC_XGPIO);
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CLK), PINMUX_FUNC_SDIO0);
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CMD), PINMUX_FUNC_SDIO0);
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_D3), PINMUX_FUNC_SDIO0);
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_PWR_EN), 0x7);
-    assert_eq!(read_u8(pinmux, IO_SDIO0_CMD) & IO_PULL_UP, IO_PULL_UP);
-    assert_eq!(read_u8(pinmux, IO_SDIO0_CMD) & IO_PULL_DOWN, 0);
-    assert_eq!(
-        read_u32(core.base(), CVI_PHY_TX_RX_DLY),
-        PHY_TX_RX_DLY_DS_HS
-    );
-    assert_eq!(read_u32(core.base(), CVI_PHY_CONFIG), PHY_CONFIG_DS_HS);
-    assert_eq!(
-        read_u32(core.base(), CVI_VENDOR_MSHC_CTRL) & MSHC_CTRL_DS_HS_BITS,
-        MSHC_CTRL_DS_HS_BITS
-    );
+    assert_eq!(registers.sdio0_cd_mux.get(), PINMUX_FUNC_XGPIO);
+    assert_eq!(registers.sdio0_clk_mux.get(), PINMUX_FUNC_SDIO0);
+    assert_eq!(registers.sdio0_cmd_mux.get(), PINMUX_FUNC_SDIO0);
+    assert_eq!(registers.sdio0_d3_mux.get(), PINMUX_FUNC_SDIO0);
+    assert_eq!(registers.sdio0_power_enable_mux.get(), 0x7);
+    assert!(registers.sdio0_cmd_pull.is_set(PAD_PULL::UP));
+    assert!(!registers.sdio0_cmd_pull.is_set(PAD_PULL::DOWN));
+
+    let core_registers = mmio.core_registers();
+    assert_eq!(core_registers.phy_tx_rx_dly.get(), PHY_TX_RX_DLY_DS_HS);
+    assert_eq!(core_registers.phy_config.get(), PHY_CONFIG_DS_HS);
+    assert!(core_registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_1));
+    assert!(core_registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_8));
+    assert!(core_registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_9));
 }
 
 #[test]
@@ -99,13 +94,13 @@ fn power_off_switches_sd_pads_to_gpio_and_closes_power() {
 
     host.configure_sd_power_off();
 
-    let pinmux =
-        unsafe { NonNull::new_unchecked(syscon.base().as_ptr().add(SYSCON_PINMUX_OFFSET)) };
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_CLK), PINMUX_FUNC_XGPIO);
-    assert_eq!(read_u8(pinmux, PINMUX_SDIO0_D0), PINMUX_FUNC_XGPIO);
-    assert_eq!(read_u8(pinmux, IO_SDIO0_D0) & IO_PULL_DOWN, IO_PULL_DOWN);
+    let mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let registers = mmio.syscon_registers();
+    assert_eq!(registers.sdio0_clk_mux.get(), PINMUX_FUNC_XGPIO);
+    assert_eq!(registers.sdio0_d0_mux.get(), PINMUX_FUNC_XGPIO);
+    assert!(registers.sdio0_d0_pull.is_set(PAD_PULL::DOWN));
     assert_eq!(
-        read_u32(syscon.base(), TOP_SD_PWRSW_CTRL) & TOP_SD_PWRSW_LOW_MASK,
+        registers.sd_powersw_ctrl.read(TOP_SD_PWRSW_CTRL::LOW_BITS),
         TOP_SD_PWRSW_OFF
     );
 }
@@ -191,12 +186,11 @@ fn high_speed_mode_sets_host_timing_even_when_clock_is_capped() {
 
     let _ = host.set_clock_speed(ClockSpeed::HighSpeed);
 
+    let mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let registers = mmio.core_registers();
+    assert!(registers.host_control1.is_set(HOST_CONTROL1::HIGH_SPEED));
     assert_eq!(
-        read_u8(core.base(), REG_HOST_CONTROL1) & HOST_CTRL1_HIGH_SPEED,
-        HOST_CTRL1_HIGH_SPEED
-    );
-    assert_eq!(
-        read_u16(core.base(), REG_HOST_CONTROL2) & HOST_CTRL2_UHS_MODE_MASK,
+        registers.host_control2.read(HOST_CONTROL2::UHS_MODE),
         HOST_CTRL2_UHS_SDR25
     );
 }

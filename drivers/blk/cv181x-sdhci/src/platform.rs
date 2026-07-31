@@ -3,6 +3,7 @@
 use core::ptr::NonNull;
 
 use sdio_host2::BusWidth;
+use tock_registers::{register_bitfields, register_structs, registers::ReadWrite};
 
 pub(super) const DEFAULT_SRC_FREQUENCY_HZ: u32 = 375_000_000;
 pub(super) const DEFAULT_MIN_FREQUENCY_HZ: u32 = 400_000;
@@ -13,48 +14,112 @@ pub const CV181X_TOP_SYSCON_BASE: u64 = 0x0300_0000;
 /// Minimum syscon mapping required by this wrapper (TOP + pinmux/IO window).
 pub const CV181X_SYSCON_REQUIRED_SIZE: usize = 0x2000;
 
-pub(super) const SYSCON_PINMUX_OFFSET: usize = 0x1000;
-
-pub(super) const TOP_SD_PWRSW_CTRL: usize = 0x1f4;
 pub(super) const TOP_SD_PWRSW_3V3: u32 = 0x9;
 pub(super) const TOP_SD_PWRSW_OFF: u32 = 0xe;
-pub(super) const TOP_SD_PWRSW_LOW_MASK: u32 = 0xf;
 
-pub(super) const PINMUX_SDIO0_CD: usize = 0x34;
-pub(super) const PINMUX_SDIO0_PWR_EN: usize = 0x38;
-pub(super) const PINMUX_SDIO0_CLK: usize = 0x1c;
-pub(super) const PINMUX_SDIO0_CMD: usize = 0x20;
-pub(super) const PINMUX_SDIO0_D0: usize = 0x24;
-pub(super) const PINMUX_SDIO0_D1: usize = 0x28;
-pub(super) const PINMUX_SDIO0_D2: usize = 0x2c;
-pub(super) const PINMUX_SDIO0_D3: usize = 0x30;
 pub(super) const PINMUX_FUNC_SDIO0: u8 = 0x0;
 pub(super) const PINMUX_FUNC_XGPIO: u8 = 0x3;
 
-pub(super) const IO_SDIO0_CD: usize = 0x900;
-pub(super) const IO_SDIO0_PWR_EN: usize = 0x904;
-pub(super) const IO_SDIO0_CLK: usize = 0xa00;
-pub(super) const IO_SDIO0_CMD: usize = 0xa04;
-pub(super) const IO_SDIO0_D0: usize = 0xa08;
-pub(super) const IO_SDIO0_D1: usize = 0xa0c;
-pub(super) const IO_SDIO0_D2: usize = 0xa10;
-pub(super) const IO_SDIO0_D3: usize = 0xa14;
-pub(super) const IO_PULL_UP: u8 = 1 << 2;
-pub(super) const IO_PULL_DOWN: u8 = 1 << 3;
-
-pub(super) const REG_HOST_CONTROL1: usize = 0x28;
-pub(super) const REG_HOST_CONTROL2: usize = 0x3e;
-pub(super) const HOST_CTRL1_HIGH_SPEED: u8 = 1 << 2;
-pub(super) const HOST_CTRL2_UHS_MODE_MASK: u16 = 0x0007;
 pub(super) const HOST_CTRL2_UHS_SDR12: u16 = 0x0000;
 pub(super) const HOST_CTRL2_UHS_SDR25: u16 = 0x0001;
 
-pub(super) const CVI_VENDOR_MSHC_CTRL: usize = 0x200;
-pub(super) const CVI_PHY_TX_RX_DLY: usize = 0x240;
-pub(super) const CVI_PHY_CONFIG: usize = 0x24c;
-pub(super) const MSHC_CTRL_DS_HS_BITS: u32 = (1 << 1) | (1 << 8) | (1 << 9);
 pub(super) const PHY_TX_RX_DLY_DS_HS: u32 = 0x0100_0100;
 pub(super) const PHY_CONFIG_DS_HS: u32 = 1;
+
+register_bitfields! [
+    u8,
+
+    pub HOST_CONTROL1 [
+        HIGH_SPEED OFFSET(2) NUMBITS(1) []
+    ],
+
+    pub PINMUX [
+        FUNCTION OFFSET(0) NUMBITS(3) []
+    ],
+
+    pub PAD_PULL [
+        UP OFFSET(2) NUMBITS(1) [],
+        DOWN OFFSET(3) NUMBITS(1) []
+    ]
+];
+
+register_bitfields! [
+    u16,
+
+    pub HOST_CONTROL2 [
+        UHS_MODE OFFSET(0) NUMBITS(3) []
+    ]
+];
+
+register_bitfields! [
+    u32,
+
+    pub TOP_SD_PWRSW_CTRL [
+        LOW_BITS OFFSET(0) NUMBITS(4) []
+    ],
+
+    pub MSHC_CTRL [
+        DS_HS_BIT_1 OFFSET(1) NUMBITS(1) [],
+        DS_HS_BIT_8 OFFSET(8) NUMBITS(1) [],
+        DS_HS_BIT_9 OFFSET(9) NUMBITS(1) []
+    ]
+];
+
+register_structs! {
+    pub Cv181xCoreRegisters {
+        (0x000 => _reserved0),
+        (0x028 => pub host_control1: ReadWrite<u8, HOST_CONTROL1::Register>),
+        (0x029 => _reserved1),
+        (0x03e => pub host_control2: ReadWrite<u16, HOST_CONTROL2::Register>),
+        (0x040 => _reserved2),
+        (0x200 => pub mshc_ctrl: ReadWrite<u32, MSHC_CTRL::Register>),
+        (0x204 => _reserved3),
+        (0x240 => pub phy_tx_rx_dly: ReadWrite<u32>),
+        (0x244 => _reserved4),
+        (0x24c => pub phy_config: ReadWrite<u32>),
+        (0x250 => @END),
+    }
+}
+
+register_structs! {
+    pub Cv181xSysconRegisters {
+        (0x000 => _reserved0),
+        (0x1f4 => pub sd_powersw_ctrl: ReadWrite<u32, TOP_SD_PWRSW_CTRL::Register>),
+        (0x1f8 => _reserved1),
+        (0x101c => pub sdio0_clk_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x101d => _reserved2),
+        (0x1020 => pub sdio0_cmd_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x1021 => _reserved3),
+        (0x1024 => pub sdio0_d0_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x1025 => _reserved4),
+        (0x1028 => pub sdio0_d1_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x1029 => _reserved5),
+        (0x102c => pub sdio0_d2_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x102d => _reserved6),
+        (0x1030 => pub sdio0_d3_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x1031 => _reserved7),
+        (0x1034 => pub sdio0_cd_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x1035 => _reserved8),
+        (0x1038 => pub sdio0_power_enable_mux: ReadWrite<u8, PINMUX::Register>),
+        (0x1039 => _reserved9),
+        (0x1900 => pub sdio0_cd_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1901 => _reserved10),
+        (0x1904 => pub sdio0_power_enable_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1905 => _reserved11),
+        (0x1a00 => pub sdio0_clk_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1a01 => _reserved12),
+        (0x1a04 => pub sdio0_cmd_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1a05 => _reserved13),
+        (0x1a08 => pub sdio0_d0_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1a09 => _reserved14),
+        (0x1a0c => pub sdio0_d1_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1a0d => _reserved15),
+        (0x1a10 => pub sdio0_d2_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1a11 => _reserved16),
+        (0x1a14 => pub sdio0_d3_pull: ReadWrite<u8, PAD_PULL::Register>),
+        (0x1a15 => @END),
+    }
+}
 
 /// Already-mapped MMIO regions required by the portable CV181x wrapper.
 #[derive(Clone, Copy)]
@@ -76,10 +141,16 @@ impl Cv181xMmio {
         self.syscon
     }
 
-    pub(super) fn pinmux(self) -> NonNull<u8> {
-        // SAFETY: OS glue maps the CV181x syscon window. The documented
-        // pinmux block lives at TOP_BASE + 0x1000 inside that mapping.
-        unsafe { NonNull::new_unchecked(self.syscon.as_ptr().add(SYSCON_PINMUX_OFFSET)) }
+    pub(super) fn core_registers(&self) -> &Cv181xCoreRegisters {
+        // SAFETY: `Cv181xSdhci::new` requires this mapping to cover the
+        // controller register file for the wrapper's whole lifetime.
+        unsafe { &*self.core.as_ptr().cast() }
+    }
+
+    pub(super) fn syscon_registers(&self) -> &Cv181xSysconRegisters {
+        // SAFETY: `Cv181xSdhci::new` requires this mapping to cover TOP and
+        // the pinmux/IO window for the wrapper's whole lifetime.
+        unsafe { &*self.syscon.as_ptr().cast() }
     }
 }
 
@@ -146,37 +217,17 @@ impl Cv181xConfig {
     }
 }
 
-pub(super) fn set_pull(base: NonNull<u8>, off: usize, set: u8, clear: u8) {
-    let next = (read_u8(base, off) | set) & !clear;
-    write_u8(base, off, next);
+#[derive(Clone, Copy)]
+pub(super) enum PullMode {
+    Up,
+    Down,
 }
 
-pub(super) fn read_u8(base: NonNull<u8>, off: usize) -> u8 {
-    // SAFETY: caller-provided MMIO base covers the documented byte register.
-    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u8) }
-}
+pub(super) fn set_pull(register: &ReadWrite<u8, PAD_PULL::Register>, mode: PullMode) {
+    use tock_registers::interfaces::ReadWriteable;
 
-pub(super) fn write_u8(base: NonNull<u8>, off: usize, val: u8) {
-    // SAFETY: caller-provided MMIO base covers the documented byte register.
-    unsafe { core::ptr::write_volatile(base.as_ptr().add(off), val) }
-}
-
-pub(super) fn read_u16(base: NonNull<u8>, off: usize) -> u16 {
-    // SAFETY: caller-provided MMIO base covers the documented 16-bit register.
-    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u16) }
-}
-
-pub(super) fn write_u16(base: NonNull<u8>, off: usize, val: u16) {
-    // SAFETY: caller-provided MMIO base covers the documented 16-bit register.
-    unsafe { core::ptr::write_volatile(base.as_ptr().add(off) as *mut u16, val) }
-}
-
-pub(super) fn read_u32(base: NonNull<u8>, off: usize) -> u32 {
-    // SAFETY: caller-provided MMIO base covers the documented 32-bit register.
-    unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u32) }
-}
-
-pub(super) fn write_u32(base: NonNull<u8>, off: usize, val: u32) {
-    // SAFETY: caller-provided MMIO base covers the documented 32-bit register.
-    unsafe { core::ptr::write_volatile(base.as_ptr().add(off) as *mut u32, val) }
+    match mode {
+        PullMode::Up => register.modify(PAD_PULL::UP::SET + PAD_PULL::DOWN::CLEAR),
+        PullMode::Down => register.modify(PAD_PULL::UP::CLEAR + PAD_PULL::DOWN::SET),
+    }
 }

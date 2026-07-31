@@ -1,6 +1,7 @@
 //! CV181x SDHCI clock and timing policy.
 
 use sdio_host2::ClockSpeed;
+use tock_registers::interfaces::ReadWriteable;
 
 use super::{Cv181xSdhci, map_protocol_error};
 use crate::platform::*;
@@ -38,17 +39,19 @@ impl Cv181xSdhci {
     }
 
     fn set_host_timing_bits(&mut self, high_speed: bool, uhs_mode: u16) {
-        let core = self.mmio.core();
-        let mut ctrl1 = read_u8(core, REG_HOST_CONTROL1);
+        let registers = self.mmio.core_registers();
         if high_speed {
-            ctrl1 |= HOST_CTRL1_HIGH_SPEED;
+            registers
+                .host_control1
+                .modify(HOST_CONTROL1::HIGH_SPEED::SET);
         } else {
-            ctrl1 &= !HOST_CTRL1_HIGH_SPEED;
+            registers
+                .host_control1
+                .modify(HOST_CONTROL1::HIGH_SPEED::CLEAR);
         }
-        write_u8(core, REG_HOST_CONTROL1, ctrl1);
 
-        let ctrl2 = (read_u16(core, REG_HOST_CONTROL2) & !HOST_CTRL2_UHS_MODE_MASK)
-            | (uhs_mode & HOST_CTRL2_UHS_MODE_MASK);
-        write_u16(core, REG_HOST_CONTROL2, ctrl2);
+        registers
+            .host_control2
+            .modify(HOST_CONTROL2::UHS_MODE.val(uhs_mode));
     }
 }

@@ -1,5 +1,7 @@
 //! CV181x TOP, pinmux, pad and PHY policy.
 
+use tock_registers::interfaces::{ReadWriteable, Writeable};
+
 use super::{Cv181xSdhci, host2::AfterBusOp};
 use crate::platform::*;
 
@@ -26,16 +28,16 @@ impl Cv181xSdhci {
     }
 
     pub fn setup_sd_pad(&mut self, unplug: bool) {
-        let pinmux = self.mmio.pinmux();
+        let registers = self.mmio.syscon_registers();
         let active_cd_func = if self.config.has_card_detect_gpio {
             PINMUX_FUNC_XGPIO
         } else {
             PINMUX_FUNC_SDIO0
         };
-        write_u8(pinmux, PINMUX_SDIO0_CD, active_cd_func);
+        registers.sdio0_cd_mux.set(active_cd_func);
 
         if self.config.touch_power_enable_pin {
-            write_u8(pinmux, PINMUX_SDIO0_PWR_EN, PINMUX_FUNC_SDIO0);
+            registers.sdio0_power_enable_mux.set(PINMUX_FUNC_SDIO0);
         }
 
         let func = if unplug {
@@ -43,55 +45,50 @@ impl Cv181xSdhci {
         } else {
             PINMUX_FUNC_SDIO0
         };
-        for off in [
-            PINMUX_SDIO0_CLK,
-            PINMUX_SDIO0_CMD,
-            PINMUX_SDIO0_D0,
-            PINMUX_SDIO0_D1,
-            PINMUX_SDIO0_D2,
-            PINMUX_SDIO0_D3,
+        for register in [
+            &registers.sdio0_clk_mux,
+            &registers.sdio0_cmd_mux,
+            &registers.sdio0_d0_mux,
+            &registers.sdio0_d1_mux,
+            &registers.sdio0_d2_mux,
+            &registers.sdio0_d3_mux,
         ] {
-            write_u8(pinmux, off, func);
+            register.set(func);
         }
     }
 
     pub fn setup_sd_io(&mut self, reset: bool) {
-        let pinmux = self.mmio.pinmux();
-        set_pull(pinmux, IO_SDIO0_CD, IO_PULL_UP, IO_PULL_DOWN);
-        set_pull(pinmux, IO_SDIO0_PWR_EN, IO_PULL_DOWN, IO_PULL_UP);
-        set_pull(pinmux, IO_SDIO0_CLK, IO_PULL_DOWN, IO_PULL_UP);
+        let registers = self.mmio.syscon_registers();
+        set_pull(&registers.sdio0_cd_pull, PullMode::Up);
+        set_pull(&registers.sdio0_power_enable_pull, PullMode::Down);
+        set_pull(&registers.sdio0_clk_pull, PullMode::Down);
 
-        let (set, clear) = if reset {
-            (IO_PULL_DOWN, IO_PULL_UP)
-        } else {
-            (IO_PULL_UP, IO_PULL_DOWN)
-        };
-        for off in [
-            IO_SDIO0_CMD,
-            IO_SDIO0_D0,
-            IO_SDIO0_D1,
-            IO_SDIO0_D2,
-            IO_SDIO0_D3,
+        let mode = if reset { PullMode::Down } else { PullMode::Up };
+        for register in [
+            &registers.sdio0_cmd_pull,
+            &registers.sdio0_d0_pull,
+            &registers.sdio0_d1_pull,
+            &registers.sdio0_d2_pull,
+            &registers.sdio0_d3_pull,
         ] {
-            set_pull(pinmux, off, set, clear);
+            set_pull(register, mode);
         }
     }
 
     pub fn restore_ds_hs_phy(&mut self) {
-        let core = self.mmio.core();
-        let mshc = read_u32(core, CVI_VENDOR_MSHC_CTRL) | MSHC_CTRL_DS_HS_BITS;
-        write_u32(core, CVI_VENDOR_MSHC_CTRL, mshc);
-        write_u32(core, CVI_PHY_TX_RX_DLY, PHY_TX_RX_DLY_DS_HS);
-        write_u32(core, CVI_PHY_CONFIG, PHY_CONFIG_DS_HS);
+        let registers = self.mmio.core_registers();
+        registers.mshc_ctrl.modify(
+            MSHC_CTRL::DS_HS_BIT_1::SET + MSHC_CTRL::DS_HS_BIT_8::SET + MSHC_CTRL::DS_HS_BIT_9::SET,
+        );
+        registers.phy_tx_rx_dly.set(PHY_TX_RX_DLY_DS_HS);
+        registers.phy_config.set(PHY_CONFIG_DS_HS);
     }
 
     fn update_top_power(&mut self, low_bits: u32) {
-        let cur = read_u32(self.mmio.syscon(), TOP_SD_PWRSW_CTRL);
-        write_u32(
-            self.mmio.syscon(),
-            TOP_SD_PWRSW_CTRL,
-            (cur & !TOP_SD_PWRSW_LOW_MASK) | low_bits,
-        );
+        self.mmio
+            .syscon_registers()
+            .sd_powersw_ctrl
+            .modify(TOP_SD_PWRSW_CTRL::LOW_BITS.val(low_bits));
     }
 
     pub(super) fn apply_after(&mut self, after: AfterBusOp) -> Result<(), sdio_host2::Error> {
