@@ -447,22 +447,20 @@ impl SharedHardIrqHandler for AhciHostIrq {
             return IrqDisposition::Spurious;
         }
 
-        let mut handled = false;
-        let mut routed_ports = 0_u32;
         for route in &self.routes {
             let port_bit = 1_u32 << route.port.index();
-            routed_ports |= port_bit;
             if asserted & port_bit == 0 {
                 continue;
             }
             let status = route.port.pending_interrupts();
             let relevant = status & PORT_IRQ_ENABLE;
-            route.port.set_interrupts_enabled(false);
+            if relevant != 0 {
+                route.port.set_interrupts_enabled(false);
+            }
             route.port.acknowledge_port_interrupts(status);
             if relevant == 0 {
                 continue;
             }
-            handled = true;
             route.status_latch.fetch_or(relevant, Ordering::Release);
             sink.publish(GroupIrqEvent::member(
                 route.member_id,
@@ -472,15 +470,10 @@ impl SharedHardIrqHandler for AhciHostIrq {
             ));
         }
 
-        let unrouted = asserted & !routed_ports;
         // HBA IS is W1C. Confirm the exact snapshot once after every routed
         // port has acknowledged its PxIS so no asserted port is lost.
         self.hba.acknowledge_interrupts(asserted);
-        if handled || unrouted != 0 {
-            IrqDisposition::Cleared
-        } else {
-            IrqDisposition::Spurious
-        }
+        IrqDisposition::Cleared
     }
 }
 
@@ -551,6 +544,29 @@ mod tests {
         assert_eq!(
             words[2], 0b111,
             "the final HBA IS write must acknowledge routed and unrouted bits from one snapshot"
+        );
+    }
+
+    #[test]
+    fn asserted_port_without_relevant_status_is_handled_without_masking() {
+        let mut words = vec![0_u32; TEST_WORDS];
+        let hba = HbaRegisters::from_words(&mut words);
+        words[0] = (1 << 30) | (31 << 8);
+        words[2] = 1;
+        let port = hba.port(0).expect("port zero");
+        words[(PORT_BASE + 0x14) / 4] = PORT_IRQ_ENABLE;
+        let status = Arc::new(AtomicU32::new(0));
+        let mut handler =
+            AhciHostIrq::new(hba, vec![PortIrqRoute::new(0, port, Arc::clone(&status))]);
+        let mut events = Events::default();
+
+        assert_eq!(handler.ack(&mut events), IrqDisposition::Cleared);
+        assert!(events.0.is_empty());
+        assert_eq!(status.load(Ordering::Acquire), 0);
+        assert_eq!(
+            words[(PORT_BASE + 0x14) / 4],
+            PORT_IRQ_ENABLE,
+            "an acknowledged global source without queue status must remain armed"
         );
     }
 
