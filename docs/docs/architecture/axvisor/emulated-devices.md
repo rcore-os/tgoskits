@@ -5,487 +5,587 @@ sidebar_label: "模拟设备"
 
 # 模拟设备框架
 
-Axvisor 的模拟设备框架负责把 VM 配置中的客户机可见设备构造成可拦截、可调度、可授权的运行时拓扑。当前框架的核心目标是“单路径、能力受限、按访问注入”：设备统一通过 `EmulatedDeviceConfig → DeviceFactory → DeviceBundle → DeviceRuntime` 构建，运行期由 `DeviceRuntime` 分派 MMIO、PIO 和系统寄存器访问，敏感能力只通过本次访问的 `DeviceAccess` 临时开放。
+模拟设备由 Hypervisor 在软件中实现，客户机通过 MMIO、x86 Port I/O 或架构系统寄存器访问这些设备。Axvisor 使用 `DeviceRuntime` 保存一台 VM 的模拟设备、地址资源和运行时能力：VM 创建时根据 `emu_devices` 构建设备，vCPU 运行后再由各架构的 VM-exit 处理代码把访问交给同一个运行时分派入口。
 
-## 设计目标
+这套框架位于 `virtualization/axdevice_base`、`virtualization/axdevice` 和 `virtualization/axvm` 三个 crate 中。本文以现有代码为准，说明配置解析、设备构建、资源注册、访问分派、DMA 授权、中断连接以及各架构设备的具体实现。
 
-模拟设备框架不是单纯的设备对象列表，而是 VM 设备拓扑、资源索引、设备间协作服务、生命周期能力和敏感授权边界的共同所有者。这个定位决定了设备不能随意保存 `AxVM`、vCPU 或客户机内存对象，也不能由架构层和 VM 层绕过统一构建路径私自加入客户机可见设备。
+## 1. 代码组成
 
-### 单路径拓扑
+模拟设备代码没有集中在单一目录。公共接口与运行时实现保持架构无关，GIC、PLIC、IOAPIC 等平台设备则由对应架构在 VM prepare 阶段接入。
 
-单路径拓扑要求所有客户机可见模拟设备都从配置进入 factory，再由 factory 产生 `DeviceBundle`，最后由 `DeviceRuntime` 事务化注册。这个约束的维护价值在于：VM prepare 完成后，设备集合、资源窗口、IRQ line、service 和 grant 绑定关系来自同一份拓扑，而不是散落在架构初始化、VM 特判和设备管理器的不同路径中。
+### 1.1 核心 crate
 
-```mermaid
-flowchart LR
-    Config["EmulatedDeviceConfig"]
-    Factory["DeviceFactory"]
-    Bundle["DeviceBundle"]
-    Runtime["DeviceRuntime"]
-    Topology["sealed runtime topology"]
+三个核心 crate 分别处理接口、运行时和 VM 集成，依赖方向为 `axvm → axdevice → axdevice_base`。
 
-    Config --> Factory
-    Factory --> Bundle
-    Bundle --> Runtime
-    Runtime --> Topology
-```
-
-这条路径由 `virtualization/axvm/src/vm/prepare/devices.rs` 中的 `PreparedDevices::build_common_with_extra()` 发起。它把 VM 配置里的 `emu_devices()` 与架构补充的 `extra_configs` 合并，然后调用 `DeviceRuntime::build_with_factories_and_ports()`，因此普通设备不需要也不应该修改架构 exit handler 或 `AxVM` 的设备特判。
-
-### 能力受限
-
-能力受限要求设备只得到协议真正需要的运行时能力。普通寄存器设备只实现 `Device::access()` 并声明 `Resource`；需要访问客户机内存的设备必须由 bundle 绑定 `DmaGrant`；需要调度定时器、唤醒 vCPU 或请求停止 VM 的设备则分别绑定 `TimerGrant`、`WakeGrant` 或 `StopGrant`。
-
-| 能力 | 授权令牌 | 运行时入口 | 典型用途 |
-| --- | --- | --- | --- |
-| 客户机内存读写 | `DmaGrant` | `DeviceAccess::read_guest_memory()`、`DeviceAccess::write_guest_memory()` | `fw_cfg` DMA descriptor 和数据搬运 |
-| 定时器调度 | `TimerGrant` | `DeviceAccess::schedule_timer()` | 可编程虚拟 timer 或需要延迟事件的设备 |
-| vCPU 唤醒 | `WakeGrant` | `DeviceAccess::wake_vcpu()` | 设备事件唤醒 VM-local vCPU |
-| VM 停止请求 | `StopGrant` | `DeviceAccess::request_vm_stop()` | 管理类设备请求受控停止 VM |
-
-这些 grant 定义在 `virtualization/axdevice_base/src/lib.rs`，运行时校验实现在 `virtualization/axdevice/src/device.rs` 的 `RuntimeDeviceAccess`。grant 本身只是注册期创建的不可伪造令牌；只有当它与当前 `DeviceId` 的注册记录匹配，并且当前访问上下文提供对应端口时，敏感操作才会执行。
-
-### 按访问注入
-
-按访问注入要求敏感能力只在一次设备访问期间有效。`DeviceRuntime` 在分派一次 MMIO、PIO 或 SysReg 访问时创建 `RuntimeDeviceAccess`，把当前 `DeviceId`、grant 绑定表和 VM 运行时窄端口放入上下文；设备访问返回后，这个上下文随调用栈失效。
-
-```mermaid
-sequenceDiagram
-    participant Arch as Arch exit handler
-    participant Runtime as DeviceRuntime
-    participant Access as RuntimeDeviceAccess
-    participant Dev as Device
-    participant Port as Runtime access port
-
-    Arch->>Runtime: handle_mmio/port/sysreg access
-    Runtime->>Runtime: lookup whole resource range
-    Runtime->>Access: create access-scoped context
-    Runtime->>Dev: access(BusAccess, DeviceAccess)
-    Dev->>Access: optional grant-protected request
-    Access->>Access: check DeviceId + Grant
-    Access->>Port: execute narrow operation
-    Dev-->>Runtime: BusResponse
-    Runtime-->>Arch: response or DeviceError
-```
-
-这使设备协议实现仍然内聚，但高风险操作被集中在 `DeviceAccess` 的校验点上。对于维护者来说，审计 DMA、timer、wake 和 stop 的使用不需要搜索所有 VM 内部对象引用，而是重点检查 bundle 是否授予 grant，以及设备是否只在 `Device::access()` 的调用边界内使用它。
-
-## 构建流程
-
-构建流程发生在 VM prepare 阶段，目标是在 vCPU 开始运行前完成所有客户机可见设备的创建、校验和拓扑封存。这个阶段可以做配置解析、资源冲突检查和权限绑定等“重工作”，因为这些成本不应该进入每一次 MMIO 或 PIO 热路径。
-
-### 工厂注册
-
-`DeviceFactoryRegistry` 是设备类型到 factory 的唯一映射表，定义在 `virtualization/axdevice/src/factory.rs`。`DeviceFactoryRegistry::register()` 会拒绝重复的 `EmulatedDeviceType`，`DeviceFactoryRegistry::build()` 在找不到 factory 时返回明确的 unsupported 错误，从而避免“factory 失败后再尝试另一条 legacy fallback”的隐式行为。
-
-| 代码对象 | 位置 | 职责 |
+| 位置 | 主要内容 | 运行阶段 |
 | --- | --- | --- |
-| `DeviceFactory` | `virtualization/axdevice/src/factory.rs` | 将一个 `EmulatedDeviceConfig` 构造成 `DeviceBundle`，不直接修改目标 runtime |
-| `DeviceFactoryRegistry` | `virtualization/axdevice/src/factory.rs` | 保存设备类型到 factory 的唯一映射，并拒绝重复注册 |
-| `register_builtin_factories()` | `virtualization/axdevice/src/factory.rs` | 注册不依赖架构后端的内置 factory，例如 dummy 和 IVC allocator |
-| `FwCfgPayloadFactory` | `virtualization/axdevice/src/fw_cfg.rs` | 把 boot payload 与 fw_cfg 配置结合，生成 fw_cfg 设备 bundle |
+| `virtualization/axdevice_base/src/lib.rs` | `Device`、`DeviceAccess`、`Resource`、`BusAccess`、grant 和 IRQ 基础接口 | 注册与访问热路径 |
+| `virtualization/axdevice/src/device.rs` | `DeviceRuntime`、资源索引、事务注册、总线分派 | VM prepare 与 VM-exit |
+| `virtualization/axdevice/src/factory.rs` | `DeviceFactory`、`DeviceFactoryRegistry`、内置 factory | VM prepare |
+| `virtualization/axdevice/src/registration.rs` | `DeviceBundle`、pollable 与 lifecycle 能力 | VM prepare 与 VM 生命周期 |
+| `virtualization/axdevice/src/service.rs` | VM 内的类型化设备服务 | VM prepare 与架构协作 |
+| `virtualization/axdevice/src/fw_cfg.rs` | QEMU 兼容的 `fw_cfg` 传输和 DMA | 启动与 VM-exit |
+| `virtualization/axvm/src/vm/prepare/devices.rs` | 汇总设备配置并生成 `DeviceRuntime` | VM prepare |
+| `virtualization/axvm/src/arch/*` | 注册架构 factory、准备中断控制器、处理架构 VM-exit | VM prepare 与 vCPU 运行期 |
 
-架构相关设备会在各自架构 prepare 路径中注册 factory。例如 RISC-V 的 vPLIC、x86 的 IOAPIC/PIT/串口/port passthrough、AArch64 的 vGIC/vtimer、LoongArch 的 PCH-PIC 都应通过架构侧 factory 或 bootstrap 产物进入同一 registry，而不是在 exit handler 中做设备类型分支。
+`axdevice_base` 不持有 VM 对象，设备实现只依赖稳定的总线和能力接口。`axdevice` 负责把这些接口组织成一台 VM 的设备拓扑；`axvm` 再提供客户机内存、定时器、vCPU 唤醒和生命周期等 VM 级实现。
 
-### 贡献包注册
-
-`DeviceBundle` 是 factory 对 `DeviceRuntime` 的“一整包贡献”。它可以包含设备对象、pollable 能力、lifecycle 能力、typed service，以及与 bundle-local 设备索引绑定的 grant。`DeviceRuntime::register_bundle()` 会先校验 grant 索引、重复 pollable/lifecycle 和 service 合并冲突，然后再注册设备资源。
+下图以 VM 边界划分各层的归属。箭头表示运行时调用或构建期注入，而不是 Rust crate 的全部依赖关系。
 
 ```mermaid
 flowchart TB
+    subgraph VM["一台 AxVM"]
+        subgraph AXVM["axvm：架构与 VM 集成"]
+            Exit["VM-exit 解码"]
+            Ports["VmDmaAccess / Timer / Wake / Stop"]
+            Fabric["InterruptFabric"]
+        end
+        subgraph AXDEVICE["axdevice：设备运行时"]
+            Factory["DeviceFactoryRegistry"]
+            Runtime["DeviceRuntime"]
+            Services["DeviceServices"]
+        end
+        subgraph BASE["axdevice_base：公共接口"]
+            Contract["Device / Resource / BusAccess"]
+            Context["DeviceAccess / Grant / IrqLine"]
+        end
+        Devices["fw_cfg、IOAPIC、vPLIC、PCH-PIC 等具体设备"]
+    end
+
+    Exit --> Runtime
+    Runtime --> Contract
+    Runtime --> Context
+    Runtime --> Devices
+    Factory --> Runtime
+    Ports --> Context
+    Fabric --> Context
+    Services --> Devices
+```
+
+具体设备只依赖公共契约；它们不会直接取得 `AxVM`。VM 侧资源通过 `DeviceAccess` 和 `IrqLine` 在构建或单次访问时接入，这也是 `axdevice` 能承载多架构设备实现的边界。
+
+### 1.2 运行时对象
+
+一台完成 prepare 的 VM 保存一个 `Arc<DeviceRuntime>`。`DeviceRuntime` 中的 `devices` 是按注册顺序追加的 `Arc<dyn Device>` 数组，数组下标同时用于生成 `DeviceId`；三棵地址索引和一张 IRQ line 索引负责把访问或资源定位到设备。
+
+| `DeviceRuntime` 字段 | 数据结构 | 保存的内容 |
+| --- | --- | --- |
+| `devices` | `Vec<Arc<dyn Device>>` | 已注册设备；下标是设备的运行时身份 |
+| `mmio_index` | `BTreeMap<u64, RangeEntry>` | MMIO 起始 GPA、长度和设备下标 |
+| `port_index` | `BTreeMap<u16, RangeEntry>` | x86 I/O port 起始端口、长度和设备下标 |
+| `sysreg_index` | `BTreeMap<u32, RangeEntry>` | 系统寄存器编码、数量和设备下标 |
+| `irq_line_index` | `BTreeMap<u32, DeviceId>` | 虚拟中断控制器输入线的独占归属 |
+| `dma_grants` 等 | `Vec<(DeviceId, Grant)>` | 设备与敏感运行时能力的绑定 |
+| `services` | `DeviceServices` | 设备向 VM 内其他组件提供的类型化服务 |
+| `pollable_devices` | `Vec<Arc<dyn PollableDeviceOps>>` | 可由运行时轮询的设备能力 |
+| `lifecycle_devices` | `Vec<Arc<dyn DeviceLifecycle>>` | reset、suspend、resume 能力 |
+
+地址索引仅在 prepare 阶段写入。构建完成后 `sealed` 被置为 `true`，运行期可以修改设备寄存器和队列状态，但不能再向这个 runtime 注册设备或资源。
+
+### 1.3 总体流程
+
+从 TOML 配置到一次设备访问，主路径分为 prepare 和 VM-exit 两段。prepare 负责生成静态拓扑，VM-exit 路径只做地址查找、访问上下文创建和设备调用。
+
+```mermaid
+flowchart LR
+    Toml["VM TOML<br/>emu_devices"]
+    Config["EmulatedDeviceConfig"]
+    Registry["DeviceFactoryRegistry"]
     Bundle["DeviceBundle"]
-    Devices["devices"]
-    Services["DeviceServices"]
-    Lifecycle["DeviceLifecycle"]
-    Grants["Dma/Timer/Wake/Stop grants"]
-    Validate["validate indices and conflicts"]
-    Register["register devices and resources"]
-    Bind["bind grants to final DeviceId"]
-    Rollback["rollback bundle devices on failure"]
+    Runtime["sealed DeviceRuntime"]
+    Exit["vCPU VM-exit"]
+    Access["BusAccess"]
+    Device["Device::access"]
 
-    Bundle --> Devices
-    Bundle --> Services
-    Bundle --> Lifecycle
-    Bundle --> Grants
-    Devices --> Validate
-    Services --> Validate
-    Lifecycle --> Validate
-    Grants --> Validate
-    Validate --> Register
-    Register --> Bind
-    Register -. failure .-> Rollback
+    Toml --> Config
+    Config --> Registry
+    Registry --> Bundle
+    Bundle --> Runtime
+    Exit --> Access
+    Access --> Runtime
+    Runtime --> Device
 ```
 
-bundle 的关键点是原子性和归属清晰。比如 `fw_cfg` factory 不只是创建一个 MMIO 设备，还要同时声明该设备拥有 `DmaGrant`；IVC factory 不产生 MMIO 设备，但会贡献 `GuestRangeAllocatorKey` 服务。两者都可以通过同一个 bundle 注册流程进入 runtime。
+直通 MMIO 映射由 `passthrough_devices`、`passthrough_addresses` 等路径管理，不经过这里的寄存器模拟。x86 的 `passthrough_ports` 是一个特例：架构代码会把每段端口范围转换为 `X86PortPassthrough` 配置，再通过 `DeviceRuntime` 分派到宿主 `in`/`out` 指令适配器。
 
-### 资源索引
+## 2. 设备配置与构建
 
-`DeviceRuntime` 当前维护 MMIO、PIO、SysReg 和 IRQ line 四类索引，核心字段在 `virtualization/axdevice/src/device.rs` 中。注册时 `validate_resources()` 会拒绝零长度、地址溢出、同 bundle 内重叠、与既有设备重叠以及 IRQ line 冲突；运行时 lookup 会校验完整访问范围，而不只是匹配访问起始地址。
+模拟设备在 VM prepare 阶段一次性构建。配置中的每一项先匹配一个 `DeviceFactory`，factory 返回完整的 `DeviceBundle`，随后 runtime 校验并注册 bundle 内的所有资源和能力。
 
-| 资源类型 | 代码表示 | 索引字段 | 运行期访问 |
-| --- | --- | --- | --- |
-| MMIO | `Resource::MmioRange` | `mmio_index` | `handle_mmio_read()`、`handle_mmio_write()` |
-| Port I/O | `Resource::PortRange` | `port_index` | `handle_port_read()`、`handle_port_write()` |
-| 系统寄存器 | `Resource::SysReg` | `sysreg_index` | `handle_sys_reg_read()`、`handle_sys_reg_write()` |
-| 中断线 | `Resource::IrqLine` | `irq_line_index` | 注册期冲突检查，运行期由 `IrqLine` 操作 |
+### 2.1 `EmulatedDeviceConfig`
 
-完整范围校验由 `range_contains_access()` 和各类 lookup 辅助函数支撑。这个细节很重要：一个 4 字节 MMIO 访问如果从资源窗口最后 2 字节开始，起始地址可能命中设备，但完整访问跨出资源边界，runtime 必须拒绝而不能把半个访问交给设备。
-
-### 拓扑封存
-
-`DeviceRuntime::build_with_factories_and_ports()` 在所有配置项注册完成后调用 `seal()`，将 runtime 置为 sealed 状态。sealed 后，`DeviceRegistry::register()` 和 `register_bundle()` 都会通过 `ensure_unsealed()` 拒绝继续修改拓扑。
-
-这种封存不是为了禁止所有运行期状态变化，而是为了禁止运行期新增或删除客户机可见设备。设备内部寄存器、队列、timer、IVC 地址分配都可以变化；但设备集合、bus resource、service registry 和 grant 绑定关系必须在 VM prepare 后稳定，避免 guest 发现信息、二阶段 trap 布局和 runtime dispatch 索引不一致。
-
-## 运行期访问
-
-运行期访问从架构 VM exit 开始，最后回到架构无关的 `BusResponse` 或结构化错误。框架的原则是：架构层负责把 exit 解码成统一访问，`DeviceRuntime` 负责查找和授权，具体设备负责协议语义。
-
-### 总线分派
-
-四个架构的 exit handler 最终都会调用公共的 MMIO 访问辅助，例如 `virtualization/axvm/src/arch/riscv64/mod.rs`、`aarch64/mod.rs`、`x86_64/mod.rs` 和 `loongarch64/mod.rs` 中的 MMIO read/write 分支。架构层不需要知道目标设备类型，只需要把地址、宽度和读写方向交给 `AxVM::handle_mmio_write()` 或对应 read 路径。
-
-```mermaid
-flowchart LR
-    Exit["architecture VM exit"]
-    AxVM["AxVM handle_mmio_*"]
-    Devices["Arc<DeviceRuntime>"]
-    Lookup["resource lookup"]
-    Access["Device::access"]
-    Response["BusResponse"]
-
-    Exit --> AxVM
-    AxVM --> Devices
-    Devices --> Lookup
-    Lookup --> Access
-    Access --> Response
-```
-
-`DeviceRuntime` 对外保留 `handle_mmio_read()`、`handle_mmio_write()`、`handle_port_read()`、`handle_port_write()`、`handle_sys_reg_read()` 和 `handle_sys_reg_write()` 这些 facade。它们构造 `BusAccess` 后调用 `BusRouter::dispatch()`，因此设备热路径集中在一个地方，错误也能统一包装成带 bus、地址和宽度的 `DeviceManagerError::Access`。
-
-### 普通访问
-
-普通设备访问不需要 DMA memory port，因此 `DeviceRuntime::dispatch()` 会创建一个 `RuntimeDeviceAccess`，其中 `memory` 字段为 `None`，但仍带有 timer/wake/stop 端口和 grant 绑定表。没有授权的设备调用敏感方法会得到 `DeviceError::Unsupported`，不会 panic，也不会静默成功。
-
-| 步骤 | 代码锚点 | 行为 |
-| --- | --- | --- |
-| 构造访问 | `BusAccess` | 保存 bus 类型、地址、宽度、方向和写入值 |
-| 查找设备 | `lookup_mmio()`、`lookup_port()`、`lookup_sysreg()` | 选择命中的设备索引并校验访问范围 |
-| 创建上下文 | `RuntimeDeviceAccess` | 绑定当前 `DeviceId` 和 grant 表 |
-| 调用设备 | `Device::access()` | 设备处理协议寄存器并返回 `BusResponse` |
-| 校验响应 | `expect_write_response()` | 读写方向与响应类型不匹配时报错 |
-
-普通访问路径不重新解析配置，不扫描所有设备，也不构造通用 effect 容器。后续如果需要优化索引实现，应只替换 `DeviceRuntime` 内部索引结构，不能改变设备接口和架构 exit handler 的分层。
-
-### DMA 访问
-
-DMA 访问当前通过 MMIO write 路径显式注入客户机内存端口。`AxVM::handle_mmio_write()` 会先调用 `DeviceRuntime::mmio_write_needs_guest_memory()` 判断本次完整 MMIO 写是否命中拥有 `DmaGrant` 的设备；只有命中时才创建 `VmDmaAccess`，并调用 `handle_mmio_write_with_memory()`。
-
-```mermaid
-sequenceDiagram
-    participant Guest as Guest
-    participant VM as AxVM
-    participant Runtime as DeviceRuntime
-    participant Ctx as RuntimeDeviceAccess
-    participant Fw as FwCfgDmaDevice
-    participant Mem as VmDmaAccess
-
-    Guest->>VM: write fw_cfg DMA register
-    VM->>Runtime: mmio_write_needs_guest_memory()
-    VM->>Mem: create VM memory adapter
-    VM->>Runtime: handle_mmio_write_with_memory()
-    Runtime->>Ctx: create context with memory port
-    Runtime->>Fw: access()
-    Fw->>Ctx: read/write_guest_memory(DmaGrant)
-    Ctx->>Ctx: check DeviceId and DmaGrant
-    Ctx->>Mem: read/write guest memory
-    Fw-->>Runtime: BusResponse::Write
-```
-
-这个路径的代表设备是 `virtualization/axdevice/src/fw_cfg.rs` 中的 `FwCfgDmaDevice`。它在处理 DMA register 写入时解析 descriptor，然后通过 `DeviceAccess::read_guest_memory()` 和 `write_guest_memory()` 完成 descriptor 和数据搬运；设备自身保存的是 `DmaGrant`，不是 `AxVM` 或客户机地址空间对象。
-
-### 运行时端口
-
-`RuntimeAccessPorts` 是 VM 运行时注入给 sealed `DeviceRuntime` 的窄端口集合，当前包含 timer、wake 和 stop 三类端口。`AxVM::device_access_ports()` 由 `AxVmDeviceAccessPorts` 构造这些端口，并通过 `PreparedDevices::build_common_with_extra()` 传入设备构建流程。
-
-| 端口 trait | 当前实现 | 运行时效果 |
-| --- | --- | --- |
-| `TimerAccessPort` | `AxVmDeviceAccessPorts` | 调用 `crate::timer::register_timer()`，到期后唤醒该 VM 的 vCPU |
-| `WakeAccessPort` | `AxVmDeviceAccessPorts` | 校验目标 vCPU 存在后通知 VM runtime |
-| `StopAccessPort` | `AxVmDeviceAccessPorts` | 将请求转换为 `StopReason::Fault` 并进入 VM 生命周期状态机 |
-
-这些端口是框架能力，不代表每个设备都能使用。设备必须在 `DeviceBundle` 中绑定对应 grant，运行期还要通过 `RuntimeDeviceAccess` 的 DeviceId+Grant 校验，才能调用对应端口。
-
-## 中断与服务
-
-中断和 typed service 是模拟设备框架与多架构后端之间的主要协作方式。普通设备不直接认识 PLIC、IOAPIC、vGIC 或 PCH-PIC，而是通过构建期获得的 `IrqLine` 和服务 key 与后端连接。
-
-### 中断布线
-
-`InterruptFabric` 是每个 VM 的中断布线层，位于 `virtualization/axvm/src/irq`。设备 factory 通过 `DeviceBuildContext` 请求 `IrqLine`，`IrqLine` 背后连接到当前 VM 的 `IrqSink`，再由架构中断后端完成实际投递。
-
-```mermaid
-flowchart LR
-    Device["ordinary device"]
-    Line["IrqLine"]
-    Fabric["InterruptFabric"]
-    Sink["IrqSink"]
-    Backend["architecture interrupt backend"]
-    Guest["guest vCPU"]
-
-    Device --> Line
-    Line --> Fabric
-    Fabric --> Sink
-    Sink --> Backend
-    Backend --> Guest
-```
-
-这种模型刻意不把 IRQ 做成 `DeviceAccess` 上的通用 effect。普通设备在状态变化后直接 `raise/lower/pulse` 自己的 `IrqLine`，而控制器到 vCPU 的注入路径由架构 bootstrap 或架构 factory 提供专用后端，避免一个中心 executor 同时理解 IRQ、DMA、timer 和 VM 生命周期。
-
-### 服务注册
-
-`DeviceServices` 是设备贡献协作能力的类型化 registry，定义在 `virtualization/axdevice/src/service.rs` 并由 `DeviceBundle::with_service()` 写入。调用方通过 `ServiceKey` 查询明确的 trait service，而不是在生产路径中对 `Arc<dyn Device>` 做 downcast。
-
-| 服务机制 | 代码锚点 | 作用 |
-| --- | --- | --- |
-| `ServiceKey` | `virtualization/axdevice/src/service.rs` | 声明 service 类型、名称和基数 |
-| `DeviceServices::require()` | `virtualization/axdevice/src/service.rs` | 获取单例必需服务，不存在时报错 |
-| `DeviceServices::all()` | `virtualization/axdevice/src/service.rs` | 获取多例服务快照 |
-| `DeviceBundle::with_service()` | `virtualization/axdevice/src/registration.rs` | 由 factory 将服务贡献给 runtime |
-
-typed service 的维护收益是减少架构层对具体设备类型的认识。例如 IVC 只需要 `GuestRangeAllocatorKey`，不需要 `DeviceRuntime` 保存一个具名 `ivc_channel` 字段；后续 vPCI 或中断域服务也可以按相同方式扩展，而不是向中心 enum 增加分支。
-
-### IVC 边界
-
-当前 IVC 仍是 hypercall 控制面的共享内存通道，不是 Linux 可枚举的 PCI 设备。设备框架中 `IvcChannelFactory` 不创建 MMIO 设备，而是在 `virtualization/axdevice/src/range_alloc.rs` 中创建 `IvcGuestRangeAllocator`，并以 `GuestRangeAllocatorKey` 服务注册给 `DeviceRuntime`。
-
-IVC 的运行期分配不破坏静态拓扑，因为它只在 VM prepare 时声明好的保留 GPA 窗口内分配和释放 channel 地址。也就是说，变化的是共享内存地址资源的占用状态，不是客户机可见设备集合、bus resource 或 stage-2 trap 布局。
-
-## 多架构接入
-
-多架构接入遵循“两阶段”思想：架构 prepare 先建立中断域和必要后端，再把所有客户机可见设备交给 factory 和 `PreparedDevices` 统一构建。这个分层让架构差异留在 bootstrap/backend 中，让普通设备保持同一套 `Device` 和 `DeviceAccess` 接口。
-
-### 准备入口
-
-各架构 VM prepare 代码会创建 `DeviceFactoryRegistry`、注册内置和架构相关 factory、构造 `InterruptFabric`，然后调用 `PreparedDevices::build_common_with_extra()`。这个函数是设备构建的公共入口，负责把配置设备和架构额外设备统一送入 `DeviceRuntime::build_with_factories_and_ports()`。
-
-| 架构 | 代表入口 | 设备构建特点 |
-| --- | --- | --- |
-| RISC-V | `virtualization/axvm/src/arch/riscv64/vm.rs` | vPLIC 通过架构 IRQ 配置注册 factory，并向 fabric 提供 sink |
-| x86_64 | `virtualization/axvm/src/arch/x86_64/vm.rs` | IOAPIC、PIT、串口和 port passthrough 通过 x86 factory 接入 |
-| AArch64 | `virtualization/axvm/src/arch/aarch64/vm.rs` | vGIC、GIC redistributor 和 CNT* SysReg vtimer 由架构 factory 贡献 |
-| LoongArch64 | `virtualization/axvm/src/arch/loongarch64/vm.rs` | PCH-PIC 等架构设备通过 factory 和 output port 接入 |
-
-架构仍然可以提供后端能力，例如中断注入、timer 后端或平台特定 output port；但这些能力应作为 factory context、fabric、typed service 或窄端口进入设备构建，而不是直接修改 `DeviceRuntime` 的具体字段。
-
-### 启动载荷
-
-fw_cfg 是启动期 payload 与模拟设备结合的典型例子。`AxVM::add_fw_cfg_device()` 当前把内核、initrd、cmdline、CPU 数量和平台 blob 暂存为 `pending_fw_cfg_payload`，随后 prepare 阶段通过 `FwCfgPayloadFactory` 把这些 payload 变成标准 fw_cfg 设备 bundle。
-
-这个路径的边界是：`pending_fw_cfg_payload` 只是 boot payload staging，不是运行期设备特判。真正的 fw_cfg 设备仍由 factory 构建，最终以 `FwCfgDmaDevice` 注册到 `DeviceRuntime`，并通过 `DmaGrant` 受控访问客户机内存。
-
-### 未来 vPCI
-
-当前 `BusKind` 和 `Resource` 已覆盖 MMIO、PIO 和 SysReg，PCI config 和 PCI function/BAR 仍属于后续扩展方向。当前框架的原则是未来 vPCI 也应复用同一套模型：PCI function、config space、BAR、MSI-X table 和 shared memory window 都作为同一个 `DeviceId` 的资源集合注册，而不是另开 vPCI 旁路。
-
-对 IVC 改造成 Jailhouse 或 rust-shyper 风格 ivshmem/vPCI 设备时，首先需要补 PCI host bridge、PCI config dispatch、BAR 分配、MSI/MSI-X 和 guest DTB/ACPI 描述。完成这些基础设施后，ivshmem 设备应仍然通过 `EmulatedDeviceConfig → DeviceFactory → DeviceBundle → DeviceRuntime` 进入框架。
-
-## 设备清单与实操流程
-
-模拟设备框架的日常使用可以分成三件事：先确认当前设备类型是否已经有 factory 支持，再在 VM 配置中填写 `emu_devices`，最后通过测试或 guest 行为确认设备确实进入了 `DeviceRuntime` 并走统一访问路径。本章从实操视角补齐这条链路，避免把“配置层认识某个类型”和“当前框架已经实现该设备”混在一起。
-
-### 已支持设备
-
-当前配置层的设备类型定义在 `virtualization/axvm-types/src/lib.rs` 的 `EmulatedDeviceType`，而真正能被框架构建的设备取决于是否注册了对应的 `DeviceFactory`。下表列出当前已经由内置 factory 或架构 factory 接入 `DeviceRuntime` 的设备，以及它们在框架中呈现的资源类型和用途。
-
-| 设备类型 | 类型值 | 主要资源 | 支持架构 | 说明 |
-| --- | ---: | --- | --- | --- |
-| `Dummy` | `0x0` | 无资源 | 通用 | 元设备或占位设备，由 `MetaDeviceFactory` 返回空 `DeviceBundle`，常用于测试配置到 factory 的最小路径 |
-| `IVCChannel` | `0xA` | service-only | 通用 | 不创建 MMIO/PIO 设备，而是通过 `IvcChannelFactory` 注册 `GuestRangeAllocatorKey`，供 IVC hypercall 在静态保留 GPA 窗口内分配 channel |
-| `FwCfg` | `0x3` | MMIO + DMA grant | 当前主要用于启动载荷路径 | QEMU 兼容 fw_cfg 设备，由 `FwCfgPayloadFactory` 构建 `FwCfgDmaDevice`，向 guest 暴露 kernel、initrd、cmdline、ACPI/SMBIOS 等启动配置 |
-| `Console` | `0x2` | Port I/O | x86_64 | 当前由 `X86SerialFactory` 构建 COM1 串口设备，并注册 `X86SerialServiceKey` 供 x86 运行时输入轮询使用 |
-| `X86IoApic` | `0x23` | MMIO + IRQ domain | x86_64 | x86 虚拟 IOAPIC，负责 GSI 路由、mask/unmask、EOI 等中断控制语义 |
-| `X86Pit` | `0x24` | Port I/O + IRQ | x86_64 | x86 PIT/8254 定时器，通过端口寄存器模拟 timer 语义，并向中断域触发对应 IRQ |
-| `X86PortPassthrough` | `0x26` | Port I/O | x86_64 | 将指定 host I/O port range 作为模拟设备资源注册，guest 访问该范围时由 `HostPortPassthroughDeviceFactory` 处理 |
-| `InterruptController` | `0x1` | MMIO | AArch64 | AArch64 vGIC 控制器入口，由架构 factory 包装预创建的 vGIC 后端并注册为客户机可见设备 |
-| `GPPTRedistributor` | `0x20` | MMIO | AArch64 | GIC partial passthrough redistributor 设备，按配置暴露 redistributor 相关窗口 |
-| `GPPTDistributor` | `0x21` | MMIO | AArch64 | GIC partial passthrough distributor 设备，暴露 distributor 相关窗口 |
-| `GPPTITS` | `0x22` | MMIO | AArch64 | GIC ITS partial passthrough 设备，用于 ITS 相关窗口或平台能力暴露 |
-| `Aarch64Vtimer` | `0x27` | SysReg | AArch64 | AArch64 CNT* 虚拟 timer 系统寄存器块，由 `Aarch64VtimerFactory` 注册到 SysReg resource index |
-| `LoongArchPchPic` | `0x25` | MMIO | LoongArch64 | LoongArch PCH-PIC 虚拟中断控制器，通过 `LoongArchPchPicFactory` 接入设备框架 |
-| `PPPTGlobal` | `0x30` | MMIO + IRQ sink | RISC-V | RISC-V vPLIC/PLIC partial passthrough global 设备，由 `RiscvPlicFactory` 构建，并作为 `InterruptFabric` 的后端 sink |
-
-
-### 配置到运行
-
-从实操角度看，模拟设备有一条很明确的分界线：VM prepare 阶段是“注册期”，负责把配置变成 sealed `DeviceRuntime`；guest 开始执行以后是“运行期”，负责把 VM exit 分派给已经注册好的设备。配置文件只影响注册期，运行期不会重新解析 TOML，也不会根据设备类型临时创建设备。
+`AxVMConfig` 将 TOML 中的一项 `emu_devices` 解析为 `EmulatedDeviceConfig`。数组内六个字段的位置固定，最后一个 `cfg_list` 由具体设备解释。
 
 ```toml
-# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
+# Name, Base-GPA, Length, IRQ-ID, Emu-Type, EmuConfig
 emu_devices = [
-  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, []],
-  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
-  ["x86-pit", 0x40, 0x22, 0x0, 0x24, []],
+  ["x86-com1",   0x3f8,      0x8,    0, 0x2,  []],
+  ["x86-ioapic", 0xfec00000, 0x1000, 0, 0x23, []],
+  ["x86-pit",    0x40,       0x22,   0, 0x24, []],
 ]
 ```
 
-这个示例来自 x86 QEMU 配置的典型形态。每一行会被解析成一个 `EmulatedDeviceConfig`：`name` 用于诊断，`base_gpa` 和 `length` 描述设备窗口，`irq_id` 表达设备可能使用的虚拟中断线，`emu_type` 选择 factory，`cfg_list` 留给具体设备解析额外参数。
+配置字段在公共类型中的含义如下。
 
-注册期发生在 VM prepare 流程中，核心代码路径是 `PreparedDevices::build_common_with_extra()` 调用 `DeviceRuntime::build_with_factories_and_ports()`。这个阶段会注册 factory、构建 bundle、检查资源冲突、绑定 grant 和 service，最后调用 `seal()` 封存拓扑；到这里为止，设备已经“注册完成”，但还没有处理任何 guest 访问。
-
-```mermaid
-flowchart TB
-    Toml["VM TOML: emu_devices"]
-    Parse["parse into EmulatedDeviceConfig"]
-    Arch["arch prepare registers factories"]
-    Common["PreparedDevices::build_common_with_extra"]
-    Factory["DeviceFactoryRegistry::build"]
-    Bundle["DeviceFactory::build returns DeviceBundle"]
-    Register["DeviceRuntime::register_bundle"]
-    Index["resource/service/grant indices"]
-    Seal["DeviceRuntime::seal"]
-
-    Toml --> Parse
-    Parse --> Arch
-    Arch --> Common
-    Common --> Factory
-    Factory --> Bundle
-    Bundle --> Register
-    Register --> Index
-    Index --> Seal
-```
-
-这张图里的 `DeviceRuntime::register_bundle()` 就是注册动作真正落地的位置。它会把 `Device::resources()` 写入 MMIO、PIO、SysReg 或 IRQ 索引，把 `DeviceBundle` 里的 typed service 合并到 `DeviceServices`，并把 `DmaGrant`、`TimerGrant`、`WakeGrant`、`StopGrant` 从 bundle-local index 绑定到最终的 `DeviceId`。
-
-运行期从 guest 访问设备资源开始。客户机访问 MMIO、PIO 或系统寄存器后触发 VM exit，架构层只把这个 exit 转成 `BusAccess`，随后进入 `DeviceRuntime` 的 lookup 和 dispatch；设备是否是串口、PIT、fw_cfg 或 vtimer，不应由架构 exit switch 判断。
-
-```mermaid
-flowchart TB
-    Guest["guest MMIO/PIO/SysReg access"]
-    Exit["architecture VM exit"]
-    Axvm["AxVM handle_* facade"]
-    Runtime["sealed DeviceRuntime"]
-    Lookup["lookup registered Resource"]
-    Context["create RuntimeDeviceAccess"]
-    Access["Device::access"]
-    Response["BusResponse or DeviceError"]
-
-    Guest --> Exit
-    Exit --> Axvm
-    Axvm --> Runtime
-    Runtime --> Lookup
-    Lookup --> Context
-    Context --> Access
-    Access --> Response
-```
-
-普通设备和 DMA 设备在运行期的差异主要体现在 `DeviceAccess` 是否带有客户机内存端口。普通设备只使用 `DeviceRuntime::dispatch()` 创建的上下文；DMA 设备仍然走同一个设备对象和同一个 `Device::access()`，但命中拥有 `DmaGrant` 的 MMIO write 时，`AxVM::handle_mmio_write()` 会额外创建 `VmDmaAccess` 并调用 `handle_mmio_write_with_memory()`。
-
-| 设备形态 | 配置侧 | Factory 侧 | 运行期使用 |
-| --- | --- | --- | --- |
-| 普通 MMIO/PIO/SysReg 设备 | 填写 `name/base_gpa/length/irq_id/emu_type/cfg_list` | 创建 `Device`，声明 `Resource`，放入 `DeviceBundle` | `dispatch()` 直接调用 `Device::access()`，无 guest memory port |
-| IRQ 设备 | 同普通设备，`irq_id` 或 `cfg_list` 由 factory 解释 | 通过 `DeviceBuildContext` 获取 `IrqLine` 或架构中断服务 | 设备状态变化后触发 `IrqLine`，不直接操作架构控制器 |
-| DMA 设备 | 通常仍表现为 MMIO 设备，例如 fw_cfg DMA register | 创建 `DmaGrant`，使用 `with_guest_memory_device_grant()` 绑定设备 | `handle_mmio_write_with_memory()` 创建带 `VmDmaAccess` 的上下文，设备用 grant 读写 guest memory |
-| service-only 设备 | 配置声明静态范围或能力，例如 IVC reserved window | 不创建 bus device，只通过 `with_service()` 贡献 typed service | runtime/hypercall 查询 service；不参与 MMIO/PIO dispatch |
-
-fw_cfg 是 DMA 设备的代表路径。启动代码先通过 `AxVM::add_fw_cfg_device()` 暂存 boot payload，prepare 阶段调用 `register_boot_payload_factories()` 注册 `FwCfgPayloadFactory`，factory 构建 `FwCfgDmaDevice` 并在 bundle 中绑定 `DmaGrant`；运行期 guest 写 fw_cfg DMA 寄存器时，设备才通过本次访问的 `DeviceAccess` 临时获得客户机内存读写能力。
-
-### 调试验证
-
-新增或修改模拟设备后，验证重点不是只看 guest 是否启动，而是确认设备确实走了统一构建路径、资源被 runtime 接管、敏感能力被 grant 控制。最小验证可以从日志、单元测试和 guest 行为三层展开；如果设备涉及中断、DMA 或架构后端，还需要补对应架构的 QEMU smoke 或行为等价测试。
-
-| 验证点 | 推荐方法 | 失败时优先检查 |
+| 字段 | Rust 字段 | 含义 |
 | --- | --- | --- |
-| factory 是否注册 | 单测调用 `DeviceFactoryRegistry::get()` 或启动日志观察 build 错误 | 架构 prepare 是否调用了对应 `register_device_factories()`，设备类型值是否匹配 |
-| bundle 是否成功注册 | 单测调用 `DeviceRuntime::build_with_factories_and_ports()` | resource 是否零长度、溢出、重叠，grant 的 bundle-local index 是否越界 |
-| 资源是否命中 | 单测调用 `handle_mmio_read/write`、`handle_port_read/write` 或 `handle_sys_reg_read/write` | `base_gpa/length` 是否与设备实际 bus 类型一致，访问宽度是否跨出窗口 |
-| DMA 是否受控 | 使用错误 grant、未授权设备或无 memory port 的测试 | 设备是否在 bundle 中绑定 `DmaGrant`，是否只在 MMIO write access 中请求 DMA |
-| 中断是否到达 | guest 日志、设备行为测试或架构 IRQ 单测 | `InterruptFabric` 是否有 backend，IRQ line 是否与 guest 描述和控制器配置一致 |
-| 拓扑是否封存 | prepare 后尝试 `register_bundle()` 的结构性测试 | 是否仍有运行期注册普通客户机可见设备的旧路径 |
+| Name | `name` | 日志和错误信息使用的设备名；不作为 factory 查找键 |
+| Base-GPA | `base_gpa` | MMIO 基地址；对 Port 设备表示起始端口；无地址资源的配置可填 0 |
+| Length | `length` | MMIO 或 Port 窗口长度；部分固定布局设备由实现自身确定资源 |
+| IRQ-ID | `irq_id` | 配置携带的中断号；现有生产 factory 没有直接读取该字段 |
+| Emu-Type | `emu_type` | `EmulatedDeviceType` 的数值，直接用于查找 factory |
+| EmuConfig | `cfg_list` | 设备专用参数，如 vPLIC context 数量或 GIC redistributor 布局 |
 
-调试时应优先沿“配置解析、factory 构建、bundle 注册、resource lookup、设备 access、grant/IRQ 后端”顺序排查。不要为了快速验证在 `AxVM` 或架构 exit switch 中增加设备类型特判；一旦新设备需要这种特判，通常说明它缺少合适的 `Resource`、typed service、`IrqLine` 或访问期 grant。
+`EmulatedDeviceType` 能够从配置解析某个数值，不等于该架构已经注册相应 factory。例如类型枚举中包含 Virtio block、net 和 console，而当前默认模拟设备 registry 没有为这些类型注册 factory；若配置命中未注册类型，prepare 会返回 `DeviceManagerError::Unsupported`。
 
-## 新增设备
+### 2.2 Factory registry
 
-新增一个普通模拟设备的目标路径很短：写私有参数解析，注册一个 factory，实现一个 `Device`，补测试。只要设备不需要新增架构后端或新 bus 类型，就不应该修改架构 exit switch、`AxVM` 的具体设备字段或 `DeviceRuntime` 的设备类型分支。
+`DeviceFactoryRegistry` 维护 `EmulatedDeviceType → Arc<dyn DeviceFactory>` 映射。一个类型最多只能注册一个 factory；重复注册返回 `ResourceConflict`，构建时找不到对应 factory 则返回 `Unsupported`，不会尝试另一条隐式构建路径。
 
-### 最小步骤
+公共 prepare 先调用 `register_builtin_factories()` 注册 `Dummy` 和 `IVCChannel`。各架构随后补充自己的平台设备。LoongArch64 的默认 bootstrap 还会在 VM 保存了 `fw_cfg` 启动载荷时注册捕获该载荷的 `FwCfgPayloadFactory`。
 
-新增普通 MMIO 设备时，建议先确认设备是否只需要寄存器读写。如果是，设备实现只需要声明 `Resource::MmioRange` 并在 `Device::access()` 中处理读写；factory 解析 `EmulatedDeviceConfig` 后把设备放入 `DeviceBundle::from_registration()` 或 `DeviceBundle::new().with_registration()`。
+| 架构 | prepare 阶段注册的主要 factory |
+| --- | --- |
+| 公共 | `MetaDeviceFactory`、`IvcChannelFactory` |
+| x86_64 | `X86SerialFactory`、`X86IoApicFactory`、`X86PitFactory`、`HostPortPassthroughDeviceFactory` |
+| AArch64 | `Aarch64VgicFactory`、GIC redistributor/distributor/ITS factory、`Aarch64VtimerFactory` |
+| RISC-V | `RiscvPlicFactory`，由 `RiscvDeviceBootstrap` 根据 PPPT 配置创建 |
+| LoongArch64 | `LoongArchPchPicFactory`；存在启动载荷时再注册 `FwCfgPayloadFactory` |
+
+registry 属于单台 VM 的构建过程。RISC-V 的 factory 捕获该 VM 已创建的 `VPlicGlobal`，`FwCfgPayloadFactory` 捕获该 VM 的 kernel、initrd、cmdline 和固件表数据，因此不会在不同 VM 之间共享可变设备状态。
+
+### 2.3 Factory 与 `DeviceBundle`
+
+`DeviceFactory::build()` 接收一项配置和 `DeviceBuildContext`，返回 `DeviceBundle`，不直接修改 runtime。`DeviceBuildContext` 当前提供 `IrqResolver`，factory 可以据此把配置中的虚拟中断线解析成连接到本 VM `InterruptFabric` 的 `IrqLine`。
+
+一个 bundle 可以同时包含多个设备对象、grant、lifecycle、pollable 能力和类型化服务。grant 使用 bundle 内设备下标记录归属，直到注册成功后才换算成最终 `DeviceId`。
+
+| Bundle 内容 | 典型实例 |
+| --- | --- |
+| 一个 `Device` | x86 PIT、LoongArch PCH-PIC |
+| 多个 `Device` | AArch64 vtimer 的三个系统寄存器设备；每 vCPU 一个 GIC redistributor |
+| 设备与 grant | `FwCfgDmaDevice` 与 `DmaGrant` |
+| 设备与 service | x86 IOAPIC 与中断域 service；GICD 与 SPI 分配 service |
+| 仅 service | IVC 配置生成的 `GuestRangeAllocatorKey` |
+| lifecycle | AArch64 vtimer 的 reset、suspend、resume 处理器 |
+
+这种返回值允许 factory 把同一功能需要的对象作为一个注册单元提交。例如 AArch64 vtimer 的三个寄存器共享同一个 `VtimerState` 和 backend，注册时还会同时加入 lifecycle，而不是在 VM 初始化代码中分别保存这些对象。
+
+factory 的公共签名很小：它只读取配置和构建上下文，产物由 runtime 统一登记。
+
+```rust
+pub trait DeviceFactory: Send + Sync {
+    fn device_type(&self) -> EmulatedDeviceType;
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle>;
+}
+```
+
+`fw_cfg` factory 展示了 grant 如何与设备一起加入 bundle。grant 在这里创建，但没有内存权限；只有 runtime 注册并在一次 MMIO 写中注入 memory port 后，它才能用于 DMA。
+
+```rust
+let fw_cfg = Arc::new(FwCfg::new(/* boot payload */));
+let dma_grant = DmaGrant::new();
+
+DeviceBundle::new().with_guest_memory_device_grant(
+    Arc::new(FwCfgDmaDevice::from_arc(fw_cfg, dma_grant.clone())),
+    dma_grant,
+)
+```
+
+这段构建代码不接触 `DeviceRuntime` 的内部字段，资源冲突、`DeviceId` 分配和 grant 归属校验均在后续注册阶段完成。
+
+### 2.4 公共构建路径
+
+`PreparedDevices::build_common_with_extra()` 是各架构共同使用的设备构建入口。它复制 `resources.config.emu_devices()`，追加架构生成的 `extra_configs`，再以当前 VM 的 `InterruptFabric` 创建 `DeviceBuildContext`。
 
 ```text
-1. 定义设备私有参数解析，拒绝非法 base/length/irq 参数。
-2. 实现 Device::name/resources/access。
-3. 实现 DeviceFactory::device_type/build。
-4. 在对应内置或架构 factory 注册函数中注册 factory。
-5. 增加配置到 runtime dispatch 的单元测试或集成测试。
+VM 配置 emu_devices
+        + 架构 extra_configs
+        ↓
+DeviceRuntime::build_with_factories_and_ports()
+        ↓ 逐项调用
+DeviceFactoryRegistry::build()
+        ↓
+DeviceRuntime::register_bundle()
+        ↓ 全部成功
+DeviceRuntime::seal()
 ```
 
-如果设备需要 IRQ，应通过 `DeviceBuildContext` 和 `InterruptFabric` 获取 `IrqLine`，并在设备状态更新后触发中断。设备不应直接调用架构中断控制器，也不应保存 VM/vCPU 对象。
+`extra_configs` 用于本来就由架构配置派生的设备。x86 将 `passthrough_ports` 转为 `X86PortPassthrough` 项；AArch64 在非 passthrough 中断模式下加入 vtimer 项。它们与 TOML 中的普通模拟设备走相同的 factory 和资源注册逻辑。
 
-### 权限申请
+### 2.5 事务注册与封存
 
-需要敏感能力的设备必须把 grant 放进 `DeviceBundle`。例如需要 DMA 的设备可以使用 `with_guest_memory_device_grant()` 或先 `add_device()` 再 `grant_guest_memory_to_device()`；timer、wake 和 stop 也有对应的 bundle 方法。
+`register_bundle()` 先验证所有 bundle-local 关系，再开始写 runtime。验证包括 grant 下标越界或重复、同一 pollable/lifecycle 对象重复注册以及单例 service 冲突。
 
-| 设备需求 | Bundle 方法 | 设备侧调用 |
+设备对象按 bundle 中的顺序注册。若中途出现地址或 IRQ 冲突，runtime 会把本 bundle 已追加的设备弹出，并按每个设备的 `resources()` 删除刚插入的索引；之前已经成功注册的 bundle 不受影响。只有全部设备成功后，grant、pollable、lifecycle 和 service 才会并入 runtime。
+
+所有配置构建完成后，`build_with_factories_and_ports()` 调用 `seal()`。此后调用 `register()`、`register_bundle()` 或 factory 注册入口都会得到 `InvalidState`，从而保证 VM 运行期间的设备数组和分派索引不再变化。
+
+## 3. 设备与资源模型
+
+运行时只认识统一的 `Device` trait。设备的协议状态保存在具体实现内部，框架通过 `resources()` 知道它占用哪些入口，通过 `access()` 处理一次已经解码的客户机访问。
+
+### 3.1 `Device` trait
+
+`Device` 要求实现 `Send + Sync`，因为一台 VM 的设备 runtime 可能被不同 vCPU 访问。接口只有设备名、静态资源快照和访问函数三个部分。
+
+```rust
+pub trait Device: Send + Sync {
+    fn name(&self) -> &str;
+    fn resources(&self) -> &[Resource];
+    fn access(
+        &self,
+        access: &BusAccess,
+        context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError>;
+}
+```
+
+`resources()` 返回的 slice 在设备构造时生成，此后保持稳定。注册路径用它检查冲突并建立索引；访问热路径不重新分配资源列表。设备内部需要修改的寄存器、队列和状态机通常使用各实现自己的锁或原子变量保护。
+
+### 3.2 `BusAccess` 与 `BusResponse`
+
+架构 VM-exit 被归一化为 `BusAccess`。`kind` 区分 MMIO、Port 和 SysReg，`is_read` 表示方向，`addr` 保存原始总线地址，`width` 表示 1、2、4 或 8 字节访问，写入数据放在 `data` 的低位。
+
+| 字段或类型 | 可取值 | 说明 |
 | --- | --- | --- |
-| DMA | `add_guest_memory_device_with_grant()`、`with_guest_memory_device_grant()` | `DeviceAccess::read_guest_memory()`、`write_guest_memory()` |
-| Timer | `add_timer_device_with_grant()`、`with_timer_device_grant()` | `DeviceAccess::schedule_timer()` |
-| Wake | `add_wake_device_with_grant()`、`with_wake_device_grant()` | `DeviceAccess::wake_vcpu()` |
-| Stop | `add_stop_device_with_grant()`、`with_stop_device_grant()` | `DeviceAccess::request_vm_stop()` |
+| `BusKind` | `Mmio`、`Port`、`SysReg` | 三类索引彼此独立 |
+| `AccessWidth` | `Byte`、`Word`、`Dword`、`Qword` | `size()` 分别返回 1、2、4、8 |
+| `BusResponse::Read` | `{ value: u64 }` | 读操作返回的数据 |
+| `BusResponse::Write` | 无数据 | 写操作的完成确认 |
 
-grant 的生命周期应由设备对象保存，但能力调用必须发生在 `Device::access()` 的上下文内。设备不应把 `&mut dyn DeviceAccess` 存入自身状态，也不应在设备状态锁内执行可能阻塞的 guest memory copy、timer 调度或 VM stop 请求。
+MMIO 写入口会检查设备是否返回 `BusResponse::Write`，MMIO、Port 和 SysReg 的读入口都会拒绝 `BusResponse::Write`。现有 `handle_port_write()` 与 `handle_sys_reg_write()` 只传播 `dispatch()` 错误，没有再次检查响应 variant；这是阅读访问错误时需要注意的现行行为。
 
-### 测试要求
+### 3.3 资源类型
 
-新增设备至少应覆盖资源注册、dispatch 读写和错误响应。若设备使用 grant，还应覆盖未授权、错误 grant、错误 `DeviceId` 或缺少 runtime port 的拒绝路径，防止权限模型只在 happy path 中生效。
+每个设备通过 `Resource` 声明自己占用的地址或中断输入线。地址范围采用左闭右开区间，`size` 或 `count` 不能为零。
 
-| 测试类别 | 验证目标 |
+| Resource | 地址含义 | 索引与检查 |
+| --- | --- | --- |
+| `MmioRange { base, size }` | 客户机物理地址 `[base, base + size)` | 检查 `u64` 加法溢出和 MMIO 重叠 |
+| `PortRange { base, size }` | x86 端口 `[base, base + size)` | 结果不能超过 `0x10000`，检查 Port 重叠 |
+| `SysReg { addr, count }` | 架构寄存器编码范围 | 结果不能超过 `u32` 编码空间，检查 SysReg 重叠 |
+| `IrqLine { line, trigger }` | 虚拟中断控制器输入线 | 同一 runtime 内独占，记录触发模式 |
+
+MMIO、Port 和 SysReg 是不同的地址域，所以数值相同不会冲突。例如 MMIO 地址 `0x40` 与 x86 port `0x40` 可以分别属于不同设备。`IrqLine.line` 表示 GSI、GIC INTID 或 PLIC source 一类虚拟控制器输入标识，不是宿主物理 IRQ、CPU trap vector 或 vCPU 注入向量。
+
+### 3.4 注册校验
+
+`DeviceRuntime::validate_resources()` 在修改索引前检查一个设备的完整资源列表。它既检查新设备内部的资源是否互相重叠，也检查与已注册设备的冲突。
+
+对地址资源，冲突查找会同时检查起始地址之前最近的区间和起始地址之后的第一个区间，因此能够识别相交、包含和被包含三种情况。IRQ line 则检查同一设备重复声明以及跨设备重复占用。
+
+注册成功后，`insert_resources()` 才把所有入口写入相应 `BTreeMap`。设备随后追加到 `devices`，其数组下标被封装为 `DeviceId`。由于 runtime 封存后不再删除设备，这个身份在本次 VM prepare 的整个运行期内保持稳定。
+
+### 3.5 地址查找
+
+一次地址查找先在对应 `BTreeMap` 中获取不大于访问地址的最后一个起点，再检查完整访问宽度是否落在该区间内。MMIO 和 Port 使用 `range_contains_access()`；SysReg 以寄存器编码和 `count` 判断。
+
+完整宽度检查能够拒绝跨边界访问。假设设备声明 `[0x1000, 0x1004)`，从 `0x1002` 发起 4 字节访问虽然起始地址位于窗口内，但结束地址越过 `0x1004`，runtime 不会调用设备，而是按未命中处理。地址加访问宽度发生溢出时同样不会命中。
+
+MMIO 查找实现正是“找前驱区间，再验证完整访问”的两步；Port 查找采用相同模式。
+
+```rust
+fn lookup_mmio(&self, addr: u64, width: AccessWidth) -> Option<usize> {
+    let (&base, entry) = self.mmio_index.range(..=addr).next_back()?;
+    range_contains_access(base, entry.size, addr, width).then_some(entry.slot)
+}
+```
+
+因此索引按区间起点排序，而不是按每个字节或每个寄存器展开。设备资源窗口越大，索引项数也不会随窗口大小增长。
+
+## 4. 运行时访问路径
+
+VM prepare 完成后，模拟设备的主要入口来自 vCPU VM-exit。架构代码负责把退出信息中的地址、宽度、方向和数据转换为公共类型，设备 runtime 不解析架构专用退出原因。
+
+### 4.1 从 VM-exit 到 `dispatch()`
+
+AArch64、RISC-V、x86_64 和 LoongArch64 的 MMIO 路径最终调用 `AxVM::handle_mmio_read()` 或 `AxVM::handle_mmio_write()`。x86 I/O instruction 进入 Port handler，AArch64 vtimer 一类寄存器退出进入 SysReg handler。
+
+```mermaid
+sequenceDiagram
+    participant VCPU as vCPU backend
+    participant VM as AxVM
+    participant RT as DeviceRuntime
+    participant DEV as Device
+
+    VCPU->>VM: VM-exit(addr, width, read/write, data)
+    VM->>RT: handle_mmio/port/sys_reg_*()
+    RT->>RT: lookup complete access range
+    RT->>RT: create RuntimeDeviceAccess
+    RT->>DEV: access(BusAccess, DeviceAccess)
+    DEV-->>RT: BusResponse or DeviceError
+    RT-->>VM: value, success, or DeviceManagerError
+    VM-->>VCPU: complete emulation
+```
+
+`BusRouter::dispatch()` 根据 `BusKind` 选择索引。Port 地址必须能转换成 `u16`，SysReg 地址必须能转换成 `u32`；转换失败返回 `OutOfRange`。索引未命中返回 `DeviceError::NotFound`，命中后才创建 `RuntimeDeviceAccess` 并调用目标设备。
+
+分派函数在总线查找完成后按如下方式创建上下文。`RuntimeDeviceAccess` 在栈上创建，生命周期严格限制在这一次 `Device::access()` 调用内。
+
+```rust
+let device = &self.devices[idx];
+let mut context = RuntimeDeviceAccess {
+    device_id: DeviceId::new(idx as u32),
+    memory: None,
+    dma_grants: &self.dma_grants,
+    timer_grants: &self.timer_grants,
+    wake_grants: &self.wake_grants,
+    stop_grants: &self.stop_grants,
+    access_ports: &self.access_ports,
+};
+device.access(access, &mut context)
+```
+
+普通 `dispatch()` 中的 `memory` 固定为 `None`；带客户机内存的 MMIO 写入口才会用同一组字段创建 `memory: Some(memory)` 的上下文。
+
+### 4.2 MMIO 访问
+
+`handle_mmio_read()` 和 `handle_mmio_write()` 构造公共访问对象并调用 `dispatch()`。读操作取得 `BusResponse::Read.value`，写操作用 `expect_write_response()` 确认设备返回写完成。
+
+MMIO 通常对应 nested page fault 或架构提供的 MMIO exit。设备窗口不会作为普通客户机 RAM 映射；地址空间准备代码可以用 `find_mmio_dev()` 判断一个 GPA 是否属于模拟设备，从而把访问留给设备模拟路径。
+
+### 4.3 Port 与系统寄存器访问
+
+x86 串口、PIT 和 host port passthrough 使用 Port 索引。`handle_port_read()`/`write()` 把 `Port(u16)` 转为 `BusAccess`，设备实现再根据 `AccessWidth` 调用对应宽度的后端操作。
+
+AArch64 vtimer 使用 SysReg 索引。一个 `Aarch64Vtimer` bundle 注册 `SysCntpCtlEl0`、`SysCntpctEl0` 和 `SysCntpTvalEl0` 三个 `Device`，各自声明自己的寄存器编码。系统寄存器退出因此不需要在 `DeviceRuntime` 中硬编码 CNT* 寄存器语义。
+
+### 4.4 错误语义
+
+设备自己的访问错误使用 `DeviceError`，runtime 对外则使用 `DeviceManagerError` 补充操作、总线、地址和宽度。日志中看到 `DeviceManagerError::Access` 时，`source` 才是底层设备给出的直接原因。
+
+| 错误类型 | 常见触发位置 | 含义 |
+| --- | --- | --- |
+| `InvalidConfig` | factory 构建设备 | `cfg_list` 数量错误、配置范围与预建对象不一致 |
+| `ResourceConflict` / `RegistryError` | 注册设备或 service | 地址重叠、IRQ line 重复、单例 service 重复 |
+| `InvalidState` | runtime 已 sealed 后注册 | prepare 结束后又尝试修改拓扑 |
+| `Unsupported` | factory 或运行时能力查找 | 未注册设备类型，或设备没有所请求的端口 |
+| `UnexpectedResponse` | facade 校验响应 | 读请求收到写确认，或 MMIO 写收到读数据 |
+| `Access` | MMIO、Port、SysReg facade | 包装一次具体总线访问失败的上下文 |
+
+资源未命中与设备主动返回 `OutOfRange` 的位置不同：前者发生在 runtime 索引查找阶段，后者说明索引已选择设备但设备自己的寄存器检查拒绝了访问。这个区别对定位配置窗口和设备寄存器布局问题很有用。
+
+## 5. 访问上下文与运行时能力
+
+设备处理寄存器时有时还要读写客户机内存、安排定时器或请求 VM 动作。框架不把 `AxVM` 直接交给设备，而是在一次 `Device::access()` 调用期间提供 `DeviceAccess`。
+
+### 5.1 `DeviceAccess` 与 grant
+
+`DeviceAccess` 暴露四类受控操作。每类操作都有独立 grant，bundle 注册时把 grant token 与最终 `DeviceId` 绑定。
+
+| 能力 | Grant | `DeviceAccess` 方法 |
+| --- | --- | --- |
+| 客户机内存 | `DmaGrant` | `read_guest_memory()`、`write_guest_memory()` |
+| 定时器 | `TimerGrant` | `schedule_timer()` |
+| vCPU 唤醒 | `WakeGrant` | `wake_vcpu()` |
+| VM 停止请求 | `StopGrant` | `request_vm_stop()` |
+
+grant 内部用一个 `Arc<()>` 作为不可伪造的 token。`RuntimeDeviceAccess` 同时检查当前处理访问的 `DeviceId` 和 token 是否与注册记录相同；仅持有另一个设备的 grant，或临时创建同类型 grant，都不能获得能力。检查通过后还必须存在相应 VM runtime port，否则仍返回 `DeviceError::Unsupported`。
+
+### 5.2 `fw_cfg` DMA 路径
+
+客户机内存端口目前只在 MMIO 写路径按需注入。`AxVM::handle_mmio_write()` 先调用 `mmio_write_needs_guest_memory()`，根据完整 MMIO 范围找到设备，并检查该 `DeviceId` 是否注册过 `DmaGrant`。只有需要时才创建 `VmDmaAccess`，然后进入 `handle_mmio_write_with_memory()`。
+
+```mermaid
+sequenceDiagram
+    participant Guest as Guest firmware/kernel
+    participant VM as AxVM
+    participant RT as DeviceRuntime
+    participant FW as FwCfgDmaDevice
+    participant Mem as VmDmaAccess
+
+    Guest->>VM: write fw_cfg DMA address register
+    VM->>RT: mmio_write_needs_guest_memory()
+    RT-->>VM: true
+    VM->>Mem: create access-scoped adapter
+    VM->>RT: handle_mmio_write_with_memory(..., Mem)
+    RT->>FW: access(..., RuntimeDeviceAccess)
+    FW->>RT: read_guest_memory(DmaGrant, descriptor)
+    RT->>Mem: read descriptor
+    FW->>RT: write_guest_memory(DmaGrant, payload)
+    RT->>Mem: write payload
+```
+
+普通 `dispatch()` 创建的上下文没有 memory port，即使设备注册了 `DmaGrant`，也只能在带 memory 的 MMIO 写入口中使用它。`FwCfgDmaDevice` 因此保存的是 grant 和 `Arc<FwCfg>`，不是客户机地址空间对象。
+
+`FwCfgDmaDevice::access()` 先区分普通寄存器写与 DMA address 写。只有完整 DMA 地址写入后，才读取 descriptor 并用 grant 调用客户机内存接口。
+
+```rust
+let Some(descriptor) = self.inner.write_dma_address(addr, access.width, access.data as usize)?
+else {
+    return Ok(BusResponse::Write); // 例如仅写入 64 位地址的高 32 位
+};
+
+self.inner.process_dma(
+    descriptor,
+    |gpa, data| context.read_guest_memory(&self.dma_grant, gpa, data),
+    |gpa, data| context.write_guest_memory(&self.dma_grant, gpa, data),
+)?;
+```
+
+descriptor 处理的具体协议仍留在 `FwCfg` 内部；`DeviceAccess` 只负责把已经通过授权的读写请求转交给 VM，避免设备层依赖客户机内存实现。
+
+### 5.3 Timer、wake 与 stop port
+
+`RuntimeAccessPorts` 保存 timer、wake 和 stop 的 VM 侧适配器，并在 prepare 时安装到 `DeviceRuntime`。设备调用相应 `DeviceAccess` 方法后，runtime 先验证 grant，再把请求转发到窄接口。
+
+`TimerAccessPort` 接收目标 `DeviceId` 和纳秒 deadline；`WakeAccessPort` 接收目标 vCPU ID；`StopAccessPort` 接收设备给出的原因字符串。设备只知道这些操作的语义，不需要持有 VM 锁、vCPU 列表或全局定时器实现。
+
+### 5.4 中断线
+
+设备中断使用 `IrqLine`，不通过 `DeviceAccess`。factory 在构建设备时可调用 `DeviceBuildContext::resolve_irq()`，由本 VM 的 `InterruptFabric` 返回连接到架构 `IrqSink` 的 line 对象；设备随后可以执行 `raise`、`lower` 或 `pulse`。
+
+`Resource::IrqLine` 负责登记虚拟输入线的归属和触发模式，避免两台设备意外占用同一 line。实际投递由架构 sink 完成：RISC-V sink 修改 vPLIC pending 状态，其他架构使用各自的中断控制器后端。资源索引本身不参与 MMIO/Port/SysReg 地址分派。
+
+## 6. 设备间服务与生命周期
+
+并非所有设备协作都表现为寄存器访问。中断域、地址分配器和架构后端需要被 VM 内其他组件取得，这些对象通过 `DeviceServices` 随 bundle 注册。
+
+### 6.1 类型化 service registry
+
+每类 service 用一个实现 `ServiceKey` 的零大小 key 标识。key 声明 service trait、诊断名称和 `Single`/`Multiple` 基数，调用方必须使用同一个 key 类型查询，registry 内部的 `Any` 擦除不会暴露给业务代码。
+
+| API | 行为 |
 | --- | --- |
-| factory 构建 | 合法配置能生成 bundle，非法配置返回结构化错误 |
-| 资源冲突 | MMIO/PIO/SysReg/IRQ 冲突会阻止注册并无残留 |
-| bus dispatch | 完整访问范围命中设备，跨界访问被拒绝 |
-| grant 拒绝 | 未申请能力或 grant 不匹配时返回 unsupported/permission 错误 |
-| 生命周期 | 有 lifecycle 的设备在 reset/suspend/resume 中按顺序调用 |
+| `DeviceBundle::with_service::<K>()` | 将 provider 加入本次 bundle |
+| `DeviceServices::provide::<K>()` | 注册 provider，并检查单例重复 |
+| `DeviceServices::require::<K>()` | 取得唯一 provider；缺失或 key 为多例时返回错误 |
+| `DeviceServices::all::<K>()` | 返回多例 key 的 provider 快照 |
 
-测试位置可以放在具体设备 crate 的单元测试，也可以放在 `virtualization/test_crates/virtualization-tests/tests/axdevice.rs` 这类跨 crate 集成测试中。对于架构设备，还需要保留对应架构的 QEMU smoke 或行为等价测试，特别是中断控制器、timer 和 port passthrough。
+现有 service 包括 IVC 的 `GuestRangeAllocatorKey`、x86 IOAPIC 与 interrupt domain、x86 PIT/串口、AArch64 GIC distributor、AArch64 vtimer backend 以及 LoongArch PCH-PIC output port。调用方依赖 service trait，不需要把 `Arc<dyn Device>` 向下转换成具体设备类型。
 
-## 维护边界
+### 6.2 IVC 地址分配
 
-模拟设备框架的长期可维护性来自边界稳定：prepare 阶段可以复杂，访问热路径必须短；设备可以表达协议，不能拿到不必要的宿主对象；架构可以提供后端，不能绕开统一 runtime。维护时应优先检查这些边界是否被新设备打破。
+`IVCChannel` 配置不会创建可被 guest 读写的 `Device`。`IvcChannelFactory` 使用 `base_gpa` 和 `length` 创建 `IvcGuestRangeAllocator`，再以单例 `GuestRangeAllocatorKey` 注册到 runtime。
 
-### 关键源码
+IVC 保留窗口的起点和长度必须非零且 4 KiB 对齐。`alloc_ivc_channel()` 要求请求大小非零并按 4 KiB 对齐，内部 best-fit allocator 从保留窗口分配连续 GPA；`release_ivc_channel()` 只接受仍处于已分配状态、完全位于初始窗口内的区间，并在释放后合并相邻空闲段。
 
-维护模拟设备框架时，最常看的不是某一个具体设备，而是接口、注册、运行时和 VM prepare 四组文件。接口文件决定设备能看到什么，注册文件决定设备如何贡献资源和能力，运行时文件决定访问如何分派，prepare 文件决定拓扑如何形成。
+### 6.3 生命周期
 
-| 文件 | 维护关注点 |
+需要参与 VM 状态转换的设备额外实现 `DeviceLifecycle`，接口包含 `reset()`、`suspend()` 和 `resume()`。它与 `Device` 分开保存，因此总线热路径不需要为没有生命周期操作的设备付出额外分派。
+
+调用顺序与注册顺序有关：reset 和 resume 按注册顺序执行，suspend 按逆序执行。`AxVM::pause()` 进入暂停状态前调用 suspend，恢复时调用 resume；重置 transient resources 时调用 reset。AArch64 vtimer 的 lifecycle 会同步处理 `VtimerState` 和 host backend，drop 时也会复位状态。
+
+### 6.4 轮询能力
+
+需要按单调时间推进的设备可以实现 `PollableDeviceOps::poll(now_ns)`，并作为 bundle 的 pollable 能力注册。runtime 会拒绝同一个 `Arc` 指针被重复加入，无论重复项来自既有 runtime 还是同一 bundle。
+
+`DeviceRuntime::iter_pollable_dev()` 提供已注册 pollable 的迭代器。该接口只负责保存和暴露能力；调用频率、时间来源和执行上下文由使用它的 VM runtime 决定，不属于总线 `dispatch()` 路径。
+
+## 7. 现有设备实现
+
+不同设备虽然共享注册和分派框架，但资源布局与状态机仍由各自实现负责。本节按现有 factory 展开实际构建结果。
+
+### 7.1 `fw_cfg`
+
+`fw_cfg` 是 QEMU 兼容的 MMIO 启动配置通道。VM 的启动加载代码先保存 kernel、可选 initrd、cmdline、CPU 数量和平台固件数据；prepare 时 `FwCfgPayloadFactory` 要求 TOML 中的 base/length 与载荷中记录的范围完全一致，再构建 `FwCfgDmaDevice`。
+
+MMIO 窗口使用三个寄存器区域：数据寄存器位于 offset `0x00`，selector 位于 `0x08`，窗口至少覆盖到 `0x18` 时启用 offset `0x10` 的 64 位 DMA address。selector 选择 signature、RAM size、CPU 数量、kernel/initrd、cmdline、文件目录、SMBIOS 和 ACPI 等 entry；数据读取会推进当前 entry 的 offset。
+
+DMA descriptor 为 16 字节大端结构，依次包含 control、length 和 guest buffer address。客户机可用 `SELECT` 切换 entry，用 `SKIP` 推进 offset，用 `READ` 把 entry 内容写入客户机内存；`WRITE` 路径会读入并丢弃客户机数据。处理结束后设备把 descriptor 的 control 写为 0，失败时写入 error bit。
+
+DMA 地址可以用一次 Qword 写入，也可以用两次 Dword 写入。Dword 模式先写高 32 位只更新 latch，写低 32 位时才启动传输。descriptor 和 payload 的客户机内存访问都经过 bundle 绑定的 `DmaGrant`。
+
+### 7.2 x86_64 平台设备
+
+x86 默认 factory 覆盖串口、IOAPIC、PIT 和 host port passthrough。它们都实现公共 `Device`，但串口、PIT 和端口透传使用 `Resource::PortRange`，IOAPIC 使用 `Resource::MmioRange`。
+
+| 类型 | 构建结果 | 配置使用情况 |
+| --- | --- | --- |
+| `Console` (`0x2`) | `X86SerialPortDevice<AxvmX86HostOps>`，同时发布 serial service | factory 使用设备实现的固定 COM1 布局 |
+| `X86IoApic` (`0x23`) | `X86IoApicDevice`，发布 IOAPIC、interrupt domain 和 runtime domain service | 使用 `base_gpa` 与 `length` |
+| `X86Pit` (`0x24`) | `X86PitDevice<AxvmX86HostOps>`，发布 PIT service | factory 使用 8254 的固定 Port 布局 |
+| `X86PortPassthrough` (`0x26`) | `HostPortPassthrough` | `base_gpa`、`length` 必须能转换为非空 `u16` 端口范围 |
+
+`HostPortPassthrough` 并不是 MMIO passthrough mapping。设备收到 Port read/write 后，按 Byte、Word 或 Dword 宽度执行宿主 x86 `inb/inw/inl` 或 `outb/outw/outl`；Qword Port 访问不在这个适配器支持的宽度内。VM 配置中的 `passthrough_ports` 会在架构 prepare 中自动变成这种设备配置。
+
+### 7.3 AArch64 平台设备
+
+AArch64 注册通用 vGIC、GIC partial-passthrough 组件和架构 vtimer。GIC redistributor、distributor 和 ITS 的 MMIO 语义来自 `arm_vgic`，`axvm` 侧 factory 负责解释配置并把相关 service 接入 VM。
+
+| 类型 | `cfg_list` | 构建结果 |
+| --- | --- | --- |
+| `InterruptController` (`0x1`) | 未使用 | 一个 `arm_vgic::Vgic` |
+| `GPPTRedistributor` (`0x20`) | `[cpu_num, stride, pcpu_id]` | 按 `base_gpa + index × stride` 创建 `cpu_num` 个 `VGicR` |
+| `GPPTDistributor` (`0x21`) | 未使用 | 一个 `VGicD`，并发布 GIC distributor service |
+| `GPPTITS` (`0x22`) | `[host_gits_base]` | 一个使用 guest range 和 host ITS 基址的 `Gits` |
+| `Aarch64Vtimer` (`0x27`) | 未使用 | 三个 CNT* SysReg 设备、一个 backend service 和一个 lifecycle |
+
+redistributor factory 要求 `cfg_list` 恰好包含三个参数，并对 `index × stride` 和基地址加法做溢出检查。vtimer 配置由非 passthrough 中断模式的架构初始化自动追加，不占用 MMIO 地址。
+
+### 7.4 RISC-V vPLIC
+
+RISC-V 的 `PPPTGlobal` (`0x30`) 由 `RiscvDeviceBootstrap` 预处理。每台 VM 最多允许一项该配置，`cfg_list` 必须恰好是 `[contexts_num]`，配置的 MMIO 长度必须覆盖所有 context 的控制和 claim/complete 区域。
+
+bootstrap 使用配置创建一个 `VPlicGlobal`，同时用它构造 `RiscvPlicIrqSink` 和 `RiscvPlicFactory`。之后公共设备构建路径再次处理该配置时，factory 会核对 base、length 和 context 数量，再把同一个 `Arc<VPlicGlobal>` 作为 `Device` 注册。这样寄存器模拟和中断 pending 状态使用的是同一个控制器实例。
+
+### 7.5 LoongArch PCH-PIC
+
+`LoongArchPchPicFactory` 根据 `LoongArchPchPic` (`0x25`) 配置创建 MMIO 设备。设备内部保存 mask、edge、polarity、route entry、ISR 等 PCH-PIC 状态，并按 Byte、Word、Dword、Qword 访问拆分或组合寄存器数据。
+
+同一个 PCH-PIC 对象还以 `PchPicOutputPortKey` 发布 output port service，架构中断路径可以设置输入电平并读取输出事件。寄存器访问通过 `DeviceRuntime`，控制器输出连接则通过 service，二者共享同一份锁保护状态。
+
+### 7.6 Dummy 与 IVC 配置
+
+`Dummy` (`0x0`) 的 `MetaDeviceFactory` 返回空 bundle，因此它不会增加设备、资源或 service。它主要表现为一项可被正常解析和构建、但不产生客户机访问入口的配置。
+
+`IVCChannel` (`0xA`) 同样不注册 `Device`，但会增加一项有效 service。判断一项配置是否生效不能只看 `device_count()`：应同时检查 `DeviceServices`，IVC 地址分配就是由 service 提供的运行时功能。
+
+## 8. 配置、测试与故障定位
+
+模拟设备错误大多在 VM prepare 阶段暴露，地址未命中和协议错误则出现在 vCPU 运行期。排查时先区分 factory、资源注册和总线访问三个阶段，可以快速缩小范围。
+
+### 8.1 配置示例
+
+仓库中的 QEMU VM 配置给出了各架构正在使用的格式。下面三个例子分别展示带专用参数的 vPLIC、带 DMA 的 `fw_cfg` 和 LoongArch PCH-PIC。
+
+```toml
+# RISC-V: cfg_list 中的 2 是 context 数量
+emu_devices = [
+  ["plic", 0x0c00_0000, 0x60_0000, 0, 0x30, [2]],
+]
+```
+
+LoongArch 配置中的 `fw_cfg` 长度为 `0x18`，覆盖 DMA address register；PCH-PIC 则占用独立的 4 KiB MMIO 窗口。
+
+```toml
+emu_devices = [
+  ["fw_cfg",       0x1e02_0000, 0x18,   0, 0x3,  []],
+  ["ls7a_pch_pic", 0x1000_0000, 0x1000, 0, 0x25, []],
+]
+```
+
+配置被接受前还要满足架构 factory 的存在条件。尤其是 `fw_cfg`，除了 TOML 项以外还必须由启动加载路径向 VM 提供 payload，且两处记录的 MMIO 范围一致。
+
+### 8.2 Prepare 阶段错误
+
+出现 “no factory is registered” 时，先检查 `emu_type` 是否属于当前架构注册集合；不要只依据 `EmulatedDeviceType` 枚举判断支持情况。出现地址冲突时，错误会携带新资源、既有资源和已有 `DeviceId`，可据此对照所有 `emu_devices` 以及架构追加项。
+
+`cfg_list` 错误通常由具体 factory 直接返回 `InvalidConfig`。AArch64 redistributor 需要三个参数，ITS 需要一个 host base，RISC-V vPLIC 需要一个 context 数量。单例 service 重复、同一类型 factory 重复和 IRQ line 重复都会在设备开始运行前终止 prepare。
+
+### 8.3 运行期访问错误
+
+运行期日志中的 bus、addr 和 width 来自 `DeviceManagerError::Access`。若 source 为 `NotFound`，应检查访问是否落入配置窗口、完整宽度是否跨越窗口末端，以及访问是否走了正确的 BusKind。若 source 为 `OutOfRange`，则重点检查设备自身支持的寄存器 offset 和宽度。
+
+DMA 失败还应检查此次访问是否走 `handle_mmio_write_with_memory()`，以及 bundle 是否把同一个 `DmaGrant` 同时交给设备并绑定到该 bundle-local 设备。token 或 `DeviceId` 任一不匹配都会被拒绝；没有安装 VM memory port 时也不会退化为不受控内存访问。
+
+### 8.4 测试覆盖
+
+`virtualization/axdevice/src/device.rs` 的单元测试覆盖 runtime 内部语义，`virtualization/test_crates/virtualization-tests/tests/axdevice.rs` 则从公共接口验证设备注册行为。测试重点如下。
+
+| 测试范围 | 代表性检查 |
 | --- | --- |
-| `virtualization/axdevice_base/src/lib.rs` | `Device`、`DeviceAccess`、`DeviceId`、`Resource`、grant 和 bus 类型 |
-| `virtualization/axdevice/src/device.rs` | `DeviceRuntime`、resource index、dispatch、grant 校验、sealed topology |
-| `virtualization/axdevice/src/registration.rs` | `DeviceBundle`、lifecycle、pollable、service 和 grant 贡献 |
-| `virtualization/axdevice/src/factory.rs` | `DeviceFactory`、`DeviceFactoryRegistry` 和内置 factory |
-| `virtualization/axdevice/src/fw_cfg.rs` | fw_cfg 设备、DMA descriptor 和 `DmaGrant` 使用样板 |
-| `virtualization/axdevice/src/range_alloc.rs` | IVC guest range allocator typed service |
-| `virtualization/axvm/src/vm/prepare/devices.rs` | 设备 prepare 公共入口和 access ports 注入 |
-| `virtualization/axvm/src/vm/mod.rs` | `VmDmaAccess`、`AxVmDeviceAccessPorts`、MMIO write DMA 注入 |
+| 地址与分派 | MMIO/Port/SysReg 命中、未命中、相邻区间、跨边界访问 |
+| 资源校验 | 零长度、地址溢出、同设备重叠、跨设备冲突、IRQ line 冲突 |
+| Bundle 原子性 | 内部冲突、与既有资源冲突、IRQ 冲突后的完整回滚 |
+| Factory | 查找、重复类型、缺失类型、配置验证、sealed 后拒绝注册 |
+| 访问能力 | DMA grant、timer/wake/stop 的 DeviceId 与 token 校验 |
+| 扩展能力 | typed service、pollable 去重、lifecycle 调用顺序、IVC allocator |
 
-这些代码锚点也说明了框架分层：`axdevice_base` 只定义设备可见契约，`axdevice` 实现 per-VM runtime 和注册逻辑，`axvm` 提供 VM 运行时能力端口，具体架构提供中断与平台后端。
-
-### 性能约束
-
-当前框架引入 factory、bundle、service 和 grant 是为了把复杂性挪到 prepare 阶段，而不是让每一次 MMIO/PIO/SysReg 访问承担额外重成本。普通访问路径应保持“索引查找、创建轻量上下文、调用设备、校验响应”的短链路。
-
-| 约束 | 维护要求 |
-| --- | --- |
-| prepare 期做重工作 | 配置解析、权限决策、资源冲突和 service 合并不得放入 dispatch |
-| 热路径无全局写锁 | `dispatch()` 不应获取会串行化所有设备访问的全局可写锁 |
-| 热路径无全设备扫描 | 新索引实现可以替换内部结构，但不应退化为每次扫描全部设备 |
-| 默认日志轻量 | 高频 trace 默认关闭，诊断信息应可按设备或错误路径开启 |
-| 锁外执行回调 | guest memory copy、IRQ、timer、wake 和 stop 不应在设备状态锁内调用 |
-
-如果重构导致性能退化，应优先优化 `DeviceRuntime` 的索引、上下文构造或具体设备锁粒度，而不是恢复 `AxVM` 中的具体设备特判。框架边界一旦被特判绕开，后续设备扩展会重新回到多路径构建和权限不清晰的问题。
-
-### 已知边界
-
-当前框架采用静态拓扑，不支持运行期热插拔普通客户机可见设备。IVC 的运行期 channel 分配属于已声明窗口内的地址资源管理，不是新增或删除设备；未来 vPCI、ivshmem 或 PCI hotplug 需要独立定义 vCPU quiesce、地址空间 unmap、IRQ release、service 引用计数和 `DeviceId` 复用策略。
-
-另一个边界是 PCI 尚未成为当前 `BusKind` 的正式成员。文档中提到的 PCI function、BAR 和 MSI-X 是当前框架对未来扩展的设计方向，不代表当前框架已经能让 Linux 枚举 vPCI 设备；实现 vPCI 前应先补 PCI host bridge、guest 描述、config space dispatch 和 MSI/MSI-X 中断路径。
+设备框架相关测试可从 crate 单元测试和 virtualization test crate 两层运行。修改资源索引、bundle 注册或 grant 校验后，至少应同时覆盖成功路径和“失败后 runtime 未被部分修改”的断言；修改具体设备时还应运行该设备所在 crate 或架构模块的测试。
