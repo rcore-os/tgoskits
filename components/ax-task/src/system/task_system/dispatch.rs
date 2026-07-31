@@ -87,27 +87,33 @@ impl TaskSystem {
             .cancel_idle_pull_if_uncommitted();
         let policy = sched.policy;
         let mut queued_entity = sched.entity;
-        if matches!(reason, EnqueueReason::Wake) && matches!(policy, SchedulePolicy::Deadline(_)) {
+        let mut deadline_wake_throttled = false;
+        if matches!(reason, EnqueueReason::Wake)
+            && matches!(policy, SchedulePolicy::Deadline(_))
+            && !sched.is_pi_boosted()
+        {
             queued_entity.activate_deadline(now_ns);
             sched.entity = queued_entity;
-            if !sched.is_pi_boosted()
-                && let SchedulingEntity::Deadline(deadline) = queued_entity
-            {
+            if let SchedulingEntity::Deadline(deadline) = queued_entity {
+                deadline_wake_throttled = deadline.is_throttled();
                 sched.base_entity = queued_entity;
                 sched.base_deadline = Some(deadline);
             }
         }
         Self::activate_owner_deadline_bandwidth(core, sched, cpu.as_mut(), owner)?;
         Self::refresh_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
+        if deadline_wake_throttled {
+            sched.deadline_replenish_pending = true;
+            sched.throttle_ready_deadline(core)?;
+            core.publish_effective_schedule(policy, queued_entity);
+            core.set_target_cpu(owner);
+            return Ok(false);
+        }
         let fields = cpu.as_mut().fields_mut();
-        let queued_entity = fields.run_queue.enqueue(
-            core.id(),
-            policy,
-            queued_entity,
-            Arc::clone(core),
-            now_ns,
-            reason,
-        )?;
+        let queued_entity =
+            fields
+                .run_queue
+                .enqueue(core.id(), policy, queued_entity, Arc::clone(core), reason)?;
         let current_fair = fields
             .current_dispatch
             .as_ref()

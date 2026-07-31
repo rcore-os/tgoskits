@@ -2690,6 +2690,51 @@ fn queued_pi_owner_is_requeued_only_by_its_owner_cpu() {
 }
 
 #[test]
+fn deadline_pi_boost_overrides_constrained_wake_throttling() {
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let idle = system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(owner.id()).unwrap();
+    system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
+    assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
+    assert_eq!(
+        system.block_current(cpu.as_mut()).unwrap().next(),
+        idle.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let donor_policy =
+        SchedulePolicy::deadline(DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap());
+    let donor = system.create_thread(ThreadSpec::new(donor_policy)).unwrap();
+    system.make_ready(donor.id()).unwrap();
+    system.enqueue(cpu.as_mut(), donor.id(), 0).unwrap();
+    system.dequeue(cpu.as_mut(), donor.id()).unwrap();
+    let _wait = system
+        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
+        .unwrap();
+
+    assert_eq!(owner.wake_handle().wake(), crate::WakeResult::Notified);
+    system.drain_remote_wakes(cpu.as_mut(), 9).unwrap();
+
+    assert_eq!(
+        system.thread_state(owner.id()).unwrap(),
+        ThreadState::Ready,
+        "Linux Deadline PI boost must override constrained wake throttling"
+    );
+    assert_eq!(system.schedule(cpu.as_mut(), 9).unwrap().next(), owner.id());
+}
+
+#[test]
 fn effective_rt_entity_never_replaces_the_base_rr_accounting() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

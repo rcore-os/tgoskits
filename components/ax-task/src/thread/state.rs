@@ -50,6 +50,20 @@ impl ThreadLifecycle {
             })
         }
     }
+
+    /// Returns one ready Deadline wake to the blocked state after the CBS
+    /// constrained-wakeup rule defers it to the next release.
+    pub(crate) fn throttle_ready_deadline(&mut self) -> Result<(), TaskError> {
+        if self.state == ThreadState::Ready {
+            self.state = ThreadState::Blocked;
+            Ok(())
+        } else {
+            Err(TaskError::InvalidTransition {
+                from: self.state,
+                to: ThreadState::Blocked,
+            })
+        }
+    }
 }
 
 const fn transition_is_valid(from: ThreadState, to: ThreadState) -> bool {
@@ -108,5 +122,15 @@ mod tests {
             lifecycle.transition(ThreadState::Blocked),
             Err(TaskError::InvalidTransition { .. })
         ));
+    }
+
+    #[test]
+    fn deadline_throttle_has_a_dedicated_ready_to_blocked_transition() {
+        let mut lifecycle = ThreadLifecycle::new();
+        lifecycle.transition(ThreadState::Ready).unwrap();
+
+        lifecycle.throttle_ready_deadline().unwrap();
+
+        assert_eq!(lifecycle.state(), ThreadState::Blocked);
     }
 }

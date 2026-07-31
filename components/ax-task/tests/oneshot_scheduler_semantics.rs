@@ -183,7 +183,7 @@ fn exiting_fifo_reprograms_the_fair_successor_deadline() {
 }
 
 #[test]
-fn deadline_replenishment_preemption_is_seen_in_the_same_safe_point() {
+fn constrained_deadline_replenishment_preemption_is_seen_in_the_same_safe_point() {
     let (system, mut cpu) = online_system();
     let deadline = ready_thread(
         &system,
@@ -211,10 +211,14 @@ fn deadline_replenishment_preemption_is_seen_in_the_same_safe_point() {
             .decision()
             .is_none()
     );
-    assert_eq!(support::last_oneshot_ns(), 10);
+    assert_eq!(
+        support::last_oneshot_ns(),
+        100,
+        "budget depletion must arm the next release rather than the earlier relative deadline",
+    );
 
     let decision = system
-        .schedule_if_requested(cpu.as_mut(), 10)
+        .schedule_if_requested(cpu.as_mut(), 100)
         .unwrap()
         .decision()
         .expect("replenishment must be reconsidered before leaving this safe point");
