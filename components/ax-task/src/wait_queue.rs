@@ -159,7 +159,7 @@ impl WaitQueue {
         let Some(waiter) = self.pop_front_task_context() else {
             return false;
         };
-        let _result = waiter.wake.wake();
+        let _result = waiter.wake.wake_from_task();
         true
     }
 
@@ -179,7 +179,7 @@ impl WaitQueue {
         let Some(waiter) = waiter else {
             return false;
         };
-        let _result = waiter.wake.wake();
+        let _result = waiter.wake.wake_from_task();
         true
     }
 

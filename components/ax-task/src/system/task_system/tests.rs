@@ -129,6 +129,191 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
 }
 
 #[test]
+fn same_cpu_hard_irq_publication_uses_irq_return_instead_of_a_self_ipi() {
+    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    let remote = &system.cpu_remotes[0];
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+
+    crate::test_runtime::set_hard_irq(true);
+    publish_test_scheduler_work(remote, test_inbox_node(&node), 1);
+    crate::test_runtime::set_hard_irq(false);
+
+    let scheduler_ipi_send_count = crate::test_runtime::scheduler_ipi_send_count();
+    let drained = system.drain_remote_wakes(cpu.as_mut(), 1).unwrap();
+    assert_eq!(drained.drained(), 1);
+    assert_eq!(
+        scheduler_ipi_send_count, 0,
+        "same-CPU hard-IRQ work must run from IRQ return without a self-IPI round trip"
+    );
+}
+
+#[test]
+fn same_cpu_task_publication_uses_guard_exit_instead_of_a_self_ipi() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
+    let remote = &system.cpu_remotes[0];
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::reset_scheduler_frame_state();
+    crate::test_runtime::configure_irq_exit_schedule_reentry(1);
+    assert_eq!(crate::test_runtime::active_irq_guards(), 0);
+
+    assert!(remote.kick_scheduler_work());
+    assert_eq!(crate::test_runtime::active_irq_guards(), 0);
+
+    crate::test_runtime::configure_irq_exit_schedule_reentry(0);
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_send_count(),
+        0,
+        "same-CPU task work must enter the scheduler from the final publication guard exit"
+    );
+    assert_eq!(
+        crate::test_runtime::scheduler_frame_state().1,
+        1,
+        "the final publication guard exit must enter exactly one local scheduler frame"
+    );
+}
+
+#[test]
+fn same_cpu_task_wake_activates_the_owner_without_remote_inbox() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let bootstrap = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue(cpu.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    assert_eq!(
+        system.block_current(cpu.as_mut()).unwrap().next(),
+        bootstrap.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    assert_eq!(
+        sleeper.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+
+    assert!(
+        !system.cpu_remotes[0].remote_wake_inbox().has_pending(),
+        "same-CPU task wake must not detour through the remote inbox"
+    );
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_send_count(),
+        0,
+        "same-CPU task wake must not send a scheduler IPI"
+    );
+    assert_eq!(
+        system.thread_state(sleeper.id()).unwrap(),
+        ThreadState::Ready
+    );
+    let token = task_runtime::irq_guard_enter();
+    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 1);
+    // SAFETY: this consumes the task-context owner token on the same host
+    // thread after the snapshot borrow has ended.
+    unsafe { task_runtime::irq_guard_exit(token) };
+}
+
+#[test]
+fn guarded_same_cpu_task_wake_retains_the_lock_free_inbox_path() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let bootstrap = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue(cpu.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    assert_eq!(
+        system.block_current(cpu.as_mut()).unwrap().next(),
+        bootstrap.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    assert_eq!(
+        sleeper.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+
+    assert!(
+        system.cpu_remotes[0].remote_wake_inbox().has_pending(),
+        "a wake inside another IRQ/preemption domain must not nest runqueue locks"
+    );
+    assert_eq!(
+        system.thread_state(sleeper.id()).unwrap(),
+        ThreadState::Blocked,
+        "the owner safe point, not the guarded producer, must activate the thread"
+    );
+}
+
+#[test]
+fn same_cpu_task_wake_before_park_remains_a_notification_without_an_inbox_node() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
+
+    assert_eq!(
+        running.wake_handle().wake_from_task(),
+        crate::WakeResult::Notified
+    );
+    assert!(
+        !system.cpu_remotes[0].remote_wake_inbox().has_pending(),
+        "the local owner may retain the park notification without an inbox node"
+    );
+
+    let token = task_runtime::irq_guard_enter();
+    assert_eq!(
+        system.prepare_park(cpu.as_mut()).unwrap(),
+        ParkPrepare::Notified,
+        "a direct wake of the running owner must still win the next park race"
+    );
+    // SAFETY: this consumes the task-context owner token on the same host
+    // thread after direct CpuLocal access has ended.
+    unsafe { task_runtime::irq_guard_exit(token) };
+}
+
+#[test]
 fn policy_update_doorbell_runs_outside_cold_irq_lock_domains() {
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -572,17 +757,25 @@ impl InstalledTaskHandles {
             irq_token: Some(task_runtime::irq_guard_enter()),
         }
     }
+
+    fn new_task_context(system: Pin<&TaskSystem>, cpu: Pin<&mut CpuLocal>) -> Self {
+        crate::test_runtime::install_task_handles(
+            (system.get_ref() as *const TaskSystem).expose_provenance(),
+            // SAFETY: this fixture exposes the owner only through facade
+            // scheduler guards after bootstrap setup has completed.
+            (unsafe { Pin::get_unchecked_mut(cpu) } as *mut CpuLocal).expose_provenance(),
+        );
+        Self { irq_token: None }
+    }
 }
 
 impl Drop for InstalledTaskHandles {
     fn drop(&mut self) {
-        let token = self
-            .irq_token
-            .take()
-            .expect("test owner scope must retain its IRQ token");
-        // SAFETY: construction entered this token on the same host test thread
-        // and the fixture has finished every direct CpuLocal access.
-        unsafe { task_runtime::irq_guard_exit(token) };
+        if let Some(token) = self.irq_token.take() {
+            // SAFETY: construction entered this token on the same host test
+            // thread and the fixture has finished every direct CpuLocal access.
+            unsafe { task_runtime::irq_guard_exit(token) };
+        }
         crate::test_runtime::clear_task_handles();
     }
 }

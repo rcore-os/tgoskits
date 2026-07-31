@@ -433,16 +433,34 @@ impl CpuRemote {
         let Some(_publication) = self.begin_publication() else {
             return false;
         };
+        let _irq = IrqScope::enter();
         self.kick_scheduler_work_owned()
     }
 
     fn kick_scheduler_work_owned(&self) -> bool {
         self.request_scheduler_work_owned();
+        if self.current_cpu_will_service_local_work() {
+            return true;
+        }
         let Some(claim) = self.claim_scheduler_ipi() else {
             return false;
         };
         self.send_claimed_scheduler_ipi(claim);
         true
+    }
+
+    fn current_cpu_will_service_local_work(&self) -> bool {
+        // Every caller retains an IrqScope from before this observation through
+        // publication completion, so the runtime CPU identity cannot migrate.
+        let current = unsafe { task_runtime::current_cpu_id() };
+        if current.as_u32() != self.owner.as_u32() {
+            return false;
+        }
+        // Hard IRQ return consumes the sticky request through its outer
+        // preemption guard. Ordinary task publication instead converts the
+        // final IRQ guard directly into the scheduler baton. In both cases a
+        // self-IPI would add an unnecessary interrupt round trip.
+        task_runtime::in_hard_irq() || task_runtime::local_scheduler_work_is_self_serviced()
     }
 
     fn claim_scheduler_ipi(&self) -> Option<SchedulerIpiClaim> {

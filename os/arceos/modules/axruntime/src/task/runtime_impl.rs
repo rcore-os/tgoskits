@@ -123,6 +123,17 @@ impl_task_runtime! {
             crate::guard::exit_irq("task runtime");
         }
 
+        fn local_scheduler_work_is_self_serviced() -> bool {
+            #[cfg(test)]
+            {
+                false
+            }
+            #[cfg(not(test))]
+            {
+                crate::guard::local_scheduler_work_is_self_serviced()
+            }
+        }
+
         fn finish_context_switch_tail() -> RuntimeStatus {
             finish_runtime_context_switch_tail()
         }

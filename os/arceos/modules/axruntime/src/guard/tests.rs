@@ -19,6 +19,30 @@ fn disabled_outer_irq_state_stays_disabled() {
 }
 
 #[test]
+fn final_task_irq_guard_converts_directly_into_scheduler_baton() {
+    let mut state = RuntimeGuardState::new();
+    state.enter_irq(true);
+
+    assert!(state.local_scheduler_work_is_self_serviced());
+    assert!(state.claim_irq_exit_scheduler());
+    assert!(state.irq.is_clear());
+    assert!(state.preempt.has_active_scheduler_baton());
+
+    state.exit_scheduler_preempt("test scheduler frame");
+    assert!(state.preempt.is_clear());
+}
+
+#[test]
+fn disabled_task_irq_guard_cannot_promise_a_local_scheduler_entry() {
+    let mut state = RuntimeGuardState::new();
+    state.enter_irq(false);
+
+    assert!(!state.local_scheduler_work_is_self_serviced());
+    assert!(!state.claim_irq_exit_scheduler());
+    assert!(!state.exit_irq("test"));
+}
+
+#[test]
 fn lock_preempt_exit_reports_only_the_outermost_transition() {
     let mut state = RuntimeGuardState::new();
     state.enter_lock_preempt();
@@ -57,6 +81,34 @@ fn nested_preempt_exit_does_not_reenter_context_queries() {
         (irq_queries.get(), reschedule_queries.get()),
         (0, 0),
         "a nested NoPreempt drop must not recursively query IRQ or scheduler state"
+    );
+}
+
+#[test]
+fn nested_irq_exit_does_not_reenter_context_queries() {
+    use core::cell::Cell;
+
+    let mut state = RuntimeGuardState::new();
+    state.enter_irq(true);
+    state.enter_irq(false);
+    let irq_queries = Cell::new(0);
+    let reschedule_queries = Cell::new(0);
+
+    assert!(!irq_guard_exit_needs_schedule(
+        &state,
+        || {
+            irq_queries.set(irq_queries.get() + 1);
+            false
+        },
+        || {
+            reschedule_queries.set(reschedule_queries.get() + 1);
+            false
+        },
+    ));
+    assert_eq!(
+        (irq_queries.get(), reschedule_queries.get()),
+        (0, 0),
+        "a nested IRQ guard drop must not recursively query IRQ or scheduler state"
     );
 }
 

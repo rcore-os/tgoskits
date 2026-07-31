@@ -135,6 +135,20 @@ impl RuntimeGuardState {
     }
 
     #[cfg(any(feature = "multitask", test))]
+    pub(super) fn claim_irq_exit_scheduler(&mut self) -> bool {
+        if self.irq.depth != 1 || !self.irq.outer_irqs_enabled || !self.preempt.is_clear() {
+            return false;
+        }
+        self.irq = RuntimeIrqState::new();
+        self.preempt.claim_task_scheduler()
+    }
+
+    #[cfg(any(feature = "multitask", test))]
+    pub(super) const fn local_scheduler_work_is_self_serviced(self) -> bool {
+        !self.irq.is_clear() && (self.irq.outer_irqs_enabled || !self.preempt.is_clear())
+    }
+
+    #[cfg(any(feature = "multitask", test))]
     pub(super) const fn owns_cpu_context(self) -> bool {
         !self.irq.is_clear() || self.preempt.has_one_scheduler_frame()
     }

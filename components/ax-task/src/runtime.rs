@@ -159,14 +159,20 @@ pub enum RuntimeScheduleOrigin {
 #[repr(u32)]
 pub enum RuntimeSchedulerEntry {
     /// Ordinary task context with IRQs enabled and no preemption guard.
-    Task        = 0,
+    Task         = 0,
     /// Final task-context preemption guard exit with IRQs disabled.
     ///
     /// The runtime retains the final preemption depth while it disables raw
     /// IRQs, then atomically converts that depth into the scheduler baton.
-    PreemptExit = 1,
+    PreemptExit  = 1,
     /// Final IRQ-return preemption guard exit with IRQs still disabled.
-    IrqReturn   = 2,
+    IrqReturn    = 2,
+    /// Final task-context IRQ publication guard exit with IRQs disabled.
+    ///
+    /// The runtime retains the final IRQ-guard depth after publishing local
+    /// scheduler work, then atomically converts that depth into the scheduler
+    /// baton. This is the local counterpart of a remote scheduler IPI.
+    IrqGuardExit = 3,
 }
 
 /// Raw IRQ state expected by the suspended scheduler continuation.
@@ -495,6 +501,16 @@ pub trait TaskRuntime {
     /// must be exited exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn irq_guard_exit(token: IrqGuardToken);
 
+    /// Reports whether sticky scheduler work for the current CPU has a local
+    /// safe point that makes a self-IPI unnecessary.
+    ///
+    /// The caller owns an IRQ guard and has already published the work. The
+    /// runtime may return `true` only when the work is guaranteed to reach the
+    /// scheduler before the CPU can sleep: through hard-IRQ return, an active
+    /// scheduler/preemption guard, or atomic conversion of the final
+    /// task-context IRQ guard into a scheduler baton.
+    fn local_scheduler_work_is_self_serviced() -> bool;
+
     /// Withdraws the outgoing runtime context's CPU binding after raw switch.
     ///
     /// The incoming context calls this exactly once while local IRQs remain
@@ -518,9 +534,11 @@ pub trait TaskRuntime {
     /// The runtime validates `entry`, disables hardware IRQs, and atomically
     /// creates one CPU-local baton. For [`RuntimeSchedulerEntry::PreemptExit`]
     /// and [`RuntimeSchedulerEntry::IrqReturn`], it must transform the exact
-    /// final lock-preemption depth into the scheduler depth without exposing a
-    /// fully preemptible intermediate state. It must not save this phase in an
-    /// execution context or migrate ordinary IRQ tokens with tasks.
+    /// final lock-preemption depth into the scheduler depth. For
+    /// [`RuntimeSchedulerEntry::IrqGuardExit`], it must instead transform the
+    /// final task-context IRQ-publication depth. Neither path may expose a
+    /// fully preemptible intermediate state. The runtime must not save this
+    /// phase in an execution context or migrate ordinary IRQ tokens with tasks.
     fn scheduler_frame_guard_enter(
         origin: RuntimeScheduleOrigin,
         entry: RuntimeSchedulerEntry,

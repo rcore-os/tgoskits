@@ -86,7 +86,7 @@ pub fn prepare_pi_mutex_claim(
 
 /// Publishes a targeted task-context wake after PI metadata handoff.
 pub fn pi_wake(wake: &ThreadWakeHandle) -> Result<(), TaskError> {
-    match wake.wake() {
+    match wake.wake_from_task() {
         WakeResult::Notified | WakeResult::AlreadyPending | WakeResult::Exited => Ok(()),
         WakeResult::Unavailable => Err(TaskError::NotInitialized),
     }
