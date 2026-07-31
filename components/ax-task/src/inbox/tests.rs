@@ -36,11 +36,11 @@ fn coalesces_duplicate_publication_and_preserves_fifo_order() {
 
 #[test]
 fn bounds_each_drain_and_reports_remaining_work() {
-    let inbox = SchedulerInbox::new(InboxKind::Migration);
+    let inbox = SchedulerInbox::new(InboxKind::OwnerControl);
     let nodes = [
-        node(InboxKind::Migration),
-        node(InboxKind::Migration),
-        node(InboxKind::Migration),
+        node(InboxKind::OwnerControl),
+        node(InboxKind::OwnerControl),
+        node(InboxKind::OwnerControl),
     ];
     for (index, node) in nodes.iter().enumerate() {
         let message =

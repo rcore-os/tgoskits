@@ -24,7 +24,7 @@ impl TaskSystem {
     /// its current non-idle dispatch and migrations not yet consumed by the
     /// destination owner. Other classes preserve owner-local placement unless
     /// affinity requires a transfer. Remote placement uses the owner-only
-    /// migration inbox and never mutates another CPU's runqueue.
+    /// owner-control inbox and never mutates another CPU's runqueue.
     ///
     /// # Errors
     ///
@@ -334,7 +334,7 @@ impl TaskSystem {
             let limit = fields.batch_limit();
             let remote = Arc::clone(fields.remote());
             let batch = remote
-                .migration_inbox()
+                .owner_control_inbox()
                 .drain(limit, &mut fields.migration_buffer);
             (batch.drained(), batch.pending())
         };
@@ -677,7 +677,7 @@ impl TaskSystem {
             let remote = cpu.remote();
             (
                 remote.remote_wake_inbox().has_pending(),
-                remote.migration_inbox().has_pending(),
+                remote.owner_control_inbox().has_pending(),
             )
         };
         if wake_pending {

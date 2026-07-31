@@ -2419,6 +2419,51 @@ The complete ax-task suite passes 232 unit tests, all integration/doc tests,
 and 21 Loom models; ax-runtime's multitask host suite passes 62/62, and both
 affected feature-clippy matrices pass.
 
+## Current-head remote scheduler ownership modules
+
+`CpuRemote` had grown into a 1,089-line file with lifecycle publication,
+scheduler doorbells, idle-pull arbitration, load snapshots, owner borrowing,
+and two different inbox protocols sharing one flat set of atomic fields. The
+code already enforced the intended ordering, but the representation allowed a
+change to one protocol to reach directly into another protocol's state. The
+old `Migration` inbox name was also stale: policy, affinity, Deadline refresh,
+and balance requests all used that same owner-CPU control channel.
+
+Linux v7.1 keeps the corresponding state under one stable per-CPU runqueue
+identity without treating it as one undifferentiated protocol. CPU active and
+online publication are hotplug state, `rq->ttwu_pending` and idle polling own
+the remote wake doorbell edge, load data belongs to balancing, and the task
+placement transaction is stabilized separately by `p->pi_lock`
+(`kernel/sched/core.c:1037-1059`, `3837-3980`, `4152-4303`, and
+`8659-8698`). PREEMPT_RT similarly separates hard irq-work from work deferred
+to its per-CPU thread (`kernel/irq_work.c:137-174` and `224-265`).
+
+ax-task now represents those ownership boundaries directly. The 46-line
+`remote.rs` root contains the stable CPU identity and composes six private
+state objects:
+
+- owner snapshots and the exclusive `CpuLocal` borrow gate;
+- the four-state publication/hotplug gate and its move-only producer leases;
+- sticky scheduler work, idle polling, preemption, and deadline doorbells;
+- balancing load summaries and incoming-migration accounting;
+- generation-bearing idle-pull arbitration; and
+- remote-wake plus owner-control inbox delivery.
+
+Each state object and all methods that mutate it live in its focused module.
+Cross-protocol actions use named methods such as
+`reset_scheduler_for_offline()`, `reserve_incoming_migration()`, and
+`idle_pull_is_quiescent()` instead of accessing foreign atomics. The public
+inbox class is now `OwnerControl`, and the former
+`publish_policy_update()`/`publish_migration()` aliases are replaced by one
+`publish_owner_control()` operation. `Migration` remains a typed message
+operation only when physical runqueue ownership is actually transferred.
+
+This phase is a behavior-preserving ownership refactor, so it is exempt from a
+new red regression. The full ax-task suite still passes 232 unit tests, every
+integration/doc test, the hard-IRQ allocation contract, and all 21 Loom
+models. ax-runtime's multitask host suite passes 62/62, and the ax-task 1-check
+plus ax-runtime 26-check feature-clippy matrices pass.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

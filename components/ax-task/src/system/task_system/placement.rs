@@ -75,7 +75,7 @@ impl TaskSystem {
             core.id().generation() as u64,
             pointer.expose_provenance(),
         );
-        let result = remote.publish_migration(node, message);
+        let result = remote.publish_owner_control(node, message);
         if result != PublishResult::Published {
             unsafe {
                 // A rejected/coalesced publication did not consume this count.
@@ -110,7 +110,7 @@ impl TaskSystem {
             generation,
             pointer.expose_provenance(),
         );
-        if remote.publish_policy_update(node, message) != PublishResult::Published {
+        if remote.publish_owner_control(node, message) != PublishResult::Published {
             // SAFETY: rejected/coalesced publication did not consume this
             // attempt's retained reference.
             unsafe { Arc::decrement_strong_count(pointer) };
@@ -143,7 +143,7 @@ impl TaskSystem {
             generation,
             pointer.expose_provenance(),
         );
-        if remote.publish_policy_update(node, message) != PublishResult::Published {
+        if remote.publish_owner_control(node, message) != PublishResult::Published {
             // SAFETY: rejected/coalesced publication retained no extra count.
             unsafe { Arc::decrement_strong_count(pointer) };
             core.cancel_scheduler_inbox_delivery();
@@ -173,7 +173,7 @@ impl TaskSystem {
             generation,
             pointer.expose_provenance(),
         );
-        if publication.publish_policy_update(node, message) != PublishResult::Published {
+        if publication.publish_owner_control(node, message) != PublishResult::Published {
             // SAFETY: rejected/coalesced publication did not consume this
             // attempt's retained reference.
             unsafe { Arc::decrement_strong_count(pointer) };
@@ -205,7 +205,7 @@ impl TaskSystem {
             target,
             pointer.expose_provenance(),
         );
-        if remote.publish_policy_update(node, message) != PublishResult::Published {
+        if remote.publish_owner_control(node, message) != PublishResult::Published {
             // SAFETY: rejected/coalesced publication did not consume this
             // attempt's retained reference.
             unsafe { Arc::decrement_strong_count(pointer) };

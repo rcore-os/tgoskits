@@ -18,10 +18,7 @@ mod scheduler_ipi_tests {
             .unwrap();
         system.make_ready(contender.id()).unwrap();
         system.enqueue(cpu.as_mut(), contender.id(), 0).unwrap();
-        let deadline = cpu
-            .remote()
-            .fair_balance_deadline_ns
-            .load(Ordering::Acquire);
+        let deadline = cpu.remote().fair_balance_deadline_ns();
 
         assert_eq!(
             cpu.as_mut().next_oneshot_deadline_ns(deadline, 1),
@@ -37,7 +34,7 @@ mod scheduler_ipi_tests {
     #[test]
     fn load_summary_reader_does_not_wait_for_stalled_writer() {
         let remote = CpuRemote::create(CpuId::new(0));
-        remote.load_summary_sequence.store(1, Ordering::Release);
+        remote.set_load_summary_sequence_for_test(1);
 
         let reader_remote = Arc::clone(&remote);
         let (started_tx, started_rx) = mpsc::channel();
@@ -54,7 +51,7 @@ mod scheduler_ipi_tests {
 
         // Always release the old implementation's unbounded reader so a red
         // result cannot leak a host thread or hang the test process.
-        remote.load_summary_sequence.store(2, Ordering::Release);
+        remote.set_load_summary_sequence_for_test(2);
         reader.join().unwrap();
 
         assert!(

@@ -566,7 +566,7 @@ impl TaskSystemState {
             target,
             pointer.expose_provenance(),
         );
-        let result = cpu_local.publish_policy_update(node, message);
+        let result = cpu_local.publish_owner_control(node, message);
         if result != PublishResult::Published {
             // SAFETY: a rejected/coalesced publication did not consume this
             // attempt's retained reference.
@@ -610,7 +610,7 @@ impl TaskSystemState {
                 generation,
                 core.expose_provenance(),
             );
-            let result = cpu_local.publish_policy_update(node, message);
+            let result = cpu_local.publish_owner_control(node, message);
             if result != PublishResult::Published {
                 // SAFETY: rejected/coalesced publication did not consume the
                 // retained count allocated for this attempt.

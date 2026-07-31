@@ -1700,7 +1700,7 @@ fn failed_owner_batch_releases_all_detached_payloads() {
         pointer.expose_provenance(),
     );
     assert_eq!(
-        cpu1.remote().publish_migration(node, malformed_owner),
+        cpu1.remote().publish_owner_control(node, malformed_owner),
         PublishResult::Published
     );
     system
@@ -1865,7 +1865,7 @@ fn scheduler_work_without_preemption_preserves_current_dispatch() {
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
     let remote_wake_drains = cpu.remote().remote_wake_inbox().drain_attempts();
-    let policy_drains = cpu.remote().migration_inbox().drain_attempts();
+    let control_drains = cpu.remote().owner_control_inbox().drain_attempts();
     cpu.request_scheduler_work();
     assert!(matches!(
         system.schedule_if_requested(cpu.as_mut(), 1).unwrap(),
@@ -1877,8 +1877,8 @@ fn scheduler_work_without_preemption_preserves_current_dispatch() {
         "a work-only safe point must not enter an empty wake inbox"
     );
     assert_eq!(
-        cpu.remote().migration_inbox().drain_attempts(),
-        policy_drains,
+        cpu.remote().owner_control_inbox().drain_attempts(),
+        control_drains,
         "a work-only safe point must not enter an empty policy inbox"
     );
     system
@@ -1902,14 +1902,14 @@ fn policy_only_safe_point_skips_the_empty_wake_inbox() {
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
     let remote_wake_drains = cpu.remote().remote_wake_inbox().drain_attempts();
-    let policy_drains = cpu.remote().migration_inbox().drain_attempts();
+    let control_drains = cpu.remote().owner_control_inbox().drain_attempts();
     system
         .set_thread_policy(
             running.id(),
             SchedulePolicy::fifo(RtPriority::new(1).unwrap()),
         )
         .unwrap();
-    assert!(cpu.remote().migration_inbox().has_pending());
+    assert!(cpu.remote().owner_control_inbox().has_pending());
 
     system.schedule_if_requested(cpu.as_mut(), 1).unwrap();
 
@@ -1919,12 +1919,12 @@ fn policy_only_safe_point_skips_the_empty_wake_inbox() {
         "policy-only work must not enter the empty wake inbox"
     );
     assert_eq!(
-        cpu.remote().migration_inbox().drain_attempts(),
-        policy_drains + 1,
+        cpu.remote().owner_control_inbox().drain_attempts(),
+        control_drains + 1,
         "the owner must still consume the policy delivery"
     );
     assert!(
-        !cpu.remote().migration_inbox().has_pending(),
+        !cpu.remote().owner_control_inbox().has_pending(),
         "the policy delivery must not remain stranded after its owner safe point"
     );
 }
