@@ -324,7 +324,6 @@ dependencies = [
  "ax-hal",
  "ax-runtime",
  "ax-std",
- "ax-task",
  "axplat-dyn",
  "axtest",
  "crab-usb",
@@ -691,6 +690,7 @@ name = "ax-api"
 version = "0.7.6"
 dependencies = [
  "ax-alloc",
+ "ax-cpumask",
  "ax-display",
  "ax-errno 0.6.2",
  "ax-fs-ng",
@@ -702,7 +702,6 @@ dependencies = [
  "ax-net",
  "ax-runtime",
  "ax-sync",
- "ax-task",
  "axklib",
  "axpoll",
  "dma-api",
@@ -736,6 +735,7 @@ dependencies = [
  "ax-page-table-multiarch",
  "ax-percpu",
  "axbacktrace",
+ "bytemuck",
  "cfg-if",
  "cpu-local",
  "log",
@@ -883,8 +883,10 @@ dependencies = [
 name = "ax-fs-ng"
 version = "0.8.6"
 dependencies = [
+ "ax-crate-interface",
  "ax-errno 0.6.2",
  "ax-io",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-sync",
  "axfs-ng-vfs",
@@ -1063,9 +1065,11 @@ version = "0.12.6"
 dependencies = [
  "async-channel",
  "async-trait",
+ "ax-crate-interface",
  "ax-errno 0.6.2",
  "ax-hal",
  "ax-io",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-sync",
  "ax-task",
@@ -1173,7 +1177,6 @@ dependencies = [
  "ax-net",
  "ax-runtime",
  "ax-sync",
- "ax-task",
  "axpoll",
  "bindgen 0.72.1",
  "flatten_objects",
@@ -1203,6 +1206,7 @@ dependencies = [
  "ax-hal",
  "ax-input",
  "ax-ipi",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",
  "ax-log",
@@ -1211,6 +1215,7 @@ dependencies = [
  "ax-net",
  "ax-percpu",
  "ax-plat",
+ "ax-sync",
  "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
@@ -1231,6 +1236,7 @@ dependencies = [
  "rdrive",
  "sdhci-cv1800",
  "spin",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1254,7 +1260,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-posix-api",
  "ax-runtime",
- "ax-task",
  "axbacktrace",
  "libc",
  "lock_api",
@@ -1265,40 +1270,22 @@ dependencies = [
 name = "ax-sync"
 version = "0.5.30"
 dependencies = [
+ "ax-crate-interface",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-lockdep",
  "ax-task",
- "fastrand",
  "lock_api",
+ "loom",
 ]
 
 [[package]]
 name = "ax-task"
-version = "0.6.6"
+version = "0.7.0"
 dependencies = [
- "ax-alloc",
- "ax-cpumask",
- "ax-crate-interface",
- "ax-errno 0.6.2",
- "ax-hal",
- "ax-ipi",
- "ax-kernel-guard",
- "ax-kspin",
- "ax-lazyinit",
- "ax-lockdep",
- "ax-memory-addr",
- "ax-mm",
- "ax-percpu",
- "ax-sched",
- "ax-timer-list",
- "axpoll",
- "axtest",
- "cfg-if",
- "extern-trait",
- "futures-util",
- "log",
- "quote",
- "spin",
+ "loom",
+ "thiserror 2.0.19",
+ "trait-ffi",
 ]
 
 [[package]]
@@ -1641,6 +1628,7 @@ dependencies = [
  "ax-percpu",
  "ax-plat",
  "ax-std",
+ "ax-sync",
  "ax-timer-list",
  "axaddrspace",
  "axdevice",
@@ -3789,6 +3777,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "generator"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3b854b0e584ead1a33f18b2fcad7cf7be18b3875c78816b753639aa501513ae"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5054,6 +5057,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "loongArch64"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5162,6 +5178,15 @@ name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "matchit"
@@ -7081,6 +7106,7 @@ version = "0.2.12"
 dependencies = [
  "aarch64-cpu-ext",
  "bitflags 2.13.1",
+ "bytemuck",
  "dma-api",
  "log",
  "mbarrier",
@@ -7113,6 +7139,7 @@ dependencies = [
 name = "rockchip-rga"
 version = "0.1.7"
 dependencies = [
+ "bytemuck",
  "dma-api",
  "rdif-base",
 ]
@@ -7419,6 +7446,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7670,6 +7703,7 @@ dependencies = [
  "ax-kspin",
  "ax-memory-addr",
  "axklib",
+ "bytemuck",
  "dma-api",
  "log",
 ]
@@ -8026,7 +8060,6 @@ dependencies = [
  "ax-cgroup",
  "ax-cpu",
  "ax-cpumask",
- "ax-crate-interface",
  "ax-display",
  "ax-driver",
  "ax-errno 0.6.2",
@@ -8049,7 +8082,6 @@ dependencies = [
  "ax-runtime",
  "ax-std",
  "ax-sync",
- "ax-task",
  "axbacktrace",
  "axfs-ng-vfs",
  "axklib",
@@ -8156,6 +8188,7 @@ dependencies = [
  "ax-errno 0.6.2",
  "ax-kspin",
  "bitflags 2.13.1",
+ "bytemuck",
  "cfg-if",
  "derive_more",
  "event-listener",
@@ -8967,11 +9000,15 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
  "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "time",
+ "tracing",
  "tracing-core",
  "tracing-log",
 ]
@@ -9038,9 +9075,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uboot-shell"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50e767c4b671e83b816efd7eb6bdfc3f8e46e94ee520ef4adc375b30940fbe5e"
+checksum = "2025d266d62972e86177045150d4020d57523567a81c4ac0b8afb1194773b870"
 dependencies = [
  "colored",
  "futures",
