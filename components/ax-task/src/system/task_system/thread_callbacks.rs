@@ -9,18 +9,24 @@ enum ExitCallbackState {
     Claimed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeadlineCallbackState {
+    Idle,
+    Claimed,
+}
+
 /// Exit and Deadline callback ownership under the thread registry lock.
 #[derive(Debug)]
 pub(super) struct ThreadCallbackState {
     exit: ExitCallbackState,
-    deadline_claimed: bool,
+    deadline: DeadlineCallbackState,
 }
 
 impl ThreadCallbackState {
     pub(super) const fn new() -> Self {
         Self {
             exit: ExitCallbackState::Absent,
-            deadline_claimed: false,
+            deadline: DeadlineCallbackState::Idle,
         }
     }
 
@@ -57,23 +63,27 @@ impl ThreadCallbackState {
     }
 
     pub(super) fn blocks_reap(&self) -> bool {
-        self.exit != ExitCallbackState::Absent || self.deadline_claimed
+        self.exit != ExitCallbackState::Absent || self.deadline != DeadlineCallbackState::Idle
     }
 
     pub(super) const fn deadline_is_claimed(&self) -> bool {
-        self.deadline_claimed
+        matches!(self.deadline, DeadlineCallbackState::Claimed)
     }
 
-    pub(super) fn claim_deadline(&mut self) {
-        debug_assert!(!self.deadline_claimed);
-        self.deadline_claimed = true;
-    }
-
-    pub(super) fn finish_deadline(&mut self) -> Result<(), TaskError> {
-        if !self.deadline_claimed {
+    pub(super) fn claim_deadline(&mut self) -> Result<(), TaskError> {
+        if self.deadline != DeadlineCallbackState::Idle {
             return Err(TaskError::InvalidConfiguration);
         }
-        self.deadline_claimed = false;
+        self.deadline = DeadlineCallbackState::Claimed;
+        Ok(())
+    }
+
+    /// Completes exactly one claimed callback.
+    pub(super) fn finish_deadline(&mut self) -> Result<(), TaskError> {
+        if self.deadline != DeadlineCallbackState::Claimed {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.deadline = DeadlineCallbackState::Idle;
         Ok(())
     }
 }
@@ -109,7 +119,7 @@ mod tests {
     #[test]
     fn deadline_claim_blocks_reap_until_exactly_one_finish() {
         let mut callbacks = ThreadCallbackState::new();
-        callbacks.claim_deadline();
+        callbacks.claim_deadline().unwrap();
         assert!(callbacks.deadline_is_claimed());
         assert!(callbacks.blocks_reap());
         callbacks.finish_deadline().unwrap();
@@ -118,5 +128,17 @@ mod tests {
             callbacks.finish_deadline(),
             Err(TaskError::InvalidConfiguration)
         );
+    }
+
+    #[test]
+    fn deadline_claim_has_one_idle_to_claimed_to_idle_path() {
+        let mut callbacks = ThreadCallbackState::new();
+        callbacks.claim_deadline().unwrap();
+        assert_eq!(
+            callbacks.claim_deadline(),
+            Err(TaskError::InvalidConfiguration)
+        );
+        callbacks.finish_deadline().unwrap();
+        assert!(!callbacks.blocks_reap());
     }
 }

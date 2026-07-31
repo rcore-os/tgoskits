@@ -1338,6 +1338,110 @@ fn last_non_idle_exit_publishes_work_only_after_switch_tail() {
 }
 
 #[test]
+fn deadline_callback_dispatch_visits_only_pending_candidates() {
+    CANDIDATE_DEADLINE_CALLBACKS.store(0, Ordering::Release);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let fillers = (0..32)
+        .map(|_| {
+            system
+                .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let deadline = SchedulePolicy::deadline(
+        DeadlinePolicy::new(10, 20, 100, DeadlineFlags::DL_OVERRUN).unwrap(),
+    );
+    let extension = unsafe {
+        // SAFETY: the static callback only increments an atomic test counter.
+        ThreadExtension::new(0, &CANDIDATE_DEADLINE_TEST_EXTENSION_OPS)
+    };
+    let deadline_thread = system
+        .create_thread(ThreadSpec::new(deadline).with_extension(extension))
+        .unwrap();
+    for thread in fillers.iter().chain(core::iter::once(&deadline_thread)) {
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+    }
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 0).unwrap().next(),
+        deadline_thread.id()
+    );
+    assert!(
+        system
+            .charge_current(cpu.as_mut(), 10, 10, 0)
+            .unwrap()
+            .deadline_overrun()
+    );
+    system.schedule(cpu.as_mut(), 10).unwrap();
+
+    registry::reset_deadline_callback_record_visits();
+    assert_eq!(system.dispatch_deadline_overruns(1), Ok(1));
+    assert_eq!(CANDIDATE_DEADLINE_CALLBACKS.load(Ordering::Acquire), 1);
+    assert_eq!(
+        registry::deadline_callback_record_visits(),
+        1,
+        "callback dispatch must visit the published candidate, not every live thread"
+    );
+}
+
+#[test]
+fn deadline_overrun_published_during_callback_gets_a_fresh_delivery() {
+    let callback = Box::leak(Box::new(DeadlineCallbackRace {
+        entered: std::sync::Barrier::new(2),
+        release: std::sync::Barrier::new(2),
+        invocations: AtomicUsize::new(0),
+    }));
+    let system = Arc::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let extension = unsafe {
+        // SAFETY: the leaked callback fixture outlives the thread extension.
+        ThreadExtension::new(
+            core::ptr::from_ref(callback).expose_provenance(),
+            &RACING_DEADLINE_TEST_EXTENSION_OPS,
+        )
+    };
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_extension(extension))
+        .unwrap();
+    let core = {
+        let state = system.state.lock();
+        state
+            .thread_record(thread.id())
+            .unwrap()
+            .sched
+            .lock()
+            .deadline
+            .overrun_events = 1;
+        Arc::clone(&state.thread_record(thread.id()).unwrap().core)
+    };
+    system.publish_deadline_overrun_work(core);
+
+    let service_system = Arc::clone(&system);
+    let service = std::thread::spawn(move || service_system.dispatch_deadline_overruns(1));
+    callback.entered.wait();
+    let core = {
+        let state = system.state.lock();
+        state
+            .thread_record(thread.id())
+            .unwrap()
+            .sched
+            .lock()
+            .deadline
+            .overrun_events += 1;
+        Arc::clone(&state.thread_record(thread.id()).unwrap().core)
+    };
+    system.publish_deadline_overrun_work(core);
+    callback.release.wait();
+
+    assert_eq!(service.join().unwrap(), Ok(1));
+    assert_eq!(callback.invocations.load(Ordering::Acquire), 1);
+    assert_eq!(system.dispatch_deadline_overruns(1), Ok(1));
+    assert_eq!(callback.invocations.load(Ordering::Acquire), 2);
+    assert_eq!(system.dispatch_deadline_overruns(1), Ok(0));
+}
+
+#[test]
 fn deadline_task_work_rotates_across_registry_slots() {
     ROTATING_DEADLINE_CALLBACKS.store(0, Ordering::Release);
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
@@ -1353,7 +1457,7 @@ fn deadline_task_work_rotates_across_registry_slots() {
         )
         .unwrap();
     let high_slot_id = high_slot.id();
-    {
+    let (low_core, high_core) = {
         let state = system.state.lock();
         state
             .thread_record(low_slot.id())
@@ -1369,13 +1473,19 @@ fn deadline_task_work_rotates_across_registry_slots() {
             .lock()
             .deadline
             .overrun_events = 1;
-    }
+        (
+            Arc::clone(&state.thread_record(low_slot.id()).unwrap().core),
+            Arc::clone(&state.thread_record(high_slot_id).unwrap().core),
+        )
+    };
+    system.publish_deadline_overrun_work(low_core);
+    system.publish_deadline_overrun_work(high_core);
     system.mark_exited(high_slot_id).unwrap();
     drop(high_slot);
 
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
     assert_eq!(system.thread_state(high_slot_id), Ok(ThreadState::Exited));
-    {
+    let low_core = {
         let state = system.state.lock();
         state
             .thread_record(low_slot.id())
@@ -1384,7 +1494,9 @@ fn deadline_task_work_rotates_across_registry_slots() {
             .lock()
             .deadline
             .overrun_events += 1;
-    }
+        Arc::clone(&state.thread_record(low_slot.id()).unwrap().core)
+    };
+    system.publish_deadline_overrun_work(low_core);
 
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
     assert_eq!(ROTATING_DEADLINE_CALLBACKS.load(Ordering::Acquire), 1);
@@ -3655,6 +3767,30 @@ static DEADLINE_TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
     drop: no_extension_drop,
 };
 
+static CANDIDATE_DEADLINE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+static CANDIDATE_DEADLINE_TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+    on_switch_in: no_extension_switch_in,
+    on_switch_out: no_extension_switch_out,
+    on_exit: no_extension_hook,
+    on_deadline_overrun: count_candidate_deadline_overrun,
+    drop: no_extension_drop,
+};
+
+struct DeadlineCallbackRace {
+    entered: std::sync::Barrier,
+    release: std::sync::Barrier,
+    invocations: AtomicUsize,
+}
+
+static RACING_DEADLINE_TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+    on_switch_in: no_extension_switch_in,
+    on_switch_out: no_extension_switch_out,
+    on_exit: no_extension_hook,
+    on_deadline_overrun: race_deadline_overrun,
+    drop: no_extension_drop,
+};
+
 static POLICY_APPLIED_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static POLICY_APPLIED_AT_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -3696,6 +3832,22 @@ unsafe extern "Rust" fn no_extension_switch_out(
 
 unsafe extern "Rust" fn count_deadline_overrun(_data: usize, _thread: ThreadId) {
     DEADLINE_OVERRUN_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+unsafe extern "Rust" fn count_candidate_deadline_overrun(_data: usize, _thread: ThreadId) {
+    CANDIDATE_DEADLINE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+unsafe extern "Rust" fn race_deadline_overrun(data: usize, _thread: ThreadId) {
+    let callback = unsafe {
+        // SAFETY: the extension payload comes from a leaked DeadlineCallbackRace.
+        &*core::ptr::with_exposed_provenance::<DeadlineCallbackRace>(data)
+    };
+    let previous = callback.invocations.fetch_add(1, Ordering::AcqRel);
+    if previous == 0 {
+        callback.entered.wait();
+        callback.release.wait();
+    }
 }
 
 unsafe extern "Rust" fn record_policy_applied(

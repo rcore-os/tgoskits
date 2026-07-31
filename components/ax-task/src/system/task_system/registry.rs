@@ -10,6 +10,9 @@ std::thread_local! {
     static REAPER_RECORD_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
+    static DEADLINE_CALLBACK_RECORD_VISITS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
 }
 
 #[cfg(test)]
@@ -32,6 +35,16 @@ pub(super) fn reaper_record_visits() -> usize {
     REAPER_RECORD_VISITS.get()
 }
 
+#[cfg(test)]
+pub(super) fn reset_deadline_callback_record_visits() {
+    DEADLINE_CALLBACK_RECORD_VISITS.set(0);
+}
+
+#[cfg(test)]
+pub(super) fn deadline_callback_record_visits() -> usize {
+    DEADLINE_CALLBACK_RECORD_VISITS.get()
+}
+
 #[derive(Debug)]
 pub(super) struct TaskSystemState {
     pub(super) cpus: Vec<CpuRegistration>,
@@ -40,9 +53,18 @@ pub(super) struct TaskSystemState {
     pub(super) pending_resource_releases: Vec<PendingResourceRelease>,
     pub(super) task_work_class_cursor: DeferredTaskWorkClass,
     pub(super) thread_release_first: bool,
-    pub(super) deadline_callback_cursor: usize,
     pub(super) exited_work: ExitedThreadWork,
     pub(super) deadline_admission: DeadlineAdmission,
+}
+
+pub(super) enum DeadlineCallbackClaim {
+    NoCallback {
+        has_more: bool,
+    },
+    Callback {
+        extension: ThreadExtensionView,
+        thread: ThreadId,
+    },
 }
 
 /// Proof that every fallible read required by one PI-chain recomputation
@@ -69,33 +91,25 @@ pub(super) struct PiWaiterCursor {
 impl TaskSystemState {
     pub(super) fn claim_pending_deadline_overrun(
         &mut self,
-    ) -> Option<Option<(ThreadExtensionView, ThreadId)>> {
-        let slot_count = self.slots.len();
-        if slot_count == 0 {
-            return None;
+        thread: ThreadId,
+    ) -> Result<DeadlineCallbackClaim, TaskError> {
+        #[cfg(test)]
+        DEADLINE_CALLBACK_RECORD_VISITS
+            .set(DEADLINE_CALLBACK_RECORD_VISITS.get().saturating_add(1));
+        let record = self.thread_record_mut(thread)?;
+        let mut sched = record.sched.lock();
+        if sched.deadline.overrun_events == 0 {
+            return Err(TaskError::InvalidConfiguration);
         }
-        let start = self.deadline_callback_cursor % slot_count;
-        for offset in 0..slot_count {
-            let index = (start + offset) % slot_count;
-            let Some(record) = self.slots[index].record.as_mut() else {
-                continue;
-            };
-            let mut sched = record.sched.lock();
-            if sched.deadline.overrun_events == 0 || record.callbacks.deadline_is_claimed() {
-                continue;
-            }
-            sched.deadline.overrun_events -= 1;
-            self.deadline_callback_cursor = (index + 1) % slot_count;
-            let callback = record
-                .extension
-                .as_ref()
-                .map(|extension| (extension.as_view(), record.core.id()));
-            if callback.is_some() {
-                record.callbacks.claim_deadline();
-            }
-            return Some(callback);
+        sched.deadline.overrun_events -= 1;
+        let has_more = sched.deadline.overrun_events != 0;
+        let callback = record.extension.as_ref().map(ThreadExtension::as_view);
+        if let Some(extension) = callback {
+            record.callbacks.claim_deadline()?;
+            Ok(DeadlineCallbackClaim::Callback { extension, thread })
+        } else {
+            Ok(DeadlineCallbackClaim::NoCallback { has_more })
         }
-        None
     }
 
     pub(super) fn reserve_deadline(
@@ -457,9 +471,11 @@ impl TaskSystemState {
         record.callbacks.finish_exit()
     }
 
-    pub(super) fn finish_deadline_callback(&mut self, thread: ThreadId) -> Result<(), TaskError> {
+    pub(super) fn finish_deadline_callback(&mut self, thread: ThreadId) -> Result<bool, TaskError> {
         let record = self.thread_record_mut(thread)?;
-        record.callbacks.finish_deadline()
+        let sched = record.sched.lock();
+        record.callbacks.finish_deadline()?;
+        Ok(sched.deadline.overrun_events != 0)
     }
 
     pub(super) fn ensure_pi_acyclic(

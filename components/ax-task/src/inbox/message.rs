@@ -37,6 +37,8 @@ pub enum InboxOperation {
     Reclaim,
     /// Account one coalesced scheduler tick outside hard IRQ context.
     SchedulerTick,
+    /// Deliver one coalesced Deadline overrun in ordinary task context.
+    DeadlineOverrun,
 }
 
 /// Allocation-free scheduler request copied into owner CPU storage.
@@ -219,6 +221,19 @@ impl InboxMessage {
         Self {
             kind: InboxKind::TaskWork,
             operation: InboxOperation::SchedulerTick,
+            thread_id,
+            source_cpu: Self::NO_CPU,
+            target_cpu: Self::NO_CPU,
+            generation: thread_id.generation() as u64,
+            payload,
+        }
+    }
+
+    /// Creates one retained Deadline-overrun task-work request.
+    pub const fn deadline_overrun(thread_id: ThreadId, payload: usize) -> Self {
+        Self {
+            kind: InboxKind::TaskWork,
+            operation: InboxOperation::DeadlineOverrun,
             thread_id,
             source_cpu: Self::NO_CPU,
             target_cpu: Self::NO_CPU,

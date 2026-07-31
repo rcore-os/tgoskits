@@ -414,7 +414,8 @@ impl TaskSystem {
             return Err(TaskError::InvalidConfiguration);
         }
         dispatch.finish_runtime_accounting(now_ns);
-        let mut deadline_task_work = false;
+        let mut donor_overrun_work = None;
+        let mut runtime_overrun_work = None;
         let mut deadline_owner_reconcile = None;
         if let (Some(donor_core), Some(cbs_generation)) = (
             dispatch.deadline_donor_core(),
@@ -456,7 +457,9 @@ impl TaskSystem {
                 donor.policy.effective_entity = donor.policy.base_entity;
             }
             donor.deadline.overrun_events = next_overrun_events;
-            deadline_task_work |= dispatch.deadline_overrun;
+            if dispatch.deadline_overrun {
+                donor_overrun_work = Some(Arc::clone(donor_core));
+            }
             donor.pi.deadline_cbs_borrower = None;
             donor.pi.deadline_cbs_generation = next_cbs_generation;
             deadline_owner_reconcile = donor
@@ -484,8 +487,8 @@ impl TaskSystem {
             .saturating_add(dispatch.charged_runtime_ns());
         if sched.policy.dispatch_generation != dispatch.policy_generation {
             drop(sched);
-            if deadline_task_work {
-                dispatch.runtime_core_arc().publish_task_work();
+            if let Some(core) = donor_overrun_work {
+                self.publish_deadline_overrun_work(core);
             }
             return Ok(());
         }
@@ -502,12 +505,15 @@ impl TaskSystem {
                     .overrun_events
                     .checked_add(1)
                     .ok_or(TaskError::InvalidConfiguration)?;
-                deadline_task_work = true;
+                runtime_overrun_work = Some(Arc::clone(dispatch.runtime_core_arc()));
             }
         }
         drop(sched);
-        if deadline_task_work {
-            dispatch.runtime_core_arc().publish_task_work();
+        if let Some(core) = donor_overrun_work {
+            self.publish_deadline_overrun_work(core);
+        }
+        if let Some(core) = runtime_overrun_work {
+            self.publish_deadline_overrun_work(core);
         }
         Ok(())
     }
