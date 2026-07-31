@@ -4,8 +4,9 @@ use crate::inbox::InboxOperation;
 const SCHEDULER_WORK_PENDING: u8 = 1 << 0;
 const SCHEDULER_IDLE_POLLING: u8 = 1 << 1;
 const CPU_LIFECYCLE_OFFLINE: usize = 1 << (usize::BITS - 1);
-const CPU_LIFECYCLE_DRAINING: usize = 1 << (usize::BITS - 2);
-const CPU_LIFECYCLE_MASK: usize = CPU_LIFECYCLE_OFFLINE | CPU_LIFECYCLE_DRAINING;
+const CPU_LIFECYCLE_INACTIVE: usize = 1 << (usize::BITS - 2);
+const CPU_LIFECYCLE_DRAINING: usize = CPU_LIFECYCLE_OFFLINE | CPU_LIFECYCLE_INACTIVE;
+const CPU_LIFECYCLE_MASK: usize = CPU_LIFECYCLE_DRAINING;
 const CPU_PUBLICATION_COUNT_MASK: usize = !CPU_LIFECYCLE_MASK;
 const CPU_PUBLICATION_OVERFLOW_INVARIANT: u32 = 0x4350_5542;
 const CPU_PUBLICATION_RELEASE_INVARIANT: u32 = 0x4350_5544;
@@ -109,7 +110,9 @@ impl Drop for IdlePullWorkPublication<'_> {
 pub enum CpuLifecycleState {
     /// The CPU accepts placement and remote scheduler publications.
     Online,
-    /// New placement is closed while the owner proves that all work is gone.
+    /// New placement is closed while existing wake routes remain reachable.
+    Inactive,
+    /// Every remote publication is closed while the owner proves work is gone.
     Draining,
     /// The CPU owns no schedulable work and is absent from the root domain.
     Offline,
@@ -257,13 +260,23 @@ impl CpuRemote {
     pub fn lifecycle_state(&self) -> CpuLifecycleState {
         match self.lifecycle.load(Ordering::Acquire) & CPU_LIFECYCLE_MASK {
             0 => CpuLifecycleState::Online,
+            CPU_LIFECYCLE_INACTIVE => CpuLifecycleState::Inactive,
             CPU_LIFECYCLE_DRAINING => CpuLifecycleState::Draining,
-            _ => CpuLifecycleState::Offline,
+            CPU_LIFECYCLE_OFFLINE => CpuLifecycleState::Offline,
+            _ => unreachable!("CPU lifecycle mask has four encoded states"),
         }
     }
 
     /// Returns whether owner initialization and online publication completed.
     pub fn is_online(&self) -> bool {
+        matches!(
+            self.lifecycle_state(),
+            CpuLifecycleState::Online | CpuLifecycleState::Inactive
+        )
+    }
+
+    /// Returns whether new runnable placement may target this CPU.
+    pub(crate) fn accepts_placement(&self) -> bool {
         self.lifecycle_state() == CpuLifecycleState::Online
     }
 
@@ -278,22 +291,58 @@ impl CpuRemote {
             .is_ok()
     }
 
-    pub(crate) fn try_begin_draining(&self) -> bool {
-        // Matching the exact zero-valued Online state also proves that no
-        // producer currently spans queue publication and its doorbell.
-        let draining = self
+    pub(crate) fn try_deactivate(&self) -> bool {
+        // Matching the exact zero-valued Online state proves that no placement
+        // publisher spans the transition. Wake publishers use the separate
+        // online-publication gate and remain allowed until final draining.
+        let inactive = self
             .lifecycle
             .compare_exchange(
                 0,
-                CPU_LIFECYCLE_DRAINING,
+                CPU_LIFECYCLE_INACTIVE,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
             .is_ok();
-        if draining {
+        if inactive {
             self.cancel_idle_pull_if_uncommitted();
         }
-        draining
+        inactive
+    }
+
+    pub(crate) fn cancel_deactivation(&self) {
+        let mut current = self.lifecycle.load(Ordering::Acquire);
+        loop {
+            if current & CPU_LIFECYCLE_MASK != CPU_LIFECYCLE_INACTIVE {
+                task_runtime::fatal_invariant(
+                    CPU_PUBLICATION_RELEASE_INVARIANT,
+                    self.owner.as_u32() as usize,
+                );
+            }
+            let online = current & !CPU_LIFECYCLE_INACTIVE;
+            match self.lifecycle.compare_exchange_weak(
+                current,
+                online,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn try_begin_draining(&self) -> bool {
+        // An exact inactive state also proves that every old-route wake has
+        // completed its queue publication and doorbell transaction.
+        self.lifecycle
+            .compare_exchange(
+                CPU_LIFECYCLE_INACTIVE,
+                CPU_LIFECYCLE_DRAINING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     pub(crate) fn cancel_draining(&self) {
@@ -363,6 +412,31 @@ impl CpuRemote {
         }
     }
 
+    fn begin_online_publication(&self) -> Option<CpuRemotePublication<'_>> {
+        let mut current = self.lifecycle.load(Ordering::Acquire);
+        loop {
+            if current & CPU_LIFECYCLE_OFFLINE != 0 {
+                return None;
+            }
+            let count = current & CPU_PUBLICATION_COUNT_MASK;
+            if count == CPU_PUBLICATION_COUNT_MASK {
+                task_runtime::fatal_invariant(
+                    CPU_PUBLICATION_OVERFLOW_INVARIANT,
+                    self.owner.as_u32() as usize,
+                );
+            }
+            match self.lifecycle.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(CpuRemotePublication { remote: self }),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         self.lifecycle.load(Ordering::Acquire) == CPU_LIFECYCLE_DRAINING
             && !self.deadline_work_pending()
@@ -396,7 +470,7 @@ impl CpuRemote {
     }
 
     pub(crate) fn request_scheduler_work(&self) {
-        let Some(_publication) = self.begin_publication() else {
+        let Some(_publication) = self.begin_online_publication() else {
             return;
         };
         self.request_scheduler_work_owned();
@@ -438,7 +512,7 @@ impl CpuRemote {
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {
-        let Some(_publication) = self.begin_publication() else {
+        let Some(_publication) = self.begin_online_publication() else {
             return false;
         };
         let _irq = IrqScope::enter();
@@ -457,7 +531,7 @@ impl CpuRemote {
     /// edge and is about to return. A remaining batch therefore needs a fresh
     /// interrupt even when the owner itself is the current CPU.
     pub(crate) fn defer_scheduler_work(&self) {
-        let Some(_publication) = self.begin_publication() else {
+        let Some(_publication) = self.begin_online_publication() else {
             task_runtime::fatal_invariant(
                 DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT,
                 self.owner.as_u32() as usize,
@@ -539,7 +613,7 @@ impl CpuRemote {
         node: Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
-        let Some(_remote_publication) = self.begin_publication() else {
+        let Some(_remote_publication) = self.begin_online_publication() else {
             return PublishResult::WrongKind;
         };
         let _irq = IrqScope::enter();
@@ -905,7 +979,7 @@ impl Drop for CpuRemotePublication<'_> {
     fn drop(&mut self) {
         let mut current = self.remote.lifecycle.load(Ordering::Acquire);
         loop {
-            if current & CPU_LIFECYCLE_MASK != 0 || current & CPU_PUBLICATION_COUNT_MASK == 0 {
+            if current & CPU_LIFECYCLE_OFFLINE != 0 || current & CPU_PUBLICATION_COUNT_MASK == 0 {
                 task_runtime::fatal_invariant(
                     CPU_PUBLICATION_RELEASE_INVARIANT,
                     self.remote.owner.as_u32() as usize,

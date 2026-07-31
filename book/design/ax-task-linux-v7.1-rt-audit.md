@@ -238,27 +238,43 @@ unrepresentable deltas to the device argument width, and programs the interval
 before unmasking the IRQ.
 
 The core CPU lifecycle now has one packed state owner. Its high bits represent
-`Online`, `Draining`, and `Offline`; its low bits count producers admitted
-across payload publication and the scheduler doorbell. The
-`Online-with-zero-producers -> Draining` compare-exchange closes new remote
-publication before the owner checks its current/idle slot, runqueue, task
-deadline heap, expired buffer, switch handoff, inboxes, IPI claim, and every
-live thread's affinity and placement ownership. A failed check returns to
-`Online`; a successful check removes the CPU from the root domain before
-publishing `Offline`. Re-online publication reverses that ordering under the
-topology sequence.
+`Online`, `Inactive`, `Draining`, and `Offline`; its low bits count producers
+admitted across payload publication and the scheduler doorbell. `Online`
+accepts new placement and every remote publication. `Inactive` rejects new
+placement but keeps old generation-bearing wake routes reachable. `Draining`
+closes every remote publication and is reachable only from an exact
+`Inactive-with-zero-producers` state. This split prevents dormant and blocked
+threads from turning a historical wake-route hint into physical CPU ownership.
+
+The `Online-with-zero-producers -> Inactive` compare-exchange closes new
+placement before dormant routes are redirected to another active CPU. A wake
+producer that already observed the old route can still publish while the CPU
+is inactive; its publication count prevents the exact transition to
+`Draining`. Once every old route has been replaced and every such producer has
+left, `Inactive-with-zero-producers -> Draining` closes the remaining wake and
+control publication boundary. Only then does the owner check its current/idle
+slot, runqueue, task deadline heap, expired buffer, switch handoff, inboxes,
+IPI claim, and every live thread's physical placement ownership. A failed
+check returns to `Online`; a successful check removes the CPU from the root
+domain before publishing `Offline`. Re-online publication reverses that
+ordering under the topology sequence.
 
 This follows the ordering rather than the object layout of Linux v7.1
-`sched_cpu_deactivate()`: clear active placement admission, enable balance
-push, wait for prior producers, and only then mark the runqueue offline.
+`sched_cpu_deactivate()`: `cpu_active` is cleared before `cpu_online`, new
+fallback placement must avoid inactive CPUs, and an RCU grace period lets
+prior wake-placement readers leave before the runqueue is marked offline.
 Linux's later `sched_cpu_wait_empty()` and `sched_cpu_dying()` verify that the
-outgoing runqueue has been vacated. TGOSKits currently exposes the stricter
-quiescent transition: callers must migrate or retire work before
-`take_cpu_offline()` succeeds. It does not yet claim Linux-style automatic
-runqueue evacuation or a complete physical CPU hot-unplug control path.
+outgoing runqueue has been vacated. TGOSKits' `Inactive` state is the
+corresponding scheduler-active/online split, while its publisher count is the
+local grace mechanism for the explicit remote capabilities. TGOSKits still
+exposes the stricter quiescent transition: callers must migrate or retire
+physically owned work before `take_cpu_offline()` succeeds. It does not yet
+claim Linux-style automatic runqueue evacuation or a complete physical CPU
+hot-unplug control path.
 
 The runtime clockevent now participates in that same lifecycle transaction.
-After remote admission is changed to `Draining` and quiescence is proven,
+After placement admission changes to `Inactive`, old wake routes are
+redirected, remote admission changes to `Draining`, and quiescence is proven,
 `TaskRuntime::prepare_cpu_offline()` stops the owner CPU's physical oneshot
 before the root-domain bit and final `Offline` publication are cleared. A
 runtime failure cancels draining and leaves the scheduler online for retry.
@@ -2293,6 +2309,60 @@ code has no unused non-waiting registry API.
 The complete ax-task suite passes 229 unit tests and 20 loom models,
 ax-runtime's multitask host suite passes 62/62, and both affected
 feature-clippy matrices pass.
+
+## Current-head CPU placement and wake-reachability boundary
+
+`take_cpu_offline()` previously treated `ThreadCore::target_cpu()` as physical
+CPU ownership. A blocked thread retained the CPU on which it last ran as its
+direct-wake route even though it owned no runqueue entry, timer, Deadline
+bandwidth, migration transaction, running dispatch, or switch tail there. That
+historical route made an otherwise idle CPU permanently fail quiescence.
+Dropping the check would have created the opposite defect: the former
+three-state lifecycle closed every remote publication before the route could
+be replaced, so a concurrent wake could observe an unusable target.
+
+Linux v7.1 keeps active placement and online reachability distinct
+(`kernel/sched/core.c:3486-3502`). CPU-down clears `cpu_active` first so load
+balancing and fallback placement reject the CPU, while the CPU remains online
+long enough to remove existing work. `sched_cpu_deactivate()` then waits for
+pre-existing RCU readers after clearing the active mask and enabling balance
+push (`kernel/sched/core.c:8659-8697`). A blocked task is not required to keep
+its historical `task_cpu()` active; the wake path selects a legal active
+destination.
+
+ax-task now models those two authorities explicitly:
+
+- `Online` accepts new placement and all remote publications;
+- `Inactive` rejects new placement but accepts publications through an old
+  generation-bearing wake route;
+- `Draining` accepts no remote publication and can be entered only when every
+  old-route publisher has left; and
+- `Offline` owns no schedulable work and is absent from the root domain.
+
+CPU-down first enters `Inactive`, validates that each live non-idle thread has
+an allowed active fallback, and rejects every genuinely physical owner:
+queued, running, on-CPU, switching/migrating, Deadline bandwidth, or sleep
+timer state. It then redirects dormant wake routes with release publication.
+A producer that acquired the old route either contributes to the inactive
+CPU's publication count and prevents final draining, or observes the new
+route. The exact `Inactive-with-zero-producers -> Draining` transition is the
+remote-capability grace boundary. Failed preparation or quiescence returns
+the same endpoint to `Online`; route redirection is safe to retain.
+
+Every placement selector now tests `accepts_placement()` rather than the
+broader online-reachability predicate. Wake, scheduler-work, and deferred-work
+delivery use the online publication gate so already-published work can still
+drive the inactive owner to a safe point. The root-domain online bit and
+physical clockevent remain published until final draining succeeds.
+
+The deterministic regression blocks a thread after it ran on CPU 1, leaves
+both CPUs in its affinity mask, and first observes the old implementation
+return `CpuNotQuiescent(1)`. The corrected transition redirects its wake route
+to CPU 0, completes CPU 1 offlining, publishes a wake through the ordinary
+generation-bearing handle, and drains the thread into CPU 0's ready queue. A
+lower-level lifecycle test proves that an inactive endpoint rejects placement,
+accepts an in-flight old-route wake, and cannot enter draining until that
+publisher leaves.
 
 ## Completion rules
 

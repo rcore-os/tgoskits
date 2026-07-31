@@ -115,7 +115,7 @@ impl TaskSystem {
                 self.cpu_remotes
                     .get(target.as_usize())
                     .is_some_and(|remote| {
-                        remote.is_online()
+                        remote.accepts_placement()
                             && remote.is_scheduler_ready()
                             && sched.affinity.contains(target)
                     })
@@ -132,7 +132,8 @@ impl TaskSystem {
             let deadline_covers_online =
                 !matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
                     || self.cpu_remotes.iter().enumerate().all(|(index, remote)| {
-                        !remote.is_online() || sched.affinity.contains(CpuId::new(index as u32))
+                        !remote.accepts_placement()
+                            || sched.affinity.contains(CpuId::new(index as u32))
                     });
             if !allowed_target
                 || sched.placement.queued_cpu() != Some(source)
@@ -340,7 +341,7 @@ impl TaskSystem {
             let mut selected_target = None;
             for (index, remote) in self.cpu_remotes.iter().enumerate() {
                 let target = CpuId::new(index as u32);
-                if !remote.is_online() || target == source {
+                if !remote.accepts_placement() || target == source {
                     continue;
                 }
                 let Some(target_summary) = remote.try_load_summary() else {

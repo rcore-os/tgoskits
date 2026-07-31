@@ -63,9 +63,9 @@ impl TaskSystem {
                         && self
                             .cpu_remotes
                             .get(target.as_usize())
-                            .is_some_and(|remote| remote.is_online())
+                            .is_some_and(|remote| remote.accepts_placement())
                 })
-                .or_else(|| self.select_allowed_online_cpu(&sched.affinity, Some(owner)))
+                .or_else(|| self.select_allowed_active_cpu(&sched.affinity, Some(owner)))
                 .ok_or(TaskError::InvalidConfiguration)?;
             sched.placement.set_migration_target(Some(target))?;
             sched.transition(&core, ThreadState::Ready)?;
@@ -130,7 +130,7 @@ impl TaskSystem {
         Ok(None)
     }
 
-    pub(super) fn select_allowed_online_cpu(
+    pub(super) fn select_allowed_active_cpu(
         &self,
         affinity: &CpuSet,
         excluded: Option<CpuId>,
@@ -140,7 +140,7 @@ impl TaskSystem {
             .enumerate()
             .filter_map(|(index, remote)| {
                 let cpu = CpuId::new(index as u32);
-                (Some(cpu) != excluded && remote.is_online() && affinity.contains(cpu))
+                (Some(cpu) != excluded && remote.accepts_placement() && affinity.contains(cpu))
                     .then_some(cpu)
                     .and_then(|cpu| {
                         remote
@@ -209,9 +209,9 @@ impl TaskSystem {
                                 && self
                                     .cpu_remotes
                                     .get(target.as_usize())
-                                    .is_some_and(|remote| remote.is_online())
+                                    .is_some_and(|remote| remote.accepts_placement())
                         })
-                        .or_else(|| self.select_allowed_online_cpu(&sched.affinity, Some(owner)))
+                        .or_else(|| self.select_allowed_active_cpu(&sched.affinity, Some(owner)))
                         .ok_or(TaskError::InvalidConfiguration)?,
                 )
             } else {
