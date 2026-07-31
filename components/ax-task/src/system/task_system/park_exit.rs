@@ -234,8 +234,7 @@ impl TaskSystem {
                 sched.transition(&previous_core, ThreadState::Exited)?;
                 sched.placement.mark_exited_awaiting_tail(cpu.owner())?;
                 let record = state.thread_record_mut(previous)?;
-                record.exit_callback_pending = record.extension.is_some();
-                record.exit_callback_claimed = false;
+                record.callbacks.prepare_exit(record.extension.is_some())?;
             }
             state.queue_exited_thread(previous);
             state.release_deadline_reservation_on_exit(previous)?;

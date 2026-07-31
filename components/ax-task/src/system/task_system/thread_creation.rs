@@ -67,9 +67,7 @@ impl TaskSystem {
             extension,
             blocked_on: None,
             pi_waiter_head: None,
-            exit_callback_pending: false,
-            exit_callback_claimed: false,
-            deadline_callback_claimed: false,
+            callbacks: ThreadCallbackState::new(),
         };
         let context = record.resources.context();
         if !context.is_none() {

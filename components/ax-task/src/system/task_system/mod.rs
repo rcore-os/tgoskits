@@ -17,6 +17,7 @@ mod registry;
 mod scheduling;
 mod switch;
 mod thread_api;
+mod thread_callbacks;
 mod thread_creation;
 
 use alloc::{sync::Arc, vec::Vec};
@@ -43,6 +44,7 @@ use registry::{
     CpuRegistration, DetachedThreadRecord, PendingResourceRelease, PiRecomputeProof,
     PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
 };
+use thread_callbacks::ThreadCallbackState;
 
 use super::thread_sched::{DeadlineActivity, ThreadSchedCell, ThreadSchedState};
 #[cfg(test)]
