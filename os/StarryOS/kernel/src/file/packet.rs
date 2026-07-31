@@ -8,7 +8,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
-use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
+use ax_net::{InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
