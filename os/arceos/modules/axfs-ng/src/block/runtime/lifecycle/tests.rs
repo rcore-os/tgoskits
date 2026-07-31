@@ -422,6 +422,39 @@ struct EndpointFirstController {
     log: Arc<StdMutex<Vec<&'static str>>>,
 }
 
+struct WaitingForIrqController;
+
+impl DriverGeneric for WaitingForIrqController {
+    fn name(&self) -> &str {
+        "waiting-for-irq-controller"
+    }
+}
+
+impl BlockController for WaitingForIrqController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        1
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::WaitingForIrq,
+                Vec::new(),
+                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+            )),
+            ControllerEvent::Rearm { .. } => {
+                Ok(ControllerUpdate::state(ControllerState::WaitingForIrq))
+            }
+            ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
+            _ => Ok(ControllerUpdate::state(ControllerState::WaitingForIrq)),
+        }
+    }
+}
+
 impl DriverGeneric for EndpointFirstController {
     fn name(&self) -> &str {
         "endpoint-first-controller"
@@ -955,6 +988,31 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
     );
     assert_eq!(handle.inner.hctxs.lock().len(), 1);
     assert_eq!(handle.inner.cpu_channels.lock().len(), 1);
+    assert_eq!(handle.shutdown(), 1);
+}
+
+#[test]
+fn bootstrap_preserves_waiting_for_irq_controller_without_io_queue() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(log);
+    *TEST_IRQ_REGISTRAR.action.lock().unwrap() = None;
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(15));
+
+    let handle = BlockDeviceHandle::bootstrap(
+        String::from("waiting-for-irq"),
+        vec![BlockIrqSource { source_id: 0, irq }],
+        Box::new(WaitingForIrqController),
+    )
+    .expect("a control IRQ may precede creation of the first I/O queue");
+
+    assert_eq!(handle.inner.state.load(Ordering::Acquire), DEVICE_STARTING);
+    assert!(handle.inner.hctxs.lock().is_empty());
     assert_eq!(handle.shutdown(), 1);
 }
 

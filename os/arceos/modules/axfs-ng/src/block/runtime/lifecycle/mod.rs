@@ -617,7 +617,7 @@ impl BlockDeviceHandle {
                 return Err(error);
             }
         };
-        if handle.inner.hctxs.lock().is_empty() {
+        if state == ControllerState::Ready && handle.inner.hctxs.lock().is_empty() {
             handle.shutdown();
             return Err(BlkError::Other(
                 "controller reported ready without an I/O hardware queue",
