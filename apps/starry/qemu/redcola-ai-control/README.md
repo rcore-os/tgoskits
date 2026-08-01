@@ -23,10 +23,17 @@ From the repository root:
 cargo xtask starry app qemu -t qemu/redcola-ai-control --arch aarch64
 ```
 
-The case uses `prebuild.sh` to build a static AArch64 musl binary and copy it to
-the StarryOS rootfs as `/usr/bin/redcola-ai-control`. The QEMU config then runs
-that binary as the shell init command and treats the final DONE line as the
-success marker, after the full PASS metrics line has already been printed.
+This case is a Rust Starry app case. Its `prebuild.sh` is intentionally small:
+it only writes `rust/src/prebuild_marker.txt`, which `build.rs` embeds so the
+guest log can prove that the prebuild hook ran. The actual Rust cross-build and
+rootfs installation are handled by the normal Starry app runner invoked by
+`cargo xtask starry app qemu`. That runner builds the static AArch64 musl
+program from `rust/` and injects the generated overlay so the guest sees the
+program as `/usr/bin/redcola-ai-control`.
+
+The QEMU config then runs `/usr/bin/redcola-ai-control` as the shell init
+command and treats the final DONE line as the success marker, after the full
+PASS metrics line and `prebuild_marker=prebuild-ok` have already been printed.
 
 ## Environment Note
 
