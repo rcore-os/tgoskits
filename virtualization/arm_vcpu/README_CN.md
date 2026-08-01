@@ -84,6 +84,11 @@ GICv3 host 必须通过 CPU pin 或等价的不可迁移作用域实现 `current
 host 不得返回固定值。GICv2 的 bind、unbind 和注入路径不会访问 CPU-local ICH
 寄存器，因此 GICv2 host 可以保留该方法默认返回错误的实现。
 
+GICv3 vCPU 完成 bind 后，`with_bound_ich()` 可在不可逃逸的回调中提供
+`IchSession`，用于类型化 LR 访问、maintenance 快照以及受控的 UIE/TDIR 设置。
+回调执行期间 vCPU 必须始终固定在其绑定的 host CPU 上；session 不暴露寄存器后端，
+也不能修改任意 HCR 位。GICv2 会直接返回 `Unsupported`，且不会访问 ICH 寄存器。
+
 ### 文档
 
 生成并查看 API 文档：

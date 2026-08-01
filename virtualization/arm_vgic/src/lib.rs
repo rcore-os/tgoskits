@@ -35,6 +35,7 @@ mod consts;
 mod interrupt;
 // mod list_register;
 mod registers;
+mod spi;
 mod vgicd;
 /// Virtual timer implementation module.
 pub mod vtimer;
@@ -42,6 +43,8 @@ pub mod vtimer;
 #[cfg(feature = "vgicv3")]
 /// GICv3 specific implementation module.
 pub mod v3;
+
+pub use spi::*;
 
 #[cfg(target_arch = "aarch64")]
 /// Re-export arch specific APIs for VGIC to avoid doc build errors

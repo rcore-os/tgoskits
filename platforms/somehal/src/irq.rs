@@ -1,4 +1,6 @@
 use alloc::vec::Vec;
+#[cfg(any(target_arch = "aarch64", test))]
+use core::sync::atomic::{AtomicU8, AtomicU64};
 use core::sync::atomic::{AtomicU16, Ordering};
 
 #[cfg(not(test))]
@@ -82,6 +84,125 @@ static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_EIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_PCH_PIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_LIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
+
+#[cfg(target_arch = "aarch64")]
+static GIC_MAINTENANCE_IRQ: GicMaintenanceIrqCapability = GicMaintenanceIrqCapability::new();
+
+#[cfg(any(target_arch = "aarch64", test))]
+const MAINTENANCE_UNINITIALIZED: u8 = 0;
+#[cfg(any(target_arch = "aarch64", test))]
+const MAINTENANCE_AVAILABLE: u8 = 1;
+#[cfg(any(target_arch = "aarch64", test))]
+const MAINTENANCE_UNAVAILABLE: u8 = 2;
+#[cfg(any(target_arch = "aarch64", test))]
+const MAINTENANCE_ERROR: u8 = 3;
+#[cfg(any(target_arch = "aarch64", test))]
+const MAINTENANCE_PUBLISHING: u8 = 4;
+
+#[cfg(any(target_arch = "aarch64", test))]
+struct GicMaintenanceIrqCapability {
+    state: AtomicU8,
+    encoded_irq: AtomicU64,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl GicMaintenanceIrqCapability {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(MAINTENANCE_UNINITIALIZED),
+            encoded_irq: AtomicU64::new(0),
+        }
+    }
+
+    fn publish_available(&self, irq: IrqId) -> Result<(), IrqError> {
+        let encoded = ((irq.domain.0 as u64) << 32) | irq.hwirq.0 as u64;
+        if self
+            .state
+            .compare_exchange(
+                MAINTENANCE_UNINITIALIZED,
+                MAINTENANCE_PUBLISHING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err(IrqError::Busy);
+        }
+        self.encoded_irq.store(encoded, Ordering::Relaxed);
+        self.state.store(MAINTENANCE_AVAILABLE, Ordering::Release);
+        Ok(())
+    }
+
+    fn publish_unavailable(&self) -> Result<(), IrqError> {
+        self.publish_terminal(MAINTENANCE_UNAVAILABLE)
+    }
+
+    fn publish_error(&self) -> Result<(), IrqError> {
+        self.publish_terminal(MAINTENANCE_ERROR)
+    }
+
+    fn publish_terminal(&self, state: u8) -> Result<(), IrqError> {
+        self.state
+            .compare_exchange(
+                MAINTENANCE_UNINITIALIZED,
+                state,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| IrqError::Busy)
+    }
+
+    fn get(&self) -> Result<IrqId, IrqError> {
+        match self.state.load(Ordering::Acquire) {
+            MAINTENANCE_AVAILABLE => {
+                let encoded = self.encoded_irq.load(Ordering::Relaxed);
+                Ok(IrqId::new(
+                    IrqDomainId((encoded >> 32) as u16),
+                    HwIrq(encoded as u32),
+                ))
+            }
+            MAINTENANCE_ERROR => Err(IrqError::Controller),
+            MAINTENANCE_UNINITIALIZED | MAINTENANCE_UNAVAILABLE | MAINTENANCE_PUBLISHING => {
+                Err(IrqError::Unsupported)
+            }
+            _ => Err(IrqError::Controller),
+        }
+    }
+}
+
+/// Returns the GICv3 virtualization maintenance PPI discovered from firmware.
+#[cfg(target_arch = "aarch64")]
+pub fn gic_maintenance_irq() -> Result<IrqId, IrqError> {
+    GIC_MAINTENANCE_IRQ.get()
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn publish_gic_maintenance_irq(irq: IrqId) -> Result<(), IrqError> {
+    GIC_MAINTENANCE_IRQ.publish_available(irq)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn publish_gic_maintenance_unavailable() -> Result<(), IrqError> {
+    GIC_MAINTENANCE_IRQ.publish_unavailable()
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn publish_gic_maintenance_error() -> Result<(), IrqError> {
+    GIC_MAINTENANCE_IRQ.publish_error()
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn validate_gic_maintenance_irq(
+    expected_domain: IrqDomainId,
+    irq: IrqId,
+) -> Result<IrqId, IrqError> {
+    if irq.domain != expected_domain || irq.hwirq.0 >= 32 {
+        Err(IrqError::InvalidIrq)
+    } else {
+        Ok(irq)
+    }
+}
 
 pub fn alloc_irq_domain(owner: DeviceId, kind: IrqDomainKind) -> Result<IrqDomainId, IrqError> {
     register_irq_domain(owner, None, kind)
@@ -745,5 +866,44 @@ mod tests {
         );
 
         assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn maintenance_irq_capability_is_typed_and_write_once() {
+        let capability = GicMaintenanceIrqCapability::new();
+        assert_eq!(capability.get(), Err(IrqError::Unsupported));
+        let irq = IrqId::new(IrqDomainId(23), HwIrq(25));
+        capability.publish_available(irq).unwrap();
+        assert_eq!(capability.get(), Ok(irq));
+        assert_eq!(capability.publish_available(irq), Err(IrqError::Busy));
+    }
+
+    #[test]
+    fn maintenance_irq_capability_distinguishes_absence_from_error() {
+        let unavailable = GicMaintenanceIrqCapability::new();
+        unavailable.publish_unavailable().unwrap();
+        assert_eq!(unavailable.get(), Err(IrqError::Unsupported));
+
+        let failed = GicMaintenanceIrqCapability::new();
+        failed.publish_error().unwrap();
+        assert_eq!(failed.get(), Err(IrqError::Controller));
+    }
+
+    #[test]
+    fn maintenance_irq_validation_requires_the_exact_private_domain() {
+        let domain = IrqDomainId(23);
+        let maintenance = IrqId::new(domain, HwIrq(25));
+        assert_eq!(
+            validate_gic_maintenance_irq(domain, maintenance),
+            Ok(maintenance)
+        );
+        assert_eq!(
+            validate_gic_maintenance_irq(IrqDomainId(24), maintenance),
+            Err(IrqError::InvalidIrq)
+        );
+        assert_eq!(
+            validate_gic_maintenance_irq(domain, IrqId::new(domain, HwIrq(32))),
+            Err(IrqError::InvalidIrq)
+        );
     }
 }

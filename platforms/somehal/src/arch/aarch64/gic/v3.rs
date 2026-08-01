@@ -63,6 +63,14 @@ module_driver!(
 
 fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, dev) = probe.into_parts();
+    let maintenance_specifier = match info.interrupts().as_slice() {
+        [interrupt] => Ok(Some(interrupt.specifier.clone())),
+        [] => Ok(None),
+        _ => {
+            warn!("GICv3 has more than one maintenance interrupt specifier");
+            Err(())
+        }
+    };
     let mut reg = info.node.regs().into_iter();
     let gicd_reg = reg.next().ok_or(OnProbeError::other(format!(
         "[{}] has no reg",
@@ -92,14 +100,51 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         crate::cpu::current_cpu_idx().unwrap_or_else(someboot::smp::early_current_cpu_idx);
     init_cpu(cpu_idx);
 
-    let domain = crate::irq::alloc_irq_domain(
-        dev.descriptor.device_id(),
-        crate::irq::IrqDomainKind::AArch64Gic,
-    )
-    .map_err(|err| OnProbeError::other(format!("failed to register GICv3 domain: {err:?}")))?;
+    let device_id = dev.descriptor.device_id();
+    let domain = crate::irq::alloc_irq_domain(device_id, crate::irq::IrqDomainKind::AArch64Gic)
+        .map_err(|err| OnProbeError::other(format!("failed to register GICv3 domain: {err:?}")))?;
     dev.register(rdif_intc::Intc::new(domain, gic));
 
+    publish_maintenance_irq(device_id, domain, maintenance_specifier);
+
     Ok(())
+}
+
+fn publish_maintenance_irq(
+    device_id: rdrive::DeviceId,
+    domain: irq_framework::IrqDomainId,
+    specifier: Result<Option<alloc::vec::Vec<u32>>, ()>,
+) {
+    let specifier = match specifier {
+        Ok(specifier) => specifier,
+        Err(()) => {
+            if let Err(error) = crate::irq::publish_gic_maintenance_error() {
+                warn!("failed to publish malformed GIC maintenance IRQ: {error:?}");
+            }
+            return;
+        }
+    };
+    let Some(specifier) = specifier else {
+        if let Err(error) = crate::irq::publish_gic_maintenance_unavailable() {
+            warn!("failed to publish missing GIC maintenance IRQ: {error:?}");
+        }
+        return;
+    };
+    let result = (|| {
+        let device = rdrive::get::<rdif_intc::Intc>(device_id)
+            .map_err(|_| crate::irq::IrqError::Unsupported)?;
+        let mut intc = device.try_lock().map_err(|_| crate::irq::IrqError::Busy)?;
+        let translation = intc.translate_fdt(&specifier)?;
+        let irq = crate::irq::validate_gic_maintenance_irq(domain, translation.id)?;
+        intc.configure(&translation)?;
+        crate::irq::publish_gic_maintenance_irq(irq)
+    })();
+    if let Err(error) = result {
+        warn!("GICv3 maintenance IRQ capability is unavailable: {error:?}");
+        if error != crate::irq::IrqError::Busy {
+            let _ = crate::irq::publish_gic_maintenance_error();
+        }
+    }
 }
 
 /// Check if support GIC cpu interface.

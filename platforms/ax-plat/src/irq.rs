@@ -364,6 +364,10 @@ pub trait IrqIf {
     /// Returns the platform IRQ id used for runtime IPIs.
     fn ipi_irq() -> IrqId;
 
+    /// Returns the typed GIC virtualization maintenance PPI.
+    #[cfg(target_arch = "aarch64")]
+    fn gic_maintenance_irq() -> Result<IrqId, IrqError>;
+
     /// Resolves a firmware/controller interrupt source to a framework IRQ id.
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError>;
 

@@ -33,6 +33,8 @@ enum Event {
     ReadLr(usize),
     WriteLr(usize, u64),
     ReadElrsr,
+    ReadMisr,
+    ReadEisr,
 }
 
 struct FakeRegisters {
@@ -45,6 +47,8 @@ struct FakeRegisters {
     fail_at: Option<usize>,
     operation_count: usize,
     empty_lr_status: u16,
+    maintenance_status: u64,
+    eoi_status: u16,
 }
 
 impl FakeRegisters {
@@ -59,6 +63,8 @@ impl FakeRegisters {
             fail_at: None,
             operation_count: 0,
             empty_lr_status: 0,
+            maintenance_status: 0,
+            eoi_status: 0,
         }
     }
 
@@ -148,6 +154,16 @@ impl IchRegisterAccess for FakeRegisters {
             IchRegisterOperation::ReadEmptyListRegisterStatus,
         )?;
         Ok(self.empty_lr_status)
+    }
+
+    fn read_maintenance_status(&mut self) -> ArmVcpuResult<u64> {
+        self.record(Event::ReadMisr, IchRegisterOperation::ReadMaintenanceStatus)?;
+        Ok(self.maintenance_status)
+    }
+
+    fn read_eoi_status(&mut self) -> ArmVcpuResult<u16> {
+        self.record(Event::ReadEisr, IchRegisterOperation::ReadEoiStatus)?;
+        Ok(self.eoi_status)
     }
 }
 
@@ -362,16 +378,23 @@ fn bound_ich_validates_owner_and_limits_register_access_to_vcpu_capacity() {
     let mut registers = FakeRegisters::populated();
     registers.hcr = 0;
     context.bind(2, &mut registers, profile).unwrap();
-    registers.lrs[0] = 0x1234;
+    let pending = IchLrEntry::Software {
+        intid: ArmVirtualIntId::new(32).unwrap(),
+        state: IchLrState::Pending,
+        priority: 0,
+        group1: true,
+        eoi: false,
+    };
+    registers.lrs[0] = pending.encode();
     registers.empty_lr_status = u16::MAX;
 
     let result = context.with_bound_ich(2, &mut registers, profile, |bound| {
         assert_eq!(bound.capability(), profile);
-        assert_eq!(bound.read_lr(0)?, 0x1234);
-        bound.write_lr(1, 0x5678)?;
+        assert_eq!(bound.read_lr(0)?, pending);
+        bound.write_lr(1, pending)?;
         bound.invalidate_lr(0)?;
         assert_eq!(bound.empty_lr_mask()?, 0b1111);
-        bound.update_hcr(IchHcrUpdate::EnableInterface)?;
+        bound.enable_interface()?;
         assert_eq!(
             bound.read_lr(profile.list_register_count()),
             Err(ArmVcpuError::UnsupportedListRegister {
@@ -383,7 +406,7 @@ fn bound_ich_validates_owner_and_limits_register_access_to_vcpu_capacity() {
 
     assert_eq!(result, Ok(()));
     assert_eq!(registers.lrs[0], 0);
-    assert_eq!(registers.lrs[1], 0x5678);
+    assert_eq!(registers.lrs[1], pending.encode());
     assert_eq!(registers.hcr, HCR_ENABLE);
     assert_eq!(
         context.with_bound_ich(1, &mut registers, profile, |_| Ok(())),
@@ -392,6 +415,109 @@ fn bound_ich_validates_owner_and_limits_register_access_to_vcpu_capacity() {
             actual_cpu: 1,
         })
     );
+}
+
+#[test]
+fn runtime_controls_own_only_en_uie_and_supported_tdir() {
+    let profile = profile();
+    let mut context = IchVcpuContext::default();
+    let mut registers = FakeRegisters::populated();
+    registers.hcr = 0;
+    context.bind(0, &mut registers, profile).unwrap();
+
+    context
+        .with_bound_ich(0, &mut registers, profile, |session| {
+            session
+                .set_runtime_controls(IchRuntimeControls::disabled().with_underflow_notification())
+        })
+        .unwrap();
+    assert_eq!(registers.hcr, HCR_ENABLE | HCR_UNDERFLOW_INTERRUPT_ENABLE);
+
+    let unsupported = context.with_bound_ich(0, &mut registers, profile, |session| {
+        session.set_runtime_controls(IchRuntimeControls::disabled().with_trap_deactivation())
+    });
+    assert!(matches!(
+        unsupported,
+        Err(ArmVcpuError::UnsupportedIchHcrPolicy { .. })
+    ));
+
+    let tdir_profile = IchCapabilityProfile::from_raw_vtr(RAW_PROFILE | (1 << 19)).unwrap();
+    context
+        .with_bound_ich(0, &mut registers, tdir_profile, |session| {
+            session.set_runtime_controls(IchRuntimeControls::disabled().with_trap_deactivation())
+        })
+        .unwrap();
+    assert_eq!(registers.hcr, HCR_ENABLE | HCR_TRAP_DEACTIVATE);
+}
+
+#[test]
+fn maintenance_snapshot_rejects_unknown_reasons_and_out_of_capacity_eisr() {
+    let profile = profile();
+    let mut context = IchVcpuContext::default();
+    let mut registers = FakeRegisters::populated();
+    registers.hcr = 0;
+    context.bind(0, &mut registers, profile).unwrap();
+
+    registers.maintenance_status = 1 << 8;
+    assert_eq!(
+        context.with_bound_ich(0, &mut registers, profile, |session| {
+            session.maintenance_snapshot()
+        }),
+        Err(ArmVcpuError::UnknownIchMaintenanceReasons { bits: 1 << 8 })
+    );
+
+    registers.maintenance_status = 1;
+    registers.eoi_status = 1 << profile.list_register_count();
+    assert_eq!(
+        context.with_bound_ich(0, &mut registers, profile, |session| {
+            session.maintenance_snapshot()
+        }),
+        Err(ArmVcpuError::InvalidIchEisr {
+            bits: 1 << profile.list_register_count(),
+        })
+    );
+
+    registers.eoi_status = 0b10;
+    let snapshot = context
+        .with_bound_ich(0, &mut registers, profile, |session| {
+            session.maintenance_snapshot()
+        })
+        .unwrap();
+    assert!(snapshot.eoi());
+    assert_eq!(snapshot.eoi_slots(), 0b10);
+}
+
+#[test]
+fn compatibility_deactivation_preserves_pending_part() {
+    let profile = profile();
+    let mut context = IchVcpuContext::default();
+    let mut registers = FakeRegisters::populated();
+    registers.hcr = 0;
+    context.bind(0, &mut registers, profile).unwrap();
+    let intid = ArmVirtualIntId::new(27).unwrap();
+    registers.lrs[0] = IchLrEntry::Software {
+        intid,
+        state: IchLrState::ActivePending,
+        priority: 0x20,
+        group1: true,
+        eoi: false,
+    }
+    .encode();
+
+    assert!(
+        context
+            .with_bound_ich(0, &mut registers, profile, |session| {
+                session.deactivate_compatibility_interrupt(intid)
+            })
+            .unwrap()
+    );
+    assert!(matches!(
+        IchLrEntry::decode(0, registers.lrs[0]).unwrap(),
+        IchLrEntry::Software {
+            state: IchLrState::Pending,
+            ..
+        }
+    ));
 }
 
 fn profile() -> IchCapabilityProfile {

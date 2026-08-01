@@ -116,6 +116,11 @@ impl IrqIf for IrqIfImpl {
         somehal::irq::ipi_irq()
     }
 
+    #[cfg(target_arch = "aarch64")]
+    fn gic_maintenance_irq() -> Result<IrqId, IrqError> {
+        somehal::irq::gic_maintenance_irq()
+    }
+
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {
         somehal::irq::resolve_irq_source(source)
     }

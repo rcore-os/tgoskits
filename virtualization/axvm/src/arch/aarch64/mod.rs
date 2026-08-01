@@ -35,9 +35,12 @@ mod gic;
 mod gicv2;
 mod images;
 mod ipi;
+mod maintenance;
+mod maintenance_state;
 mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
+mod vgic;
 mod vm;
 mod vtimer;
 
@@ -48,6 +51,8 @@ use ipi::SendIpiExit;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 
 pub(crate) struct Aarch64Arch;
+
+const ICC_DIR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x32_3016);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Aarch64DeferredRunWork {
@@ -72,6 +77,20 @@ impl ArchOps for Aarch64Arch {
             addr.as_usize(),
             size,
         );
+    }
+
+    fn register_platform_irq_injector() {
+        maintenance::register_handler();
+    }
+
+    fn after_external_interrupt(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        _vector: usize,
+    ) {
+        // fetch_pending_host_irq() already owns the platform acknowledge,
+        // dispatch, and completion transaction on AArch64.
+        crate::check_timer_events();
     }
 
     fn handle_vcpu_exit_bound(
@@ -116,6 +135,21 @@ impl ArchOps for Aarch64Arch {
                     reg,
                 },
             ),
+            ArmVmExit::SysRegWrite { addr, value } if addr == ICC_DIR_EL1 => {
+                vcpu.get_arch_vcpu()
+                    .handle_dir(value)
+                    .map_err(|error| match error {
+                        BackendError::Unsupported => crate::AxVmError::unsupported(
+                            "deactivate virtual interrupt",
+                            "the DIR target cannot be serviced by this vCPU",
+                        ),
+                        _ => crate::AxVmError::vcpu(
+                            "deactivate virtual interrupt",
+                            format_args!("{error:?}"),
+                        ),
+                    })?;
+                Ok(BoundVcpuExit::Continue)
+            }
             ArmVmExit::SysRegWrite { addr, value } => sysreg::handle_write(
                 vm,
                 SysRegWriteExit {
@@ -228,7 +262,13 @@ impl ArmHostOps for AxvmArmHostOps {
     }
 }
 
-pub(crate) struct AxvmArmVcpu(ArmVcpu<AxvmArmHostOps>);
+pub(crate) struct AxvmArmVcpu {
+    backend: ArmVcpu<AxvmArmHostOps>,
+    delivery: Option<vgic::ArmVgicDeliveryPort>,
+    vm_id: VMId,
+    vcpu_id: VCpuId,
+    bind_generation: Option<u64>,
+}
 
 impl AxvmArmVcpu {
     fn with_exclusive_ich_access<T>(
@@ -246,7 +286,7 @@ impl AxvmArmVcpu {
                     default_host().this_cpu_id(),
                     "host CPU identity disagrees with the pinned CPU area"
                 );
-                ax_percpu::with_exclusive_cpu(pin, |_| operation(&mut self.0))
+                ax_percpu::with_exclusive_cpu(pin, |_| operation(&mut self.backend))
             })
         }
         .expect("ICH access requires an installed CPU-local area")
@@ -259,38 +299,76 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     type Exit = ArmVmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(Self)
+        arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(|backend| Self {
+            backend,
+            delivery: None,
+            vm_id,
+            vcpu_id,
+            bind_generation: None,
+        })
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
-        arm_result(self.0.set_entry(ax_guest_phys_addr_to_arm(entry)))
+        arm_result(self.backend.set_entry(ax_guest_phys_addr_to_arm(entry)))
     }
 
     fn set_nested_page_table(&mut self, config: NestedPagingConfig) -> BackendResult {
         arm_result(
-            self.0
+            self.backend
                 .set_nested_page_table(ax_nested_paging_to_arm(config)),
         )
     }
 
     fn setup(&mut self, config: Self::SetupConfig) -> BackendResult {
-        arm_result(self.0.setup(config))
+        arm_result(self.backend.setup(config))
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
-        arm_result(self.0.run())
+        self.service_emulated_spis(false)?;
+        let exit = arm_result(self.backend.run())?;
+        let maintenance_seen = self.consume_maintenance_observation()?;
+        self.service_emulated_spis(maintenance_seen)?;
+        Ok(exit)
     }
 
     fn bind(&mut self) -> BackendResult {
-        arm_result(self.0.bind())
+        if self.delivery.is_none() {
+            return arm_result(self.backend.bind());
+        }
+        let generation = maintenance::next_generation()?;
+        let cpu_id = default_host().this_cpu_id();
+        maintenance::publish(cpu_id, self.vm_id, self.vcpu_id, generation)?;
+        if let Err(error) = arm_result(self.backend.bind()) {
+            let _ = maintenance::withdraw(cpu_id, self.vm_id, self.vcpu_id, generation);
+            return Err(error);
+        }
+        self.bind_generation = Some(generation);
+        Ok(())
     }
 
     fn unbind(&mut self) -> BackendResult {
-        arm_result(self.0.unbind())
+        if self.delivery.is_none() {
+            return arm_result(self.backend.unbind());
+        }
+        let service_result = self
+            .consume_maintenance_observation()
+            .and_then(|maintenance_seen| self.service_emulated_spis_bound(maintenance_seen));
+        let unbind_result = arm_result(self.backend.unbind());
+        let withdraw_result = if let Some(generation) = self.bind_generation.take() {
+            maintenance::withdraw(
+                default_host().this_cpu_id(),
+                self.vm_id,
+                self.vcpu_id,
+                generation,
+            )
+        } else {
+            Ok(())
+        };
+        service_result.and(unbind_result).and(withdraw_result)
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
-        self.0.set_gpr(reg, val);
+        self.backend.set_gpr(reg, val);
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
@@ -312,8 +390,104 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     }
 
     fn set_return_value(&mut self, val: usize) {
-        self.0.set_return_value(val);
+        self.backend.set_return_value(val);
     }
+}
+
+impl AxvmArmVcpu {
+    fn consume_maintenance_observation(&self) -> BackendResult<bool> {
+        let Some(generation) = self.bind_generation else {
+            return Ok(false);
+        };
+        let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+        maintenance::consume(
+            default_host().this_cpu_id(),
+            self.vm_id,
+            self.vcpu_id,
+            generation,
+        )
+    }
+
+    fn service_emulated_spis(&mut self, read_maintenance: bool) -> BackendResult {
+        let Some(delivery) = self.delivery.as_mut() else {
+            return Ok(());
+        };
+        let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+        let backend = &mut self.backend;
+        // SAFETY: the vCPU transition owns the backend. IRQ exclusion prevents
+        // local ICH re-entry and the pin proves this operation cannot migrate.
+        unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                ax_percpu::with_exclusive_cpu(pin, |_| {
+                    service_delivery(backend, delivery, read_maintenance)
+                })
+            })
+        }
+        .map_err(|_| BackendError::InvalidState)?
+    }
+
+    /// Services the delivery port while the caller already owns the current CPU.
+    fn service_emulated_spis_bound(&mut self, read_maintenance: bool) -> BackendResult {
+        let Some(delivery) = self.delivery.as_mut() else {
+            return Ok(());
+        };
+        service_delivery(&mut self.backend, delivery, read_maintenance)
+    }
+
+    fn handle_dir(&mut self, value: u64) -> BackendResult {
+        let raw_intid = usize::try_from(value).map_err(|_| BackendError::InvalidInput)?;
+        let intid = ArmVirtualIntId::try_from(raw_intid).map_err(|_| BackendError::InvalidInput)?;
+        let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+        let backend = &mut self.backend;
+        let delivery = &mut self.delivery;
+        let mut delivery_error = None;
+        let result = unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                ax_percpu::with_exclusive_cpu(pin, |_| {
+                    backend.with_bound_ich(|session| {
+                        let handled = if let Some(port) = delivery.as_mut() {
+                            port.handle_dir(session, intid)
+                        } else {
+                            match session.deactivate_compatibility_interrupt(intid) {
+                                Ok(true) => Ok(()),
+                                Ok(false) => Err(BackendError::Unsupported),
+                                Err(_) => Err(BackendError::InvalidState),
+                            }
+                        };
+                        if let Err(error) = handled {
+                            delivery_error = Some(error);
+                            return Err(ArmVcpuError::BadState);
+                        }
+                        Ok(())
+                    })
+                })
+            })
+        }
+        .map_err(|_| BackendError::InvalidState)?;
+        if let Some(error) = delivery_error {
+            return Err(error);
+        }
+        arm_result(result)
+    }
+}
+
+fn service_delivery(
+    backend: &mut ArmVcpu<AxvmArmHostOps>,
+    delivery: &mut vgic::ArmVgicDeliveryPort,
+    read_maintenance: bool,
+) -> BackendResult {
+    let mut delivery_error = None;
+    let result = backend.with_bound_ich(|session| {
+        if let Err(error) = delivery.service(session, read_maintenance) {
+            delivery_error = Some(error);
+            return Err(ArmVcpuError::BadState);
+        }
+        Ok(())
+    });
+    if let Some(error) = delivery_error {
+        return Err(error);
+    }
+    arm_result(result)
 }
 
 pub(crate) struct AxvmArmPerCpu(ArmPerCpu);
@@ -362,6 +536,9 @@ fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
         | ArmVcpuError::InvalidIchCapability { .. }
         | ArmVcpuError::UnexpectedIchHcrBits { .. }
         | ArmVcpuError::UnexpectedIchEoiCount { .. } => BackendError::InvalidData,
+        ArmVcpuError::UnknownIchMaintenanceReasons { .. } | ArmVcpuError::InvalidIchEisr { .. } => {
+            BackendError::InvalidData
+        }
         ArmVcpuError::NoFreeListRegister { .. } => BackendError::ResourceBusy,
         ArmVcpuError::UnsupportedListRegister { .. }
         | ArmVcpuError::UnsupportedIchHcrPolicy { .. }

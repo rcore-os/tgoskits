@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{ArmVcpuError, ArmVcpuResult, IchCapabilityProfile, IchRegisterOperation};
+use crate::{
+    ArmVcpuError, ArmVcpuResult, ArmVirtualIntId, IchCapabilityProfile, IchLrEntry, IchLrState,
+    IchRegisterOperation,
+};
 
 const MAX_LIST_REGISTERS: usize = 16;
 const MAX_ACTIVE_PRIORITY_REGISTERS: usize = 4;
@@ -146,7 +149,7 @@ impl IchVcpuContext {
         cpu_id: usize,
         registers: &mut R,
         cpu_profile: IchCapabilityProfile,
-        operation: impl for<'bound> FnOnce(&mut BoundIch<'bound, R>) -> ArmVcpuResult<T>,
+        operation: impl for<'bound> FnOnce(&mut IchSession<'bound>) -> ArmVcpuResult<T>,
     ) -> ArmVcpuResult<T> {
         match self.bound_cpu {
             None => return Err(ArmVcpuError::IchVcpuNotBound),
@@ -160,7 +163,7 @@ impl IchVcpuContext {
         }
         self.ensure_compatible(cpu_id, cpu_profile)?;
 
-        operation(&mut BoundIch {
+        operation(&mut IchSession {
             context: self,
             registers,
             cpu_profile,
@@ -205,39 +208,36 @@ impl IchVcpuContext {
 }
 
 /// Non-escaping access to the ICH registers owned by one bound vCPU.
-pub(crate) struct BoundIch<'bound, R> {
+pub struct IchSession<'bound> {
     context: &'bound mut IchVcpuContext,
-    registers: &'bound mut R,
+    registers: &'bound mut dyn IchRegisterAccess,
     cpu_profile: IchCapabilityProfile,
 }
 
-impl<R: IchRegisterAccess> BoundIch<'_, R> {
-    pub(crate) const fn capability(&self) -> IchCapabilityProfile {
+impl IchSession<'_> {
+    /// Returns the immutable capability of the bound host CPU.
+    pub const fn capability(&self) -> IchCapabilityProfile {
         self.cpu_profile
     }
 
-    pub(crate) fn read_lr(&mut self, slot: usize) -> ArmVcpuResult<u64> {
+    /// Reads and decodes one implemented LR slot.
+    pub fn read_lr(&mut self, slot: usize) -> ArmVcpuResult<IchLrEntry> {
         self.ensure_lr_slot(slot)?;
-        self.registers.read_list_register(slot)
+        IchLrEntry::decode(slot, self.registers.read_list_register(slot)?)
     }
 
-    pub(crate) fn write_lr(&mut self, slot: usize, value: u64) -> ArmVcpuResult {
+    /// Writes one typed software or invalid LR entry.
+    pub fn write_lr(&mut self, slot: usize, entry: IchLrEntry) -> ArmVcpuResult {
         self.ensure_lr_slot(slot)?;
-        self.registers.write_list_register(slot, value)
+        self.registers.write_list_register(slot, entry.encode())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the PR3.3 refill path invalidates folded list registers"
-        )
-    )]
-    pub(crate) fn invalidate_lr(&mut self, slot: usize) -> ArmVcpuResult {
-        self.write_lr(slot, 0)
+    pub fn invalidate_lr(&mut self, slot: usize) -> ArmVcpuResult {
+        self.write_lr(slot, IchLrEntry::Invalid)
     }
 
-    pub(crate) fn empty_lr_mask(&mut self) -> ArmVcpuResult<u16> {
+    /// Returns the empty status of only the implemented LR slots.
+    pub fn empty_lr_mask(&mut self) -> ArmVcpuResult<u16> {
         let implemented = self.capacity()?.list_register_count;
         let implemented_mask = if implemented == u16::BITS as usize {
             u16::MAX
@@ -247,12 +247,82 @@ impl<R: IchRegisterAccess> BoundIch<'_, R> {
         Ok(self.registers.read_empty_list_register_status()? & implemented_mask)
     }
 
-    pub(crate) fn update_hcr(&mut self, update: IchHcrUpdate) -> ArmVcpuResult {
-        let policy = self.context.hcr_policy.updated(update);
+    /// Enables the virtual CPU interface without changing runtime controls.
+    pub fn enable_interface(&mut self) -> ArmVcpuResult {
+        let policy = self.context.hcr_policy.with_interface_enabled();
         policy.validate(self.cpu_profile)?;
         self.registers.write_hcr(policy.raw())?;
         self.context.hcr_policy = policy;
         Ok(())
+    }
+
+    /// Applies the complete UIE/TDIR policy while keeping the interface enabled.
+    pub fn set_runtime_controls(&mut self, controls: IchRuntimeControls) -> ArmVcpuResult {
+        let policy = IchHcrPolicy::from_runtime_controls(controls);
+        policy.validate(self.cpu_profile)?;
+        self.registers.write_hcr(policy.raw())?;
+        self.context.hcr_policy = policy;
+        Ok(())
+    }
+
+    /// Reads the maintenance reasons and validates the EISR slot mask.
+    pub fn maintenance_snapshot(&mut self) -> ArmVcpuResult<IchMaintenanceSnapshot> {
+        let reasons = self.registers.read_maintenance_status()?;
+        let unknown_reasons = reasons & !ICH_MISR_OWNED_REASONS;
+        if unknown_reasons != 0 {
+            return Err(ArmVcpuError::UnknownIchMaintenanceReasons {
+                bits: unknown_reasons,
+            });
+        }
+        let eoi_slots = self.registers.read_eoi_status()?;
+        let implemented = self.capacity()?.list_register_count;
+        let implemented_mask = implemented_mask(implemented);
+        let invalid_slots = eoi_slots & !implemented_mask;
+        if invalid_slots != 0 {
+            return Err(ArmVcpuError::InvalidIchEisr {
+                bits: invalid_slots,
+            });
+        }
+        Ok(IchMaintenanceSnapshot { reasons, eoi_slots })
+    }
+
+    /// Applies DIR-compatible deactivation to a non-module-owned software LR.
+    pub fn deactivate_compatibility_interrupt(
+        &mut self,
+        intid: ArmVirtualIntId,
+    ) -> ArmVcpuResult<bool> {
+        for slot in 0..self.capacity()?.list_register_count {
+            let entry = self.read_lr(slot)?;
+            let IchLrEntry::Software {
+                intid: resident,
+                state,
+                priority,
+                group1,
+                eoi,
+            } = entry
+            else {
+                continue;
+            };
+            if resident != intid {
+                continue;
+            }
+            match state {
+                IchLrState::Pending => {}
+                IchLrState::Active => self.invalidate_lr(slot)?,
+                IchLrState::ActivePending => self.write_lr(
+                    slot,
+                    IchLrEntry::Software {
+                        intid,
+                        state: IchLrState::Pending,
+                        priority,
+                        group1,
+                        eoi,
+                    },
+                )?,
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn capacity(&self) -> ArmVcpuResult<IchContextCapacity> {
@@ -268,11 +338,71 @@ impl<R: IchRegisterAccess> BoundIch<'_, R> {
     }
 }
 
-/// Typed changes allowed through the bound ICH access boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IchHcrUpdate {
-    EnableInterface,
+/// Runtime-owned ICH controls. All other HCR policy bits remain zero.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IchRuntimeControls {
+    underflow_notification: bool,
+    trap_deactivation: bool,
 }
+
+impl IchRuntimeControls {
+    /// Creates controls with both UIE and TDIR disabled.
+    pub const fn disabled() -> Self {
+        Self {
+            underflow_notification: false,
+            trap_deactivation: false,
+        }
+    }
+
+    /// Enables UIE for LR-pressure notification.
+    pub const fn with_underflow_notification(mut self) -> Self {
+        self.underflow_notification = true;
+        self
+    }
+
+    /// Enables TDIR after the runtime has installed a DIR handler.
+    pub const fn with_trap_deactivation(mut self) -> Self {
+        self.trap_deactivation = true;
+        self
+    }
+
+    /// Whether UIE is requested.
+    pub const fn underflow_notification(self) -> bool {
+        self.underflow_notification
+    }
+    /// Whether TDIR is requested.
+    pub const fn trap_deactivation(self) -> bool {
+        self.trap_deactivation
+    }
+}
+
+/// Validated maintenance status observed in one bound ICH session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IchMaintenanceSnapshot {
+    reasons: u64,
+    eoi_slots: u16,
+}
+
+impl IchMaintenanceSnapshot {
+    /// Returns the validated MISR reason bitmap.
+    pub const fn reasons(self) -> u64 {
+        self.reasons
+    }
+    /// Returns EISR bits limited to implemented LR slots.
+    pub const fn eoi_slots(self) -> u16 {
+        self.eoi_slots
+    }
+    /// Whether underflow caused this maintenance event.
+    pub const fn underflow(self) -> bool {
+        self.reasons & (1 << 1) != 0
+    }
+    /// Whether an EOI-maintenance LR caused this event.
+    pub const fn eoi(self) -> bool {
+        self.reasons & 1 != 0
+    }
+}
+
+const ICH_MISR_OWNED_REASONS: u64 = 0xff;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct IchHcrPolicy(u64);
@@ -310,10 +440,19 @@ impl IchHcrPolicy {
         self.0
     }
 
-    const fn updated(self, update: IchHcrUpdate) -> Self {
-        match update {
-            IchHcrUpdate::EnableInterface => Self(self.0 | HCR_ENABLE),
+    const fn with_interface_enabled(self) -> Self {
+        Self(self.0 | HCR_ENABLE)
+    }
+
+    const fn from_runtime_controls(controls: IchRuntimeControls) -> Self {
+        let mut value = HCR_ENABLE;
+        if controls.underflow_notification {
+            value |= HCR_UNDERFLOW_INTERRUPT_ENABLE;
         }
+        if controls.trap_deactivation {
+            value |= HCR_TRAP_DEACTIVATE;
+        }
+        Self(value)
     }
 }
 
@@ -382,6 +521,16 @@ pub(crate) trait IchRegisterAccess {
     fn read_list_register(&mut self, slot: usize) -> ArmVcpuResult<u64>;
     fn write_list_register(&mut self, slot: usize, value: u64) -> ArmVcpuResult;
     fn read_empty_list_register_status(&mut self) -> ArmVcpuResult<u16>;
+    fn read_maintenance_status(&mut self) -> ArmVcpuResult<u64>;
+    fn read_eoi_status(&mut self) -> ArmVcpuResult<u16>;
+}
+
+const fn implemented_mask(count: usize) -> u16 {
+    if count == u16::BITS as usize {
+        u16::MAX
+    } else {
+        (1u16 << count) - 1
+    }
 }
 
 fn cleanup_local_interface<R: IchRegisterAccess>(
@@ -450,6 +599,16 @@ impl IchRegisterAccess for HardwareIchRegisters {
     fn read_empty_list_register_status(&mut self) -> ArmVcpuResult<u16> {
         use arm_gic_driver::v3::{ICH_ELRSR_EL2, Readable};
         Ok(ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS) as u16)
+    }
+
+    fn read_maintenance_status(&mut self) -> ArmVcpuResult<u64> {
+        use arm_gic_driver::v3::{ICH_MISR_EL2, Readable};
+        Ok(ICH_MISR_EL2.get())
+    }
+
+    fn read_eoi_status(&mut self) -> ArmVcpuResult<u16> {
+        use arm_gic_driver::v3::{ICH_EISR_EL2, Readable};
+        Ok(ICH_EISR_EL2.read(ICH_EISR_EL2::STATUS) as u16)
     }
 }
 

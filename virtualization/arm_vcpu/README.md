@@ -85,6 +85,12 @@ non-migrating scope; multi-CPU hosts must not return a fixed value. GICv2 hosts 
 use its default error implementation because the GICv2 bind, unbind, and injection
 paths do not access CPU-local ICH registers.
 
+After a GICv3 vCPU has been bound, `with_bound_ich()` exposes a non-escaping
+`IchSession` for typed LR access, maintenance snapshots, and the owned UIE/TDIR
+controls. The callback must run while the vCPU remains pinned to its bound host
+CPU. It cannot access the register backend or arbitrary HCR bits. GICv2 returns
+`Unsupported` without touching ICH registers.
+
 ### Documentation
 
 Generate and view API documentation:

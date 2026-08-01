@@ -18,14 +18,7 @@ use axdevice_base::{
 };
 use axvm_types::GuestPhysAddr;
 
-use crate::vgic::Vgic;
-
-const VGIC_V2_BASE: usize = 0x800_0000;
-const VGIC_V2_SIZE: usize = 0x10000;
-static VGIC_V2_RESOURCES: [Resource; 1] = [Resource::MmioRange {
-    base: VGIC_V2_BASE as u64,
-    size: VGIC_V2_SIZE as u64,
-}];
+use crate::{VgicError, vgic::Vgic};
 
 impl Vgic {
     /// Handles memory read operations.
@@ -41,13 +34,8 @@ impl Vgic {
     /// Returns:
     /// - `DeviceResult<usize>`: The result of the read operation, including any errors and the size of the data read.
     pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
-        if !contains_vgic_v2(addr) {
-            return Err(DeviceError::OutOfRange {
-                addr: addr.as_usize() as u64,
-            });
-        }
-        // Perform bitwise operation to ensure the address is aligned to byte boundaries
-        let addr = addr.as_usize() & 0xfff;
+        let addr = self.checked_offset(addr, width)?;
+        self.ensure_spi_enable_access(addr, width)?;
 
         // Match different read operations based on the width parameter
         let value = match width {
@@ -63,8 +51,12 @@ impl Vgic {
                 // Handle 4-byte read
                 self.handle_read32(addr)?
             }
-            // Return success for unsupported widths without performing any operation
-            _ => 0,
+            _ => {
+                return Err(DeviceError::InvalidWidth {
+                    expected: AccessWidth::Dword,
+                    actual: width,
+                });
+            }
         };
         Ok(value)
     }
@@ -84,34 +76,65 @@ impl Vgic {
         width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
-        if !contains_vgic_v2(addr) {
-            return Err(DeviceError::OutOfRange {
-                addr: addr.as_usize() as u64,
-            });
-        }
-        // Convert the physical address to a `usize` and apply a mask to ensure proper alignment
-        let addr = addr.as_usize() & 0xfff;
+        let addr = self.checked_offset(addr, width)?;
+        self.ensure_spi_enable_access(addr, width)?;
 
         // Depending on the width parameter, perform the corresponding write operation
         match width {
             AccessWidth::Byte => {
                 // Handle 8-bit write operation
-                self.handle_write8(addr, val);
-                Ok(())
+                self.handle_write8(addr, val).map_err(Into::into)
             }
             AccessWidth::Word => {
                 // Handle 16-bit write operation
-                self.handle_write16(addr, val);
-                Ok(())
+                self.handle_write16(addr, val).map_err(Into::into)
             }
             AccessWidth::Dword => {
                 // Handle 32-bit write operation
-                self.handle_write32(addr, val);
-                Ok(())
+                self.handle_write32(addr, val).map_err(Into::into)
             }
-            // For other width values, do nothing
-            _ => Ok(()),
+            _ => Err(DeviceError::InvalidWidth {
+                expected: AccessWidth::Dword,
+                actual: width,
+            }),
         }
+    }
+
+    fn checked_offset(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        let raw_addr = addr.as_usize();
+        let range = self.range();
+        let start = range.start.as_usize();
+        let end = range.end.as_usize();
+        let offset = raw_addr.checked_sub(start).ok_or(DeviceError::OutOfRange {
+            addr: raw_addr as u64,
+        })?;
+        let access_end = raw_addr
+            .checked_add(width.size())
+            .ok_or(DeviceError::OutOfRange {
+                addr: raw_addr as u64,
+            })?;
+        if access_end > end {
+            return Err(DeviceError::OutOfRange {
+                addr: raw_addr as u64,
+            });
+        }
+        Ok(offset)
+    }
+
+    fn ensure_spi_enable_access(&self, offset: usize, width: AccessWidth) -> DeviceResult {
+        const ISENABLER1: usize = 0x104;
+        const ISENABLER_END: usize = 0x180;
+        let overlaps_spi_enable =
+            offset < ISENABLER_END && offset.saturating_add(width.size()) > ISENABLER1;
+        if overlaps_spi_enable && (width != AccessWidth::Dword || !offset.is_multiple_of(4)) {
+            return Err(VgicError::InvalidAccess {
+                operation: "access SPI ISENABLER",
+                offset,
+                width,
+            }
+            .into());
+        }
+        Ok(())
     }
 }
 
@@ -121,7 +144,7 @@ impl Device for Vgic {
     }
 
     fn resources(&self) -> &[Resource] {
-        &VGIC_V2_RESOURCES
+        self.resources()
     }
 
     fn access(
@@ -143,9 +166,4 @@ impl Device for Vgic {
                 .map(|_| BusResponse::Write)
         }
     }
-}
-
-fn contains_vgic_v2(addr: GuestPhysAddr) -> bool {
-    let addr = addr.as_usize();
-    (VGIC_V2_BASE..VGIC_V2_BASE + VGIC_V2_SIZE).contains(&addr)
 }

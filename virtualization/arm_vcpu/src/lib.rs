@@ -39,6 +39,8 @@ mod vcpu;
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) use self::ich::ich_capability;
+#[cfg(any(target_arch = "aarch64", test))]
+pub use self::ich::{IchMaintenanceSnapshot, IchRuntimeControls, IchSession};
 pub use self::{
     host::{ArmHostOps, ArmInterruptVirtualization},
     ich::{IchCapabilityError, IchCapabilityProfile},

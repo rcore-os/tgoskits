@@ -170,6 +170,18 @@ pub enum ArmVcpuError {
         /// The unsupported list register slot.
         slot: usize,
     },
+    /// `ICH_MISR_EL2` reported a reason not owned by this delivery policy.
+    #[error("ICH_MISR_EL2 contains unknown maintenance reasons {bits:#x}")]
+    UnknownIchMaintenanceReasons {
+        /// Unknown reason bits.
+        bits: u64,
+    },
+    /// `ICH_EISR_EL2` named a list register outside the vCPU's capacity.
+    #[error("ICH_EISR_EL2 contains out-of-range list-register bits {bits:#x}")]
+    InvalidIchEisr {
+        /// Invalid EISR bits.
+        bits: u16,
+    },
 }
 
 /// One typed operation performed against the CPU-local ICH register bank.
@@ -197,6 +209,10 @@ pub enum IchRegisterOperation {
     WriteListRegister(usize),
     /// Read the empty-list-register status bitmap.
     ReadEmptyListRegisterStatus,
+    /// Read `ICH_MISR_EL2`.
+    ReadMaintenanceStatus,
+    /// Read `ICH_EISR_EL2`.
+    ReadEoiStatus,
 }
 
 /// Guest physical address.

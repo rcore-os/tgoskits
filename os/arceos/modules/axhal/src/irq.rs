@@ -1,6 +1,8 @@
 //! Interrupt management.
 
 use ax_cpu::trap::set_irq_handler;
+#[cfg(target_arch = "aarch64")]
+pub use ax_plat::irq::gic_maintenance_irq;
 #[cfg(feature = "smp")]
 pub use ax_plat::irq::init_secondary_boot_irqs;
 pub use ax_plat::irq::{

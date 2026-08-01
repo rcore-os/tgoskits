@@ -18,8 +18,8 @@ use aarch64_cpu::registers::*;
 
 use crate::{
     ArmGuestPhysAddr, ArmHostOps, ArmInterruptVirtualization, ArmNestedPagingConfig, ArmSysRegAddr,
-    ArmVcpuResult, ArmVirtualIntId, ArmVmExit, IchDirectInjection, IchLrEntry, IchLrState,
-    TrapFrame,
+    ArmVcpuError, ArmVcpuResult, ArmVirtualIntId, ArmVmExit, IchDirectInjection, IchLrEntry,
+    IchLrState, TrapFrame,
     context_frame::GuestSystemRegisters,
     exception::{TrapKind, handle_exception_sync},
     exception_utils::exception_class_value,
@@ -217,13 +217,15 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             .unbind(cpu_id, &mut crate::ich::HardwareIchRegisters, profile)
     }
 
-    pub(crate) fn with_bound_ich<T>(
+    /// Runs a non-escaping operation against this vCPU's bound ICH interface.
+    pub fn with_bound_ich<T>(
         &mut self,
-        cpu_id: usize,
-        operation: impl for<'bound> FnOnce(
-            &mut crate::ich::BoundIch<'bound, crate::ich::HardwareIchRegisters>,
-        ) -> ArmVcpuResult<T>,
+        operation: impl for<'bound> FnOnce(&mut crate::IchSession<'bound>) -> ArmVcpuResult<T>,
     ) -> ArmVcpuResult<T> {
+        if H::interrupt_virtualization()? == ArmInterruptVirtualization::GicV2 {
+            return Err(ArmVcpuError::Unsupported);
+        }
+        let cpu_id = H::current_cpu_id()?;
         let profile = crate::ich_capability(cpu_id)?;
         self.ich.with_bound_ich(
             cpu_id,
@@ -242,7 +244,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     pub fn inject_interrupt(&mut self, vector: usize) -> ArmVcpuResult {
         let intid = ArmVirtualIntId::try_from(vector)?;
         if H::interrupt_virtualization()? == ArmInterruptVirtualization::GicV3 {
-            return self.inject_ich_interrupt(H::current_cpu_id()?, intid);
+            return self.inject_ich_interrupt(intid);
         }
         H::inject_virtual_interrupt(intid)
     }
@@ -255,15 +257,15 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 }
 
 impl<H: ArmHostOps> ArmVcpu<H> {
-    fn inject_ich_interrupt(&mut self, cpu_id: usize, intid: ArmVirtualIntId) -> ArmVcpuResult {
-        self.with_bound_ich(cpu_id, |bound| {
+    fn inject_ich_interrupt(&mut self, intid: ArmVirtualIntId) -> ArmVcpuResult {
+        self.with_bound_ich(|bound| {
             let list_register_count = bound.capability().list_register_count();
             let mut raw_list_registers = [0; 16];
             for (slot, raw) in raw_list_registers[..list_register_count]
                 .iter_mut()
                 .enumerate()
             {
-                *raw = bound.read_lr(slot)?;
+                *raw = bound.read_lr(slot)?.encode();
             }
 
             let empty_lr_mask = bound.empty_lr_mask()?;
@@ -283,10 +285,9 @@ impl<H: ArmHostOps> ArmVcpu<H> {
                     priority: 0,
                     group1: true,
                     eoi: false,
-                }
-                .encode(),
+                },
             )?;
-            bound.update_hcr(crate::ich::IchHcrUpdate::EnableInterface)
+            bound.enable_interface()
         })
     }
 }
