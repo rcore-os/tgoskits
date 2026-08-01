@@ -298,7 +298,13 @@ pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
 pub(crate) fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
     matches!(
         prop_name,
-        "riscv,cbop-block-size" | "riscv,cboz-block-size" | "riscv,cbom-block-size"
+        "riscv,cbop-block-size"
+            | "riscv,cboz-block-size"
+            | "riscv,cbom-block-size"
+            | "operating-points-v2"
+            | "#cooling-cells"
+            | "dynamic-power-coefficient"
+            | "cpu-supply"
     )
 }
 

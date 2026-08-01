@@ -5,10 +5,12 @@ use axvm_types::{AccessWidth, GuestPhysAddr};
 use crate::StopReason;
 
 /// Scheduler effects selected after an architecture-local vCPU exit.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct VcpuRunAction {
     pub(crate) waits_for_event: bool,
     pub(crate) stop_reason: Option<StopReason>,
+    pub(crate) resets_vm: bool,
+    pub(crate) exits_vcpu: bool,
 }
 
 /// Result of handling one exit while the vCPU is still bound to the host CPU.

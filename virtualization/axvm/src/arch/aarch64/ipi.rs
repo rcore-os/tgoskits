@@ -33,6 +33,8 @@ pub(crate) fn handle(
             crate::architecture::VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             },
         ));
     }
@@ -55,6 +57,8 @@ pub(crate) fn handle(
         crate::architecture::VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         },
     ))
 }

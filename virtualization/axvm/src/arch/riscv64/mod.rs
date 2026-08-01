@@ -114,9 +114,12 @@ impl ArchOps for Riscv64Arch {
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
-            RiscvVmExit::Hypercall { nr, args } => {
-                super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
-            }
+            RiscvVmExit::Hypercall { nr, args } => super::handle_hypercall(
+                vm,
+                vcpu,
+                HypercallExit { nr, args },
+                crate::runtime::hvc::HyperCallAbi::Generic,
+            ),
             RiscvVmExit::MmioRead {
                 addr,
                 width,
@@ -175,6 +178,8 @@ impl ArchOps for Riscv64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             RiscvVmExit::Halt => {
@@ -182,6 +187,8 @@ impl ArchOps for Riscv64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             RiscvVmExit::SystemDown => {
@@ -189,11 +196,15 @@ impl ArchOps for Riscv64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: false,
                     stop_reason: Some(StopReason::SystemDown),
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             RiscvVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             })),
         }
     }
@@ -211,6 +222,8 @@ impl ArchOps for Riscv64Arch {
         Ok(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         })
     }
 }
@@ -233,6 +246,8 @@ fn handle_riscv_nested_page_fault(
             return Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             }));
         };
         return Riscv64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
@@ -252,6 +267,8 @@ fn handle_riscv_nested_page_fault(
         Ok(BoundVcpuExit::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         }))
     }
 }
