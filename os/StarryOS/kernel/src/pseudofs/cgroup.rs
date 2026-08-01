@@ -4,8 +4,8 @@ use core::any::Any;
 use ax_cgroup::CgroupNode;
 use ax_errno::LinuxError;
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Metadata,
-    MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
+    DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, Filesystem, FilesystemOps, Location,
+    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult,
     WeakDirEntry,
     path::{DOT, DOTDOT},
 };
@@ -266,4 +266,13 @@ pub(crate) fn new_cgroup2fs(root: Arc<CgroupNode>) -> Filesystem {
     SimpleFs::new_with("cgroup2".into(), CGROUP2_SUPER_MAGIC, move |fs| {
         CgroupDir::new_maker(fs, root)
     })
+}
+
+/// Return the cgroup node represented by an open cgroup2 directory.
+pub(crate) fn node_from_location(location: &Location) -> Option<Arc<CgroupNode>> {
+    location
+        .entry()
+        .downcast::<CgroupDir>()
+        .ok()
+        .map(|directory| directory.cgroup.clone())
 }
