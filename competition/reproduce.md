@@ -64,6 +64,14 @@ sudo apt-get install -y \
   git cmake ninja-build python3 python3-pip python3-venv
 ```
 
+Python 3.11 and newer provide `tomllib` in the standard library. On Ubuntu
+22.04 and other hosts using Python 3.10 or older, install the pinned backport
+used by the configuration contract tests:
+
+```sh
+python3 -m pip install --user -r competition/requirements-host.txt
+```
+
 Rebuilding the AxVisor RT probe needs a static AArch64 musl compiler named
 `aarch64-linux-musl-gcc`. For exact campaign reproduction, use the retained
 718,296-byte static AArch64 ELF at
