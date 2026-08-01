@@ -200,6 +200,41 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
     add_file_like(f, flags & O_CLOEXEC != 0)
 }
 
+fn self_fd_number(path: &str) -> Option<c_int> {
+    ["/proc/self/fd/", "/dev/fd/"]
+        .into_iter()
+        .find_map(|prefix| path.strip_prefix(prefix))?
+        .parse()
+        .ok()
+}
+
+/// Reopens anonymous pipe endpoints reached through the current process's
+/// descriptor namespace.
+///
+/// Procfs represents pipe links as `pipe:[inode]`, which is descriptive rather
+/// than a pathname that the regular VFS resolver can follow. Linux handles
+/// these entries as procfs magic links and creates a new file description for
+/// the same pipe endpoint. Keep ordinary filesystem-backed descriptors on the
+/// normal resolver path so reopening them still applies pathname permissions
+/// and filesystem open semantics.
+fn try_reopen_self_pipe(path: &str, flags: u32) -> Option<AxResult<isize>> {
+    let fd = self_fd_number(path)?;
+    let file = match get_file_like(fd) {
+        Ok(file) => file,
+        Err(_) => return Some(Err(AxError::NotFound)),
+    };
+    let pipe = file.downcast_ref::<Pipe>()?;
+
+    let requested_access = flags & O_ACCMODE;
+    let expected_access = if pipe.is_read() { O_RDONLY } else { O_WRONLY };
+    if requested_access != expected_access {
+        return Some(Err(AxError::PermissionDenied));
+    }
+
+    let pipe = Arc::new(pipe.reopen(flags & O_NONBLOCK != 0));
+    Some(add_file_like(pipe, flags & O_CLOEXEC != 0).map(|fd| fd as isize))
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct OpenHow {
@@ -390,6 +425,10 @@ pub fn sys_openat(
     // is accepted as an O_PATH handle (TMPFILE/access bits ignored), not EINVAL.
     if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
         return Err(AxError::InvalidInput);
+    }
+
+    if let Some(result) = try_reopen_self_pipe(&path, uflags) {
+        return result;
     }
 
     // Absolute path: man "If pathname is absolute, then dirfd is ignored."
