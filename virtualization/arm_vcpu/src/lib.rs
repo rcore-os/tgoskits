@@ -39,7 +39,7 @@ mod vcpu;
 
 pub use self::{
     host::ArmHostOps,
-    ich::IchCapabilityProfile,
+    ich::{IchCapabilityProfile, common_ich_capability, ich_capability},
     interrupt::{
         ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState, plan_direct_injection,
     },

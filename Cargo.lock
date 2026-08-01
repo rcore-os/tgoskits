@@ -438,6 +438,7 @@ name = "arm_vcpu"
 version = "0.5.17"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "arm-gic-driver",
  "log",
  "numeric-enum-macro",
  "spin",

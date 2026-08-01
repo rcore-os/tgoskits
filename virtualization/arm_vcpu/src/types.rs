@@ -37,6 +37,48 @@ pub enum ArmVcpuError {
         /// Architectural rule violated by the value.
         reason: crate::ich::IchCapabilityError,
     },
+    /// A logical CPU identifier exceeds the fixed capability registry.
+    #[error("logical CPU {cpu_id} exceeds the ICH capability registry capacity {capacity}")]
+    IchCapabilityCpuOutOfRange {
+        /// Rejected logical CPU identifier.
+        cpu_id: usize,
+        /// Number of representable logical CPUs.
+        capacity: usize,
+    },
+    /// No successful virtualization enable has published this CPU's profile.
+    #[error("ICH capability for logical CPU {cpu_id} has not been published")]
+    IchCapabilityNotPublished {
+        /// Logical CPU with no published profile.
+        cpu_id: usize,
+    },
+    /// A CPU attempted to replace its immutable hardware capability profile.
+    #[error(
+        "logical CPU {cpu_id} already published ICH capability {published:?}, attempted \
+         {attempted:?}"
+    )]
+    IchCapabilityConflict {
+        /// Logical CPU whose profile conflicted.
+        cpu_id: usize,
+        /// Previously published immutable profile.
+        published: crate::IchCapabilityProfile,
+        /// Newly discovered conflicting profile.
+        attempted: crate::IchCapabilityProfile,
+    },
+    /// CPU profiles cannot be represented by one lossless common shape.
+    #[error(
+        "logical CPUs {first_cpu_id} and {cpu_id} have incompatible ICH capability shapes: \
+         {first:?} versus {other:?}"
+    )]
+    IncompatibleIchCapabilities {
+        /// First logical CPU in the comparison.
+        first_cpu_id: usize,
+        /// First CPU's profile.
+        first: crate::IchCapabilityProfile,
+        /// Logical CPU with an incompatible profile.
+        cpu_id: usize,
+        /// Incompatible CPU profile.
+        other: crate::IchCapabilityProfile,
+    },
     /// A virtual interrupt identifier is outside the traditional INTID range.
     #[error("virtual interrupt ID {value} is outside the supported range 0..=1019")]
     InvalidVirtualInterruptId {

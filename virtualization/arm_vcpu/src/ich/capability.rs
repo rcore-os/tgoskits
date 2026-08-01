@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::{ArmVcpuError, ArmVcpuResult, ArmVirtualIntId};
 
 const LIST_REGISTERS_MASK: u64 = 0x1f;
@@ -22,6 +24,44 @@ const THREE_BIT_MASK: u64 = 0b111;
 const PREEMPTION_BITS_SHIFT: u32 = 26;
 const PRIORITY_BITS_SHIFT: u32 = 29;
 const RESERVED_HIGH_MASK: u64 = (u32::MAX as u64) << 32;
+const CPU_CAPABILITY_CAPACITY: usize = usize::BITS as usize;
+
+static ICH_CAPABILITIES: IchCapabilityRegistry<CPU_CAPABILITY_CAPACITY> =
+    IchCapabilityRegistry::new();
+
+/// Returns the immutable ICH capability profile published by one logical CPU.
+///
+/// # Errors
+///
+/// Returns [`ArmVcpuError::IchCapabilityCpuOutOfRange`] when `cpu_id` is not
+/// representable by the runtime CPU mask, or
+/// [`ArmVcpuError::IchCapabilityNotPublished`] before that CPU successfully
+/// enables virtualization.
+pub fn ich_capability(cpu_id: usize) -> ArmVcpuResult<IchCapabilityProfile> {
+    ICH_CAPABILITIES.get(cpu_id)
+}
+
+/// Computes the lossless common ICH capability for a set of logical CPUs.
+///
+/// LR count and INTID width are reduced to the common minimum. Priority,
+/// preemption, and AP-register shapes must match exactly. TDIR is reported only
+/// when every CPU supports it.
+///
+/// # Errors
+///
+/// Returns an error for an empty set, an unpublished CPU, or incompatible
+/// priority/AP-register shapes.
+pub fn common_ich_capability(cpu_ids: &[usize]) -> ArmVcpuResult<IchCapabilityProfile> {
+    ICH_CAPABILITIES.common(cpu_ids)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn publish_ich_capability(
+    cpu_id: usize,
+    profile: IchCapabilityProfile,
+) -> ArmVcpuResult {
+    ICH_CAPABILITIES.publish(cpu_id, profile)
+}
 
 /// Validated capabilities of one Arm GIC virtualization CPU interface.
 ///
@@ -145,6 +185,115 @@ impl IchCapabilityProfile {
             supports_tdir: raw_vtr & TDS_BIT != 0,
         })
     }
+
+    const fn packed(self) -> u64 {
+        self.list_register_count as u64
+            | (self.virtual_intid_bits as u64) << 5
+            | (self.priority_bits as u64) << 10
+            | (self.preemption_bits as u64) << 13
+            | (self.active_priority_register_count as u64) << 16
+            | (self.supports_tdir as u64) << 19
+    }
+
+    const fn from_packed(packed: u64) -> Self {
+        Self {
+            list_register_count: (packed & 0x1f) as u8,
+            virtual_intid_bits: ((packed >> 5) & 0x1f) as u8,
+            priority_bits: ((packed >> 10) & 0x7) as u8,
+            preemption_bits: ((packed >> 13) & 0x7) as u8,
+            active_priority_register_count: ((packed >> 16) & 0x7) as u8,
+            supports_tdir: packed & (1 << 19) != 0,
+        }
+    }
+
+    const fn has_same_register_shape(self, other: Self) -> bool {
+        self.priority_bits == other.priority_bits
+            && self.preemption_bits == other.preemption_bits
+            && self.active_priority_register_count == other.active_priority_register_count
+    }
+
+    const fn common_with(self, other: Self) -> Self {
+        Self {
+            list_register_count: if self.list_register_count < other.list_register_count {
+                self.list_register_count
+            } else {
+                other.list_register_count
+            },
+            virtual_intid_bits: if self.virtual_intid_bits < other.virtual_intid_bits {
+                self.virtual_intid_bits
+            } else {
+                other.virtual_intid_bits
+            },
+            priority_bits: self.priority_bits,
+            preemption_bits: self.preemption_bits,
+            active_priority_register_count: self.active_priority_register_count,
+            supports_tdir: self.supports_tdir && other.supports_tdir,
+        }
+    }
+}
+
+struct IchCapabilityRegistry<const CAPACITY: usize> {
+    profiles: [AtomicU64; CAPACITY],
+}
+
+impl<const CAPACITY: usize> IchCapabilityRegistry<CAPACITY> {
+    const fn new() -> Self {
+        Self {
+            profiles: [const { AtomicU64::new(0) }; CAPACITY],
+        }
+    }
+
+    fn publish(&self, cpu_id: usize, profile: IchCapabilityProfile) -> ArmVcpuResult {
+        let slot = self.slot(cpu_id)?;
+        let attempted = profile.packed();
+        match slot.compare_exchange(0, attempted, Ordering::Release, Ordering::Acquire) {
+            Ok(_) => Ok(()),
+            Err(published) if published == attempted => Ok(()),
+            Err(published) => Err(ArmVcpuError::IchCapabilityConflict {
+                cpu_id,
+                published: IchCapabilityProfile::from_packed(published),
+                attempted: profile,
+            }),
+        }
+    }
+
+    fn get(&self, cpu_id: usize) -> ArmVcpuResult<IchCapabilityProfile> {
+        let packed = self.slot(cpu_id)?.load(Ordering::Acquire);
+        if packed == 0 {
+            Err(ArmVcpuError::IchCapabilityNotPublished { cpu_id })
+        } else {
+            Ok(IchCapabilityProfile::from_packed(packed))
+        }
+    }
+
+    fn common(&self, cpu_ids: &[usize]) -> ArmVcpuResult<IchCapabilityProfile> {
+        let (&first_cpu_id, remaining) = cpu_ids.split_first().ok_or(ArmVcpuError::InvalidInput)?;
+        let first = self.get(first_cpu_id)?;
+        let mut common = first;
+
+        for &cpu_id in remaining {
+            let other = self.get(cpu_id)?;
+            if !first.has_same_register_shape(other) {
+                return Err(ArmVcpuError::IncompatibleIchCapabilities {
+                    first_cpu_id,
+                    first,
+                    cpu_id,
+                    other,
+                });
+            }
+            common = common.common_with(other);
+        }
+        Ok(common)
+    }
+
+    fn slot(&self, cpu_id: usize) -> ArmVcpuResult<&AtomicU64> {
+        self.profiles
+            .get(cpu_id)
+            .ok_or(ArmVcpuError::IchCapabilityCpuOutOfRange {
+                cpu_id,
+                capacity: CAPACITY,
+            })
+    }
 }
 
 /// Architectural reason why an `ICH_VTR_EL2` value was rejected.
@@ -251,6 +400,84 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn registry_publishes_once_and_accepts_idempotent_publication() {
+        let registry = IchCapabilityRegistry::<4>::new();
+        let profile = valid_profile(3, 4, 4, 0);
+
+        registry.publish(2, profile).unwrap();
+        registry.publish(2, profile).unwrap();
+
+        assert_eq!(registry.get(2).unwrap(), profile);
+    }
+
+    #[test]
+    fn registry_rejects_conflicting_publication() {
+        let registry = IchCapabilityRegistry::<4>::new();
+        let published = valid_profile(3, 4, 4, 0);
+        let attempted = valid_profile(7, 4, 4, 0);
+        registry.publish(1, published).unwrap();
+
+        assert_eq!(
+            registry.publish(1, attempted),
+            Err(ArmVcpuError::IchCapabilityConflict {
+                cpu_id: 1,
+                published,
+                attempted,
+            })
+        );
+    }
+
+    #[test]
+    fn registry_reports_unpublished_and_out_of_range_cpus() {
+        let registry = IchCapabilityRegistry::<2>::new();
+        assert_eq!(
+            registry.get(0),
+            Err(ArmVcpuError::IchCapabilityNotPublished { cpu_id: 0 })
+        );
+        assert_eq!(
+            registry.get(2),
+            Err(ArmVcpuError::IchCapabilityCpuOutOfRange {
+                cpu_id: 2,
+                capacity: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn common_profile_reduces_lr_intid_and_tdir_capabilities() {
+        let registry = IchCapabilityRegistry::<3>::new();
+        let first = IchCapabilityProfile::from_raw_vtr(raw_vtr(15, 5, 4, 1) | TDS_BIT).unwrap();
+        let second = valid_profile(7, 5, 4, 0);
+        registry.publish(0, first).unwrap();
+        registry.publish(2, second).unwrap();
+
+        let common = registry.common(&[0, 2]).unwrap();
+        assert_eq!(common.list_register_count(), 8);
+        assert_eq!(common.virtual_intid_bits(), 16);
+        assert_eq!(common.priority_bits(), 6);
+        assert_eq!(common.active_priority_register_count(), 2);
+        assert!(!common.supports_tdir());
+    }
+
+    #[test]
+    fn common_profile_rejects_lossy_priority_shape() {
+        let registry = IchCapabilityRegistry::<2>::new();
+        let first = valid_profile(3, 4, 4, 0);
+        let other = valid_profile(3, 5, 4, 0);
+        registry.publish(0, first).unwrap();
+        registry.publish(1, other).unwrap();
+
+        assert!(matches!(
+            registry.common(&[0, 1]),
+            Err(ArmVcpuError::IncompatibleIchCapabilities {
+                first_cpu_id: 0,
+                cpu_id: 1,
+                ..
+            })
+        ));
     }
 
     fn valid_profile(
