@@ -201,6 +201,30 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         Ok(())
     }
 
+    #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
+    pub(crate) fn configure_startup<F>(&self, entry: GuestPhysAddr, configure_args: F) -> AxVmResult
+    where
+        F: FnOnce(&mut A),
+    {
+        // The reserved runtime task slot and `Starting` state exclusively own this inactive
+        // backend. A CPU-up exit is still handled with the caller vCPU recorded as current, so
+        // installing the target as current here would be a nested vCPU operation. Per-CPU binding
+        // belongs to the target task when it first runs on its selected host CPU.
+        self.with_state_transition(
+            VmVcpuState::Starting,
+            VmVcpuState::Starting,
+            VmVcpuState::Starting,
+            || {
+                let arch_vcpu = self.get_arch_vcpu();
+                arch_vcpu
+                    .set_entry(entry)
+                    .map_err(|error| map_vcpu_backend_error("set vCPU entry", error))?;
+                configure_args(arch_vcpu);
+                Ok(())
+            },
+        )
+    }
+
     /// Consumes a startup reservation while binding the activated host task.
     pub(crate) fn bind_startup(&self) -> AxVmResult {
         self.manipulate_arch_vcpu(VmVcpuState::Starting, VmVcpuState::Ready, |arch_vcpu| {
@@ -426,6 +450,8 @@ fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -
 
 #[cfg(test)]
 mod tests {
+    use axvm_types::{NestedPagingConfig, VmBackendResult};
+
     use super::*;
 
     #[test]
@@ -492,5 +518,90 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn configures_secondary_while_primary_vcpu_is_current() {
+        ax_percpu::init();
+        ax_percpu::init_percpu_reg(0);
+
+        let primary = AxVCpu::<TestVcpu>::new(1, 0, None, ()).unwrap();
+        let secondary = AxVCpu::<TestVcpu>::new(1, 1, None, ()).unwrap();
+        secondary
+            .transition_state(VmVcpuState::Created, VmVcpuState::Starting)
+            .unwrap();
+
+        let entry = GuestPhysAddr::from(0x8020_0000usize);
+        let argument = 0x1234;
+        primary.with_current_cpu_set(|| {
+            secondary
+                .configure_startup(entry, |backend| backend.set_gpr(0, argument))
+                .unwrap();
+            let current = get_current_vcpu::<TestVcpu>().unwrap();
+            assert!(core::ptr::eq(current, &primary));
+        });
+
+        let backend = secondary.get_arch_vcpu();
+        assert_eq!(backend.entry, Some(entry));
+        assert_eq!(backend.argument, argument);
+        assert_eq!(secondary.state(), VmVcpuState::Starting);
+    }
+
+    #[derive(Default)]
+    struct TestVcpu {
+        entry: Option<GuestPhysAddr>,
+        argument: usize,
+    }
+
+    impl VmArchVcpuOps for TestVcpu {
+        type CreateConfig = ();
+        type SetupConfig = ();
+        type Exit = ();
+
+        fn new(
+            _vm_id: usize,
+            _vcpu_id: usize,
+            _config: Self::CreateConfig,
+        ) -> VmBackendResult<Self> {
+            Ok(Self::default())
+        }
+
+        fn set_entry(&mut self, entry: GuestPhysAddr) -> VmBackendResult {
+            self.entry = Some(entry);
+            Ok(())
+        }
+
+        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn setup(&mut self, _config: Self::SetupConfig) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn run(&mut self) -> VmBackendResult<Self::Exit> {
+            Ok(())
+        }
+
+        fn bind(&mut self) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn unbind(&mut self) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_gpr(&mut self, reg: usize, val: usize) {
+            assert_eq!(reg, 0);
+            self.argument = val;
+        }
+
+        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_return_value(&mut self, val: usize) {
+            self.argument = val;
+        }
     }
 }

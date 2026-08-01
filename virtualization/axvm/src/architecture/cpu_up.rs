@@ -79,24 +79,6 @@ impl<A: VmArchVcpuOps> crate::vcpu::AxVCpu<A> {
     fn cancel_startup(&self) -> AxVmResult {
         self.transition_state(VmVcpuState::Starting, VmVcpuState::Free)
     }
-
-    fn configure_startup<F>(&self, entry: GuestPhysAddr, configure_args: F) -> AxVmResult
-    where
-        F: FnOnce(&mut A),
-    {
-        self.manipulate_arch_vcpu_on_error(
-            VmVcpuState::Starting,
-            VmVcpuState::Starting,
-            VmVcpuState::Starting,
-            |arch_vcpu| {
-                arch_vcpu.set_entry(entry).map_err(|error| {
-                    crate::vcpu::map_vcpu_backend_error("set vCPU entry", error)
-                })?;
-                configure_args(arch_vcpu);
-                Ok(())
-            },
-        )
-    }
 }
 
 fn vcpu_on(

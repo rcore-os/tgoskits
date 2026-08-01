@@ -94,6 +94,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
 8. For guest SMP under a cooperative scheduler, give newly created vCPU tasks distinct initial host run queues whenever their effective affinity masks admit a matching. Keep guest hardware CPU IDs separate from dense host scheduler IDs, retain each task's full affinity for later migration, and publish VM runtime bookkeeping before activating a task on a remote CPU. Activation must revalidate the runtime CPU bound and current affinity, return an explicit error on mismatch, and roll back published vCPU/runtime lifecycle state if it fails.
+9. A guest `CPU_ON` exit is handled while the calling vCPU remains registered as current on the host CPU. Configure only the target vCPU's saved, inactive backend state under its `Starting` reservation; do not install the target as current or bind it until its published host task first runs on the selected CPU.
 
 ## Validation Ladder
 

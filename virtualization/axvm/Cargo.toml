@@ -77,3 +77,7 @@ arm-gic-driver = { workspace = true, features = ["rdif"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
 someboot.workspace = true
+
+[dev-dependencies]
+ax-percpu = { workspace = true, features = ["sp-naive"] }
+ax-kspin = { workspace = true, features = ["host-test"] }
