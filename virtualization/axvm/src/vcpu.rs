@@ -87,6 +87,76 @@ impl Drop for CurrentVcpuPublication<'_, '_> {
 /// Mutable runtime state of a virtual CPU.
 pub struct AxVCpuInnerMut {
     state: VmVcpuState,
+    operation_in_progress: bool,
+}
+
+/// Exclusive claim for one architecture backend state transition.
+struct VcpuTransition<'state> {
+    inner_mut: &'state Mutex<AxVCpuInnerMut>,
+    target_state: VmVcpuState,
+    completed: bool,
+}
+
+impl<'state> VcpuTransition<'state> {
+    fn begin(
+        inner_mut: &'state Mutex<AxVCpuInnerMut>,
+        source_state: VmVcpuState,
+        target_state: VmVcpuState,
+    ) -> AxVmResult<Self> {
+        if source_state == VmVcpuState::Invalid {
+            return ax_err!(BadState, "Invalid vCPU state cannot begin a transition");
+        }
+
+        let mut inner_mut_guard = inner_mut.lock();
+        if inner_mut_guard.state != source_state {
+            let current_state = inner_mut_guard.state;
+            return ax_err!(
+                BadState,
+                format!("VCpu state is not {source_state:?}, but {current_state:?}")
+            );
+        }
+        if inner_mut_guard.operation_in_progress {
+            return ax_err!(
+                BadState,
+                format!("VCpu transition from {source_state:?} is already in progress")
+            );
+        }
+        inner_mut_guard.operation_in_progress = true;
+        drop(inner_mut_guard);
+
+        Ok(Self {
+            inner_mut,
+            target_state,
+            completed: false,
+        })
+    }
+
+    fn complete(mut self, succeeded: bool) {
+        let mut inner_mut = self.inner_mut.lock();
+        assert!(
+            inner_mut.operation_in_progress,
+            "vCPU transition claim was lost before completion"
+        );
+        inner_mut.state = if succeeded {
+            self.target_state
+        } else {
+            VmVcpuState::Invalid
+        };
+        inner_mut.operation_in_progress = false;
+        self.completed = true;
+    }
+}
+
+impl Drop for VcpuTransition<'_> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+
+        let mut inner_mut = self.inner_mut.lock();
+        inner_mut.state = VmVcpuState::Invalid;
+        inner_mut.operation_in_progress = false;
+    }
 }
 
 struct AxVCpuInnerConst {
@@ -118,6 +188,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             },
             inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VmVcpuState::Created,
+                operation_in_progress: false,
             }),
             arch_vcpu: UnsafeCell::new(
                 A::new(vm_id, vcpu_id, arch_config)
@@ -172,23 +243,9 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     where
         F: FnOnce() -> AxVmResult<T>,
     {
-        {
-            let inner_mut = self.inner_mut.lock();
-            if inner_mut.state != from {
-                let current_state = inner_mut.state;
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not {from:?}, but {current_state:?}")
-                );
-            }
-        }
-
+        let transition = VcpuTransition::begin(&self.inner_mut, from, to)?;
         let result = f();
-        self.inner_mut.lock().state = if result.is_err() {
-            VmVcpuState::Invalid
-        } else {
-            to
-        };
+        transition.complete(result.is_ok());
         result
     }
 
@@ -303,10 +360,19 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         cpu_pin: &CpuPin<'_>,
         operation: impl FnOnce() -> T,
     ) -> T {
+        let inner_mut = self.inner_mut.lock();
+        assert!(
+            inner_mut.operation_in_progress || inner_mut.state == VmVcpuState::Invalid,
+            "exclusive backend access requires a transition claim or invalid cleanup state"
+        );
+        drop(inner_mut);
+
         let _guard = NoPreemptIrqSave::new();
-        // SAFETY: the state transition excludes another runner for this vCPU;
-        // the IRQ guard excludes local re-entry, and ICH registers have no
-        // remotely addressable alias. The outer pin covers the whole call.
+        // SAFETY: VcpuTransition::begin atomically claims normal backend
+        // operations before releasing the state lock. Invalid-state cleanup
+        // cannot race another runner because no transition accepts Invalid.
+        // The IRQ guard excludes local re-entry, ICH registers have no remote
+        // alias, and the outer pin covers the whole operation.
         unsafe { ax_percpu::with_exclusive_cpu(cpu_pin, |_| operation()) }
     }
 
@@ -523,7 +589,93 @@ fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -
 
 #[cfg(test)]
 mod tests {
+    use axvm_types::VmBackendResult;
+
     use super::*;
+
+    struct StateTestVcpu;
+
+    impl VmArchVcpuOps for StateTestVcpu {
+        type CreateConfig = ();
+        type SetupConfig = ();
+        type Exit = ();
+
+        fn new(
+            _vm_id: VMId,
+            _vcpu_id: VCpuId,
+            _config: Self::CreateConfig,
+        ) -> VmBackendResult<Self> {
+            Ok(Self)
+        }
+
+        fn set_entry(&mut self, _entry: GuestPhysAddr) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn setup(&mut self, _config: Self::SetupConfig) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn run(&mut self) -> VmBackendResult<Self::Exit> {
+            Ok(())
+        }
+
+        fn bind(&mut self) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn unbind(&mut self) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_gpr(&mut self, _reg: usize, _val: usize) {}
+
+        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn set_return_value(&mut self, _val: usize) {}
+    }
+
+    #[test]
+    fn concurrent_transition_cannot_enter_the_same_vcpu_operation() {
+        let vcpu = AxVCpu::<StateTestVcpu>::new(1, 0, None, ()).unwrap();
+        let mut nested_transition_rejected = false;
+
+        vcpu.with_state_transition(VmVcpuState::Created, VmVcpuState::Free, || {
+            nested_transition_rejected = vcpu
+                .transition_state(VmVcpuState::Created, VmVcpuState::Free)
+                .is_err();
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(nested_transition_rejected);
+        assert_eq!(vcpu.state(), VmVcpuState::Free);
+    }
+
+    #[test]
+    fn invalid_vcpu_state_cannot_claim_a_backend_transition() {
+        let vcpu = AxVCpu::<StateTestVcpu>::new(1, 0, None, ()).unwrap();
+        let failure =
+            AxVmError::invalid_state("fail test transition", VmBackendError::InvalidState);
+
+        assert!(
+            vcpu.with_state_transition(VmVcpuState::Created, VmVcpuState::Free, || Err::<(), _>(
+                failure
+            ))
+            .is_err()
+        );
+        assert_eq!(vcpu.state(), VmVcpuState::Invalid);
+        assert!(
+            vcpu.transition_state(VmVcpuState::Invalid, VmVcpuState::Free)
+                .is_err()
+        );
+    }
 
     #[test]
     fn vcpu_backend_errors_keep_domain_context() {

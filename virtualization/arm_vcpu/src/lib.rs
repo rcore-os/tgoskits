@@ -41,7 +41,7 @@ mod vcpu;
 pub(crate) use self::ich::ich_capability;
 pub use self::{
     host::{ArmHostOps, ArmInterruptVirtualization},
-    ich::IchCapabilityProfile,
+    ich::{IchCapabilityError, IchCapabilityProfile},
     interrupt::{
         ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState, plan_direct_injection,
     },

@@ -59,6 +59,11 @@ use arm_vcpu::{
 struct MyHost;
 
 impl ArmHostOps for MyHost {
+    fn current_cpu_id() -> ArmVcpuResult<usize> {
+        // 该示例 host 永久固定在其唯一的逻辑 CPU 上。
+        Ok(0)
+    }
+
     fn inject_virtual_interrupt(_intid: ArmVirtualIntId) -> ArmVcpuResult {
         Ok(())
     }
@@ -74,6 +79,10 @@ fn build_vcpu() -> ArmVcpuResult<ArmVcpu<MyHost>> {
     ArmVcpu::<MyHost>::new(0, 0, ArmVcpuCreateConfig::default())
 }
 ```
+
+GICv3 host 必须通过 CPU pin 或等价的不可迁移作用域实现 `current_cpu_id()`；多 CPU
+host 不得返回固定值。GICv2 的 bind、unbind 和注入路径不会访问 CPU-local ICH
+寄存器，因此 GICv2 host 可以保留该方法默认返回错误的实现。
 
 ### 文档
 

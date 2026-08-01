@@ -12,20 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg(target_arch = "aarch64")]
-
+#[cfg(target_arch = "aarch64")]
 use core::mem::size_of;
 
+#[cfg(target_arch = "aarch64")]
 use arm_vcpu::{
     ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
-    Aarch64PerCpu, Aarch64VCpu, ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps,
-    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult,
-    ArmVirtualIntId, ArmVmExit, TrapFrame,
+    Aarch64PerCpu, Aarch64VCpu, ArmPerCpu, ArmVcpu, TrapFrame,
+};
+use arm_vcpu::{
+    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmInterruptVirtualization,
+    ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVirtualIntId, ArmVmExit,
+    IchCapabilityError,
 };
 
 struct DummyHost;
 
 impl ArmHostOps for DummyHost {
+    fn current_cpu_id() -> ArmVcpuResult<usize> {
+        Ok(0)
+    }
+
+    fn inject_virtual_interrupt(_intid: ArmVirtualIntId) -> ArmVcpuResult {
+        Ok(())
+    }
+
+    fn fetch_pending_host_irq() -> Option<usize> {
+        None
+    }
+
+    fn handle_current_host_irq() {}
+}
+
+struct GicV2Host;
+
+impl ArmHostOps for GicV2Host {
+    fn interrupt_virtualization() -> ArmVcpuResult<ArmInterruptVirtualization> {
+        Ok(ArmInterruptVirtualization::GicV2)
+    }
+
     fn inject_virtual_interrupt(_intid: ArmVirtualIntId) -> ArmVcpuResult {
         Ok(())
     }
@@ -38,9 +63,11 @@ impl ArmHostOps for DummyHost {
 }
 
 #[test]
+#[cfg(target_arch = "aarch64")]
 fn vcpu_and_percpu_types_are_host_generic_without_axvm_traits() {
     let _vcpu: Option<ArmVcpu<DummyHost>> = None;
     let _compat_vcpu: Option<Aarch64VCpu<DummyHost>> = None;
+    let _gicv2_vcpu: Option<ArmVcpu<GicV2Host>> = None;
     let _percpu: Option<ArmPerCpu> = None;
     let _compat_percpu: Option<Aarch64PerCpu> = None;
 
@@ -51,6 +78,28 @@ fn vcpu_and_percpu_types_are_host_generic_without_axvm_traits() {
         ARM_VCPU_HOST_SP_EL0_OFFSET,
         ARM_VCPU_HOST_STACK_TOP_OFFSET + size_of::<u64>()
     );
+}
+
+#[test]
+fn capability_error_reason_is_nameable_from_the_crate_root() {
+    let error = ArmVcpuError::InvalidIchCapability {
+        raw_vtr: 0,
+        reason: IchCapabilityError::PriorityEncoding { encoded: 0 },
+    };
+
+    assert!(matches!(
+        error,
+        ArmVcpuError::InvalidIchCapability {
+            reason: IchCapabilityError::PriorityEncoding { encoded: 0 },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn host_cpu_id_contract_distinguishes_gicv3_from_gicv2() {
+    assert_eq!(DummyHost::current_cpu_id(), Ok(0));
+    assert_eq!(GicV2Host::current_cpu_id(), Err(ArmVcpuError::BadState));
 }
 
 #[test]

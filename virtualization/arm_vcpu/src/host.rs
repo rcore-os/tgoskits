@@ -28,8 +28,17 @@ pub trait ArmHostOps {
         Ok(ArmInterruptVirtualization::GicV3)
     }
 
-    /// Returns the logical ID of the pinned current CPU when the host can
-    /// provide that identity without accepting a caller-supplied value.
+    /// Returns the logical ID of the pinned current CPU.
+    ///
+    /// GICv3 hosts must override this method and return the ID associated with
+    /// the current non-migrating CPU scope. GICv2 hosts may retain the default
+    /// implementation because their bind, unbind, and injection paths do not
+    /// access CPU-local ICH registers.
+    ///
+    /// # Errors
+    ///
+    /// The default implementation returns [`crate::ArmVcpuError::BadState`]
+    /// so a GICv3 host that omits the required adapter fails explicitly.
     fn current_cpu_id() -> ArmVcpuResult<usize> {
         Err(crate::ArmVcpuError::BadState)
     }

@@ -59,6 +59,11 @@ use arm_vcpu::{
 struct MyHost;
 
 impl ArmHostOps for MyHost {
+    fn current_cpu_id() -> ArmVcpuResult<usize> {
+        // This example host is permanently pinned to its only logical CPU.
+        Ok(0)
+    }
+
     fn inject_virtual_interrupt(_intid: ArmVirtualIntId) -> ArmVcpuResult {
         Ok(())
     }
@@ -74,6 +79,11 @@ fn build_vcpu() -> ArmVcpuResult<ArmVcpu<MyHost>> {
     ArmVcpu::<MyHost>::new(0, 0, ArmVcpuCreateConfig::default())
 }
 ```
+
+GICv3 hosts must implement `current_cpu_id()` using their CPU pin or equivalent
+non-migrating scope; multi-CPU hosts must not return a fixed value. GICv2 hosts may
+use its default error implementation because the GICv2 bind, unbind, and injection
+paths do not access CPU-local ICH registers.
 
 ### Documentation
 
