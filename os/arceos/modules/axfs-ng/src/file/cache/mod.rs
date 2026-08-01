@@ -157,10 +157,14 @@ impl FileUserData {
     }
 }
 
+fn filesystem_uses_unbounded_page_cache(name: &str) -> bool {
+    matches!(name, "tmpfs" | "ramfs")
+}
+
 impl CachedFile {
     /// Returns an existing cached file for `location`, or creates a new one.
     pub fn get_or_create(location: Location) -> VfsResult<Self> {
-        let in_memory = location.filesystem().name() == "tmpfs";
+        let in_memory = filesystem_uses_unbounded_page_cache(location.filesystem().name());
 
         let existing = {
             let guard = location.user_data();
@@ -211,8 +215,8 @@ impl CachedFile {
             }
         };
 
-        // In-memory files (tmpfs) have no backing store, so evicting clean
-        // pages would lose data. Only register disk-backed files for reclaim.
+        // tmpfs and ramfs have no backing store, so evicting clean pages would
+        // lose data. Only register disk-backed files for reclaim.
         #[cfg(feature = "vfs")]
         if is_new && !in_memory {
             reclaim::register_cached_file(&shared);

@@ -267,6 +267,18 @@ pub fn sys_mount(
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
+        "ramfs" => {
+            // Linux registers ramfs as a separate nodev filesystem and exposes
+            // RAMFS_MAGIC through statfs. It shares the in-memory inode/data
+            // machinery here, but must not inherit tmpfs's visible identity.
+            let fs = MemoryFs::new_ramfs();
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        }
         "devpts" => {
             let fs = new_devptsfs(parse_devpts_options(data)?);
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
