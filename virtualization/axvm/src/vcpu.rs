@@ -283,6 +283,26 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         })
     }
 
+    /// Releases backend CPU-local state after the run path has completed.
+    ///
+    /// A backend run failure intentionally leaves the architecture-independent
+    /// state invalid, but CPU-local resources still have to be saved and
+    /// disabled before the pin scope ends.
+    pub(crate) fn unbind_after_run(&self) -> AxVmResult {
+        match self.state() {
+            VmVcpuState::Ready => self.unbind(),
+            VmVcpuState::Invalid => self.with_current_cpu_set(|| {
+                self.get_arch_vcpu()
+                    .unbind()
+                    .map_err(|error| map_vcpu_backend_error("unbind invalid vCPU", error))
+            }),
+            state => ax_err!(
+                BadState,
+                format!("VCpu cleanup state is not Ready or Invalid, but {state:?}")
+            ),
+        }
+    }
+
     /// Sets the guest entry point.
     #[expect(
         dead_code,

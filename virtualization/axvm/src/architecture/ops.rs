@@ -122,52 +122,63 @@ pub(crate) trait ArchOps {
     {
         let vm_id = vm.id();
         let vcpu_id = vcpu.id();
+        let bound_exit = vcpu.with_current_cpu_set(|| {
+            ensure_vcpu_bound(vcpu)?;
+            let run_result = run_bound_vcpu::<Self>(vm, vcpu_id, vcpu);
+            let unbind_result = vcpu.unbind_after_run();
+            finish_bound_run(vm_id, vcpu_id, run_result, unbind_result)
+        })?;
 
-        match vcpu.state() {
-            VmVcpuState::Free => vcpu.bind()?,
-            VmVcpuState::Ready => {}
-            state => {
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not Free or Ready, but {state:?}")
-                );
-            }
+        match bound_exit {
+            BoundVcpuExit::Complete(action) => Ok(action),
+            BoundVcpuExit::Defer(work) => Self::finish_deferred_run_work(vm, vcpu, work),
+            BoundVcpuExit::Continue => unreachable!("continued exits do not leave run loop"),
         }
+    }
+}
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-            loop {
-                crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
+fn ensure_vcpu_bound<A: VmArchVcpuOps>(vcpu: &crate::vm::AxVCpuRef<A>) -> AxVmResult {
+    match vcpu.state() {
+        VmVcpuState::Free => vcpu.bind(),
+        VmVcpuState::Ready => Ok(()),
+        state => ax_err!(
+            BadState,
+            format!("VCpu state is not Free or Ready, but {state:?}")
+        ),
+    }
+}
 
-                drain_and_inject_dispatched_interrupts::<Self>(vm, vcpu_id, vcpu);
+fn run_bound_vcpu<A: ArchOps>(
+    vm: &crate::AxVMRef,
+    vcpu_id: usize,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
+    loop {
+        crate::runtime::vcpus::inject_pending_interrupts::<A>(vm.id(), vcpu_id, vcpu);
+        drain_and_inject_dispatched_interrupts::<A>(vm, vcpu_id, vcpu);
 
-                let exit = vcpu.run()?;
-                trace!("{exit:#x?}");
-                match Self::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                    BoundVcpuExit::Continue => continue,
-                    action => break Ok(action),
-                }
-            }
-        });
+        let exit = vcpu.run()?;
+        trace!("{exit:#x?}");
+        match A::handle_vcpu_exit_bound(vm, vcpu, exit)? {
+            BoundVcpuExit::Continue => continue,
+            action => return Ok(action),
+        }
+    }
+}
 
-        let unbind_result = vcpu.unbind();
-        match run_result {
-            Ok(BoundVcpuExit::Complete(action)) => {
-                unbind_result?;
-                Ok(action)
-            }
-            Ok(BoundVcpuExit::Defer(work)) => {
-                unbind_result?;
-                Self::finish_deferred_run_work(vm, vcpu, work)
-            }
-            Ok(BoundVcpuExit::Continue) => unreachable!("continued exits do not leave run loop"),
-            Err(err) => {
-                if let Err(unbind_err) = unbind_result {
-                    warn!(
-                        "VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_err:?}"
-                    );
-                }
-                Err(err)
-            }
+fn finish_bound_run<T>(
+    vm_id: usize,
+    vcpu_id: usize,
+    run_result: AxVmResult<T>,
+    unbind_result: AxVmResult,
+) -> AxVmResult<T> {
+    match (run_result, unbind_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Ok(_), Err(unbind_error)) => Err(unbind_error),
+        (Err(run_error), Ok(())) => Err(run_error),
+        (Err(run_error), Err(unbind_error)) => {
+            warn!("VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_error:?}");
+            Err(run_error)
         }
     }
 }
@@ -261,7 +272,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{irq::model::VirtualInterruptId, vcpu::AxVCpu};
+    use crate::{AxVmError, irq::model::VirtualInterruptId, vcpu::AxVCpu};
 
     #[derive(Default)]
     struct InjectionLog {
@@ -450,5 +461,32 @@ mod tests {
             ]
         );
         assert!(dispatcher.drain(0).is_empty());
+    }
+
+    #[test]
+    fn cleanup_error_is_propagated_after_a_successful_bound_run() {
+        let cleanup_error = AxVmError::invalid_state("unbind vCPU", VmBackendError::InvalidState);
+
+        assert!(matches!(
+            finish_bound_run(3, 2, Ok(7), Err(cleanup_error)),
+            Err(AxVmError::InvalidState {
+                operation: "unbind vCPU",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn primary_run_error_wins_when_cleanup_also_fails() {
+        let run_error = AxVmError::vcpu("run vCPU", VmBackendError::InvalidData);
+        let cleanup_error = AxVmError::invalid_state("unbind vCPU", VmBackendError::InvalidState);
+
+        assert!(matches!(
+            finish_bound_run::<()>(3, 2, Err(run_error), Err(cleanup_error)),
+            Err(AxVmError::Vcpu {
+                operation: "run vCPU",
+                ..
+            })
+        ));
     }
 }
