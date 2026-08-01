@@ -103,6 +103,7 @@ const MAINTENANCE_PUBLISHING: u8 = 4;
 struct GicMaintenanceIrqCapability {
     state: AtomicU8,
     encoded_irq: AtomicU64,
+    error: AtomicU8,
 }
 
 #[cfg(any(target_arch = "aarch64", test))]
@@ -111,6 +112,7 @@ impl GicMaintenanceIrqCapability {
         Self {
             state: AtomicU8::new(MAINTENANCE_UNINITIALIZED),
             encoded_irq: AtomicU64::new(0),
+            error: AtomicU8::new(0),
         }
     }
 
@@ -137,8 +139,22 @@ impl GicMaintenanceIrqCapability {
         self.publish_terminal(MAINTENANCE_UNAVAILABLE)
     }
 
-    fn publish_error(&self) -> Result<(), IrqError> {
-        self.publish_terminal(MAINTENANCE_ERROR)
+    fn publish_error(&self, error: IrqError) -> Result<(), IrqError> {
+        if self
+            .state
+            .compare_exchange(
+                MAINTENANCE_UNINITIALIZED,
+                MAINTENANCE_PUBLISHING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err(IrqError::Busy);
+        }
+        self.error.store(encode_irq_error(error), Ordering::Relaxed);
+        self.state.store(MAINTENANCE_ERROR, Ordering::Release);
+        Ok(())
     }
 
     fn publish_terminal(&self, state: u8) -> Result<(), IrqError> {
@@ -162,7 +178,7 @@ impl GicMaintenanceIrqCapability {
                     HwIrq(encoded as u32),
                 ))
             }
-            MAINTENANCE_ERROR => Err(IrqError::Controller),
+            MAINTENANCE_ERROR => Err(decode_irq_error(self.error.load(Ordering::Relaxed))),
             MAINTENANCE_UNINITIALIZED | MAINTENANCE_UNAVAILABLE | MAINTENANCE_PUBLISHING => {
                 Err(IrqError::Unsupported)
             }
@@ -188,19 +204,47 @@ pub(crate) fn publish_gic_maintenance_unavailable() -> Result<(), IrqError> {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn publish_gic_maintenance_error() -> Result<(), IrqError> {
-    GIC_MAINTENANCE_IRQ.publish_error()
+pub(crate) fn publish_gic_maintenance_error(error: IrqError) -> Result<(), IrqError> {
+    GIC_MAINTENANCE_IRQ.publish_error(error)
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn validate_gic_maintenance_irq(
     expected_domain: IrqDomainId,
     irq: IrqId,
 ) -> Result<IrqId, IrqError> {
-    if irq.domain != expected_domain || irq.hwirq.0 >= 32 {
-        Err(IrqError::InvalidIrq)
-    } else {
-        Ok(irq)
+    crate::gic_maintenance::validate_irq(expected_domain, irq)
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+const fn encode_irq_error(error: IrqError) -> u8 {
+    match error {
+        IrqError::InvalidIrq => 1,
+        IrqError::InvalidCpu => 2,
+        IrqError::CpuOffline => 3,
+        IrqError::Timeout => 4,
+        IrqError::Busy => 5,
+        IrqError::NoMemory => 6,
+        IrqError::NotFound => 7,
+        IrqError::InIrqContext => 8,
+        IrqError::Unsupported => 9,
+        IrqError::Controller => 10,
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+const fn decode_irq_error(encoded: u8) -> IrqError {
+    match encoded {
+        1 => IrqError::InvalidIrq,
+        2 => IrqError::InvalidCpu,
+        3 => IrqError::CpuOffline,
+        4 => IrqError::Timeout,
+        5 => IrqError::Busy,
+        6 => IrqError::NoMemory,
+        7 => IrqError::NotFound,
+        8 => IrqError::InIrqContext,
+        9 => IrqError::Unsupported,
+        _ => IrqError::Controller,
     }
 }
 
@@ -885,25 +929,7 @@ mod tests {
         assert_eq!(unavailable.get(), Err(IrqError::Unsupported));
 
         let failed = GicMaintenanceIrqCapability::new();
-        failed.publish_error().unwrap();
-        assert_eq!(failed.get(), Err(IrqError::Controller));
-    }
-
-    #[test]
-    fn maintenance_irq_validation_requires_the_exact_private_domain() {
-        let domain = IrqDomainId(23);
-        let maintenance = IrqId::new(domain, HwIrq(25));
-        assert_eq!(
-            validate_gic_maintenance_irq(domain, maintenance),
-            Ok(maintenance)
-        );
-        assert_eq!(
-            validate_gic_maintenance_irq(IrqDomainId(24), maintenance),
-            Err(IrqError::InvalidIrq)
-        );
-        assert_eq!(
-            validate_gic_maintenance_irq(domain, IrqId::new(domain, HwIrq(32))),
-            Err(IrqError::InvalidIrq)
-        );
+        failed.publish_error(IrqError::InvalidCpu).unwrap();
+        assert_eq!(failed.get(), Err(IrqError::InvalidCpu));
     }
 }

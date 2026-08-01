@@ -69,8 +69,9 @@ fewer than two common LRs.
 `ICC_DIR_EL1` trapping is enabled only through the delivery session and only
 when TDIR is supported. A local module-owned SPI creates an epoch-bound
 deactivation command and reconciles immediately. A remote owner returns
-`Unsupported` until the later routing change supplies a sender. Private or
-unregistered interrupts use the compatibility LR state transition.
+a typed target hint without touching a remote LR; the current runtime maps that
+hint to `Unsupported` until the later routing change supplies a sender. Private
+or unregistered interrupts use the compatibility LR state transition.
 
 ## ICH capability boundary
 
@@ -85,16 +86,19 @@ LRENPIE, EOICOUNT, and other unowned fields remain zero. GICv2 returns
 
 The GICv3 probe copies the unique maintenance interrupt specifier and, after
 registering the exact controller, translates and configures it in that
-controller's dynamic IRQ domain. Only a same-domain private IRQ is published as
-a typed `IrqId`. Missing or malformed optional capability state does not undo a
-working host GIC.
+controller's dynamic IRQ domain. Only a same-domain PPI in INTID range 16
+through 31 is published as a typed `IrqId`; discovery errors retain their
+concrete `IrqError`. Missing or malformed optional capability state does not
+undo a working host GIC.
 
 AxVM registers one host-lifetime per-CPU handler after virtualization is enabled
-on all usable CPUs. Bind publishes `(VMId, VCpuId, generation)` under local IRQ
-exclusion. The handler records only a matching observation; it never accesses
-LRs or the controller. Unbind consumes the observation, services and saves ICH,
-then withdraws ownership. The normal platform IRQ transaction remains the only
-acknowledge/EOI owner.
+on all usable CPUs and exposes a read-only status distinguishing uninitialized,
+registered, unavailable, and the original registration error. Querying the
+status cannot retry registration. Bind publishes `(VMId, VCpuId, generation)`
+under local IRQ exclusion. The handler records only a matching observation; it
+never accesses LRs or the controller. Unbind consumes the observation, services
+and saves ICH, then withdraws ownership. The normal platform IRQ transaction
+remains the only acknowledge/EOI owner.
 
 ## Validation
 

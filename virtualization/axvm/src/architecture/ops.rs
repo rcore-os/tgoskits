@@ -9,6 +9,22 @@ use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 use super::{BoundVcpuExit, VcpuRunAction};
 use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HostIrqOwnership {
+    FetchHandled,
+    DeferredDispatch,
+}
+
+impl HostIrqOwnership {
+    pub(crate) const fn from_fetch_phase(fetch_phase_handles_irq: bool) -> Self {
+        if fetch_phase_handles_irq {
+            Self::FetchHandled
+        } else {
+            Self::DeferredDispatch
+        }
+    }
+}
+
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
@@ -89,8 +105,12 @@ pub(crate) trait ArchOps {
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         vector: usize,
     ) {
-        crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
+        finish_host_irq(
+            HostIrqOwnership::from_fetch_phase(false),
+            vector,
+            crate::host::arceos::dispatch_host_irq,
+            crate::check_timer_events,
+        );
     }
 
     /// Releases architecture runtime state after the VM's last vCPU exits.
@@ -132,6 +152,18 @@ pub(crate) trait ArchOps {
             BoundVcpuExit::Continue => unreachable!("continued exits do not leave run loop"),
         }
     }
+}
+
+pub(crate) fn finish_host_irq(
+    ownership: HostIrqOwnership,
+    vector: usize,
+    dispatch: impl FnOnce(usize),
+    check_timer: impl FnOnce(),
+) {
+    if ownership == HostIrqOwnership::DeferredDispatch {
+        dispatch(vector);
+    }
+    check_timer();
 }
 
 fn with_bound_vcpu<A: VmArchVcpuOps, T>(
@@ -281,6 +313,7 @@ pub(crate) fn default_vcpu_affinities(
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
     use alloc::{sync::Arc, vec};
+    use core::cell::Cell;
 
     use ax_kspin::SpinNoIrq;
     use axvm_types::{
@@ -444,6 +477,40 @@ mod tests {
         ) -> AxVmResult<VcpuRunAction> {
             unreachable!("the injection test has no deferred work")
         }
+    }
+
+    #[test]
+    fn fetch_handled_host_irqs_skip_a_second_dispatch_and_still_check_timers() {
+        let dispatches = Cell::new(0);
+        let timer_checks = Cell::new(0);
+
+        for vector in [25, 48] {
+            finish_host_irq(
+                HostIrqOwnership::FetchHandled,
+                vector,
+                |_| dispatches.set(dispatches.get() + 1),
+                || timer_checks.set(timer_checks.get() + 1),
+            );
+        }
+
+        assert_eq!(dispatches.get(), 0);
+        assert_eq!(timer_checks.get(), 2);
+    }
+
+    #[test]
+    fn deferred_host_irqs_dispatch_exactly_once_and_check_timers() {
+        let dispatches = Cell::new(0);
+        let timer_checks = Cell::new(0);
+
+        finish_host_irq(
+            HostIrqOwnership::from_fetch_phase(false),
+            48,
+            |_| dispatches.set(dispatches.get() + 1),
+            || timer_checks.set(timer_checks.get() + 1),
+        );
+
+        assert_eq!(dispatches.get(), 1);
+        assert_eq!(timer_checks.get(), 1);
     }
 
     #[test]

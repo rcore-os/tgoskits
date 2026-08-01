@@ -406,7 +406,7 @@ impl InterruptRecord {
             return Ok(ReconcileOutcome::Resident);
         };
         apply(update).map_err(ReconcileError::Apply)?;
-        self.commit_update(update);
+        self.commit_update(observed, update);
         Ok(match update {
             ResidentUpdate::Invalidate => ReconcileOutcome::Released,
             ResidentUpdate::SetState(_) => ReconcileOutcome::Updated,
@@ -440,9 +440,17 @@ impl InterruptRecord {
         }
     }
 
-    fn commit_update(&mut self, update: ResidentUpdate) {
+    fn commit_update(&mut self, observed: ResidentLrState, update: ResidentUpdate) {
         match update {
             ResidentUpdate::Invalidate => {
+                if self.trigger == InterruptTriggerMode::EdgeTriggered
+                    && observed == ResidentLrState::Pending
+                {
+                    // A disabled pending LR is only an execution cache eviction.
+                    // Move its edge instance back to durable source state so a
+                    // later enable can deliver it again.
+                    self.pending_latch = true;
+                }
                 self.active = false;
                 self.inflight = None;
                 self.deactivation = None;
@@ -625,6 +633,65 @@ mod tests {
             retry,
             Some(ResidentUpdate::SetState(ResidentLrState::ActivePending))
         );
+    }
+
+    #[test]
+    fn disabling_a_resident_edge_pending_preserves_it_for_reenable() {
+        let controller = controller(InterruptTriggerMode::EdgeTriggered);
+        controller.pulse(intid(32)).unwrap();
+        let descriptor = deliver(&controller);
+
+        controller.set_enabled(intid(32), false).unwrap();
+        assert_eq!(
+            controller
+                .reconcile(
+                    observe(descriptor, ResidentLrState::Pending),
+                    |_| Ok::<_, ()>(())
+                )
+                .unwrap(),
+            ReconcileOutcome::Released
+        );
+        controller.set_enabled(intid(32), true).unwrap();
+
+        assert!(matches!(
+            controller.deliver_one(target(0), |_| Ok::<_, ()>(())),
+            Ok(DeliveryOutcome::Installed { intid: installed, .. }) if installed == intid(32)
+        ));
+    }
+
+    #[test]
+    fn disabling_active_pending_preserves_its_pending_part_after_deactivation() {
+        let controller = controller(InterruptTriggerMode::EdgeTriggered);
+        controller.pulse(intid(32)).unwrap();
+        let descriptor = deliver(&controller);
+        controller
+            .fold(observe(descriptor, ResidentLrState::Active))
+            .unwrap();
+        controller.pulse(intid(32)).unwrap();
+        controller
+            .reconcile(observe(descriptor, ResidentLrState::Active), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+
+        controller.set_enabled(intid(32), false).unwrap();
+        controller.request_deactivation(intid(32)).unwrap();
+        controller
+            .reconcile(observe(descriptor, ResidentLrState::ActivePending), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        controller
+            .reconcile(observe(descriptor, ResidentLrState::Pending), |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        controller.set_enabled(intid(32), true).unwrap();
+
+        assert!(matches!(
+            controller.deliver_one(target(0), |_| Ok::<_, ()>(())),
+            Ok(DeliveryOutcome::Installed { intid: installed, .. }) if installed == intid(32)
+        ));
     }
 
     #[test]

@@ -23,7 +23,9 @@ use axvm_types::{
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
-    AxVmResult, ax_err,
+    AxVmResult,
+    architecture::ops::{HostIrqOwnership, finish_host_irq},
+    ax_err,
     host::{HostCpu, HostMemory, HostTime, default_host},
 };
 
@@ -36,6 +38,7 @@ mod gicv2;
 mod images;
 mod ipi;
 mod maintenance;
+mod maintenance_registration;
 mod maintenance_state;
 mod npt;
 #[path = "../../architecture/sysreg.rs"]
@@ -49,6 +52,7 @@ use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
 use ipi::SendIpiExit;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
+use vgic::DirOutcome;
 
 pub(crate) struct Aarch64Arch;
 
@@ -80,7 +84,7 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn register_platform_irq_injector() {
-        maintenance::register_handler();
+        let _ = maintenance::register_handler();
     }
 
     fn after_external_interrupt(
@@ -88,9 +92,12 @@ impl ArchOps for Aarch64Arch {
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         _vector: usize,
     ) {
-        // fetch_pending_host_irq() already owns the platform acknowledge,
-        // dispatch, and completion transaction on AArch64.
-        crate::check_timer_events();
+        finish_host_irq(
+            HostIrqOwnership::from_fetch_phase(true),
+            _vector,
+            crate::host::arceos::dispatch_host_irq,
+            crate::check_timer_events,
+        );
     }
 
     fn handle_vcpu_exit_bound(
@@ -446,7 +453,11 @@ impl AxvmArmVcpu {
                 ax_percpu::with_exclusive_cpu(pin, |_| {
                     backend.with_bound_ich(|session| {
                         let handled = if let Some(port) = delivery.as_mut() {
-                            port.handle_dir(session, intid)
+                            match port.handle_dir(session, intid) {
+                                Ok(DirOutcome::Completed | DirOutcome::Compatibility) => Ok(()),
+                                Ok(DirOutcome::ServiceTarget(_)) => Err(BackendError::Unsupported),
+                                Err(error) => Err(error),
+                            }
                         } else {
                             match session.deactivate_compatibility_interrupt(intid) {
                                 Ok(true) => Ok(()),

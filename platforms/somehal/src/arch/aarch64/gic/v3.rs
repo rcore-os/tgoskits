@@ -118,7 +118,9 @@ fn publish_maintenance_irq(
     let specifier = match specifier {
         Ok(specifier) => specifier,
         Err(()) => {
-            if let Err(error) = crate::irq::publish_gic_maintenance_error() {
+            if let Err(error) =
+                crate::irq::publish_gic_maintenance_error(crate::irq::IrqError::InvalidIrq)
+            {
                 warn!("failed to publish malformed GIC maintenance IRQ: {error:?}");
             }
             return;
@@ -142,7 +144,7 @@ fn publish_maintenance_irq(
     if let Err(error) = result {
         warn!("GICv3 maintenance IRQ capability is unavailable: {error:?}");
         if error != crate::irq::IrqError::Busy {
-            let _ = crate::irq::publish_gic_maintenance_error();
+            let _ = crate::irq::publish_gic_maintenance_error(error);
         }
     }
 }

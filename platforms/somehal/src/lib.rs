@@ -14,6 +14,8 @@ pub mod cache;
 pub(crate) mod common;
 pub mod cpu;
 mod driver;
+#[cfg(any(target_arch = "aarch64", test))]
+mod gic_maintenance;
 pub mod irq;
 mod irq_routing;
 pub mod platform;
