@@ -6,7 +6,15 @@ use arm_gic_driver::v3::{
 };
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
-use crate::host::{HostMemory, default_host};
+use crate::{
+    host::{HostMemory, default_host},
+    vm::{
+        PassthroughSpiController,
+        passthrough_irq::{
+            PhysicalSpiDelivery, PhysicalSpiReclaim, PhysicalSpiRoutePolicy, PhysicalSpiState,
+        },
+    },
+};
 
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
@@ -14,6 +22,27 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
         .lock()
         .expect("failed to lock GIC driver");
     f(&mut gic)
+}
+
+/// Hands the physical CPU interface from the host to a passthrough guest.
+///
+/// The host uses split EOI/deactivate mode while running the hypervisor. A
+/// passthrough guest owns the physical CPU interface and must instead start
+/// from the architectural combined-EOI mode; otherwise guests that issue only
+/// `EOIR` leave their first interrupt active forever. Guest initialization may
+/// subsequently select split mode if its driver also issues `DIR`.
+pub(crate) fn prepare_passthrough_guest_cpu_interface() {
+    with_gic(|gic| {
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            gic.cpu_interface().set_eoi_mode(false);
+            return;
+        }
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            gic.cpu_interface().set_eoi_mode_ns(false);
+            return;
+        }
+        panic!("no GIC driver found while preparing a passthrough guest");
+    });
 }
 
 pub(crate) fn inject_interrupt(irq: usize) {
@@ -91,33 +120,87 @@ fn inject_interrupt_gic_v3(vector: usize) {
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
 }
 
-/// Pends a *physical* SPI on the host GIC.
+impl arm_gic_driver::v3::SpiDeliverySpec for PhysicalSpiDelivery {
+    fn raw_intid(&self) -> u32 {
+        u32::try_from(self.intid).expect("passthrough gate validated its physical SPI INTIDs")
+    }
+
+    fn target_affinity(&self) -> arm_gic_driver::v3::Affinity {
+        arm_gic_driver::v3::Affinity::from_mpidr(self.target_mpidr as u64)
+    }
+
+    fn route_policy(&self) -> arm_gic_driver::v3::SpiRoutePolicy {
+        match self.route_policy {
+            PhysicalSpiRoutePolicy::Configure => arm_gic_driver::v3::SpiRoutePolicy::Configure,
+            PhysicalSpiRoutePolicy::Preserve => arm_gic_driver::v3::SpiRoutePolicy::Preserve,
+        }
+    }
+}
+
+impl arm_gic_driver::v3::SpiReclaimSpec for PhysicalSpiReclaim {
+    fn raw_intid(&self) -> u32 {
+        u32::try_from(self.intid).expect("passthrough gate validated its physical SPI INTIDs")
+    }
+
+    fn record_state(&mut self, state: arm_gic_driver::v3::SpiLineState) {
+        self.state = Some(PhysicalSpiState {
+            active: state.active,
+            pending: state.pending,
+        });
+    }
+}
+
+struct HostGicPassthroughSpiController<'a> {
+    gic: &'a mut rdif_intc::Intc,
+}
+
+impl PassthroughSpiController for HostGicPassthroughSpiController<'_> {
+    fn deliver_spis(&mut self, requests: &[PhysicalSpiDelivery]) -> crate::AxVmResult {
+        if let Some(gic) = self.gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            return gic
+                .route_enable_and_pend_spis(requests)
+                .map_err(|error| crate::AxVmError::interrupt("deliver physical SPIs", error));
+        }
+        if self.gic.typed_mut::<arm_gic_driver::v2::Gic>().is_some() {
+            return Err(crate::AxVmError::unsupported(
+                "deliver physical SPIs",
+                "GICv2 target routing is not implemented for emulated passthrough devices",
+            ));
+        }
+        Err(crate::AxVmError::resource_unavailable(
+            "GIC driver",
+            "no supported host GIC is registered",
+        ))
+    }
+
+    fn reclaim_spis(&mut self, requests: &mut [PhysicalSpiReclaim]) -> crate::AxVmResult {
+        if let Some(gic) = self.gic.typed_mut::<arm_gic_driver::v3::Gic>() {
+            return gic
+                .reclaim_pending_spis(requests)
+                .map_err(|error| crate::AxVmError::interrupt("reclaim physical SPIs", error));
+        }
+        if self.gic.typed_mut::<arm_gic_driver::v2::Gic>().is_some() {
+            return Err(crate::AxVmError::unsupported(
+                "reclaim physical SPIs",
+                "GICv2 pending-state reclamation is not implemented for passthrough devices",
+            ));
+        }
+        Err(crate::AxVmError::resource_unavailable(
+            "GIC driver",
+            "no supported host GIC is registered",
+        ))
+    }
+}
+
+/// Runs one ownership-gate transition while holding the host GIC lock.
 ///
-/// A guest running in passthrough interrupt mode uses the physical GIC CPU
-/// interface directly (HCR_EL2.IMO is clear) and never consults the virtual
-/// List Registers, so a software-injected *virtual* interrupt is invisible to
-/// it. To deliver an emulated-device interrupt (e.g. virtio-net) to such a
-/// guest we instead set the corresponding physical SPI pending: the guest has
-/// already enabled and routed that SPI in the (passed-through) physical GICD,
-/// so the hardware delivers it to the guest's EL1.
-pub(crate) fn pend_physical_spi(intid: usize) {
-    use arm_gic_driver::IntId;
-    let id = if intid >= 32 {
-        IntId::spi((intid - 32) as u32)
-    } else {
-        unsafe { IntId::raw(intid as u32) }
-    };
-    with_gic(|gic| {
-        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v3::Gic>() {
-            gic.set_pending(id, true);
-            return;
-        }
-        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
-            gic.set_pending(id, true);
-            return;
-        }
-        panic!("no GIC driver found");
-    });
+/// Passthrough paths always acquire the global GIC lock before the per-VM gate.
+/// The caller must release both by returning from this closure before waking a
+/// vCPU task.
+pub(crate) fn with_passthrough_spi_controller<T>(
+    f: impl FnOnce(&mut dyn PassthroughSpiController) -> T,
+) -> T {
+    with_gic(|gic| f(&mut HostGicPassthroughSpiController { gic }))
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {

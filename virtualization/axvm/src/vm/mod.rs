@@ -14,7 +14,14 @@
 
 //! Virtual machine state, resources, and lifecycle entry points.
 
-use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, btree_map::Entry},
+    format,
+    string::String,
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     alloc::Layout,
     sync::atomic::{AtomicUsize, Ordering},
@@ -26,6 +33,10 @@ use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, VirtioNet};
 use axdevice_base::AccessWidth;
+use axvm_net::{
+    MAX_SWITCH_PORTS, MacAddress, PortId, RouteDecision, SegmentId, SwitchPort, SwitchTopology,
+    TopologyError,
+};
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
 };
@@ -45,8 +56,14 @@ use crate::{
 
 pub(crate) mod boot;
 pub(crate) mod memory;
+pub(crate) mod passthrough_irq;
 pub(crate) mod prepare;
 pub use memory::PreparedMemoryLayout;
+pub(crate) use passthrough_irq::{
+    PassthroughInterfaceOwner, PassthroughSpiController, PassthroughSpiRegistration,
+    PassthroughSpiSignal, PassthroughSpiSignalRequest, PassthroughSpiTransition,
+    PassthroughSpiTransitionResult,
+};
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -57,6 +74,66 @@ type VCpu = AxVCpu<crate::arch::ArchVCpu>;
 pub(crate) type AxVCpuRef<A = crate::arch::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
+
+struct SwitchPortBinding {
+    port: SwitchPort,
+    vm: AxVMRef,
+    device: Arc<VirtioNet>,
+}
+
+struct SwitchPortSnapshot {
+    bindings: Vec<SwitchPortBinding>,
+}
+
+fn collect_switch_ports() -> Result<SwitchPortSnapshot, TopologyError> {
+    // Both snapshot APIs return owned Arcs after releasing their registry or
+    // machine lock. No broad lock is retained across routing or RX callbacks.
+    let mut bindings = Vec::new();
+    for vm in crate::get_vm_list() {
+        let devices = match vm.get_devices() {
+            Ok(devices) => devices,
+            Err(error) => {
+                crate::network::record_skipped_vm_snapshots(1);
+                debug!(
+                    "virtual switch skipped unavailable VM[{}] device snapshot: {error}",
+                    vm.id()
+                );
+                continue;
+            }
+        };
+        for device in devices.virtio_nets() {
+            if bindings.len() == MAX_SWITCH_PORTS {
+                return Err(TopologyError::TooManyPorts {
+                    count: MAX_SWITCH_PORTS + 1,
+                    max: MAX_SWITCH_PORTS,
+                });
+            }
+            bindings
+                .try_reserve(1)
+                .map_err(|_| TopologyError::AllocationFailed)?;
+            let port = SwitchPort {
+                id: PortId(bindings.len()),
+                segment: SegmentId(device.segment_id()),
+                mac: MacAddress(device.mac()),
+            };
+            bindings.push(SwitchPortBinding {
+                port,
+                vm: vm.clone(),
+                device: device.clone(),
+            });
+        }
+    }
+    Ok(SwitchPortSnapshot { bindings })
+}
+
+fn build_switch_topology(bindings: &[SwitchPortBinding]) -> Result<SwitchTopology, TopologyError> {
+    let mut ports = Vec::new();
+    ports
+        .try_reserve_exact(bindings.len())
+        .map_err(|_| TopologyError::AllocationFailed)?;
+    ports.extend(bindings.iter().map(|binding| binding.port));
+    SwitchTopology::new(&ports)
+}
 
 /// Architecture-independent vCPU runtime metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,41 +213,136 @@ pub(crate) enum PendingInterrupt {
     External { vector: usize, physical_irq: usize },
 }
 
+enum VcpuTaskSlot {
+    Starting,
+    Published(crate::AxTaskRef),
+}
+
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
-    vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
+    /// Lock order when both maps are needed: tasks before pending interrupts.
+    vcpu_task_list: Mutex<BTreeMap<usize, VcpuTaskSlot>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
+    passthrough_spis: passthrough_irq::PassthroughSpiGate,
     running_halting_vcpu_count: AtomicUsize,
 }
 
 impl VmRuntimeHandle {
-    pub(crate) fn new() -> Self {
-        Self {
+    pub(crate) fn new(
+        vcpu_count: usize,
+        passthrough_spis: &[PassthroughSpiRegistration],
+    ) -> AxVmResult<Self> {
+        Ok(Self {
             wait_queue: crate::WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
+            passthrough_spis: passthrough_irq::PassthroughSpiGate::new(
+                vcpu_count,
+                passthrough_spis,
+            )?,
             running_halting_vcpu_count: AtomicUsize::new(0),
+        })
+    }
+
+    pub(crate) fn reserve_vcpu_task(&self, vcpu_id: usize) -> AxVmResult {
+        let mut tasks = self.vcpu_task_list.lock();
+        match tasks.entry(vcpu_id) {
+            Entry::Occupied(_) => Err(AxVmError::resource_conflict(
+                "reserve vCPU task",
+                format_args!("vCPU {vcpu_id} task is already published or reserved"),
+            )),
+            Entry::Vacant(task_slot) => {
+                task_slot.insert(VcpuTaskSlot::Starting);
+                Ok(())
+            }
         }
     }
 
-    pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
-        self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
-        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    pub(crate) fn publish_reserved_vcpu_task(
+        &self,
+        vcpu_id: usize,
+        vcpu_task: crate::AxTaskRef,
+    ) -> AxVmResult {
+        let mut tasks = self.vcpu_task_list.lock();
+        match tasks.get_mut(&vcpu_id) {
+            Some(task_slot @ VcpuTaskSlot::Starting) => {
+                let mut pending_interrupts = self.pending_interrupts.lock();
+                *task_slot = VcpuTaskSlot::Published(vcpu_task);
+                pending_interrupts.entry(vcpu_id).or_default();
+                Ok(())
+            }
+            Some(VcpuTaskSlot::Published(_)) => Err(AxVmError::resource_conflict(
+                "publish reserved vCPU task",
+                format_args!("vCPU {vcpu_id} task is already published"),
+            )),
+            None => Err(AxVmError::invalid_state(
+                "publish reserved vCPU task",
+                format_args!("vCPU {vcpu_id} task was not reserved"),
+            )),
+        }
+    }
+
+    pub(crate) fn rollback_vcpu_task_slot(
+        &self,
+        vcpu_id: usize,
+        expected_task: Option<&crate::AxTaskRef>,
+    ) -> AxVmResult {
+        let mut tasks = self.vcpu_task_list.lock();
+        let task_slot = tasks.get(&vcpu_id).ok_or_else(|| {
+            AxVmError::invalid_state(
+                "roll back vCPU task slot",
+                format_args!("vCPU {vcpu_id} task slot is missing"),
+            )
+        })?;
+        match (task_slot, expected_task) {
+            (VcpuTaskSlot::Starting, None) => {}
+            (VcpuTaskSlot::Published(task), Some(expected_task))
+                if Arc::ptr_eq(task, expected_task) => {}
+            (VcpuTaskSlot::Starting, Some(_)) => {
+                return Err(AxVmError::invalid_state(
+                    "roll back vCPU task slot",
+                    format_args!("vCPU {vcpu_id} task is still reserved"),
+                ));
+            }
+            (VcpuTaskSlot::Published(_), None) => {
+                return Err(AxVmError::invalid_state(
+                    "roll back vCPU task slot",
+                    format_args!("vCPU {vcpu_id} task is already published"),
+                ));
+            }
+            (VcpuTaskSlot::Published(_), Some(_)) => {
+                return Err(AxVmError::invalid_state(
+                    "roll back vCPU task slot",
+                    format_args!("vCPU {vcpu_id} task was replaced before rollback"),
+                ));
+            }
+        }
+
+        let mut pending_interrupts = self.pending_interrupts.lock();
+        tasks.remove(&vcpu_id);
+        pending_interrupts.remove(&vcpu_id);
+        Ok(())
     }
 
     pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxVmResult<usize> {
-        let task = self
-            .vcpu_task_list
-            .lock()
+        let tasks = self.vcpu_task_list.lock();
+        let task = tasks
             .get(&vcpu_id)
-            .cloned()
             .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        let VcpuTaskSlot::Published(task) = task else {
+            return Err(ax_err_type!(
+                BadState,
+                format!("vCPU {vcpu_id} task is not published yet")
+            ));
+        };
+        let task = task.clone();
         self.pending_interrupts
             .lock()
             .entry(vcpu_id)
             .or_default()
             .push(PendingInterrupt::Normal(vector));
+        drop(tasks);
         Ok(task.cpu_id() as usize)
     }
 
@@ -184,12 +356,17 @@ impl VmRuntimeHandle {
         vector: usize,
         physical_irq: usize,
     ) -> AxVmResult<usize> {
-        let task = self
-            .vcpu_task_list
-            .lock()
+        let tasks = self.vcpu_task_list.lock();
+        let task = tasks
             .get(&vcpu_id)
-            .cloned()
             .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        let VcpuTaskSlot::Published(task) = task else {
+            return Err(ax_err_type!(
+                BadState,
+                format!("vCPU {vcpu_id} task is not published yet")
+            ));
+        };
+        let task = task.clone();
         self.pending_interrupts
             .lock()
             .entry(vcpu_id)
@@ -198,6 +375,7 @@ impl VmRuntimeHandle {
                 vector,
                 physical_irq,
             });
+        drop(tasks);
         Ok(task.cpu_id() as usize)
     }
 
@@ -209,8 +387,38 @@ impl VmRuntimeHandle {
             .unwrap_or_default()
     }
 
-    pub(crate) fn wait(&self) {
-        self.wait_queue.wait();
+    pub(crate) fn transition_passthrough_spi(
+        &self,
+        vcpu_id: usize,
+        transition: PassthroughSpiTransition,
+        controller: &mut dyn PassthroughSpiController,
+    ) -> AxVmResult<PassthroughSpiTransitionResult> {
+        match transition {
+            core::ops::ControlFlow::Continue(PassthroughSpiSignalRequest { irq, target_mpidr }) => {
+                self.passthrough_spis
+                    .signal_passthrough_spi(vcpu_id, irq, target_mpidr, controller)
+                    .map(PassthroughSpiTransitionResult::Signal)
+            }
+            core::ops::ControlFlow::Break(PassthroughInterfaceOwner::Guest) => {
+                self.passthrough_spis
+                    .prepare_guest_entry(vcpu_id, controller)?;
+                Ok(PassthroughSpiTransitionResult::OwnershipTransferred)
+            }
+            core::ops::ControlFlow::Break(PassthroughInterfaceOwner::Host) => {
+                self.passthrough_spis
+                    .complete_guest_exit(vcpu_id, controller)?;
+                Ok(PassthroughSpiTransitionResult::OwnershipTransferred)
+            }
+        }
+    }
+
+    pub(crate) fn has_pending_vcpu_work(&self, vcpu_id: usize) -> bool {
+        let has_pending_interrupt = self
+            .pending_interrupts
+            .lock()
+            .get(&vcpu_id)
+            .is_some_and(|interrupts| !interrupts.is_empty());
+        has_pending_interrupt || self.passthrough_spis.has_queued_spi(vcpu_id)
     }
 
     pub(crate) fn wait_until(&self, condition: impl Fn() -> bool) {
@@ -244,8 +452,10 @@ impl VmRuntimeHandle {
             .vcpu_task_list
             .lock()
             .values()
-            .filter(|task| !current.ptr_eq(task))
-            .cloned()
+            .filter_map(|task_slot| match task_slot {
+                VcpuTaskSlot::Published(task) if !current.ptr_eq(task) => Some(task.clone()),
+                VcpuTaskSlot::Starting | VcpuTaskSlot::Published(_) => None,
+            })
             .collect();
         let task_count = tasks.len();
         info!("VM[{vm_id}] Joining {task_count} VCpu tasks...");
@@ -579,8 +789,13 @@ impl AxVM {
         let primary_vcpu = self
             .vcpu(0)
             .ok_or_else(|| ax_err_type!(BadState, "VM primary vCPU is not prepared"))?;
-        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
-        let runtime = Arc::new(VmRuntimeHandle::new());
+        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu)?.prepare()?;
+        let passthrough_spis = crate::arch::passthrough_spi_registrations(self)?;
+        let runtime = Arc::new(VmRuntimeHandle::new(self.vcpu_num(), &passthrough_spis)?);
+
+        let task_ref = primary_task.task_ref().clone();
+        runtime.reserve_vcpu_task(0)?;
+        runtime.publish_reserved_vcpu_task(0, task_ref.clone())?;
 
         self.machine.lock().start_with(|resources| {
             resources
@@ -595,8 +810,24 @@ impl AxVM {
             Ok(runtime.clone())
         })?;
 
-        let task = crate::host::task::spawn_task(primary_task);
-        runtime.add_vcpu_task(0, task);
+        if let Err(activation_error) = primary_task.activate() {
+            let task_rollback = runtime.rollback_vcpu_task_slot(0, Some(&task_ref));
+            let lifecycle_rollback = {
+                let mut machine = self.machine.lock();
+                machine
+                    .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+                    .and_then(|()| machine.finish_stop())
+            };
+            return match task_rollback.and(lifecycle_rollback) {
+                Ok(()) => Err(activation_error),
+                Err(rollback_error) => Err(AxVmError::host(
+                    "roll back primary vCPU activation",
+                    format_args!(
+                        "activation failed: {activation_error}; rollback failed: {rollback_error}"
+                    ),
+                )),
+            };
+        }
         Ok(())
     }
 
@@ -828,9 +1059,16 @@ impl AxVM {
         Ok(())
     }
 
-    /// Drives the virtio-net transmit path: drain the TX virtqueue, raise the TX
-    /// completion interrupt, and flood each frame to every other VM (L2 broadcast switch).
+    /// Drives TX completion and routes frames through the isolated L2 switch.
     fn drive_virtio_net_tx(&self, vnet: &Arc<VirtioNet>) -> AxVmResult {
+        let notifications = crate::network::record_tx_notification();
+        if crate::network::should_log_progress(notifications) {
+            info!(
+                "IVC-SWITCH-NOTIFY vm={} irq={} notifications={notifications}",
+                self.id(),
+                vnet.irq()
+            );
+        }
         let frames = vnet.process_tx(
             &|gpa, buffer| {
                 self.read_from_guest(gpa, buffer).map_err(|error| {
@@ -849,60 +1087,145 @@ impl AxVM {
                 })
             },
         )?;
+        // process_tx releases the sender queue lock before any receiver is
+        // selected, so cross-VM delivery never nests two virtio-net locks.
         if frames.is_empty() {
+            let empty = crate::network::record_empty_tx_notification();
+            if crate::network::should_log_progress(empty) {
+                info!(
+                    "IVC-SWITCH-EMPTY-TX vm={} irq={} empty_notifications={empty}",
+                    self.id(),
+                    vnet.irq()
+                );
+            }
             return Ok(());
         }
-        self.inject_device_irq(vnet.irq());
         for frame in &frames {
-            for vm in crate::get_vm_list() {
-                if vm.id() != self.id() {
-                    let _ = vm.deliver_rx_frame(frame);
+            let transmitted = crate::network::record_transmission(frame.len());
+            if crate::network::should_log_progress(transmitted) {
+                info!(
+                    "IVC-SWITCH-TX vm={} irq={} frames={transmitted} last_bytes={}",
+                    self.id(),
+                    vnet.irq(),
+                    frame.len()
+                );
+            }
+        }
+        self.inject_device_irq(vnet.irq())?;
+
+        let snapshot = match collect_switch_ports() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                crate::network::record_topology_failure(frames.len());
+                warn!("virtual switch port snapshot failed; dropping TX batch: {error}");
+                return Ok(());
+            }
+        };
+        let bindings = snapshot.bindings;
+        let topology = match build_switch_topology(&bindings) {
+            Ok(topology) => topology,
+            Err(error) => {
+                crate::network::record_topology_failure(frames.len());
+                warn!("virtual switch topology is unusable; dropping TX batch: {error}");
+                return Ok(());
+            }
+        };
+        let Some(ingress) = bindings
+            .iter()
+            .find(|binding| binding.vm.id() == self.id() && Arc::ptr_eq(&binding.device, vnet))
+            .map(|binding| binding.port.id)
+        else {
+            crate::network::record_topology_failure(frames.len());
+            warn!(
+                "VM[{}] virtio-net at {:#x} is absent from the switch snapshot; dropping TX batch",
+                self.id(),
+                vnet.base().as_usize()
+            );
+            return Ok(());
+        };
+
+        for frame in &frames {
+            let decision = topology.route(ingress, frame);
+            crate::network::record_route(&decision);
+            match decision {
+                RouteDecision::Forward { targets, .. } => {
+                    for target in targets {
+                        let Some(binding) =
+                            bindings.iter().find(|binding| binding.port.id == target)
+                        else {
+                            crate::network::record_delivery_error();
+                            warn!("virtual switch produced missing target port {target:?}");
+                            continue;
+                        };
+                        match binding.vm.deliver_rx_frame_to(&binding.device, frame) {
+                            Ok(true) => {
+                                let forwarded = crate::network::record_forwarded_copy();
+                                if crate::network::should_log_progress(forwarded) {
+                                    info!(
+                                        "IVC-SWITCH-FORWARD destination_vm={} irq={} \
+                                         copies={forwarded}",
+                                        binding.vm.id(),
+                                        binding.device.irq()
+                                    );
+                                }
+                            }
+                            Ok(false) => crate::network::record_unavailable_rx_buffer(),
+                            Err(error) => {
+                                crate::network::record_delivery_error();
+                                warn!(
+                                    "virtual switch delivery to VM[{}] port {:?} failed: {error}",
+                                    binding.vm.id(),
+                                    binding.port.id
+                                );
+                            }
+                        }
+                    }
+                }
+                RouteDecision::Drop(reason) => {
+                    debug!(
+                        "virtual switch dropped frame from VM[{}] port {ingress:?}: {reason:?}",
+                        self.id()
+                    );
                 }
             }
         }
         Ok(())
     }
 
-    /// Delivers an Ethernet frame into this VM's virtio-net receive queue(s).
-    pub(crate) fn deliver_rx_frame(&self, frame: &[u8]) -> AxVmResult {
-        let devices = self.get_devices()?;
-        let vnets: Vec<Arc<VirtioNet>> = devices.virtio_nets().to_vec();
-        for vnet in vnets {
-            let injected = vnet.deliver_rx(
-                &|gpa, buffer| {
-                    self.read_from_guest(gpa, buffer).map_err(|error| {
-                        DeviceManagerError::UnexpectedResponse {
-                            operation: "read guest memory for virtio-net RX",
-                            detail: alloc::format!("{error}"),
-                        }
-                    })
-                },
-                &|gpa, buffer| {
-                    self.write_to_guest(gpa, buffer).map_err(|error| {
-                        DeviceManagerError::UnexpectedResponse {
-                            operation: "write guest memory for virtio-net RX",
-                            detail: alloc::format!("{error}"),
-                        }
-                    })
-                },
-                frame,
-            )?;
-            if injected {
-                self.inject_device_irq(vnet.irq());
-            }
+    /// Delivers one Ethernet frame to a selected port in this VM.
+    fn deliver_rx_frame_to(&self, vnet: &Arc<VirtioNet>, frame: &[u8]) -> AxVmResult<bool> {
+        let injected = vnet.deliver_rx(
+            &|gpa, buffer| {
+                self.read_from_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::UnexpectedResponse {
+                        operation: "read guest memory for virtio-net RX",
+                        detail: alloc::format!("{error}"),
+                    }
+                })
+            },
+            &|gpa, buffer| {
+                self.write_to_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::UnexpectedResponse {
+                        operation: "write guest memory for virtio-net RX",
+                        detail: alloc::format!("{error}"),
+                    }
+                })
+            },
+            frame,
+        )?;
+        if injected {
+            self.inject_device_irq(vnet.irq())?;
         }
-        Ok(())
+        Ok(injected)
     }
 
     /// Delivers an emulated-device IRQ using the mechanism selected by this VM's
     /// interrupt mode.
-    fn inject_device_irq(&self, irq: usize) {
-        #[cfg(target_arch = "aarch64")]
-        if self.interrupt_mode() == VMInterruptMode::Passthrough {
-            crate::arch::pend_physical_spi(irq);
-            return;
+    fn inject_device_irq(&self, irq: usize) -> AxVmResult {
+        if crate::arch::try_inject_passthrough_device_irq(self, irq)? {
+            return Ok(());
         }
-        let _ = self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), irq);
+        self.inject_interrupt_to_vcpu(CpuMask::one_shot(0), irq)
     }
 
     pub(crate) fn handle_nested_page_fault(
@@ -928,7 +1251,7 @@ impl AxVM {
         handled: bool,
     ) {
         let root = resources.address_space.page_table_root();
-        match resources.address_space.page_table().query(addr) {
+        match axaddrspace::NestedPageTableOps::query(resources.address_space.page_table(), addr) {
             Ok((hpa, flags, size)) => {
                 if handled {
                     debug!(

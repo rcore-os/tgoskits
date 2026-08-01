@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "result_kind": "deterministic-host-functional-reference",
+  "base_commit": "263f89d8f3d0481d2712224a7b517a73b1165fb3",
+  "worktree_state": "competition implementation changes not yet committed",
+  "toolchain": "rustc 1.99.0-nightly (da80ed070 2026-07-14)",
+  "host": "x86_64-pc-windows-msvc",
+  "model_id": "thermal-4x6x1-v1",
+  "scenario": {
+    "samples_per_policy": 1800,
+    "sample_period_ms": 100,
+    "duration_seconds": 180,
+    "setpoints_milli_c": [45000, 65000, 50000],
+    "segment_duration_seconds": 60,
+    "disturbance": "-0.35 C/s during steps 850 through 949",
+    "manual_fixed_actuator_permille": 500
+  },
+  "summary": {
+    "manual_fixed": {
+      "rmse_milli_c": 9258.906,
+      "iae_milli_c_s": 1429224.700,
+      "maximum_overshoot_milli_c": 6840,
+      "final_settling_time_ms": null
+    },
+    "neural": {
+      "rmse_milli_c": 5932.491,
+      "iae_milli_c_s": 686993.400,
+      "maximum_overshoot_milli_c": 13428,
+      "final_settling_time_ms": 27900
+    },
+    "rmse_improvement_percent": 35.927,
+    "iae_improvement_percent": 51.932
+  },
+  "raw_data": {
+    "path": "raw.csv",
+    "rows_including_header": 3601,
+    "sha256": "9e2f2e8f471413afc08066898621e7e00ddd0f844a3d043adf64fd181f3be584"
+  },
+  "limitations": [
+    "This is a deterministic functional reference, not an AxVisor timing result.",
+    "End-to-end Linux-to-Zephyr latency is collected by the QEMU experiment separately.",
+    "The neural policy improves RMSE and IAE but has a larger maximum excursion after the downward setpoint step."
+  ]
+}

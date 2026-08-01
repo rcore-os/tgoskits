@@ -61,7 +61,7 @@ pub use fw_cfg::{
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
-pub use virtio_net::VirtioNet;
+pub use virtio_net::{VirtioNet, VirtioNetHeaderMode, VirtioNetOptions};
 #[cfg(target_arch = "x86_64")]
 pub use x86::{
     X86IoApicDevice, X86IoApicDeviceOps, X86PitDevice, X86PitDeviceOps, X86SerialDeviceOps,

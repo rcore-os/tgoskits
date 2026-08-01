@@ -1,0 +1,441 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+#include "endpoint.h"
+#include "protocol.h"
+
+#include <errno.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <zephyr/kernel.h>
+#include <zephyr/net/net_if.h>
+#include <zephyr/net/socket.h>
+#include <zephyr/sys/printk.h>
+
+#define IVC_LOCAL_IPV4 "10.0.0.2"
+#define IVC_LOCAL_UDP_PORT 5500U
+#define IVC_SOCKET_POLL_MS 100
+#define IVC_ETHERNET_ADDRESS_LENGTH 6U
+
+static const uint8_t expected_mac[IVC_ETHERNET_ADDRESS_LENGTH] = {
+	0x52, 0x54, 0x00, 0x00, 0x00, 0x02,
+};
+
+static uint8_t receive_frame[IVC_MAX_FRAME_LENGTH];
+static uint8_t transmit_frame[IVC_MAX_FRAME_LENGTH];
+
+struct ivc_server {
+	struct ivc_receive_window receive_window;
+	struct ivc_endpoint endpoint;
+	struct ivc_thermal_plant plant;
+	struct ivc_ack_loss_policy ack_loss;
+	uint32_t applied_commands;
+	uint64_t protocol_errors;
+	uint64_t status_sent;
+	uint64_t acknowledgements_sent;
+	uint64_t errors_sent;
+	bool result_reported;
+};
+
+static uint64_t monotonic_us(void)
+{
+	return (uint64_t)k_uptime_get() * UINT64_C(1000);
+}
+
+static bool validate_fault_configuration(void)
+{
+	const uint32_t drop_every = (uint32_t)CONFIG_IVC_DROP_ACK_EVERY;
+	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
+
+	if (drop_every == 0U && expected_commands == 0U) {
+		return true;
+	}
+	if (drop_every == 0U || expected_commands == 0U || drop_every > expected_commands) {
+		printk("IVC-RTOS-FATAL stage=fault-config drop_ack_every=%u expected_commands=%u\n",
+		       drop_every, expected_commands);
+		return false;
+	}
+	return true;
+}
+
+static bool validate_network_identity(void)
+{
+	struct net_if *interface = net_if_get_default();
+	const struct net_linkaddr *address;
+
+	if (interface == NULL) {
+		printk("IVC-RTOS-NET-ERROR reason=no-default-interface\n");
+		return false;
+	}
+	address = net_if_get_link_addr(interface);
+	if (address == NULL || address->len != sizeof(expected_mac)) {
+		printk("IVC-RTOS-NET-ERROR reason=invalid-mac-length\n");
+		return false;
+	}
+	printk("IVC-RTOS-NET mac=%02x:%02x:%02x:%02x:%02x:%02x expected="
+	       "52:54:00:00:00:02\n",
+	       (unsigned int)address->addr[0], (unsigned int)address->addr[1],
+	       (unsigned int)address->addr[2], (unsigned int)address->addr[3],
+	       (unsigned int)address->addr[4], (unsigned int)address->addr[5]);
+	if (memcmp(address->addr, expected_mac, sizeof(expected_mac)) != 0) {
+		printk("IVC-RTOS-NET-ERROR reason=unexpected-mac\n");
+		return false;
+	}
+	return true;
+}
+
+static int open_endpoint_socket(void)
+{
+	struct sockaddr_in local = {
+		.sin_family = AF_INET,
+		.sin_port = htons(IVC_LOCAL_UDP_PORT),
+	};
+	int socket_fd;
+
+	if (zsock_inet_pton(AF_INET, IVC_LOCAL_IPV4, &local.sin_addr) != 1) {
+		printk("IVC-RTOS-FATAL stage=parse-bind-address errno=%d\n", errno);
+		return -1;
+	}
+	socket_fd = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (socket_fd < 0) {
+		printk("IVC-RTOS-FATAL stage=socket errno=%d\n", errno);
+		return -1;
+	}
+	if (zsock_bind(socket_fd, (const struct sockaddr *)&local, sizeof(local)) < 0) {
+		printk("IVC-RTOS-FATAL stage=bind ip=%s port=%u errno=%d\n", IVC_LOCAL_IPV4,
+		       IVC_LOCAL_UDP_PORT, errno);
+		(void)zsock_close(socket_fd);
+		return -1;
+	}
+	return socket_fd;
+}
+
+static bool send_payload(int socket_fd, const struct sockaddr *peer, socklen_t peer_length,
+			 const struct ivc_header *request, enum ivc_message_type message_type,
+			 enum ivc_error_code error_code, const uint8_t *payload,
+			 uint16_t payload_length)
+{
+	const struct ivc_header response = {
+		.message_type = message_type,
+		.flags = 0U,
+		.session_id = request->session_id,
+		.sequence = request->sequence,
+		.timestamp_us = monotonic_us(),
+		.payload_length = payload_length,
+		.error_code = error_code,
+	};
+	size_t frame_length;
+	ssize_t sent;
+
+	if (!ivc_encode_frame(&response, payload, transmit_frame, sizeof(transmit_frame),
+			      &frame_length)) {
+		printk("IVC-RTOS-FATAL stage=encode-response seq=%u type=%u\n", request->sequence,
+		       (unsigned int)message_type);
+		return false;
+	}
+	sent = zsock_sendto(socket_fd, transmit_frame, frame_length, 0, peer, peer_length);
+	if (sent != (ssize_t)frame_length) {
+		printk("IVC-RTOS-TX-ERROR seq=%u type=%u sent=%d expected=%u errno=%d\n",
+		       request->sequence, (unsigned int)message_type, (int)sent,
+		       (unsigned int)frame_length, errno);
+		return false;
+	}
+	return true;
+}
+
+static bool send_error(int socket_fd, const struct sockaddr *peer, socklen_t peer_length,
+		       const struct ivc_header *request, enum ivc_error_code error_code)
+{
+	const struct ivc_error_payload error = {
+		.offending_message_type = request->message_type,
+		.offending_sequence = request->sequence,
+	};
+	uint8_t payload[IVC_ERROR_PAYLOAD_LENGTH];
+
+	return ivc_encode_error_payload(&error, payload) &&
+	       send_payload(socket_fd, peer, peer_length, request, IVC_MESSAGE_ERROR, error_code,
+			    payload, sizeof(payload));
+}
+
+static bool send_status(int socket_fd, const struct sockaddr *peer, socklen_t peer_length,
+			const struct ivc_header *request, const struct ivc_endpoint *endpoint,
+			const struct ivc_thermal_plant *plant)
+{
+	const struct ivc_status_report status =
+		ivc_endpoint_status(endpoint, ivc_thermal_plant_temperature(plant));
+	uint8_t payload[IVC_STATUS_PAYLOAD_LENGTH];
+
+	return ivc_encode_status(&status, payload) &&
+	       send_payload(socket_fd, peer, peer_length, request, IVC_MESSAGE_STATUS,
+			    IVC_ERROR_NONE, payload, sizeof(payload));
+}
+
+static bool send_ack(int socket_fd, const struct sockaddr *peer, socklen_t peer_length,
+		     const struct ivc_header *request, const struct ivc_receive_window *window)
+{
+	const struct ivc_ack_payload ack = ivc_receive_window_ack(window, request->sequence);
+	uint8_t payload[IVC_ACK_PAYLOAD_LENGTH];
+
+	return ivc_encode_ack(&ack, payload) &&
+	       send_payload(socket_fd, peer, peer_length, request, IVC_MESSAGE_ACK, IVC_ERROR_NONE,
+			    payload, sizeof(payload));
+}
+
+static void report_ack_loss_result_if_complete(struct ivc_server *server)
+{
+#if CONFIG_IVC_DROP_ACK_EVERY == 0
+	(void)server;
+#else
+	const uint32_t drop_every = (uint32_t)CONFIG_IVC_DROP_ACK_EVERY;
+	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
+	uint64_t expected_drops;
+
+	if (server->result_reported) {
+		return;
+	}
+	expected_drops = (uint64_t)(expected_commands / drop_every);
+	if (server->receive_window.metrics.accepted != expected_commands ||
+	    server->receive_window.metrics.duplicates != expected_drops ||
+	    server->ack_loss.acknowledgements_dropped != expected_drops) {
+		return;
+	}
+	printk("IVC-RTOS-RESULT profile=ack-loss accepted=%llu applied=%u duplicates=%llu "
+	       "acks_dropped=%llu status_sent=%llu acks_sent=%llu errors_sent=%llu "
+	       "protocol_errors=%llu\n",
+	       server->receive_window.metrics.accepted, server->applied_commands,
+	       server->receive_window.metrics.duplicates,
+	       server->ack_loss.acknowledgements_dropped, server->status_sent,
+	       server->acknowledgements_sent, server->errors_sent, server->protocol_errors);
+	server->result_reported = true;
+#endif
+}
+
+static enum ivc_error_code apply_error_code(enum ivc_apply_result result)
+{
+	if (result == IVC_APPLY_INVALID_PAYLOAD) {
+		return IVC_ERROR_INVALID_CONTROL;
+	}
+	return IVC_ERROR_STALE_CONTROL;
+}
+
+static void reject_control(struct ivc_server *server, int socket_fd,
+			   const struct sockaddr *peer, socklen_t peer_length,
+			   const struct ivc_header *request, enum ivc_error_code error_code,
+			   const char *reason)
+{
+	++server->protocol_errors;
+	printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n", request->sequence,
+	       (unsigned int)error_code, reason);
+	if (send_error(socket_fd, peer, peer_length, request, error_code)) {
+		++server->errors_sent;
+	}
+}
+
+static void process_control(struct ivc_server *server, int socket_fd,
+			    const struct sockaddr *peer, socklen_t peer_length,
+			    const struct ivc_frame_view *frame,
+			    const struct ivc_control_command *command)
+{
+	enum ivc_delivery delivery;
+	enum ivc_apply_result apply_result;
+	bool drop_ack;
+	uint64_t received_us;
+
+	delivery = ivc_receive_window_observe(&server->receive_window, frame->header.session_id,
+					      frame->header.sequence);
+	if (delivery == IVC_DELIVERY_NEW_OUT_OF_ORDER ||
+	    delivery == IVC_DELIVERY_OUTSIDE_WINDOW) {
+		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+			       IVC_ERROR_SEQUENCE_OUTSIDE_WINDOW, "sequence-outside-window");
+		return;
+	}
+	if (delivery == IVC_DELIVERY_SESSION_REJECTED) {
+		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+			       IVC_ERROR_SEQUENCE_OUTSIDE_WINDOW, "retired-or-invalid-session");
+		return;
+	}
+	if (delivery == IVC_DELIVERY_INVALID_IDENTIFIER) {
+		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+			       IVC_ERROR_SEQUENCE_OUTSIDE_WINDOW, "zero-session-or-sequence");
+		return;
+	}
+	if (delivery == IVC_DELIVERY_SEQUENCE_EXHAUSTED) {
+		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+			       IVC_ERROR_INTERNAL, "sequence-exhausted");
+		return;
+	}
+
+	if (ivc_delivery_applies_control(delivery)) {
+		if (delivery == IVC_DELIVERY_NEW_SESSION) {
+			ivc_endpoint_begin_session(&server->endpoint);
+		}
+		received_us = monotonic_us();
+		/* Guest monotonic clocks do not share an epoch. As in the Rust endpoint,
+		 * local receive time drives safety age and timeout checks.
+		 */
+		apply_result = ivc_endpoint_apply(&server->endpoint, frame->header.sequence, command,
+					  received_us, received_us);
+		if (apply_result != IVC_APPLY_APPLIED &&
+		    apply_result != IVC_APPLY_ENTERED_SAFE_STATE) {
+			reject_control(server, socket_fd, peer, peer_length, &frame->header,
+				       apply_error_code(apply_result),
+				       ivc_apply_result_name(apply_result));
+			return;
+		}
+		ivc_thermal_plant_step(&server->plant, server->endpoint.actuator_permille,
+				       server->applied_commands);
+		++server->applied_commands;
+		if (server->applied_commands == 1U ||
+		    (server->applied_commands % 100U) == 0U ||
+		    (CONFIG_IVC_EXPECTED_COMMANDS != 0 &&
+		     server->applied_commands == (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS)) {
+			printk("IVC-RTOS-PROGRESS accepted=%u seq=%u mode=%s "
+			       "actuator_permille=%u measured_milli_c=%d duplicates=%llu "
+			       "protocol_errors=%llu\n",
+			       server->applied_commands, frame->header.sequence,
+			       ivc_control_mode_name(command->mode),
+			       (unsigned int)server->endpoint.actuator_permille,
+			       ivc_thermal_plant_temperature(&server->plant),
+			       server->receive_window.metrics.duplicates, server->protocol_errors);
+		}
+	} else {
+		printk("IVC-RTOS-DUPLICATE seq=%u next_expected=%u duplicates=%llu\n",
+		       frame->header.sequence, server->receive_window.next_sequence,
+		       server->receive_window.metrics.duplicates);
+	}
+
+	/* The controller waits for both messages and the Rust endpoint sends STATUS first. */
+	if (send_status(socket_fd, peer, peer_length, &frame->header, &server->endpoint,
+			&server->plant)) {
+		++server->status_sent;
+	}
+	drop_ack = ivc_ack_loss_policy_should_drop(&server->ack_loss, delivery,
+					    frame->header.sequence);
+	if (drop_ack) {
+		printk("IVC-RTOS-INJECT drop_ack_seq=%u\n", frame->header.sequence);
+	} else if (send_ack(socket_fd, peer, peer_length, &frame->header,
+			    &server->receive_window)) {
+		++server->acknowledgements_sent;
+	}
+	report_ack_loss_result_if_complete(server);
+}
+
+static void process_datagram(struct ivc_server *server, int socket_fd,
+			     const struct sockaddr *peer, socklen_t peer_length, size_t length)
+{
+	struct ivc_frame_view frame;
+	struct ivc_control_command command;
+	enum ivc_decode_result decode_result;
+
+	decode_result = ivc_decode_frame(receive_frame, length, &frame);
+	if (decode_result != IVC_DECODE_OK) {
+		++server->protocol_errors;
+		printk("IVC-RTOS-DROP reason=%s length=%u\n", ivc_decode_result_name(decode_result),
+		       (unsigned int)length);
+		return;
+	}
+	if (frame.header.message_type != IVC_MESSAGE_CONTROL) {
+		reject_control(server, socket_fd, peer, peer_length, &frame.header,
+			       IVC_ERROR_INVALID_CONTROL, "unexpected-message-type");
+		return;
+	}
+	if (!ivc_decode_control(frame.payload, frame.header.payload_length, &command)) {
+		reject_control(server, socket_fd, peer, peer_length, &frame.header,
+			       IVC_ERROR_INVALID_CONTROL, "invalid-control-payload");
+		return;
+	}
+	process_control(server, socket_fd, peer, peer_length, &frame, &command);
+}
+
+static void check_safe_timeout(struct ivc_server *server)
+{
+	enum ivc_timeout_result result = ivc_endpoint_check_timeout(&server->endpoint, monotonic_us());
+
+	if (result == IVC_TIMEOUT_ENTERED_SAFE_STATE) {
+		printk("IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=%u "
+		       "last_sequence=%u\n",
+		       (unsigned int)server->endpoint.actuator_permille,
+		       server->endpoint.last_sequence);
+	} else if (result == IVC_TIMEOUT_CLOCK_MOVED_BACKWARD) {
+		++server->protocol_errors;
+		printk("IVC-RTOS-ERROR seq=%u code=%u reason=clock-moved-backward\n",
+		       server->endpoint.last_sequence, (unsigned int)IVC_ERROR_INTERNAL);
+	}
+}
+
+int main(void)
+{
+	struct ivc_server server;
+	struct zsock_pollfd poll_descriptor;
+	int socket_fd;
+
+	if (!ivc_protocol_self_test()) {
+		printk("IVC-RTOS-SELFTEST FAIL vector=rust-wire-v1\n");
+		return 1;
+	}
+	printk("IVC-RTOS-SELFTEST PASS vector=rust-wire-v1\n");
+	if (!validate_fault_configuration()) {
+		return 1;
+	}
+
+	/* NET_CONFIG initializes the static IPv4 address before the application. */
+	k_sleep(K_MSEC(100));
+	if (!validate_network_identity()) {
+		return 1;
+	}
+	socket_fd = open_endpoint_socket();
+	if (socket_fd < 0) {
+		return 1;
+	}
+
+	ivc_receive_window_init(&server.receive_window);
+	ivc_endpoint_init(&server.endpoint);
+	ivc_thermal_plant_init(&server.plant);
+	ivc_ack_loss_policy_init(&server.ack_loss, (uint32_t)CONFIG_IVC_DROP_ACK_EVERY);
+	server.applied_commands = 0U;
+	server.protocol_errors = 0U;
+	server.status_sent = 0U;
+	server.acknowledgements_sent = 0U;
+	server.errors_sent = 0U;
+	server.result_reported = false;
+	poll_descriptor = (struct zsock_pollfd){
+		.fd = socket_fd,
+		.events = ZSOCK_POLLIN,
+	};
+	printk("IVC-RTOS-READY bind=%s:%u mac=52:54:00:00:00:02 window_bits=%u "
+	       "ack_loss_drop_every=%u expected_commands=%u\n",
+	       IVC_LOCAL_IPV4, IVC_LOCAL_UDP_PORT, IVC_RECEIVE_WINDOW_BITS,
+	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY, (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS);
+
+	for (;;) {
+		struct sockaddr_storage peer;
+		socklen_t peer_length = sizeof(peer);
+		int poll_result = zsock_poll(&poll_descriptor, 1, IVC_SOCKET_POLL_MS);
+
+		if (poll_result == 0) {
+			check_safe_timeout(&server);
+			continue;
+		}
+		if (poll_result < 0) {
+			printk("IVC-RTOS-RX-ERROR stage=poll errno=%d\n", errno);
+			check_safe_timeout(&server);
+			continue;
+		}
+		if ((poll_descriptor.revents & ZSOCK_POLLIN) != 0) {
+			ssize_t received = zsock_recvfrom(socket_fd, receive_frame,
+						  sizeof(receive_frame), 0,
+						  (struct sockaddr *)&peer, &peer_length);
+
+			if (received < 0) {
+				printk("IVC-RTOS-RX-ERROR stage=recvfrom errno=%d\n", errno);
+			} else {
+				process_datagram(&server, socket_fd, (const struct sockaddr *)&peer,
+						 peer_length, (size_t)received);
+			}
+		}
+		check_safe_timeout(&server);
+	}
+	return 0;
+}

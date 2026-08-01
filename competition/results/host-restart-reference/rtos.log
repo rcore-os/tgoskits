@@ -1,0 +1,4 @@
+IVC-RTOS-READY bind=127.0.0.1:45501 expected=2 drop_every=0
+IVC-RTOS-APPLIED seq=1 mode=ManualFixed actuator_permille=500 measured_milli_c=20140
+IVC-RTOS-APPLIED seq=1 mode=Neural actuator_permille=951 measured_milli_c=20406
+IVC-RTOS-RESULT accepted=2 duplicates=0 reordered=0 outside_window=0 session_resets=1 session_rejections=0 protocol_errors=0 acks_dropped=0 status_sent=2 safe_fallback=true

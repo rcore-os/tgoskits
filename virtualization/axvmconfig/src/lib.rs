@@ -31,8 +31,10 @@ pub use axvm_types::{
 };
 
 mod error;
+mod partition;
 
 pub use error::*;
+pub use partition::*;
 
 mod emu_device_type_serde {
     use serde::{Deserialize, Deserializer, Serializer, de};
@@ -661,6 +663,49 @@ pub struct VMBaseConfig {
     pub dedicated_cpus: bool,
 }
 
+impl VMBaseConfig {
+    /// Validates the vCPU affinity shape and dedicated-CPU requirements.
+    pub fn validate_cpu_placement(&self) -> AxVmConfigResult {
+        let Some(phys_cpu_sets) = &self.phys_cpu_sets else {
+            if self.dedicated_cpus {
+                return Err(AxVmConfigError::MissingDedicatedCpuAffinity {
+                    vm_id: self.id,
+                    vcpu_id: 0,
+                });
+            }
+            return Ok(());
+        };
+
+        if phys_cpu_sets.len() != self.cpu_num {
+            return Err(AxVmConfigError::CpuAffinityCountMismatch {
+                vm_id: self.id,
+                cpu_num: self.cpu_num,
+                affinity_count: phys_cpu_sets.len(),
+            });
+        }
+
+        if self.dedicated_cpus {
+            if phys_cpu_sets.is_empty() {
+                return Err(AxVmConfigError::MissingDedicatedCpuAffinity {
+                    vm_id: self.id,
+                    vcpu_id: 0,
+                });
+            }
+            if let Some((vcpu_id, _)) = phys_cpu_sets
+                .iter()
+                .enumerate()
+                .find(|(_, affinity)| **affinity == 0)
+            {
+                return Err(AxVmConfigError::EmptyCpuAffinity {
+                    vm_id: self.id,
+                    vcpu_id,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The configuration structure for the guest VM kernel.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -891,6 +936,7 @@ impl AxVMCrateConfig {
     /// Deserialize the toml string to `AxVMCrateConfig`.
     pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
         let mut config: AxVMCrateConfig = toml::from_str(raw_cfg_str)?;
+        config.base.validate_cpu_placement()?;
         config.kernel.validate_boot_config()?;
         config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
         Ok(config)

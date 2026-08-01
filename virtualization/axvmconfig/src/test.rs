@@ -27,6 +27,7 @@ vm_type = 1
 cpu_num = 2
 phys_cpu_sets = [3, 4]
 phys_cpu_ids = [0x500, 0x501]
+dedicated_cpus = true
 
 [kernel]
 entry_point = 0xdeadbeef
@@ -71,6 +72,11 @@ interrupt_mode = "passthrough"
     assert_eq!(config.base.cpu_num, 2);
     assert_eq!(config.base.phys_cpu_ids, Some(vec![0x500, 0x501]));
     assert_eq!(config.base.phys_cpu_sets, Some(vec![3, 4]));
+    assert!(config.base.dedicated_cpus);
+
+    let legacy_config: AxVMCrateConfig =
+        toml::from_str(&EXAMPLE_CONFIG.replace("dedicated_cpus = true\n", "")).unwrap();
+    assert!(!legacy_config.base.dedicated_cpus);
 
     assert_eq!(config.kernel.entry_point, 0xdeadbeef);
     assert_eq!(config.kernel.image_location, Some("memory".to_string()));
@@ -446,11 +452,7 @@ emu_devices = []
     assert_eq!(device_config.interrupt_mode, VMInterruptMode::default());
 
     fn test_deser(s: &str, expected: VMInterruptMode) {
-        let config_str = format!(
-            "{}{}",
-            EXAMPLE_DEVICE_CONFIG,
-            format!("interrupt_mode = \"{}\"", s)
-        );
+        let config_str = format!("{EXAMPLE_DEVICE_CONFIG}interrupt_mode = \"{s}\"");
         let device_config: VMDevicesConfig = toml::from_str(&config_str).unwrap();
         assert_eq!(device_config.interrupt_mode, expected);
     }
@@ -606,6 +608,7 @@ fn test_default_implementations() {
     assert_eq!(vm_base_config.cpu_num, 0);
     assert!(vm_base_config.phys_cpu_ids.is_none());
     assert!(vm_base_config.phys_cpu_sets.is_none());
+    assert!(!vm_base_config.dedicated_cpus);
 
     let vm_kernel_config = VMKernelConfig::default();
     assert_eq!(vm_kernel_config.entry_point, 0);
@@ -642,4 +645,56 @@ fn test_default_implementations() {
     assert_eq!(axvm_crate_config.base.id, 0);
     assert_eq!(axvm_crate_config.kernel.entry_point, 0);
     assert!(axvm_crate_config.devices.emu_devices.is_empty());
+}
+
+#[test]
+fn dedicated_cpu_placement_requires_explicit_nonempty_masks() {
+    use crate::VMBaseConfig;
+
+    let missing = VMBaseConfig {
+        id: 7,
+        cpu_num: 1,
+        dedicated_cpus: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        missing.validate_cpu_placement(),
+        Err(AxVmConfigError::MissingDedicatedCpuAffinity {
+            vm_id: 7,
+            vcpu_id: 0,
+        })
+    );
+
+    let empty = VMBaseConfig {
+        phys_cpu_sets: Some(vec![0]),
+        ..missing
+    };
+    assert_eq!(
+        empty.validate_cpu_placement(),
+        Err(AxVmConfigError::EmptyCpuAffinity {
+            vm_id: 7,
+            vcpu_id: 0,
+        })
+    );
+}
+
+#[test]
+fn cpu_placement_rejects_affinity_count_mismatch() {
+    use crate::VMBaseConfig;
+
+    let base = VMBaseConfig {
+        id: 9,
+        cpu_num: 2,
+        phys_cpu_sets: Some(vec![0b0001]),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        base.validate_cpu_placement(),
+        Err(AxVmConfigError::CpuAffinityCountMismatch {
+            vm_id: 9,
+            cpu_num: 2,
+            affinity_count: 1,
+        })
+    );
 }

@@ -1,0 +1,43 @@
+{
+  "controller": {
+    "acknowledged": 1800,
+    "errors": 0,
+    "full_loop_max_us": 20917,
+    "full_loop_p50_us": 3894,
+    "full_loop_p95_us": 4652,
+    "full_loop_p99_us": 5657,
+    "iae_milli_c_s": 686993.4,
+    "max_overshoot_milli_c": 13428,
+    "policy": "neural",
+    "pre_send_max_us": 376,
+    "pre_send_p50_us": 13,
+    "pre_send_p95_us": 17,
+    "pre_send_p99_us": 45,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 5932.491,
+    "sent": 1800,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.962,
+    "timeouts": 0,
+    "transport_max_us": 20622,
+    "transport_p50_us": 3880,
+    "transport_p95_us": 4632,
+    "transport_p99_us": 5645
+  },
+  "profile": "normal",
+  "rtos": {
+    "accepted": 1800,
+    "actuator_permille": 417,
+    "duplicates": 0,
+    "measured_milli_c": 49324,
+    "mode": "Neural",
+    "protocol_errors": 0,
+    "sequence": 1800
+  },
+  "schema_version": 1,
+  "source_log": {
+    "path": "tmp\\competition\\ivc\\reference-20260731-neural\\qemu.log",
+    "sha256": "6c7f7e2e404a5c8ef8a9a3f632a24169b35d8be6a8c0ac496775bf9d32a07eb8"
+  }
+}

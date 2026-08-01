@@ -1,10 +1,12 @@
 //! Host task type facade for AxVM's ArceOS-backed runtime.
 
 use super::arceos;
+use crate::{AxVmError, AxVmResult};
 
 pub(crate) type AxTaskExt = arceos::ArceOsAxTaskExt;
 pub(crate) type AxTaskRef = arceos::ArceOsAxTaskRef;
 pub(crate) type CurrentTask = arceos::ArceOsCurrentTask;
+pub(crate) type PreparedTask = arceos::ArceOsPreparedTask;
 pub(crate) type TaskInner = arceos::ArceOsTaskInner;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
@@ -14,8 +16,25 @@ pub(crate) fn current_task() -> CurrentTask {
     arceos::current_task()
 }
 
-pub(crate) fn spawn_task(task: TaskInner) -> AxTaskRef {
-    arceos::spawn_task(task)
+pub(crate) fn prepare_task_with_initial_cpu(
+    task: TaskInner,
+    initial_cpu: usize,
+) -> AxVmResult<PreparedTask> {
+    arceos::prepare_task_with_initial_cpu(task, initial_cpu).map_err(|error| {
+        AxVmError::host(
+            "prepare task",
+            format_args!("initial host CPU {initial_cpu} was rejected: {error}"),
+        )
+    })
+}
+
+pub(crate) fn activate_task(task: PreparedTask) -> AxVmResult<AxTaskRef> {
+    arceos::activate_task(task).map_err(|error| {
+        AxVmError::host(
+            "activate task",
+            format_args!("prepared host task was rejected: {error}"),
+        )
+    })
 }
 
 pub(crate) fn yield_now() {

@@ -83,8 +83,7 @@ register_structs! {
         (0x0f80 => pub INMIR: [ReadWrite<u32>; 0x20]),
         (0x1000 => _rsv9: [u32; 5184]),
         /// Interrupt Routing Registers.
-        (0x6100 => pub IROUTER: [ReadWrite<u64>; 987]),
-        (0x7FD8 => _rsv10: [u32; 2]),
+        (0x6100 => pub IROUTER: [ReadWrite<u64>; 988]),
         (0x7FE0 => @END),
     }
 }

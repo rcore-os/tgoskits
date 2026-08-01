@@ -10,6 +10,23 @@ use crate::ArmVcpuResult;
 /// the embedding OS or VMM owns the policy: virtual interrupt injection,
 /// physical interrupt reporting, and current-EL interrupt dispatch.
 pub trait ArmHostOps {
+    /// Reconciles host-owned state immediately before entering the guest.
+    ///
+    /// The vCPU core invokes this hook with host IRQs masked. Implementations
+    /// may use it to make pending physical interrupt state guest-visible.
+    fn prepare_guest_entry() -> ArmVcpuResult {
+        Ok(())
+    }
+
+    /// Reclaims host-owned state immediately after leaving the guest.
+    ///
+    /// The vCPU core invokes this hook before restoring the caller's DAIF
+    /// state, so implementations can prevent guest-targeted physical
+    /// interrupts from being consumed by the host.
+    fn complete_guest_exit() -> ArmVcpuResult {
+        Ok(())
+    }
+
     /// Inject a virtual interrupt through host interrupt-controller state.
     fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult;
 

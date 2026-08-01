@@ -1,0 +1,122 @@
+IVC-RTOS-READY bind=127.0.0.1:45502 expected=100 drop_every=5
+IVC-RTOS-APPLIED seq=1 mode=Neural actuator_permille=951 measured_milli_c=20266
+IVC-RTOS-APPLIED seq=2 mode=Neural actuator_permille=992 measured_milli_c=20543
+IVC-RTOS-APPLIED seq=3 mode=Neural actuator_permille=986 measured_milli_c=20817
+IVC-RTOS-APPLIED seq=4 mode=Neural actuator_permille=979 measured_milli_c=21088
+IVC-RTOS-APPLIED seq=5 mode=Neural actuator_permille=972 measured_milli_c=21356
+IVC-RTOS-INJECT drop_ack_seq=5
+IVC-RTOS-APPLIED seq=6 mode=Neural actuator_permille=965 measured_milli_c=21620
+IVC-RTOS-APPLIED seq=7 mode=Neural actuator_permille=958 measured_milli_c=21882
+IVC-RTOS-APPLIED seq=8 mode=Neural actuator_permille=951 measured_milli_c=22141
+IVC-RTOS-APPLIED seq=9 mode=Neural actuator_permille=944 measured_milli_c=22397
+IVC-RTOS-APPLIED seq=10 mode=Neural actuator_permille=937 measured_milli_c=22649
+IVC-RTOS-INJECT drop_ack_seq=10
+IVC-RTOS-APPLIED seq=11 mode=Neural actuator_permille=931 measured_milli_c=22899
+IVC-RTOS-APPLIED seq=12 mode=Neural actuator_permille=924 measured_milli_c=23147
+IVC-RTOS-APPLIED seq=13 mode=Neural actuator_permille=917 measured_milli_c=23391
+IVC-RTOS-APPLIED seq=14 mode=Neural actuator_permille=911 measured_milli_c=23632
+IVC-RTOS-APPLIED seq=15 mode=Neural actuator_permille=905 measured_milli_c=23871
+IVC-RTOS-INJECT drop_ack_seq=15
+IVC-RTOS-APPLIED seq=16 mode=Neural actuator_permille=898 measured_milli_c=24107
+IVC-RTOS-APPLIED seq=17 mode=Neural actuator_permille=892 measured_milli_c=24340
+IVC-RTOS-APPLIED seq=18 mode=Neural actuator_permille=886 measured_milli_c=24571
+IVC-RTOS-APPLIED seq=19 mode=Neural actuator_permille=879 measured_milli_c=24799
+IVC-RTOS-APPLIED seq=20 mode=Neural actuator_permille=873 measured_milli_c=25024
+IVC-RTOS-INJECT drop_ack_seq=20
+IVC-RTOS-APPLIED seq=21 mode=Neural actuator_permille=867 measured_milli_c=25247
+IVC-RTOS-APPLIED seq=22 mode=Neural actuator_permille=861 measured_milli_c=25467
+IVC-RTOS-APPLIED seq=23 mode=Neural actuator_permille=856 measured_milli_c=25685
+IVC-RTOS-APPLIED seq=24 mode=Neural actuator_permille=850 measured_milli_c=25900
+IVC-RTOS-APPLIED seq=25 mode=Neural actuator_permille=844 measured_milli_c=26113
+IVC-RTOS-INJECT drop_ack_seq=25
+IVC-RTOS-APPLIED seq=26 mode=Neural actuator_permille=838 measured_milli_c=26323
+IVC-RTOS-APPLIED seq=27 mode=Neural actuator_permille=833 measured_milli_c=26531
+IVC-RTOS-APPLIED seq=28 mode=Neural actuator_permille=827 measured_milli_c=26736
+IVC-RTOS-APPLIED seq=29 mode=Neural actuator_permille=822 measured_milli_c=26940
+IVC-RTOS-APPLIED seq=30 mode=Neural actuator_permille=816 measured_milli_c=27140
+IVC-RTOS-INJECT drop_ack_seq=30
+IVC-RTOS-APPLIED seq=31 mode=Neural actuator_permille=811 measured_milli_c=27339
+IVC-RTOS-APPLIED seq=32 mode=Neural actuator_permille=806 measured_milli_c=27535
+IVC-RTOS-APPLIED seq=33 mode=Neural actuator_permille=801 measured_milli_c=27729
+IVC-RTOS-APPLIED seq=34 mode=Neural actuator_permille=795 measured_milli_c=27921
+IVC-RTOS-APPLIED seq=35 mode=Neural actuator_permille=1000 measured_milli_c=28169
+IVC-RTOS-INJECT drop_ack_seq=35
+IVC-RTOS-APPLIED seq=36 mode=Neural actuator_permille=1000 measured_milli_c=28417
+IVC-RTOS-APPLIED seq=37 mode=Neural actuator_permille=1000 measured_milli_c=28663
+IVC-RTOS-APPLIED seq=38 mode=Neural actuator_permille=1000 measured_milli_c=28908
+IVC-RTOS-APPLIED seq=39 mode=Neural actuator_permille=1000 measured_milli_c=29153
+IVC-RTOS-APPLIED seq=40 mode=Neural actuator_permille=1000 measured_milli_c=29396
+IVC-RTOS-INJECT drop_ack_seq=40
+IVC-RTOS-APPLIED seq=41 mode=Neural actuator_permille=1000 measured_milli_c=29638
+IVC-RTOS-APPLIED seq=42 mode=Neural actuator_permille=1000 measured_milli_c=29880
+IVC-RTOS-APPLIED seq=43 mode=Neural actuator_permille=1000 measured_milli_c=30120
+IVC-RTOS-APPLIED seq=44 mode=Neural actuator_permille=1000 measured_milli_c=30360
+IVC-RTOS-APPLIED seq=45 mode=Neural actuator_permille=1000 measured_milli_c=30598
+IVC-RTOS-INJECT drop_ack_seq=45
+IVC-RTOS-APPLIED seq=46 mode=Neural actuator_permille=1000 measured_milli_c=30836
+IVC-RTOS-APPLIED seq=47 mode=Neural actuator_permille=1000 measured_milli_c=31073
+IVC-RTOS-APPLIED seq=48 mode=Neural actuator_permille=1000 measured_milli_c=31308
+IVC-RTOS-APPLIED seq=49 mode=Neural actuator_permille=1000 measured_milli_c=31543
+IVC-RTOS-APPLIED seq=50 mode=Neural actuator_permille=1000 measured_milli_c=31777
+IVC-RTOS-INJECT drop_ack_seq=50
+IVC-RTOS-APPLIED seq=51 mode=Neural actuator_permille=1000 measured_milli_c=32010
+IVC-RTOS-APPLIED seq=52 mode=Neural actuator_permille=1000 measured_milli_c=32242
+IVC-RTOS-APPLIED seq=53 mode=Neural actuator_permille=1000 measured_milli_c=32473
+IVC-RTOS-APPLIED seq=54 mode=Neural actuator_permille=1000 measured_milli_c=32703
+IVC-RTOS-APPLIED seq=55 mode=Neural actuator_permille=1000 measured_milli_c=32932
+IVC-RTOS-INJECT drop_ack_seq=55
+IVC-RTOS-APPLIED seq=56 mode=Neural actuator_permille=1000 measured_milli_c=33160
+IVC-RTOS-APPLIED seq=57 mode=Neural actuator_permille=1000 measured_milli_c=33388
+IVC-RTOS-APPLIED seq=58 mode=Neural actuator_permille=1000 measured_milli_c=33614
+IVC-RTOS-APPLIED seq=59 mode=Neural actuator_permille=1000 measured_milli_c=33840
+IVC-RTOS-APPLIED seq=60 mode=Neural actuator_permille=1000 measured_milli_c=34064
+IVC-RTOS-INJECT drop_ack_seq=60
+IVC-RTOS-APPLIED seq=61 mode=Neural actuator_permille=1000 measured_milli_c=34288
+IVC-RTOS-APPLIED seq=62 mode=Neural actuator_permille=1000 measured_milli_c=34511
+IVC-RTOS-APPLIED seq=63 mode=Neural actuator_permille=1000 measured_milli_c=34733
+IVC-RTOS-APPLIED seq=64 mode=Neural actuator_permille=1000 measured_milli_c=34954
+IVC-RTOS-APPLIED seq=65 mode=Neural actuator_permille=1000 measured_milli_c=35174
+IVC-RTOS-INJECT drop_ack_seq=65
+IVC-RTOS-APPLIED seq=66 mode=Neural actuator_permille=1000 measured_milli_c=35394
+IVC-RTOS-APPLIED seq=67 mode=Neural actuator_permille=1000 measured_milli_c=35612
+IVC-RTOS-APPLIED seq=68 mode=Neural actuator_permille=792 measured_milli_c=35771
+IVC-RTOS-APPLIED seq=69 mode=Neural actuator_permille=778 measured_milli_c=35926
+IVC-RTOS-APPLIED seq=70 mode=Neural actuator_permille=773 measured_milli_c=36079
+IVC-RTOS-INJECT drop_ack_seq=70
+IVC-RTOS-APPLIED seq=71 mode=Neural actuator_permille=769 measured_milli_c=36230
+IVC-RTOS-APPLIED seq=72 mode=Neural actuator_permille=765 measured_milli_c=36379
+IVC-RTOS-APPLIED seq=73 mode=Neural actuator_permille=761 measured_milli_c=36527
+IVC-RTOS-APPLIED seq=74 mode=Neural actuator_permille=757 measured_milli_c=36672
+IVC-RTOS-APPLIED seq=75 mode=Neural actuator_permille=754 measured_milli_c=36817
+IVC-RTOS-INJECT drop_ack_seq=75
+IVC-RTOS-APPLIED seq=76 mode=Neural actuator_permille=750 measured_milli_c=36960
+IVC-RTOS-APPLIED seq=77 mode=Neural actuator_permille=746 measured_milli_c=37101
+IVC-RTOS-APPLIED seq=78 mode=Neural actuator_permille=742 measured_milli_c=37240
+IVC-RTOS-APPLIED seq=79 mode=Neural actuator_permille=738 measured_milli_c=37378
+IVC-RTOS-APPLIED seq=80 mode=Neural actuator_permille=735 measured_milli_c=37514
+IVC-RTOS-INJECT drop_ack_seq=80
+IVC-RTOS-APPLIED seq=81 mode=Neural actuator_permille=731 measured_milli_c=37649
+IVC-RTOS-APPLIED seq=82 mode=Neural actuator_permille=727 measured_milli_c=37782
+IVC-RTOS-APPLIED seq=83 mode=Neural actuator_permille=724 measured_milli_c=37913
+IVC-RTOS-APPLIED seq=84 mode=Neural actuator_permille=721 measured_milli_c=38043
+IVC-RTOS-APPLIED seq=85 mode=Neural actuator_permille=717 measured_milli_c=38172
+IVC-RTOS-INJECT drop_ack_seq=85
+IVC-RTOS-APPLIED seq=86 mode=Neural actuator_permille=714 measured_milli_c=38299
+IVC-RTOS-APPLIED seq=87 mode=Neural actuator_permille=710 measured_milli_c=38425
+IVC-RTOS-APPLIED seq=88 mode=Neural actuator_permille=707 measured_milli_c=38549
+IVC-RTOS-APPLIED seq=89 mode=Neural actuator_permille=704 measured_milli_c=38672
+IVC-RTOS-APPLIED seq=90 mode=Neural actuator_permille=700 measured_milli_c=38793
+IVC-RTOS-INJECT drop_ack_seq=90
+IVC-RTOS-APPLIED seq=91 mode=Neural actuator_permille=697 measured_milli_c=38913
+IVC-RTOS-APPLIED seq=92 mode=Neural actuator_permille=694 measured_milli_c=39032
+IVC-RTOS-APPLIED seq=93 mode=Neural actuator_permille=691 measured_milli_c=39149
+IVC-RTOS-APPLIED seq=94 mode=Neural actuator_permille=688 measured_milli_c=39265
+IVC-RTOS-APPLIED seq=95 mode=Neural actuator_permille=685 measured_milli_c=39380
+IVC-RTOS-INJECT drop_ack_seq=95
+IVC-RTOS-APPLIED seq=96 mode=Neural actuator_permille=681 measured_milli_c=39493
+IVC-RTOS-APPLIED seq=97 mode=Neural actuator_permille=678 measured_milli_c=39605
+IVC-RTOS-APPLIED seq=98 mode=Neural actuator_permille=675 measured_milli_c=39716
+IVC-RTOS-APPLIED seq=99 mode=Neural actuator_permille=672 measured_milli_c=39825
+IVC-RTOS-APPLIED seq=100 mode=Neural actuator_permille=670 measured_milli_c=39933
+IVC-RTOS-INJECT drop_ack_seq=100
+IVC-RTOS-RESULT accepted=100 duplicates=20 reordered=0 outside_window=0 session_resets=0 session_rejections=0 protocol_errors=0 acks_dropped=20 status_sent=120 safe_fallback=true

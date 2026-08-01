@@ -1,0 +1,289 @@
+# Test and evidence report
+
+Report date: 2026-07-31. Source state: base commit
+`263f89d8f3d0481d2712224a7b517a73b1165fb3` plus uncommitted competition
+implementation changes. The final AxVisor RT and IVC campaigns share source
+snapshot SHA-256
+`8594ab76e903dd179db5f1aa91546c03a7d759454d300b2ac6c665933ab0216a`.
+The base commit alone does not contain the implementation.
+
+## 1. Requirement status
+
+| Requirement/evidence | Status | What the retained evidence establishes |
+| --- | --- | --- |
+| CPU-partition implementation | Complete | Global mask validation, maximum-matched initial placement, FDT CPU consistency, two-phase vCPU task preparation, activation-time revalidation, rollback, and frozen-registry behavior fail closed. |
+| Linux guest with at least two vCPUs | Complete standalone gate | The dedicated two-vCPU Linux gate and RT harness require exactly two online CPUs. The mixed IVC log does not independently emit that assertion. |
+| AxVisor idle/stress/soak validation | Complete | Five 10,000-sample runs retain raw logs, metadata, guest load, p99/max tails, QEMU exit, and source/config/image hashes. |
+| Native RTOS comparison | Complete retained reference | Native Zephyr v4.3.0 runs comparable periodic/dispatch loops under idle and verified CPU stress, with platform differences stated. |
+| Bidirectional guest IP path | Complete | Linux `10.0.0.1` and Zephyr `10.0.0.2` exchange CONTROL, STATUS, and ACK over UDP/IPv4 and two virtio-net devices on isolated segment 1. |
+| Application protocol and reliability | Complete | Versioned framing, CRC, typed errors, receive window, retry, duplicate suppression, timeout, session restart logic, and safe fallback are implemented and tested. |
+| Cross-guest normal communication | Complete retained reference | Neural and manual runs each complete 1,800/1,800 with zero application errors/timeouts and zero RTOS duplicates/protocol errors. |
+| Cross-guest ACK-loss recovery | Complete retained reference | A deterministic 1-in-5 first-ACK loss campaign recovers all 20 losses and applies every command once. |
+| Neural/RTOS closed loop and manual comparison | Complete retained reference | Linux neural inference drives Zephyr actuator/plant state and uses returned status as the next observation; two aggregate error metrics improve. |
+| Error notification | Implemented and host-tested | ERROR encode/decode and malformed-input behavior are covered by Rust/C tests; no retained malformed-packet cross-guest QEMU capture is claimed. |
+| Isolation/access control | Implemented and regression-tested | No host NIC/default route exists; segment separation, exact unicast, anti-spoofing, and secure unknown-unicast drop are unit-tested. No third-guest runtime negative capture is claimed. |
+| Demonstration video | Outstanding | The storyboard is complete; the actual approximately five-minute recording is not. |
+| Commit/dev-target PR | Intentionally deferred | No commit, push, conflict check, or PR was performed under the current instruction. |
+
+## 2. AxVisor real-time campaign
+
+### Method
+
+The same source, QEMU 10.0.3 Cortex-A72 TCG machine, two-vCPU Linux image,
+probe, and 1 ms measurement inputs are used for the four paired cases.
+`shared` permits both vCPUs on pCPUs 0-3; `partitioned` assigns vCPU0 only
+pCPU2 and vCPU1 only pCPU3. This is a feature-off/feature-on policy comparison,
+not an unmodified-`dev` historical binary comparison.
+
+Each metric retains exactly 10,000 samples after 100 warm-up iterations:
+
+- `periodic_jitter`: lateness of absolute `clock_nanosleep` deadlines;
+- `dispatch_latency`: eventfd signal to a higher-priority same-CPU reader; and
+- `emulated_irq_response`: timerfd deadline to userspace resume, a virtual
+  timer IRQ proxy rather than direct interrupt-injection latency.
+
+Stress is a separately pinned busy-loop probe on guest CPU1. The analyzer
+requires exact READY/ACTIVE/STOPPED/CLEANED PID/CPU/affinity records,
+non-zombie liveness, explicit termination, and at least 50% CPU1 busy time.
+The percentages below are guest CPU0/CPU1 `/proc/stat` load, not host-pCPU
+utilization.
+
+### Results
+
+All latency cells are p99/maximum nanoseconds.
+
+| Profile/workload | Guest load | Jitter | Dispatch | Timer-IRQ proxy | Raw-log SHA-256 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| shared idle | 35.563% / 0.142% | 236,864 / 1,183,648 | 164,704 / 398,832 | 229,424 / 433,488 | `638c72d723ead40f7f4ca2ae5fb7362219c95e8bd9b482588035848f155003fd` |
+| shared stress | 2.124% / 100.000% | 245,120 / 694,096 | 148,240 / 541,376 | 226,608 / 438,800 | `5179ad02eba344606dff53853c312b295b89b7ae89135697fa68c194655590cc` |
+| partitioned idle | 36.301% / 0.176% | 231,328 / 1,222,368 | 154,080 / 372,928 | 225,056 / 1,298,736 | `0010d39af45494b01e359d9ddb9b85553591431ae5592bc8d608d169e5434d37` |
+| partitioned stress | 1.995% / 100.000% | 237,264 / 944,512 | 137,584 / 372,256 | 240,832 / 454,880 | `9361542d542a141462c1504d12cc450438e2f05fce0c5bd044731de7aff4d76c` |
+| partitioned stress soak | 1.667% / 100.000% | 333,072 / 6,690,800 | 145,440 / 275,760 | 280,720 / 6,388,560 | `729a04ad0572a14c0c268910dc73e739a40709f4f508835827e0b4f3767883c2` |
+
+Partitioned stress improved dispatch p99/maximum by 7.19%/31.24% and jitter
+p99 by 3.20%, but jitter maximum and both timer-IRQ proxy tails worsened.
+Partitioned idle improved dispatch p99/maximum by 6.45%/6.49% and jitter p99
+by 2.34%, while jitter maximum and especially timer-IRQ maximum worsened. The
+claim is deterministic placement and selected dispatch-tail improvement, not
+universal latency improvement.
+
+The soak uses a 10 ms period: 10,000 samples give 100 seconds per metric and
+300 seconds measured total. Its metadata interval is
+`2026-07-31T00:21:24Z` through `00:34:24Z` (13 minutes), including build, boot,
+warm-up, setup, transitions, and shutdown. The 6.69 ms largest observed jitter
+is retained rather than hidden.
+
+Complete summaries, per-run provenance, and compressed analyzer-input logs are
+under [`results/axvisor-rt-reference`](results/axvisor-rt-reference/).
+
+## 3. Final cross-guest normal runs
+
+Both runs use four AxVisor pCPUs, dedicated Linux vCPUs on pCPUs1/2, Zephyr on
+pCPU0, identical memory/device/network configuration, 1,800 commands, and a
+100 ms nominal control period. The analyzer requires one terminal controller
+record, final RTOS progress, exact counts, `IVC-LINUX-DONE exit=0`, successful
+QEMU completion, monotonic percentile families, and zero normal-run fault
+counters.
+
+| Metric | Manual fixed | Neural |
+| --- | ---: | ---: |
+| Sent / acknowledged | 1,800 / 1,800 | 1,800 / 1,800 |
+| Application errors / timeouts | 0 / 0 | 0 / 0 |
+| Retransmissions / recoveries | 0 / 0 | 0 / 0 |
+| RTOS accepted / duplicates / protocol errors | 1,800 / 0 / 0 | 1,800 / 0 / 0 |
+| Full-loop p50 / p95 / p99 / max | 3,902 / 4,670 / 5,423 / 19,656 us | 3,894 / 4,652 / 5,657 / 20,917 us |
+| Pre-send p50 / p95 / p99 / max | 3 / 4 / 8 / 269 us | 13 / 17 / 45 / 376 us |
+| Transport p50 / p95 / p99 / max | 3,898 / 4,667 / 5,420 / 19,555 us | 3,880 / 4,632 / 5,645 / 20,622 us |
+| Effective throughput | 9.963 msg/s | 9.962 msg/s |
+| RMSE | 9,258.906 mC | 5,932.491 mC |
+| Integrated absolute error | 1,429,224.700 mC*s | 686,993.400 mC*s |
+| Maximum overshoot | 6,840 mC | 13,428 mC |
+
+Neural control improves RMSE by 35.93% and integrated absolute error by
+51.93%, while maximum overshoot is worse. The weights are checked-in,
+hand-parameterized 4x6x1 dense/ReLU controller parameters; there is no external
+training dataset claim.
+
+For Task 2, `transport_*` covers pre-send serialization plus the UDP/IP,
+virtio, RTOS action/status, ACK, and response-decode path. For Task 3,
+`full_loop_*` additionally starts before observation construction and selected
+policy inference. Both are Linux same-clock round trips; they do not subtract
+unrelated guest clock epochs, and recorded resolution is one microsecond.
+
+The neural raw-log SHA-256 is
+`6c7f7e2e404a5c8ef8a9a3f632a24169b35d8be6a8c0ac496775bf9d32a07eb8`;
+manual is
+`39ac8deaf5382490a007bfd47ec7384989c64c6092eed70ac8ff682c076d8a57`.
+Both compressed logs and summaries are retained in
+[`results/axvisor-ivc-reference`](results/axvisor-ivc-reference/).
+
+## 4. Cross-guest deterministic ACK-loss run
+
+The fault Zephyr image suppresses only the first ACK for each selected fresh
+sequence while returning STATUS. Linux retransmits after 100 ms; Zephyr treats
+that command as a duplicate and returns STATUS plus ACK without reapplying the
+actuator or stepping the plant.
+
+| Metric | Result |
+| --- | ---: |
+| Sent / acknowledged | 100 / 100 |
+| Application errors / terminal timeouts | 0 / 0 |
+| Retransmissions / recoveries | 20 / 20 |
+| Fresh accepted / applied | 100 / 100 |
+| ACKs dropped / duplicates suppressed | 20 / 20 |
+| STATUS / ACK / ERROR frames sent | 120 / 100 / 0 |
+| RTOS protocol errors | 0 |
+| Full-loop p50 / p95 / p99 / max | 3,953 / 110,808 / 111,484 / 111,548 us |
+| Effective throughput | 9.769 msg/s |
+
+The analyzer verifies the identical exact injection and duplicate sequence set
+`{5, 10, 15, ..., 100}`, terminal counters, ordering, and source-log SHA-256
+`f15c88c6671db67934ce178e3f113b65ac2811a1538a0c36412f6c156bd279fd`.
+The 100 ms retry delay intentionally dominates p95 and above. The terminal log
+also observes controller-silence safe fallback to actuator zero.
+
+## 5. Native Zephyr real-time baseline
+
+The native comparison runs upstream Zephyr v4.3.0 directly on QEMU
+`qemu_cortex_a53`, without AxVisor or a Linux guest. Both cases use a 1 ms
+absolute period, 100 warm-up expirations, 10,000 measured deadlines, no console
+output during measurement, and explicit runtime-accounted load.
+
+| Workload | Metric | p50 | p99 | p99.9 | Maximum | Actual duration |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| idle | periodic wake lateness | 65,104 ns | 186,256 ns | 597,792 ns | 841,264 ns | 10,000,197 us |
+| idle | timer-to-task dispatch | 22,896 ns | 40,288 ns | 101,280 ns | 162,896 ns | 10,000,197 us |
+| CPU stress | periodic wake lateness | 65,472 ns | 669,408 ns | 3,943,120 ns | 6,236,608 ns | 10,000,313 us |
+| CPU stress | timer-to-task dispatch | 26,368 ns | 134,912 ns | 281,024 ns | 1,141,536 ns | 10,000,313 us |
+
+The idle case reports 988 permille idle; stress reports 1,000 permille
+non-idle and 985 permille stress work. The final isolated runs recorded zero
+idle coalescings and 68 measured stress coalescings; every coalesced deadline
+remains in the fixed sample set. The validated summaries are retained under
+[`results/native-zephyr-reference`](results/native-zephyr-reference/).
+The exact console and build logs are retained there as deterministic gzip
+streams. The console records are post-measurement aggregates: the native
+benchmark did not serialize an individual-sample series, so the summaries
+cannot be independently recomputed from per-sample native data.
+
+This is an equivalent-method comparison, not the same platform: CPU model,
+CPU count, OS, timer/dispatch implementation, virtualization boundary, and
+stress placement differ. It is neither an AxVisor result nor a hardware bound.
+
+## 6. Supplemental host evidence
+
+The host UDP reference uses the same Rust protocol/state machines and 100
+commands with first-ACK loss every fifth sequence. It records 100/100 success,
+20 recoveries, 20 exactly-once duplicate suppressions, and no terminal error.
+It is useful regression evidence but is not labeled cross-guest or Zephyr
+latency. See [`results/host-network-reference`](results/host-network-reference/).
+
+The host restart reference accepts sequence 1 from one session, then sequence
+1 from a new controller session, and rejects delayed traffic from the retired
+session. It does not demonstrate a cross-guest reconnect. See
+[`results/host-restart-reference`](results/host-restart-reference/).
+
+The deterministic host CSV independently binds the 1,800-step manual/neural
+plant comparison and is retained under
+[`results/host-ai-reference`](results/host-ai-reference/). It is functional
+cross-check evidence, not guest timing.
+
+## 7. Isolation and protocol assurance
+
+The full profile has no host NIC, default route, bridge, NAT, vsock data path,
+shared-memory channel, or hypercall application channel. Its network identities
+are fixed as follows:
+
+| Endpoint | MAC | IPv4 | UDP role |
+| --- | --- | --- | --- |
+| Linux controller | `52:54:00:00:00:01` | `10.0.0.1/24` | ephemeral source port to `10.0.0.2:5500` |
+| Zephyr endpoint | `52:54:00:00:00:02` | `10.0.0.2/24` | listens on UDP port `5500` |
+
+Linux installs only the connected `10.0.0.0/24` route. The guest init script
+installs no firewall rule, and no host firewall rule is part of this experiment
+because the segment has no host-facing interface. Isolation is instead enforced
+at the AxVisor switch boundary by segment membership, exact unicast identity,
+source-MAC anti-spoofing, and secure unknown-unicast drop.
+
+Regressions cover no cross-segment delivery, no unknown-unicast flood, source
+anti-spoofing, no reflected unicast, same-segment multicast only, duplicate
+identity rejection, bounded topology, and virtio descriptor/address/header
+validation. This is strong policy and parser/driver evidence, but not a runtime
+penetration test with a malicious third guest.
+
+The Rust and C protocol suites cover version, type, payload length, session,
+sequence/timestamp, error code, CRC, exact payloads, malformed input, typed
+ERROR behavior, ACK retry, duplicate/out-of-order handling, session restart,
+and safe fallback. CONTROL, STATUS, and ACK are demonstrated cross-guest;
+ERROR is implemented and host-tested but not malformed-injected in the retained
+cross-guest run.
+
+## 8. Executed validation
+
+The final implementation sweep completed against the synchronized working tree:
+
+- the AxVisor RT harness passed 24 Python tests plus its shell/C integration
+  test; the IVC harness passed 15 Python and eight C tests; the isolated Zephyr
+  baseline passed five Python and seven C tests;
+- syntax/static harness checks passed for nine Bash scripts, two POSIX shell
+  scripts, ten Python modules, and the applicable shellcheck rules;
+- all five full-profile `axvmconfig check --config-path` invocations returned a
+  valid configuration;
+- the final `axvm`/`axvm-types` run passed 106 `axvm` unit tests, 18 architecture
+  boundary tests, 20 focused error/FDT/passthrough/vCPU integration tests, two
+  `axvm-types` unit tests, three `axvm-types` error-contract tests, and doc tests;
+- the duplicate secondary `CPU_ON` regression was demonstrated failing before
+  the startup-reservation fix, then passing in the four-test initial-placement
+  contract suite after the fix;
+- focused suites passed for GICv3, `ax-task`, `somehal`, `arm_vcpu`, virtio-net,
+  the virtual switch, `axvmconfig`, and `ivcproto`, including parser, isolation,
+  DAIF/entry-hook, passthrough-SPI, restart, and ACK-recovery contracts;
+- targeted `cargo xtask clippy --package ...` checks passed across 37 relevant
+  package/feature combinations, including the final `axvm-types` and `axvm`
+  variants, and `cargo +nightly-2026-07-15 fmt --all -- --check` passed;
+- final-tree AArch64 AxVisor Linux+Zephyr compilation passed, followed by the
+  dedicated two-vCPU Linux QEMU gate (`1/1` pass with
+  `AXVISOR_DEDICATED_PARTITION_PASS`); a final RISC-V SMP compile-only AxVisor
+  build also passed;
+- both normal/fault Zephyr v4.3.0 endpoint builds passed with verified
+  entry/load layout; and
+- all 21 retained JSON records parsed, all 12 gzip archives passed integrity
+  validation, all documented relative links resolved, retained-artifact hashes
+  matched their metadata, and the final `git diff --check` passed.
+
+The retained five-run RT comparison and three-run IVC campaign remain pinned to
+the source/config/image hashes recorded with those measurements. The later
+secondary-CPU startup hardening was validated by the complete host contract
+suites, both final target builds, and the dedicated two-vCPU QEMU gate; the
+performance campaign was not silently relabelled as a final-working-tree capture.
+
+One configured lint limitation remains explicit: the target-specific AxVisor
+`-D warnings` command stops in existing dependency warnings in
+`axdevice::adapter` and `someboot::fdt` before linting the AxVisor binary. The
+xtask clippy driver intentionally skips that target-configured binary; AxVisor
+itself compiled successfully in the final AArch64, RISC-V, and QEMU gates. The
+default `arm_vcpu` umbrella test also requires the external
+`scripts/.axci/lib/test_flow.sh` fixture, which is absent in this checkout; its
+library and repository-owned integration contracts passed.
+
+## 9. Measurement limits and remaining work
+
+QEMU TCG, WSL2 host scheduling, host activity, guest scheduling, and platform
+differences contribute to observed tails. Serial output is outside individual
+RT sample intervals; IVC progress logging can still perturb surrounding guest
+scheduling. Reported maxima are observed sample maxima, not proven WCET or
+hardware bounds. The timerfd metric is a userspace IRQ-response proxy, not
+direct injection/handler timing. FIFO CPU partitioning does not establish
+bounded preemption of a non-yielding passthrough guest or isolate every host
+task/physical interrupt.
+
+The three technical tasks, reproducible commands, source/config/image hashes,
+and retained result archives are present. Formal remaining deliverables are:
+
+1. record the actual approximately five-minute demonstration video; and
+2. when authorized, commit the implementation, verify a clean source state and
+   conflict-free dev target, push, and submit the required PR.
+
+Additional cross-guest malformed-ERROR, restart, or third-guest isolation
+captures would strengthen the evidence, but are not misrepresented as existing
+or treated as completed artifacts here.

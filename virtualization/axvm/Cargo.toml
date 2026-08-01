@@ -50,6 +50,7 @@ irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = { workspace = true }
 axvm-types = { workspace = true }
+axvm-net = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
@@ -75,3 +76,4 @@ arm_vgic = { workspace = true, features = ["vgicv3"] }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 rdif-intc.workspace = true
 rdrive.workspace = true
+someboot.workspace = true

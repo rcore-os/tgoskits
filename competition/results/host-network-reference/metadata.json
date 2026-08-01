@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "result_kind": "host-udp-fault-injection-reference",
+  "base_commit": "263f89d8f3d0481d2712224a7b517a73b1165fb3",
+  "worktree_state": "competition implementation changes not yet committed",
+  "captured_at": "2026-07-30T20:19:29Z",
+  "toolchain": "nightly-2026-07-15",
+  "transport": "UDP over IPv4 loopback",
+  "fault": "drop the first ACK for every fifth new sequence",
+  "controller": {
+    "sent": 100,
+    "acknowledged": 100,
+    "protocol_errors": 0,
+    "timeouts": 0,
+    "retransmissions": 20,
+    "success_percent": 100.0,
+    "full_loop_p50_us": 1419,
+    "full_loop_p95_us": 104050,
+    "full_loop_p99_us": 105092,
+    "full_loop_max_us": 105492,
+    "pre_send_p50_us": 2,
+    "pre_send_p95_us": 3,
+    "pre_send_p99_us": 4,
+    "pre_send_max_us": 8,
+    "transport_p50_us": 1417,
+    "transport_p95_us": 104048,
+    "transport_p99_us": 105090,
+    "transport_max_us": 105490,
+    "throughput_messages_per_second": 45.861
+  },
+  "rtos": {
+    "accepted_exactly_once": 100,
+    "duplicates_suppressed": 20,
+    "out_of_order": 0,
+    "outside_window": 0,
+    "protocol_errors": 0,
+    "acks_dropped": 20,
+    "status_frames_sent": 120,
+    "safe_fallback_observed": true
+  },
+  "logs": [
+    {
+      "path": "controller.log",
+      "lines": 4,
+      "sha256": "098a139f5debdc1396748db4161ed5bebbf92e6998686ecb0527bad8ca71d2c5"
+    },
+    {
+      "path": "rtos.log",
+      "lines": 122,
+      "sha256": "09c0f5c9a3aae29c5b9b8574fe0b3c6b93eea79b42b185360edbe93a72740e76"
+    }
+  ],
+  "limitations": [
+    "Loopback isolates protocol correctness from AxVisor and virtio-net behavior.",
+    "The injected 100 ms ACK delay dominates tail latency by design.",
+    "Cross-guest QEMU measurements are retained separately for final acceptance."
+  ]
+}

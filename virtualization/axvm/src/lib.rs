@@ -32,6 +32,7 @@ pub mod irq;
 pub mod layout;
 pub mod lifecycle;
 mod manager;
+mod network;
 mod npt;
 mod percpu;
 mod runtime;
@@ -66,8 +67,9 @@ pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
-    inject_current_vcpu_interrupt, register_vm,
+    inject_current_vcpu_interrupt, register_vm, try_register_vm,
 };
+pub use network::{VirtualSwitchMetrics, virtual_switch_metrics};
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{
     AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,

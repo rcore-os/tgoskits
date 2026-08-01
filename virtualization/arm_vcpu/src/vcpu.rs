@@ -130,20 +130,36 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Runs the vCPU until a VM exit.
     pub fn run(&mut self) -> ArmVcpuResult<ArmVmExit> {
+        let saved_daif: usize;
         unsafe {
-            core::arch::asm!("msr daifset, #2");
+            core::arch::asm!(
+                "mrs {saved_daif}, daif",
+                "msr daifset, #2",
+                saved_daif = out(reg) saved_daif,
+            );
         }
 
-        let exit_reason = unsafe {
-            self.restore_vm_system_regs();
-            self.run_guest()
+        let result = match H::prepare_guest_entry() {
+            Ok(()) => {
+                let exit_reason = unsafe {
+                    self.restore_vm_system_regs();
+                    self.run_guest()
+                };
+
+                match H::complete_guest_exit() {
+                    Ok(()) => {
+                        let trap_kind =
+                            TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
+                        self.vmexit_handler(trap_kind)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
         };
 
-        let trap_kind = TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
-        let result = self.vmexit_handler(trap_kind);
-
         unsafe {
-            core::arch::asm!("msr daifclr, #2");
+            core::arch::asm!("msr daif, {saved_daif}", saved_daif = in(reg) saved_daif);
         }
 
         result

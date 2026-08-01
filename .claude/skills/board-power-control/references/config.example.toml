@@ -1,0 +1,14 @@
+[board_power]
+name = "orangepi-5-plus-rk3588"
+ip = "192.168.31.183"
+model = "cuco.plug.v3"
+token_env = "TGOS_BOARD_POWER_TOKEN"
+off_seconds = 8
+timeout_seconds = 5
+
+# Keep the token outside tracked files whenever possible:
+#   export TGOS_BOARD_POWER_TOKEN=<32 hexadecimal characters>
+#
+# A local `.board-power.toml` may contain the following line because that file
+# is ignored, but environment-based secret injection is preferred:
+# token = "<32 hexadecimal characters>"

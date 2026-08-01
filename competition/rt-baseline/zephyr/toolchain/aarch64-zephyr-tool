@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+
+set -eu
+
+host_prefix=${RT_BASELINE_HOST_CROSS_COMPILE:-aarch64-linux-gnu-}
+tool_name=${0##*/}
+tool_name=${tool_name#aarch64-zephyr-}
+
+# Zephyr v4.3.0 expects GCC 4.3 through 13.0 to provide include-fixed/limits.h.
+# Ubuntu's GCC 11 cross package instead installs include/limits.h.
+if [ "$tool_name" = gcc ] &&
+    [ "$#" -eq 1 ] &&
+    [ "$1" = "--print-file-name=include-fixed/limits.h" ]; then
+    exec "${host_prefix}gcc" --print-file-name=include/limits.h
+fi
+
+exec "${host_prefix}${tool_name}" "$@"

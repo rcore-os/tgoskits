@@ -1,0 +1,3 @@
+IVC-CONTROLLER-START peer=127.0.0.1:45501 count=1 policy=neural period_ms=0 session_id=202
+IVC-CONTROLLER-STATUS seq=1 mode=Neural actuator_permille=951 measured_milli_c=20406 setpoint_milli_c=45000
+IVC-CONTROLLER-RESULT policy=neural sent=1 acknowledged=1 errors=0 timeouts=0 retransmissions=0 recoveries=0 success_percent=100.000 full_loop_p50_us=641 full_loop_p95_us=641 full_loop_p99_us=641 full_loop_max_us=641 pre_send_p50_us=4 pre_send_p95_us=4 pre_send_p99_us=4 pre_send_max_us=4 transport_p50_us=637 transport_p95_us=637 transport_p99_us=637 transport_max_us=637 throughput_msg_s=812.092 rmse_milli_c=24594.000 iae_milli_c_s=2459.400 max_overshoot_milli_c=0

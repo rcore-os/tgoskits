@@ -1,0 +1,43 @@
+{
+  "controller": {
+    "acknowledged": 1800,
+    "errors": 0,
+    "full_loop_max_us": 19656,
+    "full_loop_p50_us": 3902,
+    "full_loop_p95_us": 4670,
+    "full_loop_p99_us": 5423,
+    "iae_milli_c_s": 1429224.7,
+    "max_overshoot_milli_c": 6840,
+    "policy": "manual-fixed",
+    "pre_send_max_us": 269,
+    "pre_send_p50_us": 3,
+    "pre_send_p95_us": 4,
+    "pre_send_p99_us": 8,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 9258.906,
+    "sent": 1800,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.963,
+    "timeouts": 0,
+    "transport_max_us": 19555,
+    "transport_p50_us": 3898,
+    "transport_p95_us": 4667,
+    "transport_p99_us": 5420
+  },
+  "profile": "normal",
+  "rtos": {
+    "accepted": 1800,
+    "actuator_permille": 500,
+    "duplicates": 0,
+    "measured_milli_c": 54878,
+    "mode": "ManualFixed",
+    "protocol_errors": 0,
+    "sequence": 1800
+  },
+  "schema_version": 1,
+  "source_log": {
+    "path": "tmp\\competition\\ivc\\reference-20260731-manual\\qemu.log",
+    "sha256": "39ac8deaf5382490a007bfd47ec7384989c64c6092eed70ac8ff682c076d8a57"
+  }
+}

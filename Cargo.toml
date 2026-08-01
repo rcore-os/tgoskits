@@ -119,6 +119,7 @@ members = [
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",
     "tools/qperf/analyzer",
+    "tools/ivcproto",
     "xtask",
     "os/StarryOS/lkm/*",
 ]
@@ -196,6 +197,7 @@ axplat-dyn = { version = "0.7.12", path = "platforms/axplat-dyn", default-featur
 axpoll = { version = "0.5.1", path = "components/axpoll" }
 axvisor = { version = "0.5.21", path = "os/axvisor" }
 axvm = { version = "0.5.23", path = "virtualization/axvm", default-features = false }
+axvm-net = { version = "0.1.0", path = "virtualization/axvm-net" }
 axvm-types = { version = "0.7.0", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8.1", path = "virtualization/axvmconfig", default-features = false }
 bitmap-allocator = { version = "0.4.6", path = "memory/bitmap-allocator" }

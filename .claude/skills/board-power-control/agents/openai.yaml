@@ -1,0 +1,4 @@
+interface:
+  display_name: "Board Power Control"
+  short_description: "Power-cycle the OrangePi-5-Plus safely"
+  default_prompt: "Use $board-power-control to inspect or control power for the OrangePi-5-Plus RK3588 board."

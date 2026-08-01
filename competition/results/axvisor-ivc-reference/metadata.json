@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "result_kind": "axvisor-linux-zephyr-ip-control-reference",
+  "base_commit": "263f89d8f3d0481d2712224a7b517a73b1165fb3",
+  "repository": {
+    "worktree_state": "competition implementation changes not yet committed",
+    "source_snapshot_sha256": "8594ab76e903dd179db5f1aa91546c03a7d759454d300b2ac6c665933ab0216a",
+    "tracked_diff_sha256": "13e7a0689bd1e2606c76b8373b2701cf1bbc6f2bed4201e60269e1915d9cc7f5",
+    "untracked_source_file_count": 89,
+    "untracked_source_manifest_sha256": "4f8072e04fb5619c5157bb7b58682474a55c5c1b5b2a48567fd09330f78c0eaf",
+    "attestation_reference": "../axvisor-rt-reference/shared-idle-metadata.json"
+  },
+  "environment": {
+    "host_kernel": "Linux 6.18.33.2-microsoft-standard-WSL2 x86_64",
+    "qemu": "QEMU emulator version 10.0.3",
+    "rustc": "rustc 1.99.0-nightly (da80ed070 2026-07-14)",
+    "axvisor_machine": "virt,virtualization=on,gic-version=3",
+    "axvisor_cpu": "cortex-a72",
+    "axvisor_pcpus": 4,
+    "qemu_acceleration": "tcg,thread=multi"
+  },
+  "guest_artifacts": {
+    "linux_controller": {
+      "path": "tmp/competition/ivc/linux/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 758608,
+      "sha256": "73a825d12ac79a268a28e10ff5e572a313a57f4ce4e2780a5de4df824e430965"
+    },
+    "linux_rootfs_pre_campaign": {
+      "path": "tmp/competition/ivc/linux/rootfs.img",
+      "bytes": 2147483648,
+      "sha256": "3dad2a5733e066b09def9dcbd063adaaf1407df0f344c0be6a4b566f1aa945d5",
+      "retained": false,
+      "note": "Each run used a private copy. Guest mounting/recovery changed filesystem metadata in those copies, so the mutable post-run images are not content identifiers."
+    },
+    "zephyr_source": {
+      "version": "v4.3.0",
+      "tag_object": "981205b3e7cdf9fdf2e9e71b8b6b64fcc71c12a0",
+      "commit": "3568e1b6d5cdd51a6b964a2a1d6d29200fea2056"
+    },
+    "zephyr_normal_bin": {
+      "bytes": 121568,
+      "sha256": "13b7bd6cca6398824a947cc7e038b996dd9a29227873bd065158e9873e723f68"
+    },
+    "zephyr_normal_elf": {
+      "bytes": 2170024,
+      "sha256": "0643a85c9f999cc3780a4f57f9992262e535d2889d0b1d08b3dd1b544acfe7ac"
+    },
+    "zephyr_ack_loss_bin": {
+      "bytes": 121568,
+      "sha256": "c2ea50effd0b1e910a88b75c6c57b89052269877867e1ef670ecdd20102d1550"
+    },
+    "zephyr_ack_loss_elf": {
+      "bytes": 2170920,
+      "sha256": "81749add8e14a4db9f3c2d388c07ba7f0f803242745b8c2bc4c2ee47b20227d4"
+    }
+  },
+  "configuration_sha256": {
+    "axvisor-aarch64.toml": "deda18ecbbbecbf9b785d6d4267cc5b18a9599b7a52c0bdce84d8af9cc8d0fbd",
+    "qemu-aarch64.toml": "4563a249120f34ba8387df8e2e183d4a3bb33a7c18ed871e0fdc6513525bf41c",
+    "linux-smp2.toml": "6d51afe7fb5442b0d11629eff831601b777ceba8147f4700c20ffd2b29a8d523",
+    "linux-smp2-manual.toml": "ad64e3fdd23a8f17be77a112a788060a12bb48a36dc19a9ebe9b294beee04745",
+    "linux-smp2-ack-loss.toml": "79e1b3e87e331e547f6096e2a9e2370e831552b2f9f72a77d9ea0e47edc1bda0",
+    "zephyr-smp1.toml": "1ad2ba1d1f8611c754232955dbb8fc0708d11ef414255eb404eedca234b9cb7d",
+    "zephyr-smp1-ack-loss.toml": "3b2aa9efe181be0f56d791a304b0241d29b97b2d538f657b6f43989ff8bb6207",
+    "prj.conf": "3c8ab483638b2d9175fde10af335ddcf643f0680aaf0a10dc1d5eb359a92942b",
+    "ack-loss.conf": "1210f60fc1f7f73af3e805b9d875150e5d6c45faba1b2d9e71d59e2c2be36f45",
+    "qemu_cortex_a53.overlay": "3a81186ffc5e1b72b927adc8939f8186922175edff2609ea1a3414dda459a632"
+  },
+  "runs": {
+    "neural": {
+      "created_at_utc": "2026-07-31T00:39:31.7496702Z",
+      "finished_at_utc": "2026-07-31T00:43:53.6204545Z",
+      "qemu_exit_code": 0,
+      "summary": "neural-summary.json",
+      "raw_log_gzip": "neural-qemu.log.gz",
+      "raw_log_bytes": 65645,
+      "raw_log_sha256": "6c7f7e2e404a5c8ef8a9a3f632a24169b35d8be6a8c0ac496775bf9d32a07eb8",
+      "gzip_sha256": "7d5dbf8ff6ffd55427ab27545539315ca940f99d45f2ec163040aefca9201dd8"
+    },
+    "manual": {
+      "created_at_utc": "2026-07-31T00:45:01.2784043Z",
+      "finished_at_utc": "2026-07-31T00:48:39.3626932Z",
+      "qemu_exit_code": 0,
+      "summary": "manual-summary.json",
+      "raw_log_gzip": "manual-qemu.log.gz",
+      "raw_log_bytes": 64958,
+      "raw_log_sha256": "39ac8deaf5382490a007bfd47ec7384989c64c6092eed70ac8ff682c076d8a57",
+      "gzip_sha256": "54dbd155c4b66798092e8de642505e2aefd61190ce69a103e5e42e92de59c1bf"
+    },
+    "ack_loss": {
+      "created_at_utc": "2026-07-31T00:49:04.7212982Z",
+      "finished_at_utc": "2026-07-31T00:49:53.4437799Z",
+      "qemu_exit_code": 0,
+      "summary": "ack-loss-summary.json",
+      "raw_log_gzip": "ack-loss-qemu.log.gz",
+      "raw_log_bytes": 47220,
+      "raw_log_sha256": "f15c88c6671db67934ce178e3f113b65ac2811a1538a0c36412f6c156bd279fd",
+      "gzip_sha256": "78af631da20a0b661afe3ff058488c7116f3df6701769e500a4fc0103dce14ab"
+    }
+  },
+  "limitations": [
+    "These are QEMU TCG observations, not hardware real-time guarantees.",
+    "Linux and Zephyr clocks have unrelated epochs; full-loop latency is a Linux same-clock round trip.",
+    "The normal runs do not inject faults; the separate ACK-loss image is intentionally finite and deterministic.",
+    "The raw logs contain ANSI control bytes and must be hashed as binary data.",
+    "The source state was intentionally uncommitted, so the base commit alone does not reproduce the implementation."
+  ]
+}

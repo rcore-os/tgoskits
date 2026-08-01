@@ -143,7 +143,7 @@ impl AxVMConfig {
         Self::new(AxVMConfigParams {
             id,
             name: String::from(name),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         })
     }

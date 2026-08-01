@@ -115,6 +115,7 @@ pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
 pub(crate) type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
 pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
 pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
+pub(crate) type ArceOsPreparedTask = modules::ax_task::PreparedTask;
 pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
@@ -124,8 +125,15 @@ pub(crate) fn current_task() -> ArceOsCurrentTask {
     modules::ax_task::current()
 }
 
-pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
-    modules::ax_task::spawn_task(task)
+pub(crate) fn prepare_task_with_initial_cpu(
+    task: ArceOsTaskInner,
+    initial_cpu: usize,
+) -> api::AxResult<ArceOsPreparedTask> {
+    modules::ax_task::prepare_task_with_initial_cpu(task, initial_cpu)
+}
+
+pub(crate) fn activate_task(task: ArceOsPreparedTask) -> api::AxResult<ArceOsAxTaskRef> {
+    modules::ax_task::activate_task(task)
 }
 
 pub(crate) fn yield_now() {

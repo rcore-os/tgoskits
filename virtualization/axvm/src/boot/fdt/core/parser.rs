@@ -392,7 +392,7 @@ pub fn set_phys_cpu_sets(
         .collect();
     info!("Found {} host CPU nodes", cpu_nodes_info.len());
 
-    let mut new_phys_cpu_sets = Vec::new();
+    let mut default_phys_cpu_sets = Vec::new();
     let mut guest_phys_cpu_ids = Vec::new();
     for phys_cpu_id in phys_cpu_ids {
         if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
@@ -401,7 +401,7 @@ pub fn set_phys_cpu_sets(
             .find(|(_, (node_id, _))| node_id == phys_cpu_id)
         {
             let cpu_mask = 1usize << cpu_index;
-            new_phys_cpu_sets.push(cpu_mask);
+            default_phys_cpu_sets.push(cpu_mask);
             guest_phys_cpu_ids.push(*guest_cpu_id);
         } else {
             error!(
@@ -413,7 +413,9 @@ pub fn set_phys_cpu_sets(
     }
 
     let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
-    phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
+    if crate_config.base.phys_cpu_sets.is_none() {
+        phys_cpu_ls.set_guest_cpu_sets(default_phys_cpu_sets);
+    }
     phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
     Ok(())
 }
@@ -630,7 +632,7 @@ mod tests {
     use alloc::{string::ToString, vec, vec::Vec};
 
     use axvm_types::{AddressSpacePolicy, VmMemConfig, VmMemMappingType};
-    use axvmconfig::{AxVMCrateConfig, VMDevicesConfig};
+    use axvmconfig::{AxVMCrateConfig, VMBaseConfig, VMDevicesConfig};
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
 
@@ -666,6 +668,55 @@ mod tests {
         fdt.encode().as_ref().to_vec()
     }
 
+    fn host_fdt_with_cpus(cpus: &[(&str, usize)]) -> Fdt {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let cpus_node = fdt.add_node(root, Node::new("cpus"));
+        fdt.node_mut(cpus_node)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(cpus_node)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 0));
+
+        for (name, guest_cpu_id) in cpus {
+            let cpu_node = fdt.add_node(cpus_node, Node::new(name));
+            fdt.view_typed_mut(cpu_node)
+                .unwrap()
+                .set_regs(&[RegInfo::new(*guest_cpu_id as u64, None)]);
+        }
+        fdt
+    }
+
+    fn cpu_config(
+        phys_cpu_ids: Vec<usize>,
+        phys_cpu_sets: Option<Vec<usize>>,
+    ) -> (AxVMConfig, AxVMCrateConfig) {
+        let cpu_num = phys_cpu_ids.len();
+        let vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "cpu-topology-test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(
+                cpu_num,
+                Some(phys_cpu_ids.clone()),
+                phys_cpu_sets.clone(),
+                false,
+            ),
+            ..Default::default()
+        });
+        let crate_cfg = AxVMCrateConfig {
+            base: VMBaseConfig {
+                id: 1,
+                cpu_num,
+                phys_cpu_ids: Some(phys_cpu_ids),
+                phys_cpu_sets,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        (vm_cfg, crate_cfg)
+    }
+
     #[test]
     fn align_reserved_region_keeps_aligned_range() {
         assert_eq!(
@@ -685,6 +736,30 @@ mod tests {
     #[test]
     fn align_reserved_region_rejects_zero_sized_range() {
         assert_eq!(align_reserved_region_4k(0x1000, 0), None);
+    }
+
+    #[test]
+    fn fdt_cpu_resolution_preserves_explicit_affinity_masks() {
+        let host_fdt = host_fdt_with_cpus(&[("cpu@0", 0x100), ("cpu@1", 0x101)]);
+        let (mut vm_cfg, crate_cfg) = cpu_config(vec![0, 1], Some(vec![0xf, 0xf]));
+
+        super::set_phys_cpu_sets(&mut vm_cfg, &host_fdt, &crate_cfg).unwrap();
+
+        let phys_cpu_list = vm_cfg.phys_cpu_ls_mut();
+        assert_eq!(phys_cpu_list.phys_cpu_sets(), &Some(vec![0xf, 0xf]));
+        assert_eq!(phys_cpu_list.phys_cpu_ids(), &Some(vec![0x100, 0x101]));
+    }
+
+    #[test]
+    fn fdt_cpu_resolution_derives_singleton_masks_when_affinity_is_absent() {
+        let host_fdt = host_fdt_with_cpus(&[("cpu@0", 0x100), ("cpu@1", 0x101)]);
+        let (mut vm_cfg, crate_cfg) = cpu_config(vec![0, 1], None);
+
+        super::set_phys_cpu_sets(&mut vm_cfg, &host_fdt, &crate_cfg).unwrap();
+
+        let phys_cpu_list = vm_cfg.phys_cpu_ls_mut();
+        assert_eq!(phys_cpu_list.phys_cpu_sets(), &Some(vec![0x1, 0x2]));
+        assert_eq!(phys_cpu_list.phys_cpu_ids(), &Some(vec![0x100, 0x101]));
     }
 
     #[test]
@@ -735,7 +810,7 @@ mod tests {
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         });
         let crate_cfg = AxVMCrateConfig {

@@ -31,6 +31,11 @@ If the requested board type is missing, list first and use the exact local type.
 
 `board connect` holds the lease until the outer process exits. Logging out of the Linux shell inside serial does not necessarily release the board.
 
+If the board is unresponsive before a lease can be established, use the
+`board-power-control` skill to query the OrangePi-5-Plus smart plug. Only use a
+cold power cycle after confirming that no filesystem write or board test is in
+progress.
+
 ## Linux Deployment Flow
 
 1. Keep `board connect` open until Linux reaches a login or shell prompt.

@@ -1,0 +1,132 @@
+{
+  "artifacts": {
+    "binary": {
+      "bytes": 61664,
+      "path": "build/zephyr/zephyr.bin",
+      "sha256": "4f1038a5e4e65bf55779760688904202ea0f20e1e1872d35772a84ff8b505bfc"
+    },
+    "build_log": {
+      "bytes": 17129,
+      "path": "build.log",
+      "sha256": "f5e9bfe4f78413a5c66e214a28bc15a070000051c1713192d48bcb946135e5be"
+    },
+    "dot_config": {
+      "bytes": 24875,
+      "path": "build/zephyr/.config",
+      "sha256": "4e3495fbcb6723a31dca437befb01a0270fc7c16fa3a74a1fb8464430e824bb3"
+    },
+    "elf": {
+      "bytes": 863544,
+      "path": "build/zephyr/zephyr.elf",
+      "sha256": "17f3b58042364f31bf5f58c59757d267ddbf8ea5c255c4d27f7ff32bf460bf12"
+    },
+    "raw_console": {
+      "bytes": 1362,
+      "path": "qemu.log",
+      "sha256": "20a6901db7395f37b7bfdae110ef63d69235ed8fd11b52d1e2a92565ef1b57b1"
+    },
+    "source_provenance": {
+      "bytes": 629,
+      "path": "source-provenance.json",
+      "sha256": "5e9529a8eb853b7ecd0cc480c8a2ad38a4adefc83d7bf6040b54228402cb4c6e"
+    }
+  },
+  "completion": {
+    "early_wakes": 0,
+    "schema": 1,
+    "status": "pass",
+    "timer_misses": 0,
+    "warmup_timer_misses": 0,
+    "workload": "idle"
+  },
+  "configuration": {
+    "benchmark_priority": -16,
+    "board": "qemu_cortex_a53",
+    "clock_hz": 62500000,
+    "cpu_count": 1,
+    "cpu_model": "cortex-a53",
+    "os": "zephyr",
+    "period_us": 1000,
+    "qemu_icount": false,
+    "samples": 10000,
+    "schema": 1,
+    "stress_priority": 5,
+    "ticks_per_sec": 1000,
+    "warmup": 100,
+    "workload": "idle",
+    "zephyr_version": "4.3.0"
+  },
+  "generated_at_utc": "2026-07-31T00:58:55.903787+00:00",
+  "load": {
+    "benchmark_permille": 10,
+    "cpu_idle_permille": 988,
+    "cpu_non_idle_permille": 11,
+    "schema": 1,
+    "stress_blocks": 0,
+    "stress_blocks_per_second": 0,
+    "stress_permille": 0,
+    "verified": true,
+    "window_duration_us": 10100820,
+    "workload": "idle"
+  },
+  "method": {
+    "clock": "k_cycle_get_64 backed by the AArch64 architected timer",
+    "dispatch_latency": "task observation minus timer expiry callback timestamp",
+    "measurement_logging": "no console output occurs while samples are collected",
+    "percentile": "nearest-rank over 10,000 samples",
+    "period": "1 ms absolute Zephyr k_timer period",
+    "timer_misses": "coalesced measured deadlines; warm-up coalescing is reported separately",
+    "wake_lateness": "task observation minus absolute timer deadline"
+  },
+  "metrics": {
+    "periodic_wake_lateness": {
+      "actual_duration_us": 10000197,
+      "count": 10000,
+      "expected_duration_us": 10000000,
+      "max_ns": 841264,
+      "mean_ns": 74623,
+      "metric": "periodic_wake_lateness",
+      "min_ns": 40864,
+      "p50_ns": 65104,
+      "p90_ns": 102224,
+      "p999_ns": 597792,
+      "p99_ns": 186256,
+      "schema": 1,
+      "unit": "ns",
+      "workload": "idle"
+    },
+    "timer_to_task_dispatch": {
+      "actual_duration_us": 10000197,
+      "count": 10000,
+      "expected_duration_us": 10000000,
+      "max_ns": 162896,
+      "mean_ns": 22117,
+      "metric": "timer_to_task_dispatch",
+      "min_ns": 6176,
+      "p50_ns": 22896,
+      "p90_ns": 28976,
+      "p999_ns": 101280,
+      "p99_ns": 40288,
+      "schema": 1,
+      "unit": "ns",
+      "workload": "idle"
+    }
+  },
+  "schema_version": 1,
+  "scope": "native Zephyr on QEMU; no AxVisor or guest virtualization",
+  "source": {
+    "commit": "3568e1b6d5cdd51a6b964a2a1d6d29200fea2056",
+    "core_autocrlf": "true",
+    "tag_object": "981205b3e7cdf9fdf2e9e71b8b6b64fcc71c12a0",
+    "version": "v4.3.0",
+    "worktree": "clean"
+  },
+  "tools": {
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "host_cpu": "Intel(R) Core(TM) i5-14600KF",
+    "host_kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "python": "3.13.7",
+    "qemu": "QEMU emulator version 10.0.3"
+  },
+  "workload": "idle"
+}

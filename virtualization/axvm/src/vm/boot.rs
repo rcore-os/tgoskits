@@ -59,7 +59,7 @@ mod tests {
         AxVMConfig::new(AxVMConfigParams {
             id: 1,
             name: String::from("boot-policy-test"),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             cpu_config: AxVCpuConfig {
                 bsp_entry: GuestPhysAddr::from(0x101000),
                 ap_entry: GuestPhysAddr::from(0x102000),

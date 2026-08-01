@@ -92,6 +92,18 @@ pub fn checked_intid(raw: u32, max_intid: u32) -> Result<IntId, CheckedIntIdErro
     Ok(unsafe { IntId::raw(raw) })
 }
 
+/// Create an [`IntId`] after validating that it is an implemented SPI.
+///
+/// `max_intid` is the implementation-specific exclusive upper bound reported
+/// by the distributor. The architectural special-INTID range is rejected even
+/// if a malformed implementation limit would otherwise include it.
+pub fn checked_spi_intid(raw: u32, max_intid: u32) -> Result<IntId, CheckedIntIdError> {
+    if !SPI_RANGE.contains(&raw) || raw >= max_intid {
+        return Err(CheckedIntIdError);
+    }
+    Ok(unsafe { IntId::raw(raw) })
+}
+
 /// An interrupt identifier (INTID) for the GIC.
 ///
 /// Represents a unique interrupt ID that can be used with the GIC hardware.
@@ -222,7 +234,7 @@ impl IntId {
     /// assert!(!spi42.is_private());
     /// ```
     pub const fn spi(spi: u32) -> Self {
-        assert!(spi < SPECIAL_RANGE.start);
+        assert!(spi < SPI_RANGE.end - SPI_RANGE.start);
         Self(SPI_RANGE.start + spi)
     }
 

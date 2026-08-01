@@ -29,10 +29,6 @@ pub(crate) trait ArchOps {
         default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
     }
 
-    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
-        vcpu.set_gpr(0, arg);
-    }
-
     fn before_first_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
     fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
@@ -109,6 +105,7 @@ pub(crate) trait ArchOps {
 
         match vcpu.state() {
             VmVcpuState::Free => vcpu.bind()?,
+            VmVcpuState::Starting => vcpu.bind_startup()?,
             VmVcpuState::Ready => {}
             state => {
                 return ax_err!(

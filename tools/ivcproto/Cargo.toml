@@ -1,0 +1,21 @@
+[package]
+name = "ivcproto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+thiserror.workspace = true
+
+[[bin]]
+name = "ivcproto"
+path = "src/bin/ivcproto.rs"
+required-features = ["std"]
+

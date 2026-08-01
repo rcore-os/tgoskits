@@ -118,8 +118,8 @@ pub fn remove_vm(vm_id: usize) -> Option<VMRef> {
     crate::manager::remove_existing_vm(vm_id)
 }
 
-/// Register a prepared VM in the AxVM runtime.
-pub fn register_vm(vm: VMRef) -> bool {
+/// Validate and register a prepared VM in the AxVM runtime.
+pub fn try_register_vm(vm: VMRef) -> AxVmResult {
     crate::manager::push_existing_vm(vm)
 }
 

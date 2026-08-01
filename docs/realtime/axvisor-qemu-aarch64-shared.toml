@@ -1,0 +1,10 @@
+# Task 1 compatibility profile: four host CPUs, stock non-RR scheduler, and a
+# two-vCPU Linux guest whose vCPU tasks share all host CPUs.
+features = [
+    "ax-driver/virtio-blk",
+    "fs",
+]
+log = "Info"
+max_cpu_num = 4
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-smp2-shared.toml"]

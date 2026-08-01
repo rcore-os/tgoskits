@@ -236,6 +236,62 @@ fn test_sched_fifo() {
 }
 
 #[test]
+fn prepared_task_is_enqueued_only_on_activation() {
+    run_in_test_scheduler(|| {
+        static RUN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        RUN_COUNT.store(0, Ordering::Release);
+        let prepared = ax_task::prepare_task_with_initial_cpu(
+            ax_task::TaskInner::new(
+                || {
+                    RUN_COUNT.fetch_add(1, Ordering::Release);
+                },
+                "prepared".into(),
+                RAW_TASK_STACK_SIZE,
+            ),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(std::sync::Arc::strong_count(prepared.task_ref()), 1);
+        assert_eq!(RUN_COUNT.load(Ordering::Acquire), 0);
+
+        let task = ax_task::activate_task(prepared).unwrap();
+        assert_eq!(task.cpu_id(), 0);
+        assert_eq!(std::sync::Arc::strong_count(&task), 2);
+
+        let queued = crate::run_queue::take_ready_task_for_test(&task)
+            .expect("activation must add the prepared task to its initial run queue");
+        assert!(std::sync::Arc::ptr_eq(&queued, &task));
+        assert_eq!(RUN_COUNT.load(Ordering::Acquire), 0);
+    });
+}
+
+#[test]
+fn activation_revalidates_initial_cpu_affinity() {
+    run_in_test_scheduler(|| {
+        let prepared = ax_task::prepare_task_with_initial_cpu(
+            ax_task::TaskInner::new(
+                || {},
+                "prepared-invalid-affinity".into(),
+                RAW_TASK_STACK_SIZE,
+            ),
+            0,
+        )
+        .unwrap();
+        let task_id = prepared.task_ref().id().as_u64();
+        prepared.task_ref().set_cpumask(ax_task::AxCpuMask::new());
+
+        let error = match ax_task::activate_task(prepared) {
+            Ok(_) => panic!("activation must reject a disallowed initial CPU"),
+            Err(error) => error,
+        };
+        assert_eq!(error, AxError::InvalidInput);
+        assert!(ax_task::task_by_id(task_id).is_none());
+    });
+}
+
+#[test]
 fn test_fp_state_switch() {
     run_in_test_scheduler(|| {
         const NUM_TASKS: usize = 5;

@@ -1,0 +1,147 @@
+{
+  "cpu_load": {
+    "cpus": {
+      "0": {
+        "busy_percent": 2.124,
+        "busy_ticks": 943,
+        "idle_ticks": 43444,
+        "total_ticks": 44387
+      },
+      "1": {
+        "busy_percent": 100.0,
+        "busy_ticks": 44606,
+        "idle_ticks": 0,
+        "total_ticks": 44606
+      }
+    },
+    "schema_version": 1,
+    "source": "guest /proc/stat",
+    "unit": "scheduler ticks"
+  },
+  "input": {
+    "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/tmp/competition/axvisor-rt/reference-20260731-shared-stress-final/raw-console.log",
+    "sha256": "5179ad02eba344606dff53853c312b295b89b7ae89135697fa68c194655590cc"
+  },
+  "metadata": {
+    "artifacts": {
+      "axvisor_config": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/docs/realtime/axvisor-qemu-aarch64-shared.toml",
+        "sha256": "42ab0e37d5bf41841a7618105354d19852fccbda6e43318934b027fe323adb7f"
+      },
+      "guest_runner": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/tmp/competition/axvisor-rt/reference-20260731-shared-stress-final/axvisor-rt-run",
+        "sha256": "260417ed08b6e7c4dbb73eed6b2fc764b7658f0c3dd7952b1e5b0a81007d6de7"
+      },
+      "injected_rootfs_pre_run": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/tmp/competition/axvisor-rt/reference-20260731-shared-stress-final/rootfs.img",
+        "sha256": "a66caac3c641f5c6698ea061a19167d6e9fec5eaf8f96df58b1d0ddb711d2840"
+      },
+      "input_rootfs": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img",
+        "sha256": "5009e544c1f1e941034475c2757ac47997d323855429a95686049c815a849975"
+      },
+      "probe": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/tmp/competition/axvisor-rt/reference-20260731-shared-stress-final/axvisor-rt-probe",
+        "sha256": "8b3f6e7471dc9ecf60d5b64ab5f3c3a4657af8743fde1aa6b1772358c62806da"
+      },
+      "qemu_config": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/scripts/benchmark/axvisor-rt/qemu-aarch64.toml",
+        "sha256": "3d168c8e466dfec69cd8593e05c098f4da50a1cc51853065ce085dbfaf3286d6"
+      },
+      "raw_log": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/tmp/competition/axvisor-rt/reference-20260731-shared-stress-final/raw-console.log",
+        "sha256": "5179ad02eba344606dff53853c312b295b89b7ae89135697fa68c194655590cc"
+      },
+      "vm_config": {
+        "path": "/mnt/c/Users/10469/Workspace/starryos_t/tgoskits-rt-ivc/os/axvisor/configs/vms/qemu/aarch64/linux-smp2-shared.toml",
+        "sha256": "f8d677769251b35a0f5c177ef78f463b52b7cfb4318edf149fb36282f43b27a9"
+      }
+    },
+    "benchmark": {
+      "fifo_priority": 80,
+      "guest_cpu": 0,
+      "iterations": 10000,
+      "metrics": [
+        "periodic_jitter",
+        "dispatch_latency",
+        "emulated_irq_response"
+      ],
+      "period_ns": 1000000,
+      "warmup_iterations": 100,
+      "workload": "cpu-stress"
+    },
+    "finished_at": "2026-07-31T00:01:08Z",
+    "guest": {
+      "architecture": "aarch64",
+      "dedicated_host_cpu_ids": [],
+      "profile": "shared",
+      "vcpu_count": 2,
+      "vm_config": "os/axvisor/configs/vms/qemu/aarch64/linux-smp2-shared.toml"
+    },
+    "host": {
+      "machine": "x86_64",
+      "release": "6.18.33.2-microsoft-standard-WSL2",
+      "system": "Linux"
+    },
+    "qemu": {
+      "acceleration": "tcg",
+      "binary": "qemu-system-aarch64",
+      "cpu": "cortex-a72",
+      "exit_code": 0,
+      "host_cpu_count": 4,
+      "machine": "virt,virtualization=on,gic-version=3",
+      "version": "QEMU emulator version 10.0.3"
+    },
+    "repository": {
+      "commit": "263f89d8f3d0481d2712224a7b517a73b1165fb3",
+      "dirty": true,
+      "source_snapshot_sha256": "8594ab76e903dd179db5f1aa91546c03a7d759454d300b2ac6c665933ab0216a",
+      "tracked_diff_sha256": "13e7a0689bd1e2606c76b8373b2701cf1bbc6f2bed4201e60269e1915d9cc7f5",
+      "untracked_source_file_count": 89,
+      "untracked_source_manifest_sha256": "4f8072e04fb5619c5157bb7b58682474a55c5c1b5b2a48567fd09330f78c0eaf"
+    },
+    "run_id": "20260730T235051Z",
+    "schema_version": 1,
+    "started_at": "2026-07-30T23:51:12Z",
+    "status": "capture_complete"
+  },
+  "metrics": {
+    "dispatch_latency": {
+      "count": 10000,
+      "max_ns": 541376,
+      "mean_ns": 53592.454,
+      "min_ns": 45840,
+      "p50_ns": 48288,
+      "p90_ns": 61904,
+      "p999_ns": 257120,
+      "p99_ns": 148240,
+      "population_stddev_ns": 19329.722,
+      "unit": "ns"
+    },
+    "emulated_irq_response": {
+      "count": 10000,
+      "max_ns": 438800,
+      "mean_ns": 119291.962,
+      "min_ns": 61920,
+      "p50_ns": 114832,
+      "p90_ns": 158368,
+      "p999_ns": 316032,
+      "p99_ns": 226608,
+      "population_stddev_ns": 32401.007,
+      "unit": "ns"
+    },
+    "periodic_jitter": {
+      "count": 10000,
+      "max_ns": 694096,
+      "mean_ns": 112807.854,
+      "min_ns": 57904,
+      "p50_ns": 104832,
+      "p90_ns": 150624,
+      "p999_ns": 401552,
+      "p99_ns": 245120,
+      "population_stddev_ns": 37259.312,
+      "unit": "ns"
+    }
+  },
+  "schema_version": 1
+}

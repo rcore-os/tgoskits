@@ -39,7 +39,6 @@ mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
-pub(crate) use gic::pend_physical_spi;
 pub use images::ImageLoader;
 use ipi::SendIpiExit;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
@@ -69,6 +68,12 @@ impl ArchOps for Aarch64Arch {
             addr.as_usize(),
             size,
         );
+    }
+
+    fn before_first_run(vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        if vm.interrupt_mode() == crate::config::VMInterruptMode::Passthrough {
+            gic::prepare_passthrough_guest_cpu_interface();
+        }
     }
 
     fn handle_vcpu_exit_bound(
@@ -203,7 +208,77 @@ impl ArchOps for Aarch64Arch {
 
 struct AxvmArmHostOps;
 
+fn with_current_passthrough_gate(
+    operation: &'static str,
+    transition: impl FnOnce(
+        &crate::vm::VmRuntimeHandle,
+        usize,
+        &mut dyn crate::vm::PassthroughSpiController,
+    ) -> AxVmResult,
+) -> ArmVcpuResult {
+    let vcpu = crate::vcpu::get_current_vcpu::<AxvmArmVcpu>().ok_or_else(|| {
+        error!("{operation} failed: the current AArch64 vCPU is not installed");
+        ArmVcpuError::BadState
+    })?;
+    let vm = crate::get_vm_by_id(vcpu.vm_id()).ok_or_else(|| {
+        error!(
+            "{operation} failed: VM[{}] for the current vCPU is not registered",
+            vcpu.vm_id()
+        );
+        ArmVcpuError::BadState
+    })?;
+    if vm.interrupt_mode() != crate::config::VMInterruptMode::Passthrough {
+        return Ok(());
+    }
+    let runtime = vm
+        .with_runtime(|runtime| Ok(runtime.clone()))
+        .map_err(|error| {
+            error!("{operation} failed for VM[{}]: {error}", vm.id());
+            ArmVcpuError::BadState
+        })?;
+
+    gic::with_passthrough_spi_controller(|controller| transition(&runtime, vcpu.id(), controller))
+        .map_err(|error| {
+            error!(
+                "{operation} failed for VM[{}] vCPU[{}]: {error}",
+                vm.id(),
+                vcpu.id()
+            );
+            ArmVcpuError::BadState
+        })
+}
+
 impl ArmHostOps for AxvmArmHostOps {
+    fn prepare_guest_entry() -> ArmVcpuResult {
+        with_current_passthrough_gate(
+            "prepare passthrough guest entry",
+            |runtime, vcpu_id, controller| {
+                runtime
+                    .transition_passthrough_spi(
+                        vcpu_id,
+                        core::ops::ControlFlow::Break(crate::vm::PassthroughInterfaceOwner::Guest),
+                        controller,
+                    )
+                    .map(|_| ())
+            },
+        )
+    }
+
+    fn complete_guest_exit() -> ArmVcpuResult {
+        with_current_passthrough_gate(
+            "complete passthrough guest exit",
+            |runtime, vcpu_id, controller| {
+                runtime
+                    .transition_passthrough_spi(
+                        vcpu_id,
+                        core::ops::ControlFlow::Break(crate::vm::PassthroughInterfaceOwner::Host),
+                        controller,
+                    )
+                    .map(|_| ())
+            },
+        )
+    }
+
     fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult {
         gic::inject_interrupt(vector as usize);
         Ok(())

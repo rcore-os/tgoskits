@@ -390,6 +390,7 @@ dependencies = [
  "log",
  "paste",
  "rdif-intc",
+ "thiserror 2.0.18",
  "tock-registers 0.10.1",
 ]
 
@@ -1489,6 +1490,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axhvc",
+ "axvm-net",
  "axvm-types",
  "axvmconfig",
  "bit_field",
@@ -1508,11 +1510,19 @@ dependencies = [
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
+ "someboot",
  "spin",
  "thiserror 2.0.18",
  "x86",
  "x86_vcpu",
  "x86_vlapic",
+]
+
+[[package]]
+name = "axvm-net"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4282,6 +4292,13 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "ivcproto"
+version = "0.5.12"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "jiff"

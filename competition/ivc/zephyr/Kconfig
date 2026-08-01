@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "Zephyr IVC control endpoint"
+
+source "Kconfig.zephyr"
+
+menu "IVC reliability evidence"
+
+config IVC_DROP_ACK_EVERY
+	int "Drop the first ACK for every Nth fresh command"
+	range 0 1000000
+	default 0
+	help
+	  Set to zero for the normal endpoint. A positive value enables the
+	  deterministic cross-guest ACK-loss profile: the endpoint suppresses the
+	  ACK for each Nth freshly applied command, then responds normally when the
+	  controller retransmits that command.
+
+config IVC_EXPECTED_COMMANDS
+	int "Expected commands in a finite evidence run"
+	range 0 1000000
+	default 0
+	help
+	  Set to zero for an open-ended normal endpoint. The deterministic ACK-loss
+	  profile uses this count to emit one terminal IVC-RTOS-RESULT record after
+	  all fresh commands and expected retransmitted duplicates are observed.
+
+endmenu

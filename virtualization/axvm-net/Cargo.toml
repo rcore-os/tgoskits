@@ -1,0 +1,13 @@
+[package]
+name = "axvm-net"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded isolated Ethernet switch policy for AxVisor guest ports"
+categories = ["no-std", "virtualization"]
+keywords = ["ethernet", "hypervisor", "no-std"]
+
+[dependencies]
+thiserror.workspace = true

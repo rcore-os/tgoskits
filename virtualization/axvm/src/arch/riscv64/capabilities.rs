@@ -5,11 +5,13 @@ use alloc::{format, vec::Vec};
 use super::Riscv64Arch;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, PhysicalSpiPlatform},
     ax_err_type,
 };
 
 impl HostTimePlatform for Riscv64Arch {}
+
+impl PhysicalSpiPlatform for Riscv64Arch {}
 
 impl BootImagePlatform for Riscv64Arch {
     fn load_guest_dtb(

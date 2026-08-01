@@ -21,8 +21,6 @@ pub(crate) use aarch64::Aarch64Arch as CurrentArch;
 pub use aarch64::ImageLoader;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::fdt;
-#[cfg(target_arch = "aarch64")]
-pub(crate) use aarch64::pend_physical_spi;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::LoongArch64Arch as CurrentArch;
 #[cfg(target_arch = "loongarch64")]
@@ -81,6 +79,19 @@ pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
 
 pub(crate) fn register_timer_callback() {
     CurrentArch::register_timer_callback();
+}
+
+pub(crate) fn passthrough_spi_registrations(
+    vm: &crate::vm::AxVM,
+) -> AxVmResult<alloc::vec::Vec<crate::vm::PassthroughSpiRegistration>> {
+    build_passthrough_spi_registrations::<CurrentArch>(vm)
+}
+
+pub(crate) fn try_inject_passthrough_device_irq(
+    vm: &crate::vm::AxVM,
+    irq: usize,
+) -> AxVmResult<bool> {
+    crate::architecture::try_inject_passthrough_device_irq::<CurrentArch>(vm, irq)
 }
 
 pub(crate) fn set_oneshot_timer(deadline_ns: u64) {

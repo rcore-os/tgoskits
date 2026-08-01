@@ -1,0 +1,132 @@
+{
+  "artifacts": {
+    "binary": {
+      "bytes": 61664,
+      "path": "build/zephyr/zephyr.bin",
+      "sha256": "f0a78ff10d94b94495f095036b1a8f9a9316299e9d3ca5b28f6a0128882c8cdc"
+    },
+    "build_log": {
+      "bytes": 17293,
+      "path": "build.log",
+      "sha256": "8a18262902329e991b3524d49d99f31d6ff22d94f2571d65f8090e2e08d00273"
+    },
+    "dot_config": {
+      "bytes": 24864,
+      "path": "build/zephyr/.config",
+      "sha256": "5adb289abba646d49095e90bcc2a485407c4ac62275e9cf40a3a9d7fab7f1049"
+    },
+    "elf": {
+      "bytes": 866992,
+      "path": "build/zephyr/zephyr.elf",
+      "sha256": "1d3b78afc156d278f8f404d89d1aa377a1d009d577b1b1d0d3c0a48bd592e8c4"
+    },
+    "raw_console": {
+      "bytes": 1418,
+      "path": "qemu.log",
+      "sha256": "767b40de4244c5368281de2804f2445e9be6ffb06fcb69e01ac5781037fc9f42"
+    },
+    "source_provenance": {
+      "bytes": 629,
+      "path": "source-provenance.json",
+      "sha256": "5e9529a8eb853b7ecd0cc480c8a2ad38a4adefc83d7bf6040b54228402cb4c6e"
+    }
+  },
+  "completion": {
+    "early_wakes": 0,
+    "schema": 1,
+    "status": "pass",
+    "timer_misses": 68,
+    "warmup_timer_misses": 0,
+    "workload": "cpu-stress"
+  },
+  "configuration": {
+    "benchmark_priority": -16,
+    "board": "qemu_cortex_a53",
+    "clock_hz": 62500000,
+    "cpu_count": 1,
+    "cpu_model": "cortex-a53",
+    "os": "zephyr",
+    "period_us": 1000,
+    "qemu_icount": false,
+    "samples": 10000,
+    "schema": 1,
+    "stress_priority": 5,
+    "ticks_per_sec": 1000,
+    "warmup": 100,
+    "workload": "cpu-stress",
+    "zephyr_version": "4.3.0"
+  },
+  "generated_at_utc": "2026-07-31T00:58:56.154444+00:00",
+  "load": {
+    "benchmark_permille": 14,
+    "cpu_idle_permille": 0,
+    "cpu_non_idle_permille": 1000,
+    "schema": 1,
+    "stress_blocks": 7916855,
+    "stress_blocks_per_second": 783765,
+    "stress_permille": 985,
+    "verified": true,
+    "window_duration_us": 10101056,
+    "workload": "cpu-stress"
+  },
+  "method": {
+    "clock": "k_cycle_get_64 backed by the AArch64 architected timer",
+    "dispatch_latency": "task observation minus timer expiry callback timestamp",
+    "measurement_logging": "no console output occurs while samples are collected",
+    "percentile": "nearest-rank over 10,000 samples",
+    "period": "1 ms absolute Zephyr k_timer period",
+    "timer_misses": "coalesced measured deadlines; warm-up coalescing is reported separately",
+    "wake_lateness": "task observation minus absolute timer deadline"
+  },
+  "metrics": {
+    "periodic_wake_lateness": {
+      "actual_duration_us": 10000313,
+      "count": 10000,
+      "expected_duration_us": 10000000,
+      "max_ns": 6236608,
+      "mean_ns": 97118,
+      "metric": "periodic_wake_lateness",
+      "min_ns": 31712,
+      "p50_ns": 65472,
+      "p90_ns": 113376,
+      "p999_ns": 3943120,
+      "p99_ns": 669408,
+      "schema": 1,
+      "unit": "ns",
+      "workload": "cpu-stress"
+    },
+    "timer_to_task_dispatch": {
+      "actual_duration_us": 10000313,
+      "count": 10000,
+      "expected_duration_us": 10000000,
+      "max_ns": 1141536,
+      "mean_ns": 27825,
+      "metric": "timer_to_task_dispatch",
+      "min_ns": 6032,
+      "p50_ns": 26368,
+      "p90_ns": 32656,
+      "p999_ns": 281024,
+      "p99_ns": 134912,
+      "schema": 1,
+      "unit": "ns",
+      "workload": "cpu-stress"
+    }
+  },
+  "schema_version": 1,
+  "scope": "native Zephyr on QEMU; no AxVisor or guest virtualization",
+  "source": {
+    "commit": "3568e1b6d5cdd51a6b964a2a1d6d29200fea2056",
+    "core_autocrlf": "true",
+    "tag_object": "981205b3e7cdf9fdf2e9e71b8b6b64fcc71c12a0",
+    "version": "v4.3.0",
+    "worktree": "clean"
+  },
+  "tools": {
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "host_cpu": "Intel(R) Core(TM) i5-14600KF",
+    "host_kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "python": "3.13.7",
+    "qemu": "QEMU emulator version 10.0.3"
+  },
+  "workload": "cpu-stress"
+}

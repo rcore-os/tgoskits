@@ -1,0 +1,40 @@
+[base]
+id = 2
+name = "zephyr-ivc-endpoint"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+phys_cpu_sets = [0x1]
+# Reserve pCPU0 against every other registered guest vCPU. AxVisor's own
+# housekeeping remains on pCPU3 by convention; this flag does not isolate
+# arbitrary host tasks or QEMU threads.
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x4000_100c
+image_location = "memory"
+kernel_path = "../zephyr/build/zephyr/zephyr.bin"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+
+# qemu_cortex_a53 links RAM at 0x4000_0000.
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+passthrough_devices = [
+  ["/"],
+]
+passthrough_addresses = []
+excluded_devices = []
+
+# MAC 52:54:00:00:00:02, isolated segment 1. The final compatibility value 1
+# selects a fixed 12-byte virtio-net header. Zephyr 4.3 accepts VERSION_1 and
+# uses its modern 12-byte layout without accepting MRG_RXBUF; the explicit mode
+# pins that behavior independently of feature-state tracking. QEMU virt slot 16
+# uses SPI 64.
+emu_devices = [
+  ["virtio-net-zephyr", 0x0a00_2000, 0x1000, 64, 0xE2, [2, 1, 1]],
+]

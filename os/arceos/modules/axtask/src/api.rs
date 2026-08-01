@@ -7,6 +7,7 @@ use alloc::{
 };
 use core::fmt;
 
+use ax_errno::{AxError, AxResult};
 #[cfg(feature = "lockdep")]
 use ax_kernel_guard::IrqSave;
 use ax_kernel_guard::NoPreemptIrqSave;
@@ -14,7 +15,9 @@ use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
-pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
+pub(crate) use crate::run_queue::{
+    current_run_queue, run_queue_for_cpu, select_run_queue, select_wake_run_queue,
+};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
@@ -211,6 +214,106 @@ pub fn spawn_task(task: TaskInner) -> AxTaskRef {
     register_task(&task_ref);
     select_run_queue::<NoPreemptIrqSave>(&task_ref).add_task(task_ref.clone());
     task_ref
+}
+
+#[derive(Debug)]
+enum PreparedTaskPlacement {
+    SchedulerDefault,
+    InitialCpu(usize),
+}
+
+/// A registered task that has not yet been added to a run queue.
+///
+/// This two-phase form lets a subsystem publish its own task bookkeeping
+/// before another CPU can begin executing the task.
+#[must_use = "a prepared task remains non-runnable until it is activated"]
+pub struct PreparedTask {
+    task: AxTaskRef,
+    placement: PreparedTaskPlacement,
+}
+
+impl fmt::Debug for PreparedTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedTask")
+            .field("task_id", &self.task.id().as_u64())
+            .field("placement", &self.placement)
+            .finish()
+    }
+}
+
+impl PreparedTask {
+    /// Returns the task reference that will be activated.
+    pub fn task_ref(&self) -> &AxTaskRef {
+        &self.task
+    }
+}
+
+/// Registers a task without making it runnable.
+pub fn prepare_task(task: TaskInner) -> PreparedTask {
+    prepare_task_with_placement(task, PreparedTaskPlacement::SchedulerDefault)
+}
+
+/// Registers a task for later activation on a specific initial CPU.
+///
+/// The initial CPU affects only the first run-queue insertion. The task keeps
+/// its full affinity mask, and later wakeups or migrations remain controlled
+/// by the scheduler.
+///
+/// # Errors
+///
+/// Returns [`AxError::InvalidInput`] when `initial_cpu` is outside the configured
+/// CPU range or excluded by the task's CPU affinity.
+pub fn prepare_task_with_initial_cpu(
+    task: TaskInner,
+    initial_cpu: usize,
+) -> AxResult<PreparedTask> {
+    validate_initial_cpu(task.cpumask(), initial_cpu)?;
+    Ok(prepare_task_with_placement(
+        task,
+        PreparedTaskPlacement::InitialCpu(initial_cpu),
+    ))
+}
+
+fn prepare_task_with_placement(task: TaskInner, placement: PreparedTaskPlacement) -> PreparedTask {
+    let task = task.into_arc();
+    register_task(&task);
+    PreparedTask { task, placement }
+}
+
+fn validate_initial_cpu(cpumask: AxCpuMask, initial_cpu: usize) -> AxResult {
+    if initial_cpu >= ax_hal::cpu_num() || !cpumask.get(initial_cpu) {
+        Err(AxError::InvalidInput)
+    } else {
+        Ok(())
+    }
+}
+
+/// Makes a prepared task runnable and returns its task reference.
+///
+/// # Errors
+///
+/// Returns [`AxError::InvalidInput`] when a requested initial CPU is outside
+/// the configured CPU range or is no longer allowed by the task's affinity.
+pub fn activate_task(prepared: PreparedTask) -> AxResult<AxTaskRef> {
+    let PreparedTask { task, placement } = prepared;
+    match placement {
+        PreparedTaskPlacement::SchedulerDefault => {
+            select_run_queue::<NoPreemptIrqSave>(&task).add_task(task.clone());
+        }
+        PreparedTaskPlacement::InitialCpu(initial_cpu) => {
+            validate_initial_cpu(task.cpumask(), initial_cpu)?;
+            run_queue_for_cpu::<NoPreemptIrqSave>(initial_cpu).add_task(task.clone());
+        }
+    }
+    Ok(task)
+}
+
+/// Adds a task to a specific initial run queue and returns its task reference.
+///
+/// This is the one-step form of [`prepare_task_with_initial_cpu`] followed by
+/// [`activate_task`].
+pub fn spawn_task_with_initial_cpu(task: TaskInner, initial_cpu: usize) -> AxResult<AxTaskRef> {
+    prepare_task_with_initial_cpu(task, initial_cpu).and_then(activate_task)
 }
 
 /// Spawns a new task with the given parameters.

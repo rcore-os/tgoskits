@@ -18,6 +18,139 @@ pub use its::*;
 use crate::version::{IrqVecReadable, IrqVecWriteable};
 pub use crate::{IntId, VirtAddr, define::Trigger, sys_reg::*};
 
+/// Failure while routing, delivering, or reclaiming distributor SPIs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SpiDeliveryError {
+    /// The raw INTID is private, reserved, or absent from this distributor.
+    #[error("INTID {intid} is not an implemented SPI below {max_intid}")]
+    InvalidIntId { intid: u32, max_intid: u32 },
+    /// An SPI that must be rerouted is still active on a CPU interface.
+    #[error("INTID {intid} is active and cannot be rerouted")]
+    ActiveIntId { intid: u32 },
+    /// A distributor write did not become globally visible before its deadline.
+    #[error("GIC distributor write did not complete while {phase}")]
+    WritePendingTimeout { phase: &'static str },
+}
+
+/// Whether a delivery may update the SPI's distributor route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpiRoutePolicy {
+    /// Disable, reroute, and re-enable the inactive SPI before pending it.
+    Configure,
+    /// Keep the route of an already armed SPI and only set it pending.
+    Preserve,
+}
+
+/// Stable input contract for one item in a compound SPI delivery.
+///
+/// Implementations must return the same values for the duration of one
+/// [`Gic::route_enable_and_pend_spis`] call.
+pub trait SpiDeliverySpec {
+    /// Returns the architectural INTID.
+    fn raw_intid(&self) -> u32;
+
+    /// Returns the physical CPU affinity that owns the SPI.
+    fn target_affinity(&self) -> Affinity;
+
+    /// Returns whether the distributor route must be configured.
+    fn route_policy(&self) -> SpiRoutePolicy;
+}
+
+/// Descriptor for delivering one physical SPI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpiDeliveryRequest {
+    raw_intid: u32,
+    target_affinity: Affinity,
+    route_policy: SpiRoutePolicy,
+}
+
+impl SpiDeliveryRequest {
+    /// Creates a request that configures an inactive SPI before delivery.
+    pub const fn configure(raw_intid: u32, target_affinity: Affinity) -> Self {
+        Self {
+            raw_intid,
+            target_affinity,
+            route_policy: SpiRoutePolicy::Configure,
+        }
+    }
+
+    /// Creates a request that preserves an already armed SPI route.
+    pub const fn preserve(raw_intid: u32, target_affinity: Affinity) -> Self {
+        Self {
+            raw_intid,
+            target_affinity,
+            route_policy: SpiRoutePolicy::Preserve,
+        }
+    }
+}
+
+impl SpiDeliverySpec for SpiDeliveryRequest {
+    fn raw_intid(&self) -> u32 {
+        self.raw_intid
+    }
+
+    fn target_affinity(&self) -> Affinity {
+        self.target_affinity
+    }
+
+    fn route_policy(&self) -> SpiRoutePolicy {
+        self.route_policy
+    }
+}
+
+/// Distributor state observed while reclaiming a guest-targeted SPI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpiLineState {
+    /// The interrupt was acknowledged but had not completed.
+    pub active: bool,
+    /// The interrupt was pending before reclamation cleared the pending bit.
+    pub pending: bool,
+}
+
+/// Stable input/output contract for compound SPI reclamation.
+///
+/// Implementations must keep [`SpiReclaimSpec::raw_intid`] stable for the
+/// duration of one [`Gic::reclaim_pending_spis`] call.
+pub trait SpiReclaimSpec {
+    /// Returns the architectural INTID to reclaim.
+    fn raw_intid(&self) -> u32;
+
+    /// Records the state observed before the pending bit was cleared.
+    fn record_state(&mut self, state: SpiLineState);
+}
+
+/// Descriptor and result storage for reclaiming one physical SPI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SpiReclaimRequest {
+    raw_intid: u32,
+    state: Option<SpiLineState>,
+}
+
+impl SpiReclaimRequest {
+    /// Creates a reclaim request for an architectural INTID.
+    pub const fn new(raw_intid: u32) -> Self {
+        Self {
+            raw_intid,
+            state: None,
+        }
+    }
+
+    /// Returns the observed line state after successful reclamation.
+    pub const fn state(&self) -> Option<SpiLineState> {
+        self.state
+    }
+}
+
+impl SpiReclaimSpec for SpiReclaimRequest {
+    fn raw_intid(&self) -> u32 {
+        self.raw_intid
+    }
+
+    fn record_state(&mut self, state: SpiLineState) {
+        self.state = Some(state);
+    }
+}
+
 /// SGI target specification for GICv3.
 ///
 /// Defines how to target CPUs when sending Software Generated Interrupts (SGIs).
@@ -866,6 +999,169 @@ impl Gic {
             "Cannot set target CPU for private interrupt (SGI/PPI): {id:?}"
         );
         self.gicd().set_interrupt_route(id.to_u32(), affinity);
+    }
+
+    /// Routes, enables, and pends one SPI using the architectural update order.
+    ///
+    /// Routing an enabled SPI is architecturally unsafe. This compound control
+    /// operation masks only the selected SPI, waits for the distributor write
+    /// to complete, changes its affinity, restores the enable bit, and finally
+    /// sets it pending. The caller must serialize this operation with other
+    /// host-side distributor control.
+    pub fn route_enable_and_pend_spi(
+        &mut self,
+        raw_intid: u32,
+        affinity: Affinity,
+    ) -> Result<(), SpiDeliveryError> {
+        self.route_enable_and_pend_spis(core::slice::from_ref(&SpiDeliveryRequest::configure(
+            raw_intid, affinity,
+        )))
+    }
+
+    /// Delivers a batch of SPIs without exposing a partially pending batch.
+    ///
+    /// Every INTID and inactive-route precondition is checked before any
+    /// distributor write. SPIs that require a route change are disabled as one
+    /// phase, routed as one phase, and enabled as one phase. Pending bits are
+    /// written only after every fallible write-pending wait has completed.
+    /// Callers must serialize this operation with distributor control and must
+    /// use [`SpiRoutePolicy::Preserve`] for SPIs that can still be active.
+    pub fn route_enable_and_pend_spis<S: SpiDeliverySpec>(
+        &mut self,
+        requests: &[S],
+    ) -> Result<(), SpiDeliveryError> {
+        let max_intid = self.gicd().max_spi_num().min(crate::define::SPI_RANGE.end);
+        let checked_intid = |raw_intid| {
+            crate::checked_spi_intid(raw_intid, max_intid).map_err(|_| {
+                SpiDeliveryError::InvalidIntId {
+                    intid: raw_intid,
+                    max_intid,
+                }
+            })
+        };
+
+        let mut configures_route = false;
+        for request in requests {
+            let id = checked_intid(request.raw_intid())?;
+            if request.route_policy() == SpiRoutePolicy::Configure {
+                configures_route = true;
+                if self.is_active(id) {
+                    return Err(SpiDeliveryError::ActiveIntId {
+                        intid: request.raw_intid(),
+                    });
+                }
+            }
+        }
+
+        if configures_route {
+            for request in requests
+                .iter()
+                .filter(|request| request.route_policy() == SpiRoutePolicy::Configure)
+            {
+                let id = checked_intid(request.raw_intid())
+                    .expect("SPI delivery preflight validated every INTID");
+                self.set_irq_enable(id, false);
+            }
+            self.gicd()
+                .wait_for_rwp()
+                .map_err(|_| SpiDeliveryError::WritePendingTimeout {
+                    phase: "masking SPIs before routing",
+                })?;
+
+            for request in requests
+                .iter()
+                .filter(|request| request.route_policy() == SpiRoutePolicy::Configure)
+            {
+                let id = checked_intid(request.raw_intid())
+                    .expect("SPI delivery preflight validated every INTID");
+                self.set_target_cpu(id, Some(request.target_affinity()));
+            }
+            barrier::dsb(barrier::SY);
+
+            for request in requests
+                .iter()
+                .filter(|request| request.route_policy() == SpiRoutePolicy::Configure)
+            {
+                let id = checked_intid(request.raw_intid())
+                    .expect("SPI delivery preflight validated every INTID");
+                self.set_irq_enable(id, true);
+            }
+            self.gicd()
+                .wait_for_rwp()
+                .map_err(|_| SpiDeliveryError::WritePendingTimeout {
+                    phase: "enabling routed SPIs",
+                })?;
+        }
+
+        if !requests.is_empty() {
+            for request in requests {
+                let id = checked_intid(request.raw_intid())
+                    .expect("SPI delivery preflight validated every INTID");
+                self.set_pending(id, true);
+            }
+            barrier::dsb(barrier::SY);
+        }
+        Ok(())
+    }
+
+    /// Observes and reclaims the pending state of one guest-targeted SPI.
+    ///
+    /// The returned state describes the line before its pending bit was
+    /// cleared. Active state is deliberately retained so a guest interrupt
+    /// handler can continue after the next entry.
+    pub fn reclaim_pending_spi(
+        &mut self,
+        raw_intid: u32,
+    ) -> Result<SpiLineState, SpiDeliveryError> {
+        let mut request = SpiReclaimRequest::new(raw_intid);
+        self.reclaim_pending_spis(core::slice::from_mut(&mut request))?;
+        Ok(request
+            .state()
+            .expect("successful SPI reclamation records the observed state"))
+    }
+
+    /// Observes and clears pending state for a batch of guest-targeted SPIs.
+    ///
+    /// All INTIDs are validated before pending state is changed. Active state
+    /// is retained so an interrupted guest handler can continue after the next
+    /// entry. Callers must serialize this operation with new delivery for the
+    /// same SPIs.
+    pub fn reclaim_pending_spis<S: SpiReclaimSpec>(
+        &mut self,
+        requests: &mut [S],
+    ) -> Result<(), SpiDeliveryError> {
+        let max_intid = self.gicd().max_spi_num().min(crate::define::SPI_RANGE.end);
+        let checked_intid = |raw_intid| {
+            crate::checked_spi_intid(raw_intid, max_intid).map_err(|_| {
+                SpiDeliveryError::InvalidIntId {
+                    intid: raw_intid,
+                    max_intid,
+                }
+            })
+        };
+
+        for request in requests.iter() {
+            checked_intid(request.raw_intid())?;
+        }
+
+        let mut cleared_pending = false;
+        for request in requests {
+            let id = checked_intid(request.raw_intid())
+                .expect("SPI reclaim preflight validated every INTID");
+            let state = SpiLineState {
+                active: self.is_active(id),
+                pending: self.is_pending(id),
+            };
+            if state.pending {
+                self.set_pending(id, false);
+                cleared_pending = true;
+            }
+            request.record_state(state);
+        }
+        if cleared_pending {
+            barrier::dsb(barrier::SY);
+        }
+        Ok(())
     }
 
     pub fn get_target_cpu(&self, id: IntId) -> Option<Affinity> {

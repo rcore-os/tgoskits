@@ -1,0 +1,3 @@
+IVC-CONTROLLER-START peer=127.0.0.1:45501 count=1 policy=manual-fixed period_ms=0 session_id=101
+IVC-CONTROLLER-STATUS seq=1 mode=ManualFixed actuator_permille=500 measured_milli_c=20140 setpoint_milli_c=45000
+IVC-CONTROLLER-RESULT policy=manual-fixed sent=1 acknowledged=1 errors=0 timeouts=0 retransmissions=0 recoveries=0 success_percent=100.000 full_loop_p50_us=409 full_loop_p95_us=409 full_loop_p99_us=409 full_loop_max_us=409 pre_send_p50_us=1 pre_send_p95_us=1 pre_send_p99_us=1 pre_send_max_us=1 transport_p50_us=408 transport_p95_us=408 transport_p99_us=408 transport_max_us=408 throughput_msg_s=543.833 rmse_milli_c=24860.000 iae_milli_c_s=2486.000 max_overshoot_milli_c=0

@@ -34,8 +34,8 @@ use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, FwCfg, PollableDeviceOps, range_alloc::RangeAllocator,
-    virtio_net::VirtioNet,
+    DeviceManagerResult, FwCfg, PollableDeviceOps, VirtioNetHeaderMode, VirtioNetOptions,
+    range_alloc::RangeAllocator, virtio_net::VirtioNet,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
@@ -447,18 +447,57 @@ impl AxVmDevices {
                     }
                 }
                 EmulatedDeviceType::VirtioNet => {
-                    // MAC: 52:54:00:00:00:NN, where NN comes from cfg_list[0] (per-VM unique).
-                    let nn = config.cfg_list.first().copied().unwrap_or(1) as u8;
+                    // cfg_list is [MAC suffix, switch segment, optional header compatibility].
+                    let nn = config.cfg_list.first().copied().unwrap_or(1);
+                    let nn = u8::try_from(nn).map_err(|_| DeviceManagerError::InvalidConfig {
+                        operation: "initialize virtio-net device",
+                        detail: format!(
+                            "device '{}' MAC suffix {nn} exceeds {}",
+                            config.name,
+                            u8::MAX
+                        ),
+                    })?;
+                    let segment_id = config.cfg_list.get(1).copied().unwrap_or(0);
+                    let segment_id = u16::try_from(segment_id).map_err(|_| {
+                        DeviceManagerError::InvalidConfig {
+                            operation: "initialize virtio-net device",
+                            detail: format!(
+                                "device '{}' segment ID {segment_id} exceeds {}",
+                                config.name,
+                                u16::MAX
+                            ),
+                        }
+                    })?;
+                    let header_mode = match config.cfg_list.get(2).copied().unwrap_or(0) {
+                        0 => VirtioNetHeaderMode::Negotiated,
+                        1 => VirtioNetHeaderMode::FixedTwelveByte,
+                        value => {
+                            return Err(DeviceManagerError::InvalidConfig {
+                                operation: "initialize virtio-net device",
+                                detail: format!(
+                                    "device '{}' header compatibility mode {value} is not 0 or 1",
+                                    config.name
+                                ),
+                            });
+                        }
+                    };
                     let mac = [0x52, 0x54, 0x00, 0x00, 0x00, nn];
                     let base: GuestPhysAddr = config.base_gpa.into();
-                    let vnet = Arc::new(VirtioNet::new(base, mac, config.irq_id));
+                    let vnet = Arc::new(VirtioNet::new_with_options(
+                        base,
+                        mac,
+                        config.irq_id,
+                        VirtioNetOptions {
+                            segment_id,
+                            header_mode,
+                        },
+                    ));
                     this.virtio_nets.push(vnet.clone());
-                    #[allow(clippy::arc_with_non_send_sync)]
                     this.register(MmioDeviceAdapter::from_arc(vnet) as Arc<dyn Device>)?;
                     info!(
-                        "virtio-net '{}' initialized at GPA {:#x} IRQ {} (MAC \
-                         52:54:00:00:00:{:02x})",
-                        config.name, config.base_gpa, config.irq_id, nn
+                        "virtio-net '{}' initialized at GPA {:#x} IRQ {} segment {} header mode \
+                         {:?} (MAC 52:54:00:00:00:{:02x})",
+                        config.name, config.base_gpa, config.irq_id, segment_id, header_mode, nn
                     );
                 }
                 _ => {

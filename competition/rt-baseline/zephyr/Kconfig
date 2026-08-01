@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "Native Zephyr real-time baseline"
+
+source "Kconfig.zephyr"
+
+config RT_BASELINE_STRESS
+	bool "Run a lower-priority CPU stress thread"
+	default n
+	help
+	  Keep a lower-priority thread continuously runnable while the periodic
+	  benchmark thread is sleeping. The benchmark verifies that this thread
+	  executed during the measurement window.

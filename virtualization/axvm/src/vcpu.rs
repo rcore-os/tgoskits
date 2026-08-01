@@ -108,11 +108,13 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.inner_mut.lock().state
     }
 
-    /// Runs `f` if the current state equals `from`, then stores `to`.
-    pub fn with_state_transition<F, T>(
+    // The runtime task registry owns exclusive backend execution. This lock validates lifecycle
+    // metadata, but is intentionally released while `f` may enter a guest for an unbounded time.
+    fn with_state_transition<F, T>(
         &self,
         from: VmVcpuState,
         to: VmVcpuState,
+        error_state: VmVcpuState,
         f: F,
     ) -> AxVmResult<T>
     where
@@ -130,11 +132,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         }
 
         let result = f();
-        self.inner_mut.lock().state = if result.is_err() {
-            VmVcpuState::Invalid
-        } else {
-            to
-        };
+        self.inner_mut.lock().state = if result.is_err() { error_state } else { to };
         result
     }
 
@@ -171,14 +169,45 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     where
         F: FnOnce(&mut A) -> AxVmResult<T>,
     {
-        self.with_state_transition(from, to, || {
+        self.manipulate_arch_vcpu_on_error(from, to, VmVcpuState::Invalid, f)
+    }
+
+    pub(crate) fn manipulate_arch_vcpu_on_error<F, T>(
+        &self,
+        from: VmVcpuState,
+        to: VmVcpuState,
+        error_state: VmVcpuState,
+        f: F,
+    ) -> AxVmResult<T>
+    where
+        F: FnOnce(&mut A) -> AxVmResult<T>,
+    {
+        self.with_state_transition(from, to, error_state, || {
             self.with_current_cpu_set(|| f(self.get_arch_vcpu()))
         })
     }
 
     /// Transitions the vCPU state without calling the architecture backend.
     pub fn transition_state(&self, from: VmVcpuState, to: VmVcpuState) -> AxVmResult {
-        self.with_state_transition(from, to, || Ok(()))
+        let mut inner_mut = self.inner_mut.lock();
+        if inner_mut.state != from {
+            let current_state = inner_mut.state;
+            return ax_err!(
+                BadState,
+                format!("VCpu state is not {from:?}, but {current_state:?}")
+            );
+        }
+        inner_mut.state = to;
+        Ok(())
+    }
+
+    /// Consumes a startup reservation while binding the activated host task.
+    pub(crate) fn bind_startup(&self) -> AxVmResult {
+        self.manipulate_arch_vcpu(VmVcpuState::Starting, VmVcpuState::Ready, |arch_vcpu| {
+            arch_vcpu
+                .bind()
+                .map_err(|error| map_vcpu_backend_error("bind starting vCPU", error))
+        })
     }
 
     /// Returns the architecture-specific vCPU.
@@ -353,7 +382,7 @@ impl<A: VmArchPerCpuOps> Drop for AxPerCpu<A> {
     }
 }
 
-fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
+pub(crate) fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
     match error {
         VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
         VmBackendError::InvalidData => AxVmError::vcpu(operation, error),

@@ -1,0 +1,37 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-device",
+  "virtio-blk-device,drive=disk0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append",
+  "root=/dev/vda rw init=/bin/sh",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?m)^AXVISOR_DEDICATED_PARTITION_FAIL.*$",
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+success_regex = ["(?m)^AXVISOR_DEDICATED_PARTITION_PASS online=.*$"]
+shell_prefix = "~ #"
+shell_init_cmd = '''
+mount -t sysfs sysfs /sys 2>/dev/null || true
+online="$(cat /sys/devices/system/cpu/online)"
+count="$(getconf _NPROCESSORS_ONLN)"
+if [ "$count" -eq 2 ]; then
+  echo "AXVISOR_DEDICATED_PARTITION_PASS online=$online"
+else
+  echo "AXVISOR_DEDICATED_PARTITION_FAIL online=$online count=$count"
+fi
+'''
+timeout = 180
+to_bin = true
+uefi = false

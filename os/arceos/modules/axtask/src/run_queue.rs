@@ -1,3 +1,5 @@
+#[cfg(all(test, feature = "host-test"))]
+use alloc::vec::Vec;
 use alloc::{collections::VecDeque, sync::Arc};
 use core::mem::MaybeUninit;
 #[cfg(feature = "smp")]
@@ -469,6 +471,54 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
             _phantom: core::marker::PhantomData,
         }
     }
+}
+
+/// Returns the run queue for an already validated initial CPU placement.
+#[inline]
+pub(crate) fn run_queue_for_cpu<G: BaseGuard>(cpu_id: usize) -> AxRunQueueRef<'static, G> {
+    let irq_state = G::acquire();
+    #[cfg(not(feature = "smp"))]
+    {
+        let _ = cpu_id;
+        AxRunQueueRef {
+            inner: unsafe { RUN_QUEUE.current_ref_mut_raw() },
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+    #[cfg(feature = "smp")]
+    {
+        AxRunQueueRef {
+            inner: get_run_queue(cpu_id),
+            state: irq_state,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+/// Removes a task from its ready queue without performing a context switch.
+///
+/// This host-test seam drains and restores the other ready tasks in their
+/// original order so tests can inspect activation without entering privileged
+/// architecture context-switch code.
+#[cfg(all(test, feature = "host-test"))]
+pub(crate) fn take_ready_task_for_test(task: &AxTaskRef) -> Option<AxTaskRef> {
+    let run_queue = run_queue_for_cpu::<ax_kernel_guard::NoPreemptIrqSave>(task.cpu_id() as usize);
+    let mut scheduler = run_queue.inner.scheduler.lock();
+    let mut retained = Vec::new();
+    let mut matched = None;
+
+    while let Some(queued) = scheduler.pick_next_task() {
+        if matched.is_none() && Arc::ptr_eq(&queued, task) {
+            matched = Some(queued);
+        } else {
+            retained.push(queued);
+        }
+    }
+    for queued in retained {
+        scheduler.add_task(queued);
+    }
+    matched
 }
 
 /// Selects a run queue for waking a blocked task.

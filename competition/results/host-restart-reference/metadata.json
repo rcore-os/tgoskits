@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-30T18:04:05Z",
+  "scope": "host-ipv4-udp-loopback-session-restart",
+  "repository": {
+    "base_commit": "263f89d8f3d0481d2712224a7b517a73b1165fb3",
+    "implementation_uncommitted": true
+  },
+  "command": "bash competition/ivc/run-restart-recovery.sh tmp/competition/ivc/restart-recovery",
+  "sessions": [101, 202],
+  "expected": {
+    "accepted": 2,
+    "session_resets": 1,
+    "session_rejections": 0,
+    "duplicates": 0,
+    "protocol_errors": 0
+  },
+  "artifacts": {
+    "controller_binary": {
+      "bytes": 5730288,
+      "sha256": "fab4c1d1040256edda4d2829404b5b50f2b9eb60db7c1a0e06e932ca6a8cd205"
+    },
+    "controller-first.log": {
+      "sha256": "74a79e16302f4c45f212bebaa1dfb115d8fb006a60816e78b4df09b7c0891297"
+    },
+    "controller-restarted.log": {
+      "sha256": "7425d45dafd8bbd2d64b629139080fd755769c67431a8d2ca268e5ad7b0993a4"
+    },
+    "rtos.log": {
+      "sha256": "ddadeac6c89546be892626dc6c34e1c9d75fb6796ec0274f7709e4753f8dbe4a"
+    }
+  },
+  "limitations": [
+    "No AxVisor, virtio-net, or Zephyr guest participated.",
+    "Latency values are host functional evidence and are not cross-guest measurements."
+  ]
+}

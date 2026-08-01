@@ -1,0 +1,34 @@
+# Fixed-actuator baseline for the same Linux partition and network topology as
+# linux-smp2.toml. Only the VM name and controller mode differ.
+
+[base]
+id = 1
+name = "linux-ivc-manual-baseline"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [1, 2]
+phys_cpu_sets = [0x2, 0x4]
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 root=/dev/vda ro init=/ivc-init.sh loglevel=7 ivc.mode=manual ivc.count=1800 ivc.period_ms=100"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+passthrough_devices = [
+  ["/"],
+]
+passthrough_addresses = []
+excluded_devices = []
+emu_devices = [
+  ["virtio-net-linux", 0x0a00_1000, 0x1000, 56, 0xE2, [1, 1]],
+]

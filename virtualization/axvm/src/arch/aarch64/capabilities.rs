@@ -4,12 +4,52 @@ use alloc::format;
 
 use super::Aarch64Arch;
 use crate::{
-    AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    AxVmError, AxVmResult,
+    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, PhysicalSpiPlatform},
     ax_err_type,
 };
 
 impl HostTimePlatform for Aarch64Arch {}
+
+impl PhysicalSpiPlatform for Aarch64Arch {
+    fn physical_spi_target_mpidr(vm: &crate::vm::AxVM) -> AxVmResult<Option<usize>> {
+        let placement = crate::manager::vcpu_task_placement(vm.id(), 0).ok_or_else(|| {
+            AxVmError::resource_unavailable(
+                "guest CPU partition",
+                format_args!("VM[{}] vCPU[0] has no validated task affinity", vm.id()),
+            )
+        })?;
+        let enabled_cpu_mask = crate::percpu::enabled_cpu_mask();
+        let host_cpu = placement
+            .affinity
+            .single_enabled_cpu(enabled_cpu_mask)
+            .ok_or_else(|| {
+                AxVmError::interrupt(
+                    "route passthrough device IRQ",
+                    format_args!(
+                        "VM[{}] vCPU[0] affinity {:?} must select exactly one CPU from enabled \
+                         mask {enabled_cpu_mask:#x}",
+                        vm.id(),
+                        placement.affinity
+                    ),
+                )
+            })?;
+        let target_mpidr = someboot::smp::cpu_idx_to_id(host_cpu).ok_or_else(|| {
+            AxVmError::resource_unavailable(
+                "host CPU topology",
+                format_args!("logical CPU {host_cpu} has no hardware MPIDR"),
+            )
+        })?;
+        Ok(Some(target_mpidr))
+    }
+
+    fn with_physical_spi_controller<T, F>(operation: F) -> AxVmResult<Option<T>>
+    where
+        F: FnOnce(&mut dyn crate::vm::PassthroughSpiController) -> AxVmResult<T>,
+    {
+        super::gic::with_passthrough_spi_controller(operation).map(Some)
+    }
+}
 
 impl BootImagePlatform for Aarch64Arch {
     fn load_guest_dtb(

@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "result_kind": "native-zephyr-qemu-real-time-reference",
+  "base_commit": "263f89d8f3d0481d2712224a7b517a73b1165fb3",
+  "worktree_state": "competition implementation changes not yet committed",
+  "scope": "native Zephyr on QEMU; no AxVisor or guest virtualization",
+  "source": {
+    "version": "v4.3.0",
+    "tag_object": "981205b3e7cdf9fdf2e9e71b8b6b64fcc71c12a0",
+    "commit": "3568e1b6d5cdd51a6b964a2a1d6d29200fea2056",
+    "worktree": "clean",
+    "core_autocrlf": "true",
+    "provenance_path": "source-provenance.json",
+    "provenance_sha256": "5e9529a8eb853b7ecd0cc480c8a2ad38a4adefc83d7bf6040b54228402cb4c6e"
+  },
+  "tools": {
+    "west": "1.5.0",
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0",
+    "qemu": "QEMU emulator version 10.0.3",
+    "python": "3.13.7",
+    "host_kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "host_cpu": "Intel(R) Core(TM) i5-14600KF"
+  },
+  "configuration": {
+    "board": "qemu_cortex_a53",
+    "cpu_model": "cortex-a53",
+    "cpu_count": 1,
+    "qemu_icount": false,
+    "clock_hz": 62500000,
+    "ticks_per_second": 1000,
+    "period_us": 1000,
+    "warmup_expirations": 100,
+    "measured_expirations": 10000,
+    "benchmark_priority": -16,
+    "stress_priority": 5,
+    "percentile_method": "nearest-rank",
+    "measurement_logging": "no console output while measured samples are collected"
+  },
+  "runs": {
+    "idle": {
+      "observed_at_utc": "2026-07-31T00:53:55Z",
+      "summary": "idle-summary.json",
+      "summary_sha256": "e6625bdf0e993d81e6fb8e68d37c3dbf6db88f85f52d947565549abb076de7a1",
+      "raw_console": {
+        "capture_path": "tmp/competition/rt-baseline/zephyr/reference-measured-window-20260731/idle/qemu.log",
+        "retained_gzip": "idle-qemu.log.gz",
+        "uncompressed_bytes": 1362,
+        "uncompressed_sha256": "20a6901db7395f37b7bfdae110ef63d69235ed8fd11b52d1e2a92565ef1b57b1",
+        "gzip_bytes": 649,
+        "gzip_sha256": "cb861bb09c980b1099520057f587c4a152836a3b8a75696e54d4d1d572c51ce7"
+      },
+      "build_log": {
+        "capture_path": "tmp/competition/rt-baseline/zephyr/reference-measured-window-20260731/idle/build.log",
+        "retained_gzip": "idle-build.log.gz",
+        "uncompressed_bytes": 17129,
+        "uncompressed_sha256": "f5e9bfe4f78413a5c66e214a28bc15a070000051c1713192d48bcb946135e5be",
+        "gzip_bytes": 2962,
+        "gzip_sha256": "a9367dfed1fcfdd6daba689668a29facd058c0b92536ebc2e817107e3ae48d76"
+      },
+      "load": {
+        "window_duration_us": 10100820,
+        "cpu_non_idle_permille": 11,
+        "cpu_idle_permille": 988,
+        "benchmark_permille": 10,
+        "stress_permille": 0
+      },
+      "completion": {
+        "status": "pass",
+        "timer_misses": 0,
+        "warmup_timer_misses": 0,
+        "early_wakes": 0
+      }
+    },
+    "cpu_stress": {
+      "observed_at_utc": "2026-07-31T00:56:20Z",
+      "summary": "stress-summary.json",
+      "summary_sha256": "99d9ae54c5104c0400afa197e752f5a62c618860cacf61796833e98ccb204c52",
+      "raw_console": {
+        "capture_path": "tmp/competition/rt-baseline/zephyr/reference-measured-window-20260731/cpu-stress/qemu.log",
+        "retained_gzip": "stress-qemu.log.gz",
+        "uncompressed_bytes": 1418,
+        "uncompressed_sha256": "767b40de4244c5368281de2804f2445e9be6ffb06fcb69e01ac5781037fc9f42",
+        "gzip_bytes": 672,
+        "gzip_sha256": "92d66690e48018b13fb76cbc0229955527651cef65447906f88afb605f5dfbc7"
+      },
+      "build_log": {
+        "capture_path": "tmp/competition/rt-baseline/zephyr/reference-measured-window-20260731/cpu-stress/build.log",
+        "retained_gzip": "stress-build.log.gz",
+        "uncompressed_bytes": 17293,
+        "uncompressed_sha256": "8a18262902329e991b3524d49d99f31d6ff22d94f2571d65f8090e2e08d00273",
+        "gzip_bytes": 2973,
+        "gzip_sha256": "bb6b35ea7ffb200a23defc85c7d074bf3d8f30e5b3719fa7129e8ef614c1137c"
+      },
+      "load": {
+        "window_duration_us": 10101056,
+        "cpu_non_idle_permille": 1000,
+        "cpu_idle_permille": 0,
+        "benchmark_permille": 14,
+        "stress_permille": 985,
+        "stress_blocks": 7916855,
+        "stress_blocks_per_second": 783765
+      },
+      "completion": {
+        "status": "pass",
+        "timer_misses": 68,
+        "warmup_timer_misses": 0,
+        "early_wakes": 0
+      }
+    }
+  },
+  "limitations": [
+    "This is one approximately ten-second run per workload, not a long-duration soak.",
+    "QEMU TCG and host scheduling can dominate the observed tail; values are not hardware real-time guarantees.",
+    "The native and standalone AxVisor platforms differ in CPU model, topology, guest OS, timer path, and stress placement.",
+    "The retained raw consoles contain post-measurement aggregate records but not individual sample values; the native sample series was not emitted.",
+    "The exact raw consoles and build logs are retained here as deterministic gzip streams; generated binaries and .config files are not retained, but their hashes remain in the validated summaries."
+  ]
+}

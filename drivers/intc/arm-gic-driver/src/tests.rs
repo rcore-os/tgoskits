@@ -2,7 +2,10 @@ extern crate std;
 
 #[cfg(target_arch = "aarch64")]
 use crate::version::v3::{LPI, RedistributorV3, RedistributorV4, SGI};
-use crate::{CheckedIntIdError, IntId, checked_intid, define::Trigger, fdt_parse_irq_config};
+use crate::{
+    CheckedIntIdError, IntId, checked_intid, checked_spi_intid, define::Trigger,
+    fdt_parse_irq_config,
+};
 
 #[cfg(target_arch = "aarch64")]
 #[test]
@@ -45,10 +48,25 @@ fn test_ppi() {
 }
 
 #[test]
+#[should_panic]
+fn test_spi_rejects_out_of_range_index() {
+    let _ = IntId::spi(988);
+}
+
+#[test]
 fn checked_intid_rejects_special_and_out_of_range_intids() {
     assert_eq!(checked_intid(1019, 1020).unwrap().to_u32(), 1019);
     assert_eq!(checked_intid(1020, 1024), Err(CheckedIntIdError));
     assert_eq!(checked_intid(4096, 1024), Err(CheckedIntIdError));
+}
+
+#[test]
+fn checked_spi_rejects_private_special_and_unimplemented_intids() {
+    assert_eq!(checked_spi_intid(31, 288), Err(CheckedIntIdError));
+    assert_eq!(checked_spi_intid(32, 288).unwrap().to_u32(), 32);
+    assert_eq!(checked_spi_intid(287, 288).unwrap().to_u32(), 287);
+    assert_eq!(checked_spi_intid(288, 288), Err(CheckedIntIdError));
+    assert_eq!(checked_spi_intid(1020, 4096), Err(CheckedIntIdError));
 }
 
 #[test]

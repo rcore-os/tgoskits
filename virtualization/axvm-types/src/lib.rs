@@ -498,17 +498,19 @@ pub trait VmArchPerCpuOps: Sized {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VmVcpuState {
     /// Invalid state.
-    Invalid = 0,
+    Invalid  = 0,
     /// Initial state after vCPU creation.
-    Created = 1,
+    Created  = 1,
     /// vCPU is initialized and free.
-    Free    = 2,
+    Free     = 2,
     /// vCPU is bound and ready to run.
-    Ready   = 3,
+    Ready    = 3,
     /// vCPU is currently running.
-    Running = 4,
+    Running  = 4,
     /// vCPU is blocked.
-    Blocked = 5,
+    Blocked  = 5,
+    /// vCPU startup is reserved but its host task is not running yet.
+    Starting = 6,
 }
 
 /// A part of `AxVMConfig`, which represents guest VM type.

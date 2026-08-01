@@ -1,0 +1,15 @@
+//! Bounded application protocol and control logic for Linux/StarryOS-to-RTOS IVC.
+//!
+//! The library is intentionally independent of sockets and an async runtime. A
+//! caller owns one [`ReliablePeer`] per configured peer and transports encoded
+//! datagrams using its OS-specific UDP implementation.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+pub mod control;
+pub mod endpoint;
+pub mod neural;
+pub mod reliability;
+pub mod wire;
+
+pub use reliability::ReliablePeer;
