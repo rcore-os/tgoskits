@@ -27,6 +27,7 @@ mod exception_utils;
 #[cfg(target_arch = "aarch64")]
 mod exception;
 pub mod host;
+mod ich;
 mod interrupt;
 #[cfg(target_arch = "aarch64")]
 mod pcpu;
@@ -38,6 +39,7 @@ mod vcpu;
 
 pub use self::{
     host::ArmHostOps,
+    ich::IchCapabilityProfile,
     interrupt::{
         ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState, plan_direct_injection,
     },

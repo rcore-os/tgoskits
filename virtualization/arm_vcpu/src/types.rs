@@ -29,6 +29,14 @@ pub enum ArmVcpuError {
     /// Hardware or software state is inconsistent with the requested transition.
     #[error("invalid AArch64 vCPU state")]
     BadState,
+    /// The current CPU reported an invalid ICH virtualization-interface profile.
+    #[error("invalid ICH capability value {raw_vtr:#x}: {reason}")]
+    InvalidIchCapability {
+        /// Raw `ICH_VTR_EL2` value that failed validation.
+        raw_vtr: u64,
+        /// Architectural rule violated by the value.
+        reason: crate::ich::IchCapabilityError,
+    },
     /// A virtual interrupt identifier is outside the traditional INTID range.
     #[error("virtual interrupt ID {value} is outside the supported range 0..=1019")]
     InvalidVirtualInterruptId {
