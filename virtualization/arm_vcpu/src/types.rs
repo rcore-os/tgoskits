@@ -99,6 +99,41 @@ pub enum ArmVcpuError {
         /// CPU capability against which the policy was checked.
         capability: crate::IchCapabilityProfile,
     },
+    /// A vCPU is already bound to a physical CPU's ICH interface.
+    #[error("vCPU ICH context is already bound to logical CPU {cpu_id}")]
+    IchVcpuAlreadyBound {
+        /// Current owner CPU.
+        cpu_id: usize,
+    },
+    /// A vCPU has no physical ICH interface owner.
+    #[error("vCPU ICH context is not bound")]
+    IchVcpuNotBound,
+    /// Unbind was attempted from a CPU other than the current owner.
+    #[error("vCPU ICH context is bound to logical CPU {expected_cpu}, not {actual_cpu}")]
+    IchVcpuCpuMismatch {
+        /// Logical CPU that owns the context.
+        expected_cpu: usize,
+        /// Logical CPU supplied by the caller.
+        actual_cpu: usize,
+    },
+    /// A migration target cannot represent the vCPU's fixed ICH state shape.
+    #[error(
+        "logical CPU {cpu_id} capability {available:?} cannot represent {required_list_registers} \
+         saved LRs with {required_priority_bits} priority bits and {required_preemption_bits} \
+         preemption bits"
+    )]
+    IncompatibleIchVcpuCapability {
+        /// Rejected migration target CPU.
+        cpu_id: usize,
+        /// Fixed LR capacity selected on first bind.
+        required_list_registers: usize,
+        /// Fixed virtual priority width.
+        required_priority_bits: usize,
+        /// Fixed virtual preemption width.
+        required_preemption_bits: usize,
+        /// Target CPU capability.
+        available: crate::IchCapabilityProfile,
+    },
     /// A virtual interrupt identifier is outside the traditional INTID range.
     #[error("virtual interrupt ID {value} is outside the supported range 0..=1019")]
     InvalidVirtualInterruptId {

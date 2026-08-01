@@ -186,6 +186,7 @@ impl IchCapabilityProfile {
         })
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
     const fn packed(self) -> u64 {
         self.list_register_count as u64
             | (self.virtual_intid_bits as u64) << 5
@@ -243,6 +244,7 @@ impl<const CAPACITY: usize> IchCapabilityRegistry<CAPACITY> {
         }
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
     fn publish(&self, cpu_id: usize, profile: IchCapabilityProfile) -> ArmVcpuResult {
         let slot = self.slot(cpu_id)?;
         let attempted = profile.packed();

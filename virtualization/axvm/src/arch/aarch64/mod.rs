@@ -251,11 +251,11 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     }
 
     fn bind(&mut self) -> BackendResult {
-        arm_result(self.0.bind())
+        arm_result(self.0.bind(default_host().this_cpu_id()))
     }
 
     fn unbind(&mut self) -> BackendResult {
-        arm_result(self.0.unbind())
+        arm_result(self.0.unbind(default_host().this_cpu_id()))
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
@@ -321,12 +321,24 @@ fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
     match err {
         ArmVcpuError::InvalidInput => BackendError::InvalidInput,
         ArmVcpuError::Unsupported => BackendError::Unsupported,
-        ArmVcpuError::BadState => BackendError::InvalidState,
+        ArmVcpuError::BadState
+        | ArmVcpuError::IchVcpuAlreadyBound { .. }
+        | ArmVcpuError::IchVcpuNotBound
+        | ArmVcpuError::IchVcpuCpuMismatch { .. } => BackendError::InvalidState,
         ArmVcpuError::InvalidVirtualInterruptId { .. } => BackendError::InvalidInput,
         ArmVcpuError::InvalidListRegisterCount { .. }
-        | ArmVcpuError::MalformedListRegister { .. } => BackendError::InvalidData,
+        | ArmVcpuError::MalformedListRegister { .. }
+        | ArmVcpuError::InvalidIchCapability { .. }
+        | ArmVcpuError::UnexpectedIchEoiCount { .. } => BackendError::InvalidData,
         ArmVcpuError::NoFreeListRegister { .. } => BackendError::ResourceBusy,
-        ArmVcpuError::UnsupportedListRegister { .. } => BackendError::Unsupported,
+        ArmVcpuError::UnsupportedListRegister { .. }
+        | ArmVcpuError::UnsupportedIchHcrPolicy { .. }
+        | ArmVcpuError::IncompatibleIchCapabilities { .. }
+        | ArmVcpuError::IncompatibleIchVcpuCapability { .. } => BackendError::Unsupported,
+        ArmVcpuError::IchCapabilityCpuOutOfRange { .. } => BackendError::InvalidInput,
+        ArmVcpuError::IchCapabilityNotPublished { .. }
+        | ArmVcpuError::IchCapabilityConflict { .. }
+        | ArmVcpuError::IchRegisterAccess { .. } => BackendError::InvalidState,
     }
 }
 

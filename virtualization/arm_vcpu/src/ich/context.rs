@@ -38,7 +38,46 @@ pub(crate) struct IchVcpuContext {
 }
 
 impl IchVcpuContext {
-    pub(crate) fn initialize(&mut self, profile: IchCapabilityProfile) {
+    pub(crate) fn bind<R: IchRegisterAccess>(
+        &mut self,
+        cpu_id: usize,
+        registers: &mut R,
+        cpu_profile: IchCapabilityProfile,
+    ) -> ArmVcpuResult {
+        if let Some(bound_cpu) = self.bound_cpu {
+            return Err(ArmVcpuError::IchVcpuAlreadyBound { cpu_id: bound_cpu });
+        }
+
+        self.initialize(cpu_profile);
+        self.ensure_compatible(cpu_id, cpu_profile)?;
+        self.restore(registers, cpu_profile)?;
+        self.bound_cpu = Some(cpu_id);
+        Ok(())
+    }
+
+    pub(crate) fn unbind<R: IchRegisterAccess>(
+        &mut self,
+        cpu_id: usize,
+        registers: &mut R,
+        cpu_profile: IchCapabilityProfile,
+    ) -> ArmVcpuResult {
+        match self.bound_cpu {
+            None => return Err(ArmVcpuError::IchVcpuNotBound),
+            Some(expected_cpu) if expected_cpu != cpu_id => {
+                return Err(ArmVcpuError::IchVcpuCpuMismatch {
+                    expected_cpu,
+                    actual_cpu: cpu_id,
+                });
+            }
+            Some(_) => {}
+        }
+
+        let result = self.save(registers, cpu_profile);
+        self.bound_cpu = None;
+        result
+    }
+
+    fn initialize(&mut self, profile: IchCapabilityProfile) {
         if self.capacity.is_none() {
             self.capacity = Some(IchContextCapacity::from_profile(profile));
             self.initialized = true;
@@ -51,7 +90,10 @@ impl IchVcpuContext {
         cpu_profile: IchCapabilityProfile,
     ) -> ArmVcpuResult {
         let capacity = self.capacity.ok_or(ArmVcpuError::BadState)?;
-        self.hcr_policy.validate(cpu_profile)?;
+        if let Err(error) = self.hcr_policy.validate(cpu_profile) {
+            cleanup_local_interface(registers, cpu_profile);
+            return Err(error);
+        }
 
         let result = self.restore_disabled(registers, capacity, cpu_profile);
         if let Err(error) = result {
@@ -96,6 +138,21 @@ impl IchVcpuContext {
 
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    fn ensure_compatible(&self, cpu_id: usize, cpu_profile: IchCapabilityProfile) -> ArmVcpuResult {
+        let capacity = self.capacity.ok_or(ArmVcpuError::BadState)?;
+        if capacity.is_supported_by(cpu_profile) {
+            Ok(())
+        } else {
+            Err(ArmVcpuError::IncompatibleIchVcpuCapability {
+                cpu_id,
+                required_list_registers: capacity.list_register_count,
+                required_priority_bits: capacity.priority_bits,
+                required_preemption_bits: capacity.preemption_bits,
+                available: cpu_profile,
+            })
+        }
     }
 
     fn restore_disabled<R: IchRegisterAccess>(
@@ -158,6 +215,8 @@ impl IchHcrPolicy {
 struct IchContextCapacity {
     list_register_count: usize,
     active_priority_register_count: usize,
+    priority_bits: usize,
+    preemption_bits: usize,
 }
 
 impl IchContextCapacity {
@@ -165,7 +224,16 @@ impl IchContextCapacity {
         Self {
             list_register_count: profile.list_register_count(),
             active_priority_register_count: profile.active_priority_register_count(),
+            priority_bits: profile.priority_bits(),
+            preemption_bits: profile.preemption_bits(),
         }
+    }
+
+    const fn is_supported_by(self, profile: IchCapabilityProfile) -> bool {
+        profile.list_register_count() >= self.list_register_count
+            && profile.active_priority_register_count() == self.active_priority_register_count
+            && profile.priority_bits() == self.priority_bits
+            && profile.preemption_bits() == self.preemption_bits
     }
 }
 
@@ -533,6 +601,22 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_restore_policy_still_disables_and_clears_the_local_interface() {
+        let profile = profile();
+        let mut context = IchVcpuContext::default();
+        context.initialize(profile);
+        context.hcr_policy = IchHcrPolicy(HCR_ENABLE | HCR_TRAP_DEACTIVATE);
+        let mut registers = FakeRegisters::populated();
+
+        assert!(matches!(
+            context.restore(&mut registers, profile),
+            Err(ArmVcpuError::UnsupportedIchHcrPolicy { .. })
+        ));
+        assert_eq!(registers.hcr, 0);
+        assert!(registers.lrs[..4].iter().all(|value| *value == 0));
+    }
+
+    #[test]
     fn save_failure_still_disables_and_clears_the_local_interface() {
         let profile = profile();
         let mut context = IchVcpuContext::default();
@@ -562,6 +646,79 @@ mod tests {
         assert_eq!(context.capacity, None);
         assert!(!context.initialized);
         assert_eq!(context.bound_cpu, None);
+    }
+
+    #[test]
+    fn bind_rejects_double_binding_and_unbind_rejects_wrong_cpu() {
+        let profile = profile();
+        let mut context = IchVcpuContext::default();
+        let mut registers = FakeRegisters::populated();
+        registers.hcr = 0;
+
+        context.bind(1, &mut registers, profile).unwrap();
+        assert_eq!(
+            context.bind(1, &mut registers, profile),
+            Err(ArmVcpuError::IchVcpuAlreadyBound { cpu_id: 1 })
+        );
+        assert_eq!(
+            context.unbind(2, &mut registers, profile),
+            Err(ArmVcpuError::IchVcpuCpuMismatch {
+                expected_cpu: 1,
+                actual_cpu: 2,
+            })
+        );
+        assert_eq!(context.bound_cpu, Some(1));
+    }
+
+    #[test]
+    fn migration_rejects_a_cpu_with_fewer_lrs_than_first_bind() {
+        let initial = profile();
+        let smaller = IchCapabilityProfile::from_raw_vtr(1 | (4 << 26) | (4 << 29)).unwrap();
+        let mut context = IchVcpuContext::default();
+        let mut registers = FakeRegisters::populated();
+        registers.hcr = 0;
+
+        context.bind(0, &mut registers, initial).unwrap();
+        context.unbind(0, &mut registers, initial).unwrap();
+
+        assert!(matches!(
+            context.bind(1, &mut registers, smaller),
+            Err(ArmVcpuError::IncompatibleIchVcpuCapability {
+                cpu_id: 1,
+                required_list_registers: 4,
+                ..
+            })
+        ));
+        assert_eq!(context.bound_cpu, None);
+    }
+
+    #[test]
+    fn alternating_vcpus_preserve_isolated_ich_state() {
+        let profile = profile();
+        let mut first = IchVcpuContext::default();
+        let mut second = IchVcpuContext::default();
+        let mut registers = FakeRegisters::populated();
+        registers.hcr = 0;
+        registers.vmcr = 0;
+        registers.lrs.fill(0);
+
+        first.bind(0, &mut registers, profile).unwrap();
+        registers.hcr = HCR_ENABLE;
+        registers.vmcr = 0xa1;
+        registers.lrs[0] = 0xa2;
+        first.unbind(0, &mut registers, profile).unwrap();
+
+        second.bind(0, &mut registers, profile).unwrap();
+        assert_eq!(registers.vmcr, 0);
+        assert_eq!(registers.lrs[0], 0);
+        registers.vmcr = 0xb1;
+        registers.lrs[0] = 0xb2;
+        second.unbind(0, &mut registers, profile).unwrap();
+
+        first.bind(0, &mut registers, profile).unwrap();
+        assert_eq!(registers.hcr, HCR_ENABLE);
+        assert_eq!(registers.vmcr, 0xa1);
+        assert_eq!(registers.lrs[0], 0xa2);
     }
 
     fn profile() -> IchCapabilityProfile {

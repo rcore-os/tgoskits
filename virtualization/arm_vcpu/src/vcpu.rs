@@ -147,6 +147,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Completes architecture-specific setup.
     pub fn setup(&mut self, config: ArmVcpuSetupConfig) -> ArmVcpuResult {
+        self.ich.reset();
         self.init_hv(config);
         Ok(())
     }
@@ -193,13 +194,17 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     }
 
     /// Binds this vCPU to the current physical CPU.
-    pub fn bind(&mut self) -> ArmVcpuResult {
-        Ok(())
+    pub fn bind(&mut self, cpu_id: usize) -> ArmVcpuResult {
+        let profile = crate::ich_capability(cpu_id)?;
+        self.ich
+            .bind(cpu_id, &mut crate::ich::HardwareIchRegisters, profile)
     }
 
     /// Unbinds this vCPU from the current physical CPU.
-    pub fn unbind(&mut self) -> ArmVcpuResult {
-        Ok(())
+    pub fn unbind(&mut self, cpu_id: usize) -> ArmVcpuResult {
+        let profile = crate::ich_capability(cpu_id)?;
+        self.ich
+            .unbind(cpu_id, &mut crate::ich::HardwareIchRegisters, profile)
     }
 
     /// Sets a general-purpose register.
