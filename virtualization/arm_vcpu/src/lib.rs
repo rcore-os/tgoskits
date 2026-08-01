@@ -45,7 +45,7 @@ pub use self::{
     },
     types::{
         ArmAccessWidth, ArmGuestPhysAddr, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError,
-        ArmVcpuResult, ArmVmExit,
+        ArmVcpuResult, ArmVmExit, IchRegisterOperation,
     },
 };
 

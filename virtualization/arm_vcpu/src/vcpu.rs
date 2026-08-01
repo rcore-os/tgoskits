@@ -53,6 +53,7 @@ pub struct ArmVcpu<H: ArmHostOps> {
     // Keep `ctx` first and `host` immediately after it.
     ctx: TrapFrame,
     host: HostRuntimeContext,
+    ich: crate::ich::IchVcpuContext,
     guest_system_regs: GuestSystemRegisters,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
@@ -137,6 +138,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         Ok(Self {
             ctx,
             host: HostRuntimeContext::default(),
+            ich: crate::ich::IchVcpuContext::default(),
             guest_system_regs: GuestSystemRegisters::default(),
             mpidr: config.mpidr_el1,
             _host: PhantomData,

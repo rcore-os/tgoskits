@@ -79,6 +79,26 @@ pub enum ArmVcpuError {
         /// Incompatible CPU profile.
         other: crate::IchCapabilityProfile,
     },
+    /// A low-level ICH register transaction failed.
+    #[error("ICH register operation failed: {operation:?}")]
+    IchRegisterAccess {
+        /// Operation that could not be completed.
+        operation: IchRegisterOperation,
+    },
+    /// `ICH_HCR_EL2.EOICOUNT` was nonzero while saving a vCPU interface.
+    #[error("ICH_HCR_EL2 reported nonzero EOICOUNT {count}")]
+    UnexpectedIchEoiCount {
+        /// Observed five-bit EOICOUNT value.
+        count: u8,
+    },
+    /// The saved HCR policy requires a capability absent from this CPU.
+    #[error("ICH HCR policy {policy:#x} is unsupported by capability {capability:?}")]
+    UnsupportedIchHcrPolicy {
+        /// Owned HCR policy bits that cannot be restored.
+        policy: u64,
+        /// CPU capability against which the policy was checked.
+        capability: crate::IchCapabilityProfile,
+    },
     /// A virtual interrupt identifier is outside the traditional INTID range.
     #[error("virtual interrupt ID {value} is outside the supported range 0..=1019")]
     InvalidVirtualInterruptId {
@@ -109,6 +129,31 @@ pub enum ArmVcpuError {
         /// The unsupported list register slot.
         slot: usize,
     },
+}
+
+/// One typed operation performed against the CPU-local ICH register bank.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IchRegisterOperation {
+    /// Read `ICH_HCR_EL2`.
+    ReadHcr,
+    /// Write `ICH_HCR_EL2`.
+    WriteHcr,
+    /// Read `ICH_VMCR_EL2`.
+    ReadVmcr,
+    /// Write `ICH_VMCR_EL2`.
+    WriteVmcr,
+    /// Read an AP0R slot.
+    ReadAp0r(usize),
+    /// Write an AP0R slot.
+    WriteAp0r(usize),
+    /// Read an AP1R slot.
+    ReadAp1r(usize),
+    /// Write an AP1R slot.
+    WriteAp1r(usize),
+    /// Read a list-register slot.
+    ReadListRegister(usize),
+    /// Write a list-register slot.
+    WriteListRegister(usize),
 }
 
 /// Guest physical address.
