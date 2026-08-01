@@ -580,3 +580,14 @@ pub fn show_available_commands() {
     println!();
     println!("Tip: Use 'help <command>' to see detailed usage of a command");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::build_command_tree;
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn shutdown_command_is_registered_when_filesystem_is_enabled() {
+        assert!(build_command_tree().contains_key("shutdown"));
+    }
+}

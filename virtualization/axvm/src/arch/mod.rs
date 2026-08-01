@@ -66,10 +66,7 @@ pub mod platform {
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
     };
-    #[cfg(all(
-        any(target_arch = "x86_64", target_arch = "loongarch64"),
-        any(feature = "fs", feature = "host-fs")
-    ))]
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub use crate::host::arceos::shutdown_host_filesystems;
 }
 

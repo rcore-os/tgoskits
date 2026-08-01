@@ -93,6 +93,13 @@ Important details:
 - If output reaches `Exiting UEFI boot services...` and stops before the next someboot print, instrument immediately before and after `ExitBootServices`, memory map handoff, first post-exit console call, and MMU/trap setup.
 - Container success still needs host-independent documentation if the CI or developer flow depends on that image.
 
+## Axvisor Physical-Board Shutdown Handoff
+
+- When an Axvisor board build enables `fs`, use the shell's `shutdown` command before an external reset or power cycle. Wait for the exact `AXVISOR_HOST_FILESYSTEM_SYNCED` marker; it confirms that cached host filesystem state was written and block IRQ registrations were released before the platform powers off.
+- Treat `AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:` as a hard stop. Preserve the serial log and do not remove power automatically, because the host filesystem could still contain dirty state.
+- The Axvisor shell does not interpret shell operators such as `;`. Board automation must send `shutdown` as a standalone command rather than a Linux-style `sync; ...` command line.
+- Never expose the same physical root partition to a guest after Axvisor mounts it. Use an independent guest image or device so the host and guest cannot mutate one filesystem concurrently.
+
 ## QEMU Debugging Patterns
 
 - Add `-S -s` to stop at reset and attach GDB when the failure is before the first reliable print.

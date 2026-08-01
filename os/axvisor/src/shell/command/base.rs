@@ -356,6 +356,23 @@ fn do_exit(cmd: &ParsedCommand) {
     std::process::exit(exit_code);
 }
 
+#[cfg(feature = "fs")]
+fn do_shutdown(_cmd: &ParsedCommand) {
+    if let Err(error) = axvm::shutdown_host_filesystems() {
+        println!("AXVISOR_HOST_FILESYSTEM_SYNC_FAILED: {error}");
+        return;
+    }
+
+    // This marker is the handoff contract with external board automation:
+    // power may be removed only after the filesystem state reaches storage.
+    println!("AXVISOR_HOST_FILESYSTEM_SYNCED");
+    std::io::stdout().flush().ok();
+    // AxStd stdout is unbuffered, but a UART can still hold the final bytes in
+    // its hardware FIFO. Give the transmitter time to drain before shutdown.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::process::exit(0);
+}
+
 fn do_log(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -748,6 +765,14 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         CommandNode::new("Exit the shell")
             .with_handler(do_exit)
             .with_usage("exit [EXIT_CODE]"),
+    );
+
+    #[cfg(feature = "fs")]
+    tree.insert(
+        "shutdown".to_string(),
+        CommandNode::new("Sync host filesystems and power off")
+            .with_handler(do_shutdown)
+            .with_usage("shutdown"),
     );
 
     // log Command
