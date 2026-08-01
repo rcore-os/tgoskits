@@ -19,6 +19,9 @@ use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
+const TMPFS_MAGIC: u32 = 0x0102_1994;
+const RAMFS_MAGIC: u32 = 0x8584_58f6;
+
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
 
 fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
@@ -68,6 +71,8 @@ impl Borrow<str> for FileName {
 
 /// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
+    name: &'static str,
+    fs_type: u32,
     // Inodes may be released from atomic cleanup paths, so the slab and
     // metadata locks must not sleep.
     inodes: SpinNoIrq<Slab<Arc<Inode>>>,
@@ -85,10 +90,23 @@ impl MemoryFs {
         fs
     }
 
+    /// Creates an empty ramfs instance with the Linux-visible ramfs identity.
+    pub fn new_ramfs() -> Filesystem {
+        let (fs, handle) = Self::new_named_with_handle("ramfs", RAMFS_MAGIC);
+        drop(handle);
+        fs
+    }
+
     /// Creates a new empty memory filesystem and returns a handle to the
     /// underlying `MemoryFs` so callers can create anonymous (unlinked) nodes.
     pub fn new_with_handle() -> (Filesystem, Arc<Self>) {
+        Self::new_named_with_handle("tmpfs", TMPFS_MAGIC)
+    }
+
+    fn new_named_with_handle(name: &'static str, fs_type: u32) -> (Filesystem, Arc<Self>) {
         let handle = Arc::new(Self {
+            name,
+            fs_type,
             inodes: SpinNoIrq::new(Slab::new()),
             root: SpinNoIrq::new(None),
         });
@@ -134,7 +152,7 @@ impl MemoryFs {
 
 impl FilesystemOps for MemoryFs {
     fn name(&self) -> &str {
-        "tmpfs"
+        self.name
     }
 
     fn root_dir(&self) -> DirEntry {
@@ -152,7 +170,7 @@ impl FilesystemOps for MemoryFs {
         // size, which is enough to unblock every Java server we've hit and remains
         // accurate when the guest VM has >= 2 GiB.
         Ok(StatFs {
-            fs_type: 0x01021994,
+            fs_type: self.fs_type,
             block_size: 4096,
             blocks: 1 << 20,
             blocks_free: 1 << 20,
