@@ -55,6 +55,12 @@ for AxVisor's filesystem support. QEMU is configured with `-net none`; all
 guest Ethernet traffic is delivered by AxVisor's emulated virtio-net devices
 and internal switch.
 
+The physical Orange Pi 5 Plus profile preserves the guest GPA layout and
+three-vCPU partition on RK3588 hardware. AxVisor reads the Linux artifacts from
+the board's ext4 filesystem, embeds the Zephyr image at build time, and exposes
+separate output-only PL011 consoles instead of passing through the physical
+debug UART.
+
 ## 3. Guest and platform configuration
 
 The full profile is composed from:
@@ -75,6 +81,14 @@ The full profile is composed from:
   [`ack-loss.conf`](ivc/zephyr/ack-loss.conf): otherwise identical Zephyr image
   that suppresses selected first ACKs.
 
+The maintained physical profiles use
+[`axvisor-orangepi-5-plus.toml`](ivc/config/axvisor-orangepi-5-plus.toml) and
+its smoke variant, matching `board-orangepi-5-plus*.toml` lifecycle checks,
+`orangepi-5-plus-linux-smp2*.toml`, and
+`orangepi-5-plus-zephyr*.toml`. Linux artifacts are staged below
+`/home/orangepi/axvisor-guest`; no sudo password is stored in the WSL host
+automation.
+
 | Resource | Linux VM 1 | Zephyr VM 2 |
 | --- | --- | --- |
 | vCPUs | 2 | 1 |
@@ -83,7 +97,7 @@ The full profile is composed from:
 | Guest memory | `0x80000000..0x8fffffff`, 256 MiB, identity map | `0x40000000..0x47ffffff`, 128 MiB, allocated map |
 | Entry/load address | `0x80200000` | `0x40000000` |
 | DTB address | `0x80000000` | `0x47e00000` |
-| Image | `/guest/linux/linux-qemu` in AxVisor filesystem | `ivc/zephyr/build/zephyr/zephyr.bin` |
+| Image | QEMU: `/guest/linux/linux-qemu`; board: `/home/orangepi/axvisor-guest/linux-qemu` | QEMU: `ivc/zephyr/build/zephyr/zephyr.bin`; board: `ivc/zephyr/build-board/zephyr/zephyr.bin` |
 | virtio-net MMIO | `0x0a001000`, 4 KiB | `0x0a002000`, 4 KiB |
 | Guest interrupt | architectural INTID 56 | architectural INTID 64 (DTS `GIC_SPI 32`) |
 | MAC | `52:54:00:00:00:01` | `52:54:00:00:00:02` |
@@ -115,6 +129,13 @@ through the AArch64 physical-SPI ownership gate described below.
 Zephyr targets upstream `qemu_cortex_a53` v4.3.0. Its device-tree overlay
 enables virtio-mmio slot 16 and fixes the link address. Startup rejects a
 runtime MAC mismatch before binding the UDP socket.
+
+For physical Linux boot, the supplied minimal guest DTB describes GICv3 at
+`0x08000000`, one 128 KiB redistributor frame per vCPU starting at
+`0x080a0000`, the architectural timer, PL011 at `0x09000000`, and virtio-net at
+`0x0a001000`. Host CPU IDs still replace the placeholder CPU nodes, but AxVisor
+removes `cpu-idle-states` because its PSCI implementation does not support
+`CPU_SUSPEND`. Only the last redistributor advertises `GICR_TYPER.Last`.
 
 The virtio-net backend uses Linux-compatible feature negotiation: the 10-byte
 header is limited to a legacy driver that accepts neither
@@ -433,9 +454,9 @@ image hashes are retained under
   boundary and retain the on-wire contract.
 
 The required shared/partitioned idle/stress/soak campaign, deterministic
-cross-guest ACK-loss campaign, and durable QEMU evidence are complete. The
-actual approximately five-minute video and intentionally deferred dev-target
-PR remain outstanding.
+cross-guest ACK-loss campaign, durable QEMU evidence, and one complete physical
+Orange Pi neural run are complete. The actual approximately five-minute video
+and dev-target PR remain outstanding.
 
 Cross-guest malformed-ERROR, controller-restart, and a third-guest runtime
 cross-segment negative capture would strengthen the evidence, but the current

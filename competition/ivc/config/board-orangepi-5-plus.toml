@@ -1,0 +1,14 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "axvisor:/$"
+shell_init_cmd = "shutdown"
+success_regex = [
+  "\\[guest-console:pl011-linux\\] IVC-LINUX-DONE exit=0\\r*\\n",
+]
+fail_regex = [
+  "(?m)^.*IVC-(LINUX|RTOS)-(SELFTEST FAIL|NET-ERROR|FATAL).*$",
+  "(?m)^.*IVC-LINUX-DONE exit=[1-9][0-9]*\\s*$",
+  "(?m)^.*Failed to initialize guest VM.*$",
+  "(?m)^.*AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:.*$",
+  "(?mi)^.*panicked at.*$",
+]
+timeout = 600

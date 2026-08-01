@@ -10,7 +10,20 @@ exec >/dev/console 2>&1
 kernel_argument() {
     key="$1"
     default_value="$2"
-    for argument in $(cat /proc/cmdline); do
+    cmdline=
+    IFS= read -r cmdline </proc/cmdline || true
+    while [ -n "$cmdline" ]; do
+        case "$cmdline" in
+            *" "*)
+                argument=${cmdline%% *}
+                cmdline=${cmdline#* }
+                ;;
+            *)
+                argument=$cmdline
+                cmdline=
+                ;;
+        esac
+        [ -n "$argument" ] || continue
         case "$argument" in
             "$key"=*)
                 echo "${argument#*=}"
@@ -24,8 +37,17 @@ kernel_argument() {
 mode=$(kernel_argument ivc.mode neural)
 count=$(kernel_argument ivc.count 1800)
 period_ms=$(kernel_argument ivc.period_ms 100)
+exit_after_run=$(kernel_argument ivc.exit_after_run 0)
 
-echo "IVC-LINUX-BOOT mode=$mode count=$count period_ms=$period_ms"
+case "$exit_after_run" in
+    0|1) ;;
+    *)
+        echo "IVC-LINUX-FATAL reason=invalid-exit-after-run value=$exit_after_run"
+        exec sh
+        ;;
+esac
+
+echo "IVC-LINUX-BOOT mode=$mode count=$count period_ms=$period_ms exit_after_run=$exit_after_run"
 
 attempt=0
 while [ "$attempt" -lt 60 ] && [ ! -e /sys/class/net/eth0/address ]; do
@@ -51,6 +73,15 @@ else
     result=$?
 fi
 echo "IVC-LINUX-DONE exit=$result"
+
+if [ "$exit_after_run" = 1 ]; then
+    sync
+    echo "IVC-LINUX-POWEROFF"
+    poweroff -f
+    sleep 5
+    echo "IVC-LINUX-FATAL reason=poweroff-returned"
+    exec sh
+fi
 
 # Keep the guest available for console inspection without asking the shared
 # QEMU machine to power off.

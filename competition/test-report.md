@@ -1,29 +1,32 @@
 # Test and evidence report
 
-Report date: 2026-07-31. Source state: base commit
-`263f89d8f3d0481d2712224a7b517a73b1165fb3` plus uncommitted competition
-implementation changes. The final AxVisor RT and IVC campaigns share source
-snapshot SHA-256
+Report date: 2026-08-02. The retained QEMU evidence was produced from base
+commit `263f89d8f3d0481d2712224a7b517a73b1165fb3` plus the then-uncommitted
+competition implementation. The final AxVisor RT and QEMU IVC campaigns share
+source snapshot SHA-256
 `8594ab76e903dd179db5f1aa91546c03a7d759454d300b2ac6c665933ab0216a`.
-The base commit alone does not contain the implementation.
+The base commit alone does not contain the implementation. The later physical
+Orange Pi support belongs to the revision that last changes this report and is
+reported separately rather than relabeling the historical QEMU archives.
 
 ## 1. Requirement status
 
 | Requirement/evidence | Status | What the retained evidence establishes |
 | --- | --- | --- |
 | CPU-partition implementation | Complete | Global mask validation, maximum-matched initial placement, FDT CPU consistency, two-phase vCPU task preparation, activation-time revalidation, rollback, and frozen-registry behavior fail closed. |
-| Linux guest with at least two vCPUs | Complete standalone gate | The dedicated two-vCPU Linux gate and RT harness require exactly two online CPUs. The mixed IVC log does not independently emit that assertion. |
+| Linux guest with at least two vCPUs | Complete QEMU and physical gates | The dedicated QEMU gate requires exactly two online CPUs; the maintained Orange Pi smoke observes `smp: Brought up 1 node, 2 CPUs`. |
 | AxVisor idle/stress/soak validation | Complete | Five 10,000-sample runs retain raw logs, metadata, guest load, p99/max tails, QEMU exit, and source/config/image hashes. |
 | Native RTOS comparison | Complete retained reference | Native Zephyr v4.3.0 runs comparable periodic/dispatch loops under idle and verified CPU stress, with platform differences stated. |
 | Bidirectional guest IP path | Complete | Linux `10.0.0.1` and Zephyr `10.0.0.2` exchange CONTROL, STATUS, and ACK over UDP/IPv4 and two virtio-net devices on isolated segment 1. |
 | Application protocol and reliability | Complete | Versioned framing, CRC, typed errors, receive window, retry, duplicate suppression, timeout, session restart logic, and safe fallback are implemented and tested. |
 | Cross-guest normal communication | Complete retained reference | Neural and manual runs each complete 1,800/1,800 with zero application errors/timeouts and zero RTOS duplicates/protocol errors. |
+| Physical Orange Pi communication | Complete local validation | One 1,800-command neural run and the maintained 20-command smoke complete on RK3588, synchronize the host filesystem, and restore Linux automatically. |
 | Cross-guest ACK-loss recovery | Complete retained reference | A deterministic 1-in-5 first-ACK loss campaign recovers all 20 losses and applies every command once. |
 | Neural/RTOS closed loop and manual comparison | Complete retained reference | Linux neural inference drives Zephyr actuator/plant state and uses returned status as the next observation; two aggregate error metrics improve. |
 | Error notification | Implemented and host-tested | ERROR encode/decode and malformed-input behavior are covered by Rust/C tests; no retained malformed-packet cross-guest QEMU capture is claimed. |
 | Isolation/access control | Implemented and regression-tested | No host NIC/default route exists; segment separation, exact unicast, anti-spoofing, and secure unknown-unicast drop are unit-tested. No third-guest runtime negative capture is claimed. |
 | Demonstration video | Outstanding | The storyboard is complete; the actual approximately five-minute recording is not. |
-| Commit/dev-target PR | Intentionally deferred | No commit, push, conflict check, or PR was performed under the current instruction. |
+| Dev-target PR | Outstanding | The Windows/WSL local synchronization does not claim an upstream push, conflict check, or PR. |
 
 ## 2. AxVisor real-time campaign
 
@@ -117,7 +120,49 @@ manual is
 Both compressed logs and summaries are retained in
 [`results/axvisor-ivc-reference`](results/axvisor-ivc-reference/).
 
-## 4. Cross-guest deterministic ACK-loss run
+## 4. Physical Orange Pi 5 Plus validation
+
+The physical profile ran on an RK3588 Orange Pi 5 Plus with 16 GiB DRAM. WSL2
+owned the CH340 serial connection at 1,500,000 baud, staged the Linux kernel,
+initramfs, and guest DTB over SSH while holding the board lease, started
+AxVisor through U-Boot, and restored the TF-card Linux system afterward.
+
+The full neural run completed the same 1,800-command plant trajectory used by
+the QEMU neural profile:
+
+| Metric | Physical result |
+| --- | ---: |
+| Sent / acknowledged | 1,800 / 1,800 |
+| Errors / timeouts / retransmissions / recoveries | 0 / 0 / 0 / 0 |
+| Full-loop p50 / p95 / p99 / max | 4,195 / 4,228 / 7,812 / 23,216 us |
+| Pre-send p50 / p95 / p99 / max | 1 / 2 / 2 / 3 us |
+| Transport p50 / p95 / p99 / max | 4,194 / 4,227 / 7,810 / 23,213 us |
+| Effective throughput | 9.992 msg/s |
+| RMSE / integrated absolute error | 5,932.491 mC / 686,993.400 mC*s |
+| Maximum overshoot | 13,428 mC |
+
+The RTOS progress marker reached 1,800 with zero duplicates and protocol
+errors, both guests entered `SystemDown`, AxVisor confirmed host filesystem
+sync, and the board returned to `/dev/mmcblk1p2` ext4 `rw`. The local serial-log
+SHA-256 is
+`134bbd6b308c6babb0b43bb1f8906f4d4a74bb422ab1f0cae59f05fcf9209da5`.
+
+After hardening PL011 byte/word access, GICR `Last` semantics, CPU idle-state
+filtering, guest-console locking, and the newline-complete success regex, the
+maintained 20-command smoke returned exit 0. It observed two online Linux
+CPUs, 20/20 acknowledgements, zero controller faults, zero recurring
+unsupported PSCI `CPU_SUSPEND` calls, a confirmed host sync, and automatic
+Linux restore. Its local log SHA-256 is
+`4432964c3bf5746f9cb3a0a55f50f98cec7bbc270fe6c20be16b572d7f8afcf7`.
+
+These are local physical captures, not files in the committed QEMU result
+archive. The 1,800-command run is one observed hardware run, not a repeated
+statistical campaign. Long terminal records can lose spans on the shared
+physical UART; unattended success therefore uses the short newline-terminated
+`IVC-LINUX-DONE exit=0` marker, while the controller and RTOS progress records
+provide the detailed application evidence.
+
+## 5. Cross-guest deterministic ACK-loss run
 
 The fault Zephyr image suppresses only the first ACK for each selected fresh
 sequence while returning STATUS. Linux retransmits after 100 ms; Zephyr treats
@@ -142,7 +187,7 @@ The analyzer verifies the identical exact injection and duplicate sequence set
 The 100 ms retry delay intentionally dominates p95 and above. The terminal log
 also observes controller-silence safe fallback to actuator zero.
 
-## 5. Native Zephyr real-time baseline
+## 6. Native Zephyr real-time baseline
 
 The native comparison runs upstream Zephyr v4.3.0 directly on QEMU
 `qemu_cortex_a53`, without AxVisor or a Linux guest. Both cases use a 1 ms
@@ -170,7 +215,7 @@ This is an equivalent-method comparison, not the same platform: CPU model,
 CPU count, OS, timer/dispatch implementation, virtualization boundary, and
 stress placement differ. It is neither an AxVisor result nor a hardware bound.
 
-## 6. Supplemental host evidence
+## 7. Supplemental host evidence
 
 The host UDP reference uses the same Rust protocol/state machines and 100
 commands with first-ACK loss every fifth sequence. It records 100/100 success,
@@ -188,7 +233,7 @@ plant comparison and is retained under
 [`results/host-ai-reference`](results/host-ai-reference/). It is functional
 cross-check evidence, not guest timing.
 
-## 7. Isolation and protocol assurance
+## 8. Isolation and protocol assurance
 
 The full profile has no host NIC, default route, bridge, NAT, vsock data path,
 shared-memory channel, or hypercall application channel. Its network identities
@@ -218,7 +263,7 @@ and safe fallback. CONTROL, STATUS, and ACK are demonstrated cross-guest;
 ERROR is implemented and host-tested but not malformed-injected in the retained
 cross-guest run.
 
-## 8. Executed validation
+## 9. Executed validation
 
 The final implementation sweep completed against the synchronized working tree:
 
@@ -251,6 +296,14 @@ The final implementation sweep completed against the synchronized working tree:
   validation, all documented relative links resolved, retained-artifact hashes
   matched their metadata, and the final `git diff --check` passed.
 
+The later physical-board additions additionally passed six PL011 integration
+tests, the GICv3 redistributor unit regression, the AxVM guest-FDT idle-state
+regression, both Orange Pi success-regex contracts, four physical VM-config
+checks, targeted clippy for `axdevice`, `arm_vgic`, and `axvm`, and final Rust
+formatting. Both finite Zephyr board images and both physical AxVisor build
+profiles compiled. The final 20-command board smoke returned exit 0 and
+restored Linux after confirming the AxVisor filesystem sync marker.
+
 The retained five-run RT comparison and three-run IVC campaign remain pinned to
 the source/config/image hashes recorded with those measurements. The later
 secondary-CPU startup hardening was validated by the complete host contract
@@ -266,23 +319,25 @@ default `arm_vcpu` umbrella test also requires the external
 `scripts/.axci/lib/test_flow.sh` fixture, which is absent in this checkout; its
 library and repository-owned integration contracts passed.
 
-## 9. Measurement limits and remaining work
+## 10. Measurement limits and remaining work
 
 QEMU TCG, WSL2 host scheduling, host activity, guest scheduling, and platform
 differences contribute to observed tails. Serial output is outside individual
 RT sample intervals; IVC progress logging can still perturb surrounding guest
-scheduling. Reported maxima are observed sample maxima, not proven WCET or
-hardware bounds. The timerfd metric is a userspace IRQ-response proxy, not
-direct injection/handler timing. FIFO CPU partitioning does not establish
-bounded preemption of a non-yielding passthrough guest or isolate every host
-task/physical interrupt.
+scheduling. At 1,500,000 baud, long records on the shared physical UART may
+lose spans even when software print locking prevents interleaving, so compact
+completion markers are the automation contract. Reported maxima are observed
+sample maxima, not proven WCET or hardware bounds. The timerfd metric is a
+userspace IRQ-response proxy, not direct injection/handler timing. FIFO CPU
+partitioning does not establish bounded preemption of a non-yielding
+passthrough guest or isolate every host task/physical interrupt.
 
 The three technical tasks, reproducible commands, source/config/image hashes,
 and retained result archives are present. Formal remaining deliverables are:
 
 1. record the actual approximately five-minute demonstration video; and
-2. when authorized, commit the implementation, verify a clean source state and
-   conflict-free dev target, push, and submit the required PR.
+2. when authorized, verify a conflict-free dev target, push, and submit the
+   required PR.
 
 Additional cross-guest malformed-ERROR, restart, or third-guest isolation
 captures would strengthen the evidence, but are not misrepresented as existing

@@ -30,6 +30,25 @@ use crate::host;
 /// Default size per GICR region.
 pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then 64K for LPI
 
+/// Position of one redistributor in the guest-visible GICR sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RedistributorPosition {
+    /// Another guest redistributor follows this one.
+    Intermediate,
+    /// This is the final guest redistributor.
+    Last,
+}
+
+impl RedistributorPosition {
+    const fn apply_to_typer(self, host_typer: usize) -> usize {
+        let guest_typer = host_typer & !GICR_TYPER_LAST;
+        match self {
+            Self::Intermediate => guest_typer,
+            Self::Last => guest_typer | GICR_TYPER_LAST,
+        }
+    }
+}
+
 /// Virtual GICR registers.
 pub struct VGicRRegs {
     /// LPI configuration table base address.
@@ -45,6 +64,7 @@ pub struct VGicR {
 
     /// CPU ID associated with this redistributor.
     pub cpu_id: usize,
+    position: RedistributorPosition,
     /// Host physical base address of GICR for this CPU.
     pub host_gicr_base_this_cpu: HostPhysAddr,
 
@@ -64,7 +84,12 @@ impl VGicR {
     }
 
     /// Creates a new VGicR instance.
-    pub fn new(addr: GuestPhysAddr, size: Option<usize>, cpu_id: usize) -> Self {
+    pub fn new(
+        addr: GuestPhysAddr,
+        size: Option<usize>,
+        cpu_id: usize,
+        position: RedistributorPosition,
+    ) -> Self {
         let size = size.unwrap_or(DEFAULT_SIZE_PER_GICR);
         let host_gicr_base_this_cpu = crate::api_reexp::get_host_gicr_base() + cpu_id * size;
 
@@ -72,6 +97,7 @@ impl VGicR {
             addr,
             size,
             cpu_id,
+            position,
             host_gicr_base_this_cpu,
             regs: SpinNoIrq::new(VGicRRegs { propbaser: 0 }),
         }
@@ -106,14 +132,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
                 perform_mmio_read(gicr_base + reg, width)
             }
             GICR_TYPER => {
-                let mut value = perform_mmio_read(gicr_base + reg, width)?;
-
-                // TODO: set GICR_TYPER_LAST if it is the last redistributor of a VM.
-                if true {
-                    value |= GICR_TYPER_LAST;
-                }
-
-                Ok(value)
+                let host_typer = perform_mmio_read(gicr_base + reg, width)?;
+                Ok(self.position.apply_to_typer(host_typer))
             }
             GICR_IIDR | GICR_IMPL_DEF_IDENT_REGS_START..=GICR_IMPL_DEF_IDENT_REGS_END => {
                 // Make these read-only registers accessible.
@@ -316,4 +336,23 @@ pub fn enable_one_lpi(lpi: usize) {
     );
     let lpt = lpt.lock();
     lpt.enable_one_lpi(lpi);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GICR_TYPER_LAST, RedistributorPosition};
+
+    #[test]
+    fn exposes_the_last_bit_only_on_the_final_guest_redistributor() {
+        let host_typer = 0x1234_5678 | GICR_TYPER_LAST;
+
+        assert_eq!(
+            RedistributorPosition::Intermediate.apply_to_typer(host_typer) & GICR_TYPER_LAST,
+            0
+        );
+        assert_eq!(
+            RedistributorPosition::Last.apply_to_typer(host_typer) & GICR_TYPER_LAST,
+            GICR_TYPER_LAST
+        );
+    }
 }

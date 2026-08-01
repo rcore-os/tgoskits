@@ -1,8 +1,8 @@
 # Reproduction guide
 
-This guide reproduces the completed technical captures and identifies the
-video and intentionally deferred PR work separately. Run all commands from the
-repository root unless a step says otherwise.
+This guide reproduces the completed QEMU captures and the physical Orange Pi 5
+Plus flow, and identifies the video and upstream PR work separately. Run all
+commands from the repository root unless a step says otherwise.
 
 ## 1. Pin and record the source
 
@@ -14,9 +14,10 @@ plus uncommitted competition changes:
 263f89d8f3d0481d2712224a7b517a73b1165fb3
 ```
 
-That base hash alone does **not** contain the implementation. Before a final
-submission, replace this statement with the committed implementation hash and
-record a clean worktree. For every run, capture:
+That base hash alone does **not** contain the historical QEMU implementation.
+The physical-board support is contained in the repository revision that last
+changes this guide; do not relabel the older retained QEMU archives as though
+they came from that later revision. For every new run, capture:
 
 ```sh
 git rev-parse HEAD
@@ -53,6 +54,8 @@ The successful AxVisor checks used WSL Ubuntu with:
 | Linux image | repository image manager's AArch64 Alpine image, observed release `v0.0.10` |
 | Zephyr source | upstream tag `v4.3.0`, commit `3568e1b6d5cdd51a6b964a2a1d6d29200fea2056` |
 | Zephyr guest compiler | `aarch64-linux-gnu-gcc 11.4.0`, selected through the recorded `cross-compile` prefix shim |
+| Physical board | Xunlong Orange Pi 5 Plus, RK3588, 16 GiB DRAM |
+| Board automation host | WSL2 Ubuntu with a CH340 serial adapter at 1,500,000 baud and SSH access to the board Linux image |
 
 Typical Ubuntu packages are:
 
@@ -60,7 +63,7 @@ Typical Ubuntu packages are:
 sudo apt-get update
 sudo apt-get install -y \
   build-essential clang libclang-14-dev llvm-14-dev \
-  qemu-system-arm device-tree-compiler e2fsprogs \
+  qemu-system-arm device-tree-compiler e2fsprogs cpio fakeroot rsync \
   git cmake ninja-build python3 python3-pip python3-venv
 ```
 
@@ -230,6 +233,22 @@ Output:
 tmp/competition/ivc/linux/rootfs.img
 ```
 
+The physical-board profile boots the same controller from a compact initramfs
+and a guest-specific DTB. Build both without mounting the ext4 image:
+
+```sh
+bash competition/ivc/linux/build-initramfs.sh
+bash competition/ivc/linux/build-guest-dtb.sh
+```
+
+The resulting files are
+`tmp/competition/ivc/linux/initramfs.cpio.gz` and
+`tmp/competition/ivc/linux/orangepi-5-plus.dtb`. The physical run also needs
+an AArch64 Linux `Image` with PL011, PSCI, GICv3, and virtio-mmio support at
+`tmp/competition/ivc/linux/linux-qemu`, or at the path supplied through
+`IVC_LINUX_KERNEL`. Record its provenance and SHA-256; the validated image hash
+was `c9ef196e448390a1bb94263c33a4cc9d80b5d98d9d966bc1a1f51254599c06c0`.
+
 The controller used by the final QEMU captures is 758,608 bytes with SHA-256
 `73a825d12ac79a268a28e10ff5e572a313a57f4ce4e2780a5de4df824e430965`.
 The freshly built 2 GiB rootfs before the campaign had SHA-256
@@ -279,6 +298,21 @@ sha256sum \
   <repo>/competition/ivc/zephyr/build/zephyr/zephyr.bin \
   <repo>/competition/ivc/zephyr/build-ack-loss/zephyr/zephyr.elf \
   <repo>/competition/ivc/zephyr/build-ack-loss/zephyr/zephyr.bin
+```
+
+Build the finite physical-board images into the paths referenced by the
+Orange Pi VM configurations:
+
+```sh
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board-smoke \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board-smoke.conf
+
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board.conf
 ```
 
 The validated non-SDK builds used the same source tag with
@@ -413,6 +447,61 @@ The complete compressed logs, summaries, and image/config/source provenance
 are retained in
 [`results/axvisor-ivc-reference`](results/axvisor-ivc-reference/). Do not
 compare neural and manual unless every non-policy input remains identical.
+
+### Completed Orange Pi 5 Plus Linux + Zephyr runs
+
+The physical profile loads Linux and Zephyr through AxVisor on the RK3588 and
+uses the board's Linux ext4 filesystem only as the AxVisor image store. Stage
+the three Linux guest files while holding a board lease; the maintained script
+uses the ordinary `orangepi` home directory, atomically renames each upload,
+calls `sync`, and prints the remote hashes:
+
+```sh
+export ORANGEPI_SSH_TARGET=orangepi@<board-ip>
+export ORANGEPI_SSH_IDENTITY=<board-ssh-private-key>
+export IVC_LINUX_KERNEL=tmp/competition/ivc/linux/linux-qemu
+
+bash competition/ivc/stage-orangepi-5-plus.sh
+```
+
+The run selector delegates reset/serial orchestration to
+`ORANGEPI_AXVISOR_RUNNER`, which defaults to the WSL host helper
+`orangepi-axvisor-board-run`. That host integration must acquire the local
+board lease, reboot Linux only after `sync`, run `cargo xtask axvisor board`,
+require `AXVISOR_HOST_FILESYSTEM_SYNCED`, and restore the TF-card Linux system.
+With the validated board root selector:
+
+```sh
+export ORANGEPI_AXVISOR_HOST_ROOT=PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6
+
+bash competition/ivc/run-orangepi-5-plus.sh smoke
+bash competition/ivc/run-orangepi-5-plus.sh full
+```
+
+Discover and record the root selector on a different board with
+`findmnt -no SOURCE,FSTYPE,OPTIONS /` and `blkid`; do not copy this PARTUUID
+blindly. Without the host integration helper, the underlying command is:
+
+```sh
+cargo xtask axvisor board \
+  -c competition/ivc/config/axvisor-orangepi-5-plus-smoke.toml \
+  --board-config competition/ivc/config/board-orangepi-5-plus-smoke.toml \
+  -b OrangePi-5-Plus
+```
+
+The operator must still arrange the Linux-to-U-Boot reboot after the runner
+acquires the serial lease and restore Linux after AxVisor shuts down.
+
+The full neural capture completed 1,800/1,800 commands with zero errors,
+timeouts, retransmissions, or recoveries. Its full-loop p50/p95/p99/maximum was
+4,195/4,228/7,812/23,216 us and throughput was 9.992 msg/s. The local serial
+log SHA-256 is
+`134bbd6b308c6babb0b43bb1f8906f4d4a74bb422ab1f0cae59f05fcf9209da5`.
+The later maintained-tree smoke completed 20/20, observed two Linux CPUs, zero
+repeated unsupported PSCI `CPU_SUSPEND` calls, confirmed host filesystem sync,
+and restored `/dev/mmcblk1p2` as ext4 `rw`; its local log SHA-256 is
+`4432964c3bf5746f9cb3a0a55f50f98cec7bbc270fe6c20be16b572d7f8afcf7`.
+These local physical logs are not part of the committed QEMU result archive.
 
 ## 8. Real-time benchmarks
 

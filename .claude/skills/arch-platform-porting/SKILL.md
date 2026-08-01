@@ -28,6 +28,14 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   Guest FDT runtime patching must apply `kernel.cmdline` as the per-VM `/chosen/bootargs`
   override after selecting the guest tree, while retaining host bootargs as the fallback.
   Keep this policy in the shared AxVM FDT layer so Axvisor applications do not duplicate it.
+  An AArch64 physical-board guest DTB must describe the guest-visible emulated GICv3,
+  architectural timer, PL011, and virtio-mmio devices at guest GPAs; do not expose the
+  whole RK3588 host tree as though those devices were passed through. Each GPPT GICR
+  frame is 128 KiB, frames must not overlap, and only the final guest redistributor sets
+  `GICR_TYPER.Last`. Strip per-CPU `cpu-idle-states` references and `/cpus/idle-states`
+  while PSCI `CPU_SUSPEND` is unsupported. An emulated PL011 used by Linux must accept
+  byte, word, and dword accesses, and physical SMP console records must share the host
+  print lock so Guest output does not interleave with Axvisor logs.
   Host-FDT CPU resolution must still update the guest-visible physical CPU IDs, but it may
   synthesize singleton scheduler masks only when `phys_cpu_sets` is absent; validated explicit
   affinity masks remain authoritative.

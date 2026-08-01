@@ -21,8 +21,20 @@ config IVC_EXPECTED_COMMANDS
 	range 0 1000000
 	default 0
 	help
-	  Set to zero for an open-ended normal endpoint. The deterministic ACK-loss
-	  profile uses this count to emit one terminal IVC-RTOS-RESULT record after
-	  all fresh commands and expected retransmitted duplicates are observed.
+	  Set to zero for an open-ended normal endpoint. A positive count emits one
+	  terminal IVC-RTOS-RESULT record after all fresh commands are observed. The
+	  deterministic ACK-loss profile additionally waits for the expected
+	  retransmitted duplicates.
+
+config IVC_EXIT_AFTER_EXPECTED_COMMANDS
+	bool "Power off after a finite evidence run"
+	depends on IVC_EXPECTED_COMMANDS > 0
+	depends on POWEROFF
+	default n
+	help
+	  Power off through PSCI after the terminal IVC-RTOS-RESULT record. Keep
+	  this disabled for interactive and open-ended demonstrations. Enable it
+	  for automated physical-board runs so AxVisor can regain its shell after
+	  every guest has completed.
 
 endmenu

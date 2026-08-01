@@ -1,0 +1,32 @@
+[base]
+id = 2
+name = "zephyr-ivc-orangepi"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+phys_cpu_sets = [0x1]
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x4000_100c
+image_location = "memory"
+kernel_path = "../zephyr/build-board/zephyr/zephyr.bin"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+passthrough_devices = []
+passthrough_addresses = []
+excluded_devices = []
+
+emu_devices = [
+  ["gppt-gicd-zephyr", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr-zephyr", 0x080a_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+  ["pl011-zephyr", 0x0900_0000, 0x1000, 33, 0x02, []],
+  ["virtio-net-zephyr", 0x0a00_2000, 0x1000, 64, 0xE2, [2, 1, 1]],
+]

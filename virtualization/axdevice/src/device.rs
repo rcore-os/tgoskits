@@ -250,12 +250,18 @@ impl AxVmDevices {
                         for i in 0..cpu_num {
                             let addr = config.base_gpa + i * stride;
                             let size = config.length;
+                            let position = if i + 1 == cpu_num {
+                                arm_vgic::v3::vgicr::RedistributorPosition::Last
+                            } else {
+                                arm_vgic::v3::vgicr::RedistributorPosition::Intermediate
+                            };
                             #[allow(clippy::arc_with_non_send_sync)]
                             this.register(MmioDeviceAdapter::from_arc(Arc::new(
                                 arm_vgic::v3::vgicr::VGicR::new(
                                     addr.into(),
                                     Some(size),
                                     pcpu_id + i,
+                                    position,
                                 ),
                             )) as Arc<dyn Device>)?;
 
@@ -367,11 +373,13 @@ impl AxVmDevices {
                     }
                 }
                 EmulatedDeviceType::Console => {
-                    #[cfg(target_arch = "x86_64")]
+                    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
                     {
-                        debug!("x86 console device registration is owned by AxVM arch adapter");
+                        debug!(
+                            "console device registration is owned by the AxVM architecture adapter"
+                        );
                     }
-                    #[cfg(not(target_arch = "x86_64"))]
+                    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
                     {
                         warn!(
                             "emu type: {} is not supported on this platform",

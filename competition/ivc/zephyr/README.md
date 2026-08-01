@@ -100,6 +100,28 @@ python3 competition/ivc/analyze_qemu.py <qemu.log> \
   --drop-ack-every 5
 ```
 
+### Physical Orange Pi evidence images
+
+The physical-board overlays keep the normal protocol behavior but make the
+endpoint finite. `board-smoke.conf` accepts 20 fresh commands and `board.conf`
+accepts 1,800; both emit `IVC-RTOS-RESULT`, print a compact poweroff marker,
+and request PSCI system-off so the AxVisor board runner can regain control:
+
+```sh
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board-smoke \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board-smoke.conf
+
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board.conf
+```
+
+Use these only with the matching `orangepi-5-plus-zephyr-*.toml` description.
+The normal QEMU image remains open-ended.
+
 The AxVisor image is built for non-secure EL1 (`CONFIG_ARMV8_A_NS=y`) and uses
 safe GIC initialization so it does not reinitialize a distributor that the
 hypervisor already owns. The raw binary must be loaded at `0x40000000` and
@@ -181,8 +203,9 @@ cargo run -p ivcproto --bin ivcproto -- \
   controller 10.0.0.2:5500 1800 neural 100
 ```
 
-The endpoint has no finite request-count exit condition. Stop the guest after
-the controller has collected its results.
+The default endpoint has no finite request-count exit condition. Stop the guest
+after the controller has collected its results. The two physical-board
+overlays above intentionally power off after their configured finite count.
 
 ## Compatibility behavior
 

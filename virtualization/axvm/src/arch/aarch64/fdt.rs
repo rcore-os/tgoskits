@@ -83,6 +83,11 @@ pub(super) fn update_cpu_node(
                 cpus.remove_property(property);
             }
         }
+
+        // AxVisor does not currently implement PSCI CPU_SUSPEND. Do not copy
+        // host idle states that would make a guest issue unsupported calls on
+        // every idle transition.
+        tree.remove_cpu_idle_states();
     }
 
     Ok(tree.finish())

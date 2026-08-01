@@ -13,11 +13,18 @@ baseline. Neural and manual each completed 1,800/1,800 commands with no
 application error or timeout; the fault campaign recovered all 20 intentionally
 dropped ACKs among 100 commands.
 
+The same neural profile now also boots on a physical Orange Pi 5 Plus from a
+WSL2 automation host. One full hardware run completed 1,800/1,800 commands with
+zero controller error, timeout, retransmission, or recovery, then powered down
+both guests, synchronized the AxVisor host filesystem, and restored the board's
+Linux TF-card system. A maintained 20-command smoke profile repeats that
+lifecycle and asserts the Linux guest brought up two vCPUs.
+
 The evidence supports deterministic vCPU placement and selected dispatch-tail
 improvements, not universal latency improvement, bounded guest preemption, or
 a hardware real-time guarantee. The actual demonstration video remains to be
-recorded. Commit, push, dev-target conflict checking, and PR creation are
-intentionally deferred by the current task instruction. See
+recorded. Upstream push, dev-target conflict checking, and PR creation are not
+claimed by this local Windows/WSL synchronization. See
 [test-report.md](test-report.md) for the exact claims and limitations.
 
 ## Requirement status
@@ -28,9 +35,10 @@ intentionally deferred by the current task instruction. See
 | Task 1: native RTOS comparison | Implemented with Zephyr v4.3.0 under [`results/native-zephyr-reference`](results/native-zephyr-reference/) |
 | Task 2: bidirectional IP link and versioned reliable protocol | Implemented; normal and ACK-loss runs retained under [`results/axvisor-ivc-reference`](results/axvisor-ivc-reference/) |
 | Task 3: Linux neural inference, RTOS action/feedback, manual comparison | Implemented; two error metrics improve while overshoot regresses |
+| Physical Orange Pi 5 Plus lifecycle | Validated for full 1,800-command neural and maintained 20-command smoke profiles; automatic Linux restore passes |
 | Design, test, and reproduction documents | Present in this directory |
 | Approximately five-minute video | Storyboard present; actual recording outstanding |
-| Source PR to `dev` | Intentionally not created yet |
+| Source PR to `dev` | Outstanding; no upstream submission is claimed here |
 
 This submission profile uses Linux plus one Zephyr RTOS baseline. It does not
 claim either StarryOS bonus or a multi-RTOS/multi-board bonus. The competition
@@ -58,7 +66,8 @@ code remains under the repository's Apache-2.0 license.
 | Shared Rust wire protocol and controller | [`ivcproto`](../tools/ivcproto/src/lib.rs) |
 | Linux guest image/init | [`ivc/linux`](ivc/linux/) |
 | Zephyr endpoint | [`ivc/zephyr`](ivc/zephyr/) |
-| AxVisor/QEMU/guest configuration | [`ivc/config`](ivc/config/) |
+| AxVisor/QEMU/Orange Pi guest configuration | [`ivc/config`](ivc/config/) |
+| Orange Pi artifact staging and run entry points | [`stage-orangepi-5-plus.sh`](ivc/stage-orangepi-5-plus.sh), [`run-orangepi-5-plus.sh`](ivc/run-orangepi-5-plus.sh) |
 | Real-time benchmark harness | [`scripts/benchmark/axvisor-rt`](../scripts/benchmark/axvisor-rt/) |
 | Retained AxVisor, IVC, host, and native-RTOS evidence | [`results`](results/) |
 | Cross-guest log validator | [`analyze_qemu.py`](ivc/analyze_qemu.py) |
@@ -87,6 +96,12 @@ shared-memory data path, or hypercall data path in this profile.
 pCPU3 is excluded from guest affinity masks for intended AxVisor
 housekeeping; the implementation does not prove that every host task or
 physical interrupt is pinned there.
+
+The Orange Pi profile keeps the same three-vCPU partition but replaces the
+outer QEMU machine with RK3588 hardware. Linux receives a minimal guest DTB
+for the emulated GICv3, timer, PL011, and virtio-mmio network device; host CPU
+idle-state nodes are removed because AxVisor does not implement PSCI
+`CPU_SUSPEND`.
 
 ## Quick host-only checks
 

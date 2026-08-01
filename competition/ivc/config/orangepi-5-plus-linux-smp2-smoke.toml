@@ -1,0 +1,36 @@
+[base]
+id = 1
+name = "linux-ivc-orangepi-smoke"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+phys_cpu_sets = [0x2, 0x4]
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/home/orangepi/axvisor-guest/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+dtb_path = "/home/orangepi/axvisor-guest/orangepi-5-plus.dtb"
+ramdisk_path = "/home/orangepi/axvisor-guest/initramfs.cpio.gz"
+ramdisk_load_addr = 0x8800_0000
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 devtmpfs.mount=1 loglevel=7 ivc.mode=neural ivc.count=20 ivc.period_ms=100 ivc.exit_after_run=1"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+passthrough_devices = []
+passthrough_addresses = []
+excluded_devices = []
+
+emu_devices = [
+  ["gppt-gicd-linux", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr-linux", 0x080a_0000, 0x2_0000, 0, 0x20, [2, 0x2_0000, 1]],
+  ["pl011-linux", 0x0900_0000, 0x1000, 33, 0x02, []],
+  ["virtio-net-linux", 0x0a00_1000, 0x1000, 56, 0xE2, [1, 1]],
+]

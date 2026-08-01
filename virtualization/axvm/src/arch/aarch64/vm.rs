@@ -1,10 +1,10 @@
 //! AArch64 VM resource creation and initialization.
 
-use alloc::sync::Arc;
+use alloc::{string::String, sync::Arc};
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
 use axdevice_base::DeviceRegistry as _;
-use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
+use axvm_types::{EmulatedDeviceType, NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
 
 use super::{Aarch64Arch, npt};
 use crate::{
@@ -95,10 +95,46 @@ fn register_arch_devices(
     config: &AxVMConfig,
     devices: &mut axdevice::AxVmDevices,
 ) -> AxVmResult {
+    register_pl011_consoles(config, devices)?;
     if config.interrupt_mode() == VMInterruptMode::Passthrough {
         assign_passthrough_spis(vm, config, devices)?;
     } else {
         register_virtual_timers(devices)?;
+    }
+    Ok(())
+}
+
+struct AxvmPl011HostOps;
+
+impl axdevice::Pl011ConsoleHostOps for AxvmPl011HostOps {
+    fn write_console_chunk(console: &str, bytes: &[u8]) {
+        // Route the complete chunk through ax-log's global print lock so guest
+        // lines cannot interleave with host logs on an SMP physical console.
+        ax_std::print!(
+            "[guest-console:{}] {}",
+            console,
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+fn register_pl011_consoles(config: &AxVMConfig, devices: &mut axdevice::AxVmDevices) -> AxVmResult {
+    for device_config in config
+        .emu_devices()
+        .iter()
+        .filter(|device| device.emu_type == EmulatedDeviceType::Console)
+    {
+        let console = axdevice::Pl011ConsoleDevice::<AxvmPl011HostOps>::new(
+            device_config.name.clone(),
+            device_config.base_gpa.into(),
+            device_config.length,
+        )
+        .map_err(|error| AxVmError::device("create AArch64 PL011 console", error))?;
+        devices.register(Arc::new(console))?;
+        info!(
+            "AArch64 PL011 console '{}' initialized at GPA {:#x} with length {:#x}",
+            device_config.name, device_config.base_gpa, device_config.length
+        );
     }
     Ok(())
 }

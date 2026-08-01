@@ -180,6 +180,34 @@ fn tree_copies_subtree_and_exposes_mutable_inner_tree() {
 }
 
 #[test]
+fn tree_removes_cpu_idle_states_when_psci_suspend_is_unavailable() {
+    let mut fdt = Fdt::new();
+    let root = fdt.root_id();
+    let cpus = fdt.add_node(root, Node::new("cpus"));
+    let cpu = fdt.add_node(cpus, Node::new("cpu@100"));
+    fdt.node_mut(cpu)
+        .unwrap()
+        .set_property(prop_u32("cpu-idle-states", 7));
+    let idle_states = fdt.add_node(cpus, Node::new("idle-states"));
+    fdt.add_node(idle_states, Node::new("cpu-sleep"));
+
+    let mut tree = FdtTree::from_fdt(fdt);
+    tree.remove_cpu_idle_states();
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+
+    assert!(reparsed.get_by_path_id("/cpus/idle-states").is_none());
+    assert!(
+        reparsed
+            .get_by_path("/cpus/cpu@100")
+            .unwrap()
+            .as_node()
+            .get_property("cpu-idle-states")
+            .is_none()
+    );
+}
+
+#[test]
 fn finish_drops_host_header_state_from_guest_dtb() {
     let mut source = Fdt::new();
     source.boot_cpuid_phys = 0x100;

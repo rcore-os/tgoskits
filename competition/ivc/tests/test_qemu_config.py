@@ -11,6 +11,10 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 QEMU_CONFIG = REPOSITORY_ROOT / "competition/ivc/config/qemu-aarch64.toml"
+ORANGEPI_BOARD_CONFIGS = (
+    REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-smoke.toml",
+    REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus.toml",
+)
 LINUX_ACK_LOSS_CONFIG = (
     REPOSITORY_ROOT / "competition/ivc/config/linux-smp2-ack-loss.toml"
 )
@@ -44,6 +48,20 @@ class QemuConfigContractTests(unittest.TestCase):
                 for pattern in failure_patterns
             )
         )
+
+    def test_orangepi_success_requires_a_complete_line_with_serial_crlf(self) -> None:
+        completed = "[guest-console:pl011-linux] IVC-LINUX-DONE exit=0"
+
+        for config_path in ORANGEPI_BOARD_CONFIGS:
+            with self.subTest(config=config_path.name), config_path.open("rb") as source:
+                config = tomllib.load(source)
+            self.assertEqual(len(config["success_regex"]), 1)
+            success = re.compile(config["success_regex"][0])
+
+            self.assertIsNone(success.search(completed))
+            self.assertIsNotNone(success.search(f"{completed}\n"))
+            self.assertIsNotNone(success.search(f"{completed}\r\n"))
+            self.assertIsNotNone(success.search(f"{completed}\r\r\n"))
 
     def test_ack_loss_guest_configs_pin_the_100_command_fault_campaign(self) -> None:
         with LINUX_ACK_LOSS_CONFIG.open("rb") as source:

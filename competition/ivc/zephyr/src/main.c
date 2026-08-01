@@ -13,6 +13,9 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/sys/printk.h>
+#if CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS
+#include <zephyr/sys/poweroff.h>
+#endif
 
 #define IVC_LOCAL_IPV4 "10.0.0.2"
 #define IVC_LOCAL_UDP_PORT 5500U
@@ -49,10 +52,7 @@ static bool validate_fault_configuration(void)
 	const uint32_t drop_every = (uint32_t)CONFIG_IVC_DROP_ACK_EVERY;
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
 
-	if (drop_every == 0U && expected_commands == 0U) {
-		return true;
-	}
-	if (drop_every == 0U || expected_commands == 0U || drop_every > expected_commands) {
+	if ((drop_every != 0U && expected_commands == 0U) || drop_every > expected_commands) {
 		printk("IVC-RTOS-FATAL stage=fault-config drop_ack_every=%u expected_commands=%u\n",
 		       drop_every, expected_commands);
 		return false;
@@ -183,32 +183,39 @@ static bool send_ack(int socket_fd, const struct sockaddr *peer, socklen_t peer_
 			    payload, sizeof(payload));
 }
 
-static void report_ack_loss_result_if_complete(struct ivc_server *server)
+static void report_result_if_complete(struct ivc_server *server)
 {
-#if CONFIG_IVC_DROP_ACK_EVERY == 0
-	(void)server;
-#else
-	const uint32_t drop_every = (uint32_t)CONFIG_IVC_DROP_ACK_EVERY;
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
-	uint64_t expected_drops;
+#if CONFIG_IVC_DROP_ACK_EVERY > 0
+	const uint64_t expected_drops =
+		(uint64_t)(expected_commands / (uint32_t)CONFIG_IVC_DROP_ACK_EVERY);
+	const char *profile = "ack-loss";
+#else
+	const char *profile = "normal";
+#endif
 
-	if (server->result_reported) {
+	if (server->result_reported || expected_commands == 0U ||
+	    server->receive_window.metrics.accepted != expected_commands) {
 		return;
 	}
-	expected_drops = (uint64_t)(expected_commands / drop_every);
-	if (server->receive_window.metrics.accepted != expected_commands ||
-	    server->receive_window.metrics.duplicates != expected_drops ||
+#if CONFIG_IVC_DROP_ACK_EVERY > 0
+	if (server->receive_window.metrics.duplicates != expected_drops ||
 	    server->ack_loss.acknowledgements_dropped != expected_drops) {
 		return;
 	}
-	printk("IVC-RTOS-RESULT profile=ack-loss accepted=%llu applied=%u duplicates=%llu "
+#endif
+	printk("IVC-RTOS-RESULT profile=%s accepted=%llu applied=%u duplicates=%llu "
 	       "acks_dropped=%llu status_sent=%llu acks_sent=%llu errors_sent=%llu "
 	       "protocol_errors=%llu\n",
-	       server->receive_window.metrics.accepted, server->applied_commands,
+	       profile, server->receive_window.metrics.accepted, server->applied_commands,
 	       server->receive_window.metrics.duplicates,
 	       server->ack_loss.acknowledgements_dropped, server->status_sent,
 	       server->acknowledgements_sent, server->errors_sent, server->protocol_errors);
 	server->result_reported = true;
+#if CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS
+	printk("IVC-RTOS-POWEROFF accepted=%llu\n", server->receive_window.metrics.accepted);
+	k_sleep(K_MSEC(100));
+	sys_poweroff();
 #endif
 }
 
@@ -319,7 +326,7 @@ static void process_control(struct ivc_server *server, int socket_fd,
 			    &server->receive_window)) {
 		++server->acknowledgements_sent;
 	}
-	report_ack_loss_result_if_complete(server);
+	report_result_if_complete(server);
 }
 
 static void process_datagram(struct ivc_server *server, int socket_fd,
@@ -405,9 +412,10 @@ int main(void)
 		.events = ZSOCK_POLLIN,
 	};
 	printk("IVC-RTOS-READY bind=%s:%u mac=52:54:00:00:00:02 window_bits=%u "
-	       "ack_loss_drop_every=%u expected_commands=%u\n",
+	       "ack_loss_drop_every=%u expected_commands=%u exit_after_expected=%u\n",
 	       IVC_LOCAL_IPV4, IVC_LOCAL_UDP_PORT, IVC_RECEIVE_WINDOW_BITS,
-	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY, (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS);
+	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY, (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS,
+	       (uint32_t)IS_ENABLED(CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS));
 
 	for (;;) {
 		struct sockaddr_storage peer;
