@@ -267,3 +267,111 @@ impl FilesystemOps for Ext4Filesystem {
         self.sync_to_disk()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+    use std::sync::Mutex as StdMutex;
+
+    use ax_errno::{AxError, AxResult};
+    use axfs_ng_vfs::MetadataUpdate;
+
+    use super::*;
+    use crate::block::FsBlockDevice;
+
+    const TEST_DEVICE_BYTES: usize = 100 * 1024 * 1024;
+
+    struct MemoryBlockDevice {
+        storage: Arc<StdMutex<Vec<u8>>>,
+        flushes: Arc<AtomicUsize>,
+    }
+
+    impl FsBlockDevice for MemoryBlockDevice {
+        fn name(&self) -> &str {
+            "memory-ext4-test"
+        }
+
+        fn num_blocks(&self) -> u64 {
+            (self.storage.lock().unwrap().len() / rsext4::BLOCK_SIZE) as u64
+        }
+
+        fn block_size(&self) -> usize {
+            rsext4::BLOCK_SIZE
+        }
+
+        fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult {
+            let start = usize::try_from(block_id)
+                .ok()
+                .and_then(|block| block.checked_mul(rsext4::BLOCK_SIZE))
+                .ok_or(AxError::InvalidInput)?;
+            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+            let storage = self.storage.lock().unwrap();
+            let source = storage.get(start..end).ok_or(AxError::InvalidInput)?;
+            buf.copy_from_slice(source);
+            Ok(())
+        }
+
+        fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+            let start = usize::try_from(block_id)
+                .ok()
+                .and_then(|block| block.checked_mul(rsext4::BLOCK_SIZE))
+                .ok_or(AxError::InvalidInput)?;
+            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+            let mut storage = self.storage.lock().unwrap();
+            let destination = storage.get_mut(start..end).ok_or(AxError::InvalidInput)?;
+            destination.copy_from_slice(buf);
+            Ok(())
+        }
+
+        fn flush(&mut self) -> AxResult {
+            self.flushes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn metadata_update_does_not_force_device_flush() {
+        let storage = Arc::new(StdMutex::new(vec![0; TEST_DEVICE_BYTES]));
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let region = BlockRegion::from_num_blocks((TEST_DEVICE_BYTES / rsext4::BLOCK_SIZE) as u64);
+
+        let format_disk = Ext4Disk::new(
+            Box::new(MemoryBlockDevice {
+                storage: storage.clone(),
+                flushes: flushes.clone(),
+            }),
+            region,
+        );
+        let mut format_dev = Jbd2Dev::initial_jbd2dev(0, format_disk, true);
+        rsext4::mkfs(&mut format_dev).unwrap();
+        drop(format_dev);
+
+        let filesystem = Ext4Filesystem::new(
+            Box::new(MemoryBlockDevice {
+                storage,
+                flushes: flushes.clone(),
+            }),
+            region,
+        )
+        .unwrap();
+        flushes.store(0, Ordering::Relaxed);
+
+        filesystem
+            .root_dir()
+            .update_metadata(MetadataUpdate {
+                atime: Some(Duration::from_secs(1_700_000_000)),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            flushes.load(Ordering::Relaxed),
+            0,
+            "metadata updates and close(2) must not imply a full filesystem sync"
+        );
+    }
+}

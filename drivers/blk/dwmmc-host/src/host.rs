@@ -37,6 +37,17 @@ use crate::{
 /// (RK3399, RK356x, RK35xx). Other SoCs may differ — pass a custom
 /// offset to [`DwMmc::new_with_fifo_offset`].
 pub const DEFAULT_FIFO_OFFSET: usize = 0x200;
+
+/// Blocking delay capability used for bounded controller polling.
+///
+/// Platform glue supplies the actual timer implementation so the portable
+/// controller core can enforce wall-clock command submission deadlines without
+/// depending on an OS runtime.
+pub trait DwMmcDelay: Send + Sync + 'static {
+    /// Block for at least `micros` microseconds.
+    fn delay_us(&self, micros: u32);
+}
+
 const ALL_INT_CLR: u32 = u32::MAX;
 const DEFAULT_TMOUT: u32 = u32::MAX;
 const DEFAULT_FIFO_DEPTH_WORDS: u32 = 0x100;
@@ -226,6 +237,7 @@ pub struct DwMmc {
     pub(crate) dma: Option<DeviceDma>,
     pub(crate) dma_mask: u64,
     pub(crate) dma_poisoned: bool,
+    pub(crate) delay: Option<Arc<dyn DwMmcDelay>>,
     pub(crate) irq: Arc<IrqCore>,
     pub(crate) completion_irq_enabled: AtomicBool,
     pub(crate) host2_next_id: u64,
@@ -270,6 +282,7 @@ impl DwMmc {
             dma: None,
             dma_mask: u32::MAX as u64,
             dma_poisoned: false,
+            delay: None,
             irq: Arc::new(IrqCore::new(regs)),
             completion_irq_enabled: AtomicBool::new(false),
             host2_next_id: 0,
@@ -377,6 +390,11 @@ impl DwMmc {
     /// Remove a previously installed platform clock callback.
     pub fn clear_external_clock(&mut self) {
         self.ext_clock = None;
+    }
+
+    /// Install the platform delay capability used by bounded command waits.
+    pub fn set_delay(&mut self, delay: Arc<dyn DwMmcDelay>) {
+        self.delay = Some(delay);
     }
 
     /// Install a DMA capability used by high-level data-transfer hooks.

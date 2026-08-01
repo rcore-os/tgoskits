@@ -26,11 +26,11 @@ pub(crate) enum CommandState {
     WaitingInhibit {
         cmd: ProtoCmd,
         data: Option<crate::host::PendingData>,
-        polls: u32,
+        waited_us: u32,
     },
     WaitingStart {
         cmd: ProtoCmd,
-        polls: u32,
+        waited_us: u32,
     },
     Issued {
         cmd: ProtoCmd,
@@ -42,6 +42,28 @@ pub(crate) enum CommandState {
     Failed {
         error: Error,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CommandInhibit {
+    Command,
+    Data,
+}
+
+impl CommandInhibit {
+    const fn poll_interval_us(self) -> u32 {
+        match self {
+            Self::Command => COMMAND_START_POLL_INTERVAL_US,
+            Self::Data => DATA_BUSY_POLL_INTERVAL_US,
+        }
+    }
+
+    const fn phase(self) -> Phase {
+        match self {
+            Self::Command => Phase::CommandSend,
+            Self::Data => Phase::BusyWait,
+        }
+    }
 }
 
 impl DwMmc {
@@ -73,10 +95,11 @@ impl DwMmc {
         self.command_state = CommandState::WaitingInhibit {
             cmd: *cmd,
             data,
-            polls: 0,
+            waited_us: 0,
         };
-        if let Err(err) = self.poll_command() {
+        if let Err(err) = self.drive_command_submission() {
             self.command_state = CommandState::Idle;
+            self.irq.state.end_request();
             return Err(err);
         }
         Ok(())
@@ -84,28 +107,31 @@ impl DwMmc {
 
     pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
         match self.command_state {
-            CommandState::WaitingInhibit { cmd, data, polls } => {
-                if !self.command_can_issue(data.is_some()) {
-                    if polls >= COMMAND_WAIT_POLLS {
+            CommandState::WaitingInhibit {
+                cmd,
+                data,
+                waited_us,
+            } => {
+                if let Some(inhibit) = self.command_inhibit(data.is_some()) {
+                    if waited_us >= COMMAND_SUBMISSION_TIMEOUT_US {
                         self.log_command_timeout("wait-inhibit", cmd);
-                        let err =
-                            Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
+                        let err = Error::Timeout(ErrorContext::for_cmd(inhibit.phase(), cmd.index));
                         self.command_state = CommandState::Failed { error: err };
                         return Err(err);
                     }
                     self.command_state = CommandState::WaitingInhibit {
                         cmd,
                         data,
-                        polls: polls + 1,
+                        waited_us: waited_us.saturating_add(inhibit.poll_interval_us()),
                     };
                     return Ok(CommandPoll::Pending);
                 }
                 self.program_command(&cmd, data);
                 return Ok(CommandPoll::Pending);
             }
-            CommandState::WaitingStart { cmd, polls } => {
+            CommandState::WaitingStart { cmd, waited_us } => {
                 if self.regs.cmd().read().start_cmd() {
-                    if polls >= COMMAND_WAIT_POLLS {
+                    if waited_us >= COMMAND_SUBMISSION_TIMEOUT_US {
                         self.log_command_timeout("wait-start", cmd);
                         let err =
                             Error::Timeout(ErrorContext::for_cmd(Phase::CommandSend, cmd.index));
@@ -114,7 +140,7 @@ impl DwMmc {
                     }
                     self.command_state = CommandState::WaitingStart {
                         cmd,
-                        polls: polls + 1,
+                        waited_us: waited_us.saturating_add(COMMAND_START_POLL_INTERVAL_US),
                     };
                     return Ok(CommandPoll::Pending);
                 }
@@ -153,7 +179,7 @@ impl DwMmc {
             self.command_state = CommandState::Complete { response };
             return Ok(CommandPoll::Complete);
         }
-        if polls >= COMMAND_WAIT_POLLS {
+        if polls >= COMMAND_RESPONSE_WAIT_POLLS {
             let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, cmd.index));
             self.log_command_error("response-timeout", cmd, raw_status, err);
             self.command_state = CommandState::Failed { error: err };
@@ -187,10 +213,52 @@ impl DwMmc {
         }
     }
 
-    fn command_can_issue(&self, has_data: bool) -> bool {
-        let cmd_busy = self.regs.cmd().read().start_cmd();
-        let data_busy = has_data && self.regs.status().read().data_busy();
-        !cmd_busy && !data_busy
+    fn drive_command_submission(&mut self) -> Result<(), Error> {
+        loop {
+            let _ = self.poll_command()?;
+            match self.command_state {
+                CommandState::WaitingInhibit { cmd, data, .. } => {
+                    let Some(inhibit) = self.command_inhibit(data.is_some()) else {
+                        continue;
+                    };
+                    self.delay_submission_poll(cmd.index, inhibit)?;
+                }
+                CommandState::WaitingStart { cmd, .. } => {
+                    if !self.regs.cmd().read().start_cmd() {
+                        continue;
+                    }
+                    self.delay_submission_poll(cmd.index, CommandInhibit::Command)?;
+                }
+                CommandState::Issued { .. } | CommandState::Complete { .. } => return Ok(()),
+                CommandState::Failed { error } => return Err(error),
+                CommandState::Idle => return Err(Error::InvalidArgument),
+            }
+        }
+    }
+
+    fn command_inhibit(&self, has_data: bool) -> Option<CommandInhibit> {
+        if self.regs.cmd().read().start_cmd() {
+            Some(CommandInhibit::Command)
+        } else if has_data && self.regs.status().read().data_busy() {
+            Some(CommandInhibit::Data)
+        } else {
+            None
+        }
+    }
+
+    fn delay_submission_poll(&self, cmd_index: u8, inhibit: CommandInhibit) -> Result<(), Error> {
+        let Some(delay) = self.delay.as_ref() else {
+            log::error!(
+                "dwmmc: command submission requires a delay provider while {:?} is active",
+                inhibit
+            );
+            return Err(Error::BusError(ErrorContext::for_cmd(
+                inhibit.phase(),
+                cmd_index,
+            )));
+        };
+        delay.delay_us(inhibit.poll_interval_us());
+        Ok(())
     }
 
     fn program_command(&mut self, cmd: &ProtoCmd, data: Option<crate::host::PendingData>) {
@@ -206,7 +274,7 @@ impl DwMmc {
         self.regs.cmd().write(encode_command(cmd, data_dir));
         self.command_state = CommandState::WaitingStart {
             cmd: *cmd,
-            polls: 0,
+            waited_us: 0,
         };
     }
 
@@ -288,7 +356,7 @@ impl DwMmc {
 
     pub(crate) fn abort_command(&mut self) -> Result<(), Error> {
         self.clear_command_int_status();
-        for _ in 0..COMMAND_WAIT_POLLS {
+        for _ in 0..COMMAND_RESPONSE_WAIT_POLLS {
             if !self.regs.cmd().read().start_cmd() {
                 self.clear_all_int_status();
                 self.reset_and_init_preserving_irq()?;
@@ -309,7 +377,10 @@ impl DwMmc {
     }
 }
 
-const COMMAND_WAIT_POLLS: u32 = 1_000_000;
+const COMMAND_SUBMISSION_TIMEOUT_US: u32 = 500_000;
+const DATA_BUSY_POLL_INTERVAL_US: u32 = 10;
+const COMMAND_START_POLL_INTERVAL_US: u32 = 1;
+const COMMAND_RESPONSE_WAIT_POLLS: u32 = 1_000_000;
 
 /// Build the CMD register value for a single command.
 ///
@@ -430,4 +501,92 @@ fn read_r2(resp: [u32; 4]) -> [u8; 16] {
     bytes[8..12].copy_from_slice(&resp[1].to_be_bytes());
     bytes[12..16].copy_from_slice(&resp[0].to_be_bytes());
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{
+        ptr::NonNull,
+        sync::atomic::{AtomicU32, Ordering},
+    };
+
+    use sdmmc_protocol::cmd::cmd24;
+
+    use super::*;
+    use crate::{
+        host::{DwMmcDelay, PendingData},
+        regs::Status,
+    };
+
+    const CMD_WORD: usize = 0x2c / size_of::<u32>();
+    const STATUS_WORD: usize = 0x48 / size_of::<u32>();
+
+    struct ReleaseSubmissionInhibits {
+        mmio: usize,
+        calls: AtomicU32,
+        first_delay_us: AtomicU32,
+        second_delay_us: AtomicU32,
+    }
+
+    impl ReleaseSubmissionInhibits {
+        fn new(mmio: *mut u32) -> Self {
+            Self {
+                mmio: mmio as usize,
+                calls: AtomicU32::new(0),
+                first_delay_us: AtomicU32::new(0),
+                second_delay_us: AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl DwMmcDelay for ReleaseSubmissionInhibits {
+        fn delay_us(&self, micros: u32) {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            let mmio = self.mmio as *mut u32;
+            match call {
+                0 => {
+                    self.first_delay_us.store(micros, Ordering::Release);
+                    // SAFETY: the test-owned register array remains alive while
+                    // the host and delay provider use this address.
+                    unsafe {
+                        mmio.add(STATUS_WORD)
+                            .write_volatile(Status::new().with_data_busy(false).into_bits());
+                    }
+                }
+                1 => {
+                    self.second_delay_us.store(micros, Ordering::Release);
+                    // SAFETY: same register-array ownership as above.
+                    unsafe {
+                        let cmd = mmio.add(CMD_WORD);
+                        let bits = cmd.read_volatile();
+                        cmd.write_volatile(Cmd::from_bits(bits).with_start_cmd(false).into_bits());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn submit_waits_for_data_busy_and_command_acceptance() {
+        let mut mmio = [0u32; 256];
+        mmio[STATUS_WORD] = Status::new().with_data_busy(true).into_bits();
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        let delay = Arc::new(ReleaseSubmissionInhibits::new(mmio.as_mut_ptr()));
+        host.set_delay(delay.clone());
+        host.pending_data = Some(PendingData {
+            direction: DataDirection::Write,
+            block_size: 512,
+            block_count: 1,
+        });
+
+        host.submit_command(&cmd24(7)).unwrap();
+
+        assert_eq!(delay.calls.load(Ordering::Acquire), 2);
+        assert_eq!(delay.first_delay_us.load(Ordering::Acquire), 10);
+        assert_eq!(delay.second_delay_us.load(Ordering::Acquire), 1);
+        assert!(matches!(host.command_state, CommandState::Issued { .. }));
+    }
 }

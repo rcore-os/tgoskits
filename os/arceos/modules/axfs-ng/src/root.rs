@@ -1029,6 +1029,16 @@ mod tests {
             buf.copy_from_slice(block);
             Ok(())
         }
+
+        #[cfg(any(feature = "ext4", feature = "fat"))]
+        fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> AxResult {
+            unreachable!("root selection tests do not write block data")
+        }
+
+        #[cfg(feature = "ext4")]
+        fn flush(&mut self) -> AxResult {
+            Ok(())
+        }
     }
 
     fn mbr_partition(

@@ -108,6 +108,7 @@ rockchip-dwmmc = [
 starfive-jh7110-dwmmc = [
     "block",
     "starfive-soc",
+    "dep:dwmmc-host",
     "dep:sdmmc-protocol",
     "dep:starfive-jh7110-dwmmc",
     "sdmmc-protocol/rdif",

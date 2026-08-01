@@ -67,6 +67,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Jh7110DwMmc::new(mmio_base, profile.host_config) };
+    host.inner_mut().set_delay(super::dwmmc_delay());
 
     info!("starfive-jh7110-dwmmc: reset controller");
     host.reset_and_init()

@@ -207,6 +207,17 @@ impl<B: BlockDevice> BlockDev<B> {
         self.entries[self.active].buffer.as_mut_slice()
     }
 
+    /// Marks the active cache line clean after its contents have been handed
+    /// to another durability mechanism, such as the journal commit queue.
+    pub(crate) fn mark_active_clean(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
+        let active = &mut self.entries[self.active];
+        if active.block_id != Some(block_id) {
+            return Err(Ext4Error::corrupted());
+        }
+        active.dirty = false;
+        Ok(())
+    }
+
     /// Flushes dirty cached blocks, then invalidates all entries.
     ///
     /// Dirty entries are flushed first so metadata modifications made

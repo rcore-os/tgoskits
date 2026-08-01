@@ -25,6 +25,10 @@ pub enum Jbd2RunState {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
 
@@ -74,6 +78,69 @@ mod tests {
         fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
             Ok(Ext4Timestamp::new(0, 0))
         }
+    }
+
+    struct CountingBlockDevice {
+        writes: Arc<AtomicUsize>,
+    }
+
+    impl BlockDevice for CountingBlockDevice {
+        fn write(&mut self, _buffer: &[u8], _block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn read(
+            &mut self,
+            buffer: &mut [u8],
+            _block_id: AbsoluteBN,
+            _count: u32,
+        ) -> Ext4Result<()> {
+            buffer.fill(0);
+            Ok(())
+        }
+
+        fn open(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn total_blocks(&self) -> u64 {
+            1024
+        }
+
+        fn block_size(&self) -> u32 {
+            BLOCK_SIZE as u32
+        }
+
+        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(0, 0))
+        }
+    }
+
+    #[test]
+    fn journaled_metadata_is_not_rewritten_by_cache_flush() {
+        let writes = Arc::new(AtomicUsize::new(0));
+        let device = CountingBlockDevice {
+            writes: writes.clone(),
+        };
+        let mut journal = Jbd2Dev::initial_jbd2dev(0, device, true);
+        journal.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(100));
+        let metadata_block = AbsoluteBN::new(5);
+
+        journal.read_block(metadata_block).unwrap();
+        journal.buffer_mut()[0] = 0x5a;
+        journal.write_block(metadata_block, true).unwrap();
+        journal.cantflush().unwrap();
+
+        assert_eq!(
+            writes.load(Ordering::Relaxed),
+            0,
+            "journaled metadata must not be written directly from the block cache"
+        );
     }
 
     #[test]
@@ -293,7 +360,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         };
         let raw_dev = self.inner.device_mut();
 
-        if Self::enqueue_journal_update(system, raw_dev, updates)? {
+        let committed = Self::enqueue_journal_update(system, raw_dev, updates)?;
+        self.inner.mark_active_clean(block_id)?;
+        if committed {
             self.inner.invalidate_cache()?;
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");

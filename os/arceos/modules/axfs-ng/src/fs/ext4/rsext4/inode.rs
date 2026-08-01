@@ -180,7 +180,10 @@ impl NodeOps for Inode {
             })
             .map_err(into_vfs_err)?;
         }
-        self.fs.sync_to_disk()
+        // Metadata-changing syscalls and close-time atime updates do not imply
+        // fsync. Keep the inode dirty in rsext4's cache; explicit sync/fsync and
+        // filesystem flush paths own persistence and journal commit ordering.
+        Ok(())
     }
 
     fn len(&self) -> VfsResult<u64> {

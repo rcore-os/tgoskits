@@ -87,7 +87,7 @@ use sdmmc_protocol::{
 use crate::regs::RegisterBlockVolatileFieldAccess;
 pub use crate::{
     dma::{BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, RequestId},
-    host::{CardDetect, DEFAULT_FIFO_OFFSET, DwMmc, HostClock},
+    host::{CardDetect, DEFAULT_FIFO_OFFSET, DwMmc, DwMmcDelay, HostClock},
 };
 
 /// Stable controller event extracted from DW_mshc raw interrupt status.

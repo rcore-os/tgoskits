@@ -23,6 +23,21 @@ mod rockchip;
 #[cfg(feature = "starfive-jh7110-dwmmc")]
 pub mod starfive_mmc;
 
+#[cfg(any(feature = "rockchip-dwmmc", feature = "starfive-jh7110-dwmmc"))]
+struct AxDwMmcDelay;
+
+#[cfg(any(feature = "rockchip-dwmmc", feature = "starfive-jh7110-dwmmc"))]
+impl dwmmc_host::DwMmcDelay for AxDwMmcDelay {
+    fn delay_us(&self, micros: u32) {
+        axklib::time::busy_wait(core::time::Duration::from_micros(u64::from(micros)));
+    }
+}
+
+#[cfg(any(feature = "rockchip-dwmmc", feature = "starfive-jh7110-dwmmc"))]
+fn dwmmc_delay() -> alloc::sync::Arc<dyn dwmmc_host::DwMmcDelay> {
+    alloc::sync::Arc::new(AxDwMmcDelay)
+}
+
 #[cfg(sync_block_dev)]
 use alloc::{boxed::Box, sync::Arc};
 

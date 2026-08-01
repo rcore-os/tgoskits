@@ -559,6 +559,12 @@ impl RockchipFiqSerial {
     pub fn debugger_mut(&mut self) -> &mut FiqDebugger {
         &mut self.debugger
     }
+
+    fn record_baudrate(&mut self, config: &Config) {
+        if let Some(baudrate) = config.baudrate {
+            self.config.baudrate = baudrate;
+        }
+    }
 }
 
 impl DriverGeneric for RockchipFiqSerial {
@@ -585,7 +591,9 @@ impl RawUart for RockchipFiqSerial {
     }
 
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.serial.startup(config)
+        self.serial.startup(config)?;
+        self.record_baudrate(config);
+        Ok(())
     }
 
     fn shutdown(&mut self) {
@@ -593,11 +601,16 @@ impl RawUart for RockchipFiqSerial {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.serial.set_config(config)
+        self.serial.set_config(config)?;
+        self.record_baudrate(config);
+        Ok(())
     }
 
     fn baudrate(&self) -> u32 {
-        self.serial.baudrate()
+        // DW APB UART can reject a DLAB transition while it is busy, making
+        // divisor readback observe RBR/IER aliases instead of DLL/DLH. The
+        // last successfully applied configuration is authoritative here.
+        self.config.baudrate
     }
 
     fn data_bits(&self) -> DataBits {
@@ -707,6 +720,24 @@ fn normalise_baudrate(baudrate: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_baudrate_survives_unavailable_divisor_readback() {
+        // A flat register image does not emulate the DLAB aliases. This models
+        // a busy DW APB UART rejecting the LCR update, so DLL/DLH cannot be
+        // read back even though the port was configured successfully.
+        let mut registers = [0u32; UART_SRR as usize + 1];
+        let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
+        let serial = RockchipFiqSerial::new(
+            base,
+            RockchipFiqConfig {
+                baudrate: 1_500_000,
+                ..RockchipFiqConfig::default()
+            },
+        );
+
+        assert_eq!(serial.baudrate(), 1_500_000);
+    }
 
     fn feed(debugger: &mut FiqDebugger, bytes: &[u8]) -> heapless::Vec<FiqDebuggerEvent, 64> {
         let mut out = heapless::Vec::new();
