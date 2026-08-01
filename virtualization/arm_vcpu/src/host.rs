@@ -5,12 +5,35 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::{ArmVcpuResult, ArmVirtualIntId};
 
+/// Host interrupt-controller virtualization interface used by a physical CPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmInterruptVirtualization {
+    /// GICv2 memory-mapped GICH interface.
+    GicV2,
+    /// GICv3 ICH system-register interface.
+    GicV3,
+}
+
 /// Host operations required by AArch64 virtualization code.
 ///
 /// The vCPU core calls these static methods at architecture boundaries where
 /// the embedding OS or VMM owns the policy: virtual interrupt injection,
 /// physical interrupt reporting, and current-EL interrupt dispatch.
 pub trait ArmHostOps {
+    /// Reports which GIC virtualization interface backs the current CPU.
+    ///
+    /// Existing GICv3-only hosts need no override. Hosts that retain GICv2
+    /// support must report it so the vCPU core never touches ICH registers.
+    fn interrupt_virtualization() -> ArmVcpuResult<ArmInterruptVirtualization> {
+        Ok(ArmInterruptVirtualization::GicV3)
+    }
+
+    /// Returns the logical ID of the pinned current CPU when the host can
+    /// provide that identity without accepting a caller-supplied value.
+    fn current_cpu_id() -> ArmVcpuResult<usize> {
+        Err(crate::ArmVcpuError::BadState)
+    }
+
     /// Inject a virtual interrupt through host interrupt-controller state.
     fn inject_virtual_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult;
 
@@ -21,7 +44,7 @@ pub trait ArmHostOps {
     fn handle_current_host_irq();
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
+#[cfg(test)]
 pub(crate) fn inject_virtual_interrupt_for<H: ArmHostOps>(vector: usize) -> ArmVcpuResult {
     H::inject_virtual_interrupt(ArmVirtualIntId::try_from(vector)?)
 }

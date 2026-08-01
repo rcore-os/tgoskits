@@ -15,7 +15,7 @@
 use aarch64_cpu::registers::*;
 use arm_gic_driver::v3::{ICH_HCR_EL2, ICH_VTR_EL2, Readable, Writeable, ich_lr_el2_set_raw};
 
-use crate::{ArmHostOps, ArmVcpuResult, IchCapabilityProfile};
+use crate::{ArmHostOps, ArmInterruptVirtualization, ArmVcpuResult, IchCapabilityProfile};
 
 /// Per-CPU AArch64 virtualization state.
 #[repr(C)]
@@ -29,6 +29,7 @@ pub struct ArmPerCpu {
     /// Original hypervisor configuration restored by [`Self::hardware_disable`].
     pub original_hcr_el2: u64,
     enabled: bool,
+    interrupt_virtualization: Option<ArmInterruptVirtualization>,
 }
 
 unsafe extern "C" {
@@ -43,6 +44,7 @@ impl ArmPerCpu {
             original_vbar_el2: 0,
             original_hcr_el2: 0,
             enabled: false,
+            interrupt_virtualization: None,
         })
     }
 
@@ -57,13 +59,19 @@ impl ArmPerCpu {
             return Ok(());
         }
 
-        let profile = IchCapabilityProfile::from_raw_vtr(ICH_VTR_EL2.get())?;
-        ensure_capability_can_be_published(self.cpu_id, profile)?;
+        let interrupt_virtualization = H::interrupt_virtualization()?;
+        let profile =
+            crate::ich::discover_ich_capability(interrupt_virtualization, || ICH_VTR_EL2.get())?;
+        if let Some(profile) = profile {
+            ensure_capability_can_be_published(self.cpu_id, profile)?;
+        }
 
         self.original_vbar_el2 = VBAR_EL2.get();
         self.original_hcr_el2 = HCR_EL2.get();
 
-        disable_and_clear_ich(profile);
+        if let Some(profile) = profile {
+            disable_and_clear_ich(profile);
+        }
         crate::host::install_current_el_irq_handler::<H>();
 
         VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
@@ -71,11 +79,14 @@ impl ArmPerCpu {
             HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
         );
 
-        if let Err(error) = crate::ich::publish_ich_capability(self.cpu_id, profile) {
-            self.rollback_enable(profile);
+        if let Some(profile) = profile
+            && let Err(error) = crate::ich::publish_ich_capability(self.cpu_id, profile)
+        {
+            self.rollback_enable(Some(profile));
             return Err(error);
         }
 
+        self.interrupt_virtualization = Some(interrupt_virtualization);
         self.enabled = true;
         Ok(())
     }
@@ -86,14 +97,17 @@ impl ArmPerCpu {
             return Ok(());
         }
 
-        let profile = crate::ich_capability(self.cpu_id)?;
-        disable_and_clear_ich(profile);
+        if self.interrupt_virtualization == Some(ArmInterruptVirtualization::GicV3) {
+            let profile = crate::ich_capability(self.cpu_id)?;
+            disable_and_clear_ich(profile);
+        }
         VBAR_EL2.set(self.original_vbar_el2);
         HCR_EL2.set(self.original_hcr_el2);
         crate::host::clear_current_el_irq_handler();
 
         self.original_vbar_el2 = 0;
         self.original_hcr_el2 = 0;
+        self.interrupt_virtualization = None;
         self.enabled = false;
         Ok(())
     }
@@ -108,13 +122,16 @@ impl ArmPerCpu {
         crate::vcpu::pa_bits()
     }
 
-    fn rollback_enable(&mut self, profile: IchCapabilityProfile) {
-        disable_and_clear_ich(profile);
+    fn rollback_enable(&mut self, profile: Option<IchCapabilityProfile>) {
+        if let Some(profile) = profile {
+            disable_and_clear_ich(profile);
+        }
         VBAR_EL2.set(self.original_vbar_el2);
         HCR_EL2.set(self.original_hcr_el2);
         crate::host::clear_current_el_irq_handler();
         self.original_vbar_el2 = 0;
         self.original_hcr_el2 = 0;
+        self.interrupt_virtualization = None;
     }
 }
 

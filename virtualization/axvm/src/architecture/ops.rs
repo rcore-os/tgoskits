@@ -122,11 +122,8 @@ pub(crate) trait ArchOps {
     {
         let vm_id = vm.id();
         let vcpu_id = vcpu.id();
-        let bound_exit = vcpu.with_current_cpu_set(|| {
-            ensure_vcpu_bound(vcpu)?;
-            let run_result = run_bound_vcpu::<Self>(vm, vcpu_id, vcpu);
-            let unbind_result = vcpu.unbind_after_run();
-            finish_bound_run(vm_id, vcpu_id, run_result, unbind_result)
+        let bound_exit = with_bound_vcpu(vm_id, vcpu_id, vcpu, || {
+            run_bound_vcpu::<Self>(vm, vcpu_id, vcpu)
         })?;
 
         match bound_exit {
@@ -137,14 +134,34 @@ pub(crate) trait ArchOps {
     }
 }
 
-fn ensure_vcpu_bound<A: VmArchVcpuOps>(vcpu: &crate::vm::AxVCpuRef<A>) -> AxVmResult {
-    match vcpu.state() {
-        VmVcpuState::Free => vcpu.bind(),
-        VmVcpuState::Ready => Ok(()),
-        state => ax_err!(
-            BadState,
-            format!("VCpu state is not Free or Ready, but {state:?}")
-        ),
+fn with_bound_vcpu<A: VmArchVcpuOps, T>(
+    vm_id: usize,
+    vcpu_id: usize,
+    vcpu: &crate::vm::AxVCpuRef<A>,
+    operation: impl FnOnce() -> AxVmResult<T>,
+) -> AxVmResult<T> {
+    vcpu.with_current_cpu_set(|cpu_pin| {
+        ensure_vcpu_bound(vcpu, cpu_pin)?;
+        let run_result = operation();
+        let unbind_result = vcpu.unbind_after_run(cpu_pin);
+        finish_bound_run(vm_id, vcpu_id, run_result, unbind_result)
+    })
+}
+
+fn ensure_vcpu_bound<A: VmArchVcpuOps>(
+    vcpu: &crate::vm::AxVCpuRef<A>,
+    cpu_pin: &ax_percpu::CpuPin<'_>,
+) -> AxVmResult {
+    ensure_vcpu_is_free(vcpu)?;
+    vcpu.bind(cpu_pin)
+}
+
+fn ensure_vcpu_is_free<A: VmArchVcpuOps>(vcpu: &crate::vm::AxVCpuRef<A>) -> AxVmResult {
+    let state = vcpu.state();
+    if state == VmVcpuState::Free {
+        Ok(())
+    } else {
+        ax_err!(BadState, format!("VCpu state is not Free, but {state:?}"))
     }
 }
 
@@ -267,8 +284,8 @@ mod tests {
 
     use ax_kspin::SpinNoIrq;
     use axvm_types::{
-        GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
-        VmArchVcpuOps, VmBackendError, VmBackendResult,
+        GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId,
+        VmArchPerCpuOps, VmArchVcpuOps, VmBackendError, VmBackendResult,
     };
 
     use super::*;
@@ -278,6 +295,25 @@ mod tests {
     struct InjectionLog {
         attempts: Vec<(usize, InterruptTriggerMode)>,
         failing_vector: Option<usize>,
+        lifecycle: Vec<LifecycleEvent>,
+        bind_error: Option<VmBackendError>,
+        run_error: Option<VmBackendError>,
+        unbind_error: Option<VmBackendError>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum LifecycleStep {
+        Bind,
+        Run,
+        ExitHandler,
+        Unbind,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct LifecycleEvent {
+        step: LifecycleStep,
+        cpu_id: usize,
+        current_vcpu_published: bool,
     }
 
     struct RecordingVcpu {
@@ -310,15 +346,18 @@ mod tests {
         }
 
         fn run(&mut self) -> VmBackendResult<Self::Exit> {
-            Ok(())
+            self.record_lifecycle(LifecycleStep::Run);
+            self.injections.lock().run_error.map_or(Ok(()), Err)
         }
 
         fn bind(&mut self) -> VmBackendResult {
-            Ok(())
+            self.record_lifecycle(LifecycleStep::Bind);
+            self.injections.lock().bind_error.map_or(Ok(()), Err)
         }
 
         fn unbind(&mut self) -> VmBackendResult {
-            Ok(())
+            self.record_lifecycle(LifecycleStep::Unbind);
+            self.injections.lock().unbind_error.map_or(Ok(()), Err)
         }
 
         fn set_gpr(&mut self, _reg: usize, _val: usize) {}
@@ -339,6 +378,10 @@ mod tests {
     }
 
     impl RecordingVcpu {
+        fn record_lifecycle(&self, step: LifecycleStep) {
+            self.injections.lock().lifecycle.push(lifecycle_event(step));
+        }
+
         fn record_injection(
             &self,
             vector: usize,
@@ -488,5 +531,184 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn preexisting_ready_state_cannot_bypass_run_path_binding() {
+        let injections = Arc::new(SpinNoIrq::new(InjectionLog::default()));
+        let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections).unwrap());
+        vcpu.transition_state(VmVcpuState::Created, VmVcpuState::Ready)
+            .unwrap();
+
+        assert!(ensure_vcpu_is_free(&vcpu).is_err());
+    }
+
+    #[test]
+    fn bound_lifecycle_keeps_cpu_identity_and_publication_through_unbind() {
+        let (vcpu, log) = ready_recording_vcpu(InjectionLog::default());
+
+        with_bound_vcpu(1, 0, &vcpu, || {
+            vcpu.run()?;
+            log.lock()
+                .lifecycle
+                .push(lifecycle_event(LifecycleStep::ExitHandler));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            log.lock().lifecycle,
+            [
+                event_on_cpu_zero(LifecycleStep::Bind),
+                event_on_cpu_zero(LifecycleStep::Run),
+                event_on_cpu_zero(LifecycleStep::ExitHandler),
+                event_on_cpu_zero(LifecycleStep::Unbind),
+            ]
+        );
+        assert!(
+            crate::vcpu::with_current_vcpu::<RecordingVcpu, _>(|current| current.is_none()),
+            "publication must be withdrawn after successful unbind"
+        );
+        assert_eq!(vcpu.state(), VmVcpuState::Free);
+    }
+
+    #[test]
+    fn bind_failure_skips_run_and_unbind() {
+        let (vcpu, log) = ready_recording_vcpu(InjectionLog {
+            bind_error: Some(VmBackendError::InvalidState),
+            ..Default::default()
+        });
+
+        assert!(with_bound_vcpu(1, 0, &vcpu, || Ok(())).is_err());
+        assert_eq!(
+            log.lock().lifecycle,
+            [event_on_cpu_zero(LifecycleStep::Bind)]
+        );
+    }
+
+    #[test]
+    fn run_failure_still_unbinds_before_withdrawing_publication() {
+        let (vcpu, log) = ready_recording_vcpu(InjectionLog {
+            run_error: Some(VmBackendError::InvalidData),
+            ..Default::default()
+        });
+
+        assert!(with_bound_vcpu(1, 0, &vcpu, || vcpu.run()).is_err());
+        assert_eq!(
+            log.lock().lifecycle,
+            [
+                event_on_cpu_zero(LifecycleStep::Bind),
+                event_on_cpu_zero(LifecycleStep::Run),
+                event_on_cpu_zero(LifecycleStep::Unbind),
+            ]
+        );
+    }
+
+    #[test]
+    fn exit_handler_failure_still_unbinds() {
+        let (vcpu, log) = ready_recording_vcpu(InjectionLog::default());
+
+        let result = with_bound_vcpu(1, 0, &vcpu, || {
+            vcpu.run()?;
+            log.lock()
+                .lifecycle
+                .push(lifecycle_event(LifecycleStep::ExitHandler));
+            Err::<(), _>(AxVmError::vcpu(
+                "handle vCPU exit",
+                VmBackendError::InvalidData,
+            ))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            log.lock().lifecycle,
+            [
+                event_on_cpu_zero(LifecycleStep::Bind),
+                event_on_cpu_zero(LifecycleStep::Run),
+                event_on_cpu_zero(LifecycleStep::ExitHandler),
+                event_on_cpu_zero(LifecycleStep::Unbind),
+            ]
+        );
+    }
+
+    #[test]
+    fn unbind_failure_is_propagated_after_successful_run() {
+        let (vcpu, log) = ready_recording_vcpu(InjectionLog {
+            unbind_error: Some(VmBackendError::InvalidState),
+            ..Default::default()
+        });
+
+        assert!(with_bound_vcpu(1, 0, &vcpu, || vcpu.run()).is_err());
+        assert_eq!(
+            log.lock().lifecycle,
+            [
+                event_on_cpu_zero(LifecycleStep::Bind),
+                event_on_cpu_zero(LifecycleStep::Run),
+                event_on_cpu_zero(LifecycleStep::Unbind),
+            ]
+        );
+    }
+
+    fn ready_recording_vcpu(
+        log: InjectionLog,
+    ) -> (Arc<AxVCpu<RecordingVcpu>>, Arc<SpinNoIrq<InjectionLog>>) {
+        install_test_cpu_area();
+        let log = Arc::new(SpinNoIrq::new(log));
+        let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, log.clone()).unwrap());
+        vcpu.setup(
+            GuestPhysAddr::from_usize(0),
+            NestedPagingConfig::new(HostPhysAddr::from_usize(0), 3, 39, 0),
+            (),
+        )
+        .unwrap();
+        (vcpu, log)
+    }
+
+    fn install_test_cpu_area() {
+        use core::alloc::Layout;
+
+        let size = core::mem::size_of::<cpu_local::CpuAreaPrefix>();
+        let layout = Layout::from_size_align(size, 4096).unwrap();
+        // SAFETY: the zeroed allocation is checked and intentionally leaked
+        // for the process lifetime. Host tests use a thread-local current-vCPU
+        // publication, so only the fixed CPU-area prefix is required here.
+        let area = unsafe {
+            let base = std::alloc::alloc_zeroed(layout);
+            assert!(!base.is_null());
+            base.cast::<cpu_local::CpuAreaPrefix>().write(
+                cpu_local::CpuAreaPrefix::initialize(
+                    ax_percpu::CpuIndex::try_from(0).unwrap(),
+                    base as usize,
+                )
+                .unwrap(),
+            );
+            cpu_local::CpuAreaRef::from_initialized_base(base as usize).unwrap()
+        };
+        // SAFETY: this host test thread models offline logical CPU 0 and the
+        // leaked allocation remains valid until process shutdown.
+        unsafe { cpu_local::install_cpu_area(area) }.unwrap();
+    }
+
+    fn lifecycle_event(step: LifecycleStep) -> LifecycleEvent {
+        let _guard = ax_kernel_guard::NoPreempt::new();
+        // SAFETY: the guard prevents migration while observing both the CPU
+        // identity and the current-vCPU publication.
+        unsafe {
+            ax_percpu::with_cpu_pin(|pin| LifecycleEvent {
+                step,
+                cpu_id: pin.area().cpu_index().as_usize(),
+                current_vcpu_published: crate::vcpu::get_current_vcpu::<RecordingVcpu>(pin)
+                    .is_some(),
+            })
+        }
+        .unwrap()
+    }
+
+    const fn event_on_cpu_zero(step: LifecycleStep) -> LifecycleEvent {
+        LifecycleEvent {
+            step,
+            cpu_id: 0,
+            current_vcpu_published: true,
+        }
     }
 }

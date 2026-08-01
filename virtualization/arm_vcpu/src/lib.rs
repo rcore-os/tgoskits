@@ -37,9 +37,11 @@ mod types;
 #[cfg(target_arch = "aarch64")]
 mod vcpu;
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) use self::ich::ich_capability;
 pub use self::{
-    host::ArmHostOps,
-    ich::{IchCapabilityProfile, common_ich_capability, ich_capability},
+    host::{ArmHostOps, ArmInterruptVirtualization},
+    ich::IchCapabilityProfile,
     interrupt::{
         ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState, plan_direct_injection,
     },

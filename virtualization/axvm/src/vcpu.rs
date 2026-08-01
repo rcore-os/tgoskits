@@ -17,7 +17,7 @@
 use alloc::format;
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
-use ax_kernel_guard::NoPreempt;
+use ax_kernel_guard::{NoPreempt, NoPreemptIrqSave};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_percpu::{CpuAreaRef, CpuPin};
 use axvm_types::{
@@ -37,6 +37,7 @@ struct PinnedCpuContext<'pin, 'cpu> {
 
 impl<'pin, 'cpu> PinnedCpuContext<'pin, 'cpu> {
     fn new(cpu_pin: &'pin CpuPin<'cpu>) -> Self {
+        #[cfg(not(all(test, feature = "host-test")))]
         ax_percpu::current_area(cpu_pin)
             .expect("vCPU operation requires the installed per-CPU area");
         Self {
@@ -79,7 +80,7 @@ struct CurrentVcpuPublication<'scope, 'cpu> {
 
 impl Drop for CurrentVcpuPublication<'_, '_> {
     fn drop(&mut self) {
-        CURRENT_VCPU.write_current(self.pin, 0);
+        write_current_vcpu_pointer(self.pin, 0);
     }
 }
 
@@ -167,12 +168,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Runs `f` if the current state equals `from`, then stores `to`.
-    pub fn with_state_transition<F, T>(
-        &self,
-        from: VmVcpuState,
-        to: VmVcpuState,
-        f: F,
-    ) -> AxVmResult<T>
+    fn with_state_transition<F, T>(&self, from: VmVcpuState, to: VmVcpuState, f: F) -> AxVmResult<T>
     where
         F: FnOnce() -> AxVmResult<T>,
     {
@@ -199,7 +195,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Runs `f` with this vCPU recorded as current on the physical CPU.
     pub(crate) fn with_current_cpu_set<F, T>(&self, f: F) -> T
     where
-        F: FnOnce() -> T,
+        F: FnOnce(&CpuPin<'_>) -> T,
     {
         let _guard = NoPreempt::new();
         // SAFETY: the guard prevents migration through the backend operation,
@@ -210,7 +206,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
 
                 if let Some(current_vcpu) = get_current_vcpu::<A>(cpu_pin) {
                     if core::ptr::eq(current_vcpu, self) {
-                        let result = f();
+                        let result = f(cpu_pin);
                         pinned_cpu.assert_host_cpu_binding();
                         result
                     } else {
@@ -219,7 +215,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                 } else {
                     set_current_vcpu(self, cpu_pin);
                     let publication = CurrentVcpuPublication { pin: cpu_pin };
-                    let result = f();
+                    let result = f(cpu_pin);
                     pinned_cpu.assert_host_cpu_binding();
                     drop(publication);
                     result
@@ -230,28 +226,23 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Runs an architecture operation under a state transition.
-    pub fn manipulate_arch_vcpu<F, T>(
-        &self,
-        from: VmVcpuState,
-        to: VmVcpuState,
-        f: F,
-    ) -> AxVmResult<T>
+    fn manipulate_arch_vcpu<F, T>(&self, from: VmVcpuState, to: VmVcpuState, f: F) -> AxVmResult<T>
     where
         F: FnOnce(&mut A) -> AxVmResult<T>,
     {
         self.with_state_transition(from, to, || {
-            self.with_current_cpu_set(|| f(self.get_arch_vcpu()))
+            self.with_current_cpu_set(|_| f(self.get_arch_vcpu()))
         })
     }
 
     /// Transitions the vCPU state without calling the architecture backend.
-    pub fn transition_state(&self, from: VmVcpuState, to: VmVcpuState) -> AxVmResult {
+    pub(crate) fn transition_state(&self, from: VmVcpuState, to: VmVcpuState) -> AxVmResult {
         self.with_state_transition(from, to, || Ok(()))
     }
 
     /// Returns the architecture-specific vCPU.
     #[allow(clippy::mut_from_ref)]
-    pub fn get_arch_vcpu(&self) -> &mut A {
+    pub(crate) fn get_arch_vcpu(&self) -> &mut A {
         unsafe { &mut *self.arch_vcpu.get() }
     }
 
@@ -266,20 +257,24 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Binds the vCPU to the current physical CPU.
-    pub fn bind(&self) -> AxVmResult {
-        self.manipulate_arch_vcpu(VmVcpuState::Free, VmVcpuState::Ready, |arch_vcpu| {
-            arch_vcpu
-                .bind()
-                .map_err(|error| map_vcpu_backend_error("bind vCPU", error))
+    pub(crate) fn bind(&self, cpu_pin: &CpuPin<'_>) -> AxVmResult {
+        self.with_state_transition(VmVcpuState::Free, VmVcpuState::Ready, || {
+            self.with_exclusive_cpu_local(cpu_pin, || {
+                self.get_arch_vcpu()
+                    .bind()
+                    .map_err(|error| map_vcpu_backend_error("bind vCPU", error))
+            })
         })
     }
 
     /// Unbinds the vCPU from the current physical CPU.
-    pub fn unbind(&self) -> AxVmResult {
-        self.manipulate_arch_vcpu(VmVcpuState::Ready, VmVcpuState::Free, |arch_vcpu| {
-            arch_vcpu
-                .unbind()
-                .map_err(|error| map_vcpu_backend_error("unbind vCPU", error))
+    fn unbind(&self, cpu_pin: &CpuPin<'_>) -> AxVmResult {
+        self.with_state_transition(VmVcpuState::Ready, VmVcpuState::Free, || {
+            self.with_exclusive_cpu_local(cpu_pin, || {
+                self.get_arch_vcpu()
+                    .unbind()
+                    .map_err(|error| map_vcpu_backend_error("unbind vCPU", error))
+            })
         })
     }
 
@@ -288,10 +283,10 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// A backend run failure intentionally leaves the architecture-independent
     /// state invalid, but CPU-local resources still have to be saved and
     /// disabled before the pin scope ends.
-    pub(crate) fn unbind_after_run(&self) -> AxVmResult {
+    pub(crate) fn unbind_after_run(&self, cpu_pin: &CpuPin<'_>) -> AxVmResult {
         match self.state() {
-            VmVcpuState::Ready => self.unbind(),
-            VmVcpuState::Invalid => self.with_current_cpu_set(|| {
+            VmVcpuState::Ready => self.unbind(cpu_pin),
+            VmVcpuState::Invalid => self.with_exclusive_cpu_local(cpu_pin, || {
                 self.get_arch_vcpu()
                     .unbind()
                     .map_err(|error| map_vcpu_backend_error("unbind invalid vCPU", error))
@@ -301,6 +296,18 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                 format!("VCpu cleanup state is not Ready or Invalid, but {state:?}")
             ),
         }
+    }
+
+    fn with_exclusive_cpu_local<T>(
+        &self,
+        cpu_pin: &CpuPin<'_>,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        let _guard = NoPreemptIrqSave::new();
+        // SAFETY: the state transition excludes another runner for this vCPU;
+        // the IRQ guard excludes local re-entry, and ICH registers have no
+        // remotely addressable alias. The outer pin covers the whole call.
+        unsafe { ax_percpu::with_exclusive_cpu(cpu_pin, |_| operation()) }
     }
 
     /// Sets the guest entry point.
@@ -346,11 +353,16 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
 #[ax_percpu::def_percpu]
 static CURRENT_VCPU: usize = 0;
 
+#[cfg(all(test, feature = "host-test"))]
+std::thread_local! {
+    static HOST_TEST_CURRENT_VCPU: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 /// Gets the current AxVM vCPU on this physical CPU.
 pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
     pin: &'pin CpuPin<'_>,
 ) -> Option<&'pin AxVCpu<A>> {
-    let pointer = CURRENT_VCPU.read_current(pin);
+    let pointer = read_current_vcpu_pointer(pin);
     // SAFETY: publication is scoped by with_current_cpu_set, which borrows the
     // live AxVCpu and clears this pointer before its CPU pin expires.
     unsafe { (pointer as *const AxVCpu<A>).as_ref() }
@@ -358,11 +370,35 @@ pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
 
 fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &CpuPin<'_>) {
     assert_eq!(
-        CURRENT_VCPU.read_current(pin),
+        read_current_vcpu_pointer(pin),
         0,
         "current vCPU publication must be empty"
     );
-    CURRENT_VCPU.write_current(pin, vcpu as *const _ as usize);
+    write_current_vcpu_pointer(pin, vcpu as *const _ as usize);
+}
+
+fn read_current_vcpu_pointer(pin: &CpuPin<'_>) -> usize {
+    #[cfg(all(test, feature = "host-test"))]
+    {
+        let _ = pin;
+        HOST_TEST_CURRENT_VCPU.get()
+    }
+    #[cfg(not(all(test, feature = "host-test")))]
+    {
+        CURRENT_VCPU.read_current(pin)
+    }
+}
+
+fn write_current_vcpu_pointer(pin: &CpuPin<'_>, value: usize) {
+    #[cfg(all(test, feature = "host-test"))]
+    {
+        let _ = pin;
+        HOST_TEST_CURRENT_VCPU.set(value);
+    }
+    #[cfg(not(all(test, feature = "host-test")))]
+    {
+        CURRENT_VCPU.write_current(pin, value);
+    }
 }
 
 /// Runs `operation` with the current vCPU borrowed only for a pinned CPU scope.

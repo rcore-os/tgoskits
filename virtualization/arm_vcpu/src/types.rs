@@ -91,6 +91,12 @@ pub enum ArmVcpuError {
         /// Observed five-bit EOICOUNT value.
         count: u8,
     },
+    /// HCR configuration outside this module's EN/UIE/TDIR policy was observed.
+    #[error("ICH_HCR_EL2 contains unowned configuration bits {bits:#x}")]
+    UnexpectedIchHcrBits {
+        /// Unexpected HCR bits, excluding EOICOUNT and the owned policy.
+        bits: u64,
+    },
     /// The saved HCR policy requires a capability absent from this CPU.
     #[error("ICH HCR policy {policy:#x} is unsupported by capability {capability:?}")]
     UnsupportedIchHcrPolicy {
@@ -189,6 +195,8 @@ pub enum IchRegisterOperation {
     ReadListRegister(usize),
     /// Write a list-register slot.
     WriteListRegister(usize),
+    /// Read the empty-list-register status bitmap.
+    ReadEmptyListRegisterStatus,
 }
 
 /// Guest physical address.

@@ -1,13 +1,6 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
-use arm_gic_driver::v3::{
-    ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_VTR_EL2, ReadWriteable, Readable, ich_lr_el2_get,
-    ich_lr_el2_set_raw,
-};
-use arm_vcpu::{
-    ArmVcpuError, ArmVcpuResult, ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState,
-    plan_direct_injection,
-};
+use arm_vcpu::{ArmInterruptVirtualization, ArmVcpuError, ArmVcpuResult, ArmVirtualIntId};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::host::{HostMemory, default_host};
@@ -18,6 +11,18 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
         .lock()
         .expect("failed to lock GIC driver");
     f(&mut gic)
+}
+
+pub(crate) fn interrupt_virtualization() -> ArmVcpuResult<ArmInterruptVirtualization> {
+    with_gic(|gic| {
+        if gic.typed_mut::<arm_gic_driver::v2::Gic>().is_some() {
+            return Ok(ArmInterruptVirtualization::GicV2);
+        }
+        if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
+            return Ok(ArmInterruptVirtualization::GicV3);
+        }
+        Err(ArmVcpuError::Unsupported)
+    })
 }
 
 pub(crate) fn inject_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
@@ -35,52 +40,11 @@ pub(crate) fn inject_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
             return Ok(());
         }
 
-        if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
-            return inject_interrupt_gic_v3(intid);
-        }
-
+        // GICv3 injection must go through ArmVcpu's bound ICH context. Keeping
+        // this host callback GICv2-only prevents an unguarded LR/HCR access
+        // path from bypassing the CPU-local ownership boundary.
         Err(ArmVcpuError::Unsupported)
     })
-}
-
-fn inject_interrupt_gic_v3(intid: ArmVirtualIntId) -> ArmVcpuResult {
-    debug!("Injecting virtual interrupt: intid={intid}");
-    let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
-    if !(1..=16).contains(&lr_num) {
-        return Err(ArmVcpuError::InvalidListRegisterCount { count: lr_num });
-    }
-
-    let mut raw_lrs = [0; 16];
-    for (slot, raw) in raw_lrs[..lr_num].iter_mut().enumerate() {
-        *raw = ich_lr_el2_get(slot).get();
-    }
-    let empty_status = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS) as u16;
-    let free_lr = match plan_direct_injection(intid, empty_status, &raw_lrs[..lr_num])? {
-        IchDirectInjection::AlreadyPresent => {
-            debug!("Virtual interrupt {intid} already pending/active, skipping");
-            return Ok(());
-        }
-        IchDirectInjection::Vacant(slot) => slot,
-    };
-    ich_lr_el2_set_raw(
-        free_lr,
-        IchLrEntry::Software {
-            intid,
-            state: IchLrState::Pending,
-            priority: 0,
-            group1: true,
-            eoi: false,
-        }
-        .encode(),
-    );
-
-    if !ICH_HCR_EL2.is_set(ICH_HCR_EL2::EN) {
-        warn!("Virtual interrupt interface not enabled, enabling now");
-        ICH_HCR_EL2.modify(ICH_HCR_EL2::EN::SET);
-    }
-
-    debug!("Virtual interrupt {intid} injected successfully in LR{free_lr}");
-    Ok(())
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {

@@ -17,11 +17,13 @@ use core::marker::PhantomData;
 use aarch64_cpu::registers::*;
 
 use crate::{
-    ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuResult, ArmVmExit,
+    ArmGuestPhysAddr, ArmHostOps, ArmInterruptVirtualization, ArmNestedPagingConfig, ArmSysRegAddr,
+    ArmVcpuResult, ArmVirtualIntId, ArmVmExit, IchDirectInjection, IchLrEntry, IchLrState,
     TrapFrame,
     context_frame::GuestSystemRegisters,
     exception::{TrapKind, handle_exception_sync},
     exception_utils::exception_class_value,
+    plan_direct_injection,
 };
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
@@ -194,17 +196,41 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     }
 
     /// Binds this vCPU to the current physical CPU.
-    pub fn bind(&mut self, cpu_id: usize) -> ArmVcpuResult {
+    pub fn bind(&mut self) -> ArmVcpuResult {
+        if H::interrupt_virtualization()? == ArmInterruptVirtualization::GicV2 {
+            return Ok(());
+        }
+        let cpu_id = H::current_cpu_id()?;
         let profile = crate::ich_capability(cpu_id)?;
         self.ich
             .bind(cpu_id, &mut crate::ich::HardwareIchRegisters, profile)
     }
 
     /// Unbinds this vCPU from the current physical CPU.
-    pub fn unbind(&mut self, cpu_id: usize) -> ArmVcpuResult {
+    pub fn unbind(&mut self) -> ArmVcpuResult {
+        if H::interrupt_virtualization()? == ArmInterruptVirtualization::GicV2 {
+            return Ok(());
+        }
+        let cpu_id = H::current_cpu_id()?;
         let profile = crate::ich_capability(cpu_id)?;
         self.ich
             .unbind(cpu_id, &mut crate::ich::HardwareIchRegisters, profile)
+    }
+
+    pub(crate) fn with_bound_ich<T>(
+        &mut self,
+        cpu_id: usize,
+        operation: impl for<'bound> FnOnce(
+            &mut crate::ich::BoundIch<'bound, crate::ich::HardwareIchRegisters>,
+        ) -> ArmVcpuResult<T>,
+    ) -> ArmVcpuResult<T> {
+        let profile = crate::ich_capability(cpu_id)?;
+        self.ich.with_bound_ich(
+            cpu_id,
+            &mut crate::ich::HardwareIchRegisters,
+            profile,
+            operation,
+        )
     }
 
     /// Sets a general-purpose register.
@@ -214,13 +240,54 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Injects an interrupt into the guest vCPU.
     pub fn inject_interrupt(&mut self, vector: usize) -> ArmVcpuResult {
-        crate::host::inject_virtual_interrupt_for::<H>(vector)
+        let intid = ArmVirtualIntId::try_from(vector)?;
+        if H::interrupt_virtualization()? == ArmInterruptVirtualization::GicV3 {
+            return self.inject_ich_interrupt(H::current_cpu_id()?, intid);
+        }
+        H::inject_virtual_interrupt(intid)
     }
 
     /// Sets the guest return value.
     pub fn set_return_value(&mut self, val: usize) {
         // Return value is stored in x0.
         self.ctx.set_argument(val);
+    }
+}
+
+impl<H: ArmHostOps> ArmVcpu<H> {
+    fn inject_ich_interrupt(&mut self, cpu_id: usize, intid: ArmVirtualIntId) -> ArmVcpuResult {
+        self.with_bound_ich(cpu_id, |bound| {
+            let list_register_count = bound.capability().list_register_count();
+            let mut raw_list_registers = [0; 16];
+            for (slot, raw) in raw_list_registers[..list_register_count]
+                .iter_mut()
+                .enumerate()
+            {
+                *raw = bound.read_lr(slot)?;
+            }
+
+            let empty_lr_mask = bound.empty_lr_mask()?;
+            let slot = match plan_direct_injection(
+                intid,
+                empty_lr_mask,
+                &raw_list_registers[..list_register_count],
+            )? {
+                IchDirectInjection::AlreadyPresent => return Ok(()),
+                IchDirectInjection::Vacant(slot) => slot,
+            };
+            bound.write_lr(
+                slot,
+                IchLrEntry::Software {
+                    intid,
+                    state: IchLrState::Pending,
+                    priority: 0,
+                    group1: true,
+                    eoi: false,
+                }
+                .encode(),
+            )?;
+            bound.update_hcr(crate::ich::IchHcrUpdate::EnableInterface)
+        })
     }
 }
 

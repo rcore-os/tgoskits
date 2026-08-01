@@ -207,6 +207,14 @@ impl ArchOps for Aarch64Arch {
 struct AxvmArmHostOps;
 
 impl ArmHostOps for AxvmArmHostOps {
+    fn interrupt_virtualization() -> ArmVcpuResult<arm_vcpu::ArmInterruptVirtualization> {
+        gic::interrupt_virtualization()
+    }
+
+    fn current_cpu_id() -> ArmVcpuResult<usize> {
+        Ok(default_host().this_cpu_id())
+    }
+
     fn inject_virtual_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
         gic::inject_interrupt(intid)
     }
@@ -221,6 +229,29 @@ impl ArmHostOps for AxvmArmHostOps {
 }
 
 pub(crate) struct AxvmArmVcpu(ArmVcpu<AxvmArmHostOps>);
+
+impl AxvmArmVcpu {
+    fn with_exclusive_ich_access<T>(
+        &mut self,
+        operation: impl FnOnce(&mut ArmVcpu<AxvmArmHostOps>) -> T,
+    ) -> T {
+        let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+        // SAFETY: AxVM only reaches direct hardware injection from the owning
+        // vCPU run path; remote producers enqueue work. The IRQ guard excludes
+        // local re-entry, and no ICH register has a remotely addressable alias.
+        unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                assert_eq!(
+                    pin.area().cpu_index().as_usize(),
+                    default_host().this_cpu_id(),
+                    "host CPU identity disagrees with the pinned CPU area"
+                );
+                ax_percpu::with_exclusive_cpu(pin, |_| operation(&mut self.0))
+            })
+        }
+        .expect("ICH access requires an installed CPU-local area")
+    }
+}
 
 impl VmArchVcpuOps for AxvmArmVcpu {
     type CreateConfig = ArmVcpuCreateConfig;
@@ -251,11 +282,11 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     }
 
     fn bind(&mut self) -> BackendResult {
-        arm_result(self.0.bind(default_host().this_cpu_id()))
+        arm_result(self.0.bind())
     }
 
     fn unbind(&mut self) -> BackendResult {
-        arm_result(self.0.unbind(default_host().this_cpu_id()))
+        arm_result(self.0.unbind())
     }
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
@@ -263,7 +294,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        arm_result(self.0.inject_interrupt(vector))
+        self.with_exclusive_ich_access(|vcpu| arm_result(vcpu.inject_interrupt(vector)))
     }
 
     fn inject_interrupt_with_trigger(
@@ -275,7 +306,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
         // an INTID. The GIC list-register injection itself is mode-agnostic.
         match trigger {
             InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
-                arm_result(self.0.inject_interrupt(vector))
+                self.with_exclusive_ich_access(|vcpu| arm_result(vcpu.inject_interrupt(vector)))
             }
         }
     }
@@ -329,6 +360,7 @@ fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
         ArmVcpuError::InvalidListRegisterCount { .. }
         | ArmVcpuError::MalformedListRegister { .. }
         | ArmVcpuError::InvalidIchCapability { .. }
+        | ArmVcpuError::UnexpectedIchHcrBits { .. }
         | ArmVcpuError::UnexpectedIchEoiCount { .. } => BackendError::InvalidData,
         ArmVcpuError::NoFreeListRegister { .. } => BackendError::ResourceBusy,
         ArmVcpuError::UnsupportedListRegister { .. }
@@ -506,10 +538,8 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
     }
 
     fn hardware_inject_virtual_interrupt(vector: u8) {
-        let intid = ArmVirtualIntId::new(u32::from(vector))
-            .expect("an 8-bit private interrupt ID is always representable");
-        if let Err(err) = gic::inject_interrupt(intid) {
-            warn!("failed to inject private virtual interrupt {intid}: {err}");
+        if let Err(err) = crate::manager::inject_current_vcpu_interrupt(usize::from(vector)) {
+            warn!("failed to inject private virtual interrupt {vector}: {err}");
         }
     }
 }
