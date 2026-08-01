@@ -1,6 +1,49 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = "echo 'RTL8125_NET_TEST_PASSED'"
+shell_init_cmd = '''
+printf '\nRTL8125_NET_TEST_BEGIN\n'
+network_ready=0
+attempt=1
+
+while [ "$attempt" -le 30 ]; do
+  ip link show dev eth0 >/tmp/rtl8125-link 2>&1 || true
+  ip -4 addr show dev eth0 >/tmp/rtl8125-addr 2>&1 || true
+  ip route show default >/tmp/rtl8125-route 2>&1 || true
+  gateway=$(awk '/^default / { print $3; exit }' /tmp/rtl8125-route)
+
+  if grep -Eq 'inet [0-9]' /tmp/rtl8125-addr && [ -n "$gateway" ]; then
+    if ping -c 3 -W 2 "$gateway" >/tmp/rtl8125-ping 2>&1; then
+      network_ready=1
+      break
+    fi
+  fi
+
+  echo "RTL8125_NET_WAIT attempt=$attempt gateway=${gateway:-missing}"
+  attempt=$((attempt + 1))
+  sleep 2
+done
+
+cat /tmp/rtl8125-link
+cat /tmp/rtl8125-addr
+cat /tmp/rtl8125-route
+if [ -f /tmp/rtl8125-ping ]; then
+  cat /tmp/rtl8125-ping
+fi
+
+if [ "$network_ready" = "1" ]; then
+  echo "RTL8125_NET_READY attempt=$attempt gateway=$gateway"
+  printf '%s%s\n' RTL8125_NET_TEST_ PASSED
+else
+  printf '%s%s: %s\n' RTL8125_NET_TEST_ FAILED 'eth0 did not reach its default gateway'
+fi
+'''
 success_regex = ["(?m)^RTL8125_NET_TEST_PASSED\\s*$"]
-fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?i)segmentation fault', '(?i)SIGSEGV', 'exit with code: 139', "(?m)^RTL8125_NET_TEST_FAILED\\b"]
-timeout = 180
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  "(?i)(awk|cat|grep|ip|ping|sh|sleep): .*not found",
+  "(?m)^RTL8125_NET_TEST_FAILED\\b",
+]
+timeout = 240

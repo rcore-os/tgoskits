@@ -152,6 +152,68 @@ fn dhcp_qemu_case_checks_local_dhcp_state_without_external_apk_fetch() {
 }
 
 #[test]
+fn orangepi_rtl8125_board_smoke_requires_network_evidence_before_success() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config_path = workspace_root
+        .join("test-suit/starryos/board-orangepi-5-plus/net-smoke/board-orangepi-5-plus.toml");
+    let content = fs::read_to_string(&config_path).unwrap();
+    let config: toml::Value = toml::from_str(&content).unwrap();
+    let script = config
+        .get("shell_init_cmd")
+        .and_then(toml::Value::as_str)
+        .unwrap();
+    for marker in ["RTL8125_NET_TEST_PASSED", "RTL8125_NET_TEST_FAILED"] {
+        assert!(
+            !script.contains(marker),
+            "{} must construct `{marker}` at runtime so interactive shell echo cannot satisfy a \
+             \nresult regex before the probe runs",
+            config_path.display()
+        );
+    }
+    let success_index = script
+        .find("RTL8125_NET_TEST_ PASSED")
+        .expect("OrangePi RTL8125 smoke test must construct its success marker after the probes");
+
+    for expected in [
+        "RTL8125_NET_TEST_BEGIN",
+        "ip link show dev eth0",
+        "ip -4 addr show dev eth0",
+        "ip route show default",
+        "ping -c",
+    ] {
+        let probe_index = script.find(expected).unwrap_or_else(|| {
+            panic!(
+                "{} must check `{expected}` before reporting success",
+                config_path.display()
+            )
+        });
+        assert!(
+            probe_index < success_index,
+            "{} must run `{expected}` before reporting success",
+            config_path.display()
+        );
+    }
+
+    assert!(
+        script.contains("RTL8125_NET_TEST_ FAILED"),
+        "{} must construct an explicit network failure marker",
+        config_path.display()
+    );
+    let fail_regex = config
+        .get("fail_regex")
+        .and_then(toml::Value::as_array)
+        .unwrap();
+    assert!(
+        fail_regex
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|regex| regex.contains("RTL8125_NET_TEST_FAILED")),
+        "{} must fail when the network probe emits its failure marker",
+        config_path.display()
+    );
+}
+
+#[test]
 fn dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let case_dir = workspace_root.join("apps/starry/qemu/dual-net");

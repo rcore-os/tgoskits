@@ -276,6 +276,7 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
+            (PROTO_IP, IP_RECVTTL) => RecvTtl as IntBool,
             (PROTO_IP, linux_raw_sys::net::IP_RECVTOS) => RecvTos as IntBool,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // ---- Not yet implemented (add as needed) ----
@@ -337,9 +338,7 @@ pub fn sys_getsockopt(
     // known from the Socket enum variant, not from a per-protocol option.
     {
         use ax_net::Socket as SocketInner;
-        use linux_raw_sys::net::{
-            SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET,
-        };
+        use linux_raw_sys::net::{SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET};
 
         if level == SOL_SOCKET && optname == SO_TYPE {
             if *optlen == 0 {
@@ -348,7 +347,11 @@ pub fn sys_getsockopt(
             let so_type = match &**socket {
                 SocketInner::Tcp(_) => SOCK_STREAM,
                 SocketInner::Udp(_) => SOCK_DGRAM,
-                SocketInner::Raw(_) => SOCK_RAW,
+                SocketInner::Raw(raw) => {
+                    let mut socket_type = 0;
+                    raw.get_option(GetSocketOption::SocketType(&mut socket_type))?;
+                    socket_type as u32
+                }
                 SocketInner::Unix(_) => SOCK_STREAM,
                 #[cfg(feature = "vsock")]
                 SocketInner::Vsock(_) => SOCK_STREAM,
