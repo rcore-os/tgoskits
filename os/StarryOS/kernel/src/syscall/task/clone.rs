@@ -219,6 +219,12 @@ impl CloneArgs {
         }
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
+        // Inherit the parent's CPU affinity (Linux: a child inherits `p->cpus_ptr`
+        // across both fork and thread-clone). New ax_task tasks otherwise default to
+        // a full mask, which would let the worker threads a `taskset`-pinned process
+        // spawns escape the pin onto disallowed cores — e.g. a `taskset -c 0`
+        // sysbench whose workers ran on other clusters entirely.
+        new_task.set_cpumask(curr.cpumask());
         #[cfg(target_arch = "riscv64")]
         {
             let mut fp_state = ax_cpu::FpState::default();
