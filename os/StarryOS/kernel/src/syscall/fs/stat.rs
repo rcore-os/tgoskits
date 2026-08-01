@@ -13,7 +13,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    file::{File, FileLike, resolve_at},
+    file::{File, FileLike, ResolveAtResult, resolve_at},
     mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
@@ -128,7 +128,16 @@ pub fn sys_statx(
     let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    statxbuf.vm_write(resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into())?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let mut status: statx = resolved.stat()?.into();
+    if let ResolveAtResult::File(location) = &resolved {
+        status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
+        status.stx_mnt_id = location.mountpoint().mount_id();
+        if location.is_root_of_mount() {
+            status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
+        }
+    }
+    statxbuf.vm_write(status)?;
 
     Ok(0)
 }
@@ -291,7 +300,9 @@ pub fn sys_name_to_handle_at(
         .get_as_mut_slice(FILE_HANDLE_BYTES)?
         .copy_from_slice(&bytes);
 
-    (mount_id as *mut c_int).vm_write(loc.mountpoint().device() as c_int)?;
+    let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
+        .map_err(|_| AxError::from(LinuxError::EOVERFLOW))?;
+    (mount_id as *mut c_int).vm_write(resolved_mount_id)?;
     Ok(0)
 }
 

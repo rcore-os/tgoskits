@@ -37,8 +37,8 @@ use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
-    statx_timestamp,
+    O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_ATTR_MOUNT_ROOT,
+    STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
 use starry_process::Pid;
 
@@ -155,9 +155,11 @@ impl From<Kstat> for statx {
         // SAFETY: valid for statx
         let mut statx: statx = unsafe { core::mem::zeroed() };
         // We always populate the basic stats; Linux returns the same mask.
-        // `stx_attributes` is left zero — it reports FS-specific flags we do
-        // not track.
+        // Mount-root state is a VFS attribute, so every statx result advertises
+        // support for it. The syscall layer sets the value when it has a
+        // resolved filesystem location.
         statx.stx_mask = STATX_BASIC_STATS;
+        statx.stx_attributes_mask = STATX_ATTR_MOUNT_ROOT as u64;
         statx.stx_blksize = value.blksize as _;
         statx.stx_nlink = value.nlink as _;
         statx.stx_uid = value.uid as _;
