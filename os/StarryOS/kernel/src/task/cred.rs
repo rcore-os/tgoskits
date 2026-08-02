@@ -14,6 +14,8 @@ use linux_raw_sys::general::{
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
+const SECBIT_NO_SETUID_FIXUP: u32 = 1 << 2;
+const SECBIT_KEEP_CAPS: u32 = 1 << 4;
 
 /// Return the bit mask for a single Linux capability number.
 fn cap_bit(cap: u32) -> u64 {
@@ -55,6 +57,8 @@ pub struct Cred {
     pub cap_bounding: u64,
     /// Ambient Linux capabilities.
     pub cap_ambient: u64,
+    /// Linux securebits flags controlled through `prctl(2)`.
+    pub securebits: u32,
 }
 
 impl Cred {
@@ -80,6 +84,7 @@ impl Cred {
             cap_effective: CAP_MASK,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
+            securebits: 0,
         }
     }
 
@@ -104,6 +109,7 @@ impl Cred {
             cap_effective: 0,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
+            securebits: 0,
         }
     }
 
@@ -118,11 +124,18 @@ impl Cred {
     /// state drops permitted/effective/ambient caps, losing euid 0 clears the
     /// effective set, and regaining euid 0 restores effective from permitted.
     pub fn apply_id_change_capability_rules(&mut self, old: &Self) {
+        if old.securebits & SECBIT_NO_SETUID_FIXUP != 0 {
+            self.sanitize_capabilities();
+            return;
+        }
+
         let old_all_root = old.uid == 0 && old.euid == 0 && old.suid == 0;
         let new_all_nonroot = self.uid != 0 && self.euid != 0 && self.suid != 0;
 
         if old_all_root && new_all_nonroot {
-            self.cap_permitted = 0;
+            if old.securebits & SECBIT_KEEP_CAPS == 0 {
+                self.cap_permitted = 0;
+            }
             self.cap_effective = 0;
             self.cap_ambient = 0;
         } else if old.euid == 0 && self.euid != 0 {
