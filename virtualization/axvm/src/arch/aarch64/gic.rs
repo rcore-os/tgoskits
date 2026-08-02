@@ -1,6 +1,8 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
-use arm_vcpu::{ArmInterruptVirtualization, ArmVcpuError, ArmVcpuResult, ArmVirtualIntId};
+use arm_vcpu::{
+    ArmHostIrq, ArmInterruptVirtualization, ArmVcpuError, ArmVcpuResult, ArmVirtualIntId,
+};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::host::{HostMemory, default_host};
@@ -99,6 +101,6 @@ pub(crate) fn handle_current_irq() -> Option<usize> {
     ax_std::os::arceos::modules::ax_hal::irq::handle_irq(0).then_some(0)
 }
 
-pub(crate) fn fetch_irq() -> usize {
-    handle_current_irq().unwrap_or(0)
+pub(crate) fn fetch_irq() -> ArmHostIrq {
+    ArmHostIrq::fetch_handled(handle_current_irq().unwrap_or(0))
 }

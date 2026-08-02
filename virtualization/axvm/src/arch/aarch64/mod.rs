@@ -8,9 +8,9 @@ use alloc::boxed::Box;
 use core::time::Duration;
 
 use arm_vcpu::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr,
-    ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVirtualIntId,
-    ArmVmExit,
+    ArmAccessWidth, ArmGuestPhysAddr, ArmHostIrq, ArmHostIrqOwnership, ArmHostOps,
+    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError,
+    ArmVcpuResult, ArmVcpuSetupConfig, ArmVirtualIntId, ArmVmExit,
 };
 use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
@@ -23,9 +23,7 @@ use axvm_types::{
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{
-    AxVmResult,
-    architecture::ops::{HostIrqOwnership, finish_host_irq},
-    ax_err,
+    AxVmResult, ax_err,
     host::{HostCpu, HostMemory, HostTime, default_host},
 };
 
@@ -60,7 +58,7 @@ const ICC_DIR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x32_3016);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Aarch64DeferredRunWork {
-    ExternalInterrupt { vector: usize },
+    ExternalInterrupt { host_irq: ArmHostIrq },
 }
 
 impl CpuUpOps for Aarch64Arch {}
@@ -85,19 +83,6 @@ impl ArchOps for Aarch64Arch {
 
     fn register_platform_irq_injector() {
         let _ = maintenance::register_handler();
-    }
-
-    fn after_external_interrupt(
-        _vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        _vector: usize,
-    ) {
-        finish_host_irq(
-            HostIrqOwnership::from_fetch_phase(true),
-            _vector,
-            crate::host::arceos::dispatch_host_irq,
-            crate::check_timer_events,
-        );
     }
 
     fn handle_vcpu_exit_bound(
@@ -164,12 +149,15 @@ impl ArchOps for Aarch64Arch {
                     value,
                 },
             ),
-            ArmVmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
+            ArmVmExit::ExternalInterrupt { host_irq } => {
+                debug!(
+                    "VM[{}] run VCpu[{}] get irq {}",
+                    vm.id(),
+                    vcpu.id(),
+                    host_irq.vector()
+                );
                 Ok(BoundVcpuExit::Defer(
-                    Aarch64DeferredRunWork::ExternalInterrupt {
-                        vector: vector as usize,
-                    },
+                    Aarch64DeferredRunWork::ExternalInterrupt { host_irq },
                 ))
             }
             ArmVmExit::CpuDown { state } => {
@@ -229,14 +217,19 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn finish_deferred_run_work(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
-            Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
-                Self::after_external_interrupt(vm, vcpu, vector);
-            }
+            Aarch64DeferredRunWork::ExternalInterrupt { host_irq } => match host_irq.ownership() {
+                ArmHostIrqOwnership::FetchHandled => {
+                    crate::check_timer_events();
+                }
+                ArmHostIrqOwnership::DeferredDispatch => {
+                    Self::after_external_interrupt(_vm, _vcpu, host_irq.vector());
+                }
+            },
         }
         Ok(VcpuRunAction {
             waits_for_event: false,
@@ -260,7 +253,7 @@ impl ArmHostOps for AxvmArmHostOps {
         gic::inject_interrupt(intid)
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq> {
         Some(gic::fetch_irq())
     }
 

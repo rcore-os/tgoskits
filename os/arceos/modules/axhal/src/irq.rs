@@ -2,20 +2,20 @@
 
 use ax_cpu::trap::set_irq_handler;
 #[cfg(target_arch = "aarch64")]
-pub use ax_plat::irq::gic_maintenance_irq;
+pub use ax_plat::irq::gic_maintenance_irq_status;
 #[cfg(feature = "smp")]
 pub use ax_plat::irq::init_secondary_boot_irqs;
 pub use ax_plat::irq::{
     AARCH64_GIC_DOMAIN, AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger,
     AutoEnable, BoxedIrqHandler, CPU_LOCAL_IRQ_DOMAIN, CpuId, CpuMask, HwIrq, IrqAffinity,
-    IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId, IrqNumber, IrqOutcome,
-    IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, LEGACY_IRQ_DOMAIN,
-    LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, ShareMode, TrapVector,
-    X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq, dispatch_irq, enable_irq,
-    free_irq, handle, in_irq_context, init_boot_irqs, irq_status, is_cpu_online, legacy_irq,
-    legacy_irq_raw, prepare_irq_context, request_irq, request_percpu_irq, request_shared_irq,
-    resolve_irq_source, resolve_percpu_irq, run_on_cpu_sync, set_enable, set_run_on_cpu_sync,
-    synchronize_irq, try_legacy_irq,
+    IrqCapabilityStatus, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId,
+    IrqNumber, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus,
+    LEGACY_IRQ_DOMAIN, LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN,
+    ShareMode, TrapVector, X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq,
+    dispatch_irq, enable_irq, free_irq, handle, in_irq_context, init_boot_irqs, irq_status,
+    is_cpu_online, legacy_irq, legacy_irq_raw, prepare_irq_context, request_irq,
+    request_percpu_irq, request_shared_irq, resolve_irq_source, resolve_percpu_irq,
+    run_on_cpu_sync, set_enable, set_run_on_cpu_sync, synchronize_irq, try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};

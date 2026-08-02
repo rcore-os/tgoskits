@@ -263,6 +263,22 @@ pub struct IrqStatus {
     pub action_running: bool,
 }
 
+/// Discovery state for an optional platform IRQ capability.
+///
+/// Absence is distinct from a discovery failure, including an
+/// [`IrqError::Unsupported`] returned by the controller adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqCapabilityStatus {
+    /// Firmware/controller discovery has not published a terminal result.
+    Uninitialized,
+    /// Discovery completed and produced a typed IRQ id.
+    Available(IrqId),
+    /// The platform does not describe this optional IRQ capability.
+    Unavailable,
+    /// Discovery failed with the preserved controller/framework error.
+    Error(IrqError),
+}
+
 /// IRQ framework errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrqError {

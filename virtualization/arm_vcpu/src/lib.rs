@@ -42,7 +42,7 @@ pub(crate) use self::ich::ich_capability;
 #[cfg(any(target_arch = "aarch64", test))]
 pub use self::ich::{IchMaintenanceSnapshot, IchRuntimeControls, IchSession};
 pub use self::{
-    host::{ArmHostOps, ArmInterruptVirtualization},
+    host::{ArmHostIrq, ArmHostIrqOwnership, ArmHostOps, ArmInterruptVirtualization},
     ich::{IchCapabilityError, IchCapabilityProfile},
     interrupt::{
         ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState, plan_direct_injection,

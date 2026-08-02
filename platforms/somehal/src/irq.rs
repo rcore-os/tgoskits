@@ -1,6 +1,4 @@
 use alloc::vec::Vec;
-#[cfg(any(target_arch = "aarch64", test))]
-use core::sync::atomic::{AtomicU8, AtomicU64};
 use core::sync::atomic::{AtomicU16, Ordering};
 
 #[cfg(not(test))]
@@ -12,8 +10,8 @@ pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
 pub use irq_framework::{
-    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqDomainId, IrqError,
-    IrqId, IrqSource,
+    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqCapabilityStatus,
+    IrqDomainId, IrqError, IrqId, IrqSource,
 };
 use rdrive::{Device, DeviceId};
 
@@ -86,111 +84,13 @@ static LOONGARCH_PCH_PIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOM
 static LOONGARCH_LIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 
 #[cfg(target_arch = "aarch64")]
-static GIC_MAINTENANCE_IRQ: GicMaintenanceIrqCapability = GicMaintenanceIrqCapability::new();
+static GIC_MAINTENANCE_IRQ: crate::gic_maintenance::GicMaintenanceIrqCapability =
+    crate::gic_maintenance::GicMaintenanceIrqCapability::new();
 
-#[cfg(any(target_arch = "aarch64", test))]
-const MAINTENANCE_UNINITIALIZED: u8 = 0;
-#[cfg(any(target_arch = "aarch64", test))]
-const MAINTENANCE_AVAILABLE: u8 = 1;
-#[cfg(any(target_arch = "aarch64", test))]
-const MAINTENANCE_UNAVAILABLE: u8 = 2;
-#[cfg(any(target_arch = "aarch64", test))]
-const MAINTENANCE_ERROR: u8 = 3;
-#[cfg(any(target_arch = "aarch64", test))]
-const MAINTENANCE_PUBLISHING: u8 = 4;
-
-#[cfg(any(target_arch = "aarch64", test))]
-struct GicMaintenanceIrqCapability {
-    state: AtomicU8,
-    encoded_irq: AtomicU64,
-    error: AtomicU8,
-}
-
-#[cfg(any(target_arch = "aarch64", test))]
-impl GicMaintenanceIrqCapability {
-    const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(MAINTENANCE_UNINITIALIZED),
-            encoded_irq: AtomicU64::new(0),
-            error: AtomicU8::new(0),
-        }
-    }
-
-    fn publish_available(&self, irq: IrqId) -> Result<(), IrqError> {
-        let encoded = ((irq.domain.0 as u64) << 32) | irq.hwirq.0 as u64;
-        if self
-            .state
-            .compare_exchange(
-                MAINTENANCE_UNINITIALIZED,
-                MAINTENANCE_PUBLISHING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return Err(IrqError::Busy);
-        }
-        self.encoded_irq.store(encoded, Ordering::Relaxed);
-        self.state.store(MAINTENANCE_AVAILABLE, Ordering::Release);
-        Ok(())
-    }
-
-    fn publish_unavailable(&self) -> Result<(), IrqError> {
-        self.publish_terminal(MAINTENANCE_UNAVAILABLE)
-    }
-
-    fn publish_error(&self, error: IrqError) -> Result<(), IrqError> {
-        if self
-            .state
-            .compare_exchange(
-                MAINTENANCE_UNINITIALIZED,
-                MAINTENANCE_PUBLISHING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return Err(IrqError::Busy);
-        }
-        self.error.store(encode_irq_error(error), Ordering::Relaxed);
-        self.state.store(MAINTENANCE_ERROR, Ordering::Release);
-        Ok(())
-    }
-
-    fn publish_terminal(&self, state: u8) -> Result<(), IrqError> {
-        self.state
-            .compare_exchange(
-                MAINTENANCE_UNINITIALIZED,
-                state,
-                Ordering::Release,
-                Ordering::Acquire,
-            )
-            .map(|_| ())
-            .map_err(|_| IrqError::Busy)
-    }
-
-    fn get(&self) -> Result<IrqId, IrqError> {
-        match self.state.load(Ordering::Acquire) {
-            MAINTENANCE_AVAILABLE => {
-                let encoded = self.encoded_irq.load(Ordering::Relaxed);
-                Ok(IrqId::new(
-                    IrqDomainId((encoded >> 32) as u16),
-                    HwIrq(encoded as u32),
-                ))
-            }
-            MAINTENANCE_ERROR => Err(decode_irq_error(self.error.load(Ordering::Relaxed))),
-            MAINTENANCE_UNINITIALIZED | MAINTENANCE_UNAVAILABLE | MAINTENANCE_PUBLISHING => {
-                Err(IrqError::Unsupported)
-            }
-            _ => Err(IrqError::Controller),
-        }
-    }
-}
-
-/// Returns the GICv3 virtualization maintenance PPI discovered from firmware.
+/// Returns the durable discovery status of the GICv3 maintenance PPI.
 #[cfg(target_arch = "aarch64")]
-pub fn gic_maintenance_irq() -> Result<IrqId, IrqError> {
-    GIC_MAINTENANCE_IRQ.get()
+pub fn gic_maintenance_irq_status() -> IrqCapabilityStatus {
+    GIC_MAINTENANCE_IRQ.status()
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -214,38 +114,6 @@ pub(crate) fn validate_gic_maintenance_irq(
     irq: IrqId,
 ) -> Result<IrqId, IrqError> {
     crate::gic_maintenance::validate_irq(expected_domain, irq)
-}
-
-#[cfg(any(target_arch = "aarch64", test))]
-const fn encode_irq_error(error: IrqError) -> u8 {
-    match error {
-        IrqError::InvalidIrq => 1,
-        IrqError::InvalidCpu => 2,
-        IrqError::CpuOffline => 3,
-        IrqError::Timeout => 4,
-        IrqError::Busy => 5,
-        IrqError::NoMemory => 6,
-        IrqError::NotFound => 7,
-        IrqError::InIrqContext => 8,
-        IrqError::Unsupported => 9,
-        IrqError::Controller => 10,
-    }
-}
-
-#[cfg(any(target_arch = "aarch64", test))]
-const fn decode_irq_error(encoded: u8) -> IrqError {
-    match encoded {
-        1 => IrqError::InvalidIrq,
-        2 => IrqError::InvalidCpu,
-        3 => IrqError::CpuOffline,
-        4 => IrqError::Timeout,
-        5 => IrqError::Busy,
-        6 => IrqError::NoMemory,
-        7 => IrqError::NotFound,
-        8 => IrqError::InIrqContext,
-        9 => IrqError::Unsupported,
-        _ => IrqError::Controller,
-    }
 }
 
 pub fn alloc_irq_domain(owner: DeviceId, kind: IrqDomainKind) -> Result<IrqDomainId, IrqError> {
@@ -910,26 +778,5 @@ mod tests {
         );
 
         assert_eq!(result, Ok(()));
-    }
-
-    #[test]
-    fn maintenance_irq_capability_is_typed_and_write_once() {
-        let capability = GicMaintenanceIrqCapability::new();
-        assert_eq!(capability.get(), Err(IrqError::Unsupported));
-        let irq = IrqId::new(IrqDomainId(23), HwIrq(25));
-        capability.publish_available(irq).unwrap();
-        assert_eq!(capability.get(), Ok(irq));
-        assert_eq!(capability.publish_available(irq), Err(IrqError::Busy));
-    }
-
-    #[test]
-    fn maintenance_irq_capability_distinguishes_absence_from_error() {
-        let unavailable = GicMaintenanceIrqCapability::new();
-        unavailable.publish_unavailable().unwrap();
-        assert_eq!(unavailable.get(), Err(IrqError::Unsupported));
-
-        let failed = GicMaintenanceIrqCapability::new();
-        failed.publish_error(IrqError::InvalidCpu).unwrap();
-        assert_eq!(failed.get(), Err(IrqError::InvalidCpu));
     }
 }

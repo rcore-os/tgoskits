@@ -426,8 +426,8 @@ pub enum ArmVmExit {
     },
     /// A physical host interrupt should be handled by the embedding VMM.
     ExternalInterrupt {
-        /// Host or placeholder vector reported by the host adapter.
-        vector: u64,
+        /// Typed fetch result, including controller-transaction ownership.
+        host_irq: crate::ArmHostIrq,
     },
     /// A guest PSCI CPU_OFF call was trapped.
     CpuDown {

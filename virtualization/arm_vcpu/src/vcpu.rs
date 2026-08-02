@@ -69,7 +69,7 @@ impl ArmHostOps for AssemblyLayoutHost {
         Err(crate::ArmVcpuError::BadState)
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<crate::ArmHostIrq> {
         None
     }
 
@@ -461,7 +461,8 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
             TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt {
-                vector: H::fetch_pending_host_irq().unwrap_or(0) as u64,
+                host_irq: H::fetch_pending_host_irq()
+                    .unwrap_or_else(|| crate::ArmHostIrq::fetch_handled(0)),
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };

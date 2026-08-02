@@ -9,22 +9,6 @@ use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 use super::{BoundVcpuExit, VcpuRunAction};
 use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HostIrqOwnership {
-    FetchHandled,
-    DeferredDispatch,
-}
-
-impl HostIrqOwnership {
-    pub(crate) const fn from_fetch_phase(fetch_phase_handles_irq: bool) -> Self {
-        if fetch_phase_handles_irq {
-            Self::FetchHandled
-        } else {
-            Self::DeferredDispatch
-        }
-    }
-}
-
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
@@ -105,8 +89,7 @@ pub(crate) trait ArchOps {
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         vector: usize,
     ) {
-        finish_host_irq(
-            HostIrqOwnership::from_fetch_phase(false),
+        finish_deferred_host_irq(
             vector,
             crate::host::arceos::dispatch_host_irq,
             crate::check_timer_events,
@@ -154,15 +137,12 @@ pub(crate) trait ArchOps {
     }
 }
 
-pub(crate) fn finish_host_irq(
-    ownership: HostIrqOwnership,
+pub(crate) fn finish_deferred_host_irq(
     vector: usize,
     dispatch: impl FnOnce(usize),
     check_timer: impl FnOnce(),
 ) {
-    if ownership == HostIrqOwnership::DeferredDispatch {
-        dispatch(vector);
-    }
+    dispatch(vector);
     check_timer();
 }
 
@@ -479,38 +459,94 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fetch_handled_host_irqs_skip_a_second_dispatch_and_still_check_timers() {
-        let dispatches = Cell::new(0);
-        let timer_checks = Cell::new(0);
+    #[derive(Default)]
+    struct HostIrqTransactionCounts {
+        acknowledgements: Cell<usize>,
+        fetch_dispatches: Cell<usize>,
+        deferred_dispatches: Cell<usize>,
+        completions: Cell<usize>,
+        timer_checks: Cell<usize>,
+    }
 
-        for vector in [25, 48] {
-            finish_host_irq(
-                HostIrqOwnership::FetchHandled,
-                vector,
-                |_| dispatches.set(dispatches.get() + 1),
-                || timer_checks.set(timer_checks.get() + 1),
-            );
+    struct FakeActiveIrq<'a> {
+        counts: &'a HostIrqTransactionCounts,
+    }
+
+    impl Drop for FakeActiveIrq<'_> {
+        fn drop(&mut self) {
+            self.counts
+                .completions
+                .set(self.counts.completions.get() + 1);
         }
+    }
 
-        assert_eq!(dispatches.get(), 0);
-        assert_eq!(timer_checks.get(), 2);
+    fn fetch_handled_irq(counts: &HostIrqTransactionCounts, vector: usize) -> arm_vcpu::ArmHostIrq {
+        counts
+            .acknowledgements
+            .set(counts.acknowledgements.get() + 1);
+        let active = FakeActiveIrq { counts };
+        counts
+            .fetch_dispatches
+            .set(counts.fetch_dispatches.get() + 1);
+        drop(active);
+        arm_vcpu::ArmHostIrq::fetch_handled(vector)
+    }
+
+    fn finish_fetched_irq(counts: &HostIrqTransactionCounts, irq: arm_vcpu::ArmHostIrq) {
+        let check_timer = || counts.timer_checks.set(counts.timer_checks.get() + 1);
+        match irq.ownership() {
+            arm_vcpu::ArmHostIrqOwnership::FetchHandled => {
+                check_timer();
+            }
+            arm_vcpu::ArmHostIrqOwnership::DeferredDispatch => {
+                finish_deferred_host_irq(
+                    irq.vector(),
+                    |_| {
+                        counts
+                            .deferred_dispatches
+                            .set(counts.deferred_dispatches.get() + 1);
+                    },
+                    check_timer,
+                );
+            }
+        }
+    }
+
+    fn assert_fetch_owned_transaction(vector: usize) {
+        let counts = HostIrqTransactionCounts::default();
+
+        let irq = fetch_handled_irq(&counts, vector);
+        finish_fetched_irq(&counts, irq);
+
+        assert_eq!(counts.acknowledgements.get(), 1);
+        assert_eq!(counts.fetch_dispatches.get(), 1);
+        assert_eq!(counts.completions.get(), 1);
+        assert_eq!(counts.deferred_dispatches.get(), 0);
+        assert_eq!(counts.timer_checks.get(), 1);
     }
 
     #[test]
-    fn deferred_host_irqs_dispatch_exactly_once_and_check_timers() {
-        let dispatches = Cell::new(0);
-        let timer_checks = Cell::new(0);
+    fn aarch64_fetch_contract_owns_one_complete_host_irq_transaction() {
+        assert_fetch_owned_transaction(48);
+    }
 
-        finish_host_irq(
-            HostIrqOwnership::from_fetch_phase(false),
-            48,
-            |_| dispatches.set(dispatches.get() + 1),
-            || timer_checks.set(timer_checks.get() + 1),
-        );
+    #[test]
+    fn aarch64_maintenance_irq_uses_the_same_complete_transaction_boundary() {
+        assert_fetch_owned_transaction(25);
+    }
 
-        assert_eq!(dispatches.get(), 1);
-        assert_eq!(timer_checks.get(), 1);
+    #[test]
+    fn deferred_fetch_contract_dispatches_once_and_checks_timers() {
+        let counts = HostIrqTransactionCounts::default();
+        let irq = arm_vcpu::ArmHostIrq::deferred_dispatch(48);
+
+        finish_fetched_irq(&counts, irq);
+
+        assert_eq!(counts.acknowledgements.get(), 0);
+        assert_eq!(counts.fetch_dispatches.get(), 0);
+        assert_eq!(counts.completions.get(), 0);
+        assert_eq!(counts.deferred_dispatches.get(), 1);
+        assert_eq!(counts.timer_checks.get(), 1);
     }
 
     #[test]

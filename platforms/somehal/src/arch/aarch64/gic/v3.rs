@@ -132,19 +132,26 @@ fn publish_maintenance_irq(
         }
         return;
     };
-    let result = (|| {
+    let discovery = (|| {
         let device = rdrive::get::<rdif_intc::Intc>(device_id)
             .map_err(|_| crate::irq::IrqError::Unsupported)?;
         let mut intc = device.try_lock().map_err(|_| crate::irq::IrqError::Busy)?;
         let translation = intc.translate_fdt(&specifier)?;
         let irq = crate::irq::validate_gic_maintenance_irq(domain, translation.id)?;
         intc.configure(&translation)?;
-        crate::irq::publish_gic_maintenance_irq(irq)
+        Ok(irq)
     })();
-    if let Err(error) = result {
-        warn!("GICv3 maintenance IRQ capability is unavailable: {error:?}");
-        if error != crate::irq::IrqError::Busy {
-            let _ = crate::irq::publish_gic_maintenance_error(error);
+    match discovery {
+        Ok(irq) => {
+            if let Err(error) = crate::irq::publish_gic_maintenance_irq(irq) {
+                warn!("failed to publish GICv3 maintenance IRQ: {error:?}");
+            }
+        }
+        Err(error) => {
+            warn!("GICv3 maintenance IRQ discovery failed: {error:?}");
+            if let Err(publish_error) = crate::irq::publish_gic_maintenance_error(error) {
+                warn!("failed to publish GICv3 maintenance IRQ error: {publish_error:?}");
+            }
         }
     }
 }

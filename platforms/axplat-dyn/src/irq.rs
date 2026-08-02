@@ -117,8 +117,8 @@ impl IrqIf for IrqIfImpl {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn gic_maintenance_irq() -> Result<IrqId, IrqError> {
-        somehal::irq::gic_maintenance_irq()
+    fn gic_maintenance_irq_status() -> ax_plat::irq::IrqCapabilityStatus {
+        somehal::irq::gic_maintenance_irq_status()
     }
 
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError> {

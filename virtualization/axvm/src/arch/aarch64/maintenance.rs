@@ -2,13 +2,14 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_hal::irq::{CpuId, CpuMask, IrqError, IrqHandle, IrqReturn};
+use ax_hal::irq::{CpuId, CpuMask, IrqHandle, IrqReturn};
 use axvm_types::{VCpuId, VMId, VmBackendError, VmBackendResult};
 use spin::Once;
 
 use super::{
     maintenance_registration::{
-        MaintenanceHandlerRegistrationError, MaintenanceHandlerStatus, registration_status,
+        MaintenanceHandlerRegistrationError, MaintenanceHandlerStatus, maintenance_irq_from_status,
+        registration_status,
     },
     maintenance_state::{self, MaintenancePublication},
 };
@@ -22,13 +23,7 @@ static HANDLER: Once<Result<IrqHandle, MaintenanceHandlerRegistrationError>> = O
 
 pub(super) fn register_handler() -> MaintenanceHandlerStatus {
     HANDLER.call_once(|| {
-        let irq = match ax_hal::irq::gic_maintenance_irq() {
-            Ok(irq) => irq,
-            Err(IrqError::Unsupported) => {
-                return Err(MaintenanceHandlerRegistrationError::Unavailable);
-            }
-            Err(error) => return Err(MaintenanceHandlerRegistrationError::Error(error)),
-        };
+        let irq = maintenance_irq_from_status(ax_hal::irq::gic_maintenance_irq_status())?;
         let raw_mask = crate::percpu::enabled_cpu_mask();
         let mut cpus = CpuMask::empty();
         for cpu in 0..usize::BITS as usize {

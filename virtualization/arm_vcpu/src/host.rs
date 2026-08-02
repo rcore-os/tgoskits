@@ -14,6 +14,50 @@ pub enum ArmInterruptVirtualization {
     GicV3,
 }
 
+/// Phase that owns the physical IRQ transaction reported by a VM exit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmHostIrqOwnership {
+    /// The host adapter already acknowledged, dispatched, and completed it.
+    FetchHandled,
+    /// The embedding VMM must dispatch the reported vector after the vCPU unbinds.
+    DeferredDispatch,
+}
+
+/// Host IRQ observation returned by [`ArmHostOps::fetch_pending_host_irq`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArmHostIrq {
+    vector: usize,
+    ownership: ArmHostIrqOwnership,
+}
+
+impl ArmHostIrq {
+    /// Reports an IRQ whose complete controller transaction ran during fetch.
+    pub const fn fetch_handled(vector: usize) -> Self {
+        Self {
+            vector,
+            ownership: ArmHostIrqOwnership::FetchHandled,
+        }
+    }
+
+    /// Reports an IRQ that still requires deferred host dispatch.
+    pub const fn deferred_dispatch(vector: usize) -> Self {
+        Self {
+            vector,
+            ownership: ArmHostIrqOwnership::DeferredDispatch,
+        }
+    }
+
+    /// Returns the host vector or platform placeholder.
+    pub const fn vector(self) -> usize {
+        self.vector
+    }
+
+    /// Returns the phase that owns the controller transaction.
+    pub const fn ownership(self) -> ArmHostIrqOwnership {
+        self.ownership
+    }
+}
+
 /// Host operations required by AArch64 virtualization code.
 ///
 /// The vCPU core calls these static methods at architecture boundaries where
@@ -47,7 +91,11 @@ pub trait ArmHostOps {
     fn inject_virtual_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult;
 
     /// Report a pending host IRQ after a lower-EL IRQ VM exit.
-    fn fetch_pending_host_irq() -> Option<usize>;
+    ///
+    /// The returned ownership is part of the fetch contract, so the embedding
+    /// VMM cannot accidentally dispatch an IRQ whose controller transaction
+    /// already completed here.
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq>;
 
     /// Dispatch a host IRQ taken while running at the current exception level.
     fn handle_current_host_irq();
@@ -138,7 +186,7 @@ mod tests {
             Ok(())
         }
 
-        fn fetch_pending_host_irq() -> Option<usize> {
+        fn fetch_pending_host_irq() -> Option<ArmHostIrq> {
             None
         }
 

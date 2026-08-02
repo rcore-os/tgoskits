@@ -37,7 +37,7 @@ impl ArmHostOps for DummyHost {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<arm_vcpu::ArmHostIrq> {
         None
     }
 
@@ -55,7 +55,7 @@ impl ArmHostOps for GicV2Host {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<arm_vcpu::ArmHostIrq> {
         None
     }
 

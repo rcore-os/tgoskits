@@ -55,10 +55,11 @@ target-local installer while the state is locked, and commits pending
 consumption plus a new epoch only after the installer succeeds. Failed LR writes
 therefore leave both source state and epoch unchanged.
 
-The vCPU delivery port owns a slot map from module-owned LRs to `(INTID, epoch)`.
-Valid unmapped LRs remain compatible with existing SGI/PPI and direct-injection
-paths. An EISR bit for an unmapped LR is an error because no module-owned
-delivery can consume that completion.
+The vCPU delivery port owns a slot map from module-owned LRs to
+`(INTID, epoch, EOI-maintenance)`. Valid unmapped LRs remain compatible with
+existing SGI/PPI and direct-injection paths. An EISR bit for an unmapped LR, or
+for a mapped edge LR whose EOI-maintenance bit was not installed, is malformed
+because neither slot can legitimately produce that completion.
 
 Before guest entry, AxVM folds observed LR state, reconciles line or
 deactivation changes, refills empty slots, and updates owned HCR controls. It
@@ -87,9 +88,11 @@ LRENPIE, EOICOUNT, and other unowned fields remain zero. GICv2 returns
 The GICv3 probe copies the unique maintenance interrupt specifier and, after
 registering the exact controller, translates and configures it in that
 controller's dynamic IRQ domain. Only a same-domain PPI in INTID range 16
-through 31 is published as a typed `IrqId`; discovery errors retain their
-concrete `IrqError`. Missing or malformed optional capability state does not
-undo a working host GIC.
+through 31 is published as a typed `IrqId`. The platform boundary exposes the
+write-once status as uninitialized, available, unavailable, or error; an absent
+specifier is therefore distinct from a controller returning
+`IrqError::Unsupported`, and lock contention remains `Error(Busy)`. Missing or
+malformed optional capability state does not undo a working host GIC.
 
 AxVM registers one host-lifetime per-CPU handler after virtualization is enabled
 on all usable CPUs and exposes a read-only status distinguishing uninitialized,
@@ -98,7 +101,10 @@ status cannot retry registration. Bind publishes `(VMId, VCpuId, generation)`
 under local IRQ exclusion. The handler records only a matching observation; it
 never accesses LRs or the controller. Unbind consumes the observation, services
 and saves ICH, then withdraws ownership. The normal platform IRQ transaction
-remains the only acknowledge/EOI owner.
+remains the only acknowledge/EOI owner. `ArmHostOps` reports transaction
+ownership together with the fetched vector: AArch64 fetch completes
+acknowledge, dispatch, and EOI before returning `FetchHandled`, so deferred work
+checks timers without a second dispatch.
 
 ## Validation
 

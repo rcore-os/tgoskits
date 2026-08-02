@@ -5,9 +5,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
-    CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, Registry,
-    ShareMode, TrapVector,
+    CpuId, CpuMask, HwIrq, IrqAffinity, IrqCapabilityStatus, IrqContext, IrqDomainId, IrqError,
+    IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource,
+    IrqStatus, Registry, ShareMode, TrapVector,
 };
 use spin::Once;
 
@@ -364,9 +364,9 @@ pub trait IrqIf {
     /// Returns the platform IRQ id used for runtime IPIs.
     fn ipi_irq() -> IrqId;
 
-    /// Returns the typed GIC virtualization maintenance PPI.
+    /// Returns the durable discovery status of the GIC virtualization maintenance PPI.
     #[cfg(target_arch = "aarch64")]
-    fn gic_maintenance_irq() -> Result<IrqId, IrqError>;
+    fn gic_maintenance_irq_status() -> IrqCapabilityStatus;
 
     /// Resolves a firmware/controller interrupt source to a framework IRQ id.
     fn resolve_source(source: IrqSource) -> Result<IrqId, IrqError>;

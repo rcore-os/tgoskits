@@ -53,7 +53,8 @@ cargo doc --no-deps
 
 ```rust
 use arm_vcpu::{
-    ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult, ArmVirtualIntId,
+    ArmHostIrq, ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult,
+    ArmVirtualIntId,
 };
 
 struct MyHost;
@@ -68,7 +69,7 @@ impl ArmHostOps for MyHost {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq> {
         None
     }
 
