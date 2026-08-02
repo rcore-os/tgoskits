@@ -107,6 +107,7 @@ struct SeqConnRequest {
 pub struct SeqBind {
     conn_tx: async_channel::Sender<SeqConnRequest>,
     poll_new_conn: Arc<PollSet>,
+    listening: Arc<AtomicBool>,
 }
 impl SeqBind {
     /// Establish a connection: build a packet channel pair, hand the
@@ -117,6 +118,9 @@ impl SeqBind {
         pid: u32,
         client_receive_timestamp: Arc<AtomicBool>,
     ) -> AxResult<(PacketRx, Channel)> {
+        if !self.listening.load(Ordering::Acquire) {
+            return Err(AxError::ConnectionRefused);
+        }
         let (tx1, rx1) = async_channel::unbounded();
         let (tx2, rx2) = async_channel::unbounded();
         let poll1 = Arc::new(PollSet::new());
@@ -167,6 +171,8 @@ pub struct DgramTransport {
     is_seqpacket: bool,
     /// Connection-request queue installed by a seqpacket listener's bind.
     conn_rx: Mutex<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
+    /// True after a bound seqpacket socket enters listening state.
+    listening: Arc<AtomicBool>,
     /// Poll set for local state changes.
     poll_state: Arc<PollSet>,
     /// Shared socket options.
@@ -200,6 +206,7 @@ impl DgramTransport {
             peeked: Mutex::new(None),
             is_seqpacket: socket_type == 5,
             conn_rx: Mutex::new(None),
+            listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
             receive_timestamp: Arc::new(AtomicBool::new(false)),
@@ -221,6 +228,7 @@ impl DgramTransport {
             peeked: Mutex::new(None),
             is_seqpacket: socket_type == 5,
             conn_rx: Mutex::new(None),
+            listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
             receive_timestamp,
@@ -330,6 +338,7 @@ impl TransportOps for DgramTransport {
             *slot = Some(SeqBind {
                 conn_tx: tx,
                 poll_new_conn: poll.clone(),
+                listening: self.listening.clone(),
             });
             *guard = Some((rx, poll));
             self.local_addr.write().clone_from(local_addr);
@@ -360,6 +369,21 @@ impl TransportOps for DgramTransport {
         // Datagram bind state is published before waking pollers.
         unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
+    }
+
+    fn listen(&self) -> AxResult {
+        if !self.is_seqpacket {
+            return Err(AxError::OperationNotSupported);
+        }
+        if self.conn_rx.lock().is_none() {
+            return Err(AxError::InvalidInput);
+        }
+        self.listening.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn is_listening(&self) -> bool {
+        self.is_seqpacket && self.listening.load(Ordering::Acquire)
     }
 
     fn connect(&self, slot: &super::BindSlot, _local_addr: &UnixSocketAddr) -> AxResult {
@@ -404,6 +428,9 @@ impl TransportOps for DgramTransport {
             // `unix_dgram_ops.accept = sock_no_accept` returns -EOPNOTSUPP.
             return Err(AxError::OperationNotSupported);
         }
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
             // Not a listening seqpacket socket: accept requires listen(). Linux
             // returns EINVAL for accept on a non-listening socket.
@@ -426,6 +453,9 @@ impl TransportOps for DgramTransport {
             // `unix_dgram_ops.accept = sock_no_accept` returns -EOPNOTSUPP.
             // Must not return WouldBlock, or the accept poll loop hangs forever.
             return Err(AxError::OperationNotSupported);
+        }
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
         }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
             // Not a listening seqpacket socket: accept requires listen(). Linux

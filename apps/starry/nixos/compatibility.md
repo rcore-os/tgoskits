@@ -34,7 +34,8 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 | systemd-executor receives serialized invocation state over an inherited fd | systemd 260.2 clears `FD_CLOEXEC` on the serialization fd before `pidfd_spawn`; the executor deserializes it after exec | Service startup after `multi-user.target` is queued | Open finding: glibc `pidfd_spawn` still reports `EBADF`; no matcher relaxation or service mask is accepted | A focused regression must reproduce the non-CLOEXEC fd across `CLONE_VM|CLONE_VFORK|CLONE_PIDFD|CLONE_INTO_CGROUP` and exec before correction | Revisit after the focused red/green regression and the same real app command both pass |
 | `systemd-journald` enables receive timestamps on its Unix datagram socket | Linux v6.18 `sock_set_timestamp`, `unix_dgram_sendmsg`, and `__sock_recv_timestamp`: `SO_TIMESTAMP` is per receiver, records wall time before queue insertion, conditionally emits `SOL_SOCKET/SCM_TIMESTAMP`, and fills a missing timestamp when enabling races with an already queued packet | Journald initialization after systemd queued `Multi-User System`; `setsockopt(SOL_SOCKET, SO_TIMESTAMP)` returned `ENOPROTOOPT` | Resolved in the Unix datagram/seqpacket option, queue-time metadata, and timeval cmsg boundaries; no protocol-wide fake support added | `test-suit/starryos/qemu/system/bugfix-socket-timestamp/` changed from 14 pass/11 fail to 30 pass/0 fail, matching the host Linux oracle; adjacent QoS cmsg and seqpacket regressions also pass | Re-run when Unix queueing, `recvmsg`, ancillary layout, timestamp options, or wall-clock plumbing changes |
 | Journald reads the current hostname from proc sysctl | Linux v6.18 `kernel/utsname_sysctl.c` exposes `/proc/sys/kernel/hostname` from the caller's current UTS namespace and emits a newline-terminated value | Journald continued past `SO_TIMESTAMP`, printed `Collecting audit messages is disabled`, then failed to open `/proc/sys/kernel/hostname` with `ENOENT` | Resolved with a dynamic read-only proc sysctl node backed by `nsproxy.uts_ns.nodename`; no duplicate hostname state or userspace fallback added | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-hostname/` changed from deterministic `ENOENT` after 3 checks to 12/12 pass; the existing namespace regression also passed 13/13 | Re-run when procfs sysctl reads, UTS namespace cloning, `sethostname`, or `uname` semantics change |
-| Journald continues initialization after obtaining the UTS hostname | Linux systemd-journald remains a long-running service after timestamp and hostname initialization | After the hostname correction, systemd printed `Hostname set to <starrynixos>` and journald passed its former `ENOENT` point, then exited with status 1 immediately after `Collecting audit messages is disabled` without a diagnostic naming the failed operation | Open diagnostic finding; no kernel change is justified until the first failing operation and Linux-visible contract are identified | No focused regression yet: the current boot log is sufficient to prove the hostname boundary was crossed, but insufficient to assign the next failure to an owning subsystem | Revisit after syscall-level instrumentation or a minimal reproducer identifies the exact operation |
+| systemd passes a pathname Unix stream listener to journald | Linux `socket(7)` defines `SO_ACCEPTCONN` as a read-only integer that is zero before `listen(2)` and one afterwards; systemd 260.2 uses it while identifying inherited Varlink listeners | After the hostname correction, journald reported `1 unknown file descriptors passed, closing.` before `Collecting audit messages is disabled` | Resolved by exposing the owning transport's listener state through `SocketOps`, separating Unix bind from listen, and returning that state for `SO_ACCEPTCONN`; no syscall-layer shadow state added | `test-suit/starryos/qemu/system/bugfix-unix-listener-introspection/` changed from 12/17 to 17/17, matching the host Linux oracle; adjacent accept4 and seqpacket regressions also pass | Re-run when socket listener state, Unix namespace bind slots, accept/connect, or `SO_ACCEPTCONN` handling changes |
+| Journald processes systemd handoff and notification datagrams | Linux systemd-journald accepts authenticated handoff/notification messages and remains available through its activation sockets | After listener introspection was corrected, the unknown-fd diagnostic disappeared; journald logged messages without valid credentials, then `systemd-journalctl.socket` and journald startup timed out | Open diagnostic finding; the visible messages do not yet identify whether the owning gap is credential ancillary data, sender identity, socket activation, or another wait/wakeup boundary | No focused regression yet; the current boot only proves the Varlink listener boundary was crossed | Revisit after a Linux oracle and minimal deterministic reproducer identify the first failing operation |
 
 ## Run evidence
 
@@ -170,4 +171,32 @@ then the same command must be repeated to discover the next first divergence.
   several unrelated systemd jobs had no time limit. The container exit status
   137 is therefore a deliberate bounded stop, not a test pass or kernel crash.
 - Log: `.ci-cache/tmp/starrynixos-after-proc-hostname.log`.
+- `STARRY_NIXOS_SYSTEM_PASSED` was not emitted; T028 remains incomplete.
+
+### 2026-08-02 Unix listener introspection correction
+
+- Linux oracle and focused test:
+  `test-suit/starryos/qemu/system/bugfix-unix-listener-introspection/`.
+- Red result: 12/17 checks passed. Four `SO_ACCEPTCONN` queries returned
+  `ENOPROTOOPT`, and a pathname Unix stream incorrectly accepted a connection
+  after `bind(2)` but before `listen(2)`.
+- Green result: 17/17 checks passed, including pre-listen zero, post-listen one,
+  duplicated-fd state, exact option length, pathname introspection, and
+  pre-listen `ECONNREFUSED`; both focused and grouped success markers were
+  emitted.
+- Quality gates: `cargo fmt --all` passed; targeted `ax-net` clippy passed 3/3
+  checks; targeted `starry-kernel` clippy passed 25/25 checks. Adjacent
+  `syscall-test-accept4` passed 29/29 and `syscall-test-seqpacket` passed 73/73.
+- Real app payload:
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`
+  in the project Podman image with `.ci-cache` used only for caches.
+- Crossing evidence: the complete log contains zero instances of
+  `unknown file descriptors passed`, one `Collecting audit messages` record,
+  seven handoff-timestamp credential diagnostics, and two notification-datagram
+  credential diagnostics. Journald therefore crossed inherited Varlink listener
+  identification and entered later datagram processing.
+- New bounded result: `systemd-journalctl.socket` failed with result `timeout`;
+  journald and sysctl startup operations then timed out. The 180-second outer
+  timeout exited with status 124.
+- Log: `.ci-cache/tmp/starrynixos-after-so-acceptconn.log`.
 - `STARRY_NIXOS_SYSTEM_PASSED` was not emitted; T028 remains incomplete.

@@ -5,9 +5,10 @@
 > 当前结论：已进入 NixOS activation 并启动 systemd，但尚未到达
 > 严格成功门槛。`multi-user.target` 已进入启动事务，`ramfs`、`statx`
 > mount-root/mount-ID、cgroup、procfd exec、clone3 cgroup placement、
-> Unix socket timestamp 和 proc sysctl hostname 分歧均已完成红绿修复。
-> 当前 journald 已越过 hostname 读取，但在输出 audit-disabled 信息后以
-> 状态 1 退出且没有指出失败操作；marker 未执行。
+> Unix socket timestamp、proc sysctl hostname 和 Unix listener introspection
+> 分歧均已完成红绿修复。当前 journald 已识别 systemd 传入的 Varlink listener，
+> 进入 handoff/notification datagram 处理；后续 journal socket 和 journald
+> 启动超时，marker 未执行。
 
 ## 1. 定位与范围
 
@@ -28,8 +29,8 @@ QEMU q35/UEFI
   -> systemd API-filesystem 初始化
   -> systemd unit 加载与依赖事务
   -> multi-user.target 启动事务
-  -> journald 越过 SO_TIMESTAMP 与 hostname 初始化
-  -> [当前阻塞] journald 无诊断 status=1
+  -> journald 越过 SO_TIMESTAMP、hostname 与 Varlink listener 识别
+  -> [当前阻塞] journal socket/journald 启动超时
   -> [尚未执行] starry-nixos-marker.service
 ```
 
@@ -1616,6 +1617,178 @@ directory` 已消失，systemd 成功读取并设置 `starrynixos` hostname，jo
 且指向正确拥有子系统的回归，因此不猜测修复；下一步需要 syscall 级观测或最小
 复现先把该退出收敛到具体 Linux 语义。`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，
 T028 保持未完成。
+
+### 7.16 journald Varlink 监听 fd 识别红测设计（2026-08-02）
+
+继续读取与镜像一致的 systemd v260.2 固定 commit
+`f1d0952a125b96b7ab2f1ff29a87448ade8ac29b` 后，journald 初始化顺序已经
+收敛：
+
+```text
+Collecting audit messages is disabled.
+  -> manager_open_varlink()
+  -> manager_map_seqnum_file()
+  -> manager_open_kernel_seqnum()
+  -> manager_open_hostname()
+```
+
+真实日志在 audit-disabled 之前还报告：
+
+```text
+systemd-journald[89]: 1 unknown file descriptors passed, closing.
+```
+
+`manager_init()` 使用
+`sd_is_socket_unix(fd, SOCK_STREAM, 1, varlink_socket, 0)` 识别 systemd
+传入的 Varlink 监听 fd。systemd 同一固定 commit 中的实现依次要求：
+
+1. `fstat(fd)` 报告 `S_IFSOCK`；
+2. `getsockopt(SOL_SOCKET, SO_TYPE)` 报告 `SOCK_STREAM`；
+3. `getsockopt(SOL_SOCKET, SO_ACCEPTCONN)` 在 `listen(2)` 前为 0、之后为 1；
+4. `getsockname(2)` 报告匹配的 `AF_UNIX` pathname 和长度。
+
+Linux man-pages `socket(7)` 明确规定 `SO_ACCEPTCONN` 是只读 `int`，未监听时
+返回 0，已由 `listen(2)` 标记为接受连接时返回 1。Linux v6.18 固定 commit
+`7d0a66e4bb9081d75c82ec4957c50034cb0ea449` 的
+`net/core/sock.c:sock_getsockopt()` 以 `sk->sk_state == TCP_LISTEN` 生成该值。
+
+Starry 现有 socket option dispatch 已支持 `SO_TYPE`、`SO_PROTOCOL` 和
+`SO_DOMAIN`，但没有 `SO_ACCEPTCONN`；因此 systemd 的监听 fd 判定会在第三步
+得到 `ENOPROTOOPT`。下一步新增
+`test-suit/starryos/qemu/system/bugfix-unix-listener-introspection/`，使用同一
+C 程序先跑宿主 Linux oracle，再跑当前 Starry：
+
+- 创建 pathname `AF_UNIX/SOCK_STREAM` socket；
+- 验证 socket inode 和 `SO_TYPE`；
+- 验证 `SO_ACCEPTCONN` 在 `listen` 前为 0、之后为 1，且 `optlen` 精确；
+- 验证 `getsockname` 的 family、pathname 和返回长度；
+- 验证 duplicated listener fd 保留相同 introspection 结果。
+
+只有当前 Starry 在 `SO_ACCEPTCONN` 处取得确定红灯后，才修改 socket option
+实现；不能把 journald status 1 直接等同于该推断并先写修复。
+
+Podman 中的宿主 Linux oracle 已执行同一程序并通过全部 14 项检查：
+
+```text
+=== Results: 14 passed, 0 failed ===
+STARRY_UNIX_LISTENER_INTROSPECTION_PASSED
+```
+
+测试最初使用 `strncpy` 复制 pathname，宿主编译器在项目的 `-Werror` 配置下以
+`-Wstringop-truncation` 拒绝构建。测试随后改为先验证长度，再用精确
+`memcpy` 复制包含终止 NUL 的 pathname；这只修正测试构造方式，不改变被测
+socket 语义。
+
+当前 Starry 聚焦测试也已取得确定红灯：
+
+```text
+PASS: create Unix stream socket
+PASS: fstat reports a socket inode
+PASS: SO_TYPE reports SOCK_STREAM
+FAIL: SO_ACCEPTCONN is zero before listen: errno=92 (Protocol not available)
+PASS: bind pathname Unix socket
+PASS: listen on Unix stream socket
+FAIL: SO_ACCEPTCONN is one after listen: errno=92 (Protocol not available)
+PASS: getsockname reports bound pathname
+PASS: duplicate listener fd
+FAIL: duplicated fd remains a listening socket: errno=92 (Protocol not available)
+=== Results: 11 passed, 3 failed ===
+```
+
+失败严格局限于三次 `SO_ACCEPTCONN` 查询，均为 Linux 对该 option 不支持时的
+`ENOPROTOOPT`；`fstat`、`SO_TYPE`、`bind`、`listen`、`getsockname` 和 fd
+duplicate 路径均已通过。因此红测已经把修改范围限定到 socket option
+introspection 及其底层监听状态查询，下一步可以开始实现，不需要改动
+`getsockname`、fd 复制或 Unix pathname 逻辑。
+
+继续补充 bind/listen 状态边界后，Linux oracle 通过 17/17；当前 Starry 红测
+扩展为 12/17，除四次 `SO_ACCEPTCONN` 查询返回 `ENOPROTOOPT` 外，还确认
+pathname Unix stream 在只 bind、未 listen 时错误地允许 connect 成功。该结果
+证明不能只在 syscall 层伪造 option 值，必须修正拥有连接队列的 Unix transport
+状态机。
+
+实现将只读 `SocketOps::is_listening()` 作为 transport-independent 查询：
+
+- TCP 直接读取现有 `State::Listening`；
+- Unix stream 与 seqpacket 由 transport 持有并与 namespace bind slot 共享同一
+  `AtomicBool`；
+- `listen()` 以 Release 发布监听状态，`connect()`、`accept()` 和
+  `SO_ACCEPTCONN` 以 Acquire 读取；
+- Unix bind 只准备地址和连接队列，不再等价于进入监听状态；
+- datagram、raw 等不支持监听的 socket 使用 trait 默认值 0。
+
+这避免了 syscall 层和 transport 层各维护一份 listener 状态，同时恢复 Linux 的
+bind 后、listen 前 `connect()` 返回 `ECONNREFUSED` 语义。
+
+Podman + `.ci-cache` 聚焦绿测已通过：
+
+```text
+PASS: SO_ACCEPTCONN is zero before listen
+PASS: SO_ACCEPTCONN stays zero after bind
+PASS: connect is refused before listen
+PASS: SO_ACCEPTCONN is one after listen
+PASS: duplicated fd remains a listening socket
+=== Results: 17 passed, 0 failed ===
+STARRY_UNIX_LISTENER_INTROSPECTION_PASSED
+STARRY_GROUPED_TESTS_PASSED
+result: 1/1 case(s) passed
+```
+
+首次绿测构建在 `opt.rs` 缺少 `SocketOps` trait import 时按编译错误停止；补齐
+导入并重新执行后才取得上述结果。当前仍需完成 `ax-net`、`starry-kernel`
+targeted clippy、相邻 accept/seqpacket 回归和真实 StarryNixOS 越界验证，完成前
+不提交该分类。
+
+质量门禁和相邻回归现已完成：
+
+```text
+ax-net targeted clippy: 3/3 checks passed
+starry-kernel targeted clippy: 25/25 checks passed
+qemu/system/syscall-test-accept4: 29 pass, 0 fail
+qemu/system/syscall-test-seqpacket: 73 pass, 0 fail
+```
+
+`starry-kernel` clippy 包含两个 aarch64 system 配置，未因本次 x86_64 workload
+只验证单架构而跳过。accept4 回归确认未 listen 的 Unix stream 仍返回 `EINVAL`，
+以及 stream/seqpacket 的 listen/accept 正常；seqpacket 回归确认连接式
+bind/listen/connect/accept 和消息、SCM_RIGHTS 语义均未退化。
+
+clippy 初次尝试没有进入代码检查，因为先前临时容器生成的 workspace `target/`
+缓存不可写。最终没有递归修改权限，而是将 `CARGO_TARGET_DIR` 隔离到
+`.ci-cache/target` 后完成全部 3+25 项检查。grouped 相邻回归在 cache miss 时
+需要 fakeroot，最终使用与 Ubuntu 24.04 容器 glibc 匹配的临时安装完成资产提取；
+该差异仅影响测试准备，不改变 QEMU 内核或 guest 语义。
+
+真实 StarryNixOS workload 越界验证现已完成。使用同一已验证镜像和
+Podman + `.ci-cache` 运行 180 秒后，完整日志计数为：
+
+```text
+unknown file descriptors passed: 0
+Collecting audit messages: 1
+Received handoff timestamp: 7
+lacking valid credential: 2
+STARRY_NIXOS_SYSTEM_PASSED: 0
+```
+
+旧的 `1 unknown file descriptors passed, closing.` 已完全消失，证明
+`sd_is_socket_unix()` 已通过 `SO_ACCEPTCONN` 和 Unix listener 状态检查。
+journald 随后进入 handoff timestamp 与 notification datagram 处理，新的可见
+诊断和终态为：
+
+```text
+Received handoff timestamp message without valid credentials. Ignoring.
+Got notification datagram lacking valid credential information, ignoring.
+systemd-journalctl.socket: Starting timed out. Stopping.
+systemd-journalctl.socket: Failed with result 'timeout'.
+systemd-journald.service: start operation timed out. Terminating.
+```
+
+外层 `timeout` 以 124 结束本次有界运行；这不是 Starry 内核崩溃或测试通过。
+当前证据足以确认本分类跨越真实触发边界，因此 listener introspection 修复可以
+作为独立、已验证成果提交。上述 credential datagram 与 socket timeout 只记录为
+下一诊断边界；在建立新的 Linux oracle 和确定红测前，不据此猜测内核修复。
+日志位于 `.ci-cache/tmp/starrynixos-after-so-acceptconn.log`。
+`STARRY_NIXOS_SYSTEM_PASSED` 未出现，T028 保持未完成。
 
 ## 8. 关联文档
 

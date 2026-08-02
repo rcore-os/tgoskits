@@ -543,6 +543,10 @@ impl SocketOps for TcpSocket {
         Ok(())
     }
 
+    fn is_listening(&self) -> bool {
+        self.state.get() == State::Listening
+    }
+
     fn accept(&self) -> AxResult<Socket> {
         if self.state.get() != State::Listening {
             ax_bail!(InvalidInput, "not listening");

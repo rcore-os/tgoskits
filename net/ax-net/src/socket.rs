@@ -254,6 +254,10 @@ pub trait SocketOps: Configurable {
     fn listen(&self, _backlog: usize) -> AxResult {
         Err(AxError::OperationNotSupported)
     }
+    /// Returns whether this socket currently accepts incoming connections.
+    fn is_listening(&self) -> bool {
+        false
+    }
     /// Accepts a connection on a listening socket, returning a new socket.
     fn accept(&self) -> AxResult<Socket> {
         Err(AxError::OperationNotSupported)
@@ -288,6 +292,10 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
 
     fn listen(&self, backlog: usize) -> AxResult {
         (**self).listen(backlog)
+    }
+
+    fn is_listening(&self) -> bool {
+        (**self).is_listening()
     }
 
     fn accept(&self) -> AxResult<Socket> {

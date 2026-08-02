@@ -130,11 +130,16 @@ pub struct Bind {
     /// New connections are sent to this channel.
     conn_tx: async_channel::Sender<ConnRequest>,
     poll_new_conn: Arc<PollSet>,
+    /// Shared listener state published by `listen`.
+    listening: Arc<AtomicBool>,
     /// PID of the process that created the listening transport.
     pid: u32,
 }
 impl Bind {
     fn connect(&self, local_addr: UnixSocketAddr, pid: u32) -> AxResult<Channel> {
+        if !self.listening.load(Ordering::Acquire) {
+            return Err(AxError::ConnectionRefused);
+        }
         let (mut client_chan, mut server_chan) = new_channels(0);
         client_chan.peer_pid = self.pid;
         server_chan.peer_pid = pid;
@@ -166,6 +171,8 @@ pub struct StreamTransport {
     channel: Mutex<Option<Channel>>,
     /// Listener receive queue installed by bind/listen.
     conn_rx: Mutex<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
+    /// True after `listen` publishes the bound endpoint for connection attempts.
+    listening: Arc<AtomicBool>,
     /// Poll set for local stream state.
     poll_state: PollSet,
     /// Shared socket options.
@@ -187,6 +194,7 @@ impl StreamTransport {
         StreamTransport {
             channel: Mutex::new(channel),
             conn_rx: Mutex::new(None),
+            listening: Arc::new(AtomicBool::new(false)),
             poll_state: PollSet::new(),
             general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
             pid,
@@ -260,6 +268,7 @@ impl TransportOps for StreamTransport {
         *slot = Some(Bind {
             conn_tx: tx,
             poll_new_conn: poll.clone(),
+            listening: self.listening.clone(),
             pid: self.pid,
         });
         *guard = Some((rx, poll));
@@ -268,6 +277,18 @@ impl TransportOps for StreamTransport {
         // Bind state is published before waking poll waiters.
         unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
+    }
+
+    fn listen(&self) -> AxResult<()> {
+        if self.conn_rx.lock().is_none() {
+            return Err(AxError::InvalidInput);
+        }
+        self.listening.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn is_listening(&self) -> bool {
+        self.listening.load(Ordering::Acquire)
     }
 
     fn connect(&self, slot: &super::BindSlot, local_addr: &UnixSocketAddr) -> AxResult<()> {
@@ -289,6 +310,9 @@ impl TransportOps for StreamTransport {
     }
 
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
             // Not a listening socket: accept requires a prior listen(). Linux
             // returns EINVAL for accept on a non-listening socket.
@@ -306,6 +330,9 @@ impl TransportOps for StreamTransport {
     }
 
     fn try_accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
             // Not a listening socket: accept requires a prior listen(). Linux
             // returns EINVAL for accept on a non-listening socket.
