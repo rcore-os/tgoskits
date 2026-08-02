@@ -5,7 +5,7 @@
  *   1. 基本创建：各种 flag 组合，非法 flags → EINVAL
  *   2. sigsetsize 校验：非空 mask 时 size 必须为 8
  *   3. 修改已有 signalfd 的 mask（fd != -1）
- *   4. 修改已有 fd 时传 SFD_CLOEXEC → EINVAL
+ *   4. 修改已有 fd 时合法 flags 只更新 mask
  *   5. 非阻塞空读 → EAGAIN
  *   6. 读缓冲区 < 128 字节 → EINVAL
  *   7. write → EBADF
@@ -153,14 +153,14 @@ static void test_modify_mask(void) {
     close(fd);
 }
 
-/* ─── 4. fd != -1 且 SFD_CLOEXEC → EINVAL ────────────────────── */
+/* ─── 4. fd != -1 时合法 flags 不影响更新 ───────────────────── */
 
-static void test_cloexec_conflict(void) {
+static void test_existing_fd_flags(void) {
     int fd = signalfd4_new(0, 0);
     CHECK(fd >= 0, "create signalfd");
 
-    CHECK_ERR(signalfd4_modify(fd, 0, SFD_CLOEXEC), EINVAL,
-              "modify with SFD_CLOEXEC → EINVAL");
+    int ret = signalfd4_modify(fd, 0, SFD_CLOEXEC);
+    CHECK(ret == fd, "modify with SFD_CLOEXEC returns same fd");
 
     close(fd);
 }
@@ -184,8 +184,8 @@ static void test_buffer_size(void) {
     int fd = signalfd4_new(0, 0);
     CHECK(fd >= 0, "create signalfd for buffer test");
 
-    char small[64];
-    CHECK_ERR(read(fd, small, sizeof(small)), EINVAL,
+    char small[127];
+    CHECK_ERR(read(fd, small, 64), EINVAL,
               "read with 64-byte buffer → EINVAL");
     CHECK_ERR(read(fd, small, 127), EINVAL,
               "read with 127-byte buffer → EINVAL");
@@ -325,8 +325,8 @@ int main(void) {
     printf("\n--- 3. modify mask ---\n");
     test_modify_mask();
 
-    printf("\n--- 4. SFD_CLOEXEC conflict ---\n");
-    test_cloexec_conflict();
+    printf("\n--- 4. existing fd flags ---\n");
+    test_existing_fd_flags();
 
     printf("\n--- 5. nonblocking empty read ---\n");
     test_nonblocking_empty();

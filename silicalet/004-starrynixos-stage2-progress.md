@@ -2148,6 +2148,225 @@ failure 后主动结束运行，因此本次没有继续观察 `systemd-sysctl` 
 确定差分或取得更直接的用户态错误证据。signalfd 分类已满足独立提交门槛，
 但 T028 仍保持未完成。
 
+### 7.20 journald 即时退出的下一诊断边界（2026-08-02）
+
+固定 systemd v260.2 commit
+`f1d0952a125b96b7ab2f1ff29a87448ade8ac29b` 的 `setup_keyring()` 明确将
+`KEYCTL_JOIN_SESSION_KEYRING` 返回 `ENOSYS` 视为“不支持 kernel keyring”，
+只记录 debug 后继续启动。因此当前 Starry 的 `keyctl` ENOSYS 不是 journald
+退出的直接原因，不应据此实现完整 keyring syscall。
+
+journald 最后一条可见用户态消息为：
+
+```text
+systemd-journald[89]: Collecting audit messages is disabled.
+```
+
+在固定源码中，该消息之后的初始化顺序是：
+
+1. `manager_open_varlink()` 接管继承的 Unix stream listener；
+2. 创建、`posix_fallocate()` 并 `MAP_SHARED` 映射主 seqnum 文件；
+3. 打开 kernel seqnum 和 `/proc/sys/kernel/hostname`；
+4. 注册 signals 和 memory-pressure event；
+5. 读取 cgroup root；
+6. 打开 runtime/system journal 文件。
+
+`sd_varlink_server_listen_fd()` 对继承 listener 的同步操作限于设置
+`O_NONBLOCK`、`FD_CLOEXEC`、可忽略失败的 `SO_PASSRIGHTS`，以及把 listener
+注册到 event loop。现有日志仍没有暴露上述哪一步返回了错误。下一步不修改
+syscall，而是在 NixOS service 配置中临时设置
+`SYSTEMD_LOG_TARGET=console` 和 `SYSTEMD_LOG_LEVEL=debug`，重建 app-owned
+rootfs 后取得 journald 自身的精确错误消息。诊断结束后再决定是否保留该配置；
+没有确定 Linux/Starry 差分前不实现候选 syscall。
+
+第一次尝试直接在 `ghcr.io/rcore-os/tgoskits-container:latest` 中不复用
+rootfs 执行：
+
+```text
+cargo xtask starry app qemu -t nixos --arch x86_64
+```
+
+在进入 QEMU 前由 app-owned builder 明确失败：
+
+```text
+StarryNixOS artifact error: required command 'nix' is unavailable
+```
+
+该 CI 容器不包含 Nix，因此不能承担锁定 NixOS artifact 的构建；这不是
+StarryOS 或 journald 的行为结果。后续应在具备 Nix 的 x86_64 宿主按同一
+`build-rootfs.sh` 重建并验证 artifact，再在 Podman 中设置
+`STARRY_NIXOS_REUSE_ROOTFS=1` 运行 QEMU。日志保存在
+`.ci-cache/tmp/starrynixos-journald-console-debug.log`。
+
+### 7.21 journald syscall trace 与 `SO_SNDBUF` 候选排除（2026-08-02）
+
+宿主使用锁定 flake 和显式 e2fsprogs 工具路径成功重建并发布 app-owned
+rootfs：
+
+```text
+system=/nix/store/d7fqs6pm0jw30yq0wbrpahvzaynm67h0-nixos-system-starrynixos-starry-nixos-stage2
+systemd_version=260.2
+image_sha256=5d6adfe63faec9e0fd1cf654864cccf1a36bbd8e65a6f663d84c23db9964a9d9
+```
+
+构建日志为 `.ci-cache/tmp/starrynixos-host-rootfs-rebuild.log`。临时
+`SYSTEMD_LOG_LEVEL=debug` / `SYSTEMD_LOG_TARGET=console` unit drop-in 已确认
+进入新 artifact，但 journald 仍未在 console 输出直接错误。全局 kernel Debug
+日志量过大，180 秒仅推进到 guest 4.5 秒，已终止；日志为
+`.ci-cache/tmp/starrynixos-journald-kernel-debug.log`。
+
+随后在 syscall dispatcher 中临时仅跟踪进程名 `systemd-journald`，取得完整
+退出前调用链，日志为
+`.ci-cache/tmp/starrynixos-journald-syscall-trace.log`。其中
+`signalfd4` 更新已有 fd 返回 `EINVAL` 后 journald 仍继续执行，因此不能据此
+认定退出原因：
+
+```text
+signalfd4(-1, ..., SFD_CLOEXEC|SFD_NONBLOCK) = 10
+signalfd4(10, ..., SFD_CLOEXEC|SFD_NONBLOCK) = EINVAL
+```
+
+退出前可见新建 Unix datagram socket 后读取发送缓冲区：
+
+```text
+socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0) = 3
+getsockopt(3, SOL_SOCKET, SO_SNDBUF, ...) = ENOPROTOOPT
+setsockopt(3, SOL_SOCKET, SO_SNDBUF, ...) = 0
+getsockopt(3, SOL_SOCKET, SO_SNDBUF, ...) = ENOPROTOOPT
+setsockopt(3, SOL_SOCKET, SO_SNDBUFFORCE, ...) = ENOPROTOOPT
+exit_group(1)
+```
+
+Starry syscall option 映射已经把 `SO_SNDBUF` 解析为
+`GetSocketOption::SendBuffer`，而 `net/ax-net/src/unix/stream.rs` 已实现该
+查询，`net/ax-net/src/unix/dgram.rs` 当前没有对应分支。因此
+`ENOPROTOOPT` 的拥有边界初步收敛到 ax-net Unix datagram socket option
+实现，而不是 syscall 常量或 option 解码层。但锁定 systemd v260.2 源码确认
+这些调用来自 `fd_inc_sndbuf()`，其返回值在 journald 的 notify socket 和日志
+发送路径中被显式忽略；trace 中两组重复调用也发生在错误报告/退出清理阶段。
+因此 `SO_SNDBUF` 虽是独立 Linux 语义缺口，却不是本次 journald 退出根因，
+当前不修改 ax-net。
+
+同一 trace 中更早且未被忽略的失败是：
+
+```text
+signalfd4(-1, ..., SFD_CLOEXEC|SFD_NONBLOCK) = 10
+epoll_ctl(..., fd=10, EPOLL_CTL_ADD, ...) = 0
+signalfd4(10, ..., SFD_CLOEXEC|SFD_NONBLOCK) = EINVAL
+```
+
+第二次 `signalfd4` 失败后，journald 立即删除已注册 event source、关闭 fd 并
+退出。固定 systemd v260.2 的 `sd_event_add_signal()` 会为同一优先级复用一个
+signalfd；新增第二个 signal 时以原 fd 和
+`SFD_NONBLOCK|SFD_CLOEXEC` 更新合并后的 mask。该失败从
+`manager_setup_signals()` 返回并终止 `manager_new()`。
+
+Linux v6.18 `do_signalfd4()` 只拒绝未知 flag。`ufd != -1` 时它更新
+`ctx->sigmask` 并唤醒 waiters；合法的 `SFD_CLOEXEC`/`SFD_NONBLOCK` 不得
+返回 `EINVAL`，也不改变已有 fd 的 descriptor/status flags。宿主 Linux
+聚焦 oracle 全部通过：
+
+```text
+=== Results: 10 passed, 0 failed ===
+STARRY_SIGNALFD_MASK_UPDATE_FLAGS_PASSED
+```
+
+新增
+`test-suit/starryos/qemu/system/bugfix-signalfd-mask-update-flags/` 后，当前
+Starry 取得确定红灯：
+
+```text
+FAIL: update existing signalfd with valid flags returns same fd: errno=22
+FAIL: systemd-style repeated flags update returns same fd: errno=22
+=== Results: 8 passed, 2 failed ===
+```
+
+日志为 `.ci-cache/tmp/signalfd-mask-update-flags-red.log`。实现范围限制在
+`os/StarryOS/kernel/src/syscall/fs/signalfd.rs`：已有 fd 时仅更新 mask，
+不再拒绝 `SFD_CLOEXEC`，也不根据本次 flags 改写 nonblocking 状态。
+
+修复后的聚焦 Starry 回归已取得：
+
+```text
+=== Results: 10 passed, 0 failed ===
+STARRY_SIGNALFD_MASK_UPDATE_FLAGS_PASSED
+```
+
+日志为 `.ci-cache/tmp/signalfd-mask-update-flags-green.log`。相邻
+`qemu/system/syscall-test-signalfd4` 随后取得 `43 pass, 1 fail`；唯一失败
+来自旧测试仍断言“更新已有 signalfd 时传 `SFD_CLOEXEC` 返回 `EINVAL`”，
+与 Linux v6.18 和本次宿主 oracle 相反，因此属于旧测试契约错误，不是修复
+回归。该次日志为 `.ci-cache/tmp/signalfd4-adjacent.log`。
+
+尝试在宿主直接编译并执行完整旧测试时，还发现其 127 字节短读场景使用了
+实际仅 64 字节的目标对象；glibc fortify 在 syscall 前以 buffer overflow
+终止进程。相邻测试需同时把该对象扩大到 127 字节，才能安全地作为 Linux
+差分用例运行。两项测试修正都只恢复既有 Linux ABI 契约，不扩大 kernel
+实现范围。
+
+修正旧测试后，Starry 相邻回归取得：
+
+```text
+DONE: 44 pass, 0 fail
+STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/test-signalfd4
+```
+
+日志为 `.ci-cache/tmp/signalfd4-adjacent-green.log`。同一源码在宿主 Linux
+取得 `43 pass, 1 fail`；本次相关的已有-fd flags 场景已经通过，剩余差异是
+`write(signalfd)` 在 Linux 返回 `EINVAL`，而现有 Starry/测试预期
+`EBADF`。该差异与 journald 的 mask update 触发边界无关，未在本次扩大
+kernel 修复范围，留作独立分类。
+
+上一项已提交的 epoll 唤醒回归也保持通过：
+
+```text
+=== Results: 10 passed, 0 failed ===
+STARRY_SIGNALFD_EPOLL_WAKEUP_PASSED
+```
+
+日志为 `.ci-cache/tmp/signalfd-epoll-wakeup-adjacent.log`。`cargo fmt --all
+-- --check` 通过，`cargo xtask clippy --package starry-kernel` 的 25 个检查
+全部通过，日志为
+`.ci-cache/tmp/starry-kernel-signalfd-mask-update-clippy.log`。
+
+撤销临时 journald Debug 环境变量后，宿主使用锁定 flake 重建并发布正式
+app-owned rootfs：
+
+```text
+system=/nix/store/9qmm1ap5zxbsc3qmkrmphpvlwy9f8a88-nixos-system-starrynixos-starry-nixos-stage2
+systemd_version=260.2
+image_sha256=c791e3cc6c0f4c4b4feaf09e2dd3f9212ff62af50c72d6c5c92a456c9b73c18e
+```
+
+构建日志为
+`.ci-cache/tmp/starrynixos-host-rootfs-rebuild-signalfd.log`。随后在 Podman
+中设置 `STARRY_NIXOS_REUSE_ROOTFS=1` 运行真实 app，出现：
+
+```text
+[  OK  ] Started Journal Service.
+```
+
+journald 继续处理 journal flush 和错误报告，证明真实 workload 已越过原先
+第二次 `signalfd4` 更新失败并退出的触发边界。本次系统终态仍失败，新的直接
+runner 终止证据为：
+
+```text
+Task(91, "systemd-sysctl") exit with code: 15
+[FAILED] Failed to start Apply Kernel Variables.
+```
+
+该 unit 在 1 分 30 秒期限后被终止。同期 journald 报告 journal 文件
+`ENOENT` 和目录 `fstatvfs` 的 `EISDIR` 差异，但它已成功启动，且当前 runner
+首先命中的是 `systemd-sysctl.service` failure；后续必须先取得 sysctl unit
+的精确阻塞 syscall/状态边界，不能把 journald 错误直接当作本轮下一根因。
+真实 app 日志为
+`.ci-cache/tmp/starrynixos-signalfd-mask-update-real-app.log`。
+
+本轮仅直接改变 `signalfd4`：未知 flags 和 `sigsetsize` 校验保持原路径；
+新建 fd 仍应用 `SFD_CLOEXEC`/`SFD_NONBLOCK`；已有 fd 仅更新 signal mask，
+合法创建 flags 不改变 descriptor/status flags。`STARRY_NIXOS_SYSTEM_PASSED`
+仍未出现，因此 T028 保持未完成，但该 signalfd4 修复已满足独立提交门槛。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
