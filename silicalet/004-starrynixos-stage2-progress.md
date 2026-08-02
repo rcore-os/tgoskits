@@ -1074,6 +1074,96 @@ legacy `mount(2)` 虽已有 devpts 实现，但 `fsopen("devpts")` 返回 `ENODE
 但 marker 未出现。因此 sized tmpfs 分类可以独立提交，T028 仍保持未完成；
 下一处 owning subsystem 是 devpts 的新 mount API context。
 
+sized tmpfs、`mount_setattr` 和 mountpoint `statfs` flags 分类已普通提交为
+`84f048b8c`（`fix(starry-fs): support sized memory mounts`）。提交仅包含已通过
+聚焦回归、credentials 回归、fmt、`starry-kernel` clippy 和真实 `/run` 路径
+验证的 4 个内核文件、聚焦测试与本文档；未包含 marker 尚未通过的 app 集成。
+
+已新增独立聚焦用例
+`test-suit/starryos/qemu/system/bugfix-devpts-new-mount-api/`，直接执行：
+
+```text
+fsopen("devpts")
+fsconfig(source/mode/gid/ptmxmode/newinstance)
+FSCONFIG_CMD_CREATE
+fsmount
+move_mount
+```
+
+用例还将验证 devpts magic、`ptmxmode` 以及新实例中 PTY slave 的 mode/gid。
+2026-08-02 在 Podman CI 容器中安装 staging 所需的 `fakeroot` 后，当前内核
+得到确定红测：
+
+```text
+FAIL: fsopen creates a devpts filesystem context: errno=19 (No such device)
+STARRY_DEVPTS_NEW_MOUNT_API_FAILED: 1 checks
+STARRY_GROUPED_TEST_FAILED
+```
+
+红点与真实 NixOS `/dev/pts` failure 一致，证明 owning boundary 是 devpts
+filesystem context 注册/参数解析，而不是 legacy `mount(2)` 或测试环境。
+
+内核现已将 devpts 纳入既有 filesystem context，并复用
+`DevPtsOptions`/`new_devptsfs`：
+
+- `fsopen("devpts")` 返回受 capability 和 CLOEXEC 约束的 context fd；
+- `fsconfig` 支持 `source`、`mode`、`gid`、`ptmxmode` 和 flag 型
+  `newinstance`；
+- `FSCONFIG_CMD_CREATE` 创建独立 `DevPtsMount::NewInstance`，不改变 legacy
+  `mount(2)` 共享 initial instance 的兼容路径；
+- `fsmount` 保留 devpts 自身 root metadata，同时复用 detached mount、
+  mount attributes 和 `move_mount` 流程。
+
+同一 Podman 聚焦用例已由红转绿，19/19 检查通过：
+
+```text
+PASS: fsopen creates a devpts filesystem context
+PASS: fsconfig creates the configured devpts instance
+PASS: fsmount creates a detached devpts mount
+PASS: move_mount attaches the devpts mount
+PASS: statfs exposes the devpts filesystem identity
+PASS: ptmxmode applies through the new mount API
+PASS: mode applies through the new mount API
+PASS: gid applies through the new mount API
+STARRY_DEVPTS_NEW_MOUNT_API_PASSED
+STARRY_GROUPED_TESTS_PASSED
+result: 1/1 case(s) passed
+```
+
+兼容性与质量门槛随后全部通过：
+
+- legacy `qemu/system/test-devpts-newinstance` 仍为 13 项全部通过，覆盖 private
+  instance、initial instance 共享、PTY allocator 和 controlling tty；
+- `cargo fmt --all -- --check`：通过；
+- `cargo xtask clippy --package starry-kernel`：25/25，0 失败。
+
+真实 StarryNixOS app 复跑进一步证明该实现进入 activation 主路径：
+
+```text
+Task(40, "mount") exit with code: 0
+Task(48, "mount") exit with code: 0
+Task(52, "mount") exit with code: 0
+Task(25, "activate") exit with code: 0
+Queued start job for default target Multi-User System.
+```
+
+其中 Task 40 是 `/dev/pts`，Task 48 是 `/run`，Task 52 是 `/run/keys`。
+因此 devpts 新 mount API 分类已满足独立提交条件。最终
+`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，T028 保持未完成。
+
+当前首个边界已转移到 systemd unit 启动阶段：
+
+```text
+[FAILED] Failed to listen on udev Kernel Socket.
+systemd-journald.service: Failed at step OOM_ADJUST ... Invalid argument
+systemd-journalctl.socket: Starting timed out.
+```
+
+同时 `systemd-modules-load` 启动的 `efi_pstore`、`drm` 和 `fuse` 模块 unit
+持续处于无期限 start job。后续应先将最早、可独立复现的 unit 行为收敛为
+新的确定红测，再修改 owning subsystem；不能用 marker 未出现的完整启动日志
+直接推测修复，也不能把这些 unit 的失败宽泛屏蔽后宣称 T028 完成。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
