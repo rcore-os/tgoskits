@@ -35,18 +35,22 @@ mod publisher {
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
     use axivc::{
-        IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcPeerEventWaiter, IvcProducer,
-        IvcRegion, record_peer_event,
+        IvcMessageReceiver, IvcMessageSender, IvcPeerEventWaiter, IvcRegion, record_peer_event,
     };
 
-    const PUBLISH_COUNT: u64 = 5;
+    const ACK_BODY: &[u8] = b"ack from arceos subscriber";
+    const APP_HEADER_LEN: usize = 11;
+    const APP_MAX_MESSAGE_LEN: usize = 700;
+    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [39, 40, 41, 640, 700];
+    const SUBSCRIBER_DATA_MESSAGE_LENGTHS: [usize; 3] = [41, 641, 700];
+    const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 
     use crate::demo_config;
 
     pub fn run() {
-        let shm_base_gpa = HyperCallOutputSlot::new(0);
-        let shm_size = HyperCallOutputSlot::new(demo_config::CHANNEL_SIZE);
+        let shm_base_gpa = HyperCallOutputValue::new(0);
+        let shm_size = HyperCallOutputValue::new(demo_config::CHANNEL_SIZE);
         let shm_base_gpa_ptr = shm_base_gpa.guest_phys_addr();
         let shm_size_ptr = shm_size.guest_phys_addr();
 
@@ -99,58 +103,264 @@ mod publisher {
         println!("ivc full-duplex demo complete");
     }
 
-    /// Sends PUBLISH_COUNT requests without blocking on individual acks.
-    /// Skips notification on the first send because the subscriber may not
-    /// have completed `subscribe_channel` yet.
-    fn sender_task(mut producer: IvcProducer<'_>, waiter: &IvcPeerEventWaiter<'_>) {
+    /// Sends messages spanning one-cell, fragment-boundary, ring-boundary, and
+    /// backpressured lengths without waiting for individual acknowledgements.
+    fn sender_task(mut sender: IvcMessageSender<'_>, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
         let mut subscriber_ready = false;
-        for seq in 1..=PUBLISH_COUNT {
-            loop {
-                match producer.send(IvcMessageKind::Request, seq, b"hello from arceos publisher") {
-                    Ok(()) => {
-                        println!("ivc send seq={seq}");
-                        if subscriber_ready {
-                            notify_subscriber();
-                        }
-                        subscriber_ready = true;
-                        break;
-                    }
-                    Err(_) => waiter.wait_for_peer_event(),
-                }
+        for (index, &message_len) in REQUEST_MESSAGE_LENGTHS.iter().enumerate() {
+            let sequence = index as u64 + 1;
+            let message = &mut payload[..message_len];
+            if !encode_pattern_message(message, AppMessageKind::Request, sequence) {
+                println!("ivc validation failed: cannot encode request seq={sequence}");
+                return;
             }
+            if !send_payload(&mut sender, message, waiter, &mut subscriber_ready) {
+                return;
+            }
+            println!("ivc send seq={sequence} len={message_len}");
         }
     }
 
-    /// Receives ring-B messages until PUBLISH_COUNT acks have arrived.
-    /// Subscriber data messages (kind `Request`) share ring B with acks, so
-    /// only `Ack` messages count toward request completion.
-    fn receiver_task(mut consumer: IvcConsumer<'_>, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
-        let mut ack_count = 0u64;
+    /// Receives independently sequenced Data and Ack messages and rejects any
+    /// duplicate, gap, reorder, length mismatch, or body corruption.
+    fn receiver_task(mut receiver: IvcMessageReceiver<'_>, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
+        let mut received = 0;
+        let mut expected_ack_sequence = 1u64;
+        let mut expected_data_sequence = 1u64;
         loop {
-            match consumer.try_recv(&mut payload) {
-                Ok(Some(msg)) => {
-                    let text = core::str::from_utf8(&payload[..msg.len()]).unwrap_or("<non-utf8>");
-                    match msg.kind() {
-                        IvcMessageKind::Ack => {
-                            ack_count += 1;
-                            println!("ivc ack seq={} msg={text}", msg.sequence());
-                            if ack_count >= PUBLISH_COUNT {
+            if received == 0 {
+                match receiver.peek_message_meta() {
+                    Ok(Some(meta)) if message_fits(meta.len(), payload.len()) => {}
+                    Ok(Some(meta)) => {
+                        println!("ivc recv error oversized message len={}", meta.len());
+                        return;
+                    }
+                    Ok(None) => {
+                        waiter.wait_for_peer_event();
+                        continue;
+                    }
+                    Err(err) => {
+                        println!("ivc recv error {err:?}");
+                        return;
+                    }
+                }
+            }
+
+            match receiver.try_read(&mut payload[received..]) {
+                Ok(progress) => {
+                    received += progress.written();
+                    if progress.consumed_cells() > 0 {
+                        notify_subscriber();
+                    }
+                    if progress.is_complete() {
+                        let Some(message) = decode_app_message(&payload[..received]) else {
+                            println!("ivc recv error malformed application payload");
+                            return;
+                        };
+                        match message.kind {
+                            AppMessageKind::Ack => {
+                                if message.sequence != expected_ack_sequence
+                                    || message.body != ACK_BODY
+                                {
+                                    println!(
+                                        "ivc validation failed: ack expected={} actual={} len={}",
+                                        expected_ack_sequence,
+                                        message.sequence,
+                                        message.body.len()
+                                    );
+                                    return;
+                                }
+                                if expected_ack_sequence == PUBLISH_COUNT
+                                    && expected_data_sequence
+                                        != SUBSCRIBER_DATA_MESSAGE_LENGTHS.len() as u64 + 1
+                                {
+                                    println!(
+                                        "ivc validation failed: missing subscriber data \
+                                         expected={}",
+                                        expected_data_sequence
+                                    );
+                                    return;
+                                }
+                                let text =
+                                    core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
+                                println!("ivc ack seq={} msg={text}", message.sequence);
+                                expected_ack_sequence += 1;
+                                if expected_ack_sequence == PUBLISH_COUNT + 1 {
+                                    return;
+                                }
+                            }
+                            AppMessageKind::Data => {
+                                let Some(&expected_len) = SUBSCRIBER_DATA_MESSAGE_LENGTHS
+                                    .get((expected_data_sequence - 1) as usize)
+                                else {
+                                    println!(
+                                        "ivc validation failed: unexpected subscriber data seq={}",
+                                        message.sequence
+                                    );
+                                    return;
+                                };
+                                if !validate_pattern_message(
+                                    &message,
+                                    AppMessageKind::Data,
+                                    expected_data_sequence,
+                                    expected_len,
+                                ) {
+                                    println!(
+                                        "ivc validation failed: subscriber data expected={} \
+                                         actual={} len={}",
+                                        expected_data_sequence, message.sequence, received
+                                    );
+                                    return;
+                                }
+                                let text =
+                                    core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
+                                println!(
+                                    "ivc recv data seq={} len={received} msg={text}",
+                                    message.sequence
+                                );
+                                expected_data_sequence += 1;
+                            }
+                            AppMessageKind::Request => {
+                                println!("ivc validation failed: unexpected Request on reply ring");
                                 return;
                             }
                         }
-                        IvcMessageKind::Request => {
-                            println!("ivc recv sub data seq={} msg={text}", msg.sequence());
-                        }
+                        received = 0;
+                    } else if progress.consumed_cells() == 0 {
+                        waiter.wait_for_peer_event();
                     }
                 }
-                Ok(None) => waiter.wait_for_peer_event(),
                 Err(err) => {
                     println!("ivc recv ack error {err:?}");
                     return;
                 }
             }
         }
+    }
+
+    fn send_payload(
+        sender: &mut IvcMessageSender<'_>,
+        payload: &[u8],
+        waiter: &IvcPeerEventWaiter<'_>,
+        peer_ready: &mut bool,
+    ) -> bool {
+        if let Err(err) = sender.start_message(payload.len() as u64) {
+            println!("ivc send error {err:?}");
+            return false;
+        }
+
+        let mut consumed = 0;
+        loop {
+            match sender.try_write(&payload[consumed..]) {
+                Ok(progress) => {
+                    consumed += progress.consumed();
+                    if progress.published_cells() > 0 {
+                        if *peer_ready {
+                            notify_subscriber();
+                        }
+                        *peer_ready = true;
+                    }
+                    if progress.is_complete() {
+                        return true;
+                    }
+                    if progress.published_cells() == 0 {
+                        waiter.wait_for_peer_event();
+                    }
+                }
+                Err(err) => {
+                    println!("ivc send error {err:?}");
+                    return false;
+                }
+            }
+        }
+    }
+
+    fn encode_pattern_message(payload: &mut [u8], kind: AppMessageKind, sequence: u64) -> bool {
+        let Some(body_len) = payload.len().checked_sub(APP_HEADER_LEN) else {
+            return false;
+        };
+        let Ok(body_len) = u16::try_from(body_len) else {
+            return false;
+        };
+        payload[0] = kind as u8;
+        payload[1..9].copy_from_slice(&sequence.to_le_bytes());
+        payload[9..APP_HEADER_LEN].copy_from_slice(&body_len.to_le_bytes());
+        for (index, byte) in payload[APP_HEADER_LEN..].iter_mut().enumerate() {
+            *byte = pattern_byte(kind, sequence, index);
+        }
+        true
+    }
+
+    fn validate_pattern_message(
+        message: &AppMessage<'_>,
+        expected_kind: AppMessageKind,
+        expected_sequence: u64,
+        expected_len: usize,
+    ) -> bool {
+        message.kind == expected_kind
+            && message.sequence == expected_sequence
+            && APP_HEADER_LEN + message.body.len() == expected_len
+            && message
+                .body
+                .iter()
+                .enumerate()
+                .all(|(index, &byte)| byte == pattern_byte(expected_kind, expected_sequence, index))
+    }
+
+    fn pattern_byte(kind: AppMessageKind, sequence: u64, index: usize) -> u8 {
+        let pattern_index = (index as u8)
+            .wrapping_add(sequence as u8)
+            .wrapping_add((kind as u8).wrapping_mul(7));
+        b'a' + pattern_index % 26
+    }
+
+    fn message_fits(message_len: u64, capacity: usize) -> bool {
+        usize::try_from(message_len).is_ok_and(|len| len <= capacity)
+    }
+
+    fn decode_app_message(payload: &[u8]) -> Option<AppMessage<'_>> {
+        if payload.len() < APP_HEADER_LEN {
+            return None;
+        }
+        let kind = AppMessageKind::from_raw(payload[0])?;
+        let sequence = u64::from_le_bytes(payload[1..9].try_into().ok()?);
+        let body_len = u16::from_le_bytes(payload[9..APP_HEADER_LEN].try_into().ok()?) as usize;
+        let body_end = APP_HEADER_LEN.checked_add(body_len)?;
+        if body_end != payload.len() {
+            return None;
+        }
+        Some(AppMessage {
+            kind,
+            sequence,
+            body: &payload[APP_HEADER_LEN..body_end],
+        })
+    }
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    #[repr(u8)]
+    enum AppMessageKind {
+        Request = 1,
+        Ack     = 2,
+        Data    = 3,
+    }
+
+    impl AppMessageKind {
+        const fn from_raw(raw: u8) -> Option<Self> {
+            match raw {
+                1 => Some(Self::Request),
+                2 => Some(Self::Ack),
+                3 => Some(Self::Data),
+                _ => None,
+            }
+        }
+    }
+
+    struct AppMessage<'a> {
+        kind: AppMessageKind,
+        sequence: u64,
+        body: &'a [u8],
     }
 
     fn notify_subscriber() {
@@ -198,11 +408,11 @@ mod publisher {
         }
     }
 
-    struct HyperCallOutputSlot {
+    struct HyperCallOutputValue {
         value: UnsafeCell<usize>,
     }
 
-    impl HyperCallOutputSlot {
+    impl HyperCallOutputValue {
         const fn new(value: usize) -> Self {
             Self {
                 value: UnsafeCell::new(value),
@@ -216,7 +426,7 @@ mod publisher {
 
         fn read(&self) -> usize {
             unsafe {
-                // Axvisor writes this slot through the guest physical address
+                // Axvisor writes this value through the guest physical address
                 // passed to the hypercall; use a volatile read to observe it.
                 core::ptr::read_volatile(self.value.get())
             }
@@ -227,7 +437,7 @@ mod publisher {
         let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
         unsafe {
             // Axvisor maps the returned GPA to one exclusive publisher view of
-            // the shared region before subscribers can use the phase-2 rings.
+            // the shared region before subscribers can use the Message V1 rings.
             Some(&mut *(vaddr.as_mut_ptr() as *mut IvcRegion))
         }
     }

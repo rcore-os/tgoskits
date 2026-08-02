@@ -15,73 +15,113 @@
 
 # 介绍
 
-`axivc` 是一个 `no_std` crate，提供 AxVisor 客户机间通信所需的共享内存协议辅助实现。它用于 AxVisor 已经把同一个 IVC channel 映射到两个客户机之后。
+`axivc` 是一个 `#![no_std]` 共享内存协议 crate，用于 AxVisor 已把同一
+IVC channel 映射给 publisher 和 subscriber 之后。它提供：
 
-该 crate 负责客户机可见的内存协议和共享内存操作：
+- 两个互相独立的单生产者、单消费者方向；
+- 通过 Release/Acquire 发布的固定大小 opaque cell ring；
+- Message V1 编码、校验、分片、重组和中止；
+- 支持消息大于整个 ring 的非阻塞 partial-progress API；
+- 用于 IRQ 唤醒和有界 fallback polling 的对端事件辅助类型。
 
-- 固定的共享内存区域头；
-- 两个单生产者、单消费者消息环；
-- 固定大小的请求和确认消息；
-- 用于“IRQ 唤醒 + fallback polling”的对端事件计数器。
+Hypercall、GPA 映射、IRQ 注册、阻塞等待、通知和应用协议仍属于客户机
+OS glue。Request/Ack 类型和应用 sequence 应编码在 payload 中，不是传输层字段。
 
-`axivc` 不直接发起 hypercall，不注册 IRQ handler，也不映射客户机物理地址。这些能力分别属于底层 ABI crate 和客户机 OS 集成层。
+# 分层
 
-# 分层边界
+```text
+应用 payload（RPC、Request/Ack、文件块等）
+IvcMessageSender / IvcMessageReceiver（Message V1 cells）
+IvcRegion 中的 opaque SPSC rings
+AxVisor HVC 映射和客户机 notify glue
+```
 
-IVC 栈按职责分为三层：
+ring 不解释 cell；Message frame 编解码也不依赖 hypercall 或具体 runtime。
 
-- `axhvc`：原始 guest-hypervisor ABI，包括 hypercall 编号、寄存器参数顺序、架构相关 trap 指令，以及 publish、subscribe、notify、unpublish 等低层封装。
-- `axivc`：channel 已映射之后的架构无关共享内存协议布局和读写操作。
-- 客户机 OS glue：hypercall 输出槽的虚实地址转换、GPA 映射、IRQ 注册、调度唤醒和应用策略。
+# Message V1
 
-完整客户机流程通常先用 `axhvc` 发布或订阅 channel，再通过客户机 OS 映射返回的 GPA，最后把映射后的内存作为 `axivc::IvcRegion` 使用。
+每个 64 字节 cell 以手工 little-endian 编码的 24 字节 header 开始：
 
-# 协议布局
+| Offset | 大小 | 字段 |
+|---:|---:|---|
+| `0x00` | 1 | version（`1`） |
+| `0x01` | 1 | `FIRST`、`LAST`、`ABORT` flags |
+| `0x02` | 2 | header 长度（`24`） |
+| `0x04` | 4 | fragment 长度 |
+| `0x08` | 8 | 传输层 message ID |
+| `0x10` | 8 | 完整 payload 长度 |
+| `0x18` | 最多 40 | fragment bytes |
 
-当前协议使用紧凑的单页格式：
+同一消息的 frames 必须连续。sender 自动分配非零传输 ID、填写 flags 和长度，
+并禁止消息交错。receiver 会拒绝未知 version/flags、非法长度、变化的 ID 或总长度，
+以及不正确的 `LAST` 边界。
 
-- 前两个 `u64` 字段与 AxVisor host 侧 `IVCChannelHeader` 保持一致，分别是 publisher VM ID 和 channel key。
-- `IvcRegion` 记录 magic、version、区域大小、feature flags 和 ring 偏移。
-- 提供两个固定 slot 的 ring：publisher-to-subscriber 和 subscriber-to-publisher。
-- 每个 slot 包含消息类型、序列号、payload 长度和固定 payload 缓冲区。
+共享 region layout 版本为 **3**，与旧 v2 固定 Request/Ack cell 格式不兼容。
+v2/v3 peer 会明确互拒；publish/subscribe/notify HVC ABI 保持不变。
 
-ring 协议使用 Release/Acquire 内存序。生产者写入 slot payload 后 release `tail`；消费者 acquire `tail` 后复制 slot，并 release `head` 归还所有权。
+# 非阻塞 API
 
-# 客户机使用流程
+先开始消息，再反复传入尚未消费的 input 后缀：
 
-publisher 通常执行：
+```rust
+# use axivc::{IvcMessageError, IvcMessageSender};
+fn send_step(
+    sender: &mut IvcMessageSender<'_>,
+    payload: &[u8],
+    consumed: &mut usize,
+) -> Result<bool, IvcMessageError> {
+    let progress = sender.try_write(&payload[*consumed..])?;
+    *consumed += progress.consumed();
+    // published_cells() 非零时，客户机 glue 可以批量 notify 一次。
+    Ok(progress.is_complete())
+}
+```
 
-1. 调用 `axhvc::ivc::publish_channel`。
-2. 映射返回的共享内存 GPA。
-3. 使用 `IvcRegion::initialize` 初始化映射区域。
-4. 仅调用一次 `IvcRegion::publisher_endpoints`，并通过
-   `IvcEndpoints::into_parts` 拆分端点。
-5. 通过 producer 发送，通过 consumer 接收。
-6. 可选通过 `axhvc` 通知对端。
+ring 满时，`try_write` 返回零进度并保留发送状态，调用方可以等待后重试。因此一条
+消息可以同时大于单个 cell 和全部 16 个在途 cells。
 
-subscriber 通常执行：
+receiver 可以在不消费 `FIRST` 的情况下检查不可信 metadata：
 
-1. 调用 `axhvc::ivc::subscribe_channel`。
-2. 映射返回的共享内存 GPA。
-3. 校验 `channel_header_matches` 和 `protocol_header_matches`。
-4. 仅调用一次 `IvcRegion::subscriber_endpoints`，并通过
-   `IvcEndpoints::into_parts` 拆分端点。
-5. 通过 consumer 接收，通过 producer 回复。
-6. 可选通过 `axhvc` 通知对端。
+```rust
+# use axivc::{IvcMessageError, IvcMessageReceiver};
+fn receive_step(
+    receiver: &mut IvcMessageReceiver<'_>,
+    output: &mut [u8],
+) -> Result<bool, IvcMessageError> {
+    let progress = receiver.try_read(output)?;
+    // 只把 output[..progress.written()] 追加到应用 sink。
+    Ok(progress.is_complete())
+}
+```
 
-对于需要等待消息的路径，客户机 IRQ 代码可以在 AxVisor 注入 notify IRQ 时调用 `record_peer_event`。接收路径再使用 `IvcPeerEventWaiter` 和 `fallback_poll`，组合 IRQ 唤醒和有界轮询，以覆盖中断丢失或 IRQ 尚未接好时的场景。
+一个 cell fragment 不会被拆开消费。如果第一个可用 fragment 放不进 output，API
+返回 `BufferTooSmall`，且不推进 ring head。应用因资源策略拒绝消息时，可用
+`try_discard` 释放其 cells。需要应用级原子可见性的调用方，应自行暂存流式输出，
+直到观察到 `LAST` 再提交。
 
-# 当前限制
+# 客户机流程
 
-- 区域布局可放在一个 4 KiB 页内；AxVisor IVC channel 可以更大（上限为 hypervisor 的
-  `MAX_IVC_CHANNEL_SIZE`），超出部分当前协议暂未使用。
+1. 通过 `axhvc` publish/subscribe，并映射返回的 GPA。
+2. publisher 调用 `IvcRegion::initialize`。
+3. subscriber 校验 `channel_header_matches` 和 `protocol_header_matches`。
+4. 每个角色只调用一次 `publisher_endpoints` 或 `subscriber_endpoints`。
+5. 用 `IvcEndpoints::into_parts` 拆分，并把 sender/receiver 移交给各自任务。
+6. 发布 cells 或释放 ring capacity 后通知对端；无进度时等待或轮询。
+
+unsafe attach 契约负责阻止重复 producer/consumer 在 `UnsafeCell` cell bytes 上发生竞争。
+
+# 兼容性与限制
+
 - 当前每个 HVC channel 只允许一个 publisher 和一个 subscriber，因为两个
   ring 都是单生产者、单消费者。多 peer 支持由
   [tgoskits#1238](https://github.com/rcore-os/tgoskits/issues/1238) 跟踪，后续需要
   引入版本化的 per-peer 内存布局。
-- payload slot 大小固定。
-- OS IRQ 注册和 hypervisor notify hypercall 不属于本 crate。
-- 访问控制、配额和 channel 生命周期仍由 AxVisor 或客户机策略负责。
+- cell 为 64 字节，fragment capacity 为 40，ring capacity 为 16。
+- Message V1 不支持消息交错、重传、乱序重排，也不进行分配。
+- API 预留 `PeerReset`；当前 HVC backend 没有 queue generation，暂不会产生该错误。
+- 外部 Linux `/root/axvisor.ko` companion 必须升级到 region v3 后，ArceOS↔Linux
+  IVC 才兼容；该模块不在本仓库内。
+- ivshmem、PCI BAR、doorbell、MSI-X 和 owner-RW/peer-RO section 不属于本次协议。
 
 # 开发验证
 
@@ -89,7 +129,9 @@ subscriber 通常执行：
 
 ```bash
 cargo fmt
+cargo test -p axivc
 cargo xtask clippy --package axivc
+cargo xtask axvisor test qemu --arch aarch64 --test-case ivc-arceos2arceos
 ```
 
 # 许可证
