@@ -149,9 +149,12 @@ static void capbset_drop_child(void)
                  "PR_CAPBSET_READ sees dropped capability");
 
     errno = 0;
-    long ret = prctl_raw(PR_CAPBSET_DROP, CAP_SETUID, 1, 0, 0);
-    child_expect(ret == -1 && errno == EINVAL,
-                 "PR_CAPBSET_DROP rejects nonzero reserved args");
+    child_expect(prctl_raw(PR_CAPBSET_DROP, CAP_SETUID, 1, 2, 3) == 0,
+                 "PR_CAPBSET_DROP ignores unused trailing args");
+
+    errno = 0;
+    child_expect(prctl_raw(PR_CAPBSET_READ, CAP_SETUID, 0, 0, 0) == 0,
+                 "PR_CAPBSET_READ sees capability dropped with trailing args");
 }
 
 static void ambient_cap_child(void)

@@ -414,8 +414,9 @@ pub fn sys_prctl(
         }
         PR_CAPBSET_DROP => {
             // Permanently drop a capability from this thread's bounding set.
-            // Linux requires CAP_SETPCAP for this operation.
-            if arg2 > CAP_LAST_CAP as usize || arg3 != 0 || arg4 != 0 || arg5 != 0 {
+            // Linux consumes only arg2 for this variadic prctl option and
+            // requires CAP_SETPCAP for the operation.
+            if arg2 > CAP_LAST_CAP as usize {
                 return Err(AxError::InvalidInput);
             }
             let thread_ref = current();
