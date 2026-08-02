@@ -301,6 +301,9 @@ pub struct Directory {
     /// O_PATH on directory descriptors — open(dir, O_PATH|O_DIRECTORY)
     /// must reject fchmod just like O_PATH on a regular file).
     open_flags: u32,
+    /// Whether this is the original handle returned by fsmount(2).
+    /// Reopening it as a normal directory deliberately drops this authority.
+    detached_mount_handle: bool,
 }
 
 impl Directory {
@@ -309,12 +312,26 @@ impl Directory {
             inner,
             offset: Mutex::new(0),
             open_flags,
+            detached_mount_handle: false,
+        }
+    }
+
+    pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
+        Self {
+            inner,
+            offset: Mutex::new(0),
+            open_flags,
+            detached_mount_handle: true,
         }
     }
 
     /// Get the inner node of the directory.
     pub fn inner(&self) -> &Location {
         &self.inner
+    }
+
+    pub(crate) fn is_detached_mount_handle(&self) -> bool {
+        self.detached_mount_handle
     }
 }
 
