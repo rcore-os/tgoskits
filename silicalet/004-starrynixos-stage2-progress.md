@@ -1164,6 +1164,93 @@ systemd-journalctl.socket: Starting timed out.
 新的确定红测，再修改 owning subsystem；不能用 marker 未出现的完整启动日志
 直接推测修复，也不能把这些 unit 的失败宽泛屏蔽后宣称 T028 完成。
 
+对 `OOM_ADJUST` 的只读定位表明，systemd 260.2 为 journald 写入
+`/proc/self/oom_score_adj`，其值是带换行的负数。Linux
+`oom_score_adj` 文本 ABI 接受 `-1000..=1000` 的十进制值；procfs 写入通常
+携带结尾换行。StarryOS 当前直接对完整 write buffer 调用 Rust
+`parse::<i32>()`，因此 `-250\n` 稳定被解析为 `EINVAL`，且尚未校验 Linux
+规定的取值范围。
+
+已新增独立 grouped 回归
+`test-suit/starryos/qemu/system/bugfix-oom-score-adj/`，直接验证：
+
+- `-250\n` 写入成功并可读回；
+- `1001\n` 和 `-1001\n` 均以 `EINVAL` 拒绝。
+
+下一步先在当前内核运行该用例取得确定红灯；红灯成立前不修改 procfs。
+
+首次 Podman + `.ci-cache` QEMU 已进入 guest 并得到确定红灯：
+
+```text
+FAIL: oom_score_adj accepts a newline-terminated signed value:
+      errno=22 (Invalid argument)
+FAIL: oom_score_adj reports the adjusted value
+STARRY_OOM_SCORE_ADJ_FAILED: 2 checks
+STARRY_GROUPED_TEST_FAILED
+```
+
+首次用例中的越界输入也带换行，因此它们因同一个 parser 缺陷返回 `EINVAL`，
+不能证明范围校验。现已将两项越界输入改为不带换行的 `1001` 与 `-1001`，
+下一次修复前运行应同时暴露 parser 和范围两个独立缺口。
+
+修正后的用例在同一 Podman QEMU 环境得到 4 项确定失败：
+
+```text
+FAIL: oom_score_adj accepts a newline-terminated signed value: EINVAL
+FAIL: oom_score_adj reports the adjusted value
+FAIL: oom_score_adj rejects values above 1000
+FAIL: oom_score_adj rejects values below -1000
+STARRY_OOM_SCORE_ADJ_FAILED: 4 checks
+STARRY_GROUPED_TEST_FAILED
+```
+
+这证明当前实现同时缺少 procfs 文本 ABI 的尾随换行处理和 Linux
+`-1000..=1000` 范围校验。实现仅在 `pseudofs/proc.rs` 的
+`oom_score_adj` write 路径去除尾随 ASCII 空白、解析有符号十进制并检查范围；
+不会借此扩展 StarryOS 的 OOM 策略、权限或继承模型。
+
+修复后的 Podman 验证已通过：
+
+```text
+PASS: oom_score_adj accepts a newline-terminated signed value
+PASS: oom_score_adj reports the adjusted value
+PASS: oom_score_adj rejects values above 1000
+PASS: oom_score_adj rejects values below -1000
+STARRY_OOM_SCORE_ADJ_PASSED
+STARRY_GROUPED_TESTS_PASSED
+result: 1/1 case(s) passed
+```
+
+同一容器中 `cargo fmt --all -- --check` 通过，
+`cargo xtask clippy --package starry-kernel` 也完成 25/25、0 失败。该分类
+已经满足最低层回归与 owning crate 质量门槛；下一步复用已校验的 NixOS
+rootfs 运行真实 app，确认 journald 是否越过 `OOM_ADJUST`，并继续记录新的
+首个终端边界。marker 出现前仍不提交该分类，也不勾选 T028。
+
+真实 StarryNixOS app 已确认该分类进入 systemd executor 路径：
+
+```text
+Task(40, "mount") exit with code: 0
+Task(48, "mount") exit with code: 0
+Task(52, "mount") exit with code: 0
+Task(25, "activate") exit with code: 0
+Queued start job for default target Multi-User System.
+```
+
+本次日志不再出现 `OOM_ADJUST`；journald 越过该阶段后，新的精确失败为：
+
+```text
+systemd-journald.service: Failed to drop capabilities: Invalid argument
+systemd-journald.service: Failed at step CAPABILITIES ... Invalid argument
+systemd-journalctl.socket: Starting timed out. Stopping.
+```
+
+因此 `oom_score_adj` 分类具备独立提交条件。完整 app 在取得上述终端证据后
+手动停止，以免 `efi_pstore`、`drm`、`fuse` 等无期限模块 jobs 继续占用
+QEMU；`STARRY_NIXOS_SYSTEM_PASSED` 未出现，T028 保持未完成。下一处内核
+候选已收敛为 systemd executor 的 capability drop ABI，必须先从
+`capset(2)`/securebits/ambient capability 调用序列建立新的直接红测。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
