@@ -65,6 +65,16 @@ pub trait TransportOps: Configurable + Pollable + Send + Sync {
     /// Connect the transport to a remote address.
     fn connect(&self, slot: &BindSlot, local_addr: &UnixSocketAddr) -> AxResult;
 
+    /// Marks a bound connection-oriented transport as accepting connections.
+    fn listen(&self) -> AxResult {
+        Err(AxError::OperationNotSupported)
+    }
+
+    /// Returns whether this transport currently accepts connections.
+    fn is_listening(&self) -> bool {
+        false
+    }
+
     /// Accept an incoming connection, returning the new transport and peer address.
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)>;
 
@@ -220,7 +230,11 @@ impl SocketOps for UnixSocket {
     }
 
     fn listen(&self, _backlog: usize) -> AxResult {
-        Ok(())
+        self.transport.listen()
+    }
+
+    fn is_listening(&self) -> bool {
+        self.transport.is_listening()
     }
 
     fn accept(&self) -> AxResult<Socket> {
