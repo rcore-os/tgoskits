@@ -356,8 +356,11 @@ impl OpenOptions {
                 loc
             }
             Err(VfsError::InvalidInput) => {
-                // root directory
-                context.root_dir().clone()
+                // `resolve_parent()` has no parent to return for either `/` or
+                // a relative `.` whose current directory is a detached mount
+                // root. Resolve the path itself so openat(dirfd, ".") keeps
+                // the supplied directory instead of falling back to `/`.
+                context.resolve(path.as_ref())?
             }
             Err(err) => return Err(err),
         };

@@ -45,13 +45,23 @@ static void expect_enosys(const char *name, long ret, int saved_errno)
     }
 }
 
+static void expect_supported_fsopen(long ret, int saved_errno)
+{
+    check(ret >= 0, "fsopen supports the bounded tmpfs filesystem context");
+    if (ret >= 0) {
+        close((int)ret);
+    } else {
+        printf("INFO: fsopen errno: %s\n", strerror(saved_errno));
+    }
+}
+
 int main(void)
 {
     long ret;
 
     errno = 0;
     ret = syscall(SYS_fsopen, "tmpfs", 0);
-    expect_enosys("fsopen", ret, errno);
+    expect_supported_fsopen(ret, errno);
 
     errno = 0;
     ret = syscall(SYS_fspick, AT_FDCWD, "/", 0);

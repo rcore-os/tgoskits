@@ -604,6 +604,44 @@ impl Mountpoint {
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
+
+    /// Attaches a detached mount tree at `new_location`.
+    ///
+    /// Unlike [`Self::move_to`], the source has no old parent entry to remove.
+    /// Callers must only expose this operation for mount handles created as
+    /// detached trees; the namespace root also has no parent but is not a
+    /// movable mount handle.
+    pub fn attach_detached(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        if self.location.lock().is_some() {
+            return Err(VfsError::InvalidInput);
+        }
+        if new_location.is_mountpoint() {
+            return Err(VfsError::ResourceBusy);
+        }
+        new_location.check_is_dir()?;
+
+        let root_location = self.root_location();
+        let mut current = Some(new_location.clone());
+        while let Some(location) = current {
+            if location.ptr_eq(&root_location) {
+                return Err(VfsError::FilesystemLoop);
+            }
+            current = location.parent();
+        }
+
+        *self.location.lock() = Some(new_location.clone());
+        new_location
+            .mountpoint
+            .children
+            .lock()
+            .insert(new_location.entry.key(), self.clone());
+        if new_location.mountpoint.is_shared() {
+            Self::propagate_new_child(new_location.mountpoint(), new_location, self)?;
+        }
+        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
