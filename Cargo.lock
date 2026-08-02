@@ -1447,6 +1447,9 @@ dependencies = [
 [[package]]
 name = "axivc"
 version = "0.1.1"
+dependencies = [
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "axklib"

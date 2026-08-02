@@ -39,14 +39,18 @@ mod subscriber {
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
     use axivc::{
-        IVC_SLOT_PAYLOAD_SIZE, IvcConsumer, IvcMessageKind, IvcPeerEventWaiter, IvcProducer,
-        IvcRegion, record_peer_event,
+        IvcMessageReceiver, IvcMessageSender, IvcPeerEventWaiter, IvcRegion, record_peer_event,
     };
 
+    const ACK_BODY: &[u8] = b"ack from arceos subscriber";
+    const APP_HEADER_LEN: usize = 11;
+    const APP_MAX_MESSAGE_LEN: usize = 700;
+    const ACK_MESSAGE_LEN: usize = APP_HEADER_LEN + ACK_BODY.len();
+    const DATA_MESSAGE_LENGTHS: [usize; 3] = [41, 641, 700];
+    const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [39, 40, 41, 640, 700];
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
-    const MAX_PROTOCOL_HEADER_ATTEMPTS: usize = 80;
-    const PASS_SEQUENCE: u64 = 5;
-    const SUBSCRIBE_DATA_COUNT: u64 = 3;
+    const PUBLISH_COUNT: u64 = REQUEST_MESSAGE_LENGTHS.len() as u64;
+    const SUBSCRIBE_DATA_COUNT: u64 = DATA_MESSAGE_LENGTHS.len() as u64;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
     /// Highest publisher sequence received so far. Publisher sequences are
     /// contiguous, so one monotonic counter covers every pending ack.
@@ -86,9 +90,7 @@ mod subscriber {
             return;
         }
         if !wait_for_protocol_header(region, &waiter) {
-            println!(
-                "ivc subscribe failed: protocol header was not initialized before retry limit"
-            );
+            println!("ivc subscribe failed: unsupported Message V1 protocol header");
             return;
         }
 
@@ -117,10 +119,20 @@ mod subscriber {
         println!("ivc subscriber full-duplex demo complete");
     }
 
+    fn wait_for_protocol_header(region: &IvcRegion, waiter: &IvcPeerEventWaiter<'_>) -> bool {
+        for _ in 0..MAX_SUBSCRIBE_ATTEMPTS {
+            if region.protocol_header_matches() {
+                return true;
+            }
+            waiter.wait_for_peer_event();
+        }
+        false
+    }
+
     fn subscribe_with_retry(waiter: &IvcPeerEventWaiter<'_>) -> Option<(usize, usize)> {
         for attempt in 1..=MAX_SUBSCRIBE_ATTEMPTS {
-            let shm_base_gpa = HyperCallOutputSlot::new(0);
-            let shm_size = HyperCallOutputSlot::new(0);
+            let shm_base_gpa = HyperCallOutputValue::new(0);
+            let shm_size = HyperCallOutputValue::new(0);
             let shm_base_gpa_ptr = shm_base_gpa.guest_phys_addr();
             let shm_size_ptr = shm_size.guest_phys_addr();
 
@@ -142,96 +154,265 @@ mod subscriber {
         None
     }
 
-    /// Waits for the publisher to finish protocol initialization after the
-    /// channel becomes subscribable. `protocol_header_matches` performs the
-    /// Acquire observation paired with the publisher's Release publication.
-    fn wait_for_protocol_header(region: &IvcRegion, waiter: &IvcPeerEventWaiter<'_>) -> bool {
-        for _ in 0..MAX_PROTOCOL_HEADER_ATTEMPTS {
-            if region.protocol_header_matches() {
-                return true;
-            }
-            waiter.wait_for_peer_event();
-        }
-        false
-    }
-
-    /// Sends subscriber data messages and acks of publisher data on ring B.
-    /// Skips notification on the first data send because the publisher may not
-    /// be ready to receive the notify yet. Acks every publisher sequence seen
-    /// in `HIGHEST_RECV_SEQ` in order, so no ack is lost when several
-    /// publisher messages arrive between two sender iterations.
-    fn sender_task(mut producer: IvcProducer<'_>, waiter: &IvcPeerEventWaiter<'_>) {
+    /// Sends independently sequenced Data and Ack messages on one Message V1
+    /// direction without interleaving their fragments.
+    fn sender_task(mut sender: IvcMessageSender<'_>, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut data_payload = [0u8; APP_MAX_MESSAGE_LEN];
         let mut sent_data = 0u64;
-        let mut last_acked_seq = 0u64;
+        let mut last_acked_sequence = 0u64;
         let mut publisher_ready = false;
 
         loop {
             if sent_data < SUBSCRIBE_DATA_COUNT {
-                match producer.send(
-                    IvcMessageKind::Request,
-                    sent_data + 1,
-                    b"hello from arceos subscriber",
-                ) {
-                    Ok(()) => {
-                        sent_data += 1;
-                        println!("ivc send data seq={sent_data}");
-                        if publisher_ready {
-                            notify_publisher();
-                        }
-                        publisher_ready = true;
-                    }
-                    Err(_) => { /* ring full, will retry */ }
+                let sequence = sent_data + 1;
+                let message_len = DATA_MESSAGE_LENGTHS[sent_data as usize];
+                let payload = &mut data_payload[..message_len];
+                if !encode_pattern_message(payload, AppMessageKind::Data, sequence) {
+                    println!("ivc validation failed: cannot encode data seq={sequence}");
+                    return;
                 }
+                if !send_payload(&mut sender, payload, waiter, &mut publisher_ready) {
+                    return;
+                }
+                sent_data = sequence;
+                println!("ivc send data seq={sent_data} len={message_len}");
             }
 
             let highest = HIGHEST_RECV_SEQ.load(Ordering::Acquire);
-            let mut acked_any = false;
-            while last_acked_seq < highest {
-                match producer.send(
-                    IvcMessageKind::Ack,
-                    last_acked_seq + 1,
-                    b"ack from arceos subscriber",
-                ) {
-                    Ok(()) => {
-                        last_acked_seq += 1;
-                        acked_any = true;
-                        println!("ivc ack pub seq={last_acked_seq}");
-                    }
-                    Err(_) => break, // ring full, will retry
+            while last_acked_sequence < highest {
+                let sequence = last_acked_sequence + 1;
+                let payload = encode_ack(sequence);
+                if !send_payload(&mut sender, &payload, waiter, &mut publisher_ready) {
+                    return;
                 }
-            }
-            if acked_any {
-                notify_publisher();
+                last_acked_sequence = sequence;
+                println!("ivc ack pub seq={last_acked_sequence}");
             }
 
-            if sent_data >= SUBSCRIBE_DATA_COUNT && last_acked_seq >= PASS_SEQUENCE {
+            if sent_data == SUBSCRIBE_DATA_COUNT && last_acked_sequence == PUBLISH_COUNT {
                 return;
             }
-
             waiter.wait_for_peer_event();
         }
     }
 
-    /// Receives publisher data messages from ring A.
-    fn receiver_task(mut consumer: IvcConsumer<'_>, waiter: &IvcPeerEventWaiter<'_>) {
-        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
+    /// Receives publisher Requests and rejects any duplicate, gap, reorder,
+    /// length mismatch, kind mismatch, or body corruption.
+    fn receiver_task(mut receiver: IvcMessageReceiver<'_>, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut payload = [0u8; APP_MAX_MESSAGE_LEN];
+        let mut received = 0;
+        let mut expected_sequence = 1u64;
         loop {
-            match consumer.try_recv(&mut payload) {
-                Ok(Some(msg)) => {
-                    let text = core::str::from_utf8(&payload[..msg.len()]).unwrap_or("<non-utf8>");
-                    println!("ivc recv pub data seq={} msg={text}", msg.sequence());
-                    HIGHEST_RECV_SEQ.store(msg.sequence(), Ordering::Release);
-                    if msg.sequence() >= PASS_SEQUENCE {
+            if received == 0 {
+                match receiver.peek_message_meta() {
+                    Ok(Some(meta)) if message_fits(meta.len(), payload.len()) => {}
+                    Ok(Some(meta)) => {
+                        println!("ivc recv error oversized message len={}", meta.len());
+                        return;
+                    }
+                    Ok(None) => {
+                        waiter.wait_for_peer_event();
+                        continue;
+                    }
+                    Err(err) => {
+                        println!("ivc recv error {err:?}");
                         return;
                     }
                 }
-                Ok(None) => waiter.wait_for_peer_event(),
+            }
+
+            match receiver.try_read(&mut payload[received..]) {
+                Ok(progress) => {
+                    received += progress.written();
+                    if progress.consumed_cells() > 0 {
+                        notify_publisher();
+                    }
+                    if progress.is_complete() {
+                        let Some(message) = decode_app_message(&payload[..received]) else {
+                            println!("ivc recv error malformed application payload");
+                            return;
+                        };
+                        let Some(&expected_len) =
+                            REQUEST_MESSAGE_LENGTHS.get((expected_sequence - 1) as usize)
+                        else {
+                            println!(
+                                "ivc validation failed: unexpected request seq={}",
+                                message.sequence
+                            );
+                            return;
+                        };
+                        if !validate_pattern_message(
+                            &message,
+                            AppMessageKind::Request,
+                            expected_sequence,
+                            expected_len,
+                        ) {
+                            println!(
+                                "ivc validation failed: request expected={} actual={} len={}",
+                                expected_sequence, message.sequence, received
+                            );
+                            return;
+                        }
+                        let text = core::str::from_utf8(message.body).unwrap_or("<non-utf8>");
+                        println!(
+                            "ivc recv request seq={} len={received} msg={text}",
+                            message.sequence
+                        );
+                        HIGHEST_RECV_SEQ.store(expected_sequence, Ordering::Release);
+                        expected_sequence += 1;
+                        if expected_sequence == PUBLISH_COUNT + 1 {
+                            return;
+                        }
+                        received = 0;
+                    } else if progress.consumed_cells() == 0 {
+                        waiter.wait_for_peer_event();
+                    }
+                }
                 Err(err) => {
                     println!("ivc recv error {err:?}");
                     return;
                 }
             }
         }
+    }
+
+    fn send_payload(
+        sender: &mut IvcMessageSender<'_>,
+        payload: &[u8],
+        waiter: &IvcPeerEventWaiter<'_>,
+        peer_ready: &mut bool,
+    ) -> bool {
+        if let Err(err) = sender.start_message(payload.len() as u64) {
+            println!("ivc send error {err:?}");
+            return false;
+        }
+
+        let mut consumed = 0;
+        loop {
+            match sender.try_write(&payload[consumed..]) {
+                Ok(progress) => {
+                    consumed += progress.consumed();
+                    if progress.published_cells() > 0 {
+                        if *peer_ready {
+                            notify_publisher();
+                        }
+                        *peer_ready = true;
+                    }
+                    if progress.is_complete() {
+                        return true;
+                    }
+                    if progress.published_cells() == 0 {
+                        waiter.wait_for_peer_event();
+                    }
+                }
+                Err(err) => {
+                    println!("ivc send error {err:?}");
+                    return false;
+                }
+            }
+        }
+    }
+
+    fn encode_pattern_message(payload: &mut [u8], kind: AppMessageKind, sequence: u64) -> bool {
+        let Some(body_len) = payload.len().checked_sub(APP_HEADER_LEN) else {
+            return false;
+        };
+        let Ok(body_len) = u16::try_from(body_len) else {
+            return false;
+        };
+        encode_app_header(payload, kind, sequence, body_len);
+        for (index, byte) in payload[APP_HEADER_LEN..].iter_mut().enumerate() {
+            *byte = pattern_byte(kind, sequence, index);
+        }
+        true
+    }
+
+    fn validate_pattern_message(
+        message: &AppMessage<'_>,
+        expected_kind: AppMessageKind,
+        expected_sequence: u64,
+        expected_len: usize,
+    ) -> bool {
+        message.kind == expected_kind
+            && message.sequence == expected_sequence
+            && APP_HEADER_LEN + message.body.len() == expected_len
+            && message
+                .body
+                .iter()
+                .enumerate()
+                .all(|(index, &byte)| byte == pattern_byte(expected_kind, expected_sequence, index))
+    }
+
+    fn pattern_byte(kind: AppMessageKind, sequence: u64, index: usize) -> u8 {
+        let pattern_index = (index as u8)
+            .wrapping_add(sequence as u8)
+            .wrapping_add((kind as u8).wrapping_mul(7));
+        b'a' + pattern_index % 26
+    }
+
+    fn encode_ack(sequence: u64) -> [u8; ACK_MESSAGE_LEN] {
+        let mut payload = [0u8; ACK_MESSAGE_LEN];
+        encode_app_header(
+            &mut payload,
+            AppMessageKind::Ack,
+            sequence,
+            ACK_BODY.len() as u16,
+        );
+        payload[APP_HEADER_LEN..].copy_from_slice(ACK_BODY);
+        payload
+    }
+
+    fn encode_app_header(payload: &mut [u8], kind: AppMessageKind, sequence: u64, body_len: u16) {
+        payload[0] = kind as u8;
+        payload[1..9].copy_from_slice(&sequence.to_le_bytes());
+        payload[9..APP_HEADER_LEN].copy_from_slice(&body_len.to_le_bytes());
+    }
+
+    fn message_fits(message_len: u64, capacity: usize) -> bool {
+        usize::try_from(message_len).is_ok_and(|len| len <= capacity)
+    }
+
+    fn decode_app_message(payload: &[u8]) -> Option<AppMessage<'_>> {
+        if payload.len() < APP_HEADER_LEN {
+            return None;
+        }
+        let kind = AppMessageKind::from_raw(payload[0])?;
+        let sequence = u64::from_le_bytes(payload[1..9].try_into().ok()?);
+        let body_len = u16::from_le_bytes(payload[9..APP_HEADER_LEN].try_into().ok()?) as usize;
+        let body_end = APP_HEADER_LEN.checked_add(body_len)?;
+        if body_end != payload.len() {
+            return None;
+        }
+        Some(AppMessage {
+            kind,
+            sequence,
+            body: &payload[APP_HEADER_LEN..body_end],
+        })
+    }
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    #[repr(u8)]
+    enum AppMessageKind {
+        Request = 1,
+        Ack     = 2,
+        Data    = 3,
+    }
+
+    impl AppMessageKind {
+        const fn from_raw(raw: u8) -> Option<Self> {
+            match raw {
+                1 => Some(Self::Request),
+                2 => Some(Self::Ack),
+                3 => Some(Self::Data),
+                _ => None,
+            }
+        }
+    }
+
+    struct AppMessage<'a> {
+        kind: AppMessageKind,
+        sequence: u64,
+        body: &'a [u8],
     }
 
     fn notify_publisher() {
@@ -279,11 +460,11 @@ mod subscriber {
         }
     }
 
-    struct HyperCallOutputSlot {
+    struct HyperCallOutputValue {
         value: UnsafeCell<usize>,
     }
 
-    impl HyperCallOutputSlot {
+    impl HyperCallOutputValue {
         const fn new(value: usize) -> Self {
             Self {
                 value: UnsafeCell::new(value),
@@ -297,7 +478,7 @@ mod subscriber {
 
         fn read(&self) -> usize {
             unsafe {
-                // Axvisor writes this slot through the guest physical address
+                // Axvisor writes this value through the guest physical address
                 // passed to the hypercall; use a volatile read to observe it.
                 core::ptr::read_volatile(self.value.get())
             }

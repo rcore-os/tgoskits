@@ -15,94 +15,127 @@ English | [中文](README_CN.md)
 
 # Overview
 
-`axivc` provides reusable `no_std` shared-memory protocol helpers for AxVisor
-inter-VM communication. It is used after AxVisor has mapped the same IVC channel
-into two guests.
+`axivc` is a `#![no_std]` shared-memory protocol crate used after AxVisor maps
+one IVC channel into a publisher and a subscriber. It provides:
 
-The crate owns the guest-visible protocol layout and in-memory operations:
+- two independent single-producer/single-consumer directions;
+- fixed-size opaque cell rings with Release/Acquire publication;
+- Message V1 framing, validation, fragmentation, reassembly, and aborts;
+- nonblocking partial-progress APIs for messages larger than the whole ring;
+- peer-event helpers for IRQ wakeup with bounded fallback polling.
 
-- a fixed shared-memory region header;
-- two single-producer/single-consumer message rings;
-- fixed-size request and acknowledgement messages;
-- peer-event counters for IRQ wakeup plus bounded fallback polling.
-
-`axivc` intentionally does not issue hypercalls, register IRQ handlers, or map
-guest physical addresses. Those operations belong to lower-level ABI crates and
-guest OS integration code.
+Hypercalls, GPA mapping, IRQ registration, blocking waits, notifications, and
+application protocols remain in guest OS glue. In particular, request/ack kinds
+and application sequence numbers are payload bytes; they are not transport
+fields.
 
 # Layering
 
-The IVC stack is split into three layers:
+```text
+application payload (RPC, request/ack, file chunk, ...)
+IvcMessageSender / IvcMessageReceiver (Message V1 cells)
+opaque SPSC rings in IvcRegion
+AxVisor HVC mapping and guest notify glue
+```
 
-- `axhvc`: raw guest-hypervisor ABI, including hypercall numbers, register
-  argument order, architecture-specific trap instructions, and low-level
-  publish, subscribe, notify, and unpublish wrappers.
-- `axivc`: architecture-independent shared-memory protocol layout and
-  operations after a channel has been mapped.
-- guest OS glue: virtual-to-physical translation for hypercall output slots,
-  GPA mapping, IRQ registration, scheduler wakeup, and application policy.
+The ring never interprets a cell. Message framing never invokes a hypercall or
+runtime service.
 
-A complete guest flow usually calls `axhvc` to publish or subscribe to a channel,
-maps the returned GPA through the guest OS, and then treats the mapped memory as
-an `axivc::IvcRegion`.
+# Message V1
 
-# Protocol
+Each 64-byte cell starts with a manually encoded 24-byte little-endian header:
 
-The current protocol is a compact single-page format:
+| Offset | Size | Field |
+|---:|---:|---|
+| `0x00` | 1 | version (`1`) |
+| `0x01` | 1 | `FIRST`, `LAST`, `ABORT` flags |
+| `0x02` | 2 | header length (`24`) |
+| `0x04` | 4 | fragment length |
+| `0x08` | 8 | transport message ID |
+| `0x10` | 8 | complete payload length |
+| `0x18` | up to 40 | fragment bytes |
 
-- The first two `u64` fields match AxVisor's host-side `IVCChannelHeader`
-  layout: publisher VM ID and channel key.
-- `IvcRegion` records magic, version, region size, feature flags, and ring
-  offsets.
-- Two fixed-slot rings are provided: publisher-to-subscriber and
-  subscriber-to-publisher.
-- Each slot carries message kind, sequence number, payload length, and a fixed
-  payload buffer.
+Frames of one message are contiguous. The sender assigns nonzero transport IDs,
+automatically writes flags and lengths, and never interleaves messages. The
+receiver rejects unknown versions/flags, malformed lengths, changed IDs or total
+lengths, and incorrect `LAST` boundaries.
 
-The ring protocol uses Release/Acquire ordering. The producer writes a slot
-payload and releases `tail`; the consumer acquires `tail`, copies the slot, and
-releases `head` to return ownership.
+The shared region layout version is **3**, incompatible with the old v2
+fixed-request/ack cell format. A v2 peer and a v3 peer explicitly reject each
+other. The publish/subscribe/notify HVC ABI is unchanged.
+
+# Nonblocking API
+
+Start a message, then repeatedly provide the unconsumed input suffix:
+
+```rust
+# use axivc::{IvcMessageError, IvcMessageSender};
+fn send_step(
+    sender: &mut IvcMessageSender<'_>,
+    payload: &[u8],
+    consumed: &mut usize,
+) -> Result<bool, IvcMessageError> {
+    let progress = sender.try_write(&payload[*consumed..])?;
+    *consumed += progress.consumed();
+    // Guest glue may notify once when published_cells() is nonzero.
+    Ok(progress.is_complete())
+}
+```
+
+`try_write` returns zero progress when the ring is full and preserves sender
+state for a later retry. A message can therefore exceed both one cell and all
+16 in-flight cells.
+
+A receiver may inspect untrusted metadata without consuming `FIRST`:
+
+```rust
+# use axivc::{IvcMessageError, IvcMessageReceiver};
+fn receive_step(
+    receiver: &mut IvcMessageReceiver<'_>,
+    output: &mut [u8],
+) -> Result<bool, IvcMessageError> {
+    let progress = receiver.try_read(output)?;
+    // Append only output[..progress.written()] to the application sink.
+    Ok(progress.is_complete())
+}
+```
+
+A cell fragment is never partially consumed. If the first available fragment
+does not fit, `BufferTooSmall` is returned and the ring head is unchanged. Use
+`try_discard` to drain a message rejected by application resource policy.
+Callers that need application-level atomic visibility must stage streaming
+output themselves until `LAST` is observed.
 
 # Guest Flow
 
-A publisher typically:
+1. Publish or subscribe with `axhvc` and map the returned GPA.
+2. The publisher calls `IvcRegion::initialize`.
+3. The subscriber validates `channel_header_matches` and
+   `protocol_header_matches`.
+4. Attach exactly once with `publisher_endpoints` or `subscriber_endpoints`.
+5. Split with `IvcEndpoints::into_parts` and move sender/receiver into their
+   owning tasks.
+6. Notify the peer after publishing cells or releasing ring capacity; wait or
+   poll when an operation makes no progress.
 
-1. Calls `axhvc::ivc::publish_channel`.
-2. Maps the returned shared-memory GPA.
-3. Initializes the mapped memory with `IvcRegion::initialize`.
-4. Attaches `IvcRegion::publisher_endpoints` exactly once and splits the result
-   with `IvcEndpoints::into_parts`.
-5. Sends through the producer and receives through the consumer.
-6. Optionally notifies the peer through `axhvc`.
+The unsafe attachment contract is what prevents duplicate producers or
+consumers from racing on `UnsafeCell` cell bytes.
 
-A subscriber typically:
+# Compatibility and Limits
 
-1. Calls `axhvc::ivc::subscribe_channel`.
-2. Maps the returned shared-memory GPA.
-3. Validates `channel_header_matches` and `protocol_header_matches`.
-4. Attaches `IvcRegion::subscriber_endpoints` exactly once and splits the
-   result with `IvcEndpoints::into_parts`.
-5. Receives through the consumer and replies through the producer.
-6. Optionally notifies the peer through `axhvc`.
-
-For blocking-style receive paths, guest IRQ code can call `record_peer_event`
-when AxVisor injects a notify IRQ. The receive path can then use
-`IvcPeerEventWaiter` and `fallback_poll` to combine IRQ wakeup with bounded
-polling when an interrupt is missed or not yet wired.
-
-# Current Limits
-
-- The region layout fits in one 4 KiB page; AxVisor IVC channels may be larger
-  (up to the hypervisor's `MAX_IVC_CHANNEL_SIZE`), and the extra space is
-  currently unused by this protocol.
 - Each HVC channel currently admits one publisher and one subscriber because
   both rings are single-producer/single-consumer. Multi-peer support is tracked
   in [tgoskits#1238](https://github.com/rcore-os/tgoskits/issues/1238) and will
   require a versioned per-peer memory layout.
-- Payload slots are fixed size.
-- OS IRQ registration and hypervisor notification hypercalls are outside this
-  crate.
-- Access control, quotas, and channel lifecycle remain AxVisor or guest policy.
+- Cell size is 64 bytes, fragment capacity is 40 bytes, and ring capacity is 16.
+- Message V1 does not interleave messages, retransmit, reorder, or allocate.
+- Peer-reset reporting is reserved in the API; the current HVC backend has no
+  queue generation and cannot produce it yet.
+- The external Linux `/root/axvisor.ko` companion must be upgraded to region v3
+  before ArceOS-to-Linux IVC is compatible. This repository does not contain
+  that module.
+- ivshmem, PCI BARs, doorbells, MSI-X, and owner-RW/peer-RO sections are outside
+  this protocol revision.
 
 # Development
 
@@ -110,7 +143,9 @@ Use the workspace `xtask` flow for validation:
 
 ```bash
 cargo fmt
+cargo test -p axivc
 cargo xtask clippy --package axivc
+cargo xtask axvisor test qemu --arch aarch64 --test-case ivc-arceos2arceos
 ```
 
 # License
