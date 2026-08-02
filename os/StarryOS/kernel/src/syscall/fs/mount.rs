@@ -197,15 +197,17 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum MemoryMountKind {
+enum MountContextKind {
     Tmpfs,
     Ramfs,
+    DevPts,
 }
 
 struct MountContextState {
     filesystem: Option<Filesystem>,
     source: Option<String>,
     root_mode: NodePermission,
+    devpts_options: DevPtsOptions,
     tmpfs_size_limit: Option<u64>,
     unsupported_tmpfs_limits: bool,
     readonly_reconfigure: bool,
@@ -213,18 +215,19 @@ struct MountContextState {
 }
 
 struct MountContext {
-    kind: MemoryMountKind,
+    kind: MountContextKind,
     state: Mutex<MountContextState>,
 }
 
 impl MountContext {
-    fn new(kind: MemoryMountKind) -> Self {
+    fn new(kind: MountContextKind) -> Self {
         Self {
             kind,
             state: Mutex::new(MountContextState {
                 filesystem: None,
                 source: None,
                 root_mode: NodePermission::from_bits_truncate(0o755),
+                devpts_options: DevPtsOptions::mounted(),
                 tmpfs_size_limit: None,
                 unsupported_tmpfs_limits: false,
                 readonly_reconfigure: false,
@@ -298,8 +301,9 @@ pub fn sys_fsopen(fs_name: *const c_char, flags: u32) -> AxResult<isize> {
     }
 
     let kind = match vm_load_string(fs_name)?.as_str() {
-        "tmpfs" => MemoryMountKind::Tmpfs,
-        "ramfs" => MemoryMountKind::Ramfs,
+        "tmpfs" => MountContextKind::Tmpfs,
+        "ramfs" => MountContextKind::Ramfs,
+        "devpts" => MountContextKind::DevPts,
         _ => return Err(AxError::NoSuchDevice),
     };
     MountContext::new(kind)
@@ -331,14 +335,24 @@ pub fn sys_fsconfig(
                 (_, "source") if state.filesystem.is_none() && !value.is_empty() => {
                     state.source = Some(value);
                 }
-                (MemoryMountKind::Tmpfs, "size") if !value.is_empty() => {
+                (MountContextKind::Tmpfs, "size") if !value.is_empty() => {
                     state.tmpfs_size_limit = Some(parse_tmpfs_size(&value)?);
                 }
-                (MemoryMountKind::Tmpfs, "nr_inodes") if !value.is_empty() => {
+                (MountContextKind::Tmpfs, "nr_inodes") if !value.is_empty() => {
                     state.unsupported_tmpfs_limits = true;
                 }
-                (_, "mode") => {
+                (MountContextKind::Tmpfs | MountContextKind::Ramfs, "mode") => {
                     state.root_mode = parse_devpts_mode(&value)?;
+                }
+                (MountContextKind::DevPts, "mode") => {
+                    state.devpts_options.slave_mode = parse_devpts_mode(&value)?;
+                }
+                (MountContextKind::DevPts, "gid") => {
+                    state.devpts_options.slave_gid =
+                        value.parse().map_err(|_| AxError::InvalidInput)?;
+                }
+                (MountContextKind::DevPts, "ptmxmode") => {
+                    state.devpts_options.ptmx_mode = parse_devpts_mode(&value)?;
                 }
                 _ => return Err(AxError::InvalidInput),
             }
@@ -350,7 +364,16 @@ pub fn sys_fsconfig(
             match vm_load_string(key)?.as_str() {
                 // Linux systemd deliberately falls back from tmpfs to ramfs
                 // when the kernel cannot configure tmpfs with `noswap`.
-                "noswap" if state.filesystem.is_none() => return Err(AxError::InvalidInput),
+                "noswap"
+                    if context.kind == MountContextKind::Tmpfs && state.filesystem.is_none() =>
+                {
+                    return Err(AxError::InvalidInput);
+                }
+                // A devpts filesystem context already denotes a fresh instance;
+                // retain Linux's accepted option spelling without adding a
+                // second instance-selection state.
+                "newinstance"
+                    if context.kind == MountContextKind::DevPts && state.filesystem.is_none() => {}
                 "ro" if state.filesystem.is_some() => state.readonly_reconfigure = true,
                 _ => return Err(AxError::InvalidInput),
             }
@@ -359,14 +382,17 @@ pub fn sys_fsconfig(
             if !key.is_null() || !value.is_null() || aux != 0 || state.filesystem.is_some() {
                 return Err(AxError::InvalidInput);
             }
-            if context.kind == MemoryMountKind::Tmpfs && state.unsupported_tmpfs_limits {
+            if context.kind == MountContextKind::Tmpfs && state.unsupported_tmpfs_limits {
                 return Err(AxError::OperationNotSupported);
             }
             state.filesystem = Some(match context.kind {
-                MemoryMountKind::Tmpfs => state
+                MountContextKind::Tmpfs => state
                     .tmpfs_size_limit
                     .map_or_else(MemoryFs::new, MemoryFs::new_with_size_limit),
-                MemoryMountKind::Ramfs => MemoryFs::new_ramfs(),
+                MountContextKind::Ramfs => MemoryFs::new_ramfs(),
+                MountContextKind::DevPts => {
+                    new_devptsfs(DevPtsMount::NewInstance(state.devpts_options))
+                }
             });
         }
         command if command == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {
@@ -407,10 +433,12 @@ pub fn sys_fsmount(fs_fd: i32, flags: u32, mount_attributes: u32) -> AxResult<is
     let mountpoint =
         Mountpoint::new_root_with_source(&filesystem, state.source.as_deref().unwrap_or("none"));
     let root = mountpoint.root_location();
-    root.update_metadata(MetadataUpdate {
-        mode: Some(state.root_mode),
-        ..Default::default()
-    })?;
+    if context.kind != MountContextKind::DevPts {
+        root.update_metadata(MetadataUpdate {
+            mode: Some(state.root_mode),
+            ..Default::default()
+        })?;
+    }
     mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0);
     mountpoint.set_mount_flags(
         mount_attributes & (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC),
