@@ -2367,6 +2367,233 @@ Task(91, "systemd-sysctl") exit with code: 15
 合法创建 flags 不改变 descriptor/status flags。`STARRY_NIXOS_SYSTEM_PASSED`
 仍未出现，因此 T028 保持未完成，但该 signalfd4 修复已满足独立提交门槛。
 
+### 7.22 `systemd-sysctl` 精确失败路径诊断（2026-08-02）
+
+固定 systemd 260.2 源码确认，无显式参数时 `systemd-sysctl` 只枚举
+`/etc/sysctl.d`、`/run/sysctl.d`、`/usr/local/lib/sysctl.d`、
+`/usr/lib/sysctl.d` 和可选 `sysctl.extra` credential；它不会无条件递归
+扫描整个 `/proc/sys`。此前仅限该进程的 syscall entry/return trace 已证明
+程序主要执行 O_PATH 路径追踪，并最终主动或被 unit timeout 终止，但由于用户
+指针未解码，无法确定配置文件和错误文本。日志为
+`.ci-cache/tmp/starrynixos-systemd-sysctl-trace.log`。
+
+本轮在 `sys_openat()` 和 `sys_writev()` 中加入仅用于诊断、限定任务名的临时
+路径和 UTF-8 payload 输出。第一次使用完整进程名匹配没有命中，因为 StarryOS
+任务名实际截断为 `"(systemd-sysct)"`；该运行在 systemd 90 秒 unit timeout
+后收到 SIGTERM，日志为
+`.ci-cache/tmp/starrynixos-systemd-sysctl-path-trace.log`。将临时匹配改为
+截断名片段后，Podman + `.ci-cache` 真实 app 复跑取得首个精确非忽略错误：
+
+```text
+systemd-sysctl openat: ... path="50-coredump.conf", flags=0o12400000
+systemd-sysctl writev: fd=2, payload=Ok(
+    "Failed to chase '/etc/sysctl.d/50-coredump.conf': Invalid argument\n"
+)
+```
+
+该配置项在生成的 `/etc` closure 中是绝对 symlink：
+
+```text
+/etc/sysctl.d/50-coredump.conf
+  -> /nix/store/kj963xfalaj4pcgpza1dy16qpl51j3k7-50-coredump.conf
+```
+
+随后读取配置并应用 sysctl 时出现的缺项均由 systemd 明确标记为
+`ignoring`，不是 unit 失败根因：
+
+```text
+Couldn't write '16' to 'kernel/sysrq', ignoring: No such file or directory
+Couldn't write '1' to 'kernel/core_uses_pid', ignoring: No such file or directory
+Couldn't write '2' to 'net/ipv4/conf/default/rp_filter', ignoring: No such file or directory
+Couldn't write '0' to 'net/ipv4/conf/default/accept_source_route', ignoring: No such file or directory
+```
+
+因此当前首个兼容性边界收敛为 systemd path-chase 对绝对 symlink 的
+O_PATH/O_NOFOLLOW、`statx(AT_EMPTY_PATH)` 或 `readlinkat` 组合语义，而不是
+缺少任意一个 `/proc/sys` 键。完整命中日志为
+`.ci-cache/tmp/starrynixos-systemd-sysctl-path-trace-2.log`。下一步必须继续
+收敛到产生 `EINVAL` 的具体 syscall，建立同一绝对 symlink 追踪序列的 Linux
+oracle 和确定性 Starry 红测后，才能修改 owning subsystem。所有临时路径/
+payload 诊断不得进入提交。
+
+进一步加入仅限 `openat/statx/readlinkat/close` 的临时 dispatcher
+entry/return trace 后，错误已精确到 `readlinkat`：
+
+```text
+openat(..., "50-coredump.conf", O_PATH|O_NOFOLLOW|...) = 7
+statx(7, "", AT_EMPTY_PATH, ...) = 0
+readlinkat(..., "50-coredump.conf", ..., 4096) = EINVAL
+```
+
+日志为 `.ci-cache/tmp/starrynixos-systemd-sysctl-path-trace-3.log`。对应
+symlink target 长度恰好为 60 字节：
+
+```text
+/nix/store/kj963xfalaj4pcgpza1dy16qpl51j3k7-50-coredump.conf
+```
+
+Starry 的 `readlinkat` 通过 axfs-ng `Location::read_link()` 读取 ext4 inode；
+其下层 `components/rsext4/src/file/io.rs::read_symlink_target()` 当前仅按
+`size <= 60` 把 `i_block[15]` 当作 inline target。对于宿主生成的这个 60
+字节 symlink，读取结果不是有效 UTF-8，最终映射为 `EINVAL`。这给出一个可
+确定验证的候选边界：ext4 fast-symlink 判定不能只依赖 `size <= 60`，还必须
+与 inode 是否实际分配数据块一致。修复前先用 59/60/61 字节 target 建立
+Linux oracle 和 Starry 红测；若只有 60 字节边界失败，再修改 rsext4 owning
+subsystem。临时 dispatcher/openat/writev trace 随后全部撤销。
+
+### 7.23 ext4 60 字节 symlink 确定性红测（2026-08-02）
+
+新增 grouped QEMU 回归：
+
+```text
+test-suit/starryos/qemu/system/bugfix-ext4-symlink-60-byte-target/
+```
+
+fixture 不是由 Starry guest 创建，而是在 CMake install 阶段写入宿主 overlay，
+随后由 grouped asset pipeline 的 e2fsprogs `debugfs` 1.47.0 注入 ext4 镜像。
+因此 59/60/61 字节链接使用宿主 ext4 工具选择的真实磁盘表示，不会被当前
+`rsext4::create_symbol_link()` 的边界行为掩盖。
+
+同一 C 二进制先在 Ubuntu 24.04 CI 容器的 Linux 上运行。关闭仅适用于 ext4
+镜像的 `st_blocks` 编码断言后，lstat、`openat(O_PATH|O_NOFOLLOW)`、
+`statx(AT_EMPTY_PATH)` 和 `readlinkat(dirfd, name)` 对 59/60/61 字节 target
+均通过，共 13/13。Linux oracle 目录和输出保留在：
+
+```text
+.ci-cache/tmp/starry-symlink-oracle.CyA0wY/
+```
+
+Starry 使用 Podman + `.ci-cache` 的实际命令：
+
+```text
+cargo xtask starry test qemu --arch x86_64 \
+  -c qemu/system/bugfix-ext4-symlink-60-byte-target
+```
+
+首次运行因 CI 容器缺少 `fakeroot`，在 rootfs extraction 阶段停止，未到 guest，
+不计作产品红测。临时容器刷新 Ubuntu 索引并安装 `fakeroot` 后，同一命令进入
+guest，得到确定性 15/16：
+
+```text
+PASS: 59-byte fixture uses the expected ext4 block encoding
+PASS: readlinkat returns exact 59-byte target
+PASS: 60-byte fixture uses the expected ext4 block encoding
+FAIL: readlinkat returns exact 60-byte target: errno=22 (Invalid argument)
+PASS: 61-byte fixture uses the expected ext4 block encoding
+PASS: readlinkat returns exact 61-byte target
+Results: pass=15 fail=1
+```
+
+完整红测日志：
+
+```text
+.ci-cache/tmp/starry-ext4-symlink-60-red.log
+```
+
+Linux ext4 文档把长度小于 60 字节的 target 描述为 `i_block` 内 fast symlink；
+Linux v6.18 `ext4_inode_is_fast_symlink()` 则以 inode 实际 block 占用（扣除
+EA inode block）和 inline-data flag 判断读取表示，而不是仅按 `i_size`
+猜测。当前 rsext4 的 `size <= 60` 读取判据与宿主工具生成的 60 字节
+block-backed symlink 冲突。下一步仅修改 `components/rsext4`：读取时结合
+`blocks_count() == 0` 判定 fast symlink，并把新建 fast symlink 的边界收敛为
+`target_len < 60`；随后用同一红测验证。
+
+修复仅涉及 rsext4 owning subsystem：
+
+```text
+components/rsext4/src/file/io.rs
+components/rsext4/src/file/create.rs
+```
+
+读取 fast symlink 现在同时要求 `size <= 60` 和 `inode.blocks_count() == 0`；
+新建 fast symlink 的长度边界改为严格 `< 60`。同一 Podman + `.ci-cache`
+Starry 回归随后通过 16/16：
+
+```text
+PASS: readlinkat returns exact 59-byte target
+PASS: readlinkat returns exact 60-byte target
+PASS: readlinkat returns exact 61-byte target
+Results: pass=16 fail=0
+STARRY_GROUPED_TEST_PASSED: bugfix-ext4-symlink-60-byte-target
+STARRY_GROUPED_TESTS_PASSED
+```
+
+完整绿测日志：
+
+```text
+.ci-cache/tmp/starry-ext4-symlink-60-green.log
+```
+
+该结果已完成确定性红→绿，但在 targeted fmt/clippy、相邻回归和真实
+StarryNixOS app 跨越 `systemd-sysctl.service` 边界前仍不提交。
+
+rsext4 定向格式化已在 CI 容器执行；`cargo xtask clippy --package rsext4`
+的 3 个配置全部通过：
+
+```text
+rsext4 (base)
+rsext4 (feature: USE_MULTILEVEL_CACHE)
+rsext4 (feature: axtest)
+```
+
+clippy 日志：
+
+```text
+.ci-cache/tmp/rsext4-clippy-ext4-symlink.log
+```
+
+随后在同一 Podman + `.ci-cache` 环境串行运行相邻 Starry grouped 回归：
+
+```text
+bugfix-bug-readlinkat-zero-size: 12 passed / 0 failed
+bugfix-bug-linkat-flags-symlink: 17 passed / 0 failed
+bugfix-bug-ext4-dir-ops: 151 passed / 0 failed
+```
+
+对应日志：
+
+```text
+.ci-cache/tmp/starry-ext4-symlink-adjacent-bugfix-bug-readlinkat-zero-size.log
+.ci-cache/tmp/starry-ext4-symlink-adjacent-bugfix-bug-linkat-flags-symlink.log
+.ci-cache/tmp/starry-ext4-symlink-adjacent-bugfix-bug-ext4-dir-ops.log
+```
+
+focused regression、fmt、owning-crate clippy 和相邻回归均已满足；独立提交前
+只剩真实 StarryNixOS workload 跨越原 `systemd-sysctl.service` 触发边界。
+
+使用已有 rootfs manifest 复用同一正式镜像执行真实 app：
+
+```text
+STARRY_NIXOS_REUSE_ROOTFS=1 \
+cargo xtask starry app qemu -t nixos --arch x86_64
+```
+
+完整日志：
+
+```text
+.ci-cache/tmp/starrynixos-ext4-symlink-60-real-app.log
+```
+
+该运行中 stage 2 activation 和 systemd manager 初始化均已通过；
+`systemd-sysctl` 在约 26.1 秒启动，持续执行到约 56.8 秒后才以退出码 1
+结束。原先首个 `50-coredump.conf` 绝对 symlink 的 60 字节
+`readlinkat(...)=EINVAL` 不再出现，后续 journald、内核模块加载和其他
+workload 均继续推进。因此真实 workload 已跨越本修复对应的 ext4 symlink
+触发边界，rsext4 修复满足独立提交门槛。
+
+但该 unit 仍最终报告：
+
+```text
+Task(91, "systemd-sysctl") exit with code: 256
+[FAILED] Failed to start Apply Kernel Variables.
+```
+
+当前日志没有保留足够的用户态 stderr/payload，不能把退出码 1 归因于
+`keyctl`、缺失 sysctl 节点或其他候选项。下一轮需重新启用仅限
+`systemd-sysctl` 的最小路径/payload 诊断，取得新的首个非忽略错误后再建立
+确定性红测；不得根据时间相邻日志直接修改 syscall。由于
+`STARRY_NIXOS_SYSTEM_PASSED` 尚未出现，T028 保持未完成。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
