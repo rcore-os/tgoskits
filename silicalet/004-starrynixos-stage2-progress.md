@@ -1251,6 +1251,92 @@ QEMU；`STARRY_NIXOS_SYSTEM_PASSED` 未出现，T028 保持未完成。下一处
 候选已收敛为 systemd executor 的 capability drop ABI，必须先从
 `capset(2)`/securebits/ambient capability 调用序列建立新的直接红测。
 
+systemd 260.2 固定提交
+`f1d0952a125b96b7ab2f1ff29a87448ade8ac29b` 的
+`capability_bounding_set_drop()` 逐项调用
+`prctl(PR_CAPBSET_DROP, capability)`。Linux 的该 `prctl` option 只消费
+capability 参数：Linux v6.12 的 `security/commoncap.c::cap_task_prctl()`
+在该分支只把 `arg2` 传给 `cap_prctl_drop()`。StarryOS 当前却额外要求
+`arg3..arg5` 全为 0。由于
+`prctl(2)` 是 variadic 接口，systemd 不会为未消费参数提供零值，这正好解释
+真实 app 中的 `Failed to drop capabilities: Invalid argument`。
+
+现有 `syscall-test-capset` 曾反向断言尾随参数非零应得到 `EINVAL`。该断言已按
+Linux ABI 修正为：使用非零尾随参数 drop `CAP_SETUID` 必须成功，并由
+`PR_CAPBSET_READ` 观察到 capability 已从 bounding set 移除。Podman +
+`.ci-cache` 聚焦 QEMU 在当前内核得到确定红灯：
+
+```text
+FAIL | child | PR_CAPBSET_DROP ignores unused trailing args |
+       errno=22 (Invalid argument)
+FAIL | C1: PR_CAPBSET_DROP removes a bounding cap |
+       errno=22 (Invalid argument)
+CAPSET_HAS_FAILURES
+DONE: 20 pass, 1 fail
+STARRY_GROUPED_TEST_FAILED
+result: 0/1 case(s) passed
+```
+
+因此 owning boundary 已精确收敛到
+`os/StarryOS/kernel/src/syscall/task/ctl.rs` 的 `PR_CAPBSET_DROP` 参数校验。
+下一步只移除对未消费 `arg3..arg5` 的零值要求，保留 capability 范围检查和
+`CAP_SETPCAP` 权限检查；不扩展 capability 模型或其他 `prctl` option。
+
+内核修复已按上述边界完成：`PR_CAPBSET_DROP` 仍校验 capability 编号和
+`CAP_SETPCAP`，但不再检查 Linux 未消费的 `arg3..arg5`。同一 Podman
+聚焦用例已由红转绿：
+
+```text
+PASS | C1: PR_CAPBSET_DROP removes a bounding cap
+CAPSET_ALL_PASSED
+DONE: 21 pass, 0 fail
+STARRY_GROUPED_TESTS_PASSED
+result: 1/1 case(s) passed
+```
+
+容器内 `cargo fmt --all` 同时通过。宿主直接运行格式化时，rustup 尝试删除
+只读 `/home/user0/.rustup` 下的 update hash 而失败；改用项目 CI 容器及
+`.ci-cache` 的 `CARGO_HOME`/`RUSTUP_HOME` 后解决，不需要修改宿主工具链。
+下一步运行 `starry-kernel` 定向 clippy，再用真实 NixOS app 验证
+`CAPABILITIES` 边界是否消失。
+
+`cargo xtask clippy --package starry-kernel` 已在同一 Podman 环境完成：
+25/25 checks 通过，0 失败。当前 capability 分类已满足最低层回归、格式化和
+owning crate 质量门槛；剩余提交条件是实际 NixOS app 越过
+`Failed at step CAPABILITIES`，并记录新的首个边界或最终 marker。
+
+首次 app 命令未设置 artifact 复用开关，CI 镜像因没有 `nix` 而在进入 QEMU
+前退出。随后使用
+`STARRY_NIXOS_REUSE_ROOTFS=1` 复跑；该路径仍完整校验现有 manifest、
+`flake.lock` hash、x86_64 closure、ext4 内容和 image hash，不绕过 artifact
+provenance：
+
+```text
+StarryNixOS rootfs reused after manifest validation:
+/workspace/tmp/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img
+```
+
+真实 app 已确认 capability 修复进入 systemd executor 主路径：
+
+- activation Task 25 退出 0，`/dev/pts`、`/run`、`/run/keys` mount 仍退出 0；
+- systemd 排队 `Multi-User System`；
+- 日志不再出现 `Failed to drop capabilities` 或
+  `Failed at step CAPABILITIES`；
+- `systemd-journald` 进程已进入自身初始化，并报告新的精确失败：
+
+```text
+systemd-journald[89]: 1 unknown file descriptors passed, closing.
+systemd-journald[89]: Failed to enable SO_TIMESTAMP: Protocol not available
+Task(89, "systemd-journald") exit with code: 256
+```
+
+本轮日志保存为
+`.ci-cache/tmp/starrynixos-after-capbset-drop.log`。取得约 64 秒证据后手动
+停止 QEMU，避免 `efi_pstore`、`drm`、`fuse`、firewall 等无期限 jobs 持续
+运行。因此 capability drop 分类已经满足独立提交条件；新的 owning boundary
+转移到 socket `SO_TIMESTAMP` 支持。`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，
+T028 保持未完成，下一分类必须先为 `SO_TIMESTAMP` 建立确定红测。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
