@@ -3,9 +3,11 @@
 > 更新日期：2026-08-02
 > 当前目标：StarryOS/x86_64 + NixOS-generated system closure + systemd stage 2
 > 当前结论：已进入 NixOS activation 并启动 systemd，但尚未到达
-> `multi-user.target` 已真实到达；`ramfs`、`statx` mount-root 与 mount-ID
-> 分歧均已完成红绿修复。严格成功门槛尚未通过：当前首分歧是 systemd
-> 创建根 cgroup `/` 返回 `EPERM`，导致服务进程无法 spawn，marker 未执行。
+> 严格成功门槛。`multi-user.target` 已进入启动事务，`ramfs`、`statx`
+> mount-root/mount-ID、cgroup、procfd exec、clone3 cgroup placement、
+> Unix socket timestamp 和 proc sysctl hostname 分歧均已完成红绿修复。
+> 当前 journald 已越过 hostname 读取，但在输出 audit-disabled 信息后以
+> 状态 1 退出且没有指出失败操作；marker 未执行。
 
 ## 1. 定位与范围
 
@@ -25,8 +27,9 @@ QEMU q35/UEFI
   -> systemd（PID 1）
   -> systemd API-filesystem 初始化
   -> systemd unit 加载与依赖事务
-  -> multi-user.target（已到达）
-  -> [当前阻塞] cgroup service spawn（EPERM）
+  -> multi-user.target 启动事务
+  -> journald 越过 SO_TIMESTAMP 与 hostname 初始化
+  -> [当前阻塞] journald 无诊断 status=1
   -> [尚未执行] starry-nixos-marker.service
 ```
 
@@ -1493,6 +1496,126 @@ sysctl `/proc/sys/kernel/hostname`；本轮在取得该证据后停止容器，�
 `efi_pstore`、`drm`、`fuse` 等无期限 start jobs 继续运行。
 `STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，T028 保持未完成；下一分类仍须先建
 确定红测。
+
+### 7.14 `/proc/sys/kernel/hostname` 红测设计（2026-08-02）
+
+真实 journald 已把下一边界收敛到读取 `/proc/sys/kernel/hostname` 返回
+`ENOENT`。Linux v6.18 的 `kernel/utsname_sysctl.c` 在 `kernel` sysctl
+目录注册 `hostname`，数据来自调用者当前 UTS namespace 的
+`utsname()->nodename`，通过字符串 sysctl handler 读取时输出当前 hostname
+并带一个尾随换行。该值必须与 `uname(2).nodename`、`gethostname(2)` 和
+`sethostname(2)` 操作的同一 UTS namespace 状态一致，不能在 procfs 中再
+维护一份静态副本。
+
+Starry 已在 `axnsproxy::UtNamespace::nodename` 中保存每 UTS namespace 的
+hostname，`sys_uname` 和 `sys_sethostname` 均使用该字段；缺口仅是
+`os/StarryOS/kernel/src/pseudofs/proc.rs` 的 `/proc/sys/kernel` 映射没有
+暴露它。计划新增
+`test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-hostname/`，先验证：
+
+1. `gethostname(2)` 和 `uname(2).nodename` 一致；
+2. `/proc/sys/kernel/hostname` 可打开且表现为普通文件；
+3. 读取内容精确等于当前 hostname 加一个 `\n`，无 NUL padding；
+4. 读至 EOF 后可 `lseek` 回起点，并重复获得相同内容。
+
+同一测试先在宿主 Linux 运行作为 oracle，再在当前 Starry 内核取得确定
+`ENOENT` 红灯。红灯成立前不修改 procfs 实现。
+
+宿主 Linux oracle 已通过 12/12。当前 Starry QEMU 聚焦用例取得预期红灯：
+
+```text
+PASS: gethostname succeeds
+PASS: uname succeeds
+PASS: gethostname matches uname nodename
+FAIL: open /proc/sys/kernel/hostname: errno=2 (No such file or directory)
+=== Results: 3 passed, 1 failed ===
+STARRY_GROUPED_TEST_FAILED: bugfix-proc-sys-kernel-hostname
+result: 0/1 case(s) passed
+```
+
+因此 UTS syscall 状态本身已工作，缺口精确位于 procfs kernel sysctl 目录。
+下一步只新增一个动态只读节点：每次读取复制调用者当前 UTS namespace 的
+`nodename` 到输出并追加换行；不新增全局 hostname，不修改 `uname`、
+`sethostname` 或 namespace clone 逻辑。
+
+### 7.15 `/proc/sys/kernel/hostname` 聚焦绿测（2026-08-02）
+
+已在 `os/StarryOS/kernel/src/pseudofs/proc.rs` 的 `/proc/sys/kernel`
+目录增加动态只读 `hostname` 节点。每次打开/读取时从当前 task 的
+`nsproxy.uts_ns.nodename` 取得当前 UTS namespace hostname，截断首个 NUL
+后追加一个换行；procfs 不保存第二份 hostname 状态。
+
+实现过程中，最初的 `c_char as u8` 转换在 x86_64 可用，但完整
+`starry-kernel` clippy 的 aarch64 system 配置将其判定为
+`unnecessary_cast`，因为不同架构上的 `c_char` signedness 不同。最终改用
+`to_ne_bytes()[0]` 复制底层单字节表示，并重新执行完整矩阵，没有跳过
+aarch64 配置。
+
+Podman + `.ci-cache` 验证结果：
+
+```text
+cargo fmt --all: passed
+starry-kernel clippy: 25/25 checks passed
+bugfix-proc-sys-kernel-hostname:
+  PASS: gethostname succeeds
+  PASS: uname succeeds
+  PASS: gethostname matches uname nodename
+  PASS: open /proc/sys/kernel/hostname
+  PASS: hostname sysctl is a regular file
+  PASS: read hostname sysctl
+  PASS: hostname sysctl has exact length
+  PASS: hostname sysctl equals current hostname plus newline
+  PASS: hostname sysctl has no NUL padding
+  PASS: hostname sysctl reaches EOF
+  PASS: hostname sysctl seeks to start
+  PASS: hostname sysctl repeats the same UTS value
+  === Results: 12 passed, 0 failed ===
+  STARRY_PROC_SYS_HOSTNAME_PASSED
+  result: 1/1 case(s) passed
+```
+
+该聚焦回归已完成确定性 `ENOENT` 红灯到 12/12 绿灯。下一步复跑现有 UTS
+namespace 回归，随后用同一已验证 NixOS 镜像确认 journald 越过
+`/proc/sys/kernel/hostname`；真实 workload 越界前不提交本分类。
+
+现有 `qemu/system/syscall-test-namespace` 也已在相同 Podman 环境通过：
+
+```text
+UTS / PID / USER namespace: 13 pass, 0 fail
+STARRY_GROUPED_TESTS_PASSED
+result: 1/1 case(s) passed
+```
+
+其中 UTS 子用例确认 child `unshare(CLONE_NEWUTS)` 并 `sethostname` 后只改变
+child hostname，parent hostname 保持不变。该结果证明新增 procfs 节点没有
+破坏现有 UTS namespace 复制和隔离路径。
+
+真实 StarryNixOS 复验也已越过该边界：
+
+```text
+Hostname set to <starrynixos>.
+systemd-journald[89]: 1 unknown file descriptors passed, closing.
+systemd-journald[89]: Collecting audit messages is disabled.
+Task(89, "systemd-journald") exit with code: 256
+```
+
+与修复前相比，`Failed to open /proc/sys/kernel/hostname: No such file or
+directory` 已消失，systemd 成功读取并设置 `starrynixos` hostname，journald
+继续执行到原失败点之后。因此真实 workload 越界门槛已满足。
+
+本次 app 中多个非核心 systemd jobs 标记为 `no limit`，在取得越界证据后
+停止 Podman 容器，最终退出码 137 是有界停止结果，不是通过或内核崩溃。
+完整日志保存于：
+
+```text
+.ci-cache/tmp/starrynixos-after-proc-hostname.log
+```
+
+新的首个可见问题是 journald 在 audit-disabled 信息后以状态 1 退出，但现有
+日志没有给出失败 syscall、errno 或资源对象。当前证据不足以设计一个必然失败
+且指向正确拥有子系统的回归，因此不猜测修复；下一步需要 syscall 级观测或最小
+复现先把该退出收敛到具体 Linux 语义。`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，
+T028 保持未完成。
 
 ## 8. 关联文档
 

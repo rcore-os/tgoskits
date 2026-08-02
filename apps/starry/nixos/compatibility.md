@@ -33,7 +33,8 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 | glibc `pidfd_spawn` requests `clone3(CLONE_INTO_CGROUP)` | Linux clone3 places the child in the cgroup represented by the supplied cgroup2 directory fd before it runs | systemd executor initially inherited the parent cgroup and failed to attach to the service leaf | Resolved by binding the opened cgroup2 directory to a stable node and committing fork membership before task publication | `test-suit/starryos/qemu/system/cgroup-basic/` changed from 49 pass/1 fail to 50 pass/0 fail | Re-run when clone3, pidfd spawn, cgroup namespaces, or fork publication ordering changes |
 | systemd-executor receives serialized invocation state over an inherited fd | systemd 260.2 clears `FD_CLOEXEC` on the serialization fd before `pidfd_spawn`; the executor deserializes it after exec | Service startup after `multi-user.target` is queued | Open finding: glibc `pidfd_spawn` still reports `EBADF`; no matcher relaxation or service mask is accepted | A focused regression must reproduce the non-CLOEXEC fd across `CLONE_VM|CLONE_VFORK|CLONE_PIDFD|CLONE_INTO_CGROUP` and exec before correction | Revisit after the focused red/green regression and the same real app command both pass |
 | `systemd-journald` enables receive timestamps on its Unix datagram socket | Linux v6.18 `sock_set_timestamp`, `unix_dgram_sendmsg`, and `__sock_recv_timestamp`: `SO_TIMESTAMP` is per receiver, records wall time before queue insertion, conditionally emits `SOL_SOCKET/SCM_TIMESTAMP`, and fills a missing timestamp when enabling races with an already queued packet | Journald initialization after systemd queued `Multi-User System`; `setsockopt(SOL_SOCKET, SO_TIMESTAMP)` returned `ENOPROTOOPT` | Resolved in the Unix datagram/seqpacket option, queue-time metadata, and timeval cmsg boundaries; no protocol-wide fake support added | `test-suit/starryos/qemu/system/bugfix-socket-timestamp/` changed from 14 pass/11 fail to 30 pass/0 fail, matching the host Linux oracle; adjacent QoS cmsg and seqpacket regressions also pass | Re-run when Unix queueing, `recvmsg`, ancillary layout, timestamp options, or wall-clock plumbing changes |
-| Journald reads the current hostname from proc sysctl | Linux procfs exposes `/proc/sys/kernel/hostname` as the UTS namespace hostname and permits newline-terminated reads | Journald continued past `SO_TIMESTAMP`, printed `Collecting audit messages is disabled`, then failed to open `/proc/sys/kernel/hostname` with `ENOENT` | Open measured behavior gap; no fallback hostname, service mask, or matcher relaxation is accepted | A focused regression must first reproduce the missing proc sysctl path and its Linux-visible read semantics | Revisit after a deterministic red/green regression and the same real app command both pass |
+| Journald reads the current hostname from proc sysctl | Linux v6.18 `kernel/utsname_sysctl.c` exposes `/proc/sys/kernel/hostname` from the caller's current UTS namespace and emits a newline-terminated value | Journald continued past `SO_TIMESTAMP`, printed `Collecting audit messages is disabled`, then failed to open `/proc/sys/kernel/hostname` with `ENOENT` | Resolved with a dynamic read-only proc sysctl node backed by `nsproxy.uts_ns.nodename`; no duplicate hostname state or userspace fallback added | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-hostname/` changed from deterministic `ENOENT` after 3 checks to 12/12 pass; the existing namespace regression also passed 13/13 | Re-run when procfs sysctl reads, UTS namespace cloning, `sethostname`, or `uname` semantics change |
+| Journald continues initialization after obtaining the UTS hostname | Linux systemd-journald remains a long-running service after timestamp and hostname initialization | After the hostname correction, systemd printed `Hostname set to <starrynixos>` and journald passed its former `ENOENT` point, then exited with status 1 immediately after `Collecting audit messages is disabled` without a diagnostic naming the failed operation | Open diagnostic finding; no kernel change is justified until the first failing operation and Linux-visible contract are identified | No focused regression yet: the current boot log is sufficient to prove the hostname boundary was crossed, but insufficient to assign the next failure to an owning subsystem | Revisit after syscall-level instrumentation or a minimal reproducer identifies the exact operation |
 
 ## Run evidence
 
@@ -140,3 +141,33 @@ then the same command must be repeated to discover the next first divergence.
 - Terminal result: the strict `.service: Failed with result` matcher rejected
   the run. The ordered marker sequence was not emitted, so this remains
   bounded failure evidence rather than a Stage-2 success claim.
+
+### 2026-08-02 `/proc/sys/kernel/hostname` correction
+
+- Linux oracle and focused test:
+  `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-hostname/`.
+- Red result: `gethostname` and `uname` agreed, then
+  `open("/proc/sys/kernel/hostname", O_RDONLY)` failed with `ENOENT`
+  after 3 passing checks.
+- Green result: 12/12 checks passed, including exact `hostname + "\n"`
+  contents, no NUL padding, EOF, seek-to-start, and repeat-read behavior;
+  `STARRY_PROC_SYS_HOSTNAME_PASSED` and the grouped success marker were
+  emitted.
+- Adjacent namespace result:
+  `qemu/system/syscall-test-namespace` passed 13/13, including child-only
+  `unshare(CLONE_NEWUTS)` plus `sethostname` isolation.
+- Quality gates: `cargo fmt --all` passed and
+  `cargo xtask clippy --package starry-kernel` passed all 25 checks,
+  including both aarch64 system configurations.
+- Real app payload:
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`
+  in the project Podman image with `.ci-cache` used only for caches.
+- Crossing evidence: systemd printed `Hostname set to <starrynixos>`;
+  journald no longer logged an `ENOENT` for `/proc/sys/kernel/hostname` and
+  continued through `Collecting audit messages is disabled`.
+- New bounded result: journald then exited with status 1 without identifying
+  the failed operation. The run was stopped after this evidence because
+  several unrelated systemd jobs had no time limit. The container exit status
+  137 is therefore a deliberate bounded stop, not a test pass or kernel crash.
+- Log: `.ci-cache/tmp/starrynixos-after-proc-hostname.log`.
+- `STARRY_NIXOS_SYSTEM_PASSED` was not emitted; T028 remains incomplete.
