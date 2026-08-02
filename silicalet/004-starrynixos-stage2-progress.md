@@ -1997,6 +1997,157 @@ systemd-sysctl.service: start operation timed out. Terminating.
 满足独立提交条件，但完整 Stage-2 acceptance 仍未通过，T028 保持未完成。
 journald/sysctl timeout 是下一诊断边界，必须重新建立确定红测后再修改。
 
+### 7.19 signalfd epoll 唤醒边界与红测设计（2026-08-02）
+
+passcred 修复后的真实日志显示，超时并不是 journald/sysctl 进程仍在执行：
+
+```text
+Task(89, "systemd-journald") exit with code: 256
+Send signal SIGCHLD to process 1
+Task(91, "systemd-sysctl") exit with code: 256
+Send signal SIGCHLD to process 1
+```
+
+但上述退出后 PID 1 没有再次出现
+`waitid(P_ALL, 0, ..., WEXITED|WNOHANG|WNOWAIT)`，最终 systemd 仍将两个 PID
+视为 active 并在超时后发送 SIGTERM/SIGKILL。固定 systemd v260.2 commit
+`f1d0952a125b96b7ab2f1ff29a87448ade8ac29b` 的调用链为：
+
+1. PID 1 阻塞 `SIGCHLD`，通过 `signalfd` 加入 `sd-event` epoll；
+2. signalfd 就绪后启用 deferred `manager_dispatch_sigchld()`；
+3. dispatcher 先用 `waitid(P_ALL, ..., WNOWAIT)` 观察 zombie，再用
+   `waitid(P_PID, ...)` 回收。
+
+Starry 当前 `send_signal_to_process()` 会在 process-directed signal 入队后唤醒
+每个线程的 `Thread::signalfd_waker`；但 `Signalfd::register()` 只把 poll
+waker 注册到 `Signalfd` 自己的 `poll_rx`。这两个 `PollSet` 没有连接，因此：
+
+- 信号在 `epoll_wait()` 前已经 pending 时，`Signalfd::poll()` 仍可偶然看到；
+- `epoll_wait()` 已阻塞后才到达的 signal 只唤醒 thread `signalfd_waker`，
+  无法唤醒注册在私有 `poll_rx` 上的 event loop。
+
+这与当前日志中“PID 1 曾处理一批 SIGCHLD，后续退出不再触发 waitid”一致。
+下一步新增
+`test-suit/starryos/qemu/system/bugfix-signalfd-epoll-wakeup/`，直接验证：
+
+1. parent 先阻塞 `SIGCHLD`，创建 nonblocking signalfd 并注册到 epoll；
+2. child 延迟退出，确保 parent 已进入 `epoll_wait()`；
+3. epoll 必须因 signalfd 的 `EPOLLIN` 返回；
+4. signalfd 必须读到该 child 的 `SIGCHLD`；
+5. 随后按 systemd 相同的 `waitid(WNOWAIT)` + `waitid(P_PID)` 顺序观察并回收
+   child。
+
+先运行同一 Linux oracle，再在当前 Starry 取得确定红灯。红灯成立前不修改
+signalfd/poll 实现，也不据 journald timeout 扩展其他 syscall。
+
+Linux oracle 已通过全部 10 项：
+
+```text
+PASS: epoll wakes when blocked SIGCHLD reaches signalfd
+PASS: read SIGCHLD from signalfd
+PASS: waitid WNOWAIT observes child after signalfd wake
+PASS: waitid P_PID reaps observed child
+=== Results: 10 passed, 0 failed ===
+```
+
+Starry 首次 grouped 准备因 cache miss 且 CI 镜像缺少 `fakeroot`，未进入 guest；
+改用一次性 root-mapped Podman 容器安装 `fakeroot` 后取得确定红灯：
+
+```text
+FAIL: epoll wakes when blocked SIGCHLD reaches signalfd
+PASS: read SIGCHLD from signalfd
+PASS: signalfd reports exiting child
+PASS: waitid WNOWAIT observes child after signalfd wake
+PASS: waitid P_PID reaps observed child
+=== Results: 9 passed, 1 failed ===
+```
+
+日志为 `.ci-cache/tmp/signalfd-epoll-red.log`。信号入队、signalfd dequeue 和
+systemd 使用的两步 waitid 均正常，唯一失败是等待中的 epoll 没有收到 signal
+arrival wakeup。因此实现范围限制在 `Signalfd::register()`：保留私有
+`poll_rx` 处理 mask update/剩余 pending signal，同时注册当前线程的
+`signalfd_waker` 处理新 signal 到达；不修改 signal queue、waitid 或 epoll
+通用逻辑。
+
+实现后同一 Podman + `.ci-cache` 聚焦用例已转绿：
+
+```text
+PASS: epoll wakes when blocked SIGCHLD reaches signalfd
+PASS: read SIGCHLD from signalfd
+PASS: signalfd reports exiting child
+PASS: waitid WNOWAIT observes child after signalfd wake
+PASS: waitid P_PID reaps observed child
+=== Results: 10 passed, 0 failed ===
+STARRY_SIGNALFD_EPOLL_WAKEUP_PASSED
+STARRY_GROUPED_TESTS_PASSED
+```
+
+`cargo fmt --all -- --check` 同时通过，日志为
+`.ci-cache/tmp/signalfd-epoll-green.log`。随后 `starry-kernel` targeted Clippy
+通过全部 25 项检查，包含两个 aarch64 system 配置：
+
+```text
+clippy summary: 1 package(s), 25 check(s), 1 package(s) passed, 0 package(s) failed
+passed checks: 25, failed checks: 0
+```
+
+日志为 `.ci-cache/tmp/signalfd-epoll-clippy-starry-kernel.log`。相邻 QEMU 回归
+也已通过：
+
+```text
+qemu/system/syscall-test-signalfd4: 44 passed, 0 failed
+qemu/system/bugfix-bug-sigwaitinfo-blocked-sigchld: 3 passed, 0 failed
+qemu/system/zombie-bugfix-bug-waitid-basic: passed
+qemu/system/bugfix-bug-epoll-topology: 32 passed, 0 failed
+```
+
+对应日志为：
+
+- `.ci-cache/tmp/signalfd-epoll-regression-signalfd4.log`
+- `.ci-cache/tmp/signalfd-epoll-adjacent-regressions.log`
+- `.ci-cache/tmp/signalfd-epoll-regression-epoll-topology.log`
+
+曾尝试使用 `syscall-test-epoll-eventfd` 作为通用 epoll 回归，但该用例当前安装
+在 `starry-known-fail`，显式选择后正常测试目录为空，因此没有将其失败计入代码
+回归证据，改用已启用的 epoll topology 用例。
+
+当前分类只剩真实 StarryNixOS workload 越界验证：必须确认 child exit 后 PID 1
+重新执行 `waitid`，且原 journald/sysctl timeout 消失或转移到新的精确边界。
+该真实运行完成前不提交，T028 保持未完成。
+
+真实 StarryNixOS app 随后使用复用且通过 manifest 校验的 rootfs 运行。journald
+退出后，PID 1 已在约 0.24 秒内重新进入 systemd 的 child reap 流程：
+
+```text
+[ 40.705929] Task(89, "systemd-journald") exit with code: 256
+[ 40.756948] Send signal SIGCHLD to process 1
+[ 40.992712] sys_waitid <= idtype: 0, id: 0,
+              options: WNOHANG | WEXITED | WNOWAIT
+[ 41.286211] sys_waitid <= idtype: 1, id: 89, options: WEXITED
+[ 41.287224] sys_waitid <= idtype: 0, id: 0,
+              options: WNOHANG | WEXITED | WNOWAIT
+```
+
+systemd 不再把已经退出的 journald 长时间保留为 active；它立即报告并回收该
+进程，然后进入重启逻辑：
+
+```text
+systemd-journald.service: Main process exited, code=exited, status=1/FAILURE
+systemd-journald.service: Failed with result 'exit-code'.
+systemd-journald.service: Scheduled restart job, restart counter is at 1.
+```
+
+这证明真实 workload 已跨过 signalfd/epoll 的原始触发边界，旧的 journald
+start timeout 已消失。app runner 的 fail regex 在约 41 秒遇到即时 service
+failure 后主动结束运行，因此本次没有继续观察 `systemd-sysctl` 的终态，也未
+出现 `STARRY_NIXOS_SYSTEM_PASSED`。日志为
+`.ci-cache/tmp/starrynixos-after-signalfd-epoll.log`。
+
+当前日志中 journald 退出前出现 `Unimplemented syscall: keyctl (tid=89)`，但
+仅凭相邻时序不能认定它就是退出根因；下一分类必须先建立 Linux/Starry
+确定差分或取得更直接的用户态错误证据。signalfd 分类已满足独立提交门槛，
+但 T028 仍保持未完成。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；

@@ -182,8 +182,17 @@ impl Pollable for Signalfd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            // The private poll set covers mask updates and additional queued
+            // signals. New signal delivery wakes the current thread's shared
+            // signalfd poll set, so an already-blocked epoll waiter must be
+            // registered with both sources.
+            unsafe {
+                self.poll_rx.register(context.waker(), IoEvents::IN);
+                current()
+                    .as_thread()
+                    .signalfd_waker
+                    .register(context.waker(), IoEvents::IN);
+            }
         }
     }
 }
