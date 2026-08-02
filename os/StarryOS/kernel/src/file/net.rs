@@ -15,7 +15,7 @@ use ax_errno::{AxError, AxResult};
 use ax_net::{
     InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind, RecvOptions, SendOptions,
     Socket as SocketInner, SocketOps,
-    options::{Configurable, GetSocketOption, SetSocketOption},
+    options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
 };
 use ax_task::current;
 use axpoll::{IoEvents, Pollable};
@@ -74,6 +74,17 @@ impl Socket {
 
     pub fn ip_domain(&self) -> u32 {
         self.ip_domain
+    }
+
+    pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
+        let current = current();
+        let credentials = current.as_thread().cred();
+        options.sender_credentials = Some(UnixCredentials {
+            pid: current.as_thread().proc_data.proc.pid(),
+            uid: credentials.uid,
+            gid: credentials.gid,
+        });
+        options
     }
 }
 
@@ -369,7 +380,10 @@ impl FileLike for Socket {
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        self.send(src, SendOptions::default())
+        self.send(
+            src,
+            Self::with_current_sender_credentials(SendOptions::default()),
+        )
     }
 
     fn stat(&self) -> AxResult<Kstat> {

@@ -36,7 +36,7 @@ use enum_dispatch::enum_dispatch;
 #[cfg(feature = "vsock")]
 use crate::vsock::{VsockAddr, VsockSocket};
 use crate::{
-    options::{Configurable, GetSocketOption, SetSocketOption},
+    options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
     raw::RawSocket,
     tcp::TcpSocket,
     udp::UdpSocket,
@@ -180,6 +180,8 @@ pub enum IpCmsg {
 /// `recvmsg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketCmsg {
+    /// Sender credentials requested with `SO_PASSCRED`.
+    Credentials(UnixCredentials),
     /// Wall-clock receive timestamp requested with `SO_TIMESTAMP`.
     Timestamp(Duration),
 }
@@ -195,6 +197,8 @@ pub struct SendOptions {
     pub flags: SendFlags,
     /// Ancillary control messages.
     pub cmsg: Vec<CMsgData>,
+    /// Real credentials of the task performing this send operation.
+    pub sender_credentials: Option<UnixCredentials>,
 }
 
 /// Options for receiving data from a socket.

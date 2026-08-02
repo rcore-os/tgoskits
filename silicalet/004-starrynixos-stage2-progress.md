@@ -1790,6 +1790,213 @@ systemd-journald.service: start operation timed out. Terminating.
 日志位于 `.ci-cache/tmp/starrynixos-after-so-acceptconn.log`。
 `STARRY_NIXOS_SYSTEM_PASSED` 未出现，T028 保持未完成。
 
+### 7.17 systemd notification credential 红测设计（2026-08-02）
+
+真实 workload 越过 Varlink listener 后连续报告：
+
+```text
+Received handoff timestamp message without valid credentials. Ignoring.
+Got notification datagram lacking valid credential information, ignoring.
+```
+
+固定 systemd v260.2 commit
+`f1d0952a125b96b7ab2f1ff29a87448ade8ac29b` 的对应调用链已经确认：
+
+- `src/core/manager.c` 为 handoff timestamp `AF_UNIX/SOCK_DGRAM`
+  socketpair 的接收端启用 `SO_PASSCRED`；
+- 同文件为 service notification pathname datagram socket 启用
+  `SO_PASSCRED`；
+- `manager_dispatch_handoff_timestamp()` 从 `recvmsg` 控制消息查找
+  `SOL_SOCKET/SCM_CREDENTIALS`，缺失或 PID 无效时打印第一条诊断；
+- `src/shared/notify-recv.c:notify_recv_with_fds()` 同样要求有效
+  `SCM_CREDENTIALS`，缺失时打印第二条诊断；
+- journald 的 syslog/native datagram sockets 也启用 `SO_PASSCRED` 并使用
+  同一 `struct ucred` 布局。
+
+Starry 当前实现存在可直接验证的语义缺口：
+
+- Unix stream/datagram 的 `SetSocketOption::PassCredentials` 为空分支，没有保存
+  receiver 状态；
+- `GetSocketOption::PassCredentials` 不写回实际值；
+- Unix packet 只保存 payload、显式 cmsg、sender address 和 timestamp，没有
+  发送时 credential snapshot；
+- syscall `recvmsg` 只序列化 `SCM_RIGHTS`、IP cmsg 和 `SCM_TIMESTAMP`，没有
+  `SCM_CREDENTIALS`。
+
+因此下一步新增
+`test-suit/starryos/qemu/system/bugfix-unix-passcred/`，先用同一 C 程序执行
+Linux oracle，再在当前 Starry 建立确定红灯。测试范围限定为 systemd 当前使用的
+Unix datagram 自动 credential 传递：
+
+- `SO_PASSCRED` 初始值、启用回读和禁用回读；
+- socketpair 在 `fork()` 后由 child 发送，receiver 必须得到发送时 child 的
+  PID、real UID 和 real GID，不能使用 socket 创建者 PID；
+- `MSG_PEEK` 和随后消费同一 datagram 都必须观察相同 credential；
+- receiver 启用 `SO_PASSCRED` 但控制缓冲区为零时必须设置 `MSG_CTRUNC`；
+- 禁用后普通 datagram 不应携带 `SCM_CREDENTIALS`。
+
+显式发送自定义 `SCM_CREDENTIALS` 涉及 capability、PID namespace 和
+credential override 校验，不是当前 systemd 诊断的必要前提，本红测不扩展到该
+独立语义。只有 Linux oracle 通过且当前 Starry 在上述自动传递路径确定失败后，
+才修改 `ax-net`/syscall cmsg 边界。
+
+Podman 中的 Linux oracle 已通过全部 23 项：
+
+```text
+=== Results: 23 passed, 0 failed ===
+STARRY_UNIX_PASSCRED_PASSED
+```
+
+测试第一次进入 grouped C 交叉构建时，musl 的 `CMSG_NXTHDR` 宏在项目
+`-Werror` 下触发 `-Wsign-compare`。由于测试控制缓冲区只容纳一个
+`struct ucred`，测试改为直接验证 `CMSG_FIRSTHDR`；修正后重新执行 Linux
+oracle 仍为 23/23。
+
+当前 Starry 的同一测试得到确定红灯：
+
+```text
+PASS: SO_PASSCRED is disabled initially
+PASS: enable SO_PASSCRED on receiver
+FAIL: SO_PASSCRED enable state reads back
+PASS: receive first child datagram
+FAIL: receive SCM_CREDENTIALS automatically
+FAIL: SCM_CREDENTIALS reports sending child PID
+FAIL: SCM_CREDENTIALS reports sender real UID
+FAIL: SCM_CREDENTIALS reports sender real GID
+FAIL: MSG_PEEK reports credentials
+FAIL: MSG_PEEK preserves sender PID
+FAIL: consume after MSG_PEEK reports credentials
+FAIL: peek and consume report identical credentials
+PASS: receive datagram without control buffer
+FAIL: missing credential control space sets MSG_CTRUNC
+PASS: SO_PASSCRED disable state reads back
+PASS: disabled SO_PASSCRED emits no credentials
+=== Results: 13 passed, 10 failed ===
+```
+
+因此修改范围已经收敛到：
+
+1. receiver-owned `SO_PASSCRED` 状态及其 get/set；
+2. 每次 send syscall 取得发送线程的 real PID/UID/GID snapshot；
+3. Unix 消息在目标 receiver 启用该选项时附加自动 credential cmsg；
+4. syscall `recvmsg` 将内部 credential cmsg 序列化为
+   `SOL_SOCKET/SCM_CREDENTIALS`；
+5. 控制缓冲区容不下自动 credential 时设置 `MSG_CTRUNC`。
+
+不得使用 socket 创建者 PID 代替发送时 PID，也不得在 syscall receive 层查询
+当前 receiver credential 伪造 sender identity。
+
+### 7.18 Unix passcred 首轮修复验证与真实 workload 差分（2026-08-02）
+
+上述聚焦用例已从 13/23 转为全部通过：
+
+```text
+=== Results: 23 passed, 0 failed ===
+STARRY_UNIX_PASSCRED_PASSED
+STARRY_GROUPED_TESTS_PASSED
+```
+
+当前实现完成了 receiver-owned `SO_PASSCRED` get/set、发送时 real
+PID/UID/GID snapshot、Unix datagram/seqpacket/stream 自动
+`SCM_CREDENTIALS`、`MSG_PEEK` 保留和 `MSG_CTRUNC`。质量门禁及相邻回归均
+通过：
+
+```text
+ax-net targeted clippy: 3/3 checks passed
+starry-kernel targeted clippy: 25/25 checks passed
+qemu/system/syscall-test-cmsg-cloexec: 62/62
+qemu/system/test-unix-cmsg-byte-marks: passed
+qemu/system/test-unix-msg-peek: 16/16
+qemu/system/syscall-test-seqpacket: 73/73
+```
+
+真实 StarryNixOS app 复跑仍报告：
+
+```text
+Received handoff timestamp message without valid credentials. Ignoring.
+```
+
+固定 systemd v260.2 源码进一步确认 handoff sender 在
+`src/core/exec-invoke.c` 使用 `write(handoff_timestamp_fd, ...)`，而不是
+`send(2)`/`sendmsg(2)`。Starry 的普通 `write(2)` 当前通过
+`Socket::write -> send(..., SendOptions::default())`，没有注入发送线程
+credential；现有聚焦用例的 child sender 则使用 `send(2)`，因此首轮绿测没有
+覆盖 systemd 的实际发送入口。
+
+下一步在同一用例增加 Unix datagram socket 上的直接 `write(2)` credential
+断言，先确认 Linux oracle 通过且当前 Starry 稳定失败，再让 socket file
+`write(2)` 复用与 send syscall 相同的发送 credential snapshot。该差分闭环和
+真实 app 越界完成前，本分类不提交，T028 保持未完成。
+
+该扩展测试现已形成预期差分：
+
+```text
+Linux oracle: 26 passed, 0 failed
+Starry before fix: 24 passed, 2 failed
+FAIL: write(2) automatically reports SCM_CREDENTIALS
+FAIL: write(2) credentials report sending child PID
+```
+
+红测日志为 `.ci-cache/tmp/unix-passcred-write-red.log`。修复将当前线程的 real
+PID/UID/GID snapshot 集中到 `Socket::with_current_sender_credentials()`，
+`send*` syscall 和 socket file `write(2)`/`writev(2)` 都通过该边界构造
+`SendOptions`；后续必须重新完成聚焦测试、Clippy、相邻回归和真实 NixOS app
+验证。
+
+聚焦修复后已转绿：
+
+```text
+=== Results: 26 passed, 0 failed ===
+STARRY_UNIX_PASSCRED_PASSED
+STARRY_GROUPED_TESTS_PASSED
+```
+
+日志为 `.ci-cache/tmp/unix-passcred-write-green.log`。`cargo fmt --all -- --check`
+已通过；当前仍需完成受影响 crate 的 Clippy、相邻 socket 回归和真实 workload
+越界验证。
+
+`starry-kernel` targeted Clippy 随后通过全部 25 项检查，包含两个 aarch64
+system 配置；日志为
+`.ci-cache/tmp/unix-passcred-write-clippy-starry-kernel.log`。下一步继续执行
+相邻 Unix cmsg/peek/seqpacket 回归和真实 app。
+
+相邻 Unix socket QEMU 回归全部通过：
+
+```text
+syscall-test-cmsg-cloexec: 62 passed, 0 failed
+test-unix-cmsg-byte-marks: 18 passed, 0 failed
+test-unix-msg-peek: 16 passed, 0 failed
+syscall-test-seqpacket: 73 passed, 0 failed
+```
+
+日志为 `.ci-cache/tmp/unix-passcred-write-adjacent.log`。当前分类只剩真实
+StarryNixOS app 越界验证；`git diff --check` 已通过。
+
+真实 StarryNixOS app 已使用复用且重新校验的 NixOS rootfs 完成 240 秒有界
+复跑。完整日志计数为：
+
+```text
+Received handoff timestamp message without valid credentials: 0
+Got notification datagram lacking valid credential information: 0
+STARRY_NIXOS_SYSTEM_PASSED: 0
+```
+
+这证明 systemd 的 handoff `write(2)` 和 notification datagram 均已越过原始
+`SO_PASSCRED`/`SCM_CREDENTIALS` 触发边界。运行继续进入 systemd unit 启动事务，
+当前终态仍是：
+
+```text
+systemd-journalctl.socket: Starting timed out. Stopping.
+systemd-journalctl.socket: Failed with result 'timeout'.
+systemd-journald.service: start operation timed out. Terminating.
+systemd-sysctl.service: start operation timed out. Terminating.
+```
+
+外层有界运行以 124 结束；日志位于
+`.ci-cache/tmp/starrynixos-after-passcred-write.log`。因此 Unix passcred 分类
+满足独立提交条件，但完整 Stage-2 acceptance 仍未通过，T028 保持未完成。
+journald/sysctl timeout 是下一诊断边界，必须重新建立确定红测后再修改。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；

@@ -63,6 +63,8 @@ struct Channel {
     poll_update: Arc<PollSet>,
     /// Target receiver's `SO_TIMESTAMP` state.
     receive_timestamp: Arc<AtomicBool>,
+    /// Target receiver's `SO_PASSCRED` state.
+    receive_credentials: Arc<AtomicBool>,
 }
 
 pub struct Bind {
@@ -72,6 +74,8 @@ pub struct Bind {
     poll_update: Arc<PollSet>,
     /// Bound receiver's `SO_TIMESTAMP` state.
     receive_timestamp: Arc<AtomicBool>,
+    /// Bound receiver's `SO_PASSCRED` state.
+    receive_credentials: Arc<AtomicBool>,
 }
 impl Bind {
     fn connect(&self) -> Channel {
@@ -80,6 +84,7 @@ impl Bind {
             data_tx: tx,
             poll_update: self.poll_update.clone(),
             receive_timestamp: self.receive_timestamp.clone(),
+            receive_credentials: self.receive_credentials.clone(),
         }
     }
 }
@@ -96,6 +101,8 @@ struct SeqConnRequest {
     pid: u32,
     /// Timestamp state owned by the accepted server socket.
     receive_timestamp: Arc<AtomicBool>,
+    /// Passcred state owned by the accepted server socket.
+    receive_credentials: Arc<AtomicBool>,
 }
 
 /// Seqpacket listener published in the Unix namespace.
@@ -108,6 +115,8 @@ pub struct SeqBind {
     conn_tx: async_channel::Sender<SeqConnRequest>,
     poll_new_conn: Arc<PollSet>,
     listening: Arc<AtomicBool>,
+    /// Passcred state inherited by accepted transports.
+    receive_credentials: Arc<AtomicBool>,
 }
 impl SeqBind {
     /// Establish a connection: build a packet channel pair, hand the
@@ -117,6 +126,7 @@ impl SeqBind {
         addr: UnixSocketAddr,
         pid: u32,
         client_receive_timestamp: Arc<AtomicBool>,
+        client_receive_credentials: Arc<AtomicBool>,
     ) -> AxResult<(PacketRx, Channel)> {
         if !self.listening.load(Ordering::Acquire) {
             return Err(AxError::ConnectionRefused);
@@ -126,6 +136,9 @@ impl SeqBind {
         let poll1 = Arc::new(PollSet::new());
         let poll2 = Arc::new(PollSet::new());
         let server_receive_timestamp = Arc::new(AtomicBool::new(false));
+        let server_receive_credentials = Arc::new(AtomicBool::new(
+            self.receive_credentials.load(Ordering::Acquire),
+        ));
         self.conn_tx
             .try_send(SeqConnRequest {
                 data_rx: (rx2, poll2.clone()),
@@ -133,10 +146,12 @@ impl SeqBind {
                     data_tx: tx1,
                     poll_update: poll1.clone(),
                     receive_timestamp: client_receive_timestamp,
+                    receive_credentials: client_receive_credentials,
                 },
                 addr,
                 pid,
                 receive_timestamp: server_receive_timestamp.clone(),
+                receive_credentials: server_receive_credentials.clone(),
             })
             .map_err(|_| AxError::ConnectionRefused)?;
         // The connection request is queued before waking accept waiters.
@@ -147,6 +162,7 @@ impl SeqBind {
                 data_tx: tx2,
                 poll_update: poll2,
                 receive_timestamp: server_receive_timestamp,
+                receive_credentials: server_receive_credentials,
             },
         ))
     }
@@ -180,6 +196,9 @@ pub struct DgramTransport {
     /// Per-receiver `SO_TIMESTAMP` state shared with channels targeting this
     /// socket.
     receive_timestamp: Arc<AtomicBool>,
+    /// Per-receiver `SO_PASSCRED` state shared with channels targeting this
+    /// socket.
+    receive_credentials: Arc<AtomicBool>,
     /// Creator pid used for SO_PEERCRED-style reporting.
     pid: u32,
 }
@@ -210,6 +229,7 @@ impl DgramTransport {
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
             receive_timestamp: Arc::new(AtomicBool::new(false)),
+            receive_credentials: Arc::new(AtomicBool::new(false)),
             pid,
         }
     }
@@ -220,6 +240,7 @@ impl DgramTransport {
         pid: u32,
         socket_type: i32,
         receive_timestamp: Arc<AtomicBool>,
+        receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         DgramTransport {
             data_rx: Mutex::new(Some(data_rx)),
@@ -232,6 +253,7 @@ impl DgramTransport {
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
             receive_timestamp,
+            receive_credentials,
             pid,
         }
     }
@@ -253,16 +275,20 @@ impl DgramTransport {
         let poll2 = Arc::new(PollSet::new());
         let timestamp1 = Arc::new(AtomicBool::new(false));
         let timestamp2 = Arc::new(AtomicBool::new(false));
+        let credentials1 = Arc::new(AtomicBool::new(false));
+        let credentials2 = Arc::new(AtomicBool::new(false));
         let transport1 = DgramTransport::new_connected(
             (rx1, poll1.clone()),
             Channel {
                 data_tx: tx2,
                 poll_update: poll2.clone(),
                 receive_timestamp: timestamp2.clone(),
+                receive_credentials: credentials2.clone(),
             },
             pid,
             socket_type,
             timestamp1.clone(),
+            credentials1.clone(),
         );
         let transport2 = DgramTransport::new_connected(
             (rx2, poll2.clone()),
@@ -270,10 +296,12 @@ impl DgramTransport {
                 data_tx: tx1,
                 poll_update: poll1.clone(),
                 receive_timestamp: timestamp1,
+                receive_credentials: credentials1,
             },
             pid,
             socket_type,
             timestamp2,
+            credentials2,
         );
         (transport1, transport2)
     }
@@ -288,7 +316,9 @@ impl Configurable for DgramTransport {
         }
 
         match opt {
-            O::PassCredentials(_) => {}
+            O::PassCredentials(enabled) => {
+                **enabled = self.receive_credentials.load(Ordering::Acquire);
+            }
             O::ReceiveTimestamp(enabled) => {
                 **enabled = self.receive_timestamp.load(Ordering::Acquire);
             }
@@ -311,7 +341,9 @@ impl Configurable for DgramTransport {
         }
 
         match opt {
-            O::PassCredentials(_) => {}
+            O::PassCredentials(enabled) => {
+                self.receive_credentials.store(*enabled, Ordering::Release);
+            }
             O::ReceiveTimestamp(enabled) => {
                 self.receive_timestamp.store(*enabled, Ordering::Release);
             }
@@ -339,6 +371,7 @@ impl TransportOps for DgramTransport {
                 conn_tx: tx,
                 poll_new_conn: poll.clone(),
                 listening: self.listening.clone(),
+                receive_credentials: self.receive_credentials.clone(),
             });
             *guard = Some((rx, poll));
             self.local_addr.write().clone_from(local_addr);
@@ -361,6 +394,7 @@ impl TransportOps for DgramTransport {
             data_tx: tx,
             poll_update: poll_update.clone(),
             receive_timestamp: self.receive_timestamp.clone(),
+            receive_credentials: self.receive_credentials.clone(),
         });
         *guard = Some((rx, poll_update));
         self.local_addr.write().clone_from(local_addr);
@@ -399,7 +433,12 @@ impl TransportOps for DgramTransport {
                 .lock()
                 .as_ref()
                 .ok_or(AxError::ConnectionRefused)?
-                .connect(client_addr, self.pid, self.receive_timestamp.clone())?;
+                .connect(
+                    client_addr,
+                    self.pid,
+                    self.receive_timestamp.clone(),
+                    self.receive_credentials.clone(),
+                )?;
             *self.data_rx.lock() = Some(client_rx);
             *self.connected.write() = Some(client_chan);
             unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
@@ -443,6 +482,7 @@ impl TransportOps for DgramTransport {
             req.pid,
             5,
             req.receive_timestamp,
+            req.receive_credentials,
         );
         Ok((Transport::Dgram(transport), req.addr))
     }
@@ -470,6 +510,7 @@ impl TransportOps for DgramTransport {
                     req.pid,
                     5,
                     req.receive_timestamp,
+                    req.receive_credentials,
                 );
                 Ok((Transport::Dgram(transport), req.addr))
             }
@@ -495,12 +536,18 @@ impl TransportOps for DgramTransport {
         }
         let len = message.len();
         let sender = self.local_addr.read().clone();
-        let cmsg = options.cmsg;
+        let mut cmsg = options.cmsg;
+        let sender_credentials = options.sender_credentials;
 
         let wake_poll = if let Some(addr) = options.to {
             let addr = addr.into_unix()?;
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
+                    if bind.receive_credentials.load(Ordering::Acquire)
+                        && let Some(credentials) = sender_credentials
+                    {
+                        cmsg.push(Box::new(SocketCmsg::Credentials(credentials)));
+                    }
                     let packet = Packet {
                         data: message,
                         cmsg,
@@ -519,6 +566,11 @@ impl TransportOps for DgramTransport {
                 }
             })?
         } else if let Some(chan) = self.connected.read().as_ref() {
+            if chan.receive_credentials.load(Ordering::Acquire)
+                && let Some(credentials) = sender_credentials
+            {
+                cmsg.push(Box::new(SocketCmsg::Credentials(credentials)));
+            }
             let packet = Packet {
                 data: message,
                 cmsg,
