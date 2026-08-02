@@ -262,6 +262,7 @@ macro_rules! call_dispatch {
             (SOL_SOCKET, SO_RCVTIMEO) => ReceiveTimeout as Duration,
             (SOL_SOCKET, SO_SNDTIMEO) => SendTimeout as Duration,
             (SOL_SOCKET, SO_PASSCRED) => PassCredentials as IntBool, // TODO: set accepted but no-op for non-unix
+            (SOL_SOCKET, SO_TIMESTAMP) => ReceiveTimestamp as IntBool,
             (SOL_SOCKET, SO_PEERCRED) => PeerCredentials as Ucred,
             (SOL_SOCKET, SO_TYPE) => SocketType as Int<i32>,       // read-only
             (SOL_SOCKET, SO_PROTOCOL) => SocketProtocol as Int<i32>,// read-only

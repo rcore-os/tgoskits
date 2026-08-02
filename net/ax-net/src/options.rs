@@ -172,6 +172,7 @@ define_options! {
     ReceiveTimeout(Duration),
     SendBufferForce(usize),
     PassCredentials(bool),
+    ReceiveTimestamp(bool),
     PeerCredentials(UnixCredentials),
     SocketType(i32),
     SocketProtocol(i32),

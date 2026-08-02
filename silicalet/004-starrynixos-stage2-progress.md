@@ -894,6 +894,15 @@ unit 的超时/协议缺口阻塞；本轮有界运行在等待终态时被用�
 成果，避免把 StarryNixOS app、Stage 2 marker 或个人 `.envrc`/`.gitignore`
 改动混入提交。
 
+2026-08-02 复核发现，该策略此前只记录在本文档，正式 SpecKit 工件中尚未
+体现，且 `plan.md` 仍保留“No commit or PR is part of this plan”的旧表述。
+现已同步到 `spec.md`、`plan.md` 和 `tasks.md`：Linux ABI 修复须完成确定红测、
+语义修复、同一回归转绿、格式化与受影响 crate 的 targeted clippy；若修复由
+StarryNixOS 实际启动发现，还须确认真实启动越过对应首个失败边界。满足这些
+门槛的独立改动可用 `git commit --no-gpg-sign` 分类提交；未通过、仍在验证或
+与该成果无关的工作区改动不得混入提交。最终 marker 未出现只阻止 T028/整体
+Stage 2 完成，不阻止已经独立闭环的兼容性修复提交。
+
 pidfd fdinfo 分类已普通提交为 `11790a00e`
 (`fix(starry-fs): expose pidfd fdinfo metadata`)。首次未显式禁用签名时被
 `commit.gpgsign=true` 自动触发 GPG pinentry 并超时，未产生提交；随后使用
@@ -1336,6 +1345,154 @@ Task(89, "systemd-journald") exit with code: 256
 运行。因此 capability drop 分类已经满足独立提交条件；新的 owning boundary
 转移到 socket `SO_TIMESTAMP` 支持。`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，
 T028 保持未完成，下一分类必须先为 `SO_TIMESTAMP` 建立确定红测。
+
+### 7.13 `SO_TIMESTAMP` Linux 语义与红测设计（2026-08-02）
+
+当前 journald 首个失败是
+`setsockopt(syslog_fd, SOL_SOCKET, SO_TIMESTAMP, 1)` 返回
+`ENOPROTOOPT`。本轮以 Linux v6.18 固定提交
+`7d0a66e4bb9081d75c82ec4957c50034cb0ea449` 为语义基线：
+
+- `net/core/sock.c::sock_set_timestamp()` 维护每 socket 的
+  `SOCK_RCVTSTAMP` 状态，`getsockopt(SO_TIMESTAMP)` 只在同一旧 timeval
+  ABI 选项启用时返回真；
+- `net/unix/af_unix.c::unix_dgram_sendmsg()` 在接收端当时启用
+  `SO_TIMESTAMP` 时，于 skb 加入接收队列之前调用 `__net_timestamp()`；
+- `unix_dgram_recvmsg()` 在接收端仍启用该选项时，通过
+  `__sock_recv_timestamp()` 输出 `SOL_SOCKET/SCM_TIMESTAMP`，body 为
+  `struct timeval`；若启用与报文接收并发、skb 尚无时间戳，Linux 明确在
+  `__sock_recv_timestamp()` 中以当前时间补戳；`MSG_PEEK` 对同一排队报文
+  重复返回同一时间戳；
+- x86_64 UAPI 中 `SO_TIMESTAMP == SO_TIMESTAMP_OLD == 29`，
+  `SCM_TIMESTAMP == SO_TIMESTAMP`。
+
+Starry 当前 `ax-net` Unix `DgramTransport::Packet` 已拥有数据报 payload、
+原有 cmsg 和发送者地址，且 send 路径在 `try_send(packet)` 后才唤醒接收端；
+因此真实入队时间应保存在该 Packet 中。备选方案“在 `recvmsg` 返回时调用
+`wall_time()`”会把所有读取时间伪装为接收时间，已排除；但 Linux 对
+“关闭时入队、读取前启用”的竞争窗口确实要求读取时补戳，因此实现必须区分
+正常入队时间和该有界 fallback。把 Starry syscall 时间对象反向注入通用网络层
+也没有必要，因为 `ax-net` 已依赖 `ax-hal`，可以在 Unix transport 入队边界
+取得墙钟时间。
+
+计划新增聚焦回归
+`test-suit/starryos/qemu/system/bugfix-socket-timestamp/`，验证：
+
+1. Unix datagram socket 的 `SO_TIMESTAMP` 初始关闭，可启用、读回和关闭；
+2. 启用后，排队报文的 `recvmsg` 返回合法
+   `SOL_SOCKET/SCM_TIMESTAMP` `struct timeval`；
+3. 发送后延迟读取，时间戳仍落在发送/入队窗口，而不是读取时刻；
+4. 关闭时入队、读取前再启用的报文按 Linux race fallback 获得读取时补戳；
+5. 启用时入队但读取前关闭时不交付时间戳；
+6. `MSG_PEEK` 与随后消费同一报文时返回完全相同的时间戳。
+
+先在宿主 Linux 运行同一测试确认 oracle，再用 Podman + `.ci-cache` 在当前
+Starry 内核取得确定红测。红灯成立前不修改 socket 实现，也不提交该分类。
+
+宿主 Linux oracle 已通过全部 30 个断言：
+
+```text
+=== Results: 30 passed, 0 failed ===
+STARRY_SOCKET_TIMESTAMP_PASSED
+STARRY_GROUPED_TEST_PASSED: bugfix-socket-timestamp
+```
+
+首次 Podman 构建因 musl 的 `CMSG_NXTHDR` 宏在 `-Werror` 下产生
+signedness warning，尚未进入 QEMU。测试只允许并期待一个 timestamp cmsg，
+因此改为直接检查 `CMSG_FIRSTHDR`，避免引入与测试目标无关的宏告警；修正后
+同一 Linux oracle 仍为 30/30。
+
+随后 Podman + `.ci-cache` 聚焦 Starry QEMU 回归已取得确定红灯，测试确实
+进入 guest，且失败精确来自尚未实现的 `SO_TIMESTAMP`：
+
+```text
+FAIL: SO_TIMESTAMP defaults to disabled: value=-1 len=4 errno=92 (Protocol not available)
+FAIL: enable SO_TIMESTAMP: errno=92 (Protocol not available)
+FAIL: SO_TIMESTAMP reports enabled: value=-1 len=4 errno=92 (Protocol not available)
+...
+=== Results: 14 passed, 11 failed ===
+STARRY_SYSTEM_TEST_FAILED: /usr/bin/starry-test-suit/bugfix-socket-timestamp status=1
+result: 0/1 case(s) passed
+```
+
+基础 Unix datagram 的发送、接收、关闭状态无 cmsg、排队和 `MSG_PEEK`
+数据路径均能运行；11 个失败覆盖 option round-trip、timestamp cmsg、
+enable-after-enqueue fallback 和 peek/consume timestamp 一致性。因此红测
+已把实现边界限制在 Unix datagram/seqpacket 的 socket option、Packet 入队
+时间元数据和 syscall cmsg 序列化，不需要改 matcher 或掩盖其他错误。
+
+实现已保持在上述边界内：
+
+- `ax-net` 新增通用 socket-level timestamp ancillary payload，但只有 Unix
+  datagram/seqpacket transport 接受 `ReceiveTimestamp` option；
+- 每个接收端持有独立的原子开关，`Bind`/`Channel` 只引用目标接收端状态；
+- Packet 在 `try_send` 前按目标接收端当时状态保存 `wall_time()`；
+- recv 时按当前开关决定是否交付；若开启但 Packet 无时间戳，只执行 Linux
+  定义的 enable-after-enqueue fallback，并把补戳写回 Packet；
+- syscall 层将该内部元数据序列化为
+  `SOL_SOCKET/SCM_TIMESTAMP` `struct timeval`。
+
+Podman + `.ci-cache` 质量门槛已通过：
+
+```text
+cargo fmt --all
+ax-net clippy: 3/3 checks passed
+starry-kernel clippy: 25/25 checks passed
+```
+
+同一 Starry QEMU 聚焦回归已由红转绿：
+
+```text
+=== Results: 30 passed, 0 failed ===
+STARRY_SOCKET_TIMESTAMP_PASSED
+STARRY_GROUPED_TEST_PASSED: bugfix-socket-timestamp
+STARRY_GROUPED_TESTS_PASSED
+result: 1/1 case(s) passed
+```
+
+这证明 option round-trip、正常入队时间、关闭时不交付、
+enable-after-enqueue fallback、enable-then-disable 抑制，以及
+`MSG_PEEK`/消费同一时间戳均符合固定 Linux oracle。接下来复跑现有 Unix
+ancillary/seqpacket 回归，再用真实 NixOS app 确认 journald 越过该边界；
+在真实工作负载证据取得前不提交此分类。
+
+相邻既有回归也已在同一 Podman 环境顺序通过：
+
+```text
+bugfix-bug-recv-qos-cmsg: 27 passed, 0 failed
+syscall-test-seqpacket: 73 passed, 0 failed
+```
+
+前者确认新增 socket-level cmsg downcast 未破坏 IPv4 `IP_TOS` 和 IPv6
+`IPV6_TCLASS` ancillary 交付；后者确认新增接收端 timestamp 状态未破坏
+seqpacket 的消息边界、截断、`MSG_PEEK`、connect/accept、`SCM_RIGHTS`
+和 `MSG_CMSG_CLOEXEC` 语义。当前剩余提交门槛仅为真实 NixOS app 越过
+journald `SO_TIMESTAMP` 初始化边界。
+
+真实 app 已使用 manifest 校验后的既有 rootfs 复跑：
+
+```text
+STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64
+```
+
+日志保存为
+`.ci-cache/tmp/starrynixos-after-so-timestamp.log`。本轮不再出现
+`Failed to enable SO_TIMESTAMP: Protocol not available`；journald 已继续到：
+
+```text
+systemd-journald[89]: 1 unknown file descriptors passed, closing.
+systemd-journald[89]: Collecting audit messages is disabled.
+systemd-journald[89]: Failed to open /proc/sys/kernel/hostname: No such file or directory
+Task(89, "systemd-journald") exit with code: 256
+```
+
+因此 `SO_TIMESTAMP` 分类已同时满足确定红绿回归、Linux oracle、格式化、
+两个 owning crate 的 clippy、相邻 ancillary/seqpacket 回归和真实工作负载
+越界证据，可以作为独立绿色成果提交。新的首个 owning boundary 是 procfs
+sysctl `/proc/sys/kernel/hostname`；本轮在取得该证据后停止容器，避免
+`efi_pstore`、`drm`、`fuse` 等无期限 start jobs 继续运行。
+`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，T028 保持未完成；下一分类仍须先建
+确定红测。
 
 ## 8. 关联文档
 

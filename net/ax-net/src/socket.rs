@@ -24,6 +24,7 @@ use core::{
     fmt::{self, Debug},
     net::SocketAddr,
     task::Context,
+    time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -173,6 +174,14 @@ pub enum IpCmsg {
     Ipv4Tos(u8),
     /// IPv6 traffic-class byte for `IPV6_RECVTCLASS`.
     Ipv6TrafficClass(u8),
+}
+
+/// Transport-independent socket-level ancillary data reported through
+/// `recvmsg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketCmsg {
+    /// Wall-clock receive timestamp requested with `SO_TIMESTAMP`.
+    Timestamp(Duration),
 }
 
 /// Options for sending data to a socket.
