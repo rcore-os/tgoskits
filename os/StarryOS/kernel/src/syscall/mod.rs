@@ -486,6 +486,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
             uctx.arg4() as _,
         ),
+        Sysno::mount_setattr => sys_mount_setattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
 
         // pipe
         Sysno::pipe2 => sys_pipe2(uctx.arg0() as _, uctx.arg1() as _),
