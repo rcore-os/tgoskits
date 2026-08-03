@@ -22,6 +22,17 @@ impl InitialContextState {
             fp_state: None,
         }
     }
+
+    #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
+    pub(super) fn user_with_fp_state(
+        address_space: TaskAddressSpace,
+        fp_state: ax_hal::cpu::FpState,
+    ) -> Self {
+        Self {
+            address_space: Some(address_space),
+            fp_state: Some(fp_state),
+        }
+    }
 }
 
 pub(super) fn create_idle_resources() -> ThreadResources {

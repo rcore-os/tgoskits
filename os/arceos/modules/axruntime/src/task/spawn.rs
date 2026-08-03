@@ -243,10 +243,7 @@ where
             os_extension,
             None,
             SchedulePolicy::default(),
-            InitialContextState {
-                address_space: address_space.0,
-                fp_state: Some(fp_state),
-            },
+            InitialContextState::user_with_fp_state(address_space, fp_state),
         )
     }
 }
@@ -280,10 +277,7 @@ where
             os_extension,
             None,
             policy,
-            InitialContextState {
-                address_space: address_space.0,
-                fp_state: Some(fp_state),
-            },
+            InitialContextState::user_with_fp_state(address_space, fp_state),
         )
     }
 }
@@ -315,10 +309,7 @@ where
             os_extension,
             None,
             policy,
-            InitialContextState {
-                address_space: address_space.0,
-                fp_state: Some(fp_state),
-            },
+            InitialContextState::user_with_fp_state(address_space, fp_state),
         )
     }
 }
