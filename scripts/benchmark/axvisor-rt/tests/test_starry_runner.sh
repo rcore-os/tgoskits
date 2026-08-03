@@ -12,6 +12,7 @@ harvest_runner=$benchmark_dir/harvest-starry-board.sh
 guest_runner=$benchmark_dir/guest/starry_rt_compat_run.sh
 capture_runner=$benchmark_dir/guest/starry_rt_capture_run.sh
 irq_analyzer=$benchmark_dir/analyze_irq_trace.py
+stress_aggregator=$benchmark_dir/aggregate_starry_stress.py
 config_dir=$benchmark_dir/config
 noise_source=$benchmark_dir/guest/aarch64_rt_noise.S
 noise_shared_config=$config_dir/aarch64-rt-noise-shared.toml
@@ -44,6 +45,7 @@ bash -n "$harvest_runner"
 sh -n "$guest_runner"
 sh -n "$capture_runner"
 python3 -m py_compile "$irq_analyzer"
+python3 -m py_compile "$stress_aggregator"
 
 grep -q 'mrs.*cntvct_el0' "$noise_source" || \
     fail "noise guest must use the guest virtual counter for a bounded run"

@@ -205,6 +205,28 @@ worst-of-runs. Passing `five_pair_matrix_gate_met` does not set
 `m2_exit_gate_met`: the latter remains false until the separately required
 shared and partitioned soak evidence is collected and checked.
 
+The formal guest CPU-stress campaign is a separate stability and coverage
+matrix. It uses the standard two-vCPU shared and partitioned VM configs, keeps
+host interference disabled, pins the measurement task to guest CPU 0 and the
+harness-controlled busy loop to guest CPU 1, and collects 10,000 samples per
+guest metric in the preregistered `AB/BA/AB/BA/AB` order. Aggregate the five
+pair comparisons together with their adjacent `shared/summary.json` and
+`partitioned/summary.json` files:
+
+```sh
+python3 scripts/benchmark/axvisor-rt/aggregate_starry_stress.py \
+  pair-1/comparison.json pair-2/comparison.json pair-3/comparison.json \
+  pair-4/comparison.json pair-5/comparison.json \
+  --output stress-campaign-summary.json
+```
+
+The stress aggregate requires clean snapshot fsck state, unique raw and trace
+hashes, lossless host/guest IRQ traces, fixed vCPU0/vCPU1 masks `0x2`/`0x4`,
+zero vCPU migration, and the standard non-soak VM configs. Passing
+`formal_stress_coverage_met` does not authorize an isolation-benefit claim:
+the CPU 1 load runs inside the measured StarryOS VM and therefore validates
+sustained-load stability rather than the cross-VM isolation treatment.
+
 The soak is a separate long-duration contract, not a larger copy of the 1 ms
 matrix. Run `prepare-starry-soak.sh` from a clean commit. It preserves 10,000
 samples per metric and uses a 90 ms period for the two timer-paced metrics, so
