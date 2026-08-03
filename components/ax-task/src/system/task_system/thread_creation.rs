@@ -160,6 +160,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         spec: ThreadSpec,
     ) -> Result<ThreadHandle, TaskError> {
+        let unpublished = UnpublishedThreadGuard::new(self, spec);
         self.ensure_owner_cpu_context(&cpu)?;
         {
             let state = self.state.lock();
@@ -172,7 +173,7 @@ impl TaskSystem {
             }
         }
 
-        let thread = self.create_thread(spec)?;
+        let thread = self.create_thread(unpublished.into_spec())?;
         let setup = (|| {
             let state = self.state.lock();
             let record = state.thread_record(thread.id())?;
@@ -208,9 +209,10 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         spec: ThreadSpec,
     ) -> Result<ThreadHandle, TaskError> {
+        let unpublished = UnpublishedThreadGuard::new(self, spec);
         self.ensure_owner_cpu_context(&cpu)?;
         if !matches!(
-            spec.policy(),
+            unpublished.spec().policy(),
             SchedulePolicy::Fair {
                 mode: crate::FairMode::Idle,
                 ..
@@ -229,7 +231,7 @@ impl TaskSystem {
             }
         }
 
-        let thread = self.create_thread(spec)?;
+        let thread = self.create_thread(unpublished.into_spec())?;
         let setup = self.make_ready(thread.id()).and_then(|()| {
             let state = self.state.lock();
             let core = Arc::clone(&state.thread_record(thread.id())?.core);

@@ -371,6 +371,14 @@ timer IRQ 顺序：
 
 物理 timer 是加速路径，不是唯一正确性来源。scheduler safe point 会有界提升已经过期的 task deadline，避免丢失或过晚的硬件边永久挂起 sleeper。
 
+Linux 在 `dequeue_task_dl()`、`inactive_task_timer()` 与 switch-tail 的
+`task_dead` 回调中，都由持有对应 rq 所有权的一侧移除 Deadline bandwidth；任务退出侧
+不能越过 rq owner 直接修改计账。TGOSKits 同样把阻塞线程的 reservation 清理投递给
+原 owner CPU。退出事务若为阻止新调度访问而暂时关闭 scheduler activity gate，必须先
+放弃该排他 permit、重新开放普通 owner-control publication，再发布清理请求；不能让
+退出路径通过普通入口向自己已经关闭的 gate 投递消息。registry 回收继续等待 bandwidth
+和在途 delivery 同时归零。
+
 ## PI、等待与锁边界
 
 ### PI mutex
@@ -474,6 +482,8 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
 | switch 后 balance 竞争 | LoongArch `task-parallel` 偶发在已提交 `next` 后把一次 balance 事务竞争升级为 `0x53430001` fatal | balance 事务完整回滚后返回 `Retry`；本地切换继续，只有回滚失败才是 fatal |
+| 阻塞 Deadline 线程退出 | exit permit 先关闭 scheduler activity gate，再经普通入口发布 owner-rq cleanup；请求被自身 gate 必然拒绝，reservation 永久保留并持续返回 `ThreadBusy` | 记录 cleanup 后先释放排他 exit permit，再发布 owner-control；确定性测试要求一次 owner drain 物理移除 bandwidth 后才允许最终退出 |
+| bootstrap 前置校验失败 | CPU 已有 current 时在进入 `create_thread()` 资源事务前返回，传入的 context/stack/TLS/address-space 失去唯一销毁权 | `UnpublishedThreadGuard` 从 bootstrap/idle 入口第一行接管完整 `ThreadSpec`，所有前置失败与创建失败共用逆序释放路径 |
 | user/kthread 地址空间切换 | user -> blk worker -> same user 每次恢复 kernel root，再次写 CR3/SATP 并全量 flush | kthread 借用 per-CPU active mm；move-only token 和 active lease 将回收推迟到 switch-tail 后任务上下文 |
 | zombie 前地址空间回收 | 12 轮 SIGKILL/waitpid 后 scheduler token 仍绑在异步 reap 的 thread record，RISC-V `MemFree` 少约 304 MiB，完整组随后小对象 OOM | 每线程按 `exit_mm()` 顺序同步 detach task-mm；process slot 清理后再发布 zombie；RISC-V/x86_64 仅剩约 6/7 MiB 合法开销 |
 | active-mm 过期 readiness edge | `destroy_address_space()` 仍报告 `Active` 时也把回收计为成功；同一 token 在一个 pass 内重试 64 次并永久 yield | `AddressSpaceDestroyOutcome::Active` 只重新 arm waiter，不算 progress；下一次尝试必须由新的最后-CPU lease edge 驱动 |

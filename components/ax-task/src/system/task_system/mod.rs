@@ -77,7 +77,7 @@ use crate::{
 
 struct UnpublishedThreadGuard<'system> {
     system: &'system TaskSystem,
-    record: Option<DetachedThreadRecord>,
+    spec: Option<ThreadSpec>,
 }
 
 struct OwnerNext {
@@ -87,25 +87,38 @@ struct OwnerNext {
 
 impl<'system> UnpublishedThreadGuard<'system> {
     fn new(system: &'system TaskSystem, spec: ThreadSpec) -> Self {
-        let (extension, resources) = spec.into_owned_parts();
         Self {
             system,
-            record: Some(DetachedThreadRecord::new(resources, extension)),
+            spec: Some(spec),
         }
     }
 
     fn into_owned_parts(mut self) -> (Option<ThreadExtension>, ThreadResources) {
-        self.record
+        self.spec
             .take()
-            .expect("unpublished thread transaction must still own its record")
+            .expect("unpublished thread transaction must still own its specification")
             .into_owned_parts()
+    }
+
+    fn into_spec(mut self) -> ThreadSpec {
+        self.spec
+            .take()
+            .expect("unpublished thread transaction must still own its specification")
+    }
+
+    fn spec(&self) -> &ThreadSpec {
+        self.spec
+            .as_ref()
+            .expect("unpublished thread transaction must still own its specification")
     }
 }
 
 impl Drop for UnpublishedThreadGuard<'_> {
     fn drop(&mut self) {
-        if let Some(record) = self.record.take() {
-            self.system.release_unpublished_thread(record);
+        if let Some(spec) = self.spec.take() {
+            let (extension, resources) = spec.into_owned_parts();
+            self.system
+                .release_unpublished_thread(DetachedThreadRecord::new(resources, extension));
         }
     }
 }
