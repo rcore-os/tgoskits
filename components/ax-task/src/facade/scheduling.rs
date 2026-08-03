@@ -189,7 +189,7 @@ pub fn exit_current_thread() -> Result<(), TaskError> {
 
 /// A validated, thread-bound opportunity to publish exit completion.
 pub struct ExitPermit {
-    thread: ThreadId,
+    system: CurrentExitPermit,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -201,9 +201,9 @@ pub fn prepare_current_exit() -> Result<ExitPermit, TaskError> {
     let system = runtime_task_system()?;
     let now_ns = task_runtime::monotonic_ns();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    let thread = system.prepare_current_exit(cpu.as_mut(), now_ns)?;
+    let system = system.prepare_current_exit(cpu.as_mut(), now_ns)?;
     Ok(ExitPermit {
-        thread,
+        system,
         _not_send: PhantomData,
     })
 }
@@ -213,27 +213,22 @@ pub fn prepare_current_exit() -> Result<ExitPermit, TaskError> {
 /// Any failure after completion became externally visible is a fatal runtime
 /// invariant; this function therefore has no recoverable return path.
 pub fn commit_current_exit(permit: ExitPermit) -> ! {
+    let thread = permit.system.thread();
     let mut scheduler_frame =
         RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Exit, RuntimeSchedulerEntry::Task)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x4558_0010, permit.thread.as_u64() as _)
-            });
-    let system = runtime_task_system().unwrap_or_else(|_| {
-        task_runtime::fatal_invariant(0x4558_0011, permit.thread.as_u64() as _)
-    });
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0010, thread.as_u64() as _));
+    let system = runtime_task_system()
+        .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0011, thread.as_u64() as _));
     let now_ns = task_runtime::monotonic_ns();
     let decision = {
-        let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame).unwrap_or_else(|_| {
-            task_runtime::fatal_invariant(0x4558_0013, permit.thread.as_u64() as _)
-        });
-        if cpu.current() != Some(permit.thread) {
-            task_runtime::fatal_invariant(0x4558_0014, permit.thread.as_u64() as _);
+        let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0013, thread.as_u64() as _));
+        if cpu.current() != Some(thread) {
+            task_runtime::fatal_invariant(0x4558_0014, thread.as_u64() as _);
         }
         system
-            .exit_current(cpu.as_mut(), now_ns)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x4558_0015, permit.thread.as_u64() as _)
-            })
+            .commit_prepared_current_exit(cpu.as_mut(), permit.system, now_ns)
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0015, thread.as_u64() as _))
     };
     execute_switch_plan(&mut scheduler_frame, decision, now_ns);
     // An exited context is never re-enqueued, so returning here indicates a

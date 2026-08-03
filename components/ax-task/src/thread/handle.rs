@@ -2,6 +2,7 @@
 
 use alloc::sync::{Arc, Weak};
 use core::{
+    marker::PhantomData,
     mem::ManuallyDrop,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
@@ -11,6 +12,7 @@ use crate::{
     SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey, SchedulingUrgency, TaskError,
     ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxNode},
+    runtime::{PreemptGuardToken, task_runtime},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
 };
@@ -292,23 +294,48 @@ struct ThreadReapSignal {
 #[must_use = "the scheduler activity guard serializes owner delivery against exit"]
 pub(crate) struct ThreadSchedulerActivity<'thread> {
     core: &'thread ThreadCore,
+    preempt: PreemptGuardToken,
+    _not_send: PhantomData<*mut ()>,
 }
 
 impl Drop for ThreadSchedulerActivity<'_> {
     fn drop(&mut self) {
         self.core.finish_scheduler_activity();
+        release_scheduler_preempt(self.preempt);
     }
 }
 
-#[must_use = "the scheduler exit guard closes new owner delivery until exit commits"]
-pub(crate) struct ThreadSchedulerExit<'thread> {
-    core: &'thread ThreadCore,
+#[must_use = "the owned scheduler exit guard closes new activity until exit commits"]
+pub(crate) struct OwnedThreadSchedulerExit {
+    core: Arc<ThreadCore>,
+    preempt: PreemptGuardToken,
+    sealed: bool,
+    _not_send: PhantomData<*mut ()>,
 }
 
-impl Drop for ThreadSchedulerExit<'_> {
+impl OwnedThreadSchedulerExit {
+    pub(crate) fn seal(&mut self) {
+        self.sealed = true;
+    }
+}
+
+impl Drop for OwnedThreadSchedulerExit {
     fn drop(&mut self) {
-        self.core.finish_scheduler_exit();
+        if !self.sealed {
+            self.core.reopen_scheduler_activity();
+        }
+        release_scheduler_preempt(self.preempt);
     }
+}
+
+fn release_scheduler_preempt(token: PreemptGuardToken) {
+    if token.is_none() {
+        return;
+    }
+    // SAFETY: scheduler activity and exit guards are !Send and consume the
+    // exact token returned on this execution context after publishing their
+    // final gate state.
+    unsafe { task_runtime::preempt_guard_exit(token) };
 }
 
 #[must_use = "dropping the delivery lease makes an exited thread reapable"]
@@ -653,9 +680,11 @@ impl ThreadCore {
 
     /// Enters one owner-side delivery section that must not overlap exit.
     pub(crate) fn try_scheduler_activity(&self) -> Option<ThreadSchedulerActivity<'_>> {
+        let preempt = task_runtime::preempt_guard_enter();
         let mut observed = self.scheduler_activity_gate.load(Ordering::Acquire);
         loop {
             if observed & SCHEDULER_ACTIVITY_CLOSED != 0 {
+                release_scheduler_preempt(preempt);
                 return None;
             }
             assert!(
@@ -668,23 +697,32 @@ impl ThreadCore {
                 Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Some(ThreadSchedulerActivity { core: self }),
+                Ok(_) => {
+                    return Some(ThreadSchedulerActivity {
+                        core: self,
+                        preempt,
+                        _not_send: PhantomData,
+                    });
+                }
                 Err(updated) => observed = updated,
             }
         }
     }
 
-    /// Closes producer and owner delivery sections for one exit transition.
-    pub(crate) fn try_scheduler_exit(&self) -> Option<ThreadSchedulerExit<'_>> {
-        self.scheduler_activity_gate
-            .compare_exchange(
-                0,
-                SCHEDULER_ACTIVITY_CLOSED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .ok()
-            .map(|_| ThreadSchedulerExit { core: self })
+    pub(crate) fn close_owned_scheduler_activity(
+        self: &Arc<Self>,
+    ) -> Option<OwnedThreadSchedulerExit> {
+        let preempt = task_runtime::preempt_guard_enter();
+        if !self.close_scheduler_activity_gate() {
+            release_scheduler_preempt(preempt);
+            return None;
+        }
+        Some(OwnedThreadSchedulerExit {
+            core: Arc::clone(self),
+            preempt,
+            sealed: false,
+            _not_send: PhantomData,
+        })
     }
 
     pub(crate) fn cancel_reap_claim(&self) {
@@ -694,16 +732,39 @@ impl ThreadCore {
     fn finish_scheduler_activity(&self) {
         let previous = self.scheduler_activity_gate.fetch_sub(1, Ordering::Release);
         assert!(
-            previous != 0 && previous & SCHEDULER_ACTIVITY_CLOSED == 0,
+            previous & SCHEDULER_ACTIVITY_MAX_READERS != 0,
             "unbalanced scheduler activity guard"
         );
     }
 
-    fn finish_scheduler_exit(&self) {
+    fn close_scheduler_activity_gate(&self) -> bool {
+        let previous = self
+            .scheduler_activity_gate
+            .fetch_or(SCHEDULER_ACTIVITY_CLOSED, Ordering::AcqRel);
+        if previous & SCHEDULER_ACTIVITY_CLOSED != 0 {
+            return false;
+        }
+        // Activity guards disable task preemption before incrementing the
+        // reader count. Hard-IRQ and scheduler-frame callers are already
+        // non-preemptible. Waiting here is therefore the same bounded raw-lock
+        // handoff as Linux's task pi_lock: no sleeping owner can retain a
+        // reader indefinitely, and no new reader can enter after the close bit.
+        while self.scheduler_activity_gate.load(Ordering::Acquire) != SCHEDULER_ACTIVITY_CLOSED {
+            core::hint::spin_loop();
+        }
+        true
+    }
+
+    fn reopen_scheduler_activity(&self) {
         assert_eq!(
-            self.scheduler_activity_gate.swap(0, Ordering::Release),
-            SCHEDULER_ACTIVITY_CLOSED,
-            "unbalanced scheduler exit guard"
+            self.scheduler_activity_gate.compare_exchange(
+                SCHEDULER_ACTIVITY_CLOSED,
+                0,
+                Ordering::Release,
+                Ordering::Acquire,
+            ),
+            Ok(SCHEDULER_ACTIVITY_CLOSED),
+            "only a quiescent uncommitted exit may reopen scheduler activity"
         );
     }
 
@@ -1101,6 +1162,55 @@ mod tests {
         assert!(weak.upgrade().is_none());
         handle.core.cancel_reap_claim();
         assert!(weak.upgrade().is_some());
+    }
+
+    #[test]
+    fn scheduler_exit_closes_before_waiting_for_inflight_activity() {
+        let core = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
+        let activity = core
+            .try_scheduler_activity()
+            .expect("fresh thread must accept scheduler activity");
+        let closer_core = Arc::clone(&core);
+        let entered = Arc::new(AtomicBool::new(false));
+        let returned = Arc::new(AtomicBool::new(false));
+        let succeeded = Arc::new(AtomicBool::new(false));
+        let closer = {
+            let entered = Arc::clone(&entered);
+            let returned = Arc::clone(&returned);
+            let succeeded = Arc::clone(&succeeded);
+            std::thread::spawn(move || {
+                entered.store(true, Ordering::Release);
+                let exit = closer_core.close_owned_scheduler_activity();
+                succeeded.store(exit.is_some(), Ordering::Release);
+                returned.store(true, Ordering::Release);
+                drop(exit);
+            })
+        };
+
+        while !entered.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+        let closed_before_return = loop {
+            let gate = core.scheduler_activity_gate.load(Ordering::Acquire);
+            if gate & SCHEDULER_ACTIVITY_CLOSED != 0 {
+                break true;
+            }
+            if returned.load(Ordering::Acquire) {
+                break false;
+            }
+            core::hint::spin_loop();
+        };
+        drop(activity);
+        closer.join().unwrap();
+
+        assert!(
+            closed_before_return,
+            "exit must reject new activity before waiting for the old reader"
+        );
+        assert!(
+            succeeded.load(Ordering::Acquire),
+            "an in-flight reader is not a recoverable exit failure"
+        );
     }
 
     #[test]

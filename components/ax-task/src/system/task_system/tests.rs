@@ -2182,7 +2182,7 @@ fn exited_context_cannot_be_reaped_before_switch_tail() {
 }
 
 #[test]
-fn remote_affinity_published_after_exit_drain_is_a_late_noop() {
+fn prepared_exit_rejects_new_remote_affinity_delivery() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
     let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
@@ -2201,24 +2201,22 @@ fn remote_affinity_published_after_exit_drain_is_a_late_noop() {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
     }
 
-    system.drain_owner_work(cpu0.as_mut(), 0).unwrap();
+    let permit = system
+        .prepare_current_exit_inner(cpu0.as_mut(), 0, false)
+        .unwrap();
     let mut target_only = CpuSet::empty(2);
     assert!(target_only.insert(CpuId::new(1)));
     system.set_affinity(exiting_id, target_only).unwrap();
-    assert!(cpu0.has_remote_work());
+    assert!(
+        !cpu0.has_remote_work(),
+        "a prepared exit must reject new affinity delivery reservations"
+    );
 
     system
-        .commit_current_exit_after_owner_drain(cpu0.as_mut(), 1)
+        .commit_current_exit_after_owner_drain(cpu0.as_mut(), permit, 1)
         .unwrap();
     drop(exiting);
     system.complete_context_switch(cpu0.as_mut()).unwrap();
-    assert_eq!(
-        system.service_deferred_task_work(1).unwrap().processed(),
-        0,
-        "the in-flight affinity delivery must pin the exited record"
-    );
-
-    system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
     assert_eq!(cpu1.try_runnable_summary(), Some(0));
     let core = exiting_core
         .upgrade()
@@ -2238,12 +2236,12 @@ fn remote_affinity_published_after_exit_drain_is_a_late_noop() {
     );
     assert!(
         exiting_core.upgrade().is_none(),
-        "late migration payload Arc must be released after owner drain"
+        "reaping must release the prepared exit permit's core reference"
     );
 }
 
 #[test]
-fn remote_deadline_policy_published_after_exit_drain_cannot_create_a_zombie() {
+fn prepared_exit_rejects_new_remote_deadline_policy_delivery() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
     let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
@@ -2262,23 +2260,25 @@ fn remote_deadline_policy_published_after_exit_drain_cannot_create_a_zombie() {
         system.bring_cpu_online(cpu.as_mut()).unwrap();
     }
 
-    system.drain_owner_work(cpu0.as_mut(), 0).unwrap();
+    let permit = system
+        .prepare_current_exit_inner(cpu0.as_mut(), 0, false)
+        .unwrap();
     let deadline =
         SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 10, DeadlineFlags::NONE).unwrap());
     system.set_thread_policy(exiting_id, deadline).unwrap();
-    assert!(cpu0.has_remote_work());
+    assert!(
+        !cpu0.has_remote_work(),
+        "a prepared exit must reject new policy delivery reservations"
+    );
 
     system
-        .commit_current_exit_after_owner_drain(cpu0.as_mut(), 1)
+        .commit_current_exit_after_owner_drain(cpu0.as_mut(), permit, 1)
         .unwrap();
     drop(exiting);
     system.complete_context_switch(cpu0.as_mut()).unwrap();
-    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 0);
-
-    system.drain_policy_updates(cpu0.as_mut(), 2).unwrap();
     assert!(
         cpu0.deadline_members_are_empty_for_test(),
-        "late policy delivery must not register an exited Deadline member"
+        "rejected policy delivery must not register an exited Deadline member"
     );
     let core = exiting_core
         .upgrade()
@@ -2288,7 +2288,7 @@ fn remote_deadline_policy_published_after_exit_drain_cannot_create_a_zombie() {
     assert_eq!(
         system.deadline_activity(exiting_id),
         Err(TaskError::InvalidConfiguration),
-        "late policy delivery must not register an exited Deadline member"
+        "prepared exit must not leave an active Deadline entity"
     );
     assert!(
         system
@@ -2302,7 +2302,7 @@ fn remote_deadline_policy_published_after_exit_drain_cannot_create_a_zombie() {
     );
     assert!(
         exiting_core.upgrade().is_none(),
-        "late policy payload Arc must be released after owner drain"
+        "reaping must release the prepared exit permit's core reference"
     );
 }
 
@@ -4158,6 +4158,52 @@ fn wake_during_parking_cancels_schedule_out() {
         system.thread_state(running.id()).unwrap(),
         ThreadState::Running,
         "a resolved park ticket must not start another block transition"
+    );
+}
+
+#[test]
+fn wake_between_park_check_and_block_transition_cancels_schedule_out() {
+    let system = Arc::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let _idle = system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
+        panic!("fresh park must publish PARKING");
+    };
+
+    park_exit::arm_park_commit_wake_race();
+    let wake_system = Pin::clone(&system);
+    let wake_core = Arc::clone(&running.core);
+    let waker = std::thread::spawn(move || {
+        while !park_exit::park_commit_wake_race_entered() {
+            core::hint::spin_loop();
+        }
+        let result = wake_system
+            .as_ref()
+            .get_ref()
+            .wake_thread_direct(wake_core, CpuId::new(0), 0);
+        park_exit::complete_park_commit_wake_race();
+        result
+    });
+
+    let commit = system.commit_park(cpu.as_mut(), &mut ticket, 0).unwrap();
+    assert_eq!(waker.join().unwrap(), crate::WakeResult::Notified);
+    assert!(
+        matches!(commit, ParkCommit::Notified),
+        "a wake serialized before the final block transition must win"
+    );
+    assert_eq!(
+        system.thread_state(running.id()).unwrap(),
+        ThreadState::Running
     );
 }
 

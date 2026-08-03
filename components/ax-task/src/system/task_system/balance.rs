@@ -255,7 +255,7 @@ impl TaskSystem {
         let publication_exit = FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION
             .replace(false)
             .then(|| {
-                core.try_scheduler_exit()
+                core.close_owned_scheduler_activity()
                     .expect("failure injection requires a quiescent scheduler activity gate")
             });
         let publication_result = self.publish_owner_migration(&core, target, source, target);

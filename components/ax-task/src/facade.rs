@@ -4,12 +4,12 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
-    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult, IrqWaitCell,
-    IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit, ParkPrepare, PiLockId, PiMutexClaim,
-    PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority, ScheduleDecision, SchedulePolicy,
-    SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore, ThreadExtensionLease,
-    ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState, ThreadWakeHandle, WaitQueue,
-    WakeResult,
+    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CurrentExitPermit, IrqRegisterResult,
+    IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit, ParkPrepare, PiLockId,
+    PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority, ScheduleDecision,
+    SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore,
+    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
+    ThreadWakeHandle, WaitQueue, WakeResult,
     executor::CoroutineHeader,
     inbox::PublishResult,
     runtime::{
