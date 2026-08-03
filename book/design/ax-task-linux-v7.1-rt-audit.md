@@ -410,6 +410,10 @@ xHCI host 初始化必须取得真实 IRQ binding；缺少 IRQ 时 probe 直接�
 永久 1 ms USBFS event ticker 和 PCI interrupt-disable fallback 已删除，不保留 feature
 开关或兼容入口。
 
+Starry evdev 的后台 `evdev-poll` 兼容线程同样删除。输入 wake 只允许沿设备 IRQ、
+`IrqWaitCell` 和任务态 IRQ service worker 推进；IRQ 路由失效必须在平台/驱动所有权
+边界修复，不能在上层用 10/200 ms 轮询掩盖。
+
 vsock hard/poll 路径只发布固定事件与 credit snapshot，connection manager 和 socket wake 在释放设备 gate 后由 worker 处理。第三方 manager 吞掉 `CREDIT_REQUEST` 细节的问题由 issue #1724 跟踪。
 
 ## 主要确定性红绿证据
