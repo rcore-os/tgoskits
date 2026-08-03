@@ -26,15 +26,26 @@ pub fn ipi_irq() -> IrqId {
 
 /// IRQ handler.
 ///
-/// # Warn
+/// Normalizes both hardware-trap and hypervisor VM-exit callers to the same
+/// local-IRQ-disabled entry contract. The latter may restore the host IRQ
+/// state before forwarding a deferred external interrupt.
+///
+/// # Warning
 ///
 /// Make sure called in an interrupt context or hypervisor VM exit handler.
 pub fn handle_irq(vector: usize) -> bool {
+    // Real trap entry has already disabled local IRQs. A VM exit is different:
+    // the hypervisor may have restored the task's host IRQ state before it
+    // forwards the intercepted vector. Retaining this saved state through the
+    // preemption-guard release gives both paths the same irqentry boundary and
+    // lets a pending reschedule enter through the IRQ-return scheduler baton.
+    let irq_guard = ax_kernel_guard::IrqSave::new();
     prepare_irq_context(TrapVector(vector));
-    let guard = ax_kernel_guard::NoPreempt::new();
+    let preempt_guard = ax_kernel_guard::NoPreempt::new();
     let handled = handle(TrapVector(vector)).is_some();
 
-    drop(guard); // rescheduling may occur when preemption is re-enabled.
+    drop(preempt_guard); // rescheduling may occur with local IRQs still disabled.
+    drop(irq_guard);
     handled
 }
 

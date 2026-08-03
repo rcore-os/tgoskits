@@ -616,6 +616,21 @@ blocker 关系。Starry 因此新增独立的 `FutexWaitError::SchedulerNotifica
 最低层 axtest 在旧分类上稳定失败，修复后 x86_64 内核 axtest 为 395/395，定向
 `bug-fcntl-setlkw-blocks` 的 POSIX、OFD、EINTR 三阶段全部通过。
 
+Axvisor 的真实 VMX 板卡进一步暴露了 host IRQ 入口状态不一致：硬件 trap 天然在
+本地 IRQ 关闭时进入 `ax_hal::irq::handle_irq()`，但 x86 VM-exit 会先恢复宿主
+RFLAGS，再延迟分发截获的 external-interrupt vector。当恢复后的 IF 为 1 时，IPI
+handler 在没有 IRQ publication guard 的状态下发布 scheduler work，正确触发了
+ax-runtime 的边界断言。Linux v7.1 的 `vmx_vcpu_enter_exit()` 则要求
+`guest_state_enter_irqoff()` 到 `guest_state_exit_irqoff()` 全程保持 IRQ 关闭；退出 guest
+状态后，调度工作也只在 `vcpu_run()` 的明确 task-context 边界或
+`irqentry_exit_cond_resched()` 中消费。
+
+本分支把该约束放回四架构共用的 ArceOS IRQ 入口：入口首先保存并关闭本地 IRQ，
+随后准备平台 IRQ 上下文并进入 preemption guard；处理完成后先在 IRQ 仍关闭时释放
+preemption guard，使待调度状态只能通过 IRQ-return baton 被消费，最后才恢复调用者
+原 IRQ 状态。真实 trap 的保存状态本来就是关闭，VM-exit 的延迟分发则由同一边界规范
+化，Axvisor 不再保留架构专用的补丁或旧兼容入口。
+
 同配置完整 guest benchmark 的中位 handoff 从 138,786 ns 降到 111,948 ns，
 改善约 19.3%；这证明分配与共享引用流量确实位于热路径，但仍为 Linux RT 的约
 8.05 倍，不能据此结束性能审计。
