@@ -185,7 +185,7 @@ impl Scenario {
     }
 }
 
-const FAIR_SLICE_NS: u64 = ax_task::DEFAULT_FAIR_SLICE_NS;
+const FAIR_SLICE_NS: u64 = ax_task::NORMALIZED_FAIR_SLICE_NS;
 const INITIAL_FAIR_SLICE_NS: u64 = FAIR_SLICE_NS / 2;
 const RR_QUANTUM_NS: u64 = 8;
 const DEADLINE_RUNTIME_NS: u64 = 2_000;

@@ -1,5 +1,5 @@
 use ax_task::{
-    CpuId, DEFAULT_FAIR_SLICE_NS, DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority,
+    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, NORMALIZED_FAIR_SLICE_NS, Nice, RtPriority,
     SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec,
 };
 
@@ -32,7 +32,7 @@ fn contended_fair_dispatch_programs_its_remaining_service_request() {
 
     let selected = system.schedule(cpu.as_mut(), 100).unwrap().next();
     assert!(selected == first.id() || selected == second.id());
-    let initial_deadline = 100 + DEFAULT_FAIR_SLICE_NS / 2;
+    let initial_deadline = 100 + NORMALIZED_FAIR_SLICE_NS / 2;
     assert_eq!(support::last_oneshot_ns(), initial_deadline);
     let (generation, deadline_ns, deferred_work) = support::last_task_deadline_update();
     assert_ne!(generation, 0);
@@ -142,7 +142,7 @@ fn blocking_fifo_reprograms_the_fair_successor_deadline() {
     );
     assert_eq!(
         support::last_oneshot_ns(),
-        200 + DEFAULT_FAIR_SLICE_NS / 2,
+        200 + NORMALIZED_FAIR_SLICE_NS / 2,
         "a forced block must replace the outgoing RT deadline with the selected Fair request",
     );
 }
@@ -183,7 +183,10 @@ fn exiting_fifo_reprograms_the_fair_successor_deadline() {
         system.exit_current(cpu.as_mut(), 200).unwrap().next(),
         fair.id()
     );
-    assert_eq!(support::last_oneshot_ns(), 200 + DEFAULT_FAIR_SLICE_NS / 2);
+    assert_eq!(
+        support::last_oneshot_ns(),
+        200 + NORMALIZED_FAIR_SLICE_NS / 2
+    );
 }
 
 #[test]

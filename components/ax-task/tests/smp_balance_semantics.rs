@@ -393,7 +393,9 @@ fn fair_balance_deadline_is_relative_to_cpu_online_time() {
 
     support::clear_handles();
     support::set_monotonic_ns(BOOT_NOW_NS);
-    let system = TaskSystem::new(TaskSystemConfig::new(4)).unwrap();
+    let config = TaskSystemConfig::new(4);
+    let fair_slice_ns = config.fair_slice_ns();
+    let system = TaskSystem::new(config).unwrap();
     let mut cpus = (0..4)
         .map(|cpu| system.create_cpu_local(CpuId::new(cpu)).unwrap())
         .collect::<Vec<_>>();
@@ -416,7 +418,7 @@ fn fair_balance_deadline_is_relative_to_cpu_online_time() {
     let _first = system.schedule(cpus[0].as_mut(), BOOT_NOW_NS).unwrap();
     assert_eq!(
         support::last_oneshot_ns(),
-        BOOT_NOW_NS + ax_task::DEFAULT_FAIR_SLICE_NS / 2,
+        BOOT_NOW_NS + fair_slice_ns / 2,
         "an online CPU must not program an already-expired balance duration as an absolute \
          deadline"
     );
@@ -435,7 +437,7 @@ fn fair_balance_deadline_is_relative_to_cpu_online_time() {
     let _second = system.schedule(cpus[0].as_mut(), balance_now).unwrap();
     assert_eq!(
         support::last_oneshot_ns(),
-        balance_now + ax_task::DEFAULT_FAIR_SLICE_NS / 2,
+        balance_now + fair_slice_ns / 2,
         "the owner must reprogram the timer after advancing the balance deadline"
     );
     for cpu in cpus.iter_mut().skip(1) {
