@@ -49,6 +49,8 @@ if [ "${ivc_fault_profile:-none}" = restart ]; then
     [ "${ivc_restart_current_session:-}" = 572662306 ] \
         || fatal invalid-restart-current-session
     [ "${ivc_restart_first_count:-}" = 20 ] || fatal invalid-restart-first-count
+    [ "${ivc_restart_ack_timeout_ms:-}" = 1000 ] \
+        || fatal invalid-restart-ack-timeout
     [ "$ivc_count" = 100 ] || fatal invalid-restart-final-count
 fi
 
@@ -96,6 +98,7 @@ if [ "${ivc_fault_profile:-none}" = restart ] && [ ! -r "$restart_marker" ]; the
         10.0.0.2:5500 "$ivc_restart_first_count" "$ivc_mode" "$ivc_period_ms" \
         "$ivc_restart_previous_session" --backend "$ivc_backend" \
         --raw-csv "$restart_raw_csv" --fault-profile none \
+        --ack-timeout-ms "$ivc_restart_ack_timeout_ms" \
         >"$restart_controller_log" 2>&1; then
         validate_raw_csv "$restart_raw_csv" "$ivc_restart_first_count"
     else
@@ -152,7 +155,8 @@ if [ "${ivc_fault_profile:-none}" = restart ]; then
         10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
         "$ivc_restart_current_session" --backend "$ivc_backend" \
         --raw-csv "$ivc_raw_csv" --fault-profile restart \
-        --restart-previous-session "$ivc_restart_previous_session"; then
+        --restart-previous-session "$ivc_restart_previous_session" \
+        --ack-timeout-ms "$ivc_restart_ack_timeout_ms"; then
         result=0
     else
         result=$?

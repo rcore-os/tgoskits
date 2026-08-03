@@ -87,6 +87,7 @@ output_image=
 ivc_restart_previous_session=286331153
 ivc_restart_current_session=572662306
 ivc_restart_first_count=20
+ivc_restart_ack_timeout_ms=1000
 
 if (($# > 0)) && [[ "$1" != -* ]]; then
     profile=$1
@@ -211,10 +212,10 @@ cleanup() {
     rm -f -- "$profile_file"
 }
 trap cleanup EXIT HUP INT TERM
-printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\nivc_restart_previous_session=%s\nivc_restart_current_session=%s\nivc_restart_first_count=%s\n' \
+printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\nivc_restart_previous_session=%s\nivc_restart_current_session=%s\nivc_restart_first_count=%s\nivc_restart_ack_timeout_ms=%s\n' \
     "$policy" "$backend" "$fault_profile" "$profile" "$command_count" "$period_ms" \
     "$ivc_restart_previous_session" "$ivc_restart_current_session" \
-    "$ivc_restart_first_count" \
+    "$ivc_restart_first_count" "$ivc_restart_ack_timeout_ms" \
     >"$profile_file"
 for directory in /root /usr /usr/bin /usr/local /usr/local/bin /etc /var /var/lib /var/lib/ivc; do
     debugfs -w -R "mkdir $directory" "$output_image" >/dev/null 2>&1 || true

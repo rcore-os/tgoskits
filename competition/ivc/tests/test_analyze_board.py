@@ -241,6 +241,10 @@ class BoardAnalysisTests(unittest.TestCase):
                 ("control_rejected", 1),
             ),
         )
+        controller_duplicate = integrity_record(
+            "IVC-RESTART-D ",
+            (("seq", 1), ("status", 1), ("ack", 1)),
+        )
         controller_result = integrity_record(
             "IVC-RESTART-RESULT ",
             (("profile", "restart"), ("sent", 4), ("acknowledged", 4), ("continued", 1)),
@@ -253,7 +257,6 @@ AXVISOR_GUEST_RESTART_RUNNING schema=1 vm_id=1 host_cpu=3 ready_wait_ms=450 stat
 [guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
 [guest-console:pl011-zephyr] IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_drop_every=0 expected_commands=24 expected_protocol_errors=1 exit_after_expected=1
 [guest-console:pl011-zephyr] IVC-RTOS-RESTART-READY commands=24 errors=1 resets=1 rejections=1 safe=1 drop=0 exit=1
-[guest-console:pl011-zephyr] IVC-RTOS-DUPLICATE seq=1 next_expected=2 duplicates=1
 [guest-console:pl011-starry] IVC-STARRY-RESTART-ARMED phase=before-reset session_id={old_session} samples=20
 [guest-console:pl011-starry] IVC-STARRY-RESTART-RAW path=/var/lib/ivc/raw-before-reset.csv samples=20 sha256={pre_digest}
 [guest-console:pl011-zephyr] IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=0 last_sequence=20 session={old_session} safe_fallbacks=1
@@ -269,6 +272,7 @@ AXVISOR_GUEST_RESTART_TRIGGER schema=1 vm_id=1 host_cpu=3 requested_delay_ms=200
 [guest-console:pl011-starry] IVC-CONTROLLER-PRE-SEND p50_us=20 p95_us=30 p99_us=30 max_us=40
 [guest-console:pl011-starry] IVC-CONTROLLER-TRANSPORT p50_us=120 p95_us=150 p99_us=150 max_us=200 throughput_msg_s=9.000
 [guest-console:pl011-starry] IVC-CONTROLLER-CONTROL rmse_milli_c=1224.745 iae_milli_c_s=400.000 max_overshoot_milli_c=1000
+[guest-console:pl011-starry] {controller_duplicate}
 [guest-console:pl011-starry] {controller_restart}
 [guest-console:pl011-starry] {controller_result}
 [guest-console:pl011-zephyr] {stale_error}
@@ -715,6 +719,37 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         )
 
         self.assertLessEqual(len(line.encode("ascii")), 160)
+
+    def test_restart_duplicate_probe_record_fits_the_shared_uart_budget(self) -> None:
+        line = (
+            "[guest-console:pl011-starry] "
+            + integrity_record(
+                "IVC-RESTART-D ",
+                (("seq", 1), ("status", 1), ("ack", 1)),
+            )
+        )
+
+        self.assertLessEqual(len(line.encode("ascii")), 160)
+
+    def test_restart_profile_requires_the_explicit_duplicate_probe(self) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        log = "\n".join(
+            line
+            for line in self.restart_profile_log(
+                pre_reset_raw_csv=pre_reset_raw
+            ).splitlines()
+            if "IVC-RESTART-D" not in line
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "IVC-RESTART-D"):
+            analyzer.analyze(
+                self.write_log(log + "\n"),
+                4,
+                self.write_raw_csv(),
+                profile="restart",
+                pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+                expected_pre_reset_count=20,
+            )
 
     def test_restart_profile_recovers_complete_host_records_after_uart_prefix_collision(
         self,

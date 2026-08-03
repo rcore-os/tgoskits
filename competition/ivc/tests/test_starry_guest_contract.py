@@ -134,6 +134,8 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn("ivc_restart_previous_session=286331153", builder)
         self.assertIn("ivc_restart_current_session=572662306", builder)
         self.assertIn("ivc_restart_first_count=20", builder)
+        self.assertIn("ivc_restart_ack_timeout_ms=1000", builder)
+        self.assertIn("ivc_restart_ack_timeout_ms=%s", builder)
         self.assertIn("/var/lib/ivc/restart-phase-1.done", autorun)
         self.assertIn("/var/lib/ivc/raw-before-reset.csv", autorun)
         self.assertIn("IVC-STARRY-RESTART-ARMED", autorun)
@@ -148,6 +150,10 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn("sha256=$restart_uart_sha256", autorun)
         self.assertIn('--fault-profile restart', autorun)
         self.assertIn('--restart-previous-session "$ivc_restart_previous_session"', autorun)
+        self.assertEqual(
+            autorun.count('--ack-timeout-ms "$ivc_restart_ack_timeout_ms"'),
+            2,
+        )
         self.assertLess(
             autorun.index('"$BB" sync || fatal restart-phase-sync-failed'),
             autorun.index('IVC-STARRY-RESTART-ARMED'),

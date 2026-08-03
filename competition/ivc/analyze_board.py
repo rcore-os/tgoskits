@@ -39,6 +39,7 @@ DUPLICATE_PREFIX = "IVC-RTOS-DUPLICATE "
 CONTROLLER_ERROR_PREFIX = "IVC-ERROR-C "
 RTOS_ERROR_PREFIX = "IVC-ERROR-Z "
 CONTROLLER_ERROR_RESULT_PREFIX = "IVC-ERROR-RESULT "
+CONTROLLER_RESTART_DUPLICATE_PREFIX = "IVC-RESTART-D "
 CONTROLLER_RESTART_PREFIX = "IVC-RESTART-C "
 CONTROLLER_RESTART_RESULT_PREFIX = "IVC-RESTART-RESULT "
 ERROR_EVIDENCE_PREFIXES = (
@@ -635,25 +636,28 @@ def validate_restart_rtos(
                 f"RTOS restart READY {field} does not match the profile"
             )
 
-    # The cold pre-reset controller deterministically retransmits its first
-    # command once.  The endpoint must identify that frame as a duplicate,
-    # respond to it, and apply the command only once.
-    expected_duplicate_sequences = [1]
-    duplicate_sequences = parse_sequence_records(
+    duplicate_probe = find_integrity_record(
         lines,
-        DUPLICATE_PREFIX,
-        "seq",
-        "restart duplicate command",
+        CONTROLLER_RESTART_DUPLICATE_PREFIX,
+        ("seq", "status", "ack"),
     )
-    if duplicate_sequences != expected_duplicate_sequences:
-        raise AnalysisError(
-            "duplicate sequence set does not match the deterministic restart profile"
-        )
-    expected_response_frames = expected_count + len(expected_duplicate_sequences) + 1
+    duplicate_probe_contract = {"seq": 1, "status": 1, "ack": 1}
+    for field, expected in duplicate_probe_contract.items():
+        if integer(duplicate_probe, field, CONTROLLER_RESTART_DUPLICATE_PREFIX) != (
+            expected
+        ):
+            raise AnalysisError(f"controller restart duplicate {field} is invalid")
+
+    # The post-reset controller explicitly resends sequence one. The
+    # checksummed controller record identifies the probe even when its
+    # best-effort Zephyr event line is damaged on the shared UART. The RTOS
+    # terminal counters below still prove that exactly one duplicate occurred.
+    duplicate_sequences = [duplicate_probe_contract["seq"]]
+    expected_response_frames = expected_count + len(duplicate_sequences) + 1
     expected_fields = {
         "accepted": expected_count,
         "applied": expected_count,
-        "duplicates": len(expected_duplicate_sequences),
+        "duplicates": len(duplicate_sequences),
         "acks_dropped": 0,
         "status_sent": expected_response_frames,
         "acks_sent": expected_response_frames,
@@ -667,6 +671,11 @@ def validate_restart_rtos(
                 f"restart-profile value {expected}"
             )
     result["duplicate_sequences"] = duplicate_sequences
+    result["duplicate_probe"] = {
+        "sequence": duplicate_probe_contract["seq"],
+        "status_received": True,
+        "ack_received": True,
+    }
 
     restart = find_record(
         lines,

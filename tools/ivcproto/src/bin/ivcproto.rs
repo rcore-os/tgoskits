@@ -22,12 +22,13 @@ use ivcproto::{
         AckResult, Delivery, ReceiveWindow, ReliabilityConfig, RetryAction, StopAndWaitSender,
     },
     wire::{
-        ErrorCode, FrameFlags, HEADER_LEN, Header, MAX_PAYLOAD_LEN, MessageType, VERSION,
+        ErrorCode, Frame, FrameFlags, HEADER_LEN, Header, MAX_PAYLOAD_LEN, MessageType, VERSION,
         decode_frame, encode_frame,
     },
 };
 
 const SOCKET_TIMEOUT: Duration = Duration::from_millis(100);
+const DEFAULT_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 const BOARD_CONSOLE_RECORD_MAX_BYTES: usize = 160;
 const BOARD_CONSOLE_RECORD_COPIES: usize = 2;
 const BOARD_CONSOLE_RECORD_PAUSE: Duration = Duration::from_millis(10);
@@ -39,6 +40,7 @@ const ERROR_FAULT_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(25);
 const ERROR_EVIDENCE_RECORD_MAX_BYTES: usize = 96;
 const ERROR_FAULT_SEQUENCE_BASE: u32 = 1_000;
 const RESTART_PREVIOUS_FINAL_SEQUENCE: u32 = 20;
+const RESTART_DUPLICATE_SEQUENCE: u32 = 1;
 const RESTART_STALE_CONTROL_SEQUENCE: u32 = RESTART_PREVIOUS_FINAL_SEQUENCE + 1;
 const RESTART_PROBE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const VERSION_OFFSET: usize = 4;
@@ -124,6 +126,16 @@ struct ControllerArguments {
     raw_csv: Option<PathBuf>,
     fault_profile: ControllerFaultProfile,
     restart_previous_session: Option<u32>,
+    ack_timeout: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RestartDuplicateEvidence {
+    sequence: u32,
+    statuses_received: u64,
+    acknowledgements_received: u64,
+    stale_acknowledgements_ignored: u64,
+    stale_statuses_ignored: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -705,6 +717,197 @@ fn replay_verified_error_fault_records() -> Result<(), String> {
     Ok(())
 }
 
+fn build_restart_duplicate_datagram(
+    session_id: u32,
+    command: ControlCommand,
+    timestamp_us: u64,
+) -> Result<Vec<u8>, String> {
+    let mut datagram = vec![0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
+    let mut header = Header::new(
+        MessageType::Control,
+        session_id,
+        RESTART_DUPLICATE_SEQUENCE,
+        timestamp_us,
+    );
+    header.flags = FrameFlags::ACK_REQUIRED.union(FrameFlags::RETRANSMISSION);
+    let payload = command.encode().map_err(|error| error.to_string())?;
+    let length =
+        encode_frame(header, &payload, &mut datagram).map_err(|error| error.to_string())?;
+    datagram.truncate(length);
+    Ok(datagram)
+}
+
+fn run_restart_duplicate_probe(
+    socket: &UdpSocket,
+    session_id: u32,
+    previous_session: u32,
+    command: ControlCommand,
+    clock: Instant,
+) -> Result<RestartDuplicateEvidence, String> {
+    let datagram = build_restart_duplicate_datagram(session_id, command, elapsed_us(clock))?;
+    socket
+        .send(&datagram)
+        .map_err(|error| format!("send current-session duplicate probe: {error}"))?;
+
+    let mut evidence = RestartDuplicateEvidence {
+        sequence: RESTART_DUPLICATE_SEQUENCE,
+        statuses_received: 0,
+        acknowledgements_received: 0,
+        stale_acknowledgements_ignored: 0,
+        stale_statuses_ignored: 0,
+    };
+    let response_started = Instant::now();
+    loop {
+        let mut response = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
+        match socket.recv(&mut response) {
+            Ok(received) => {
+                let frame = decode_frame(&response[..received]).map_err(|error| {
+                    format!("decode current-session duplicate response: {error}")
+                })?;
+                observe_restart_duplicate_response(
+                    &mut evidence,
+                    frame,
+                    session_id,
+                    previous_session,
+                )?;
+                if restart_duplicate_probe_is_complete(evidence) {
+                    return Ok(evidence);
+                }
+            }
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && response_started.elapsed() < RESTART_PROBE_RESPONSE_TIMEOUT => {}
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("timed out waiting for current-session duplicate responses".to_owned());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "receive current-session duplicate response: {error}"
+                ));
+            }
+        }
+    }
+}
+
+fn observe_restart_duplicate_response(
+    evidence: &mut RestartDuplicateEvidence,
+    frame: Frame<'_>,
+    session_id: u32,
+    previous_session: u32,
+) -> Result<(), String> {
+    if frame.header.session_id == session_id && frame.header.sequence == RESTART_DUPLICATE_SEQUENCE
+    {
+        return observe_current_session_duplicate_response(evidence, frame);
+    }
+    if frame.header.session_id == previous_session
+        && frame.header.sequence == RESTART_PREVIOUS_FINAL_SEQUENCE
+    {
+        return observe_retired_session_replay(evidence, frame);
+    }
+    Err(format!(
+        "unexpected response to current-session duplicate probe: session={} sequence={} type={:?}",
+        frame.header.session_id, frame.header.sequence, frame.header.message_type
+    ))
+}
+
+fn observe_current_session_duplicate_response(
+    evidence: &mut RestartDuplicateEvidence,
+    frame: Frame<'_>,
+) -> Result<(), String> {
+    match frame.header.message_type {
+        MessageType::Status => observe_restart_duplicate_status(evidence, frame.payload),
+        MessageType::Ack => observe_restart_duplicate_ack(evidence, frame.payload),
+        MessageType::Error => Err(format!(
+            "RTOS rejected duplicate sequence {} with {:?}",
+            RESTART_DUPLICATE_SEQUENCE, frame.header.error
+        )),
+        other => Err(format!(
+            "unexpected {:?} response to current-session duplicate probe",
+            other
+        )),
+    }
+}
+
+fn observe_restart_duplicate_status(
+    evidence: &mut RestartDuplicateEvidence,
+    payload: &[u8],
+) -> Result<(), String> {
+    let status = StatusReport::decode(payload).map_err(|error| error.to_string())?;
+    if status.applied_sequence != RESTART_DUPLICATE_SEQUENCE {
+        return Err(format!(
+            "duplicate STATUS identifies sequence {}, expected {}",
+            status.applied_sequence, RESTART_DUPLICATE_SEQUENCE
+        ));
+    }
+    evidence.statuses_received = evidence.statuses_received.saturating_add(1);
+    if evidence.statuses_received != 1 {
+        return Err("duplicate probe received more than one STATUS".to_owned());
+    }
+    Ok(())
+}
+
+fn observe_restart_duplicate_ack(
+    evidence: &mut RestartDuplicateEvidence,
+    payload: &[u8],
+) -> Result<(), String> {
+    let ack = AckPayload::decode(payload).map_err(|error| error.to_string())?;
+    if ack.acknowledged_sequence != RESTART_DUPLICATE_SEQUENCE
+        || ack.next_expected_sequence != RESTART_DUPLICATE_SEQUENCE + 1
+    {
+        return Err(format!(
+            "duplicate ACK identifies sequence {}/{}, expected {}/{}",
+            ack.acknowledged_sequence,
+            ack.next_expected_sequence,
+            RESTART_DUPLICATE_SEQUENCE,
+            RESTART_DUPLICATE_SEQUENCE + 1
+        ));
+    }
+    evidence.acknowledgements_received = evidence.acknowledgements_received.saturating_add(1);
+    if evidence.acknowledgements_received != 1 {
+        return Err("duplicate probe received more than one ACK".to_owned());
+    }
+    Ok(())
+}
+
+fn observe_retired_session_replay(
+    evidence: &mut RestartDuplicateEvidence,
+    frame: Frame<'_>,
+) -> Result<(), String> {
+    match frame.header.message_type {
+        MessageType::Ack => {
+            let ack = AckPayload::decode(frame.payload).map_err(|error| error.to_string())?;
+            if ack.acknowledged_sequence != RESTART_PREVIOUS_FINAL_SEQUENCE {
+                return Err(format!(
+                    "stale ACK identifies sequence {}, expected {}",
+                    ack.acknowledged_sequence, RESTART_PREVIOUS_FINAL_SEQUENCE
+                ));
+            }
+            evidence.stale_acknowledgements_ignored =
+                evidence.stale_acknowledgements_ignored.saturating_add(1);
+            Ok(())
+        }
+        MessageType::Status => {
+            let status = StatusReport::decode(frame.payload).map_err(|error| error.to_string())?;
+            if status.applied_sequence != RESTART_PREVIOUS_FINAL_SEQUENCE {
+                return Err(format!(
+                    "stale STATUS identifies sequence {}, expected {}",
+                    status.applied_sequence, RESTART_PREVIOUS_FINAL_SEQUENCE
+                ));
+            }
+            evidence.stale_statuses_ignored = evidence.stale_statuses_ignored.saturating_add(1);
+            Ok(())
+        }
+        other => Err(format!(
+            "unexpected {:?} response from retired session",
+            other
+        )),
+    }
+}
+
+fn restart_duplicate_probe_is_complete(evidence: RestartDuplicateEvidence) -> bool {
+    evidence.statuses_received == 1 && evidence.acknowledgements_received == 1
+}
+
 fn run_restart_stale_control_probe(
     socket: &UdpSocket,
     previous_session: u32,
@@ -786,6 +989,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         raw_csv,
         fault_profile,
         restart_previous_session,
+        ack_timeout,
     } = arguments;
     if count == 0 {
         return Err("command count must be nonzero".to_owned());
@@ -798,8 +1002,10 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     socket
         .set_read_timeout(Some(SOCKET_TIMEOUT))
         .map_err(|error| format!("set read timeout: {error}"))?;
-    let reliability = ReliabilityConfig::new(SOCKET_TIMEOUT.as_micros() as u64, 20)
-        .map_err(|error| error.to_string())?;
+    let ack_timeout_us = u64::try_from(ack_timeout.as_micros())
+        .map_err(|_| "ACK timeout is too large to represent in microseconds".to_owned())?;
+    let reliability =
+        ReliabilityConfig::new(ack_timeout_us, 20).map_err(|error| error.to_string())?;
     let session_id = session_id.unwrap_or_else(generate_session_id);
     if session_id == 0 {
         return Err("session-id must be nonzero".to_owned());
@@ -832,15 +1038,17 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     let mut stale_acknowledgements_ignored = 0u64;
     let mut stale_statuses_ignored = 0u64;
     let mut stale_controls_rejected = 0u64;
+    let mut restart_duplicate_evidence = None;
     let mut sum_squared_error = 0f64;
     let mut integrated_absolute_error = 0f64;
     let mut maximum_overshoot = 0i32;
 
     println!(
         "IVC-CONTROLLER-START peer={peer} count={count} policy={} period_ms={period_ms} \
-         session_id={session_id} backend={}",
+         session_id={session_id} backend={} ack_timeout_ms={}",
         policy_name(policy),
-        backend.name()
+        backend.name(),
+        ack_timeout.as_millis()
     );
     for sample in 1..=count {
         let cycle_start = Instant::now();
@@ -1011,6 +1219,19 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         if sample == 1 && fault_profile == ControllerFaultProfile::Restart {
             let previous_session = restart_previous_session
                 .ok_or_else(|| "restart profile is missing its previous session".to_owned())?;
+            if sequence != RESTART_DUPLICATE_SEQUENCE {
+                return Err(format!(
+                    "restart duplicate sequence must be {}, got {sequence}",
+                    RESTART_DUPLICATE_SEQUENCE
+                ));
+            }
+            let evidence =
+                run_restart_duplicate_probe(&socket, session_id, previous_session, command, clock)?;
+            stale_acknowledgements_ignored = stale_acknowledgements_ignored
+                .saturating_add(evidence.stale_acknowledgements_ignored);
+            stale_statuses_ignored =
+                stale_statuses_ignored.saturating_add(evidence.stale_statuses_ignored);
+            restart_duplicate_evidence = Some(evidence);
             run_restart_stale_control_probe(&socket, previous_session, command, clock)?;
             stale_controls_rejected = stale_controls_rejected.saturating_add(1);
         }
@@ -1120,6 +1341,19 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         }
     }
     if fault_profile == ControllerFaultProfile::Restart {
+        let duplicate = restart_duplicate_evidence
+            .ok_or_else(|| "restart profile did not execute its duplicate probe".to_owned())?;
+        if duplicate.sequence != RESTART_DUPLICATE_SEQUENCE
+            || duplicate.statuses_received != 1
+            || duplicate.acknowledgements_received != 1
+        {
+            return Err(format!(
+                "restart duplicate evidence mismatch: sequence={} STATUS={} ACK={}",
+                duplicate.sequence,
+                duplicate.statuses_received,
+                duplicate.acknowledgements_received
+            ));
+        }
         if stale_acknowledgements_ignored != 1
             || stale_statuses_ignored != 1
             || stale_controls_rejected != 1
@@ -1144,10 +1378,16 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
             "profile=restart sent={} acknowledged={} continued=1",
             metrics.started, metrics.acknowledged
         );
+        let duplicate_body = format!(
+            "seq={} status={} ack={}",
+            duplicate.sequence, duplicate.statuses_received, duplicate.acknowledgements_received
+        );
+        let duplicate_record = checksummed_console_record("IVC-RESTART-D ", &duplicate_body);
         let transport_record = checksummed_console_record("IVC-RESTART-C ", &transport_body);
         let result_record = checksummed_console_record("IVC-RESTART-RESULT ", &result_body);
         std::thread::sleep(ERROR_FAULT_RESULT_SETTLE);
         for _ in 0..ERROR_FAULT_RESULT_RECORD_COPIES {
+            println!("{duplicate_record}");
             println!("{transport_record}");
             println!("{result_record}");
             std::io::stdout()
@@ -1288,6 +1528,7 @@ fn parse_controller_arguments(
     let mut fault_profile = ControllerFaultProfile::None;
     let mut fault_profile_was_set = false;
     let mut restart_previous_session = None;
+    let mut ack_timeout_ms: Option<u64> = None;
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -1347,6 +1588,15 @@ fn parse_controller_arguments(
                     "restart previous session",
                 )?);
             }
+            "--ack-timeout-ms" => {
+                if ack_timeout_ms.is_some() {
+                    return Err("--ack-timeout-ms may only be specified once".to_owned());
+                }
+                ack_timeout_ms = Some(parse(
+                    &required(&mut arguments, "ACK timeout milliseconds")?,
+                    "ACK timeout milliseconds",
+                )?);
+            }
             _ if argument.starts_with('-') => {
                 return Err(format!(
                     "unsupported controller option '{argument}'\n{}",
@@ -1367,6 +1617,12 @@ fn parse_controller_arguments(
             }
         }
     }
+
+    let ack_timeout = match ack_timeout_ms {
+        Some(0) => return Err("ACK timeout milliseconds must be nonzero".to_owned()),
+        Some(milliseconds) => Duration::from_millis(milliseconds),
+        None => DEFAULT_ACK_TIMEOUT,
+    };
 
     if fault_profile == ControllerFaultProfile::Restart {
         if session_id.is_none() {
@@ -1391,6 +1647,7 @@ fn parse_controller_arguments(
         raw_csv,
         fault_profile,
         restart_previous_session,
+        ack_timeout,
     })
 }
 
@@ -1479,7 +1736,8 @@ fn usage() -> &'static str {
     "usage:\n  ivcproto evaluate\n  ivcproto evaluate-csv <output.csv>\n  ivcproto rtos-sim <bind> \
      <expected-count> [drop-every]\n  ivcproto controller <peer> <count> <manual|neural> \
      [period-ms] [session-id] [--backend <native|onnxruntime>] [--raw-csv <path>] [--fault-profile \
-     <none|error|restart>] [--restart-previous-session <session-id>]"
+     <none|error|restart>] [--restart-previous-session <session-id>] [--ack-timeout-ms \
+     <milliseconds>]"
 }
 
 #[cfg(test)]
@@ -1508,6 +1766,32 @@ mod tests {
     #[test]
     fn console_evidence_crc32_matches_the_standard_check_value() {
         assert_eq!(console_evidence_crc32(b"123456789"), 0xcbf4_3926);
+    }
+
+    #[test]
+    fn restart_duplicate_probe_replays_sequence_one_with_retransmission_flags() {
+        let command = ControlCommand {
+            operation: ControlOperation::SetActuator,
+            mode: ControlMode::Neural,
+            actuator_permille: 500,
+            setpoint_milli_c: 45_000,
+            sample_id: RESTART_DUPLICATE_SEQUENCE,
+        };
+
+        let datagram = build_restart_duplicate_datagram(572_662_306, command, 1234)
+            .expect("restart duplicate probe should be encodable");
+        let frame = decode_frame(&datagram).expect("restart duplicate probe should decode");
+
+        assert_eq!(frame.header.message_type, MessageType::Control);
+        assert_eq!(frame.header.session_id, 572_662_306);
+        assert_eq!(frame.header.sequence, RESTART_DUPLICATE_SEQUENCE);
+        assert_eq!(frame.header.timestamp_us, 1234);
+        assert!(frame.header.flags.contains(FrameFlags::ACK_REQUIRED));
+        assert!(frame.header.flags.contains(FrameFlags::RETRANSMISSION));
+        assert_eq!(
+            ControlCommand::decode(frame.payload).expect("probe payload should decode"),
+            command
+        );
     }
 
     #[test]
@@ -1642,6 +1926,7 @@ mod tests {
             Some(std::path::Path::new("/var/lib/ivc/raw.csv"))
         );
         assert_eq!(parsed.fault_profile, ControllerFaultProfile::None);
+        assert_eq!(parsed.ack_timeout, DEFAULT_ACK_TIMEOUT);
     }
 
     #[test]
@@ -1675,6 +1960,8 @@ mod tests {
             "restart",
             "--restart-previous-session",
             "286331153",
+            "--ack-timeout-ms",
+            "1000",
         ]
         .into_iter()
         .map(str::to_owned);
@@ -1685,6 +1972,26 @@ mod tests {
         assert_eq!(parsed.fault_profile, ControllerFaultProfile::Restart);
         assert_eq!(parsed.session_id, Some(572_662_306));
         assert_eq!(parsed.restart_previous_session, Some(286_331_153));
+        assert_eq!(parsed.ack_timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn controller_arguments_reject_a_zero_ack_timeout() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "manual",
+            "100",
+            "--ack-timeout-ms",
+            "0",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let error =
+            parse_controller_arguments(arguments).expect_err("zero ACK timeout should be rejected");
+
+        assert!(error.contains("must be nonzero"));
     }
 
     #[test]
