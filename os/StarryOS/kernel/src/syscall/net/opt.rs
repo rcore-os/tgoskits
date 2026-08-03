@@ -456,8 +456,8 @@ pub fn sys_setsockopt(
 
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         use linux_raw_sys::net::{
-            SO_ATTACH_FILTER, SO_LOCK_FILTER, SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SO_SNDBUF,
-            SO_SNDBUFFORCE, SOL_SOCKET,
+            SO_ATTACH_FILTER, SO_LOCK_FILTER, SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SO_REUSEADDR,
+            SO_SNDBUF, SO_SNDBUFFORCE, SOL_SOCKET,
         };
 
         match (level, optname) {
@@ -480,6 +480,13 @@ pub fn sys_setsockopt(
             (SOL_SOCKET, SO_PASSCRED) => {
                 let value = read_int_sockopt(optval, optlen)?;
                 socket.set_passcred(value != 0);
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_REUSEADDR) => {
+                // Linux accepts this generic socket option before netlink
+                // bind. Netlink port and multicast-group binding in Starry
+                // does not use local-address reuse to resolve conflicts.
+                let _ = read_int_sockopt(optval, optlen)?;
                 return Ok(0);
             }
             _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
