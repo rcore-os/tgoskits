@@ -44,6 +44,15 @@ static int clone_child_sleep(void *arg) {
     _exit(0);
 }
 
+static int clone_child_attach_shm(void *arg) {
+    int shmid = *(int *)arg;
+
+    if (shmat(shmid, NULL, 0) == (void *)-1) {
+        _exit(1);
+    }
+    _exit(0);
+}
+
 /* Test 1: Memory Sniff - Check if vfork shares address space */
 int test_vfork_memory_sniff(void) {
     volatile int stack_var = 0;
@@ -131,9 +140,12 @@ int test_vfork_clone_child_stack_blocking(void) {
     return (elapsed_ms >= 1500) ? 1 : 0;
 }
 
-/* Test 4: do_exit releases a vfork child's SysV SHM attachment before the
- * blocked parent is allowed to return from vfork(). */
-int test_vfork_child_shm_cleanup(void) {
+/* Test 4: do_exit releases a CLONE_VFORK child's SysV SHM attachment before
+ * the blocked parent is allowed to return. The private child stack permits
+ * this test to attach SHM without entering the restricted vfork child path. */
+int test_clone_vfork_child_shm_cleanup(void) {
+    static char child_stack[16384];
+    char *stack_top = child_stack + sizeof(child_stack);
     int shmid = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600);
     if (shmid < 0) {
         perror("shmget failed");
@@ -147,18 +159,13 @@ int test_vfork_child_shm_cleanup(void) {
         return -1;
     }
 
-    pid_t child = do_vfork();
+    int child = clone(clone_child_attach_shm, stack_top,
+                      CLONE_VM | CLONE_VFORK | SIGCHLD, &shmid);
     if (child < 0) {
-        perror("vfork failed");
+        perror("clone(CLONE_VM|CLONE_VFORK) failed");
         shmdt(parent_addr);
         shmctl(shmid, IPC_RMID, NULL);
         return -1;
-    }
-    if (child == 0) {
-        if (shmat(shmid, NULL, 0) == (void *)-1) {
-            _exit(1);
-        }
-        _exit(0);
     }
 
     struct shmid_ds segment;
@@ -177,7 +184,7 @@ int test_vfork_child_shm_cleanup(void) {
 
 int main(void) {
     int vfork_mem_pass = 0, vfork_exec_pass = 0, clone_stack_pass = 0,
-        shm_cleanup_pass = 0;
+        clone_vfork_shm_cleanup_pass = 0;
 
     /* Test 1: vfork memory sharing */
     vfork_mem_pass = test_vfork_memory_sniff();
@@ -188,8 +195,8 @@ int main(void) {
     /* Test 3: CLONE_VFORK with a private child stack still blocks parent */
     clone_stack_pass = test_vfork_clone_child_stack_blocking();
 
-    /* Test 4: vfork return observes do_exit's process-resource cleanup. */
-    shm_cleanup_pass = test_vfork_child_shm_cleanup();
+    /* Test 4: CLONE_VFORK return observes do_exit resource cleanup. */
+    clone_vfork_shm_cleanup_pass = test_clone_vfork_child_shm_cleanup();
 
     /* Report results */
     if (vfork_mem_pass > 0) {
@@ -210,15 +217,15 @@ int main(void) {
         printf("VFORK: FAIL (Child stack clone did NOT block parent)\n");
     }
 
-    if (shm_cleanup_pass > 0) {
-        printf("VFORK: PASS (Child SHM cleanup precedes parent resume)\n");
+    if (clone_vfork_shm_cleanup_pass > 0) {
+        printf("CLONE_VFORK: PASS (Child SHM cleanup precedes parent resume)\n");
     } else {
-        printf("VFORK: FAIL (Child SHM remained attached after parent resume)\n");
+        printf("CLONE_VFORK: FAIL (Child SHM remained attached after parent resume)\n");
     }
 
     /* Return success only if all vfork-related tests pass */
     if (vfork_mem_pass > 0 && vfork_exec_pass > 0 && clone_stack_pass > 0
-        && shm_cleanup_pass > 0) {
+        && clone_vfork_shm_cleanup_pass > 0) {
         printf("VFORK TEST: ALL TESTS PASSED\n");
         return 0;
     } else {
