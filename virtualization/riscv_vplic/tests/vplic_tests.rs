@@ -1,32 +1,13 @@
-use ax_crate_interface::impl_interface;
-use ax_memory_addr::{PhysAddr, VirtAddr};
-use axdevice_base::{AccessWidth, BaseDeviceOps};
+use axdevice_base::AccessWidth;
 use axvm_types::GuestPhysAddr;
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
     PLIC_ENABLE_OFFSET, PLIC_ENABLE_STRIDE, PLIC_NUM_SOURCES, PLIC_PENDING_OFFSET,
-    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError, host::RiscvVplicHostIf,
+    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError,
 };
 
 const HOST_PLIC_BASE: usize = 0x0c00_0000;
 const HOST_PLIC_SIZE: usize = 0x40_0000;
-
-#[repr(align(8))]
-struct AlignedHostPlic([u8; HOST_PLIC_SIZE]);
-
-static mut HOST_PLIC: AlignedHostPlic = AlignedHostPlic([0; HOST_PLIC_SIZE]);
-
-struct TestRiscvVplicHostIf;
-
-#[impl_interface]
-impl RiscvVplicHostIf for TestRiscvVplicHostIf {
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        let offset = paddr.as_usize() - HOST_PLIC_BASE;
-        assert!(offset < HOST_PLIC_SIZE);
-        let base = unsafe { core::ptr::addr_of_mut!(HOST_PLIC.0).cast::<u8>() };
-        VirtAddr::from(unsafe { base.add(offset) } as usize)
-    }
-}
 
 /// Calculate minimum required size for VPlicGlobal with given contexts
 fn calculate_min_size(contexts_num: usize) -> usize {
@@ -104,7 +85,7 @@ fn test_typed_pending_api_is_visible_through_mmio() {
     assert!(vplic.is_pending(33).unwrap());
     assert_eq!(
         vplic
-            .handle_read(addr + PLIC_PENDING_OFFSET + 4, AccessWidth::Dword)
+            .read_register(addr + PLIC_PENDING_OFFSET + 4, AccessWidth::Dword)
             .unwrap(),
         1 << 1
     );
@@ -149,14 +130,14 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
     let context_id = 1;
 
     vplic
-        .handle_write(
+        .write_register(
             addr + PLIC_PRIORITY_OFFSET + irq_id * 4,
             AccessWidth::Dword,
             1,
         )
         .unwrap();
     vplic
-        .handle_write(
+        .write_register(
             addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE,
             AccessWidth::Dword,
             1 << irq_id,
@@ -169,14 +150,14 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
         + context_id * PLIC_CONTEXT_STRIDE
         + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
     assert_eq!(
-        vplic.handle_read(claim_addr, AccessWidth::Dword).unwrap(),
+        vplic.read_register(claim_addr, AccessWidth::Dword).unwrap(),
         irq_id
     );
     assert!(!vplic.is_pending(irq_id).unwrap());
     assert!(vplic.active_irqs.lock().get(irq_id));
 
     vplic
-        .handle_write(claim_addr, AccessWidth::Dword, irq_id)
+        .write_register(claim_addr, AccessWidth::Dword, irq_id)
         .unwrap();
     assert!(!vplic.active_irqs.lock().get(irq_id));
 }

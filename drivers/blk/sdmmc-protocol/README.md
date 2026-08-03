@@ -107,135 +107,59 @@ CRC16 verification for read data is enabled by default and can be changed with
 
 ## SDIO Mode
 
-The SDIO path expects the platform to implement `SdioHost`. The driver tracks
-the published RCA itself, so hosts no longer need to snoop R6 responses:
+Physical controllers implement `sdio_host2::SdioHost` plus
+`sdio::host2::SdioHost2Irq`. The latter transfers a move-only IRQ endpoint and
+stable event summaries to OS glue; it does not accept a task, waker, channel,
+or scheduling callback. Construct the protocol state with
+`SdioSdmmc::new_host2`.
 
-```rust
-use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, OperationPoll, Response};
-use core::task::Waker;
-use sdmmc_protocol::sdio::{
-    card::SdioSdmmc,
-    host::{BusWidth, ClockSpeed, SdioHost},
-    init::SdioInitScratch,
-};
+Initialization is a request state machine. Its `wait_kind()` result is a
+mandatory execution contract:
 
-struct MySdioHost;
-struct MyDataRequest<'a>(&'a mut [u8]);
+- `SdioInitWait::Irq`: advance only after the hard-IRQ endpoint acknowledged
+  and latched a matching controller event.
+- `SdioInitWait::Register`: the maintenance task may inspect register state
+  under one caller-owned deadline.
 
-impl SdioHost for MySdioHost {
-    type Event = ();
-    type DataRequest<'a> = MyDataRequest<'a>;
-
-    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
-        let _ = cmd;
-        todo!()
-    }
-
-    fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
-        todo!()
-    }
-
-    fn submit_read_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a mut [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error> {
-        let _ = (cmd, block_size, block_count);
-        Ok(MyDataRequest(buf))
-    }
-
-    fn submit_write_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error> {
-        let _ = (cmd, buf, block_size, block_count);
-        todo!()
-    }
-
-    fn poll_data_request<'a>(
-        &mut self,
-        request: &mut Self::DataRequest<'a>,
-    ) -> Result<DataCommandPoll, Error> {
-        let _ = request;
-        todo!()
-    }
-
-    fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
-        let _ = width;
-        todo!()
-    }
-
-    fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
-        let _ = speed;
-        todo!()
-    }
-
-    fn register_waker(&mut self, waker: &Waker) {
-        let _ = waker;
-        // Optional: IRQ-driven hosts store this waker and wake it from
-        // their OS glue after handle_irq() reports command/data progress.
-    }
-}
-
-fn example(host: MySdioHost) -> Result<(), Error> {
-    let mut card = SdioSdmmc::new(host);
-    let mut scratch = SdioInitScratch::new();
-    let mut request = card.submit_init(&mut scratch)?;
-    let info = loop {
-        match card.poll_init_request(&mut request)? {
-            OperationPoll::Pending => {
-                // Runtime policy belongs here: spin, yield, wait for IRQ, or
-                // sleep/timer when request.take_needs_pace() is set.
-            }
-            OperationPoll::Complete(info) => break info,
-        }
-    };
-    let _rca = info.rca;
-    let _capacity_blocks = info.capacity_blocks;
-    Ok(())
-}
-```
+Methods named `poll_*` advance one already-authorized state-machine step. They
+are not completion-polling APIs and must not be called from a tight loop for a
+command or data phase. The hard IRQ only acknowledges hardware and publishes
+an event; protocol progress, DMA finalization, and request completion all stay
+in the maintenance task.
 
 `SdioSdmmc` detects SD versus eMMC during initialization. SD cards are widened
 through ACMD6; eMMC cards use EXT_CSD plus CMD6 SWITCH to negotiate bus width
-and timing where the host supports those modes.
+and timing where the host supports those modes. The eMMC path also parses
+`EXT_CSD_REV`, `CACHE_SIZE`, and `CACHE_CTRL`. A nonzero advertised cache is
+enabled with an IRQ-completed CMD6 before initialization finishes.
 
-`SdioHost` follows a submit/poll model. Protocol operations such as card
-initialization, command status, EXT_CSD reads, MMC switches, switch-function
-reads, and block I/O expose request objects that
-callers can poll from a blocking loop, an IRQ wakeup path, a worker, or an async
-runtime wrapper. `SdioSdmmc` does not choose the waiting policy; the caller owns
-whether pending work spins, yields, sleeps, waits for an IRQ, or uses a timer.
+The RDIF flush path sends `FLUSH_CACHE` only when that cache is enabled. A card
+without an enabled cache instead receives an IRQ-completed CMD13
+transfer-state barrier. Neither path polls for command completion.
+
+Protocol operations expose request objects because the portable crate does not
+own a scheduler. The block runtime owns the waiting policy and invokes these
+step methods only from its hctx maintenance task after the required event.
 
 ### Optional wall-clock timeouts
 
-ACMD41 / CMD1 power-up and MMC `CMD6 SWITCH` busy-waits default to a poll
-counter that assumes the caller paces `poll_*` at ~10 ms. Hosts that can
-expose a monotonic clock should override `SdioHost::now_ms() -> Option<u64>`:
-the protocol layer then enforces wall-clock deadlines (1 s for power-up,
-250 ms for CMD6) in addition to the poll budget, so timeouts stay accurate
-no matter how fast or slow the caller polls. Hosts that return `None` (the
-default) keep the pure poll-counter behavior.
+Hosts should expose a monotonic clock through
+`SdioHost::now_ms() -> Option<u64>`. The protocol layer then enforces
+wall-clock deadlines for ACMD41/CMD1 power-up and MMC `CMD6 SWITCH` in addition
+to its bounded step budgets. The owning runtime must also apply one outer
+deadline to the complete initialization or recovery transaction.
 
 ### SDIO module boundaries
 
 The `sdio` feature is split by capability:
 
 - `sdio::host`: host-controller capabilities, IRQ events, and bus operations.
-- `sdio::host2`: compatibility adapter for `sdio-host2` physical hosts,
-  including request ownership and DMA recovery.
+- `sdio::host2`: adapter for `sdio-host2` physical hosts, including request
+  ownership and DMA recovery.
 - `sdio::card`: `SdioSdmmc`, card information, and ordinary command/block I/O
   request wrappers.
 - `sdio::init`: initialization scratch storage, probe preference, and the
-  submit/poll initialization state machine.
-
-The historical `sdmmc_protocol::sdio::*` re-exports remain available for
-callers that have not migrated to the capability submodules yet.
+  event-gated initialization state machine.
 
 ## RDIF Block Bridge
 
@@ -245,21 +169,13 @@ match the ownership boundary:
 
 - `rdif::config`: block size constants, `BlockConfig`, queue limits, device
   info, card-address translation, and error/transfer-mode helpers.
-- `rdif::host`: the `BlockHost` capability boundary plus the `SdioHost2Adapter`
-  request-slot adapter.
+- `rdif::host`: the private `ProtocolBlockSlot` and owned Host2 request
+  lifecycle used by the depth-one hardware queue.
 - `rdif::device`: `BlockDevice` and `rdif_block::Interface` integration.
-- `rdif::queue`: `BlockQueue` submit/poll behavior for FIFO and owned-DMA
-  queues.
-- `rdif::split`: FIFO single-block split state.
-- `rdif::owned`: owned-DMA submit, completion, cancel, and shutdown handling.
+- `rdif::queue`: the depth-one `HardwareQueue` implementation, including
+  owned-DMA batch submission, IRQ-gated completion, and shutdown recovery.
 - `rdif::irq`: the top-half IRQ bridge, which consumes a host IRQ endpoint and
   never enters the shared card core.
-- `rdif::shared_core`: the task-context borrow gate shared by device control
-  and queues.
-
-The historical `sdmmc_protocol::rdif::*` re-exports remain available for
-compatibility, while new code should prefer the submodule where each capability
-is defined.
 
 ## Command Helpers
 

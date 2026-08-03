@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.6...axbacktrace-v0.4.7) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.5...axbacktrace-v0.4.6) - 2026-07-23
 
 ### Other

@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use axdevice::AxVmDevices;
+use axdevice::DeviceRuntime;
 use axdevice_base::Resource;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
@@ -14,7 +14,7 @@ use crate::{
 pub(crate) fn map_guest_address_space(
     vm: &AxVM,
     resources: &mut AxVMResources,
-    devices: &AxVmDevices,
+    devices: &DeviceRuntime,
     owned_regions: &[GuestOwnedRegion],
 ) -> AxVmResult {
     let emulated_resources = devices

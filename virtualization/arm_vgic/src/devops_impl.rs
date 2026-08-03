@@ -12,34 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType};
-use axvm_types::GuestPhysAddrRange;
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Resource,
+};
+use axvm_types::GuestPhysAddr;
 
 use crate::vgic::Vgic;
 
-impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
-    /// Gets the emulator type of the current device.
-    ///
-    /// This function returns the emulator device type of the current instance. Specifically, it always returns `EmuDeviceType::EmuDeviceTGicdV2`,
-    /// indicating that the emulator device is of type `EmuDeviceTGicdV2`.
-    ///
-    /// # Returns
-    /// - Returns an instance of the `EmuDeviceType` enum, representing the specific type of the emulator device.
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::InterruptController
-    }
+const VGIC_V2_BASE: usize = 0x800_0000;
+const VGIC_V2_SIZE: usize = 0x10000;
+static VGIC_V2_RESOURCES: [Resource; 1] = [Resource::MmioRange {
+    base: VGIC_V2_BASE as u64,
+    size: VGIC_V2_SIZE as u64,
+}];
 
-    /// Returns the address range for the device.
-    ///
-    /// This function defines the address range accessible to the device, starting from `0x800_0000`,
-    /// with a length of `0x10000` (64KB). It is used to specify where the device can read or write in memory.
-    ///
-    /// # Returns
-    /// An `AddrRange` instance representing the address range from `0x800_0000` to `0x800_FFFF`.
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(0x800_0000.into(), 0x10000)
-    }
-
+impl Vgic {
     /// Handles memory read operations.
     ///
     /// Based on the given physical address and read width, performs the corresponding read operation.
@@ -52,11 +40,12 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
     ///
     /// Returns:
     /// - `DeviceResult<usize>`: The result of the read operation, including any errors and the size of the data read.
-    fn handle_read(
-        &self,
-        addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
-        width: AccessWidth,
-    ) -> DeviceResult<usize> {
+    pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !contains_vgic_v2(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         // Perform bitwise operation to ensure the address is aligned to byte boundaries
         let addr = addr.as_usize() & 0xfff;
 
@@ -89,12 +78,17 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
     /// - `addr`: The physical address to write to.
     /// - `width`: The byte width of the data to be written (1, 2, 4 for 8-bit, 16-bit, and 32-bit data respectively).
     /// - `val`: The value to be written.
-    fn handle_write(
+    pub fn write_register(
         &self,
-        addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
+        addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
+        if !contains_vgic_v2(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         // Convert the physical address to a `usize` and apply a mask to ensure proper alignment
         let addr = addr.as_usize() & 0xfff;
 
@@ -119,4 +113,39 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Vgic {
             _ => Ok(()),
         }
     }
+}
+
+impl Device for Vgic {
+    fn name(&self) -> &str {
+        "aarch64-vgic-v2"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &VGIC_V2_RESOURCES
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            self.read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
+    }
+}
+
+fn contains_vgic_v2(addr: GuestPhysAddr) -> bool {
+    let addr = addr.as_usize();
+    (VGIC_V2_BASE..VGIC_V2_BASE + VGIC_V2_SIZE).contains(&addr)
 }

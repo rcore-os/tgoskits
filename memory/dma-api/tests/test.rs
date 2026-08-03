@@ -299,6 +299,45 @@ fn allocation_rejects_backend_address_outside_mask() {
 }
 
 #[test]
+fn coherent_try_release_reports_failure_without_retrying() {
+    let (dev, tracker) = new_tracking_device();
+    let buffer = dev.coherent_array_zero::<u8>(64).unwrap();
+    tracker.clear();
+    tracker.fail_coherent_release();
+
+    let result = buffer.try_release();
+
+    assert_eq!(result, Err(DmaError::CoherentReleaseFailed));
+    assert_eq!(
+        tracker
+            .operations()
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn coherent_drop_failure_attempts_release_only_once() {
+    let (dev, tracker) = new_tracking_device();
+    let buffer = dev.coherent_array_zero::<u8>(64).unwrap();
+    tracker.clear();
+    tracker.fail_coherent_release();
+
+    drop(buffer);
+
+    assert_eq!(
+        tracker
+            .operations()
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn explicit_dma_domain_survives_constraint_updates() {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);

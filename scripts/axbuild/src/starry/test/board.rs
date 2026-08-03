@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use ostool::board::RunBoardOptions;
+use ostool::board::{BoardRunRequest, RunBoardOptions};
 
-use super::{ArgsTestBoard, StarryBoardTestGroup, discover_board_test_groups};
+use super::{
+    ArgsTestBoard, StarryBoardTestGroup, board_assets::prepare_board_session_assets,
+    discover_board_test_groups,
+};
 use crate::{
-    context::{SnapshotPersistence, StarryCliArgs, arch_for_target_checked},
+    context::{SnapshotPersistence, StarryCliArgs, arch_for_target_checked, board_run_request},
     starry::{Starry, board, build},
     test::{board as board_test, qemu as qemu_test},
 };
@@ -74,29 +77,59 @@ impl Starry {
                     SnapshotPersistence::Discard,
                 )?;
                 let cargo = build::load_cargo_config(&request)?;
-                let board_config = self
+                let (board_config, board_config_path) = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
                     .await?;
-                self.run_board_artifact(
-                    &request,
-                    cargo,
-                    board_config,
-                    RunBoardOptions {
-                        board_type: args.board_type.clone(),
-                        server: args.server.clone(),
-                        port: args.port,
-                    },
-                )
-                .await
-                .with_context(|| {
+                let options = RunBoardOptions {
+                    board_type: args.board_type.clone(),
+                    server: args.server.clone(),
+                    port: args.port,
+                };
+                let case_dir = board_config_path.parent().with_context(|| {
                     format!(
-                        "starry board test failed for group `{}` (build_config={}, \
-                         board_test_config={})",
-                        group_label,
-                        group.build_config_path.display(),
-                        board_test_config_summary
+                        "board configuration path `{}` has no parent directory",
+                        board_config_path.display()
                     )
-                })
+                })?;
+                let session_assets = prepare_board_session_assets(
+                    self.app.workspace_root(),
+                    &group.arch,
+                    &group.target,
+                    &group.name,
+                    case_dir,
+                    &board_config_path,
+                    &board_config.session_files,
+                )
+                .await?;
+                let output = self.build_artifact(&request, cargo.clone()).await?;
+                let board_request = match session_assets {
+                    Some(assets) => {
+                        println!(
+                            "[axbuild] board session upload root: {}",
+                            assets.root.display()
+                        );
+                        BoardRunRequest::new(board_config, options)
+                            .with_session_files(&assets.root, &assets.relative_paths)?
+                    }
+                    None => board_run_request(&board_config_path, board_config, options)?,
+                };
+                self.app
+                    .board_prepared_elf_with_request(
+                        output.elf_path().to_path_buf(),
+                        cargo.to_bin,
+                        request.build_info_path.clone(),
+                        board_request,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "starry board test failed for group `{}` (build_config={}, \
+                             board_test_config={})",
+                            group_label,
+                            group.build_config_path.display(),
+                            board_test_config_summary
+                        )
+                    })
             }
             .await;
 

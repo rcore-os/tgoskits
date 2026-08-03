@@ -5,15 +5,15 @@ args = [
     "-m",
     "512M",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img,snapshot=on",
     "-device",
-    "nvme,serial=starry-block-io-bench,drive=nvm",
-    "-snapshot",
+    "nvme,serial=starry-block-io-bench,drive=nvm,max_ioqpairs=64,msix_qsize=1",
 ]
-uefi = false
-to_bin = false
+# StarryOS is linked as a PIE image and needs the x86_64 UEFI handoff.
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "BLOCK_BENCH_FSYNC=0 /usr/bin/block-io-bench.sh"
+shell_init_cmd = "/usr/bin/block-io-bench.sh"
 success_regex = [
     "(?m)^BLOCK_BENCH_APP_PASSED\\s*$",
 ]

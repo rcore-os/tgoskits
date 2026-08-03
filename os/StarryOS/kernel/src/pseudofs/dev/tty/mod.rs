@@ -19,14 +19,16 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use ax_task::current;
-use axfs_ng_vfs::NodeFlags;
+use axfs_ng_vfs::{Location, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
+pub(crate) use self::pts::{DevPtsMount, DevPtsOptions, PtsInstance};
 use self::terminal::{
     Terminal, WindowSize,
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
@@ -36,27 +38,48 @@ pub use self::{
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
-    serial::{
-        SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
-    },
-    usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
+    serial::{arm_console_irq, bind_console_to, console_device, serial_tty_entries},
+    usb_serial::usb_serial_tty,
 };
 use crate::{
-    pseudofs::DeviceOps,
+    pseudofs::{Device, DeviceOps},
     task::{AsThread, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 
-pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
-    if let Some(pts) = term.downcast_ref::<PtyDriver>() {
-        Some(format!("/dev/pts/{}", pts.pty_number()))
-    } else if let Some(tty) = term.downcast_ref::<UsbSerialTtyDriver>() {
-        Some(format!("/dev/ttyUSB{}", tty.usb_serial_number()))
+pub(crate) enum TerminalDevice {
+    Location(Location),
+    Path(String),
+}
+
+struct BoundTty<R, W> {
+    tty: Arc<Tty<R, W>>,
+    location: Option<Location>,
+}
+
+pub(crate) fn terminal_device(term: &(dyn Any + Send + Sync)) -> Option<TerminalDevice> {
+    if let Some(bound) = term.downcast_ref::<BoundTty<pty::PtyReader, pty::PtyWriter>>() {
+        bound.location.clone().map_or_else(
+            || {
+                Some(TerminalDevice::Path(format!(
+                    "/dev/pts/{}",
+                    bound.tty.pty_number()
+                )))
+            },
+            |location| Some(TerminalDevice::Location(location)),
+        )
+    } else if let Some(bound) =
+        term.downcast_ref::<BoundTty<usb_serial::UsbSerialReader, usb_serial::UsbSerialWriter>>()
+    {
+        Some(TerminalDevice::Path(format!(
+            "/dev/ttyUSB{}",
+            bound.tty.usb_serial_number()
+        )))
     } else {
-        term.downcast_ref::<SerialTtyDriver>()
-            .map(|tty| format!("/dev/ttyS{}", tty.serial_number()))
+        term.downcast_ref::<BoundTty<serial::SerialReader, serial::SerialWriter>>()
+            .map(|bound| TerminalDevice::Path(format!("/dev/ttyS{}", bound.tty.serial_number())))
     }
 }
 
@@ -68,6 +91,7 @@ pub struct Tty<R, W> {
     writer: W,
     is_ptm: bool,
     open_count: AtomicUsize,
+    binding: SpinNoIrq<Option<Weak<dyn Any + Send + Sync>>>,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -82,19 +106,29 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             writer,
             is_ptm,
             open_count: AtomicUsize::new(0),
+            binding: SpinNoIrq::new(None),
         })
     }
 }
 
 impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
     pub fn bind_to(self: &Arc<Self>, proc: &Process) -> AxResult<()> {
+        self.bind_to_at(proc, None)
+    }
+
+    fn bind_to_at(self: &Arc<Self>, proc: &Process, location: Option<Location>) -> AxResult<()> {
         let pg = proc.group();
         if pg.session().sid() != proc.pid() {
             return Err(AxError::OperationNotPermitted);
         }
         if !pg.session().try_set_terminal_with(|| {
             self.terminal.job_control.set_session(&pg.session())?;
-            Ok::<_, AxError>(self.clone() as Arc<dyn Any + Send + Sync>)
+            let binding: Arc<dyn Any + Send + Sync> = Arc::new(BoundTty {
+                tty: self.clone(),
+                location,
+            });
+            *self.binding.lock() = Some(Arc::downgrade(&binding));
+            Ok::<_, AxError>(binding)
         })? {
             return Err(AxError::ResourceBusy);
         }
@@ -106,6 +140,19 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
     pub fn pty_number(&self) -> u32 {
         self.terminal.pty_number.load(Ordering::Acquire)
     }
+
+    fn bind_current_to_at(&self, location: Location) -> AxResult<()> {
+        self.this
+            .upgrade()
+            .unwrap()
+            .bind_to_at(&current().as_thread().proc_data.proc, Some(location))
+    }
+}
+
+pub(crate) fn bind_pty_at_location(location: Location) -> Option<AxResult<usize>> {
+    let device = location.entry().downcast::<Device>().ok()?;
+    let pty = device.inner().as_any().downcast_ref::<PtyDriver>()?;
+    Some(pty.bind_current_to_at(location).map(|()| 0))
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
@@ -258,14 +305,22 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TIOCNOTTY => {
                 let session = current().as_thread().proc_data.proc.group().session();
+                let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
+                let binding = self
+                    .binding
+                    .lock()
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .unwrap_or(this);
                 if current()
                     .as_thread()
                     .proc_data
                     .proc
                     .group()
                     .session()
-                    .unset_terminal(&(self.this.upgrade().unwrap() as _))
+                    .unset_terminal(&binding)
                 {
+                    *self.binding.lock() = None;
                     self.terminal.job_control.clear_session(&session);
                     // TODO: If the process was session leader, send SIGHUP and
                     // SIGCONT to the foreground process group and all processes

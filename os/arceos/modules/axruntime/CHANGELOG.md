@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.5...ax-runtime-v0.10.6) - 2026-08-03
+
+### Added
+
+- *(ahci-driver)* add portable multi-disk AHCI support ([#1795](https://github.com/rcore-os/tgoskits/pull/1795))
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+- *(ax-runtime)* restore CRLF for queued console logs ([#1695](https://github.com/rcore-os/tgoskits/pull/1695))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
+### Changed
+
+- Provide the task, fixed-affinity IRQ, and SMP-online capabilities used by the
+  IRQ-driven block multi-queue runtime.
+
 ## [0.10.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.4...ax-runtime-v0.10.5) - 2026-07-23
 
 ### Other

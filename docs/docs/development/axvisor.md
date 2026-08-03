@@ -514,7 +514,7 @@ log = "Debug"   # "Error" | "Warn" | "Info" | "Debug" | "Trace"
 | 内存布局 | 简单连续 | 可能有保留区域 |
 | 启动方式 | QEMU 直接加载 | U-Boot 引导 |
 | 时钟/电源 | 无需配置 | 需初始化 PMU/Clock |
-| 存储设备 | virtio-blk | 真实 eMMC/SD/NVMe |
+| 宿主根存储 | NVMe | RK3588 DWCMSHC eMMC |
 
 ### 11.2 物理板测试
 

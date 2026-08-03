@@ -7,8 +7,15 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-display"
 repository.workspace = true
-version = "0.2.0"
+version = "0.2.1"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

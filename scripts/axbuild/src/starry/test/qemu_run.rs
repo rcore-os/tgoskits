@@ -426,6 +426,7 @@ impl Starry {
                 suppress_terminal_raw_blocks: false,
                 write_log_during_capture: keep_qemu_log,
                 captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
+                success_output: None,
             })
         } else {
             None

@@ -1527,9 +1527,9 @@ else
 fi
 
 # busybox_rdev — reports the device mounted at "/": stats "/", takes st_dev,
-# scans /dev for a block node with matching st_rdev. With the /dev/vda root
-# block node (its rdev == root st_dev) rdev prints "/dev/vda /". Require exactly
-# one "/dev/<no-space> /" line so stray output can't slip through.
+# scans /dev for a block node with matching st_rdev. With the /dev/nvme0n1 root
+# block node (its rdev == root st_dev) rdev prints "/dev/nvme0n1 /". Require
+# exactly one "/dev/<no-space> /" line so stray output can't slip through.
 bb_case_start "busybox_rdev"
 _t=$({ timeout 10 sh -c 'busybox rdev 2>&1'; echo "EXIT:$?"; } 2>&1)
 _rc=$(printf '%s\n' "$_t" | sed -n 's/^EXIT://p')

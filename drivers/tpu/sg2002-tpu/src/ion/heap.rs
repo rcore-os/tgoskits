@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::alloc::Layout;
 
-use ax_dma::{self, DMAInfo};
+use dma_api::{CoherentArray, DeviceDma, DmaError};
 
 use super::{
     error::{IonError, IonResult},
@@ -11,7 +11,9 @@ use super::{
 };
 
 /// Ion 堆管理器
-pub struct IonHeapManager;
+pub struct IonHeapManager {
+    dma: DeviceDma,
+}
 
 impl Default for IonHeapManager {
     fn default() -> Self {
@@ -21,8 +23,10 @@ impl Default for IonHeapManager {
 
 impl IonHeapManager {
     /// 创建新的堆管理器
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self {
+            dma: axklib::dma::device_with_mask(u64::MAX),
+        }
     }
 
     /// 从指定堆分配缓冲区
@@ -41,7 +45,7 @@ impl IonHeapManager {
             return Err(IonError::InvalidArg);
         }
 
-        let dma_info = match heap_type {
+        let dma = match heap_type {
             IonHeapType::System => {
                 // 系统堆使用普通的 DMA 内存
                 self.alloc_dma_buffer(size, align)?
@@ -57,16 +61,20 @@ impl IonHeapManager {
             }
         };
 
-        let buffer = Arc::new(IonBuffer::new(dma_info, size));
+        let buffer = Arc::new(IonBuffer::new(dma, size));
         debug!("Allocated Ion buffer with handle: {:?}", buffer.handle);
 
         Ok(buffer)
     }
 
     /// 分配 DMA 内存
-    fn alloc_dma_buffer(&self, size: usize, align: usize) -> IonResult<DMAInfo> {
-        let layout = Layout::from_size_align(size, align).map_err(|_| IonError::InvalidArg)?;
-
-        unsafe { ax_dma::alloc_coherent_pages(layout).map_err(|_| IonError::NoMemory) }
+    fn alloc_dma_buffer(&self, size: usize, align: usize) -> IonResult<CoherentArray<u8>> {
+        Layout::from_size_align(size, align).map_err(|_| IonError::InvalidArg)?;
+        self.dma
+            .coherent_array_zero_with_align(size, align)
+            .map_err(|err| match err {
+                DmaError::LayoutError(_) => IonError::InvalidArg,
+                _ => IonError::NoMemory,
+            })
     }
 }

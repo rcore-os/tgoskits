@@ -13,7 +13,10 @@ use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
+use linux_raw_sys::{
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
+    ioctl::TIOCSCTTY,
+};
 use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat, get_file_like};
@@ -210,6 +213,11 @@ impl FileLike for File {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         let loc = self.inner().backend()?.location();
+        if cmd == TIOCSCTTY
+            && let Some(result) = crate::pseudofs::dev::tty::bind_pty_at_location(loc.clone())
+        {
+            return result;
+        }
         match cmd {
             DFS_IOCTL_ATOMIC_WRITE_SET => {
                 let _enabled: u32 = (arg as *const u32).vm_read()?;
@@ -351,4 +359,42 @@ impl Pollable for Directory {
     }
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+}
+#[cfg(axtest)]
+pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
+    use core::time::Duration;
+
+    use axfs_ng_vfs::{DeviceId, Metadata};
+
+    // Create a Metadata with known values.
+    let meta = Metadata {
+        device: 42,
+        inode: 100,
+        nlink: 3,
+        mode: axfs_ng_vfs::NodePermission::from_bits_truncate(0o644),
+        node_type: axfs_ng_vfs::NodeType::RegularFile,
+        uid: 1000,
+        gid: 1000,
+        size: 4096,
+        block_size: 512,
+        blocks: 8,
+        rdev: DeviceId::default(),
+        atime: Duration::from_secs(1000),
+        mtime: Duration::from_millis(2000500),
+        ctime: Duration::from_nanos(3000999999000),
+    };
+
+    let kstat = metadata_to_kstat(&meta);
+
+    // Verify key fields are correctly transferred.
+    kstat.dev == 42
+        && kstat.ino == 100
+        && kstat.nlink == 3
+        && kstat.uid == 1000
+        && kstat.gid == 1000
+        && kstat.size == 4096
+        && kstat.blksize == 512
+        && kstat.blocks == 8
+        // mode should have type bits (S_IFREG=0100000) OR'd with 0644.
+        && (kstat.mode >> 12) == (axfs_ng_vfs::NodeType::RegularFile as u32)
 }

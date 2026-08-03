@@ -121,7 +121,7 @@ pub struct Cmd {
     #[bits(default = true)]
     pub wait_prvdata_complete: bool,
     pub send_auto_stop: bool,
-    pub transfer_mode: bool,
+    pub stream_mode: bool,
     pub read_write: bool,
     pub data_expected: bool,
     pub check_response_crc: bool,
@@ -218,3 +218,5 @@ pub struct ClockSource {
 
 pub const CARD_THRCTL_OFFSET: usize = 0x100;
 pub const CLK_SRC_OFFSET: usize = 0x108;
+pub const CLK_DIVIDER_OFFSET: usize = 0x114;
+pub const IRQ_LATCH_OFFSET: usize = 0xfd0;

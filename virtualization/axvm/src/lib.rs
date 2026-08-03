@@ -19,6 +19,9 @@
 //! This crate contains:
 //! - [`AxVM`]: The main structure representing a VM.
 
+#[cfg(any(test, feature = "host-test"))]
+extern crate std;
+
 extern crate alloc;
 #[macro_use]
 extern crate log;

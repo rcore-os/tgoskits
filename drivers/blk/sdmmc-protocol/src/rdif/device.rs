@@ -1,173 +1,238 @@
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{boxed::Box, sync::Arc, vec};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
-use log::warn;
-use rdif_block::{BIrqHandler, IQueue, Interface, QueueHandle};
+use rdif_block::{
+    BlkError, BlockController, ControllerEvent, ControllerState, ControllerUpdate, DeviceInfo,
+    DriverGeneric, HardIrqHandler, HardwareQueue, IrqEndpoint,
+};
 
 use crate::{
     rdif::{
-        config::{BlockConfig, device_info, queue_limits},
-        host::BlockHost,
+        config::{BlockConfig, device_info},
         irq::BlockIrqHandler,
         queue::BlockQueue,
-        shared_core::SharedCore,
     },
-    sdio::{
-        card::SdioSdmmc,
-        host::{SdioHost, SdioIrqHost},
-    },
+    sdio::{card::SdioSdmmc, host::SdioIrqHost, init::CardInitPreference},
 };
 
-pub struct BlockDevice<H>
-where
-    H: BlockHost,
-{
-    pub(super) control: Arc<BlockControl<H>>,
-    irq_handler: Option<BIrqHandler>,
+const INIT_INITIALIZING: u8 = 0;
+const INIT_READY: u8 = 1;
+const INIT_FAILED: u8 = 2;
+
+pub(super) struct BlockInitStatus {
+    state: AtomicU8,
+    capacity_blocks: AtomicU64,
+    controller_wake: AtomicBool,
 }
 
-pub struct BlockControl<H>
+impl BlockInitStatus {
+    fn initialized(capacity_blocks: u64) -> Self {
+        Self {
+            state: AtomicU8::new(INIT_READY),
+            capacity_blocks: AtomicU64::new(capacity_blocks),
+            controller_wake: AtomicBool::new(false),
+        }
+    }
+
+    fn initializing() -> Self {
+        Self {
+            state: AtomicU8::new(INIT_INITIALIZING),
+            capacity_blocks: AtomicU64::new(0),
+            controller_wake: AtomicBool::new(true),
+        }
+    }
+
+    pub(super) fn mark_ready(&self, capacity_blocks: u64) {
+        self.capacity_blocks
+            .store(capacity_blocks, Ordering::Release);
+        self.state.store(INIT_READY, Ordering::Release);
+        self.controller_wake.store(false, Ordering::Release);
+    }
+
+    pub(super) fn mark_failed(&self) {
+        self.state.store(INIT_FAILED, Ordering::Release);
+        self.controller_wake.store(false, Ordering::Release);
+    }
+
+    pub(super) fn needs_controller_wake(&self) -> bool {
+        self.controller_wake.load(Ordering::Acquire)
+    }
+
+    fn capacity_blocks(&self) -> u64 {
+        self.capacity_blocks.load(Ordering::Acquire)
+    }
+
+    fn controller_state(&self) -> Result<ControllerState, BlkError> {
+        match self.state.load(Ordering::Acquire) {
+            INIT_INITIALIZING => Ok(ControllerState::WaitingForIrq),
+            INIT_READY => Ok(ControllerState::Ready),
+            INIT_FAILED => Err(BlkError::Io),
+            _ => Err(BlkError::InvalidRequest),
+        }
+    }
+}
+
+/// Interrupt-driven single-queue SD/MMC controller.
+pub struct BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
-    pub(super) raw: SharedCore<SdioSdmmc<H>>,
-    pub(super) config: BlockConfig,
-    pub(super) irq_enabled: AtomicBool,
-    pub(super) queue_taken: AtomicBool,
+    card: Option<SdioSdmmc<H>>,
+    config: BlockConfig,
+    irq_handler: Option<Box<dyn HardIrqHandler>>,
+    init_preference: Option<CardInitPreference>,
+    init_status: Arc<BlockInitStatus>,
+    started: bool,
+    stopped: bool,
 }
 
 impl<H> BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     pub fn new(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
-        let irq_handler = config.irq_driven.then(|| {
-            Box::new(BlockIrqHandler::<H> {
-                irq: SdioIrqHost::irq_handle(card.host_mut()),
-            }) as BIrqHandler
+        let init_status = Arc::new(BlockInitStatus::initialized(config.capacity_blocks()));
+        let irq_handler = Box::new(BlockIrqHandler::<H> {
+            irq: SdioIrqHost::irq_handle(card.host_mut()),
+            init_status: Arc::clone(&init_status),
         });
-        let raw = SharedCore::new(card);
         Self {
-            control: Arc::new(BlockControl {
-                raw,
-                config,
-                irq_enabled: AtomicBool::new(false),
-                queue_taken: AtomicBool::new(false),
-            }),
-            irq_handler,
+            card: Some(card),
+            config,
+            irq_handler: Some(irq_handler),
+            init_preference: None,
+            init_status,
+            started: false,
+            stopped: false,
         }
     }
 
-    pub fn config(&self) -> &BlockConfig {
-        &self.control.config
+    /// Creates a controller whose eMMC/SD protocol initialization is owned by
+    /// the hctx task and advances command/data states only after IRQ ack.
+    pub fn new_initializing(
+        mut card: SdioSdmmc<H>,
+        config: BlockConfig,
+        preference: CardInitPreference,
+    ) -> Self {
+        let init_status = Arc::new(BlockInitStatus::initializing());
+        let irq_handler = Box::new(BlockIrqHandler::<H> {
+            irq: SdioIrqHost::irq_handle(card.host_mut()),
+            init_status: Arc::clone(&init_status),
+        });
+        Self {
+            card: Some(card),
+            config,
+            irq_handler: Some(irq_handler),
+            init_preference: Some(preference),
+            init_status,
+            started: false,
+            stopped: false,
+        }
     }
 
-    fn queue_limits_with_mask(&self, dma_mask: u64) -> rdif_block::QueueLimits {
-        queue_limits(&self.control.config, dma_mask)
+    pub const fn config(&self) -> &BlockConfig {
+        &self.config
+    }
+
+    fn start(&mut self) -> Result<ControllerUpdate, BlkError> {
+        if self.started || self.stopped {
+            return Err(BlkError::NotSupported);
+        }
+        let card = self.card.take().ok_or(BlkError::InvalidRequest)?;
+        let handler = self.irq_handler.take().ok_or(BlkError::InvalidRequest)?;
+        let queue: Box<dyn HardwareQueue> = if let Some(preference) = self.init_preference {
+            Box::new(BlockQueue::new_initializing(
+                card,
+                self.config,
+                0,
+                preference,
+                Arc::clone(&self.init_status),
+            )?)
+        } else {
+            Box::new(BlockQueue::new(card, self.config, 0))
+        };
+        self.started = true;
+        let state = self.init_status.controller_state()?;
+        let mut update = ControllerUpdate::with_resources(
+            state,
+            vec![queue],
+            vec![IrqEndpoint::new(0, 1, handler)],
+        );
+        if state == ControllerState::Ready {
+            update = update.with_device_info(self.device_info());
+        }
+        Ok(update)
+    }
+
+    fn current_update(&self) -> Result<ControllerUpdate, BlkError> {
+        let state = self.init_status.controller_state()?;
+        let mut update = ControllerUpdate::state(state);
+        if state == ControllerState::Ready {
+            update = update.with_device_info(self.device_info());
+        }
+        Ok(update)
     }
 }
 
-impl<H> BlockControl<H>
+impl<H> DriverGeneric for BlockDevice<H>
 where
-    H: BlockHost,
-{
-    pub(super) fn claim_queue(&self) -> bool {
-        self.queue_taken
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    pub(super) fn release_queue(&self) {
-        self.queue_taken.store(false, Ordering::Release);
-    }
-}
-
-impl<H> rdif_block::DriverGeneric for BlockDevice<H>
-where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     fn name(&self) -> &str {
-        self.control.config.name
+        self.config.name()
     }
 }
 
-impl<H> Interface for BlockDevice<H>
+impl<H> BlockController for BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
-    fn device_info(&self) -> rdif_block::DeviceInfo {
-        device_info(&self.control.config)
+    fn device_info(&self) -> DeviceInfo {
+        let mut config = self.config;
+        config.set_capacity_blocks(self.init_status.capacity_blocks());
+        device_info(&config)
     }
 
-    fn queue_limits(&self) -> rdif_block::QueueLimits {
-        self.queue_limits_with_mask(self.control.config.dma_mask)
+    fn max_io_queues(&self) -> usize {
+        1
     }
 
-    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
-        if self.control.config.uses_dma() || !self.control.claim_queue() {
-            return None;
-        }
-        Some(Box::new(BlockQueue::<H>::new(Arc::clone(&self.control), 0)) as _)
-    }
-
-    fn create_owned_queue(&mut self) -> Option<QueueHandle> {
-        if self.control.config.dma.is_none() || !self.control.claim_queue() {
-            return None;
-        }
-        Some(QueueHandle::new(Box::new(BlockQueue::<H>::new(
-            Arc::clone(&self.control),
-            0,
-        ))))
-    }
-
-    fn enable_irq(&self) {
-        if !self.control.config.irq_driven {
-            self.control.irq_enabled.store(false, Ordering::Release);
-            return;
-        }
-        let mut enabled = false;
-        self.control.raw.with_mut(|raw| {
-            if let Err(err) = SdioHost::enable_completion_irq(raw.host_mut()) {
-                warn!(
-                    "{}: enable completion IRQ failed: {:?}",
-                    self.control.config.name, err
-                );
-                return;
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { target_queues } if target_queues != 0 => self.start(),
+            ControllerEvent::OnlineSmp { .. }
+            | ControllerEvent::RegisterRetry
+            | ControllerEvent::Rearm { .. }
+            | ControllerEvent::QuiesceIrqs
+                if self.started && !self.stopped =>
+            {
+                self.current_update()
             }
-            enabled = raw.host().completion_irq_enabled();
-        });
-        self.control.irq_enabled.store(enabled, Ordering::Release);
-    }
-
-    fn disable_irq(&self) {
-        self.control.raw.with_mut(|raw| {
-            if let Err(err) = SdioHost::disable_completion_irq(raw.host_mut()) {
-                warn!(
-                    "{}: disable completion IRQ failed: {:?}",
-                    self.control.config.name, err
-                );
+            ControllerEvent::Irq(event)
+                if self.started && !self.stopped && event.source_id() == 0 && event.bits() != 0 =>
+            {
+                self.current_update()
             }
-        });
-        self.control.irq_enabled.store(false, Ordering::Release);
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.control.irq_enabled.load(Ordering::Acquire)
-    }
-
-    fn irq_sources(&self) -> rdif_block::IrqSourceList {
-        if !self.control.config.irq_driven {
-            return Vec::new();
+            ControllerEvent::QuiesceIrqs if self.stopped => {
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            ControllerEvent::Watchdog { .. } => {
+                self.stopped = true;
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            ControllerEvent::Shutdown => {
+                self.stopped = true;
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Err(BlkError::InvalidRequest),
         }
-        vec![rdif_block::IrqSourceInfo::legacy(
-            rdif_block::IdList::from_bits(1),
-        )]
-    }
-
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn rdif_block::IrqHandler>> {
-        if !self.control.config.irq_driven || source_id != 0 {
-            return None;
-        }
-        self.irq_handler.take()
     }
 }

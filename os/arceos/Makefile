@@ -14,7 +14,7 @@
 #     - `FEATURES`: Features os ArceOS modules to be enabled.
 #     - `APP_FEATURES`: Features of (rust) apps to be enabled.
 # * QEMU options:
-#     - `BLK`: Enable storage devices (virtio-blk)
+#     - `BLK`: Enable the IRQ-driven NVMe storage path
 #     - `NET`: Enable network devices (virtio-net)
 #     - `GRAPHIC`: Enable display devices and graphic output (virtio-gpu)
 #     - `BUS`: Device bus type: mmio, pci

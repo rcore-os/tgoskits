@@ -1,6 +1,6 @@
 //! RISC-V VM resource creation and initialization.
 
-use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{EmulatedDeviceType, NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
 use super::{Riscv64Arch, irq, npt};
@@ -10,7 +10,7 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            ArchDeviceBootstrap, PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
             devices::PreparedDevices,
@@ -33,18 +33,58 @@ impl Riscv64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let mut factories = default_device_factories()?;
-                let mode = vm.interrupt_mode();
-                let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_fabric = irq::configure(&mut factories, mode, &emulated_devices)?;
+                let (factories, interrupt_fabric) = prepare_device_bootstrap(vm)?.into_parts();
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {
                 factories,
                 interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+            } => {
+                validate_provided_device_bootstrap(vm, factories, &interrupt_fabric)?;
+                init_vm_with(vm, factories, interrupt_fabric)
+            }
         }
     }
+}
+
+fn prepare_device_bootstrap(vm: &AxVM) -> AxVmResult<ArchDeviceBootstrap> {
+    let mut factories = default_device_factories()?;
+    let mode = vm.interrupt_mode();
+    let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
+    let interrupt_fabric =
+        irq::RiscvDeviceBootstrap::prepare(&mut factories, mode, &emulated_devices)?;
+    Ok(ArchDeviceBootstrap::new(factories, interrupt_fabric))
+}
+
+/// Ensures an explicitly supplied RISC-V device plan cannot omit the vPLIC
+/// pieces that the default architecture bootstrap would have supplied.
+fn validate_provided_device_bootstrap(
+    vm: &AxVM,
+    factories: &axdevice::DeviceFactoryRegistry,
+    interrupt_fabric: &crate::InterruptFabric,
+) -> AxVmResult {
+    let has_vplic = vm.with_config(|config| {
+        config
+            .emu_devices()
+            .iter()
+            .any(|device| device.emu_type == EmulatedDeviceType::PPPTGlobal)
+    });
+    if !has_vplic {
+        return Ok(());
+    }
+    if factories.get(EmulatedDeviceType::PPPTGlobal).is_none() {
+        return ax_err!(
+            InvalidInput,
+            "explicit RISC-V device factories must include the virtual PLIC factory"
+        );
+    }
+    if !interrupt_fabric.has_backend() {
+        return ax_err!(
+            InvalidInput,
+            "explicit RISC-V interrupt fabric must include a virtual PLIC backend"
+        );
+    }
+    Ok(())
 }
 
 fn init_vm_with(
@@ -65,8 +105,12 @@ fn init_vm_with(
                 dtb_addr: dtb_addr.as_usize(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        devices.register_special_devices(vm)?;
+        let devices = PreparedDevices::build_common(
+            resources,
+            factories,
+            interrupt_fabric,
+            vm.device_access_ports(),
+        )?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

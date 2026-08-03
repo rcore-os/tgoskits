@@ -209,7 +209,7 @@ docker run --rm \
   -v /tmp/qperf:/qperf \
   -w /work \
   b7c4600e825d \
-  bash -lc 'mkdir -p target/qperf-manual-riscv64 && timeout 20s qemu-system-riscv64 -nographic -cpu rv64 -machine virt -kernel target/riscv64gc-unknown-none-elf/debug/starryos.bin -device virtio-blk-pci,drive=disk0 -drive id=disk0,if=none,format=raw,file=target/riscv64gc-unknown-none-elf/rootfs-riscv64.img -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -plugin /qperf/target/release/libqperf.so,freq=99,out=target/qperf-manual-riscv64/qperf.bin || true'
+  bash -lc 'mkdir -p target/qperf-manual-riscv64 && timeout 20s qemu-system-riscv64 -nographic -cpu rv64 -machine virt -kernel target/riscv64gc-unknown-none-elf/debug/starryos.bin -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 -drive id=disk0,if=none,format=raw,file=target/riscv64gc-unknown-none-elf/rootfs-riscv64.img -device virtio-net-pci,netdev=net0 -netdev user,id=net0 -plugin /qperf/target/release/libqperf.so,freq=99,out=target/qperf-manual-riscv64/qperf.bin || true'
 ```
 
 Analyze samples:

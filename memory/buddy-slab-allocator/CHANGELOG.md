@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.4.7](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.6...buddy-slab-allocator-v0.4.7) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.4.6](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.5...buddy-slab-allocator-v0.4.6) - 2026-07-08
 
 ### Other

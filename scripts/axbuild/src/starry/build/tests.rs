@@ -533,7 +533,7 @@ fn load_cargo_config_keeps_original_bare_target_for_dynamic_platform_request() {
     let target = "aarch64-unknown-none-softfloat";
     let mut request = request(PathBuf::from("/tmp/.build.toml"), "aarch64", target);
     request.build_info_override = Some(StarryBuildInfo {
-        features: vec!["ax-driver/virtio-blk".to_string()],
+        features: vec!["ax-driver/nvme".to_string()],
         ..default_starry_build_info()
     });
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.5...aic8800-v0.2.6) - 2026-08-03
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rdif-eth, rd-net
+
 ## [0.2.5](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.4...aic8800-v0.2.5) - 2026-07-23
 
 ### Other

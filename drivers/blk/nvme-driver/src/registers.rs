@@ -1,11 +1,10 @@
-use core::hint::spin_loop;
-
-use log::debug;
 use tock_registers::{
     interfaces::{Readable, Writeable},
     register_bitfields, register_structs,
     registers::{ReadOnly, ReadWrite, WriteOnly},
 };
+
+use crate::err::{Error, Result};
 
 register_structs! {
     pub(crate) NvmeReg {
@@ -129,6 +128,12 @@ register_bitfields! [
         // Command Sets Supported (CSS)
         CSS OFFSET(37) NUMBITS(8) [],
 
+        // Memory Page Size Minimum (MPSMIN)
+        MPSMIN OFFSET(48) NUMBITS(4) [],
+
+        // Memory Page Size Maximum (MPSMAX)
+        MPSMAX OFFSET(52) NUMBITS(4) [],
+
         // Controller Memory Buffer Supported
         CMBS OFFSET(57) NUMBITS(1) [],
     ],
@@ -167,37 +172,58 @@ impl NvmeReg {
         );
     }
 
-    pub fn reset(&self) {
+    pub fn begin_disable(&self) {
         self.controller_configuration.write(CC::Enable::CLEAR);
-        debug!("Waiting for reset...");
-        spin_for_true(|| !self.controller_status.is_set(CSTS::RDY));
-        debug!("Reset complete!")
     }
 
-    pub fn setup_cc(&self, sqes: u32, cqes: u32) {
+    pub fn begin_enable(&self, sqes: u32, cqes: u32, page_size: usize) -> Result {
+        let page_shift = page_size
+            .checked_ilog2()
+            .ok_or(Error::Unknown("invalid NVMe page size"))?;
+        let memory_page_size = page_shift
+            .checked_sub(12)
+            .ok_or(Error::Unknown("NVMe page size is smaller than 4 KiB"))?;
+        let min_page_size = self.controller_capabilities.read(CAP::MPSMIN);
+        let max_page_size = self.controller_capabilities.read(CAP::MPSMAX);
+        if u64::from(memory_page_size) < min_page_size
+            || u64::from(memory_page_size) > max_page_size
+            || memory_page_size >= 1 << 4
+        {
+            return Err(Error::Unknown(
+                "NVMe page size is outside controller capabilities",
+            ));
+        }
         self.controller_configuration.write(
             CC::Enable::SET
                 + CC::IOCommandSetSelected::NVMCommandSet
+                + CC::MemoryPageSize.val(memory_page_size)
                 + CC::ArbitrationMechanismSelected::RoundRobin
                 + CC::ShutdownNotification::None
                 + CC::IOSubmissionQueueEntrySize.val(sqes)
                 + CC::IOCompletionQueueEntrySize.val(cqes),
         );
-        debug!("Waiting for ready...");
-        spin_for_true(|| self.controller_status.is_set(CSTS::RDY));
-        debug!("Ready!");
+        Ok(())
     }
 
-    pub fn ready_for_read_controller_info(&self) {
-        self.controller_configuration.write(
-            CC::Enable::SET
-                + CC::IOCommandSetSelected::NVMCommandSet
-                + CC::ArbitrationMechanismSelected::RoundRobin
-                + CC::ShutdownNotification::None,
-        );
-        debug!("Waiting for ready...");
-        spin_for_true(|| self.controller_status.is_set(CSTS::RDY));
-        debug!("Ready!");
+    pub fn is_disabled(&self) -> bool {
+        !self.controller_status.is_set(CSTS::RDY)
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.controller_status.is_set(CSTS::RDY)
+    }
+
+    pub fn has_fatal_status(&self) -> bool {
+        self.controller_status.is_set(CSTS::CFS)
+    }
+
+    pub fn max_queue_entries(&self) -> usize {
+        self.controller_capabilities.read(CAP::MQES) as usize + 1
+    }
+
+    /// Returns the CAP.MPSMIN page size used as the MDTS scale base.
+    pub fn minimum_page_size(&self) -> usize {
+        1usize << (12 + self.controller_capabilities.read(CAP::MPSMIN) as usize)
     }
 
     pub fn mask_interrupt_vector(&self, vector: u32) {
@@ -230,14 +256,5 @@ impl NvmeReg {
                 as *mut u32;
             ptr.write_volatile(head);
         }
-    }
-}
-
-fn spin_for_true<F>(f: F)
-where
-    F: Fn() -> bool,
-{
-    while !f() {
-        spin_loop();
     }
 }

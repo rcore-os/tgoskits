@@ -648,3 +648,28 @@ impl Backend {
         })
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
+    // Zero-length file without an explicit end rejects any offset (offset 0 is
+    // already >= file_len 0).
+    matches!(cow_file_max_read_len(0, None, 0, 4096), Err(AxError::BadAddress))
+        // Offset past the file end without an explicit end is BadAddress.
+        && matches!(
+            cow_file_max_read_len(4096, None, 8192, 4096),
+            Err(AxError::BadAddress)
+        )
+        // Offset at exactly file_len without an explicit end is also BadAddress.
+        && matches!(
+            cow_file_max_read_len(4096, None, 4096, 4096),
+            Err(AxError::BadAddress)
+        )
+        // Explicit end below the file length caps the returned size.
+        && matches!(cow_file_max_read_len(8192, Some(4096), 0, 8192), Ok(4096))
+        // Returned size is always clamped by the caller-supplied capacity.
+        && matches!(cow_file_max_read_len(8192, None, 0, 2048), Ok(2048))
+        // Saturating subtraction never underflows when offset >= explicit end.
+        && matches!(cow_file_max_read_len(8192, Some(4096), 8192, 4096), Ok(0))
+        // Explicit end == offset yields zero (EOF reached within bounds).
+        && matches!(cow_file_max_read_len(8192, Some(4096), 4096, 4096), Ok(0))
+}

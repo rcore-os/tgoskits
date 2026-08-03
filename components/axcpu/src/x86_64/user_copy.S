@@ -8,6 +8,7 @@
 
 .section .text
 .global user_copy
+.type user_copy, @function
 user_copy:
     // Arguments: rdi (dst), rsi (src), rdx (size)
     mov rcx, rdx        // copy size to rcx
@@ -17,4 +18,5 @@ user_copy:
 1:  mov rax, rcx        // return remain bytes
     ret
 
+    .size user_copy, . - user_copy
     _asm_extable 0b, 1b

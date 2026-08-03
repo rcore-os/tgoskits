@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.8.5"
+version = "0.8.6"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -8,10 +8,14 @@ description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
+axtest = []
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
-vfs = []
+vfs = ["ax-sync/multitask"]
 lockdep = ["axfs-ng-vfs/lockdep"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 ax-errno = { workspace = true }

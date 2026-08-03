@@ -134,11 +134,11 @@ LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备�
 | 用户地址空间 | `starry-kernel` | `starry-kernel` feature `loongarch64-low-va` | 使用符合 2K1000 40-bit VA 限制的用户地址布局 |
 | 串口 | `ax-driver`、`some-serial`、`rdif-serial` | `ax-driver` feature `serial`；`drivers/ax-driver/src/serial/ns16550.rs` | 驱动 NS16550，并注册运行期 `ttyS0` |
 | RTC | `ax-driver` | `ax-driver` feature `rtc`；`drivers/ax-driver/src/time/loongson.rs` | 探测 `loongson,ls2k1000-rtc` |
-| SATA | `ax-driver`、`simple-ahci`、`rdif-block` | `ax-driver` feature `ls2k1000-ahci`；`drivers/ax-driver/src/block/ahci.rs` | 驱动 AHCI 控制器并向文件系统提供 block device；当前使用同步 polling |
+| SATA | `ax-driver`、`dma-api`、`rdif-block` | `ax-driver` feature `ls2k1000-ahci`；`drivers/ax-driver/src/block/ahci/` | 通过 IRQ 驱动的单槽硬件队列向文件系统提供 block device |
 | 网络 | `ax-driver`、`rd-net`、`ax-net` | `ax-driver` feature `ls2k1000-gmac`；`drivers/ax-driver/src/net/loongson_gmac.rs` | 驱动板载 GMAC 并注册 `eth0` |
 | 根文件系统 | `ax-fs-ng`、`rsext4` | — | 扫描 SATA 分区并挂载 ext4 rootfs |
 
-板卡配置位于 `os/StarryOS/configs/board/ls2k1000.toml`。LS2K1000 AHCI 的 FDT/MMIO 适配已经合并在 `drivers/ax-driver/src/block/ahci.rs`，控制器核心复用 `simple-ahci`。LIOINTC 实现在 `somehal`；GMAC、RTC 和 NS16550 的 FDT 适配也位于 `ax-driver`。
+板卡配置位于 `os/StarryOS/configs/board/ls2k1000.toml`。LS2K1000 AHCI 的 FDT/MMIO、寄存器状态机、owned-DMA 队列和最小 IRQ top-half 位于 `drivers/ax-driver/src/block/ahci/`。LIOINTC 实现在 `somehal`；GMAC、RTC 和 NS16550 的 FDT 适配也位于 `ax-driver`。
 
 #### 3.1.2 构建镜像
 
@@ -229,10 +229,10 @@ SG2002 路径需要 someboot 完成固件交接，并由板级支持、串口和
 | 板级支持 | `starry-kernel`、`sg200x-bsp` | `starry-kernel` feature `sg2002` | 提供 SG2002 板级设备和用户态支持 |
 | 驱动发现 | `rdrive`、`ax-driver` | `drivers/ax-driver/` | 根据 FDT 探测并注册板载设备 |
 | 串口 | `ax-driver`、`some-serial`、`rdif-serial` | `ax-driver` feature `serial` | 注册运行期硬件控制台和 TTY |
-| SD 卡 | `ax-driver`、`cv181x-sdhci`、`sdmmc-protocol`、`rdif-block` | `ax-driver` feature `cvsd` | 初始化 SD 卡并向文件系统提供 block device |
+| SG2002 SD | `ax-driver`、`cv181x-sdhci`、`sdhci-host`、`sdmmc-protocol`、`rdif-block` | `ax-driver` feature `cv181x-sdhci` | 使用 CV181x SDHCI、ADMA2 和 IRQ 驱动的 block runtime |
 | 根文件系统 | `ax-fs-ng`、`rsext4` | — | 挂载 `/dev/mmcblk0p2` 上的 ext4 rootfs |
 
-板卡构建配置位于 `os/StarryOS/configs/board/licheerv-nano-sg2002.toml`。其中 `cvsd` feature 会启用 CV181x SDHCI、SD/MMC 协议和块设备接口，`sg2002` feature 提供 StarryOS 所需的 SG2002 板级支持。
+板卡构建配置位于 `os/StarryOS/configs/board/licheerv-nano-sg2002.toml`。其中 `cv181x-sdhci` feature 会启用 CV181x SDHCI、SD/MMC 协议和块设备接口，`sg2002` feature 提供 StarryOS 所需的 SG2002 板级支持。
 
 #### 3.2.2 构建准备
 
@@ -302,92 +302,13 @@ cargo starry test board \
 
 常规远端启动使用 `os/StarryOS/configs/board` 下的配置；板测使用 `test-suit/starryos/board-licheerv-nano-sg2002` 下的配置。若启动停在根设备探测阶段，请确认 SD 卡第二分区存在可挂载的 ext4 根文件系统。
 
-### 3.3 StarFive VisionFive 2
+### 3.3 尚未公开的板级块设备路径
 
-VisionFive 2 与 LicheeRV-Nano-SG2002 一样通过 U-Boot 启动。VisionFive 2 使用动态平台配置，并通过 JH7110 MMC 驱动挂载开发板上已有的 Linux ext4 根文件系统；与 QEMU 路径不同，这里不需要执行 `cargo starry rootfs`。仓库当前已验证的自动化流程由 ostool-server 申请板卡，通过 U-Boot 加载内核并连接串口。
-
-#### 3.3.1 实现组件
-
-VisionFive 2 通过动态平台和 FDT 发现 PLIC、串口、RTC 与 JH7110 MMC，最终从 SD 卡挂载 ext4 rootfs。下表给出这些硬件能力对应的 crate 和 feature，用于区分通用驱动问题与 JH7110 SoC 适配问题。
-
-| 类型 | crates | feature 或实现位置 | 作用 |
-| --- | --- | --- | --- |
-| 早期启动 | `someboot` | `platforms/someboot/src/arch/riscv64/` | 接收 U-Boot 传入的 FDT，建立页表并进入内核 |
-| CPU 与动态平台 | `ax-cpu`、`axplat-dyn`、`ax-hal` | `components/axcpu/src/riscv/`、`platforms/axplat-dyn/` | 提供 RISC-V 上下文、陷阱和动态平台接口 |
-| 中断控制器 | `somehal`、`ax-riscv-plic`、`rdif-intc`、`irq-framework` | `platforms/somehal/src/arch/riscv64/plic.rs` | 从 FDT 探测并驱动 JH7110 PLIC |
-| 驱动发现 | `rdrive`、`ax-driver` | `drivers/ax-driver/` | 根据 FDT 探测并注册板载设备 |
-| 串口 | `ax-driver`、`some-serial`、`rdif-serial` | `ax-driver` feature `serial` | 注册运行期硬件控制台和 TTY |
-| RTC | `ax-driver` | `ax-driver` feature `rtc`；`drivers/ax-driver/src/time/starfive.rs` | 探测 `starfive,jh7110-rtc` |
-| 时钟与复位 | `ax-driver`、`rdif-clk`、`rdif-reset` | `ax-driver` feature `starfive-soc`；`drivers/ax-driver/src/soc/starfive/` | 准备 JH7110 MMC 所需的 SYSCRG 时钟和复位 |
-| SD/MMC | `starfive-jh7110-dwmmc`、`dwmmc-host`、`sdmmc-protocol`、`rdif-block` | `ax-driver` feature `starfive-jh7110-dwmmc` | 初始化 SD 卡并向文件系统提供 block device |
-| 根文件系统 | `ax-fs-ng`、`rsext4` | — | 扫描 SD 卡分区并挂载 ext4 rootfs |
-
-板卡构建配置位于 `os/StarryOS/configs/board/visionfive2.toml`。其中 `starfive-jh7110-dwmmc` feature 会同时启用通用 DWMMC/SD 协议、块设备接口以及 JH7110 SoC 时钟和复位支持。
-
-#### 3.3.2 构建准备
-
-实板启动前需要准备：
-
-- 能正常进入 U-Boot 的 VisionFive 2；
-- 开发板上可由 StarryOS 识别的 SD 卡；
-- SD 卡中可挂载的 Linux ext4 根文件系统；
-- 可访问 VisionFive 2 的 ostool-server 和串口连接。
-
-板卡路径不会像 QEMU 一样自动下载或制作 rootfs 镜像。`ax-fs-ng` 会扫描 JH7110 MMC 块设备及其分区表，并根据 U-Boot 传入的 `root=` 参数选择根分区；没有明确指定时，再从探测到的文件系统中选择。
-
-选择 VisionFive 2 配置并单独构建内核：
-
-```bash
-cargo starry defconfig visionfive2
-cargo starry build
-```
-
-也可以不修改默认配置，直接显式指定配置文件：
-
-```bash
-cargo starry build \
-  --config os/StarryOS/configs/board/visionfive2.toml
-```
-
-该配置使用 `riscv64gc-unknown-none-elf` 目标，并启用串口、RTC 和 `starfive-jh7110-dwmmc` 驱动。后面的 `cargo starry board` 也会自动构建，因此只想快速启动时可以跳过这里的 `cargo starry build`。
-
-#### 3.3.3 固件启动
-
-当前维护入口使用 ostool-server 驱动 VisionFive 2 的 U-Boot 启动流程，并复用前文设置的 `OSTOOL_SERVER` 与 `OSTOOL_PORT`：
-
-```bash
-cargo starry board \
-  --board-config os/StarryOS/configs/board/visionfive2-board.toml \
-  --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" \
-  --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
-```
-
-这条命令会使用 `visionfive2.toml` 构建 StarryOS，并将构建产物转换为板卡运行时需要的内核镜像；随后根据 `visionfive2-board.toml` 向 ostool-server 申请 `VisionFive2`，由服务器控制开发板进入 U-Boot、传输并加载内核。U-Boot 启动内核并传入当前开发板的 FDT 后，StarryOS 会从 FDT 发现 PLIC、串口、RTC 和 JH7110 MMC，从 SD 卡选择并挂载 ext4 rootfs，进入 `root@starry:` shell，最后执行预设的 shell 探针并在成功后释放板卡。
-
-VisionFive 2 的镜像传输方式、U-Boot 加载地址和具体启动命令由 ostool-server 的 `VisionFive2` 板卡配置管理，不在 `visionfive2-board.toml` 中写死。因此不能直接复用 SG2002 的 `loady` 地址或 `bootm` 命令；调试这些参数时应检查所连接板卡服务器的 VisionFive 2 配置和 U-Boot 串口日志。
-
-`visionfive2-board.toml` 中维护的是 StarryOS 侧的运行和判定配置：板卡类型为 `VisionFive2`，shell 提示符为 `root@starry:`，超时时间为 600 秒。进入 shell 后会执行：
-
-```bash
-echo STARRY_VISIONFIVE2_SHELL_OK
-```
-
-看到下面的输出表示内核启动、MMC rootfs 挂载和用户态 shell 均已成功：
-
-```text
-STARRY_VISIONFIVE2_SHELL_OK
-```
-
-如果要使用 test-suit 运行同一条板级启动验证：
-
-```bash
-cargo starry test board \
-  --board visionfive2 \
-  --server "${OSTOOL_SERVER:?set OSTOOL_SERVER}" \
-  --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
-```
-
-常规启动使用 `os/StarryOS/configs/board` 下的配置；板测使用 `test-suit/starryos/board-visionfive2` 下的配置。若启动停在根设备探测阶段，请先确认 SD 卡能被 U-Boot/Linux 正常识别，并且其中存在可挂载的 ext4 根文件系统。
+JH7110 DWMMC、Phytium MCI 和 RK3568 DWMMC 的 portable driver core 仍保留
+owned-DMA、IRQ-only 实现与 crate 级测试，但不提供 `ax-driver` 注册 feature
+或 StarryOS 板级构建配置。最近的实机验证分别受只读/损坏介质或无卡状态阻塞，
+尚未满足完整写入、fsync、校验和与 teardown 矩阵；在这些证据补齐前，不应将
+对应路径当作受支持的根文件系统配置。
 
 ## 4. 测试入口
 

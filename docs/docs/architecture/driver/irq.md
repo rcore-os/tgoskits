@@ -128,16 +128,22 @@ pub enum PciIrqRequirement {
 
 ## rdif 内部 IRQ 事件
 
-部分 `rdif-*` 能力接口（如 `rdif-block`、`rdif-display`、`rdif-input`、`rdif-vsock`）的 `Interface` trait 提供 `handle_irq()` 方法。这些方法只确认中断源并返回可 poll 的 queue mask 或事件，不做 OS wake、不阻塞、不持有 OS 锚，也不在中断上下文推进慢路径完成。
+部分 `rdif-*` 能力接口返回稳定的 IRQ 事件；块设备使用独立的 boxed
+`HardIrqHandler::ack()` endpoint。这些入口只确认并清除/屏蔽中断源，返回 queue
+mask 或控制事件，不做 OS wake、不阻塞、不持有 OS 锚，也不在中断上下文推进慢路径完成。
 
-例如 `rdif-block` 的 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask，它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。收到事件后，runtime 或 task-side wrapper 再对相应 queue 调用 `poll_request()`。
+`rdif-block::IrqAck` 中的 queue mask 描述该硬件 source 影响哪些 hctx；它不是平台
+FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。HAL handler 把非空事件
+合并到预分配原子 latch，并通过 IRQ-safe notify 激活维护线程。维护线程随后独占
+调用对应 queue 的 `drain_completions()`，发布完成订阅并在需要时 rearm。
 
 ```mermaid
 flowchart LR
     Irq["platform IRQ<br/>IrqId"] --> Handler["HAL IRQ handler"]
-    Handler --> Rdif["rdif Interface::handle_irq()"]
-    Rdif --> Event["事件 / queue mask"]
-    Event --> Runtime["runtime / task wrapper"]
-    Runtime --> Poll["poll_request() / 推进完成"]
-    Poll --> Wake["wake 等待方"]
+    Handler --> Ack["boxed HardIrqHandler::ack()"]
+    Ack --> Latch["原子 latch / queue mask"]
+    Latch --> Notify["IRQ-safe notify"]
+    Notify --> Hctx["hctx 维护线程"]
+    Hctx --> Drain["drain_completions()"]
+    Drain --> Wake["发布订阅并唤醒等待方"]
 ```

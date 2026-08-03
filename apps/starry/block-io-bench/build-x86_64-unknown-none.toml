@@ -1,8 +1,8 @@
 target = "x86_64-unknown-none"
-log = "Warn"
+log = "Info"
+max_cpu_num = 8
 features = [
   "ax-driver/nvme",
-  "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",

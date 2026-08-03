@@ -20,14 +20,26 @@ pub trait ArmVgicHostIf {
     /// Return host CPU count.
     fn host_cpu_num() -> usize;
 
+    /// Return current VM ID.
+    fn current_vm_id() -> usize;
+
     /// Return current vCPU ID.
     fn current_vcpu_id() -> usize;
+
+    /// Queue a virtual interrupt for delivery to a VM vCPU.
+    fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: u8);
 
     /// Current monotonic host time in nanoseconds.
     fn current_time_nanos() -> u64;
 
-    /// Register a timer callback.
-    fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>);
+    /// Register a timer callback at an absolute host deadline.
+    fn register_timer(
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> usize;
+
+    /// Cancel a previously registered timer callback.
+    fn cancel_timer(token: usize);
 
     /// Read VGICD IIDR from host GIC.
     fn read_vgicd_iidr() -> u32;
@@ -71,19 +83,38 @@ pub(crate) fn host_cpu_num() -> usize {
     ax_crate_interface::call_interface!(ArmVgicHostIf::host_cpu_num())
 }
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn current_vm_id() -> usize {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::current_vm_id())
+}
+
 pub(crate) fn current_vcpu_id() -> usize {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_vcpu_id())
 }
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::queue_virtual_interrupt(
+        vm_id, vcpu_id, vector
+    ));
+}
+
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn current_time_nanos() -> u64 {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_time_nanos())
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn register_timer(
     deadline: Duration,
     callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-) {
-    ax_crate_interface::call_interface!(ArmVgicHostIf::register_timer(deadline, callback));
+) -> usize {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::register_timer(deadline, callback))
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn cancel_timer(token: usize) {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::cancel_timer(token));
 }
 
 pub fn read_vgicd_iidr() -> u32 {

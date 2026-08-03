@@ -127,14 +127,44 @@ bitflags! {
         /// the real size of the datagram, even when it is larger than the
         /// buffer.
         const TRUNCATE = 0x02;
+        /// Requests out-of-band data (`MSG_OOB`). Only stream sockets that
+        /// support urgent data honor it; others reject it with `EOPNOTSUPP`.
+        const OOB = 0x04;
         /// Per-call non-blocking override (`MSG_DONTWAIT`). Does NOT
         /// change the socket's own `O_NONBLOCK` state.
         const DONTWAIT = 0x40;
     }
 }
 
+/// Ancillary control message payload, carried opaquely so the socket layer
+/// stays protocol-independent. Cloneable so `recvmsg(MSG_PEEK)` can duplicate
+/// the ancillary data without consuming the record: SCM_RIGHTS fds are cloned
+/// (sharing the open file description), matching Linux `unix_peek_fds` /
+/// `scm_fp_dup`.
+pub trait CMsgPayload: Any + Send + Sync {
+    /// Duplicate into a fresh payload for peek delivery.
+    fn clone_box(&self) -> Box<dyn CMsgPayload>;
+    /// Recover a `Box<dyn Any>` for owned downcast at the syscall layer.
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync>;
+}
+impl<T: Any + Send + Sync + Clone> CMsgPayload for T {
+    fn clone_box(&self) -> Box<dyn CMsgPayload> {
+        Box::new(self.clone())
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync> {
+        self
+    }
+}
+// Opaque payload; mirror the std `dyn Any` Debug impl so containers deriving
+// Debug still compile.
+impl core::fmt::Debug for dyn CMsgPayload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CMsgPayload { .. }")
+    }
+}
+
 /// Type alias for ancillary control message data.
-pub type CMsgData = Box<dyn Any + Send + Sync>;
+pub type CMsgData = Box<dyn CMsgPayload>;
 
 /// IP ancillary data reported through `recvmsg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

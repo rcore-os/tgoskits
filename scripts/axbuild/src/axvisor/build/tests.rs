@@ -508,7 +508,7 @@ fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
     fs::write(
         &config_path,
         r#"
-features = ["ax-driver/virtio-blk", "fs"]
+features = ["ax-driver/nvme", "fs"]
 log = "Info"
 "#,
     )

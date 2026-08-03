@@ -124,9 +124,9 @@ fn apk_add_fs_equivalence_qemu_case_covers_package_fs_ops() {
             .collect::<Vec<_>>();
 
         assert!(
-            args.iter()
-                .any(|arg| arg.contains("virtio-blk-pci,drive=disk0")),
-            "{} must exercise virtio-blk",
+            args.iter().any(|arg| arg
+                .contains("nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65")),
+            "{} must exercise NVMe",
             config_path.display()
         );
         assert!(
@@ -270,9 +270,9 @@ fn apk_net_equivalence_qemu_case_covers_apk_like_network_ops() {
             .collect::<Vec<_>>();
 
         assert!(
-            args.iter()
-                .any(|arg| arg.contains("virtio-blk-pci,drive=disk0")),
-            "{} must exercise virtio-blk",
+            args.iter().any(|arg| arg
+                .contains("nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65")),
+            "{} must exercise NVMe",
             config_path.display()
         );
         assert!(

@@ -198,9 +198,9 @@ impl Ext4Filesystem {
     /// Locks the shared rsext4 state.
     ///
     /// Uses a blocking mutex because rsext4 operations may issue block I/O while
-    /// this guard is held. Submit/poll block devices without IRQ support can
-    /// yield while waiting for completion, so the outer filesystem state guard
-    /// must not disable interrupts or preemption.
+    /// this guard is held. IRQ-driven block submission sleeps until the
+    /// maintenance thread publishes completion, so the outer filesystem state
+    /// guard must not disable interrupts or preemption.
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
         self.inner.lock()
     }

@@ -789,6 +789,78 @@ fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
 }
 
 #[test]
+fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (name, build_path, qemu_path) in [
+        (
+            "aarch64",
+            "test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml",
+            "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml",
+        ),
+        (
+            "riscv64",
+            "test-suit/axvisor/normal/qemu/build-riscv64gc-unknown-none-elf.toml",
+            "test-suit/axvisor/normal/qemu/smoke/qemu-riscv64.toml",
+        ),
+        (
+            "loongarch64",
+            "test-suit/axvisor/normal/qemu/build-loongarch64-unknown-none-softfloat.toml",
+            "test-suit/axvisor/normal/qemu/smoke/qemu-loongarch64.toml",
+        ),
+        (
+            "x86_64-svm",
+            "test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml",
+            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-svm.toml",
+        ),
+        (
+            "x86_64-vmx",
+            "test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml",
+            "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml",
+        ),
+    ] {
+        let build_content = fs::read_to_string(workspace_root.join(&build_path)).unwrap();
+        let build: TestBuildConfigVmConfigs = toml::from_str(&build_content).unwrap();
+        assert!(
+            build.vm_configs.is_empty(),
+            "{build_path} should keep the NVMe root filesystem owned by the Axvisor host; guest \
+             block ABI validation is outside this migration"
+        );
+
+        let qemu_content = fs::read_to_string(workspace_root.join(&qemu_path)).unwrap();
+        let qemu: QemuConfig = toml::from_str(&qemu_content).unwrap();
+        let command = qemu
+            .shell_init_cmd
+            .unwrap_or_else(|| panic!("{name} NVMe smoke should inject a host file-I/O command"));
+
+        for required_step in [
+            "> /tmp/axvisor-nvme-rw",
+            "\ncat /tmp/axvisor-nvme-rw",
+            "rm -f /tmp/axvisor-nvme-rw",
+            "AXVISOR_NVME_ROOTFS_RW_PASSED",
+        ] {
+            assert!(
+                command.contains(required_step),
+                "{qemu_path} should include `{required_step}` in its host file-I/O smoke command"
+            );
+        }
+        assert_eq!(
+            qemu.shell_prefix.as_deref(),
+            Some("axvisor:/$"),
+            "{qemu_path} should wait for the Axvisor host shell"
+        );
+        assert_eq!(
+            qemu.success_regex,
+            vec![
+                r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
+                r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
+            ],
+            "{qemu_path} should require the read-back payload and final file-I/O marker"
+        );
+    }
+}
+
+#[test]
 fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
     let root = tempdir().unwrap();
     write_qemu_build_config(

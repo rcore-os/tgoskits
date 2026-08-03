@@ -9,7 +9,13 @@ use crate::{
     ax_err_type,
 };
 
-impl HostTimePlatform for Aarch64Arch {}
+impl HostTimePlatform for Aarch64Arch {
+    fn register_timer_callback() {
+        ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| {
+            crate::check_timer_events();
+        });
+    }
+}
 
 impl BootImagePlatform for Aarch64Arch {
     fn load_guest_dtb(
@@ -39,6 +45,14 @@ pub fn host_fdt_bootarg() -> usize {
 
 pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
+}
+
+pub(super) fn resolve_cpu_index(hardware_cpu_id: usize) -> Option<usize> {
+    ax_std::os::arceos::modules::ax_hal::topology::resolve_cpu_index(hardware_cpu_id)
+}
+
+pub(super) fn host_cpu_count() -> usize {
+    ax_std::os::arceos::modules::ax_hal::cpu_num()
 }
 
 pub(super) fn decode_gic_spi(specifier: &[u32]) -> Option<u32> {

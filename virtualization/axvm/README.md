@@ -69,6 +69,13 @@ cargo doc --no-deps --open
 
 Online documentation: [docs.rs/axvm](https://docs.rs/axvm)
 
+### VM Lifecycle
+
+- [VM Lifecycle Model](docs/lifecycle.md) — the authoritative lifecycle model for VM managers/control
+  planes (states, transitions, request-vs-completion semantics).
+- [VM Lifecycle Internals (Implementer View)](docs/lifecycle-internals.md) — implementer-view internals
+  (lifecycle × runtime dimensions, runtime lifecycle, unobservable states and lock semantics).
+
 # Contributing
 
 1. Fork the repository and create a branch

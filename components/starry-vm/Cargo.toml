@@ -1,6 +1,6 @@
 [package]
 name = "starry-vm"
-version = "0.5.11"
+version = "0.5.12"
 edition.workspace = true
 authors = ["朝倉水希 <asakuramizu111@gmail.com>", "Mivik <mivikq@gmail.com>"]
 description = "Virtual memory management library for Starry OS"
@@ -11,6 +11,9 @@ license = "Apache-2.0"
 [features]
 default = ["alloc"]
 alloc = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 ax-errno = { workspace = true }

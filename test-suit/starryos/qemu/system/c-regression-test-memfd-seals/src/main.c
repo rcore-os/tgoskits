@@ -7,6 +7,8 @@
  *   - F_SEAL_SHRINK rejects ftruncate to a smaller size with EPERM
  *   - F_SEAL_GROW rejects ftruncate to a larger size with EPERM
  *   - F_SEAL_WRITE rejects mmap(PROT_WRITE | MAP_SHARED) with EPERM
+ *   - F_SEAL_FUTURE_WRITE seals an already-populated memfd and rejects
+ *     writes issued after sealing with EPERM
  *   - F_SEAL_SEAL blocks all subsequent F_ADD_SEALS with EPERM
  *   - Without MFD_ALLOW_SEALING, F_ADD_SEALS is rejected with EPERM
  *
@@ -38,6 +40,9 @@
 #define F_SEAL_SHRINK  0x0002
 #define F_SEAL_GROW    0x0004
 #define F_SEAL_WRITE   0x0008
+#endif
+#ifndef F_SEAL_FUTURE_WRITE
+#define F_SEAL_FUTURE_WRITE 0x0010
 #endif
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 0x0001
@@ -182,7 +187,84 @@ int main(void) {
         CHECK(zwn2 == 0 && errno == 0,
               "zero-length write returns 0 under F_SEAL_WRITE");
 
+        /* Non-zero write(2)/pwrite(2) under F_SEAL_WRITE fails with EPERM
+         * (man: those calls fail with EPERM if this seal is set). */
+        char wbuf[16];
+        memset(wbuf, 'Z', sizeof(wbuf));
+        errno = 0;
+        CHECK(pwrite(wfd, wbuf, sizeof(wbuf), 0) == -1 && errno == EPERM,
+              "non-zero pwrite rejected with EPERM under F_SEAL_WRITE");
+        errno = 0;
+        CHECK(write(wfd, wbuf, sizeof(wbuf)) == -1 && errno == EPERM,
+              "non-zero write rejected with EPERM under F_SEAL_WRITE");
+
         close(wfd);
+    }
+
+    /* --- F_ADD_SEALS(F_SEAL_WRITE) fails with EBUSY while a writable shared
+     * mapping is live; succeeds once unmapped (man: EBUSY if any writable,
+     * shared mapping exists). --------------------------------------------- */
+    int bfd = memfd_create_sys("wbusy", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    CHECK(bfd >= 0, "memfd_create write-busy fd");
+    if (bfd >= 0) {
+        CHECK_RET(ftruncate(bfd, 4096), 0, "write-busy fd ftruncate");
+        void *pmw = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, bfd, 0);
+        CHECK(pmw != MAP_FAILED, "mmap(PROT_WRITE|MAP_SHARED) succeeds pre-seal");
+        if (pmw != MAP_FAILED) {
+            CHECK_ERR(fcntl(bfd, F_ADD_SEALS, F_SEAL_WRITE), EBUSY,
+                      "F_ADD_SEALS(F_SEAL_WRITE) EBUSY with live writable shared mapping");
+            CHECK_RET(munmap(pmw, 4096), 0, "munmap writable shared mapping");
+            CHECK_RET(fcntl(bfd, F_ADD_SEALS, F_SEAL_WRITE), 0,
+                      "F_ADD_SEALS(F_SEAL_WRITE) succeeds after munmap");
+            int sbusy = fcntl(bfd, F_GET_SEALS, 0);
+            CHECK((sbusy & F_SEAL_WRITE) != 0,
+                  "F_GET_SEALS reports F_SEAL_WRITE after munmap+add");
+        }
+        close(bfd);
+    }
+
+    /* --- F_SEAL_FUTURE_WRITE blocks writes issued after sealing ------- */
+    /* Unlike F_SEAL_WRITE, F_SEAL_FUTURE_WRITE can seal an already-populated
+     * memfd and only rejects future writes; Chromium/Firefox seal a
+     * read-only snapshot for sandboxed children this way. */
+    int ffd = memfd_create_sys("fwseal", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    CHECK(ffd >= 0, "memfd_create future-write-seal fd");
+    if (ffd >= 0) {
+        CHECK_RET(ftruncate(ffd, 4096), 0, "future-write-seal fd ftruncate");
+        CHECK(write(ffd, "AB", 2) == 2, "write allowed before F_SEAL_FUTURE_WRITE");
+        CHECK_RET(fcntl(ffd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE), 0,
+                  "F_ADD_SEALS F_SEAL_FUTURE_WRITE");
+        seals = fcntl(ffd, F_GET_SEALS, 0);
+        CHECK((seals & F_SEAL_FUTURE_WRITE) != 0,
+              "F_GET_SEALS reports F_SEAL_FUTURE_WRITE");
+
+        errno = 0;
+        CHECK(pwrite(ffd, "z", 1, 0) == -1 && errno == EPERM,
+              "pwrite rejected with EPERM after F_SEAL_FUTURE_WRITE");
+
+        /* Zero-length write still returns 0 under FUTURE_WRITE, matching
+         * Linux, which never synthesizes EPERM for a count==0 write. */
+        char zb[1];
+        errno = 0;
+        CHECK(pwrite(ffd, zb, 0, 0) == 0 && errno == 0,
+              "zero-length pwrite returns 0 under F_SEAL_FUTURE_WRITE");
+
+        close(ffd);
+    }
+
+    /* --- F_ADD_SEALS with an unrecognized seal bit -> EINVAL (man:
+     * "arg includes unrecognized sealing bits"). 0x8000 is outside
+     * F_ALL_SEALS on every kernel variant. ---------------------------- */
+    int ifd = memfd_create_sys("inval", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    CHECK(ifd >= 0, "memfd_create invalid-seal fd");
+    if (ifd >= 0) {
+        CHECK_ERR(fcntl(ifd, F_ADD_SEALS, 0x8000), EINVAL,
+                  "F_ADD_SEALS unrecognized bit 0x8000 rejected with EINVAL");
+        CHECK_ERR(fcntl(ifd, F_ADD_SEALS, F_SEAL_SHRINK | 0x8000), EINVAL,
+                  "F_ADD_SEALS valid|unrecognized bit rejected with EINVAL");
+        int sinval = fcntl(ifd, F_GET_SEALS, 0);
+        CHECK(sinval == 0, "rejected F_ADD_SEALS installed no seals");
+        close(ifd);
     }
 
     /* --- F_SEAL_SEAL blocks further F_ADD_SEALS ---------------------- */
@@ -199,6 +281,27 @@ int main(void) {
                   "F_ADD_SEALS denied without MFD_ALLOW_SEALING");
         close(nfd);
     }
+
+    /* --- seal fcntls on non-sealable fds return EINVAL (man: on other
+     * filesystems all seal fcntl operations return EINVAL). ------------- */
+    int rf = open("/tmp/memfd_seal_nonmemfd.tmp", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    CHECK(rf >= 0, "open regular file for non-memfd seal check");
+    if (rf >= 0) {
+        CHECK_ERR(fcntl(rf, F_GET_SEALS, 0), EINVAL,
+                  "F_GET_SEALS on regular file rejected with EINVAL");
+        CHECK_ERR(fcntl(rf, F_ADD_SEALS, F_SEAL_SHRINK), EINVAL,
+                  "F_ADD_SEALS on regular file rejected with EINVAL");
+        close(rf);
+        unlink("/tmp/memfd_seal_nonmemfd.tmp");
+    }
+    int npfd[2];
+    CHECK_RET(pipe(npfd), 0, "pipe for non-memfd seal check");
+    CHECK_ERR(fcntl(npfd[0], F_GET_SEALS, 0), EINVAL,
+              "F_GET_SEALS on pipe rejected with EINVAL");
+    CHECK_ERR(fcntl(npfd[1], F_ADD_SEALS, F_SEAL_WRITE), EINVAL,
+              "F_ADD_SEALS on pipe rejected with EINVAL");
+    close(npfd[0]);
+    close(npfd[1]);
 
     /* --- fsync / fdatasync / fadvise64 on memfd ----------------------- */
     int sfd = memfd_create_sys("sync", MFD_CLOEXEC);

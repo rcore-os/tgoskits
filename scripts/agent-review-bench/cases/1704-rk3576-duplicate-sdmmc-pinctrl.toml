@@ -1,0 +1,14 @@
+id = "1704-rk3576-duplicate-sdmmc-pinctrl"
+pr = 1704
+title = "新增 RK3576 ROCK 4D 支持并重复应用 SDMMC pinctrl"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "99d0965f962570a80eee5d2a948fa146272d48af"
+head = "33d1b5de6c5c58d98669951b24c4eed17cb91150"
+source = "https://github.com/rcore-os/tgoskits/pull/1704"
+
+[[expected]]
+id = "rockchip-sd-reapplies-rdrive-default-pinctrl"
+path = "drivers/ax-driver/src/block/rockchip/sd/mod.rs"
+line = 250
+severity = "major"
+description = "SDMMC consumer 新增的 apply_sdmmc_default_pinctrl 再次解析并应用 pinctrl-0，但 rdrive 已在调用 consumer probe 前自动应用默认 pinctrl，RK3576 provider 也通过 with_fdt_parser 按框架约定注册了解析器。这会对同一状态重复编程，并复制框架所有者的执行时序、错误处理和测试职责。应删除 consumer 层的默认 pinctrl 应用及其专用测试并复用 rdrive；若自动路径确有语义缺口，应修改 rdrive 或 rdif-pinctrl 的所有者边界并在该层补测试。SD 固定电源处理和缺失 pinctrl provider 检查是独立逻辑，不属于该重复实现。"

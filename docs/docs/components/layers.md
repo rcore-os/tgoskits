@@ -34,7 +34,7 @@ flowchart TB
   L9["<b>层级 9</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-driver`"]
   classDef ls9 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
   class L9 ls9
-  L8["<b>层级 8</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-dma`、`ax-sync`"]
+  L8["<b>层级 8</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-sync`"]
   classDef ls8 fill:#eceff1,stroke:#455a64,stroke-width:2px,color:#000
   class L8 ls8
   L7["<b>层级 7</b><br/>堆叠层（依赖更底层 crate）<br/>`ax-ipi`、`ax-mm`、`ax-task`、`axvm`"]
@@ -160,7 +160,6 @@ flowchart TB
 | 7 | 堆叠层 | ArceOS 层 | `ax-mm` | `0.5.0` | `os/arceos/modules/axmm` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-task` | `0.5.0` | `os/arceos/modules/axtask` |
 | 7 | 堆叠层 | 组件层 | `axvm` | `0.5.0` | `virtualization/axvm` |
-| 8 | 堆叠层 | ArceOS 层 | `ax-dma` | `0.5.0` | `os/arceos/modules/axdma` |
 | 8 | 堆叠层 | ArceOS 层 | `ax-sync` | `0.5.0` | `os/arceos/modules/axsync` |
 | 9 | 堆叠层 | ArceOS 层 | `ax-driver` | `0.5.0` | `drivers/ax-driver` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-display` | `0.5.0` | `os/arceos/modules/axdisplay` |
@@ -211,7 +210,7 @@ flowchart TB
 | 5 | 3 | `arm_vgic` `riscv_vplic` `x86_vlapic` |
 | 6 | 5 | `arm_vcpu` `ax-hal` `axdevice` `riscv_vcpu` `x86_vcpu` |
 | 7 | 4 | `ax-ipi` `ax-mm` `ax-task` `axvm` |
-| 8 | 2 | `ax-dma` `ax-sync` |
+| 8 | 1 | `ax-sync` |
 | 9 | 1 | `ax-driver` |
 | 10 | 5 | `ax-display` `ax-fs` `ax-fs-ng` `ax-input` `ax-net` |
 | 11 | 1 | `ax-net` |
@@ -247,10 +246,10 @@ flowchart TB
 | `arceos-yield` | 16 | 系统级测试与回归入口 | `ax-std` | — |
 | `arm_vcpu` | 6 | Aarch64 VCPU implementation for Arceos Hypervisor | `ax-errno` `ax-percpu` `axaddrspace` `axdevice_base` `axvisor_api` | `axvm` |
 | `arm_vgic` | 5 | ARM Virtual Generic Interrupt Controller (VGIC) i… | `aarch64_sysreg` `ax-errno` `ax-memory-addr` `axaddrspace` `axdevice_base` `axvisor_api` | `axdevice` `axvm` |
-| `ax-alloc` | 3 | ArceOS global memory allocator | `ax-allocator` `ax-errno` `ax-kspin` `ax-memory-addr` `ax-percpu` `axbacktrace` | `ax-api` `ax-dma` `ax-driver` `ax-runtime` `ax-fs-ng` `ax-hal` `ax-mm` `ax-posix-api` `ax-runtime` `axplat-dyn` `starry-kernel` |
-| `ax-allocator` | 1 | Various allocator algorithms in a unified interfa… | `ax-errno` `bitmap-allocator` | `ax-alloc` `ax-dma` |
-| `ax-api` | 14 | Public APIs and types for ArceOS modules | `ax-alloc` `ax-display` `ax-dma` `ax-driver` `ax-errno` `ax-runtime` `ax-fs` `ax-hal` `ax-io` `ax-ipi` `ax-log` `ax-mm` `ax-net` `ax-runtime` `ax-sync` `ax-task` | `ax-std` |
-| | 2 | Platform-specific constants and parameters for Ar… | | `ax-api` `ax-dma` `ax-driver` `ax-runtime` `ax-hal` `ax-ipi` `ax-net` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
+| `ax-alloc` | 3 | ArceOS global memory allocator | `ax-allocator` `ax-errno` `ax-kspin` `ax-memory-addr` `ax-percpu` `axbacktrace` | `ax-api` `ax-driver` `ax-runtime` `ax-fs-ng` `ax-hal` `ax-mm` `ax-posix-api` `ax-runtime` `axklib` `axplat-dyn` `starry-kernel` |
+| `ax-allocator` | 1 | Various allocator algorithms in a unified interfa… | `ax-errno` `bitmap-allocator` | `ax-alloc` |
+| `ax-api` | 14 | Public APIs and types for ArceOS modules | `ax-alloc` `ax-display` `ax-driver` `ax-errno` `ax-runtime` `ax-fs` `ax-hal` `ax-io` `ax-ipi` `ax-log` `ax-mm` `ax-net` `ax-runtime` `ax-sync` `ax-task` `axklib` `dma-api` | `ax-std` |
+| | 2 | Platform-specific constants and parameters for Ar… | | `ax-api` `ax-driver` `ax-runtime` `ax-hal` `ax-ipi` `ax-net` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
 | | 0 | A TOML-based configuration generation tool for Ar… | — | |
 | | 1 | Procedural macros for converting TOML format conf… | | `axplat-dyn` |
 | `ax-cpu` | 3 | Privileged instruction and structure abstractions… | `ax-lazyinit` `ax-memory-addr` `ax-page-table-entry` `ax-page-table-multiarch` `ax-percpu` `axbacktrace` | `ax-hal` `axplat-dyn` `starry-signal` |
@@ -259,16 +258,15 @@ flowchart TB
 | `ax-ctor-bare` | 1 | Register constructor functions for Rust at compli… | `ax-ctor-bare-macros` | `ax-runtime` |
 | `ax-ctor-bare-macros` | 0 | Macros for registering constructor functions for … | — | `ax-ctor-bare` |
 | `ax-display` | 10 | ArceOS graphics module | `ax-driver` `ax-lazyinit` `ax-sync` | `ax-api` `ax-runtime` `ax-runtime` `starry-kernel` |
-| `ax-dma` | 8 | ArceOS global DMA allocator | `ax-alloc` `ax-allocator` `ax-hal` `ax-kspin` `ax-memory-addr` `ax-mm` | `ax-api` `ax-driver` |
-| `ax-driver` | 9 | ArceOS device drivers | `anyhow` `ax-alloc` `ax-crate-interface` `ax-dma` `ax-errno` `ax-kernel-guard` `ax-kspin` `axklib` `dma-api` `mmio-api` `rdrive` `rd-net` `rdif-*` `virtio-drivers` | `ax-api` `ax-display` `ax-runtime` `ax-fs` `ax-fs-ng` `ax-input` `ax-net` `ax-net` `ax-runtime` `starry-kernel` |
+| `ax-driver` | 9 | ArceOS device drivers | `anyhow` `ax-alloc` `ax-crate-interface` `ax-errno` `ax-kernel-guard` `ax-kspin` `axklib` `dma-api` `mmio-api` `rdrive` `rd-net` `rdif-*` `virtio-drivers` | `ax-api` `ax-display` `ax-runtime` `ax-fs` `ax-fs-ng` `ax-input` `ax-net` `ax-net` `ax-runtime` `starry-kernel` |
 | `ax-errno` | 0 | Generic error code representation. | — | `arm_vcpu` `arm_vgic` `ax-alloc` `ax-allocator` `ax-api` `ax-driver` `ax-fs` `ax-fs-ng` `ax-fs-vfs` `ax-io` `ax-libc` `ax-memory-set` `ax-mm` `ax-net` `ax-net` `ax-page-table-multiarch` `ax-posix-api` `ax-std` `ax-task` `axaddrspace` `axdevice` `axdevice_base` `axfs-ng-vfs` `axhvc` `axklib` `axplat-dyn` `axvisor` `axvm` `axvmconfig` `riscv_vcpu` `riscv_vplic` `starry-kernel` `starry-vm` `x86_vcpu` `x86_vlapic` |
-| `ax-runtime` | 13 | Top-level feature selection for ArceOS | `ax-alloc` `ax-display` `ax-driver` `ax-fs` `ax-fs-ng` `ax-hal` `ax-input` `ax-ipi` `ax-kspin` `ax-log` `ax-net` `ax-runtime` `ax-sync` `ax-task` `axbacktrace` | `ax-api` `ax-libc` `ax-posix-api` `ax-std` `starry-kernel` `starryos` `starryos-test` |
+| `ax-runtime` | 13 | Top-level feature selection for ArceOS | `ax-alloc` `ax-display` `ax-driver` `ax-fs` `ax-fs-ng` `ax-hal` `ax-input` `ax-ipi` `ax-kspin` `ax-log` `ax-net` `ax-runtime` `ax-sync` `ax-task` `axbacktrace` `axklib` `dma-api` | `ax-api` `ax-libc` `ax-posix-api` `ax-std` `starry-kernel` `starryos` `starryos-test` |
 | `ax-fs` | 10 | ArceOS filesystem module | `ax-driver` `ax-errno` `ax-fs-devfs` `ax-fs-ramfs` `ax-fs-vfs` `ax-hal` `ax-io` `ax-lazyinit` `rsext4` | `ax-api` `ax-runtime` `ax-posix-api` `ax-runtime` |
 | `ax-fs-devfs` | 2 | Device filesystem used by ArceOS | `ax-fs-vfs` | `ax-fs` |
 | `ax-fs-ng` | 10 | ArceOS filesystem module | `ax-alloc` `ax-driver` `ax-errno` `ax-hal` `ax-io` `ax-kspin` `ax-sync` `axfs-ng-vfs` `axpoll` `scope-local` | `ax-runtime` `ax-net` `ax-runtime` `starry-kernel` |
 | `ax-fs-ramfs` | 2 | RAM filesystem used by ArceOS | `ax-fs-vfs` | `arceos-fs-shell` `ax-fs` |
 | `ax-fs-vfs` | 1 | Virtual filesystem interfaces used by ArceOS | `ax-errno` | `arceos-fs-shell` `ax-fs` `ax-fs-devfs` `ax-fs-ramfs` |
-| `ax-hal` | 6 | ArceOS hardware abstraction layer, provides unifi… | `ax-alloc` `ax-cpu` `ax-kernel-guard` `ax-memory-addr` `ax-page-table-multiarch` `ax-percpu` `ax-plat` `axplat-dyn` | `ax-api` `ax-dma` `ax-driver` `ax-runtime` `ax-fs` `ax-fs-ng` `ax-ipi` `ax-mm` `ax-net` `ax-net` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
+| `ax-hal` | 6 | ArceOS hardware abstraction layer, provides unifi… | `ax-alloc` `ax-cpu` `ax-kernel-guard` `ax-memory-addr` `ax-page-table-multiarch` `ax-percpu` `ax-plat` `axplat-dyn` | `ax-api` `ax-driver` `ax-runtime` `ax-fs` `ax-fs-ng` `ax-ipi` `ax-mm` `ax-net` `ax-net` `ax-posix-api` `ax-runtime` `ax-task` `axvisor` `starry-kernel` |
 | `arceos-helloworld` | 16 | ArceOS 示例程序 | `ax-std` | — |
 | `arceos-httpclient` | 16 | ArceOS 示例程序 | `ax-std` | — |
 | `arceos-httpserver` | 16 | Simple HTTP server. Benchmark with Apache HTTP se… | `ax-std` | — |
@@ -276,14 +274,14 @@ flowchart TB
 | `ax-io` | 1 | `std::io` for `no_std` environment | `ax-errno` | `ax-api` `ax-fs` `ax-fs-ng` `ax-libc` `ax-net` `ax-net` `ax-posix-api` `ax-std` `starry-kernel` |
 | `ax-ipi` | 7 | ArceOS IPI management module | `ax-hal` `ax-kspin` `ax-lazyinit` `ax-percpu` | `ax-api` `ax-runtime` `ax-runtime` |
 | `ax-kernel-guard` | 1 | RAII wrappers to create a critical section with l… | `ax-crate-interface` | `ax-hal` `ax-kspin` `ax-percpu` `ax-task` `axvisor` `starry-kernel` |
-| `ax-kspin` | 2 | Spinlocks used for kernel space that can disable … | `ax-kernel-guard` | `ax-alloc` `ax-dma` `ax-runtime` `ax-fs-ng` `ax-ipi` `ax-log` `ax-mm` `ax-plat` `ax-std` `ax-sync` `ax-task` `axvisor` `starry-kernel` `starry-process` `starry-signal` |
+| `ax-kspin` | 2 | Spinlocks used for kernel space that can disable … | `ax-kernel-guard` | `ax-alloc` `ax-runtime` `ax-fs-ng` `ax-ipi` `ax-log` `ax-mm` `ax-plat` `ax-std` `ax-sync` `ax-task` `axvisor` `starry-kernel` `starry-process` `starry-signal` |
 | `ax-lazyinit` | 0 | Initialize a static value lazily. | — | `ax-cpu` `ax-display` `ax-fs` `ax-input` `ax-ipi` `ax-mm` `ax-net` `ax-std` `ax-task` `axaddrspace` `axvisor` `starry-process` |
 | `ax-libc` | 15 | ArceOS user program library for C apps | `ax-errno` `ax-runtime` `ax-io` `ax-posix-api` | — |
 | `ax-linked-list-r4l` | 0 | Linked lists that supports arbitrary removal in c… | — | `ax-sched` |
 | `ax-log` | 3 | Macros for multi-level formatted logging used by … | `ax-crate-interface` `ax-kspin` | `ax-api` `ax-runtime` `ax-posix-api` `ax-runtime` `starry-kernel` |
-| `ax-memory-addr` | 0 | Wrappers and helper functions for physical and vi… | — | `arm_vgic` `ax-alloc` `ax-cpu` `ax-dma` `ax-hal` `ax-memory-set` `ax-mm` `ax-page-table-entry` `ax-page-table-multiarch` `ax-plat` `ax-task` `axaddrspace` `axdevice` `axklib` `axplat-dyn` `axvisor` `axvisor_api` `axvm` `riscv_vcpu` `starry-kernel` `x86_vcpu` `x86_vlapic` |
+| `ax-memory-addr` | 0 | Wrappers and helper functions for physical and vi… | — | `arm_vgic` `ax-alloc` `ax-cpu` `ax-hal` `ax-memory-set` `ax-mm` `ax-page-table-entry` `ax-page-table-multiarch` `ax-plat` `ax-task` `axaddrspace` `axdevice` `axklib` `axplat-dyn` `axvisor` `axvisor_api` `axvm` `riscv_vcpu` `starry-kernel` `x86_vcpu` `x86_vlapic` |
 | `ax-memory-set` | 1 | Data structures and operations for managing memor… | `ax-errno` `ax-memory-addr` | `ax-mm` `axaddrspace` `starry-kernel` |
-| `ax-mm` | 7 | ArceOS virtual memory management module | `ax-alloc` `ax-errno` `ax-hal` `ax-kspin` `ax-lazyinit` `ax-memory-addr` `ax-memory-set` `ax-page-table-multiarch` | `ax-api` `ax-dma` `ax-runtime` `starry-kernel` |
+| `ax-mm` | 7 | ArceOS virtual memory management module | `ax-alloc` `ax-errno` `ax-hal` `ax-kspin` `ax-lazyinit` `ax-memory-addr` `ax-memory-set` `ax-page-table-multiarch` | `ax-api` `ax-runtime` `starry-kernel` |
 | `ax-net` | 11 | Unified network stack | `ax-errno` `ax-fs-ng` `ax-hal` `ax-io` `ax-sync` `ax-task` `axfs-ng-vfs` `axpoll` `rd-net` `smoltcp` | `ax-api` `ax-runtime` `ax-posix-api` `ax-runtime` `starry-kernel` |
 | `ax-page-table-entry` | 1 | Page table entry definition for various hardware … | `ax-memory-addr` | `ax-cpu` `ax-page-table-multiarch` `axaddrspace` `axvisor` `axvm` `riscv_vcpu` `x86_vcpu` |
 | `ax-page-table-multiarch` | 2 | Generic page table structures for various hardwar… | `ax-errno` `ax-memory-addr` `ax-page-table-entry` | `ax-cpu` `ax-hal` `ax-mm` `axaddrspace` `axvisor` `axvm` `starry-kernel` |

@@ -90,7 +90,7 @@ qemu_config = "os/arceos/configs/qemu/qemu-aarch64.toml"
 共享的 `BuildInfo` 结构只有四个字段：
 
 ```toml
-features = ["fs", "net", "ax-driver/virtio-blk"]
+features = ["fs", "net", "ax-driver/nvme"]
 log = "Warn"
 max_cpu_num = 4
 
@@ -187,6 +187,11 @@ test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml
 test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
 os/axvisor/configs/board/qemu-x86_64.toml
 ```
+
+首阶段 NVMe 块运行时验证中，这两个 x86 测试 Build Config 的
+`vm_configs = []`。测试保留 VMX/SVM 宿主能力检查，并在 Axvisor shell
+直接对宿主 NVMe 根文件系统执行写入、回读和删除；guest 块设备 ABI 与
+guest 内核驱动不属于该迁移。
 
 ## 6. 环境变量
 

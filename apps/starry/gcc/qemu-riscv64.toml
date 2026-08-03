@@ -3,7 +3,7 @@ args = [
     "-m",
     "512M",
     "-device",
-    "virtio-blk-pci,drive=disk0",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
     "-device",

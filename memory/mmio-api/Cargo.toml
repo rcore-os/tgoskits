@@ -1,6 +1,6 @@
 [package]
 name = "mmio-api"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["周睿 <zrufo747@outlook.com>"]
 categories.workspace = true
 description = "Memory-mapped I/O abstraction API for OS kernel development."
@@ -12,3 +12,10 @@ repository.workspace = true
 [dependencies]
 derive_more.workspace=true
 thiserror.workspace=true
+axtest = { workspace = true, optional = true }
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

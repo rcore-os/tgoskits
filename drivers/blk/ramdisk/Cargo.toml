@@ -7,8 +7,4 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "ramdisk"
 repository.workspace = true
-version = "0.1.10"
-
-[dependencies]
-ax-kspin = { workspace = true }
-rdif-block = { workspace = true }
+version = "0.1.11"

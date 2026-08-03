@@ -36,6 +36,18 @@ mod manager;
 mod platform_irq;
 mod shell;
 
+#[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+fn init_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("{info}");
+        // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
+        // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
+        // When the `backtrace` feature IS enabled, axbacktrace captures real
+        // frames (alloc=true, frames enumerated).
+        eprintln!("{}", axbacktrace::Backtrace::capture().kind("panic"));
+    }));
+}
+
 /// Axvisor kernel entry point.
 ///
 /// The startup sequence is:
@@ -45,6 +57,17 @@ mod shell;
 /// 3. Build and start configured guest VMs.
 /// 4. Enter the management shell after the default guests have exited.
 fn main() {
+    #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+    init_panic_hook();
+
+    // Test-only panic paths — gated behind dedicated features so they never
+    // activate in normal builds.  These are consumed by test-suit cases that
+    // verify the backtrace markers (or their absence) via QEMU regex matching.
+    #[cfg(feature = "test-backtrace-panic")]
+    panic!("axvisor backtrace smoke test: deliberate panic to verify backtrace output");
+    #[cfg(feature = "test-panic-no-backtrace")]
+    panic!("axvisor no-backtrace smoke test: panic without backtrace");
+
     banner::print_logo();
 
     info!("Starting virtualization...");

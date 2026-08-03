@@ -194,46 +194,16 @@ fn rdif_bias_from_rockchip_pull(pull: Pull) -> Bias {
     }
 }
 
-fn gpio_bank_index(node: &Node) -> Option<u32> {
-    let name = node.name();
-    if let Some(name) = name
-        .strip_prefix("gpio")
-        .filter(|name| !name.starts_with('@'))
-        && let Some(bank) = name
-            .chars()
-            .next()
-            .and_then(|ch| ch.to_digit(10))
-            .filter(|bank| *bank < GPIO_BANK_COUNT as u32)
-    {
-        return Some(bank);
+pub(super) fn gpio_bank_index(node: &Node) -> Option<u32> {
+    let pin_base = node
+        .get_property("gpio-ranges")
+        .and_then(|property| property.get_u32_iter().nth(2))?;
+    if pin_base % GPIO_LINES_PER_BANK != 0 {
+        return None;
     }
 
-    let address = gpio_bank_address(node)?;
-    match address {
-        0xfd8a_0000 => Some(0),
-        0xfec2_0000 => Some(1),
-        0xfec3_0000 => Some(2),
-        0xfec4_0000 => Some(3),
-        0xfec5_0000 => Some(4),
-        _ => None,
-    }
-}
-
-fn gpio_bank_address(node: &Node) -> Option<u64> {
-    if let Some(address) = node
-        .name()
-        .split_once('@')
-        .and_then(|(_, unit)| u64::from_str_radix(unit, 16).ok())
-    {
-        return Some(address);
-    }
-
-    let reg = node.get_property("reg")?.get_u32_iter().collect::<Vec<_>>();
-    match reg.as_slice() {
-        [addr] => Some(u64::from(*addr)),
-        cells if cells.len() >= 2 => Some((u64::from(cells[0]) << 32) | u64::from(cells[1])),
-        _ => None,
-    }
+    let bank = pin_base / GPIO_LINES_PER_BANK;
+    (bank < GPIO_BANK_COUNT as u32).then_some(bank)
 }
 
 #[cfg(test)]
@@ -264,13 +234,22 @@ mod tests {
                 PhysAddr::from_usize(addr.as_usize())
             }
 
-            fn mem_make_dma_coherent_uncached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
+            fn mem_make_dma_coherent_uncached(
+                _addr: VirtAddr,
+                _size: usize,
+            ) -> axklib::DmaCoherentMappingOutcome {
+                axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
             }
 
             fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
                 Err(AxError::Unsupported)
             }
+
+            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
 
             fn dma_alloc_pages(
                 _dma_mask: u64,
@@ -443,6 +422,7 @@ mod tests {
                 &[
                     prop_u32s("phandle", &[30]),
                     prop_strs("compatible", &["rockchip,gpio-bank"]),
+                    prop_u32s("gpio-ranges", &[1, 0, 2 * GPIO_LINES_PER_BANK, 32]),
                 ],
             ),
         );
@@ -497,6 +477,23 @@ mod tests {
             .unwrap(),
             vec![GpioLineId::new(GpioBankId::new(3), 4)]
         );
+    }
+
+    #[test]
+    fn gpio_bank_without_gpio_ranges_is_rejected() {
+        let node = Node::new("gpio@2ae20000");
+
+        assert_eq!(gpio_bank_index(&node), None);
+    }
+
+    #[test]
+    fn gpio_ranges_define_bank_order_independently_of_node_address() {
+        let node = node_with_props(
+            "gpio@deadbeef",
+            &[prop_u32s("gpio-ranges", &[1, 0, 3 * 32, 32])],
+        );
+
+        assert_eq!(gpio_bank_index(&node), Some(3));
     }
 
     fn conf_node(name: &str, phandle: u32, biases: &[&str], drive: Option<u32>) -> Node {

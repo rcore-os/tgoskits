@@ -15,8 +15,9 @@ use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, SysRegAddr, VCpuId, VMId,
+    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
@@ -36,6 +37,7 @@ mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
+mod vtimer;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
@@ -76,9 +78,12 @@ impl ArchOps for Aarch64Arch {
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
-            ArmVmExit::Hypercall { nr, args } => {
-                super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
-            }
+            ArmVmExit::Hypercall { nr, args } => super::handle_hypercall(
+                vm,
+                vcpu,
+                HypercallExit { nr, args },
+                crate::runtime::hvc::HyperCallAbi::AArch64,
+            ),
             ArmVmExit::MmioRead {
                 addr,
                 width,
@@ -136,6 +141,8 @@ impl ArchOps for Aarch64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             ArmVmExit::CpuUp {
@@ -156,6 +163,8 @@ impl ArchOps for Aarch64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: false,
                     stop_reason: Some(crate::StopReason::SystemDown),
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             ArmVmExit::SendIPI {
@@ -178,6 +187,8 @@ impl ArchOps for Aarch64Arch {
             ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             })),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
@@ -196,6 +207,8 @@ impl ArchOps for Aarch64Arch {
         Ok(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         })
     }
 }
@@ -223,6 +236,10 @@ impl VmArchVcpuOps for AxvmArmVcpu {
     type CreateConfig = ArmVcpuCreateConfig;
     type SetupConfig = ArmVcpuSetupConfig;
     type Exit = ArmVmExit;
+
+    fn guest_mpidr_from_create_config(config: &Self::CreateConfig) -> Option<u64> {
+        Some(config.mpidr_el1 as u64)
+    }
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(Self)
@@ -261,6 +278,20 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         arm_result(self.0.inject_interrupt(vector))
+    }
+
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        // The Arm Router/VGIC consumes line trigger semantics before emitting
+        // an INTID. The GIC list-register injection itself is mode-agnostic.
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
+                arm_result(self.0.inject_interrupt(vector))
+            }
+        }
     }
 
     fn set_return_value(&mut self, val: usize) {
@@ -410,12 +441,31 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
         crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
     }
 
+    fn current_vm_id() -> usize {
+        crate::current_vm_id().expect("current AArch64 VM is not set")
+    }
+
+    fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
+        if let Err(err) = crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector as usize) {
+            warn!(
+                "failed to queue VM[{vm_id}] vCPU[{vcpu_id}] virtual interrupt {vector}: {err:?}"
+            );
+        }
+    }
+
     fn current_time_nanos() -> u64 {
         default_host().monotonic_time().as_nanos() as u64
     }
 
-    fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>) {
-        let _ = crate::timer::register_timer(deadline.as_nanos() as u64, callback);
+    fn register_timer(
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> usize {
+        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
+    }
+
+    fn cancel_timer(token: usize) {
+        crate::timer::cancel_timer(token);
     }
 
     fn read_vgicd_iidr() -> u32 {
@@ -436,5 +486,23 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn hardware_inject_virtual_interrupt(vector: u8) {
         gic::inject_interrupt(vector as usize);
+    }
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod guest_mpidr_tests {
+    use super::*;
+
+    #[test]
+    fn guest_mpidr_from_real_arm_create_config() {
+        let config = ArmVcpuCreateConfig {
+            mpidr_el1: 0x100,
+            dtb_addr: 0x4000_0000,
+        };
+
+        assert_eq!(
+            <AxvmArmVcpu as VmArchVcpuOps>::guest_mpidr_from_create_config(&config),
+            Some(0x100),
+        );
     }
 }

@@ -9,18 +9,6 @@ use axvm_types::HostPhysAddr;
 
 use crate::{VplicResult, host};
 
-/// Performs a volatile MMIO read operation.
-pub(crate) fn perform_mmio_read(addr: HostPhysAddr, width: AccessWidth) -> VplicResult<usize> {
-    let addr = host::phys_to_virt(addr).as_ptr();
-
-    match width {
-        AccessWidth::Byte => Ok(unsafe { addr.read_volatile() as _ }),
-        AccessWidth::Word => Ok(unsafe { (addr as *const u16).read_volatile() as _ }),
-        AccessWidth::Dword => Ok(unsafe { (addr as *const u32).read_volatile() as _ }),
-        AccessWidth::Qword => Ok(unsafe { (addr as *const u64).read_volatile() as _ }),
-    }
-}
-
 /// Performs a volatile MMIO write operation.
 pub(crate) fn perform_mmio_write(
     addr: HostPhysAddr,

@@ -14,74 +14,16 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use ax_plat::{console::ConsoleIf, time::TimeIf};
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceResult, InterruptTriggerMode, IrqError, IrqLine, IrqLineId,
-    IrqResult, IrqSink,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
+    InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink, Resource,
 };
 use axvm::{AxVmError, InterruptFabric};
-use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
-};
-
-struct TestConsole;
-
-#[ax_plat::impl_plat_interface]
-impl ConsoleIf for TestConsole {
-    fn write_bytes(_bytes: &[u8]) {}
-
-    fn read_bytes(_bytes: &mut [u8]) -> usize {
-        0
-    }
-
-    fn device_id() -> ax_plat::console::ConsoleDeviceIdResult {
-        Err(ax_plat::console::ConsoleDeviceIdError::NotSpecified)
-    }
-
-    fn claim_runtime_output() {}
-
-    fn irq_num() -> Option<irq_framework::IrqId> {
-        None
-    }
-
-    fn set_input_irq_enabled(_enabled: bool) {}
-
-    fn handle_irq() -> ax_plat::console::ConsoleIrqEvent {
-        ax_plat::console::ConsoleIrqEvent::empty()
-    }
-}
-
-struct TestTime;
-
-#[ax_plat::impl_plat_interface]
-impl TimeIf for TestTime {
-    fn current_ticks() -> u64 {
-        0
-    }
-
-    fn ticks_to_nanos(ticks: u64) -> u64 {
-        ticks
-    }
-
-    fn nanos_to_ticks(nanos: u64) -> u64 {
-        nanos
-    }
-
-    fn epochoffset_nanos() -> u64 {
-        0
-    }
-
-    fn irq_num() -> irq_framework::IrqId {
-        irq_framework::IrqId::new(irq_framework::IrqDomainId(0), irq_framework::HwIrq(0))
-    }
-
-    fn set_oneshot_timer(_deadline_ns: u64) {}
-}
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, VMInterruptMode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IrqEvent {
@@ -116,30 +58,36 @@ impl IrqSink for RecordingIrqSink {
 }
 
 struct IrqMmioDevice {
-    range: GuestPhysAddrRange,
+    resources: [Resource; 1],
     line: IrqLine,
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for IrqMmioDevice {
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.range
+impl Device for IrqMmioDevice {
+    fn name(&self) -> &str {
+        "irq-mmio"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::VirtioNet
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        self.line
-            .pulse()
-            .map_err(|error| axdevice_base::DeviceError::Backend {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            self.line.pulse().map_err(|error| DeviceError::Backend {
                 operation: "pulse test device IRQ",
                 detail: error.to_string(),
-            })
+            })?;
+            Ok(BusResponse::Write)
+        }
     }
 }
 
@@ -162,13 +110,14 @@ impl DeviceFactory for IrqMmioFactory {
             });
         };
         let line = context.resolve_irq(config.irq_id, InterruptTriggerMode::EdgeTriggered)?;
-        Ok(
-            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(Arc::new(IrqMmioDevice {
-                range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
-                line,
-            })))
-            .into(),
-        )
+        Ok(DeviceRegistration::Device(Arc::new(IrqMmioDevice {
+            resources: [Resource::MmioRange {
+                base: config.base_gpa as u64,
+                size: (end - config.base_gpa) as u64,
+            }],
+            line,
+        }))
+        .into())
     }
 }
 
@@ -206,8 +155,8 @@ fn test_no_irq_fabric_rejects_backend_and_line_resolution() {
     let fabric = InterruptFabric::new(VMInterruptMode::NoIrq);
     let context = DeviceBuildContext::new(&fabric);
     assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x6_0000, 12)]),
+        DeviceRuntime::build_with_factories(
+            &[irq_device_config(0x6_0000, 12)],
             &irq_factory_registry(),
             &context,
         )
@@ -273,8 +222,8 @@ fn test_factory_device_emits_irq_through_interrupt_fabric() {
     let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
     let devices = {
         let context = DeviceBuildContext::new(&fabric);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x7_0000, 15)]),
+        DeviceRuntime::build_with_factories(
+            &[irq_device_config(0x7_0000, 15)],
             &irq_factory_registry(),
             &context,
         )
@@ -296,8 +245,8 @@ fn test_dropping_devices_and_fabric_releases_irq_backend() {
     let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
     let devices = {
         let context = DeviceBuildContext::new(&fabric);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x8_0000, 16)]),
+        DeviceRuntime::build_with_factories(
+            &[irq_device_config(0x8_0000, 16)],
             &irq_factory_registry(),
             &context,
         )
@@ -316,8 +265,8 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
     let (fabric_b, sink_b) = recording_fabric(VMInterruptMode::Emulated);
     let devices_a = {
         let context = DeviceBuildContext::new(&fabric_a);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0x9_0000, 17)]),
+        DeviceRuntime::build_with_factories(
+            &[irq_device_config(0x9_0000, 17)],
             &irq_factory_registry(),
             &context,
         )
@@ -325,8 +274,8 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
     };
     let devices_b = {
         let context = DeviceBuildContext::new(&fabric_b);
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![irq_device_config(0xa_0000, 17)]),
+        DeviceRuntime::build_with_factories(
+            &[irq_device_config(0xa_0000, 17)],
             &irq_factory_registry(),
             &context,
         )

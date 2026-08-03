@@ -25,12 +25,24 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
 
             let thr = curr.as_thread();
-            if thr.proc_data.ptrace_stop_signo_for(thr.tid()).is_some() {
-                wait_existing_ptrace_stop_current(thr, &mut uctx);
-            } else if thr.tid() == thr.proc_data.proc.pid()
-                && thr.proc_data.ptrace_stop_signo().is_some()
-            {
-                let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
+            let resumed_from_initial_ptrace_stop =
+                if thr.proc_data.ptrace_stop_signo_for(thr.tid()).is_some() {
+                    wait_existing_ptrace_stop_current(thr, &mut uctx);
+                    true
+                } else if thr.tid() == thr.proc_data.proc.pid()
+                    && thr.proc_data.ptrace_stop_signo().is_some()
+                {
+                    let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
+                    true
+                } else {
+                    false
+                };
+            if resumed_from_initial_ptrace_stop {
+                // `block_on_user` consumes the interruption that aborted the
+                // stop. Re-scan pending signals before the first user
+                // instruction so SIGKILL cannot be replaced by a racing
+                // `_exit(0)`.
+                while check_signals(thr, &mut uctx, None, None) {}
             }
             while !thr.pending_exit() {
                 let tid = thr.tid();

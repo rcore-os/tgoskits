@@ -118,6 +118,19 @@ pub fn init_trap() {
     #[cfg(feature = "uspace")]
     {
         CNTKCTL_EL1.modify(CNTKCTL_EL1::EL0VCTEN::TrappedNone + CNTKCTL_EL1::EL0PCTEN::TrappedNone);
+        // Start this CPU's free-running PMU cycle counter and let EL0 read it, so
+        // `PMCCNTR_EL0` yields real cycle counts at both EL1 and EL0. This is the
+        // exact-frequency oracle the DVFS calibration reads in-kernel and that
+        // `cpuprobe`'s `mhz_pmc` reads from userspace (both were 0/trapping before,
+        // because these registers were only ever set on the lazy perf_event_open
+        // path). Guarded on PMUv3 being present; a live system-wide `perf stat -e
+        // cycles` may momentarily reset/disable this shared counter, which is fine
+        // for a boot/idle calibration.
+        if crate::pmu::probe().is_some() {
+            crate::pmu::init_cpu();
+            crate::pmu::cycles::configure(false, false);
+            crate::pmu::cycles::enable();
+        }
         barrier::isb(barrier::SY);
     }
     unsafe extern "C" {

@@ -311,6 +311,9 @@ impl From<RegistryError> for AxVmError {
             RegistryError::InvalidResource { .. } => {
                 Self::invalid_input("register virtual device", error)
             }
+            RegistryError::InvalidState { .. } => {
+                Self::invalid_state("register virtual device", error)
+            }
             RegistryError::BusKindNotSupported { .. } | RegistryError::ArchNotSupported { .. } => {
                 Self::unsupported("register virtual device", error)
             }

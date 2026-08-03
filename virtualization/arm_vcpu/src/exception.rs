@@ -16,8 +16,7 @@ use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VT
 use log::error;
 
 use crate::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
-    TrapFrame,
+    ArmAccessWidth, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit, TrapFrame,
     exception_utils::{
         exception_class, exception_class_value, exception_data_abort_access_is_write,
         exception_data_abort_access_reg, exception_data_abort_access_reg_width,
@@ -43,6 +42,12 @@ pub enum TrapKind {
 const EXCEPTION_SYNC: usize = TrapKind::Synchronous as usize;
 /// Equals to [`TrapKind::Irq`], used in exception.S.
 const EXCEPTION_IRQ: usize = TrapKind::Irq as usize;
+
+const AARCH64_EXCEPTION_INSN_SIZE: usize = 4;
+
+fn advance_aarch64_exception_pc(ctx: &mut TrapFrame) {
+    ctx.set_exception_pc(ctx.exception_pc() + AARCH64_EXCEPTION_INSN_SIZE);
+}
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -93,27 +98,14 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             handle_data_abort(ctx)
         }
         Some(ESR_EL2::EC::Value::HVC64) => {
-            // The `#imm`` argument when triggering a hvc call, currently not used.
+            // The `#imm` argument when triggering a hvc call, currently not used.
             let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
 
-            // Is this a psci call?
-            //
-            // By convention, a psci call can use either the `hvc` or the `smc` instruction.
-            // NimbOS uses `hvc`, `ArceOS` use `hvc` too when running on QEMU.
-            if let Some(result) = handle_psci_call(ctx) {
+            if let Some(result) = handle_hvc_psci_version(ctx) {
                 return result;
             }
 
-            // We assume that guest VM triggers HVC through a `hvc #0`` instruction.
-            // And arm64 hcall implementation uses `x0` to specify the hcall number.
-            // For more details on the hypervisor call (HVC) mechanism and the use of general-purpose registers,
-            // refer to the [Linux Kernel documentation on KVM ARM hypervisor ABI](https://github.com/torvalds/linux/blob/master/Documentation/virt/kvm/arm/hyp-abi.rst).
-            Ok(ArmVmExit::Hypercall {
-                nr: ctx.gpr[0],
-                args: [
-                    ctx.gpr[1], ctx.gpr[2], ctx.gpr[3], ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
-                ],
-            })
+            handle_hvc64_exception(ctx)
         }
         Some(ESR_EL2::EC::Value::TrappedMsrMrs) => handle_system_register(ctx),
         Some(ESR_EL2::EC::Value::SMC64) => {
@@ -138,6 +130,40 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             );
         }
     }
+}
+
+fn handle_hvc_psci_version(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
+    const PSCI_VERSION_32: u64 = 0x8400_0000;
+    const PSCI_VERSION_0_2: usize = 0x0000_0002;
+
+    if ctx.gpr[0] != PSCI_VERSION_32 {
+        return None;
+    }
+
+    advance_aarch64_exception_pc(ctx);
+    ctx.set_gpr(0, PSCI_VERSION_0_2);
+    Some(Ok(ArmVmExit::Nothing))
+}
+
+fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
+    advance_aarch64_exception_pc(ctx);
+
+    // Is this a psci call?
+    //
+    // By convention, a psci call can use either the `hvc` or the `smc` instruction.
+    // NimbOS uses `hvc`, `ArceOS` use `hvc` too when running on QEMU.
+    if let Some(result) = handle_psci_call(ctx) {
+        return result;
+    }
+
+    // We assume that guest VM triggers HVC through a `hvc #0` instruction.
+    // And arm64 hcall implementation uses `x0` to specify the hcall number.
+    Ok(ArmVmExit::Hypercall {
+        nr: ctx.gpr[0],
+        args: [
+            ctx.gpr[1], ctx.gpr[2], ctx.gpr[3], ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
+        ],
+    })
 }
 
 fn handle_data_abort(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
@@ -222,47 +248,26 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmE
     })
 }
 
-/// Handles HVC or SMC exceptions that serve as psci (Power State Coordination Interface) calls.
+/// Handles HVC or SMC exceptions that serve as PSCI calls.
 ///
-/// A hvc or smc call with the function in range 0x8000_0000..=0x8000_001F  (when the 32-bit
-/// hvc/smc calling convention is used) or 0xC000_0000..=0xC000_001F (when the 64-bit hvc/smc
-/// calling convention is used) is a psci call. This function handles them all.
-///
-/// Returns `None` if the HVC is not a psci call.
-fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
+/// PSCI calls are normalized into `ArmVmExit::Hypercall` so that PSCI
+/// semantics live in `axvm::runtime::hvc` instead of being split between
+/// the trap layer and the VM runtime.
+fn handle_psci_call(ctx: &TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
     const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
     const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
 
-    const PSCI_FN_VERSION: u64 = 0x0;
-    const _PSCI_FN_CPU_SUSPEND: u64 = 0x1;
-    const PSCI_FN_CPU_OFF: u64 = 0x2;
-    const PSCI_FN_CPU_ON: u64 = 0x3;
-    const _PSCI_FN_MIGRATE: u64 = 0x5;
-    const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
-    const _PSCI_FN_SYSTEM_RESET: u64 = 0x9;
-    const PSCI_FN_END: u64 = 0x1f;
-
-    let fn_ = ctx.gpr[0];
-    let fn_offset = if PSCI_FN_RANGE_32.contains(&fn_) {
-        Some(fn_ - PSCI_FN_RANGE_32.start())
-    } else if PSCI_FN_RANGE_64.contains(&fn_) {
-        Some(fn_ - PSCI_FN_RANGE_64.start())
-    } else {
-        None
-    };
-
-    match fn_offset {
-        Some(PSCI_FN_CPU_OFF) => Some(Ok(ArmVmExit::CpuDown { state: ctx.gpr[1] })),
-        Some(PSCI_FN_CPU_ON) => Some(Ok(ArmVmExit::CpuUp {
-            target_cpu: ctx.gpr[1],
-            entry_point: ArmGuestPhysAddr::from_usize(ctx.gpr[2] as usize),
-            arg: ctx.gpr[3],
-        })),
-        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(ArmVmExit::SystemDown)),
-        // We just forward these request to the ATF directly.
-        Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
-        _ => None,
+    let fn_id = ctx.gpr[0];
+    if !PSCI_FN_RANGE_32.contains(&fn_id) && !PSCI_FN_RANGE_64.contains(&fn_id) {
+        return None;
     }
+
+    Some(Ok(ArmVmExit::Hypercall {
+        nr: fn_id,
+        args: [
+            ctx.gpr[1], ctx.gpr[2], ctx.gpr[3], ctx.gpr[4], ctx.gpr[5], ctx.gpr[6],
+        ],
+    }))
 }
 
 /// Handles SMC (Secure Monitor Call) exceptions.
@@ -370,4 +375,51 @@ fn invalid_exception_el2(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource)
         "Invalid exception {:?} from {:?}:\n{:#x?}",
         kind, source, tf
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PSCI_VERSION_32: u64 = 0x8400_0000;
+    const GENERIC_HVC_NR: u64 = 0x1234_5678;
+    const TEST_PC: usize = 0x8020_0000;
+
+    #[test]
+    fn hvc_psci_exit_advances_exception_pc() {
+        let mut ctx = TrapFrame::default();
+        ctx.set_exception_pc(TEST_PC);
+        ctx.set_gpr(0, PSCI_VERSION_32 as usize);
+
+        let exit = handle_hvc64_exception(&mut ctx).expect("PSCI HVC should produce VM exit");
+
+        assert_eq!(ctx.exception_pc(), TEST_PC + AARCH64_EXCEPTION_INSN_SIZE);
+        assert!(matches!(
+            exit,
+            ArmVmExit::Hypercall {
+                nr: PSCI_VERSION_32,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn generic_hvc_exit_advances_exception_pc() {
+        let mut ctx = TrapFrame::default();
+        ctx.set_exception_pc(TEST_PC);
+        ctx.set_gpr(0, GENERIC_HVC_NR as usize);
+        ctx.set_gpr(1, 1);
+        ctx.set_gpr(2, 2);
+
+        let exit = handle_hvc64_exception(&mut ctx).expect("generic HVC should produce VM exit");
+
+        assert_eq!(ctx.exception_pc(), TEST_PC + AARCH64_EXCEPTION_INSN_SIZE);
+        assert!(matches!(
+            exit,
+            ArmVmExit::Hypercall {
+                nr: GENERIC_HVC_NR,
+                args: [1, 2, _, _, _, _],
+            }
+        ));
+    }
 }

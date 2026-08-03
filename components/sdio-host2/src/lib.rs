@@ -2,8 +2,9 @@
 //!
 //! This crate intentionally models the shared CMD/DAT bus rather than a card,
 //! block device, filesystem, or runtime queue. A host accepts one transaction
-//! at a time: a command, an optional data phase, and a task-side poll path to
-//! observe completion. Higher-level SD/MMC card protocols live in
+//! at a time: a command, an optional data phase, and explicit task-side causes
+//! that advance the controller state machine. Higher-level SD/MMC card
+//! protocols live in
 //! `sdmmc-protocol`.
 
 #![no_std]
@@ -14,6 +15,7 @@ use alloc::boxed::Box;
 use core::{
     fmt,
     num::{NonZeroU16, NonZeroU32},
+    time::Duration,
 };
 
 use dma_api::{CompletedDma, DmaDirection, PreparedDma};
@@ -45,23 +47,6 @@ impl Command {
 
     pub const fn with_response(self, response: ResponseType) -> Self {
         Self { response, ..self }
-    }
-
-    /// Return a copy of this command with its response type overridden.
-    ///
-    /// Kept as a compatibility alias for existing SD/MMC protocol helpers.
-    pub const fn with_resp_type(self, response: ResponseType) -> Self {
-        self.with_response(response)
-    }
-
-    /// Compatibility alias for older SD/MMC command helpers.
-    pub const fn cmd(self) -> u8 {
-        self.index
-    }
-
-    /// Compatibility alias for older SD/MMC command helpers.
-    pub const fn arg(self) -> u32 {
-        self.argument
     }
 
     /// Direction of the data phase that follows this command when it is
@@ -349,51 +334,64 @@ impl<'a> Transaction<'a> {
 
 /// Submit failure for an owned transaction.
 ///
-/// When `transaction` is present, the caller may recover and retry the DMA
-/// backing. When it is absent, the host had to consume/quiesce the transaction
-/// while handling the error; no hardware access remains active on return.
+/// A rejected submission must return the original transaction. Once hardware
+/// has accepted a transaction, the host must instead return a request and
+/// report any later failure through [`RequestProgress::Complete`].
 pub struct SubmitTransactionError<'a> {
     pub error: Error,
-    transaction: Option<Box<Transaction<'a>>>,
+    transaction: Box<Transaction<'a>>,
 }
 
 impl<'a> SubmitTransactionError<'a> {
     pub fn new(error: Error, transaction: Transaction<'a>) -> Self {
         Self {
             error,
-            transaction: Some(Box::new(transaction)),
+            transaction: Box::new(transaction),
         }
     }
 
-    pub const fn consumed(error: Error) -> Self {
-        Self {
-            error,
-            transaction: None,
-        }
+    pub fn into_transaction(self) -> Transaction<'a> {
+        *self.transaction
     }
 
-    pub fn into_transaction(self) -> Option<Transaction<'a>> {
-        self.transaction.map(|transaction| *transaction)
+    pub fn into_parts(self) -> (Error, Transaction<'a>) {
+        (self.error, *self.transaction)
     }
+}
+
+/// Cause that permits a maintenance task to advance one host request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressCause {
+    /// The request was just accepted and hardware submission may start.
+    Submitted,
+    /// A hard IRQ handler acknowledged and latched a matching device event.
+    AcknowledgedIrq,
+    /// A bounded register-only wait expired.
+    RegisterRetry,
 }
 
 /// Result of advancing a submitted request once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestPoll<T> {
-    Pending,
-    Ready(Result<T, Error>),
+pub enum RequestProgress<T> {
+    /// A register-only transition may be retried after this delay.
+    RegisterPending { retry_after: Duration },
+    /// Command or data progress requires a matching acknowledged IRQ.
+    WaitingForIrq,
+    /// The request reached a terminal state and hardware no longer accesses
+    /// its payload.
+    Complete(Result<T, Error>),
 }
 
-/// Error returned when a request is polled through the wrong handle or after
+/// Error returned when a request is advanced through the wrong handle or after
 /// its terminal state.
 ///
-/// Unlike [`RequestPoll::Ready`], this is not a transfer terminal state for
+/// Unlike [`RequestProgress::Complete`], this is not a transfer terminal state for
 /// the request payload. Implementations must not report a terminal
-/// [`RequestPoll::Ready`] error until the controller is no longer accessing
+/// [`RequestProgress::Complete`] error until the controller is no longer accessing
 /// the transaction buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum PollRequestError {
+pub enum AdvanceRequestError {
     WrongOwner,
     WrongKind,
     AlreadyCompleted,
@@ -407,8 +405,11 @@ pub enum PollRequestError {
 }
 
 /// SD/SDIO/MMC bus width.
+///
+/// This is a closed protocol set. Keeping it exhaustive makes every host
+/// choose the exact hardware encoding instead of silently guessing for an
+/// unknown width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum BusWidth {
     Bit1,
     Bit4,
@@ -496,11 +497,11 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
-impl fmt::Display for PollRequestError {
+impl fmt::Display for AdvanceRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Self::WrongOwner => "request belongs to a different host",
-            Self::WrongKind => "request was polled through the wrong operation kind",
+            Self::WrongKind => "request was advanced through the wrong operation kind",
             Self::AlreadyCompleted => "request has already completed",
             Self::StaleGeneration => "request generation is no longer active",
             Self::RecoveryFailed => "request recovery failed",
@@ -509,26 +510,26 @@ impl fmt::Display for PollRequestError {
     }
 }
 
-impl core::error::Error for PollRequestError {}
+impl core::error::Error for AdvanceRequestError {}
 
 /// Physical SD/SDIO/MMC host bus.
 ///
 /// The base contract is single active transaction: a host may reject a submit
 /// with [`Error::Busy`] while another transaction or bus operation is active.
 pub trait SdioHost {
-    type TransactionRequest<'a>
+    type TransactionRequest<'a>: Send
     where
         Self: 'a;
-    type BusRequest;
+    type BusRequest: Send;
 
     /// Submit one CMD/DAT transaction.
     ///
     /// # Safety
     ///
-    /// Callers must poll the returned request until [`RequestPoll::Ready`] or
-    /// call [`Self::abort_transaction`] before dropping it. Until one of those
-    /// terminal paths runs, the host may still access the associated data
-    /// buffer through DMA or FIFO PIO.
+    /// Callers must advance the returned request until
+    /// [`RequestProgress::Complete`] or call [`Self::abort_transaction`] before
+    /// dropping it. Until one of those terminal paths runs, the host may still
+    /// access the associated data buffer through DMA or FIFO PIO.
     unsafe fn submit_transaction<'a>(
         &mut self,
         transaction: Transaction<'a>,
@@ -537,10 +538,7 @@ pub trait SdioHost {
         Self: 'a;
 
     /// Submit one CMD/DAT transaction while preserving transaction ownership
-    /// on submit-side failure when the host has not started hardware access.
-    ///
-    /// The default path is kept for legacy hosts. Native DMA users should
-    /// override it so submit failure can return the original transaction.
+    /// on submit-side failure.
     ///
     /// # Safety
     ///
@@ -550,18 +548,18 @@ pub trait SdioHost {
         transaction: Transaction<'a>,
     ) -> Result<Self::TransactionRequest<'a>, SubmitTransactionError<'a>>
     where
-        Self: 'a,
-    {
-        match unsafe { self.submit_transaction(transaction) } {
-            Ok(request) => Ok(request),
-            Err(error) => Err(SubmitTransactionError::consumed(error)),
-        }
-    }
+        Self: 'a;
 
-    fn poll_transaction<'a>(
+    /// Advances one transaction for an explicit task-side cause.
+    ///
+    /// `Submitted` and `RegisterRetry` must never complete a CMD or DAT phase.
+    /// Such phases may become terminal only when `cause` is
+    /// [`ProgressCause::AcknowledgedIrq`].
+    fn advance_transaction<'a>(
         &mut self,
         request: &mut Self::TransactionRequest<'a>,
-    ) -> Result<RequestPoll<RawResponse>, PollRequestError>
+        cause: ProgressCause,
+    ) -> Result<RequestProgress<RawResponse>, AdvanceRequestError>
     where
         Self: 'a;
 
@@ -593,14 +591,16 @@ pub trait SdioHost {
     ///
     /// # Safety
     ///
-    /// The returned request must be polled until [`RequestPoll::Ready`] or
-    /// passed to [`Self::abort_bus_op`] before being dropped.
+    /// The returned request must be advanced until
+    /// [`RequestProgress::Complete`] or passed to [`Self::abort_bus_op`] before
+    /// being dropped.
     unsafe fn submit_bus_op(&mut self, op: BusOp) -> Result<Self::BusRequest, Error>;
 
-    fn poll_bus_op(
+    fn advance_bus_op(
         &mut self,
         request: &mut Self::BusRequest,
-    ) -> Result<RequestPoll<()>, PollRequestError>;
+        cause: ProgressCause,
+    ) -> Result<RequestProgress<()>, AdvanceRequestError>;
 
     /// Abort a bus operation.
     ///
@@ -625,13 +625,11 @@ mod tests {
     #[derive(Debug)]
     struct MockTransactionRequest {
         response: RawResponse,
-        pending_once: bool,
         done: bool,
     }
 
     #[derive(Debug)]
     struct MockBusRequest {
-        pending_once: bool,
         done: bool,
     }
 
@@ -655,28 +653,44 @@ mod tests {
             self.busy = true;
             Ok(MockTransactionRequest {
                 response: RawResponse::new(transaction.command.response, [0x1234, 0, 0, 0]),
-                pending_once: true,
                 done: false,
             })
         }
 
-        fn poll_transaction<'a>(
+        unsafe fn submit_transaction_owned<'a>(
+            &mut self,
+            transaction: Transaction<'a>,
+        ) -> Result<Self::TransactionRequest<'a>, SubmitTransactionError<'a>>
+        where
+            Self: 'a,
+        {
+            if self.busy {
+                return Err(SubmitTransactionError::new(Error::Busy, transaction));
+            }
+            self.busy = true;
+            Ok(MockTransactionRequest {
+                response: RawResponse::new(transaction.command.response, [0x1234, 0, 0, 0]),
+                done: false,
+            })
+        }
+
+        fn advance_transaction<'a>(
             &mut self,
             request: &mut Self::TransactionRequest<'a>,
-        ) -> Result<RequestPoll<RawResponse>, PollRequestError>
+            cause: ProgressCause,
+        ) -> Result<RequestProgress<RawResponse>, AdvanceRequestError>
         where
             Self: 'a,
         {
             if request.done {
-                return Err(PollRequestError::AlreadyCompleted);
+                return Err(AdvanceRequestError::AlreadyCompleted);
             }
-            if request.pending_once {
-                request.pending_once = false;
-                return Ok(RequestPoll::Pending);
+            if cause != ProgressCause::AcknowledgedIrq {
+                return Ok(RequestProgress::WaitingForIrq);
             }
             self.busy = false;
             request.done = true;
-            Ok(RequestPoll::Ready(Ok(request.response)))
+            Ok(RequestProgress::Complete(Ok(request.response)))
         }
 
         fn abort_transaction<'a>(
@@ -696,26 +710,23 @@ mod tests {
                 return Err(Error::Busy);
             }
             self.busy = true;
-            Ok(MockBusRequest {
-                pending_once: false,
-                done: false,
-            })
+            Ok(MockBusRequest { done: false })
         }
 
-        fn poll_bus_op(
+        fn advance_bus_op(
             &mut self,
             request: &mut Self::BusRequest,
-        ) -> Result<RequestPoll<()>, PollRequestError> {
+            cause: ProgressCause,
+        ) -> Result<RequestProgress<()>, AdvanceRequestError> {
             if request.done {
-                return Err(PollRequestError::AlreadyCompleted);
+                return Err(AdvanceRequestError::AlreadyCompleted);
             }
-            if request.pending_once {
-                request.pending_once = false;
-                return Ok(RequestPoll::Pending);
+            if cause != ProgressCause::AcknowledgedIrq {
+                return Ok(RequestProgress::WaitingForIrq);
             }
             self.busy = false;
             request.done = true;
-            Ok(RequestPoll::Ready(Ok(())))
+            Ok(RequestProgress::Complete(Ok(())))
         }
 
         fn abort_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<(), Error> {
@@ -744,16 +755,16 @@ mod tests {
             Error::Busy
         );
         assert_eq!(
-            host.poll_transaction(&mut request),
-            Ok(RequestPoll::Pending)
+            host.advance_transaction(&mut request, ProgressCause::Submitted),
+            Ok(RequestProgress::WaitingForIrq)
         );
         assert!(matches!(
-            host.poll_transaction(&mut request),
-            Ok(RequestPoll::Ready(Ok(_)))
+            host.advance_transaction(&mut request, ProgressCause::AcknowledgedIrq),
+            Ok(RequestProgress::Complete(Ok(_)))
         ));
         assert_eq!(
-            host.poll_transaction(&mut request),
-            Err(PollRequestError::AlreadyCompleted)
+            host.advance_transaction(&mut request, ProgressCause::AcknowledgedIrq),
+            Err(AdvanceRequestError::AlreadyCompleted)
         );
         assert!(unsafe { host.submit_transaction(Transaction::command(cmd)) }.is_ok());
     }
@@ -778,8 +789,32 @@ mod tests {
 
         assert!(unsafe { host.submit_transaction(Transaction::command(cmd)) }.is_ok());
         assert_eq!(
-            host.poll_transaction(&mut request),
-            Err(PollRequestError::AlreadyCompleted)
+            host.advance_transaction(&mut request, ProgressCause::AcknowledgedIrq),
+            Err(AdvanceRequestError::AlreadyCompleted)
+        );
+    }
+
+    #[test]
+    fn command_and_data_cannot_complete_without_acknowledged_irq() {
+        let mut host = MockHost { busy: false };
+        let command = Command::new(17, 0, ResponseType::R1);
+        let mut request =
+            unsafe { host.submit_transaction(Transaction::command(command)) }.unwrap();
+
+        assert_eq!(
+            host.advance_transaction(&mut request, ProgressCause::Submitted),
+            Ok(RequestProgress::WaitingForIrq)
+        );
+        assert_eq!(
+            host.advance_transaction(&mut request, ProgressCause::RegisterRetry),
+            Ok(RequestProgress::WaitingForIrq)
+        );
+        assert_eq!(
+            host.advance_transaction(&mut request, ProgressCause::AcknowledgedIrq),
+            Ok(RequestProgress::Complete(Ok(RawResponse::new(
+                ResponseType::R1,
+                [0x1234, 0, 0, 0]
+            ))))
         );
     }
 }

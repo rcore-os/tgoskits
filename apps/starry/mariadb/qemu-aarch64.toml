@@ -5,7 +5,7 @@ args = [
     "-cpu",
     "cortex-a53",
     "-device",
-    "virtio-blk-pci,drive=disk0",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
     "-device",
@@ -13,7 +13,7 @@ args = [
     "-netdev",
     "user,id=net0",
     "-append",
-    "root=/dev/sda",
+    "root=/dev/nvme0n1",
 ]
 uefi = false
 to_bin = true

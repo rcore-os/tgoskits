@@ -1,0 +1,22 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "rv64",
+    "-machine",
+    "virt",
+    "-smp",
+    "1",
+    "-m",
+    "512M",
+]
+# Negative case: test-panic-no-backtrace = [] (no backtrace feature chain).
+# axruntime's #[panic_handler] still calls Backtrace::capture() on the first
+# panic, but alloc is disabled → Inner::Disabled → BT_ERROR requires_alloc.
+# Fail if alloc=true (backtrace feature leaked through).
+fail_regex = ["(?s)BACKTRACE_BEGIN(?-u:\\b).*(?-u:\\b)alloc=true(?-u:\\b)"]
+# Assert the BACKTRACE_BEGIN … BACKTRACE_END block is present but capture
+# is disabled (alloc=false + BT_ERROR requires_alloc).
+success_regex = ["(?s)BACKTRACE_BEGIN(?-u:\\b).*(?-u:\\b)alloc=false(?-u:\\b).*(?-u:\\b)BT_ERROR requires_alloc(?-u:\\b).*(?-u:\\b)BACKTRACE_END"]
+timeout = 60
+to_bin = true
+uefi = false

@@ -22,8 +22,8 @@
 #                collectors uname/time. GET the metrics path and assert the documented node_* families
 #                are exposed AND carry real, non-zero values: node_cpu_seconds_total, node_memory_*,
 #                node_load1, node_vmstat_pgfault (page-fault counter), node_network_receive_bytes_total
-#                {device="lo"} (loopback scrape traffic), node_disk_reads_completed_total{device="vda"}
-#                (root virtio-blk), and node_filesystem_size_bytes{mountpoint="/"} (ext4 root via
+#                {device="lo"} (loopback scrape traffic), node_disk_reads_completed_total{device="nvme0n1"}
+#                (root NVMe), and node_filesystem_size_bytes{mountpoint="/"} (ext4 root via
 #                statfs). A custom --web.telemetry-path is honored (moved off /metrics) and the landing
 #                page is served; then stop it.
 #
@@ -311,13 +311,13 @@ def main():
         lo_rx = metric_value(body, "node_network_receive_bytes_total", 'device="lo"')
         check(lo_rx is not None and lo_rx > 0,
               'node_network_receive_bytes_total{device="lo"} > 0 from /proc/net/dev (got %r)' % lo_rx)
-        # diskstats: the root virtio-blk device served boot reads, so vda read counters are non-zero.
-        vda_reads = metric_value(body, "node_disk_reads_completed_total", 'device="vda"')
-        check(vda_reads is not None and vda_reads > 0,
-              'node_disk_reads_completed_total{device="vda"} > 0 from /proc/diskstats (got %r)' % vda_reads)
-        vda_rbytes = metric_value(body, "node_disk_read_bytes_total", 'device="vda"')
-        check(vda_rbytes is not None and vda_rbytes > 0,
-              'node_disk_read_bytes_total{device="vda"} > 0 from /proc/diskstats (got %r)' % vda_rbytes)
+        # diskstats: the root NVMe device served boot reads, so nvme0n1 read counters are non-zero.
+        nvme0n1_reads = metric_value(body, "node_disk_reads_completed_total", 'device="nvme0n1"')
+        check(nvme0n1_reads is not None and nvme0n1_reads > 0,
+              'node_disk_reads_completed_total{device="nvme0n1"} > 0 from /proc/diskstats (got %r)' % nvme0n1_reads)
+        nvme0n1_rbytes = metric_value(body, "node_disk_read_bytes_total", 'device="nvme0n1"')
+        check(nvme0n1_rbytes is not None and nvme0n1_rbytes > 0,
+              'node_disk_read_bytes_total{device="nvme0n1"} > 0 from /proc/diskstats (got %r)' % nvme0n1_rbytes)
         # vmstat: /proc/vmstat's pgfault counter -- demand paging has serviced faults by scrape time.
         pgfault = metric_value(body, "node_vmstat_pgfault")
         check(pgfault is not None and pgfault > 0,

@@ -837,6 +837,11 @@ pub struct VMDevicesConfig {
     )]
     #[serde(with = "passthrough_device_config_vec_serde")]
     pub passthrough_devices: Vec<PassThroughDeviceConfig>,
+    /// Physical SPI IDs that must be explicitly forwarded to the guest.
+    ///
+    /// The IDs exclude the architectural GIC SPI offset of 32.
+    #[serde(default)]
+    pub passthrough_irqs: Vec<u32>,
     /// How the VM should handle interrupts and interrupt controllers.
     #[serde(default)]
     #[cfg_attr(

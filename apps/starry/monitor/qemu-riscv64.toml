@@ -2,7 +2,7 @@
 # OFFICIAL upstream release (upstream ships riscv64). uefi=false / to_bin=true = riscv64 raw boot.
 args = [
     "-nographic", "-cpu", "rv64", "-m", "2048M", "-smp", "1",
-    "-device", "virtio-blk-pci,drive=disk0",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
 ]

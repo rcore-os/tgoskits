@@ -51,6 +51,8 @@ passthrough_devices = [
     ["dev1", 0x0900_0000, 0x0900_0000, 0x0a00_0000, 0x2],
 ]
 
+passthrough_irqs = [4, 17]
+
 passthrough_ports = [
     [0x6000, 0x80],
 ]
@@ -108,6 +110,7 @@ interrupt_mode = "passthrough"
     assert_eq!(config.devices.passthrough_devices[1].base_hpa, 0x0900_0000);
     assert_eq!(config.devices.passthrough_devices[1].length, 0x0a00_0000);
     assert_eq!(config.devices.passthrough_devices[1].irq_id, 2);
+    assert_eq!(config.devices.passthrough_irqs, vec![4, 17]);
     assert_eq!(config.devices.passthrough_ports.len(), 1);
     assert_eq!(config.devices.passthrough_ports[0].base, 0x6000);
     assert_eq!(config.devices.passthrough_ports[0].length, 0x80);
@@ -636,6 +639,7 @@ fn test_default_implementations() {
     );
     assert!(vm_devices_config.emu_devices.is_empty());
     assert!(vm_devices_config.passthrough_devices.is_empty());
+    assert!(vm_devices_config.passthrough_irqs.is_empty());
     assert_eq!(vm_devices_config.interrupt_mode, VMInterruptMode::NoIrq);
 
     let axvm_crate_config = AxVMCrateConfig::default();

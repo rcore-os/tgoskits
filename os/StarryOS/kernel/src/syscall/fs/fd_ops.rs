@@ -165,11 +165,16 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         .session()
                         .terminal()
                         .ok_or(AxError::NotFound)?;
-                    let path = tty::terminal_device_path(term.as_ref()).ok_or_else(|| {
+                    let target = tty::terminal_device(term.as_ref()).ok_or_else(|| {
                         warn!("unknown controlling terminal type for /dev/tty");
                         AxError::BadState
                     })?;
-                    let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
+                    let loc = match target {
+                        tty::TerminalDevice::Location(location) => location,
+                        tty::TerminalDevice::Path(path) => {
+                            ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?
+                        }
+                    };
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
@@ -301,6 +306,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
         "pid" => NsFd::Pid(nsproxy.pid_ns.clone()),
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),
+        "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
         _ => return Some(Err(AxError::NotFound)),
     };
 
@@ -786,13 +792,46 @@ fn set_pipe_size(pipe: &Pipe, size: usize) -> AxResult<isize> {
     Ok(pipe.capacity() as _)
 }
 
+pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
+    debug!("flock <= fd: {fd}, operation: {operation}");
+    super::lock::flock_op(fd, operation)
+}
+
 #[cfg(axtest)]
 pub(crate) fn fcntl_setpipe_size_returns_capacity_for_test() -> bool {
     let (read_end, _write_end) = Pipe::new();
     set_pipe_size(&read_end, 4097) == Ok(8192)
 }
 
-pub fn sys_flock(fd: c_int, operation: c_int) -> AxResult<isize> {
-    debug!("flock <= fd: {fd}, operation: {operation}");
-    super::lock::flock_op(fd, operation)
+#[cfg(axtest)]
+pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
+    // Sub-page sizes round up to one page (4096).
+    let (read_end, _write_end) = Pipe::new();
+    set_pipe_size(&read_end, 1) == Ok(4096)
+        // Power-of-two page multiples stay unchanged.
+        && set_pipe_size(&read_end, 8192) == Ok(8192)
+        // Non-power-of-two sizes round up to the next power of two.
+        && set_pipe_size(&read_end, 4097) == Ok(8192)
+        // Sizes at exactly RING_BUFFER_MAX_SIZE (1 MiB) succeed.
+        && set_pipe_size(&read_end, 1024 * 1024) == Ok(1024 * 1024)
+        // Sizes above RING_BUFFER_MAX_SIZE are rejected.
+        && set_pipe_size(&read_end, 1024 * 1024 + 1).is_err()
+        // Zero rounds up to a single page.
+        && set_pipe_size(&read_end, 0) == Ok(4096)
+}
+
+#[cfg(axtest)]
+pub(crate) fn fd_ops_flags_to_options_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::*;
+    // Test flags_to_options function - verify it doesn't panic for valid inputs
+    let _options = flags_to_options(O_RDONLY as i32, 0o644, (1000, 1000));
+    let _options = flags_to_options(O_WRONLY as i32, 0o644, (1000, 1000));
+    let _options = flags_to_options(O_RDWR as i32, 0o644, (1000, 1000));
+
+    // Test with various flag combinations
+    let _options = flags_to_options((O_WRONLY | O_APPEND | O_CREAT) as i32, 0o644, (1000, 1000));
+    let _options = flags_to_options((O_RDWR | O_CREAT | O_TRUNC) as i32, 0o644, (1000, 1000));
+    let _options = flags_to_options((O_RDONLY | O_PATH) as i32, 0o644, (1000, 1000));
+
+    true
 }

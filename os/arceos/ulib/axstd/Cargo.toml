@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.29"
+version = "0.5.30"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -50,7 +50,6 @@ ext-ld = ["ax-runtime/ext-ld"]
 # Memory
 alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
-dma = ["ax-api/dma", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler
@@ -68,7 +67,7 @@ fs = [
     "ax-api/fs",
     "ax-posix-api/fs",
     "ax-runtime/fs",
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "fd",
 ]
 ext4fs = ["fs", "ax-runtime/ext4fs"]
@@ -90,7 +89,7 @@ dns = ["net"]
 fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
 
 # Driver feature forwards used by std-aware apps that depend on `axstd` directly.
-virtio-blk = ["ax-driver/virtio-blk"]
+nvme = ["ax-driver/nvme"]
 virtio-net = ["ax-driver/virtio-net"]
 virtio-gpu = ["ax-driver/virtio-gpu"]
 virtio-input = ["ax-driver/virtio-input"]

@@ -18,8 +18,11 @@ use core::ptr;
 
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Resource,
+};
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use log::{debug, trace, warn};
 use spin::Once;
 
@@ -54,6 +57,8 @@ pub struct Gits {
     pub addr: GuestPhysAddr,
     /// Size of the GITS region.
     pub size: usize,
+    /// Stable guest resources declared to the V3 device runtime.
+    resources: [Resource; 1],
 
     /// Host physical base address of GITS.
     pub host_gits_base: HostPhysAddr,
@@ -100,6 +105,10 @@ impl Gits {
         Self {
             addr,
             size,
+            resources: [Resource::MmioRange {
+                base: addr.as_usize() as u64,
+                size: size as u64,
+            }],
             host_gits_base,
             is_root_vm,
             regs,
@@ -108,21 +117,21 @@ impl Gits {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
-    fn emu_type(&self) -> axdevice_base::EmuDeviceType {
-        // todo: determine the correct type
-        axdevice_base::EmuDeviceType::GPPTITS
+impl Gits {
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.addr.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.addr, self.size)
-    }
-
-    fn handle_read(
-        &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
-        width: AccessWidth,
-    ) -> DeviceResult<usize> {
+    /// Reads a guest-visible GITS MMIO register.
+    pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let gits_base = self.host_gits_base;
         let reg = addr - self.addr;
         // let reg = mmio.address;
@@ -163,12 +172,18 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
         Ok(result?)
     }
 
-    fn handle_write(
+    /// Writes a guest-visible GITS MMIO register.
+    pub fn write_register(
         &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let gits_base = self.host_gits_base;
         let reg = addr - self.addr;
         // let reg = mmio.address;
@@ -236,6 +251,36 @@ impl BaseDeviceOps<GuestPhysAddrRange> for Gits {
             _ => perform_mmio_write(gits_base + reg, width, val),
         };
         Ok(result?)
+    }
+}
+
+impl Device for Gits {
+    fn name(&self) -> &str {
+        "aarch64-gits"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            self.read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }
 

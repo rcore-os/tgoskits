@@ -175,7 +175,7 @@ fi
 log "booting $QEMU for scenario=$SCENARIO arch=$ARCH on vnc=:$slot"
 "$QEMU" "${MACHINE_ARGS[@]}" \
     -kernel "$KERNEL" \
-    -device virtio-blk-pci,drive=disk0 \
+    -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
     -drive id=disk0,if=none,format=raw,file="$SCRATCH/disk.img" \
     -device virtio-net-pci,netdev=net0 -netdev user,id=net0 \
     "${GRAPHICS_ARGS[@]}" \

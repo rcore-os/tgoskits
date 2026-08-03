@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.1...ax-driver-v0.12.2) - 2026-08-03
+
+### Added
+
+- *(ahci-driver)* add portable multi-disk AHCI support ([#1795](https://github.com/rcore-os/tgoskits/pull/1795))
+- *(rockchip)* add RK3576 ROCK 4D support ([#1704](https://github.com/rcore-os/tgoskits/pull/1704))
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+### Changed
+
+- Defer SD/eMMC protocol initialization to the block hctx and configure every
+  migrated controller through an owned `dma-api` capability.
+- Restore the existing SD/eMMC configuration surface on top of the migrated
+  CV181x, SDHCI, DWMMC, JH7110, Phytium MCI, and K230 implementations.
+- Replace the LS2K1000 AHCI synchronous polling adapter with a single-slot
+  IRQ-driven queue that owns command and request DMA through `dma-api`.
+- Bind NVMe admin and I/O vectors independently and enable each MSI-X source
+  only after its non-reentrant handler is installed.
+- Keep the NVMe INTx acknowledgement path lock-free and ignore AHCI port status
+  outside the controller's enabled completion, error, and link event mask.
+
+### Removed
+
+- Remove unreachable BCM2835 synchronous glue and the legacy `UnsafeCell`
+  shared-driver adapter.
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.0...ax-driver-v0.12.1) - 2026-07-23
 
 ### Added

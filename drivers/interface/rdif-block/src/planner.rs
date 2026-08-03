@@ -258,14 +258,15 @@ mod tests {
             dma_mask: u64::MAX,
             dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 512,
+            dma_length_alignment: 512,
+            segment_boundary: None,
             max_inflight: 1,
+            max_submit_batch: 1,
             max_blocks_per_request,
             max_segments,
             max_segment_size,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
-            supports_discard: false,
-            supports_write_zeroes: false,
         }
     }
 

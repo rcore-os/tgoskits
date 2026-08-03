@@ -13,8 +13,11 @@
 // limitations under the License.
 
 use ax_kspin::SpinNoIrq;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Resource,
+};
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use bitmaps::Bitmap;
 use log::debug;
 
@@ -35,6 +38,8 @@ pub struct VGicD {
     pub addr: GuestPhysAddr,
     /// The size of the VGicD in bytes.
     pub size: usize,
+    /// Stable guest resources declared to the V3 device runtime.
+    resources: [Resource; 1],
 
     /// IRQs assigned to this VGicD.
     pub assigned_irqs: SpinNoIrq<Bitmap<{ MAX_IRQ_V3 }>>,
@@ -64,6 +69,10 @@ impl VGicD {
         Self {
             addr,
             size,
+            resources: [Resource::MmioRange {
+                base: addr.as_usize() as u64,
+                size: size as u64,
+            }],
             assigned_irqs: SpinNoIrq::new(Bitmap::new()),
             host_gicd_addr: crate::api_reexp::get_host_gicd_base(),
         }
@@ -109,20 +118,21 @@ impl VGicD {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
-    fn emu_type(&self) -> axdevice_base::EmuDeviceType {
-        EmuDeviceType::GPPTDistributor
+impl VGicD {
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.addr.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.addr, self.size)
-    }
-
-    fn handle_read(
-        &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
-        width: AccessWidth,
-    ) -> DeviceResult<usize> {
+    /// Reads a guest-visible GIC distributor register.
+    pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
@@ -193,12 +203,18 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
         Ok(result?)
     }
 
-    fn handle_write(
+    /// Writes a guest-visible GIC distributor register.
+    pub fn write_register(
         &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let gicd_base = self.host_gicd_addr;
         let reg = addr - self.addr;
 
@@ -267,6 +283,36 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             }
         };
         Ok(result?)
+    }
+}
+
+impl Device for VGicD {
+    fn name(&self) -> &str {
+        "aarch64-gic-distributor"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            self.read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }
 

@@ -11,16 +11,16 @@
 //!   - `F_SEAL_SHRINK`  — file size cannot shrink (enforced in ftruncate)
 //!   - `F_SEAL_GROW`    — file size cannot grow   (enforced in ftruncate)
 //!   - `F_SEAL_WRITE`   — no further writes via write(); also rejects new
-//!     `MAP_SHARED|PROT_WRITE` mmap calls
+//!     `MAP_SHARED|PROT_WRITE` mmap calls; adding it fails with `EBUSY`
+//!     while any live shared writable mapping exists
+//!   - `F_SEAL_FUTURE_WRITE` — like `F_SEAL_WRITE` for every future write
+//!     path (write/pwrite/writev, fallocate, new `MAP_SHARED|PROT_WRITE`
+//!     mmap), but mappings created before the seal keep write access, so
+//!     adding it never returns `EBUSY`
 //!
-//! Remaining gap vs. Linux (will be addressed in a follow-up PR):
-//!   - `F_SEAL_WRITE` does not revoke write access on extant
-//!     `MAP_SHARED|PROT_WRITE` mappings — the seal only blocks new mmap
-//!     calls. Implementing live-mapping revocation needs a registry of
-//!     installed VMAs and a way to call `aspace.protect` from the seal
-//!     path; deferred to keep this PR focused on the seal mask itself.
-//!
-//! Wayland's `wl_shm` requires `F_SEAL_SHRINK`, which is fully enforced.
+//! Wayland's `wl_shm` requires `F_SEAL_SHRINK`, which is fully enforced;
+//! Chromium/Firefox seal read-only shared-memory snapshots with
+//! `F_SEAL_FUTURE_WRITE` after populating them.
 
 use alloc::{borrow::Cow, format, string::String, sync::Arc, vec::Vec};
 use core::{
@@ -44,9 +44,18 @@ pub const F_SEAL_SEAL: u32 = 0x0001;
 pub const F_SEAL_SHRINK: u32 = 0x0002;
 pub const F_SEAL_GROW: u32 = 0x0004;
 pub const F_SEAL_WRITE: u32 = 0x0008;
+pub const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
 
 /// Mask of bits that can ever appear in a seal mask.
-pub const F_SEAL_ALL: u32 = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
+pub const F_SEAL_ALL: u32 =
+    F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+
+/// Seals that reject a fresh write, matching Linux's
+/// `seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE)` guard in `mm/shmem.c`.
+/// `F_SEAL_FUTURE_WRITE` blocks the same write paths as `F_SEAL_WRITE`;
+/// the two only differ in whether adding the seal tolerates pre-existing
+/// shared writable mappings (handled in `add_seals`).
+pub const F_SEAL_ANY_WRITE: u32 = F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
 
 #[derive(Clone)]
 pub struct MemfdRef(pub Arc<Memfd>);
@@ -95,7 +104,7 @@ impl Memfd {
     }
 
     pub fn check_write_seal(&self) -> AxResult {
-        if self.get_seals() & F_SEAL_WRITE != 0 {
+        if self.get_seals() & F_SEAL_ANY_WRITE != 0 {
             Err(AxError::OperationNotPermitted)
         } else {
             Ok(())
@@ -195,7 +204,7 @@ impl Memfd {
         let f = self.inner.inner().access(FileFlags::WRITE)?;
         let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
-        if seals & F_SEAL_WRITE != 0 {
+        if seals & F_SEAL_ANY_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
         }
         if seals & F_SEAL_GROW == 0 {
@@ -276,6 +285,40 @@ pub fn check_write_seal_for_shared_file_backend(backend: &Backend) -> AxResult {
         return Ok(());
     };
     memfd.check_write_seal()
+}
+
+/// Punch a hole in a shared file-backed (memfd) mapping's backing store by
+/// zeroing `[file_offset, file_offset+len)` so a `MAP_SHARED` mapping reads
+/// zero afterwards. Backs `madvise(MADV_REMOVE)` (Linux `vfs_fallocate`
+/// `FALLOC_FL_PUNCH_HOLE` on shmem, mm/madvise.c `madvise_remove`). Returns
+/// `Ok(false)` when the backend is not a shared file map, so the caller can
+/// report `EINVAL` for anonymous ranges (Linux requires file backing).
+/// Honors `F_SEAL_WRITE` via `write_at` (a sealed memfd punch yields `EPERM`,
+/// matching `shmem_fallocate`).
+pub(crate) fn punch_shared_file_backend(
+    backend: &Backend,
+    file_offset: u64,
+    len: usize,
+) -> AxResult<bool> {
+    let Some(memfd) = memfd_from_file_backend(backend) else {
+        return Ok(false);
+    };
+    if len == 0 {
+        return Ok(true);
+    }
+    let zeros = alloc::vec![0u8; len.min(64 * 1024)];
+    let mut off = file_offset;
+    let mut remaining = len;
+    while remaining > 0 {
+        let chunk = remaining.min(zeros.len());
+        let n = memfd.write_at(&zeros[..chunk], off)?;
+        if n == 0 {
+            break;
+        }
+        off += n as u64;
+        remaining -= n;
+    }
+    Ok(true)
 }
 
 pub(crate) fn apply_shared_writable_delta_for_backend(
@@ -408,7 +451,7 @@ impl FileLike for Memfd {
         // publishing.
         let _guard = self.truncate_mtx.lock();
         let seals = self.get_seals();
-        if seals & F_SEAL_WRITE != 0 {
+        if seals & F_SEAL_ANY_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
         }
         if seals & F_SEAL_GROW == 0 {

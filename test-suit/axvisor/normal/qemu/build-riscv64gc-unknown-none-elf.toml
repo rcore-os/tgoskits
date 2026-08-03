@@ -1,9 +1,9 @@
 features = [
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "fs",
     "sstc"
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"
-vm_configs = ["os/axvisor/configs/vms/qemu/riscv64/linux-smp1.toml"]
+vm_configs = []
 max_cpu_num = 4

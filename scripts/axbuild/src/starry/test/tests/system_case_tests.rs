@@ -56,12 +56,15 @@ fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
 }
 
 #[test]
-fn starry_system_grouped_qemu_configs_report_subcase_timing() {
+fn starry_system_grouped_qemu_configs_report_each_result_once() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
+    let mut paths = ["aarch64", "loongarch64", "riscv64", "x86_64"]
+        .map(|arch| system_dir.join(format!("qemu-{arch}.toml")))
+        .to_vec();
+    paths.push(workspace_root.join("test-suit/starryos/qemu-rga/system/qemu-aarch64.toml"));
 
-    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-        let path = system_dir.join(format!("qemu-{arch}.toml"));
+    for path in paths {
         let content = fs::read_to_string(&path).unwrap();
         let config: toml::Value = toml::from_str(&content).unwrap();
         let test_commands = config
@@ -75,33 +78,31 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
             .unwrap_or_default();
 
         assert!(
-            command.contains("STARRY_SYSTEM_TEST_TIMING_BEGIN"),
-            "{} must start a grouped subcase timing section",
+            command.contains("STARRY_SYSTEM_TEST_BEGIN: $bin"),
+            "{} must identify each test before it starts",
             path.display()
         );
         assert!(
-            command.contains("STARRY_SYSTEM_TEST_TIMING: elapsed_s="),
-            "{} must report per-subcase elapsed seconds",
+            command.contains("STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"),
+            "{} must report one traceable duration for each passing test",
             path.display()
         );
         assert!(
-            command.contains("status=passed bin=") && command.contains("status=failed bin="),
-            "{} must include pass/fail status in timing lines",
+            command.contains("$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"),
+            "{} must report the status and duration of each failing test",
             path.display()
         );
         assert!(
-            command.contains("STARRY_SYSTEM_TEST_TIMING_END"),
-            "{} must end a grouped subcase timing section",
+            command.contains(
+                "STARRY_SYSTEM_TEST_SUMMARY: total=$total passed=$passed failed=$failed \
+                 elapsed_s=$suite_elapsed_s"
+            ),
+            "{} must report one compact suite timing summary",
             path.display()
         );
         assert!(
-            !command.contains("sort -nr") && !command.contains("head -n"),
-            "{} must not depend on external sort/head pipelines in the final timing summary",
-            path.display()
-        );
-        assert!(
-            command.contains("done < \"$timing_file\""),
-            "{} must read grouped subcase timing from the timing file, not from stdin",
+            !command.contains("STARRY_SYSTEM_TEST_TIMING") && !command.contains("timing_file="),
+            "{} must not duplicate per-test durations in a trailing timing block",
             path.display()
         );
         let failure_branch = command.find("else\n").unwrap_or_else(|| {
@@ -117,11 +118,11 @@ fn starry_system_grouped_qemu_configs_report_subcase_timing() {
                 path.display()
             )
         });
-        let status_failed_position = failure_command
-            .find("status=failed")
+        let failed_count_position = failure_command
+            .find("failed=$((failed + 1))")
             .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
         assert!(
-            exit_status_position < status_failed_position,
+            exit_status_position < failed_count_position,
             "{} must capture `$?` before assigning shell variables in the failure branch",
             path.display()
         );
@@ -219,6 +220,31 @@ fn qemu_system_case_has_riscv64_runtime_config() {
         "{} must keep riscv64 coverage in the unified SMP4 qemu/system case",
         config.display()
     );
+}
+
+#[test]
+fn mountinfo_root_source_tracks_the_nvme_qemu_root_disk() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
+    let source_path = system_dir.join("syscall-test-mountinfo/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("#define ROOT_MOUNT_SOURCE \"/dev/nvme0n1\""),
+        "{} must expect the NVMe root device exposed by every Starry QEMU system config",
+        source_path.display()
+    );
+
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        let config_path = system_dir.join(format!("qemu-{arch}.toml"));
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            content.contains("\"nvme,") && !content.contains("virtio-blk"),
+            "{} must attach the Starry rootfs through NVMe",
+            config_path.display()
+        );
+    }
 }
 
 #[test]

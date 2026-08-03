@@ -15,4 +15,6 @@ pub struct GuestFdtPolicy {
     pub patch_runtime: RuntimeFdtPatch,
     pub patch_provided: ProvidedFdtPatch,
     pub decode_interrupt: fn(&[u32]) -> Option<u32>,
+    pub resolve_cpu_index: fn(usize) -> Option<usize>,
+    pub host_cpu_count: fn() -> usize,
 }

@@ -15,7 +15,7 @@ args = [
   "-accel",
   "kvm",
   "-device",
-  "virtio-blk-pci,drive=disk0,addr=03.0",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65,addr=03.0",
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-m",
@@ -31,9 +31,18 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
+  "(?m)^(?:echo|cat|rm):",
 ]
-success_regex = ["(?m)^guest linux test pass!\\s*$"]
-shell_prefix = "~ #"
-shell_init_cmd = "pwd && echo 'guest linux test pass!'"
+success_regex = [
+  "(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$",
+  "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$",
+]
+shell_prefix = "axvisor:/$"
+shell_init_cmd = """
+echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
+cat /tmp/axvisor-nvme-rw
+rm -f /tmp/axvisor-nvme-rw
+echo AXVISOR_NVME_ROOTFS_RW_PASSED
+"""
 to_bin = true
 uefi = true

@@ -3,8 +3,15 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
-use axdevice_base::DeviceRegistry as _;
-use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
+use ax_memory_addr::PhysAddr;
+use axdevice::{
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, ServiceCardinality, ServiceKey,
+};
+use axdevice_base::Device;
+use axvm_types::{
+    EmulatedDeviceConfig, EmulatedDeviceType, NestedPagingConfig, VMInterruptMode, VmArchVcpuOps,
+};
 
 use super::{Aarch64Arch, npt};
 use crate::{
@@ -13,7 +20,7 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            ArchDeviceBootstrap, PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
             devices::PreparedDevices,
@@ -36,8 +43,7 @@ impl Aarch64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
+                let (factories, interrupt_fabric) = prepare_device_bootstrap(vm)?.into_parts();
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {
@@ -46,6 +52,15 @@ impl Aarch64Arch {
             } => init_vm_with(vm, factories, interrupt_fabric),
         }
     }
+}
+
+fn prepare_device_bootstrap(vm: &AxVM) -> AxVmResult<ArchDeviceBootstrap> {
+    let mut factories = default_device_factories()?;
+    register_device_factories(&mut factories)?;
+    Ok(ArchDeviceBootstrap::new(
+        factories,
+        crate::InterruptFabric::new(vm.interrupt_mode()),
+    ))
 }
 
 fn init_vm_with(
@@ -66,9 +81,15 @@ fn init_vm_with(
                 dtb_addr: dtb_addr.as_usize(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        register_arch_devices(vm, resources.config(), &mut devices.devices)?;
-        devices.register_special_devices(vm)?;
+        let extra_devices = arch_extra_device_configs(resources.config());
+        let devices = PreparedDevices::build_common_with_extra(
+            resources,
+            factories,
+            interrupt_fabric,
+            &extra_devices,
+            vm.device_access_ports(),
+        )?;
+        assign_arch_device_state(vm, resources.config(), devices.devices())?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
@@ -90,45 +111,211 @@ fn build_vcpu_setup_config(
     })
 }
 
-fn register_arch_devices(
+fn assign_arch_device_state(
     vm: &AxVM,
     config: &AxVMConfig,
-    devices: &mut axdevice::AxVmDevices,
+    devices: &axdevice::DeviceRuntime,
 ) -> AxVmResult {
     if config.interrupt_mode() == VMInterruptMode::Passthrough {
         assign_passthrough_spis(vm, config, devices)?;
-    } else {
-        register_virtual_timers(devices)?;
     }
     Ok(())
+}
+
+fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDeviceConfig> {
+    if config.interrupt_mode() == VMInterruptMode::Passthrough {
+        return alloc::vec![];
+    }
+    alloc::vec![EmulatedDeviceConfig {
+        name: "aarch64-vtimer".into(),
+        base_gpa: 0,
+        length: 0,
+        irq_id: 0,
+        emu_type: EmulatedDeviceType::Aarch64Vtimer,
+        cfg_list: alloc::vec![],
+    }]
 }
 
 fn assign_passthrough_spis(
     vm: &AxVM,
     config: &AxVMConfig,
-    devices: &axdevice::AxVmDevices,
+    devices: &axdevice::DeviceRuntime,
 ) -> AxVmResult {
+    if config.pass_through_spis().is_empty() {
+        return Ok(());
+    }
     let cpu_id = vm.id() - 1; // FIXME: get the real CPU id.
-    let Some(gicd) = devices
-        .devices()
-        .find_map(|device| device.as_any().downcast_ref::<arm_vgic::v3::vgicd::VGicD>())
-    else {
-        warn!("Failed to assign SPIs: No VGicD found in device list");
+    let Ok(gicd) = devices.services().require::<Aarch64GicDistributorKey>() else {
+        // A passthrough-only guest intentionally has no emulated GICD service:
+        // its interrupt controller is described by the forwarded host FDT.
+        // SPI assignment is meaningful only when a virtual distributor exists.
         return Ok(());
     };
 
     for spi in config.pass_through_spis() {
-        gicd.assign_irq(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
+        gicd.assign_spi(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
             .map_err(|error| AxVmError::interrupt("assign passthrough SPI", error))?;
     }
     Ok(())
 }
 
-fn register_virtual_timers(devices: &mut axdevice::AxVmDevices) -> AxVmResult {
-    for device in axdevice::create_vtimer_devices() {
-        devices.register(Arc::from(device) as Arc<dyn axdevice_base::Device>)?;
+/// Typed architecture capability used only for passthrough SPI assignment.
+trait Aarch64GicDistributorOps: Send + Sync {
+    fn assign_spi(
+        &self,
+        irq: u32,
+        cpu_phys_id: usize,
+        target_cpu_affinity: (u8, u8, u8, u8),
+    ) -> DeviceManagerResult;
+}
+
+struct Aarch64GicDistributorKey;
+
+impl ServiceKey for Aarch64GicDistributorKey {
+    type Service = dyn Aarch64GicDistributorOps;
+
+    const NAME: &'static str = "aarch64-gic-distributor";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+impl Aarch64GicDistributorOps for arm_vgic::v3::vgicd::VGicD {
+    fn assign_spi(
+        &self,
+        irq: u32,
+        cpu_phys_id: usize,
+        target_cpu_affinity: (u8, u8, u8, u8),
+    ) -> DeviceManagerResult {
+        self.assign_irq(irq, cpu_phys_id, target_cpu_affinity)
+            .map_err(|error| DeviceManagerError::UnexpectedResponse {
+                operation: "assign passthrough SPI",
+                detail: alloc::format!("{error}"),
+            })
     }
-    Ok(())
+}
+
+struct Aarch64VgicFactory;
+struct Aarch64GicRedistributorFactory;
+struct Aarch64GicDistributorFactory;
+struct Aarch64GitsFactory;
+
+impl DeviceFactory for Aarch64VgicFactory {
+    fn device_type(&self) -> axvm_types::EmulatedDeviceType {
+        axvm_types::EmulatedDeviceType::InterruptController
+    }
+
+    fn build(
+        &self,
+        _config: &axvm_types::EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        #[allow(clippy::arc_with_non_send_sync)]
+        let device: Arc<dyn Device> = Arc::new(arm_vgic::Vgic::new());
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            device,
+        )))
+    }
+}
+
+impl DeviceFactory for Aarch64GicRedistributorFactory {
+    fn device_type(&self) -> axvm_types::EmulatedDeviceType {
+        axvm_types::EmulatedDeviceType::GPPTRedistributor
+    }
+
+    fn build(
+        &self,
+        config: &axvm_types::EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let [cpu_num, stride, pcpu_id] = config.cfg_list.as_slice() else {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build virtual GIC redistributor",
+                detail: "device requires cpu_num, stride and pcpu_id".into(),
+            });
+        };
+        let mut bundle = DeviceBundle::new();
+        for index in 0..*cpu_num {
+            let base = config
+                .base_gpa
+                .checked_add(index.checked_mul(*stride).ok_or_else(|| {
+                    DeviceManagerError::InvalidConfig {
+                        operation: "build virtual GIC redistributor",
+                        detail: "redistributor address overflows".into(),
+                    }
+                })?)
+                .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                    operation: "build virtual GIC redistributor",
+                    detail: "redistributor address overflows".into(),
+                })?;
+            #[allow(clippy::arc_with_non_send_sync)]
+            let device: Arc<dyn Device> = Arc::new(arm_vgic::v3::vgicr::VGicR::new(
+                base.into(),
+                Some(config.length),
+                pcpu_id + index,
+            ));
+            bundle.push(DeviceRegistration::Device(device));
+        }
+        Ok(bundle)
+    }
+}
+
+impl DeviceFactory for Aarch64GicDistributorFactory {
+    fn device_type(&self) -> axvm_types::EmulatedDeviceType {
+        axvm_types::EmulatedDeviceType::GPPTDistributor
+    }
+
+    fn build(
+        &self,
+        config: &axvm_types::EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        #[allow(clippy::arc_with_non_send_sync)]
+        let distributor = Arc::new(arm_vgic::v3::vgicd::VGicD::new(
+            config.base_gpa.into(),
+            Some(config.length),
+        ));
+        #[allow(clippy::arc_with_non_send_sync)]
+        let device: Arc<dyn Device> = distributor.clone();
+        let service: Arc<dyn Aarch64GicDistributorOps> = distributor;
+        DeviceBundle::from_registration(DeviceRegistration::Device(device))
+            .with_service::<Aarch64GicDistributorKey>(service)
+    }
+}
+
+impl DeviceFactory for Aarch64GitsFactory {
+    fn device_type(&self) -> axvm_types::EmulatedDeviceType {
+        axvm_types::EmulatedDeviceType::GPPTITS
+    }
+
+    fn build(
+        &self,
+        config: &axvm_types::EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let [host_gits_base] = config.cfg_list.as_slice() else {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build virtual GITS",
+                detail: "device requires host_gits_base".into(),
+            });
+        };
+        #[allow(clippy::arc_with_non_send_sync)]
+        let device: Arc<dyn Device> = Arc::new(arm_vgic::v3::gits::Gits::new(
+            config.base_gpa.into(),
+            Some(config.length),
+            PhysAddr::from_usize(*host_gits_base),
+            false,
+        ));
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            device,
+        )))
+    }
+}
+
+fn register_device_factories(registry: &mut DeviceFactoryRegistry) -> DeviceManagerResult {
+    registry.register(Arc::new(Aarch64VgicFactory))?;
+    registry.register(Arc::new(Aarch64GicRedistributorFactory))?;
+    registry.register(Arc::new(Aarch64GicDistributorFactory))?;
+    registry.register(Arc::new(Aarch64GitsFactory))?;
+    registry.register(Arc::new(super::vtimer::Aarch64VtimerFactory))
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {

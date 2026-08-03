@@ -6,8 +6,11 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.21"
+version = "0.4.22"
 description = "An OS build lib toolkit used by arceos"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
@@ -25,6 +28,7 @@ log = "0.4"
 object = "0.38"
 ostool = { workspace = true }
 regex = { version = "1.12" }
+regex-automata = "0.4.16"
 reqwest = { version = "0.13", features = ["stream"] }
 addr2line = "0.26"
 rustc-demangle = "0.1"

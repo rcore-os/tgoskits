@@ -546,7 +546,7 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 ///
 /// Runs with IRQs disabled inside `switch_to`: [`SpinNoIrq`](ax_sync::spin::SpinNoIrq)
 /// + atomics + sysreg writes only, no allocation. `sampling::register` nests a
-/// further local-IRQ-off section, which is fine.
+///   further local-IRQ-off section, which is fine.
 pub fn perf_sched_in(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
@@ -756,8 +756,8 @@ pub fn on_exec_sideband(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid() as u32;
-    let tid = thr.tid() as u32;
+    let pid = thr.proc_data.proc.pid();
+    let tid = thr.tid();
 
     /// A target plus which record kinds it wants (so the COMM/MMAP2 loops below
     /// can each skip non-subscribers without re-walking the counter list).
@@ -823,8 +823,8 @@ pub fn on_mmap_sideband(
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid() as u32;
-    let tid = thr.tid() as u32;
+    let pid = thr.proc_data.proc.pid();
+    let tid = thr.tid();
     let targets: Vec<SidebandTarget> = {
         let counters = thr.perf_counters.lock();
         counters

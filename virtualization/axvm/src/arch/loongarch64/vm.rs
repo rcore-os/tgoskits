@@ -1,5 +1,7 @@
 //! LoongArch64 VM resource creation and initialization.
 
+use alloc::sync::Arc;
+
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
@@ -10,7 +12,7 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            ArchDeviceBootstrap, PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
             devices::PreparedDevices,
@@ -43,8 +45,7 @@ impl LoongArch64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
+                let (factories, interrupt_fabric) = prepare_device_bootstrap(vm)?.into_parts();
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {
@@ -53,6 +54,16 @@ impl LoongArch64Arch {
             } => init_vm_with(vm, factories, interrupt_fabric),
         }
     }
+}
+
+fn prepare_device_bootstrap(vm: &AxVM) -> AxVmResult<ArchDeviceBootstrap> {
+    let mut factories = default_device_factories()?;
+    crate::vm::prepare::register_boot_payload_factories(vm, &mut factories)?;
+    factories.register(Arc::new(axdevice::LoongArchPchPicFactory))?;
+    Ok(ArchDeviceBootstrap::new(
+        factories,
+        crate::InterruptFabric::new(vm.interrupt_mode()),
+    ))
 }
 
 fn init_vm_with(
@@ -86,8 +97,12 @@ fn init_vm_with(
                 iocsr_state: iocsr_state.clone(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        devices.register_special_devices(vm)?;
+        let devices = PreparedDevices::build_common(
+            resources,
+            factories,
+            interrupt_fabric,
+            vm.device_access_ports(),
+        )?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

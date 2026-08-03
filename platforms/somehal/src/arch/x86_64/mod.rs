@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod lapic;
+mod msi;
 mod vector;
 
 #[cfg(test)]
@@ -72,6 +73,14 @@ impl X86IoApicCpuInterface {
     fn irq_for_vector(&self, vector: usize) -> Option<IrqId> {
         let vector = u8::try_from(vector).ok()?;
         decode_irq_id(self.vector_routes[usize::from(vector)].load(Ordering::Acquire))
+    }
+
+    fn forget_vector_route(&self, vector: usize, irq: IrqId) -> Result<(), IrqError> {
+        let vector = validate_external_vector(vector)?;
+        self.vector_routes[usize::from(vector)]
+            .compare_exchange(encode_irq_id(irq), 0, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| IrqError::InvalidIrq)
     }
 }
 
@@ -373,12 +382,14 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
         return Err(OnProbeError::NotMatch);
     }
 
-    let domain = crate::irq::alloc_irq_domain(
-        dev.descriptor.device_id(),
-        crate::irq::IrqDomainKind::X86IoApic,
-    )
-    .map_err(|err| OnProbeError::other(format!("failed to register IOAPIC domain: {err:?}")))?;
+    let owner = dev.descriptor.device_id();
+    let domain = crate::irq::alloc_irq_domain(owner, crate::irq::IrqDomainKind::X86IoApic)
+        .map_err(|err| OnProbeError::other(format!("failed to register IOAPIC domain: {err:?}")))?;
     dev.register(rdif_intc::Intc::new(domain, X86IoApicIntc::new(ioapics)));
+    let msi = msi::X86MsiProvider::new(owner).map_err(|err| {
+        OnProbeError::other(format!("failed to register x86 MSI domain: {err:?}"))
+    })?;
+    dev.register(rdif_msi::Msi::new(msi.provider_id(), msi));
     Ok(())
 }
 
@@ -403,6 +414,15 @@ impl PlatOp for Plat {
             let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
             return intc.set_enabled(irq.hwirq, enable);
         }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86Msi) {
+            // MSI-X source masking is owned by the PCI endpoint table. The
+            // parent domain only validates that the allocated vector exists.
+            return IOAPIC_CPU_IF
+                .irq_for_vector(irq.hwirq.0 as usize)
+                .filter(|registered| *registered == irq)
+                .map(|_| ())
+                .ok_or(IrqError::InvalidIrq);
+        }
 
         Err(IrqError::InvalidIrq)
     }
@@ -410,6 +430,9 @@ impl PlatOp for Plat {
     fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
         if irq.domain == X86_LAPIC_DOMAIN || irq.domain == CPU_LOCAL_IRQ_DOMAIN {
             return Err(IrqError::Unsupported);
+        }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86Msi) {
+            return msi::set_irq_affinity(irq, affinity);
         }
         if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
             return Err(IrqError::InvalidIrq);
@@ -812,4 +835,15 @@ mod tests {
 
         assert_eq!(route_to_rdif(route_to_irq_framework(route)), route);
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn somehal_x86_64_constants_hold_for_test() -> bool {
+    // IRQ route constant
+    assert!(IRQ_ROUTE_VALID == 1 << 63);
+
+    // IOAPIC placeholder vector
+    assert!(MASKED_IOAPIC_PLACEHOLDER_VECTOR == 0x21);
+
+    true
 }

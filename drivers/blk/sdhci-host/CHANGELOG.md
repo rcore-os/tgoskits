@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.2...sdhci-host-v0.4.3) - 2026-08-03
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
+### Changed
+
+- Add an explicit block-transfer policy so RK3588 DWCMSHC can require ADMA2
+  and reject every FIFO fallback.
+- Remove the raw submit/poll block compatibility API; block I/O now enters
+  through the owned-DMA RDIF adapter and advances only from IRQ/deadline events.
+- Split host2 transaction ownership from bus-operation state machines, and
+  split DMA request lifecycle from FIFO progress and descriptor policy.
+- Move controller, DMA, and crate tests out of production modules.
+- Make the `SdioIrqHost` capability enable and disable the physical SDHCI
+  signal masks instead of inheriting the no-op default implementation.
+- Use only preallocated 32-bit, 64-bit, or v4 ADMA2 descriptors and enforce
+  DMA mask, alignment, descriptor-count, and 128 MiB boundary limits.
+- Route acknowledgement exclusively through the owned IRQ endpoint.
+- Keep the depth-one ADMA2 table under controller ownership and pass each
+  transfer shape directly into command submission instead of moving
+  descriptor and transient command state through parallel fields.
+- Match all shared protocol progress and bus-width states exhaustively.
+
+### Removed
+
+- Remove PIO block fallback and FIFO DMA compatibility code.
+- Remove the direct host `handle_irq` compatibility entry point.
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.1...sdhci-host-v0.4.2) - 2026-07-23
 
 ### Other

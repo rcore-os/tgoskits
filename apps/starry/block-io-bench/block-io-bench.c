@@ -27,6 +27,23 @@ struct bench_sample {
     uint64_t elapsed_us;
 };
 
+struct write_sample {
+    uint64_t write_us;
+    uint64_t fsync_us;
+};
+
+struct disk_counters {
+    uint64_t reads;
+    uint64_t sectors_read;
+    uint64_t writes;
+    uint64_t sectors_written;
+};
+
+struct disk_probe {
+    char device[64];
+    int available;
+};
+
 static void usage(const char *program) {
     fprintf(stderr,
             "usage: %s [--path BASE] [--bytes BYTES] [--block-bytes BYTES] [--rounds N] "
@@ -92,6 +109,119 @@ static uint64_t now_us(void) {
         exit(1);
     }
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+static int read_disk_counters(const char *device, struct disk_counters *counters) {
+    FILE *diskstats = fopen("/proc/diskstats", "r");
+    if (diskstats == NULL) {
+        return 0;
+    }
+
+    char line[512];
+    int found = 0;
+    while (fgets(line, sizeof(line), diskstats) != NULL) {
+        unsigned major;
+        unsigned minor;
+        char name[64];
+        unsigned long long reads;
+        unsigned long long reads_merged;
+        unsigned long long sectors_read;
+        unsigned long long read_ms;
+        unsigned long long writes;
+        unsigned long long writes_merged;
+        unsigned long long sectors_written;
+        unsigned long long write_ms;
+        unsigned long long inflight;
+        unsigned long long io_ms;
+        unsigned long long weighted_io_ms;
+        int fields = sscanf(
+            line,
+            "%u %u %63s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+            &major, &minor, name, &reads, &reads_merged, &sectors_read, &read_ms, &writes,
+            &writes_merged, &sectors_written, &write_ms, &inflight, &io_ms, &weighted_io_ms);
+        if (fields == 14 && strcmp(name, device) == 0) {
+            counters->reads = (uint64_t)reads;
+            counters->sectors_read = (uint64_t)sectors_read;
+            counters->writes = (uint64_t)writes;
+            counters->sectors_written = (uint64_t)sectors_written;
+            found = 1;
+            break;
+        }
+    }
+    fclose(diskstats);
+    return found;
+}
+
+static void base_block_device(char *device) {
+    char *partition = strrchr(device, 'p');
+    if (partition != NULL && partition[1] >= '0' && partition[1] <= '9') {
+        *partition = '\0';
+        return;
+    }
+    size_t len = strlen(device);
+    while (len != 0 && device[len - 1] >= '0' && device[len - 1] <= '9') {
+        len--;
+    }
+    device[len] = '\0';
+}
+
+static struct disk_probe discover_root_disk(void) {
+    struct disk_probe probe = {{0}, 0};
+    FILE *mounts = fopen("/proc/mounts", "r");
+    if (mounts == NULL) {
+        return probe;
+    }
+
+    char source[256];
+    char target[256];
+    char filesystem[64];
+    char options[256];
+    while (fscanf(mounts, "%255s %255s %63s %255s %*u %*u", source, target, filesystem,
+                  options) == 4) {
+        if (strcmp(target, "/") == 0 && strncmp(source, "/dev/", 5) == 0) {
+            const char *device = source + 5;
+            size_t device_len = strlen(device);
+            if (device_len < sizeof(probe.device)) {
+                memcpy(probe.device, device, device_len + 1);
+            }
+            break;
+        }
+    }
+    fclose(mounts);
+
+    struct disk_counters counters;
+    if (probe.device[0] != '\0' && read_disk_counters(probe.device, &counters)) {
+        probe.available = 1;
+        return probe;
+    }
+    base_block_device(probe.device);
+    if (probe.device[0] != '\0' && read_disk_counters(probe.device, &counters)) {
+        probe.available = 1;
+    }
+    return probe;
+}
+
+static uint64_t counter_delta(uint64_t after, uint64_t before) {
+    return after >= before ? after - before : 0;
+}
+
+static void print_disk_delta(const struct disk_probe *probe, unsigned round, const char *phase,
+                             const struct disk_counters *before,
+                             const struct disk_counters *after) {
+    if (!probe->available) {
+        printf("BLOCK_BENCH_DISKSTATS round=%u phase=%s device=unresolved status=unavailable\n",
+               round, phase);
+    } else {
+        printf("BLOCK_BENCH_DISKSTATS round=%u phase=%s device=%s reads=%llu "
+               "sectors_read=%llu writes=%llu sectors_written=%llu\n",
+               round, phase, probe->device,
+               (unsigned long long)counter_delta(after->reads, before->reads),
+               (unsigned long long)counter_delta(after->sectors_read, before->sectors_read),
+               (unsigned long long)counter_delta(after->writes, before->writes),
+               (unsigned long long)counter_delta(after->sectors_written,
+                                                 before->sectors_written));
+    }
+    fflush(stdout);
 }
 
 static void fill_buffer(uint8_t *buf, size_t len, unsigned round, uint64_t offset) {
@@ -178,8 +308,9 @@ static void bench_path(char *path, size_t len, const char *base_path, unsigned r
     }
 }
 
-static uint64_t run_write_round(const struct bench_config *config, uint8_t *buf, unsigned round,
-                                const char *path) {
+static struct write_sample run_write_round(const struct bench_config *config, uint8_t *buf,
+                                           unsigned round, const char *path,
+                                           const struct disk_probe *probe) {
     int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0644);
     if (fd < 0) {
         perror("open write");
@@ -189,11 +320,23 @@ static uint64_t run_write_round(const struct bench_config *config, uint8_t *buf,
     printf("BLOCK_BENCH_PROGRESS phase=write round=%u path=%s\n", round, path);
     fflush(stdout);
 
-    uint64_t start = now_us();
+    struct disk_counters before_write = {0};
+    struct disk_counters after_write = {0};
+    struct disk_counters after_fsync = {0};
+    if (probe->available) {
+        read_disk_counters(probe->device, &before_write);
+    }
+    uint64_t write_start = now_us();
     for (uint64_t done = 0; done < config->bytes; done += config->block_bytes) {
         fill_buffer(buf, config->block_bytes, round, done);
         checked_write_all(fd, buf, config->block_bytes);
     }
+    uint64_t write_end = now_us();
+    if (probe->available) {
+        read_disk_counters(probe->device, &after_write);
+    }
+
+    uint64_t fsync_start = now_us();
     if (config->fsync_enabled) {
         printf("BLOCK_BENCH_PROGRESS phase=fsync round=%u path=%s\n", round, path);
         fflush(stdout);
@@ -202,17 +345,26 @@ static uint64_t run_write_round(const struct bench_config *config, uint8_t *buf,
             exit(1);
         }
     }
-    uint64_t end = now_us();
+    uint64_t fsync_end = now_us();
+    if (probe->available) {
+        read_disk_counters(probe->device, &after_fsync);
+    }
 
     if (close(fd) != 0) {
         perror("close write");
         exit(1);
     }
-    return end - start;
+    print_disk_delta(probe, round, "write", &before_write, &after_write);
+    print_disk_delta(probe, round, "fsync", &after_write, &after_fsync);
+    return (struct write_sample){
+        .write_us = write_end - write_start,
+        .fsync_us = fsync_end - fsync_start,
+    };
 }
 
 static uint64_t run_read_round(const struct bench_config *config, uint8_t *buf, unsigned round,
-                               const char *path, uint64_t *checksum) {
+                               const char *path, uint64_t *checksum,
+                               const struct disk_probe *probe) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
         perror("open read");
@@ -222,17 +374,26 @@ static uint64_t run_read_round(const struct bench_config *config, uint8_t *buf, 
     printf("BLOCK_BENCH_PROGRESS phase=read round=%u path=%s\n", round, path);
     fflush(stdout);
 
+    struct disk_counters before_read = {0};
+    struct disk_counters after_read = {0};
+    if (probe->available) {
+        read_disk_counters(probe->device, &before_read);
+    }
     uint64_t start = now_us();
     for (uint64_t done = 0; done < config->bytes; done += config->block_bytes) {
         checked_read_all(fd, buf, config->block_bytes);
         *checksum += checksum_buffer(buf, config->block_bytes);
     }
     uint64_t end = now_us();
+    if (probe->available) {
+        read_disk_counters(probe->device, &after_read);
+    }
 
     if (close(fd) != 0) {
         perror("close read");
         exit(1);
     }
+    print_disk_delta(probe, round, "read", &before_read, &after_read);
     return end - start;
 }
 
@@ -244,12 +405,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("BLOCK_BENCH_CONFIG path=%s rounds=%u bytes=%llu block_bytes=%zu fsync=%d\n",
+    struct disk_probe probe = discover_root_disk();
+    printf("BLOCK_BENCH_CONFIG path=%s rounds=%u bytes=%llu block_bytes=%zu fsync=%d "
+           "io_model=buffered-file write_scope=write-syscalls cache_drop=none "
+           "diskstats_device=%s\n",
            config.base_path, config.rounds, (unsigned long long)config.bytes, config.block_bytes,
-           config.fsync_enabled);
+           config.fsync_enabled, probe.available ? probe.device : "unresolved");
     fflush(stdout);
 
     struct bench_sample write_samples[MAX_ROUNDS];
+    struct bench_sample fsync_samples[MAX_ROUNDS];
     struct bench_sample read_samples[MAX_ROUNDS];
     uint64_t checksum = 0;
 
@@ -258,11 +423,16 @@ int main(int argc, char **argv) {
         bench_path(path, sizeof(path), config.base_path, round);
         unlink(path);
 
-        uint64_t write_us = run_write_round(&config, buf, round, path);
-        write_samples[round].elapsed_us = write_us;
-        print_speed("BLOCK_BENCH_ROUND", "write", round, config.bytes, write_us, checksum);
+        struct write_sample write = run_write_round(&config, buf, round, path, &probe);
+        write_samples[round].elapsed_us = write.write_us;
+        fsync_samples[round].elapsed_us = write.fsync_us;
+        print_speed("BLOCK_BENCH_ROUND", "write", round, config.bytes, write.write_us, checksum);
+        if (config.fsync_enabled) {
+            print_speed("BLOCK_BENCH_ROUND", "fsync", round, config.bytes, write.fsync_us,
+                        checksum);
+        }
 
-        uint64_t read_us = run_read_round(&config, buf, round, path, &checksum);
+        uint64_t read_us = run_read_round(&config, buf, round, path, &checksum, &probe);
         read_samples[round].elapsed_us = read_us;
         print_speed("BLOCK_BENCH_ROUND", "read", round, config.bytes, read_us, checksum);
 
@@ -273,6 +443,11 @@ int main(int argc, char **argv) {
     struct bench_sample read_median = median_sample(read_samples, config.rounds);
     print_speed("BLOCK_BENCH_RESULT", "write", config.rounds, config.bytes,
                 write_median.elapsed_us, checksum);
+    if (config.fsync_enabled) {
+        struct bench_sample fsync_median = median_sample(fsync_samples, config.rounds);
+        print_speed("BLOCK_BENCH_RESULT", "fsync", config.rounds, config.bytes,
+                    fsync_median.elapsed_us, checksum);
+    }
     print_speed("BLOCK_BENCH_RESULT", "read", config.rounds, config.bytes,
                 read_median.elapsed_us, checksum);
 

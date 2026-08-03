@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.6...axfs-ng-vfs-v0.5.7) - 2026-08-03
+
+### Added
+
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+- *(starry)* implement cgroup namespace ([#1642](https://github.com/rcore-os/tgoskits/pull/1642))
+
+### Fixed
+
+- *(starry)* make shutdown filesystem teardown best-effort ([#1711](https://github.com/rcore-os/tgoskits/pull/1711))
+- *(axfs-ng-vfs)* move mount callbacks outside atomic context ([#1683](https://github.com/rcore-os/tgoskits/pull/1683))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.5...axfs-ng-vfs-v0.5.6) - 2026-07-23
 
 ### Added

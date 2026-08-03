@@ -6,7 +6,7 @@
 # rootfs-x86_64-alpine.img which prebuild.sh grows to 1.5G for the apk cache + generated keys.
 args = [
     "-nographic", "-m", "1024M", "-smp", "1",
-    "-device", "virtio-blk-pci,drive=disk0",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
 ]

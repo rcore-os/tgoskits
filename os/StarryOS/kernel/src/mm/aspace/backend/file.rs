@@ -154,7 +154,13 @@ impl FileBackendInner {
                         );
                         return false;
                     }
-                    flush_tlb_range_sync(vaddr, PAGE_SIZE_4K);
+                    if let Err(err) = flush_tlb_range_sync(vaddr, PAGE_SIZE_4K) {
+                        warn!(
+                            "Failed to invalidate dirty mmap page {:?} on all CPUs: {:?}",
+                            vaddr, err
+                        );
+                        return false;
+                    }
                 }
                 true
             }
@@ -178,7 +184,7 @@ impl FileBackendInner {
 #[derive(Clone)]
 pub struct FileBackend(Arc<FileBackendInner>, Weak<Mutex<AddrSpace>>);
 impl FileBackend {
-    fn check_flags(&self, flags: MappingFlags) -> AxResult {
+    pub(crate) fn check_flags(&self, flags: MappingFlags) -> AxResult {
         let mut required_flags = FileFlags::empty();
         if flags.contains(MappingFlags::READ) {
             required_flags |= FileFlags::READ;
@@ -237,6 +243,15 @@ impl FileBackend {
 
     pub fn cache(&self) -> &CachedFile {
         &self.0.cache
+    }
+
+    /// Byte offset into the backing file for a virtual address inside this
+    /// mapping. Used by `madvise(MADV_REMOVE)` to punch a hole in the backing
+    /// (`offset_page * PAGE + (va - mapping_start)`).
+    pub(crate) fn file_offset_at(&self, va: VirtAddr) -> u64 {
+        let file_data = self.0.file_data.lock();
+        (file_data.offset_page as u64) * PAGE_SIZE_4K as u64
+            + (va.as_usize().saturating_sub(file_data.start.as_usize())) as u64
     }
 
     pub fn writeback_range(&self, range_start: VirtAddr, range_end: VirtAddr) -> AxResult {

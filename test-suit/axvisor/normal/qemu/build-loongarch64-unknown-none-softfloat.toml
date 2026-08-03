@@ -1,5 +1,5 @@
 features = [
-  "ax-driver/virtio-blk",
+  "ax-driver/nvme",
   "fs",
 ]
 log = "Info"
@@ -8,4 +8,4 @@ target = "loongarch64-unknown-none-softfloat"
 vm_configs = []
 
 [env]
-KERNEL_BUILTIN_CMDLINE = "root=/dev/vda earlycon=uart8250,mmio,0x1fe001e0,115200"
+KERNEL_BUILTIN_CMDLINE = "root=/dev/nvme0n1 earlycon=uart8250,mmio,0x1fe001e0,115200"

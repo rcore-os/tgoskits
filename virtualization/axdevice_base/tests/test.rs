@@ -17,87 +17,80 @@ extern crate alloc;
 use alloc::{sync::Arc, vec};
 
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceResult,
-    EmuDeviceType, MmioDeviceAdapter,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceId,
+    NoopDeviceAccess, Resource,
 };
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
-
-const DEVICE_A_TEST_METHOD_ANSWER: usize = 42;
 
 struct DeviceA;
 
-impl BaseDeviceOps<GuestPhysAddrRange> for DeviceA {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Dummy
+impl Device for DeviceA {
+    fn name(&self) -> &str {
+        "device-a"
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        (0x1000..0x2000).try_into().unwrap()
+    fn resources(&self) -> &[Resource] {
+        static RESOURCES: [Resource; 1] = [Resource::MmioRange {
+            base: 0x1000,
+            size: 0x1000,
+        }];
+        &RESOURCES
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(addr.as_usize())
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
-    }
-}
-
-impl DeviceA {
-    /// A test method unique to DeviceA.
-    pub fn test_method(&self) -> usize {
-        DEVICE_A_TEST_METHOD_ANSWER
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        Ok(BusResponse::Read { value: access.addr })
     }
 }
 
 struct DeviceB;
 
-impl BaseDeviceOps<GuestPhysAddrRange> for DeviceB {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Dummy
+impl Device for DeviceB {
+    fn name(&self) -> &str {
+        "device-b"
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        (0x2000..0x3000).try_into().unwrap()
+    fn resources(&self) -> &[Resource] {
+        static RESOURCES: [Resource; 1] = [Resource::MmioRange {
+            base: 0x2000,
+            size: 0x1000,
+        }];
+        &RESOURCES
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(addr.as_usize())
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        Ok(BusResponse::Read { value: access.addr })
     }
 }
 
 #[test]
 fn test_device_type_test() {
-    let devices: Vec<Arc<dyn Device>> = vec![
-        MmioDeviceAdapter::from_arc(Arc::new(DeviceA)),
-        MmioDeviceAdapter::from_arc(Arc::new(DeviceB)),
-    ];
+    let devices: Vec<Arc<dyn Device>> = vec![Arc::new(DeviceA), Arc::new(DeviceB)];
 
-    let mut device_a_found = false;
-    for device in &devices {
+    for (index, device) in devices.iter().enumerate() {
+        let addr = 0x1000 + index * 0x1000;
+        let mut context = NoopDeviceAccess::new(DeviceId::new(index as u32));
         let resp = device
-            .handle(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x2000,
-                width: AccessWidth::Byte,
-                data: 0,
-            })
+            .access(
+                &BusAccess {
+                    kind: BusKind::Mmio,
+                    is_read: true,
+                    addr: addr as u64,
+                    width: AccessWidth::Byte,
+                    data: 0,
+                },
+                &mut context,
+            )
             .unwrap();
         assert!(matches!(
             resp,
-            BusResponse::Read { value } if value as usize == 0x2000
+            BusResponse::Read { value } if value as usize == addr
         ));
-
-        if let Some(a) = device.as_any().downcast_ref::<DeviceA>() {
-            assert_eq!(a.test_method(), DEVICE_A_TEST_METHOD_ANSWER);
-            device_a_found = true;
-        }
     }
-    assert!(device_a_found, "DeviceA was not found");
 }

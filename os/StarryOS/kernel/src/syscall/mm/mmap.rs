@@ -642,10 +642,20 @@ pub fn sys_mprotect(addr: usize, length: usize, prot: u32) -> AxResult<isize> {
         return Err(AxError::NoMemory);
     }
     if permission_flags.contains(MmapProt::WRITE) {
+        let new_flags: MappingFlags = permission_flags.into();
         for (_frag_start, _frag_size, _old_flags, backend) in
             aspace.areas_in_range(start_addr, length)
         {
             memfd_check_write_seal_for_shared_file_backend(&backend)?;
+            // man 2 mprotect EACCES: a MAP_SHARED mapping of a file opened
+            // read-only has no VM_MAYWRITE, so upgrading it to PROT_WRITE is
+            // rejected. Validate against the file's open mode here (mirroring
+            // Linux mprotect_fixup); the area-level protect() only reports a
+            // bool, so the EACCES must surface from this pre-check rather than
+            // being swallowed downstream.
+            if let Backend::File(fb) = &backend {
+                fb.check_flags(new_flags)?;
+            }
         }
     }
     aspace.protect_with_reported_flags(
@@ -1010,10 +1020,44 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> AxResult<isize> {
     // Go's runtime relies on this to return idle heap spans — without it the
     // committed working set grows until OOM. DONTNEED_LOCKED behaves like
     // DONTNEED here (we do not honor mlock).
+    let start_va = VirtAddr::from(addr);
     match advice as u32 {
-        MADV_DONTNEED | MADV_FREE | MADV_DONTNEED_LOCKED => {
+        MADV_DONTNEED | MADV_DONTNEED_LOCKED => {
+            aspace.discard_range(start_va, align_up_4k(length))?;
+        }
+        MADV_FREE => {
+            // Linux madvise_free_single_vma (mm/madvise.c:813): MADV_FREE may
+            // only be applied to private anonymous pages; a file-backed range
+            // is rejected with EINVAL.
             let length = align_up_4k(length);
-            aspace.discard_range(VirtAddr::from(addr), length)?;
+            for (_fs, _fl, _flags, backend) in aspace.areas_in_range(start_va, length) {
+                match backend {
+                    Backend::Cow(cow) if cow.is_anonymous() => {}
+                    _ => return Err(AxError::InvalidInput),
+                }
+            }
+            aspace.discard_range(start_va, length)?;
+        }
+        MADV_REMOVE => {
+            // Linux madvise_remove (mm/madvise.c:1000): the range must be a
+            // shared file-backed (shmem/tmpfs) mapping; an anonymous range is
+            // rejected with EINVAL. Punch a hole by zeroing the backing store
+            // (Linux vfs_fallocate FALLOC_FL_PUNCH_HOLE) so subsequent reads
+            // of the shared mapping return zero.
+            let length = align_up_4k(length);
+            let frags = aspace.areas_in_range(start_va, length);
+            for (_fs, _fl, _flags, backend) in &frags {
+                match backend {
+                    Backend::File(fb) if fb.is_shared() => {}
+                    _ => return Err(AxError::InvalidInput),
+                }
+            }
+            for (fs, fl, _flags, backend) in frags {
+                if let Backend::File(fb) = &backend {
+                    let offset = fb.file_offset_at(fs);
+                    crate::file::memfd::punch_shared_file_backend(&backend, offset, fl)?;
+                }
+            }
         }
         _ => {}
     }
@@ -1120,4 +1164,15 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
         aspace.populate_area(start, size, MappingFlags::READ)?;
     }
     Ok(0)
+}
+
+#[cfg(axtest)]
+pub(crate) fn mmap_capped_device_map_len_rules_hold_for_test() -> bool {
+    // capped_device_map_len: returns min of request and aligned available.
+    let page_size = ax_runtime::hal::paging::PageSize::Size4K;
+    assert!(capped_device_map_len(1000, 4096, page_size) == 1000); // request < available
+    assert!(capped_device_map_len(8192, 4096, page_size) == 4096); // request > available
+    assert!(capped_device_map_len(0, 8192, page_size) == 0); // zero request
+    assert!(capped_device_map_len(5000, 4096, page_size) == 4096); // request > available (aligned)
+    true
 }

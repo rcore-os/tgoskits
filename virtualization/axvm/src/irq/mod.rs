@@ -58,6 +58,7 @@ pub(crate) fn set_riscv_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) 
 /// The fabric owns only the backend capability. It never owns or references the
 /// containing VM, so devices can retain [`IrqLine`] objects without creating an
 /// `AxVM -> device -> IRQ -> AxVM` reference cycle.
+#[derive(Clone)]
 pub struct InterruptFabric {
     mode: VMInterruptMode,
     sink: Option<Arc<dyn IrqSink>>,
@@ -159,3 +160,4 @@ impl IrqResolver for InterruptFabric {
 }
 
 pub(crate) mod model;
+pub(crate) mod sender;

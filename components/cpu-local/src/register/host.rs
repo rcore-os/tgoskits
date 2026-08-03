@@ -32,7 +32,11 @@ pub(super) unsafe fn read_current_thread(_area_base: usize) -> usize {
     // Host tests execute on x86_64, whose current pointer is the GS runtime
     // anchor itself. Read the live modeled CPU, rather than a previously
     // sampled base, so tests can reproduce migration between the two reads.
-    unsafe { area_runtime_anchor(CPU_BASE.get()) }.current_thread_raw()
+    let area_base = CPU_BASE.get();
+    if area_base == 0 {
+        return 0;
+    }
+    unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
 }
 
 pub(super) unsafe fn write_current_thread(_value: usize) {}

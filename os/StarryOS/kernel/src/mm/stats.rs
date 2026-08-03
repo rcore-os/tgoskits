@@ -223,6 +223,92 @@ impl ProcessMemStats {
     }
 }
 
+#[cfg(axtest)]
+pub(crate) fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
+    // Heap is classified as Data (writable, non-stack, non-exec).
+    matches!(
+        classify_vma(HEAP_VMA_NAME, MappingFlags::READ | MappingFlags::WRITE, VirtAddr::from(0)),
+        VmaClass::Data,
+    )
+    // Empty path + READ-only + non-EXEC + non-WRITE falls through to Other.
+    && matches!(
+        classify_vma("", MappingFlags::READ, VirtAddr::from(0)),
+        VmaClass::Other,
+    )
+    // Stack takes precedence over EXEC/WRITE flag-based classification.
+    && matches!(
+        classify_vma(
+            STACK_VMA_NAME,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
+            VirtAddr::from(0),
+        ),
+        VmaClass::Stack,
+    )
+    && {
+        // Accumulating a shared executable file mapping bumps shared_vss_pages
+        // and exe_pages, and updates start_code/end_code bounds.
+        let mut stats = ProcessMemStats::default();
+        accumulate_vma(
+            &mut stats,
+            2,
+            "/bin/app",
+            MappingFlags::READ | MappingFlags::EXECUTE,
+            VirtAddr::from(0x4000),
+            VirtAddr::from(0x6000),
+            true,
+        );
+        // Accumulating another text mapping expands start_code/end_code.
+        accumulate_vma(
+            &mut stats,
+            1,
+            "/lib/libc.so",
+            MappingFlags::READ | MappingFlags::EXECUTE,
+            VirtAddr::from(0x1000),
+            VirtAddr::from(0x2000),
+            false,
+        );
+        stats.vss_pages == 3
+            && stats.shared_vss_pages == 2
+            && stats.text_pages == 3
+            && stats.exe_pages == 3
+            && stats.start_code == 0x1000
+            && stats.end_code == 0x6000
+    }
+    && {
+        // Accumulating an empty-named executable updates text_pages but leaves
+        // exe_pages unchanged (anonymous executable mapping).
+        let mut stats = ProcessMemStats::default();
+        accumulate_vma(
+            &mut stats,
+            1,
+            "",
+            MappingFlags::READ | MappingFlags::EXECUTE,
+            VirtAddr::from(0x1000),
+            VirtAddr::from(0x2000),
+            false,
+        );
+        stats.text_pages == 1 && stats.exe_pages == 0
+    }
+    && {
+        // Accumulating a stack VMA records start_stack on the first stack seen.
+        let mut stats = ProcessMemStats::default();
+        let (stack_start, _stack_end) = user_stack_range();
+        accumulate_vma(
+            &mut stats,
+            4,
+            "",
+            MappingFlags::READ | MappingFlags::WRITE,
+            VirtAddr::from(stack_start + PAGE_SIZE_4K),
+            VirtAddr::from(stack_start + 5 * PAGE_SIZE_4K),
+            false,
+        );
+        stats.stack_pages == 4
+            && stats.start_stack == (stack_start + PAGE_SIZE_4K) as u64
+            && stats.start_code == 0
+            && stats.end_code == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

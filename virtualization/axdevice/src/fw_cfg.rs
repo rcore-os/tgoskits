@@ -1,10 +1,16 @@
-use alloc::{format, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
+use core::cell::RefCell;
 
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    DmaGrant, Resource,
+};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
-use crate::{DeviceManagerError, DeviceManagerResult};
+use crate::{
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
+};
 
 const FW_CFG_SIGNATURE: u16 = 0x00;
 const FW_CFG_ID: u16 = 0x01;
@@ -33,8 +39,6 @@ const LOWMEM_LENGTH: u64 = 0x1000_0000;
 const HIGHMEM_BASE: u64 = 0x8000_0000;
 const HIGHMEM_LENGTH: u64 = 0x2400_0000;
 const MEMMAP_RAM_TYPE: u32 = 1;
-const VIRT_PCI_CFG_BASE: u64 = 0x2000_0000;
-const VIRT_PCI_CFG_SIZE: u64 = 0x0800_0000;
 
 const FW_CFG_DATA_OFFSET: usize = 0x00;
 const FW_CFG_SELECTOR_OFFSET: usize = 0x08;
@@ -43,16 +47,6 @@ const FW_CFG_DMA_OFFSET: usize = 0x10;
 const ACPI_TABLE_FILE: &str = "etc/acpi/tables";
 const ACPI_RSDP_FILE: &str = "etc/acpi/rsdp";
 const ACPI_LOADER_FILE: &str = "etc/table-loader";
-const ACPI_OEM_ID: &[u8; 6] = b"BOCHS ";
-const ACPI_OEM_TABLE_ID: &[u8; 8] = b"BXPC    ";
-
-const QEMU_LOADER_CMD_ALLOCATE: u32 = 1;
-const QEMU_LOADER_CMD_ADD_POINTER: u32 = 2;
-const QEMU_LOADER_CMD_ADD_CHECKSUM: u32 = 3;
-const QEMU_LOADER_ALLOC_HIGH: u8 = 1;
-const QEMU_LOADER_ALLOC_FSEG: u8 = 2;
-const QEMU_LOADER_ENTRY_SIZE: usize = 128;
-
 const FW_CFG_DMA_CTL_ERROR: u32 = 0x01;
 const FW_CFG_DMA_CTL_READ: u32 = 0x02;
 const FW_CFG_DMA_CTL_SKIP: u32 = 0x04;
@@ -67,13 +61,22 @@ pub struct FwCfgRamRegion {
     pub size: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Prebuilt platform firmware blobs exposed through fw_cfg file entries.
+///
+/// `fw_cfg` itself is only the transport. Architecture boot code owns the
+/// contents of ACPI/AML or other firmware tables and passes them in here.
+#[derive(Clone, Debug, Default)]
+pub struct FwCfgAcpiBlobs {
+    pub tables: Vec<u8>,
+    pub rsdp: Vec<u8>,
+    pub loader: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
 pub struct FwCfgPlatformConfig {
     pub ram_regions: &'static [FwCfgRamRegion],
     pub srat_regions: &'static [FwCfgRamRegion],
-    pub serial: FwCfgSerialConfig,
-    pub pci: FwCfgPciConfig,
-    pub interrupt: FwCfgInterruptConfig,
+    pub acpi: FwCfgAcpiBlobs,
 }
 
 impl Default for FwCfgPlatformConfig {
@@ -92,80 +95,7 @@ impl Default for FwCfgPlatformConfig {
         Self {
             ram_regions: &DEFAULT_RAM_REGIONS,
             srat_regions: &DEFAULT_RAM_REGIONS,
-            serial: FwCfgSerialConfig::default(),
-            pci: FwCfgPciConfig::default(),
-            interrupt: FwCfgInterruptConfig::default(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct FwCfgSerialConfig {
-    pub base: u64,
-    pub size: u64,
-    pub irq: u8,
-    pub clock_hz: u32,
-    pub baud: u32,
-}
-
-impl Default for FwCfgSerialConfig {
-    fn default() -> Self {
-        Self {
-            base: 0x1fe0_01e0,
-            size: 0x100,
-            irq: 66,
-            clock_hz: 100_000_000,
-            baud: 115_200,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct FwCfgPciConfig {
-    pub ecam_base: u64,
-    pub ecam_size: u64,
-    pub mmio_base: u64,
-    pub mmio_size: u64,
-    pub io_base: u64,
-    pub io_size: u32,
-    pub intx_base: u8,
-}
-
-impl Default for FwCfgPciConfig {
-    fn default() -> Self {
-        Self {
-            ecam_base: VIRT_PCI_CFG_BASE,
-            ecam_size: VIRT_PCI_CFG_SIZE,
-            mmio_base: 0x4000_0000,
-            mmio_size: 0x4000_0000,
-            io_base: 0x1800_0000,
-            io_size: 0x0001_0000,
-            intx_base: 80,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct FwCfgInterruptConfig {
-    pub eiointc_irq: u8,
-    pub pch_msi_base: u64,
-    pub pch_msi_start: u32,
-    pub pch_msi_count: u32,
-    pub pch_pic_base: u64,
-    pub pch_pic_size: u16,
-    pub pch_pic_gsi_base: u16,
-}
-
-impl Default for FwCfgInterruptConfig {
-    fn default() -> Self {
-        Self {
-            eiointc_irq: 3,
-            pch_msi_base: 0x2ff0_0000,
-            pch_msi_start: 0x40,
-            pch_msi_count: 0xc0,
-            pch_pic_base: 0x1000_0000,
-            pch_pic_size: 0x1000,
-            pch_pic_gsi_base: 0x40,
+            acpi: FwCfgAcpiBlobs::default(),
         }
     }
 }
@@ -218,7 +148,7 @@ impl FwCfg {
         let memmap = build_memmap(platform.ram_regions);
         let smbios_tables = build_smbios_tables();
         let smbios_anchor = build_smbios_anchor();
-        let acpi = build_acpi(cpu_num, &platform);
+        let acpi = platform.acpi;
         let file_dir = build_file_dir(&[
             FwCfgFile {
                 name: "etc/memmap",
@@ -379,13 +309,59 @@ impl FwCfg {
         self.size >= FW_CFG_DMA_OFFSET + core::mem::size_of::<u64>()
     }
 
+    /// Returns the stable MMIO resource exposed by this fw_cfg transport.
+    fn mmio_resource(&self) -> Resource {
+        Resource::MmioRange {
+            base: self.base.as_usize() as u64,
+            size: self.size as u64,
+        }
+    }
+
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.base.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
+    }
+
+    /// Reads a fw_cfg MMIO register.
+    fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
+        match addr.as_usize() - self.base.as_usize() {
+            FW_CFG_DATA_OFFSET => Ok(self.read_data(width)),
+            FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock().selected as usize),
+            _ => Ok(0),
+        }
+    }
+
+    /// Writes a fw_cfg MMIO register.
+    fn write_register(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
+        let offset = addr.as_usize() - self.base.as_usize();
+        if offset == FW_CFG_SELECTOR_OFFSET {
+            self.write_selector(width, val);
+        }
+        Ok(())
+    }
+
     /// Returns whether `addr` belongs to the QEMU fw_cfg DMA address register.
     pub fn is_dma_address(&self, addr: GuestPhysAddr) -> bool {
         if !self.dma_enabled() {
             return false;
         }
+        if !self.contains(addr) {
+            return false;
+        }
 
-        let offset = addr.as_usize().saturating_sub(self.base.as_usize());
+        let offset = addr.as_usize() - self.base.as_usize();
         (FW_CFG_DMA_OFFSET..FW_CFG_DMA_OFFSET + core::mem::size_of::<u64>()).contains(&offset)
     }
 
@@ -396,10 +372,10 @@ impl FwCfg {
         width: AccessWidth,
         value: usize,
     ) -> DeviceManagerResult<Option<GuestPhysAddr>> {
-        let offset = addr.as_usize() - self.base.as_usize();
         if !self.is_dma_address(addr) {
             return Ok(None);
         }
+        let offset = addr.as_usize() - self.base.as_usize();
 
         let mut state = self.state.lock();
         match (offset - FW_CFG_DMA_OFFSET, width) {
@@ -519,6 +495,205 @@ impl FwCfg {
                 })
             }
         }
+    }
+}
+
+/// Runtime adapter that gives fw_cfg DMA access only to the current bus access.
+pub struct FwCfgDmaDevice {
+    inner: Arc<FwCfg>,
+    dma_grant: DmaGrant,
+    name: String,
+    resources: Box<[Resource]>,
+}
+
+/// Runtime image payload used to build one fw_cfg device contribution.
+///
+/// fw_cfg is supplied by the boot loader rather than a static
+/// `EmulatedDeviceConfig`: its kernel, initrd and command-line bytes are VM
+/// image state.  Keeping that input typed prevents it from becoming an
+/// architecture-side registration special case.
+pub struct FwCfgBuildConfig<'a> {
+    /// Guest MMIO base address.
+    pub base: GuestPhysAddr,
+    /// Guest MMIO region size.
+    pub size: usize,
+    /// Kernel image exposed through fw_cfg.
+    pub kernel: &'static [u8],
+    /// Optional initrd image exposed through fw_cfg.
+    pub initrd: Option<&'static [u8]>,
+    /// Optional kernel command line.
+    pub cmdline: Option<&'a str>,
+    /// Number of guest CPUs.
+    pub cpu_num: u16,
+    /// Platform firmware description inputs.
+    pub platform: FwCfgPlatformConfig,
+}
+
+/// Builds fw_cfg as a normal capability-declaring device contribution.
+pub struct FwCfgDeviceFactory;
+
+/// VM-local factory input supplied by the boot-image loader.
+#[derive(Clone)]
+pub struct FwCfgPayloadConfig {
+    pub base: GuestPhysAddr,
+    pub size: usize,
+    pub kernel: &'static [u8],
+    pub initrd: Option<&'static [u8]>,
+    pub cmdline: Option<String>,
+    pub cpu_num: u16,
+    pub platform: FwCfgPlatformConfig,
+}
+
+/// Factory that joins boot-image payloads to the configured fw_cfg device.
+pub struct FwCfgPayloadFactory {
+    payload: FwCfgPayloadConfig,
+}
+
+impl FwCfgPayloadFactory {
+    pub const fn new(payload: FwCfgPayloadConfig) -> Self {
+        Self { payload }
+    }
+}
+
+impl DeviceFactory for FwCfgPayloadFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::FwCfg
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        if config.base_gpa != self.payload.base.as_usize() || config.length != self.payload.size {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build fw_cfg device",
+                detail: format!(
+                    "configured range [{:#x}, {:#x}) differs from boot payload range [{:#x}, \
+                     {:#x})",
+                    config.base_gpa,
+                    config.base_gpa.saturating_add(config.length),
+                    self.payload.base.as_usize(),
+                    self.payload
+                        .base
+                        .as_usize()
+                        .saturating_add(self.payload.size),
+                ),
+            });
+        }
+        FwCfgDeviceFactory::new().build(FwCfgBuildConfig {
+            base: self.payload.base,
+            size: self.payload.size,
+            kernel: self.payload.kernel,
+            initrd: self.payload.initrd,
+            cmdline: self.payload.cmdline.as_deref(),
+            cpu_num: self.payload.cpu_num,
+            platform: self.payload.platform.clone(),
+        })
+    }
+}
+
+impl FwCfgDeviceFactory {
+    /// Creates the fw_cfg payload factory.
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Builds the fw_cfg MMIO device and declares its guest-memory need.
+    pub fn build(&self, config: FwCfgBuildConfig<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let fw_cfg = Arc::new(FwCfg::new(
+            config.base,
+            config.size,
+            config.kernel,
+            config.initrd,
+            config.cmdline,
+            config.cpu_num,
+            config.platform,
+        ));
+        let dma_grant = DmaGrant::new();
+        Ok(DeviceBundle::new().with_guest_memory_device_grant(
+            Arc::new(FwCfgDmaDevice::from_arc(fw_cfg, dma_grant.clone())),
+            dma_grant,
+        ))
+    }
+}
+
+impl Default for FwCfgDeviceFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FwCfgDmaDevice {
+    pub fn from_arc(inner: Arc<FwCfg>, dma_grant: DmaGrant) -> Self {
+        let resource = inner.mmio_resource();
+        Self {
+            inner,
+            dma_grant,
+            name: String::from("fw-cfg"),
+            resources: alloc::vec![resource].into_boxed_slice(),
+        }
+    }
+}
+
+impl Device for FwCfgDmaDevice {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+    fn access(
+        &self,
+        access: &BusAccess,
+        context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            return self
+                .inner
+                .read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                });
+        }
+        if !self.inner.is_dma_address(addr) {
+            return self
+                .inner
+                .write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write);
+        }
+        let Some(descriptor) = self
+            .inner
+            .write_dma_address(addr, access.width, access.data as usize)
+            .map_err(DeviceError::from)?
+        else {
+            // A 32-bit write of the descriptor's high half only updates the
+            // latch; the low-half write starts the DMA transaction.
+            return Ok(BusResponse::Write);
+        };
+        let context = RefCell::new(context);
+        self.inner
+            .process_dma(
+                descriptor,
+                |gpa, data| {
+                    context
+                        .borrow_mut()
+                        .read_guest_memory(&self.dma_grant, gpa, data)
+                        .map_err(crate::DeviceManagerError::from)
+                },
+                |gpa, data| {
+                    context
+                        .borrow_mut()
+                        .write_guest_memory(&self.dma_grant, gpa, data)
+                        .map_err(crate::DeviceManagerError::from)
+                },
+            )
+            .map_err(DeviceError::from)?;
+        Ok(BusResponse::Write)
     }
 }
 
@@ -672,737 +847,6 @@ fn build_smbios_anchor() -> Vec<u8> {
     anchor
 }
 
-struct AcpiBlobs {
-    tables: Vec<u8>,
-    rsdp: Vec<u8>,
-    loader: Vec<u8>,
-}
-
-fn build_acpi(cpu_num: u16, platform: &FwCfgPlatformConfig) -> AcpiBlobs {
-    let mut tables = Vec::new();
-    let mut loader = Vec::new();
-
-    push_loader_allocate(&mut loader, ACPI_TABLE_FILE, 64, QEMU_LOADER_ALLOC_HIGH);
-
-    let facs = tables.len() as u32;
-    build_facs(&mut tables);
-
-    let dsdt = tables.len() as u32;
-    build_dsdt(&mut tables, platform);
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        dsdt as usize,
-        table_len(&tables, dsdt),
-    );
-
-    let fadt = tables.len() as u32;
-    build_fadt(&mut tables, facs, dsdt);
-    write_le_at(&mut tables, facs as u64, fadt as usize + 36, 4);
-    push_loader_add_pointer(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        fadt + 36,
-        4,
-        ACPI_TABLE_FILE,
-        facs,
-    );
-    write_le_at(&mut tables, dsdt as u64, fadt as usize + 40, 4);
-    push_loader_add_pointer(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        fadt + 40,
-        4,
-        ACPI_TABLE_FILE,
-        dsdt,
-    );
-    write_le_at(&mut tables, dsdt as u64, fadt as usize + 140, 8);
-    push_loader_add_pointer(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        fadt + 140,
-        8,
-        ACPI_TABLE_FILE,
-        dsdt,
-    );
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        fadt as usize,
-        table_len(&tables, fadt),
-    );
-
-    let madt = tables.len() as u32;
-    build_madt(&mut tables, cpu_num, &platform.interrupt);
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        madt as usize,
-        table_len(&tables, madt),
-    );
-
-    let srat = tables.len() as u32;
-    build_srat(&mut tables, cpu_num, platform.srat_regions);
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        srat as usize,
-        table_len(&tables, srat),
-    );
-
-    let spcr = tables.len() as u32;
-    build_spcr(&mut tables, &platform.serial);
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        spcr as usize,
-        table_len(&tables, spcr),
-    );
-
-    let mcfg = tables.len() as u32;
-    build_mcfg(&mut tables, &platform.pci);
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        mcfg as usize,
-        table_len(&tables, mcfg),
-    );
-
-    let mut table_offsets = Vec::new();
-    table_offsets.extend_from_slice(&[fadt, madt, srat, spcr, mcfg]);
-
-    let rsdt = tables.len() as u32;
-    build_rsdt(&mut tables, &table_offsets);
-    for (idx, table_offset) in table_offsets.iter().enumerate() {
-        write_le_at(
-            &mut tables,
-            *table_offset as u64,
-            rsdt as usize + 36 + (idx * 4),
-            4,
-        );
-        push_loader_add_pointer(
-            &mut loader,
-            ACPI_TABLE_FILE,
-            rsdt + 36 + (idx as u32 * 4),
-            4,
-            ACPI_TABLE_FILE,
-            *table_offset,
-        );
-    }
-    push_loader_add_checksum(
-        &mut loader,
-        ACPI_TABLE_FILE,
-        rsdt as usize,
-        table_len(&tables, rsdt),
-    );
-
-    let mut rsdp = Vec::new();
-    push_loader_allocate(&mut loader, ACPI_RSDP_FILE, 16, QEMU_LOADER_ALLOC_FSEG);
-    build_rsdp(&mut rsdp);
-    write_le_at(&mut rsdp, rsdt as u64, 16, 4);
-    push_loader_add_pointer(&mut loader, ACPI_RSDP_FILE, 16, 4, ACPI_TABLE_FILE, rsdt);
-    push_loader_add_checksum(&mut loader, ACPI_RSDP_FILE, 0, 20);
-
-    AcpiBlobs {
-        tables,
-        rsdp,
-        loader,
-    }
-}
-
-fn table_len(tables: &[u8], offset: u32) -> usize {
-    u32::from_le_bytes(
-        tables[offset as usize + 4..offset as usize + 8]
-            .try_into()
-            .unwrap(),
-    ) as usize
-}
-
-fn build_facs(tables: &mut Vec<u8>) {
-    tables.extend_from_slice(b"FACS");
-    push_le(tables, 64, 4);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 4);
-    tables.resize(tables.len() + 40, 0);
-}
-
-fn build_dsdt(tables: &mut Vec<u8>, platform: &FwCfgPlatformConfig) {
-    let start = begin_acpi_table(tables, b"DSDT", 1);
-    tables.extend_from_slice(&build_loongarch_dsdt_aml(platform));
-    end_acpi_table(tables, start);
-}
-
-fn build_fadt(tables: &mut Vec<u8>, _facs: u32, _dsdt: u32) {
-    let start = begin_acpi_table(tables, b"FACP", 5);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    for _ in 0..8 {
-        push_le(tables, 0, 4);
-    }
-    for _ in 0..8 {
-        push_le(tables, 0, 1);
-    }
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 2);
-    for _ in 0..5 {
-        push_le(tables, 0, 1);
-    }
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 1);
-    push_le(tables, (1u64 << 10) | (1u64 << 20), 4);
-    push_gas(tables, 0, 8, 0, 1, 0x100e_001e);
-    push_le(tables, 0x42, 1);
-    push_le(tables, 0, 3);
-    push_le(tables, 0, 8);
-    push_le(tables, 0, 8);
-    for _ in 0..8 {
-        push_gas(tables, 0, 0, 0, 0, 0);
-    }
-    push_gas(tables, 0, 8, 0, 1, 0x100e_001c);
-    push_gas(tables, 0, 8, 0, 1, 0x100e_001d);
-    end_acpi_table(tables, start);
-}
-
-fn build_madt(tables: &mut Vec<u8>, cpu_num: u16, interrupt: &FwCfgInterruptConfig) {
-    let start = begin_acpi_table(tables, b"APIC", 1);
-    push_le(tables, 0, 4);
-    push_le(tables, 1, 4);
-
-    for cpu_id in 0..cpu_num {
-        push_le(tables, 17, 1);
-        push_le(tables, 15, 1);
-        push_le(tables, 1, 1);
-        push_le(tables, cpu_id as u64, 4);
-        push_le(tables, cpu_id as u64, 4);
-        push_le(tables, 1, 4);
-    }
-
-    push_le(tables, 20, 1);
-    push_le(tables, 13, 1);
-    push_le(tables, 1, 1);
-    push_le(tables, interrupt.eiointc_irq as u64, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0xffff, 8);
-
-    push_le(tables, 21, 1);
-    push_le(tables, 19, 1);
-    push_le(tables, 1, 1);
-    push_le(tables, interrupt.pch_msi_base, 8);
-    push_le(tables, interrupt.pch_msi_start as u64, 4);
-    push_le(tables, interrupt.pch_msi_count as u64, 4);
-
-    push_le(tables, 22, 1);
-    push_le(tables, 17, 1);
-    push_le(tables, 1, 1);
-    push_le(tables, interrupt.pch_pic_base, 8);
-    push_le(tables, interrupt.pch_pic_size as u64, 2);
-    push_le(tables, 0, 2);
-    push_le(tables, interrupt.pch_pic_gsi_base as u64, 2);
-
-    end_acpi_table(tables, start);
-}
-
-fn build_srat(tables: &mut Vec<u8>, cpu_num: u16, ram_regions: &[FwCfgRamRegion]) {
-    let start = begin_acpi_table(tables, b"SRAT", 1);
-    push_le(tables, 1, 4);
-    push_le(tables, 0, 8);
-
-    for cpu_id in 0..cpu_num {
-        push_le(tables, 0, 1);
-        push_le(tables, 16, 1);
-        push_le(tables, 0, 1);
-        push_le(tables, cpu_id as u64, 1);
-        push_le(tables, 1, 4);
-        push_le(tables, 0, 1);
-        push_le(tables, 0, 3);
-        push_le(tables, 0, 4);
-    }
-
-    for region in ram_regions {
-        if region.size != 0 {
-            push_srat_memory(tables, region.base, region.size);
-        }
-    }
-
-    end_acpi_table(tables, start);
-}
-
-fn push_srat_memory(tables: &mut Vec<u8>, base: u64, length: u64) {
-    push_le(tables, 1, 1);
-    push_le(tables, 40, 1);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 2);
-    push_le(tables, base, 4);
-    push_le(tables, base >> 32, 4);
-    push_le(tables, length, 4);
-    push_le(tables, length >> 32, 4);
-    push_le(tables, 0, 4);
-    push_le(tables, 1, 4);
-    push_le(tables, 0, 8);
-}
-
-fn build_spcr(tables: &mut Vec<u8>, serial: &FwCfgSerialConfig) {
-    let start = begin_acpi_table(tables, b"SPCR", 2);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 3);
-    push_gas(tables, 0, 8, 0, 1, serial.base);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, serial.irq as u64, 4);
-    push_le(tables, 7, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 1, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 3, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0xffff, 2);
-    push_le(tables, 0xffff, 2);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 4);
-    push_le(tables, 0, 1);
-    push_le(tables, 0, 4);
-    push_le(tables, serial.clock_hz as u64, 4);
-    push_le(tables, serial.baud as u64, 4);
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 2);
-    end_acpi_table(tables, start);
-}
-
-fn build_mcfg(tables: &mut Vec<u8>, pci: &FwCfgPciConfig) {
-    let start = begin_acpi_table(tables, b"MCFG", 1);
-    push_le(tables, 0, 8);
-    push_le(tables, pci.ecam_base, 8);
-    push_le(tables, 0, 2);
-    push_le(tables, 0, 1);
-    push_le(tables, (pci.ecam_size - 1) >> 20, 1);
-    push_le(tables, 0, 4);
-    end_acpi_table(tables, start);
-}
-
-fn build_rsdt(tables: &mut Vec<u8>, table_offsets: &[u32]) {
-    let start = begin_acpi_table(tables, b"RSDT", 1);
-    for _ in table_offsets {
-        push_le(tables, 0, 4);
-    }
-    end_acpi_table(tables, start);
-}
-
-fn build_rsdp(rsdp: &mut Vec<u8>) {
-    rsdp.extend_from_slice(b"RSD PTR ");
-    push_le(rsdp, 0, 1);
-    rsdp.extend_from_slice(ACPI_OEM_ID);
-    push_le(rsdp, 0, 1);
-    push_le(rsdp, 0, 4);
-}
-
-fn begin_acpi_table(tables: &mut Vec<u8>, signature: &[u8; 4], revision: u8) -> usize {
-    let start = tables.len();
-    tables.extend_from_slice(signature);
-    push_le(tables, 0, 4);
-    push_le(tables, revision as u64, 1);
-    push_le(tables, 0, 1);
-    tables.extend_from_slice(ACPI_OEM_ID);
-    tables.extend_from_slice(ACPI_OEM_TABLE_ID);
-    push_le(tables, 1, 4);
-    tables.extend_from_slice(b"BXPC");
-    push_le(tables, 1, 4);
-    start
-}
-
-fn end_acpi_table(tables: &mut [u8], start: usize) {
-    let length = (tables.len() - start) as u32;
-    tables[start + 4..start + 8].copy_from_slice(&length.to_le_bytes());
-}
-
-fn build_loongarch_dsdt_aml(platform: &FwCfgPlatformConfig) -> Vec<u8> {
-    let mut scope_body = Vec::new();
-    scope_body.extend(aml_device("COMA", build_coma_aml(&platform.serial)));
-    scope_body.extend(aml_device("PCI0", build_pci0_aml(&platform.pci)));
-
-    let mut aml = Vec::new();
-    aml.extend(aml_scope("_SB_", scope_body));
-    aml.extend(aml_name_decl(
-        "_S5_",
-        aml_package(&[aml_int(5), aml_int(0), aml_int(0), aml_int(0)]),
-    ));
-    aml
-}
-
-fn build_coma_aml(serial: &FwCfgSerialConfig) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend(aml_name_decl("_HID", aml_string("PNP0501")));
-    body.extend(aml_name_decl("_UID", aml_int(0)));
-    body.extend(aml_name_decl("_CCA", aml_int(1)));
-    body.extend(aml_name_decl("_CRS", serial_crs_aml(serial)));
-    body.extend_from_slice(&[
-        0x08, 0x5f, 0x44, 0x53, 0x44, 0x12, 0x32, 0x02, 0x11, 0x13, 0x0a, 0x10, 0x14, 0xd8, 0xff,
-        0xda, 0xba, 0x6e, 0x8c, 0x4d, 0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01, 0x12, 0x1b,
-        0x01, 0x12, 0x18, 0x02, 0x0d, 0x63, 0x6c, 0x6f, 0x63, 0x6b, 0x2d, 0x66, 0x72, 0x65, 0x71,
-        0x75, 0x65, 0x6e, 0x63, 0x79, 0x00, 0x0c, 0x00, 0xe1, 0xf5, 0x05,
-    ]);
-    body
-}
-
-fn build_pci0_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend(aml_name_decl("_HID", aml_string("PNP0A08")));
-    body.extend(aml_name_decl("_CID", aml_string("PNP0A03")));
-    body.extend(aml_name_decl("_SEG", aml_int(0)));
-    body.extend(aml_name_decl("_BBN", aml_int(0)));
-    body.extend(aml_name_decl("_UID", aml_int(0)));
-    body.extend(aml_name_decl("_CCA", aml_int(1)));
-    body.extend(aml_name_decl("_PRT", pci_route_package_aml()));
-
-    for gsi in 0..4 {
-        body.extend(aml_device(
-            &format!("GSI{gsi}"),
-            build_gsi_link_aml(pci, gsi),
-        ));
-    }
-
-    body.extend(aml_method("_CBA", 0, aml_return(aml_int(pci.ecam_base))));
-    body.extend(aml_name_decl("_CRS", pci_crs_aml(pci)));
-    body.extend(aml_device("RES0", build_pci_res0_aml(pci)));
-    body
-}
-
-fn pci_route_package_aml() -> Vec<u8> {
-    const PCI_SLOT_MAX: usize = 32;
-    const PCI_NUM_PINS: usize = 4;
-
-    let mut entries = Vec::new();
-    for slot in 0..PCI_SLOT_MAX {
-        for pin in 0..PCI_NUM_PINS {
-            let gsi = (pin + slot) % PCI_NUM_PINS;
-            let address = ((slot as u64) << 16) | 0xffff;
-            entries.push(aml_package(&[
-                aml_int(address),
-                aml_int(pin as u64),
-                aml_name_ref(&format!("GSI{gsi}")),
-                aml_int(0),
-            ]));
-        }
-    }
-    aml_package_with_count(entries, (PCI_SLOT_MAX * PCI_NUM_PINS) as u8)
-}
-
-fn build_gsi_link_aml(pci: &FwCfgPciConfig, gsi: usize) -> Vec<u8> {
-    let irq = pci.intx_base + gsi as u8;
-    let mut body = Vec::new();
-    body.extend(aml_name_decl("_HID", aml_string("PNP0C0F")));
-    body.extend(aml_name_decl("_UID", aml_int(gsi as u64)));
-    body.extend(aml_name_decl("_PRS", interrupt_crs_aml(irq, false)));
-    body.extend(aml_name_decl("_CRS", interrupt_crs_aml(irq, false)));
-    body.extend(aml_method("_SRS", 1, Vec::new()));
-    body
-}
-
-fn build_pci_res0_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
-    let mut body = Vec::new();
-    body.extend(aml_name_decl("_HID", aml_string("PNP0C02")));
-    body.extend(aml_name_decl("_CRS", pci_res0_crs_aml(pci)));
-    body
-}
-
-fn aml_scope(name: &str, body: Vec<u8>) -> Vec<u8> {
-    let mut content = aml_name_ref(name);
-    content.extend(body);
-    aml_pkg_op(&[0x10], content)
-}
-
-fn aml_device(name: &str, body: Vec<u8>) -> Vec<u8> {
-    let mut content = aml_name_ref(name);
-    content.extend(body);
-    aml_pkg_op(&[0x5b, 0x82], content)
-}
-
-fn aml_method(name: &str, arg_count: u8, body: Vec<u8>) -> Vec<u8> {
-    let mut content = aml_name_ref(name);
-    content.push(arg_count & 0x7);
-    content.extend(body);
-    aml_pkg_op(&[0x14], content)
-}
-
-fn aml_pkg_op(opcode: &[u8], content: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(opcode);
-    out.extend(aml_pkg_len(content.len()));
-    out.extend(content);
-    out
-}
-
-fn aml_pkg_len(content_len: usize) -> Vec<u8> {
-    for len_len in 1..=4 {
-        let total_len = content_len + len_len;
-        let max_len = 1usize << (4 + 8 * (len_len - 1));
-        if total_len < max_len {
-            if len_len == 1 {
-                return vec![total_len as u8];
-            }
-            let mut bytes = Vec::with_capacity(len_len);
-            bytes.push((((len_len - 1) as u8) << 6) | ((total_len as u8) & 0x0f));
-            let mut remaining = total_len >> 4;
-            for _ in 1..len_len {
-                bytes.push((remaining & 0xff) as u8);
-                remaining >>= 8;
-            }
-            return bytes;
-        }
-    }
-    unreachable!("AML package is too large")
-}
-
-fn aml_name_decl(name: &str, value: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.push(0x08);
-    out.extend(aml_name_ref(name));
-    out.extend(value);
-    out
-}
-
-fn aml_name_ref(name: &str) -> Vec<u8> {
-    if name == "\\" {
-        return vec![0x5c];
-    }
-    let bytes = name.as_bytes();
-    assert_eq!(bytes.len(), 4, "AML short names must be 4 bytes");
-    bytes.to_vec()
-}
-
-fn aml_string(value: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len() + 2);
-    out.push(0x0d);
-    out.extend_from_slice(value.as_bytes());
-    out.push(0);
-    out
-}
-
-fn aml_int(value: u64) -> Vec<u8> {
-    match value {
-        0 => vec![0x00],
-        1 => vec![0x01],
-        2..=0xff => vec![0x0a, value as u8],
-        0x100..=0xffff => {
-            let mut out = vec![0x0b];
-            out.extend_from_slice(&(value as u16).to_le_bytes());
-            out
-        }
-        0x1_0000..=0xffff_ffff => {
-            let mut out = vec![0x0c];
-            out.extend_from_slice(&(value as u32).to_le_bytes());
-            out
-        }
-        _ => {
-            let mut out = vec![0x0e];
-            out.extend_from_slice(&value.to_le_bytes());
-            out
-        }
-    }
-}
-
-fn aml_package(elements: &[Vec<u8>]) -> Vec<u8> {
-    aml_package_with_count(elements.to_vec(), elements.len() as u8)
-}
-
-fn aml_package_with_count(elements: Vec<Vec<u8>>, count: u8) -> Vec<u8> {
-    let mut content = vec![count];
-    for element in elements {
-        content.extend(element);
-    }
-    aml_pkg_op(&[0x12], content)
-}
-
-fn aml_return(value: Vec<u8>) -> Vec<u8> {
-    let mut out = vec![0xa4];
-    out.extend(value);
-    out
-}
-
-fn aml_buffer(bytes: &[u8]) -> Vec<u8> {
-    let mut content = Vec::with_capacity(1 + bytes.len());
-    content.extend(aml_int(bytes.len() as u64));
-    content.extend_from_slice(bytes);
-    aml_pkg_op(&[0x11], content)
-}
-
-fn aml_resource_template(resources: &[Vec<u8>]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for resource in resources {
-        bytes.extend_from_slice(resource);
-    }
-    bytes.extend_from_slice(&[0x79, 0x00]);
-    aml_buffer(&bytes)
-}
-
-fn word_bus_number_resource(min: u16, max: u16) -> Vec<u8> {
-    let length = max.saturating_sub(min).saturating_add(1);
-    let mut out = vec![0x88, 0x0d, 0x00, 0x02, 0x0c, 0x00, 0x00, 0x00];
-    out.extend_from_slice(&min.to_le_bytes());
-    out.extend_from_slice(&max.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&length.to_le_bytes());
-    out
-}
-
-fn dword_io_resource(base: u64, size: u32) -> Vec<u8> {
-    let max = size.saturating_sub(1);
-    let mut out = vec![0x87, 0x17, 0x00, 0x01, 0x0c, 0x03];
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&max.to_le_bytes());
-    out.extend_from_slice(&(base as u32).to_le_bytes());
-    out.extend_from_slice(&size.to_le_bytes());
-    out
-}
-
-fn qword_memory_resource(base: u64, size: u64, prefetchable: bool, fixed: bool) -> Vec<u8> {
-    let max = base.saturating_add(size).saturating_sub(1);
-    let mut out = vec![
-        0x8a,
-        0x2b,
-        0x00,
-        0x00,
-        if fixed { 0x0d } else { 0x0c },
-        if prefetchable { 0x03 } else { 0x01 },
-    ];
-    out.extend_from_slice(&0u64.to_le_bytes());
-    out.extend_from_slice(&base.to_le_bytes());
-    out.extend_from_slice(&max.to_le_bytes());
-    out.extend_from_slice(&0u64.to_le_bytes());
-    out.extend_from_slice(&size.to_le_bytes());
-    out
-}
-
-fn extended_interrupt_resource(irqs: &[u32], consumer: bool) -> Vec<u8> {
-    let payload_len = 2 + core::mem::size_of_val(irqs);
-    let mut out = vec![0x89];
-    out.extend_from_slice(&(payload_len as u16).to_le_bytes());
-    out.push(if consumer { 0x09 } else { 0x01 });
-    out.push(irqs.len() as u8);
-    for irq in irqs {
-        out.extend_from_slice(&irq.to_le_bytes());
-    }
-    out
-}
-
-fn serial_crs_aml(serial: &FwCfgSerialConfig) -> Vec<u8> {
-    aml_resource_template(&[
-        qword_memory_resource(serial.base, serial.size, false, true),
-        extended_interrupt_resource(&[serial.irq as u32], true),
-    ])
-}
-
-fn interrupt_crs_aml(irq: u8, shared: bool) -> Vec<u8> {
-    vec![
-        0x11,
-        0x0e,
-        0x0a,
-        0x0b,
-        0x89,
-        0x06,
-        0x00,
-        0x01,
-        if shared { 0x09 } else { 0x01 },
-        irq,
-        0x00,
-        0x00,
-        0x00,
-        0x79,
-        0x00,
-    ]
-}
-
-fn pci_crs_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
-    aml_resource_template(&[
-        word_bus_number_resource(0, ((pci.ecam_size - 1) >> 20) as u16),
-        dword_io_resource(pci.io_base, pci.io_size),
-        qword_memory_resource(pci.mmio_base, pci.mmio_size, false, false),
-    ])
-}
-
-fn pci_res0_crs_aml(pci: &FwCfgPciConfig) -> Vec<u8> {
-    aml_resource_template(&[qword_memory_resource(
-        pci.ecam_base,
-        pci.ecam_size,
-        false,
-        true,
-    )])
-}
-
-fn push_gas(out: &mut Vec<u8>, space: u8, bit_width: u8, bit_offset: u8, access: u8, addr: u64) {
-    out.push(space);
-    out.push(bit_width);
-    out.push(bit_offset);
-    out.push(access);
-    push_le(out, addr, 8);
-}
-
-fn push_loader_allocate(out: &mut Vec<u8>, file: &str, align: u32, zone: u8) {
-    let mut entry = [0u8; QEMU_LOADER_ENTRY_SIZE];
-    entry[0..4].copy_from_slice(&QEMU_LOADER_CMD_ALLOCATE.to_le_bytes());
-    write_loader_file(&mut entry[4..60], file);
-    entry[60..64].copy_from_slice(&align.to_le_bytes());
-    entry[64] = zone;
-    out.extend_from_slice(&entry);
-}
-
-fn push_loader_add_pointer(
-    out: &mut Vec<u8>,
-    pointer_file: &str,
-    pointer_offset: u32,
-    pointer_size: u8,
-    pointee_file: &str,
-    pointee_offset: u32,
-) {
-    let mut entry = [0u8; QEMU_LOADER_ENTRY_SIZE];
-    entry[0..4].copy_from_slice(&QEMU_LOADER_CMD_ADD_POINTER.to_le_bytes());
-    write_loader_file(&mut entry[4..60], pointer_file);
-    write_loader_file(&mut entry[60..116], pointee_file);
-    entry[116..120].copy_from_slice(&pointer_offset.to_le_bytes());
-    entry[120] = pointer_size;
-    let _ = pointee_offset;
-    out.extend_from_slice(&entry);
-}
-
-fn push_loader_add_checksum(out: &mut Vec<u8>, file: &str, start: usize, length: usize) {
-    let mut entry = [0u8; QEMU_LOADER_ENTRY_SIZE];
-    entry[0..4].copy_from_slice(&QEMU_LOADER_CMD_ADD_CHECKSUM.to_le_bytes());
-    write_loader_file(&mut entry[4..60], file);
-    entry[60..64].copy_from_slice(&((start + 9) as u32).to_le_bytes());
-    entry[64..68].copy_from_slice(&(start as u32).to_le_bytes());
-    entry[68..72].copy_from_slice(&(length as u32).to_le_bytes());
-    out.extend_from_slice(&entry);
-}
-
-fn write_loader_file(dst: &mut [u8], file: &str) {
-    let bytes = file.as_bytes();
-    let len = core::cmp::min(bytes.len(), dst.len().saturating_sub(1));
-    dst[..len].copy_from_slice(&bytes[..len]);
-}
-
-fn write_le_at(out: &mut [u8], value: u64, offset: usize, size: u8) {
-    let bytes = value.to_le_bytes();
-    out[offset..offset + size as usize].copy_from_slice(&bytes[..size as usize]);
-}
-
-fn push_le(out: &mut Vec<u8>, value: u64, size: usize) {
-    out.extend_from_slice(&value.to_le_bytes()[..size]);
-}
-
 enum FwCfgEntry<'a> {
     Bytes(&'a [u8]),
     Owned(Vec<u8>),
@@ -1414,32 +858,6 @@ impl<'a> FwCfgEntry<'a> {
             Self::Bytes(bytes) => bytes,
             Self::Owned(bytes) => bytes,
         }
-    }
-}
-
-impl BaseDeviceOps<GuestPhysAddrRange> for FwCfg {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::FwCfg
-    }
-
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.base, self.size)
-    }
-
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
-        match addr.as_usize() - self.base.as_usize() {
-            FW_CFG_DATA_OFFSET => Ok(self.read_data(width)),
-            FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock().selected as usize),
-            _ => Ok(0),
-        }
-    }
-
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
-        let offset = addr.as_usize() - self.base.as_usize();
-        if offset == FW_CFG_SELECTOR_OFFSET {
-            self.write_selector(width, val);
-        }
-        Ok(())
     }
 }
 
@@ -1489,5 +907,88 @@ mod tests {
     #[test]
     fn dma_rejects_buffer_address_overflow() {
         assert!(validate_dma_buffer(GuestPhysAddr::from_usize(usize::MAX), 2).is_err());
+    }
+
+    #[cfg(feature = "host-test")]
+    struct TestGuestMemory {
+        bytes: Vec<u8>,
+    }
+
+    #[cfg(feature = "host-test")]
+    impl DeviceAccess for TestGuestMemory {
+        fn device_id(&self) -> axdevice_base::DeviceId {
+            axdevice_base::DeviceId::new(0)
+        }
+
+        fn read_guest_memory(
+            &mut self,
+            _grant: &DmaGrant,
+            addr: GuestPhysAddr,
+            data: &mut [u8],
+        ) -> DeviceResult {
+            let start = addr.as_usize();
+            let end = start
+                .checked_add(data.len())
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or(axdevice_base::DeviceError::OutOfRange { addr: start as u64 })?;
+            data.copy_from_slice(&self.bytes[start..end]);
+            Ok(())
+        }
+
+        fn write_guest_memory(
+            &mut self,
+            _grant: &DmaGrant,
+            addr: GuestPhysAddr,
+            data: &[u8],
+        ) -> DeviceResult {
+            let start = addr.as_usize();
+            let end = start
+                .checked_add(data.len())
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or(axdevice_base::DeviceError::OutOfRange { addr: start as u64 })?;
+            self.bytes[start..end].copy_from_slice(data);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn dma_descriptor_uses_the_runtime_granted_memory_port() {
+        const BASE: usize = 0x1000;
+        const DESCRIPTOR: usize = 0x80;
+        const BUFFER: usize = 0x100;
+        let bundle = FwCfgDeviceFactory::new()
+            .build(FwCfgBuildConfig {
+                base: GuestPhysAddr::from_usize(BASE),
+                size: 0x20,
+                kernel: b"kernel",
+                initrd: None,
+                cmdline: None,
+                cpu_num: 1,
+                platform: FwCfgPlatformConfig::default(),
+            })
+            .unwrap();
+        let mut runtime = crate::DeviceRuntime::empty();
+        runtime.register_bundle(bundle).unwrap();
+        let mut memory = TestGuestMemory {
+            bytes: alloc::vec![0; 0x200],
+        };
+        let control = FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_READ;
+        memory.bytes[DESCRIPTOR..DESCRIPTOR + 4].copy_from_slice(&control.to_be_bytes());
+        memory.bytes[DESCRIPTOR + 4..DESCRIPTOR + 8].copy_from_slice(&4u32.to_be_bytes());
+        memory.bytes[DESCRIPTOR + 8..DESCRIPTOR + 16]
+            .copy_from_slice(&(BUFFER as u64).to_be_bytes());
+
+        runtime
+            .handle_mmio_write_with_memory(
+                GuestPhysAddr::from_usize(BASE + FW_CFG_DMA_OFFSET),
+                AccessWidth::Qword,
+                (DESCRIPTOR as u64).swap_bytes() as usize,
+                &mut memory,
+            )
+            .unwrap();
+
+        assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
+        assert_eq!(&memory.bytes[DESCRIPTOR..DESCRIPTOR + 4], &[0, 0, 0, 0]);
     }
 }

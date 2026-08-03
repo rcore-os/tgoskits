@@ -166,10 +166,7 @@ pub fn irq_set_affinity(
         return Err(crate::irq::IrqError::Unsupported);
     }
     if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
-        return match affinity {
-            crate::irq::IrqAffinity::Any => Ok(()),
-            crate::irq::IrqAffinity::Fixed { .. } => Err(crate::irq::IrqError::Unsupported),
-        };
+        return super::its::set_lpi_affinity(irq, affinity);
     }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,
@@ -241,7 +238,12 @@ fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {
     let mut cpu = CPU_IF_INIT.cpu_interface();
     cpu.init_current_cpu()?;
     #[cfg(feature = "hv")]
-    cpu.set_eoi_mode(true);
+    {
+        // EL1 guests such as Zephyr may expect EOIR to both drop priority
+        // and deactivate the interrupt, as it does in the architectural reset state.
+        cpu.set_eoi_mode(false);
+        info!("GICv3 CPU {cpu_idx} EOI mode: two_step={}", cpu.eoi_mode());
+    }
 
     // SAFETY: CPU_IF was preallocated during BSP probe. Each CPU initializes
     // only its own logical CPU slot before it can send SGIs through that slot.

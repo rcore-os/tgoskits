@@ -180,10 +180,10 @@ fn build_config_target_from_stem(stem: &str) -> Option<String> {
         .filter(|target| !target.is_empty())
 }
 
-pub(super) fn default_target_for_board_config(
+pub(super) fn default_build_config_for_board_config(
     workspace_root: &Path,
     board_config_path: &Path,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(PathBuf, String)>> {
     let Some(stem) = board_config_path.file_stem().and_then(|stem| stem.to_str()) else {
         return Ok(None);
     };
@@ -196,7 +196,8 @@ pub(super) fn default_target_for_board_config(
     if !build_config_path.is_file() {
         return Ok(None);
     }
-    Ok(Some(board::load_board_file(&build_config_path)?.target))
+    let target = board::load_board_file(&build_config_path)?.target;
+    Ok(Some((build_config_path, target)))
 }
 
 #[cfg(test)]

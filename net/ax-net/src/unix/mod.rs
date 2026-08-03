@@ -115,6 +115,10 @@ pub struct BindSlot {
     stream: Mutex<Option<stream::Bind>>,
     /// Datagram endpoint bound at this address.
     dgram: Mutex<Option<dgram::Bind>>,
+    /// Seqpacket listener bound at this address. Seqpacket is connection
+    /// oriented (like stream) but preserves message boundaries (like dgram),
+    /// so it carries its own connection-request queue.
+    seqpacket: Mutex<Option<dgram::SeqBind>>,
 }
 
 static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =

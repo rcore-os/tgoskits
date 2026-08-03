@@ -104,9 +104,9 @@ pub mod sdio;
 pub mod rdif;
 
 pub use block::{
-    BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
-    BlockTransferState, CommandPoll, CommandResponsePoll, DataCommandDirection, DataCommandPoll,
-    DataCommandState, OperationPoll,
+    BlockBufferConfig, BlockProgress, BlockRequestId, BlockTransferDirection, BlockTransferMode,
+    BlockTransferState, CommandProgress, CommandResponseProgress, DataCommandDirection,
+    DataCommandProgress, DataCommandState, OperationProgress,
 };
 pub use cmd::{Command, DataDirection};
 pub use error::{Error, ErrorContext, Phase};

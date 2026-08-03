@@ -24,7 +24,6 @@ use axdevice_base::InterruptTriggerMode;
 /// Will be constructed by architecture interrupt routers and consumed by
 /// [`VcpuIrqDispatcher`](crate::runtime::VcpuIrqDispatcher) when a virtual
 /// device raises an interrupt.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct VirtualInterruptId(pub u32);
 
@@ -35,7 +34,6 @@ pub struct VirtualInterruptId(pub u32);
 ///
 /// Will be enqueued into [`VcpuIrqDispatcher`](crate::runtime::VcpuIrqDispatcher)
 /// and later drained by the target vCPU run loop for injection.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingVcpuInterrupt {
     pub id: VirtualInterruptId,

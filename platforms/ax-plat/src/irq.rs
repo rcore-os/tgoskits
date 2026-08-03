@@ -103,12 +103,11 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn cpu_online(&self, cpu: CpuId) -> bool {
-        cpu.0 < usize::BITS as usize
-            && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu.0)) != 0
+        is_cpu_online(cpu.0)
     }
 
     fn in_irq_context(&self) -> bool {
-        in_irq_context_on(self.current_cpu())
+        crate::irq::in_irq_context()
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
@@ -174,7 +173,17 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    in_irq_context_on(PlatIrqOps.current_cpu())
+    let _guard = ax_kernel_guard::NoPreempt::new();
+    // SAFETY: the guard prevents migration across both CPU identity resolution
+    // and the matching context-bit read. Releasing an inner guard between these
+    // operations could resume this thread on another CPU with a stale ID.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            let cpu = CpuId(crate::percpu::this_cpu_id_pinned(pin));
+            in_irq_context_on(cpu)
+        })
+    }
+    .expect("the current CPU-local area must remain bound")
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -242,6 +251,11 @@ pub fn cpu_online(cpu: usize) -> Result<(), IrqError> {
     }
     ONLINE_CPUS.fetch_or(1usize << cpu, Ordering::AcqRel);
     registry().cpu_online(CpuId(cpu))
+}
+
+/// Returns whether a CPU has entered the platform IRQ runtime.
+pub fn is_cpu_online(cpu: usize) -> bool {
+    cpu < usize::BITS as usize && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu)) != 0
 }
 
 /// Prepares CPU-local runtime state before the common IRQ guard is entered.

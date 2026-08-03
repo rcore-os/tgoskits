@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.2.10...realtek-rtl8125-v0.2.11) - 2026-08-03
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api, rdif-eth, mmio-api
+
 ## [0.2.10](https://github.com/rcore-os/tgoskits/compare/realtek-rtl8125-v0.2.9...realtek-rtl8125-v0.2.10) - 2026-07-23
 
 ### Fixed

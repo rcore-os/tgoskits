@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.5...starry-kernel-v0.7.6) - 2026-08-03
+
+### Added
+
+- *(kernel)* browser-prerequisite syscall support and tests, aligned to Linux ([#1569](https://github.com/rcore-os/tgoskits/pull/1569))
+- *(ahci-driver)* add portable multi-disk AHCI support ([#1795](https://github.com/rcore-os/tgoskits/pull/1795))
+- *(net)* add SIOCGIFNAME and share device ioctls across socket families ([#1707](https://github.com/rcore-os/tgoskits/pull/1707))
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+- *(starry)* implement cgroup namespace ([#1642](https://github.com/rcore-os/tgoskits/pull/1642))
+
+### Fixed
+
+- *(starry-task)* publish SIGKILL before ptrace release ([#1801](https://github.com/rcore-os/tgoskits/pull/1801))
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+- *(starry-perf)* separate control and IRQ output locks ([#1793](https://github.com/rcore-os/tgoskits/pull/1793))
+- *(ax-task)* initialize tasks before scheduling ([#1783](https://github.com/rcore-os/tgoskits/pull/1783))
+- *(axbuild)* lint Starry aarch64 configurations ([#1778](https://github.com/rcore-os/tgoskits/pull/1778))
+- *(starry)* make shutdown filesystem teardown best-effort ([#1711](https://github.com/rcore-os/tgoskits/pull/1711))
+- *(starry-task)* retain zombie PID identity through reap ([#1706](https://github.com/rcore-os/tgoskits/pull/1706))
+- *(starry-kernel)* avoid sleeping lock in overlay root ([#1685](https://github.com/rcore-os/tgoskits/pull/1685))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.4...starry-kernel-v0.7.5) - 2026-07-23
 
 ### Added

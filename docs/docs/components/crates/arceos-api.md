@@ -68,7 +68,7 @@
 - `time` -> `ax-hal::time`
 - `stdio` -> `ax-hal::console` 与 `ax-log`
 - `mem::alloc` -> `ax-alloc`
-- `mem::dma` -> `ax-dma`
+- `modules::{dma_api, axklib}` -> owned DMA 类型与平台 glue
 - `task` -> `ax-task`、`ax-sync`、`ax-hal::time`
 - `fs` -> `ax-fs`
 - `net` -> `ax-net`
@@ -86,7 +86,7 @@
 ### 使用场景
 - `ax_get_cpu_num()`、`ax_terminate()`：系统级基础控制。
 - `ax_monotonic_time()`、`ax_wall_time()`：时间查询。
-- `ax_alloc()`、`ax_dealloc()`、`ax_alloc_coherent()`：内存与 DMA 申请。
+- `ax_alloc()`、`ax_dealloc()`：普通内存申请；DMA 调用方使用 `dma-api` 的 owned 类型。
 - `ax_sleep_until()`、`ax_yield_now()`、`ax_exit()`：任务控制。
 - `ax_open_file()`、`ax_open_dir()`、路径和目录操作：文件系统接口。
 - `ax_tcp_connect()`、`ax_udp_bind()`、`ax_dns_query()`：网络接口。
@@ -112,7 +112,8 @@ graph LR
     ax-runtime["ax-runtime"] --> ax-api["ax-api"]
     ax-hal["ax-hal"] --> ax-api
     ax-alloc["ax-alloc"] --> ax-api
-    ax_dma["ax-dma"] --> ax-api
+    dma_api["dma-api"] --> ax-api
+    axklib["axklib"] --> ax-api
     ax-task["ax-task"] --> ax-api
     ax-fs["ax-fs"] --> ax-api
     ax-net["ax-net"] --> ax-api
@@ -124,8 +125,8 @@ graph LR
 ```
 
 ### 直接依赖
-- 核心基础：`ax-errno`、`ax-runtime`、`ax-hal`、`axio`、`ax-log`、`ax-runtime`、`ax-sync`。
-- 可选能力：`ax-alloc`、`ax-dma`、`ax-task`、`ax-fs`、`ax-net`、`ax-display`、`ax-driver`、`ax-ipi`、`ax-mm`。
+- 核心基础：`ax-errno`、`ax-runtime`、`ax-hal`、`axio`、`ax-log`、`ax-sync`、`dma-api`、`axklib`。
+- 可选能力：`ax-alloc`、`ax-task`、`ax-fs`、`ax-net`、`ax-display`、`ax-ipi`、`ax-mm`。
 
 ### 主要消费者
 - `ax-std`：最重要的直接消费者，会把 `ax-api` 作为用户库的重要下层能力来源。

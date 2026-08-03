@@ -68,7 +68,6 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "ipi"
             | "alloc"
             | "paging"
-            | "dma"
             | "tls"
             | "multitask"
             | "lockdep"

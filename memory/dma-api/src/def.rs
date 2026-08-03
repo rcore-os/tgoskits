@@ -144,6 +144,8 @@ pub enum DmaError {
     NullPointer,
     #[error("Zero-sized buffer cannot be used for DMA")]
     ZeroSizedBuffer,
+    #[error("DMA coherent allocation could not be released and was quarantined")]
+    CoherentReleaseFailed,
 }
 
 /// Marker for plain data that can be safely stored in typed DMA buffers.

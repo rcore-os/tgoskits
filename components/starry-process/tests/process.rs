@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use starry_process::init_proc;
+use starry_process::{ProcessCpuTime, ThreadExit, init_proc};
 
 mod common;
 use common::ProcessExt;
@@ -14,27 +14,19 @@ fn child() {
 }
 
 #[test]
-fn exit() {
-    let parent = init_proc();
-    let child = parent.new_child();
-    child.exit();
-    assert!(child.is_zombie());
-    assert!(parent.children().iter().any(|c| Arc::ptr_eq(c, &child)));
-}
-
-#[test]
-#[should_panic]
-fn free_not_zombie() {
-    init_proc().new_child().free();
-}
-
-#[test]
-fn free() {
+fn retire_removes_parent_and_group_links() {
     let parent = init_proc().new_child();
     let child = parent.new_child();
-    child.exit();
-    child.free();
+    child.retire();
+    assert!(child.parent().is_none());
     assert!(parent.children().is_empty());
+    assert!(
+        !child
+            .group()
+            .processes()
+            .iter()
+            .any(|process| Arc::ptr_eq(process, &child))
+    );
 }
 
 #[test]
@@ -44,7 +36,7 @@ fn reap() {
     let parent = init.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    parent.reparent_children_to(&init);
     assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
 }
 
@@ -71,7 +63,7 @@ fn reap_to_nearest_child_subreaper() {
     let parent = subreaper.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    parent.reparent_children_to(&subreaper);
 
     assert!(Arc::ptr_eq(&subreaper, &child.parent().unwrap()));
     assert!(subreaper.children().iter().any(|c| Arc::ptr_eq(c, &child)));
@@ -89,7 +81,7 @@ fn reap_to_nearest_nested_child_subreaper() {
     let parent = inner.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    parent.reparent_children_to(&inner);
 
     assert!(Arc::ptr_eq(&inner, &child.parent().unwrap()));
 }
@@ -105,10 +97,10 @@ fn exiting_child_subreaper_reparents_to_next_subreaper() {
     let parent = inner.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    parent.reparent_children_to(&inner);
     assert!(Arc::ptr_eq(&inner, &child.parent().unwrap()));
 
-    inner.exit();
+    inner.reparent_children_to(&outer);
     assert!(Arc::ptr_eq(&outer, &child.parent().unwrap()));
 }
 
@@ -124,8 +116,12 @@ fn thread_exit() {
     threads.sort();
     assert_eq!(threads, vec![101, 102]);
 
-    let last = child.exit_thread(101, 7);
-    assert!(!last);
+    let first = child.exit_thread(
+        101,
+        7,
+        ProcessCpuTime::new(Duration::from_millis(5), Duration::from_millis(7)),
+    );
+    assert_eq!(first, ThreadExit::Remaining);
     assert_eq!(child.exit_code(), 7);
 
     let mut snapshot = child.start_group_exit(9).unwrap();
@@ -133,9 +129,51 @@ fn thread_exit() {
     assert_eq!(snapshot, vec![102]);
     assert!(child.is_group_exited());
 
-    let last2 = child.exit_thread(102, 3);
-    assert!(last2);
+    let last = child.exit_thread(
+        102,
+        3,
+        ProcessCpuTime::new(Duration::from_millis(2), Duration::from_millis(3)),
+    );
+    assert_eq!(
+        last,
+        ThreadExit::Last(ProcessCpuTime::new(
+            Duration::from_millis(7),
+            Duration::from_millis(10)
+        ))
+    );
     assert_eq!(child.exit_code(), 9);
     assert!(child.start_group_exit(11).is_none());
     assert_eq!(child.exit_code(), 9);
+}
+
+#[test]
+fn repeated_thread_exit_does_not_report_last_twice() {
+    let child = init_proc().new_child();
+    child.add_thread(101);
+
+    assert_eq!(
+        child.exit_thread(
+            101,
+            7,
+            ProcessCpuTime::new(Duration::from_millis(2), Duration::from_millis(3))
+        ),
+        ThreadExit::Last(ProcessCpuTime::new(
+            Duration::from_millis(2),
+            Duration::from_millis(3)
+        ))
+    );
+    assert_eq!(
+        child.exit_thread(
+            101,
+            9,
+            ProcessCpuTime::new(Duration::from_secs(20), Duration::from_secs(30))
+        ),
+        ThreadExit::AlreadyExited,
+        "an already-removed thread must not publish process exit again"
+    );
+    assert_eq!(
+        child.exit_code(),
+        7,
+        "a duplicate exit must not overwrite the process exit status"
+    );
 }

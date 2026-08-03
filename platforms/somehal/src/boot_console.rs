@@ -3,6 +3,7 @@ use rdrive::{DeviceId, Fdt};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConsoleSpec {
     HardwareSerial(usize),
+    RockchipFiq(usize),
     VirtualTty,
 }
 
@@ -26,26 +27,38 @@ pub fn device_id() -> Result<DeviceId, ConsoleDeviceIdError> {
 }
 
 fn device_id_from_bootargs(cmdline: Option<&str>) -> Result<DeviceId, ConsoleDeviceIdError> {
-    device_id_from_bootargs_with(cmdline, device_id_from_serial_index)
+    device_id_from_bootargs_with(
+        cmdline,
+        device_id_from_serial_index,
+        device_id_from_rockchip_fiq_index,
+    )
 }
 
 fn device_id_from_bootargs_with(
     cmdline: Option<&str>,
     serial_device_id: impl Fn(usize) -> Option<DeviceId>,
+    rockchip_fiq_device_id: impl Fn(usize) -> Option<DeviceId>,
 ) -> Result<DeviceId, ConsoleDeviceIdError> {
     let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
     let mut has_console_spec = false;
-    let mut last_hardware_serial = None;
+    let mut last_hardware_device = None;
 
     for spec in console_specs(cmdline) {
         has_console_spec = true;
-        if let ConsoleSpec::HardwareSerial(index) = spec {
-            last_hardware_serial = Some(index);
+        match spec {
+            ConsoleSpec::HardwareSerial(index) => {
+                last_hardware_device = Some(serial_device_id(index));
+            }
+            ConsoleSpec::RockchipFiq(index) => {
+                last_hardware_device = Some(rockchip_fiq_device_id(index));
+            }
+            ConsoleSpec::VirtualTty => {}
         }
     }
 
-    match last_hardware_serial {
-        Some(index) => serial_device_id(index).ok_or(ConsoleDeviceIdError::DeviceNotFound),
+    match last_hardware_device {
+        Some(Some(device_id)) => Ok(device_id),
+        Some(None) => Err(ConsoleDeviceIdError::DeviceNotFound),
         None if has_console_spec => Err(ConsoleDeviceIdError::NoHardwareDevice),
         None => Err(ConsoleDeviceIdError::NotSpecified),
     }
@@ -72,6 +85,7 @@ fn parse_console_spec(spec: &str) -> Option<ConsoleSpec> {
     parse_number_suffix(name, "ttyS")
         .or_else(|| parse_number_suffix(name, "ttyAMA"))
         .map(ConsoleSpec::HardwareSerial)
+        .or_else(|| parse_number_suffix(name, "ttyFIQ").map(ConsoleSpec::RockchipFiq))
 }
 
 fn parse_number_suffix(name: &str, prefix: &str) -> Option<usize> {
@@ -95,6 +109,16 @@ fn fdt_serial_alias_device_id(index: usize) -> Option<DeviceId> {
         let alias = alloc::format!("serial{index}");
         let path = alias_path(fdt, &alias)?;
         rdrive::fdt_path_to_device_id(path)
+    })
+    .flatten()
+}
+
+fn device_id_from_rockchip_fiq_index(index: usize) -> Option<DeviceId> {
+    rdrive::with_fdt(|fdt| {
+        fdt.find_compatible(&["rockchip,fiq-debugger"])
+            .into_iter()
+            .filter_map(|node| rdrive::fdt_path_to_device_id(&node.path()))
+            .nth(index)
     })
     .flatten()
 }
@@ -170,6 +194,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_rockchip_fiq_console_name() {
+        assert_eq!(
+            parse_console_spec("ttyFIQ0,1500000"),
+            Some(ConsoleSpec::RockchipFiq(0))
+        );
+    }
+
+    #[test]
     fn bootargs_console_spec_suppresses_firmware_fallback() {
         assert_eq!(
             device_id_from_bootargs(Some("root=/dev/vda")),
@@ -190,9 +222,11 @@ mod tests {
         let serial2_device = DeviceId::from(42);
 
         assert_eq!(
-            device_id_from_bootargs_with(Some("console=ttyS2,1500000 console=tty1"), |index| {
-                (index == 2).then_some(serial2_device)
-            }),
+            device_id_from_bootargs_with(
+                Some("console=ttyS2,1500000 console=tty1"),
+                |index| (index == 2).then_some(serial2_device),
+                |_| None,
+            ),
             Ok(serial2_device)
         );
     }
@@ -205,6 +239,7 @@ mod tests {
             device_id_from_bootargs_with(
                 Some("console=ttyS2,1500000 console=tty1 console=ttyAMA3,115200"),
                 |index| (index == 3).then_some(serial3_device),
+                |_| None,
             ),
             Ok(serial3_device)
         );
@@ -218,6 +253,7 @@ mod tests {
             device_id_from_bootargs_with(
                 Some("console=ttyS2,1500000 console=ttyS3,115200 console=tty1"),
                 |index| (index == 2).then_some(serial2_device),
+                |_| None,
             ),
             Err(ConsoleDeviceIdError::DeviceNotFound)
         );
@@ -225,8 +261,23 @@ mod tests {
             device_id_from_bootargs_with(
                 Some("console=ttyS2,1500000 console=ttyS3,115200"),
                 |index| (index == 2).then_some(serial2_device),
+                |_| None,
             ),
             Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn rockchip_fiq_console_uses_fiq_device_resolver() {
+        let fiq_device = DeviceId::from(44);
+
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyFIQ0,1500000"),
+                |_| None,
+                |index| (index == 0).then_some(fiq_device),
+            ),
+            Ok(fiq_device)
         );
     }
 

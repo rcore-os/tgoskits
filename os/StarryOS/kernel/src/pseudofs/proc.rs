@@ -439,21 +439,16 @@ fn render_proc_net_snmp() -> String {
     buf
 }
 
-/// Block-device major reported for the root virtio-blk disk (`vda`) in
-/// `/proc/diskstats`. Linux assigns virtio-blk a dynamic major through
-/// `register_blkdev(0, "virtblk")`; 254 is the value the single-disk guest
-/// consistently observes.
-const VIRTBLK_MAJOR: u32 = 254;
-
 fn render_diskstats() -> String {
     // 14-field Linux /proc/diskstats layout, one line per block device. Only the
-    // root virtio-blk device ("vda", minor 0) is backed by the block runtime, so
-    // only its request/sector counters are real; the timing and in-flight fields
-    // have no source and stay zero.
+    // selected root device is backed by the block runtime, so only its
+    // request/sector counters are real; timing and in-flight fields have no
+    // source and stay zero.
+    let identity = ax_fs_ng::root::root_block_identity();
     let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
     format!(
-        "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
-         0 0\n"
+        "{}       {} {} {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 0 0\n",
+        identity.major, identity.minor, identity.name
     )
 }
 
@@ -637,7 +632,6 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
         _ => "Unk.",
     }
 }
-
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -945,7 +939,7 @@ struct NsDir {
 impl SimpleDirOps for NsDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            ["uts", "ipc", "mnt", "pid", "net", "user"]
+            ["uts", "ipc", "mnt", "pid", "net", "user", "cgroup"]
                 .into_iter()
                 .map(Cow::Borrowed),
         )
@@ -989,6 +983,11 @@ impl SimpleDirOps for NsDir {
                 let nsproxy = proc_data.nsproxy.lock();
                 let ns_id = nsproxy.user_ns.lock().id;
                 format!("user:[{}]\n", ns_id)
+            }
+            "cgroup" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let ns_id = nsproxy.cgroup_ns.lock().id();
+                format!("cgroup:[{}]\n", ns_id)
             }
             _ => return Err(VfsError::NotFound),
         };
@@ -1565,7 +1564,21 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
+            "cgroup" => SimpleFile::new_regular(fs, move || {
+                let reader = current();
+                let reader_cgroup_ns = reader
+                    .as_thread()
+                    .proc_data
+                    .nsproxy
+                    .lock()
+                    .cgroup_ns
+                    .clone();
+                let reader_root = reader_cgroup_ns.lock().root();
+                let target_membership = task.as_thread().proc_data.cgroup.read().clone();
+                let path = crate::cgroup::relative_path(&reader_root, &target_membership);
+                Ok(format!("0::{path}\n"))
+            })
+            .into(),
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(NsDir {
@@ -1938,6 +1951,41 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             SimpleDir::new_maker(fs.clone(), Arc::new(net))
         });
 
+        // /proc/sys/user/max_*_namespaces — nix checks these to decide
+        // whether namespaces are available for sandboxed builds.
+        sys.add("user", {
+            let mut user = DirMapping::new();
+            user.add(
+                "max_user_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_mnt_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_pid_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_net_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_uts_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_ipc_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_cgroup_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(user))
+        });
+
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
     });
 
@@ -2076,6 +2124,231 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
         self.write_str(s).map_err(|_| core::fmt::Error)
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn formatting_contracts_hold_for_test() -> bool {
+    let cpu_presence = collect_cpu_presence([0usize, 1, 32, 63], 64);
+    format_cpu_presence_hex(&cpu_presence) == "80000001,00000003"
+        && format_cpu_presence_list(&collect_cpu_presence([0usize, 2, 3, 4, 7, 9, 10, 11], 12))
+            == "0,2-4,7,9-11"
+        && proc_net_snmp_field_counts_match()
+        && proc_net_dev_header_matches_linux_layout()
+        && task_status_fields_match_linux_layout()
+        && usb_label_helpers_match_busybox_lsusb_layout()
+        && usb_bcd_format_matches_linux_layout()
+        && proc_mountinfo_lines_match_linux_layout()
+        && descriptor_helpers_round_trip_known_offsets()
+        && format_cpu_presence_list_handles_single_cpu()
+        && format_cpu_presence_hex_handles_zero_size_input()
+}
+
+#[cfg(axtest)]
+fn usb_label_helpers_match_busybox_lsusb_layout() -> bool {
+    // usb_class_label: cover every match arm.
+    usb_class_label(0x00) == ">ifc"
+        && usb_class_label(0x03) == "HID"
+        && usb_class_label(0x08) == "stor."
+        && usb_class_label(0x09) == "hub"
+        && usb_class_label(0x0e) == "video"
+        && usb_class_label(0xe0) == "wlcon"
+        && usb_class_label(0xef) == "misc"
+        && usb_class_label(0xff) == "vend."
+        // Unknown class falls back to the "unk." label.
+        && usb_class_label(0x42) == "unk."
+        // usb_endpoint_type_label: cover every match arm.
+        && usb_endpoint_type_label(0) == "Ctrl"
+        && usb_endpoint_type_label(1) == "Isoc"
+        && usb_endpoint_type_label(2) == "Bulk"
+        && usb_endpoint_type_label(3) == "Int."
+        && usb_endpoint_type_label(9) == "Unk."
+}
+
+#[cfg(axtest)]
+fn usb_bcd_format_matches_linux_layout() -> bool {
+    // Linux renders bcdUSB/bcdDevice as Major.Minor_subminor with each nibble
+    // shown as one hex digit. The Rust `{:2x}` spec pads the major field to a
+    // minimum width of 2 with a *space* (not '0'), so single-digit majors are
+    // preceded by one space. 0x0210 -> " 2.10".
+    usb_bcd(0x0210) == " 2.10"
+        // 0x0100 -> " 1.00" (single-digit major, space-padded).
+        && usb_bcd(0x0100) == " 1.00"
+        // 0x0312 -> " 3.12".
+        && usb_bcd(0x0312) == " 3.12"
+        // 0xa051 -> "a0.51" (two-digit major, no padding).
+        && usb_bcd(0xa051) == "a0.51"
+        // 0xffff -> "ff.ff" (largest possible nibbles).
+        && usb_bcd(0xffff) == "ff.ff"
+        // 0x0001 -> " 0.01" (zero major still width-2-padded).
+        && usb_bcd(0x0001) == " 0.01"
+}
+
+#[cfg(axtest)]
+fn proc_mountinfo_lines_match_linux_layout() -> bool {
+    let ctx_arc = current_fs_context();
+    let ctx = ctx_arc.lock();
+    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
+    !text.is_empty()
+        && text.lines().any(|line| line.contains(" / / "))
+        && text.lines().all(|line| {
+            let Some((pre_separator, post_separator)) = line.split_once(" - ") else {
+                return false;
+            };
+            pre_separator.split_whitespace().count() >= 6
+                && post_separator.split_whitespace().count() >= 3
+        })
+}
+
+#[cfg(axtest)]
+fn descriptor_helpers_round_trip_known_offsets() -> bool {
+    // Build a blob with known bytes at the u8 and u16 read offsets.
+    let blob: Vec<u8> = alloc::vec![0x10, 0x20, 0x30, 0x40, 0x50];
+    // In-bounds reads return the expected value.
+    descriptor_u8(&blob, 0) == 0x10
+        && descriptor_u8(&blob, 4) == 0x50
+        // Out-of-bounds u8 reads return 0 (no panic).
+        && descriptor_u8(&blob, 99) == 0
+        && descriptor_u16(&blob, 0) == 0x2010
+        && descriptor_u16(&blob, 3) == 0x5040
+        // Partial out-of-bounds u16 reads (offset+1 past end) return the high
+        // byte paired with 0 (descriptor_u8 returns 0 for the missing byte).
+        && descriptor_u16(&blob, 4) == 0x0050
+}
+
+#[cfg(axtest)]
+fn format_cpu_presence_list_handles_single_cpu() -> bool {
+    // Single present CPU with no neighbors yields a bare number.
+    let presence = collect_cpu_presence([0usize], 1);
+    format_cpu_presence_list(&presence) == "0"
+        // All-absent list renders as the empty string (no ranges).
+        && format_cpu_presence_list(&collect_cpu_presence([], 4)).is_empty()
+        // Contiguous range across the whole mask collapses to one range.
+        && format_cpu_presence_list(&collect_cpu_presence([0usize, 1, 2, 3], 4)) == "0-3"
+}
+
+#[cfg(axtest)]
+fn format_cpu_presence_hex_handles_zero_size_input() -> bool {
+    // Empty input still produces at least one 32-bit word ("00000000").
+    format_cpu_presence_hex(&[]) == "00000000"
+        // Exactly 32 CPUs in one word emits a single word.
+        && format_cpu_presence_hex(&collect_cpu_presence([0usize], 32)) == "00000001"
+        // Boundary: cpu 31 sets bit 31 in the single word.
+        && format_cpu_presence_hex(&collect_cpu_presence([31usize], 32)) == "80000000"
+}
+
+#[cfg(axtest)]
+fn proc_net_snmp_field_counts_match() -> bool {
+    let text = render_proc_net_snmp();
+    let mut tcp_header_count = None;
+    let mut tcp_data_count = None;
+    let mut udp_header_count = None;
+    let mut udp_data_count = None;
+
+    for line in text.lines() {
+        if line.starts_with("Tcp:") && line.contains("RtoAlgorithm") {
+            tcp_header_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Tcp:") {
+            tcp_data_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Udp:") && line.contains("InDatagrams") {
+            udp_header_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Udp:") {
+            udp_data_count = Some(line.split_whitespace().count() - 1);
+        }
+    }
+
+    tcp_header_count.is_some()
+        && udp_header_count.is_some()
+        && tcp_header_count == tcp_data_count
+        && udp_header_count == udp_data_count
+}
+
+#[cfg(axtest)]
+fn proc_net_dev_header_matches_linux_layout() -> bool {
+    let text = render_proc_net_dev();
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    let Some(second) = lines.next() else {
+        return false;
+    };
+
+    first.starts_with("Inter-|")
+        && first.contains("Receive")
+        && first.contains("Transmit")
+        && second.contains("face |bytes")
+        && second.contains("compressed")
+}
+
+#[cfg(axtest)]
+fn task_status_fields_match_linux_layout() -> bool {
+    let cpu_presence = collect_cpu_presence([1usize, 3], 4);
+    let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+    let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+    let mem = ProcessMemStats {
+        vss_pages: 128,
+        resident_pages: 96,
+        rss_anon_pages: 80,
+        rss_file_pages: 8,
+        rss_shmem_pages: 8,
+        peak_pages: 256,
+        hiwater_rss_pages: 128,
+        ..Default::default()
+    };
+    let status = render_task_status_fields(&TaskStatusFields {
+        base: TaskStatusBase {
+            name: "axtest-proc",
+            state: "S (sleeping)",
+            tgid: 42,
+            pid: 43,
+            ppid: 41,
+            tracer_pid: 7,
+            cred: &Cred::root(),
+            num_threads: 3,
+        },
+        cpus_allowed: &cpus_allowed,
+        cpus_allowed_list: &cpus_allowed_list,
+        mem: &mem,
+    });
+
+    status.contains("Name:\taxtest-proc\n")
+        && status.contains("State:\tS (sleeping)\n")
+        && status.contains("Tgid:\t42\n")
+        && status.contains("Pid:\t43\n")
+        && status.contains("PPid:\t41\n")
+        && status.contains("TracerPid:\t7\n")
+        && status.contains("Threads:\t3\n")
+        && status.contains("VmPeak:\t1024 kB\n")
+        && status.contains("VmRSS:\t384 kB\n")
+        && status.contains("Cpus_allowed:\t0000000a\n")
+        && status.contains("Cpus_allowed_list:\t1,3\n")
+}
+
+#[cfg(axtest)]
+pub(crate) fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test() -> bool {
+    let text =
+        render_proc_bus_usb_devices_from_snapshots(&[high_speed_root_hub_snapshot_for_test()]);
+
+    text.contains("T:  Bus=01")
+        && text.contains("Dev#=  1")
+        && text.contains("P:  Vendor=1d6b ProdID=0002 Rev= 6.00")
+        && text.contains("I:* If#= 0")
+        && text.contains("Driver=hub")
+        && text.contains("E:  Ad=81(I)")
+}
+
+#[cfg(axtest)]
+fn high_speed_root_hub_snapshot_for_test() -> crate::pseudofs::usbfs::UsbDeviceSnapshotInfo {
+    crate::pseudofs::usbfs::UsbDeviceSnapshotInfo {
+        bus_num: 1,
+        device_num: 1,
+        descriptor_blob: vec![
+            18, 0x01, 0x00, 0x02, 0x09, 0x00, 0x01, 64, 0x6b, 0x1d, 0x02, 0x00, 0x00, 0x06, 0, 0,
+            0, 1, 9, 0x02, 25, 0, 1, 1, 0, 0xe0, 0, 9, 0x04, 0, 0, 1, 0x09, 0, 0, 0, 7, 0x05, 0x81,
+            0x03, 4, 0, 12,
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::String};

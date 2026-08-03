@@ -221,8 +221,14 @@ pub const CMD8_MMC: Command = Command::new(8, 0, ResponseType::R1);
 /// EXT_CSD byte offsets the driver currently consumes. Full register is
 /// 512 bytes; only document the ones we read.
 pub mod ext_csd {
+    /// Trigger a flush of the enabled volatile write cache.
+    pub const FLUSH_CACHE: usize = 32;
+    /// Volatile write-cache enable control.
+    pub const CACHE_CTRL: usize = 33;
     /// Card type (HS / HS200 / HS400 support bitmap).
     pub const DEVICE_TYPE: usize = 196;
+    /// Extended CSD structure revision.
+    pub const REV: usize = 192;
     /// Selected timing mode after CMD6 (0 = backwards compat,
     /// 1 = HS, 2 = HS200, 3 = HS400). Same byte is also written to
     /// switch modes.
@@ -232,6 +238,8 @@ pub mod ext_csd {
     pub const BUS_WIDTH: usize = 183;
     /// Sector count (LE u32) — authoritative capacity for ≥2 GB cards.
     pub const SEC_COUNT: usize = 212;
+    /// Volatile write-cache size in KiB (LE u32, eMMC 4.5+).
+    pub const CACHE_SIZE: usize = 249;
 
     pub mod device_type {
         /// Supports HS @ 26 MHz.
@@ -389,7 +397,7 @@ mod tests {
     #[test]
     fn with_resp_type_overrides_only_resp_type() {
         let original = cmd41(true, 0xFF8000);
-        let overridden = original.with_resp_type(ResponseType::R1);
+        let overridden = original.with_response(ResponseType::R1);
         assert_eq!(overridden.index, original.index);
         assert_eq!(overridden.argument, original.argument);
         assert_eq!(overridden.response, ResponseType::R1);

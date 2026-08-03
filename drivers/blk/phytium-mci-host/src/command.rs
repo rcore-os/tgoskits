@@ -1,5 +1,5 @@
 use sdmmc_protocol::{
-    CommandPoll, CommandResponsePoll,
+    CommandProgress, CommandResponseProgress,
     cmd::{Command as ProtoCmd, DataDirection},
     error::{Error, ErrorContext, Phase},
     response::{
@@ -29,6 +29,11 @@ pub(crate) enum CommandState {
         cmd: ProtoCmd,
         polls: u32,
     },
+    WaitingBusy {
+        cmd: ProtoCmd,
+        response: Response,
+        polls: u32,
+    },
     Complete {
         response: Response,
     },
@@ -38,41 +43,74 @@ pub(crate) enum CommandState {
 }
 
 impl PhytiumMci {
-    pub fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
-        match self.poll_command() {
-            Ok(CommandPoll::Pending) => Ok(CommandResponsePoll::Pending),
-            Ok(CommandPoll::Complete) => self
+    pub fn advance_command_response(
+        &mut self,
+        cause: sdio_host2::ProgressCause,
+    ) -> Result<CommandResponseProgress, Error> {
+        let acknowledged_irq = cause == sdio_host2::ProgressCause::AcknowledgedIrq;
+        match self.advance_command_for_cause(acknowledged_irq) {
+            Ok(CommandProgress::Pending) => Ok(CommandResponseProgress::Pending),
+            Ok(CommandProgress::Complete) => self
                 .take_command_response()
-                .map(CommandResponsePoll::Complete),
-            // Future CommandPoll variants: treat as best-effort harvest, same as Err path.
-            Ok(_) => self
-                .take_command_response()
-                .map(CommandResponsePoll::Complete),
-            Err(_) => self
-                .take_command_response()
-                .map(CommandResponsePoll::Complete),
+                .map(CommandResponseProgress::Complete),
+            Err(err) => Err(err),
         }
     }
 
     pub fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
+        self.submit_command_in_generation(cmd, true)
+    }
+
+    pub(crate) fn submit_chained_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
+        self.submit_command_in_generation(cmd, false)
+    }
+
+    fn submit_command_in_generation(
+        &mut self,
+        cmd: &ProtoCmd,
+        begin_irq_generation: bool,
+    ) -> Result<(), Error> {
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
         let data = self.pending_data.take();
-        self.prepare_irq_for_request();
+        if data.is_none() && begin_irq_generation {
+            self.prepare_irq_for_request();
+        }
         self.command_state = CommandState::WaitingInhibit {
             cmd: *cmd,
             data,
             polls: 0,
         };
-        if let Err(err) = self.poll_command() {
+        if let Err(err) = self.advance_command() {
             self.command_state = CommandState::Idle;
             return Err(err);
         }
         Ok(())
     }
 
-    pub fn poll_command(&mut self) -> Result<CommandPoll, Error> {
+    pub(crate) fn advance_command_for_cause(
+        &mut self,
+        acknowledged_irq: bool,
+    ) -> Result<CommandProgress, Error> {
+        let was_waiting_for_start = matches!(self.command_state, CommandState::WaitingStart { .. });
+        let progress = self.advance_command()?;
+        if acknowledged_irq
+            && was_waiting_for_start
+            && matches!(progress, CommandProgress::Pending)
+            && matches!(self.command_state, CommandState::Issued { .. })
+        {
+            // A fast command may complete before the maintenance thread's
+            // register retry observes START_CMD clearing. The IRQ event is
+            // already latched, so consume it in the same acknowledged-IRQ
+            // transition instead of sleeping for an interrupt that has
+            // already happened.
+            return self.advance_command();
+        }
+        Ok(progress)
+    }
+
+    pub fn advance_command(&mut self) -> Result<CommandProgress, Error> {
         match self.command_state {
             CommandState::WaitingInhibit { cmd, data, polls } => {
                 if !self.command_can_issue(data.is_some()) {
@@ -87,10 +125,10 @@ impl PhytiumMci {
                         data,
                         polls: polls + 1,
                     };
-                    return Ok(CommandPoll::Pending);
+                    return Ok(CommandProgress::Pending);
                 }
                 self.program_command(&cmd, data);
-                return Ok(CommandPoll::Pending);
+                return Ok(CommandProgress::Pending);
             }
             CommandState::WaitingStart { cmd, polls } => {
                 if self.regs.cmd().read().start_cmd() {
@@ -104,13 +142,18 @@ impl PhytiumMci {
                         cmd,
                         polls: polls + 1,
                     };
-                    return Ok(CommandPoll::Pending);
+                    return Ok(CommandProgress::Pending);
                 }
                 self.command_state = CommandState::Issued { cmd, polls: 0 };
-                return Ok(CommandPoll::Pending);
+                return Ok(CommandProgress::Pending);
             }
             CommandState::Issued { .. } => {}
-            CommandState::Complete { .. } => return Ok(CommandPoll::Complete),
+            CommandState::WaitingBusy {
+                cmd,
+                response,
+                polls,
+            } => return self.advance_r1b_busy(cmd, response, polls),
+            CommandState::Complete { .. } => return Ok(CommandProgress::Complete),
             CommandState::Failed { error } => return Err(error),
             CommandState::Idle => return Err(Error::InvalidArgument),
         }
@@ -118,6 +161,20 @@ impl PhytiumMci {
         let CommandState::Issued { cmd, polls } = self.command_state else {
             unreachable!();
         };
+        let raw_idsts = self
+            .irq
+            .state
+            .take_idmac_status(crate::MCI_IDSTS_LATCH_ERROR_MASK);
+        if raw_idsts != 0 {
+            let phase = if cmd.index == 12 {
+                Phase::BusyWait
+            } else {
+                Phase::ResponseWait
+            };
+            let err = Error::BusError(ErrorContext::for_cmd(phase, cmd.index));
+            self.command_state = CommandState::Failed { error: err };
+            return Err(err);
+        }
         let raw_status = self.take_command_irq_status();
         let status = RIntSts::from_bits(raw_status);
         if status.error() {
@@ -137,8 +194,11 @@ impl PhytiumMci {
                     return Err(err);
                 }
             };
+            if matches!(cmd.response, ResponseType::R1b) {
+                return self.advance_r1b_busy(cmd, response, 0);
+            }
             self.command_state = CommandState::Complete { response };
-            return Ok(CommandPoll::Complete);
+            return Ok(CommandProgress::Complete);
         }
         if polls >= COMMAND_WAIT_POLLS {
             let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, cmd.index));
@@ -149,7 +209,46 @@ impl PhytiumMci {
             cmd,
             polls: polls + 1,
         };
-        Ok(CommandPoll::Pending)
+        Ok(CommandProgress::Pending)
+    }
+
+    fn advance_r1b_busy(
+        &mut self,
+        cmd: ProtoCmd,
+        response: Response,
+        polls: u32,
+    ) -> Result<CommandProgress, Error> {
+        let raw_idsts = self
+            .irq
+            .state
+            .take_idmac_status(crate::MCI_IDSTS_LATCH_ERROR_MASK);
+        if raw_idsts != 0 {
+            let err = Error::BusError(ErrorContext::for_cmd(Phase::BusyWait, cmd.index));
+            self.command_state = CommandState::Failed { error: err };
+            return Err(err);
+        }
+        let raw_status = self.take_command_irq_status();
+        let status = RIntSts::from_bits(raw_status);
+        if status.error() {
+            let err = self.translate_int_error(status, Phase::BusyWait, cmd.index);
+            self.command_state = CommandState::Failed { error: err };
+            return Err(err);
+        }
+        if !self.regs.status().read().data_busy() {
+            self.command_state = CommandState::Complete { response };
+            return Ok(CommandProgress::Complete);
+        }
+        if polls >= COMMAND_BUSY_POLLS {
+            let err = Error::Timeout(ErrorContext::for_cmd(Phase::BusyWait, cmd.index));
+            self.command_state = CommandState::Failed { error: err };
+            return Err(err);
+        }
+        self.command_state = CommandState::WaitingBusy {
+            cmd,
+            response,
+            polls: polls + 1,
+        };
+        Ok(CommandProgress::Pending)
     }
 
     pub fn take_command_response(&mut self) -> Result<Response, Error> {
@@ -169,7 +268,8 @@ impl PhytiumMci {
             CommandState::Idle
             | CommandState::WaitingInhibit { .. }
             | CommandState::WaitingStart { .. }
-            | CommandState::Issued { .. } => Err(Error::InvalidArgument),
+            | CommandState::Issued { .. }
+            | CommandState::WaitingBusy { .. } => Err(Error::InvalidArgument),
         }
     }
 
@@ -183,18 +283,12 @@ impl PhytiumMci {
         if data.is_some() {
             self.data_cmd_index = cmd.index;
         }
-        self.clear_command_int_status();
-        let mut use_idmac = false;
         let data_dir = data.map(|d| {
             self.program_data_phase(d.block_size, d.block_count);
-            use_idmac = d.use_idmac;
             d.direction
         });
         self.regs.cmdarg().write(cmd.argument);
-        let mut encoded = encode_command(cmd, data_dir).with_use_hold_reg(self.use_hold_reg);
-        if use_idmac {
-            encoded = encoded.with_transfer_mode(true);
-        }
+        let encoded = encode_command(cmd, data_dir).with_use_hold_reg(self.use_hold_reg);
         self.regs.cmd().write(encoded);
         self.command_state = CommandState::WaitingStart {
             cmd: *cmd,
@@ -203,18 +297,9 @@ impl PhytiumMci {
     }
 
     fn take_command_irq_status(&mut self) -> u32 {
-        if self.completion_irq_enabled() {
-            return self
-                .irq
-                .state
-                .take_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
-        }
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let consume = raw_status & (crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK);
-        if consume != 0 {
-            self.regs.rintsts().write(RIntSts::from_bits(consume));
-        }
-        raw_status
+        self.irq
+            .state
+            .take_status(crate::MCI_INT_COMMAND_DONE | crate::MCI_INT_ERROR_MASK)
     }
 
     fn clear_command_int_status(&mut self) {
@@ -259,6 +344,7 @@ impl PhytiumMci {
 }
 
 const COMMAND_WAIT_POLLS: u32 = 1_000_000;
+const COMMAND_BUSY_POLLS: u32 = 1_000_000;
 
 pub(crate) fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
     let mut c = Cmd::new()
@@ -329,4 +415,50 @@ fn read_r2(resp: [u32; 4]) -> [u8; 16] {
     bytes[8..12].copy_from_slice(&resp[1].to_be_bytes());
     bytes[12..16].copy_from_slice(&resp[0].to_be_bytes());
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use core::ptr::NonNull;
+
+    use sdmmc_protocol::cmd::cmd17;
+
+    use super::*;
+    use crate::host::PendingData;
+
+    #[test]
+    fn data_command_preserves_prepared_irq_generation() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        host.irq.state.begin_request();
+        let prepared_generation = host.irq.state.generation();
+        host.pending_data = Some(PendingData {
+            direction: DataDirection::Read,
+            block_size: 512,
+            block_count: 1,
+        });
+
+        host.submit_command(&cmd17(0)).unwrap();
+
+        assert_eq!(host.irq.state.generation(), prepared_generation);
+    }
+
+    #[test]
+    fn idmac_data_command_uses_block_transfer_mode() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        host.irq.state.begin_request();
+        host.pending_data = Some(PendingData {
+            direction: DataDirection::Read,
+            block_size: 64,
+            block_count: 1,
+        });
+
+        host.submit_command(&ProtoCmd::new(6, 0, ResponseType::R1))
+            .unwrap();
+
+        assert!(!host.regs.cmd().read().stream_mode());
+    }
 }

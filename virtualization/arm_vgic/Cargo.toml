@@ -1,5 +1,5 @@
 [package]
-version = "0.5.4"
+version = "0.5.5"
 authors = [
   "Mingxian Su <aarkegz@gmail.com>",
   "DeBin Luo <luodeb@outlook.com>",
@@ -19,6 +19,7 @@ targets = ["aarch64-unknown-none-softfloat"]
 
 [features]
 default = []
+host-test = ["ax-kspin/host-test"]
 vgicv3 = []
 
 [dependencies]
@@ -34,3 +35,6 @@ ax-memory-addr = { workspace = true }
 spin = { workspace = true }
 tock-registers = "0.10"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }

@@ -1,10 +1,9 @@
 //! x86_64 VM resource creation and initialization.
 
-use alloc::sync::Arc;
-
 use ax_memory_addr::PAGE_SIZE_4K;
-use axdevice_base::{BaseDeviceOps, DeviceRegistry as _, PortDeviceAdapter};
-use axvm_types::{EmulatedDeviceType, MappingFlags, NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{
+    EmulatedDeviceConfig, EmulatedDeviceType, MappingFlags, NestedPagingConfig, VmArchVcpuOps,
+};
 use x86_vcpu::{
     X86GuestMemoryRegion, X86GuestPhysAddr, X86HostVirtAddr, X86VcpuCreateConfig,
     X86VcpuSetupConfig,
@@ -15,13 +14,13 @@ use super::{
     x86_requires_apic_access_page, x86_result,
 };
 use crate::{
-    AxVmError, AxVmResult, ax_err, ax_err_type,
+    AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     layout::GuestOwnedRegion,
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            ArchDeviceBootstrap, PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
             devices::PreparedDevices,
@@ -51,8 +50,7 @@ impl X86_64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
+                let (factories, interrupt_fabric) = prepare_device_bootstrap(vm)?.into_parts();
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {
@@ -63,6 +61,15 @@ impl X86_64Arch {
     }
 }
 
+fn prepare_device_bootstrap(vm: &AxVM) -> AxVmResult<ArchDeviceBootstrap> {
+    let mut factories = default_device_factories()?;
+    super::register_device_factories(&mut factories)?;
+    Ok(ArchDeviceBootstrap::new(
+        factories,
+        crate::InterruptFabric::new(vm.interrupt_mode()),
+    ))
+}
+
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
@@ -71,9 +78,14 @@ fn init_vm_with(
     complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
         let placements = vcpu_placements(resources);
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        register_arch_devices(resources.config(), &mut devices.devices)?;
-        devices.register_special_devices(vm)?;
+        let extra_devices = arch_extra_device_configs(resources.config());
+        let devices = PreparedDevices::build_common_with_extra(
+            resources,
+            factories,
+            interrupt_fabric,
+            &extra_devices,
+            vm.device_access_ports(),
+        )?;
         validate_guest_dtb(resources)?;
 
         let mut owned_regions = guest_owned_regions(resources);
@@ -112,28 +124,26 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::AxVmDevices) -> AxVmResult {
-    for port in config.pass_through_ports() {
-        let passthrough = Arc::new(super::port::HostPortPassthrough::new(
-            port.base,
-            port.length,
-        )?);
-        let range = passthrough.address_range();
-        debug!(
-            "PT port region: [{:#x}~{:#x}]",
-            range.start.number(),
-            range.end.number(),
-        );
-        devices
-            .register(PortDeviceAdapter::from_arc(passthrough))
-            .map_err(|err| {
-                ax_err_type!(InvalidInput, alloc::format!("register PT port: {err:?}"))
-            })?;
-    }
-    for device_config in config.emu_devices() {
-        super::register_arch_device(device_config, devices)?;
-    }
-    Ok(())
+fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDeviceConfig> {
+    config
+        .pass_through_ports()
+        .iter()
+        .map(|port| {
+            debug!(
+                "PT port region: [{:#x}~{:#x}]",
+                port.base,
+                port.base as u32 + port.length as u32 - 1,
+            );
+            EmulatedDeviceConfig {
+                name: alloc::format!("x86-port-passthrough-{:#x}", port.base),
+                base_gpa: port.base as usize,
+                length: port.length as usize,
+                irq_id: 0,
+                emu_type: EmulatedDeviceType::X86PortPassthrough,
+                cfg_list: alloc::vec![],
+            }
+        })
+        .collect()
 }
 
 fn append_arch_owned_regions(regions: &mut alloc::vec::Vec<GuestOwnedRegion>) -> AxVmResult {

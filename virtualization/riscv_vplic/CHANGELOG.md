@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.22](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.21...riscv_vplic-v0.4.22) - 2026-08-03
+
+### Other
+
+- *(axvisor)* implement unified emulated device framework ([#1722](https://github.com/rcore-os/tgoskits/pull/1722))
+
 ## [0.4.21](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.20...riscv_vplic-v0.4.21) - 2026-07-23
 
 ### Other

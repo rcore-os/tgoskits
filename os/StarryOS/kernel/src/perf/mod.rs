@@ -37,10 +37,11 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_io::{Read, Write};
-use ax_kspin::{SpinNoPreempt, SpinNoPreemptGuard};
+use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
+use ax_sync::Mutex;
 use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
@@ -93,8 +94,8 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// Stop firing without tearing down the event.
     fn disable(&mut self) -> AxResult<()>;
 
-    /// `Any` upcast (mutable). Used by `perf_event_output` to recover the
-    /// concrete `BpfPerfEventWrapper` from a `dyn PerfEventOps`.
+    /// `Any` upcast (mutable). Used while constructing [`PerfEvent`] to recover
+    /// capabilities exposed by concrete implementations.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
     /// Attach a BPF program to this event (`PERF_EVENT_IOC_SET_BPF`).
@@ -196,10 +197,16 @@ pub struct PerfReadValues {
     pub read_format: u64,
 }
 
-/// File-like handle returned by `perf_event_open(2)`. Locks a
-/// `Box<dyn PerfEventOps>` so the inner implementation can stay generic.
+/// File-like handle returned by `perf_event_open(2)`.
+///
+/// Task-context control operations use a blocking mutex because callbacks may
+/// allocate, fault, or reschedule. Software BPF output has a separate
+/// non-sleeping capability containing only the bounded ring-write state needed
+/// by trace and IRQ producers.
 pub struct PerfEvent {
-    event: SpinNoPreempt<Box<dyn PerfEventOps>>,
+    event: Mutex<Box<dyn PerfEventOps>>,
+    /// Bounded non-sleeping output endpoint for software BPF events.
+    irq_output: Option<bpf::BpfPerfOutput>,
     /// Unique, stable perf-event id (see [`NEXT_PERF_EVENT_ID`]). Returned by
     /// `PERF_EVENT_IOC_ID` and used as the `read_format` `PERF_FORMAT_ID` value.
     id: u64,
@@ -221,16 +228,16 @@ impl PerfEvent {
     pub fn new(mut event: Box<dyn PerfEventOps>) -> Self {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
+        let irq_output = event
+            .as_any_mut()
+            .downcast_mut::<BpfPerfEventWrapper>()
+            .map(|event| event.output_handle());
         PerfEvent {
-            event: SpinNoPreempt::new(event),
+            event: Mutex::new(event),
+            irq_output,
             id,
             nonblocking: AtomicBool::new(false),
         }
-    }
-
-    /// Borrow the inner impl under the lock.
-    pub fn event(&self) -> SpinNoPreemptGuard<'_, Box<dyn PerfEventOps>> {
-        self.event.lock()
     }
 
     /// Handle `PERF_EVENT_IOC_SET_OUTPUT`: redirect this event's records into the
@@ -258,7 +265,8 @@ impl PerfEvent {
         // event's output at it. If the target has no ring (e.g. it is itself a
         // non-mmap'd or non-sampling event), there is nothing to merge into; the
         // source keeps its own ring — `redirect_output` is then never called.
-        if let Some((ring_vaddr, ring_len, anchor)) = target.event.lock().output_ring() {
+        let target_output = target.event.lock().output_ring();
+        if let Some((ring_vaddr, ring_len, anchor)) = target_output {
             self.event
                 .lock()
                 .redirect_output(ring_vaddr, ring_len, anchor)?;
@@ -491,12 +499,12 @@ pub fn perf_event_open(
 /// Map fd → weak<PerfEvent> so `bpf_perf_event_output` can locate the
 /// target ringbuf without owning a strong reference (the user side owns
 /// it via the fd).
-static PERF_FILE: LazyInit<SpinNoPreempt<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
+static PERF_FILE: LazyInit<SpinNoIrq<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
     LazyInit::new();
 
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
-    PERF_FILE.init_once(SpinNoPreempt::new(HashMap::new()));
+    PERF_FILE.init_once(SpinNoIrq::new(HashMap::new()));
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
@@ -516,13 +524,43 @@ pub fn perf_event_output(_ctx: *mut c_void, fd: usize, _flags: u32, data: &[u8])
         .into_any_arc()
         .downcast::<PerfEvent>()
         .map_err(|_| AxError::InvalidInput)?;
-    let mut inner = perf_event.event();
-    let bpf_event = inner
-        .as_any_mut()
-        .downcast_mut::<BpfPerfEventWrapper>()
-        .ok_or(AxError::InvalidInput)?;
-    bpf_event.write_event(data)?;
-    Ok(())
+    perf_event
+        .irq_output
+        .as_ref()
+        .ok_or(AxError::InvalidInput)?
+        .write_event(data)
+}
+
+#[cfg(axtest)]
+pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
+    #[derive(Debug)]
+    struct YieldingControl;
+
+    impl Pollable for YieldingControl {
+        fn poll(&self) -> axpoll::IoEvents {
+            axpoll::IoEvents::empty()
+        }
+
+        fn register(&self, _context: &mut core::task::Context<'_>, _events: axpoll::IoEvents) {}
+    }
+
+    impl PerfEventOps for YieldingControl {
+        fn enable(&mut self) -> AxResult<()> {
+            ax_task::yield_now();
+            Ok(())
+        }
+
+        fn disable(&mut self) -> AxResult<()> {
+            Ok(())
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    let event = PerfEvent::new(Box::new(YieldingControl));
+    event.ioctl(PerfEventIoc::Enable as u32, 0).is_ok()
 }
 
 /// Executable kernel mapping used by rbpf JIT programs on x86_64.

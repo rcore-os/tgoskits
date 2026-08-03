@@ -386,6 +386,32 @@ fn starry_system_grouped_cases_use_root_cmake_layout() {
 }
 
 #[test]
+fn starry_system_grouped_cases_use_overlay_relative_install_destinations() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
+
+    for entry in fs::read_dir(&system_dir).unwrap() {
+        let entry = entry.unwrap();
+        let cmake_path = entry.path().join("CMakeLists.txt");
+        if !cmake_path.is_file() {
+            continue;
+        }
+
+        let cmake = fs::read_to_string(&cmake_path).unwrap();
+        assert!(
+            !cmake.lines().any(|line| {
+                line.split_whitespace()
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .any(|tokens| tokens[0] == "DESTINATION" && tokens[1].starts_with('/'))
+            }),
+            "{} must install through DESTDIR using a relative DESTINATION",
+            cmake_path.display()
+        );
+    }
+}
+
+#[test]
 fn grouped_case_skips_arch_specific_subcases_for_other_arches() {
     let root = tempdir().unwrap();
     write_qemu_build_config(

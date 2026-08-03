@@ -1,43 +1,31 @@
 //! A minimal contiguous dma-buf file backing the `/dev/dma_heap` allocator.
 //!
 //! Each [`DmaBufFile`] owns one physically-contiguous, DMA-coherent allocation
-//! (via `ax_dma`). It is handed to userspace as a file descriptor; `mmap` maps
+//! (via `dma-api`). It is handed to userspace as a file descriptor; `mmap` maps
 //! the buffer's physical pages, and the physical base is what the
 //! `/dev/mpp_service` node programs into the JPEG decoder. The allocation lives
 //! in an inner `Arc` so that an active `mmap` keeps the pages alive even if the
 //! fd is closed first; it is freed only when both the fd and every mmap drop.
 
 use alloc::{borrow::Cow, sync::Arc};
-use core::{alloc::Layout, any::Any, ffi::c_int};
+use core::{any::Any, ffi::c_int};
 
-use ax_dma::DMAInfo;
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange};
 use axpoll::{IoEvents, Pollable};
+use dma_api::{CoherentArray, DmaError};
 use linux_raw_sys::general::O_RDWR;
 
 use super::{FileLike, Kstat};
 use crate::pseudofs::DeviceMmap;
 
+const DMA_BUF_MASK: u64 = u32::MAX as u64;
+
 /// The owned contiguous allocation. Freed when the last reference (the fd's
 /// `DmaBufFile` and any mmap retainer) drops.
 struct DmaBufAlloc {
-    dma: DMAInfo,
+    dma: CoherentArray<u8>,
     size: usize,
-    align: usize,
-}
-
-// The buffer is DMA-coherent memory addressed by physical address; the contained
-// CPU pointer is only touched (uniquely) in `Drop`.
-unsafe impl Send for DmaBufAlloc {}
-unsafe impl Sync for DmaBufAlloc {}
-
-impl Drop for DmaBufAlloc {
-    fn drop(&mut self) {
-        if let Ok(layout) = Layout::from_size_align(self.size, self.align) {
-            unsafe { ax_dma::dealloc_coherent_pages(self.dma, layout) };
-        }
-    }
 }
 
 /// A contiguous, DMA-coherent buffer exposed as a dma-buf file.
@@ -48,35 +36,42 @@ pub struct DmaBufFile {
 impl DmaBufFile {
     /// Allocate a page-aligned contiguous buffer of at least `len` bytes.
     pub fn alloc(len: usize) -> AxResult<Self> {
+        Self::alloc_with_device(len, &axklib::dma::device_with_mask(DMA_BUF_MASK))
+    }
+
+    fn alloc_with_device(len: usize, dma: &dma_api::DeviceDma) -> AxResult<Self> {
         let align = PAGE_SIZE_4K;
         let size = len
             .checked_next_multiple_of(align)
             .ok_or(AxError::InvalidInput)?
             .max(align);
-        let layout = Layout::from_size_align(size, align).map_err(|_| AxError::InvalidInput)?;
         // The accelerators that consume these buffers (JPU/RGA/NPU) run with the
         // IOMMU bypassed and program raw 32-bit physical DMA addresses, so the
         // backing pages must live below 4 GiB. Plain `alloc_coherent_pages` draws
         // from anywhere in RAM and returns >4 GiB pages on large-memory boards,
         // which the 32-bit address registers cannot reach.
-        let dma =
-            unsafe { ax_dma::alloc_coherent_pages_dma32(layout) }.map_err(|_| AxError::NoMemory)?;
+        let dma = dma
+            .coherent_array_zero_with_align::<u8>(size, align)
+            .map_err(|err| match err {
+                DmaError::LayoutError(_) => AxError::InvalidInput,
+                _ => AxError::NoMemory,
+            })?;
         Ok(Self {
-            alloc: Arc::new(DmaBufAlloc { dma, size, align }),
+            alloc: Arc::new(DmaBufAlloc { dma, size }),
         })
     }
 
     /// Physical address range of the buffer.
     pub fn phys_range(&self) -> PhysAddrRange {
         PhysAddrRange::from_start_size(
-            PhysAddr::from(self.alloc.dma.bus_addr.as_u64() as usize),
+            PhysAddr::from(self.alloc.dma.dma_addr().as_u64() as usize),
             self.alloc.size,
         )
     }
 
     /// Physical base address.
     pub fn phys_base(&self) -> usize {
-        self.alloc.dma.bus_addr.as_u64() as usize
+        self.alloc.dma.dma_addr().as_u64() as usize
     }
 
     /// Size of the allocation in bytes (page-rounded up from the request).
@@ -122,7 +117,7 @@ impl ContiguousDmaBuf for DmaBufFile {
     }
 
     fn dma_cpu_base(&self) -> Option<usize> {
-        Some(self.alloc.dma.cpu_addr.as_ptr() as usize)
+        Some(self.alloc.dma.as_ptr().as_ptr() as usize)
     }
 
     fn dma_retainer(&self) -> Arc<dyn Any + Send + Sync> {
@@ -173,5 +168,92 @@ impl FileLike for DmaBufFile {
         // not freed if userspace closes the fd while it is still mapped.
         let retainer: Arc<dyn Any + Send + Sync> = self.alloc.clone();
         Ok(DeviceMmap::Physical(self.phys_range(), Some(retainer)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::{
+        alloc::Layout,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    };
+
+    use self::std::alloc::{alloc_zeroed, dealloc};
+    use super::*;
+
+    struct TestDma;
+
+    static TEST_DMA: TestDma = TestDma;
+    static ALLOC_MASK: AtomicU64 = AtomicU64::new(0);
+    static RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            PAGE_SIZE_4K
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            ALLOC_MASK.store(constraints.addr_mask, Ordering::SeqCst);
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            Some(unsafe { DmaAllocHandle::new(ptr, 0x2000_u64.into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+            RELEASES.fetch_add(1, Ordering::SeqCst);
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            Err(DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    #[test]
+    fn dma_buf_preserves_dma32_size_address_and_arc_lifetime() {
+        RELEASES.store(0, Ordering::SeqCst);
+        ALLOC_MASK.store(0, Ordering::SeqCst);
+        let device = DeviceDma::new_legacy(DMA_BUF_MASK, &TEST_DMA);
+        let file = DmaBufFile::alloc_with_device(1, &device).unwrap();
+
+        assert_eq!(file.alloc.size, PAGE_SIZE_4K);
+        assert_eq!(file.phys_base(), 0x2000);
+        assert_eq!(ALLOC_MASK.load(Ordering::SeqCst), DMA_BUF_MASK);
+
+        let mmap_owner = file.alloc.clone();
+        drop(file);
+        assert_eq!(RELEASES.load(Ordering::SeqCst), 0);
+        drop(mmap_owner);
+        assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
     }
 }

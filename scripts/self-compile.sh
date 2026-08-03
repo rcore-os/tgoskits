@@ -59,7 +59,7 @@ case "$ARCH" in
         QEMU_MACHINE="virt"
         QEMU_CPU="rv64"
         QEMU_EXTRA=""  # extra flags appended after -cpu
-        QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     x86_64)
@@ -74,7 +74,7 @@ case "$ARCH" in
             QEMU_EXTRA=""
             info "KVM not available — using TCG emulation (will be slow)"
         fi
-        QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     aarch64)
@@ -83,7 +83,7 @@ case "$ARCH" in
         QEMU_MACHINE="virt"
         QEMU_CPU="cortex-a72"
         QEMU_EXTRA=""
-        QEMU_BLK_DEV="virtio-blk-device,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-device,netdev=net0"
         ;;
     *)
@@ -179,7 +179,7 @@ echo "BUILD_START"
 		# Direct output to serial console (TTY = line-buffered cargo)
 		cargo build --ignore-rust-version -p starryos \
 		            --target ${TARGET} \
-		            --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
+		            --features qemu,ax-driver/nvme,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
 		            --offline
 		BUILD_RC=\$?
 		kill \$HEARTBEAT_PID 2>/dev/null || true

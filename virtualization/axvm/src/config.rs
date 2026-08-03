@@ -104,6 +104,7 @@ pub struct AxVMConfigParams {
     pub cpu_config: AxVCpuConfig,
     pub image_config: VMImageConfig,
     pub emu_devices: Vec<EmulatedDeviceConfig>,
+    pub pass_through_irqs: Vec<u32>,
     pub pass_through_devices: Vec<PassThroughDeviceConfig>,
     pub excluded_devices: Vec<Vec<String>>,
     pub pass_through_addresses: Vec<PassThroughAddressConfig>,
@@ -117,6 +118,13 @@ pub struct AxVMConfigParams {
 
 impl AxVMConfig {
     pub fn new(params: AxVMConfigParams) -> Self {
+        let mut passthrough_irq_list = Vec::new();
+        for irq in params.pass_through_irqs {
+            if !passthrough_irq_list.contains(&irq) {
+                passthrough_irq_list.push(irq);
+            }
+        }
+
         Self {
             id: params.id,
             name: params.name,
@@ -133,7 +141,7 @@ impl AxVMConfig {
             address_space_policy: params.address_space_policy,
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
-            passthrough_irq_list: Vec::new(),
+            passthrough_irq_list,
             interrupt_mode: params.interrupt_mode,
         }
     }
@@ -425,5 +433,18 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+    }
+
+    #[test]
+    fn constructor_keeps_unique_explicit_passthrough_irqs() {
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: String::from("irq-test"),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            pass_through_irqs: vec![4, 4, 17],
+            ..Default::default()
+        });
+
+        assert_eq!(config.pass_through_irqs(), &vec![4, 17]);
     }
 }

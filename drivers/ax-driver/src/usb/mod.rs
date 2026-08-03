@@ -54,7 +54,7 @@ impl DmaOp for UsbKernel {
         unsafe { axklib::dma::op().alloc_coherent(constraints, layout) }
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         unsafe { axklib::dma::op().dealloc_coherent(handle) }
     }
 
@@ -442,7 +442,9 @@ mod tests {
             None
         }
 
-        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {}
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) -> Result<(), DmaError> {
+            Ok(())
+        }
 
         unsafe fn map_streaming(
             &self,

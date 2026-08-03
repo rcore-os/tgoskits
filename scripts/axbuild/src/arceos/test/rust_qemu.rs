@@ -214,6 +214,7 @@ pub(super) async fn run_rust_qemu_case(
             suppress_terminal_raw_blocks: true,
             write_log_during_capture: keep_qemu_log,
             captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            success_output: None,
         })
     } else {
         None

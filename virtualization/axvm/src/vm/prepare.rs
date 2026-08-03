@@ -6,7 +6,7 @@ pub(crate) mod vcpus;
 
 use alloc::{format, sync::Arc};
 
-use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
+use axdevice::{DeviceFactoryRegistry, FwCfgPayloadFactory, register_builtin_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
@@ -18,6 +18,35 @@ pub(crate) enum VmInitRequest<'a> {
         factories: &'a DeviceFactoryRegistry,
         interrupt_fabric: InterruptFabric,
     },
+}
+
+/// The architecture-owned inputs to the common device preparation path.
+///
+/// Every default VM creation path must produce this object before calling
+/// [`complete_vm_init`].  It keeps factory registration and interrupt-fabric
+/// selection together, so an architecture cannot accidentally construct
+/// devices with a fabric different from the one that resolved their IRQs.
+pub(crate) struct ArchDeviceBootstrap {
+    factories: DeviceFactoryRegistry,
+    interrupt_fabric: InterruptFabric,
+}
+
+impl ArchDeviceBootstrap {
+    /// Creates one complete architecture device bootstrap result.
+    pub(crate) const fn new(
+        factories: DeviceFactoryRegistry,
+        interrupt_fabric: InterruptFabric,
+    ) -> Self {
+        Self {
+            factories,
+            interrupt_fabric,
+        }
+    }
+
+    /// Splits the bootstrap result for the common preparation path.
+    pub(crate) fn into_parts(self) -> (DeviceFactoryRegistry, InterruptFabric) {
+        (self.factories, self.interrupt_fabric)
+    }
 }
 
 pub(crate) struct PreparedVm {
@@ -33,13 +62,13 @@ impl PreparedVm {
 
 impl AxVM {
     /// Sets up the VM before booting.
-    pub fn prepare(&self) -> AxVmResult {
+    pub fn prepare(self: &Arc<Self>) -> AxVmResult {
         crate::arch::CurrentArch::init_vm(self, VmInitRequest::Default)
     }
 
     /// Sets up the VM with explicit device factories and an interrupt fabric.
     pub fn prepare_with_factories(
-        &self,
+        self: &Arc<Self>,
         factories: &DeviceFactoryRegistry,
         interrupt_fabric: InterruptFabric,
     ) -> AxVmResult {
@@ -57,6 +86,22 @@ pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories)?;
     Ok(factories)
+}
+
+/// Adds VM-local boot-payload factories to an architecture's static registry.
+///
+/// Only architectures that expose such a configured device should call this:
+/// keeping the common RISC-V path independent of unrelated boot-payload state
+/// avoids introducing a VM-lock dependency before its interrupt fabric exists.
+#[allow(dead_code)]
+pub(crate) fn register_boot_payload_factories(
+    vm: &AxVM,
+    factories: &mut DeviceFactoryRegistry,
+) -> AxVmResult {
+    if let Some(payload) = vm.fw_cfg_payload() {
+        factories.register(Arc::new(FwCfgPayloadFactory::new(payload)))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn complete_vm_init(
