@@ -383,10 +383,14 @@ impl FsPollable for File {
     }
 }
 
+fn needs_metadata_update_on_drop(location: &Location, access_flags: u8) -> bool {
+    access_flags != 0 && !location.is_readonly()
+}
+
 impl Drop for File {
     fn drop(&mut self) {
         let flags = self.access_flags.load(Ordering::Acquire);
-        if flags != 0 {
+        if needs_metadata_update_on_drop(self.inner.location(), flags) {
             let mut update = axfs_ng_vfs::MetadataUpdate::default();
             if flags & 1 != 0 {
                 update.atime = Some(crate::os::wall_time());
@@ -398,5 +402,146 @@ impl Drop for File {
                 warn!("Failed to update file times on drop: {err:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::{any::Any, task::Context, time::Duration};
+
+    use axfs_ng_vfs::{
+        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
+        FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType,
+        Reference, StatFs,
+    };
+
+    use super::*;
+
+    struct ReadonlyTestFilesystem;
+
+    static READONLY_TEST_FILESYSTEM: ReadonlyTestFilesystem = ReadonlyTestFilesystem;
+
+    impl FilesystemOps for ReadonlyTestFilesystem {
+        fn name(&self) -> &str {
+            "readonly-file-drop-test"
+        }
+
+        fn is_readonly(&self) -> bool {
+            true
+        }
+
+        fn root_dir(&self) -> DirEntry {
+            test_entry(Arc::new(ReadonlyTestFile::new()))
+        }
+
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::InvalidInput)
+        }
+    }
+
+    struct ReadonlyTestFile {}
+
+    impl ReadonlyTestFile {
+        const fn new() -> Self {
+            Self {}
+        }
+    }
+
+    impl NodeOps for ReadonlyTestFile {
+        fn inode(&self) -> u64 {
+            1
+        }
+
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(Metadata {
+                device: 1,
+                inode: self.inode(),
+                nlink: 1,
+                mode: NodePermission::default(),
+                node_type: NodeType::RegularFile,
+                uid: 0,
+                gid: 0,
+                size: 1,
+                block_size: 1,
+                blocks: 1,
+                rdev: DeviceId::default(),
+                atime: Duration::ZERO,
+                mtime: Duration::ZERO,
+                ctime: Duration::ZERO,
+            })
+        }
+
+        fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            &READONLY_TEST_FILESYSTEM
+        }
+
+        fn sync(&self, _data_only: bool) -> VfsResult<()> {
+            Ok(())
+        }
+
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+
+        fn flags(&self) -> NodeFlags {
+            NodeFlags::empty()
+        }
+    }
+
+    impl FsPollable for ReadonlyTestFile {
+        fn poll(&self) -> FsIoEvents {
+            FsIoEvents::IN | FsIoEvents::OUT
+        }
+
+        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+    }
+
+    impl FileNodeOps for ReadonlyTestFile {
+        fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+            if let Some(byte) = buf.first_mut() {
+                *byte = 0;
+                Ok(1)
+            } else {
+                Ok(0)
+            }
+        }
+
+        fn write_at(&self, _buf: &[u8], _offset: u64) -> VfsResult<usize> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn append(&self, _buf: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_len(&self, _len: u64) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+
+        fn set_symlink(&self, _target: &str) -> VfsResult<()> {
+            Err(VfsError::ReadOnlyFilesystem)
+        }
+    }
+
+    fn test_entry(node: Arc<ReadonlyTestFile>) -> DirEntry {
+        DirEntry::new_file(
+            FileNode::new(node),
+            NodeType::RegularFile,
+            Reference::root(),
+        )
+    }
+
+    #[test]
+    fn readonly_mount_skips_read_access_metadata_update() {
+        let filesystem = Filesystem::new(Arc::new(ReadonlyTestFilesystem));
+        let mountpoint = Mountpoint::new_root(&filesystem);
+        let location = Location::new(mountpoint, test_entry(Arc::new(ReadonlyTestFile::new())));
+
+        assert!(!needs_metadata_update_on_drop(&location, 1));
     }
 }
