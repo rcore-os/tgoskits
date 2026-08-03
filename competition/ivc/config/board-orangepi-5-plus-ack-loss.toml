@@ -1,3 +1,4 @@
+board_type = "OrangePi-5-Plus"
 shell_prefix = "AXVISOR_SHELL_READY"
 shell_init_cmd = "ss 1 0 /home/orangepi/ivc-a"
 success_regex = [

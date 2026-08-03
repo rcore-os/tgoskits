@@ -27,6 +27,8 @@ service_dtb=${ORANGEPI_SERVICE_DTB:-${HOME}/.local/share/ostool-server/dtbs/oran
 axvisor_dtb=${ORANGEPI_AXVISOR_DTB:-$workspace/os/axvisor/configs/board/orangepi-5-plus.dtb}
 starry_dtb=${ORANGEPI_STARRY_DTB:-$workspace/os/StarryOS/configs/board/orangepi-5-plus.dtb}
 ostool_patch=${OSTOOL_UBOOT_PATCH:-${HOME}/.config/ostool-server/uboot-shell-patch.toml}
+cargo_lock=$workspace/Cargo.lock
+cargo_lock_backup=
 
 validate_boolean() {
     local name=$1
@@ -63,6 +65,30 @@ configure_system_libclang() {
             return
         fi
     done
+}
+
+backup_cargo_lock() {
+    if [[ ! -r "$ostool_patch" ]]; then
+        return
+    fi
+    if [[ ! -r "$cargo_lock" ]]; then
+        echo "Cargo lockfile is not readable before applying the local ostool patch: $cargo_lock" >&2
+        return 1
+    fi
+    cargo_lock_backup=$(mktemp "${TMPDIR:-/tmp}/orangepi-cargo-lock.XXXXXX")
+    cp -- "$cargo_lock" "$cargo_lock_backup"
+}
+
+restore_cargo_lock() {
+    if [[ -z "$cargo_lock_backup" ]]; then
+        return
+    fi
+    if ! cp -- "$cargo_lock_backup" "$cargo_lock"; then
+        echo "Failed to restore Cargo lockfile after the local ostool patch" >&2
+        return 1
+    fi
+    rm -f -- "$cargo_lock_backup"
+    cargo_lock_backup=
 }
 
 prepare_linux_state() (
@@ -198,7 +224,7 @@ if [[ -n "$raw_output" ]]; then
         exit 1
     }
 fi
-for command_name in cargo fuser grep mktemp sed ssh tee timeout; do
+for command_name in cargo cp fuser grep mktemp sed ssh tee timeout; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Required Orange Pi runner tool not found: $command_name" >&2
         exit 1
@@ -247,9 +273,11 @@ cleanup() {
     fi
     rm -f -- "$runner_log"
     restore_service_dtb
+    restore_cargo_lock || true
 }
 trap cleanup EXIT HUP INT TERM
 
+backup_cargo_lock
 cargo_command=(cargo)
 if [[ -r "$ostool_patch" ]]; then
     cargo_command+=(--config "$ostool_patch")
@@ -358,6 +386,8 @@ bash "$prepare_service_dtb" \
     "$starry_dtb" "$service_dtb" "$host_root_selector" >/dev/null
 dtb_restore_status=$?
 rm -f -- "$runner_log"
+restore_cargo_lock
+lock_restore_status=$?
 set -e
 
 runner_pid=
@@ -375,5 +405,8 @@ if ((harvest_status != 0)); then
 fi
 if ((dtb_restore_status != 0)); then
     exit "$dtb_restore_status"
+fi
+if ((lock_restore_status != 0)); then
+    exit "$lock_restore_status"
 fi
 exit "$runner_status"

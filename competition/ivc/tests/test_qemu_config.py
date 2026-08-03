@@ -263,6 +263,20 @@ class QemuConfigContractTests(unittest.TestCase):
             runner.index('"${cargo_command[@]}" xtask axvisor board'),
         )
 
+    def test_board_runner_restores_the_lockfile_after_a_local_cargo_patch(self) -> None:
+        runner = ORANGEPI_AUTOMATION_SCRIPTS[0].read_text(encoding="utf-8")
+
+        self.assertIn("cargo_lock_backup", runner)
+        self.assertIn("restore_cargo_lock", runner)
+        self.assertRegex(
+            runner,
+            re.compile(
+                r"backup_cargo_lock.*?cargo_command.*?--config.*?"
+                r"wait \"\$runner_pid\".*?restore_cargo_lock",
+                re.DOTALL,
+            ),
+        )
+
     def test_board_profiles_snapshot_the_matching_volatile_disk(self) -> None:
         for config_path, result_path in ORANGEPI_BOARD_SNAPSHOT_CONFIGS:
             with self.subTest(config=config_path.name), config_path.open("rb") as source:
@@ -279,6 +293,7 @@ class QemuConfigContractTests(unittest.TestCase):
                 f"ss 1 0 {result_path}",
             )
             self.assertEqual(config["shell_prefix"], "AXVISOR_SHELL_READY")
+            self.assertEqual(config["board_type"], "OrangePi-5-Plus")
             self.assertEqual(len(config["success_regex"]), 1)
             success = re.compile(config["success_regex"][0])
             self.assertEqual(
