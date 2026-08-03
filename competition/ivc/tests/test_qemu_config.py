@@ -22,12 +22,14 @@ ORANGEPI_BOARD_CONFIGS = (
     REPOSITORY_ROOT
     / "competition/ivc/config/board-orangepi-5-plus-manual-smoke.toml",
     REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-manual.toml",
+    REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-ack-loss.toml",
 )
 ORANGEPI_BOARD_SNAPSHOT_CONFIGS = (
     (ORANGEPI_BOARD_CONFIGS[0], "/home/orangepi/ivc-ns"),
     (ORANGEPI_BOARD_CONFIGS[1], "/home/orangepi/ivc-n"),
     (ORANGEPI_BOARD_CONFIGS[2], "/home/orangepi/ivc-ms"),
     (ORANGEPI_BOARD_CONFIGS[3], "/home/orangepi/ivc-m"),
+    (ORANGEPI_BOARD_CONFIGS[4], "/home/orangepi/ivc-a"),
 )
 LINUX_ACK_LOSS_CONFIG = (
     REPOSITORY_ROOT / "competition/ivc/config/linux-smp2-ack-loss.toml"
@@ -36,6 +38,9 @@ ZEPHYR_ACK_LOSS_CONFIG = (
     REPOSITORY_ROOT / "competition/ivc/config/zephyr-smp1-ack-loss.toml"
 )
 ZEPHYR_ACK_LOSS_CONF = REPOSITORY_ROOT / "competition/ivc/zephyr/ack-loss.conf"
+ZEPHYR_BOARD_ACK_LOSS_CONF = (
+    REPOSITORY_ROOT / "competition/ivc/zephyr/board-ack-loss.conf"
+)
 ZEPHYR_KCONFIG = REPOSITORY_ROOT / "competition/ivc/zephyr/Kconfig"
 ZEPHYR_GITIGNORE = REPOSITORY_ROOT / "competition/ivc/zephyr/.gitignore"
 ORANGEPI_RUN_SCRIPT = REPOSITORY_ROOT / "competition/ivc/run-orangepi-5-plus.sh"
@@ -111,9 +116,68 @@ BOARD_IDENTITY board_id=fake-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4200
 EOF
 """
 
+VALID_ACK_LOSS_RUNNER = """#!/bin/sh
+set -eu
+: "${ORANGEPI_IVC_RAW_CSV:?}"
+: "${ORANGEPI_IVC_RESULT_IMAGE:?}"
+[ "${ORANGEPI_IVC_EXPECTED_COUNT:?}" = 100 ]
+mkdir -p "$(dirname -- "$ORANGEPI_IVC_RAW_CSV")"
+{
+    echo 'sequence,cycle_started_us,command_sent_us,response_completed_us,full_loop_us,pre_send_us,transport_us,setpoint_milli_c,observed_milli_c,measured_milli_c,command_actuator_permille,status_actuator_permille,error_milli_c'
+    sequence=1
+    while [ "$sequence" -le 100 ]; do
+        cycle_started_us=$(((sequence - 1) * 100000))
+        command_sent_us=$((cycle_started_us + 10))
+        response_completed_us=$((cycle_started_us + 110))
+        printf '%s,%s,%s,%s,110,10,100,45000,44000,44000,500,500,1000\n' \
+            "$sequence" "$cycle_started_us" "$command_sent_us" "$response_completed_us"
+        sequence=$((sequence + 1))
+    done
+} >"$ORANGEPI_IVC_RAW_CSV"
+raw_record=$(sha256sum "$ORANGEPI_IVC_RAW_CSV")
+raw_sha256=${raw_record%% *}
+cat <<EOF
+[guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native count=100 period_ms=100 vcpus=2
+[guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=unknown ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
+[guest-console:pl011-starry] IVC-CONTROLLER-OUTCOME policy=neural sent=100 acknowledged=100 errors=0 timeouts=0
+[guest-console:pl011-starry] IVC-CONTROLLER-RELIABILITY retransmissions=20 recoveries=20 success_percent=100.000
+[guest-console:pl011-starry] IVC-CONTROLLER-FULL-LOOP p50_us=110 p95_us=110 p99_us=110 max_us=110
+[guest-console:pl011-starry] IVC-CONTROLLER-PRE-SEND p50_us=10 p95_us=10 p99_us=10 max_us=10
+[guest-console:pl011-starry] IVC-CONTROLLER-TRANSPORT p50_us=100 p95_us=100 p99_us=100 max_us=100 throughput_msg_s=10.000
+[guest-console:pl011-starry] IVC-CONTROLLER-CONTROL rmse_milli_c=1000.000 iae_milli_c_s=10000.000 max_overshoot_milli_c=0
+[guest-console:pl011-starry] IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=100 sha256=$raw_sha256
+[guest-console:pl011-zephyr] IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_drop_every=5 expected_commands=100 exit_after_expected=1
+EOF
+sequence=5
+duplicate=1
+while [ "$sequence" -le 100 ]; do
+    printf '[guest-console:pl011-zephyr] IVC-RTOS-INJECT drop_ack_seq=%s\n' "$sequence"
+    printf '[guest-console:pl011-zephyr] IVC-RTOS-DUPLICATE seq=%s next_expected=%s duplicates=%s\n' \
+        "$sequence" "$((sequence + 1))" "$duplicate"
+    sequence=$((sequence + 5))
+    duplicate=$((duplicate + 1))
+done
+cat <<EOF
+[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=ack-loss accepted=100 applied=100 duplicates=20 acks_dropped=20
+[guest-console:pl011-zephyr] IVC-RTOS-MESSAGES status_sent=120 acks_sent=100 errors_sent=0 protocol_errors=0
+[guest-console:pl011-zephyr] IVC-RTOS-POWEROFF accepted=100
+[guest-console:pl011-starry] IVC-STARRY-DONE exit=0
+AXVISOR_SNAPSHOT_SYNC_OK
+BOARD_LINUX_RESTORED
+BOARD_RESULT_IMAGE_VALIDATED vm=1 index=0 path=$ORANGEPI_IVC_RESULT_IMAGE bytes=67108864 sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef fsck=clean
+BOARD_RAW_RESULT_HARVESTED path=$ORANGEPI_IVC_RAW_CSV samples=100 sha256=$raw_sha256
+BOARD_IDENTITY board_id=fake-rk3588 hostname=orangepi5plus cpu_temp_milli_c=42000
+EOF
+"""
+
 
 def write_fake_board_runner(path: Path) -> None:
     path.write_text(VALID_SMOKE_RUNNER, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def write_fake_ack_loss_runner(path: Path) -> None:
+    path.write_text(VALID_ACK_LOSS_RUNNER, encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -415,7 +479,7 @@ class QemuConfigContractTests(unittest.TestCase):
                 manual["vm_configs"][0] = neural["vm_configs"][0]
                 self.assertEqual(manual, neural)
 
-    def test_board_entrypoint_and_staging_cover_manual_profiles(self) -> None:
+    def test_board_entrypoint_and_staging_cover_all_rootfs_profiles(self) -> None:
         entrypoint = ORANGEPI_RUN_SCRIPT.read_text(encoding="utf-8")
         staging = ORANGEPI_STAGE_SCRIPT.read_text(encoding="utf-8")
 
@@ -423,6 +487,8 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("manual-full", entrypoint)
         self.assertIn("starry-ivc-rootfs-manual-smoke.img", staging)
         self.assertIn("starry-ivc-rootfs-manual.img", staging)
+        self.assertIn("fault-ack-loss", entrypoint)
+        self.assertIn("starry-ivc-rootfs-ack-loss.img", staging)
 
     def test_success_waits_for_complete_linux_result_line(self) -> None:
         with QEMU_CONFIG.open("rb") as source:
@@ -576,6 +642,49 @@ class QemuConfigContractTests(unittest.TestCase):
                     self.assertIn("raw.csv.gz", checksums)
                     self.assertIn("console.log.gz", checksums)
 
+    def test_orangepi_ack_loss_runner_emits_strict_recovery_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            temporary = Path(temporary_dir)
+            runner = temporary / "fake-ack-loss-board-runner"
+            result_dir = temporary / "results"
+            write_fake_ack_loss_runner(runner)
+            environment = {
+                **os.environ,
+                "ORANGEPI_AXVISOR_RUNNER": str(runner),
+                "ORANGEPI_AXVISOR_HOST_ROOT": "PARTUUID=test-root",
+            }
+
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(ORANGEPI_RUN_SCRIPT),
+                    "--profile",
+                    "fault-ack-loss",
+                    "--result-dir",
+                    str(result_dir),
+                ],
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            run_dir = result_dir / "fault-ack-loss" / "run-001"
+            summary = json.loads(
+                (run_dir / "summary.json").read_text(encoding="utf-8")
+            )
+            metadata = json.loads(
+                (run_dir / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["profile"], "ack-loss")
+            self.assertEqual(summary["controller"]["retransmissions"], 20)
+            self.assertEqual(summary["rtos"]["acks_dropped"], 20)
+            self.assertEqual(summary["rtos"]["duplicates"], 20)
+            self.assertEqual(summary["rtos"]["injected_sequences"], list(range(5, 101, 5)))
+            self.assertEqual(metadata["run"]["profile"], "fault-ack-loss")
+
     def test_ack_loss_guest_configs_pin_the_100_command_fault_campaign(self) -> None:
         with LINUX_ACK_LOSS_CONFIG.open("rb") as source:
             linux = tomllib.load(source)
@@ -596,11 +705,16 @@ class QemuConfigContractTests(unittest.TestCase):
 
     def test_ack_loss_build_overlay_is_explicit_and_default_remains_off(self) -> None:
         fault_config = ZEPHYR_ACK_LOSS_CONF.read_text(encoding="utf-8")
+        board_fault_config = ZEPHYR_BOARD_ACK_LOSS_CONF.read_text(encoding="utf-8")
         kconfig = ZEPHYR_KCONFIG.read_text(encoding="utf-8")
         gitignore = ZEPHYR_GITIGNORE.read_text(encoding="utf-8").splitlines()
 
         self.assertIn("CONFIG_IVC_DROP_ACK_EVERY=5", fault_config)
         self.assertIn("CONFIG_IVC_EXPECTED_COMMANDS=100", fault_config)
+        self.assertIn("CONFIG_IVC_DROP_ACK_EVERY=5", board_fault_config)
+        self.assertIn("CONFIG_IVC_EXPECTED_COMMANDS=100", board_fault_config)
+        self.assertIn("CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS=y", board_fault_config)
+        self.assertIn("CONFIG_POWEROFF=y", board_fault_config)
         self.assertRegex(
             kconfig,
             r"(?s)config IVC_DROP_ACK_EVERY.*?default 0",
@@ -610,6 +724,41 @@ class QemuConfigContractTests(unittest.TestCase):
             r"(?s)config IVC_EXPECTED_COMMANDS.*?default 0",
         )
         self.assertIn("/build-ack-loss/", gitignore)
+        self.assertIn("/build-board-ack-loss/", gitignore)
+
+    def test_orangepi_ack_loss_profile_pins_matching_fault_artifacts(self) -> None:
+        paths = (
+            REPOSITORY_ROOT
+            / "competition/ivc/config/axvisor-orangepi-5-plus-ack-loss.toml",
+            REPOSITORY_ROOT
+            / "competition/ivc/config/orangepi-5-plus-starry-smp2-ack-loss.toml",
+            REPOSITORY_ROOT
+            / "competition/ivc/config/orangepi-5-plus-zephyr-ack-loss.toml",
+        )
+        with paths[0].open("rb") as source:
+            build = tomllib.load(source)
+        with paths[1].open("rb") as source:
+            starry = tomllib.load(source)
+        with paths[2].open("rb") as source:
+            zephyr = tomllib.load(source)
+
+        self.assertEqual(
+            build["vm_configs"],
+            [
+                paths[1].relative_to(REPOSITORY_ROOT).as_posix(),
+                paths[2].relative_to(REPOSITORY_ROOT).as_posix(),
+            ],
+        )
+        self.assertEqual(
+            starry["kernel"]["disk_path"],
+            "/home/orangepi/axvisor-guest/starry-ivc-rootfs-ack-loss.img",
+        )
+        self.assertEqual(
+            zephyr["kernel"]["kernel_path"],
+            "../zephyr/build-board-ack-loss/zephyr/zephyr.bin",
+        )
+        self.assertEqual(starry["base"]["phys_cpu_sets"], [0x2, 0x4])
+        self.assertEqual(zephyr["base"]["phys_cpu_sets"], [0x1])
 
 
 if __name__ == "__main__":

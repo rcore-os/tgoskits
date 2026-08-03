@@ -121,9 +121,30 @@ west build -p always -b qemu_cortex_a53 \
   -d <repo>/competition/ivc/zephyr/build-board \
   <repo>/competition/ivc/zephyr -- \
   -DEXTRA_CONF_FILE=board.conf
+
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board-ack-loss \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board-ack-loss.conf
 ```
 
-Use these only with the matching `orangepi-5-plus-zephyr-*.toml` description.
+The third image is the physical 100-command ACK-loss campaign: it drops the
+first ACK for every fifth fresh command and powers off only after all 20
+deterministic retransmissions have been observed. Use these images only with
+the matching `orangepi-5-plus-zephyr-*.toml` description.
+
+After building and staging the matching StarryOS artifacts, run the physical
+campaign from a clean worktree. The wrapper preserves every failed attempt,
+harvests and hashes the raw CSV, validates all 20 injection/recovery pairs, and
+restores board Linux after each repeat:
+
+```sh
+competition/ivc/run-orangepi-5-plus.sh \
+  --profile fault-ack-loss \
+  --repeat 3 \
+  --require-clean \
+  --result-dir competition/results/orangepi-5-plus/<campaign-id>
+```
 The normal QEMU image remains open-ended.
 
 The retained physical build produced:

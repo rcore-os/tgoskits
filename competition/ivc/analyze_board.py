@@ -27,6 +27,9 @@ RTOS_RESULT_PREFIX = "IVC-RTOS-RESULT "
 RTOS_OUTCOME_PREFIX = "IVC-RTOS-OUTCOME "
 RTOS_MESSAGES_PREFIX = "IVC-RTOS-MESSAGES "
 RTOS_POWEROFF_PREFIX = "IVC-RTOS-POWEROFF "
+RTOS_READY_PREFIX = "IVC-RTOS-READY "
+ACK_LOSS_INJECT_PREFIX = "IVC-RTOS-INJECT "
+DUPLICATE_PREFIX = "IVC-RTOS-DUPLICATE "
 STARRY_BOOT_PREFIX = "IVC-STARRY-BOOT "
 STARRY_NETWORK_PREFIX = "IVC-STARRY-NET "
 STARRY_RAW_PREFIX = "IVC-STARRY-RAW "
@@ -55,6 +58,7 @@ RAW_COLUMNS = (
     "status_actuator_permille",
     "error_milli_c",
 )
+RUN_PROFILES = {"normal", "ack-loss"}
 
 
 class AnalysisError(ValueError):
@@ -62,10 +66,16 @@ class AnalysisError(ValueError):
 
 
 def analyze(
-    log_path: Path, expected_count: int, raw_path: Path | None = None
+    log_path: Path,
+    expected_count: int,
+    raw_path: Path | None = None,
+    *,
+    profile: str = "normal",
+    drop_ack_every: int = 0,
 ) -> dict[str, object]:
     if expected_count <= 0:
         raise AnalysisError("expected count must be positive")
+    validate_profile(profile, expected_count, drop_ack_every)
 
     with open_evidence_text(log_path, errors="replace") as source:
         text = ANSI_ESCAPE.sub("", source.read())
@@ -73,9 +83,11 @@ def analyze(
     controller = parse_controller(
         lines,
         expected_count,
+        profile,
+        drop_ack_every,
         console_metrics_required=raw_path is None,
     )
-    rtos = parse_rtos(lines, expected_count)
+    rtos = parse_rtos(lines, expected_count, profile, drop_ack_every)
     starry = parse_starry_boot(lines, expected_count, str(controller["policy"]))
     raw_samples = None
     board = None
@@ -89,7 +101,7 @@ def analyze(
         )
         board = parse_board_identity(lines)
     network = parse_starry_network(lines)
-    block_snapshot = parse_block_snapshot(lines)
+    block_snapshot = parse_block_snapshot(lines, profile)
     require_marker(lines, STARRY_DONE)
     require_marker(lines, SNAPSHOT_SYNCED)
     require_any_marker(
@@ -102,6 +114,7 @@ def analyze(
         "schema_version": 2,
         "platform": "orangepi-5-plus",
         "guest": "starryos",
+        "profile": profile,
         "source_log": {
             "path": str(log_path),
             "sha256": sha256_file(log_path),
@@ -130,6 +143,8 @@ def analyze(
 def parse_controller(
     lines: list[str],
     expected_count: int,
+    profile: str,
+    drop_ack_every: int,
     *,
     console_metrics_required: bool = True,
 ) -> dict[str, object]:
@@ -174,10 +189,17 @@ def parse_controller(
 
     if result["sent"] != expected_count or result["acknowledged"] != expected_count:
         raise AnalysisError("controller sent/acknowledged count does not match expected count")
-    zero_fields = ("errors", "timeouts", "retransmissions", "recoveries")
-    for field in zero_fields:
+    for field in ("errors", "timeouts"):
         if result[field] != 0:
             raise AnalysisError(f"controller {field} must be zero")
+    expected_recoveries = (
+        expected_count // drop_ack_every if profile == "ack-loss" else 0
+    )
+    for field in ("retransmissions", "recoveries"):
+        if result[field] != expected_recoveries:
+            raise AnalysisError(
+                f"controller {field} does not match the deterministic ACK-loss count"
+            )
     if result["success_percent"] != 100.0:
         raise AnalysisError("controller success percentage is not 100")
     if "throughput_msg_s" in result and result["throughput_msg_s"] <= 0:
@@ -270,7 +292,12 @@ def parse_latency_fields(fields: dict[str, str], family: str) -> dict[str, int]:
     }
 
 
-def parse_rtos(lines: list[str], expected_count: int) -> dict[str, object]:
+def parse_rtos(
+    lines: list[str],
+    expected_count: int,
+    profile: str,
+    drop_ack_every: int,
+) -> dict[str, object]:
     outcome = find_record(
         lines,
         RTOS_OUTCOME_PREFIX,
@@ -305,19 +332,156 @@ def parse_rtos(lines: list[str], expected_count: int) -> dict[str, object]:
             messages, "protocol_errors", RTOS_MESSAGES_PREFIX
         ),
     }
-    if result["profile"] != "normal":
-        raise AnalysisError("physical full run must use the normal RTOS profile")
+    if result["profile"] != profile:
+        raise AnalysisError("RTOS profile does not match the selected run profile")
+    if profile == "normal":
+        validate_normal_rtos(lines, result, expected_count)
+    else:
+        validate_ack_loss_rtos(lines, result, expected_count, drop_ack_every)
+
+    poweroff = find_record(lines, RTOS_POWEROFF_PREFIX, ("accepted",))
+    if integer(poweroff, "accepted", RTOS_POWEROFF_PREFIX) != expected_count:
+        raise AnalysisError("RTOS poweroff count does not match expected count")
+    return result
+
+
+def validate_normal_rtos(
+    lines: list[str], result: dict[str, object], expected_count: int
+) -> None:
     for field in ("accepted", "applied", "status_sent", "acks_sent"):
         if result[field] != expected_count:
             raise AnalysisError(f"RTOS {field} does not match expected count")
     for field in ("duplicates", "acks_dropped", "errors_sent", "protocol_errors"):
         if result[field] != 0:
             raise AnalysisError(f"RTOS {field} must be zero")
+    if any(
+        line.startswith((ACK_LOSS_INJECT_PREFIX, DUPLICATE_PREFIX)) for line in lines
+    ):
+        raise AnalysisError("normal run contains ACK-loss evidence markers")
 
-    poweroff = find_record(lines, RTOS_POWEROFF_PREFIX, ("accepted",))
-    if integer(poweroff, "accepted", RTOS_POWEROFF_PREFIX) != expected_count:
-        raise AnalysisError("RTOS poweroff count does not match expected count")
-    return result
+
+def validate_ack_loss_rtos(
+    lines: list[str],
+    result: dict[str, object],
+    expected_count: int,
+    drop_ack_every: int,
+) -> None:
+    ready = find_record(
+        lines,
+        RTOS_READY_PREFIX,
+        ("ack_loss_drop_every", "expected_commands", "exit_after_expected"),
+    )
+    if integer(ready, "ack_loss_drop_every", RTOS_READY_PREFIX) != drop_ack_every:
+        raise AnalysisError("RTOS READY ACK-loss interval does not match the run profile")
+    if integer(ready, "expected_commands", RTOS_READY_PREFIX) != expected_count:
+        raise AnalysisError("RTOS READY command count does not match the run profile")
+    if integer(ready, "exit_after_expected", RTOS_READY_PREFIX) != 1:
+        raise AnalysisError("physical ACK-loss endpoint must power off after completion")
+
+    expected_sequences = list(range(drop_ack_every, expected_count + 1, drop_ack_every))
+    injected_sequences = parse_sequence_records(
+        lines,
+        ACK_LOSS_INJECT_PREFIX,
+        "drop_ack_seq",
+        "injected ACK-loss",
+    )
+    if injected_sequences != expected_sequences:
+        raise AnalysisError(
+            "injected ACK-loss sequence set does not match the deterministic profile"
+        )
+    duplicate_sequences = parse_sequence_records(
+        lines,
+        DUPLICATE_PREFIX,
+        "seq",
+        "duplicate command",
+    )
+    if duplicate_sequences != expected_sequences:
+        raise AnalysisError(
+            "duplicate sequence set does not match the deterministic ACK-loss profile"
+        )
+    validate_ack_loss_marker_order(lines, expected_sequences)
+
+    expected_recoveries = len(expected_sequences)
+    expected_fields = {
+        "accepted": expected_count,
+        "applied": expected_count,
+        "duplicates": expected_recoveries,
+        "acks_dropped": expected_recoveries,
+        "status_sent": expected_count + expected_recoveries,
+        "acks_sent": expected_count,
+        "errors_sent": 0,
+        "protocol_errors": 0,
+    }
+    for field, expected in expected_fields.items():
+        if result[field] != expected:
+            raise AnalysisError(
+                f"RTOS {field}={result[field]} does not match deterministic "
+                f"ACK-loss value {expected}"
+            )
+    result.update(
+        {
+            "drop_ack_every": drop_ack_every,
+            "expected_recoveries": expected_recoveries,
+            "injected_sequences": injected_sequences,
+            "duplicate_sequences": duplicate_sequences,
+        }
+    )
+
+
+def parse_sequence_records(
+    lines: list[str], prefix: str, sequence_field: str, description: str
+) -> list[int]:
+    sequences = [
+        integer(parse_fields(line, prefix), sequence_field, prefix)
+        for line in lines
+        if line.startswith(prefix)
+    ]
+    if len(sequences) != len(set(sequences)):
+        raise AnalysisError(f"{description} records contain duplicate sequence markers")
+    return sequences
+
+
+def validate_ack_loss_marker_order(
+    lines: list[str], expected_sequences: list[int]
+) -> None:
+    ready_indexes = [
+        index for index, line in enumerate(lines) if line.startswith(RTOS_READY_PREFIX)
+    ]
+    outcome_indexes = [
+        index for index, line in enumerate(lines) if line.startswith(RTOS_OUTCOME_PREFIX)
+    ]
+    if len(ready_indexes) != 1:
+        raise AnalysisError("ACK-loss run must contain exactly one RTOS READY record")
+    if not outcome_indexes:
+        raise AnalysisError("ACK-loss run is missing the RTOS outcome record")
+
+    events: list[tuple[str, int, int]] = []
+    for index, line in enumerate(lines):
+        if line.startswith(ACK_LOSS_INJECT_PREFIX):
+            fields = parse_fields(line, ACK_LOSS_INJECT_PREFIX)
+            events.append(
+                (
+                    "inject",
+                    integer(fields, "drop_ack_seq", ACK_LOSS_INJECT_PREFIX),
+                    index,
+                )
+            )
+        elif line.startswith(DUPLICATE_PREFIX):
+            fields = parse_fields(line, DUPLICATE_PREFIX)
+            events.append(
+                ("duplicate", integer(fields, "seq", DUPLICATE_PREFIX), index)
+            )
+    expected_events = [
+        event
+        for sequence in expected_sequences
+        for event in (("inject", sequence), ("duplicate", sequence))
+    ]
+    if [(kind, sequence) for kind, sequence, _ in events] != expected_events:
+        raise AnalysisError("ACK-loss injection and duplicate markers are out of order")
+    if not all(
+        ready_indexes[0] < index < outcome_indexes[0] for _, _, index in events
+    ):
+        raise AnalysisError("ACK-loss markers are outside the READY/result interval")
 
 
 def parse_starry_boot(
@@ -440,7 +604,7 @@ def parse_board_identity(lines: list[str]) -> dict[str, object]:
     }
 
 
-def parse_block_snapshot(lines: list[str]) -> dict[str, object]:
+def parse_block_snapshot(lines: list[str], profile: str) -> dict[str, object]:
     fields = find_record(
         lines,
         BLOCK_SNAPSHOT_PREFIX,
@@ -459,9 +623,10 @@ def parse_block_snapshot(lines: list[str]) -> dict[str, object]:
     legacy_result_path = image_path.startswith(
         "/home/orangepi/"
     ) and image_path.endswith(".result.img")
-    compact_result_path = (
-        re.fullmatch(r"/home/orangepi/ivc-(?:n|ns|m|ms)", image_path) is not None
-    )
+    compact_names = ("a",) if profile == "ack-loss" else ("n", "ns", "m", "ms")
+    compact_result_path = image_path in {
+        f"/home/orangepi/ivc-{name}" for name in compact_names
+    }
     if not legacy_result_path and not compact_result_path:
         raise AnalysisError("BOARD_RESULT_IMAGE_VALIDATED path is not a result image")
     if re.fullmatch(r"[0-9a-f]{64}", image_sha256) is None:
@@ -724,16 +889,37 @@ def open_evidence_text(
     )
 
 
+def validate_profile(profile: str, expected_count: int, drop_ack_every: int) -> None:
+    if profile not in RUN_PROFILES:
+        raise AnalysisError(f"unsupported run profile: {profile}")
+    if profile == "normal":
+        if drop_ack_every != 0:
+            raise AnalysisError("normal profile requires drop-ack-every=0")
+        return
+    if drop_ack_every <= 0:
+        raise AnalysisError("ack-loss profile requires a positive drop-ack-every value")
+    if drop_ack_every > expected_count:
+        raise AnalysisError("ack-loss profile must inject at least one dropped ACK")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
     parser.add_argument("--raw-csv", type=Path, required=True)
     parser.add_argument("--expected-count", type=int, required=True)
+    parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="normal")
+    parser.add_argument("--drop-ack-every", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
 
     try:
-        result = analyze(arguments.log, arguments.expected_count, arguments.raw_csv)
+        result = analyze(
+            arguments.log,
+            arguments.expected_count,
+            arguments.raw_csv,
+            profile=arguments.profile,
+            drop_ack_every=arguments.drop_ack_every,
+        )
         arguments.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

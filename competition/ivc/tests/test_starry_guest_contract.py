@@ -62,6 +62,23 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn("starry-ivc-rootfs-manual.img", script)
         self.assertIn("starry-ivc-rootfs-manual-smoke.img", script)
 
+    def test_starry_build_materializes_a_fresh_raw_kernel(self) -> None:
+        script = STARRY_BUILD.read_text(encoding="utf-8")
+
+        self.assertIn("built_elf=$workspace/target/", script)
+        self.assertIn(
+            'rustup run "$toolchain" llvm-objcopy --strip-all -O binary',
+            script,
+        )
+        self.assertLess(
+            script.index("xtask starry build"),
+            script.index("llvm-objcopy --strip-all -O binary"),
+        )
+        self.assertLess(
+            script.index("llvm-objcopy --strip-all -O binary"),
+            script.index('install -m 0644 "$built_kernel"'),
+        )
+
     def test_manual_guests_only_change_identity_and_rootfs_policy_image(self) -> None:
         for neural_path, manual_path, manual_image in ORANGEPI_STARRY_MANUAL_CONFIGS:
             with self.subTest(config=manual_path.name):

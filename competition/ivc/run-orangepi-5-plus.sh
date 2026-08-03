@@ -10,10 +10,10 @@ metadata_writer=$script_dir/write_board_metadata.py
 
 usage() {
     cat <<EOF
-Usage: $0 [smoke|full|manual-smoke|manual-full] [options]
+Usage: $0 [smoke|full|manual-smoke|manual-full|fault-ack-loss] [options]
 
 Options:
-  --profile <name>        Select smoke, full, manual-smoke, or manual-full.
+  --profile <name>        Select a normal/manual run or the ACK-loss campaign.
   --repeat <count>        Run the selected profile repeatedly (default: 1).
   --board <type>          Select the board service type.
   --result-dir <path>     Store structured run results below this directory.
@@ -94,6 +94,8 @@ while (($# > 0)); do
     esac
 done
 
+analyzer_profile=normal
+drop_ack_every=0
 case "$profile" in
     smoke)
         build_config=competition/ivc/config/axvisor-orangepi-5-plus-smoke.toml
@@ -130,6 +132,17 @@ case "$profile" in
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-manual.img
         result_image_name=ivc-m
+        ;;
+    fault-ack-loss)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-ack-loss.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-ack-loss.toml
+        expected_count=100
+        model_id=thermal-4x6x1-v1
+        inference_backend=native
+        guest_image_name=starry-ivc-rootfs-ack-loss.img
+        result_image_name=ivc-a
+        analyzer_profile=ack-loss
+        drop_ack_every=5
         ;;
     *)
         echo "Unsupported Orange Pi profile: $profile" >&2
@@ -278,6 +291,8 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
             "$console_gzip" \
             --raw-csv "$raw_csv_gzip" \
             --expected-count "$expected_count" \
+            --profile "$analyzer_profile" \
+            --drop-ack-every "$drop_ack_every" \
             --output "$summary_path"
         analysis_status=$?
         set -e

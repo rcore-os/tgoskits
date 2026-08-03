@@ -95,6 +95,41 @@ class BoardAnalysisTests(unittest.TestCase):
         digest = hashlib.sha256(raw_csv.encode()).hexdigest()
         return RAW_LOG_TEMPLATE.format(raw_sha256=digest)
 
+    def ack_loss_log(self, raw_csv: str = RAW_CSV) -> str:
+        normal_outcome = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=normal "
+            "accepted=4 applied=4 duplicates=0 acks_dropped=0\n"
+        )
+        fault_outcome = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-READY "
+            "bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 "
+            "ack_loss_drop_every=2 expected_commands=4 exit_after_expected=1\n"
+            "[guest-console:pl011-zephyr] IVC-RTOS-INJECT drop_ack_seq=2\n"
+            "[guest-console:pl011-zephyr] IVC-RTOS-DUPLICATE "
+            "seq=2 next_expected=3 duplicates=1\n"
+            "[guest-console:pl011-zephyr] IVC-RTOS-INJECT drop_ack_seq=4\n"
+            "[guest-console:pl011-zephyr] IVC-RTOS-DUPLICATE "
+            "seq=4 next_expected=5 duplicates=2\n"
+            "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=ack-loss "
+            "accepted=4 applied=4 duplicates=2 acks_dropped=2\n"
+        )
+        return (
+            self.raw_log(raw_csv)
+            .replace(
+                "IVC-CONTROLLER-RELIABILITY retransmissions=0 recoveries=0",
+                "IVC-CONTROLLER-RELIABILITY retransmissions=2 recoveries=2",
+            )
+            .replace(normal_outcome, fault_outcome)
+            .replace(
+                "IVC-RTOS-MESSAGES status_sent=4 acks_sent=4",
+                "IVC-RTOS-MESSAGES status_sent=6 acks_sent=4",
+            )
+            .replace(
+                "/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img",
+                "/home/orangepi/ivc-a",
+            )
+        )
+
     def test_compact_records_survive_a_corrupted_legacy_result(self) -> None:
         result = analyzer.analyze(self.write_log(VALID_LOG), 1_800)
 
@@ -284,6 +319,53 @@ class BoardAnalysisTests(unittest.TestCase):
             result["raw_samples"]["sha256"],
             hashlib.sha256(RAW_CSV.encode()).hexdigest(),
         )
+
+    def test_ack_loss_capture_cross_checks_every_injected_recovery(self) -> None:
+        result = analyzer.analyze(
+            self.write_log(self.ack_loss_log()),
+            4,
+            self.write_raw_csv(),
+            profile="ack-loss",
+            drop_ack_every=2,
+        )
+
+        self.assertEqual(result["profile"], "ack-loss")
+        self.assertEqual(result["controller"]["retransmissions"], 2)
+        self.assertEqual(result["controller"]["recoveries"], 2)
+        self.assertEqual(result["rtos"]["injected_sequences"], [2, 4])
+        self.assertEqual(result["rtos"]["duplicate_sequences"], [2, 4])
+        self.assertEqual(result["rtos"]["status_sent"], 6)
+        self.assertEqual(
+            result["lifecycle"]["block_snapshot"]["image_path"],
+            "/home/orangepi/ivc-a",
+        )
+
+    def test_ack_loss_capture_rejects_a_missing_injection_marker(self) -> None:
+        log = self.ack_loss_log().replace(
+            "[guest-console:pl011-zephyr] IVC-RTOS-INJECT drop_ack_seq=4\n",
+            "",
+        )
+
+        with self.assertRaisesRegex(
+            analyzer.AnalysisError, "injected ACK-loss sequence set"
+        ):
+            analyzer.analyze(
+                self.write_log(log),
+                4,
+                self.write_raw_csv(),
+                profile="ack-loss",
+                drop_ack_every=2,
+            )
+
+    def test_normal_capture_rejects_ack_loss_markers(self) -> None:
+        log = self.raw_log().replace(
+            "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME",
+            "[guest-console:pl011-zephyr] IVC-RTOS-INJECT drop_ack_seq=2\n"
+            "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME",
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "ACK-loss evidence"):
+            analyzer.analyze(self.write_log(log), 4, self.write_raw_csv())
 
 
 if __name__ == "__main__":
