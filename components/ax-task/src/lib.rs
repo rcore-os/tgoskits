@@ -19,6 +19,8 @@ mod facade;
 pub mod inbox;
 mod irq_wait;
 mod lock;
+#[cfg(any(feature = "qperf-metrics", test))]
+mod metrics;
 mod reclaim;
 pub mod runtime;
 mod scheduler;
@@ -33,6 +35,8 @@ pub use config::*;
 pub use error::*;
 pub use facade::*;
 pub use irq_wait::*;
+#[cfg(feature = "qperf-metrics")]
+pub use metrics::{QperfSchedulerMetricsSnapshot, qperf_scheduler_metrics_snapshot};
 pub use scheduler::*;
 pub use system::*;
 pub use thread::*;

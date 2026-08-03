@@ -79,7 +79,13 @@ pub use runtime_impl::{SchedSwitchTraceHook, install_sched_switch_trace_hook};
 use scheduler_events::SchedulerIpiDoorbell;
 #[cfg(all(test, not(any(feature = "ipi", feature = "wake-ipi"))))]
 use scheduler_events::publish_then_notify_scheduler_ipi;
+#[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
+use scheduler_events::record_scheduler_ipi_send;
 pub use scheduler_events::timer_irq_count;
+#[cfg(feature = "qperf-metrics")]
+pub use scheduler_events::{
+    QperfRuntimeSchedulerMetricsSnapshot, qperf_runtime_scheduler_metrics_snapshot,
+};
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(crate) use scheduler_events::{
     consume_scheduler_ipi_doorbell, current_scheduler_ipi_doorbell_pending,

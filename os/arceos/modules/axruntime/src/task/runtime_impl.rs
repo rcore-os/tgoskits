@@ -240,6 +240,8 @@ impl_task_runtime! {
                 publish_then_notify_scheduler_ipi(
                     || publish_scheduler_ipi_doorbell(cpu_id),
                     || {
+                        #[cfg(feature = "qperf-metrics")]
+                        record_scheduler_ipi_send();
                         ax_hal::irq::send_ipi(
                             ax_hal::irq::ipi_irq(),
                             ax_hal::irq::IpiTarget::Other { cpu_id },

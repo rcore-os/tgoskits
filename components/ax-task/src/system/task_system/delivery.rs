@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConsumedWakePlacement {
+    OwnerRunQueue,
+    MigrationHandoff,
+}
+
 impl TaskSystem {
     /// Enqueues a ready thread on an affinity-compatible owner CPU.
     pub fn enqueue(
@@ -129,6 +135,8 @@ impl TaskSystem {
             let batch = remote.remote_wake_inbox().drain(limit, buffer);
             (batch.drained(), batch.pending())
         };
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_remote_wake_drain(drained);
         let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
         detached[..drained].copy_from_slice(&cpu.drain_state().remote_wake_buffer[..drained]);
         let mut messages =
@@ -169,7 +177,7 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<(), TaskError> {
         if Self::consume_owner_task_wake(&core)? {
-            self.place_consumed_owner_wake(cpu.as_mut(), core, now_ns)?;
+            let _placement = self.place_consumed_owner_wake(cpu.as_mut(), core, now_ns)?;
         }
         Self::program_local_timer(cpu, now_ns)
     }
@@ -183,7 +191,19 @@ impl TaskSystem {
         if !Self::consume_owner_wake(&core)? {
             return Ok(());
         }
-        self.place_consumed_owner_wake(cpu, core, now_ns)
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_remote_wake_activation();
+        let _placement = self.place_consumed_owner_wake(cpu, core, now_ns)?;
+        #[cfg(feature = "qperf-metrics")]
+        match _placement {
+            ConsumedWakePlacement::OwnerRunQueue => {
+                crate::metrics::record_remote_wake_owner_enqueue();
+            }
+            ConsumedWakePlacement::MigrationHandoff => {
+                crate::metrics::record_remote_wake_migration_handoff();
+            }
+        }
+        Ok(())
     }
 
     fn place_consumed_owner_wake(
@@ -191,11 +211,12 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         core: Arc<ThreadCore>,
         now_ns: u64,
-    ) -> Result<(), TaskError> {
+    ) -> Result<ConsumedWakePlacement, TaskError> {
         let owner = cpu.owner();
         let target = core.target_cpu().unwrap_or(owner);
         if target == owner {
-            return self.enqueue_owner_thread(cpu, core, now_ns, EnqueueReason::Wake);
+            self.enqueue_owner_thread(cpu, core, now_ns, EnqueueReason::Wake)?;
+            return Ok(ConsumedWakePlacement::OwnerRunQueue);
         }
 
         // Affinity may change after a producer selected this CPU. The old
@@ -206,7 +227,8 @@ impl TaskSystem {
             .lock()
             .placement
             .set_migration_target(Some(target))?;
-        self.publish_owner_migration(&core, target, owner, target)
+        self.publish_owner_migration(&core, target, owner, target)?;
+        Ok(ConsumedWakePlacement::MigrationHandoff)
     }
 
     /// Reconciles task metadata written by a remote affinity setter with the
