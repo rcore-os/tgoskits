@@ -1,5 +1,139 @@
 use super::*;
 
+/// Result of beginning an externally queued current-thread park transaction.
+///
+/// OS wait subsystems use this after validating their condition under their own
+/// queue lock. The scheduler still owns the generation, deadline, and context
+/// switch transaction; callers own only publication and removal of their
+/// domain-specific waiter record.
+#[derive(Debug)]
+pub enum CurrentParkStart {
+    /// A preceding wake was consumed, so no waiter may be published for this attempt.
+    Notified,
+    /// The current thread entered `Parking` and must be committed or cancelled.
+    Prepared(PreparedCurrentPark),
+}
+
+/// Move-only ownership of one prepared current-thread park transaction.
+#[must_use = "a prepared current-thread park must be committed or cancelled"]
+#[derive(Debug)]
+pub struct PreparedCurrentPark {
+    thread: ThreadHandle,
+    ticket: Option<crate::ParkTicket>,
+}
+
+/// Terminal scheduler information returned after a prepared park resumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CurrentParkResume {
+    generation: u64,
+    deadline_expired: bool,
+}
+
+impl CurrentParkResume {
+    /// Returns the scheduler park generation completed by this transaction.
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    /// Reports whether an armed task deadline physically expired before cleanup.
+    pub const fn deadline_expired(self) -> bool {
+        self.deadline_expired
+    }
+}
+
+impl PreparedCurrentPark {
+    /// Returns the generation-bearing scheduler identity being parked.
+    pub fn thread_id(&self) -> ThreadId {
+        self.thread.id()
+    }
+
+    /// Returns this park attempt's monotonically increasing generation.
+    pub fn generation(&self) -> u64 {
+        self.ticket()
+            .expect("prepared park ticket remains owned")
+            .generation()
+    }
+
+    /// Arms an absolute task deadline measured in runtime monotonic nanoseconds.
+    pub fn arm_deadline(&mut self, deadline_ns: u64) -> Result<(), TaskError> {
+        let thread = self.thread.clone();
+        let ticket = self
+            .ticket
+            .as_mut()
+            .expect("prepared park ticket remains owned");
+        arm_current_park_deadline(&thread, ticket, deadline_ns)
+    }
+
+    /// Commits the scheduler park and returns after this thread is runnable again.
+    pub fn commit(mut self) -> Result<CurrentParkResume, TaskError> {
+        let mut ticket = self
+            .ticket
+            .take()
+            .expect("prepared park ticket remains owned");
+        let generation = ticket.generation();
+        let deadline_armed = ticket.has_deadline();
+        if let Err(error) = commit_current_park(&mut ticket) {
+            let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
+            if cancel_current_park(&mut ticket).is_err() {
+                task_runtime::fatal_invariant(0x5041_0002, self.thread.id().as_u64() as usize);
+            }
+            let _cancelled = deadline_result?;
+            return Err(error);
+        }
+        let deadline_cancelled = cancel_current_park_deadline(&self.thread, &mut ticket)?;
+        Ok(CurrentParkResume {
+            generation,
+            deadline_expired: deadline_armed && !deadline_cancelled,
+        })
+    }
+
+    /// Cancels this transaction without blocking the current thread.
+    pub fn cancel(mut self) -> Result<(), TaskError> {
+        let mut ticket = self
+            .ticket
+            .take()
+            .expect("prepared park ticket remains owned");
+        let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
+        let park_result = cancel_current_park(&mut ticket);
+        let _cancelled = deadline_result?;
+        park_result
+    }
+
+    fn ticket(&self) -> Option<&crate::ParkTicket> {
+        self.ticket.as_ref()
+    }
+}
+
+impl Drop for PreparedCurrentPark {
+    fn drop(&mut self) {
+        if self
+            .ticket
+            .as_ref()
+            .is_some_and(|ticket| !ticket.is_resolved())
+        {
+            task_runtime::fatal_invariant(0x5041_0003, self.thread.id().as_u64() as usize);
+        }
+    }
+}
+
+/// Begins a scheduler-owned park transaction for an OS-owned waiter queue.
+///
+/// The caller must serialize its condition check and waiter publication so a
+/// selecting producer either observes the waiter or leaves the scheduler's
+/// sticky wake-before-park notification. This function is bounded and does not
+/// sleep, allocate, or invoke OS callbacks.
+pub fn begin_current_park() -> Result<CurrentParkStart, TaskError> {
+    let permit = acquire_blocking_permit()?;
+    let thread = current_thread_handle()?;
+    match prepare_current_park(&permit)? {
+        ParkPrepare::Notified => Ok(CurrentParkStart::Notified),
+        ParkPrepare::Prepared(ticket) => Ok(CurrentParkStart::Prepared(PreparedCurrentPark {
+            thread,
+            ticket: Some(ticket),
+        })),
+    }
+}
+
 /// Performs one bounded task-clockevent pass without allocation or callbacks.
 pub fn on_clock_event(now_ns: u64, budget: usize) -> Result<TaskClockEventOutcome, TaskError> {
     on_clock_event_with_scheduler_tick(now_ns, budget, false)

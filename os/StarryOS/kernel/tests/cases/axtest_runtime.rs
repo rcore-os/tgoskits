@@ -97,6 +97,16 @@ fn futex_empty_wake_op_avoids_entry_allocation() {
 }
 
 #[axtest]
+fn futex_false_wait_condition_avoids_waiter_allocation() {
+    ax_assert!(axtest_exports::futex_false_wait_condition_avoids_waiter_allocation());
+}
+
+#[axtest]
+fn futex_park_prepare_error_cleans_waiter() {
+    ax_assert!(axtest_exports::futex_park_prepare_error_cleans_waiter());
+}
+
+#[axtest]
 fn futex_wake_completion_is_scheduler_driven() {
     ax_assert!(axtest_exports::futex_wake_completion_is_scheduler_driven());
 }

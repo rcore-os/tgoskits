@@ -222,6 +222,11 @@ impl UserTaskRef {
         }
     }
 
+    /// Consumes one pending interruption from a synchronous user wait.
+    pub(crate) fn take_interrupt(&self) -> bool {
+        self.as_thread().take_interrupt()
+    }
+
     /// Tests whether an interruption remains pending.
     pub fn interrupted(&self) -> bool {
         self.as_thread().interrupted()

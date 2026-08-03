@@ -27,7 +27,8 @@ mod scheduling;
 mod task_work;
 
 pub use deadline::{
-    TaskClockEventOutcome, on_clock_event, on_clock_event_with_scheduler_tick,
+    CurrentParkResume, CurrentParkStart, PreparedCurrentPark, TaskClockEventOutcome,
+    begin_current_park, on_clock_event, on_clock_event_with_scheduler_tick,
     take_current_expired_task_deadlines,
 };
 pub(crate) use deadline::{

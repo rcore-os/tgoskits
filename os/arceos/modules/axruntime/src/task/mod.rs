@@ -12,13 +12,14 @@ use ax_kernel_guard::IrqSave;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
-    CpuId, CpuSet, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult, IrqWaitCell,
-    IrqWaitDrain, IrqWaitRegistration, IrqWaitToken, Nice, RtPriority, SchedulePolicy,
-    SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWorkDisposition, SwitchReason,
-    TaskError, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadState,
-    ThreadWakeHandle, WaitQueue, WakeResult, cpu_busy_runtime_ns, current_cpu_needs_resched,
-    current_thread_extension, current_thread_handle, current_thread_id, executor::LocalExecutor,
-    exit_current_thread, quiesce_irq_wait, runtime::SchedSwitchRecord, schedule_current_cpu,
+    CpuId, CpuSet, CurrentParkResume, CurrentParkStart, DeadlineFlags, DeadlinePolicy, FairMode,
+    IrqRegisterResult, IrqWaitCell, IrqWaitDrain, IrqWaitRegistration, IrqWaitToken, Nice,
+    PreparedCurrentPark, RtPriority, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork,
+    SchedulerTickWorkDisposition, SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps,
+    ThreadHandle, ThreadId, ThreadState, ThreadWakeHandle, WaitQueue, WakeResult,
+    begin_current_park, cpu_busy_runtime_ns, current_cpu_needs_resched, current_thread_extension,
+    current_thread_handle, current_thread_id, executor::LocalExecutor, exit_current_thread,
+    quiesce_irq_wait, runtime::SchedSwitchRecord, schedule_current_cpu,
     set_current_thread_affinity, set_thread_affinity, set_thread_affinity_and_wait,
     set_thread_policy, sleep, sleep_until, thread_affinity, thread_handle, thread_policy,
     thread_round_robin_interval_ns, thread_runtime, validate_blocking_context, yield_current_cpu,
