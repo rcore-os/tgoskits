@@ -318,9 +318,13 @@ impl AddrSpace {
         if let Some(area) = self.areas.find(vaddr) {
             let orig_flags = area.flags();
             if orig_flags.contains(access_flags) {
-                return area
+                let handled = area
                     .backend()
                     .handle_page_fault(vaddr, orig_flags, &mut self.pt);
+                if handled {
+                    ax_hal::cache::update_mmu_cache(vaddr);
+                }
+                return handled;
             }
         }
         false

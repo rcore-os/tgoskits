@@ -655,7 +655,11 @@ impl AddrSpace {
         match self.mutate_with_tlb_gather(&[], |aspace| {
             aspace.handle_page_fault_inner(vaddr, access_flags)
         }) {
-            Ok(handled) => handled,
+            Ok(true) => {
+                ax_runtime::hal::cache::update_mmu_cache(vaddr);
+                true
+            }
+            Ok(false) => false,
             Err(error) => {
                 warn!("Failed to finish page-fault TLB transaction: {error}");
                 false
