@@ -18,8 +18,6 @@ use std::{collections::BTreeMap, string::ToString};
 
 #[cfg(feature = "fs")]
 use anyhow::{Context, Result, bail};
-#[cfg(all(feature = "fs", feature = "rt-trace"))]
-use std::io::Seek;
 #[cfg(feature = "fs")]
 use std::{
     fs::{self, File},
@@ -148,21 +146,16 @@ fn persist_host_rt_trace(
     output_path: &str,
     trace: &axvm::rt_trace::HostRtTraceSnapshot,
 ) -> Result<usize> {
-    let temporary_path = String::from(output_path) + ".new";
-    let result = (|| -> Result<usize> {
-        let mut output = File::create(&temporary_path)?;
-        write_host_rt_trace(&mut output, trace)?;
-        output.flush()?;
-        let bytes = output.stream_position()? as usize;
-        drop(output);
-        fs::rename(&temporary_path, output_path)?;
-        Ok(bytes)
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
+    // Formatting directly into an ArceOS file turns every `write_fmt` fragment
+    // into a small ext4 write. Large formal traces can then spend minutes in
+    // writeback and leave only an allocated, zero-filled `.new` file after a
+    // forced recovery. Serialize in memory first so persistent I/O follows the
+    // same bounded, explicitly synced path as the block snapshot.
+    let mut serialized = Vec::new();
+    write_host_rt_trace(&mut serialized, trace)?;
+    let bytes = serialized.len();
+    persist_bytes_atomically(output_path, &serialized)?;
+    Ok(bytes)
 }
 
 #[cfg(all(feature = "fs", feature = "rt-trace"))]
@@ -266,16 +259,21 @@ fn parse_snapshot_request(cmd: &ParsedCommand) -> Result<SnapshotRequest<'_>> {
 
 #[cfg(feature = "fs")]
 fn persist_block_snapshot(output_path: &str, snapshot: &[u8]) -> Result<()> {
+    persist_bytes_atomically(output_path, snapshot)
+}
+
+#[cfg(feature = "fs")]
+fn persist_bytes_atomically(output_path: &str, contents: &[u8]) -> Result<()> {
     let temporary_path = String::from(output_path) + ".new";
     let result = (|| -> Result<()> {
         let mut output = File::create(&temporary_path)?;
-        for chunk in snapshot.chunks(SNAPSHOT_WRITE_CHUNK_BYTES) {
+        for chunk in contents.chunks(SNAPSHOT_WRITE_CHUNK_BYTES) {
             output.write_all(chunk)?;
-            axvm::sync_host_filesystems().context("sync snapshot chunk to host storage")?;
+            axvm::sync_host_filesystems().context("sync persisted chunk to host storage")?;
         }
         drop(output);
         fs::rename(&temporary_path, output_path)?;
-        axvm::sync_host_filesystems().context("sync snapshot rename to host storage")
+        axvm::sync_host_filesystems().context("sync persisted rename to host storage")
     })();
 
     if result.is_err() {

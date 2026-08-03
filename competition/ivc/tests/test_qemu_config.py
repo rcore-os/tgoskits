@@ -364,7 +364,7 @@ class QemuConfigContractTests(unittest.TestCase):
             ),
         )
 
-    def test_axvisor_snapshot_writer_syncs_bounded_chunks(self) -> None:
+    def test_axvisor_persistence_writer_syncs_bounded_chunks(self) -> None:
         source = AXVISOR_SHELL_HOST.read_text(encoding="utf-8")
 
         chunk_match = re.search(
@@ -380,14 +380,28 @@ class QemuConfigContractTests(unittest.TestCase):
             chunk_bytes *= factor
         self.assertGreater(chunk_bytes, 0)
         self.assertLessEqual(chunk_bytes, 1024 * 1024)
+        self.assertIn("persist_bytes_atomically(output_path, snapshot)", source)
         self.assertRegex(
             source,
             re.compile(
-                r"for chunk in snapshot\.chunks\(SNAPSHOT_WRITE_CHUNK_BYTES\).*?"
+                r"for chunk in contents\.chunks\(SNAPSHOT_WRITE_CHUNK_BYTES\).*?"
                 r"write_all\(chunk\).*?sync_host_filesystems\(\)",
                 re.DOTALL,
             ),
         )
+
+    def test_axvisor_host_trace_uses_bounded_persistence(self) -> None:
+        source = AXVISOR_SHELL_HOST.read_text(encoding="utf-8")
+        trace_flow = source.split("fn persist_host_rt_trace", maxsplit=1)[1].split(
+            "fn write_host_rt_trace", maxsplit=1
+        )[0]
+
+        self.assertIn("let mut serialized = Vec::new()", trace_flow)
+        self.assertIn("write_host_rt_trace(&mut serialized, trace)?", trace_flow)
+        self.assertIn(
+            "persist_bytes_atomically(output_path, &serialized)?", trace_flow
+        )
+        self.assertNotIn("write_host_rt_trace(&mut output, trace)?", trace_flow)
 
     def test_manual_build_configs_only_select_the_manual_starry_guest(self) -> None:
         for neural_path, manual_path, manual_guest in ORANGEPI_MANUAL_BUILD_CONFIGS:
