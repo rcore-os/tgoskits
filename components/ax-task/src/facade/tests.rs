@@ -159,6 +159,26 @@ mod tests {
     }
 
     #[test]
+    fn os_waiter_park_transaction_restores_running_on_cancel() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        let CurrentParkStart::Prepared(park) = begin_current_park().unwrap() else {
+            panic!("fresh OS waiter park must publish Parking");
+        };
+        assert_eq!(park.thread_id(), running.id());
+        assert_eq!(system.thread_state(running.id()).unwrap(), crate::ThreadState::Parking);
+
+        park.cancel().unwrap();
+        assert_eq!(system.thread_state(running.id()).unwrap(), crate::ThreadState::Running);
+    }
+
+    #[test]
     fn scheduler_safe_point_does_not_scan_an_idle_deadline_queue() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

@@ -349,17 +349,21 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 | 内核 | 中位 handoff | 最小 | 最大 |
 | --- | ---: | ---: | ---: |
 | Linux v7.1 `CONFIG_PREEMPT_RT=y` | 13,908 ns | 9,370 ns | 24,810 ns |
-| 当前 StarryOS | 221,878 ns | 136,991 ns | 250,738 ns |
+| StarryOS 临时 executor 路径 | 221,878 ns | 136,991 ns | 250,738 ns |
+| StarryOS 调度器直接 park 路径 | 138,786 ns | 103,820 ns | 170,209 ns |
 
-当前 StarryOS 是 Linux RT 的约 15.95 倍，尚未达到接受目标。这个结果只比较
-同一宿主机上的完整 guest 调用路径，不把 TCG 时间解释成硬件周期或实时延迟
-上界。
+调度器直接 park 相比临时 executor 路径缩短约 37.4%，但当前 StarryOS 仍是
+Linux RT 的约 9.98 倍，尚未达到接受目标。这个结果只比较同一宿主机上的完整
+guest 调用路径，不把 TCG 时间解释成硬件周期或实时延迟上界。
 
-源码审计显示，Starry 每次 `FUTEX_WAIT` 都创建并销毁临时 `LocalExecutor` 和
-`WaitQueue`，实际入队还分配 `Arc<WaiterState>`；wake 侧分配 `Vec<Waker>`。
-Linux v7.1 使用当前任务和栈上 `futex_q`/`wake_q`，不会为每次 wait 构造 executor。
-这些差异必须先用稳态分配计数和生命周期计数形成确定性红测，再进行破坏性内部
-接口重构，不能仅凭 TCG 时间直接删路径。
+首个确定性红测证明，旧实现即使发现 futex 值已经不匹配，仍会分配
+`WaiterState`。当前实现已经让调度线程通过 move-only park transaction 直接
+进入 `ax-task`，不再为每次 `FUTEX_WAIT` 创建临时 `LocalExecutor`、`WaitQueue`
+和 coroutine；同一红测由失败转为通过。仍未消除的热路径成本包括每次 wait 的
+`Arc<WaiterState>`、wake 侧 `Vec<ThreadWakeHandle>` 和按 key 动态创建的
+`FutexEntry`。Linux v7.1 使用当前任务和栈上 `futex_q`/`wake_q`；下一阶段应把
+waiter 生命周期收敛为线程拥有的 generation 状态，并把 wake 收集改为有界批次，
+继续用分配与状态机红测约束，而不是只凭 TCG 时间直接删路径。
 
 qperf leaf 采样已能定位 CPU-local、guard、remote wake 和 schedule 小热点。完整
 FP 模式原先会覆盖内核链接 rustflags，postprocess 也无法转发 `-cpu`；两项已由
