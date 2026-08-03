@@ -1830,6 +1830,27 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
             );
+            kernel.add(
+                "hostname",
+                SimpleFile::new_regular(fs.clone(), || {
+                    let nodename = {
+                        let task = current();
+                        let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                        let uts_namespace = nsproxy.uts_ns.lock();
+                        uts_namespace.nodename
+                    };
+                    let name_len = nodename
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .unwrap_or(nodename.len());
+                    let mut output = Vec::with_capacity(name_len + 1);
+                    for byte in &nodename[..name_len] {
+                        output.push(byte.to_ne_bytes()[0]);
+                    }
+                    output.push(b'\n');
+                    Ok(output)
+                }),
+            );
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
             // `perf_event_paranoid` gates how much unprivileged users may
