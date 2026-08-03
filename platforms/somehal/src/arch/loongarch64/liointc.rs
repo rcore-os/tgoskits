@@ -8,7 +8,7 @@ use rdrive::{
 
 use super::{
     irq_common::fdt_first_cell_vector,
-    liointc_fast_path::{LIOINTC_PARENT_COUNT, LIOINTC_VECTOR_COUNT, LioIntcFastPath, REG_DISABLE},
+    liointc_cpu_interface::{LIOINTC_PARENT_COUNT, LIOINTC_VECTOR_COUNT, LioIntcCpuInterface},
 };
 use crate::{common::ioremap, setup::MmioRaw};
 
@@ -18,6 +18,8 @@ const DEFAULT_LIOINTC_ISR_PADDR: usize = 0x1fe0_1040;
 const DEFAULT_LIOINTC_ISR_SIZE: usize = 0x10;
 const DEFAULT_CASCADE_IRQ: usize = 2;
 const ROUTE_BASE: usize = 0x00;
+const REG_ENABLE: usize = 0x28;
+const REG_DISABLE: usize = 0x2c;
 const REG_POLARITY: usize = 0x30;
 const REG_EDGE: usize = 0x34;
 
@@ -28,7 +30,7 @@ const ROUTE_INT_COUNT: usize = 4;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static CASCADE_IRQ_MASK: AtomicUsize = AtomicUsize::new(0);
-static FAST_PATH: StaticCell<LioIntcFastPath> = StaticCell::uninit();
+static CPU_IF: StaticCell<LioIntcCpuInterface> = StaticCell::uninit();
 
 module_driver!(
     name: "Loongson LS2K1000 LIOINTC",
@@ -53,13 +55,13 @@ pub fn is_cascade_irq(irq: usize) -> bool {
 pub fn claim_irq(raw: usize) -> Option<crate::irq::IrqId> {
     REGISTERED
         .load(Ordering::Acquire)
-        .then(|| FAST_PATH.claim_irq(raw))
+        .then(|| CPU_IF.claim_irq(raw))
         .flatten()
 }
 
 pub fn complete_irq(irq: crate::irq::IrqId) {
     if REGISTERED.load(Ordering::Acquire) {
-        FAST_PATH.complete_irq(irq);
+        CPU_IF.complete_irq(irq);
     }
 }
 
@@ -122,7 +124,7 @@ fn register_liointc(
 ) -> Result<(), OnProbeError> {
     let regs = map_liointc_mmio(mmio.regs.addr, mmio.regs.size, "register")?;
     let isr = map_liointc_mmio(mmio.isr.addr, mmio.isr.size, "ISR")?;
-    let intc = LioIntc::new(regs, isr, parent_irqs, parent_int_map);
+    let intc = LioIntc::new(regs, parent_irqs, parent_int_map);
     intc.init();
     let reg_addr = mmio.regs.addr;
     let isr_addr = mmio.isr.addr;
@@ -132,7 +134,7 @@ fn register_liointc(
          parent_irqs={:?}, parent_int_map={:#x?}, inputs={}",
         node_name,
         intc.regs.as_ptr() as usize,
-        intc.isr.as_ptr() as usize,
+        isr.as_ptr() as usize,
         intc.parent_irqs,
         intc.parent_int_map,
         LIOINTC_VECTOR_COUNT,
@@ -145,16 +147,11 @@ fn register_liointc(
     .map_err(|err| OnProbeError::other(format!("failed to register LIOINTC domain: {err:?}")))?;
     let cascade_mask = intc.cascade_irq_mask();
     let cascade_irqs = intc.parent_irqs;
-    FAST_PATH.init(LioIntcFastPath::new(
-        domain,
-        intc.regs.clone(),
-        intc.isr.clone(),
-        cascade_irqs,
-    ));
+    CPU_IF.init(LioIntcCpuInterface::new(domain, isr, cascade_irqs));
     dev.register(rdif_intc::Intc::new(domain, intc));
     CASCADE_IRQ_MASK.fetch_or(cascade_mask, Ordering::AcqRel);
-    // Publish every fast-path field before claim/complete can observe it. The
-    // parent cascade remains disabled until after this release store.
+    // Publish the dedicated CPU interface before hard IRQ claim/complete can
+    // observe it. The parent cascade remains disabled until afterwards.
     REGISTERED.store(true, Ordering::Release);
     for cascade_irq in cascade_irqs.into_iter().flatten() {
         someboot::irq::irq_set_enable(someboot::irq::IrqId::new(cascade_irq), true);
@@ -239,7 +236,6 @@ fn route_int_bit(parent_index: usize) -> u8 {
 
 struct LioIntc {
     regs: MmioRaw,
-    isr: MmioRaw,
     parent_irqs: [Option<usize>; LIOINTC_PARENT_COUNT],
     parent_int_map: [u32; LIOINTC_PARENT_COUNT],
 }
@@ -247,13 +243,11 @@ struct LioIntc {
 impl LioIntc {
     fn new(
         regs: MmioRaw,
-        isr: MmioRaw,
         parent_irqs: [Option<usize>; LIOINTC_PARENT_COUNT],
         parent_int_map: [u32; LIOINTC_PARENT_COUNT],
     ) -> Self {
         Self {
             regs,
-            isr,
             parent_irqs,
             parent_int_map,
         }
@@ -352,7 +346,14 @@ impl Interface for LioIntc {
         if !self.contains_input(input, if enabled { "enable" } else { "disable" }) {
             return Err(rdif_intc::IrqError::InvalidIrq);
         }
-        FAST_PATH.set_enabled(input, enabled);
+        let mask = 1u32 << input;
+        if enabled {
+            self.write_reg_u32(REG_ENABLE, mask);
+            CPU_IF.publish_enabled(input);
+        } else {
+            CPU_IF.hide_disabled(input);
+            self.write_reg_u32(REG_DISABLE, mask);
+        }
         Ok(())
     }
 }

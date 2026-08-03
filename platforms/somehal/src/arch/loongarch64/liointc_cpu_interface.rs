@@ -1,38 +1,34 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use ax_kspin::SpinNoIrq;
 use irq_framework::{HwIrq, IrqDomainId, IrqId};
 use mmio_api::MmioRaw;
 
 pub(crate) const LIOINTC_VECTOR_COUNT: usize = 32;
 pub(crate) const LIOINTC_PARENT_COUNT: usize = 4;
-pub(crate) const REG_ENABLE: usize = 0x28;
-pub(crate) const REG_DISABLE: usize = 0x2c;
 
-/// Shutdown-lifetime LIOINTC state used by hard IRQ dispatch.
-pub(crate) struct LioIntcFastPath {
+/// Shutdown-lifetime LIOINTC CPU interface read by hard IRQ dispatch.
+///
+/// The task-owned controller may only publish its enabled-input state through
+/// the atomic methods below. It does not share register ownership or a lock
+/// with this interface.
+pub(crate) struct LioIntcCpuInterface {
     domain: IrqDomainId,
-    regs: MmioRaw,
     isr: MmioRaw,
     parent_irqs: [Option<usize>; LIOINTC_PARENT_COUNT],
     enabled: AtomicU32,
-    control: SpinNoIrq<()>,
 }
 
-impl LioIntcFastPath {
+impl LioIntcCpuInterface {
     pub(crate) fn new(
         domain: IrqDomainId,
-        regs: MmioRaw,
         isr: MmioRaw,
         parent_irqs: [Option<usize>; LIOINTC_PARENT_COUNT],
     ) -> Self {
         Self {
             domain,
-            regs,
             isr,
             parent_irqs,
             enabled: AtomicU32::new(0),
-            control: SpinNoIrq::new(()),
         }
     }
 
@@ -41,9 +37,9 @@ impl LioIntcFastPath {
             return None;
         }
 
-        // Claim runs in hard IRQ context and must remain independent of the
-        // task-side controller lock. Acquire observes the enable publication
-        // after its W1 MMIO write without blocking interrupt dispatch.
+        // Acquire observes the controller's enabled publication after its W1
+        // MMIO write. The CPU interface has no reference to the task-owned
+        // controller, so hard IRQ dispatch cannot depend on its lock.
         let pending = self.isr.read::<u32>(0) & self.enabled.load(Ordering::Acquire);
         (pending != 0).then(|| IrqId::new(self.domain, HwIrq(pending.trailing_zeros())))
     }
@@ -55,23 +51,16 @@ impl LioIntcFastPath {
         // Inputs are level-triggered; the device-side handler deasserts them.
     }
 
-    pub(crate) fn set_enabled(&self, input: usize, enabled: bool) {
+    pub(crate) fn publish_enabled(&self, input: usize) {
         debug_assert!(input < LIOINTC_VECTOR_COUNT);
-        let _control = self.control.lock();
         let mask = 1u32 << input;
-        if enabled {
-            self.regs.write(REG_ENABLE, mask);
-            self.enabled.fetch_or(mask, Ordering::Release);
-        } else {
-            self.enabled.fetch_and(!mask, Ordering::AcqRel);
-            self.regs.write(REG_DISABLE, mask);
-        }
+        self.enabled.fetch_or(mask, Ordering::Release);
     }
 
-    #[cfg(test)]
-    pub(crate) fn claim_irq_while_control_busy(&self, raw: usize) -> Option<IrqId> {
-        let _control = self.control.lock();
-        self.claim_irq(raw)
+    pub(crate) fn hide_disabled(&self, input: usize) {
+        debug_assert!(input < LIOINTC_VECTOR_COUNT);
+        let mask = 1u32 << input;
+        self.enabled.fetch_and(!mask, Ordering::AcqRel);
     }
 
     #[cfg(test)]
