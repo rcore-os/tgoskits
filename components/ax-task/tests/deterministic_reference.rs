@@ -185,7 +185,8 @@ impl Scenario {
     }
 }
 
-const FAIR_SLICE_NS: u64 = 1_000_000;
+const FAIR_SLICE_NS: u64 = ax_task::DEFAULT_FAIR_SLICE_NS;
+const INITIAL_FAIR_SLICE_NS: u64 = FAIR_SLICE_NS / 2;
 const RR_QUANTUM_NS: u64 = 8;
 const DEADLINE_RUNTIME_NS: u64 = 2_000;
 const DEADLINE_RELATIVE_NS: u64 = 5_000;
@@ -349,8 +350,8 @@ impl ReferenceEntity {
         match scenario {
             Scenario::Fair => Self::Fair {
                 vruntime: 0,
-                remaining_request_ns: FAIR_SLICE_NS,
-                virtual_deadline: FAIR_SLICE_NS,
+                remaining_request_ns: INITIAL_FAIR_SLICE_NS,
+                virtual_deadline: INITIAL_FAIR_SLICE_NS,
             },
             Scenario::Fifo => Self::Fifo,
             Scenario::RoundRobin => Self::RoundRobin {

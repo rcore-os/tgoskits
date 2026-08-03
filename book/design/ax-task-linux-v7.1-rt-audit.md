@@ -151,7 +151,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | --- | --- | --- | --- |
 | placement | `try_to_wake_up()`、rq locking | 一个线程只能有一个物理 owner | 已用 `SchedulerPlacement` 状态机收敛 |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
-| 远程投递 | `ttwu_queue_wakelist()`、`irq_work` | payload/epoch 先于 IPI；handler 先 claim 旧投递 | 已收敛到 runtime 物理门铃与 owner inbox |
+| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 当前 owner inbox 正确但与 RT 热路径仍有性能差距，待确定性模型后重构 |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
@@ -212,6 +212,8 @@ Linux v7.1 的 Fair 唤醒不再用旧的物理时间 `wakeup_granularity` 修�
 deadline。当前实现直接使用 wrap-safe 的虚拟时间顺序，并保留最新 EEVDF 的请求保护：
 
 - wake 后先以包含 current 的加权平均虚拟时间判断 eligibility；
+- 普通 Fair 基础 request 与 Linux v7.1 一致为 700 us；初始实体只获得半个 request，
+  之后的 request 以及 sleep 后新 request 使用完整 slice；
 - eligible current 的活动请求未结束时继续运行，不因任意更早 deadline 立即切换；
 - current 已 ineligible 时保护失效，正 `vlag` 的唤醒线程可在本次 safe point 抢占；
 - Fair request 到期由 task deadline/clockevent 保证有界重选，不依赖旧粒度阈值。
@@ -354,6 +356,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | Fair sleep wake | wake 清空正 `vlag`，维护线程 Ready 后仍等到偶然 timer | dequeue 保存有界 `vlag`，ineligible current 在 IRQ-return safe point 立即让出 |
 | Fair virtual-time wrap | `saturating_add` 与普通 `<` 在 wrap 后颠倒 deadline | 所有虚拟 deadline 使用 modular `virtual_before` |
 | Fair current 过度抢占 | 删除旧 wakeup granularity 后，任意更早 deadline 都打断 eligible current | 最新 EEVDF 请求保护保留到 request boundary；ineligible current 不受保护 |
+| Fair 初始放置 | 新线程直接获得完整 1 ms request，与 Linux v7.1 `PLACE_DEADLINE_INITIAL` 不同 | 默认基础 slice 改为 700 us；初始 deadline 与 oneshot 只给半 request，后续 request 恢复完整 slice |
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
 
@@ -412,6 +415,22 @@ USB audio 驱动路径停止，已作为范围外问题 #1838 单独跟踪。
 约 70 秒，说明主要问题是“线程已经 Ready，但 EEVDF placement 使它等到后续 timer”，
 不是永久 lost-wake。这个运行按“慢于 dev 57 秒即停止”的规则提前终止，不能作为
 最终通过数据；完成单一 V、迁移事务和 request protection 后必须重新测量。
+
+随后核对 Linux v7.1 PREEMPT_RT 的远程 wake 链路发现一处仍未关闭的架构差异：
+`CONFIG_PREEMPT_RT` 将 `TTWU_QUEUE` 设为 false，`try_to_wake_up()` 在持有 task
+`pi_lock`、等待旧 `on_cpu` release 后，直接取得目标 raw rq lock 并激活线程；只有
+`wakeup_preempt()` 确认目标 CPU 需要重调度时才发送 reschedule IPI。Linux 的
+wake-list payload/IPI 合并路径只用于非 RT 配置。当前实现对每个远程 wake 先进入
+owner inbox，再由 scheduler IPI/safe point 激活，语义上没有永久丢唤醒，但会增加
+一次跨 CPU 投递、一次 drain 和不必要的 IPI。下一阶段必须先用虚拟多 CPU 红测证明
+直接目标-rq 事务的 `on_cpu`、CPU offline 和 affinity 并发边界，再替换该热路径；
+不能用旧 wakeup granularity 或周期 tick 掩盖延迟。
+
+落实 700 us 基础 slice 与初始半 request 后再次运行同一目标：guest workload 约
+45 秒只完成 786/2048，按当前进度仍约需 118 秒；总墙钟 92.98 秒包含约 23 秒
+重编译及启动，已按规则主动终止。这个结果证明 Linux 最新初始放置语义是必要的
+正确性修复，但不是 ext4 回退的主因；后续不再通过缩短 slice 继续试参，而是直接
+验证远程 wake 激活、IPI 数量和 owner safe-point 放大。
 
 ### Linux v7.1 PREEMPT_RT 同源 futex 对照
 
