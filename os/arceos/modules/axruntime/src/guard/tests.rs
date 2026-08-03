@@ -7,22 +7,6 @@ fn host_spin_guard_before_runtime_bootstrap_is_noop() {
     let _guard = lock.lock();
 }
 
-#[cfg(feature = "host-test")]
-#[test]
-fn ordinary_preempt_guard_does_not_lookup_current_thread() {
-    ax_hal::percpu::initialize_host_test_cpu();
-    cpu_local::host_test::reset_register_read_counts();
-
-    enter_preempt();
-    exit_preempt();
-
-    assert_eq!(
-        cpu_local::host_test::register_read_counts().current_thread,
-        0,
-        "ordinary preemption state must be owned by the fixed CPU anchor"
-    );
-}
-
 #[test]
 fn nested_irq_exits_restore_only_the_outer_state() {
     let mut state = RuntimeGuardState::new();

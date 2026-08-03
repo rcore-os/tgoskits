@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     CPU_AREA_CURRENT_THREAD_OFFSET, CPU_AREA_PREEMPT_STATE_OFFSET, CPU_AREA_SELF_BASE_OFFSET,
-    CpuPreemptExit, PREEMPT_NO_RESCHED,
+    PreemptExit, preempt::PREEMPT_NO_RESCHED,
 };
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
@@ -77,7 +77,7 @@ pub(super) unsafe fn preempt_guard_depth() -> u32 {
 
 #[inline(always)]
 pub(super) unsafe fn enter_preempt_guard() {
-    debug_assert_ne!(
+    assert_ne!(
         unsafe { preempt_guard_depth() },
         !PREEMPT_NO_RESCHED,
         "CPU-local preemption guard nesting overflow"
@@ -120,22 +120,22 @@ unsafe fn try_consume_final_preempt_guard() -> bool {
 }
 
 #[inline(always)]
-pub(super) unsafe fn prepare_preempt_guard_exit() -> CpuPreemptExit {
+pub(super) unsafe fn prepare_preempt_guard_exit() -> PreemptExit {
     loop {
         let state = unsafe { preempt_state() };
         let depth = state & !PREEMPT_NO_RESCHED;
         assert!(depth > 0, "unbalanced CPU-local preemption guard exit");
         if depth == 1 {
             if state & PREEMPT_NO_RESCHED == 0 {
-                return CpuPreemptExit::FinalPending;
+                return PreemptExit::FinalPending;
             }
             if unsafe { try_consume_final_preempt_guard() } {
-                return CpuPreemptExit::FinalConsumed;
+                return PreemptExit::FinalConsumed;
             }
             continue;
         }
         unsafe { exit_nested_preempt_guard() };
-        return CpuPreemptExit::NestedConsumed;
+        return PreemptExit::NestedConsumed;
     }
 }
 
