@@ -141,6 +141,9 @@ work even when the kernel image and CPU topology are correct.
   Cortex-A72 MPIDRs `0x100` through `0x103`. Keep these hardware IDs separate
   from dense logical CPU indices. Both the maintained single-core board test
   and an eight-core boot have been validated.
+- GICv2 CPU target bits are firmware/controller interface IDs, not dense
+  logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
+  per-CPU initialization and reuse that mask for SPI affinity and SGIs.
 - The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
   `0x50000`. Early driver evidence should include
   `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by
