@@ -18,6 +18,7 @@ profile=${ORANGEPI_RT_PROFILE:?set ORANGEPI_RT_PROFILE to shared or partitioned}
 expected_workload=${ORANGEPI_RT_EXPECTED_WORKLOAD:-idle}
 expected_iterations=${ORANGEPI_RT_EXPECTED_ITERATIONS:-100}
 expected_host_noise_pcpu=${ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU:-}
+soak=${ORANGEPI_RT_SOAK:-0}
 guest_raw_path=/var/lib/axvisor-rt/raw.log
 guest_irq_path=/var/lib/axvisor-rt/guest-timer-trace.log.gz
 host_trace_remote=${result_image}.host.log
@@ -47,6 +48,10 @@ fi
 case "$profile" in
     shared|partitioned) ;;
     *) echo "ORANGEPI_RT_PROFILE must be shared or partitioned" >&2; exit 2 ;;
+esac
+case "$soak" in
+    0|1) ;;
+    *) echo "ORANGEPI_RT_SOAK must be 0 or 1" >&2; exit 2 ;;
 esac
 case "$expected_workload" in
     idle|cpu-stress) ;;
@@ -315,6 +320,9 @@ analyzer_args=(
 if [[ -n "$expected_host_noise_pcpu" ]]; then
     analyzer_args+=(--expected-host-noise-pcpu "$expected_host_noise_pcpu")
 fi
+if [[ "$soak" == 1 ]]; then
+    analyzer_args+=(--soak)
+fi
 python3 "$analyzer" "${analyzer_args[@]}"
 
 raw_sha256=$(sha256sum "$temporary_raw")
@@ -356,4 +364,4 @@ lease_pid=
 
 printf '%s\n' "$result_evidence"
 host_noise_pcpu=${expected_host_noise_pcpu:-none}
-echo "AXVISOR_RT_STARRY_HARVESTED profile=$profile workload=$expected_workload host_noise_pcpu=$host_noise_pcpu samples_per_metric=$expected_iterations lines=$raw_lines sha256=$raw_sha256 guest_irq_sha256=$guest_irq_sha256 host_trace_sha256=$host_trace_sha256 filesystem_state=$filesystem_state raw=$raw_output guest_irq=$guest_irq_output host_trace=$host_trace_output summary=$summary_output"
+echo "AXVISOR_RT_STARRY_HARVESTED profile=$profile workload=$expected_workload host_noise_pcpu=$host_noise_pcpu soak=$soak samples_per_metric=$expected_iterations lines=$raw_lines sha256=$raw_sha256 guest_irq_sha256=$guest_irq_sha256 host_trace_sha256=$host_trace_sha256 filesystem_state=$filesystem_state raw=$raw_output guest_irq=$guest_irq_output host_trace=$host_trace_output summary=$summary_output"

@@ -230,6 +230,23 @@ class StarryBoardAnalyzerTests(unittest.TestCase):
         )
         self.assertEqual(result["host_pcpu_accounting"]["status"], "not-collected")
 
+    def test_soak_capture_records_the_dedicated_vm_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            raw = write_raw(Path(directory), capture_lines())
+
+            result = starry.analyze_starry_file(
+                raw,
+                profile="shared",
+                soak=True,
+            )
+
+        self.assertEqual(
+            result["profile_contract"]["vm_config"],
+            "scripts/benchmark/axvisor-rt/config/"
+            "starry-orangepi-5-plus-smp2-soak-shared.toml",
+        )
+        self.assertTrue(result["profile_contract"]["soak"])
+
     def test_rejects_missing_sample_even_when_completion_count_claims_success(self) -> None:
         lines = capture_lines()
         lines.remove(sample_line("dispatch_latency", 1, 11))

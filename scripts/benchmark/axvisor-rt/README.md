@@ -229,9 +229,16 @@ ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED=1 \
 ORANGEPI_RESTORE_LINUX=1 \
 ORANGEPI_RUN_TIMEOUT_SECONDS=4500 \
 bash competition/ivc/orangepi/board-runner.sh
+
+ORANGEPI_RT_SOAK=1 \
+ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU=1 \
+  scripts/benchmark/axvisor-rt/harvest-starry-board.sh
 ```
 
-Use the matching partitioned configs for the second half. A soak is valid only
+Use the matching partitioned configs and expected pCPU3 for the second half.
+`ORANGEPI_RT_SOAK=1` records the dedicated 512 MiB soak VM config in the
+summary, so the aggregate cannot mistake a standard 10k capture for the
+long-duration contract. A soak is valid only
 when the persisted host-noise elapsed time is at least 1,800 seconds, both
 trace headers report zero dropped/incomplete records, the noise task stops for
 `guest-complete`, snapshot fsck is clean, and Linux is restored. The one-hour

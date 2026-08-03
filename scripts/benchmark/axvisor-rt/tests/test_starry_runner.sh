@@ -155,6 +155,10 @@ grep -q 'ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU' "$harvest_runner" || \
     fail "harvest must expose an explicit expected host-noise placement"
 grep -q -- '--expected-host-noise-pcpu' "$harvest_runner" || \
     fail "harvest must pass the host-noise placement contract to analysis"
+grep -q 'ORANGEPI_RT_SOAK' "$harvest_runner" || \
+    fail "harvest must expose the explicit soak contract"
+grep -q 'analyzer_args+=(--soak)' "$harvest_runner" || \
+    fail "harvest must pass the soak contract to analysis"
 
 grep -q '"rt-irq-trace"' "$config_dir/starry-aarch64-rt.toml" || \
     fail "StarryOS RT kernel must enable the guest IRQ trace feature"

@@ -78,6 +78,16 @@ PROFILE_CONTRACTS: dict[str, dict[str, object]] = {
         ),
     },
 }
+SOAK_VM_CONFIGS = {
+    "shared": (
+        "scripts/benchmark/axvisor-rt/config/"
+        "starry-orangepi-5-plus-smp2-soak-shared.toml"
+    ),
+    "partitioned": (
+        "scripts/benchmark/axvisor-rt/config/"
+        "starry-orangepi-5-plus-smp2-soak-partitioned.toml"
+    ),
+}
 FILESYSTEM_STATES = (
     "clean",
     "not-recorded",
@@ -284,6 +294,7 @@ def analyze_starry_file(
     host_trace_evidence_path: str | None = None,
     guest_irq_trace_evidence_path: str | None = None,
     expected_host_noise_pcpu: int | None = None,
+    soak: bool = False,
 ) -> dict[str, object]:
     """Validate one extracted StarryOS raw log and return deterministic statistics."""
     if profile not in PROFILE_CONTRACTS:
@@ -472,6 +483,13 @@ def analyze_starry_file(
             "raw log declares a guest IRQ trace; provide both host and guest trace artifacts"
         )
 
+    profile_contract = {
+        **PROFILE_CONTRACTS[profile],
+        "soak": soak,
+    }
+    if soak:
+        profile_contract["vm_config"] = SOAK_VM_CONFIGS[profile]
+
     result = {
         "schema_version": 1,
         "capture": {
@@ -500,7 +518,7 @@ def analyze_starry_file(
         },
         "metrics": summary["metrics"],
         "metric_semantics": METRIC_SEMANTICS,
-        "profile_contract": PROFILE_CONTRACTS[profile],
+        "profile_contract": profile_contract,
         "host_pcpu_accounting": {
             "status": "not-collected",
             "reason": (
@@ -560,6 +578,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default="not-recorded",
         help="read-only snapshot validation result from the harvest step",
     )
+    parser.add_argument(
+        "--soak",
+        action="store_true",
+        help="record the dedicated 30-minute soak VM contract",
+    )
     parser.add_argument("--output", type=Path, help="summary JSON; defaults to stdout")
     return parser.parse_args(argv)
 
@@ -579,6 +602,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             host_trace_evidence_path=args.host_trace_evidence_path,
             guest_irq_trace_evidence_path=args.guest_irq_trace_evidence_path,
             expected_host_noise_pcpu=args.expected_host_noise_pcpu,
+            soak=args.soak,
         )
     except (
         AnalysisError,
