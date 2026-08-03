@@ -155,7 +155,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
-| active mm | `context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | kthread 借用 active mm；最后 CPU lease 释放后才能回收 owner | move-only token + per-CPU active lease 已实现 |
+| active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
 | switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | baton 与一次性、失败即 fatal 的 tail 已实现 |
@@ -278,6 +278,12 @@ kthread 通过 `enter_lazy_tlb()` 借用前一任务的 `active_mm`；切回同�
 CR3/SATP 或刷新 TLB。真正的 mm 引用释放在 `finish_task_switch()` 之后，PREEMPT_RT
 通过 `mmdrop_sched()` 把可能阻塞的最后释放推迟到安全上下文。
 
+但 Linux 的任务所有权与物理 active-mm carrier 不是同一个生命周期。每个退出线程先在
+`do_exit()` 内执行 `exit_mm()`，清除自己的 `task_struct::mm` 并完成 `mmput()`；只有
+`active_mm`/lazy-TLB carrier 继续把页表根存储保留到后续 switch tail。`exit_notify()`
+发布 zombie 时，退出进程的用户映射已经拆除，不能让父进程 `waitpid()` 返回后再依赖
+异步 task record reaper 释放匿名页。
+
 TGOSKits 采用同一套最新语义，不保留旧的“`usize` 页表根 + kernel thread 强制恢复
 kernel root”接口：
 
@@ -293,8 +299,10 @@ kernel root”接口：
 7. CPU offline 的 kernel-root 恢复是独立事务，不复用 kernel-thread lazy 激活路径；
 8. 切到另一个地址空间或 CPU offline 时，先提交新硬件根和 per-CPU pointer，再释放旧
    lease；最后一个 lease 若观察到 reclaim waiter，只发布 allocation-free task-work；
-9. 地址空间 OS owner 和页表只在 readiness edge 后由普通任务上下文 reaper 销毁；
-   thread-private 资源不受 active-mm lease 拖延。
+9. task-mm owner 提供一次性的 task-detach edge；它可以在普通任务上下文解除 OS
+   scheduler slot，但其 owner 对象和地址空间存储仍由 runtime wrapper 保留；
+10. runtime wrapper 和页表根存储只在最后 CPU active-mm readiness edge 后由普通任务
+    上下文 reaper 销毁；thread-private 资源不受 active-mm lease 拖延。
 
 统一的是 owner/token/lease 生命周期，物理安装按架构实现：
 
@@ -309,6 +317,21 @@ exec 的提交边界固定为：IRQ-off 内先验证 current context 和新 runt
 scheduler token；转移之后只有不可失败的 context/root/active-mm 提交。旧 token 的
 销毁、OS owner drop 和回收队列扩容只能在恢复 IRQ 后发生。创建失败时 token 仍由
 `TaskAddressSpace` 持有并按事务逆序释放，不提供 raw-root 构造或回退入口。
+
+线程退出使用另一条显式事务：
+
+```text
+IRQ off: take current AddressSpaceToken -> scheduler mm = NONE -> KernelLazy
+IRQ on : detach task owner once -> release token to active-mm reaper
+last Linux thread: release process slot -> clear user mappings -> publish zombie
+later switch tail: last active CPU lease -> destroy runtime wrapper/root storage
+```
+
+`new_with_task_detach()` 的 owner 必须在 detach 后继续保持页表根存储有效，直到其最终
+drop；detach callback 只允许释放任务级记账或 OS ownership，不能释放仍被 CPU 装载的
+root。Starry 的 `SchedulerAddressSpaceLease` 因此把“scheduler slot 已解除”与“保留
+`Arc<AddrSpace>` 存储”建模为同一对象的两个阶段，原子的一次性 release 同时覆盖正常
+退出、exec 替换和创建回滚，避免双减计数。
 
 ## Task deadline 与 clockevent
 
@@ -443,6 +466,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
 | user/kthread 地址空间切换 | user -> blk worker -> same user 每次恢复 kernel root，再次写 CR3/SATP 并全量 flush | kthread 借用 per-CPU active mm；move-only token 和 active lease 将回收推迟到 switch-tail 后任务上下文 |
+| zombie 前地址空间回收 | 12 轮 SIGKILL/waitpid 后 scheduler token 仍绑在异步 reap 的 thread record，RISC-V `MemFree` 少约 304 MiB，完整组随后小对象 OOM | 每线程按 `exit_mm()` 顺序同步 detach task-mm；process slot 清理后再发布 zombie；RISC-V/x86_64 仅剩约 6/7 MiB 合法开销 |
 | active-mm 过期 readiness edge | `destroy_address_space()` 仍报告 `Active` 时也把回收计为成功；同一 token 在一个 pass 内重试 64 次并永久 yield | `AddressSpaceDestroyOutcome::Active` 只重新 arm waiter，不算 progress；下一次尝试必须由新的最后-CPU lease edge 驱动 |
 | coroutine 最终引用 | 普通任务上下文也把每个零引用 header 投递给单一全局 reaper | 普通任务上下文按最终引用直接释放；只有 hard IRQ 发布类型化 coroutine header，删除任意 callback node、公开 drain 和 shutdown leak fallback |
 
@@ -681,6 +705,7 @@ IRQ 边界仍只做类型化 publication。
 - #1772：Starry ktest 错误启用 `log/std` 的 feature graph；
 - #1773：Starry target-aware clippy 永久 CI 能力；
 - #1838：Starry USBFS no-std `event-listener` wake transport 可能在长序列 USB audio 中永久自旋；
+- #1852：AArch64 Starry 启动在同步 xHCI host 初始化中持续处理 hwirq 37 但不完成；
 - USB 控制器、USBFS、第三方 connection manager 的外围协议缺陷，除非它们破坏调度交接契约。
 
 ## 验证策略
