@@ -59,6 +59,7 @@ def comparison(index: int) -> dict[str, object]:
         "pair": {
             "workload": "cpu-stress",
             "iterations_per_metric": 10_000,
+            "controlled_interference": None,
             "shared_raw": {
                 "path": f"/campaign/pair-{index}/shared/raw.log",
                 "sha256": identity(f"pair-{index}-shared-raw"),
@@ -221,6 +222,15 @@ class StarryStressCampaignTests(unittest.TestCase):
         comparisons[0]["pair"]["workload"] = "idle"
 
         with self.assertRaisesRegex(stress.AggregationError, "cpu-stress"):
+            stress.aggregate_stress_campaign(comparisons, summaries)
+
+    def test_rejects_controlled_interference_payload(self) -> None:
+        comparisons, summaries = campaign_inputs()
+        comparisons[0]["pair"]["controlled_interference"] = {
+            "shared": {"pcpu": 1}
+        }
+
+        with self.assertRaisesRegex(stress.AggregationError, "host interference"):
             stress.aggregate_stress_campaign(comparisons, summaries)
 
     def test_rejects_lossy_trace(self) -> None:

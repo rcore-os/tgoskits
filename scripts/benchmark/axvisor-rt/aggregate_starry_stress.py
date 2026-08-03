@@ -217,7 +217,7 @@ def aggregate_stress_campaign(
             raise AggregationError(f"{label} must use the cpu-stress workload")
         if pair.get("iterations_per_metric") != EXPECTED_ITERATIONS:
             raise AggregationError(f"{label} must contain 10,000 samples per metric")
-        if "controlled_interference" in pair:
+        if pair.get("controlled_interference") is not None:
             raise AggregationError(f"{label} must not contain controlled host interference")
 
         thresholds = base.require_object(comparison, "thresholds", label)
