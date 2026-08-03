@@ -317,6 +317,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | CPU timer | reader等待已被抢占 writer，系统 livelock | owner-only vtime writer + 原子 group aggregate |
 | clone publication | PID/TID 可见后 placement 失败再回滚 | stage scheduler first，identity commit 后只做 infallible activate |
 | futex wake | syscall 每次 wake 后额外 yield | wake publication 自己驱动 reschedule |
+| futex waiter | 每次排队单独分配 `Arc<WaiterState>`，取消与 requeue 依赖对象地址 | 稳定 `Thread` 内嵌 generation 状态；队列用 `UserTaskRef + generation` 校验唯一胜者 |
 | Deadline scan | 每次 schedule 扫描无关 reservation | typed timer node 和 owner heap |
 
 bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。纯文件移动和可见性收敛阶段例外。
@@ -351,6 +352,7 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 | Linux v7.1 `CONFIG_PREEMPT_RT=y` | 13,908 ns | 9,370 ns | 24,810 ns |
 | StarryOS 临时 executor 路径 | 221,878 ns | 136,991 ns | 250,738 ns |
 | StarryOS 调度器直接 park 路径 | 138,786 ns | 103,820 ns | 170,209 ns |
+| StarryOS 线程内嵌 wait generation | 111,948 ns | 81,575 ns | 153,262 ns |
 
 调度器直接 park 相比临时 executor 路径缩短约 37.4%，但当前 StarryOS 仍是
 Linux RT 的约 9.98 倍，尚未达到接受目标。这个结果只比较同一宿主机上的完整
@@ -359,11 +361,25 @@ guest 调用路径，不把 TCG 时间解释成硬件周期或实时延迟上界
 首个确定性红测证明，旧实现即使发现 futex 值已经不匹配，仍会分配
 `WaiterState`。当前实现已经让调度线程通过 move-only park transaction 直接
 进入 `ax-task`，不再为每次 `FUTEX_WAIT` 创建临时 `LocalExecutor`、`WaitQueue`
-和 coroutine；同一红测由失败转为通过。仍未消除的热路径成本包括每次 wait 的
-`Arc<WaiterState>`、wake 侧 `Vec<ThreadWakeHandle>` 和按 key 动态创建的
-`FutexEntry`。Linux v7.1 使用当前任务和栈上 `futex_q`/`wake_q`；下一阶段应把
-waiter 生命周期收敛为线程拥有的 generation 状态，并把 wake 收集改为有界批次，
-继续用分配与状态机红测约束，而不是只凭 TCG 时间直接删路径。
+和 coroutine；同一红测由失败转为通过。
+
+第二个确定性红测进一步要求“已经决定排队的 waiter 也不能分配独立状态对象”。
+旧实现稳定报告一次 `Arc<WaiterState>` 分配，x86_64 axtest 为 393/394；重构后
+wait 状态固定内嵌在稳定的 Starry `Thread` 中，队列只保留持有生命周期的
+`UserTaskRef` 和 wait generation，同一套状态机线性化 wake、signal、timeout、
+cancel 与 requeue，axtest 恢复为 394/394。generation 不匹配的旧队列项只能被
+清理，不能命中新一轮 wait，避免线程和 slot 复用形成 ABA。
+
+同配置完整 guest benchmark 的中位 handoff 从 138,786 ns 降到 111,948 ns，
+改善约 19.3%；这证明分配与共享引用流量确实位于热路径，但仍为 Linux RT 的约
+8.05 倍，不能据此结束性能审计。
+
+仍未消除的热路径成本包括 wake 侧 `Vec<ThreadWakeHandle>`、每个 key 动态创建的
+`FutexEntry` 以及进程级 `HashMap` 粗粒度查找。Linux v7.1 使用全局固定 futex
+hash bucket 和锁外 `wake_q`；下一阶段将 key 扩展为稳定地址空间/共享后端身份，
+用固定桶替换 `FutexTable`，再把 wake 收集改为固定容量批次。该步骤必须同时修正
+`CLONE_VM` 但非 `CLONE_THREAD` 时 private futex 应按共享 mm 匹配的语义，不能只
+为降低分配而保留错误的 per-process key 所有权。
 
 qperf leaf 采样已能定位 CPU-local、guard、remote wake 和 schedule 小热点。完整
 FP 模式原先会覆盖内核链接 rustflags，postprocess 也无法转发 `-cpu`；两项已由

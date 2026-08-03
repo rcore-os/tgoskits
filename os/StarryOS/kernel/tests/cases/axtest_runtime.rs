@@ -102,6 +102,11 @@ fn futex_false_wait_condition_avoids_waiter_allocation() {
 }
 
 #[axtest]
+fn futex_queued_waiter_avoids_state_allocation() {
+    ax_assert!(axtest_exports::futex_queued_waiter_avoids_state_allocation());
+}
+
+#[axtest]
 fn futex_park_prepare_error_cleans_waiter() {
     ax_assert!(axtest_exports::futex_park_prepare_error_cleans_waiter());
 }

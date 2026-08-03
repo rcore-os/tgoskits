@@ -48,7 +48,7 @@ pub use self::{
 };
 #[cfg(axtest)]
 pub(crate) use self::{
-    futex::empty_wake_op_entry_allocations_for_test,
+    futex::{empty_wake_op_entry_allocations_for_test, queued_waiter_state_allocations_for_test},
     ops::decode_wait_status_rules_hold_for_test,
     posix_timer::{
         posix_timer_active_gate_rules_hold_for_test,
