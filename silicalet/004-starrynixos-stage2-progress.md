@@ -2909,6 +2909,124 @@ Failed to create listening socket (kobject-uevent 1): Protocol not available
 和确定性 Starry 红测前，不能判断它是否为独立根因。由于
 `STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，T028 保持未完成。
 
+### 7.28 netlink `SO_REUSEADDR` 红绿验证与 udev socket 越界（2026-08-03）
+
+固定 systemd 260.2 源码确认 `ListenNetlink=kobject-uevent 1` 的实际调用链：
+
+- `socket_address_parse_netlink()` 生成 `SOCK_RAW`、
+  `NETLINK_KOBJECT_UEVENT` 和 multicast group 1；
+- `socket_address_listen()` 使用
+  `SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK` 创建 fd；
+- bind 前无条件调用
+  `setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, 1)`。
+
+Starry 已支持对应 uevent netlink socket 和 group bind，但其 netlink
+`sys_setsockopt()` 未处理 `SO_REUSEADDR`，默认返回 `ENOPROTOOPT`。这与正式
+workload 的：
+
+```text
+Failed to create listening socket (kobject-uevent 1): Protocol not available
+```
+
+逐层一致。
+
+新增确定性回归：
+
+```text
+test-suit/starryos/qemu/system/bugfix-netlink-uevent-reuseaddr/
+```
+
+同一测试分别覆盖无特权可用的 `NETLINK_ROUTE` 对照和 systemd 实际使用的
+`NETLINK_KOBJECT_UEVENT`：
+
+- `SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK`；
+- `setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)`；
+- route group 0 / uevent group 1 的 `bind(2)`。
+
+Podman Linux oracle 结果为：
+
+```text
+=== Results: 6 passed, 0 failed ===
+STARRY_NETLINK_UEVENT_REUSEADDR_PASSED
+```
+
+直接宿主进程受当前执行沙箱限制，所有 `AF_NETLINK` socket 都先返回
+`EPERM`，因此不作为 Linux 语义证据。
+
+修复前 Starry 结果为：
+
+```text
+PASS: create route netlink control socket
+FAIL: set SO_REUSEADDR on route netlink socket: errno=92
+PASS: bind route netlink socket
+PASS: create systemd-style uevent socket
+FAIL: set SO_REUSEADDR on uevent socket: errno=92
+PASS: bind uevent multicast group 1
+=== Results: 4 passed, 2 failed ===
+```
+
+完整红测日志：
+
+```text
+.ci-cache/tmp/bugfix-netlink-uevent-reuseaddr-red.log
+```
+
+修复只在 netlink `setsockopt` 边界读取并接受 `SO_REUSEADDR` 的整数参数。
+Starry 当前 netlink bind 模型不通过本地地址复用解决端口或 group 冲突，因此
+没有加入未被消费的复用状态，也没有扩大 uevent broadcast 能力声明。
+
+修复后同一 Starry 回归 6/6 通过：
+
+```text
+STARRY_NETLINK_UEVENT_REUSEADDR_PASSED
+STARRY_GROUPED_TESTS_PASSED
+```
+
+完整绿测日志：
+
+```text
+.ci-cache/tmp/bugfix-netlink-uevent-reuseaddr-green.log
+```
+
+Podman 中 `cargo fmt --all` 通过，
+`cargo xtask clippy --package starry-kernel` 的 25 项检查全部通过。clippy
+日志：
+
+```text
+.ci-cache/tmp/starry-kernel-netlink-reuseaddr-clippy.log
+```
+
+正式固定 rootfs 复测日志：
+
+```text
+.ci-cache/tmp/starrynixos-netlink-reuseaddr-run.log
+```
+
+该运行明确出现：
+
+```text
+[  OK  ] Listening on udev Kernel Socket.
+Task(91, "systemd-sysctl") exit with code: 0
+[  OK  ] Finished Apply Kernel Variables.
+```
+
+说明 uevent socket 和前一轮 proc sysctl 两个触发边界均已越过。当前新的首个
+terminal failure 是：
+
+```text
+systemd-journald:
+Failed to fstatvfs(.../journal/<machine-id>): Is a directory
+.../system.journal: Unexpected error while writing to journal file:
+No such file or directory
+
+[FAILED] Failed to start Flush Journal to Persistent Storage.
+```
+
+下一步应先直接比较 Linux/Starry 对目录 fd 和普通文件 fd 的
+`fstatvfs(2)`，确认 `EISDIR` 是否来自 Starry VFS fd 类型分派，再建立确定性
+红测。不能直接屏蔽 `systemd-journal-flush.service`。由于
+`STARRY_NIXOS_SYSTEM_PASSED` 尚未出现，T028 保持未完成。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
