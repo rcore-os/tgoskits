@@ -33,7 +33,10 @@ use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "lockdep")]
 use crate::lockdep::HeldLockStack;
-use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
+use crate::{
+    AxCpuMask, AxTask, AxTaskRef, WaitQueue,
+    interrupt::{InterruptSnapshot, InterruptState},
+};
 
 #[cfg(target_pointer_width = "64")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
@@ -129,7 +132,7 @@ pub struct TaskInner {
     #[cfg(feature = "preempt")]
     preempt_disable_count: AtomicUsize,
 
-    interrupted: AtomicBool,
+    interrupted: InterruptState,
     interrupt_waker: AtomicWaker,
 
     exit_code: AtomicI32,
@@ -322,25 +325,28 @@ impl TaskInner {
         // allow `interrupt()` to run and call `wake()` on an empty waker
         // slot — the wake is lost. Registering first closes the window.
         self.interrupt_waker.register(cx.waker());
-        if self.interrupted.swap(false, Ordering::AcqRel) {
+        if self.interrupted.consume() {
             Poll::Ready(())
         } else {
             Poll::Pending
         }
     }
 
-    /// Clears the interrupt state of the task.
+    /// Acknowledges all interruption publications visible at this call.
+    ///
+    /// Publications that race after the internal snapshot remain pending.
     #[inline]
     pub fn clear_interrupt(&self) {
-        self.interrupted.store(false, Ordering::Release);
+        let snapshot = self.interrupt_snapshot();
+        self.acknowledge_interrupt(snapshot);
     }
 
-    /// Atomically checks and clears the interrupt flag.
+    /// Consumes the interruption publications currently visible to this task.
     ///
     /// Returns `true` if the task was interrupted.
     #[inline]
     pub fn take_interrupt(&self) -> bool {
-        self.interrupted.swap(false, Ordering::AcqRel)
+        self.interrupted.consume()
     }
 
     /// Checks whether the task has been interrupted without clearing
@@ -351,14 +357,26 @@ impl TaskInner {
     /// consumers (e.g., an [`interruptible`] future wrapper).
     #[inline]
     pub fn interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
+        self.interrupted.is_pending()
     }
 
     /// Interrupts the task.
     #[inline]
     pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::Release);
+        self.interrupted.publish();
         self.interrupt_waker.wake();
+    }
+
+    /// Captures the interruption publications visible before a safe-point scan.
+    #[inline]
+    pub fn interrupt_snapshot(&self) -> InterruptSnapshot {
+        self.interrupted.snapshot()
+    }
+
+    /// Acknowledges the interruption publications covered by `snapshot`.
+    #[inline]
+    pub fn acknowledge_interrupt(&self, snapshot: InterruptSnapshot) {
+        self.interrupted.acknowledge(snapshot);
     }
 }
 
@@ -390,7 +408,7 @@ impl TaskInner {
             force_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             preempt_disable_count: AtomicUsize::new(0),
-            interrupted: AtomicBool::new(false),
+            interrupted: InterruptState::new(),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
