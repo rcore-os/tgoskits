@@ -12,6 +12,9 @@ use core::{
 
 use crate::host::{HostCpu, HostTime, default_host};
 
+#[cfg(feature = "rt-trace-soak")]
+const TRACE_CAPACITY: usize = 1_048_576;
+#[cfg(not(feature = "rt-trace-soak"))]
 const TRACE_CAPACITY: usize = 262_144;
 const MAX_VCPUS: usize = 64;
 const MAX_HOST_CPUS: usize = 128;

@@ -24,6 +24,10 @@ DIRECT_IRQ_METRIC = "virtual_timer_injection_to_guest_irq"
 P99_NON_REGRESSION_LIMIT_PERCENT = 5.0
 MAX_IMPROVEMENT_TARGET_PERCENT = 10.0
 DIRECT_IRQ_MAX_REQUIRED_PAIRS = 4
+SOAK_ITERATIONS_PER_METRIC = 10_000
+SOAK_PERIOD_US = 90_000
+SOAK_MINIMUM_DURATION_SECONDS = 1_800
+SOAK_HOST_NOISE_MAX_DURATION_MS = 3_600_000
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
@@ -103,6 +107,114 @@ def validate_metric(
     return validated
 
 
+def validate_soak_summary(
+    summary: dict[str, object], profile: str, observed_hashes: set[str]
+) -> dict[str, object]:
+    """Validate one lossless, at-least-30-minute controlled-interference soak."""
+    label = f"{profile} soak"
+    if summary.get("schema_version") != 1:
+        raise AggregationError(f"{label} must use summary schema version 1")
+
+    capture = require_object(summary, "capture", label)
+    expected_capture = {
+        "profile": profile,
+        "workload": "idle",
+        "iterations_per_metric": SOAK_ITERATIONS_PER_METRIC,
+        "period_us": SOAK_PERIOD_US,
+        "sample_count": SOAK_ITERATIONS_PER_METRIC * 3,
+        "vcpu_count": 2,
+    }
+    for key, expected in expected_capture.items():
+        if capture.get(key) != expected:
+            raise AggregationError(f"{label} {key} differs from the soak contract")
+
+    raw = require_object(summary, "input", label)
+    if raw.get("snapshot_filesystem_state") != "clean":
+        raise AggregationError(f"{label} snapshot filesystem must be clean")
+    raw_identity = validate_raw({"input": raw}, "input", label, observed_hashes)
+
+    profile_contract = require_object(summary, "profile_contract", label)
+    expected_vm_config = (
+        "scripts/benchmark/axvisor-rt/config/"
+        f"starry-orangepi-5-plus-smp2-soak-{profile}.toml"
+    )
+    expected_dedicated = profile == "partitioned"
+    if profile_contract.get("dedicated_cpus") is not expected_dedicated:
+        raise AggregationError(f"{label} dedicated_cpus does not match its profile")
+    if profile_contract.get("phys_cpu_sets") != ["0x2", "0x4"]:
+        raise AggregationError(f"{label} vCPU placement differs from the formal matrix")
+    if profile_contract.get("vm_config") != expected_vm_config:
+        raise AggregationError(f"{label} does not use its soak VM config")
+
+    noise = require_object(summary, "host_noise", label)
+    requested_pcpu = 1 if profile == "shared" else 3
+    expected_mask = 1 << requested_pcpu
+    exact_noise = {
+        "requested_pcpu": requested_pcpu,
+        "affinity_mask": expected_mask,
+        "observed_pcpu_mask": expected_mask,
+        "max_duration_ms": SOAK_HOST_NOISE_MAX_DURATION_MS,
+        "stop_reason": "guest-complete",
+        "intensity": "busy-loop",
+        "covers_host_trace": True,
+        "status": "collected",
+    }
+    for key, expected in exact_noise.items():
+        if noise.get(key) != expected:
+            raise AggregationError(f"{label} host-noise {key} is invalid")
+    elapsed_ns = require_number(noise, "elapsed_ns", f"{label} host-noise")
+    if elapsed_ns < SOAK_MINIMUM_DURATION_SECONDS * 1_000_000_000:
+        raise AggregationError(f"{label} does not cover the required 30-minute window")
+    if require_number(noise, "loop_iterations", f"{label} host-noise") <= 0:
+        raise AggregationError(f"{label} host-noise loop must execute")
+
+    direct = require_object(summary, "direct_irq_trace", label)
+    lossless = require_object(direct, "lossless", label)
+    record_counts: dict[str, int | float] = {}
+    for side in ("host", "guest"):
+        counters = require_object(lossless, side, f"{label} lossless")
+        records = require_number(counters, "records", f"{label} {side} trace")
+        if records <= 0:
+            raise AggregationError(f"{label} {side} trace must contain records")
+        record_counts[side] = records
+        for key in (
+            "dropped",
+            "incomplete",
+            "failed_injections",
+            "unowned_virtual_timer_irqs",
+            "counter_frequency_mismatches",
+        ):
+            if require_number(counters, key, f"{label} {side} trace") != 0:
+                raise AggregationError(f"{label} {side} trace reports {key}")
+    pairing = require_object(direct, "pairing", label)
+    pair_count = require_number(pairing, "pair_count", f"{label} direct IRQ")
+    if pair_count <= 0 or pair_count > min(record_counts.values()):
+        raise AggregationError(f"{label} direct IRQ pair count is invalid")
+
+    trace_inputs = require_object(direct, "inputs", label)
+    trace_identities: dict[str, dict[str, str]] = {}
+    for side in ("host", "guest"):
+        trace_identities[side] = validate_raw(
+            {side: require_object(trace_inputs, side, f"{label} trace inputs")},
+            side,
+            f"{label} trace",
+            observed_hashes,
+        )
+
+    return {
+        "profile": profile,
+        "raw": raw_identity,
+        "trace_inputs": trace_identities,
+        "elapsed_ns": elapsed_ns,
+        "elapsed_seconds": round(elapsed_ns / 1_000_000_000, 3),
+        "host_records": record_counts["host"],
+        "guest_records": record_counts["guest"],
+        "direct_irq_pair_count": pair_count,
+        "requested_pcpu": requested_pcpu,
+        "observed_pcpu_mask": expected_mask,
+    }
+
+
 def aggregate_statistic(
     pairs: list[dict[str, dict[str, int | float | bool]]], statistic: str
 ) -> dict[str, object]:
@@ -139,7 +251,10 @@ def aggregate_statistic(
     return result
 
 
-def aggregate_comparisons(comparisons: Sequence[dict[str, object]]) -> dict[str, object]:
+def aggregate_comparisons(
+    comparisons: Sequence[dict[str, object]],
+    soak_summaries: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
     """Validate and aggregate exactly five orthogonal pair comparisons."""
     if len(comparisons) != EXPECTED_PAIR_COUNT:
         raise AggregationError(
@@ -251,7 +366,34 @@ def aggregate_comparisons(comparisons: Sequence[dict[str, object]]) -> dict[str,
         )
     )
 
-    return {
+    soak: dict[str, object] | None = None
+    soak_gate_met = False
+    if soak_summaries is not None:
+        if set(soak_summaries) != {"shared", "partitioned"}:
+            raise AggregationError("soak evidence must contain shared and partitioned summaries")
+        validated_soaks = {
+            profile: validate_soak_summary(
+                soak_summaries[profile], profile, observed_hashes
+            )
+            for profile in ("shared", "partitioned")
+        }
+        soak = {
+            "minimum_duration_seconds": SOAK_MINIMUM_DURATION_SECONDS,
+            "iterations_per_metric": SOAK_ITERATIONS_PER_METRIC,
+            "period_us": SOAK_PERIOD_US,
+            "profiles": validated_soaks,
+        }
+        soak_gate_met = True
+
+    m2_exit_gate_met = matrix_gate_met and soak_gate_met
+    if m2_exit_gate_met:
+        reason = "five-pair matrix and required shared/partitioned soak evidence passed"
+    elif matrix_gate_met:
+        reason = "five-pair matrix passed; required shared/partitioned soak evidence is missing"
+    else:
+        reason = "five-pair matrix thresholds were not all satisfied"
+
+    result = {
         "schema_version": 1,
         "campaign": {
             "pair_count": EXPECTED_PAIR_COUNT,
@@ -274,15 +416,14 @@ def aggregate_comparisons(comparisons: Sequence[dict[str, object]]) -> dict[str,
             "direct_irq_max_direction_gate_met": direct_max_direction_pass,
             "direct_irq_worst_of_runs_gate_met": direct_worst_pass,
             "five_pair_matrix_gate_met": matrix_gate_met,
-            "soak_evidence_collected": False,
-            "m2_exit_gate_met": False,
-            "reason": (
-                "five-pair matrix passed; required shared/partitioned soak evidence is not part of this aggregate"
-                if matrix_gate_met
-                else "five-pair matrix thresholds were not all satisfied"
-            ),
+            "soak_evidence_collected": soak_gate_met,
+            "m2_exit_gate_met": m2_exit_gate_met,
+            "reason": reason,
         },
     }
+    if soak is not None:
+        result["soak"] = soak
+    return result
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -294,6 +435,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="five pair comparison JSON files in registered run order",
     )
     parser.add_argument("--output", type=Path, help="campaign JSON; defaults to stdout")
+    parser.add_argument("--shared-soak", type=Path, help="validated shared soak summary")
+    parser.add_argument(
+        "--partitioned-soak", type=Path, help="validated partitioned soak summary"
+    )
     return parser.parse_args(argv)
 
 
@@ -306,7 +451,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not isinstance(value, dict):
                 raise AggregationError(f"comparison {path} must be a JSON object")
             comparisons.append(value)
-        result = aggregate_comparisons(comparisons)
+        if (args.shared_soak is None) != (args.partitioned_soak is None):
+            raise AggregationError("both shared and partitioned soak summaries are required")
+        soak_summaries = None
+        if args.shared_soak is not None:
+            soak_summaries = {}
+            for profile, path in (
+                ("shared", args.shared_soak),
+                ("partitioned", args.partitioned_soak),
+            ):
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise AggregationError(f"{profile} soak summary must be a JSON object")
+                soak_summaries[profile] = value
+        result = aggregate_comparisons(comparisons, soak_summaries)
     except (AggregationError, OSError, json.JSONDecodeError) as error:
         print(f"StarryOS board campaign aggregation failed: {error}", file=sys.stderr)
         return 2

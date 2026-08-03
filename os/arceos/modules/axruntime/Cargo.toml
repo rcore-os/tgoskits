@@ -21,6 +21,7 @@ wake-ipi = ["irq", "ax-hal/ipi"]
 # This is opt-in because the preallocated buffer intentionally reserves
 # several MiB and is not needed by normal ArceOS/StarryOS images.
 rt-irq-trace = ["irq"]
+rt-irq-trace-soak = ["rt-irq-trace"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",

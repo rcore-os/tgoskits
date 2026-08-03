@@ -28,6 +28,7 @@ qperf = ["ax-driver/virtio-blk", "ax-driver/virtio-net", "ax-driver/virtio-socke
 qperf-metrics = []
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 rt-irq-trace = ["starry-kernel/rt-irq-trace"]
+rt-irq-trace-soak = ["rt-irq-trace", "starry-kernel/rt-irq-trace-soak"]
 
 k230 = [
   "starry-kernel/k230-kpu",

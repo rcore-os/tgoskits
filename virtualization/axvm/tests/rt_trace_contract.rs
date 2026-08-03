@@ -42,6 +42,18 @@ fn direct_timer_trace_uses_guest_counter_domain_and_preallocated_storage() {
 }
 
 #[test]
+fn soak_trace_feature_expands_the_preallocated_host_buffer() {
+    let axvm_cargo = read("virtualization/axvm/Cargo.toml");
+    let axvisor_cargo = read("os/axvisor/Cargo.toml");
+    let trace = read("virtualization/axvm/src/rt_trace.rs");
+
+    assert!(axvm_cargo.contains("rt-trace-soak = [\"rt-trace\"]"));
+    assert!(axvisor_cargo.contains("rt-trace-soak = [\"rt-trace\", \"axvm/rt-trace-soak\"]"));
+    assert!(trace.contains("#[cfg(feature = \"rt-trace-soak\")]"));
+    assert!(trace.contains("const TRACE_CAPACITY: usize = 1_048_576;"));
+}
+
+#[test]
 fn host_trace_accounts_vcpu_run_wait_and_pcpu_idle_time() {
     let trace = read("virtualization/axvm/src/rt_trace.rs");
     let vcpus = read("virtualization/axvm/src/runtime/vcpus.rs");

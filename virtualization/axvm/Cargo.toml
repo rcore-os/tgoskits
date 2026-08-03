@@ -13,6 +13,7 @@ license = "Apache-2.0"
 fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs"]
 rt-trace = []
+rt-trace-soak = ["rt-trace"]
 sstc = ["riscv_vcpu/sstc"]
 
 [dependencies]

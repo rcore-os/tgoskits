@@ -5,6 +5,7 @@ set -euo pipefail
 benchmark_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 builder=$benchmark_dir/build-starry-rootfs.sh
 kernel_builder=$benchmark_dir/build-starry-kernel.sh
+soak_builder=$benchmark_dir/prepare-starry-soak.sh
 noise_builder=$benchmark_dir/build-aarch64-noise-guest.sh
 stage_runner=$benchmark_dir/stage-starry-board.sh
 harvest_runner=$benchmark_dir/harvest-starry-board.sh
@@ -19,11 +20,15 @@ host_noise_shared_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-sh
 host_noise_partitioned_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-partitioned.toml
 host_noise_formal_shared_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-formal-shared.toml
 host_noise_formal_partitioned_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-formal-partitioned.toml
+host_noise_soak_shared_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-soak-shared.toml
+host_noise_soak_partitioned_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-soak-partitioned.toml
 host_noise_source=$benchmark_dir/../../../os/axvisor/src/host_noise.rs
 host_noise_shared_board=$config_dir/board-orangepi-5-plus-starry-host-noise-shared.toml
 host_noise_partitioned_board=$config_dir/board-orangepi-5-plus-starry-host-noise-partitioned.toml
 host_noise_formal_shared_board=$config_dir/board-orangepi-5-plus-starry-host-noise-formal-shared.toml
 host_noise_formal_partitioned_board=$config_dir/board-orangepi-5-plus-starry-host-noise-formal-partitioned.toml
+host_noise_soak_shared_board=$config_dir/board-orangepi-5-plus-starry-host-noise-soak-shared.toml
+host_noise_soak_partitioned_board=$config_dir/board-orangepi-5-plus-starry-host-noise-soak-partitioned.toml
 
 fail() {
     echo "test_starry_runner: $*" >&2
@@ -32,6 +37,7 @@ fail() {
 
 bash -n "$builder"
 bash -n "$kernel_builder"
+bash -n "$soak_builder"
 bash -n "$noise_builder"
 bash -n "$stage_runner"
 bash -n "$harvest_runner"
@@ -99,6 +105,16 @@ for host_noise_formal_build in \
     grep -q 'ax-std/sched-rr' "$host_noise_formal_build" || \
         fail "$(basename "$host_noise_formal_build") must retain round-robin host scheduling"
 done
+for host_noise_soak_build in \
+    "$host_noise_soak_shared_build" \
+    "$host_noise_soak_partitioned_build"; do
+    grep -q 'max_duration_ms = 3600000' "$host_noise_soak_build" || \
+        fail "$(basename "$host_noise_soak_build") must allow the bounded 30-minute soak"
+    grep -q '"rt-trace-soak"' "$host_noise_soak_build" || \
+        fail "$(basename "$host_noise_soak_build") must enable the enlarged host trace"
+    grep -q 'ax-std/sched-rr' "$host_noise_soak_build" || \
+        fail "$(basename "$host_noise_soak_build") must retain round-robin host scheduling"
+done
 grep -q 'AXVISOR_RT_HOST_NOISE schema=1' "$host_noise_source" || \
     fail "host noise must emit a machine-readable persisted evidence record"
 for host_noise_board in "$host_noise_shared_board" "$host_noise_partitioned_board"; do
@@ -127,6 +143,14 @@ for host_noise_formal_board in \
     printf '%s\n' "$success_block" | grep -q 'AXVISOR_SNAPSHOT_SYNC_OK' || \
         fail "$(basename "$host_noise_formal_board") must succeed only after snapshot sync"
 done
+for host_noise_soak_board in \
+    "$host_noise_soak_shared_board" \
+    "$host_noise_soak_partitioned_board"; do
+    grep -q '^timeout = 4500' "$host_noise_soak_board" || \
+        fail "$(basename "$host_noise_soak_board") must include trace persistence and Linux restore"
+    grep -q 'stop_reason=max-duration' "$host_noise_soak_board" || \
+        fail "$(basename "$host_noise_soak_board") must reject an expired soak host-noise task"
+done
 grep -q 'ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU' "$harvest_runner" || \
     fail "harvest must expose an explicit expected host-noise placement"
 grep -q -- '--expected-host-noise-pcpu' "$harvest_runner" || \
@@ -134,6 +158,18 @@ grep -q -- '--expected-host-noise-pcpu' "$harvest_runner" || \
 
 grep -q '"rt-irq-trace"' "$config_dir/starry-aarch64-rt.toml" || \
     fail "StarryOS RT kernel must enable the guest IRQ trace feature"
+grep -q '"rt-irq-trace-soak"' "$config_dir/starry-aarch64-rt-soak.toml" || \
+    fail "StarryOS soak kernel must enable the enlarged guest IRQ trace"
+grep -q 'STARRY_RT_CONFIG' "$kernel_builder" || \
+    fail "StarryOS RT kernel builder must accept an explicit soak config"
+grep -q '^iterations=10000$' "$soak_builder" || \
+    fail "soak preparation must retain the formal 10,000 samples per metric"
+grep -q '^period_us=90000$' "$soak_builder" || \
+    fail "soak preparation must use two 15-minute timed phases"
+grep -q '^minimum_duration_seconds=1800$' "$soak_builder" || \
+    fail "soak preparation must enforce a 30-minute nominal timed window"
+grep -q 'starry-rt-soak-rootfs.img' "$soak_builder" || \
+    fail "soak preparation must produce a distinct immutable rootfs artifact"
 grep -Fq 'rustup run "$toolchain" llvm-objcopy --strip-all -O binary "$built_elf" "$built_kernel"' \
     "$kernel_builder" || \
     fail "StarryOS RT kernel build must materialize a fresh BIN from the clean-tree ELF"
@@ -176,6 +212,15 @@ grep -q 'phys_cpu_sets = \[0x2, 0x4\]' \
 grep -q 'phys_cpu_sets = \[0x2, 0x4\]' \
     "$config_dir/starry-orangepi-5-plus-smp2-partitioned.toml" || \
     fail "partitioned profile must isolate its two vCPUs"
+for soak_profile in shared partitioned; do
+    soak_vm=$config_dir/starry-orangepi-5-plus-smp2-soak-$soak_profile.toml
+    grep -q 'memory_regions = ' "$soak_vm" || \
+        fail "$(basename "$soak_vm") must declare guest memory"
+    grep -q '\[0x8000_0000, 0x2000_0000, 0x7, 0\]' "$soak_vm" || \
+        fail "$(basename "$soak_vm") must provide 512 MiB for the enlarged trace export"
+    grep -q 'starry-rt-soak-rootfs.img' "$soak_vm" || \
+        fail "$(basename "$soak_vm") must use the dedicated soak result image"
+done
 grep -q 'shell_init_cmd = "rs"' \
     "$config_dir/board-orangepi-5-plus-starry-shared.toml" || \
     fail "shared capture must use the UART-safe snapshot command"

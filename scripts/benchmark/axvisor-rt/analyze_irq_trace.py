@@ -117,17 +117,21 @@ def _validate_record_count(
         )
 
 
-def _validate_lossless_header(fields: dict[str, str], marker: str) -> None:
-    for key in (
-        "dropped",
-        "incomplete",
-        "failed_injections",
-        "unowned_virtual_timer_irqs",
-        "counter_frequency_mismatches",
-    ):
-        value = _integer(fields, key, marker, default=0)
+def _validate_lossless_header(fields: dict[str, str], marker: str) -> dict[str, int]:
+    counters = {
+        key: _integer(fields, key, marker, default=0)
+        for key in (
+            "dropped",
+            "incomplete",
+            "failed_injections",
+            "unowned_virtual_timer_irqs",
+            "counter_frequency_mismatches",
+        )
+    }
+    for key, value in counters.items():
         if value != 0:
             raise AnalysisError(f"{marker} reports {key}={value}; evidence is not lossless")
+    return {"records": _integer(fields, "records", marker), **counters}
 
 
 def _parse_host_accounting(
@@ -389,8 +393,8 @@ def analyze_irq_traces(host_path: Path, guest_path: Path) -> dict[str, object]:
     guest_header = _single(guest_records, GUEST_HEADER)
     host_footer = _single(host_records, HOST_COMPLETE)
     guest_footer = _single(guest_records, GUEST_COMPLETE)
-    _validate_lossless_header(host_header, HOST_HEADER)
-    _validate_lossless_header(guest_header, GUEST_HEADER)
+    host_lossless = _validate_lossless_header(host_header, HOST_HEADER)
+    guest_lossless = _validate_lossless_header(guest_header, GUEST_HEADER)
     _validate_record_count(
         host_header, host_footer, len(host_records[HOST_IRQ]), "host trace"
     )
@@ -454,6 +458,7 @@ def analyze_irq_traces(host_path: Path, guest_path: Path) -> dict[str, object]:
             "domain": "guest-virtual-counter",
             "translation": "guest_counter_ticks = CNTPCT_EL0 - CNTVOFF_EL2 (mod 2^64)",
         },
+        "lossless": {"host": host_lossless, "guest": guest_lossless},
         "virtual_timer_injection_to_guest_irq_ns": _summarize_ticks(
             latency_ticks, host_frequency
         ),

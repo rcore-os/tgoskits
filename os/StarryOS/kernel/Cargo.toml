@@ -58,6 +58,7 @@ sg2002-cvi-usb-camera = [
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 rt-irq-trace = ["ax-runtime/rt-irq-trace"]
+rt-irq-trace-soak = ["rt-irq-trace", "ax-runtime/rt-irq-trace-soak"]
 axtest = []
 
 [dependencies]

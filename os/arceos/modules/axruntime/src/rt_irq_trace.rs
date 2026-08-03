@@ -10,6 +10,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
+#[cfg(feature = "rt-irq-trace-soak")]
+const TRACE_CAPACITY: usize = 1_048_576;
+#[cfg(not(feature = "rt-irq-trace-soak"))]
 const TRACE_CAPACITY: usize = 262_144;
 
 /// One guest timer IRQ observation in the guest virtual-counter domain.

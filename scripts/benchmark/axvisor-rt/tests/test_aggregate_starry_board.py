@@ -92,6 +92,71 @@ def comparison(index: int) -> dict[str, object]:
     }
 
 
+def soak_summary(profile: str) -> dict[str, object]:
+    requested_pcpu = 1 if profile == "shared" else 3
+    mask = 1 << requested_pcpu
+    suffix = "a" if profile == "shared" else "b"
+    host_suffix = "c" if profile == "shared" else "e"
+    guest_suffix = "d" if profile == "shared" else "f"
+    return {
+        "schema_version": 1,
+        "capture": {
+            "profile": profile,
+            "workload": "idle",
+            "iterations_per_metric": 10_000,
+            "period_us": 90_000,
+            "sample_count": 30_000,
+            "vcpu_count": 2,
+        },
+        "input": {
+            "path": f"/soak/{profile}/raw.log",
+            "sha256": suffix * 64,
+            "snapshot_filesystem_state": "clean",
+        },
+        "profile_contract": {
+            "dedicated_cpus": profile == "partitioned",
+            "phys_cpu_sets": ["0x2", "0x4"],
+            "vm_config": f"scripts/benchmark/axvisor-rt/config/starry-orangepi-5-plus-smp2-soak-{profile}.toml",
+        },
+        "host_noise": {
+            "requested_pcpu": requested_pcpu,
+            "affinity_mask": mask,
+            "observed_pcpu_mask": mask,
+            "max_duration_ms": 3_600_000,
+            "elapsed_ns": 1_900_000_000_000,
+            "loop_iterations": 1,
+            "stop_reason": "guest-complete",
+            "intensity": "busy-loop",
+            "covers_host_trace": True,
+            "status": "collected",
+        },
+        "direct_irq_trace": {
+            "lossless": {
+                side: {
+                    "records": 600_000,
+                    "dropped": 0,
+                    "incomplete": 0,
+                    "failed_injections": 0,
+                    "unowned_virtual_timer_irqs": 0,
+                    "counter_frequency_mismatches": 0,
+                }
+                for side in ("host", "guest")
+            },
+            "pairing": {"pair_count": 599_000},
+            "inputs": {
+                "host": {
+                    "path": f"/soak/{profile}/host.log",
+                    "sha256": host_suffix * 64,
+                },
+                "guest": {
+                    "path": f"/soak/{profile}/guest.log.gz",
+                    "sha256": guest_suffix * 64,
+                },
+            },
+        },
+    }
+
+
 class StarryBoardCampaignAggregationTests(unittest.TestCase):
     def test_five_passing_pairs_meet_matrix_gate_but_not_soak_gate(self) -> None:
         result = aggregate.aggregate_comparisons(
@@ -104,6 +169,32 @@ class StarryBoardCampaignAggregationTests(unittest.TestCase):
         direct = result["metrics"]["virtual_timer_injection_to_guest_irq"]
         self.assertEqual(direct["max"]["target_pair_count"], 5)
         self.assertGreater(direct["max"]["worst_of_runs_improvement_percent"], 10)
+
+    def test_valid_shared_and_partitioned_soaks_complete_m2_gate(self) -> None:
+        result = aggregate.aggregate_comparisons(
+            [comparison(index) for index in range(1, 6)],
+            {
+                "shared": soak_summary("shared"),
+                "partitioned": soak_summary("partitioned"),
+            },
+        )
+
+        self.assertTrue(result["assessment"]["soak_evidence_collected"])
+        self.assertTrue(result["assessment"]["m2_exit_gate_met"])
+        self.assertEqual(result["soak"]["minimum_duration_seconds"], 1800)
+
+    def test_rejects_a_soak_shorter_than_thirty_minutes(self) -> None:
+        shared = soak_summary("shared")
+        shared["host_noise"]["elapsed_ns"] = 1_799_999_999_999
+
+        with self.assertRaisesRegex(aggregate.AggregationError, "30-minute"):
+            aggregate.aggregate_comparisons(
+                [comparison(index) for index in range(1, 6)],
+                {
+                    "shared": shared,
+                    "partitioned": soak_summary("partitioned"),
+                },
+            )
 
     def test_requires_exactly_five_pairs(self) -> None:
         with self.assertRaisesRegex(aggregate.AggregationError, "exactly 5"):
@@ -144,6 +235,38 @@ class StarryBoardCampaignAggregationTests(unittest.TestCase):
 
             self.assertEqual(status, 0)
             self.assertNotIn(b"\r\n", output.read_bytes())
+
+    def test_cli_accepts_both_soak_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = []
+            for index in range(1, 6):
+                path = root / f"pair-{index}.json"
+                path.write_text(json.dumps(comparison(index)), encoding="utf-8")
+                inputs.append(str(path))
+            shared = root / "shared-soak.json"
+            partitioned = root / "partitioned-soak.json"
+            shared.write_text(json.dumps(soak_summary("shared")), encoding="utf-8")
+            partitioned.write_text(
+                json.dumps(soak_summary("partitioned")), encoding="utf-8"
+            )
+            output = root / "campaign.json"
+
+            status = aggregate.main(
+                [
+                    *inputs,
+                    "--shared-soak",
+                    str(shared),
+                    "--partitioned-soak",
+                    str(partitioned),
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(status, 0)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertTrue(result["assessment"]["m2_exit_gate_met"])
 
 
 if __name__ == "__main__":

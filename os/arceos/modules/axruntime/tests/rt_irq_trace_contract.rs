@@ -30,6 +30,27 @@ fn guest_timer_irq_entry_trace_is_feature_gated_and_non_allocating() {
 }
 
 #[test]
+fn soak_trace_feature_expands_the_preallocated_guest_buffer() {
+    let runtime_cargo = read("os/arceos/modules/axruntime/Cargo.toml");
+    let kernel_cargo = read("os/StarryOS/kernel/Cargo.toml");
+    let starryos_cargo = read("os/StarryOS/starryos/Cargo.toml");
+    let trace = read("os/arceos/modules/axruntime/src/rt_irq_trace.rs");
+
+    assert!(runtime_cargo.contains("rt-irq-trace-soak = [\"rt-irq-trace\"]"));
+    assert!(
+        kernel_cargo
+            .contains("rt-irq-trace-soak = [\"rt-irq-trace\", \"ax-runtime/rt-irq-trace-soak\"]")
+    );
+    assert!(
+        starryos_cargo.contains(
+            "rt-irq-trace-soak = [\"rt-irq-trace\", \"starry-kernel/rt-irq-trace-soak\"]"
+        )
+    );
+    assert!(trace.contains("#[cfg(feature = \"rt-irq-trace-soak\")]"));
+    assert!(trace.contains("const TRACE_CAPACITY: usize = 1_048_576;"));
+}
+
+#[test]
 fn starry_exports_guest_irq_trace_before_rootfs_snapshot() {
     let kernel_cargo = read("os/StarryOS/kernel/Cargo.toml");
     let procfs = read("os/StarryOS/kernel/src/pseudofs/proc.rs");

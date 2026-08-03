@@ -205,6 +205,51 @@ worst-of-runs. Passing `five_pair_matrix_gate_met` does not set
 `m2_exit_gate_met`: the latter remains false until the separately required
 shared and partitioned soak evidence is collected and checked.
 
+The soak is a separate long-duration contract, not a larger copy of the 1 ms
+matrix. Run `prepare-starry-soak.sh` from a clean commit. It preserves 10,000
+samples per metric and uses a 90 ms period for the two timer-paced metrics, so
+their nominal measured window is exactly 1,800 seconds; dispatch remains an
+untimed latency phase. The soak-only features expand both fixed trace buffers
+from 262,144 to 1,048,576 records, and the soak VM provides 512 MiB so StarryOS
+can render and compress its lossless trace after capture. Normal and formal
+10k builds retain the smaller buffers.
+
+```sh
+scripts/benchmark/axvisor-rt/prepare-starry-soak.sh
+
+scripts/benchmark/axvisor-rt/stage-starry-board.sh \
+  --kernel tmp/axvisor-rt/starryos-rt-soak.bin \
+  --rootfs tmp/axvisor-rt/starry-rt-soak-rootfs.img \
+  --rootfs-name starry-rt-soak-rootfs.img
+
+ORANGEPI_POWER_PYTHON=/home/seven_wsl/.cache/tgoskits-board-power-venv/bin/python \
+ORANGEPI_AXVISOR_BUILD_CONFIG=scripts/benchmark/axvisor-rt/config/axvisor-orangepi-5-plus-starry-host-noise-soak-shared.toml \
+ORANGEPI_AXVISOR_BOARD_CONFIG=scripts/benchmark/axvisor-rt/config/board-orangepi-5-plus-starry-host-noise-soak-shared.toml \
+ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED=1 \
+ORANGEPI_RESTORE_LINUX=1 \
+ORANGEPI_RUN_TIMEOUT_SECONDS=4500 \
+bash competition/ivc/orangepi/board-runner.sh
+```
+
+Use the matching partitioned configs for the second half. A soak is valid only
+when the persisted host-noise elapsed time is at least 1,800 seconds, both
+trace headers report zero dropped/incomplete records, the noise task stops for
+`guest-complete`, snapshot fsck is clean, and Linux is restored. The one-hour
+noise bound and 75-minute outer timeout are failure guards, not the claimed
+measurement duration.
+
+After both summaries pass harvest, regenerate the campaign summary with the
+same five comparisons plus the two soak summaries:
+
+```sh
+python3 scripts/benchmark/axvisor-rt/aggregate_starry_board.py \
+  pair-1/comparison.json pair-2/comparison.json pair-3/comparison.json \
+  pair-4/comparison.json pair-5/comparison.json \
+  --shared-soak soak/shared/summary.json \
+  --partitioned-soak soak/partitioned/summary.json \
+  --output campaign-summary.json
+```
+
 Do not replace the repository wrapper with a direct `cargo xtask axvisor board`
 invocation on the local automation host. The wrapper performs the Linux-side
 SSH reboot needed to expose U-Boot, applies the temporary U-Boot 2025.10

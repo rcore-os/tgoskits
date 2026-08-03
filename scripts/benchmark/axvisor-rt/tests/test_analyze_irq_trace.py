@@ -76,6 +76,27 @@ class DirectIrqTraceTests(unittest.TestCase):
         self.assertEqual(len(result["host_accounting"]["pcpus"]), 2)
         self.assertEqual(len(result["host_accounting"]["vcpus"]), 2)
         self.assertIsNone(result["host_noise"])
+        self.assertEqual(
+            result["lossless"],
+            {
+                "guest": {
+                    "counter_frequency_mismatches": 0,
+                    "dropped": 0,
+                    "failed_injections": 0,
+                    "incomplete": 0,
+                    "records": 3,
+                    "unowned_virtual_timer_irqs": 0,
+                },
+                "host": {
+                    "counter_frequency_mismatches": 0,
+                    "dropped": 0,
+                    "failed_injections": 0,
+                    "incomplete": 0,
+                    "records": 3,
+                    "unowned_virtual_timer_irqs": 0,
+                },
+            },
+        )
 
     def test_validates_host_noise_placement_and_trace_coverage(self) -> None:
         host = HOST_TRACE.replace(
