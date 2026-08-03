@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.25...axvm-v0.5.26) - 2026-08-03
+
+### Other
+
+- updated the following local packages: arm-gic-driver, axvmconfig, ax-hal, ax-hal, ax-std
+
 ## [0.5.25](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.24...axvm-v0.5.25) - 2026-08-03
 
 ### Added

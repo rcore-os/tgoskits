@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.11](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.10...arm-gic-driver-v0.17.11) - 2026-08-03
+
+### Fixed
+
+- *(arm-gic-driver)* use hardware CPU targets for GICv2 routing ([#1803](https://github.com/rcore-os/tgoskits/pull/1803))
+
 ## [0.17.10](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.9...arm-gic-driver-v0.17.10) - 2026-08-03
 
 ### Other

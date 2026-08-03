@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "arm-gic-driver"
-version = "0.17.10"
+version = "0.17.11"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "bitflags 2.13.1",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.7.6"
+version = "0.7.7"
 dependencies = [
  "ax-alloc",
  "ax-display",
@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "ax-errno 0.6.2",
  "ax-io",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "ax-input"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "ax-hal",
  "ax-kspin",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.2",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.12.6"
+version = "0.12.7"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.31"
+version = "0.5.32"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.2",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.10.6"
+version = "0.10.7"
 dependencies = [
  "aic8800",
  "ax-alloc",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
@@ -1271,7 +1271,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.6.6"
+version = "0.6.7"
 dependencies = [
  "ax-alloc",
  "ax-cpumask",
@@ -1491,7 +1491,7 @@ version = "0.1.1"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.7.14"
+version = "0.7.15"
 dependencies = [
  "anyhow",
  "ax-cpu",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.25"
+version = "0.5.26"
 dependencies = [
  "aarch64-cpu-ext",
  "arm-gic-driver",
@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "axvmconfig"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "axvm-types",
  "clap",
@@ -7924,7 +7924,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
