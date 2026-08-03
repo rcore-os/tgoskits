@@ -978,9 +978,7 @@ def parse_raw_samples(
     period_ms: int,
     controller: dict[str, object],
 ) -> dict[str, object]:
-    uart_record = find_record(
-        lines, STARRY_RAW_PREFIX, ("path", "samples", "sha256")
-    )
+    uart_record = find_hash_fragment_record(lines, STARRY_RAW_PREFIX)
     guest_manifest_record = find_record(
         lines, GUEST_RAW_MANIFEST_PREFIX, ("path", "samples", "sha256")
     )
@@ -1007,8 +1005,6 @@ def parse_raw_samples(
             )
 
     uart_sha256 = required(uart_record, "sha256", STARRY_RAW_PREFIX)
-    if re.fullmatch(r"[0-9a-f]{1,64}", uart_sha256) is None:
-        raise AnalysisError("invalid SHA-256 fragment in IVC-STARRY-RAW record")
     uart_sha256_complete = len(uart_sha256) == 64
     guest_manifest_sha256 = complete_sha256(
         guest_manifest_record, GUEST_RAW_MANIFEST_PREFIX
@@ -1019,8 +1015,8 @@ def parse_raw_samples(
         raise AnalysisError(
             "raw CSV SHA-256 does not match snapshot guest manifest and harvest records"
         )
-    if uart_sha256_complete and actual_sha256 != uart_sha256:
-        raise AnalysisError("complete UART SHA-256 conflicts with harvested raw CSV")
+    if not actual_sha256.startswith(uart_sha256):
+        raise AnalysisError("UART SHA-256 conflicts with harvested raw CSV")
 
     rows = read_raw_rows(raw_path, expected_count)
     derived = derive_raw_metrics(rows, period_ms)
@@ -1045,9 +1041,7 @@ def parse_pre_reset_raw_samples(
     expected_count: int,
     period_ms: int,
 ) -> dict[str, object]:
-    uart_record = find_record(
-        lines, STARRY_RESTART_RAW_PREFIX, ("path", "samples", "sha256")
-    )
+    uart_record = find_hash_fragment_record(lines, STARRY_RESTART_RAW_PREFIX)
     guest_manifest_record = find_record(
         lines,
         GUEST_PRE_RESET_RAW_MANIFEST_PREFIX,
@@ -1079,8 +1073,6 @@ def parse_pre_reset_raw_samples(
             )
 
     uart_sha256 = required(uart_record, "sha256", STARRY_RESTART_RAW_PREFIX)
-    if re.fullmatch(r"[0-9a-f]{1,64}", uart_sha256) is None:
-        raise AnalysisError("invalid SHA-256 fragment in pre-reset raw record")
     guest_manifest_sha256 = complete_sha256(
         guest_manifest_record, GUEST_PRE_RESET_RAW_MANIFEST_PREFIX
     )
@@ -1092,8 +1084,8 @@ def parse_pre_reset_raw_samples(
         raise AnalysisError(
             "pre-reset raw CSV SHA-256 does not match snapshot and harvest records"
         )
-    if len(uart_sha256) == 64 and actual_sha256 != uart_sha256:
-        raise AnalysisError("complete pre-reset UART SHA-256 conflicts with raw CSV")
+    if not actual_sha256.startswith(uart_sha256):
+        raise AnalysisError("pre-reset UART SHA-256 fragment conflicts with raw CSV")
 
     rows = read_raw_rows(raw_path, expected_count)
     derived = derive_raw_metrics(rows, period_ms)
@@ -1682,6 +1674,46 @@ def find_record(
     if record is None:
         raise AnalysisError(f"missing complete {prefix.strip()} record")
     return record
+
+
+def find_hash_fragment_record(lines: list[str], prefix: str) -> dict[str, str]:
+    required_fields = ("path", "samples", "sha256")
+    complete_records: list[dict[str, str]] = []
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        try:
+            fields = parse_fields(line, prefix)
+        except AnalysisError:
+            continue
+        if all(field in fields for field in required_fields):
+            complete_records.append(fields)
+
+    if not complete_records:
+        raise AnalysisError(f"missing complete {prefix.strip()} record")
+    reference = complete_records[0]
+    for record in complete_records[1:]:
+        if any(record[field] != reference[field] for field in ("path", "samples")):
+            raise ConflictingRecordsError(
+                f"conflicting complete {prefix.strip()} records"
+            )
+
+    fragments = [record["sha256"] for record in complete_records]
+    if any(
+        re.fullmatch(r"[0-9a-f]{1,64}", fragment) is None
+        for fragment in fragments
+    ):
+        raise AnalysisError(f"invalid SHA-256 fragment in {prefix.strip()} record")
+    longest_fragment = max(fragments, key=len)
+    if any(not longest_fragment.startswith(fragment) for fragment in fragments):
+        raise ConflictingRecordsError(
+            f"conflicting SHA-256 fragments in {prefix.strip()} records"
+        )
+    return {
+        "path": reference["path"],
+        "samples": reference["samples"],
+        "sha256": longest_fragment,
+    }
 
 
 def first_complete_record_index(

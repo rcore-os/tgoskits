@@ -849,6 +849,72 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
 
         self.assertTrue(result["restart_recovery"]["safe_fallback_observed"])
 
+    def test_restart_profile_accepts_compatible_pre_reset_uart_hash_fragments(
+        self,
+    ) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        digest = hashlib.sha256(pre_reset_raw.encode()).hexdigest()
+        uart_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-RESTART-RAW "
+            "path=/var/lib/ivc/raw-before-reset.csv samples=20 "
+            f"sha256={digest}"
+        )
+        log = self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw).replace(
+            uart_record,
+            "\n".join(
+                (
+                    uart_record.replace(digest, digest[:8]),
+                    uart_record.replace(digest, digest[:12]),
+                )
+            ),
+            1,
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            profile="restart",
+            pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+            expected_pre_reset_count=20,
+        )
+
+        self.assertEqual(
+            result["pre_reset_raw_samples"]["uart_sha256"], digest[:12]
+        )
+
+    def test_restart_profile_rejects_incompatible_pre_reset_uart_hash_fragments(
+        self,
+    ) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        digest = hashlib.sha256(pre_reset_raw.encode()).hexdigest()
+        conflicting_prefix = ("0" if digest[0] != "0" else "1") + digest[1:12]
+        uart_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-RESTART-RAW "
+            "path=/var/lib/ivc/raw-before-reset.csv samples=20 "
+            f"sha256={digest}"
+        )
+        log = self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw).replace(
+            uart_record,
+            "\n".join(
+                (
+                    uart_record.replace(digest, digest[:12]),
+                    uart_record.replace(digest, conflicting_prefix),
+                )
+            ),
+            1,
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "conflicting"):
+            analyzer.analyze(
+                self.write_log(log),
+                4,
+                self.write_raw_csv(),
+                profile="restart",
+                pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+                expected_pre_reset_count=20,
+            )
+
     def test_restart_profile_does_not_let_unterminated_guest_prefix_consume_host_records(
         self,
     ) -> None:
