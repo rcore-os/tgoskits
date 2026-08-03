@@ -29,7 +29,7 @@ use core::{
 
 use exited_work::ExitedThreadWork;
 use model::{
-    BalanceReason, DeferredTaskWorkClass, DetachedOwnerMessageBatch,
+    BalanceReason, BalanceTransferOutcome, DeferredTaskWorkClass, DetachedOwnerMessageBatch,
     FAIR_BALANCE_BALANCED_BACKOFF_FACTOR, FAIR_BALANCE_CONSTRAINED_BACKOFF_FACTOR,
     FairBalanceResult, FairPolicyPlacement, RootDomainState,
 };

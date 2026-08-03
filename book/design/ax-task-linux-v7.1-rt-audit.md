@@ -271,6 +271,14 @@ update source V -> capture vlag/relative deadline -> detach
 affinity 和 periodic balance 不再各自维护一条裸 `dequeue` 路径。失败回滚恢复原队列
 位置、placement、deadline bandwidth 和 Fair 请求状态。
 
+本地 `next` 提交后的 balance 与本地切换正确性分层。Linux v7.1 的
+`finish_lock_switch()` 只在调度尾执行无返回值的 `__balance_callbacks()`；Fair
+balance 遇到 pinned/affinity 竞争时只累计失败并通过 active balance 异步重试，不能
+否定已经选定的本地任务。对应地，TGOSKits 的 owner-to-owner balance 事务返回
+`Migrated / NoCandidate / Retry`：目标 offline、affinity 改写、候选失效或 publication
+竞争在完整回滚后归为 `Retry`，不会再触发 scheduler fatal。只有回滚本身无法恢复
+placement、队列或 Deadline bandwidth 时，才作为本地不变量破坏返回错误。
+
 ## Active mm 与地址空间所有权
 
 Linux v7.1 的 `context_switch()` 不在 user task 切到 kthread 时恢复一个独立 kernel mm。
@@ -465,6 +473,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | Fair 初始放置 | 新线程直接获得完整 1 ms request，与 Linux v7.1 `PLACE_DEADLINE_INITIAL` 不同 | normalized slice 改为 700 us 并按 CPU 数对数放大；初始 deadline 与 oneshot 只给半个实际 request，后续 request 恢复完整 slice |
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
+| switch 后 balance 竞争 | LoongArch `task-parallel` 偶发在已提交 `next` 后把一次 balance 事务竞争升级为 `0x53430001` fatal | balance 事务完整回滚后返回 `Retry`；本地切换继续，只有回滚失败才是 fatal |
 | user/kthread 地址空间切换 | user -> blk worker -> same user 每次恢复 kernel root，再次写 CR3/SATP 并全量 flush | kthread 借用 per-CPU active mm；move-only token 和 active lease 将回收推迟到 switch-tail 后任务上下文 |
 | zombie 前地址空间回收 | 12 轮 SIGKILL/waitpid 后 scheduler token 仍绑在异步 reap 的 thread record，RISC-V `MemFree` 少约 304 MiB，完整组随后小对象 OOM | 每线程按 `exit_mm()` 顺序同步 detach task-mm；process slot 清理后再发布 zombie；RISC-V/x86_64 仅剩约 6/7 MiB 合法开销 |
 | active-mm 过期 readiness edge | `destroy_address_space()` 仍报告 `Active` 时也把回收计为成功；同一 token 在一个 pass 内重试 64 次并永久 yield | `AddressSpaceDestroyOutcome::Active` 只重新 arm waiter，不算 progress；下一次尝试必须由新的最后-CPU lease edge 驱动 |

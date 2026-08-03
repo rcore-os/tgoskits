@@ -193,14 +193,15 @@ impl TaskSystem {
         target: CpuId,
         now_ns: u64,
         reason: BalanceReason,
-    ) -> Result<Option<ThreadId>, TaskError> {
+    ) -> Result<BalanceTransferOutcome, TaskError> {
         self.ensure_owner_cpu_online(&cpu)?;
         let _irq = IrqScope::enter();
-        self.cpu_remote(target)
-            .ok_or(TaskError::CpuOffline(target.as_u32()))?;
+        if self.cpu_remote(target).is_none() {
+            return Ok(BalanceTransferOutcome::Retry);
+        }
         let source = cpu.owner();
         if source == target {
-            return Ok(None);
+            return Ok(BalanceTransferOutcome::NoCandidate);
         }
         let Some(candidate) = self.select_owner_balance_candidate(
             cpu.as_ref().get_ref(),
@@ -208,7 +209,7 @@ impl TaskSystem {
             now_ns,
             reason,
         ) else {
-            return Ok(None);
+            return Ok(BalanceTransferOutcome::NoCandidate);
         };
         let core = Arc::clone(&candidate.core);
         let mut sched = core.sched().lock();
@@ -217,7 +218,7 @@ impl TaskSystem {
             || sched.placement.migration_target().is_some()
             || sched.placement.on_cpu().is_some()
         {
-            return Err(TaskError::InvalidConfiguration);
+            return Ok(BalanceTransferOutcome::Retry);
         }
         let detached = {
             let current_fair = cpu
@@ -225,12 +226,17 @@ impl TaskSystem {
                 .current_dispatch
                 .as_ref()
                 .and_then(|current| current.entity.fair());
-            cpu.lock_run_queue()
-                .detach_for_transfer(core.id(), current_fair, self.config.timing_granularity_ns())
-                .ok_or(TaskError::NotReady)?
+            let Some(detached) = cpu.lock_run_queue().detach_for_transfer(
+                core.id(),
+                current_fair,
+                self.config.timing_granularity_ns(),
+            ) else {
+                return Ok(BalanceTransferOutcome::Retry);
+            };
+            detached
         };
         let queued_entity = detached.thread.entity;
-        let prepare_result = (|| {
+        let prepare_result: Result<(), TaskError> = (|| {
             Self::detach_owner_deadline_bandwidth_locked(&core, &mut sched, cpu.as_mut())?;
             #[cfg(test)]
             if FAIL_BALANCE_TRANSFER_AFTER_DETACH.replace(false) {
@@ -246,9 +252,9 @@ impl TaskSystem {
             Ok(())
         })();
         drop(sched);
-        if let Err(error) = prepare_result {
+        if prepare_result.is_err() {
             self.rollback_owner_queued_migration(cpu.as_mut(), &core, detached, source, target)?;
-            return Err(error);
+            return Ok(BalanceTransferOutcome::Retry);
         }
         let migrated_fair = matches!(candidate.policy, SchedulePolicy::Fair { .. });
         #[cfg(test)]
@@ -261,9 +267,9 @@ impl TaskSystem {
         let publication_result = self.publish_owner_migration(&core, target, source, target);
         #[cfg(test)]
         drop(publication_exit);
-        if let Err(error) = publication_result {
+        if publication_result.is_err() {
             self.rollback_owner_queued_migration(cpu.as_mut(), &core, detached, source, target)?;
-            return Err(error);
+            return Ok(BalanceTransferOutcome::Retry);
         }
         self.publish_owner_cpu_load_summary(cpu.as_mut());
         if migrated_fair && reason != BalanceReason::FairPeriodic {
@@ -271,7 +277,7 @@ impl TaskSystem {
             cpu.as_mut()
                 .reset_fair_balance(completion_now_ns, self.config.balance_interval_ns());
         }
-        Ok(Some(core.id()))
+        Ok(BalanceTransferOutcome::Migrated(core.id()))
     }
 
     pub(super) fn rollback_owner_queued_migration(
@@ -378,8 +384,10 @@ impl TaskSystem {
                     now_ns,
                     BalanceReason::FairPeriodic,
                 )? {
-                    Some(thread) => FairBalanceResult::Migrated(thread),
-                    None => FairBalanceResult::Constrained,
+                    BalanceTransferOutcome::Migrated(thread) => FairBalanceResult::Migrated(thread),
+                    BalanceTransferOutcome::NoCandidate | BalanceTransferOutcome::Retry => {
+                        FairBalanceResult::Constrained
+                    }
                 }
             } else if lower_load_target_seen {
                 FairBalanceResult::Constrained
@@ -459,7 +467,7 @@ mod tests {
                 0,
                 BalanceReason::RtDeadlinePush,
             ),
-            Err(TaskError::InvalidConfiguration)
+            Ok(BalanceTransferOutcome::Retry)
         );
 
         assert_eq!(
@@ -499,7 +507,7 @@ mod tests {
                 0,
                 BalanceReason::RtDeadlinePush,
             ),
-            Err(TaskError::InvalidConfiguration)
+            Ok(BalanceTransferOutcome::Retry)
         );
 
         assert_eq!(
@@ -507,6 +515,28 @@ mod tests {
             first.id(),
             "rollback must restore the candidate at its original FIFO position"
         );
+    }
+
+    #[test]
+    fn committed_local_switch_survives_a_recoverable_balance_race() {
+        let (system, mut cpu0, _cpu1) = online_pair();
+        let policy = SchedulePolicy::fifo(RtPriority::new(50).unwrap());
+        let first = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        let second = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        for thread in [&first, &second] {
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+        }
+
+        // Model an affinity/offline/publication race after the owner has
+        // detached a balance candidate. The transfer transaction rolls back
+        // completely, so the already committed local selection must remain
+        // usable instead of being converted into a fatal scheduler error.
+        fail_next_balance_transfer_after_detach();
+        let decision = system.schedule(cpu0.as_mut(), 0).unwrap();
+
+        assert_eq!(decision.next(), first.id());
+        assert_eq!(cpu0.runnable_count(), 1);
     }
 
     #[test]
@@ -528,7 +558,7 @@ mod tests {
                 0,
                 BalanceReason::RtDeadlinePush,
             ),
-            Err(TaskError::CpuOffline(1))
+            Ok(BalanceTransferOutcome::Retry)
         );
 
         assert_eq!(cpu0.runnable_count(), 2);

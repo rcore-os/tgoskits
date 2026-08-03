@@ -167,12 +167,21 @@ impl TaskSystem {
         let Some(target) = target else {
             return Ok(None);
         };
-        self.transfer_owner_balance_candidate(
+        let outcome = self.transfer_owner_balance_candidate(
             cpu.as_mut(),
             target,
             task_runtime::monotonic_ns(),
             BalanceReason::RtDeadlinePush,
-        )
+        )?;
+        if outcome == BalanceTransferOutcome::Retry
+            && let Some(target_remote) = self.cpu_remote(target)
+        {
+            // Ask the idle destination to issue a fresh owner-mediated pull.
+            // This keeps retry asynchronous instead of spinning the source
+            // scheduler tail on a transient affinity/publication race.
+            target_remote.kick_scheduler_work();
+        }
+        Ok(outcome.migrated())
     }
 
     /// Replenishes a throttled Deadline job and enqueues it on an owner CPU.
