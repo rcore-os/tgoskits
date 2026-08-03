@@ -28,13 +28,15 @@ use ax_task::{
     CpuLocal, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources, ThreadSpec,
     impl_trait as impl_task_runtime,
     runtime::{
-        AddressSpaceHandle, ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle,
-        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, RuntimeCpuId,
-        RuntimeHandleResult, RuntimeStatus, StackHandle, StackRequest, TaskRuntime,
+        AddressSpaceActivation, AddressSpaceDestroyOutcome, AddressSpaceHandle,
+        AddressSpaceReclaimArmOutcome, ContextThreadBinding, CpuRemoteHandle,
+        CurrentCpuLocalHandle, ExecutionContextHandle, IrqGuardToken, KernelContextRequest,
+        RuntimeCpuId, RuntimeHandleResult, RuntimeStatus, StackHandle, StackRequest, TaskRuntime,
         TaskSystemHandle, TlsHandle, TlsRequest, UserContextRequest,
     },
 };
 
+mod address_space;
 mod bootstrap;
 mod context;
 mod executor;
@@ -45,6 +47,11 @@ mod spawn;
 mod thread;
 mod thread_resources;
 
+pub use address_space::{TaskAddressSpace, switch_current_address_space};
+use address_space::{
+    activate_runtime_address_space, arm_runtime_address_space_reclaim,
+    destroy_runtime_address_space, release_current_active_address_space,
+};
 #[cfg(feature = "tls")]
 pub(crate) use bootstrap::initialize_early_bootstrap_tls;
 #[cfg(test)]
@@ -60,13 +67,11 @@ use bootstrap::{
 };
 #[cfg(feature = "smp")]
 pub(crate) use bootstrap::{initialize_secondary, run_idle};
-pub use context::{
-    TaskAddressSpace, diagnose_current_stack_guard_page_fault, switch_current_page_table,
-};
+pub use context::diagnose_current_stack_guard_page_fault;
 use context::{
     bind_bootstrap_runtime_context, bind_runtime_context_thread, create_bootstrap_context,
     create_runtime_context, create_user_runtime_context, destroy_runtime_context,
-    finish_runtime_context_switch_tail, install_runtime_address_space, switch_runtime_context,
+    finish_runtime_context_switch_tail, switch_runtime_context,
 };
 pub use executor::{BlockOnError, block_on, block_on_timeout};
 #[cfg(feature = "tls")]

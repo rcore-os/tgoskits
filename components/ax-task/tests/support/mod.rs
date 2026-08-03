@@ -61,6 +61,7 @@ std::thread_local! {
     static IPI_PENDING: RefCell<[bool; MAX_TEST_CPUS]> = const { RefCell::new([false; MAX_TEST_CPUS]) };
     static ONLINE_CPU_COUNT: Cell<usize> = const { Cell::new(1) };
     static DESTROYED_CONTEXTS: Cell<usize> = const { Cell::new(0) };
+    static DESTROYED_ADDRESS_SPACES: Cell<usize> = const { Cell::new(0) };
     static DEALLOCATED_STACKS: Cell<usize> = const { Cell::new(0) };
     static DEALLOCATED_TLS: Cell<usize> = const { Cell::new(0) };
     static ACTIVE_IRQ_TOKENS: RefCell<ActiveGuardTokens> = const { RefCell::new(ActiveGuardTokens::new()) };
@@ -180,7 +181,7 @@ impl_trait! {
             IN_HARD_IRQ.with(Cell::get)
         }
 
-        fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
+        fn finish_context_switch_tail() {}
 
         fn finish_initial_context_switch() {
             // Integration tests do not execute real architecture context
@@ -241,41 +242,37 @@ impl_trait! {
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
-        fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus {
+        fn deallocate_stack(_stack: StackHandle) {
             DEALLOCATED_STACKS.with(|count| count.set(count.get() + 1));
-            RuntimeStatus::Success
         }
         fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
-        fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus {
+        fn deallocate_tls(_tls: TlsHandle) {
             DEALLOCATED_TLS.with(|count| count.set(count.get() + 1));
-            RuntimeStatus::Success
         }
         fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
         fn create_user_context(_request: UserContextRequest) -> RuntimeHandleResult {
-            if _request.address_space.is_none() {
-                RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle)
-            } else {
-                RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
-            }
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
         fn bind_context_thread(_binding: ContextThreadBinding) -> RuntimeStatus {
             RuntimeStatus::Success
         }
-        fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
-            let attempt = DESTROYED_CONTEXTS.with(|count| {
-                let attempt = count.get() + 1;
-                count.set(attempt);
-                attempt
-            });
-            if _context.into_raw() == usize::MAX && attempt == 1 {
-                RuntimeStatus::Busy
-            } else {
-                RuntimeStatus::Success
-            }
+        fn destroy_context(_context: ExecutionContextHandle) {
+            DESTROYED_CONTEXTS.with(|count| count.set(count.get() + 1));
+        }
+        fn destroy_address_space(
+            _address_space: AddressSpaceHandle,
+        ) -> AddressSpaceDestroyOutcome {
+            DESTROYED_ADDRESS_SPACES.with(|count| count.set(count.get() + 1));
+            AddressSpaceDestroyOutcome::Released
+        }
+        fn arm_address_space_reclaim(
+            _address_space: AddressSpaceHandle,
+        ) -> AddressSpaceReclaimArmOutcome {
+            AddressSpaceReclaimArmOutcome::Ready
         }
         unsafe fn switch_context(
             _previous: ExecutionContextHandle,
@@ -283,7 +280,7 @@ impl_trait! {
         ) {
             panic!("integration runtime has no execution contexts")
         }
-        fn install_address_space(_address_space: AddressSpaceHandle) -> RuntimeStatus {
+        fn activate_address_space(_activation: AddressSpaceActivation) -> RuntimeStatus {
             RuntimeStatus::Unsupported
         }
         fn flush_tlb_local(_start: usize, _size: usize) {}
@@ -360,9 +357,10 @@ pub fn consume_local_scheduler_work() -> bool {
     LOCAL_SCHEDULER_WORK_PENDING.with(|pending| pending.replace(false))
 }
 
-pub fn resource_release_counts() -> (usize, usize, usize) {
+pub fn resource_release_counts() -> (usize, usize, usize, usize) {
     (
         DESTROYED_CONTEXTS.with(Cell::get),
+        DESTROYED_ADDRESS_SPACES.with(Cell::get),
         DEALLOCATED_STACKS.with(Cell::get),
         DEALLOCATED_TLS.with(Cell::get),
     )
@@ -390,6 +388,7 @@ pub fn set_monotonic_ns(now_ns: u64) {
 
 pub fn reset_resource_release_counts() {
     DESTROYED_CONTEXTS.with(|count| count.set(0));
+    DESTROYED_ADDRESS_SPACES.with(|count| count.set(0));
     DEALLOCATED_STACKS.with(|count| count.set(0));
     DEALLOCATED_TLS.with(|count| count.set(0));
 }

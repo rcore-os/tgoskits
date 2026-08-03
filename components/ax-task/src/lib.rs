@@ -21,7 +21,6 @@ mod irq_wait;
 mod lock;
 #[cfg(feature = "qperf-metrics")]
 mod metrics;
-mod reclaim;
 pub mod runtime;
 mod scheduler;
 mod system;

@@ -370,9 +370,6 @@ pub struct TaskContext {
     rsp: u64,
     /// Architecture-neutral current-header and kernel-TLS switch state.
     task_local: TaskLocalState,
-    /// The `CR3` value restored for this task's userspace address space.
-    #[cfg(feature = "uspace")]
-    page_table_root: ax_memory_addr::PhysAddr,
     /// Extended states, i.e., FP/SIMD states.
     #[cfg(feature = "fp-simd")]
     ext_state: ExtendedState,
@@ -401,8 +398,6 @@ impl TaskContext {
             kstack_top: va!(0),
             rsp: 0,
             task_local: TaskLocalState::new(),
-            #[cfg(feature = "uspace")]
-            page_table_root: crate::asm::read_kernel_page_table(),
             #[cfg(feature = "fp-simd")]
             ext_state: ExtendedState::default(),
         }
@@ -441,24 +436,12 @@ impl TaskContext {
         self.task_local.current_header()
     }
 
-    /// Changes the page table root restored for this task.
-    #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
-        self.page_table_root = page_table_root;
-    }
-
     /// Completes every helper operation that must precede current publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.ext_state.save();
             _next_ctx.ext_state.restore();
-        }
-        #[cfg(feature = "uspace")]
-        if self.page_table_root != _next_ctx.page_table_root {
-            // SAFETY: the scheduler owns both contexts with IRQs disabled.
-            unsafe { crate::asm::write_user_page_table(_next_ctx.page_table_root) };
-            // Writing CR3 flushes the non-global TLB entries.
         }
     }
 
@@ -524,6 +507,27 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
             + offset_of!(TaskLocalState, kernel_tls),
         fs_base_msr = const 0xc000_0100_u32,
     )
+}
+
+#[cfg(all(test, feature = "host-test", feature = "uspace"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_prepare_does_not_override_the_runtime_address_space_commit() {
+        // SAFETY: the host-test backend models CR3 with an unprivileged atomic.
+        unsafe { crate::asm::write_user_page_table(0x1000.into()) };
+        let mut previous = TaskContext::new();
+        unsafe { crate::asm::write_user_page_table(0x2000.into()) };
+        let next = TaskContext::new();
+
+        // The runtime address-space transaction commits a third root before
+        // the architecture register context is prepared.
+        unsafe { crate::asm::write_user_page_table(0x3000.into()) };
+        previous.prepare_switch_to(&next);
+
+        assert_eq!(crate::asm::read_user_page_table().as_usize(), 0x3000);
+    }
 }
 
 #[cfg(not(feature = "tls"))]

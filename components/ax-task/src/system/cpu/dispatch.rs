@@ -57,6 +57,19 @@ pub(crate) struct CurrentSchedule {
 }
 
 impl CurrentSchedule {
+    #[cfg(test)]
+    pub(crate) const fn test_state(
+        thread: ThreadId,
+        policy: SchedulePolicy,
+        entity: SchedulingEntity,
+    ) -> Self {
+        Self {
+            thread,
+            policy,
+            entity,
+        }
+    }
+
     pub(crate) const fn thread(self) -> ThreadId {
         self.thread
     }
@@ -298,16 +311,6 @@ impl CurrentDispatch {
                 next
             }
         }
-    }
-
-    pub(crate) fn should_preempt(
-        &self,
-        woken_policy: SchedulePolicy,
-        woken_entity: SchedulingEntity,
-        fair_virtual_time: u64,
-    ) -> bool {
-        self.schedule_snapshot()
-            .should_preempt(woken_policy, woken_entity, fair_virtual_time)
     }
 }
 

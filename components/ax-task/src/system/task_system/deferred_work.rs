@@ -10,6 +10,13 @@ struct SchedulerTickDispatch {
     retry_deferred: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceReclaim {
+    None,
+    Coroutine,
+    AddressSpace,
+}
+
 impl TaskSystem {
     pub(crate) fn publish_current_scheduler_tick_work(&self, cpu: &CpuLocal, observed_ns: u64) {
         let Some(core) = cpu.current_core() else {
@@ -54,27 +61,18 @@ impl TaskSystem {
         task_runtime::fatal_invariant(0x5457_0001, result as usize);
     }
 
-    /// Publishes one zero-reference resource to the task-context reaper.
-    ///
-    /// The pinned node supplies its own fixed reclaim function. Publication is
-    /// allocation-free and does not invoke that function, so callers may use it
-    /// from hard IRQ context. `data` must be an exposed allocation address
-    /// numerically equal to the node address; this is checked before its
-    /// intrusive membership is published.
-    pub(crate) fn publish_deferred_reclaim(
+    /// Publishes one zero-reference coroutine header from hard IRQ context.
+    pub(crate) fn publish_deferred_coroutine_reclaim(
         &self,
-        node: Pin<&'static DeferredReclaimNode>,
-        data: usize,
+        header: Pin<&'static CoroutineHeader>,
     ) -> PublishResult {
-        if data != node.address() {
-            task_runtime::fatal_invariant(0x4558_0007, data);
-        }
+        let data = header.address();
         let _publication = IrqScope::enter();
-        let result = self.deferred_reclaims.publish(
-            node.inbox(),
+        let result = self.deferred_coroutine_reclaims.publish(
+            header.reclaim_node(),
             InboxMessage::reclaim(ThreadId::from_parts(0, 0), 0, data),
         );
-        if result != PublishResult::WrongKind {
+        if result == PublishResult::Published {
             self.task_work.publish();
         }
         result
@@ -99,6 +97,10 @@ impl TaskSystem {
     /// Reports whether a sticky task-work publication awaits the service thread.
     pub fn deferred_task_work_pending(&self) -> bool {
         self.task_work.is_pending()
+    }
+
+    pub(crate) fn publish_resource_release_ready(&self) {
+        self.task_work.publish();
     }
 
     /// Runs one bounded task-context pass as the single task-work consumer.
@@ -154,11 +156,17 @@ impl TaskSystem {
                         batch.reaped_threads += reaped;
                         reaped
                     }
-                    DeferredTaskWorkClass::Reclaim => {
-                        let reclaimed = self.reclaim_one_resource()?;
-                        batch.reclaimed_resources += reclaimed;
-                        reclaimed
-                    }
+                    DeferredTaskWorkClass::Reclaim => match self.reclaim_one_resource()? {
+                        ResourceReclaim::None => 0,
+                        ResourceReclaim::Coroutine => {
+                            batch.coroutine_reclaims += 1;
+                            1
+                        }
+                        ResourceReclaim::AddressSpace => {
+                            batch.address_space_reclaims += 1;
+                            1
+                        }
+                    },
                 };
                 if processed == 0 {
                     classes_without_progress += 1;
@@ -167,6 +175,15 @@ impl TaskSystem {
                 }
             }
             debug_assert!(batch.processed() <= limit);
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::record_task_work_classes(
+                batch.deadline_events,
+                batch.scheduler_tick_events,
+                batch.exit_callbacks,
+                batch.reaped_threads,
+                batch.coroutine_reclaims,
+                batch.address_space_reclaims,
+            );
             Ok(batch)
         })();
         self.state.lock().task_work_class_cursor = next_class;
@@ -227,80 +244,74 @@ impl TaskSystem {
         })
     }
 
-    fn reclaim_one_resource(&self) -> Result<usize, TaskError> {
-        let thread_release_first = {
+    fn reclaim_one_resource(&self) -> Result<ResourceReclaim, TaskError> {
+        let address_space_reclaim_first = {
             let mut state = self.state.lock();
-            let current = state.thread_release_first;
-            state.thread_release_first = !current;
+            let current = state.address_space_reclaim_first;
+            state.address_space_reclaim_first = !current;
             current
         };
-        if thread_release_first {
-            if self.retry_pending_resource_release() {
-                return Ok(1);
+        if address_space_reclaim_first {
+            if self.reclaim_pending_address_space() {
+                return Ok(ResourceReclaim::AddressSpace);
             }
-            self.drain_deferred_reclaims_inner(1)
+            self.drain_deferred_coroutine_reclaims_inner(1)
+                .map(|count| match count {
+                    0 => ResourceReclaim::None,
+                    1 => ResourceReclaim::Coroutine,
+                    _ => unreachable!("single-resource drain exceeded its bound"),
+                })
         } else {
-            let reclaimed = self.drain_deferred_reclaims_inner(1)?;
+            let reclaimed = self.drain_deferred_coroutine_reclaims_inner(1)?;
             if reclaimed != 0 {
-                Ok(reclaimed)
+                Ok(ResourceReclaim::Coroutine)
+            } else if self.reclaim_pending_address_space() {
+                Ok(ResourceReclaim::AddressSpace)
             } else {
-                Ok(usize::from(self.retry_pending_resource_release()))
+                Ok(ResourceReclaim::None)
             }
         }
     }
 
-    fn retry_pending_resource_release(&self) -> bool {
-        let Some(mut pending) = self.state.lock().pending_resource_releases.pop() else {
+    fn reclaim_pending_address_space(&self) -> bool {
+        let Some(address_space) = self.state.lock().pending_address_space_reclaims.pop() else {
             return false;
         };
-        match pending.resources_mut().try_release() {
-            Ok(()) => {
-                pending.finish();
-            }
-            Err(_error) => {
-                self.state.lock().pending_resource_releases.push(pending);
-                // A failed release retains every live handle. Re-publish after
-                // returning it to the queue so the service thread yields
-                // between retries instead of spinning inside one batch.
-                self.task_work.publish();
+        let handle = address_space.handle();
+        match task_runtime::destroy_address_space(handle) {
+            AddressSpaceDestroyOutcome::Released => {}
+            AddressSpaceDestroyOutcome::Active => {
+                self.state
+                    .lock()
+                    .pending_address_space_reclaims
+                    .push(address_space);
+                match task_runtime::arm_address_space_reclaim(handle) {
+                    AddressSpaceReclaimArmOutcome::Ready => self.task_work.publish(),
+                    AddressSpaceReclaimArmOutcome::Armed => {}
+                }
+                return false;
             }
         }
         true
     }
 
-    /// Reclaims at most `limit` resources in ordinary task context.
-    ///
-    /// The implementation additionally caps one pass at 64 callbacks so an
-    /// accidental large caller limit cannot create an unbounded safe point.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TaskError::UnsafeContext`] from hard IRQ context.
-    pub fn drain_deferred_reclaims(&self, limit: usize) -> Result<usize, TaskError> {
-        if task_runtime::in_hard_irq() {
-            return Err(TaskError::UnsafeContext);
-        }
-        let _consumer = self.task_work.try_claim_consumer()?;
-        self.drain_deferred_reclaims_inner(limit)
-    }
-
-    fn drain_deferred_reclaims_inner(&self, limit: usize) -> Result<usize, TaskError> {
+    fn drain_deferred_coroutine_reclaims_inner(&self, limit: usize) -> Result<usize, TaskError> {
         const MAX_DRAIN_BATCH: usize = 64;
 
         let mut messages = [InboxMessage::EMPTY; MAX_DRAIN_BATCH];
         let batch = self
-            .deferred_reclaims
+            .deferred_coroutine_reclaims
             .drain(limit.min(MAX_DRAIN_BATCH), &mut messages);
         for message in messages.iter().take(batch.drained()) {
-            let data = ptr::with_exposed_provenance_mut::<()>(message.payload());
-            if data.is_null() {
-                continue;
+            if message.operation() != InboxOperation::Reclaim || message.payload() == 0 {
+                task_runtime::fatal_invariant(0x4558_0009, message.payload());
             }
-            let node = data.cast::<DeferredReclaimNode>();
+            let header = ptr::with_exposed_provenance_mut::<CoroutineHeader>(message.payload());
             unsafe {
-                // Detachment cleared this node's inbox membership before the
-                // fixed callback receives exclusive ownership of its resource.
-                DeferredReclaimNode::reclaim(node, data);
+                // Detachment cleared the embedded reclaim membership. Zero
+                // references and FUTURE_EMPTY make the type-erased allocation
+                // exclusively owned by this task-context consumer.
+                CoroutineHeader::deallocate_raw(header);
             }
         }
         Ok(batch.drained())

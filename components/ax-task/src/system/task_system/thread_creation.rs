@@ -87,7 +87,7 @@ impl TaskSystem {
                     state.deadline_admission.release(reservation);
                 }
                 drop(core);
-                let _rollback = self.release_thread_record(record);
+                self.release_thread_record(record);
                 return Err(TaskError::RuntimeFailure(status as u32));
             }
         }
@@ -125,7 +125,7 @@ impl TaskSystem {
         };
         if let Some(error) = commit_error {
             drop(core);
-            let _rollback = self.release_thread_record(
+            self.release_thread_record(
                 record.expect("rejected thread commit must retain its resource record"),
             );
             return Err(error);
@@ -251,6 +251,7 @@ impl TaskSystem {
             .lock()
             .remove_unpublished_thread_with_handle(&handle)?;
         drop(handle);
-        self.release_thread_record(record)
+        self.release_thread_record(record);
+        Ok(())
     }
 }

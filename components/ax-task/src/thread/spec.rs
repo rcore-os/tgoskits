@@ -6,7 +6,7 @@ use crate::{
     CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWork,
     SchedulerTickWorkDisposition, TaskError, ThreadHandle, ThreadId,
     runtime::{
-        AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle,
+        AddressSpaceHandle, AddressSpaceToken, ExecutionContextHandle, StackHandle, TlsHandle,
         task_runtime,
     },
 };
@@ -18,7 +18,7 @@ pub struct ThreadResources {
     context: ExecutionContextHandle,
     stack: StackHandle,
     tls: TlsHandle,
-    address_space: AddressSpaceHandle,
+    address_space: AddressSpaceToken,
 }
 
 impl ThreadResources {
@@ -27,7 +27,7 @@ impl ThreadResources {
         context: ExecutionContextHandle::NONE,
         stack: StackHandle::NONE,
         tls: TlsHandle::NONE,
-        address_space: AddressSpaceHandle::NONE,
+        address_space: AddressSpaceToken::NONE,
     };
 
     /// Creates a complete runtime resource bundle from uniquely owned handles.
@@ -42,7 +42,7 @@ impl ThreadResources {
         context: ExecutionContextHandle,
         stack: StackHandle,
         tls: TlsHandle,
-        address_space: AddressSpaceHandle,
+        address_space: AddressSpaceToken,
     ) -> Self {
         Self {
             context,
@@ -66,56 +66,41 @@ impl ThreadResources {
     }
     /// Returns the address-space handle.
     pub const fn address_space(&self) -> AddressSpaceHandle {
-        self.address_space
+        self.address_space.handle()
     }
 
     pub(crate) fn replace_address_space(
         &mut self,
-        address_space: AddressSpaceHandle,
-    ) -> AddressSpaceHandle {
+        address_space: AddressSpaceToken,
+    ) -> AddressSpaceToken {
         core::mem::replace(&mut self.address_space, address_space)
     }
 
-    /// Releases as many resources as possible without losing retry ownership.
+    /// Releases thread-private resources and returns the independent active-mm
+    /// ownership token.
     ///
-    /// A failed runtime operation leaves its handle and every dependent handle
-    /// in this bundle. The task-context reaper can therefore retry the same
-    /// transaction without reconstructing an already-consumed identity.
-    pub(crate) fn try_release(&mut self) -> Result<(), TaskError> {
+    /// The registry calls this only after switch tail has cleared physical CPU
+    /// ownership. Context, TLS, and stack destruction are consequently
+    /// one-way operations with no retry state. The address-space token has a
+    /// separate active-CPU lifetime and is handed to that reclaim protocol
+    /// instead of retaining already-dead thread resources.
+    pub(crate) fn release(mut self) -> AddressSpaceToken {
         if !self.context.is_none() {
-            let status = task_runtime::destroy_context(self.context);
-            if status != RuntimeStatus::Success {
-                return Err(TaskError::RuntimeFailure(status as u32));
-            }
+            task_runtime::destroy_context(self.context);
             self.context = ExecutionContextHandle::NONE;
         }
-        self.address_space = AddressSpaceHandle::NONE;
 
         if !self.tls.is_none() {
-            let status = task_runtime::deallocate_tls(self.tls);
-            if status != RuntimeStatus::Success {
-                return Err(TaskError::RuntimeFailure(status as u32));
-            }
+            task_runtime::deallocate_tls(self.tls);
             self.tls = TlsHandle::NONE;
         }
 
         if !self.stack.is_none() {
-            let status = task_runtime::deallocate_stack(self.stack);
-            if status != RuntimeStatus::Success {
-                return Err(TaskError::RuntimeFailure(status as u32));
-            }
+            task_runtime::deallocate_stack(self.stack);
             self.stack = StackHandle::NONE;
         }
-        Ok(())
-    }
-}
 
-impl Drop for ThreadResources {
-    fn drop(&mut self) {
-        // Ordinary scheduler teardown retains this bundle when a retry is
-        // needed. This best-effort fallback is only for construction rollback
-        // or shutdown paths where no task-system retry owner remains.
-        let _result = self.try_release();
+        core::mem::replace(&mut self.address_space, AddressSpaceToken::NONE)
     }
 }
 

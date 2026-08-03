@@ -287,9 +287,6 @@ pub struct TaskContext {
     pub s: [usize; 10],
     /// Architecture-neutral current-header and kernel-TLS switch state.
     task_local: TaskLocalState,
-    /// The `PGDL` value restored for this task's userspace address space.
-    #[cfg(feature = "uspace")]
-    page_table_root: usize,
     #[cfg(feature = "fp-simd")]
     /// Floating Point Unit states
     pub fpu: FpuState,
@@ -316,8 +313,6 @@ impl Default for TaskContext {
             sp: 0,
             s: [0; 10],
             task_local: TaskLocalState::new(),
-            #[cfg(feature = "uspace")]
-            page_table_root: 0,
             #[cfg(feature = "fp-simd")]
             fpu: FpuState::default(),
         }
@@ -327,11 +322,7 @@ impl Default for TaskContext {
 impl TaskContext {
     /// Creates a new default context for a new task.
     pub fn new() -> Self {
-        Self {
-            #[cfg(feature = "uspace")]
-            page_table_root: crate::asm::read_user_page_table().as_usize(),
-            ..Self::default()
-        }
+        Self::default()
     }
 
     /// Initializes a task context with its entry point, kernel stack, and
@@ -352,28 +343,12 @@ impl TaskContext {
         self.task_local.current_header()
     }
 
-    /// Changes the page table root restored for this task.
-    #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
-        self.page_table_root = page_table_root.as_usize();
-    }
-
     /// Completes FPU work before current-thread publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.fpu.save();
             _next_ctx.fpu.restore();
-        }
-        #[cfg(feature = "uspace")]
-        if self.page_table_root != _next_ctx.page_table_root {
-            // SAFETY: the scheduler owns both contexts with IRQs disabled.
-            unsafe {
-                crate::asm::write_user_page_table(ax_memory_addr::PhysAddr::from(
-                    _next_ctx.page_table_root,
-                ))
-            };
-            crate::asm::flush_tlb(None);
         }
     }
 

@@ -28,7 +28,7 @@ enum ResourceEvent {
     AllocateStack,
     AllocateTls,
     CreateKernelContext,
-    CreateUserContext(usize),
+    CreateUserContext,
     DeallocateTls,
     DeallocateStack,
 }
@@ -103,10 +103,8 @@ impl ThreadResourceBackend for InjectedResourceBackend {
         }
     }
 
-    fn create_user_context(&mut self, request: UserContextRequest) -> RuntimeHandleResult {
-        self.events.push(ResourceEvent::CreateUserContext(
-            request.address_space.into_raw(),
-        ));
+    fn create_user_context(&mut self, _request: UserContextRequest) -> RuntimeHandleResult {
+        self.events.push(ResourceEvent::CreateUserContext);
         match self.failure {
             InjectedResourceFailure::Context | InjectedResourceFailure::TlsRollback => {
                 RuntimeHandleResult::failure(RuntimeStatus::NoMemory)
@@ -469,7 +467,7 @@ fn failed_resource_rollback_returns_every_live_handle() {
 #[test]
 fn failed_user_context_creation_preserves_address_space_identity_during_rollback() {
     let mut backend = InjectedResourceBackend::new(InjectedResourceFailure::Context);
-    let address_space = TaskAddressSpace::from_page_table_root(0x4000).unwrap();
+    let address_space = TaskAddressSpace::new(ax_memory_addr::PhysAddr::from(0x4000), ()).unwrap();
 
     let result = create_thread_resources_with(
         &mut backend,
@@ -489,7 +487,7 @@ fn failed_user_context_creation_preserves_address_space_identity_during_rollback
         [
             ResourceEvent::AllocateStack,
             ResourceEvent::AllocateTls,
-            ResourceEvent::CreateUserContext(0x4000),
+            ResourceEvent::CreateUserContext,
             ResourceEvent::DeallocateTls,
             ResourceEvent::DeallocateStack,
         ]
@@ -540,19 +538,6 @@ fn entry_extension_lookup_does_not_pin_exited_thread() {
     );
     system.reap_thread_handle(handle).unwrap();
     assert_eq!(extension_drops.load(Ordering::Acquire), 1);
-}
-
-#[test]
-fn user_context_rejects_a_missing_address_space() {
-    let result = create_user_runtime_context(UserContextRequest {
-        stack: StackHandle::NONE,
-        entry: unreachable_test_entry,
-        tls: TlsHandle::NONE,
-        address_space: AddressSpaceHandle::NONE,
-    });
-
-    assert_eq!(result.status, RuntimeStatus::InvalidHandle);
-    assert_eq!(result.handle, 0);
 }
 
 #[cfg(feature = "tls")]

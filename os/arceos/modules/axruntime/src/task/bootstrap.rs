@@ -37,7 +37,7 @@ static EARLY_BOOTSTRAP_TLS: usize = 0;
 
 #[cfg(feature = "uspace")]
 #[ax_percpu::def_percpu]
-static KERNEL_ADDRESS_SPACE_ROOT: usize = 0;
+static OFFLINE_KERNEL_ROOT: usize = 0;
 
 /// Runs one CPU-local operation under the caller's existing migration guard.
 ///
@@ -183,9 +183,7 @@ fn initialize_current_cpu(cpu_id: usize) -> Result<ThreadId, TaskError> {
         };
         // SAFETY: this owner CPU remains offline and has not entered a
         // scheduler-managed user address space.
-        unsafe {
-            with_current_cpu_pin(|pin| KERNEL_ADDRESS_SPACE_ROOT.write_current(pin, kernel_root))
-        };
+        unsafe { with_current_cpu_pin(|pin| OFFLINE_KERNEL_ROOT.write_current(pin, kernel_root)) };
     }
     let mut cpu = system.create_cpu_local(owner)?;
     // Bootstrap and idle contexts use this CPU's architecture-owned boot
@@ -372,6 +370,6 @@ pub(super) fn primary_bootstrap_thread() -> Option<ThreadId> {
 }
 
 #[cfg(feature = "uspace")]
-pub(super) fn kernel_address_space_root(cpu_pin: &CpuPin) -> usize {
-    KERNEL_ADDRESS_SPACE_ROOT.read_current(cpu_pin)
+pub(super) fn offline_kernel_root(cpu_pin: &CpuPin) -> usize {
+    OFFLINE_KERNEL_ROOT.read_current(cpu_pin)
 }

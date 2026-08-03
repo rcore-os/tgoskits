@@ -50,9 +50,9 @@ pub(super) struct TaskSystemState {
     pub(super) cpus: Vec<CpuRegistration>,
     pub(super) slots: Vec<ThreadSlot>,
     pub(super) free_slots: Vec<u32>,
-    pub(super) pending_resource_releases: Vec<PendingResourceRelease>,
+    pub(super) pending_address_space_reclaims: Vec<crate::runtime::AddressSpaceToken>,
     pub(super) task_work_class_cursor: DeferredTaskWorkClass,
-    pub(super) thread_release_first: bool,
+    pub(super) address_space_reclaim_first: bool,
     pub(super) exited_work: ExitedThreadWork,
     pub(super) deadline_admission: DeadlineAdmission,
 }
@@ -861,7 +861,7 @@ pub(super) struct ThreadSlot {
 pub(super) struct ThreadRecord {
     pub(super) core: Arc<ThreadCore>,
     pub(super) sched: Arc<ThreadSchedCell>,
-    // Keep the fallback field drop order aligned with the normal reaper.
+    // Explicit teardown consumes this bundle before dropping the extension.
     pub(super) resources: ThreadResources,
     pub(super) extension: Option<ThreadExtension>,
     pub(super) blocked_on: Option<PiWaitRegistration>,
@@ -894,36 +894,10 @@ impl DetachedThreadRecord {
         (extension, resources)
     }
 
-    pub(super) fn try_release_resources(&mut self) -> Result<(), TaskError> {
-        self.resources.try_release()
-    }
-
-    pub(super) fn finish_release(mut self) {
+    pub(super) fn release(mut self) -> crate::runtime::AddressSpaceToken {
+        let address_space = self.resources.release();
         drop(self.extension.take());
-    }
-}
-
-#[derive(Debug)]
-pub(super) enum PendingResourceRelease {
-    /// A reaped thread whose extension must outlive its runtime context.
-    Thread(ThreadRecord),
-    /// A construction transaction that failed before registry publication.
-    Detached(DetachedThreadRecord),
-}
-
-impl PendingResourceRelease {
-    pub(super) fn resources_mut(&mut self) -> &mut ThreadResources {
-        match self {
-            Self::Thread(record) => &mut record.resources,
-            Self::Detached(record) => &mut record.resources,
-        }
-    }
-
-    pub(super) fn finish(self) {
-        match self {
-            Self::Thread(mut record) => drop(record.extension.take()),
-            Self::Detached(record) => record.finish_release(),
-        }
+        address_space
     }
 }
 

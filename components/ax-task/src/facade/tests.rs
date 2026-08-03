@@ -7,7 +7,7 @@ mod tests {
     use crate::{
         CpuId, SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadSpec,
         inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
-        runtime::AddressSpaceHandle,
+        runtime::{AddressSpaceHandle, AddressSpaceToken},
         test_runtime,
     };
 
@@ -74,7 +74,7 @@ mod tests {
     };
 
     #[test]
-    fn kernel_address_space_is_explicitly_installed_before_switch_in() {
+fn kernel_thread_submits_explicit_lazy_address_space_before_switch_in() {
         test_runtime::reset_installed_address_space();
         let extension = unsafe {
             // SAFETY: the callback table interprets data only as the expected
@@ -830,7 +830,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(1),
                 StackHandle::from_raw(2),
                 TlsHandle::from_raw(3),
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         system
@@ -844,7 +844,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(4),
                 StackHandle::from_raw(5),
                 TlsHandle::from_raw(6),
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         let next = system
@@ -898,7 +898,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(11),
                 StackHandle::from_raw(12),
                 TlsHandle::from_raw(13),
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         let extension = unsafe {
@@ -919,7 +919,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(21),
                 StackHandle::from_raw(22),
                 TlsHandle::from_raw(23),
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         let next = system
@@ -1080,7 +1080,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(1),
                 StackHandle::NONE,
                 TlsHandle::NONE,
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         let running = system
@@ -1116,7 +1116,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(1),
                 StackHandle::from_raw(2),
                 TlsHandle::from_raw(3),
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         system
@@ -1131,7 +1131,7 @@ mod tests {
                 ExecutionContextHandle::from_raw(4),
                 StackHandle::from_raw(5),
                 TlsHandle::from_raw(6),
-                AddressSpaceHandle::NONE,
+                AddressSpaceToken::NONE,
             )
         };
         let next = system

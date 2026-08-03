@@ -10,12 +10,11 @@ use crate::{
     SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore, ThreadExtensionLease,
     ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState, ThreadWakeHandle, WaitQueue,
     WakeResult,
+    executor::CoroutineHeader,
     inbox::PublishResult,
-    reclaim::DeferredReclaimNode,
     runtime::{
-        AddressSpaceHandle, IrqGuardToken, RuntimeCpuId, RuntimeScheduleOrigin,
-        RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
-        task_runtime,
+        IrqGuardToken, RuntimeCpuId, RuntimeScheduleOrigin, RuntimeSchedulerEntry,
+        RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord, task_runtime,
     },
     timer::{ExpiredTaskDeadline, TaskDeadlineKind},
 };
@@ -57,10 +56,12 @@ use scheduling::{complete_current_context_switch_tail, execute_switch_plan};
 use scheduling::{
     drain_current_expired_timers, prepare_next_context, service_scheduler_safe_point_deadlines,
 };
+pub(crate) use task_work::publish_deferred_coroutine_reclaim;
 #[cfg(test)]
 use task_work::{TaskWorkServiceAction, service_task_work_pass, task_work_service_action};
-pub(crate) use task_work::{drain_deferred_reclaims, publish_deferred_reclaim};
-pub use task_work::{quiesce_irq_wait, start_deferred_task_work_service};
+pub use task_work::{
+    notify_address_space_reclaim, quiesce_irq_wait, start_deferred_task_work_service,
+};
 
 /// Returns a strong handle for the calling scheduler thread.
 ///
@@ -155,15 +156,28 @@ pub fn current_thread_extension() -> Result<Option<ThreadExtensionLease>, TaskEr
 ///
 /// The runtime must update its architecture context and hardware page table in
 /// the same outer IRQ-off transaction after this function returns. The old
-/// token is returned for runtime bookkeeping; ax-task owns no address-space
-/// destruction right.
+/// token remains scheduler-owned and is returned so the runtime can defer its
+/// task-context reclamation after leaving that IRQ-off transaction.
 pub fn replace_current_address_space(
-    address_space: AddressSpaceHandle,
-) -> Result<AddressSpaceHandle, TaskError> {
+    address_space: &mut crate::runtime::AddressSpaceToken,
+) -> Result<crate::runtime::AddressSpaceToken, TaskError> {
     validate_task_context()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     runtime_task_system()?.replace_current_address_space(cpu.as_mut(), address_space)
+}
+
+/// Transfers an obsolete address-space token to task-context reclamation.
+///
+/// The runtime may still report the object busy while another CPU retains it
+/// as an active mm. The task-work reaper owns every retry after this function
+/// accepts the token.
+pub fn release_address_space_token(
+    address_space: crate::runtime::AddressSpaceToken,
+) -> Result<(), TaskError> {
+    validate_task_context()?;
+    runtime_task_system()?.release_address_space_token(address_space);
+    Ok(())
 }
 
 /// Looks up a generation-valid thread through the runtime-owned task system.

@@ -11,8 +11,8 @@ use ax_hal::percpu::{CpuPin, CurrentContext, CurrentThreadHeader, PreviousThread
 use ax_task::{
     TaskError,
     runtime::{
-        AddressSpaceHandle, ContextThreadBinding, ExecutionContextHandle, KernelContextRequest,
-        RuntimeHandleResult, RuntimeStatus, StackHandle, UserContextRequest,
+        ContextThreadBinding, ExecutionContextHandle, KernelContextRequest, RuntimeHandleResult,
+        RuntimeStatus, StackHandle, UserContextRequest,
     },
 };
 
@@ -20,24 +20,6 @@ use super::{
     resources::{RuntimeStack, runtime_tls_pointer},
     runtime_status_error, with_current_cpu_pin,
 };
-
-/// Opaque runtime token for one user page-table root.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TaskAddressSpace(pub(super) AddressSpaceHandle);
-
-impl TaskAddressSpace {
-    /// Creates a token from a non-zero physical page-table root address.
-    pub fn from_page_table_root(root: usize) -> Result<Self, TaskError> {
-        if root == 0 {
-            Err(TaskError::InvalidRuntimeHandle)
-        } else {
-            // SAFETY: the non-zero root is the runtime's address-space token;
-            // the OS that creates this wrapper owns the corresponding page
-            // tables for every scheduler record that retains the token.
-            Ok(Self(unsafe { AddressSpaceHandle::from_raw(root) }))
-        }
-    }
-}
 
 /// Reports whether a kernel page fault hit the current runtime stack guard.
 pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) -> bool {
@@ -83,41 +65,6 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
     {
         let _ = fault;
         false
-    }
-}
-
-/// Replaces the current user context's page-table root and installs it now.
-///
-/// This operation is valid only for the running thread during an `exec`-style
-/// address-space replacement.
-pub fn switch_current_page_table(root: usize) -> Result<(), TaskError> {
-    if root == 0 {
-        return Err(TaskError::InvalidRuntimeHandle);
-    }
-    #[cfg(feature = "uspace")]
-    {
-        let _irq = ax_kernel_guard::IrqSave::new();
-        let root = ax_memory_addr::PhysAddr::from(root);
-        // SAFETY: the exec caller transfers a live process page-table root;
-        // the scheduler retains only its opaque identity while the process MM
-        // remains the allocation owner.
-        let address_space = unsafe { AddressSpaceHandle::from_raw(root.as_usize()) };
-        // Keep the scheduler endpoint, architecture context, and hardware root
-        // coherent across exec. A later switch must restore this new root
-        // instead of the address space that existed when the context was built.
-        let _old_address_space = ax_task::replace_current_address_space(address_space)?;
-        set_current_context_page_table_root(root)?;
-        let status = install_runtime_address_space(address_space);
-        if status == RuntimeStatus::Success {
-            Ok(())
-        } else {
-            Err(runtime_status_error(status))
-        }
-    }
-    #[cfg(not(feature = "uspace"))]
-    {
-        let _ = root;
-        Err(TaskError::RuntimeFailure(RuntimeStatus::Unsupported as u32))
     }
 }
 
@@ -190,25 +137,19 @@ impl RuntimeContext {
         Ok(())
     }
 
-    unsafe fn finish_switch_tail(&self) -> RuntimeStatus {
+    unsafe fn finish_switch_tail(&self) {
         // SAFETY: the current incoming continuation owns this slot with local
         // IRQs disabled and completes the one-shot previous-binding token.
         let slot = unsafe { &mut *self.switch_tail.get() };
-        let Some(tail) = slot.as_mut() else {
-            return RuntimeStatus::InvalidHandle;
-        };
+        let tail = slot
+            .as_mut()
+            .expect("incoming runtime context is missing its switch tail");
         // SAFETY: the outgoing header stays pinned and unreclaimable through
         // the scheduler `on_cpu` handoff; this tail owns its exact epoch.
         let previous = unsafe { Pin::new_unchecked(tail.previous.as_ref()) };
-        match unsafe { tail.binding.finish(previous) } {
-            Ok(()) => {
-                // The exact binding epoch is now withdrawn. Only this success
-                // consumes the staged transaction and permits scheduler tail.
-                let _ = slot.take();
-                RuntimeStatus::Success
-            }
-            Err(_) => RuntimeStatus::InvalidHandle,
-        }
+        unsafe { tail.binding.finish(previous) }
+            .expect("runtime switch tail did not own the exact previous CPU binding");
+        let _ = slot.take();
     }
 }
 
@@ -288,46 +229,39 @@ pub(super) fn bind_bootstrap_runtime_context(
     Ok(())
 }
 
-pub(super) fn finish_runtime_context_switch_tail() -> RuntimeStatus {
+pub(super) fn finish_runtime_context_switch_tail() {
     // SAFETY: TaskSystem invokes this with the scheduler baton and local IRQs
     // disabled immediately after entering the incoming context.
     unsafe {
         with_current_cpu_pin(|cpu_pin| {
-            let Ok(current) = current_runtime_context(cpu_pin) else {
-                return RuntimeStatus::InvalidHandle;
-            };
+            let current = current_runtime_context(cpu_pin)
+                .expect("incoming scheduler context is not runtime-owned");
             // SAFETY: the incoming context exclusively owns its staged one-shot tail.
-            current.finish_switch_tail()
+            current.finish_switch_tail();
         })
     }
 }
 
 pub(super) fn create_runtime_context(request: KernelContextRequest) -> RuntimeHandleResult {
-    create_runtime_context_parts(
-        request.stack,
-        request.entry,
-        request.tls,
-        request.address_space,
-    )
+    create_runtime_context_parts(request.stack, request.entry, request.tls)
 }
 
 pub(super) fn create_user_runtime_context(request: UserContextRequest) -> RuntimeHandleResult {
-    if request.address_space.is_none() {
-        return RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle);
+    #[cfg(not(feature = "uspace"))]
+    {
+        let _ = request;
+        RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
-    create_runtime_context_parts(
-        request.stack,
-        request.entry,
-        request.tls,
-        request.address_space,
-    )
+    #[cfg(feature = "uspace")]
+    {
+        create_runtime_context_parts(request.stack, request.entry, request.tls)
+    }
 }
 
 fn create_runtime_context_parts(
     stack_handle: StackHandle,
     entry: ax_task::runtime::KernelEntry,
     tls_handle: ax_task::runtime::TlsHandle,
-    address_space: AddressSpaceHandle,
 ) -> RuntimeHandleResult {
     if stack_handle.is_none() {
         return RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle);
@@ -341,14 +275,6 @@ fn create_runtime_context_parts(
         ax_memory_addr::VirtAddr::from(stack.usable_top),
         ax_hal::context::KernelTlsBase::new(tls_pointer),
     );
-    #[cfg(not(feature = "uspace"))]
-    if !address_space.is_none() {
-        return RuntimeHandleResult::failure(RuntimeStatus::Unsupported);
-    }
-    #[cfg(feature = "uspace")]
-    context.set_page_table_root(ax_memory_addr::PhysAddr::from(resolve_address_space_root(
-        address_space,
-    )));
     RuntimeHandleResult::success(
         RuntimeContext::allocate(context, stack_handle).expose_provenance(),
     )
@@ -360,61 +286,6 @@ pub(super) fn create_bootstrap_context() -> ExecutionContextHandle {
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeContext
     // that stays live until destroy_runtime_context consumes the handle.
     unsafe { ExecutionContextHandle::from_raw(context.expose_provenance()) }
-}
-
-#[cfg(feature = "uspace")]
-fn resolve_address_space_root(address_space: AddressSpaceHandle) -> usize {
-    if !address_space.is_none() {
-        return address_space.into_raw();
-    }
-    if cfg!(any(target_arch = "x86_64", target_arch = "riscv64")) {
-        // SAFETY: callers retain the scheduler baton or an IRQ guard, and every
-        // CPU publishes this immutable root before coming online.
-        unsafe { with_current_cpu_pin(super::bootstrap::kernel_address_space_root) }
-    } else {
-        // AArch64 and LoongArch have distinct kernel roots; zero disables the
-        // lower/user translation root without disturbing kernel mappings.
-        0
-    }
-}
-
-#[cfg(feature = "uspace")]
-fn set_current_context_page_table_root(root: ax_memory_addr::PhysAddr) -> Result<(), TaskError> {
-    // SAFETY: the exec path holds local IRQ exclusion, so the current context
-    // cannot migrate or overlap a scheduler handoff while its saved root is
-    // replaced.
-    unsafe {
-        with_current_cpu_pin(|cpu_pin| {
-            let context = current_runtime_context(cpu_pin).map_err(runtime_status_error)?;
-            // SAFETY: the published current context exclusively owns its
-            // architecture state until the next scheduler switch.
-            (&mut *context.inner.get()).set_page_table_root(root);
-            Ok(())
-        })
-    }
-}
-
-pub(super) fn install_runtime_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {
-    #[cfg(feature = "uspace")]
-    {
-        let root = ax_memory_addr::PhysAddr::from(resolve_address_space_root(address_space));
-        if ax_hal::asm::read_user_page_table() != root {
-            // SAFETY: both scheduler switch and exec replacement invoke this
-            // with local IRQs disabled after committing the selected address
-            // space to the current scheduler endpoint.
-            unsafe { ax_hal::asm::write_user_page_table(root) };
-            ax_hal::asm::flush_tlb(None);
-        }
-        RuntimeStatus::Success
-    }
-    #[cfg(not(feature = "uspace"))]
-    {
-        if address_space.is_none() {
-            RuntimeStatus::Success
-        } else {
-            RuntimeStatus::Unsupported
-        }
-    }
 }
 
 pub(super) fn destroy_runtime_context(handle: ExecutionContextHandle) -> RuntimeStatus {
@@ -495,7 +366,7 @@ pub(super) unsafe fn switch_runtime_context(
             let previous_context = &*previous;
             let next_context = &*next;
             let previous_arch_context = &mut *previous_context.inner.get();
-            let next_arch_context = &*next_context.inner.get();
+            let next_arch_context = &mut *next_context.inner.get();
             assert_eq!(
                 previous_arch_context.current_header(),
                 Some(previous_context.header().as_non_null()),
@@ -519,8 +390,9 @@ pub(super) unsafe fn switch_runtime_context(
                 "scheduler next context retained an unfinished switch tail"
             );
 
-            // All fallible CPU binding validation and FP/address-space
-            // preparation precede the irreversible baton transfer.
+            // All fallible CPU binding validation and FP preparation precede
+            // the irreversible baton transfer. Address-space activation is an
+            // independent ax-runtime transaction and is never repeated here.
             let (prepared, previous_binding) = ax_hal::percpu::prepare_thread_switch(
                 pin,
                 previous_context.header(),
@@ -553,7 +425,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failed_switch_tail_preserves_the_binding_transaction_for_retry() {
+    fn switch_tail_consumes_the_exact_previous_binding_once() {
         std::thread::spawn(|| {
             let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
             let base = storage.as_mut_ptr() as usize;
@@ -582,23 +454,11 @@ mod tests {
                     prepared.commit();
 
                     next.stage_switch_tail(RuntimeSwitchTail {
-                        // Inject a retryable validation failure without
-                        // mutating the live previous binding.
-                        previous: next.header().as_non_null(),
+                        previous: previous.header().as_non_null(),
                         binding,
                     })
                     .unwrap();
-                    assert_eq!(next.finish_switch_tail(), RuntimeStatus::InvalidHandle);
-                    assert!(
-                        next.has_switch_tail(),
-                        "a failed runtime tail must retain its binding token"
-                    );
-
-                    (*next.switch_tail.get())
-                        .as_mut()
-                        .expect("failed tail must remain staged")
-                        .previous = previous.header().as_non_null();
-                    assert_eq!(next.finish_switch_tail(), RuntimeStatus::Success);
+                    next.finish_switch_tail();
                     assert!(!next.has_switch_tail());
                     assert_eq!(previous.header.cpu_area(), None);
                 })
@@ -606,6 +466,6 @@ mod tests {
             .unwrap();
         })
         .join()
-        .expect("modeled CPU must complete the retry");
+        .expect("modeled CPU must complete the switch tail");
     }
 }

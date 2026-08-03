@@ -201,6 +201,10 @@ impl FairRunQueue {
         Some(removed)
     }
 
+    pub(super) fn earliest_eligible(&self, virtual_time: u64) -> Option<ThreadId> {
+        earliest_eligible_key(self.root.as_deref(), virtual_time).map(|key| key.thread)
+    }
+
     pub(super) fn first(&self) -> Option<&QueuedThread> {
         let mut node = self.root.as_deref()?;
         while let Some(left) = node.left.as_deref() {

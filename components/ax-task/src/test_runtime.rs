@@ -39,7 +39,6 @@ std::thread_local! {
     static CONTEXT_BIND_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static LAST_CONTEXT_BINDING: Cell<Option<ContextThreadBinding>> = const { Cell::new(None) };
     static IRQ_GUARDS_AT_CONTEXT_BIND: Cell<usize> = const { Cell::new(usize::MAX) };
-    static CONTEXT_SWITCH_TAIL_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static CONTEXT_SWITCH_TAIL_COUNT: Cell<usize> = const { Cell::new(0) };
     static HOOK_REENTRY_QUERY: Cell<HookReentryQuery> = const { Cell::new(HookReentryQuery::None) };
     static HOOK_REENTRY_ERROR: Cell<Option<crate::TaskError>> = const { Cell::new(None) };
@@ -57,6 +56,10 @@ std::thread_local! {
         const { RefCell::new(std::vec::Vec::new()) };
     static RESOURCE_RELEASE_STATUS: Cell<RuntimeStatus> =
         const { Cell::new(RuntimeStatus::Unsupported) };
+    static ADDRESS_SPACE_DESTROY_OUTCOME: Cell<AddressSpaceDestroyOutcome> =
+        const { Cell::new(AddressSpaceDestroyOutcome::Released) };
+    static ADDRESS_SPACE_RECLAIM_ARM_OUTCOME: Cell<AddressSpaceReclaimArmOutcome> =
+        const { Cell::new(AddressSpaceReclaimArmOutcome::Ready) };
     static RESOURCE_RELEASE_EVENTS: RefCell<std::vec::Vec<ResourceReleaseEvent>> =
         const { RefCell::new(std::vec::Vec::new()) };
 }
@@ -80,6 +83,7 @@ pub(crate) enum SwitchObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResourceReleaseEvent {
     DestroyContext,
+    DestroyAddressSpace,
     DeallocateTls,
     DeallocateStack,
     DropExtension,
@@ -245,9 +249,8 @@ impl TaskRuntime for UnitTestRuntime {
             || IRQ_EXIT_SCHEDULE_REMAINING.with(|remaining| remaining.get() != 0)
     }
 
-    fn finish_context_switch_tail() -> RuntimeStatus {
+    fn finish_context_switch_tail() {
         CONTEXT_SWITCH_TAIL_COUNT.with(|count| count.set(count.get() + 1));
-        CONTEXT_SWITCH_TAIL_STATUS.with(Cell::get)
     }
 
     fn finish_initial_context_switch() {
@@ -378,26 +381,28 @@ impl TaskRuntime for UnitTestRuntime {
     fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
-    fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus {
+    fn deallocate_stack(_stack: StackHandle) {
         record_resource_release_event(ResourceReleaseEvent::DeallocateStack);
-        RESOURCE_RELEASE_STATUS.with(Cell::get)
+        let status = RESOURCE_RELEASE_STATUS.with(Cell::get);
+        if status != RuntimeStatus::Success {
+            Self::fatal_invariant(0x5253_0003, status as usize);
+        }
     }
     fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
-    fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus {
+    fn deallocate_tls(_tls: TlsHandle) {
         record_resource_release_event(ResourceReleaseEvent::DeallocateTls);
-        RESOURCE_RELEASE_STATUS.with(Cell::get)
+        let status = RESOURCE_RELEASE_STATUS.with(Cell::get);
+        if status != RuntimeStatus::Success {
+            Self::fatal_invariant(0x5253_0002, status as usize);
+        }
     }
     fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
     fn create_user_context(_request: UserContextRequest) -> RuntimeHandleResult {
-        if _request.address_space.is_none() {
-            RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle)
-        } else {
-            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
-        }
+        RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
     fn bind_context_thread(binding: ContextThreadBinding) -> RuntimeStatus {
         LAST_CONTEXT_BINDING.with(|observed| observed.set(Some(binding)));
@@ -406,9 +411,23 @@ impl TaskRuntime for UnitTestRuntime {
         });
         CONTEXT_BIND_STATUS.with(Cell::get)
     }
-    fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
+    fn destroy_context(_context: ExecutionContextHandle) {
         record_resource_release_event(ResourceReleaseEvent::DestroyContext);
-        RESOURCE_RELEASE_STATUS.with(Cell::get)
+        let status = RESOURCE_RELEASE_STATUS.with(Cell::get);
+        if status != RuntimeStatus::Success {
+            Self::fatal_invariant(0x5253_0001, status as usize);
+        }
+    }
+
+    fn destroy_address_space(_address_space: AddressSpaceHandle) -> AddressSpaceDestroyOutcome {
+        record_resource_release_event(ResourceReleaseEvent::DestroyAddressSpace);
+        ADDRESS_SPACE_DESTROY_OUTCOME.with(Cell::get)
+    }
+
+    fn arm_address_space_reclaim(
+        _address_space: AddressSpaceHandle,
+    ) -> AddressSpaceReclaimArmOutcome {
+        ADDRESS_SPACE_RECLAIM_ARM_OUTCOME.with(Cell::get)
     }
     unsafe fn switch_context(_previous: ExecutionContextHandle, _next: ExecutionContextHandle) {
         assert!(
@@ -419,8 +438,11 @@ impl TaskRuntime for UnitTestRuntime {
             observed.set(ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().len()));
         });
     }
-    fn install_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {
-        INSTALLED_ADDRESS_SPACE.store(address_space.into_raw(), Ordering::Release);
+    fn activate_address_space(activation: AddressSpaceActivation) -> RuntimeStatus {
+        let address_space = activation
+            .user_handle()
+            .map_or(0, AddressSpaceHandle::into_raw);
+        INSTALLED_ADDRESS_SPACE.store(address_space, Ordering::Release);
         RuntimeStatus::Success
     }
     fn flush_tlb_local(_start: usize, _size: usize) {}
@@ -447,6 +469,18 @@ pub(crate) fn configure_resource_release(status: RuntimeStatus) {
     RESOURCE_RELEASE_EVENTS.with(|events| events.borrow_mut().clear());
 }
 
+pub(crate) fn configure_address_space_destroy(outcome: AddressSpaceDestroyOutcome) {
+    ADDRESS_SPACE_DESTROY_OUTCOME.with(|current| current.set(outcome));
+}
+
+pub(crate) fn configure_address_space_reclaim_arm(outcome: AddressSpaceReclaimArmOutcome) {
+    ADDRESS_SPACE_RECLAIM_ARM_OUTCOME.with(|current| current.set(outcome));
+}
+
+pub(crate) fn clear_resource_release_events() {
+    RESOURCE_RELEASE_EVENTS.with(|events| events.borrow_mut().clear());
+}
+
 pub(crate) fn record_resource_release_event(event: ResourceReleaseEvent) {
     RESOURCE_RELEASE_EVENTS.with(|events| events.borrow_mut().push(event));
 }
@@ -463,8 +497,7 @@ pub(crate) fn irq_guards_at_context_bind() -> usize {
     IRQ_GUARDS_AT_CONTEXT_BIND.with(Cell::get)
 }
 
-pub(crate) fn configure_context_switch_tail(status: RuntimeStatus) {
-    CONTEXT_SWITCH_TAIL_STATUS.with(|current| current.set(status));
+pub(crate) fn reset_context_switch_tail_count() {
     CONTEXT_SWITCH_TAIL_COUNT.with(|count| count.set(0));
 }
 

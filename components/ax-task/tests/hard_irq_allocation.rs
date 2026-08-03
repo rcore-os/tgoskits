@@ -11,7 +11,7 @@ use std::{
 
 use ax_task::{
     CpuId, RtPriority, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadId, ThreadSpec,
-    executor::{DEFAULT_RECLAIM_BATCH, LocalExecutor},
+    executor::LocalExecutor,
     timer::{
         ExpiredTaskDeadline, TaskDeadlineExpireRequest, TaskDeadlineKind, TaskDeadlineNode,
         TaskDeadlineQueue,
@@ -219,7 +219,7 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         polls_before_irq_ops,
         "wake must not poll a future"
     );
-    let hard_irq_reclaim_audit = audit(|| system.drain_deferred_reclaims(1));
+    let hard_irq_reclaim_audit = audit(|| system.service_deferred_task_work(1));
     assert_eq!(
         hard_irq_reclaim_audit.value,
         Err(ax_task::TaskError::UnsafeContext)
@@ -235,7 +235,13 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     system
         .reap_thread(irq_reap_id)
         .expect("ordinary task context must reap the IRQ fixture");
-    assert_eq!(executor.reclaim_completed(DEFAULT_RECLAIM_BATCH), 1);
+    assert_eq!(
+        system
+            .service_deferred_task_work(ax_task::DEFAULT_BATCH_LIMIT)
+            .expect("task context must reclaim the hard-IRQ coroutine")
+            .coroutine_reclaims(),
+        1
+    );
 
     drop(executor);
     support::clear_handles();

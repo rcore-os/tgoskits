@@ -295,7 +295,7 @@ impl TaskSystem {
         }
 
         if !initial_handoff.runtime_tail_finished {
-            ensure_runtime_success(task_runtime::finish_context_switch_tail())?;
+            task_runtime::finish_context_switch_tail();
             if cpu
                 .as_mut()
                 .finish_switch_runtime_tail(

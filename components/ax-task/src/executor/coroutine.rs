@@ -15,7 +15,7 @@ use core::{
 };
 
 use super::SharedExecutor;
-use crate::{ThreadId, reclaim::DeferredReclaimNode, runtime::task_runtime};
+use crate::{ThreadId, inbox::InboxNode, runtime::task_runtime};
 
 pub(super) const RUN_QUEUED: usize = 1 << 0;
 pub(super) const POLLING: usize = 1 << 1;
@@ -62,7 +62,7 @@ impl CoroutineId {
 /// to raw waker operations.
 #[repr(C)]
 pub struct CoroutineHeader {
-    reclaim: DeferredReclaimNode,
+    reclaim: InboxNode,
     id: CoroutineId,
     pub(super) state: AtomicUsize,
     references: AtomicUsize,
@@ -128,7 +128,7 @@ impl CoroutineHeader {
     ///
     /// `header` must be detached from the task-system reclaim inbox, have zero
     /// references, and have had its future emptied by the owner.
-    unsafe fn deallocate_raw(header: *mut Self) {
+    pub(crate) unsafe fn deallocate_raw(header: *mut Self) {
         let state = unsafe { (*header).state.load(Ordering::Acquire) };
         if state & (COMPLETE | FUTURE_EMPTY) != (COMPLETE | FUTURE_EMPTY) {
             task_runtime::fatal_invariant(EARLY_RECLAIM_INVARIANT, unsafe {
@@ -144,6 +144,18 @@ impl CoroutineHeader {
             // running a !Send future destructor.
             deallocate(header);
         }
+    }
+
+    pub(crate) fn reclaim_node(self: Pin<&'static Self>) -> Pin<&'static InboxNode> {
+        unsafe {
+            // The coroutine header is pinned for its complete lifetime, and the
+            // intrusive reclaim node is never projected mutably or moved.
+            self.map_unchecked(|header| &header.reclaim)
+        }
+    }
+
+    pub(crate) fn address(self: Pin<&'static Self>) -> usize {
+        (self.get_ref() as *const Self).addr()
     }
 
     pub(super) fn next(&self, kind: super::inbox::InboxKind) -> &AtomicPtr<Self> {
@@ -181,7 +193,7 @@ where
     pub(super) fn new(id: CoroutineId, executor: Arc<SharedExecutor>, future: F) -> Self {
         Self {
             header: CoroutineHeader {
-                reclaim: DeferredReclaimNode::new(reclaim_coroutine),
+                reclaim: InboxNode::new(crate::inbox::InboxKind::Reclaim),
                 id,
                 state: AtomicUsize::new(0),
                 references: AtomicUsize::new(1),
@@ -264,7 +276,7 @@ pub(super) fn retain_reference(header: &CoroutineHeader) {
     }
 }
 
-/// Releases one allocation reference without freeing in the calling context.
+/// Releases one allocation reference.
 ///
 /// # Safety
 ///
@@ -288,12 +300,24 @@ pub(super) unsafe fn release_reference(header: *mut CoroutineHeader) {
     }
     core::sync::atomic::fence(Ordering::Acquire);
 
-    let reclaim = unsafe {
-        // The zero-reference allocation remains pinned until the task-system
-        // reaper invokes its fixed callback.
-        Pin::new_unchecked(&header_ref.reclaim)
+    if !task_runtime::in_hard_irq() {
+        unsafe {
+            // The final Release/Acquire pair proves that no raw waker or queue
+            // reader can still address this header. The future was emptied by
+            // the owner before its permanent reference was released, so task
+            // context may destroy the allocation immediately.
+            CoroutineHeader::deallocate_raw(header);
+        }
+        return;
+    }
+
+    let header = unsafe {
+        // Hard IRQ cannot run allocator or ThreadWakeHandle destruction. The
+        // zero-reference allocation therefore stays pinned until the typed
+        // task-system consumer detaches this header and frees it.
+        Pin::new_unchecked(header_ref)
     };
-    crate::facade::publish_deferred_reclaim(reclaim, header.expose_provenance());
+    crate::facade::publish_deferred_coroutine_reclaim(header);
 }
 
 /// Polls the concrete future behind a type-erased header.
@@ -363,20 +387,6 @@ where
         // that requires destruction and then releases the raw allocation.
         core::ptr::drop_in_place(core::ptr::addr_of_mut!((*header).executor));
         dealloc(header.cast::<u8>(), Layout::new::<Coroutine<F>>());
-    }
-}
-
-/// Dispatches one task-system reclaim node to its containing coroutine header.
-///
-/// # Safety
-///
-/// `node` must be the first field of a zero-reference `CoroutineHeader` detached
-/// from the task-system deferred-reclaim inbox.
-unsafe fn reclaim_coroutine(_node: *mut DeferredReclaimNode, data: *mut ()) {
-    unsafe {
-        // Publication exposes the original header pointer, preserving permission
-        // for the complete allocation instead of only its first reclaim field.
-        CoroutineHeader::deallocate_raw(data.cast::<CoroutineHeader>());
     }
 }
 

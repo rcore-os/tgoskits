@@ -4,7 +4,7 @@ use ax_task::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, SchedulePolicy, SwitchReason,
     TaskSystem, TaskSystemConfig, ThreadExtension, ThreadExtensionOps, ThreadId, ThreadResources,
     ThreadSpec,
-    runtime::{AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle},
+    runtime::{AddressSpaceToken, ExecutionContextHandle, StackHandle, TlsHandle},
 };
 
 mod support;
@@ -104,7 +104,7 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
             ExecutionContextHandle::from_raw(1),
             StackHandle::from_raw(2),
             TlsHandle::from_raw(3),
-            AddressSpaceHandle::from_raw(4),
+            AddressSpaceToken::from_raw(4),
         )
     };
     let spec = unsafe { ThreadSpec::new(SchedulePolicy::default()).with_resources(resources) };
@@ -119,19 +119,22 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
+    let mut missing_address_space = AddressSpaceToken::NONE;
     assert_eq!(
-        system.replace_current_address_space(cpu.as_mut(), AddressSpaceHandle::NONE),
+        system.replace_current_address_space(cpu.as_mut(), &mut missing_address_space),
         Err(ax_task::TaskError::InvalidConfiguration)
     );
+    let mut address_space = test_address_space(5);
     assert_eq!(
         system
-            .replace_current_address_space(cpu.as_mut(), test_address_space(5))
+            .replace_current_address_space(cpu.as_mut(), &mut address_space)
             .unwrap(),
         test_address_space(4)
     );
+    let mut address_space = test_address_space(6);
     assert_eq!(
         system
-            .replace_current_address_space(cpu.as_mut(), test_address_space(6))
+            .replace_current_address_space(cpu.as_mut(), &mut address_space)
             .unwrap(),
         test_address_space(5)
     );
@@ -141,7 +144,7 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
             ExecutionContextHandle::from_raw(10),
             StackHandle::from_raw(11),
             TlsHandle::from_raw(12),
-            AddressSpaceHandle::from_raw(13),
+            AddressSpaceToken::from_raw(13),
         )
     };
     let next = system
@@ -160,9 +163,10 @@ fn current_address_space_replacement_updates_only_the_running_owner_record() {
         bootstrap.id()
     );
     system.complete_context_switch(cpu.as_mut()).unwrap();
+    let mut address_space = test_address_space(7);
     assert_eq!(
         system
-            .replace_current_address_space(cpu.as_mut(), test_address_space(7))
+            .replace_current_address_space(cpu.as_mut(), &mut address_space)
             .unwrap(),
         test_address_space(6),
         "switching away and back must retain the exec-time address-space token"
@@ -283,7 +287,7 @@ fn thread_resources_release_each_unique_runtime_handle_once() {
             ExecutionContextHandle::from_raw(1),
             StackHandle::from_raw(2),
             TlsHandle::from_raw(3),
-            AddressSpaceHandle::from_raw(4),
+            AddressSpaceToken::from_raw(4),
         )
     };
     let spec = unsafe { ThreadSpec::new(SchedulePolicy::default()).with_resources(resources) };
@@ -293,52 +297,10 @@ fn thread_resources_release_each_unique_runtime_handle_once() {
     system.mark_exited(id).unwrap();
     system.reap_thread_handle(handle).unwrap();
 
-    assert_eq!(support::resource_release_counts(), (1, 1, 1));
-}
-
-#[test]
-fn context_destroy_failure_keeps_context_dependent_resources_live() {
-    let _serial = RESOURCE_RELEASE_TEST_LOCK.lock().unwrap();
-    support::reset_resource_release_counts();
-    let resources = unsafe {
-        ThreadResources::new(
-            ExecutionContextHandle::from_raw(usize::MAX),
-            StackHandle::from_raw(2),
-            TlsHandle::from_raw(3),
-            AddressSpaceHandle::from_raw(4),
-        )
-    };
-    let spec = unsafe { ThreadSpec::new(SchedulePolicy::default()).with_resources(resources) };
-    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
-    let handle = system.create_thread(spec).unwrap();
-    let thread = handle.id();
-    system.mark_exited(thread).unwrap();
-
-    let error = system.reap_thread_handle(handle).unwrap_err();
-    assert_eq!(
-        error.task_error(),
-        ax_task::TaskError::RuntimeFailure(RuntimeStatus::Busy as u32)
-    );
     assert_eq!(
         support::resource_release_counts(),
-        (1, 0, 0),
-        "a live context may still reference its stack and TLS"
-    );
-    assert_eq!(
-        system.thread_state(thread),
-        Err(ax_task::TaskError::StaleThreadId),
-        "registry removal remains committed while the reaper owns the resources"
-    );
-
-    let retry = system.service_deferred_task_work(1).unwrap();
-    assert!(
-        retry.made_progress(),
-        "the task-work reaper must retry the retained resource bundle"
-    );
-    assert_eq!(
-        support::resource_release_counts(),
-        (2, 1, 1),
-        "a successful retry must release the context before TLS and stack"
+        (1, 1, 1, 1),
+        "the owning address-space token must be released exactly once"
     );
 }
 
@@ -366,7 +328,7 @@ fn failed_bootstrap_install_releases_every_unpublished_resource() {
             ExecutionContextHandle::from_raw(101),
             StackHandle::from_raw(102),
             TlsHandle::from_raw(103),
-            AddressSpaceHandle::from_raw(104),
+            AddressSpaceToken::from_raw(104),
         )
     };
     let extension = unsafe { ThreadExtension::new(3, &DROP_COUNT_EXTENSION_OPS) };
@@ -382,7 +344,7 @@ fn failed_bootstrap_install_releases_every_unpublished_resource() {
         Err(ax_task::TaskError::InvalidConfiguration)
     );
     assert_eq!(DROP_COUNTS[3].load(Ordering::Acquire), 1);
-    assert_eq!(support::resource_release_counts(), (1, 1, 1));
+    assert_eq!(support::resource_release_counts(), (1, 1, 1, 1));
     assert!(
         system
             .create_thread(ThreadSpec::new(SchedulePolicy::deadline(deadline)))
@@ -430,10 +392,10 @@ fn foreign_cpu_local_is_rejected_before_thread_creation() {
     assert_eq!(DROP_COUNTS[5].load(Ordering::Acquire), 1);
 }
 
-fn test_address_space(raw: usize) -> AddressSpaceHandle {
+fn test_address_space(raw: usize) -> AddressSpaceToken {
     // SAFETY: the integration runtime treats these non-zero scalar values as
     // inert address-space identities and never dereferences them.
-    unsafe { AddressSpaceHandle::from_raw(raw) }
+    unsafe { AddressSpaceToken::from_raw(raw) }
 }
 
 static DROP_COUNT_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {

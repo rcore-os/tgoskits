@@ -196,7 +196,7 @@ fn prepare_test_runtime() {
         support::install_cpu as fn(u32, core::pin::Pin<&mut ax_task::CpuLocal>),
         support::set_online_cpu_count as fn(usize),
         support::ipi_count as fn(u32) -> usize,
-        support::resource_release_counts as fn() -> (usize, usize, usize),
+        support::resource_release_counts as fn() -> (usize, usize, usize, usize),
         support::last_oneshot_ns as fn() -> u64,
         support::set_timer_resolution_ns as fn(u64),
         support::set_monotonic_ns as fn(u64),

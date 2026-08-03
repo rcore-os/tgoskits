@@ -66,7 +66,6 @@ pub fn init(args: &[String], envs: &[String]) {
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
-    let page_table_root = uspace.page_table_root().as_usize();
 
     // PID 1 must really be 1: the init process is the root of the process
     // hierarchy and userspace (e.g. systemd's `getpid() == 1` system-manager
@@ -101,7 +100,6 @@ pub fn init(args: &[String], envs: &[String]) {
             axnsproxy::NsProxy::new_root(),
             None,
             pid,
-            false,
         ),
     );
     // SAFE-EXPECT: failing to attach init would violate the kernel's process accounting invariant.
@@ -117,7 +115,6 @@ pub fn init(args: &[String], envs: &[String]) {
         new_user_task(uctx, 0),
         name,
         crate::config::KERNEL_STACK_SIZE,
-        page_table_root,
         thr,
     )
     .unwrap_or_else(|error| panic!("failed to spawn init task: {error}"));

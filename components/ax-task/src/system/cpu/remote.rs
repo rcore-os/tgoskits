@@ -13,6 +13,8 @@ pub use lifecycle::CpuLifecycleState;
 pub(crate) use lifecycle::CpuRemotePublication;
 pub use owner::CpuLocalOwnerBorrow;
 pub(crate) use run_queue::CpuRunQueueState;
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use run_queue::WakePreemptionDecision;
 
 /// Stable cross-CPU publication endpoint for one scheduler owner.
 ///
