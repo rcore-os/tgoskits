@@ -17,9 +17,13 @@ noise_shared_config=$config_dir/aarch64-rt-noise-shared.toml
 noise_partitioned_config=$config_dir/aarch64-rt-noise-partitioned.toml
 host_noise_shared_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-shared.toml
 host_noise_partitioned_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-partitioned.toml
+host_noise_formal_shared_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-formal-shared.toml
+host_noise_formal_partitioned_build=$config_dir/axvisor-orangepi-5-plus-starry-host-noise-formal-partitioned.toml
 host_noise_source=$benchmark_dir/../../../os/axvisor/src/host_noise.rs
 host_noise_shared_board=$config_dir/board-orangepi-5-plus-starry-host-noise-shared.toml
 host_noise_partitioned_board=$config_dir/board-orangepi-5-plus-starry-host-noise-partitioned.toml
+host_noise_formal_shared_board=$config_dir/board-orangepi-5-plus-starry-host-noise-formal-shared.toml
+host_noise_formal_partitioned_board=$config_dir/board-orangepi-5-plus-starry-host-noise-formal-partitioned.toml
 
 fail() {
     echo "test_starry_runner: $*" >&2
@@ -87,6 +91,14 @@ for host_noise_build in "$host_noise_shared_build" "$host_noise_partitioned_buil
         fail "$(basename "$host_noise_build") must use one StarryOS guest plus host noise"
     fi
 done
+for host_noise_formal_build in \
+    "$host_noise_formal_shared_build" \
+    "$host_noise_formal_partitioned_build"; do
+    grep -q 'max_duration_ms = 600000' "$host_noise_formal_build" || \
+        fail "$(basename "$host_noise_formal_build") must cover the 10,000-sample formal run"
+    grep -q 'ax-std/sched-rr' "$host_noise_formal_build" || \
+        fail "$(basename "$host_noise_formal_build") must retain round-robin host scheduling"
+done
 grep -q 'AXVISOR_RT_HOST_NOISE schema=1' "$host_noise_source" || \
     fail "host noise must emit a machine-readable persisted evidence record"
 for host_noise_board in "$host_noise_shared_board" "$host_noise_partitioned_board"; do
@@ -100,6 +112,20 @@ for host_noise_board in "$host_noise_shared_board" "$host_noise_partitioned_boar
         fail "$(basename "$host_noise_board") must have one terminal success condition"
     printf '%s\n' "$success_block" | grep -q 'AXVISOR_SNAPSHOT_SYNC_OK' || \
         fail "$(basename "$host_noise_board") must succeed only after the snapshot is synced"
+done
+for host_noise_formal_board in \
+    "$host_noise_formal_shared_board" \
+    "$host_noise_formal_partitioned_board"; do
+    grep -q '^timeout = 1200' "$host_noise_formal_board" || \
+        fail "$(basename "$host_noise_formal_board") must allow the bounded formal run and restore"
+    grep -q 'stop_reason=max-duration' "$host_noise_formal_board" || \
+        fail "$(basename "$host_noise_formal_board") must reject an expired formal host-noise task"
+    success_block=$(sed -n '/^success_regex = \[/,/^\]/p' "$host_noise_formal_board")
+    success_count=$(printf '%s\n' "$success_block" | grep -c '^  "')
+    [[ "$success_count" -eq 1 ]] || \
+        fail "$(basename "$host_noise_formal_board") must have one terminal success condition"
+    printf '%s\n' "$success_block" | grep -q 'AXVISOR_SNAPSHOT_SYNC_OK' || \
+        fail "$(basename "$host_noise_formal_board") must succeed only after snapshot sync"
 done
 grep -q 'ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU' "$harvest_runner" || \
     fail "harvest must expose an explicit expected host-noise placement"
