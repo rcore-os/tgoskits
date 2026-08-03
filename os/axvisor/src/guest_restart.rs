@@ -137,7 +137,7 @@ fn run_worker(config: GuestRestartConfig) -> Result<GuestRestartReport> {
                 config.ready_timeout_ms
             );
         }
-        thread::sleep(STATUS_POLL_INTERVAL);
+        wait_cooperatively(STATUS_POLL_INTERVAL);
     }
     let ready_wait_ms = elapsed_millis(ready_started);
     write_repeated_record(&format!(
@@ -147,7 +147,7 @@ fn run_worker(config: GuestRestartConfig) -> Result<GuestRestartReport> {
     .context("write Axvisor guest-restart running evidence")?;
 
     let delay_started = Instant::now();
-    thread::sleep(Duration::from_millis(config.delay_ms));
+    wait_cooperatively(Duration::from_millis(config.delay_ms));
     let observed_delay_ms = elapsed_millis(delay_started);
     let before_status = crate::manager::AxvmManager::with_vm(config.vm_id, |vm| vm.status())
         .with_context(|| format!("restart target VM[{}] disappeared", config.vm_id))?;
@@ -179,6 +179,15 @@ fn run_worker(config: GuestRestartConfig) -> Result<GuestRestartReport> {
 
 fn elapsed_millis(start: Instant) -> u64 {
     start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn wait_cooperatively(duration: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        // The RK3588 host sleep timer can stop waking this task after guest
+        // virtual timers start. Keeping it runnable preserves guest scheduling.
+        thread::yield_now();
+    }
 }
 
 fn validate_report(report: &GuestRestartReport) -> Result<()> {
@@ -222,7 +231,7 @@ fn write_repeated_record(record: &str) -> io::Result<()> {
         writeln!(output, "{record}")?;
         output.flush()?;
         if copy + 1 < EVIDENCE_RECORD_COPIES {
-            thread::sleep(EVIDENCE_RECORD_PAUSE);
+            wait_cooperatively(EVIDENCE_RECORD_PAUSE);
         }
     }
     Ok(())
