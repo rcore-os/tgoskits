@@ -20,13 +20,31 @@ use ax_task::{
 use super::with_current_cpu_pin;
 
 /// OS-owned lifetime anchor retained by a scheduler address-space token.
-///
-/// The runtime never invokes methods on this object. Its destructor runs only
-/// from the task-context resource reaper after every CPU active-mm lease has
-/// been released.
-trait TaskAddressSpaceOwner: Send + Sync {}
+trait TaskAddressSpaceOwner: Send + Sync {
+    /// Releases ownership that follows the attached task while retaining any
+    /// storage needed by CPUs that still carry the address space as lazy mm.
+    fn detach_from_task(&self);
+}
 
-impl<T: Send + Sync> TaskAddressSpaceOwner for T {}
+struct RetainedTaskAddressSpaceOwner<T>(T);
+
+impl<T: Send + Sync> TaskAddressSpaceOwner for RetainedTaskAddressSpaceOwner<T> {
+    fn detach_from_task(&self) {}
+}
+
+struct DetachableTaskAddressSpaceOwner<T> {
+    owner: T,
+    detached: core::sync::atomic::AtomicBool,
+    detach: fn(&T),
+}
+
+impl<T: Send + Sync> TaskAddressSpaceOwner for DetachableTaskAddressSpaceOwner<T> {
+    fn detach_from_task(&self) {
+        if !self.detached.swap(true, Ordering::AcqRel) {
+            (self.detach)(&self.owner);
+        }
+    }
+}
 
 struct RuntimeAddressSpace {
     #[cfg(feature = "uspace")]
@@ -42,6 +60,34 @@ pub struct TaskAddressSpace(Option<AddressSpaceToken>);
 impl TaskAddressSpace {
     /// Creates a scheduler token that owns `owner` until address-space reap.
     pub fn new(root: PhysAddr, owner: impl Send + Sync + 'static) -> Result<Self, TaskError> {
+        Self::new_with_owner(root, Box::new(RetainedTaskAddressSpaceOwner(owner)))
+    }
+
+    /// Creates a scheduler token with task-detach ownership semantics.
+    ///
+    /// `detach` runs once in ordinary task context after the attached thread
+    /// has entered lazy kernel-mm state. It may release task-scoped accounting,
+    /// but `owner` must keep the hardware page-table root valid until its final
+    /// drop after all active-CPU leases have drained.
+    pub fn new_with_task_detach<T: Send + Sync + 'static>(
+        root: PhysAddr,
+        owner: T,
+        detach: fn(&T),
+    ) -> Result<Self, TaskError> {
+        Self::new_with_owner(
+            root,
+            Box::new(DetachableTaskAddressSpaceOwner {
+                owner,
+                detached: core::sync::atomic::AtomicBool::new(false),
+                detach,
+            }),
+        )
+    }
+
+    fn new_with_owner(
+        root: PhysAddr,
+        owner: Box<dyn TaskAddressSpaceOwner>,
+    ) -> Result<Self, TaskError> {
         if root.as_usize() == 0 {
             return Err(TaskError::InvalidRuntimeHandle);
         }
@@ -50,7 +96,7 @@ impl TaskAddressSpace {
             root: root.as_usize(),
             active_cpus: AtomicUsize::new(0),
             reclaim_waiting: AtomicUsize::new(0),
-            _owner: Box::new(owner),
+            _owner: owner,
         });
         let raw = Box::into_raw(address_space).expose_provenance();
         // SAFETY: the fresh allocation transfers its unique destruction right
@@ -79,11 +125,19 @@ impl TaskAddressSpace {
     }
 }
 
+fn detach_runtime_address_space_owner(address_space: AddressSpaceHandle) {
+    runtime_address_space(address_space)
+        .unwrap_or_else(|_| panic!("address-space detach received an invalid owning handle"))
+        ._owner
+        .detach_from_task();
+}
+
 impl Drop for TaskAddressSpace {
     fn drop(&mut self) {
         let Some(address_space) = self.0.take() else {
             return;
         };
+        detach_runtime_address_space_owner(address_space.handle());
         let outcome = destroy_runtime_address_space(address_space.handle());
         assert_eq!(
             outcome,
@@ -301,6 +355,35 @@ pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(
     }
 }
 
+/// Detaches the running user task from its address space before exit
+/// publication, matching Linux `exit_mm` ordering.
+pub fn detach_current_address_space() -> Result<(), TaskError> {
+    #[cfg(feature = "uspace")]
+    {
+        let previous = {
+            let _irq = ax_kernel_guard::IrqSave::new();
+            let previous = ax_task::detach_current_address_space()?;
+            let status = activate_runtime_address_space(AddressSpaceActivation::KERNEL_LAZY);
+            assert_eq!(
+                status,
+                RuntimeStatus::Success,
+                "detaching current address space failed to enter lazy kernel-mm state"
+            );
+            previous
+        };
+
+        // The task-scoped owner may acquire sleepable OS locks. Run it only
+        // after restoring IRQs, while the runtime wrapper still pins the root
+        // for any CPU retaining it as a lazy active mm.
+        detach_runtime_address_space_owner(previous.handle());
+        ax_task::release_address_space_token(previous)
+    }
+    #[cfg(not(feature = "uspace"))]
+    {
+        Err(TaskError::RuntimeFailure(RuntimeStatus::Unsupported as u32))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
@@ -338,6 +421,57 @@ mod tests {
             AddressSpaceReclaimArmOutcome::Armed
         );
         assert_eq!(drops.load(Ordering::Acquire), 0);
+
+        release_active_cpu(runtime);
+        assert_eq!(
+            destroy_runtime_address_space(handle),
+            AddressSpaceDestroyOutcome::Released
+        );
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+        assert!(!owned.is_none());
+    }
+
+    #[test]
+    fn task_detach_releases_task_owner_before_lazy_cpu_lease() {
+        struct CountDetach {
+            detaches: Arc<AtomicUsize>,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Drop for CountDetach {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        fn detach(owner: &CountDetach) {
+            owner.detaches.fetch_add(1, Ordering::Release);
+        }
+
+        let detaches = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut token = TaskAddressSpace::new_with_task_detach(
+            ax_memory_addr::PhysAddr::from(0x4000),
+            CountDetach {
+                detaches: Arc::clone(&detaches),
+                drops: Arc::clone(&drops),
+            },
+            detach,
+        )
+        .unwrap();
+        let handle = token.handle();
+        let runtime = runtime_address_space(handle).unwrap();
+        runtime.active_cpus.fetch_add(1, Ordering::AcqRel);
+        let owned = token.take_token();
+
+        detach_runtime_address_space_owner(handle);
+        detach_runtime_address_space_owner(handle);
+        assert_eq!(detaches.load(Ordering::Acquire), 1);
+        assert_eq!(drops.load(Ordering::Acquire), 0);
+        assert_eq!(
+            destroy_runtime_address_space(handle),
+            AddressSpaceDestroyOutcome::Active
+        );
 
         release_active_cpu(runtime);
         assert_eq!(

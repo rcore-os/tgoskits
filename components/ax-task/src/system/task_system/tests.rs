@@ -1588,6 +1588,40 @@ fn busy_address_space_does_not_retain_completed_thread_resources() {
 }
 
 #[test]
+fn current_address_space_detach_transfers_the_unique_token_once() {
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Released);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let resources = unsafe {
+        // SAFETY: this fixture transfers one modeled address-space token into
+        // the bootstrap record and takes it back through the detach operation.
+        ThreadResources::new(
+            ExecutionContextHandle::NONE,
+            crate::runtime::StackHandle::NONE,
+            crate::runtime::TlsHandle::NONE,
+            crate::runtime::AddressSpaceToken::from_raw(0xb000),
+        )
+    };
+    system
+        .install_bootstrap_thread(cpu.as_mut(), unsafe {
+            // SAFETY: the specification is the sole owner of `resources`.
+            ThreadSpec::new(SchedulePolicy::default()).with_resources(resources)
+        })
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    let address_space = system.detach_current_address_space(cpu.as_mut()).unwrap();
+    assert_eq!(address_space.handle().into_raw(), 0xb000);
+    assert_eq!(
+        system.detach_current_address_space(cpu.as_mut()),
+        Err(TaskError::InvalidConfiguration),
+        "one running task may transfer its address-space token only once"
+    );
+
+    system.release_address_space_token(address_space);
+}
+
+#[test]
 fn thread_private_resource_release_failure_is_fatal() {
     let failure = std::thread::spawn(|| {
         crate::test_runtime::configure_resource_release(RuntimeStatus::Busy);

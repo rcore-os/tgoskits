@@ -67,6 +67,34 @@ impl TaskSystem {
         Ok(previous)
     }
 
+    /// Detaches the current running thread from its user address space.
+    ///
+    /// The caller must enter the runtime's lazy kernel address-space state in
+    /// the same IRQ-off transaction before releasing the returned token.
+    pub fn detach_current_address_space(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+    ) -> Result<crate::runtime::AddressSpaceToken, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        let mut state = self.state.lock();
+        state.ensure_cpu_online(&cpu)?;
+        let owner = cpu.owner();
+        let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
+        let record = state.thread_record_mut(current)?;
+        let mut sched = record.sched.lock();
+        if sched.lifecycle.state() != ThreadState::Running
+            || sched.placement.running_cpu() != Some(owner)
+            || sched.placement.on_cpu() != Some(owner)
+            || sched.placement.queued_cpu().is_some()
+            || record.resources.address_space().is_none()
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let previous = record.resources.take_address_space();
+        sched.runtime.address_space = crate::runtime::AddressSpaceHandle::NONE;
+        Ok(previous)
+    }
+
     /// Acquires a strong handle for a generation-valid registry entry.
     pub fn thread_handle(&self, thread: ThreadId) -> Result<ThreadHandle, TaskError> {
         let state = self.state.lock();

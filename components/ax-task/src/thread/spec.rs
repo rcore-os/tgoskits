@@ -76,6 +76,10 @@ impl ThreadResources {
         core::mem::replace(&mut self.address_space, address_space)
     }
 
+    pub(crate) fn take_address_space(&mut self) -> AddressSpaceToken {
+        core::mem::replace(&mut self.address_space, AddressSpaceToken::NONE)
+    }
+
     /// Releases thread-private resources and returns the independent active-mm
     /// ownership token.
     ///

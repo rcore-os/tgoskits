@@ -10,19 +10,39 @@ use crate::mm::AddrSpace;
 
 struct SchedulerAddressSpaceLease {
     aspace: Arc<PiMutex<AddrSpace>>,
+    released: AtomicBool,
 }
 
 impl Drop for SchedulerAddressSpaceLease {
     fn drop(&mut self) {
-        crate::mm::release_scheduler_slot(&self.aspace);
+        self.release();
     }
+}
+
+impl SchedulerAddressSpaceLease {
+    fn release(&self) {
+        if !self.released.swap(true, Ordering::AcqRel) {
+            crate::mm::release_scheduler_slot(&self.aspace);
+        }
+    }
+}
+
+fn detach_scheduler_address_space(lease: &SchedulerAddressSpaceLease) {
+    lease.release();
 }
 
 pub(crate) fn scheduler_address_space(
     aspace: Arc<PiMutex<AddrSpace>>,
 ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
     let root = crate::mm::attach_scheduler_slot(&aspace);
-    ax_runtime::task::TaskAddressSpace::new(root, SchedulerAddressSpaceLease { aspace })
+    ax_runtime::task::TaskAddressSpace::new_with_task_detach(
+        root,
+        SchedulerAddressSpaceLease {
+            aspace,
+            released: AtomicBool::new(false),
+        },
+        detach_scheduler_address_space,
+    )
 }
 
 /// Address-space state whose release must follow scheduler switch-tail rules.
