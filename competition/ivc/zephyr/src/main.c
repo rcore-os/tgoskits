@@ -21,6 +21,7 @@
 #define IVC_LOCAL_UDP_PORT 5500U
 #define IVC_SOCKET_POLL_MS 100
 #define IVC_ETHERNET_ADDRESS_LENGTH 6U
+#define IVC_READY_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_PAUSE_MS 10
 
@@ -41,6 +42,7 @@ struct ivc_server {
 	uint64_t status_sent;
 	uint64_t acknowledgements_sent;
 	uint64_t errors_sent;
+	bool ready_replayed;
 	bool result_reported;
 };
 
@@ -187,6 +189,31 @@ static bool send_ack(int socket_fd, const struct sockaddr *peer, socklen_t peer_
 	return ivc_encode_ack(&ack, payload) &&
 	       send_payload(socket_fd, peer, peer_length, request, IVC_MESSAGE_ACK, IVC_ERROR_NONE,
 			    payload, sizeof(payload));
+}
+
+static void report_ready(void)
+{
+	printk("IVC-RTOS-READY bind=%s:%u mac=52:54:00:00:00:02 window_bits=%u "
+	       "ack_loss_drop_every=%u expected_commands=%u expected_protocol_errors=%u "
+	       "exit_after_expected=%u\n",
+	       IVC_LOCAL_IPV4, IVC_LOCAL_UDP_PORT, IVC_RECEIVE_WINDOW_BITS,
+	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY, (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS,
+	       (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS,
+	       (uint32_t)IS_ENABLED(CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS));
+}
+
+static void replay_ready_if_needed(struct ivc_server *server)
+{
+	uint32_t copy;
+
+	if (server->ready_replayed) {
+		return;
+	}
+	server->ready_replayed = true;
+	for (copy = 0U; copy < IVC_READY_RECORD_COPIES; ++copy) {
+		report_ready();
+		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
+	}
 }
 
 static void report_compact_result(const struct ivc_server *server, const char *profile)
@@ -374,6 +401,7 @@ static void process_datagram(struct ivc_server *server, int socket_fd,
 	struct ivc_control_command command;
 	enum ivc_decode_result decode_result;
 
+	replay_ready_if_needed(server);
 	decode_result = ivc_decode_frame(receive_frame, length, &frame);
 	if (decode_result != IVC_DECODE_OK) {
 		++server->protocol_errors;
@@ -455,18 +483,13 @@ int main(void)
 	server.status_sent = 0U;
 	server.acknowledgements_sent = 0U;
 	server.errors_sent = 0U;
+	server.ready_replayed = false;
 	server.result_reported = false;
 	poll_descriptor = (struct zsock_pollfd){
 		.fd = socket_fd,
 		.events = ZSOCK_POLLIN,
 	};
-	printk("IVC-RTOS-READY bind=%s:%u mac=52:54:00:00:00:02 window_bits=%u "
-	       "ack_loss_drop_every=%u expected_commands=%u expected_protocol_errors=%u "
-	       "exit_after_expected=%u\n",
-	       IVC_LOCAL_IPV4, IVC_LOCAL_UDP_PORT, IVC_RECEIVE_WINDOW_BITS,
-	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY, (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS,
-	       (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS,
-	       (uint32_t)IS_ENABLED(CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS));
+	report_ready();
 
 	for (;;) {
 		struct sockaddr_storage peer;

@@ -45,6 +45,7 @@ ZEPHYR_BOARD_ACK_LOSS_CONF = (
 )
 ZEPHYR_BOARD_ERROR_CONF = REPOSITORY_ROOT / "competition/ivc/zephyr/board-error.conf"
 ZEPHYR_KCONFIG = REPOSITORY_ROOT / "competition/ivc/zephyr/Kconfig"
+ZEPHYR_MAIN = REPOSITORY_ROOT / "competition/ivc/zephyr/src/main.c"
 ZEPHYR_GITIGNORE = REPOSITORY_ROOT / "competition/ivc/zephyr/.gitignore"
 ORANGEPI_RUN_SCRIPT = REPOSITORY_ROOT / "competition/ivc/run-orangepi-5-plus.sh"
 ORANGEPI_STAGE_SCRIPT = REPOSITORY_ROOT / "competition/ivc/stage-orangepi-5-plus.sh"
@@ -824,6 +825,13 @@ class QemuConfigContractTests(unittest.TestCase):
             kconfig,
             r"(?s)config IVC_EXPECTED_PROTOCOL_ERRORS.*?default 0",
         )
+
+    def test_error_profile_replays_ready_on_the_first_observable_datagram(self) -> None:
+        source = ZEPHYR_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("report_ready();", source)
+        self.assertIn("replay_ready_if_needed(server);", source)
+        self.assertIn("bool ready_replayed;", source)
 
 
 if __name__ == "__main__":
