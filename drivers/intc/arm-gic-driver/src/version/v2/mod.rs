@@ -645,6 +645,12 @@ impl HypervisorInterface {
 
     /// Initialize the hypervisor interface
     pub fn init_current_cpu(&mut self) {
+        self.reset_current_cpu();
+    }
+
+    /// Restore this physical CPU's virtual interface to architectural reset
+    /// state before assigning it to a new vCPU incarnation.
+    pub fn reset_current_cpu(&self) {
         let gich = self.gich();
 
         // Disable the hypervisor interface first

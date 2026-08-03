@@ -246,16 +246,18 @@ class BoardAnalysisTests(unittest.TestCase):
             (("profile", "restart"), ("sent", 4), ("acknowledged", 4), ("continued", 1)),
         )
         return f"""\
-AXVISOR_GUEST_RESTART_ARMED schema=1 vm_id=1 delay_ms=20000 ready_timeout_ms=30000
-AXVISOR_GUEST_RESTART_RUNNING schema=1 vm_id=1 ready_wait_ms=450 status=running
+AXVISOR_GUEST_RESTART_ARMED schema=1 vm_id=1 host_cpu=3 delay_ms=20000 ready_timeout_ms=30000
+AXVISOR_GUEST_RESTART_PLACED schema=1 vm_id=1 requested_pcpu=3 actual_pcpu=3 affinity_mask=8
+AXVISOR_GUEST_RESTART_RUNNING schema=1 vm_id=1 host_cpu=3 ready_wait_ms=450 status=running
 [guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native fault_profile=restart count=4 period_ms=100 vcpus=2
 [guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
 [guest-console:pl011-zephyr] IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_drop_every=0 expected_commands=24 expected_protocol_errors=1 exit_after_expected=1
 [guest-console:pl011-zephyr] IVC-RTOS-RESTART-READY commands=24 errors=1 resets=1 rejections=1 safe=1 drop=0 exit=1
+[guest-console:pl011-zephyr] IVC-RTOS-DUPLICATE seq=1 next_expected=2 duplicates=1
 [guest-console:pl011-starry] IVC-STARRY-RESTART-ARMED phase=before-reset session_id={old_session} samples=20
 [guest-console:pl011-starry] IVC-STARRY-RESTART-RAW path=/var/lib/ivc/raw-before-reset.csv samples=20 sha256={pre_digest}
 [guest-console:pl011-zephyr] IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=0 last_sequence=20 session={old_session} safe_fallbacks=1
-AXVISOR_GUEST_RESTART_TRIGGER schema=1 vm_id=1 requested_delay_ms=20000 observed_delay_ms=20001 before_status=running reset_count=1
+AXVISOR_GUEST_RESTART_TRIGGER schema=1 vm_id=1 host_cpu=3 requested_delay_ms=20000 observed_delay_ms=20001 before_status=running reset_count=1
 [guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native fault_profile=restart count=4 period_ms=100 vcpus=2
 [guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
 [guest-console:pl011-starry] IVC-STARRY-RESTART-RESUME phase=after-reset old_session={old_session} new_session={new_session} first_samples=20
@@ -270,14 +272,14 @@ AXVISOR_GUEST_RESTART_TRIGGER schema=1 vm_id=1 requested_delay_ms=20000 observed
 [guest-console:pl011-starry] {controller_restart}
 [guest-console:pl011-starry] {controller_result}
 [guest-console:pl011-zephyr] {stale_error}
-[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=restart accepted=24 applied=24 duplicates=0 acks_dropped=0
-[guest-console:pl011-zephyr] IVC-RTOS-MESSAGES status_sent=25 acks_sent=25 errors_sent=1 protocol_errors=1
+[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=restart accepted=24 applied=24 duplicates=1 acks_dropped=0
+[guest-console:pl011-zephyr] IVC-RTOS-MESSAGES status_sent=26 acks_sent=26 errors_sent=1 protocol_errors=1
 [guest-console:pl011-zephyr] IVC-RTOS-RESTART session_resets=1 session_rejections=1 safe_fallbacks=1 recoveries=1 stale_status_sent=1 stale_acks_sent=1
 [guest-console:pl011-zephyr] IVC-RTOS-POWEROFF accepted=24
 [guest-console:pl011-starry] IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=4 sha256={post_digest}
 [guest-console:pl011-starry] IVC-STARRY-DONE exit=0
-AXVISOR_GUEST_RESTART_COMPLETE schema=1 vm_id=1 before_status=running after_status=running reset_count=1
-AXVISOR_GUEST_RESTART_TIMING schema=1 vm_id=1 ready_wait_ms=450 requested_delay_ms=20000 observed_delay_ms=20001
+AXVISOR_GUEST_RESTART_COMPLETE schema=1 vm_id=1 host_cpu=3 before_status=running after_status=running reset_count=1
+AXVISOR_GUEST_RESTART_TIMING schema=1 vm_id=1 host_cpu=3 ready_wait_ms=450 requested_delay_ms=20000 observed_delay_ms=20001
 AXVISOR_SNAPSHOT_SYNC_OK
 BOARD_LINUX_RESTORED
 BOARD_RESULT_IMAGE_VALIDATED vm=1 index=0 path=/home/orangepi/ivc-r bytes=67108864 sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef fsck=clean
@@ -688,12 +690,17 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
 
         self.assertEqual(result["profile"], "restart")
         self.assertEqual(result["rtos"]["accepted"], 24)
+        self.assertEqual(result["rtos"]["duplicates"], 1)
+        self.assertEqual(result["rtos"]["duplicate_sequences"], [1])
+        self.assertEqual(result["rtos"]["status_sent"], 26)
+        self.assertEqual(result["rtos"]["acks_sent"], 26)
         self.assertEqual(result["rtos"]["session_resets"], 1)
         self.assertEqual(result["rtos"]["session_rejections"], 1)
         self.assertEqual(result["restart_recovery"]["old_session"], 286_331_153)
         self.assertEqual(result["restart_recovery"]["new_session"], 572_662_306)
         self.assertTrue(result["restart_recovery"]["safe_fallback_observed"])
         self.assertTrue(result["restart_recovery"]["actual_vm_reset"])
+        self.assertEqual(result["restart_recovery"]["host_cpu"], 3)
         self.assertEqual(result["pre_reset_raw_samples"]["sample_count"], 20)
         self.assertEqual(
             result["lifecycle"]["block_snapshot"]["image_path"],

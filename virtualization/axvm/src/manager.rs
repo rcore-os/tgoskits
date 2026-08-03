@@ -294,6 +294,11 @@ impl AxvmRuntime {
         crate::runtime::reset_vm(vm_id)
     }
 
+    /// Reset a VM with a caller-selected stop-wait strategy.
+    pub fn reset_vm_with_wait(vm_id: VMId, wait_step: impl FnMut()) -> AxVmResult {
+        crate::runtime::reset_vm_with_wait(vm_id, wait_step)
+    }
+
     /// Remove a VM selected from the runtime registry.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
         crate::runtime::remove_vm(vm_id)

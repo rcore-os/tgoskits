@@ -286,6 +286,7 @@ log = "Info"
 
 [guest_restart]
 vm_id = 1
+cpu = 3
 delay_ms = 12000
 ready_timeout_ms = 30000
 "#,
@@ -305,6 +306,13 @@ ready_timeout_ms = 30000
             .get("AXVISOR_GUEST_RESTART_VM_ID")
             .map(String::as_str),
         Some("1")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_CPU")
+            .map(String::as_str),
+        Some("3")
     );
     assert_eq!(
         cargo

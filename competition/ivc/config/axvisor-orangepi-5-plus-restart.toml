@@ -15,5 +15,6 @@ board_type = "OrangePi-5-Plus"
 
 [guest_restart]
 vm_id = 1
+cpu = 3
 delay_ms = 20000
 ready_timeout_ms = 30000

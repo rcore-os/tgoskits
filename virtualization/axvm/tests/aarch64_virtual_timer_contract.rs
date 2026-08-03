@@ -74,6 +74,84 @@ fn aarch64_timer_forwarding_uses_a_hardware_list_register() {
 }
 
 #[test]
+fn fresh_emulated_vcpu_clears_stale_virtual_interrupt_state_before_enable() {
+    let gic = include_str!("../src/arch/aarch64/gic.rs");
+    let prepare = gic
+        .split_once("pub(crate) fn prepare_emulated_guest_cpu_interface()")
+        .expect("AArch64 must prepare the virtual CPU interface before guest entry")
+        .1
+        .split_once("fn inject_interrupt_gic_v2")
+        .expect("virtual-interface preparation must precede interrupt injection")
+        .0;
+    assert!(
+        prepare.contains("reset_gic_v2_virtual_interface")
+            && prepare.contains("reset_gic_v3_virtual_interface"),
+        "a fresh vCPU must reset the pCPU-local virtual interface instead of reusing the previous \
+         VM incarnation's state"
+    );
+
+    let gic_v2_reset = gic
+        .split_once("fn reset_gic_v2_virtual_interface")
+        .expect("GICv2 must expose a current-pCPU virtual-interface reset")
+        .1
+        .split_once("fn reset_gic_v3_virtual_interface")
+        .expect("GICv3 reset must follow the GICv2 reset")
+        .0;
+    assert!(
+        gic_v2_reset.contains("reset_current_cpu") && gic_v2_reset.contains("gich.enable()"),
+        "GICv2 must clear HCR, active priorities, and list registers before enabling the new vCPU"
+    );
+
+    let gic_v3_reset = gic
+        .split_once("fn reset_gic_v3_virtual_interface")
+        .expect("GICv3 must expose a current-pCPU virtual-interface reset")
+        .1
+        .split_once("fn inject_interrupt_gic_v2")
+        .expect("GICv3 reset must remain bounded before interrupt injection")
+        .0;
+    for required in [
+        "ICH_HCR_EL2.set(0)",
+        "ich_lr_el2_write",
+        "ICH_LR_EL2::STATE::Invalid",
+        "ICH_VMCR_EL2.set(0)",
+        "clear_gic_v3_active_priorities",
+        "enable_gic_v3_virtual_interface()",
+        "isb",
+    ] {
+        assert!(
+            gic_v3_reset.contains(required),
+            "GICv3 fresh-vCPU reset is missing `{required}`"
+        );
+    }
+
+    let active_priorities = gic
+        .split_once("fn clear_gic_v3_active_priorities")
+        .expect("GICv3 must clear pCPU-local active priorities")
+        .1
+        .split_once("fn reset_gic_v3_virtual_interface")
+        .expect("active-priority cleanup must precede the complete GICv3 reset")
+        .0;
+    for required in [
+        "ICH_VTR_EL2::PREBITS",
+        "ICH_AP0R0_EL2.set(0)",
+        "ICH_AP1R0_EL2.set(0)",
+        "preemption_bits >= 6",
+        "ICH_AP0R1_EL2.set(0)",
+        "ICH_AP1R1_EL2.set(0)",
+        "preemption_bits >= 7",
+        "ICH_AP0R2_EL2.set(0)",
+        "ICH_AP0R3_EL2.set(0)",
+        "ICH_AP1R2_EL2.set(0)",
+        "ICH_AP1R3_EL2.set(0)",
+    ] {
+        assert!(
+            active_priorities.contains(required),
+            "GICv3 active-priority reset is missing `{required}`"
+        );
+    }
+}
+
+#[test]
 fn forwarded_timer_defers_physical_deactivation_until_guest_eoi() {
     let platform_irq = include_str!("../../../platforms/axplat-dyn/src/irq.rs");
     assert!(

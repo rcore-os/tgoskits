@@ -576,6 +576,51 @@ def validate_restart_summary(
     pre_reset_count = require_integer(
         capture, "pre_reset_command_count", "capture contract"
     )
+    expected_duplicate_sequences = require_list(
+        capture, "expected_duplicate_sequences", "capture contract"
+    )
+    if expected_duplicate_sequences != [1]:
+        raise AggregationError(
+            "restart capture contract must preregister duplicate sequence 1"
+        )
+    expected_duplicate_receives = require_integer(
+        capture, "expected_duplicate_receives", "capture contract"
+    )
+    if expected_duplicate_receives != len(expected_duplicate_sequences):
+        raise AggregationError(
+            "restart duplicate count differs from its preregistered sequence set"
+        )
+    expected_fresh_applications = require_integer(
+        capture, "expected_fresh_applications", "capture contract"
+    )
+    expected_status_frames = require_integer(
+        capture, "expected_status_frames", "capture contract"
+    )
+    expected_ack_frames = require_integer(
+        capture, "expected_ack_frames", "capture contract"
+    )
+    expected_stale_status_frames = require_integer(
+        capture, "expected_stale_status_frames", "capture contract"
+    )
+    expected_stale_ack_frames = require_integer(
+        capture, "expected_stale_ack_frames", "capture contract"
+    )
+    if expected_status_frames != (
+        expected_fresh_applications
+        + expected_duplicate_receives
+        + expected_stale_status_frames
+    ):
+        raise AggregationError(
+            "restart STATUS count differs from fresh, duplicate, and stale responses"
+        )
+    if expected_ack_frames != (
+        expected_fresh_applications
+        + expected_duplicate_receives
+        + expected_stale_ack_frames
+    ):
+        raise AggregationError(
+            "restart ACK count differs from fresh, duplicate, and stale responses"
+        )
     pre_reset = require_object(summary, "pre_reset_raw_samples", label)
     pre_reset_hash = sha256_file(run_dir / "raw-before-reset.csv")
     require_equal(pre_reset, "sha256", pre_reset_hash, f"{label} pre-reset raw")
@@ -620,6 +665,7 @@ def validate_restart_summary(
     recovery_contract = {
         "actual_vm_reset": True,
         "vm_id": capture["restart_vm_id"],
+        "host_cpu": capture["restart_host_cpu"],
         "reset_count": 1,
         "ready_wait_ms": ready_wait_ms,
         "requested_delay_ms": requested_delay_ms,
@@ -699,6 +745,7 @@ def validate_summary(
         rtos_contract.update(
             {
                 "acks_dropped": 0,
+                "duplicate_sequences": capture["expected_duplicate_sequences"],
                 "session_resets": capture["expected_session_resets"],
                 "session_rejections": capture[
                     "expected_session_rejections"
@@ -1111,6 +1158,7 @@ def aggregate_campaign(
                     "expected_retired_control_rejections"
                 ],
                 "restart_vm_id": capture["restart_vm_id"],
+                "restart_host_cpu": capture["restart_host_cpu"],
                 "restart_delay_ms": capture["restart_delay_ms"],
                 "restart_ready_timeout_ms": capture[
                     "restart_ready_timeout_ms"

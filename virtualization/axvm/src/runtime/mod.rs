@@ -116,9 +116,13 @@ pub fn resume_vm(vm_id: usize) -> AxVmResult {
 }
 
 pub fn reset_vm(vm_id: usize) -> AxVmResult {
+    reset_vm_with_wait(vm_id, crate::host::task::yield_now)
+}
+
+pub fn reset_vm_with_wait(vm_id: usize, wait_step: impl FnMut()) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
     let previous_status = vm.status();
-    vm.reset()?;
+    vm.reset_with_wait(wait_step)?;
     if reset_starts_counted_runtime(previous_status) {
         add_running_vm_count(1);
     }

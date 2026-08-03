@@ -66,6 +66,12 @@ impl AxvmManager {
         AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))
     }
 
+    /// Reset a VM without yielding the caller's dedicated host CPU.
+    pub fn reset_vm_with_spin_wait(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::reset_vm_with_wait(vm_id, core::hint::spin_loop)
+            .with_context(|| format!("reset VM[{vm_id}] with reserved-CPU polling"))
+    }
+
     /// Remove a VM by ID.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
         #[cfg(target_arch = "loongarch64")]

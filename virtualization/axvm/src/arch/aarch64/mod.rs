@@ -72,6 +72,14 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
+    fn clean_and_invalidate_dcache_range(addr: VirtAddr, size: usize) {
+        aarch64_cpu_ext::cache::dcache_range(
+            aarch64_cpu_ext::cache::CacheOp::CleanAndInvalidate,
+            addr.as_usize(),
+            size,
+        );
+    }
+
     fn register_platform_irq_injector() {
         gic::register_guest_virtual_timer_irq_injector();
     }
@@ -92,8 +100,17 @@ impl ArchOps for Aarch64Arch {
         arm_vcpu::disable_local_guest_timers();
     }
 
-    fn before_vcpu_task_exit(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+    fn before_vcpu_task_exit(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         arm_vcpu::disable_local_guest_timers();
+        let byte_len = vm.quiesce_local_reset_memory_cache();
+        if byte_len != 0 {
+            info!(
+                "VM[{}] VCpu[{}] quiesced {byte_len} bytes of reset-memory cache state on pCPU{}",
+                vm.id(),
+                vcpu.id(),
+                default_host().this_cpu_id()
+            );
+        }
     }
 
     fn handle_vcpu_exit_bound(

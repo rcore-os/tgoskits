@@ -510,9 +510,10 @@ def write_restart_campaign(root: Path) -> tuple[Path, Path, Path]:
         "expected_retransmissions": 0,
         "expected_recoveries": 0,
         "expected_fresh_applications": 120,
-        "expected_duplicate_receives": 0,
-        "expected_status_frames": 121,
-        "expected_ack_frames": 121,
+        "expected_duplicate_receives": 1,
+        "expected_duplicate_sequences": [1],
+        "expected_status_frames": 122,
+        "expected_ack_frames": 122,
         "expected_error_frames": 1,
         "expected_protocol_errors": 1,
         "expected_session_resets": 1,
@@ -523,6 +524,7 @@ def write_restart_campaign(root: Path) -> tuple[Path, Path, Path]:
         "expected_stale_ack_frames": 1,
         "expected_retired_control_rejections": 1,
         "restart_vm_id": 1,
+        "restart_host_cpu": 3,
         "restart_delay_ms": 20_000,
         "restart_ready_timeout_ms": 30_000,
         "previous_session": 286_331_153,
@@ -559,10 +561,11 @@ def write_restart_campaign(root: Path) -> tuple[Path, Path, Path]:
             "profile": "restart",
             "accepted": 120,
             "applied": 120,
-            "duplicates": 0,
+            "duplicates": 1,
+            "duplicate_sequences": [1],
             "acks_dropped": 0,
-            "status_sent": 121,
-            "acks_sent": 121,
+            "status_sent": 122,
+            "acks_sent": 122,
             "errors_sent": 1,
             "protocol_errors": 1,
             "session_resets": 1,
@@ -590,6 +593,7 @@ def write_restart_campaign(root: Path) -> tuple[Path, Path, Path]:
         summary["restart_recovery"] = {
             "actual_vm_reset": True,
             "vm_id": 1,
+            "host_cpu": 3,
             "reset_count": 1,
             "ready_wait_ms": 450,
             "requested_delay_ms": 20_000,
@@ -652,6 +656,26 @@ class BoardCampaignAggregationTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 aggregate.AggregationError, "restart_recovery"
+            ):
+                aggregate.aggregate_campaign(
+                    root, result_root, amendment, final_check
+                )
+
+    def test_rejects_rehashed_restart_summary_with_wrong_duplicate_sequence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_restart_campaign(root)
+            run_dir = result_root / "run-002"
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["rtos"]["duplicate_sequences"] = [2]
+            write_json(summary_path, summary)
+            refresh_run_identity(run_dir)
+
+            with self.assertRaisesRegex(
+                aggregate.AggregationError, "duplicate_sequences"
             ):
                 aggregate.aggregate_campaign(
                     root, result_root, amendment, final_check

@@ -868,7 +868,12 @@ class QemuConfigContractTests(unittest.TestCase):
         )
         self.assertEqual(
             build["guest_restart"],
-            {"vm_id": 1, "delay_ms": 20000, "ready_timeout_ms": 30000},
+            {
+                "vm_id": 1,
+                "cpu": 3,
+                "delay_ms": 20000,
+                "ready_timeout_ms": 30000,
+            },
         )
         self.assertEqual(
             starry["kernel"]["disk_path"],
@@ -886,7 +891,7 @@ class QemuConfigContractTests(unittest.TestCase):
             "CONFIG_IVC_EXPECTED_SAFE_FALLBACKS=1",
         ):
             self.assertIn(setting, board_overlay)
-        self.assertIn("AxvmManager::reset_vm(config.vm_id)?;", (
+        self.assertIn("AxvmManager::reset_vm_with_spin_wait(config.vm_id)?;", (
             REPOSITORY_ROOT / "os/axvisor/src/guest_restart.rs"
         ).read_text(encoding="utf-8"))
         self.assertIn("IVC-RTOS-SAFE-FALLBACK", zephyr_source)

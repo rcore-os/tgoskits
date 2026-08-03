@@ -19,6 +19,9 @@ pub(crate) trait ArchOps {
 
     fn clean_dcache_range(_addr: VirtAddr, _size: usize) {}
 
+    #[cfg(target_arch = "aarch64")]
+    fn clean_and_invalidate_dcache_range(_addr: VirtAddr, _size: usize) {}
+
     fn register_platform_irq_injector() {}
 
     fn vcpu_affinities(

@@ -81,6 +81,7 @@ RAW_COLUMNS = (
     "error_milli_c",
 )
 AXVISOR_RESTART_ARMED_PREFIX = "AXVISOR_GUEST_RESTART_ARMED "
+AXVISOR_RESTART_PLACED_PREFIX = "AXVISOR_GUEST_RESTART_PLACED "
 AXVISOR_RESTART_RUNNING_PREFIX = "AXVISOR_GUEST_RESTART_RUNNING "
 AXVISOR_RESTART_TRIGGER_PREFIX = "AXVISOR_GUEST_RESTART_TRIGGER "
 AXVISOR_RESTART_COMPLETE_PREFIX = "AXVISOR_GUEST_RESTART_COMPLETE "
@@ -618,13 +619,28 @@ def validate_restart_rtos(
                 f"RTOS restart READY {field} does not match the profile"
             )
 
+    # The cold pre-reset controller deterministically retransmits its first
+    # command once.  The endpoint must identify that frame as a duplicate,
+    # respond to it, and apply the command only once.
+    expected_duplicate_sequences = [1]
+    duplicate_sequences = parse_sequence_records(
+        lines,
+        DUPLICATE_PREFIX,
+        "seq",
+        "restart duplicate command",
+    )
+    if duplicate_sequences != expected_duplicate_sequences:
+        raise AnalysisError(
+            "duplicate sequence set does not match the deterministic restart profile"
+        )
+    expected_response_frames = expected_count + len(expected_duplicate_sequences) + 1
     expected_fields = {
         "accepted": expected_count,
         "applied": expected_count,
-        "duplicates": 0,
+        "duplicates": len(expected_duplicate_sequences),
         "acks_dropped": 0,
-        "status_sent": expected_count + 1,
-        "acks_sent": expected_count + 1,
+        "status_sent": expected_response_frames,
+        "acks_sent": expected_response_frames,
         "errors_sent": 1,
         "protocol_errors": 1,
     }
@@ -634,6 +650,7 @@ def validate_restart_rtos(
                 f"RTOS {field}={result[field]} does not match deterministic "
                 f"restart-profile value {expected}"
             )
+    result["duplicate_sequences"] = duplicate_sequences
 
     restart = find_record(
         lines,
@@ -659,10 +676,8 @@ def validate_restart_rtos(
         if value != 1:
             raise AnalysisError(f"RTOS restart {field} must equal one")
         result[field] = value
-    if any(
-        line.startswith((ACK_LOSS_INJECT_PREFIX, DUPLICATE_PREFIX)) for line in lines
-    ):
-        raise AnalysisError("restart profile contains ACK-loss evidence markers")
+    if any(line.startswith(ACK_LOSS_INJECT_PREFIX) for line in lines):
+        raise AnalysisError("restart profile contains ACK-loss injection markers")
 
 
 def parse_integrity_fields(
@@ -1078,12 +1093,17 @@ def parse_restart_recovery(
     armed = find_record(
         lines,
         AXVISOR_RESTART_ARMED_PREFIX,
-        ("schema", "vm_id", "delay_ms", "ready_timeout_ms"),
+        ("schema", "vm_id", "host_cpu", "delay_ms", "ready_timeout_ms"),
+    )
+    placed = find_record(
+        lines,
+        AXVISOR_RESTART_PLACED_PREFIX,
+        ("schema", "vm_id", "requested_pcpu", "actual_pcpu", "affinity_mask"),
     )
     running = find_record(
         lines,
         AXVISOR_RESTART_RUNNING_PREFIX,
-        ("schema", "vm_id", "ready_wait_ms", "status"),
+        ("schema", "vm_id", "host_cpu", "ready_wait_ms", "status"),
     )
     trigger = find_record(
         lines,
@@ -1091,6 +1111,7 @@ def parse_restart_recovery(
         (
             "schema",
             "vm_id",
+            "host_cpu",
             "requested_delay_ms",
             "observed_delay_ms",
             "before_status",
@@ -1100,7 +1121,14 @@ def parse_restart_recovery(
     complete = find_record(
         lines,
         AXVISOR_RESTART_COMPLETE_PREFIX,
-        ("schema", "vm_id", "before_status", "after_status", "reset_count"),
+        (
+            "schema",
+            "vm_id",
+            "host_cpu",
+            "before_status",
+            "after_status",
+            "reset_count",
+        ),
     )
     timing = find_record(
         lines,
@@ -1108,6 +1136,7 @@ def parse_restart_recovery(
         (
             "schema",
             "vm_id",
+            "host_cpu",
             "ready_wait_ms",
             "requested_delay_ms",
             "observed_delay_ms",
@@ -1115,6 +1144,7 @@ def parse_restart_recovery(
     )
     for record, prefix in (
         (armed, AXVISOR_RESTART_ARMED_PREFIX),
+        (placed, AXVISOR_RESTART_PLACED_PREFIX),
         (running, AXVISOR_RESTART_RUNNING_PREFIX),
         (trigger, AXVISOR_RESTART_TRIGGER_PREFIX),
         (complete, AXVISOR_RESTART_COMPLETE_PREFIX),
@@ -1124,6 +1154,25 @@ def parse_restart_recovery(
             raise AnalysisError(f"{prefix.strip()} schema must equal one")
         if integer(record, "vm_id", prefix) != 1:
             raise AnalysisError(f"{prefix.strip()} must target StarryOS VM 1")
+    host_cpu = integer(armed, "host_cpu", AXVISOR_RESTART_ARMED_PREFIX)
+    if host_cpu != 3:
+        raise AnalysisError("Axvisor restart worker must use reserved host CPU 3")
+    placement_contract = {
+        "requested_pcpu": host_cpu,
+        "actual_pcpu": host_cpu,
+        "affinity_mask": 1 << host_cpu,
+    }
+    for field, expected in placement_contract.items():
+        if integer(placed, field, AXVISOR_RESTART_PLACED_PREFIX) != expected:
+            raise AnalysisError(f"Axvisor restart placement {field} is invalid")
+    for record, prefix in (
+        (running, AXVISOR_RESTART_RUNNING_PREFIX),
+        (trigger, AXVISOR_RESTART_TRIGGER_PREFIX),
+        (complete, AXVISOR_RESTART_COMPLETE_PREFIX),
+        (timing, AXVISOR_RESTART_TIMING_PREFIX),
+    ):
+        if integer(record, "host_cpu", prefix) != host_cpu:
+            raise AnalysisError(f"{prefix.strip()} host CPU conflicts with placement")
     if required(running, "status", AXVISOR_RESTART_RUNNING_PREFIX) != "running":
         raise AnalysisError("Axvisor restart target was not observed running")
     for record, prefix in (
@@ -1300,8 +1349,18 @@ def parse_restart_recovery(
         raise AnalysisError("retired-session ERROR reason is invalid")
 
     ordered_events = (
-        (AXVISOR_RESTART_ARMED_PREFIX, ("schema", "vm_id", "delay_ms", "ready_timeout_ms")),
-        (AXVISOR_RESTART_RUNNING_PREFIX, ("schema", "vm_id", "ready_wait_ms", "status")),
+        (
+            AXVISOR_RESTART_ARMED_PREFIX,
+            ("schema", "vm_id", "host_cpu", "delay_ms", "ready_timeout_ms"),
+        ),
+        (
+            AXVISOR_RESTART_PLACED_PREFIX,
+            ("schema", "vm_id", "requested_pcpu", "actual_pcpu", "affinity_mask"),
+        ),
+        (
+            AXVISOR_RESTART_RUNNING_PREFIX,
+            ("schema", "vm_id", "host_cpu", "ready_wait_ms", "status"),
+        ),
         (STARRY_RESTART_ARMED_PREFIX, ("phase", "session_id", "samples")),
         (
             RTOS_SAFE_FALLBACK_PREFIX,
@@ -1312,6 +1371,7 @@ def parse_restart_recovery(
             (
                 "schema",
                 "vm_id",
+                "host_cpu",
                 "requested_delay_ms",
                 "observed_delay_ms",
                 "before_status",
@@ -1338,7 +1398,14 @@ def parse_restart_recovery(
         ),
         (
             AXVISOR_RESTART_COMPLETE_PREFIX,
-            ("schema", "vm_id", "before_status", "after_status", "reset_count"),
+            (
+                "schema",
+                "vm_id",
+                "host_cpu",
+                "before_status",
+                "after_status",
+                "reset_count",
+            ),
         ),
     )
     event_indexes = [
@@ -1353,6 +1420,7 @@ def parse_restart_recovery(
     return {
         "actual_vm_reset": True,
         "vm_id": 1,
+        "host_cpu": host_cpu,
         "reset_count": 1,
         "ready_wait_ms": ready_wait_ms,
         "requested_delay_ms": requested_delay_ms,

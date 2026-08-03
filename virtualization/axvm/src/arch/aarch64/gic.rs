@@ -1,13 +1,17 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    arch::asm,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use arm_gic_driver::{
     IntId,
     v2::{HypervisorInterface, VirtualInterruptConfig, VirtualInterruptState},
     v3::{
-        ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VTR_EL2, ReadWriteable, Readable,
-        ich_lr_el2_get, ich_lr_el2_write,
+        ICH_AP0R0_EL2, ICH_AP0R1_EL2, ICH_AP0R2_EL2, ICH_AP0R3_EL2, ICH_AP1R0_EL2, ICH_AP1R1_EL2,
+        ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VMCR_EL2,
+        ICH_VTR_EL2, ReadWriteable, Readable, Writeable, ich_lr_el2_get, ich_lr_el2_write,
     },
 };
 use ax_lazyinit::LazyInit;
@@ -86,12 +90,51 @@ pub(crate) fn prepare_passthrough_guest_cpu_interface() {
     });
 }
 
-/// Enables the virtual CPU interface before an emulated-IRQ guest initializes
-/// its ICC system-register state on this physical CPU.
+/// Restores a reset-state virtual CPU interface before an emulated-IRQ guest
+/// initializes its ICC system-register state on this physical CPU.
 pub(crate) fn prepare_emulated_guest_cpu_interface() {
     match virtual_interrupt_backend() {
-        VirtualInterruptBackend::GicV2(gich) => gich.enable(),
-        VirtualInterruptBackend::GicV3 => enable_gic_v3_virtual_interface(),
+        VirtualInterruptBackend::GicV2(gich) => reset_gic_v2_virtual_interface(gich),
+        VirtualInterruptBackend::GicV3 => reset_gic_v3_virtual_interface(),
+    }
+}
+
+fn reset_gic_v2_virtual_interface(gich: &HypervisorInterface) {
+    gich.reset_current_cpu();
+    gich.enable();
+}
+
+fn clear_gic_v3_active_priorities() {
+    let preemption_bits = ICH_VTR_EL2.read(ICH_VTR_EL2::PREBITS) + 1;
+
+    ICH_AP0R0_EL2.set(0);
+    ICH_AP1R0_EL2.set(0);
+    if preemption_bits >= 6 {
+        ICH_AP0R1_EL2.set(0);
+        ICH_AP1R1_EL2.set(0);
+    }
+    if preemption_bits >= 7 {
+        ICH_AP0R2_EL2.set(0);
+        ICH_AP0R3_EL2.set(0);
+        ICH_AP1R2_EL2.set(0);
+        ICH_AP1R3_EL2.set(0);
+    }
+}
+
+fn reset_gic_v3_virtual_interface() {
+    ICH_HCR_EL2.set(0);
+    let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
+    for lr in 0..lr_num {
+        ich_lr_el2_write(lr, ICH_LR_EL2::STATE::Invalid);
+    }
+    clear_gic_v3_active_priorities();
+    ICH_VMCR_EL2.set(0);
+    enable_gic_v3_virtual_interface();
+
+    // SAFETY: `isb` only synchronizes the preceding EL2 system-register
+    // writes before this pCPU enters the new guest incarnation.
+    unsafe {
+        asm!("isb", options(nomem, nostack, preserves_flags));
     }
 }
 

@@ -25,6 +25,7 @@ use alloc::{
 use core::{
     alloc::Layout,
     sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use ax_cpumask::CpuMask;
@@ -49,7 +50,7 @@ use crate::{
     ax_err, ax_err_type,
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
-    host::paging::virt_to_phys,
+    host::{HostTime, default_host, paging::virt_to_phys},
     irq::InterruptFabric,
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmStatus},
@@ -60,6 +61,7 @@ pub(crate) mod boot;
 pub(crate) mod memory;
 pub(crate) mod passthrough_irq;
 pub(crate) mod prepare;
+mod reset_memory;
 pub use memory::PreparedMemoryLayout;
 pub(crate) use passthrough_irq::{
     PassthroughInterfaceOwner, PassthroughSpiController, PassthroughSpiRegistration,
@@ -608,6 +610,7 @@ pub struct AxVM {
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     pending_fw_cfg: Mutex<Option<PendingFwCfg>>,
+    reset_memory_snapshot: Mutex<Option<Arc<reset_memory::GuestMemorySnapshot>>>,
 }
 
 impl AxVM {
@@ -628,6 +631,7 @@ impl AxVM {
             name,
             machine: Mutex::new(Machine::Ready(resources)),
             pending_fw_cfg: Mutex::new(None),
+            reset_memory_snapshot: Mutex::new(None),
         });
 
         info!("VM created: id={}", result.id());
@@ -903,14 +907,13 @@ impl AxVM {
         self.machine.lock().finish_stop()
     }
 
-    fn wait_until_stopped(&self) -> AxVmResult {
-        const MAX_YIELDS: usize = 10_000;
-        for _ in 0..MAX_YIELDS {
+    fn wait_until_stopped(&self, wait_step: &mut impl FnMut()) -> AxVmResult {
+        const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+        let started = default_host().monotonic_time();
+        loop {
             match self.status() {
                 VmStatus::Stopped | VmStatus::Ready => return Ok(()),
-                VmStatus::Stopping | VmStatus::Running | VmStatus::Paused | VmStatus::Pausing => {
-                    crate::host::task::yield_now();
-                }
+                VmStatus::Stopping | VmStatus::Running | VmStatus::Paused | VmStatus::Pausing => {}
                 status => {
                     return ax_err!(
                         BadState,
@@ -918,14 +921,29 @@ impl AxVM {
                     );
                 }
             }
+            if default_host().monotonic_time().saturating_sub(started) >= STOP_TIMEOUT {
+                return ax_err!(
+                    BadState,
+                    format!(
+                        "VM[{}] did not stop within {} seconds",
+                        self.id(),
+                        STOP_TIMEOUT.as_secs()
+                    )
+                );
+            }
+            wait_step();
         }
-        ax_err!(
-            BadState,
-            format!("VM[{}] did not stop before reset timeout", self.id())
-        )
     }
 
     fn stop_and_join_runtime(&self, reason: StopReason) -> AxVmResult {
+        self.stop_and_join_runtime_with(reason, crate::host::task::yield_now)
+    }
+
+    fn stop_and_join_runtime_with(
+        &self,
+        reason: StopReason,
+        mut wait_step: impl FnMut(),
+    ) -> AxVmResult {
         match self.status() {
             VmStatus::Running | VmStatus::Paused => {
                 self.stop(reason)?;
@@ -933,14 +951,14 @@ impl AxVM {
                     runtime.notify_all();
                     Ok(())
                 }) {}
-                self.wait_until_stopped()?;
+                self.wait_until_stopped(&mut wait_step)?;
             }
             VmStatus::Stopping => {
                 if let Ok(()) = self.with_runtime(|runtime| {
                     runtime.notify_all();
                     Ok(())
                 }) {}
-                self.wait_until_stopped()?;
+                self.wait_until_stopped(&mut wait_step)?;
             }
             VmStatus::Stopped | VmStatus::Ready => {}
             status => {
@@ -960,8 +978,18 @@ impl AxVM {
     /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
     /// and starting from a fresh `Running` state.
     pub fn reset(self: &Arc<Self>) -> AxVmResult {
+        self.reset_with_wait(crate::host::task::yield_now)
+    }
+
+    /// Resets the VM while delegating each stop-wait iteration to the caller.
+    ///
+    /// A non-yielding callback is suitable only when the caller runs on a host
+    /// CPU that is not assigned to this VM; otherwise it can prevent the vCPU
+    /// tasks from observing the stop request.
+    pub fn reset_with_wait(self: &Arc<Self>, mut wait_step: impl FnMut()) -> AxVmResult {
         info!("Resetting VM[{}]", self.id());
-        self.stop_and_join_runtime(StopReason::Forced)?;
+        self.stop_and_join_runtime_with(StopReason::Forced, &mut wait_step)?;
+        self.restore_reset_memory()?;
 
         self.machine.lock().reset_with(|resources| {
             resources

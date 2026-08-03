@@ -17,6 +17,7 @@ pub struct AxvisorHostNoiseConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AxvisorGuestRestartConfig {
     pub vm_id: usize,
+    pub cpu: usize,
     pub delay_ms: u64,
     pub ready_timeout_ms: u64,
 }
