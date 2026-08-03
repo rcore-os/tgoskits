@@ -9,8 +9,8 @@ use rdrive::probe::{
     pci::{FnOnProbe, ProbePci},
 };
 
-use super::{PlatformDeviceUsbHost, align_up_4k, usb_kernel};
-use crate::BindingInfo;
+use super::{ProbePciUsbHost, align_up_4k, usb_kernel};
+use crate::PciIrqRequirement;
 
 const DRIVER_NAME: &str = "usb-xhci-pci";
 
@@ -35,11 +35,8 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     };
 
     endpoint.update_command(|mut cmd| {
-        cmd.insert(
-            CommandRegister::MEMORY_ENABLE
-                | CommandRegister::BUS_MASTER_ENABLE
-                | CommandRegister::INTERRUPT_DISABLE,
-        );
+        cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
+        cmd.remove(CommandRegister::INTERRUPT_DISABLE);
         cmd
     });
 
@@ -51,11 +48,7 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         ))
     })?;
 
-    let irq = probe.into_platform_device().register_usb_host_with_info(
-        DRIVER_NAME,
-        host,
-        BindingInfo::empty(),
-    );
+    let irq = probe.register_usb_host(DRIVER_NAME, host, PciIrqRequirement::Required)?;
     info!(
         "xHCI PCI host registered successfully at {} with irq {:?}",
         address, irq

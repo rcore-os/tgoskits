@@ -1,8 +1,5 @@
 use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
@@ -12,7 +9,6 @@ use rdrive::DeviceId as RDriveDeviceId;
 use super::manager::UsbFsManager;
 use crate::task::future::IrqNotify;
 
-const USBFS_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const USBFS_EVENT_BATCH_LIMIT: usize = 64;
 const USB_EVENT_ACTIVE: u8 = 1 << 0;
 const USB_EVENT_BUSY: u8 = 1 << 1;
@@ -21,17 +17,16 @@ const USB_EVENT_DEFERRED: u8 = 1 << 2;
 static USBFS_MANAGER: LazyInit<Arc<UsbFsManager>> = LazyInit::new();
 static USBFS_IRQ_REGISTRY: LazyInit<UsbIrqRegistry> = LazyInit::new();
 static USBFS_EVENT_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
-static USBFS_POLL_TICKER_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub(super) struct PendingUsbIrqSlot {
-    pub(super) irq: Option<IrqId>,
+    pub(super) irq: IrqId,
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
     pub(super) handler: ax_driver::usb::UsbHostIrqHandler,
 }
 
 pub(super) struct UsbIrqSlot {
-    irq: Option<IrqId>,
+    irq: IrqId,
     device_id: RDriveDeviceId,
     bus_num: u8,
     handler: ax_driver::usb::UsbHostIrqHandler,
@@ -170,29 +165,22 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
 
     if let Some(registry) = USBFS_IRQ_REGISTRY.get() {
         for (slot_index, slot) in registry.iter_slots() {
-            if let Some(irq) = slot.irq {
-                info!(
-                    "usbfs: registering IRQ callback for IRQ {:?} (bus {}, host {:?})",
-                    irq, slot.bus_num, slot.device_id
-                );
-                let request = IrqRequest::new(move |_ctx| {
-                    usb_irq_return(usbfs_irq_handler_by_slot(slot_index))
-                })
-                .share_mode(ShareMode::Shared)
-                .auto_enable(AutoEnable::No);
-                match ax_runtime::hal::irq::request_irq(irq, request) {
-                    Ok(handle) => {
-                        *slot.handle.lock() = Some(handle);
-                    }
-                    Err(err) => {
-                        warn!("usbfs: failed to register IRQ callback for IRQ {irq:?}: {err:?}");
-                    }
+            let irq = slot.irq;
+            info!(
+                "usbfs: registering IRQ callback for IRQ {:?} (bus {}, host {:?})",
+                irq, slot.bus_num, slot.device_id
+            );
+            let request =
+                IrqRequest::new(move |_ctx| usb_irq_return(usbfs_irq_handler_by_slot(slot_index)))
+                    .share_mode(ShareMode::Shared)
+                    .auto_enable(AutoEnable::No);
+            match ax_runtime::hal::irq::request_irq(irq, request) {
+                Ok(handle) => {
+                    *slot.handle.lock() = Some(handle);
                 }
-            } else {
-                info!(
-                    "usbfs: polling event handler for bus {} host {:?}",
-                    slot.bus_num, slot.device_id
-                );
+                Err(err) => {
+                    warn!("usbfs: failed to register IRQ callback for IRQ {irq:?}: {err:?}");
+                }
             }
         }
     }
@@ -211,16 +199,6 @@ pub(super) fn start_event_pump() {
     {
         crate::task::spawn_kernel_thread(usbfs_event_service_task, "usbfs-event-worker".to_owned());
         registry.deferred_notify.notify();
-    }
-
-    if registry
-        .iter_slots()
-        .any(|(_, slot)| slot.active() && slot.irq.is_none())
-        && USBFS_POLL_TICKER_STARTED
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    {
-        crate::task::spawn_kernel_thread(usbfs_poll_ticker_task, "usbfs-event-ticker".to_owned());
     }
 }
 
@@ -251,7 +229,7 @@ pub(super) fn enable_device_irq(device_id: RDriveDeviceId) -> bool {
     let mut all_enabled = true;
     for (_, slot) in registry
         .iter_slots()
-        .filter(|(_, slot)| slot.device_id == device_id && slot.irq.is_some())
+        .filter(|(_, slot)| slot.device_id == device_id)
     {
         found = true;
         let Some(handle) = *slot.handle.lock() else {
@@ -355,7 +333,6 @@ fn usbfs_event_handler(slot: &UsbIrqSlot) {
 
     let _acknowledged = slot.handler.acknowledge_irq();
     let batch = drain_event_batch(|| slot.handler.drain_event());
-
     let has_topology_event = batch.port_events > 0 || batch.stopped_events > 0;
     let has_usb_activity = has_topology_event || batch.transfer_events > 0;
 
@@ -450,9 +427,8 @@ fn service_deferred_events() {
         let Some(slot) = registry.slot(slot_index) else {
             continue;
         };
-        let is_polling_host = slot.irq.is_none();
         let is_deferred = slot.event_gate.take_deferred();
-        if slot.active() && (is_polling_host || is_deferred) {
+        if slot.active() && is_deferred {
             registry
                 .service_cursor
                 .store((slot_index + 1) % slot_count, Ordering::Release);
@@ -476,23 +452,6 @@ fn usbfs_event_service_task() {
     loop {
         registry.deferred_notify.wait();
         service_deferred_events();
-        crate::task::yield_now();
-    }
-}
-
-fn usbfs_poll_ticker_task() {
-    let registry = USBFS_IRQ_REGISTRY
-        .get()
-        .unwrap_or_else(|| unreachable!("USB poll ticker starts after registry initialization"));
-    loop {
-        if !registry
-            .iter_slots()
-            .any(|(_, slot)| slot.active() && slot.irq.is_none())
-        {
-            return;
-        }
-        registry.deferred_notify.notify();
-        crate::task::sleep(USBFS_EVENT_POLL_INTERVAL);
     }
 }
 
