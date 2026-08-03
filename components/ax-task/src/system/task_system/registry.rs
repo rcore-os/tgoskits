@@ -886,14 +886,6 @@ impl DetachedThreadRecord {
         }
     }
 
-    pub(super) fn into_owned_parts(self) -> (Option<ThreadExtension>, ThreadResources) {
-        let Self {
-            resources,
-            extension,
-        } = self;
-        (extension, resources)
-    }
-
     pub(super) fn release(mut self) -> crate::runtime::AddressSpaceToken {
         let address_space = self.resources.release();
         drop(self.extension.take());

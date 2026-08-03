@@ -34,7 +34,13 @@ impl TaskSystem {
             if sched.deadline.bandwidth_cpu.is_some() {
                 sched.deadline.cleanup_pending = true;
                 drop(sched);
-                state.request_owner_reschedule(thread);
+                drop(state);
+                // Owner-control publication enters the scheduler activity
+                // gate. Reopen it before publishing the rq-local Deadline
+                // cleanup; otherwise the exit permit rejects its own work and
+                // leaves the reservation permanently attached.
+                drop(scheduler_exit);
+                self.state.lock().request_owner_reschedule(thread);
                 return Err(TaskError::ThreadBusy);
             }
             sched.placement.set_migration_target(None)?;

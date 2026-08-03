@@ -309,7 +309,15 @@ fn blocked_deadline_exit_waits_for_owner_member_cleanup() {
 
     assert_eq!(system.mark_exited(thread.id()), Err(TaskError::ThreadBusy));
     assert_eq!(cpu.deadline_bandwidth().this_bw_scaled(), 100_000_000);
-    system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
+    let drain = system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
+    assert_eq!((drain.drained(), drain.pending()), (1, false));
+    assert_eq!(
+        system
+            .deadline_activity(thread.id())
+            .unwrap()
+            .bandwidth_cpu(),
+        None
+    );
     system.mark_exited(thread.id()).unwrap();
 
     assert_eq!(cpu.deadline_bandwidth().this_bw_scaled(), 0);
