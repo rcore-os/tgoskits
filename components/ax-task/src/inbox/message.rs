@@ -6,8 +6,6 @@ use crate::{CpuId, ThreadId};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum InboxKind {
-    /// Make a sleeping or remotely queued thread runnable.
-    RemoteWake,
     /// Reconcile placement, policy, deadlines, or balancing on the owner CPU.
     OwnerControl,
     /// Reap a thread, coroutine, context, or other deferred resource.
@@ -21,8 +19,6 @@ pub enum InboxKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum InboxOperation {
-    /// Publish a sleeping thread to its selected owner.
-    RemoteWake,
     /// Transfer physical runqueue ownership between CPUs.
     Migration,
     /// Reconcile a thread's latest scheduling-policy generation.
@@ -66,28 +62,6 @@ impl InboxMessage {
         generation: 0,
         payload: 0,
     };
-
-    /// Creates a direct remote wake request.
-    pub const fn remote_wake(thread_id: ThreadId, target_cpu: CpuId) -> Self {
-        Self::remote_wake_with_payload(thread_id, target_cpu, 0)
-    }
-
-    /// Creates a direct remote wake carrying a retained wake-header pointer.
-    pub const fn remote_wake_with_payload(
-        thread_id: ThreadId,
-        target_cpu: CpuId,
-        payload: usize,
-    ) -> Self {
-        Self {
-            kind: InboxKind::RemoteWake,
-            operation: InboxOperation::RemoteWake,
-            thread_id,
-            source_cpu: Self::NO_CPU,
-            target_cpu: target_cpu.as_u32(),
-            generation: 0,
-            payload,
-        }
-    }
 
     /// Creates an owner-to-owner migration transfer.
     pub const fn migration(

@@ -81,13 +81,13 @@ impl CpuLocal {
     }
 
     /// Returns the number of runnable non-idle threads.
-    pub(crate) const fn runnable_count(&self) -> usize {
-        self.dispatch.run_queue.len()
+    pub(crate) fn runnable_count(&self) -> usize {
+        self.remote.lock_run_queue().len()
     }
 
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         (self.dispatch.current.is_none() || self.dispatch.current == self.dispatch.idle)
-            && self.dispatch.run_queue.len() == 0
+            && self.remote.lock_run_queue().len() == 0
             && self.deadline_class.members.is_empty()
             && self.task_deadlines.queue.is_empty()
             && self.task_deadlines.expired_count == 0
@@ -145,18 +145,23 @@ impl CpuLocal {
     }
 
     pub(crate) fn install_dispatch(self: Pin<&mut Self>, dispatch: CurrentDispatch) {
-        // SAFETY: replacing copy-only owner state cannot move CpuLocal.
-        unsafe { self.get_unchecked_mut() }
-            .dispatch
-            .current_dispatch = Some(dispatch);
+        // SAFETY: replacing owner state cannot move CpuLocal. The remote
+        // scheduling snapshot is committed under the runqueue lock before a
+        // concurrent wake may compare preemption priority.
+        let this = unsafe { self.get_unchecked_mut() };
+        let snapshot = dispatch.schedule_snapshot();
+        let mut run_queue = this.remote.lock_run_queue();
+        this.dispatch.current_dispatch = Some(dispatch);
+        run_queue.set_current(Some(snapshot));
     }
 
     pub(crate) fn take_dispatch(self: Pin<&mut Self>) -> Option<CurrentDispatch> {
-        // SAFETY: taking copy-only owner state cannot move CpuLocal.
-        unsafe { self.get_unchecked_mut() }
-            .dispatch
-            .current_dispatch
-            .take()
+        // SAFETY: taking owner state cannot move CpuLocal.
+        let this = unsafe { self.get_unchecked_mut() };
+        let mut run_queue = this.remote.lock_run_queue();
+        let dispatch = this.dispatch.current_dispatch.take();
+        run_queue.set_current(None);
+        dispatch
     }
 
     /// Reads the lock-free lifecycle published by the current dispatch.
@@ -209,9 +214,9 @@ impl CpuLocal {
         let current_policy = dispatch.policy;
         let current_fair = dispatch.entity.fair();
         let rt_quota_exempt = dispatch.rt_quota_exempt;
-        dispatch_state
-            .run_queue
-            .update_fair_virtual_time(current_fair);
+        let mut run_queue = remote.lock_run_queue();
+        run_queue.update_fair_virtual_time(current_fair);
+        run_queue.set_current(Some(dispatch.schedule_snapshot()));
         let rt_quota_exhausted = if matches!(
             current_policy,
             SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
@@ -360,6 +365,10 @@ impl CpuLocal {
         &mut unsafe { self.get_unchecked_mut() }.dispatch
     }
 
+    pub(crate) fn lock_run_queue(&self) -> IrqTicketGuard<'_, CpuRunQueueState> {
+        self.remote.lock_run_queue()
+    }
+
     fn deadline_class_state_mut(self: Pin<&mut Self>) -> &mut deadline_state::DeadlineClassState {
         // SAFETY: the owner borrow is pinned, and deadline admission state does
         // not contain a self-reference into CpuLocal.
@@ -390,23 +399,6 @@ impl CpuLocal {
 
     pub(crate) fn balance_request_node(&self) -> Pin<&'static InboxNode> {
         self.remote.balance_request_node()
-    }
-
-    pub(crate) fn publish_load_summary(
-        &self,
-        current_key: Option<SchedulingKey>,
-        pushable_key: Option<SchedulingKey>,
-        runnable_count: usize,
-        workload_count: usize,
-        overloaded: bool,
-    ) {
-        self.remote.publish_load_summary(
-            current_key,
-            pushable_key,
-            runnable_count,
-            workload_count,
-            overloaded,
-        );
     }
 
     pub(crate) fn add_deadline_bandwidth(
@@ -618,7 +610,8 @@ impl CpuLocal {
 
     fn scheduler_deadline_ns(&mut self, now_ns: u64) -> Option<u64> {
         let mut next_deadline_ns = None;
-        if let Some(deadline) = self.dispatch.run_queue.earliest_deadline_event_ns() {
+        let run_queue = self.remote.lock_run_queue();
+        if let Some(deadline) = run_queue.earliest_deadline_event_ns() {
             next_deadline_ns = earliest(next_deadline_ns, deadline);
         }
 
@@ -627,9 +620,9 @@ impl CpuLocal {
         if !current_is_idle && let Some(dispatch) = self.dispatch.current_dispatch.as_ref() {
             let fair_slice_required = dispatch.entity.fair().is_none_or(|fair| {
                 if fair.mode() == FairMode::Idle {
-                    self.dispatch.run_queue.has_idle_fair()
+                    run_queue.has_idle_fair()
                 } else {
-                    self.dispatch.run_queue.has_fair()
+                    run_queue.has_fair()
                 }
             });
             if fair_slice_required && let Some(deadline) = dispatch.next_scheduler_event_ns(now_ns)
@@ -646,16 +639,14 @@ impl CpuLocal {
                 next_deadline_ns = earliest(next_deadline_ns, deadline);
             }
         }
-        if self.dispatch.run_queue.has_rt() && self.dispatch.rt_bandwidth.is_throttled(now_ns) {
+        if run_queue.has_rt() && self.dispatch.rt_bandwidth.is_throttled(now_ns) {
             let deadline = self.dispatch.rt_bandwidth.next_period_ns(now_ns);
             next_deadline_ns = earliest(next_deadline_ns, deadline);
         }
         let current_non_idle =
             self.dispatch.current.is_some() && self.dispatch.current != self.dispatch.idle;
-        if self.dispatch.run_queue.has_fair()
-            && self
-                .dispatch
-                .run_queue
+        if run_queue.has_fair()
+            && run_queue
                 .len()
                 .saturating_add(usize::from(current_non_idle))
                 > 1

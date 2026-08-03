@@ -117,7 +117,7 @@ fn wake_before_zero_lag_cancels_the_pending_inactive_transition() {
 
     install_runtime_handles(&system, cpu.as_mut());
     assert_eq!(thread.wake_handle().wake(), WakeResult::Notified);
-    system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
+    system.drain_policy_updates(cpu.as_mut(), 3).unwrap();
     let activity = system.deadline_activity(thread.id()).unwrap();
     assert_eq!(activity.activity(), DeadlineActivity::ActiveContending);
     assert_eq!(activity.zero_lag_ns(), 0);
@@ -165,7 +165,7 @@ fn throttled_wake_cannot_restore_cbs_budget_before_replenishment() {
 
     install_runtime_handles(&system, cpu.as_mut());
     assert_eq!(thread.wake_handle().wake(), WakeResult::Notified);
-    system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
+    system.drain_policy_updates(cpu.as_mut(), 3).unwrap();
     assert_eq!(thread.state(), ThreadState::Blocked);
     assert_eq!(
         system

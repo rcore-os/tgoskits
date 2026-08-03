@@ -151,7 +151,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | --- | --- | --- | --- |
 | placement | `try_to_wake_up()`、rq locking | 一个线程只能有一个物理 owner | 已用 `SchedulerPlacement` 状态机收敛 |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
-| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 计数已排除 lost wake；当前 owner inbox 造成 78.6% remote-wake/IPI 比例，必须直接替换为 target-rq 事务 |
+| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
@@ -181,13 +181,15 @@ Migrating(from, to)
 ExitedAwaitingTail(cpu)
 ```
 
-enqueue、dequeue、wake、migration、switch-tail 和回收只能通过状态转换方法。blocked thread 的历史 wake route 不是物理 owner；CPU offline 时可重定向到仍 online 的 carrier。
+enqueue、dequeue、wake、migration、switch-tail 和回收只能通过状态转换方法。blocked
+thread 的 `target_cpu` 只是直接唤醒的首选目标，不是物理 owner；CPU offline 关闭新
+runqueue publication 后，将该提示重定向到仍 online 且满足 affinity 的 CPU。
 
 ### owner-CPU 与 runqueue
 
-`CpuLocal` 为固定、不可移动的 per-CPU owner。当前实现把 runqueue 也放在
-owner-only `OwnerDispatchState`，导致远程 waker 只能先投递 inbox。Linux v7.1
-PREEMPT_RT 的目标模型要求继续拆分为：
+`CpuLocal` 为固定、不可移动的 per-CPU owner。runqueue 已从 owner-only
+`OwnerDispatchState` 拆到 `CpuRemote` 的 IRQ-safe raw rq lock 下，使远程 waker
+可以采用 Linux v7.1 PREEMPT_RT 的 active wake 模型：
 
 - remotely lockable `RunQueue`：Fair/RT 队列、runnable load、调度策略时钟和 admission
   记账；使用 IRQ-safe raw rq lock，四架构共享同一事务模型；
@@ -401,7 +403,10 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 - forced yield 不顺带 drain 无关 deadline/task-work；
 - unchanged semantic task deadline 不重复发布物理 clockevent；
 - futex wake 不额外强制 yield；
-- task-only scheduler metadata 使用 preempt-only ticket lock，不扩大 IRQ-off 区间；
+- 调度实体状态与 target runqueue 使用统一 IRQ-safe raw ticket lock，锁序固定为
+  thread state -> target rq，IRQ 状态由外层 guard 精确恢复；
+- direct wake 在同一个 target-rq 临界区提交 queue membership、current/preemption
+  比较和 remotely visible load summary，balance 与初始 placement 不会漏看刚唤醒线程；
 - same-CPU hard IRQ wake 发布架构 `need_resched` 后直接由 IRQ return 消费，不发送 self-IPI；
 - Fair sleep/wake 与 migration 保留 Linux EEVDF `vlag`，避免维护线程 Ready 后仍排在错误位置；
 - eligible current 使用 request protection，避免删除旧 granularity 后形成 wake 驱动的上下文切换风暴。
@@ -441,15 +446,15 @@ USB audio 驱动路径停止，已作为范围外问题 #1838 单独跟踪。
 不是永久 lost-wake。这个运行按“慢于 dev 57 秒即停止”的规则提前终止，不能作为
 最终通过数据；完成单一 V、迁移事务和 request protection 后必须重新测量。
 
-随后核对 Linux v7.1 PREEMPT_RT 的远程 wake 链路发现一处仍未关闭的架构差异：
+随后核对 Linux v7.1 PREEMPT_RT 的远程 wake 链路发现一处架构差异：
 `CONFIG_PREEMPT_RT` 将 `TTWU_QUEUE` 设为 false，`try_to_wake_up()` 在持有 task
 `pi_lock`、等待旧 `on_cpu` release 后，直接取得目标 raw rq lock 并激活线程；只有
 `wakeup_preempt()` 确认目标 CPU 需要重调度时才发送 reschedule IPI。Linux 的
-wake-list payload/IPI 合并路径只用于非 RT 配置。当前实现对每个远程 wake 先进入
-owner inbox，再由 scheduler IPI/safe point 激活，语义上没有永久丢唤醒，但会增加
-一次跨 CPU 投递、一次 drain 和不必要的 IPI。下一阶段必须先用虚拟多 CPU 红测证明
-直接目标-rq 事务的 `on_cpu`、CPU offline 和 affinity 并发边界，再替换该热路径；
-不能用旧 wakeup granularity 或周期 tick 掩盖延迟。
+wake-list payload/IPI 合并路径只用于非 RT 配置。重构前实现对每个远程 wake 先进入
+owner inbox，再由 scheduler IPI/safe point 激活，语义上没有永久丢唤醒，但增加了
+一次跨 CPU 投递、一次 drain 和不必要的 IPI。当前实现已经用虚拟多 CPU 行为测试
+约束 `on_cpu`、CPU offline 和 affinity 并发边界，并以直接目标-rq 事务替换该热路径；
+没有保留 wake-list feature fallback、旧 API 或兼容别名。
 
 落实 700 us 基础 slice 与初始半 request 后再次运行同一目标：guest workload 约
 45 秒只完成 786/2048，按当前进度仍约需 118 秒；总墙钟 92.98 秒包含约 23 秒
@@ -504,7 +509,7 @@ FP 模式原先会覆盖内核链接 rustflags，postprocess 也无法转发 `-c
 QEMU SIGSEGV，因此现阶段不能把不完整 FP 报告用于归因；该诊断边界需要在插件
 侧按采样窗口延迟启用，或对 early-boot FP 读取做显式有效性检查。
 
-### 2026-08-03 remote wake 精确计数窗口
+### 2026-08-03 重构前 remote-wake inbox 精确计数窗口
 
 qperf 现在可以直接选择正式 Starry QEMU case，并复用同一构建配置、设备配置、基础
 rootfs 和目标二进制。grouped case 的执行所有权被类型化为：
@@ -518,8 +523,8 @@ Starry 正式测试使用 `GuestInit`，Axvisor 使用 `ShellCommand`，qperf �
 runner，因此 init 不会在性能窗口前抢先启动 workload。x86 qperf 与正式 ostool 路径
 统一默认 `q35`，不再意外退回缺少 ACPI MCFG 的 i440fx。
 
-在 x86_64、4 vCPU、正式 `qemu/test-ext4-inode-unique` 的 30.6237922 秒窗口内，指标
-增量为：
+在 direct target-rq 重构前，x86_64、4 vCPU、正式
+`qemu/test-ext4-inode-unique` 的 30.6237922 秒窗口内，指标增量为：
 
 | 指标 | 增量 | 每秒 |
 | --- | ---: | ---: |
@@ -538,9 +543,10 @@ lost wake。问题是结构性放大：96.7% 的 publication 遇到空 inbox 边
 
 本次 qperf 使用 leaf callchain；6,080 个样本均只有一层，不能据此伪造完整调用链。
 单叶聚合仍显示 CPU-local current/area 查询约占 19.9%，guard/preempt 约占 8.3%，
-timer/deadline 约占 19.5%。这些热点将在 target-rq 重构后用相同窗口复测；接受标准是
-remote wake 不再计入 scheduler-work IPI，且只有实际抢占目标 current 的 wake 产生
-reschedule IPI。
+timer/deadline 约占 19.5%。这些数据仅作为已经删除的 inbox 架构基线，不再作为当前
+接口或指标名。重构后使用
+`direct_wake_attempts / activations / enqueues / preemptions` 复测相同窗口；接受标准是
+`activations == enqueues`，且只有 `preemptions` 对应的跨 CPU wake 产生 reschedule IPI。
 
 ## 模块化结果
 

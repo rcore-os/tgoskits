@@ -75,8 +75,6 @@ fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
         bootstrap.id()
     );
     assert_eq!(sleeper.wake_handle().wake(), WakeResult::Notified);
-    let drain = system.drain_remote_wakes(cpu.as_mut(), 2).unwrap();
-    assert_eq!(drain.drained(), 1);
     assert_eq!(
         system.thread_state(sleeper.id()).unwrap(),
         ThreadState::Ready

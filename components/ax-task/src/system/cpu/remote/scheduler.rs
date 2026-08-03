@@ -48,15 +48,26 @@ impl CpuRemote {
         self.request_reschedule_owned();
     }
 
-    fn request_reschedule_owned(&self) {
+    fn request_reschedule_owned(&self) -> SchedulerWorkPublication {
         self.scheduler
             .preempt_requested
             .store(true, Ordering::Release);
-        let _ = self.request_scheduler_work_owned();
+        self.request_scheduler_work_owned()
+    }
+
+    /// Publishes a remote preemption and rings the target doorbell only after
+    /// the runqueue transaction has become visible.
+    pub(crate) fn request_remote_reschedule(&self) {
+        let Some(_publication) = self.begin_owner_delivery() else {
+            return;
+        };
+        let _irq = IrqScope::enter();
+        let publication = self.request_reschedule_owned();
+        self.deliver_scheduler_work_owned(publication);
     }
 
     pub(crate) fn request_scheduler_work(&self) {
-        let Some(_publication) = self.begin_online_publication() else {
+        let Some(_publication) = self.begin_owner_delivery() else {
             return;
         };
         self.request_scheduler_work_owned();
@@ -105,7 +116,7 @@ impl CpuRemote {
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {
-        let Some(_publication) = self.begin_online_publication() else {
+        let Some(_publication) = self.begin_owner_delivery() else {
             return false;
         };
         let _irq = IrqScope::enter();
@@ -124,7 +135,7 @@ impl CpuRemote {
     /// edge and is about to return. A remaining batch therefore needs a fresh
     /// interrupt even when the owner itself is the current CPU.
     pub(crate) fn defer_scheduler_work(&self) {
-        let Some(_publication) = self.begin_online_publication() else {
+        let Some(_publication) = self.begin_owner_delivery() else {
             task_runtime::fatal_invariant(
                 DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT,
                 self.owner.as_u32() as usize,
@@ -211,7 +222,7 @@ impl CpuRemote {
             .park_preempt_deferred
             .swap(false, Ordering::AcqRel);
         if resume_running && deferred {
-            self.request_reschedule_owned();
+            let _ = self.request_reschedule_owned();
         }
     }
 

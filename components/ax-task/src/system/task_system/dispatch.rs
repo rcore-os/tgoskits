@@ -3,19 +3,11 @@
 use super::*;
 
 impl TaskSystem {
-    pub(super) fn consume_owner_wake(core: &Arc<ThreadCore>) -> Result<bool, TaskError> {
-        Self::consume_owner_wake_inner(core, false)
-    }
-
-    pub(super) fn consume_owner_task_wake(core: &Arc<ThreadCore>) -> Result<bool, TaskError> {
-        Self::consume_owner_wake_inner(core, true)
-    }
-
-    fn consume_owner_wake_inner(
+    fn consume_wake_locked(
         core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
         preserve_running_notification: bool,
     ) -> Result<bool, TaskError> {
-        let mut sched = core.sched().lock();
         let lifecycle = sched.lifecycle.state();
         if preserve_running_notification && lifecycle == ThreadState::Running {
             // A local task may publish immediately before parking. With no
@@ -47,6 +39,140 @@ impl TaskSystem {
             ThreadState::Ready | ThreadState::Running | ThreadState::Waking => Ok(false),
             ThreadState::New | ThreadState::Exited => Ok(false),
         }
+    }
+
+    /// Activates a blocked thread directly under its target runqueue lock.
+    ///
+    /// Lock order is thread scheduler state, then target runqueue. This is the
+    /// active PREEMPT_RT wakeup model: no owner inbox or later safe point owns
+    /// the transition from blocked to physically queued.
+    pub(crate) fn wake_thread_direct(
+        &self,
+        core: Arc<ThreadCore>,
+        preferred: CpuId,
+        now_ns: u64,
+    ) -> WakeResult {
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_direct_wake_attempt();
+        if core.state() == ThreadState::Exited {
+            return WakeResult::Exited;
+        }
+        let Some(_activity) = core.try_scheduler_activity() else {
+            return WakeResult::Exited;
+        };
+        let mut sched = core.sched().lock();
+        if sched.lifecycle.state() == ThreadState::Exited {
+            return WakeResult::Exited;
+        }
+        // Serialize publication with lifecycle and placement just as Linux
+        // serializes try_to_wake_up() with p->pi_lock. A failed target lookup
+        // may clear only the wake owned by this transaction; a concurrent
+        // waker cannot observe and coalesce with it until that decision ends.
+        if core.publish_wake() {
+            return WakeResult::AlreadyPending;
+        }
+        let target = (sched.placement.affinity.contains(preferred)
+            && self
+                .cpu_remotes
+                .get(preferred.as_usize())
+                .is_some_and(|remote| remote.accepts_placement()))
+        .then_some(preferred)
+        .or_else(|| self.select_allowed_active_cpu(&sched.placement.affinity, None));
+        let Some(target) = target else {
+            core.discard_failed_wake();
+            return WakeResult::Unavailable;
+        };
+        let Some(publication) = self.cpu_remotes[target.as_usize()].begin_publication() else {
+            core.discard_failed_wake();
+            return WakeResult::Unavailable;
+        };
+        let lifecycle = sched.lifecycle.state();
+        let preserve_running_notification = lifecycle == ThreadState::Running;
+        let activated =
+            match Self::consume_wake_locked(&core, &mut sched, preserve_running_notification) {
+                Ok(activated) => activated,
+                Err(_) => task_runtime::fatal_invariant(0x574b_0002, core.id().as_u64() as usize),
+            };
+        if !activated {
+            return WakeResult::Notified;
+        }
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_direct_wake_activation();
+
+        let policy = sched.policy.effective;
+        let mut queued_entity = sched.policy.effective_entity;
+        let deadline_wake = matches!(policy, SchedulePolicy::Deadline(_)) && !sched.is_pi_boosted();
+        if deadline_wake {
+            queued_entity.activate_deadline(now_ns);
+            sched.policy.effective_entity = queued_entity;
+            if let SchedulingEntity::Deadline(deadline) = queued_entity {
+                sched.policy.base_entity = queued_entity;
+                sched.policy.base_deadline = Some(deadline);
+            }
+        }
+        let remote = &self.cpu_remotes[target.as_usize()];
+        remote.cancel_idle_pull_if_uncommitted();
+        let mut run_queue = remote.lock_run_queue();
+        let current_fair = run_queue.current().and_then(CurrentSchedule::fair_entity);
+        run_queue.update_fair_virtual_time(current_fair);
+        let queued_entity = match run_queue.enqueue(
+            QueuedThread::new(
+                core.id(),
+                policy,
+                queued_entity,
+                Arc::clone(&core),
+                sched.is_pi_boosted_rt_owner(),
+            ),
+            EnqueueReason::Wake,
+            current_fair,
+        ) {
+            Ok(entity) => entity,
+            Err(_) => task_runtime::fatal_invariant(0x574b_0100, core.id().as_u64() as usize),
+        };
+        run_queue.update_fair_virtual_time(current_fair);
+        let fair_virtual_time = queued_entity
+            .fair()
+            .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+        let preempts_current = run_queue
+            .current()
+            .is_none_or(|current| current.should_preempt(policy, queued_entity, fair_virtual_time));
+        sched.policy.effective_entity = queued_entity;
+        if !sched.is_pi_boosted() {
+            sched.policy.base_entity = queued_entity;
+        }
+        core.publish_effective_schedule(policy, queued_entity);
+        if sched.placement.set_queued_cpu(Some(target)).is_err() {
+            task_runtime::fatal_invariant(0x574b_0200, core.id().as_u64() as usize);
+        }
+        core.set_target_cpu(target);
+        remote.publish_run_queue_load_summary(&run_queue);
+        let deadline_generation = sched.pi.deadline_cbs_generation;
+        drop(run_queue);
+        drop(sched);
+
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_direct_wake_enqueue();
+        #[cfg(feature = "qperf-metrics")]
+        if preempts_current {
+            crate::metrics::record_direct_wake_preemption();
+        }
+        if deadline_wake {
+            if preempts_current {
+                remote.request_reschedule();
+            }
+            self.publish_owner_deadline_refresh_reserved(
+                &core,
+                target,
+                deadline_generation,
+                publication,
+            );
+        } else {
+            drop(publication);
+            if preempts_current {
+                remote.request_remote_reschedule();
+            }
+        }
+        WakeResult::Notified
     }
 
     pub(super) fn enqueue_owner_thread(
@@ -112,25 +238,30 @@ impl TaskSystem {
             core.set_target_cpu(owner);
             return Ok(false);
         }
-        let fields = cpu.as_mut().dispatch_state_mut();
-        let current_fair = fields
+        let current_fair = cpu
+            .dispatch_state()
             .current_dispatch
             .as_ref()
             .and_then(|dispatch| dispatch.entity.fair());
-        fields.run_queue.update_fair_virtual_time(current_fair);
-        let queued_entity = fields.run_queue.enqueue(
-            core.id(),
-            policy,
-            queued_entity,
-            Arc::clone(core),
+        let mut run_queue = cpu.lock_run_queue();
+        run_queue.update_fair_virtual_time(current_fair);
+        let queued_entity = run_queue.enqueue(
+            QueuedThread::new(
+                core.id(),
+                policy,
+                queued_entity,
+                Arc::clone(core),
+                sched.is_pi_boosted_rt_owner(),
+            ),
             reason,
             current_fair,
         )?;
-        fields.run_queue.update_fair_virtual_time(current_fair);
-        let fair_virtual_time = queued_entity.fair().map_or(0, |fair| {
-            fields.run_queue.virtual_time_for_mode(fair.mode())
-        });
-        let preempts_current = fields
+        run_queue.update_fair_virtual_time(current_fair);
+        let fair_virtual_time = queued_entity
+            .fair()
+            .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+        let preempts_current = cpu
+            .dispatch_state()
             .current_dispatch
             .as_ref()
             .is_none_or(|current| current.should_preempt(policy, queued_entity, fair_virtual_time));
@@ -305,15 +436,10 @@ impl TaskSystem {
             .base_entity
             .fair()
             .map_or(destination_mode, |fair| fair.mode());
+        let run_queue = cpu.lock_run_queue();
         Some(FairPolicyPlacement {
-            source_virtual_time: cpu
-                .dispatch_state()
-                .run_queue
-                .virtual_time_for_mode(source_mode),
-            destination_virtual_time: cpu
-                .dispatch_state()
-                .run_queue
-                .virtual_time_for_mode(destination_mode),
+            source_virtual_time: run_queue.virtual_time_for_mode(source_mode),
+            destination_virtual_time: run_queue.virtual_time_for_mode(destination_mode),
         })
     }
 

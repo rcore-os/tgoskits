@@ -1,4 +1,4 @@
-//! Run queue mutated exclusively by its owner CPU.
+//! Per-CPU runqueue protected by the target CPU's IRQ-safe scheduler lock.
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
@@ -66,10 +66,30 @@ pub(crate) struct QueuedThread {
     pub(crate) policy: SchedulePolicy,
     pub(crate) entity: SchedulingEntity,
     pub(crate) core: Arc<ThreadCore>,
+    pub(crate) rt_quota_exempt: bool,
+    balance_scan_epoch: u64,
     pub(super) sequence: u64,
 }
 
 impl QueuedThread {
+    pub(crate) fn new(
+        id: ThreadId,
+        policy: SchedulePolicy,
+        entity: SchedulingEntity,
+        core: Arc<ThreadCore>,
+        rt_quota_exempt: bool,
+    ) -> Self {
+        Self {
+            id,
+            policy,
+            entity,
+            core,
+            rt_quota_exempt,
+            balance_scan_epoch: 0,
+            sequence: 0,
+        }
+    }
+
     pub(crate) fn balance_key(&self) -> SchedulingKey {
         self.entity.fair().map_or_else(
             || self.entity.scheduling_key(self.policy, self.id.as_u64()),
@@ -133,6 +153,7 @@ pub(crate) struct RunQueue {
     membership: Vec<Option<QueueMembership>>,
     earliest_deadline_event_ns: Option<u64>,
     pushable_summary: Option<PushableSummary>,
+    balance_scan_epoch: u64,
     next_sequence: u64,
     len: usize,
 }
@@ -148,6 +169,7 @@ impl RunQueue {
             membership: Vec::new(),
             earliest_deadline_event_ns: None,
             pushable_summary: None,
+            balance_scan_epoch: 0,
             next_sequence: 0,
             len: 0,
         }
@@ -236,13 +258,23 @@ impl RunQueue {
         true
     }
 
-    pub(crate) fn balance_candidate(
-        &self,
+    pub(crate) fn begin_balance_scan(&mut self) -> u64 {
+        self.balance_scan_epoch = self
+            .balance_scan_epoch
+            .checked_add(1)
+            .expect("runqueue balance scan epoch must not wrap");
+        self.balance_scan_epoch
+    }
+
+    pub(crate) fn next_balance_candidate(
+        &mut self,
+        scan_epoch: u64,
         mut may_migrate: impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThread> {
-        self.deadline
+        let candidate = self
+            .deadline
             .iter()
-            .filter(|thread| may_migrate(thread))
+            .filter(|thread| thread.balance_scan_epoch != scan_epoch && may_migrate(thread))
             .min_by_key(|thread| {
                 let absolute = thread
                     .entity
@@ -252,34 +284,54 @@ impl RunQueue {
             })
             .cloned()
             .or_else(|| {
-                self.rt
-                    .iter()
-                    .rev()
-                    .find_map(|queue| queue.iter().find(|thread| may_migrate(thread)).cloned())
+                self.rt.iter().rev().find_map(|queue| {
+                    queue
+                        .iter()
+                        .find(|thread| {
+                            thread.balance_scan_epoch != scan_epoch && may_migrate(thread)
+                        })
+                        .cloned()
+                })
             })
-            .or_else(|| self.fair.find_first_matching(&mut may_migrate))
+            .or_else(|| {
+                self.fair.find_first_matching(&mut |thread| {
+                    thread.balance_scan_epoch != scan_epoch && may_migrate(thread)
+                })
+            })?;
+        self.mark_balance_candidate(candidate.id, scan_epoch);
+        Some(candidate)
+    }
+
+    pub(crate) fn queued_thread(&self, id: ThreadId) -> Option<QueuedThread> {
+        match self.membership_class(id)? {
+            QueueMembershipClass::Deadline => {
+                self.deadline.iter().find(|thread| thread.id == id).cloned()
+            }
+            QueueMembershipClass::Realtime(priority) => self.rt[(priority - 1) as usize]
+                .iter()
+                .find(|thread| thread.id == id)
+                .cloned(),
+            QueueMembershipClass::Fair => {
+                self.fair.find_first_matching(&mut |thread| thread.id == id)
+            }
+            QueueMembershipClass::IdleFair => self
+                .idle_fair
+                .find_first_matching(&mut |thread| thread.id == id),
+        }
     }
 
     pub(crate) fn enqueue(
         &mut self,
-        id: ThreadId,
-        policy: SchedulePolicy,
-        entity: SchedulingEntity,
-        core: Arc<ThreadCore>,
+        mut entry: QueuedThread,
         reason: EnqueueReason,
         current_fair: Option<FairEntity>,
     ) -> Result<SchedulingEntity, TaskError> {
-        if self.contains(id) {
+        if self.contains(entry.id) {
             return Err(TaskError::AlreadyQueued);
         }
-        let sequence = self.allocate_sequence();
-        let mut entry = QueuedThread {
-            id,
-            policy,
-            entity,
-            core,
-            sequence,
-        };
+        entry.sequence = self.allocate_sequence();
+        let id = entry.id;
+        let policy = entry.policy;
         if let SchedulingEntity::Fair(fair) = &mut entry.entity {
             let virtual_time = self.virtual_time_for_mode(fair.mode());
             match reason {
@@ -396,6 +448,44 @@ impl RunQueue {
         (queue_weight, current_weight)
     }
 
+    fn mark_balance_candidate(&mut self, id: ThreadId, scan_epoch: u64) {
+        match self
+            .membership_class(id)
+            .expect("a selected balance candidate must remain queued")
+        {
+            QueueMembershipClass::Deadline => {
+                self.deadline
+                    .iter_mut()
+                    .find(|thread| thread.id == id)
+                    .expect("deadline balance candidate must remain linked")
+                    .balance_scan_epoch = scan_epoch;
+            }
+            QueueMembershipClass::Realtime(priority) => {
+                self.rt[(priority - 1) as usize]
+                    .iter_mut()
+                    .find(|thread| thread.id == id)
+                    .expect("RT balance candidate must remain linked")
+                    .balance_scan_epoch = scan_epoch;
+            }
+            QueueMembershipClass::Fair => {
+                let mut thread = self
+                    .fair
+                    .remove(id)
+                    .expect("fair balance candidate must remain linked");
+                thread.balance_scan_epoch = scan_epoch;
+                self.fair.insert(thread);
+            }
+            QueueMembershipClass::IdleFair => {
+                let mut thread = self
+                    .idle_fair
+                    .remove(id)
+                    .expect("idle-fair balance candidate must remain linked");
+                thread.balance_scan_epoch = scan_epoch;
+                self.idle_fair.insert(thread);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn enqueue_test(
         &mut self,
@@ -407,7 +497,11 @@ impl RunQueue {
     ) -> Result<SchedulingEntity, TaskError> {
         let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
         let core = Arc::new(ThreadCore::new(id, policy, sched, None, None, None));
-        self.enqueue(id, policy, entity, core, reason, None)
+        self.enqueue(
+            QueuedThread::new(id, policy, entity, core, false),
+            reason,
+            None,
+        )
     }
 
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
@@ -536,14 +630,10 @@ impl RunQueue {
         self.recompute_pushable_summary();
     }
 
-    pub(crate) fn pick_next_with_rt(
-        &mut self,
-        ordinary_rt_may_run: bool,
-        mut is_pi_boosted_owner: impl FnMut(&QueuedThread) -> bool,
-    ) -> Option<QueuedThread> {
+    pub(crate) fn pick_next_with_rt(&mut self, ordinary_rt_may_run: bool) -> Option<QueuedThread> {
         let picked = self
             .pick_deadline()
-            .or_else(|| self.pick_rt(ordinary_rt_may_run, &mut is_pi_boosted_owner))
+            .or_else(|| self.pick_rt(ordinary_rt_may_run))
             .or_else(|| self.pick_fair(false))
             .or_else(|| self.pick_fair(true));
         if let Some(picked_entry) = &picked {
@@ -577,11 +667,7 @@ impl RunQueue {
         Some(picked)
     }
 
-    fn pick_rt(
-        &mut self,
-        ordinary_rt_may_run: bool,
-        is_pi_boosted_owner: &mut impl FnMut(&QueuedThread) -> bool,
-    ) -> Option<QueuedThread> {
+    fn pick_rt(&mut self, ordinary_rt_may_run: bool) -> Option<QueuedThread> {
         if ordinary_rt_may_run {
             let priority = self.highest_rt_priority()?;
             let index = (priority - 1) as usize;
@@ -594,7 +680,7 @@ impl RunQueue {
             return Some(thread);
         }
         for (index, queue) in self.rt.iter_mut().enumerate().rev() {
-            if let Some(position) = queue.iter().position(&mut *is_pi_boosted_owner) {
+            if let Some(position) = queue.iter().position(|thread| thread.rt_quota_exempt) {
                 let thread = queue.remove(position);
                 if queue.is_empty() {
                     self.rt_bitmap &= !(1_u128 << index);
@@ -769,7 +855,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            queue.pick_next_with_rt(true).unwrap().id,
             ThreadId::from_parts(2, 1)
         );
     }
@@ -799,7 +885,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            queue.pick_next_with_rt(true).unwrap().id,
             ThreadId::from_parts(0, 1)
         );
     }
@@ -912,10 +998,13 @@ mod tests {
             .unwrap();
         destination
             .enqueue(
-                migrating,
-                policy,
-                detached.thread.entity,
-                detached.thread.core,
+                QueuedThread::new(
+                    migrating,
+                    policy,
+                    detached.thread.entity,
+                    detached.thread.core,
+                    false,
+                ),
                 EnqueueReason::Migrated,
                 None,
             )
@@ -994,7 +1083,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            queue.pick_next_with_rt(true).unwrap().id,
             waiting,
             "yield must forfeit the active request so positive-lag peers become eligible",
         );
@@ -1025,7 +1114,7 @@ mod tests {
         }
 
         assert_eq!(
-            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            queue.pick_next_with_rt(true).unwrap().id,
             ThreadId::from_parts(1, 1),
             "weighted V must make both vruntime 0 and 4 eligible, then choose vd=8",
         );
@@ -1060,7 +1149,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            queue.pick_next_with_rt(true, |_| false).unwrap().id,
+            queue.pick_next_with_rt(true).unwrap().id,
             earlier,
             "EEVDF must order wrapped virtual deadlines by signed distance",
         );
@@ -1184,7 +1273,7 @@ mod tests {
 
         queue.dequeue(deadline_id).unwrap();
         assert_eq!(queue.pushable_key().unwrap().class_rank(), 1);
-        assert_eq!(queue.pick_next_with_rt(true, |_| false).unwrap().id, rt_id);
+        assert_eq!(queue.pick_next_with_rt(true).unwrap().id, rt_id);
         assert_eq!(queue.pushable_key().unwrap().class_rank(), 2);
         queue.dequeue(fair_id).unwrap();
         assert_eq!(queue.pushable_key(), None);
@@ -1218,7 +1307,7 @@ mod tests {
         queue.fair.assert_invariants();
         while queue.has_fair() {
             reset_fair_runqueue_visits();
-            queue.pick_next_with_rt(true, |_| false).unwrap();
+            queue.pick_next_with_rt(true).unwrap();
             assert!(
                 fair_runqueue_visits() <= 32,
                 "EEVDF selection must remain logarithmic, observed {} visits",
@@ -1333,7 +1422,7 @@ mod tests {
         assert_eq!(queue.highest_rt_priority(), Some(99));
         assert_eq!(queue.dequeue(high_id).unwrap().id, high_id);
         assert_eq!(queue.highest_rt_priority(), Some(1));
-        assert_eq!(queue.pick_next_with_rt(true, |_| false).unwrap().id, low_id);
+        assert_eq!(queue.pick_next_with_rt(true).unwrap().id, low_id);
         assert!(!queue.has_rt());
     }
 }

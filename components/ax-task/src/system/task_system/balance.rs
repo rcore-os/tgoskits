@@ -72,25 +72,8 @@ impl TaskSystem {
         // Every caller already owns either the scheduler baton or an owner IRQ
         // guard. Like Linux's rq clock/load update under rq ownership, this
         // nested publication needs no second IRQ-state transaction.
-        let state = cpu.dispatch_state();
-        let current_key = state
-            .current_dispatch
-            .as_ref()
-            .map(CurrentDispatch::scheduling_key);
-        let current_non_idle = state.current.is_some() && state.current != state.idle;
-        let pushable_key = state.run_queue.pushable_key();
-        let runnable = state.run_queue.len();
-        let workload = state
-            .run_queue
-            .len()
-            .saturating_add(usize::from(current_non_idle));
-        cpu.publish_load_summary(
-            current_key,
-            pushable_key,
-            runnable,
-            workload,
-            pushable_key.is_some() && workload > 1,
-        );
+        let run_queue = cpu.lock_run_queue();
+        cpu.remote().publish_run_queue_load_summary(&run_queue);
     }
 
     pub(super) fn select_owner_balance_candidate(
@@ -106,12 +89,63 @@ impl TaskSystem {
             .current_dispatch
             .as_ref()
             .map(CurrentDispatch::schedule_policy);
-        let queued_top_rt = state.run_queue.highest_rt_priority();
-        let top_rt_count =
-            queued_top_rt.map_or(0, |priority| state.run_queue.rt_count_at_priority(priority));
-        state.run_queue.balance_candidate(|candidate| {
-            #[cfg(test)]
-            BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
+        let fair_balance_due = cpu.fair_balance_due(now_ns);
+        let scan_epoch = cpu.lock_run_queue().begin_balance_scan();
+        loop {
+            let candidate = {
+                let mut run_queue = cpu.lock_run_queue();
+                let queued_top_rt = run_queue.highest_rt_priority();
+                let top_rt_count =
+                    queued_top_rt.map_or(0, |priority| run_queue.rt_count_at_priority(priority));
+                run_queue.next_balance_candidate(scan_epoch, |candidate| {
+                    #[cfg(test)]
+                    BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
+                    let class_allowed = match reason {
+                        BalanceReason::IdlePull => {
+                            !matches!(
+                                candidate.policy,
+                                SchedulePolicy::Fair {
+                                    mode: FairMode::Idle,
+                                    ..
+                                }
+                            ) && (!matches!(candidate.policy, SchedulePolicy::Fair { .. })
+                                || fair_balance_due)
+                        }
+                        BalanceReason::RtDeadlinePush => matches!(
+                            candidate.policy,
+                            SchedulePolicy::Deadline(_)
+                                | SchedulePolicy::Fifo { .. }
+                                | SchedulePolicy::RoundRobin { .. }
+                        ),
+                        BalanceReason::FairPeriodic => matches!(
+                            candidate.policy,
+                            SchedulePolicy::Fair {
+                                mode: FairMode::Normal | FairMode::Batch,
+                                ..
+                            }
+                        ),
+                    };
+                    if !class_allowed {
+                        return false;
+                    }
+                    let candidate_priority = match candidate.policy {
+                        SchedulePolicy::Fifo { priority }
+                        | SchedulePolicy::RoundRobin { priority, .. } => priority.get(),
+                        _ => return true,
+                    };
+                    match current_policy {
+                        Some(SchedulePolicy::Deadline(_)) => true,
+                        Some(SchedulePolicy::Fifo { priority })
+                        | Some(SchedulePolicy::RoundRobin { priority, .. }) => {
+                            candidate_priority <= priority.get()
+                        }
+                        _ => queued_top_rt.is_some_and(|top| {
+                            candidate_priority < top
+                                || (candidate_priority == top && top_rt_count > 1)
+                        }),
+                    }
+                })
+            }?;
             let sched = candidate.core.sched().lock();
             let target_is_allowed = |target: CpuId| {
                 self.cpu_remotes
@@ -144,53 +178,13 @@ impl TaskSystem {
                 || candidate.core.sleep_timer_cpu().is_some()
                 || !deadline_covers_online
             {
-                return false;
+                continue;
             }
-            let class_allowed = match reason {
-                BalanceReason::IdlePull => {
-                    !matches!(
-                        candidate.policy,
-                        SchedulePolicy::Fair {
-                            mode: FairMode::Idle,
-                            ..
-                        }
-                    ) && (!matches!(candidate.policy, SchedulePolicy::Fair { .. })
-                        || cpu.fair_balance_due(now_ns))
-                }
-                BalanceReason::RtDeadlinePush => matches!(
-                    candidate.policy,
-                    SchedulePolicy::Deadline(_)
-                        | SchedulePolicy::Fifo { .. }
-                        | SchedulePolicy::RoundRobin { .. }
-                ),
-                BalanceReason::FairPeriodic => matches!(
-                    candidate.policy,
-                    SchedulePolicy::Fair {
-                        mode: FairMode::Normal | FairMode::Batch,
-                        ..
-                    }
-                ),
-            };
-            if !class_allowed {
-                return false;
+            let queued = cpu.lock_run_queue().queued_thread(candidate.id);
+            if let Some(queued) = queued {
+                return Some(queued);
             }
-            let candidate_priority = match candidate.policy {
-                SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
-                    priority.get()
-                }
-                _ => return true,
-            };
-            match current_policy {
-                Some(SchedulePolicy::Deadline(_)) => true,
-                Some(SchedulePolicy::Fifo { priority })
-                | Some(SchedulePolicy::RoundRobin { priority, .. }) => {
-                    candidate_priority <= priority.get()
-                }
-                _ => queued_top_rt.is_some_and(|top| {
-                    candidate_priority < top || (candidate_priority == top && top_rt_count > 1)
-                }),
-            }
-        })
+        }
     }
 
     pub(super) fn transfer_owner_balance_candidate(
@@ -226,13 +220,12 @@ impl TaskSystem {
             return Err(TaskError::InvalidConfiguration);
         }
         let detached = {
-            let dispatch = cpu.as_mut().dispatch_state_mut();
-            let current_fair = dispatch
+            let current_fair = cpu
+                .dispatch_state()
                 .current_dispatch
                 .as_ref()
                 .and_then(|current| current.entity.fair());
-            dispatch
-                .run_queue
+            cpu.lock_run_queue()
                 .detach_for_transfer(core.id(), current_fair, self.config.timing_granularity_ns())
                 .ok_or(TaskError::NotReady)?
         };
@@ -312,10 +305,7 @@ impl TaskSystem {
                 }
             }
         };
-        cpu.as_mut()
-            .dispatch_state_mut()
-            .run_queue
-            .restore_detached(detached);
+        cpu.lock_run_queue().restore_detached(detached);
         self.publish_owner_cpu_load_summary(cpu);
         state_result
     }

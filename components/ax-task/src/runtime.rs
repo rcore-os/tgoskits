@@ -508,8 +508,8 @@ pub trait TaskRuntime {
     /// Prevents the current task context from being preempted or migrated.
     ///
     /// This capability does not disable hardware interrupts. It is valid only
-    /// in task context or inside an active scheduler frame; hard-IRQ code must
-    /// use IRQ-safe publication instead of task-only scheduler locks.
+    /// in task context or inside an active scheduler frame; scheduler state
+    /// shared with hard-IRQ producers uses the separate IRQ-safe lock domain.
     ///
     /// When an enclosing scheduler frame or runtime IRQ guard already owns the
     /// CPU for the complete lock scope, the runtime returns

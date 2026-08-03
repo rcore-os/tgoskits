@@ -48,6 +48,95 @@ pub(crate) struct CurrentDispatchState {
     pub(crate) policy_generation: u64,
 }
 
+/// Copy-only current scheduling state observed under the runqueue lock.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CurrentSchedule {
+    thread: ThreadId,
+    policy: SchedulePolicy,
+    entity: SchedulingEntity,
+}
+
+impl CurrentSchedule {
+    pub(crate) const fn thread(self) -> ThreadId {
+        self.thread
+    }
+
+    pub(crate) const fn fair_entity(self) -> Option<crate::FairEntity> {
+        self.entity.fair()
+    }
+
+    pub(crate) const fn scheduling_key(self) -> SchedulingKey {
+        match self.entity {
+            SchedulingEntity::Fair(fair) => SchedulingKey::new(
+                self.policy.class_rank(),
+                fair.virtual_deadline(),
+                self.thread.as_u64(),
+            ),
+            _ => self
+                .entity
+                .scheduling_key(self.policy, self.thread.as_u64()),
+        }
+    }
+
+    pub(crate) fn should_preempt(
+        self,
+        woken_policy: SchedulePolicy,
+        woken_entity: SchedulingEntity,
+        fair_virtual_time: u64,
+    ) -> bool {
+        match woken_policy {
+            SchedulePolicy::Deadline(_) => match self.policy {
+                SchedulePolicy::Deadline(_) => {
+                    deadline_key(woken_entity) < deadline_key(self.entity)
+                }
+                _ => true,
+            },
+            SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
+                match self.policy {
+                    SchedulePolicy::Deadline(_) => false,
+                    SchedulePolicy::Fifo { priority: current }
+                    | SchedulePolicy::RoundRobin {
+                        priority: current, ..
+                    } => priority > current,
+                    SchedulePolicy::Fair { .. } => true,
+                }
+            }
+            SchedulePolicy::Fair {
+                mode: woken_mode, ..
+            } => match self.policy {
+                SchedulePolicy::Deadline(_)
+                | SchedulePolicy::Fifo { .. }
+                | SchedulePolicy::RoundRobin { .. } => false,
+                SchedulePolicy::Fair {
+                    mode: current_mode, ..
+                } => {
+                    if woken_mode == FairMode::Idle && current_mode != FairMode::Idle {
+                        false
+                    } else if woken_mode != FairMode::Idle && current_mode == FairMode::Idle {
+                        true
+                    } else if woken_mode == FairMode::Batch
+                        || woken_entity
+                            .fair()
+                            .is_none_or(|fair| !fair.is_eligible(fair_virtual_time))
+                    {
+                        false
+                    } else {
+                        let woken = woken_entity
+                            .fair()
+                            .expect("fair policy must own a fair scheduling entity");
+                        let current = self
+                            .entity
+                            .fair()
+                            .expect("fair policy must own a fair scheduling entity");
+                        (!current.is_eligible(fair_virtual_time) || current.request_exhausted())
+                            && woken.deadline_precedes(current)
+                    }
+                }
+            },
+        }
+    }
+}
+
 impl CurrentDispatch {
     pub(crate) fn new(
         state: CurrentDispatchState,
@@ -180,16 +269,11 @@ impl CurrentDispatch {
         )
     }
 
-    pub(crate) const fn scheduling_key(&self) -> SchedulingKey {
-        match self.entity {
-            SchedulingEntity::Fair(fair) => SchedulingKey::new(
-                self.policy.class_rank(),
-                fair.virtual_deadline(),
-                self.thread.as_u64(),
-            ),
-            _ => self
-                .entity
-                .scheduling_key(self.policy, self.thread.as_u64()),
+    pub(crate) const fn schedule_snapshot(&self) -> CurrentSchedule {
+        CurrentSchedule {
+            thread: self.thread,
+            policy: self.policy,
+            entity: self.entity,
         }
     }
 
@@ -222,64 +306,8 @@ impl CurrentDispatch {
         woken_entity: SchedulingEntity,
         fair_virtual_time: u64,
     ) -> bool {
-        match woken_policy {
-            SchedulePolicy::Deadline(_) => match self.policy {
-                SchedulePolicy::Deadline(_) => {
-                    deadline_key(woken_entity) < deadline_key(self.entity)
-                }
-                _ => true,
-            },
-            SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
-                match self.policy {
-                    SchedulePolicy::Deadline(_) => false,
-                    SchedulePolicy::Fifo { priority: current }
-                    | SchedulePolicy::RoundRobin {
-                        priority: current, ..
-                    } => priority > current,
-                    SchedulePolicy::Fair { .. } => true,
-                }
-            }
-            SchedulePolicy::Fair {
-                mode: woken_mode, ..
-            } => match self.policy {
-                SchedulePolicy::Deadline(_)
-                | SchedulePolicy::Fifo { .. }
-                | SchedulePolicy::RoundRobin { .. } => false,
-                SchedulePolicy::Fair {
-                    mode: current_mode, ..
-                } => {
-                    if woken_mode == FairMode::Idle && current_mode != FairMode::Idle {
-                        false
-                    } else if woken_mode != FairMode::Idle && current_mode == FairMode::Idle {
-                        true
-                    } else if woken_mode == FairMode::Batch {
-                        // Batch suppresses ordinary fair wakeup preemption, but
-                        // the Idle case above still enforces fair class order.
-                        false
-                    } else if woken_entity
-                        .fair()
-                        .is_none_or(|fair| !fair.is_eligible(fair_virtual_time))
-                    {
-                        false
-                    } else {
-                        let woken = woken_entity
-                            .fair()
-                            .expect("fair policy must own a fair scheduling entity");
-                        let current = self
-                            .entity
-                            .fair()
-                            .expect("fair policy must own a fair scheduling entity");
-                        // Linux v7.1 EEVDF protects an eligible current entity's
-                        // active request. This is a request-state invariant,
-                        // not the removed physical-time wakeup granularity. An
-                        // ineligible current entity loses protection so a
-                        // positive-lag wake can run at this safe point.
-                        (!current.is_eligible(fair_virtual_time) || current.request_exhausted())
-                            && woken.deadline_precedes(current)
-                    }
-                }
-            },
-        }
+        self.schedule_snapshot()
+            .should_preempt(woken_policy, woken_entity, fair_virtual_time)
     }
 }
 

@@ -64,10 +64,7 @@ impl TaskSystem {
             let mut sched = previous_core.sched().lock();
             let timing_granularity_ns = self.config.timing_granularity_ns();
             if let Some(fair) = sched.policy.effective_entity.fair() {
-                let virtual_time = cpu
-                    .dispatch_state()
-                    .run_queue
-                    .virtual_time_for_mode(fair.mode());
+                let virtual_time = cpu.lock_run_queue().virtual_time_for_mode(fair.mode());
                 sched
                     .policy
                     .effective_entity
@@ -76,10 +73,7 @@ impl TaskSystem {
             if !sched.is_pi_boosted()
                 && let Some(fair) = sched.policy.base_entity.fair()
             {
-                let virtual_time = cpu
-                    .dispatch_state()
-                    .run_queue
-                    .virtual_time_for_mode(fair.mode());
+                let virtual_time = cpu.lock_run_queue().virtual_time_for_mode(fair.mode());
                 sched
                     .policy
                     .base_entity

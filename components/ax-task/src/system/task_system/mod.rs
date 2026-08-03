@@ -29,14 +29,14 @@ use core::{
 
 use exited_work::ExitedThreadWork;
 use model::{
-    BalanceReason, DeferredTaskWorkClass, DetachedOwnerMessageBatch, DetachedPayloadKind,
+    BalanceReason, DeferredTaskWorkClass, DetachedOwnerMessageBatch,
     FAIR_BALANCE_BALANCED_BACKOFF_FACTOR, FAIR_BALANCE_CONSTRAINED_BACKOFF_FACTOR,
     FairBalanceResult, FairPolicyPlacement, RootDomainState,
 };
 pub use model::{DeferredTaskWorkBatch, OwnedThreadReapError, TaskSystem};
 pub(crate) use outcome::SwitchEndpoint;
 pub use outcome::{
-    ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, RemoteWakeDrain,
+    ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, OwnerControlDrain,
     ScheduleDecision, SchedulerOutcome,
 };
 pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};
@@ -50,13 +50,13 @@ use super::thread_sched::{DeadlineActivity, ThreadSchedCell, ThreadSchedState};
 #[cfg(test)]
 use crate::runtime::ExecutionContextHandle;
 use crate::{
-    CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot, CpuWakeCarrier,
-    DeadlineAdmission, DeadlineBandwidthSnapshot, DeadlineEntity, DetachedQueueEntry,
-    EnqueueReason, FairMode, ParkCommit, ParkPrepare, ParkTicket, PiLockId, PiWaitToken,
-    QueuedThread, SchedulePolicy, SchedulingClass, SchedulingEntity, SwitchReason, TaskError,
-    TaskSystemConfig, ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow,
-    ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources,
-    ThreadRuntimeSnapshot, ThreadSpec, ThreadState,
+    CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot, DeadlineAdmission,
+    DeadlineBandwidthSnapshot, DeadlineEntity, DetachedQueueEntry, EnqueueReason, FairMode,
+    ParkCommit, ParkPrepare, ParkTicket, PiLockId, PiWaitToken, QueuedThread, SchedulePolicy,
+    SchedulingClass, SchedulingEntity, SwitchReason, TaskError, TaskSystemConfig,
+    ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease,
+    ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources, ThreadRuntimeSnapshot,
+    ThreadSpec, ThreadState, WakeResult,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, PreemptTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
@@ -64,7 +64,7 @@ use crate::{
         ContextThreadBinding, CpuRemoteHandle, RuntimeCpuId, RuntimeStatus, ThreadIdentityV1,
         task_runtime,
     },
-    system::cpu::{CurrentDispatch, CurrentDispatchState, IdlePullReservation},
+    system::cpu::{CurrentDispatch, CurrentDispatchState, CurrentSchedule, IdlePullReservation},
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
         ExpiredTaskDeadline, TaskDeadlineError, TaskDeadlineKind, TaskDeadlineNode,

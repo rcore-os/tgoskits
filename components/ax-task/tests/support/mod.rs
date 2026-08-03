@@ -11,6 +11,42 @@ use ax_task::{
 };
 
 const MAX_TEST_CPUS: usize = 8;
+const MAX_ACTIVE_GUARDS: usize = 64;
+
+#[derive(Clone, Copy)]
+struct ActiveGuardTokens {
+    slots: [usize; MAX_ACTIVE_GUARDS],
+    len: usize,
+}
+
+impl ActiveGuardTokens {
+    const fn new() -> Self {
+        Self {
+            slots: [0; MAX_ACTIVE_GUARDS],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, token: usize) {
+        assert!(self.len < MAX_ACTIVE_GUARDS, "test guard nesting overflow");
+        self.slots[self.len] = token;
+        self.len += 1;
+    }
+
+    fn remove(&mut self, token: usize, kind: &str) {
+        let index = self.slots[..self.len]
+            .iter()
+            .position(|active| *active == token)
+            .unwrap_or_else(|| panic!("integration {kind} token must be active"));
+        self.len -= 1;
+        self.slots[index] = self.slots[self.len];
+        self.slots[self.len] = 0;
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
 
 std::thread_local! {
     // Every integration fixture installs borrowed object addresses only for its
@@ -27,8 +63,8 @@ std::thread_local! {
     static DESTROYED_CONTEXTS: Cell<usize> = const { Cell::new(0) };
     static DEALLOCATED_STACKS: Cell<usize> = const { Cell::new(0) };
     static DEALLOCATED_TLS: Cell<usize> = const { Cell::new(0) };
-    static ACTIVE_IRQ_TOKENS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-    static ACTIVE_PREEMPT_TOKENS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static ACTIVE_IRQ_TOKENS: RefCell<ActiveGuardTokens> = const { RefCell::new(ActiveGuardTokens::new()) };
+    static ACTIVE_PREEMPT_TOKENS: RefCell<ActiveGuardTokens> = const { RefCell::new(ActiveGuardTokens::new()) };
     static CURRENT_CPU: Cell<u32> = const { Cell::new(0) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
     static LOCAL_SCHEDULER_WORK_PENDING: Cell<bool> = const { Cell::new(false) };
@@ -117,12 +153,7 @@ impl_trait! {
 
         unsafe fn irq_guard_exit(token: IrqGuardToken) {
             ACTIVE_IRQ_TOKENS.with(|tokens| {
-                let mut tokens = tokens.borrow_mut();
-                let index = tokens
-                    .iter()
-                    .position(|active| *active == token.into_raw())
-                    .expect("integration IRQ token must be active");
-                tokens.swap_remove(index);
+                tokens.borrow_mut().remove(token.into_raw(), "IRQ");
             });
         }
 
@@ -140,12 +171,7 @@ impl_trait! {
 
         unsafe fn preempt_guard_exit(token: PreemptGuardToken) {
             ACTIVE_PREEMPT_TOKENS.with(|tokens| {
-                let mut tokens = tokens.borrow_mut();
-                let index = tokens
-                    .iter()
-                    .position(|active| *active == token.into_raw())
-                    .expect("integration preempt token must be active");
-                tokens.swap_remove(index);
+                tokens.borrow_mut().remove(token.into_raw(), "preempt");
             });
         }
 

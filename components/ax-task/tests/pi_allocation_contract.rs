@@ -45,18 +45,20 @@ fn pi_registration_handoff_and_cancel_do_not_allocate() {
         .unwrap();
     let lock = PiLockIdentity::new().id().unwrap();
 
-    let selected_wait = assert_no_alloc(|| {
+    let selected_wait = assert_no_alloc("register selected waiter", || {
         system
             .pi_wait_start(lock, selected.id(), owner.id())
             .unwrap()
     });
-    let cancelled_wait = assert_no_alloc(|| {
+    let cancelled_wait = assert_no_alloc("register cancelled waiter", || {
         system
             .pi_wait_start(lock, cancelled.id(), owner.id())
             .unwrap()
     });
-    assert_no_alloc(|| system.pi_wait_cancel(cancelled_wait).unwrap());
-    assert_no_alloc(|| {
+    assert_no_alloc("cancel waiter", || {
+        system.pi_wait_cancel(cancelled_wait).unwrap()
+    });
+    assert_no_alloc("commit handoff", || {
         let handoff = system
             .prepare_pi_mutex_handoff(lock, owner.id(), Some(selected.id()))
             .unwrap();
@@ -83,10 +85,13 @@ fn retain_fake_runtime_helpers() {
     );
 }
 
-fn assert_no_alloc<T>(operation: impl FnOnce() -> T) -> T {
+fn assert_no_alloc<T>(operation_name: &str, operation: impl FnOnce() -> T) -> T {
     let before = ALLOCATIONS.load(Ordering::Relaxed);
     let result = operation();
     let after = ALLOCATIONS.load(Ordering::Relaxed);
-    assert_eq!(after, before, "PI scheduler operation allocated");
+    assert_eq!(
+        after, before,
+        "PI scheduler operation allocated during {operation_name}"
+    );
     result
 }
