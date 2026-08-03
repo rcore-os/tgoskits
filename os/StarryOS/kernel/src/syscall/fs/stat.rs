@@ -13,7 +13,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    file::{File, FileLike, ResolveAtResult, resolve_at},
+    file::{Directory, File, FileLike, ResolveAtResult, get_file_like, resolve_at},
     mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
@@ -273,7 +273,15 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
 pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
-    buf.vm_write(statfs(File::from_fd(fd)?.inner().location())?)?;
+    let file_like = get_file_like(fd)?;
+    // Linux fstatfs accepts directory descriptors. File::from_fd intentionally
+    // rejects directories because its callers require regular-file I/O.
+    let status = if let Ok(directory) = file_like.downcast_arc::<Directory>() {
+        statfs(directory.inner())?
+    } else {
+        statfs(File::from_fd(fd)?.inner().location())?
+    };
+    buf.vm_write(status)?;
     Ok(0)
 }
 

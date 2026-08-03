@@ -3027,6 +3027,107 @@ No such file or directory
 红测。不能直接屏蔽 `systemd-journal-flush.service`。由于
 `STARRY_NIXOS_SYSTEM_PASSED` 尚未出现，T028 保持未完成。
 
+### 7.29 目录 fd `fstatvfs` 红绿验证与 journal flush 越界（2026-08-03）
+
+新增确定性回归：
+
+```text
+test-suit/starryos/qemu/system/bugfix-fstatvfs-directory/
+```
+
+同一测试覆盖：
+
+- 目录 fd 的 `fstatvfs(3)` 成功路径；
+- 目录结果包含非零 `f_bsize`；
+- 普通文件 fd 的对照成功路径；
+- 无效 fd 返回 `EBADF`。
+
+Podman Linux oracle 结果为：
+
+```text
+=== Results: 6 passed, 0 failed ===
+STARRY_FSTATVFS_DIRECTORY_PASSED
+```
+
+修复前 Starry 结果为：
+
+```text
+PASS: open directory fd
+FAIL: fstatvfs accepts directory fd: errno=21 (Is a directory)
+PASS: open regular file fd
+PASS: fstatvfs accepts regular file fd
+PASS: fstatvfs rejects invalid fd with EBADF
+=== Results: 4 passed, 1 failed ===
+```
+
+完整红测日志：
+
+```text
+.ci-cache/tmp/bugfix-fstatvfs-directory-red.log
+```
+
+根因位于 `os/StarryOS/kernel/src/syscall/fs/stat.rs`：
+`sys_fstatfs()` 无条件通过 `File::from_fd()` 取得位置，而该转换为常规文件
+I/O 明确把 `Directory` 映射为 `EISDIR`。Linux 的 `fstatfs(2)` 接受指向目录
+的合法打开 fd，因此修复仅在 `sys_fstatfs()` 中为 `Directory` 选择其
+`Location`，其他 fd 类型继续走既有 regular file/memfd 分派；未扩大到
+socket、pipe 或匿名 fd 的未验证语义。
+
+修复后同一 Starry 回归结果为：
+
+```text
+=== Results: 6 passed, 0 failed ===
+STARRY_FSTATVFS_DIRECTORY_PASSED
+STARRY_GROUPED_TESTS_PASSED
+```
+
+完整绿测日志：
+
+```text
+.ci-cache/tmp/bugfix-fstatvfs-directory-green.log
+```
+
+Podman + `.ci-cache` 中 `cargo fmt --all -- --check` 通过，
+`cargo xtask clippy --package starry-kernel` 的 25 项检查全部通过。clippy
+日志：
+
+```text
+.ci-cache/tmp/starry-kernel-fstatvfs-directory-clippy.log
+```
+
+正式固定 rootfs 复测日志：
+
+```text
+.ci-cache/tmp/starrynixos-fstatvfs-directory-run.log
+```
+
+该运行不再出现：
+
+```text
+Failed to fstatvfs(.../journal/<machine-id>): Is a directory
+```
+
+并明确越过原触发边界：
+
+```text
+[  OK  ] Started Journal Service.
+[  OK  ] Finished Flush Journal to Persistent Storage.
+```
+
+journald 后续仍报告创建或写入 `system.journal` 时的 `ENOENT`，但该消息未再
+使 journal flush unit 失败，不能与已修复的目录 fd `EISDIR` 合并处理。当前
+新的首个 terminal failure 是：
+
+```text
+[FAILED] Failed to start Rule-based Manager for Device Events and Files.
+See 'systemctl status systemd-udevd.service' for details.
+```
+
+对应 `(systemd-udevd)` 任务退出码记录为 `57856`，acceptance runner 随后由
+`Failed to start` fail pattern 正确终止。下一步需要为该 udevd 退出建立独立
+诊断和 Linux oracle；不能从当前日志推测为 netlink、keyctl 或文件系统问题。
+由于 `STARRY_NIXOS_SYSTEM_PASSED` 尚未出现，T028 保持未完成。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；
