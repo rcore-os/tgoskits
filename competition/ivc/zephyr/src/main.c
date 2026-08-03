@@ -21,6 +21,8 @@
 #define IVC_LOCAL_UDP_PORT 5500U
 #define IVC_SOCKET_POLL_MS 100
 #define IVC_ETHERNET_ADDRESS_LENGTH 6U
+#define IVC_ERROR_EVIDENCE_CAPACITY 8U
+#define IVC_ERROR_EVIDENCE_REPLAY_COPIES 2U
 #define IVC_READY_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_PAUSE_MS 10
@@ -32,6 +34,12 @@ static const uint8_t expected_mac[IVC_ETHERNET_ADDRESS_LENGTH] = {
 static uint8_t receive_frame[IVC_MAX_FRAME_LENGTH];
 static uint8_t transmit_frame[IVC_MAX_FRAME_LENGTH];
 
+struct ivc_error_evidence {
+	uint32_t sequence;
+	enum ivc_error_code error_code;
+	const char *reason;
+};
+
 struct ivc_server {
 	struct ivc_receive_window receive_window;
 	struct ivc_endpoint endpoint;
@@ -42,6 +50,9 @@ struct ivc_server {
 	uint64_t status_sent;
 	uint64_t acknowledgements_sent;
 	uint64_t errors_sent;
+	struct ivc_error_evidence error_evidence[IVC_ERROR_EVIDENCE_CAPACITY];
+	uint32_t error_evidence_count;
+	bool error_evidence_replayed;
 	bool ready_replayed;
 	bool result_reported;
 };
@@ -59,10 +70,12 @@ static bool validate_fault_configuration(void)
 
 	if ((drop_every != 0U && expected_commands == 0U) || drop_every > expected_commands ||
 	    (expected_errors != 0U && expected_commands == 0U) ||
-	    (expected_errors != 0U && drop_every != 0U)) {
+	    (expected_errors != 0U && drop_every != 0U) ||
+	    expected_errors > IVC_ERROR_EVIDENCE_CAPACITY) {
 		printk("IVC-RTOS-FATAL stage=fault-config drop_ack_every=%u "
-		       "expected_commands=%u expected_protocol_errors=%u\n",
-		       drop_every, expected_commands, expected_errors);
+		       "expected_commands=%u expected_protocol_errors=%u evidence_capacity=%u\n",
+		       drop_every, expected_commands, expected_errors,
+		       (unsigned int)IVC_ERROR_EVIDENCE_CAPACITY);
 		return false;
 	}
 	return true;
@@ -254,7 +267,8 @@ static void report_result_if_complete(struct ivc_server *server)
 		return;
 	}
 #if CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
-	if (server->protocol_errors != expected_errors || server->errors_sent != expected_errors) {
+	if (server->protocol_errors != expected_errors || server->errors_sent != expected_errors ||
+	    !server->error_evidence_replayed) {
 		return;
 	}
 #elif CONFIG_IVC_DROP_ACK_EVERY > 0
@@ -291,17 +305,49 @@ static enum ivc_error_code apply_error_code(enum ivc_apply_result result)
 	return IVC_ERROR_STALE_CONTROL;
 }
 
-static void reject_control(struct ivc_server *server, int socket_fd,
-			   const struct sockaddr *peer, socklen_t peer_length,
-			   const struct ivc_header *request, enum ivc_error_code error_code,
-			   const char *reason)
+static void reject_datagram(struct ivc_server *server, int socket_fd,
+			    const struct sockaddr *peer, socklen_t peer_length,
+			    const struct ivc_header *request, enum ivc_error_code error_code,
+			    const char *reason)
 {
 	++server->protocol_errors;
+	if (server->error_evidence_count < IVC_ERROR_EVIDENCE_CAPACITY) {
+		server->error_evidence[server->error_evidence_count++] =
+			(struct ivc_error_evidence){
+				.sequence = request->sequence,
+				.error_code = error_code,
+				.reason = reason,
+			};
+	}
 	printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n", request->sequence,
 	       (unsigned int)error_code, reason);
 	if (send_error(socket_fd, peer, peer_length, request, error_code)) {
 		++server->errors_sent;
 	}
+}
+
+static void replay_error_evidence_if_complete(struct ivc_server *server)
+{
+	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
+	const uint32_t expected_errors = (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS;
+	uint32_t copy;
+	uint32_t index;
+
+	if (server->error_evidence_replayed || expected_errors == 0U ||
+	    server->receive_window.metrics.accepted != expected_commands ||
+	    server->protocol_errors != expected_errors || server->errors_sent != expected_errors ||
+	    server->error_evidence_count != expected_errors) {
+		return;
+	}
+	for (copy = 0U; copy < IVC_ERROR_EVIDENCE_REPLAY_COPIES; ++copy) {
+		for (index = 0U; index < server->error_evidence_count; ++index) {
+			const struct ivc_error_evidence *evidence = &server->error_evidence[index];
+
+			printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n", evidence->sequence,
+			       (unsigned int)evidence->error_code, evidence->reason);
+		}
+	}
+	server->error_evidence_replayed = true;
 }
 
 static void process_control(struct ivc_server *server, int socket_fd,
@@ -318,22 +364,22 @@ static void process_control(struct ivc_server *server, int socket_fd,
 					      frame->header.sequence);
 	if (delivery == IVC_DELIVERY_NEW_OUT_OF_ORDER ||
 	    delivery == IVC_DELIVERY_OUTSIDE_WINDOW) {
-		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+		reject_datagram(server, socket_fd, peer, peer_length, &frame->header,
 			       IVC_ERROR_SEQUENCE_OUTSIDE_WINDOW, "sequence-outside-window");
 		return;
 	}
 	if (delivery == IVC_DELIVERY_SESSION_REJECTED) {
-		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+		reject_datagram(server, socket_fd, peer, peer_length, &frame->header,
 			       IVC_ERROR_SEQUENCE_OUTSIDE_WINDOW, "retired-or-invalid-session");
 		return;
 	}
 	if (delivery == IVC_DELIVERY_INVALID_IDENTIFIER) {
-		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+		reject_datagram(server, socket_fd, peer, peer_length, &frame->header,
 			       IVC_ERROR_SEQUENCE_OUTSIDE_WINDOW, "zero-session-or-sequence");
 		return;
 	}
 	if (delivery == IVC_DELIVERY_SEQUENCE_EXHAUSTED) {
-		reject_control(server, socket_fd, peer, peer_length, &frame->header,
+		reject_datagram(server, socket_fd, peer, peer_length, &frame->header,
 			       IVC_ERROR_INTERNAL, "sequence-exhausted");
 		return;
 	}
@@ -350,7 +396,7 @@ static void process_control(struct ivc_server *server, int socket_fd,
 					  received_us, received_us);
 		if (apply_result != IVC_APPLY_APPLIED &&
 		    apply_result != IVC_APPLY_ENTERED_SAFE_STATE) {
-			reject_control(server, socket_fd, peer, peer_length, &frame->header,
+			reject_datagram(server, socket_fd, peer, peer_length, &frame->header,
 				       apply_error_code(apply_result),
 				       ivc_apply_result_name(apply_result));
 			return;
@@ -377,6 +423,7 @@ static void process_control(struct ivc_server *server, int socket_fd,
 		       server->receive_window.metrics.duplicates);
 	}
 
+	replay_error_evidence_if_complete(server);
 	/* The controller waits for both messages and the Rust endpoint sends STATUS first. */
 	if (send_status(socket_fd, peer, peer_length, &frame->header, &server->endpoint,
 			&server->plant)) {
@@ -404,29 +451,25 @@ static void process_datagram(struct ivc_server *server, int socket_fd,
 	replay_ready_if_needed(server);
 	decode_result = ivc_decode_frame(receive_frame, length, &frame);
 	if (decode_result != IVC_DECODE_OK) {
-		++server->protocol_errors;
 		if (ivc_decode_rejection_context(receive_frame, length, decode_result,
 						 &rejection)) {
-			printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n",
-			       rejection.request.sequence, (unsigned int)rejection.response_error,
-			       ivc_decode_result_name(decode_result));
-			if (send_error(socket_fd, peer, peer_length, &rejection.request,
-				       rejection.response_error)) {
-				++server->errors_sent;
-			}
+			reject_datagram(server, socket_fd, peer, peer_length,
+					&rejection.request, rejection.response_error,
+					ivc_decode_result_name(decode_result));
 		} else {
+			++server->protocol_errors;
 			printk("IVC-RTOS-DROP reason=%s length=%u\n",
 			       ivc_decode_result_name(decode_result), (unsigned int)length);
 		}
 		return;
 	}
 	if (frame.header.message_type != IVC_MESSAGE_CONTROL) {
-		reject_control(server, socket_fd, peer, peer_length, &frame.header,
+		reject_datagram(server, socket_fd, peer, peer_length, &frame.header,
 			       IVC_ERROR_INVALID_CONTROL, "unexpected-message-type");
 		return;
 	}
 	if (!ivc_decode_control(frame.payload, frame.header.payload_length, &command)) {
-		reject_control(server, socket_fd, peer, peer_length, &frame.header,
+		reject_datagram(server, socket_fd, peer, peer_length, &frame.header,
 			       IVC_ERROR_INVALID_CONTROL, "invalid-control-payload");
 		return;
 	}
@@ -483,6 +526,8 @@ int main(void)
 	server.status_sent = 0U;
 	server.acknowledgements_sent = 0U;
 	server.errors_sent = 0U;
+	server.error_evidence_count = 0U;
+	server.error_evidence_replayed = false;
 	server.ready_replayed = false;
 	server.result_reported = false;
 	poll_descriptor = (struct zsock_pollfd){

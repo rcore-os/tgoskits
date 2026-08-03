@@ -47,6 +47,7 @@ ZEPHYR_BOARD_ERROR_CONF = REPOSITORY_ROOT / "competition/ivc/zephyr/board-error.
 ZEPHYR_KCONFIG = REPOSITORY_ROOT / "competition/ivc/zephyr/Kconfig"
 ZEPHYR_MAIN = REPOSITORY_ROOT / "competition/ivc/zephyr/src/main.c"
 ZEPHYR_GITIGNORE = REPOSITORY_ROOT / "competition/ivc/zephyr/.gitignore"
+IVCPROTO_BIN = REPOSITORY_ROOT / "tools/ivcproto/src/bin/ivcproto.rs"
 ORANGEPI_RUN_SCRIPT = REPOSITORY_ROOT / "competition/ivc/run-orangepi-5-plus.sh"
 ORANGEPI_STAGE_SCRIPT = REPOSITORY_ROOT / "competition/ivc/stage-orangepi-5-plus.sh"
 AXVISOR_SHELL_BASE = REPOSITORY_ROOT / "os/axvisor/src/shell/command/base.rs"
@@ -832,6 +833,14 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("report_ready();", source)
         self.assertIn("replay_ready_if_needed(server);", source)
         self.assertIn("bool ready_replayed;", source)
+
+    def test_error_profile_replays_both_verified_fault_detail_sets(self) -> None:
+        zephyr_source = ZEPHYR_MAIN.read_text(encoding="utf-8")
+        controller_source = IVCPROTO_BIN.read_text(encoding="utf-8")
+
+        self.assertIn("struct ivc_error_evidence", zephyr_source)
+        self.assertIn("replay_error_evidence_if_complete(server);", zephyr_source)
+        self.assertIn("replay_verified_error_fault_records()?;", controller_source)
 
 
 if __name__ == "__main__":

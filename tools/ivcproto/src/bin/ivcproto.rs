@@ -76,6 +76,16 @@ impl ErrorFaultKind {
             Self::InvalidSessionTransition => "invalid-session-transition",
         }
     }
+
+    const fn expected_error(self) -> ErrorCode {
+        match self {
+            Self::UnsupportedVersion => ErrorCode::UnsupportedVersion,
+            Self::LengthMismatch => ErrorCode::MalformedFrame,
+            Self::ChecksumMismatch => ErrorCode::ChecksumMismatch,
+            Self::UnexpectedMessageType => ErrorCode::InvalidControl,
+            Self::InvalidSessionTransition => ErrorCode::SequenceOutsideWindow,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -559,33 +569,29 @@ fn build_error_fault_probe(
     let mut buffer = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
     let length = encode_frame(header, payload, &mut buffer).map_err(|error| error.to_string())?;
     let mut datagram = buffer[..length].to_vec();
-    let expected_error = match kind {
+    match kind {
         ErrorFaultKind::UnsupportedVersion => {
             datagram[VERSION_OFFSET] = VERSION.wrapping_add(1);
-            ErrorCode::UnsupportedVersion
         }
         ErrorFaultKind::LengthMismatch => {
             let declared = u16::try_from(payload.len() + 1)
                 .map_err(|_| "fault payload length exceeds u16".to_owned())?;
             datagram[PAYLOAD_LENGTH_OFFSET..PAYLOAD_LENGTH_OFFSET + 2]
                 .copy_from_slice(&declared.to_le_bytes());
-            ErrorCode::MalformedFrame
         }
         ErrorFaultKind::ChecksumMismatch => {
             let last = datagram
                 .last_mut()
                 .ok_or_else(|| "fault datagram is unexpectedly empty".to_owned())?;
             *last ^= 1;
-            ErrorCode::ChecksumMismatch
         }
-        ErrorFaultKind::UnexpectedMessageType => ErrorCode::InvalidControl,
-        ErrorFaultKind::InvalidSessionTransition => ErrorCode::SequenceOutsideWindow,
-    };
+        ErrorFaultKind::UnexpectedMessageType | ErrorFaultKind::InvalidSessionTransition => {}
+    }
     Ok(ErrorFaultProbe {
         kind,
         sequence,
         offending_type,
-        expected_error,
+        expected_error: kind.expected_error(),
         datagram,
     })
 }
@@ -652,20 +658,39 @@ fn run_error_fault_probes(
         let observed_error = receive_error_fault_response(socket, &probe)?;
         errors_received += 1;
         for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
-            println!(
-                "IVC-CONTROLLER-FAULT kind={} seq={} expected_code={} observed_code={}",
-                kind.name(),
-                sequence,
-                probe.expected_error as u16,
-                observed_error as u16
-            );
-            std::io::stdout()
-                .flush()
-                .map_err(|error| format!("flush fault evidence: {error}"))?;
-            std::thread::sleep(BOARD_CONSOLE_RECORD_PAUSE);
+            report_error_fault_record(kind, sequence, observed_error)?;
         }
     }
     Ok(errors_received)
+}
+
+fn report_error_fault_record(
+    kind: ErrorFaultKind,
+    sequence: u32,
+    observed_error: ErrorCode,
+) -> Result<(), String> {
+    println!(
+        "IVC-CONTROLLER-FAULT kind={} seq={} expected_code={} observed_code={}",
+        kind.name(),
+        sequence,
+        kind.expected_error() as u16,
+        observed_error as u16
+    );
+    std::io::stdout()
+        .flush()
+        .map_err(|error| format!("flush fault evidence: {error}"))?;
+    std::thread::sleep(BOARD_CONSOLE_RECORD_PAUSE);
+    Ok(())
+}
+
+fn replay_verified_error_fault_records() -> Result<(), String> {
+    for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
+        for (index, kind) in ErrorFaultKind::ALL.into_iter().enumerate() {
+            let sequence = ERROR_FAULT_SEQUENCE_BASE + index as u32 + 1;
+            report_error_fault_record(kind, sequence, kind.expected_error())?;
+        }
+    }
+    Ok(())
 }
 
 fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
@@ -936,6 +961,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     }
     println!("{}", summary.legacy_record());
     if fault_profile == ControllerFaultProfile::Error {
+        replay_verified_error_fault_records()?;
         for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
             println!(
                 "IVC-CONTROLLER-FAULT-RESULT profile=error injected={} errors_received={} \
