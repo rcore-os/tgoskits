@@ -308,7 +308,11 @@ impl Starry {
             .app
             .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
             .await?;
-        qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
+        qemu_case::apply_grouped_qemu_config(
+            &mut qemu,
+            &test_case,
+            &asset_config.grouped_execution,
+        );
         let prepare_started = std::time::Instant::now();
         let prepared_assets = qemu_case::prepare_case_assets(
             self.app.workspace_root(),

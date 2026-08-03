@@ -390,7 +390,7 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let case = &prepared_case.case;
         let mut qemu = prepared_case.qemu.clone();
-        case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_runner);
+        case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_execution);
 
         qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
         qemu_test::apply_timeout_scale(&mut qemu);

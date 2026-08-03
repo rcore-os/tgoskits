@@ -41,20 +41,20 @@ fn arceos_io_test_x86_uses_uefi_handoff() {
 }
 
 #[test]
-fn axfs_vfs_enables_sleepable_mutexes() {
+fn axfs_enables_sleepable_mutexes_on_its_sync_dependency() {
     let workspace = crate::context::workspace_root_path().unwrap();
     let manifest_path = workspace.join("os/arceos/modules/axfs-ng/Cargo.toml");
     let manifest: toml::Value =
         toml::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-    let vfs_features = manifest["features"]["vfs"]
+    let sync_features = manifest["dependencies"]["ax-sync"]["features"]
         .as_array()
-        .expect("ax-fs-ng must declare its VFS feature set");
+        .expect("ax-fs-ng must declare the ax-sync feature set");
 
     assert!(
-        vfs_features
+        sync_features
             .iter()
             .filter_map(toml::Value::as_str)
-            .any(|feature| feature == "ax-sync/multitask"),
+            .any(|feature| feature == "multitask"),
         "{} must keep filesystem I/O locks sleepable for channel-backed block completion",
         manifest_path.display()
     );

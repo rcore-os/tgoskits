@@ -2,18 +2,19 @@ use crate::test::case as test_case;
 
 pub(super) fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
     test_case::CaseAssetConfig {
-        grouped_runner: test_case::GroupedCaseRunnerConfig {
-            runner_name: "axvisor-run-case-tests".to_string(),
-            runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
-            autorun_profile_script: None,
-            begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
-            passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
-            failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
-            all_passed_marker: "AXVISOR_GROUPED_TESTS_PASSED".to_string(),
-            all_failed_marker: "AXVISOR_GROUPED_TESTS_FAILED".to_string(),
-            success_regex: r"(?m)^AXVISOR_GROUPED_TESTS_PASSED\s*$".to_string(),
-            fail_regex: r"(?m)^AXVISOR_GROUPED_TEST_FAILED:".to_string(),
-        },
+        grouped_execution: test_case::GroupedCaseExecution::ShellCommand(
+            test_case::GroupedCaseRunnerConfig {
+                runner_name: "axvisor-run-case-tests".to_string(),
+                runner_path: "/usr/bin/axvisor-run-case-tests".to_string(),
+                begin_marker: "AXVISOR_GROUPED_TEST_BEGIN".to_string(),
+                passed_marker: "AXVISOR_GROUPED_TEST_PASSED".to_string(),
+                failed_marker: "AXVISOR_GROUPED_TEST_FAILED".to_string(),
+                all_passed_marker: "AXVISOR_GROUPED_TESTS_PASSED".to_string(),
+                all_failed_marker: "AXVISOR_GROUPED_TESTS_FAILED".to_string(),
+                success_regex: r"(?m)^AXVISOR_GROUPED_TESTS_PASSED\s*$".to_string(),
+                fail_regex: r"(?m)^AXVISOR_GROUPED_TEST_FAILED:".to_string(),
+            },
+        ),
         script_env: test_case::CaseScriptEnvConfig {
             staging_root: "AXVISOR_TEST_STAGING_ROOT".to_string(),
             case_dir: "AXVISOR_TEST_CASE_DIR".to_string(),

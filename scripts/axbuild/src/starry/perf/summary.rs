@@ -50,6 +50,9 @@ pub(super) fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
         perf_needs_frame_pointers(args)
     )?;
     writeln!(file, "case = {}", args.case)?;
+    if let Some(test_case) = args.test_case.as_deref() {
+        writeln!(file, "test_case = {test_case}")?;
+    }
     writeln!(file, "symbol_style = {}", args.symbol_style)?;
     writeln!(file, "flamegraph_kind = {}", args.flamegraph_kind)?;
     writeln!(

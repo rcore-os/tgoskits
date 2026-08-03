@@ -105,20 +105,22 @@ pub(crate) fn prepare_grouped_case_assets_sync(
         result?;
     }
 
-    let timing_stage = timing::TimingStage::new(
-        "qemu-asset-grouped",
-        [
-            ("case", case.display_name.clone()),
-            ("phase", "write-grouped-runner".to_string()),
-        ],
-    );
-    let runner_commands = selected_grouped_runner_commands(case, &c_subcases)?;
-    case_assets::write_grouped_case_runner_script(
-        &layout.overlay_dir,
-        &runner_commands,
-        &config.grouped_runner,
-    )?;
-    timing_stage.finish();
+    if config.grouped_execution.runner().is_some() {
+        let timing_stage = timing::TimingStage::new(
+            "qemu-asset-grouped",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "write-grouped-runner".to_string()),
+            ],
+        );
+        let runner_commands = selected_grouped_runner_commands(case, &c_subcases)?;
+        case_assets::write_grouped_case_runner(
+            &layout.overlay_dir,
+            &runner_commands,
+            &config.grouped_execution,
+        )?;
+        timing_stage.finish();
+    }
     let timing_stage = timing::TimingStage::new(
         "qemu-asset-grouped",
         [
