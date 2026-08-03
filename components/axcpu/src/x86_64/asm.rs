@@ -150,6 +150,13 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     }
 }
 
+/// Makes a page-table entry installed by the local page-fault handler visible
+/// before retrying the faulting instruction.
+///
+/// x86 does not cache invalid leaf entries, so the page-table write is enough.
+#[inline]
+pub fn update_mmu_cache(_vaddr: VirtAddr) {}
+
 /// Reads the current kernel task's TLS base (`FS_BASE`).
 ///
 /// It is used to implement TLS (Thread Local Storage).

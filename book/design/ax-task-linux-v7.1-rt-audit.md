@@ -323,6 +323,14 @@ kernel root”接口：
 | AArch64 | TTBR1 保持 kernel，TTBR0 使用禁用值 | owner lease 仍保留到下一次切换 |
 | LoongArch64 | 保留借用 mm 的 PGDL，PGDH 保持 kernel | 同 root 不写 PGDL，不 flush |
 
+按需缺页补齐 PTE 与“旧映射失效后回收”不是同一种 TLB 事务。前者仿照 Linux
+`update_mmu_cache()`，只在 fault 返回用户态前同步当前 CPU 的 fault VA：x86 不缓存
+invalid leaf，AArch64 依赖一致的硬件 walker，因此两者保持空操作；RISC-V 执行本地
+`SFENCE.VMA`；LoongArch 软件 refill 可能安装 `NR|NX` 占位项，因此本地 invalidation
+后重新 refill。这个 fast path 不发送 IPI，也不释放任何物理所有权。只有 unmap、COW
+替换或权限收紧等可能让其他 CPU 持有危险旧映射的事务，才进入 active-mm tracker 与
+同步 shootdown。
+
 exec 的提交边界固定为：IRQ-off 内先验证 current context 和新 runtime object，再转移
 scheduler token；转移之后只有不可失败的 context/root/active-mm 提交。旧 token 的
 销毁、OS owner drop 和回收队列扩容只能在恢复 IRQ 后发生。创建失败时 token 仍由

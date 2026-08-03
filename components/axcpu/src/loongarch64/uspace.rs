@@ -115,10 +115,9 @@ impl UserContext {
                 // user access can also arrive here after the low-level TLB
                 // refill path installs a non-user placeholder entry. Treat it
                 // as a user page fault so the VM layer can populate a lazy user
-                // mapping or reject a real permission violation. Flush the
-                // address first in case the exception came from such an entry
-                // or a stale kernel-only TLB entry for the same VA.
-                crate::asm::flush_tlb(Some(va!(badv)));
+                // mapping or reject a real permission violation. The common
+                // page-fault completion path synchronizes the installed PTE
+                // through `update_mmu_cache` before retrying user mode.
                 ReturnReason::PageFault(va!(badv), PageFaultFlags::USER)
             }
             Trap::Exception(e) => ReturnReason::Exception(ExceptionInfo {

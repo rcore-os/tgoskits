@@ -1,6 +1,6 @@
 //! Cache, TLB, and modified-text synchronization helpers.
 
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 
 // The range API is normalized to 4 KiB pages. x86_64 and RISC-V use the
 // current Linux defaults; the other backends keep the page-table engine's
@@ -58,6 +58,17 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     for offset in (0..size).step_by(PAGE_SIZE_4K) {
         ax_cpu::asm::flush_tlb(Some(start + offset));
     }
+}
+
+/// Synchronizes a page-table update performed by the local page-fault handler.
+///
+/// This is the architecture boundary corresponding to Linux's
+/// `update_mmu_cache()`: it is intentionally local and must not be replaced by
+/// a cross-CPU shootdown. Architectures that do not cache invalid translations
+/// implement it as a no-op.
+#[inline]
+pub fn update_mmu_cache(vaddr: VirtAddr) {
+    ax_cpu::asm::update_mmu_cache(vaddr.align_down_4k());
 }
 
 /// Flushes the TLB entries covering a virtual-address range on all available CPUs.
