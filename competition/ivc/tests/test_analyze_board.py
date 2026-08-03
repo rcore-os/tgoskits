@@ -740,6 +740,35 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertTrue(result["restart_recovery"]["actual_vm_reset"])
         self.assertEqual(result["restart_recovery"]["host_cpu"], 3)
 
+    def test_restart_profile_does_not_let_unterminated_guest_prefix_consume_host_records(
+        self,
+    ) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        trigger = (
+            "AXVISOR_GUEST_RESTART_TRIGGER schema=1 vm_id=1 host_cpu=3 "
+            "requested_delay_ms=20000 observed_delay_ms=20001 "
+            "before_status=running reset_count=1"
+        )
+        damaged_uart = (
+            f"[guest-console:pl011-{trigger}\n{trigger}\n{trigger}\n"
+            "[guest-console:pl011-starry] trailing-guest-output"
+        )
+        log = self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw).replace(
+            trigger, damaged_uart
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            profile="restart",
+            pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+            expected_pre_reset_count=20,
+        )
+
+        self.assertTrue(result["restart_recovery"]["actual_vm_reset"])
+        self.assertEqual(result["restart_recovery"]["observed_delay_ms"], 20_001)
+
     def test_restart_profile_rejects_missing_safe_fallback(self) -> None:
         pre_reset_raw = repeated_raw_csv(20)
         log = "\n".join(
