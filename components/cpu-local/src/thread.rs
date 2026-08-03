@@ -5,7 +5,9 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::{CpuAreaPrefix, CpuAreaRef, CpuIndex, ThreadSwitchError};
+use crate::{
+    CpuAreaPrefix, CpuAreaRef, CpuIndex, PreemptExit, ThreadSwitchError, preempt::PreemptState,
+};
 
 /// Stable opaque identity of one runtime-owned execution context.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -40,7 +42,7 @@ const CPU_BOUND: usize = 0b10;
 const CPU_UNBINDING: usize = 0b11;
 
 const fn current_thread_reserved_size() -> usize {
-    64 - 5 * size_of::<usize>()
+    64 - 5 * size_of::<usize>() - size_of::<PreemptState>()
 }
 
 /// Pinned scheduler/architecture header for one execution context.
@@ -54,6 +56,7 @@ pub struct CurrentThreadHeader {
     cpu_area: AtomicUsize,
     binding_epoch: AtomicUsize,
     architecture_state: [AtomicUsize; 2],
+    preempt_state: PreemptState,
     reserved: [u8; current_thread_reserved_size()],
 }
 
@@ -65,6 +68,7 @@ impl CurrentThreadHeader {
             cpu_area: AtomicUsize::new(0),
             binding_epoch: AtomicUsize::new(CPU_UNBOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
+            preempt_state: PreemptState::new(),
             reserved: [0; current_thread_reserved_size()],
         }
     }
@@ -75,6 +79,7 @@ impl CurrentThreadHeader {
             cpu_area: AtomicUsize::new(area_base),
             binding_epoch: AtomicUsize::new(CPU_BOUND),
             architecture_state: [const { AtomicUsize::new(0) }; 2],
+            preempt_state: PreemptState::new(),
             reserved: [0; current_thread_reserved_size()],
         }
     }
@@ -82,6 +87,58 @@ impl CurrentThreadHeader {
     /// Returns the immutable runtime context identity, if this is a task.
     pub const fn current_context(&self) -> Option<CurrentContext> {
         CurrentContext::from_raw(self.context)
+    }
+
+    /// Returns this execution context's ordinary preemption-guard depth.
+    ///
+    /// Load/store architectures use this task-owned state directly. x86_64
+    /// retains its Linux-compatible fixed per-CPU fast path instead.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn preempt_guard_depth(&self) -> u32 {
+        self.preempt_state.depth()
+    }
+
+    /// Returns whether this execution context must schedule at its next safe point.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn preempt_need_resched(&self) -> bool {
+        self.preempt_state.need_resched()
+    }
+
+    /// Publishes scheduler work into this context's preemption word.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn set_preempt_need_resched(&self) {
+        self.preempt_state.set_need_resched();
+    }
+
+    /// Clears scheduler work after the safe point drains its CPU queues.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn clear_preempt_need_resched(&self) {
+        self.preempt_state.clear_need_resched();
+    }
+
+    /// Enters one ordinary preemption guard on this execution context.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn enter_preempt_guard(&self) {
+        self.preempt_state.enter_guard();
+    }
+
+    /// Consumes a nested guard or retains the final depth for baton conversion.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn prepare_preempt_guard_exit(&self) -> PreemptExit {
+        self.preempt_state.prepare_guard_exit()
+    }
+
+    /// Converts the exact final ordinary guard into scheduler-owned state.
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn consume_final_preempt_guard(&self) -> bool {
+        self.preempt_state.consume_final_guard()
     }
 
     /// Returns the stable CPU area while this header is fully bound.
@@ -185,6 +242,10 @@ pub const CURRENT_THREAD_CPU_BASE_OFFSET: usize = offset_of!(CurrentThreadHeader
 /// Byte offset of architecture-owned task trap state.
 pub const CURRENT_THREAD_ARCH_STATE_OFFSET: usize =
     offset_of!(CurrentThreadHeader, architecture_state);
+/// Byte offset of task-owned preemption state on load/store architectures.
+#[doc(hidden)]
+pub const CURRENT_THREAD_PREEMPT_STATE_OFFSET: usize =
+    offset_of!(CurrentThreadHeader, preempt_state);
 /// Reserved bytes available to architecture-owned task trap state.
 pub const CURRENT_THREAD_ARCH_STATE_SIZE: usize = 2 * size_of::<usize>();
 

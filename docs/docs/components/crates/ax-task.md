@@ -116,8 +116,9 @@ baton；新上下文或恢复上下文完成 switch tail 后，才恢复对应�
 - `cpu-local` 定义体系结构寄存器契约，`ax-percpu` 只提供 typed layout/storage。
 - runtime 只在防迁移 guard 的非逃逸回调中获得 `CpuPin`。
 - 当前上下文和当前线程 header 使用 `CurrentContext`、`CurrentThreadHeader`。
-- 普通 preemption depth 和本 CPU `need_resched` 位由固定
-  `CpuRuntimeAnchor` 持有，不随线程切换迁移。
+- 普通 preemption depth 和 `need_resched` 按架构选择所有者：x86_64 使用固定
+  `CpuRuntimeAnchor`，AArch64/RISC-V/LoongArch 使用随任务发布的
+  `CurrentThreadHeader`；scheduler baton 与 IRQ 状态始终属于 CPU。
 - 上下文切换使用 prepared/previous binding token，incoming tail 消费旧 binding
   后，旧线程才允许在其他 CPU 运行。
 - 不创建第二份“当前任务”per-CPU 指针，也不直接读写 raw TP。

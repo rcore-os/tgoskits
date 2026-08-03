@@ -10,6 +10,7 @@ mod identity;
 #[cfg(target_arch = "loongarch64")]
 pub mod loongarch64;
 mod pin;
+mod preempt;
 mod register;
 mod switch;
 mod symbol;
@@ -19,6 +20,7 @@ pub use area::*;
 pub use error::*;
 pub use identity::*;
 pub use pin::*;
+pub use preempt::PreemptExit;
 pub use register::current_thread;
 #[cfg(feature = "tls")]
 #[doc(hidden)]

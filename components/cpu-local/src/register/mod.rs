@@ -3,7 +3,7 @@
 use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 
 use crate::{
-    CpuAreaRef, CpuLocalError, CpuPin, CpuPreemptExit, CurrentThreadHeader, ThreadSwitchError,
+    CpuAreaRef, CpuLocalError, CpuPin, CurrentThreadHeader, PreemptExit, ThreadSwitchError,
 };
 
 #[cfg(all(not(feature = "host-test"), target_arch = "aarch64"))]
@@ -46,7 +46,7 @@ use x86_64 as imp;
 ))]
 compile_error!("cpu-local supports x86_64, AArch64, RISC-V, and LoongArch64 only");
 
-/// Reads ordinary preemption nesting from the fixed current CPU anchor.
+/// Reads ordinary preemption nesting from the architecture-selected owner.
 #[doc(hidden)]
 #[inline(always)]
 pub fn scheduler_preempt_guard_depth() -> Result<u32, CpuLocalError> {
@@ -56,11 +56,11 @@ pub fn scheduler_preempt_guard_depth() -> Result<u32, CpuLocalError> {
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     {
-        Ok(scheduler_runtime_anchor()?.preempt_guard_depth())
+        with_scheduler_preempt_state(CurrentThreadHeader::preempt_guard_depth)
     }
 }
 
-/// Publishes scheduler work into the current CPU preemption word.
+/// Publishes scheduler work into the architecture-selected preemption word.
 #[doc(hidden)]
 #[inline(always)]
 pub fn scheduler_set_preempt_need_resched() -> Result<(), CpuLocalError> {
@@ -69,7 +69,7 @@ pub fn scheduler_set_preempt_need_resched() -> Result<(), CpuLocalError> {
         imp::set_preempt_need_resched();
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
-    scheduler_runtime_anchor()?.set_preempt_need_resched();
+    with_scheduler_preempt_state(CurrentThreadHeader::set_preempt_need_resched)?;
     Ok(())
 }
 
@@ -82,11 +82,11 @@ pub fn scheduler_clear_preempt_need_resched() -> Result<(), CpuLocalError> {
         imp::clear_preempt_need_resched();
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
-    scheduler_runtime_anchor()?.clear_preempt_need_resched();
+    with_scheduler_preempt_state(CurrentThreadHeader::clear_preempt_need_resched)?;
     Ok(())
 }
 
-/// Enters one ordinary preemption guard on the fixed current CPU anchor.
+/// Enters one ordinary preemption guard on the architecture-selected owner.
 #[doc(hidden)]
 #[inline(always)]
 pub fn scheduler_enter_preempt_guard() -> Result<(), CpuLocalError> {
@@ -95,21 +95,21 @@ pub fn scheduler_enter_preempt_guard() -> Result<(), CpuLocalError> {
         imp::enter_preempt_guard();
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
-    scheduler_runtime_anchor()?.enter_preempt_guard();
+    with_scheduler_preempt_state(CurrentThreadHeader::enter_preempt_guard)?;
     Ok(())
 }
 
 /// Consumes a nested guard or retains the final depth for baton conversion.
 #[doc(hidden)]
 #[inline(always)]
-pub fn scheduler_prepare_preempt_guard_exit() -> Result<CpuPreemptExit, CpuLocalError> {
+pub fn scheduler_prepare_preempt_guard_exit() -> Result<PreemptExit, CpuLocalError> {
     #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
     {
         Ok(unsafe { imp::prepare_preempt_guard_exit() })
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     {
-        Ok(scheduler_runtime_anchor()?.prepare_preempt_guard_exit())
+        with_scheduler_preempt_state(CurrentThreadHeader::prepare_preempt_guard_exit)
     }
 }
 
@@ -123,22 +123,21 @@ pub fn scheduler_consume_final_preempt_guard() -> Result<bool, CpuLocalError> {
     }
     #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     {
-        Ok(scheduler_runtime_anchor()?.consume_final_preempt_guard())
+        with_scheduler_preempt_state(CurrentThreadHeader::consume_final_preempt_guard)
     }
 }
 
 #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
 #[inline(always)]
-fn scheduler_runtime_anchor() -> Result<&'static crate::CpuRuntimeAnchor, CpuLocalError> {
-    let area_base = unsafe { imp::read_cpu_base()? };
-    if area_base == 0 {
-        return Err(CpuLocalError::AreaNotInstalled);
-    }
-    // SAFETY: install_cpu_area is the only writer of the architecture CPU
-    // base and requires the initialized area to remain mapped until shutdown.
-    Ok(unsafe {
-        &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
-    })
+fn with_scheduler_preempt_state<R>(
+    operation: impl for<'current> FnOnce(&'current CurrentThreadHeader) -> R,
+) -> Result<R, CpuLocalError> {
+    // SAFETY: the scheduler owns the current task allocation. A nested switch
+    // resumes this same execution on its stable pinned header before the
+    // operation continues, while the non-escaping callback prevents a borrow
+    // from outliving the register observation.
+    let current = unsafe { scheduler_current_thread()? };
+    Ok(operation(unsafe { current.as_ref() }))
 }
 
 #[cfg(feature = "host-test")]
@@ -243,8 +242,7 @@ pub unsafe fn scheduler_current_thread() -> Result<NonNull<CurrentThreadHeader>,
         // source. Reading a CPU area first would race migration because this
         // function is itself used to construct the preemption guard.
         let register = unsafe { imp::read_current_thread(0) };
-        NonNull::new(register as *mut CurrentThreadHeader)
-            .ok_or(CpuLocalError::CurrentThreadMismatch)
+        scheduler_header_from_raw(register, None)
     }
 
     #[cfg(feature = "tls")]
@@ -257,9 +255,29 @@ pub unsafe fn scheduler_current_thread() -> Result<NonNull<CurrentThreadHeader>,
         if unsafe { imp::read_cpu_base()? } != area.base() {
             continue;
         }
-        return NonNull::new(register as *mut CurrentThreadHeader)
-            .ok_or(CpuLocalError::CurrentThreadMismatch);
+        return scheduler_header_from_raw(register, Some(area));
     }
+}
+
+#[inline(always)]
+fn scheduler_header_from_raw(
+    raw: usize,
+    expected_area: Option<CpuAreaRef>,
+) -> Result<NonNull<CurrentThreadHeader>, CpuLocalError> {
+    if raw == 0 || !raw.is_multiple_of(core::mem::align_of::<CurrentThreadHeader>()) {
+        return Err(CpuLocalError::CurrentThreadMismatch);
+    }
+    let pointer = NonNull::new(raw as *mut CurrentThreadHeader)
+        .ok_or(CpuLocalError::CurrentThreadMismatch)?;
+    if let Some(expected_area) = expected_area {
+        // SAFETY: the runtime anchor may only publish a pinned scheduler
+        // header. Alignment and non-nullness were checked above; comparing the
+        // bound area catches a stale anchor before guard state is accessed.
+        if unsafe { pointer.as_ref() }.cpu_area() != Some(expected_area) {
+            return Err(CpuLocalError::CurrentThreadMismatch);
+        }
+    }
+    Ok(pointer)
 }
 
 /// Reads the logical CPU identity before the scheduler can construct its guard.
@@ -282,7 +300,7 @@ mod tests {
     use core::mem::MaybeUninit;
 
     use super::*;
-    use crate::{CpuAreaPrefix, CpuIndex};
+    use crate::{CpuAreaPrefix, CpuIndex, CurrentContext};
 
     fn modeled_area(cpu_index: usize) -> CpuAreaRef {
         let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
@@ -331,6 +349,92 @@ mod tests {
         .expect("host current-thread probe panicked");
 
         assert!(rejected);
+    }
+
+    #[test]
+    fn scheduler_current_thread_rejects_a_misaligned_publication() {
+        std::thread::spawn(|| {
+            let area = modeled_area(0);
+            // SAFETY: this fresh host thread exclusively owns the modeled CPU
+            // area and publishes the malformed value only for this probe.
+            unsafe {
+                install_cpu_area(area).expect("modeled CPU install must succeed");
+                commit_current_thread(area, 1);
+            }
+
+            assert_eq!(
+                // SAFETY: the test deliberately checks that validation rejects
+                // the malformed value before any dereference can occur.
+                unsafe { scheduler_current_thread() },
+                Err(CpuLocalError::CurrentThreadMismatch),
+            );
+        })
+        .join()
+        .expect("modeled CPU test thread must not panic");
+    }
+
+    #[test]
+    fn generic_preempt_state_follows_current_thread_publication() {
+        std::thread::spawn(|| {
+            let area = modeled_area(0);
+            let first = Box::pin(CurrentThreadHeader::new(
+                CurrentContext::from_raw(1).expect("test context must be non-zero"),
+            ));
+            let second = Box::pin(CurrentThreadHeader::new(
+                CurrentContext::from_raw(2).expect("test context must be non-zero"),
+            ));
+
+            // SAFETY: this fresh host thread models one offline CPU and owns
+            // the leaked CPU fixture for the complete test.
+            unsafe { install_cpu_area(area) }.expect("modeled CPU install must succeed");
+            // SAFETY: the modeled CPU is serialized and receives no interrupts.
+            unsafe {
+                crate::with_cpu_pin(|pin| {
+                    install_bootstrap_thread(pin, first.as_ref())
+                        .expect("first task publication must succeed");
+                    scheduler_enter_preempt_guard().expect("first guard enter must succeed");
+                    assert_eq!(scheduler_preempt_guard_depth(), Ok(1));
+
+                    let (prepared, mut previous) =
+                        crate::prepare_thread_switch(pin, first.as_ref(), second.as_ref())
+                            .expect("switch to second task must prepare");
+                    prepared.commit();
+                    previous
+                        .finish(first.as_ref())
+                        .expect("first task binding must withdraw");
+
+                    assert_eq!(
+                        scheduler_preempt_guard_depth(),
+                        Ok(0),
+                        "an incoming task must not inherit the previous task's guard depth",
+                    );
+                    scheduler_enter_preempt_guard().expect("second guard enter must succeed");
+                    let _ = scheduler_prepare_preempt_guard_exit()
+                        .expect("second guard exit must succeed");
+                    assert_eq!(scheduler_preempt_guard_depth(), Ok(0));
+
+                    let (prepared, mut previous) =
+                        crate::prepare_thread_switch(pin, second.as_ref(), first.as_ref())
+                            .expect("switch back to first task must prepare");
+                    prepared.commit();
+                    previous
+                        .finish(second.as_ref())
+                        .expect("second task binding must withdraw");
+
+                    assert_eq!(
+                        scheduler_preempt_guard_depth(),
+                        Ok(1),
+                        "the suspended task must retain its guard depth",
+                    );
+                    let _ = scheduler_prepare_preempt_guard_exit()
+                        .expect("first guard exit must succeed");
+                    assert_eq!(scheduler_preempt_guard_depth(), Ok(0));
+                })
+            }
+            .expect("modeled CPU pin must succeed");
+        })
+        .join()
+        .expect("modeled CPU test thread must not panic");
     }
 }
 

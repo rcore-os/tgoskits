@@ -1689,40 +1689,47 @@ Linux v7.1 keeps this path deliberately direct:
 - `preempt_enable()` calls `preempt_count_dec_and_test()` and reaches
   `__preempt_schedule()` only when the final nesting level exposes
   `need_resched`;
-- `hardirq_count()` and `in_hardirq()` read the already-current task's
+- `hardirq_count()` and `in_hardirq()` read the architecture-selected current
   preemption word instead of acquiring another preemption guard; and
 - `preempt_schedule_common()` retains the preemption-disabled ownership proof
   across `__schedule()` and uses the no-reschedule decrement on its tail.
 
-TGOSKits retains a narrow scheduler-only current-thread register read for
-per-CPU objects whose address still depends on the running task's validated
-binding. Ordinary preemption no longer uses that path. Its depth and inverted
-`need_resched` bit live in the fixed `CpuRuntimeAnchor`, so x86_64 changes the
-word directly through GS and the other architectures recover only the fixed
-CPU base. `CurrentThreadHeader` again contains task identity, binding epoch and
-architecture task state only; a context switch neither copies nor resets the
-CPU guard word.
+The earlier optimization incorrectly generalized x86_64's per-CPU
+`__preempt_count` to every architecture. Linux v7.1 does not have one ownership
+model here: x86_64 accesses a per-CPU word through GS, AArch64 keeps the folded
+count and reschedule bit in `current_thread_info()`, and RISC-V/LoongArch use
+the generic task-owned `thread_info::preempt_count` plus the task reschedule
+flag. The fixed-anchor implementation therefore made a load/store architecture
+select preemption state by the CPU on which it resumed instead of by its
+current execution context.
+
+TGOSKits now makes that ownership an architecture property behind the same
+scheduler-only interface. x86_64 retains direct operations on the fixed
+`CpuRuntimeAnchor`; AArch64, RISC-V, LoongArch, and the deterministic host
+register model operate on the stable `CurrentThreadHeader`. Scheduler-baton
+and IRQ-owner state remain CPU-local on every architecture. Both candidate
+preemption words keep the same typed `PreemptState` transition logic, while
+the register backend alone decides which word is live.
 
 The final guard exit follows the Linux `preempt_count_dec_and_test()` boundary:
 `FinalPending` itself is the reschedule observation. ax-runtime disables local
 IRQs, validates hard-IRQ and scheduler-baton constraints, and converts that
 exact retained depth into the scheduler baton without querying `CpuRemote`
 again. IRQ-exit paths may still reconcile the remote sticky request into the
-local word, but ordinary guard release never turns a current-CPU scalar into a
-registry or current-thread lookup.
+selected word. The load/store path reads only its architecture current-thread
+register; it does not perform a registry lookup or reconstruct a general
+`CpuPin`.
 
-The deterministic host regression first observed one CPU-base register read
-plus one current-thread register read for a scheduler-current per-CPU access.
-It now observes only the current-thread read. A second regression proves that
-dropping a nested preemption guard invokes neither the IRQ-context nor the
-reschedule query; the buggy ordering failed by entering both callbacks. The
-new fixed-anchor regression additionally observed two current-thread reads for
-one ordinary guard pair on the intermediate implementation and now observes
-zero. A final-pending regression proved that the old path re-read the
-reschedule endpoint after the local word had already selected scheduling. The
-corrected path performs no such callback. Four-CPU `task-yield` runs pass on
-x86_64, AArch64, RISC-V and LoongArch64, and x86_64 `task-irq` covers the
-IRQ-to-baton path.
+The failure first appeared in the AArch64 Starry SMP system group as
+`unbalanced CPU-local preemption guard exit`. A low-perturbation QEMU GDB run
+stopped at `panic_fmt` on CPU 1 and recovered the exact path:
+`WaitQueue::wait_once_inner -> LocalExecutor::run -> framebuffer refresh
+thread`. The incoming CPU anchor had depth zero when that execution context
+released its wait-queue guard. A deterministic host register regression then
+published task A with depth one, switched publication to task B, and observed
+the buggy B depth as one. The corrected implementation observes B at zero and
+restores A at one when publication switches back. Separate state-machine tests
+retain nested, final, final-pending, and unique baton-consumption coverage.
 
 A DHCP-to-shell qperf window confirms that the old CPU-local symbol-offset
 hotspot is gone, but also keeps the remaining performance finding explicit:

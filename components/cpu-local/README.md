@@ -8,22 +8,22 @@ allocate CPU areas, define per-CPU variables, schedule tasks, or choose IRQ
 policy; those responsibilities remain in `ax-percpu`, platform boot code, and
 the scheduler.
 
-| Architecture | CPU area | Current thread | TLS |
-| --- | --- | --- | --- |
-| x86_64 | GS base | GS runtime anchor | FS base |
-| AArch64 | TPIDR_EL1/EL2 | SP_EL0 | TPIDR_EL0 |
-| RISC-V | prefix recovery or `sscratch` | `tp=current`, `sscratch=0` | `tp=TLS`, `sscratch=CPU base` |
-| LoongArch64 | r21, mirrored in KS3 | `tp=current` | `tp=TLS` |
+| Architecture | CPU area | Current thread | Preemption word | TLS |
+| --- | --- | --- | --- | --- |
+| x86_64 | GS base | GS runtime anchor | GS runtime anchor | FS base |
+| AArch64 | TPIDR_EL1/EL2 | SP_EL0 | current-thread header | TPIDR_EL0 |
+| RISC-V | prefix recovery or `sscratch` | `tp=current`, `sscratch=0` | current-thread header | `tp=TLS`, `sscratch=CPU base` |
+| LoongArch64 | r21, mirrored in KS3 | `tp=current` | current-thread header | `tp=TLS` |
 
 LoongArch KS4 and KS5 are deliberately outside this contract and remain
 available to vCPU scratch state.
 
-Ordinary preemption depth and the local `need_resched` bit belong to the fixed
-`CpuRuntimeAnchor`, not to `CurrentThreadHeader`. This matches the Linux
-per-CPU `preempt_count` ownership model: task migration is impossible while
-the depth is nonzero, a context switch does not move the CPU guard word, and
-the final pending depth is converted to the scheduler baton while local IRQs
-remain disabled.
+Ordinary preemption depth and the inverted `need_resched` bit follow Linux's
+architecture ownership. x86_64 keeps the live word in the fixed
+`CpuRuntimeAnchor` for direct GS operations. AArch64, RISC-V, and LoongArch
+keep it in `CurrentThreadHeader`, so context-switch publication selects the
+incoming task's state and migration retains the suspended task's state. The
+scheduler baton and IRQ ownership remain CPU-local on every architecture.
 
 The `tls` feature selects the TLS-owning image mode; without it the current
 thread occupies the architecture task-pointer register. `host-test` provides a
