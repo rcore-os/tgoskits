@@ -69,6 +69,9 @@ pub struct ArgsPerf {
     /// Profile case name used in the default output path.
     #[arg(long, default_value = "boot")]
     pub case: String,
+    /// Reuse one Starry QEMU test-suit case's build, device, and rootfs assets.
+    #[arg(long)]
+    pub test_case: Option<String>,
     #[arg(long)]
     pub arch: Option<String>,
     #[arg(long, default_value_t = 99)]

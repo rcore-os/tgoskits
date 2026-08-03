@@ -6,18 +6,19 @@ use super::{grouped_c::*, toolchain::*, *};
 
 fn fake_config() -> CaseAssetConfig {
     CaseAssetConfig {
-        grouped_runner: case_assets::GroupedCaseRunnerConfig {
-            runner_name: "suite-run-case-tests".to_string(),
-            runner_path: "/usr/bin/suite-run-case-tests".to_string(),
-            autorun_profile_script: None,
-            begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
-            passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
-            failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
-            all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
-            all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
-            success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
-            fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
-        },
+        grouped_execution: case_assets::GroupedCaseExecution::ShellCommand(
+            case_assets::GroupedCaseRunnerConfig {
+                runner_name: "suite-run-case-tests".to_string(),
+                runner_path: "/usr/bin/suite-run-case-tests".to_string(),
+                begin_marker: "SUITE_GROUPED_TEST_BEGIN".to_string(),
+                passed_marker: "SUITE_GROUPED_TEST_PASSED".to_string(),
+                failed_marker: "SUITE_GROUPED_TEST_FAILED".to_string(),
+                all_passed_marker: "SUITE_GROUPED_TESTS_PASSED".to_string(),
+                all_failed_marker: "SUITE_GROUPED_TESTS_FAILED".to_string(),
+                success_regex: r"(?m)^SUITE_GROUPED_TESTS_PASSED\s*$".to_string(),
+                fail_regex: r"(?m)^SUITE_GROUPED_TEST_FAILED:".to_string(),
+            },
+        ),
         script_env: case_assets::CaseScriptEnvConfig {
             staging_root: "SUITE_STAGING_ROOT".to_string(),
             case_dir: "SUITE_CASE_DIR".to_string(),

@@ -8,6 +8,7 @@ mod outputs;
 mod qemu;
 mod summary;
 mod symbols;
+mod test_case;
 mod toolchain;
 
 use anyhow::bail;
@@ -23,6 +24,12 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         .unwrap_or_else(|| crate::context::DEFAULT_STARRY_ARCH.to_string());
     qemu::validate_arch(&arch)?;
     let target = starry_target_for_arch_checked(&arch)?.to_string();
+    let selected_test_case = test_case::resolve(
+        starry.app.workspace_root(),
+        &arch,
+        &target,
+        args.test_case.as_deref(),
+    )?;
     let outputs = outputs::prepare_outputs(
         starry.app.workspace_root(),
         &arch,
@@ -42,7 +49,9 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     let tools = harness::build_qperf_tools(starry.app.workspace_root(), generate_svg)?;
 
     let build_args = ArgsBuild {
-        config: None,
+        config: selected_test_case
+            .as_ref()
+            .map(|selected| selected.build_config_path().to_path_buf()),
         arch: Some(arch.clone()),
         target: None,
         smp: args.smp,
@@ -50,7 +59,9 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     };
     let request = starry.prepare_request(
         StarryCliArgs::from(&build_args),
-        None,
+        selected_test_case
+            .as_ref()
+            .map(|selected| selected.qemu_config_path().to_path_buf()),
         None,
         SnapshotPersistence::Store,
     )?;
@@ -62,7 +73,9 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     rootfs::ensure_qemu_rootfs_ready(&request, starry.app.workspace_root(), None).await?;
     let mut cargo = build::load_cargo_config(&request)?;
     args_support::apply_perf_cargo_features(&mut cargo, &args);
-    let qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    let mut qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
+    let prepared_test_case =
+        test_case::prepare(starry, &request, selected_test_case.as_ref(), &mut qemu).await?;
     let elf = build_output.elf_path().to_path_buf();
     starry
         .app
@@ -73,6 +86,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
 
     let kernel_bin = symbols::kernel_bin_path(starry.app.workspace_root(), &target, args.debug);
     let qemu_run = qemu::run_qemu_direct(&outputs, &args, &arch, &kernel_bin)?;
+    drop(prepared_test_case);
     if !qemu_run.status.success() {
         if !outputs::file_nonempty(&outputs.raw) {
             bail!(

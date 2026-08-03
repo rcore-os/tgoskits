@@ -147,14 +147,16 @@ pub(super) fn validate_arch(arch: &str) -> anyhow::Result<()> {
 }
 
 fn direct_qemu_args(arch: &str, mut args: Vec<String>) -> anyhow::Result<Vec<String>> {
-    match arch {
-        "riscv64" | "loongarch64" => {
-            if !has_qemu_option(&args, "-machine") {
-                args.splice(0..0, ["-machine".to_string(), "virt".to_string()]);
-            }
-        }
-        "x86_64" => {}
+    let default_machine = match arch {
+        "riscv64" | "loongarch64" => "virt",
+        "x86_64" => "q35",
         _ => bail!("qperf currently supports StarryOS {SUPPORTED_ARCHES} only"),
+    };
+    if !args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-machine" | "-M"))
+    {
+        args.splice(0..0, ["-machine".to_string(), default_machine.to_string()]);
     }
     Ok(args)
 }
@@ -406,6 +408,13 @@ mod tests {
         let args = direct_qemu_args("x86_64", args.clone()).unwrap();
 
         assert_eq!(args, vec!["-machine", "q35"]);
+    }
+
+    #[test]
+    fn direct_qemu_args_inserts_the_ostool_x86_64_machine_default() {
+        let args = direct_qemu_args("x86_64", vec!["-nographic".to_string()]).unwrap();
+
+        assert_eq!(args, vec!["-machine", "q35", "-nographic"]);
     }
 
     #[test]

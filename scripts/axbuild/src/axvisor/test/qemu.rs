@@ -254,7 +254,7 @@ impl Axvisor {
         test_case::apply_grouped_qemu_config(
             &mut qemu,
             &case.case.case,
-            &asset_config.grouped_runner,
+            &asset_config.grouped_execution,
         );
         test_qemu::apply_timeout_scale(&mut qemu);
 

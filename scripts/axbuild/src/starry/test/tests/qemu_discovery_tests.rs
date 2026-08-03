@@ -1,13 +1,14 @@
 use super::*;
+use crate::test::case::GroupedCaseExecution;
 
 #[test]
-fn starry_grouped_cases_install_profile_autorun() {
+fn starry_grouped_cases_are_started_by_guest_init() {
     let config = starry_case_asset_config();
 
-    assert_eq!(
-        config.grouped_runner.autorun_profile_script.as_deref(),
-        Some("99-starry-run-case-tests.sh")
-    );
+    assert!(matches!(
+        config.grouped_execution,
+        GroupedCaseExecution::GuestInit(_)
+    ));
 }
 
 #[test]
