@@ -4,7 +4,7 @@
 use ax_task::{
     CpuId, CpuSet, DEFAULT_BALANCE_INTERVAL_NS, DeadlineFlags, DeadlinePolicy, FairMode, Nice,
     PiLockIdentity, RtPriority, SchedulePolicy, SchedulingClass, TaskSystem, TaskSystemConfig,
-    ThreadSpec, WakeResult,
+    ThreadSpec, ThreadState, WakeResult,
 };
 
 mod support;
@@ -87,7 +87,7 @@ fn stale_idle_pull_request_cannot_overfill_a_target_that_became_runnable() {
 }
 
 #[test]
-fn overloaded_owner_pushes_earliest_deadline_without_remote_rq_locking() {
+fn overloaded_owner_pushes_earliest_deadline_through_owner_handoff() {
     let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
     let later = ready_thread(&system, SchedulePolicy::deadline(deadline_policy(1, 8, 20)));
     let earlier = ready_thread(&system, SchedulePolicy::deadline(deadline_policy(1, 5, 20)));
@@ -468,7 +468,7 @@ fn hard_irq_context_cannot_run_owner_balance() {
 }
 
 #[test]
-fn remote_wake_sent_to_old_cpu_follows_latest_affinity() {
+fn direct_wake_is_migrated_after_a_new_affinity_generation() {
     support::clear_handles();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -495,14 +495,26 @@ fn remote_wake_sent_to_old_cpu_follows_latest_affinity() {
     support::install_cpu(1, cpu1.as_mut());
     support::set_online_cpu_count(2);
 
-    assert_eq!(blocked.wake_handle().wake(), WakeResult::Notified);
+    let wake = blocked.wake_handle();
+    assert_eq!(blocked.state(), ThreadState::Blocked);
+    assert_eq!(wake.target_cpu(), Some(CpuId::new(0)));
+    assert_eq!(wake.wake(), WakeResult::Notified);
+    assert_eq!(blocked.state(), ThreadState::Ready);
+    assert_eq!(wake.target_cpu(), Some(CpuId::new(0)));
+    assert_eq!(
+        cpu0.try_runnable_summary(),
+        Some(1),
+        "direct wake must commit queue membership and remotely visible load in one rq transaction"
+    );
     system
         .set_affinity(blocked.id(), singleton_affinity(2, 1))
         .unwrap();
-    system.drain_remote_wakes(cpu0.as_mut(), 1).unwrap();
+    assert_eq!(cpu0.try_runnable_summary(), Some(1));
+    assert!(cpu0.has_remote_work());
+
+    system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
     assert_eq!(cpu0.try_runnable_summary(), Some(0));
     assert!(cpu1.has_remote_work());
-
     system.drain_policy_updates(cpu1.as_mut(), 1).unwrap();
     assert_eq!(cpu1.try_runnable_summary(), Some(1));
     assert_eq!(

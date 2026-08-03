@@ -15,7 +15,9 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
-pub(crate) use dispatch::{CurrentDispatch, CurrentDispatchState, DispatchCharge, SwitchHandoff};
+pub(crate) use dispatch::{
+    CurrentDispatch, CurrentDispatchState, CurrentSchedule, DispatchCharge, SwitchHandoff,
+};
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 use load::{
     LOAD_SUMMARY_READ_RETRIES, SUMMARY_CLASS_MASK, SUMMARY_CURRENT_CLASS_SHIFT,
@@ -25,14 +27,14 @@ use load::{
 pub use local::CpuLocal;
 use local::{earliest, nonzero_deadline};
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
-pub(crate) use remote::{CpuRemotePublication, CpuWakeCarrier, IdlePullReservation};
+pub(crate) use remote::{CpuRemotePublication, CpuRunQueueState, IdlePullReservation};
 pub use snapshot::CpuSnapshot;
 
 use crate::{
     CpuId, DeadlineAdmission, FairMode, RtBandwidth, RunQueue, SchedulePolicy, SchedulingEntity,
     SchedulingKey, TaskError, TaskSystemConfig, ThreadHandle, ThreadId, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
-    lock::IrqScope,
+    lock::{IrqScope, IrqTicketGuard, IrqTicketLock},
     runtime::{MonotonicDeadline, RuntimeCpuId, RuntimeStatus, TaskDeadlineUpdate, task_runtime},
     thread::ThreadCore,
     timer::{

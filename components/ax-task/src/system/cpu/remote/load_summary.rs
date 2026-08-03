@@ -35,7 +35,7 @@ impl RemoteLoadState {
 }
 
 impl CpuRemote {
-    pub(crate) fn publish_load_summary(
+    fn publish_load_summary(
         &self,
         current_key: Option<SchedulingKey>,
         pushable_key: Option<SchedulingKey>,
@@ -44,7 +44,11 @@ impl CpuRemote {
         overloaded: bool,
     ) {
         let write_sequence = self.load.sequence.fetch_add(1, Ordering::AcqRel);
-        debug_assert_eq!(write_sequence & 1, 0, "load summary has one owner writer");
+        debug_assert_eq!(
+            write_sequence & 1,
+            0,
+            "load summary writers must hold the runqueue lock"
+        );
         self.load.runnable.store(runnable_count, Ordering::Relaxed);
         self.load.workload.store(workload_count, Ordering::Relaxed);
         let mut flags = 0;
@@ -73,6 +77,31 @@ impl CpuRemote {
         }
         self.load.flags.store(flags, Ordering::Relaxed);
         self.load.sequence.fetch_add(1, Ordering::Release);
+    }
+
+    /// Publishes the remotely observable load state while the caller owns this
+    /// CPU's runqueue lock.
+    ///
+    /// Taking the runqueue state by reference keeps queue membership, current
+    /// priority, and load publication in one transaction for both owner and
+    /// direct remote wake paths.
+    pub(crate) fn publish_run_queue_load_summary(&self, run_queue: &CpuRunQueueState) {
+        let current = run_queue.current();
+        let current_key = current.map(CurrentSchedule::scheduling_key);
+        let current_non_idle = current.is_some_and(|current| {
+            self.idle_thread()
+                .is_none_or(|idle| current.thread() != idle)
+        });
+        let pushable_key = run_queue.pushable_key();
+        let runnable = run_queue.len();
+        let workload = runnable.saturating_add(usize::from(current_non_idle));
+        self.publish_load_summary(
+            current_key,
+            pushable_key,
+            runnable,
+            workload,
+            pushable_key.is_some() && workload > 1,
+        );
     }
 
     /// Attempts to return a coherent remotely observable scheduling snapshot.

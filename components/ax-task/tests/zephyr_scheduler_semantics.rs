@@ -227,7 +227,7 @@ fn affinity_rejects_enqueue_on_a_disallowed_cpu() {
 }
 
 #[test]
-fn repeated_smp_wake_coalesces_to_one_ipi_epoch() {
+fn repeated_smp_wake_keeps_one_runnable_entry_and_one_preemption_edge() {
     support::clear_handles();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -266,14 +266,12 @@ fn repeated_smp_wake_coalesces_to_one_ipi_epoch() {
     let second_wake = second.wake_handle();
     assert_eq!(first_wake.wake(), WakeResult::Notified);
     assert_eq!(second_wake.wake(), WakeResult::Notified);
-    assert_eq!(first_wake.wake(), WakeResult::AlreadyPending);
+    assert_eq!(first_wake.wake(), WakeResult::Notified);
     assert_eq!(support::ipi_count(1), 1);
     assert!(support::consume_ipi(1));
-    let drained = system.drain_remote_wakes(cpu1.as_mut(), 1).unwrap();
-    assert_eq!(drained.drained(), 2);
-    assert!(!drained.pending());
     assert_eq!(first.state(), ThreadState::Ready);
     assert_eq!(second.state(), ThreadState::Ready);
+    assert_eq!(cpu1.try_runnable_summary(), Some(2));
     support::clear_handles();
 }
 

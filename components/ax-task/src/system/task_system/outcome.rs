@@ -197,15 +197,15 @@ impl DeadlineRuntimeSnapshot {
     }
 }
 
-/// Result of one bounded owner-side remote-wake drain.
+/// Result of one bounded owner-control drain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RemoteWakeDrain {
+pub struct OwnerControlDrain {
     pub(super) drained: usize,
     pub(super) pending: bool,
 }
 
-impl RemoteWakeDrain {
-    /// Returns the number of detached wake messages consumed.
+impl OwnerControlDrain {
+    /// Returns the number of detached control messages consumed.
     pub const fn drained(self) -> usize {
         self.drained
     }

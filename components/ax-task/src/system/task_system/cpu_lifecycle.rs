@@ -20,24 +20,6 @@ impl TaskSystem {
             .filter(|remote| remote.accepts_placement())
     }
 
-    /// Acquires a reachable CPU that can carry one lock-free wake publication.
-    ///
-    /// The placement hint is the common fast path. If CPU-down already closed
-    /// that endpoint, the fixed CPU array supplies another online carrier; the
-    /// carrier owner revalidates placement after consuming the wake.
-    pub(crate) fn acquire_wake_carrier(&self, preferred: CpuId) -> Option<CpuWakeCarrier<'_>> {
-        self.cpu_remotes
-            .get(preferred.as_usize())
-            .and_then(|remote| remote.begin_wake_carrier())
-            .or_else(|| {
-                self.cpu_remotes
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| *index != preferred.as_usize())
-                    .find_map(|(_, remote)| remote.begin_wake_carrier())
-            })
-    }
-
     /// Returns the opaque runtime endpoint for a configured CPU.
     ///
     /// This bootstrap capability is available before online publication so a
@@ -207,7 +189,7 @@ impl TaskSystem {
         self.topology_sequence.write_begin();
         let result = if !remote.try_deactivate() {
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
-        } else if !Self::prepare_thread_routes_for_cpu_offline(&state, &root_domain, id)
+        } else if !Self::prepare_thread_targets_for_cpu_offline(&state, &root_domain, id)
             || !remote.try_begin_draining()
         {
             remote.cancel_deactivation();
@@ -236,14 +218,14 @@ impl TaskSystem {
         result
     }
 
-    /// Stops dormant threads from retaining a wake route to an inactive CPU.
+    /// Stops dormant threads from retaining an inactive preferred target.
     ///
-    /// Placement was closed before this pass, while old-route wake publishers
-    /// remain accepted. A producer that read the old route either completes
-    /// before final draining (making the CPU non-quiescent) or observes the new
-    /// route. This is the same active-before-online split used by Linux CPU
-    /// hotplug around `task_cpu()` routing.
-    fn prepare_thread_routes_for_cpu_offline(
+    /// Placement is closed before this pass. A producer that sampled the old
+    /// target either finishes its runqueue publication before final draining,
+    /// making the CPU non-quiescent, or revalidates and selects an online CPU.
+    /// This is the active-before-online split used by Linux CPU hotplug around
+    /// `task_cpu()` placement.
+    fn prepare_thread_targets_for_cpu_offline(
         state: &TaskSystemState,
         root_domain: &RootDomainState,
         cpu: CpuId,
@@ -417,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_thread_route_is_redirected_before_cpu_offline() {
+    fn blocked_thread_target_is_redirected_before_cpu_offline() {
         let (system, _cpu0, mut cpu1, sleeper) = blocked_thread_fixture();
         let wake = sleeper.wake_handle();
         assert_eq!(wake.target_cpu(), Some(CpuId::new(1)));
@@ -427,18 +409,18 @@ mod tests {
         assert_eq!(
             wake.target_cpu(),
             Some(CpuId::new(0)),
-            "hotplug preparation must publish a live wake route before closing the old CPU"
+            "hotplug preparation must publish an online target before closing the old CPU"
         );
     }
 
     #[test]
-    fn wake_sampled_before_cpu_offline_uses_a_live_carrier() {
+    fn wake_sampled_before_cpu_offline_revalidates_the_target_runqueue() {
         let (system, mut cpu0, mut cpu1, sleeper) = blocked_thread_fixture();
         let wake = sleeper.wake_handle();
-        let stale_route = wake
+        let stale_target = wake
             .target_cpu()
-            .expect("the blocked thread retains its previous direct-wake route");
-        assert_eq!(stale_route, CpuId::new(1));
+            .expect("the blocked thread retains its previous direct-wake target");
+        assert_eq!(stale_target, CpuId::new(1));
 
         system.take_cpu_offline(cpu1.as_mut()).unwrap();
 
@@ -449,12 +431,11 @@ mod tests {
             (unsafe { Pin::get_unchecked_mut(cpu0.as_mut()) } as *mut CpuLocal).expose_provenance(),
         );
         assert_eq!(
-            wake.wake_from_route_snapshot_for_test(stale_route),
+            wake.wake_from_target_snapshot_for_test(stale_target),
             crate::WakeResult::Notified,
-            "a wake that sampled the route before CPU-down must not lose that event"
+            "a wake that sampled the target before CPU-down must not lose that event"
         );
         crate::test_runtime::clear_task_handles();
-        system.drain_remote_wakes(cpu0.as_mut(), 1).unwrap();
         assert_eq!(sleeper.state(), ThreadState::Ready);
         assert_eq!(system.snapshot(cpu0.as_ref()).unwrap().runnable(), 1);
     }

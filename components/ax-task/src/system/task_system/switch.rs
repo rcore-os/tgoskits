@@ -9,11 +9,9 @@ impl TaskSystem {
         sched: &mut ThreadSchedState,
     ) {
         let timing_granularity_ns = self.config.timing_granularity_ns();
+        let run_queue = cpu.lock_run_queue();
         if let Some(fair) = sched.policy.effective_entity.fair() {
-            let virtual_time = cpu
-                .dispatch_state()
-                .run_queue
-                .virtual_time_for_mode(fair.mode());
+            let virtual_time = run_queue.virtual_time_for_mode(fair.mode());
             sched
                 .policy
                 .effective_entity
@@ -22,10 +20,7 @@ impl TaskSystem {
         if !sched.is_pi_boosted() {
             sched.policy.base_entity = sched.policy.effective_entity;
         } else if let Some(fair) = sched.policy.base_entity.fair() {
-            let virtual_time = cpu
-                .dispatch_state()
-                .run_queue
-                .virtual_time_for_mode(fair.mode());
+            let virtual_time = run_queue.virtual_time_for_mode(fair.mode());
             sched
                 .policy
                 .base_entity
@@ -209,11 +204,7 @@ impl TaskSystem {
             let queued = {
                 let dispatch = cpu.as_mut().dispatch_state_mut();
                 let ordinary_rt_may_run = dispatch.rt_bandwidth.may_run(now_ns, false);
-                dispatch
-                    .run_queue
-                    .pick_next_with_rt(ordinary_rt_may_run, |queued| {
-                        queued.core.sched().lock().is_pi_boosted_rt_owner()
-                    })
+                cpu.lock_run_queue().pick_next_with_rt(ordinary_rt_may_run)
             };
             let Some(queued) = queued else {
                 break cpu

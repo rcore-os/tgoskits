@@ -167,5 +167,5 @@ wait/IRQ、PI、executor、task-work、上下文切换尾部和 loom 并发模�
 - bootstrap 与 secondary CPU 上线顺序。
 - scheduler baton、嵌套 IRQ guard 和 context switch tail。
 - stack/TLS/address-space 创建、切换和回收。
-- timer deadline、IPI 合并/重复投递、remote wake 和 SMP affinity。
+- timer deadline、IPI 合并/重复投递、跨 CPU direct wake 和 SMP affinity。
 - ArceOS 与 StarryOS 的四架构 QEMU task/system 组。

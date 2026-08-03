@@ -6,11 +6,11 @@ use crate::{CpuId, ThreadId};
 
 #[test]
 fn coalesces_duplicate_publication_and_preserves_fifo_order() {
-    let inbox = SchedulerInbox::new(InboxKind::RemoteWake);
-    let first = node(InboxKind::RemoteWake);
-    let second = node(InboxKind::RemoteWake);
-    let first_message = InboxMessage::remote_wake(thread(1), CpuId::new(2));
-    let second_message = InboxMessage::remote_wake(thread(2), CpuId::new(2));
+    let inbox = SchedulerInbox::new(InboxKind::OwnerControl);
+    let first = node(InboxKind::OwnerControl);
+    let second = node(InboxKind::OwnerControl);
+    let first_message = message(1);
+    let second_message = message(2);
 
     assert_eq!(
         inbox.publish(first.pin(), first_message),
@@ -60,7 +60,7 @@ fn bounds_each_drain_and_reports_remaining_work() {
 #[test]
 fn rejects_a_node_from_a_different_inbox_class() {
     let inbox = SchedulerInbox::new(InboxKind::Reclaim);
-    let wake_node = node(InboxKind::RemoteWake);
+    let wake_node = node(InboxKind::OwnerControl);
     let message = InboxMessage::reclaim(thread(1), 4, 0x1234);
 
     assert_eq!(
@@ -71,26 +71,18 @@ fn rejects_a_node_from_a_different_inbox_class() {
 
 #[test]
 fn defers_detach_while_a_publisher_retains_the_observed_head() {
-    let inbox = Arc::new(SchedulerInbox::new(InboxKind::RemoteWake));
-    let first = node(InboxKind::RemoteWake);
-    let second = node(InboxKind::RemoteWake);
+    let inbox = Arc::new(SchedulerInbox::new(InboxKind::OwnerControl));
+    let first = node(InboxKind::OwnerControl);
+    let second = node(InboxKind::OwnerControl);
     assert_eq!(
-        inbox.publish(
-            first.pin(),
-            InboxMessage::remote_wake(thread(1), CpuId::new(0)),
-        ),
+        inbox.publish(first.pin(), message(1),),
         PublishResult::Published
     );
 
     inbox.arm_test_publisher_pause();
     let publisher_inbox = Arc::clone(&inbox);
     let second_pin = second.pin();
-    let publisher = std::thread::spawn(move || {
-        publisher_inbox.publish(
-            second_pin,
-            InboxMessage::remote_wake(thread(2), CpuId::new(0)),
-        )
-    });
+    let publisher = std::thread::spawn(move || publisher_inbox.publish(second_pin, message(2)));
     inbox.wait_for_test_publisher_pause();
 
     let mut output = [InboxMessage::EMPTY; 2];
@@ -118,27 +110,20 @@ fn defers_detach_while_a_publisher_retains_the_observed_head() {
 
 #[test]
 fn new_generation_entrant_does_not_delay_retired_head_grace() {
-    let inbox = Arc::new(SchedulerInbox::new(InboxKind::RemoteWake));
-    let first = node(InboxKind::RemoteWake);
-    let retiring_tail = node(InboxKind::RemoteWake);
-    let next_generation = node(InboxKind::RemoteWake);
+    let inbox = Arc::new(SchedulerInbox::new(InboxKind::OwnerControl));
+    let first = node(InboxKind::OwnerControl);
+    let retiring_tail = node(InboxKind::OwnerControl);
+    let next_generation = node(InboxKind::OwnerControl);
     assert_eq!(
-        inbox.publish(
-            first.pin(),
-            InboxMessage::remote_wake(thread(1), CpuId::new(0)),
-        ),
+        inbox.publish(first.pin(), message(1),),
         PublishResult::Published
     );
 
     inbox.arm_test_publisher_pause();
     let retiring_inbox = Arc::clone(&inbox);
     let retiring_pin = retiring_tail.pin();
-    let retiring_publisher = std::thread::spawn(move || {
-        retiring_inbox.publish(
-            retiring_pin,
-            InboxMessage::remote_wake(thread(2), CpuId::new(0)),
-        )
-    });
+    let retiring_publisher =
+        std::thread::spawn(move || retiring_inbox.publish(retiring_pin, message(2)));
     inbox.wait_for_test_publisher_pause();
     let mut output = [InboxMessage::EMPTY; 2];
     let grace_started = inbox.drain(2, &mut output);
@@ -148,12 +133,7 @@ fn new_generation_entrant_does_not_delay_retired_head_grace() {
     inbox.arm_test_generation_pause();
     let next_inbox = Arc::clone(&inbox);
     let next_pin = next_generation.pin();
-    let next_publisher = std::thread::spawn(move || {
-        next_inbox.publish(
-            next_pin,
-            InboxMessage::remote_wake(thread(3), CpuId::new(0)),
-        )
-    });
+    let next_publisher = std::thread::spawn(move || next_inbox.publish(next_pin, message(3)));
     inbox.wait_for_test_generation_pause();
     let retired = inbox.drain(2, &mut output);
     inbox.resume_test_generation_publisher();
@@ -190,4 +170,8 @@ fn node(kind: InboxKind) -> TestInboxNode {
 
 fn thread(slot: u32) -> ThreadId {
     ThreadId::from_parts(slot, 1)
+}
+
+fn message(slot: u32) -> InboxMessage {
+    InboxMessage::migration(thread(slot), CpuId::new(0), CpuId::new(1), u64::from(slot))
 }

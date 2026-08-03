@@ -3,7 +3,6 @@
 use alloc::sync::{Arc, Weak};
 use core::{
     mem::ManuallyDrop,
-    pin::Pin,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -11,7 +10,7 @@ use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
     SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey, SchedulingUrgency, TaskError,
     ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
-    inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
+    inbox::{InboxKind, InboxNode},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
 };
@@ -203,25 +202,22 @@ impl ThreadWakeHandle {
         }
     }
 
-    /// Publishes a wake without allocating, taking a lock, or invoking callbacks.
+    /// Directly wakes the thread without allocating, sleeping, or invoking callbacks.
+    ///
+    /// This IRQ-safe operation may acquire the thread scheduler lock and the
+    /// selected CPU's raw runqueue lock.
     pub fn wake(&self) -> WakeResult {
         self.core.wake()
     }
 
     #[cfg(test)]
-    pub(crate) fn wake_from_route_snapshot_for_test(&self, target: CpuId) -> WakeResult {
-        self.core.wake_from_route_snapshot(target)
+    pub(crate) fn wake_from_target_snapshot_for_test(&self, target: CpuId) -> WakeResult {
+        self.core.wake_from_target_snapshot(target)
     }
 
     /// Wakes from ordinary task context.
-    ///
-    /// The scheduler may use an owner-CPU direct activation path when the
-    /// target is local. Hard IRQ, guarded task context, and remote callers
-    /// automatically retain the bounded inbox publication path so direct
-    /// runqueue locks never nest inside an unrelated lock domain.
     pub fn wake_from_task(&self) -> WakeResult {
-        crate::facade::try_wake_current_cpu_from_task(&self.core)
-            .unwrap_or_else(|| self.core.wake())
+        self.core.wake()
     }
 
     /// Returns the thread that owns this wake header.
@@ -237,7 +233,7 @@ impl ThreadWakeHandle {
 }
 
 impl ThreadCore {
-    fn wake(&self) -> WakeResult {
+    fn wake(self: &Arc<Self>) -> WakeResult {
         if self.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
@@ -245,59 +241,21 @@ impl ThreadCore {
         let Some(target) = (cpu != u32::MAX).then(|| CpuId::new(cpu)) else {
             return WakeResult::Unavailable;
         };
-        self.wake_from_route_snapshot(target)
+        self.wake_from_target_snapshot(target)
     }
 
-    fn wake_from_route_snapshot(&self, target: CpuId) -> WakeResult {
-        let Some(carrier) = crate::facade::wake_carrier(target) else {
-            return WakeResult::Unavailable;
-        };
-        // Publish the inbox request and wake-before-park notification as one
-        // atomic state transition. Owner-side consumption can then preserve
-        // the notification only while PARKING without racing a newer wake.
-        if self.publish_wake() {
-            // A coalesced wake is also a recovery path for a doorbell claimed
-            // concurrently by the owner. Reassert scheduler work even though
-            // the first producer still owns the intrusive publication.
-            carrier.kick_scheduler_work();
-            return WakeResult::AlreadyPending;
-        }
-        let core = self as *const ThreadCore;
-        // SAFETY: this retained strong count is transferred to the inbox
-        // payload and released by the owner drain after consuming the node.
-        unsafe { Arc::increment_strong_count(core) };
-        // SAFETY: Arc allocation addresses are stable. The transferred strong
-        // count keeps the embedded node alive until owner-side drain.
-        let node = unsafe { Pin::new_unchecked(&(*core).remote_wake_node) };
-        let message = InboxMessage::remote_wake_with_payload(
-            self.id,
-            carrier.owner(),
-            core.expose_provenance(),
-        );
-        match carrier.publish_remote_wake(node, message) {
-            PublishResult::Published => WakeResult::Notified,
-            PublishResult::AlreadyPending => {
-                // SAFETY: publication did not take ownership of the retained
-                // reference, so this path releases it immediately.
-                unsafe { Arc::decrement_strong_count(core) };
-                WakeResult::AlreadyPending
-            }
-            PublishResult::WrongKind => {
-                // SAFETY: publication rejected the node before taking ownership.
-                unsafe { Arc::decrement_strong_count(core) };
-                self.discard_failed_wake();
-                WakeResult::Unavailable
-            }
-        }
+    fn wake_from_target_snapshot(self: &Arc<Self>, target: CpuId) -> WakeResult {
+        crate::facade::wake_thread_direct(self, target)
     }
 }
 
 /// Result of an IRQ-safe direct wake publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WakeResult {
-    /// This call published a new pending wake.
+    /// This call completed a wake transaction. The thread is runnable already,
+    /// became runnable, or retained the notification for a park transition.
     Notified,
-    /// A pending wake already represents this event.
+    /// An unresolved park-transition notification already represents this event.
     AlreadyPending,
     /// The destination thread has exited, so the late wake is ignored.
     Exited,
@@ -429,7 +387,6 @@ pub(crate) struct ThreadCore {
     wake_state: AtomicU8,
     park_generation: AtomicU64,
     target_cpu: AtomicU32,
-    remote_wake_node: InboxNode,
     policy_update_node: InboxNode,
     affinity_update_node: InboxNode,
     deadline_refresh_node: InboxNode,
@@ -479,7 +436,6 @@ impl ThreadCore {
             wake_state: AtomicU8::new(0),
             park_generation: AtomicU64::new(0),
             target_cpu: AtomicU32::new(u32::MAX),
-            remote_wake_node: InboxNode::new(InboxKind::RemoteWake),
             policy_update_node: InboxNode::new(InboxKind::OwnerControl),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
             deadline_refresh_node: InboxNode::new(InboxKind::OwnerControl),
@@ -913,9 +869,14 @@ impl ThreadCore {
         self.wake_state.fetch_and(!consumed, Ordering::AcqRel) & WAKE_PENDING != 0
     }
 
-    fn discard_failed_wake(&self) {
+    pub(crate) fn discard_failed_wake(&self) {
         self.wake_state
             .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wake_is_pending(&self) -> bool {
+        self.wake_state.load(Ordering::Acquire) & WAKE_PENDING != 0
     }
 
     pub(crate) fn register_sleep_timer(&self, cpu: CpuId, generation: u64) {

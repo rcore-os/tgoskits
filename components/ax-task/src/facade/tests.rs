@@ -115,16 +115,6 @@ mod tests {
             1
         );
         drop(irq);
-        {
-            let _irq = RuntimeIrqGuard::enter();
-            assert_eq!(
-                system
-                    .drain_remote_wakes(cpu.as_mut(), 0)
-                    .unwrap()
-                    .drained(),
-                1
-            );
-        }
         assert_eq!(
             system.thread_state(running.id()).unwrap(),
             crate::ThreadState::Parking,
@@ -616,9 +606,9 @@ mod tests {
     #[test]
     fn parking_safe_point_is_bounded_and_does_not_run_task_work() {
         PARKING_EXIT_CALLBACKS.store(0, Ordering::Release);
-        let remote_wake_nodes = [
-            Box::pin(InboxNode::new(InboxKind::RemoteWake)),
-            Box::pin(InboxNode::new(InboxKind::RemoteWake)),
+        let owner_work_nodes = [
+            Box::pin(InboxNode::new(InboxKind::OwnerControl)),
+            Box::pin(InboxNode::new(InboxKind::OwnerControl)),
         ];
         let system =
             Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());
@@ -655,16 +645,21 @@ mod tests {
         };
         let _ = permit;
 
-        for (index, node) in remote_wake_nodes.iter().enumerate() {
+        for (index, node) in owner_work_nodes.iter().enumerate() {
             let slot = (index + 1) as u32;
-            let message = InboxMessage::remote_wake(ThreadId::from_parts(slot, 1), CpuId::new(0));
+            let message = InboxMessage::migration(
+                ThreadId::from_parts(slot, 1),
+                CpuId::new(0),
+                CpuId::new(0),
+                u64::from(slot),
+            );
             let node = unsafe {
                 // The pinned fixture is declared before the task system, so it
                 // outlives the CPU inbox even when one bounded batch remains.
                 Pin::new_unchecked(&*(node.as_ref().get_ref() as *const InboxNode))
             };
             assert_eq!(
-                cpu.remote().publish_remote_wake(node, message),
+                cpu.remote().publish_owner_control(node, message),
                 PublishResult::Published
             );
         }
@@ -785,16 +780,26 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_safe_point_drains_owner_work_after_resched_bit_was_consumed() {
+    fn scheduler_safe_point_drains_owner_control_after_resched_bit_was_consumed() {
         let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-        let running = system
+        system
             .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
         system.bring_cpu_online(cpu.as_mut()).unwrap();
-        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let waiting = system
+            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.make_ready(waiting.id()).unwrap();
+        system.enqueue(cpu.as_mut(), waiting.id(), 0).unwrap();
 
-        assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
+        system
+            .set_thread_policy(
+                waiting.id(),
+                SchedulePolicy::fair(crate::Nice::ZERO, crate::FairMode::Idle),
+            )
+            .unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
         assert!(cpu.has_remote_work());
         assert!(cpu.needs_reschedule());
 
@@ -804,10 +809,7 @@ mod tests {
         cpu.as_mut().scheduler_enter();
         assert!(cpu.needs_reschedule());
 
-        assert!(matches!(
-            schedule_current_cpu().unwrap(),
-            SchedulerOutcome::Quiescent
-        ));
+        let _outcome = schedule_current_cpu().unwrap();
         assert!(
             !cpu.has_remote_work(),
             "pending owner work must be sufficient to enter the scheduler safe point"
@@ -868,8 +870,8 @@ mod tests {
         );
         assert_eq!(
             test_runtime::scheduler_frame_state(),
-            (0, 1, 0),
-            "one scheduling operation must use exactly one scheduler baton without nested IRQ guards"
+            (0, 1, 1),
+            "one scheduling operation must use one scheduler baton while irq-safe shared locks nest inside it"
         );
         assert_eq!(
             test_runtime::irq_guards_at_context_switch(),

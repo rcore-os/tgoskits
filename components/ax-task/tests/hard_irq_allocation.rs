@@ -4,16 +4,14 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     boxed::Box,
     cell::{Cell, RefCell},
-    pin::Pin,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
     task::{Poll, Waker},
 };
 
 use ax_task::{
-    CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadId, ThreadSpec,
+    CpuId, RtPriority, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadId, ThreadSpec,
     executor::{DEFAULT_RECLAIM_BATCH, LocalExecutor},
-    inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
     timer::{
         ExpiredTaskDeadline, TaskDeadlineExpireRequest, TaskDeadlineKind, TaskDeadlineNode,
         TaskDeadlineQueue,
@@ -93,7 +91,9 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     );
 
     let thread = system
-        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(1).expect("test RT priority must be valid"),
+        )))
         .expect("thread must initialize");
     system
         .make_ready(thread.id())
@@ -101,6 +101,23 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     system
         .enqueue(cpu.as_mut(), thread.id(), 0)
         .expect("thread must be queued");
+    assert_eq!(
+        system
+            .schedule(cpu.as_mut(), 0)
+            .expect("thread must be selected")
+            .next(),
+        thread.id()
+    );
+    assert_eq!(
+        system
+            .block_current(cpu.as_mut(), 0)
+            .expect("thread must block back to the executor")
+            .next(),
+        executor_thread.id()
+    );
+    system
+        .complete_context_switch(cpu.as_mut())
+        .expect("blocked thread must leave the physical CPU");
     let wake = thread.wake_handle();
 
     support::set_hard_irq(true);
@@ -115,21 +132,6 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         support::consume_local_scheduler_work(),
         "suppressing the self-IPI must leave a sticky IRQ-return scheduler request"
     );
-    assert!(
-        cpu.has_remote_work(),
-        "skipping the self-IPI must retain the wake publication for the owner safe point"
-    );
-
-    let inbox = SchedulerInbox::new(InboxKind::RemoteWake);
-    let inbox_node = OwnedInboxNode::new(InboxKind::RemoteWake);
-    let inbox_audit = audit(|| {
-        inbox.publish(
-            inbox_node.pinned(),
-            InboxMessage::remote_wake(ThreadId::from_parts(7, 1), CpuId::new(0)),
-        )
-    });
-    assert_eq!(inbox_audit.value, PublishResult::Published);
-    assert_zero_allocator_activity(inbox_audit);
 
     let mut timer_queue = TaskDeadlineQueue::new(1);
     let timer = Box::pin(TaskDeadlineNode::for_thread(ThreadId::from_parts(11, 1)));
@@ -148,10 +150,11 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
     support::set_hard_irq(false);
     assert_eq!(
         system
-            .drain_remote_wakes(cpu.as_mut(), 0)
-            .expect("IRQ-return safe point must drain the retained wake")
-            .drained(),
-        1
+            .snapshot(cpu.as_ref())
+            .expect("direct wake must be visible on the target runqueue")
+            .runnable(),
+        1,
+        "hard-IRQ wake must activate the target runqueue before returning"
     );
 
     let executor = LocalExecutor::new(executor_thread.wake_handle())
@@ -234,20 +237,13 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         .expect("ordinary task context must reap the IRQ fixture");
     assert_eq!(executor.reclaim_completed(DEFAULT_RECLAIM_BATCH), 1);
 
-    let mut inbox_output = [InboxMessage::EMPTY; 1];
-    assert_eq!(inbox.drain(1, &mut inbox_output).drained(), 1);
-    system
-        .drain_remote_wakes(cpu.as_mut(), 0)
-        .expect("owner must consume the direct wake reference");
     drop(executor);
     support::clear_handles();
 
     // Keep teardown explicit so default Miri leak checking verifies the same
-    // fixture that audits hard-IRQ allocator activity. Both intrusive nodes
-    // have been detached from their owner queues before their storage drops.
+    // fixture that audits hard-IRQ allocator activity.
     drop(timer_queue);
     drop(timer);
-    drop(inbox_node);
     drop(wake);
     drop(thread);
     drop(executor_thread);
@@ -284,30 +280,4 @@ struct AuditResult<T> {
     value: T,
     allocations: usize,
     deallocations: usize,
-}
-
-struct OwnedInboxNode {
-    node: *mut InboxNode,
-}
-
-impl OwnedInboxNode {
-    fn new(kind: InboxKind) -> Self {
-        Self {
-            node: Box::into_raw(Box::new(InboxNode::new(kind))),
-        }
-    }
-
-    fn pinned(&self) -> Pin<&'static InboxNode> {
-        // SAFETY: `node` comes from Box, remains pinned until this owner's Drop,
-        // and the test drops the drained SchedulerInbox before this owner.
-        unsafe { Pin::new_unchecked(&*self.node) }
-    }
-}
-
-impl Drop for OwnedInboxNode {
-    fn drop(&mut self) {
-        // SAFETY: the test drains and drops the only inbox that observed this
-        // pointer before dropping the owner, and no producer retains it.
-        unsafe { drop(Box::from_raw(self.node)) };
-    }
 }

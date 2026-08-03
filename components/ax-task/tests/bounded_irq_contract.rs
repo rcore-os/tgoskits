@@ -36,12 +36,12 @@ fn timer_irq_work_is_bounded() {
 }
 
 #[test]
-fn remote_inbox_publication_coalesces_and_drain_is_bounded() {
-    let inbox = SchedulerInbox::new(InboxKind::RemoteWake);
-    let first = inbox_node(InboxKind::RemoteWake);
-    let second = inbox_node(InboxKind::RemoteWake);
-    let first_message = InboxMessage::remote_wake(thread(1), CpuId::new(1));
-    let second_message = InboxMessage::remote_wake(thread(2), CpuId::new(1));
+fn owner_control_publication_coalesces_and_drain_is_bounded() {
+    let inbox = SchedulerInbox::new(InboxKind::OwnerControl);
+    let first = inbox_node(InboxKind::OwnerControl);
+    let second = inbox_node(InboxKind::OwnerControl);
+    let first_message = InboxMessage::migration(thread(1), CpuId::new(0), CpuId::new(1), 1);
+    let second_message = InboxMessage::migration(thread(2), CpuId::new(0), CpuId::new(1), 2);
     assert_eq!(
         inbox.publish(first.pin(), first_message),
         PublishResult::Published

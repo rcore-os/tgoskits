@@ -19,7 +19,7 @@ mod facade;
 pub mod inbox;
 mod irq_wait;
 mod lock;
-#[cfg(any(feature = "qperf-metrics", test))]
+#[cfg(feature = "qperf-metrics")]
 mod metrics;
 mod reclaim;
 pub mod runtime;

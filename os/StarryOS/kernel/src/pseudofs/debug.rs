@@ -31,40 +31,18 @@ fn render_scheduler_metrics() -> alloc::string::String {
     let metrics = ax_runtime::task::qperf_runtime_scheduler_metrics_snapshot();
     let task = metrics.task;
     let mut output = alloc::string::String::new();
+    writeln!(output, "direct_wake_attempts {}", task.direct_wake_attempts).unwrap();
     writeln!(
         output,
-        "remote_wake_publications {}",
-        task.remote_wake_publications
+        "direct_wake_activations {}",
+        task.direct_wake_activations
     )
     .unwrap();
+    writeln!(output, "direct_wake_enqueues {}", task.direct_wake_enqueues).unwrap();
     writeln!(
         output,
-        "remote_wake_head_transitions {}",
-        task.remote_wake_head_transitions
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "remote_wake_messages_drained {}",
-        task.remote_wake_messages_drained
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "remote_wake_activations {}",
-        task.remote_wake_activations
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "remote_wake_owner_enqueues {}",
-        task.remote_wake_owner_enqueues
-    )
-    .unwrap();
-    writeln!(
-        output,
-        "remote_wake_migration_handoffs {}",
-        task.remote_wake_migration_handoffs
+        "direct_wake_preemptions {}",
+        task.direct_wake_preemptions
     )
     .unwrap();
     writeln!(
@@ -97,12 +75,10 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "remote_wake_publications",
-                "remote_wake_head_transitions",
-                "remote_wake_messages_drained",
-                "remote_wake_activations",
-                "remote_wake_owner_enqueues",
-                "remote_wake_migration_handoffs",
+                "direct_wake_attempts",
+                "direct_wake_activations",
+                "direct_wake_enqueues",
+                "direct_wake_preemptions",
                 "scheduler_ipi_sends",
                 "scheduler_ipi_consumes",
                 "clockevent_irqs",

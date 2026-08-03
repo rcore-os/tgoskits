@@ -94,24 +94,17 @@ impl DeferredTaskWorkBatch {
 /// passes explicit object references to the scheduler or exposes them through its
 /// trait-FFI facade.
 ///
-/// Direct wake consumption is deliberately not part of the public scheduler
-/// boundary. IRQ and remote producers must publish through
-/// [`ThreadWakeHandle::wake`](crate::ThreadWakeHandle::wake), leaving the owner
-/// CPU as the only consumer of its bounded inbox.
-///
-/// ```compile_fail
-/// use ax_task::{TaskSystem, ThreadWakeHandle};
-///
-/// fn bypass_owner_inbox(system: &TaskSystem, wake: &ThreadWakeHandle) {
-///     system.consume_wake(wake).unwrap();
-/// }
-/// ```
+/// IRQ and remote producers wake through
+/// [`ThreadWakeHandle::wake`](crate::ThreadWakeHandle::wake). The wake path
+/// serializes thread state, selects an online destination, and activates the
+/// thread under that destination's IRQ-safe runqueue lock. Owner-control
+/// inboxes are reserved for migration, policy, and deferred owner work.
 #[derive(Debug)]
 pub struct TaskSystem {
     pub(super) config: TaskSystemConfig,
     pub(super) cpu_remotes: Vec<Arc<CpuRemote>>,
     // Cold-path order is registry/PI/admission -> root domain -> thread cell.
-    // Owner runqueue progress may lock only its CpuLocal and thread cells.
+    // Wake and placement hot paths lock thread state before the target runqueue.
     pub(super) state: PreemptTicketLock<TaskSystemState>,
     pub(super) root_domain: PreemptTicketLock<RootDomainState>,
     pub(super) deferred_reclaims: SchedulerInbox,
@@ -155,12 +148,6 @@ pub(super) const FAIR_BALANCE_BALANCED_BACKOFF_FACTOR: u64 = 2;
 pub(super) const FAIR_BALANCE_CONSTRAINED_BACKOFF_FACTOR: u64 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum DetachedPayloadKind {
-    RemoteWake,
-    SchedulerDelivery,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DeferredTaskWorkClass {
     Deadline,
     SchedulerTick,
@@ -191,19 +178,11 @@ impl DeferredTaskWorkClass {
 pub(super) struct DetachedOwnerMessageBatch<'batch> {
     pub(super) messages: &'batch [InboxMessage],
     pub(super) next: usize,
-    pub(super) payload_kind: DetachedPayloadKind,
 }
 
 impl<'batch> DetachedOwnerMessageBatch<'batch> {
-    pub(super) const fn new(
-        messages: &'batch [InboxMessage],
-        payload_kind: DetachedPayloadKind,
-    ) -> Self {
-        Self {
-            messages,
-            next: 0,
-            payload_kind,
-        }
+    pub(super) const fn new(messages: &'batch [InboxMessage]) -> Self {
+        Self { messages, next: 0 }
     }
 
     pub(super) fn next(&mut self) -> Option<InboxMessage> {
@@ -212,7 +191,7 @@ impl<'batch> DetachedOwnerMessageBatch<'batch> {
         Some(message)
     }
 
-    pub(super) fn release(message: InboxMessage, payload_kind: DetachedPayloadKind) {
+    pub(super) fn release(message: InboxMessage) {
         if message.payload() == 0 {
             return;
         }
@@ -224,16 +203,14 @@ impl<'batch> DetachedOwnerMessageBatch<'batch> {
                 message.payload(),
             ))
         };
-        if payload_kind == DetachedPayloadKind::SchedulerDelivery {
-            let _delivery = core.accept_scheduler_inbox_delivery();
-        }
+        let _delivery = core.accept_scheduler_inbox_delivery();
     }
 }
 
 impl Drop for DetachedOwnerMessageBatch<'_> {
     fn drop(&mut self) {
         for &message in &self.messages[self.next..] {
-            Self::release(message, self.payload_kind);
+            Self::release(message);
         }
     }
 }

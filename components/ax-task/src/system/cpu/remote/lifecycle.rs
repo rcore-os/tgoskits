@@ -28,7 +28,7 @@ impl CpuPublicationState {
 pub enum CpuLifecycleState {
     /// The CPU accepts placement and remote scheduler publications.
     Online,
-    /// New placement is closed while existing wake routes remain reachable.
+    /// New placement is closed while owner-directed control delivery may finish.
     Inactive,
     /// Every remote publication is closed while the owner proves work is gone.
     Draining,
@@ -74,9 +74,9 @@ impl CpuRemote {
     }
 
     pub(crate) fn try_deactivate(&self) -> bool {
-        // Matching the exact zero-valued Online state proves that no placement
-        // publisher spans the transition. Wake publishers use the separate
-        // online-publication gate and remain allowed until final draining.
+        // Matching the exact zero-valued Online state proves that no target-rq
+        // placement transaction spans the transition. Owner-directed control
+        // delivery remains allowed until final draining.
         let inactive = self
             .publication
             .state
@@ -116,8 +116,8 @@ impl CpuRemote {
     }
 
     pub(crate) fn try_begin_draining(&self) -> bool {
-        // An exact inactive state also proves that every old-route wake has
-        // completed its queue publication and doorbell transaction.
+        // An exact inactive state also proves that every owner-directed control
+        // delivery has completed its publication and doorbell transaction.
         self.publication
             .state
             .compare_exchange(
@@ -194,7 +194,7 @@ impl CpuRemote {
         }
     }
 
-    pub(super) fn begin_online_publication(&self) -> Option<CpuRemotePublication<'_>> {
+    pub(super) fn begin_owner_delivery(&self) -> Option<CpuRemotePublication<'_>> {
         let mut current = self.publication.state.load(Ordering::Acquire);
         loop {
             if current & CPU_LIFECYCLE_OFFLINE != 0 {
@@ -219,13 +219,6 @@ impl CpuRemote {
         }
     }
 
-    pub(crate) fn begin_wake_carrier(&self) -> Option<CpuWakeCarrier<'_>> {
-        self.is_scheduler_ready()
-            .then(|| self.begin_online_publication())
-            .flatten()
-            .map(|publication| CpuWakeCarrier { publication })
-    }
-
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
         self.publication.state.load(Ordering::Acquire) == CPU_LIFECYCLE_DRAINING
             && !self.deadline_work_pending()
@@ -238,37 +231,6 @@ impl CpuRemote {
 
 pub(crate) struct CpuRemotePublication<'remote> {
     remote: &'remote CpuRemote,
-}
-
-/// One bounded wake-delivery lease on an online CPU.
-///
-/// The carrier need not match the thread's latest placement hint. Its owner
-/// CPU revalidates that hint after consuming the wake and forwards the ready
-/// thread when placement changed. Retaining this lease prevents CPU draining
-/// from closing the inbox between payload publication and its doorbell.
-pub(crate) struct CpuWakeCarrier<'remote> {
-    publication: CpuRemotePublication<'remote>,
-}
-
-impl CpuWakeCarrier<'_> {
-    pub(crate) fn owner(&self) -> CpuId {
-        self.publication.remote.owner
-    }
-
-    pub(crate) fn kick_scheduler_work(&self) {
-        let _irq = IrqScope::enter();
-        self.publication.remote.kick_scheduler_work_owned();
-    }
-
-    pub(crate) fn publish_remote_wake(
-        self,
-        node: Pin<&'static InboxNode>,
-        message: InboxMessage,
-    ) -> PublishResult {
-        self.publication
-            .remote
-            .publish_remote_wake_owned(node, message)
-    }
 }
 
 impl CpuRemotePublication<'_> {

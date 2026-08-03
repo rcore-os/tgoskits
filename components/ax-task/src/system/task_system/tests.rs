@@ -9,8 +9,13 @@ fn publish_test_scheduler_work(
     node: Pin<&'static crate::inbox::InboxNode>,
     slot: u32,
 ) {
-    let message = InboxMessage::remote_wake(ThreadId::from_parts(slot, 1), remote.owner());
-    let result = remote.publish_remote_wake(node, message);
+    let message = InboxMessage::migration(
+        ThreadId::from_parts(slot, 1),
+        remote.owner(),
+        remote.owner(),
+        u64::from(slot),
+    );
+    let result = remote.publish_owner_control(node, message);
     assert_eq!(result, PublishResult::Published);
 }
 
@@ -111,7 +116,7 @@ fn current_extension_lookup_progresses_while_registry_is_locked() {
 
 #[test]
 fn remote_publication_cannot_be_preempted_before_doorbell() {
-    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::OwnerControl));
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let remote = &system.cpu_remotes[1];
     remote.mark_scheduler_ready();
@@ -131,7 +136,7 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
 
 #[test]
 fn same_cpu_hard_irq_publication_uses_irq_return_instead_of_a_self_ipi() {
-    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::OwnerControl));
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -149,7 +154,7 @@ fn same_cpu_hard_irq_publication_uses_irq_return_instead_of_a_self_ipi() {
     crate::test_runtime::set_hard_irq(false);
 
     let scheduler_ipi_send_count = crate::test_runtime::scheduler_ipi_send_count();
-    let drained = system.drain_remote_wakes(cpu.as_mut(), 1).unwrap();
+    let drained = system.drain_policy_updates(cpu.as_mut(), 1).unwrap();
     assert_eq!(drained.drained(), 1);
     assert_eq!(
         scheduler_ipi_send_count, 0,
@@ -203,10 +208,9 @@ fn same_cpu_hard_irq_wake_is_runnable_at_the_irq_return_safe_point() {
     assert_eq!(cell.notify(), crate::IrqNotifyResult::Notified);
     crate::test_runtime::set_hard_irq(false);
 
-    assert!(system.cpu_remotes[0].remote_wake_inbox().has_pending());
     assert_eq!(
         system.thread_state(service.id()).unwrap(),
-        ThreadState::Blocked
+        ThreadState::Ready
     );
     let outcome = system.schedule_if_requested(cpu.as_mut(), 3).unwrap();
     crate::quiesce_irq_wait(token).unwrap();
@@ -287,8 +291,7 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
         FairEntity::test_state(Nice::ZERO, FairMode::Normal, 20_000_000, 20_400_000);
     let dispatch = cpu.as_mut().dispatch_state_mut();
     dispatch.current_dispatch.as_mut().unwrap().entity = SchedulingEntity::Fair(current_entity);
-    dispatch
-        .run_queue
+    cpu.lock_run_queue()
         .update_fair_virtual_time(Some(current_entity));
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
@@ -302,13 +305,6 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
     crate::test_runtime::set_hard_irq(true);
     assert_eq!(cell.notify(), crate::IrqNotifyResult::Notified);
     crate::test_runtime::set_hard_irq(false);
-    assert_eq!(
-        system
-            .drain_remote_wakes(cpu.as_mut(), 20_000_001)
-            .unwrap()
-            .drained(),
-        1
-    );
     assert_eq!(
         system.thread_state(service.id()).unwrap(),
         ThreadState::Ready
@@ -399,7 +395,7 @@ fn same_cpu_task_publication_uses_guard_exit_instead_of_a_self_ipi() {
 }
 
 #[test]
-fn same_cpu_task_wake_activates_the_owner_without_remote_inbox() {
+fn same_cpu_task_wake_activates_the_owner_runqueue_directly() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -430,10 +426,6 @@ fn same_cpu_task_wake_activates_the_owner_without_remote_inbox() {
         crate::WakeResult::Notified
     );
 
-    assert!(
-        !system.cpu_remotes[0].remote_wake_inbox().has_pending(),
-        "same-CPU task wake must not detour through the remote inbox"
-    );
     assert_eq!(
         crate::test_runtime::scheduler_ipi_send_count(),
         0,
@@ -451,7 +443,7 @@ fn same_cpu_task_wake_activates_the_owner_without_remote_inbox() {
 }
 
 #[test]
-fn same_cpu_task_irq_cell_notification_activates_without_remote_inbox() {
+fn same_cpu_task_irq_cell_notification_activates_the_owner_runqueue_directly() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -485,20 +477,15 @@ fn same_cpu_task_irq_cell_notification_activates_without_remote_inbox() {
     };
 
     let notified = cell.notify_from_task();
-    let remote_wake_pending = system.cpu_remotes[0].remote_wake_inbox().has_pending();
     let sleeper_state = system.thread_state(sleeper.id()).unwrap();
     token.detach().try_finish().unwrap();
 
     assert_eq!(notified, crate::IrqNotifyResult::Notified);
-    assert!(
-        !remote_wake_pending,
-        "task-context notification must not detour through the IRQ wake inbox"
-    );
     assert_eq!(sleeper_state, ThreadState::Ready);
 }
 
 #[test]
-fn guarded_same_cpu_task_wake_retains_the_lock_free_inbox_path() {
+fn guarded_same_cpu_task_wake_uses_the_irq_safe_runqueue() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -529,19 +516,191 @@ fn guarded_same_cpu_task_wake_retains_the_lock_free_inbox_path() {
         crate::WakeResult::Notified
     );
 
-    assert!(
-        system.cpu_remotes[0].remote_wake_inbox().has_pending(),
-        "a wake inside another IRQ/preemption domain must not nest runqueue locks"
-    );
     assert_eq!(
         system.thread_state(sleeper.id()).unwrap(),
-        ThreadState::Blocked,
-        "the owner safe point, not the guarded producer, must activate the thread"
+        ThreadState::Ready,
+        "the irqsave thread/runqueue transaction must complete before wake returns"
     );
 }
 
 #[test]
-fn same_cpu_task_wake_before_park_remains_a_notification_without_an_inbox_node() {
+fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    let _cpu1_bootstrap = system.block_current(cpu1.as_mut(), 2).unwrap().next();
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+
+    assert_eq!(
+        system.thread_state(sleeper.id()).unwrap(),
+        ThreadState::Ready,
+        "PREEMPT_RT wakeup must activate under the target runqueue lock before the owner safe \
+         point",
+    );
+    assert_eq!(
+        cpu1.lock_run_queue().len(),
+        1,
+        "the target runqueue must expose the newly runnable thread before the wake returns",
+    );
+}
+
+fn remote_fifo_wake_fixture(
+    current_priority: u8,
+    woken_priority: u8,
+) -> (
+    Pin<Box<TaskSystem>>,
+    Pin<Box<CpuLocal>>,
+    Pin<Box<CpuLocal>>,
+    ThreadHandle,
+) {
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(2)).unwrap());
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(woken_priority).unwrap(),
+        )))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue(cpu1.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    system.block_current(cpu1.as_mut(), 2).unwrap();
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+
+    let current = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(current_priority).unwrap(),
+        )))
+        .unwrap();
+    system.make_ready(current.id()).unwrap();
+    system.enqueue(cpu1.as_mut(), current.id(), 3).unwrap();
+    assert_eq!(
+        system.schedule(cpu1.as_mut(), 3).unwrap().next(),
+        current.id()
+    );
+    system.complete_context_switch(cpu1.as_mut()).unwrap();
+    (system, cpu0, cpu1, sleeper)
+}
+
+#[test]
+fn lower_priority_remote_wake_does_not_send_a_reschedule_ipi() {
+    crate::test_runtime::reset_irq_state();
+    let (system, mut cpu0, cpu1, sleeper) = remote_fifo_wake_fixture(10, 1);
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    let runnable_before = cpu1.lock_run_queue().len();
+
+    assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+
+    assert_eq!(
+        system.thread_state(sleeper.id()).unwrap(),
+        ThreadState::Ready
+    );
+    assert_eq!(cpu1.lock_run_queue().len(), runnable_before + 1);
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_send_count(),
+        0,
+        "a direct wake below the target current priority must not disturb the remote CPU"
+    );
+}
+
+#[test]
+fn higher_priority_remote_wake_sends_one_reschedule_ipi() {
+    crate::test_runtime::reset_irq_state();
+    let (system, mut cpu0, cpu1, sleeper) = remote_fifo_wake_fixture(1, 10);
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    let runnable_before = cpu1.lock_run_queue().len();
+
+    assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
+
+    assert_eq!(
+        system.thread_state(sleeper.id()).unwrap(),
+        ThreadState::Ready
+    );
+    assert_eq!(cpu1.lock_run_queue().len(), runnable_before + 1);
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_send_count(),
+        1,
+        "a direct wake above the target current priority must publish one reschedule edge"
+    );
+}
+
+#[test]
+fn unavailable_direct_wakers_do_not_coalesce_before_the_thread_lock() {
+    let system = Arc::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let core = Arc::clone(&thread.core);
+    let sched = core.sched().lock();
+    let entries = Arc::new(AtomicUsize::new(0));
+
+    let first = {
+        let system = Arc::clone(&system);
+        let core = Arc::clone(&core);
+        let entries = Arc::clone(&entries);
+        std::thread::spawn(move || {
+            entries.fetch_add(1, Ordering::Release);
+            system.wake_thread_direct(core, CpuId::new(0), 0)
+        })
+    };
+    let second = {
+        let system = Arc::clone(&system);
+        let core = Arc::clone(&core);
+        let entries = Arc::clone(&entries);
+        std::thread::spawn(move || {
+            entries.fetch_add(1, Ordering::Release);
+            system.wake_thread_direct(core, CpuId::new(0), 0)
+        })
+    };
+    while entries.load(Ordering::Acquire) != 2 {
+        std::thread::yield_now();
+    }
+    assert!(
+        !core.wake_is_pending(),
+        "a waker blocked on thread state must not publish a bit that another waker can consume"
+    );
+    drop(sched);
+
+    assert_eq!(first.join().unwrap(), crate::WakeResult::Unavailable);
+    assert_eq!(second.join().unwrap(), crate::WakeResult::Unavailable);
+}
+
+#[test]
+fn same_cpu_task_wake_before_park_preserves_the_notification_until_prepare() {
     crate::test_runtime::reset_irq_state();
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -554,10 +713,6 @@ fn same_cpu_task_wake_before_park_remains_a_notification_without_an_inbox_node()
     assert_eq!(
         running.wake_handle().wake_from_task(),
         crate::WakeResult::Notified
-    );
-    assert!(
-        !system.cpu_remotes[0].remote_wake_inbox().has_pending(),
-        "the local owner may retain the park notification without an inbox node"
     );
 
     let token = task_runtime::irq_guard_enter();
@@ -605,89 +760,8 @@ fn policy_update_doorbell_runs_outside_cold_irq_lock_domains() {
 }
 
 #[test]
-fn runtime_doorbell_coalesces_payloads_and_accepts_a_fresh_delivery() {
-    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());
-    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    let running = system
-        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-        .unwrap();
-    system.bring_cpu_online(cpu.as_mut()).unwrap();
-    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-
-    let coalesced = system
-        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
-        .unwrap();
-    let newer_epoch = system
-        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
-        .unwrap();
-    for thread in [&coalesced, &newer_epoch] {
-        system.make_ready(thread.id()).unwrap();
-        thread.core.set_target_cpu(CpuId::new(0));
-    }
-
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
-    assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
-    assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
-    assert_eq!(crate::test_runtime::scheduler_ipi_notification_count(), 1);
-
-    assert_eq!(coalesced.wake_handle().wake(), crate::WakeResult::Notified);
-    assert_eq!(
-        crate::test_runtime::scheduler_ipi_send_count(),
-        1,
-        "only the empty-to-nonempty inbox transition must ring the runtime doorbell"
-    );
-    assert_eq!(
-        crate::test_runtime::scheduler_ipi_notification_count(),
-        1,
-        "the runtime doorbell must coalesce work behind its in-flight edge"
-    );
-
-    assert!(crate::test_runtime::consume_scheduler_ipi());
-    assert!(
-        system
-            .schedule_if_requested(cpu.as_mut(), 1)
-            .unwrap()
-            .owner_work_pending()
-    );
-    assert_eq!(
-        crate::test_runtime::scheduler_ipi_notification_count(),
-        2,
-        "a bounded drain remainder must create a fresh physical edge after handler consumption"
-    );
-    assert!(crate::test_runtime::consume_scheduler_ipi());
-    assert!(matches!(
-        system.schedule_if_requested(cpu.as_mut(), 2).unwrap(),
-        SchedulerOutcome::Quiescent
-    ));
-
-    assert_eq!(
-        newer_epoch.wake_handle().wake(),
-        crate::WakeResult::Notified
-    );
-    assert_eq!(
-        crate::test_runtime::scheduler_ipi_send_count(),
-        3,
-        "publication after handler consumption must reach the runtime again"
-    );
-    assert_eq!(
-        crate::test_runtime::scheduler_ipi_notification_count(),
-        3,
-        "publication after handler consumption must create a fresh physical edge"
-    );
-
-    assert!(crate::test_runtime::consume_scheduler_ipi());
-    let second = system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
-    assert_eq!(second.drained(), 1);
-    assert!(!second.pending());
-    assert!(matches!(
-        system.schedule_if_requested(cpu.as_mut(), 4).unwrap(),
-        SchedulerOutcome::Quiescent
-    ));
-}
-
-#[test]
 fn permanent_scheduler_ipi_failure_fails_at_the_publication_boundary() {
-    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::OwnerControl));
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let remote = &system.cpu_remotes[1];
     assert!(remote.mark_online());
@@ -814,7 +888,7 @@ fn pending_remote_publication_prevents_cpu_offline() {
     system.bring_cpu_online(cpu1.as_mut()).unwrap();
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
 
-    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::OwnerControl));
     publish_test_scheduler_work(&system.cpu_remotes[1], test_inbox_node(&node), 7);
 
     assert_eq!(
@@ -1195,6 +1269,42 @@ fn successful_fair_balance_resets_the_minimum_interval() {
     assert!(
         cpu0.fair_balance_due(INTERVAL_NS.saturating_mul(2)),
         "successful migration must restore the configured minimum interval"
+    );
+}
+
+#[test]
+fn fair_balance_scans_past_an_affinity_constrained_candidate() {
+    const INTERVAL_NS: u64 = 1_000;
+
+    let system =
+        TaskSystem::new(TaskSystemConfig::new(2).with_balance_interval_ns(INTERVAL_NS)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online_at(cpu.as_mut(), 0).unwrap();
+    }
+
+    let mut cpu0_only = CpuSet::empty(2);
+    assert!(cpu0_only.insert(CpuId::new(0)));
+    let pinned = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(cpu0_only))
+        .unwrap();
+    let movable = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    for thread in [&pinned, &movable] {
+        system.make_ready(thread.id()).unwrap();
+        system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+    }
+
+    crate::test_runtime::set_monotonic_ns(INTERVAL_NS);
+    assert_eq!(
+        system.balance_fair(cpu0.as_mut(), INTERVAL_NS),
+        Ok(Some(movable.id())),
+        "one constrained EEVDF candidate must not hide another movable entity"
     );
 }
 
@@ -2288,18 +2398,12 @@ fn scheduler_work_without_preemption_preserves_current_dispatch() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
-    let remote_wake_drains = cpu.remote().remote_wake_inbox().drain_attempts();
     let control_drains = cpu.remote().owner_control_inbox().drain_attempts();
     cpu.request_scheduler_work();
     assert!(matches!(
         system.schedule_if_requested(cpu.as_mut(), 1).unwrap(),
         SchedulerOutcome::Quiescent
     ));
-    assert_eq!(
-        cpu.remote().remote_wake_inbox().drain_attempts(),
-        remote_wake_drains,
-        "a work-only safe point must not enter an empty wake inbox"
-    );
     assert_eq!(
         cpu.remote().owner_control_inbox().drain_attempts(),
         control_drains,
@@ -2311,7 +2415,7 @@ fn scheduler_work_without_preemption_preserves_current_dispatch() {
 }
 
 #[test]
-fn policy_only_safe_point_skips_the_empty_wake_inbox() {
+fn policy_safe_point_drains_only_owner_control() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     let running = system
@@ -2325,7 +2429,6 @@ fn policy_only_safe_point_skips_the_empty_wake_inbox() {
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
 
-    let remote_wake_drains = cpu.remote().remote_wake_inbox().drain_attempts();
     let control_drains = cpu.remote().owner_control_inbox().drain_attempts();
     system
         .set_thread_policy(
@@ -2337,11 +2440,6 @@ fn policy_only_safe_point_skips_the_empty_wake_inbox() {
 
     system.schedule_if_requested(cpu.as_mut(), 1).unwrap();
 
-    assert_eq!(
-        cpu.remote().remote_wake_inbox().drain_attempts(),
-        remote_wake_drains,
-        "policy-only work must not enter the empty wake inbox"
-    );
     assert_eq!(
         cpu.remote().owner_control_inbox().drain_attempts(),
         control_drains + 1,
@@ -2467,7 +2565,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap();
     assert_eq!(before.vruntime(), 650_000);
     assert_eq!(before.remaining_request_ns(), 450_000);
-    let virtual_time = cpu.dispatch_state().run_queue.virtual_time();
+    let virtual_time = cpu.lock_run_queue().virtual_time();
     assert_eq!(virtual_time, 525_000);
 
     let nice = Nice::new(5).unwrap();
@@ -2547,7 +2645,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
 }
 
 #[test]
-fn scheduler_internal_locks_do_not_reenter_the_irq_guard() {
+fn scheduler_shared_locks_use_the_irq_domain_without_preempt_guards() {
     let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
@@ -2561,15 +2659,19 @@ fn scheduler_internal_locks_do_not_reenter_the_irq_guard() {
     system.schedule(cpu.as_mut(), 0).unwrap();
 
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    let outer_irq_depth = crate::test_runtime::active_irq_guards();
     crate::test_runtime::reset_irq_guard_entries();
     crate::test_runtime::reset_preempt_guard_entries();
     system.yield_current(cpu.as_mut(), 1).unwrap();
 
+    assert!(
+        crate::test_runtime::irq_guard_entries() > 0,
+        "thread state and target runqueue locks must use the IRQ-safe shared lock domain"
+    );
     assert_eq!(
-        crate::test_runtime::irq_guard_entries(),
-        0,
-        "owner scheduling already runs inside its scheduler frame; internal locks must not repeat \
-         the full IRQ-guard path"
+        crate::test_runtime::active_irq_guards(),
+        outer_irq_depth,
+        "every nested irq-safe lock must restore the scheduler baton's IRQ state"
     );
     assert_eq!(
         crate::test_runtime::preempt_guard_entries(),
@@ -2614,7 +2716,7 @@ fn running_idle_to_normal_transition_uses_both_class_virtual_times() {
         .charge_current(cpu.as_mut(), 1_001_000, 1_000, 0)
         .unwrap();
 
-    let normal_virtual_time = cpu.dispatch_state().run_queue.virtual_time();
+    let normal_virtual_time = cpu.lock_run_queue().virtual_time();
     assert_eq!(normal_virtual_time, 1_000_000);
     system
         .set_thread_policy(idle.id(), SchedulePolicy::default())
@@ -2668,9 +2770,7 @@ fn running_normal_to_idle_transition_settles_then_rebases_lag() {
     assert_eq!(transitioned.mode(), FairMode::Idle);
     assert_eq!(
         transitioned.vruntime(),
-        cpu.dispatch_state()
-            .run_queue
-            .virtual_time_for_mode(FairMode::Idle),
+        cpu.lock_run_queue().virtual_time_for_mode(FairMode::Idle),
         "settled zero lag must be expressed relative to the destination V domain",
     );
 }
@@ -2687,18 +2787,22 @@ fn bounded_inbox_remainder_stays_sticky_across_scheduler_entry() {
     let mut nodes = Vec::with_capacity(cpu.batch_limit() * 2 + 1);
     for slot in 0..=cpu.batch_limit() * 2 {
         nodes.push(Box::pin(crate::inbox::InboxNode::new(
-            crate::inbox::InboxKind::RemoteWake,
+            crate::inbox::InboxKind::OwnerControl,
         )));
-        let message =
-            InboxMessage::remote_wake(ThreadId::from_parts(slot as u32, 1), CpuId::new(0));
+        let message = InboxMessage::migration(
+            ThreadId::from_parts(slot as u32, 1),
+            CpuId::new(0),
+            CpuId::new(0),
+            slot as u64,
+        );
         assert_eq!(
             cpu.remote()
-                .publish_remote_wake(test_inbox_node(nodes.last().unwrap()), message),
+                .publish_owner_control(test_inbox_node(nodes.last().unwrap()), message),
             PublishResult::Published
         );
     }
 
-    let first = system.drain_remote_wakes(cpu.as_mut(), 1).unwrap();
+    let first = system.drain_policy_updates(cpu.as_mut(), 1).unwrap();
     assert_eq!(first.drained(), cpu.batch_limit());
     assert!(first.pending());
     assert!(
@@ -2709,7 +2813,7 @@ fn bounded_inbox_remainder_stays_sticky_across_scheduler_entry() {
     );
     assert!(cpu.needs_reschedule());
 
-    let second = system.drain_remote_wakes(cpu.as_mut(), 2).unwrap();
+    let second = system.drain_policy_updates(cpu.as_mut(), 2).unwrap();
     assert_eq!(second.drained(), 1);
     assert!(!second.pending());
     assert!(matches!(
@@ -2813,19 +2917,19 @@ fn forced_yield_does_not_consume_deferred_owner_work() {
     system.make_ready(contender.id()).unwrap();
     system.enqueue(cpu.as_mut(), contender.id(), 0).unwrap();
 
-    let deferred = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    let deferred = Box::pin(crate::inbox::InboxNode::new(InboxKind::OwnerControl));
     publish_test_scheduler_work(cpu.remote(), test_inbox_node(&deferred), 7);
-    assert!(cpu.remote().remote_wake_inbox().has_pending());
+    assert!(cpu.remote().owner_control_inbox().has_pending());
 
     system.yield_current(cpu.as_mut(), 1).unwrap();
 
     assert!(
-        cpu.remote().remote_wake_inbox().has_pending(),
+        cpu.remote().owner_control_inbox().has_pending(),
         "sched_yield must not consume unrelated remote/deferred work"
     );
     assert_eq!(
         system
-            .drain_remote_wakes(cpu.as_mut(), 1)
+            .drain_policy_updates(cpu.as_mut(), 1)
             .unwrap()
             .drained(),
         1
@@ -2927,10 +3031,7 @@ fn queued_affinity_migration_captures_lag_before_detaching_from_source() {
         system.make_ready(thread.id()).unwrap();
     }
 
-    cpu0.as_mut()
-        .dispatch_state_mut()
-        .run_queue
-        .set_virtual_time_for_test(1_000);
+    cpu0.lock_run_queue().set_virtual_time_for_test(1_000);
     for (thread, vruntime, deadline) in [(&migrating, 900, 950), (&peer, 1_100, 1_200)] {
         let policy = SchedulePolicy::default();
         let entity = SchedulingEntity::Fair(FairEntity::test_state(
@@ -2939,14 +3040,9 @@ fn queued_affinity_migration_captures_lag_before_detaching_from_source() {
             vruntime,
             deadline,
         ));
-        cpu0.as_mut()
-            .dispatch_state_mut()
-            .run_queue
+        cpu0.lock_run_queue()
             .enqueue(
-                thread.id(),
-                policy,
-                entity,
-                Arc::clone(&thread.core),
+                QueuedThread::new(thread.id(), policy, entity, Arc::clone(&thread.core), false),
                 EnqueueReason::Preempted,
                 None,
             )
@@ -3450,7 +3546,6 @@ fn deadline_pi_boost_overrides_constrained_wake_throttling() {
         .unwrap();
 
     assert_eq!(owner.wake_handle().wake(), crate::WakeResult::Notified);
-    system.drain_remote_wakes(cpu.as_mut(), 9).unwrap();
 
     assert_eq!(
         system.thread_state(owner.id()).unwrap(),
@@ -3952,37 +4047,6 @@ fn wake_before_park_is_consumed_without_blocking() {
         system.thread_state(running.id()).unwrap(),
         ThreadState::Running
     );
-    let wake = system.drain_remote_wakes(cpu.as_mut(), 0).unwrap();
-    assert_eq!(wake.drained(), 1);
-    assert!(!wake.pending());
-}
-
-#[test]
-fn consumed_running_wake_does_not_notify_a_later_park() {
-    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
-    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    let running = system
-        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-        .unwrap();
-    system.bring_cpu_online(cpu.as_mut()).unwrap();
-    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-
-    assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
-    assert_eq!(
-        system
-            .drain_remote_wakes(cpu.as_mut(), 0)
-            .unwrap()
-            .drained(),
-        1,
-    );
-    assert_eq!(
-        system.thread_state(running.id()).unwrap(),
-        ThreadState::Running,
-    );
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
-        panic!("a later park must not consume the previous running wake");
-    };
-    system.cancel_park(cpu.as_mut(), &mut ticket).unwrap();
 }
 
 #[test]
@@ -4016,81 +4080,6 @@ fn wake_during_parking_cancels_schedule_out() {
         system.thread_state(running.id()).unwrap(),
         ThreadState::Running,
         "a resolved park ticket must not start another block transition"
-    );
-}
-
-#[test]
-fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
-    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
-    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    let running = system
-        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-        .unwrap();
-    system.bring_cpu_online(cpu.as_mut()).unwrap();
-    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    let ParkPrepare::Prepared(mut ticket) = system.prepare_park(cpu.as_mut()).unwrap() else {
-        panic!("fresh park must publish PARKING");
-    };
-
-    assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
-    assert_eq!(
-        system
-            .drain_remote_wakes(cpu.as_mut(), 0)
-            .unwrap()
-            .drained(),
-        1
-    );
-    assert_eq!(
-        system.thread_state(running.id()).unwrap(),
-        ThreadState::Parking,
-        "the owner must finish a PARKING handshake before wake can enqueue it"
-    );
-    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 0);
-    assert!(system.snapshot(cpu.as_ref()).unwrap().need_resched());
-    assert!(
-        system
-            .schedule_if_requested(cpu.as_mut(), 0)
-            .unwrap()
-            .parking_deferred(),
-        "IRQ-return scheduling must defer while current owns a PARKING token"
-    );
-    assert_eq!(
-        system.thread_state(running.id()).unwrap(),
-        ThreadState::Parking
-    );
-    assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
-
-    assert!(matches!(
-        system.commit_park(cpu.as_mut(), &mut ticket, 0).unwrap(),
-        ParkCommit::Notified
-    ));
-    assert_eq!(
-        system.thread_state(running.id()).unwrap(),
-        ThreadState::Running
-    );
-    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 0);
-    assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
-    assert!(
-        matches!(
-            system.schedule_if_requested(cpu.as_mut(), 0).unwrap(),
-            SchedulerOutcome::Quiescent
-        ),
-        "a work-only wake must not be upgraded into a preemption"
-    );
-    assert_eq!(
-        system.snapshot(cpu.as_ref()).unwrap().current(),
-        Some(running.id())
-    );
-    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 0);
-    assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
-    assert!(matches!(
-        system.cancel_park(cpu.as_mut(), &mut ticket),
-        Err(TaskError::StaleThreadId)
-    ));
-    assert_eq!(
-        system.thread_state(running.id()).unwrap(),
-        ThreadState::Running,
-        "a resolved park ticket must not mutate the current thread"
     );
 }
 

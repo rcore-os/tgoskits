@@ -422,9 +422,7 @@ impl TaskSystem {
         }
         if let Some(entity) = update_queued
             && !cpu
-                .as_mut()
-                .dispatch_state_mut()
-                .run_queue
+                .lock_run_queue()
                 .update_deadline_entity(core.id(), entity)
         {
             return Err(TaskError::InvalidConfiguration);

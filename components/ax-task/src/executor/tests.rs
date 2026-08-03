@@ -141,18 +141,12 @@ fn closes_the_wake_during_park_window() {
 }
 
 #[test]
-fn predicate_aware_os_park_observes_work_after_scheduler_wake_drain() {
+fn predicate_aware_os_park_observes_direct_scheduler_wake() {
     let mut fixture = executor();
     let completed = Rc::new(Cell::new(false));
     let saved_waker = Rc::new(RefCell::new(None::<Waker>));
-    let ExecutorFixture {
-        executor,
-        cpu,
-        system,
-        ..
-    } = &mut fixture;
+    let ExecutorFixture { executor, .. } = &mut fixture;
     let executor = executor.as_ref().expect("executor must remain active");
-    let system = system.as_ref().get_ref();
 
     executor.run(
         {
@@ -174,11 +168,6 @@ fn predicate_aware_os_park_observes_work_after_scheduler_wake_drain() {
                 .expect("pending future must publish its waker")
                 .wake_by_ref();
 
-            let wake = system
-                .drain_remote_wakes(cpu.as_mut(), 0)
-                .expect("owner CPU must drain its published wake");
-            assert_eq!(wake.drained(), 1);
-            assert!(!wake.pending());
             assert!(
                 condition.should_abort(),
                 "executor readiness must survive scheduler notification consumption"
@@ -407,7 +396,7 @@ fn executor() -> ExecutorFixture {
         LocalExecutor::new(thread.wake_handle()).expect("executor owner identity must match");
     ExecutorFixture {
         executor: Some(executor),
-        cpu,
+        _cpu: cpu,
         system,
         irq_token: Some(crate::runtime::task_runtime::irq_guard_enter()),
     }
@@ -415,7 +404,8 @@ fn executor() -> ExecutorFixture {
 
 struct ExecutorFixture {
     executor: Option<LocalExecutor>,
-    cpu: Pin<Box<crate::CpuLocal>>,
+    // Owns the pinned runtime handle installed above until fixture teardown.
+    _cpu: Pin<Box<crate::CpuLocal>>,
     system: Pin<Box<TaskSystem>>,
     irq_token: Option<crate::runtime::IrqGuardToken>,
 }
@@ -434,15 +424,6 @@ impl ExecutorFixture {
     }
 
     fn drain_runtime_work(&mut self) {
-        loop {
-            let batch = self
-                .system
-                .drain_remote_wakes(self.cpu.as_mut(), 0)
-                .expect("test CPU must accept its pending wakes");
-            if !batch.pending() {
-                break;
-            }
-        }
         while self
             .system
             .drain_deferred_reclaims(DEFAULT_RECLAIM_BATCH)

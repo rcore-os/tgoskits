@@ -4,12 +4,12 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
-    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CpuWakeCarrier, IrqRegisterResult,
-    IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit, ParkPrepare, PiLockId,
-    PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority, ScheduleDecision,
-    SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore,
-    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
-    ThreadWakeHandle, WaitQueue, WakeResult,
+    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult, IrqWaitCell,
+    IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit, ParkPrepare, PiLockId, PiMutexClaim,
+    PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority, ScheduleDecision, SchedulePolicy,
+    SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore, ThreadExtensionLease,
+    ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState, ThreadWakeHandle, WaitQueue,
+    WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
     runtime::{
@@ -45,7 +45,7 @@ use runtime_cpu::{
 };
 pub(crate) use runtime_cpu::{
     RuntimeIrqGuard, current_cpu_remote, runtime_current_cpu_mut, runtime_task_system,
-    try_wake_current_cpu_from_task, wake_carrier,
+    wake_thread_direct,
 };
 pub use scheduling::{
     ExitPermit, commit_current_exit, exit_current_thread, prepare_current_exit,

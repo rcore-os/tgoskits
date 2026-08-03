@@ -1,11 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConsumedWakePlacement {
-    OwnerRunQueue,
-    MigrationHandoff,
-}
-
 impl TaskSystem {
     /// Enqueues a ready thread on an affinity-compatible owner CPU.
     pub fn enqueue(
@@ -100,14 +94,12 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         let state = self.state.lock();
         state.ensure_cpu_online(&cpu)?;
-        let queued = cpu
-            .as_mut()
-            .dispatch_state_mut()
-            .run_queue
-            .dequeue(thread)
-            .ok_or(TaskError::NotReady)?;
         let record = state.thread_record(thread)?;
         let mut sched = record.sched.lock();
+        let queued = cpu
+            .lock_run_queue()
+            .dequeue(thread)
+            .ok_or(TaskError::NotReady)?;
         sched.policy.effective_entity = queued.entity;
         if !sched.is_pi_boosted() {
             sched.policy.base_entity = queued.entity;
@@ -117,118 +109,6 @@ impl TaskSystem {
         drop(state);
         self.publish_owner_cpu_load_summary(cpu.as_mut());
         Ok(())
-    }
-
-    /// Drains a bounded batch of direct remote wakes on the owner CPU.
-    pub fn drain_remote_wakes(
-        &self,
-        mut cpu: Pin<&mut CpuLocal>,
-        now_ns: u64,
-    ) -> Result<RemoteWakeDrain, TaskError> {
-        self.ensure_owner_cpu_context(&cpu)?;
-        self.ensure_owner_cpu_online(&cpu)?;
-        let (drained, pending) = {
-            let remote = Arc::clone(cpu.remote());
-            let scratch = cpu.as_mut().drain_state_mut();
-            let limit = scratch.batch_limit();
-            let buffer = &mut scratch.remote_wake_buffer;
-            let batch = remote.remote_wake_inbox().drain(limit, buffer);
-            (batch.drained(), batch.pending())
-        };
-        #[cfg(feature = "qperf-metrics")]
-        crate::metrics::record_remote_wake_drain(drained);
-        let mut detached = [InboxMessage::EMPTY; crate::DEFAULT_BATCH_LIMIT];
-        detached[..drained].copy_from_slice(&cpu.drain_state().remote_wake_buffer[..drained]);
-        let mut messages =
-            DetachedOwnerMessageBatch::new(&detached[..drained], DetachedPayloadKind::RemoteWake);
-        while let Some(message) = messages.next() {
-            if message.payload() == 0 {
-                continue;
-            }
-            // SAFETY: ThreadWakeHandle::wake transfers one Arc strong count in
-            // every published non-zero payload. This owner drain consumes it
-            // exactly once after the intrusive node was detached.
-            let core = unsafe {
-                Arc::from_raw(ptr::with_exposed_provenance::<ThreadCore>(
-                    message.payload(),
-                ))
-            };
-            if core.id() != message.thread_id() {
-                continue;
-            }
-            self.consume_and_place_owner_wake(cpu.as_mut(), core, now_ns)?;
-        }
-        if pending {
-            cpu.request_scheduler_work();
-        }
-        Ok(RemoteWakeDrain { drained, pending })
-    }
-
-    /// Consumes one locally published task-context wake and refreshes the
-    /// owner CPU's complete scheduler deadline state.
-    ///
-    /// The caller must own `cpu` under task-context IRQ exclusion. Hard IRQ
-    /// and remote producers instead publish to the lock-free wake inbox and
-    /// let the owner consume it at an IRQ-return scheduler safe point.
-    pub(crate) fn wake_owner_thread_local(
-        &self,
-        mut cpu: Pin<&mut CpuLocal>,
-        core: Arc<ThreadCore>,
-        now_ns: u64,
-    ) -> Result<(), TaskError> {
-        if Self::consume_owner_task_wake(&core)? {
-            let _placement = self.place_consumed_owner_wake(cpu.as_mut(), core, now_ns)?;
-        }
-        Self::program_local_timer(cpu, now_ns)
-    }
-
-    fn consume_and_place_owner_wake(
-        &self,
-        cpu: Pin<&mut CpuLocal>,
-        core: Arc<ThreadCore>,
-        now_ns: u64,
-    ) -> Result<(), TaskError> {
-        if !Self::consume_owner_wake(&core)? {
-            return Ok(());
-        }
-        #[cfg(feature = "qperf-metrics")]
-        crate::metrics::record_remote_wake_activation();
-        let _placement = self.place_consumed_owner_wake(cpu, core, now_ns)?;
-        #[cfg(feature = "qperf-metrics")]
-        match _placement {
-            ConsumedWakePlacement::OwnerRunQueue => {
-                crate::metrics::record_remote_wake_owner_enqueue();
-            }
-            ConsumedWakePlacement::MigrationHandoff => {
-                crate::metrics::record_remote_wake_migration_handoff();
-            }
-        }
-        Ok(())
-    }
-
-    fn place_consumed_owner_wake(
-        &self,
-        mut cpu: Pin<&mut CpuLocal>,
-        core: Arc<ThreadCore>,
-        now_ns: u64,
-    ) -> Result<ConsumedWakePlacement, TaskError> {
-        let owner = cpu.owner();
-        let target = core.target_cpu().unwrap_or(owner);
-        if target == owner {
-            self.enqueue_owner_thread(cpu, core, now_ns, EnqueueReason::Wake)?;
-            return Ok(ConsumedWakePlacement::OwnerRunQueue);
-        }
-
-        // Affinity may change after a producer selected this CPU. The old
-        // owner consumes the lifecycle transition, then hands the ready thread
-        // to the latest target instead of placing it on an invalid runqueue.
-        Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
-        core.sched()
-            .lock()
-            .placement
-            .set_migration_target(Some(target))?;
-        self.publish_owner_migration(&core, target, owner, target)?;
-        Ok(ConsumedWakePlacement::MigrationHandoff)
     }
 
     /// Reconciles task metadata written by a remote affinity setter with the
@@ -292,13 +172,12 @@ impl TaskSystem {
                 return Ok(());
             }
             let detached = {
-                let dispatch = cpu.as_mut().dispatch_state_mut();
-                let current_fair = dispatch
+                let current_fair = cpu
+                    .dispatch_state()
                     .current_dispatch
                     .as_ref()
                     .and_then(|current| current.entity.fair());
-                dispatch
-                    .run_queue
+                cpu.lock_run_queue()
                     .detach_for_transfer(
                         core.id(),
                         current_fair,
@@ -370,7 +249,7 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
-    ) -> Result<RemoteWakeDrain, TaskError> {
+    ) -> Result<OwnerControlDrain, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
         let (drained, pending) = {
@@ -390,10 +269,7 @@ impl TaskSystem {
             .count();
         cpu.remote()
             .complete_incoming_migrations(completed_incoming_migrations);
-        let mut messages = DetachedOwnerMessageBatch::new(
-            &detached[..drained],
-            DetachedPayloadKind::SchedulerDelivery,
-        );
+        let mut messages = DetachedOwnerMessageBatch::new(&detached[..drained]);
         while let Some(message) = messages.next() {
             let operation = message.operation();
             if operation == InboxOperation::BalanceRequest {
@@ -451,9 +327,7 @@ impl TaskSystem {
             }
             if matches!(
                 operation,
-                InboxOperation::RemoteWake
-                    | InboxOperation::BalanceRequest
-                    | InboxOperation::Reclaim
+                InboxOperation::BalanceRequest | InboxOperation::Reclaim
             ) {
                 return Err(TaskError::InvalidConfiguration);
             }
@@ -496,6 +370,14 @@ impl TaskSystem {
                 }
                 let mut sched = core.sched().lock();
                 if message.generation() <= sched.pi.deadline_cbs_generation {
+                    if sched.placement.queued_cpu() == Some(owner) {
+                        Self::activate_owner_deadline_bandwidth(
+                            &core,
+                            &mut sched,
+                            cpu.as_mut(),
+                            owner,
+                        )?;
+                    }
                     Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
                 }
                 continue;
@@ -614,17 +496,12 @@ impl TaskSystem {
                 if cpu.dispatch_state().current_dispatch.is_some() {
                     cpu.as_mut().settle_current_dispatch(now_ns, 0)?;
                 } else {
-                    cpu.as_mut()
-                        .dispatch_state_mut()
-                        .run_queue
-                        .update_fair_virtual_time(None);
+                    cpu.lock_run_queue().update_fair_virtual_time(None);
                 }
                 let fair_placement =
                     Self::owner_fair_policy_placement(cpu.as_ref().get_ref(), &core);
                 let queued = cpu
-                    .as_mut()
-                    .dispatch_state_mut()
-                    .run_queue
+                    .lock_run_queue()
                     .dequeue(core.id())
                     .ok_or(TaskError::NotReady)?;
                 Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
@@ -701,32 +578,22 @@ impl TaskSystem {
         if pending {
             cpu.request_scheduler_work();
         }
-        Ok(RemoteWakeDrain { drained, pending })
+        Ok(OwnerControlDrain { drained, pending })
     }
 
     /// Drains one bounded batch from every inbox owned by `cpu`.
     ///
-    /// The inboxes, rather than `need_resched`, are the source of truth for
-    /// remote scheduler work. Forced scheduling operations call this before
-    /// claiming their sticky request so object-API users cannot accidentally
-    /// clear a wake, migration, or policy update without first making it
-    /// visible to the owner run queue. A bounded remainder is assigned a fresh
-    /// runtime doorbell before this safe point returns.
+    /// Owner-control inboxes, rather than `need_resched`, are the source of
+    /// truth for migration, policy, and deferred owner work. Direct wakeups
+    /// have already activated the target runqueue before this safe point. A
+    /// bounded owner-work remainder is assigned a fresh runtime doorbell before
+    /// this safe point returns.
     pub(super) fn drain_owner_work(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
-        let (wake_pending, policy_pending) = {
-            let remote = cpu.remote();
-            (
-                remote.remote_wake_inbox().has_pending(),
-                remote.owner_control_inbox().has_pending(),
-            )
-        };
-        if wake_pending {
-            self.drain_remote_wakes(cpu.as_mut(), now_ns)?;
-        }
+        let policy_pending = cpu.remote().owner_control_inbox().has_pending();
         if policy_pending {
             self.drain_policy_updates(cpu.as_mut(), now_ns)?;
         }
