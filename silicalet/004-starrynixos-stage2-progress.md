@@ -2594,6 +2594,321 @@ Task(91, "systemd-sysctl") exit with code: 256
 确定性红测；不得根据时间相邻日志直接修改 syscall。由于
 `STARRY_NIXOS_SYSTEM_PASSED` 尚未出现，T028 保持未完成。
 
+### 7.24 `systemd-sysctl` stderr payload 与退出状态分离（2026-08-02）
+
+为确认 ext4 60 字节 symlink 修复后的真实 `systemd-sysctl` 失败原因，在
+`sys_writev()` 已有的单次用户缓冲区复制之后临时记录任务名匹配
+`systemd-sysct` 的 stderr payload，并使用 Podman + `.ci-cache` 复用受检
+rootfs 运行：
+
+```text
+STARRY_NIXOS_REUSE_ROOTFS=1 \
+cargo xtask starry app qemu -t nixos --arch x86_64
+```
+
+完整日志：
+
+```text
+.ci-cache/tmp/starrynixos-systemd-sysctl-writev-after-symlink.log
+```
+
+真实运行中 `systemd-sysctl` 共输出 15 条 `writev(fd=2)` 诊断，涉及：
+
+```text
+kernel/core_pattern
+kernel/core_pipe_limit
+fs/suid_dumpable
+kernel/sysrq
+kernel/core_uses_pid
+net/ipv4/conf/default/rp_filter
+net/ipv4/conf/default/accept_source_route
+net/ipv4/conf/default/promote_secondaries
+fs/protected_hardlinks
+fs/protected_symlinks
+fs/protected_regular
+fs/protected_fifos
+vm/mmap_rnd_bits
+vm/mmap_rnd_compat_bits
+fs/inotify/max_user_instances
+```
+
+每条消息均为：
+
+```text
+Couldn't write ... ignoring: No such file or directory
+```
+
+最后一条 payload 是：
+
+```text
+Couldn't write '524288' to 'fs/inotify/max_user_instances', ignoring:
+No such file or directory
+```
+
+随后任务主动以退出码 1 结束：
+
+```text
+Task(91, "systemd-sysctl") exit with code: 256
+[FAILED] Failed to start Apply Kernel Variables.
+```
+
+因此之前“最后 78 字节 stderr 是新的非忽略错误”的假设不成立：用户可见
+stderr 全部明确标记为 `ignoring`，但内部返回值聚合仍保留了失败。当前不能
+任选一个缺失 sysctl 节点补实现，也不能把相邻 `keyctl` 日志当作根因。下一步
+应撤销临时 payload 追踪，核对固定 systemd 260.2 的 sysctl 配置解析和返回值
+聚合路径，找出哪类带忽略前缀的写入在 Linux 上仍能导致最终退出 1，并为该
+最小语义建立 Linux oracle 与确定性 Starry 红测。`STARRY_NIXOS_SYSTEM_PASSED`
+仍未出现，T028 保持未完成。
+
+固定 systemd v260.2 commit
+`f1d0952a125b96b7ab2f1ff29a87448ade8ac29b` 的实现确认：
+
+- `sysctl_write_or_warn()` 对非 strict 模式的缺失节点记录上述
+  `ignoring: ENOENT` 后返回 0；
+- `apply_all()` 只聚合负值；
+- `DEFINE_MAIN_FUNCTION(run)` 只把 `run()` 的负返回值映射为进程退出 1。
+
+随后在隔离 Podman 中运行镜像同版本的
+`systemd-minimal-260.2/lib/systemd/systemd-sysctl`，显式传入同一
+`50-coredump.conf`、`50-default.conf`、`55-nixos-aslr-entropy.conf` 和
+`60-nixos.conf`，Linux 结果为：
+
+```text
+SYSTEMD_SYSCTL_EXIT=0
+```
+
+这证明同一 systemd 版本和同一配置内容本身能够成功结束；Starry 的退出 1
+来自配置文件枚举/追踪/读取路径中保留的负结果，不能通过屏蔽 unit 或删减配置
+解决。现有 dispatcher trace 中所有配置内容读取的 `read(2)` 均成功并到达
+EOF；下一步继续解码该进程唯一一次普通 `write(2)` 及其 fd 目标，并检查配置
+枚举阶段是否存在未进入 stderr `writev(2)` 的错误通道。
+
+对普通 `write(2)` 的后续定向追踪确认，`systemd-sysctl` 只成功写入两个
+已实现的 procfs sysctl 节点：
+
+```text
+fd=3, path=/proc/sys/kernel/pid_max, payload="4194304\n"
+fd=3, path=/proc/sys/vm/max_map_count, payload="1048576\n"
+```
+
+完整日志：
+
+```text
+.ci-cache/tmp/starrynixos-systemd-sysctl-write-fd-trace.log
+```
+
+普通 `write(2)` 因而不是未捕获的错误日志通道。`60-nixos.conf` 中其余配置项
+既没有进入成功写入，也没有全部形成 `ignoring` 诊断；下一步需要核对实际
+rootfs 内四个配置文件的内容与哈希，并对照 systemd 的有序配置表、覆盖和
+过滤规则，确定这些键是在正常规则下被消除，还是 Starry 的配置读取/枚举语义
+导致了差异。上述追踪代码已经撤销，不进入提交。
+
+### 7.25 rootfs 配置同一性与 debug 扰动边界（2026-08-02）
+
+使用 Podman 中的 `debugfs` 只读导出正式 rootfs
+`c791e3cc6c0f4c4b4feaf09e2dd3f9212ff62af50c72d6c5c92a456c9b73c18e`
+内四个实际 sysctl 配置文件，并与宿主固定 Nix store 比较 SHA-256：
+
+```text
+07a4ab4381de93122ffe76ae5749949515d41b145ab50f169bf987f09a5acc77  50-coredump.conf
+5f836b672f2e83426b0fb2379379c454886d7b66865771a9d25707ed96fcc64f  50-default.conf
+fb3cadf6a7f2716555ff9e87a39e2df786c6da0494349ddf485d07c5dc720e36  55-nixos-aslr-entropy.conf
+e055c7f04e47f5c79cd642f80b3a6b22d87ba3566361a0550db53d3c6a0944ba  60-nixos.conf
+```
+
+四项均逐字节一致，排除发布 rootfs 的配置内容漂移。结合固定 systemd
+`apply_all()` 的插入顺序，`fs.inotify.max_user_instances` 之后本应继续处理
+`60-nixos.conf` 新增的 `max_user_watches`、`kptr_restrict`、`pid_max` 等键；
+现有日志没有完整反映这一顺序，因此缺失日志不能解释为配置不存在。
+
+为取得 systemd 内部 debug 信息，曾临时为 `systemd-sysctl.service` 设置
+`SYSTEMD_LOG_LEVEL=debug` 和 `SYSTEMD_LOG_TARGET=console`，宿主重建临时
+artifact：
+
+```text
+system=/nix/store/3q5pyjj1h0f4qq7as09246i370rq7f3m-nixos-system-starrynixos-starry-nixos-stage2
+image_sha256=05366cb2267f1ab1de9cabf74be8e5f292743c69756a58b7417f3dba5c582ca6
+```
+
+构建和运行日志：
+
+```text
+.ci-cache/tmp/starrynixos-systemd-sysctl-debug-rootfs-rebuild.log
+.ci-cache/tmp/starrynixos-systemd-sysctl-debug-run.log
+```
+
+该运行没有输出预期的 systemd debug 行，反而使 `systemd-sysctl` 持续到
+90 秒 unit 超时后被 `SIGTERM` 终止（退出状态 15）。由于临时环境变量和
+artifact 布局已经改变真实 workload 的时序/终态，这次运行只能证明该诊断
+方式有扰动，不能作为 Linux ABI 修复依据。临时 unit 环境已经撤销；正式
+rootfs 必须重新发布后才能继续回归。下一轮定位应使用不会改变 unit 日志目标
+的窄化证据，例如确认 `exit_group(1)` 前最后一个由 systemd 聚合的负返回
+来源，或者构造直接运行同一二进制和单一配置输入的确定性 Starry 回归。
+
+随后尝试在正式镜像的临时副本中直接替换 `/init`，以绕开 systemd manager
+和 credential setup，仅执行同一 `systemd-sysctl` 二进制及四个显式配置
+文件。axbuild 对 managed rootfs 的路径约束已按
+`rootfs-*.img/rootfs-*.img` 形式满足，但两种 debugfs 注入方式都在目标程序
+执行前失败：
+
+1. 直接删除并重建根目录 `/init`；
+2. 保留原 `/init` symlink，只删除并重建其 Nix store target。
+
+Starry 均在 `entry.rs` 加载用户入口时报告：
+
+```text
+Failed to load user app: Entity not found
+```
+
+Linux `debugfs stat` 能看到对应 inode 和 0755 mode，但这类事后新建目录项不能
+作为当前 rsext4 上可靠的测试镜像构造方式。因此该实验没有得到
+`systemd-sysctl` 退出状态，不构成红测或实现依据。QEMU 配置已恢复到正式
+rootfs、正式 success/fail regex 和 600 秒超时；临时镜像不进入提交。若继续
+做直接执行回归，应在 Nix 构建阶段生成入口文件，不能再用 debugfs 事后替换。
+
+### 7.26 构建期 direct-rootfs 将失败收敛到 proc sysctl 写入（2026-08-03）
+
+为避免 debugfs 事后新建入口导致的 rsext4 加载扰动，在锁定 flake 的构建阶段
+临时增加专用 PID 1 和 ext4 输出。该入口直接运行正式闭包中的 systemd 260.2
+`systemd-sysctl`，并显式传入与正式 rootfs 逐字节一致的四个配置文件。重新
+实现的 toplevel 仍为：
+
+```text
+/nix/store/9qmm1ap5zxbsc3qmkrmphpvlwy9f8a88-nixos-system-starrynixos-starry-nixos-stage2
+```
+
+direct image 通过容器内 `e2fsck -fn`，其 `/init` 在 Nix 构建时创建为：
+
+```text
+/nix/store/cr34c4cn314b4idjg1k3ayiic2h4rwg4-starry-nixos-sysctl-direct-init/init
+```
+
+使用 Podman + `.ci-cache` 和 managed-rootfs manifest 运行：
+
+```text
+STARRY_NIXOS_REUSE_ROOTFS=1 \
+cargo xtask starry app qemu -t nixos --arch x86_64
+```
+
+完整日志：
+
+```text
+.ci-cache/tmp/starrynixos-systemd-sysctl-direct-run.log
+```
+
+该 direct workload 不经过 systemd manager、unit credential 或 service 启动
+环境，仍稳定得到：
+
+```text
+Couldn't write '4194304' to 'kernel/pid_max': Bad file descriptor
+Couldn't write '1048576' to 'vm/max_map_count': Bad file descriptor
+STARRY_NIXOS_SYSCTL_DIRECT_EXIT=1
+STARRY_NIXOS_SYSCTL_DIRECT_FAILED
+```
+
+其余缺失 proc sysctl 节点继续被 systemd 明确标记为 `ignoring: ENOENT`。因此
+T028 的当前阻塞不在 systemd manager/unit 环境，而在
+`/proc/sys/kernel/pid_max` 与 `/proc/sys/vm/max_map_count` 的可写文件描述符
+语义：路径打开成功，但后续 `write(2)` 返回 `EBADF`。下一步必须先建立同时
+覆盖 `open(O_WRONLY)`、`open(O_RDWR)`、`write(2)`、offset 和回读结果的 Linux
+oracle/Starry 确定性回归，确认是哪一层错误地丢失写权限或拒绝已打开 fd，再只
+修复对应 procfs/VFS 子系统。临时 flake 输出和 QEMU matcher 已撤销，direct
+image 仅保留为 `.gitignore` 覆盖的诊断产物，不进入提交。
+
+`STARRY_NIXOS_SYSTEM_PASSED` 尚未出现，T028 保持未完成。
+
+### 7.27 proc sysctl 可写语义红绿验证与正式 workload 越界（2026-08-03）
+
+围绕 direct-rootfs 已定位的两个节点新增确定性回归：
+
+```text
+test-suit/starryos/qemu/system/bugfix-proc-sysctl-writable-limits/
+```
+
+测试对 `/proc/sys/kernel/pid_max` 和 `/proc/sys/vm/max_map_count` 分别覆盖：
+
+- `openat(O_WRONLY | O_CLOEXEC)`；
+- `openat(O_RDWR | O_CLOEXEC)`；
+- `lseek(fd, 0, SEEK_SET)`；
+- 通过两种可写 fd 写回原值；
+- 重新打开节点并核对写后回读。
+
+Linux oracle 对 `kernel.pid_max` 的 7 项断言全部通过。rootless Podman
+缺少修改宿主 `vm.max_map_count` 所需的 capability，该节点在 open 阶段返回
+`EACCES`，因此不能把该容器环境当作第二个节点的写入 oracle。测试始终写回
+读取到的原值，不主动改变宿主 sysctl 配置。
+
+修复前 Starry 结果为：
+
+```text
+=== Results: 10 passed, 4 failed ===
+```
+
+四个失败均发生在已成功打开 fd 后的 `write(2)`，errno 为
+`EBADF`。完整红测日志：
+
+```text
+.ci-cache/tmp/bugfix-proc-sysctl-writable-limits-red.log
+```
+
+修复将两个只读 `SimpleFile` 改为可写整数 proc sysctl：
+
+- `pid_max` 接受 `301..=4194304`；
+- `max_map_count` 接受 `1..=i32::MAX`；
+- 非法 UTF-8、空白以外的非整数和越界值返回 `EINVAL`；
+- 合法写入更新节点的回读状态。
+
+当前实现只兑现 systemd 所需的 proc 文件写入与回读语义；PID 分配器和 VMA
+分配器尚未消费这两个 atomic，因此不能宣称对应资源限制已经具有完整执行
+语义。
+
+修复后同一 Starry 回归结果为：
+
+```text
+=== Results: 14 passed, 0 failed ===
+STARRY_PROC_SYSCTL_WRITABLE_LIMITS_PASSED
+```
+
+完整绿测日志：
+
+```text
+.ci-cache/tmp/bugfix-proc-sysctl-writable-limits-green.log
+```
+
+Podman + `.ci-cache` 中的 `cargo fmt --all` 通过，
+`cargo xtask clippy --package starry-kernel` 的 25 项检查全部通过。clippy
+日志：
+
+```text
+.ci-cache/tmp/starry-kernel-proc-sysctl-clippy.log
+```
+
+随后重新运行正式 rootfs：
+
+```text
+system=/nix/store/9qmm1ap5zxbsc3qmkrmphpvlwy9f8a88-nixos-system-starrynixos-starry-nixos-stage2
+image_sha256=c791e3cc6c0f4c4b4feaf09e2dd3f9212ff62af50c72d6c5c92a456c9b73c18e
+systemd_version=260.2
+```
+
+完整日志：
+
+```text
+.ci-cache/tmp/starrynixos-proc-sysctl-writable-limits-run.log
+```
+
+正式 workload 已越过原 `systemd-sysctl` 阻塞并继续启动后续 units。当前最先
+出现的可操作失败变为：
+
+```text
+systemd-udevd-kernel.socket:
+Failed to create listening socket (kobject-uevent 1): Protocol not available
+```
+
+随后另有 `/run/wrappers` mount 失败，但在完成 uevent socket 的 Linux oracle
+和确定性 Starry 红测前，不能判断它是否为独立根因。由于
+`STARRY_NIXOS_SYSTEM_PASSED` 仍未出现，T028 保持未完成。
+
 ## 8. 关联文档
 
 - `silicalet/TODO.md`：总体路线与长期门槛；

@@ -47,6 +47,8 @@ use crate::{
 /// Global IRQ counter incremented on every timer tick.
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
+static PID_MAX: AtomicUsize = AtomicUsize::new(32768);
+static VM_MAX_MAP_COUNT: AtomicUsize = AtomicUsize::new(65530);
 const PROCFS_INIT_PID: Pid = 1;
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
@@ -1755,6 +1757,41 @@ fn mq_sysctl_file(
     )
 }
 
+/// Builds a root-configurable integer proc sysctl.
+///
+/// Linux's `proc_dointvec_minmax` accepts a decimal value with optional
+/// surrounding whitespace, rejects values outside the registered range, and
+/// exposes the updated value to subsequent reads. The owning subsystem can
+/// consume the same atomic as its enforcement boundary is implemented.
+fn usize_sysctl_file(
+    fs: &Arc<SimpleFs>,
+    cell: &'static AtomicUsize,
+    min: usize,
+    max: usize,
+) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |operation| match operation {
+            SimpleFileOperation::Read => Ok(Some(
+                format!("{}\n", cell.load(Ordering::Relaxed)).into_bytes(),
+            )),
+            SimpleFileOperation::Write(data) => {
+                let text = core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                let value: usize = trimmed.parse().map_err(|_| VfsError::InvalidInput)?;
+                if value < min || value > max {
+                    return Err(VfsError::InvalidInput);
+                }
+                cell.store(value, Ordering::Relaxed);
+                Ok(None)
+            }
+        }),
+    )
+}
+
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -1874,10 +1911,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add(
-                "pid_max",
-                SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
-            );
+            kernel.add("pid_max", usize_sysctl_file(&fs, &PID_MAX, 301, 4_194_304));
             kernel.add(
                 "osrelease",
                 SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
@@ -1941,7 +1975,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             vm.add(
                 "max_map_count",
-                SimpleFile::new_regular(fs.clone(), || Ok("65530\n")),
+                usize_sysctl_file(&fs, &VM_MAX_MAP_COUNT, 1, i32::MAX as usize),
             );
             SimpleDir::new_maker(fs.clone(), Arc::new(vm))
         });
