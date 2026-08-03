@@ -1434,6 +1434,7 @@ def parse_restart_recovery(
         ),
     )
     replayed_event_prefixes = {
+        RTOS_SAFE_FALLBACK_PREFIX,
         RTOS_STALE_REPLAY_PREFIX,
         RTOS_RECOVERY_PREFIX,
     }

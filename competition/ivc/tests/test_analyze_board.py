@@ -811,6 +811,44 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
 
         self.assertTrue(result["restart_recovery"]["recovered"])
 
+    def test_restart_profile_orders_replayed_safe_fallback_from_its_first_prefix(
+        self,
+    ) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        safe_fallback = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-SAFE-FALLBACK "
+            "reason=controller-timeout actuator_permille=0 last_sequence=20 "
+            "session=286331153 safe_fallbacks=1"
+        )
+        truncated_safe_fallback = safe_fallback.rsplit(
+            " safe_fallbacks=", maxsplit=1
+        )[0]
+        recovery = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-RECOVERY "
+            "session=572662306 seq=1 from=controller-timeout mode=Neural "
+            "actuator_permille=500 recoveries=1"
+        )
+        log = self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw).replace(
+            safe_fallback,
+            truncated_safe_fallback,
+            1,
+        ).replace(
+            recovery,
+            f"{recovery}\n{safe_fallback}",
+            1,
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            profile="restart",
+            pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+            expected_pre_reset_count=20,
+        )
+
+        self.assertTrue(result["restart_recovery"]["safe_fallback_observed"])
+
     def test_restart_profile_does_not_let_unterminated_guest_prefix_consume_host_records(
         self,
     ) -> None:

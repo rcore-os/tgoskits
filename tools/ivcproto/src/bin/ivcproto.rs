@@ -37,6 +37,9 @@ const ERROR_FAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const ERROR_FAULT_RESULT_SETTLE: Duration = Duration::from_millis(750);
 const ERROR_FAULT_RESULT_RECORD_COPIES: usize = 3;
 const ERROR_FAULT_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(25);
+const RESTART_RESULT_SETTLE: Duration = Duration::from_secs(2);
+const RESTART_RESULT_RECORD_COPIES: usize = 3;
+const RESTART_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(100);
 const ERROR_EVIDENCE_RECORD_MAX_BYTES: usize = 96;
 const ERROR_FAULT_SEQUENCE_BASE: u32 = 1_000;
 const RESTART_PREVIOUS_FINAL_SEQUENCE: u32 = 20;
@@ -717,6 +720,19 @@ fn replay_verified_error_fault_records() -> Result<(), String> {
     Ok(())
 }
 
+fn report_restart_records(records: &[&str]) -> Result<(), String> {
+    for _ in 0..RESTART_RESULT_RECORD_COPIES {
+        for record in records {
+            println!("{record}");
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush restart evidence: {error}"))?;
+            std::thread::sleep(RESTART_RESULT_RECORD_PAUSE);
+        }
+    }
+    Ok(())
+}
+
 fn build_restart_duplicate_datagram(
     session_id: u32,
     command: ControlCommand,
@@ -1385,16 +1401,10 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         let duplicate_record = checksummed_console_record("IVC-RESTART-D ", &duplicate_body);
         let transport_record = checksummed_console_record("IVC-RESTART-C ", &transport_body);
         let result_record = checksummed_console_record("IVC-RESTART-RESULT ", &result_body);
-        std::thread::sleep(ERROR_FAULT_RESULT_SETTLE);
-        for _ in 0..ERROR_FAULT_RESULT_RECORD_COPIES {
-            println!("{duplicate_record}");
-            println!("{transport_record}");
-            println!("{result_record}");
-            std::io::stdout()
-                .flush()
-                .map_err(|error| format!("flush restart evidence: {error}"))?;
-            std::thread::sleep(ERROR_FAULT_RESULT_RECORD_PAUSE);
-        }
+        // The RTOS guest shuts down on the same physical UART. Wait for that
+        // burst to drain, then pace every restart record independently.
+        std::thread::sleep(RESTART_RESULT_SETTLE);
+        report_restart_records(&[&duplicate_record, &transport_record, &result_record])?;
     }
     Ok(())
 }
@@ -1889,6 +1899,18 @@ mod tests {
         assert!(
             ERROR_FAULT_RESULT_RECORD_PAUSE >= Duration::from_millis(15),
             "error terminal records need enough time to drain at 1.5 Mbaud"
+        );
+        assert!(
+            RESTART_RESULT_SETTLE >= Duration::from_secs(2),
+            "restart terminal evidence must outlive the RTOS shutdown burst"
+        );
+        assert!(
+            RESTART_RESULT_RECORD_COPIES >= 3,
+            "restart terminal evidence needs three copies on the multiplexed UART"
+        );
+        assert!(
+            RESTART_RESULT_RECORD_PAUSE >= Duration::from_millis(100),
+            "restart terminal records need independent UART drain windows"
         );
     }
 

@@ -15,6 +15,7 @@ VIRTIO_NET_DRIVER = REPOSITORY_ROOT / "drivers/ax-driver/src/virtio/net.rs"
 STARRY_AUTORUN = REPOSITORY_ROOT / "competition/ivc/starry/autorun.sh"
 STARRY_BUILD = REPOSITORY_ROOT / "competition/ivc/starry/build.sh"
 STARRY_ROOTFS_BUILD = REPOSITORY_ROOT / "competition/ivc/starry/build-rootfs.sh"
+IVCPROTO_CONTROLLER = REPOSITORY_ROOT / "tools/ivcproto/src/bin/ivcproto.rs"
 ORANGEPI_STARRY_CONFIGS = (
     REPOSITORY_ROOT / "competition/ivc/config/orangepi-5-plus-starry-smp2.toml",
     REPOSITORY_ROOT
@@ -169,6 +170,22 @@ class StarryGuestContractTests(unittest.TestCase):
         )
 
         self.assertLessEqual(len(record.encode("ascii")), 160)
+
+    def test_restart_controller_waits_for_shutdown_and_paces_terminal_records(
+        self,
+    ) -> None:
+        source = IVCPROTO_CONTROLLER.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "const RESTART_RESULT_SETTLE: Duration = Duration::from_secs(2);",
+            source,
+        )
+        self.assertIn(
+            "const RESTART_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(100);",
+            source,
+        )
+        self.assertIn("std::thread::sleep(RESTART_RESULT_SETTLE);", source)
+        self.assertIn("std::thread::sleep(RESTART_RESULT_RECORD_PAUSE);", source)
 
     def test_virtio_net_driver_registers_an_fdt_mmio_probe(self) -> None:
         production_source = VIRTIO_NET_DRIVER.read_text(encoding="utf-8").split(

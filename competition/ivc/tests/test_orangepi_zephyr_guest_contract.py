@@ -45,6 +45,19 @@ class OrangePiZephyrGuestContractTests(unittest.TestCase):
         self.assertIn("IVC-RTOS-RESTART-READY commands=%u", source)
         self.assertIn("report_restart_ready();", source)
 
+    def test_restart_terminal_evidence_replays_safe_fallback_with_pacing(self) -> None:
+        source = ZEPHYR_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("restart_safe_session", source)
+        self.assertIn("restart_safe_sequence", source)
+        self.assertIn("restart_safe_actuator_permille", source)
+        self.assertIn("report_safe_fallback_evidence(server);", source)
+        self.assertRegex(
+            source,
+            r"(?m)^#define IVC_RESTART_RECORD_PAUSE_MS 50$",
+        )
+        self.assertIn("k_sleep(K_MSEC(IVC_RESTART_RECORD_PAUSE_MS));", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,7 @@
 #define IVC_READY_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_PAUSE_MS 10
+#define IVC_RESTART_RECORD_PAUSE_MS 50
 
 static const uint8_t expected_mac[IVC_ETHERNET_ADDRESS_LENGTH] = {
 	0x52, 0x54, 0x00, 0x00, 0x00, 0x02,
@@ -58,11 +59,15 @@ struct ivc_server {
 	uint32_t restart_old_session;
 	uint32_t restart_old_sequence;
 	uint32_t restart_new_session;
+	uint32_t restart_safe_session;
+	uint32_t restart_safe_sequence;
 	uint32_t restart_recovery_sequence;
 	enum ivc_control_mode restart_recovery_mode;
+	uint16_t restart_safe_actuator_permille;
 	uint16_t restart_recovery_actuator_permille;
 	struct ivc_error_evidence error_evidence[IVC_ERROR_EVIDENCE_CAPACITY];
 	uint32_t error_evidence_count;
+	bool restart_safe_observed;
 	bool restart_stale_observed;
 	bool restart_recovery_observed;
 	bool error_evidence_replayed;
@@ -291,13 +296,25 @@ static void replay_ready_if_needed(struct ivc_server *server)
 	}
 }
 
+static void report_safe_fallback_evidence(const struct ivc_server *server)
+{
+	printk("IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=%u "
+	       "last_sequence=%u session=%u safe_fallbacks=%llu\n",
+	       (unsigned int)server->restart_safe_actuator_permille,
+	       server->restart_safe_sequence, server->restart_safe_session,
+	       server->safe_fallbacks);
+}
+
 static void report_restart_evidence(const struct ivc_server *server)
 {
+	report_safe_fallback_evidence(server);
+	k_sleep(K_MSEC(IVC_RESTART_RECORD_PAUSE_MS));
 	printk("IVC-RTOS-STALE-REPLAY old_session=%u old_sequence=%u new_session=%u "
 	       "stale_status_sent=%llu stale_acks_sent=%llu\n",
 	       server->restart_old_session, server->restart_old_sequence,
 	       server->restart_new_session, server->stale_status_sent,
 	       server->stale_acknowledgements_sent);
+	k_sleep(K_MSEC(IVC_RESTART_RECORD_PAUSE_MS));
 	printk("IVC-RTOS-RECOVERY session=%u seq=%u from=controller-timeout "
 	       "mode=%s actuator_permille=%u recoveries=%llu\n",
 	       server->restart_new_session, server->restart_recovery_sequence,
@@ -371,8 +388,8 @@ static void report_result_if_complete(struct ivc_server *server)
 	    server->receive_window.metrics.session_rejections != expected_session_rejections ||
 	    server->safe_fallbacks != expected_safe_fallbacks ||
 	    server->recoveries != expected_safe_fallbacks || server->stale_status_sent != 1U ||
-	    server->stale_acknowledgements_sent != 1U || !server->restart_stale_observed ||
-	    !server->restart_recovery_observed) {
+	    server->stale_acknowledgements_sent != 1U || !server->restart_safe_observed ||
+	    !server->restart_stale_observed || !server->restart_recovery_observed) {
 		return;
 	}
 #elif CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
@@ -638,11 +655,11 @@ static void check_safe_timeout(struct ivc_server *server)
 
 	if (result == IVC_TIMEOUT_ENTERED_SAFE_STATE) {
 		++server->safe_fallbacks;
-		printk("IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=%u "
-		       "last_sequence=%u session=%u safe_fallbacks=%llu\n",
-		       (unsigned int)server->endpoint.actuator_permille,
-		       server->endpoint.last_sequence, server->receive_window.session_id,
-		       server->safe_fallbacks);
+		server->restart_safe_session = server->receive_window.session_id;
+		server->restart_safe_sequence = server->endpoint.last_sequence;
+		server->restart_safe_actuator_permille = server->endpoint.actuator_permille;
+		server->restart_safe_observed = true;
+		report_safe_fallback_evidence(server);
 	} else if (result == IVC_TIMEOUT_CLOCK_MOVED_BACKWARD) {
 		++server->protocol_errors;
 		printk("IVC-RTOS-ERROR seq=%u code=%u reason=clock-moved-backward\n",
@@ -691,10 +708,14 @@ int main(void)
 	server.restart_old_session = 0U;
 	server.restart_old_sequence = 0U;
 	server.restart_new_session = 0U;
+	server.restart_safe_session = 0U;
+	server.restart_safe_sequence = 0U;
 	server.restart_recovery_sequence = 0U;
 	server.restart_recovery_mode = IVC_MODE_SAFE;
+	server.restart_safe_actuator_permille = 0U;
 	server.restart_recovery_actuator_permille = 0U;
 	server.error_evidence_count = 0U;
+	server.restart_safe_observed = false;
 	server.restart_stale_observed = false;
 	server.restart_recovery_observed = false;
 	server.error_evidence_replayed = false;
