@@ -211,7 +211,9 @@ fn read_symlink_target<B: BlockDevice>(
         return Ok(Vec::new());
     }
 
-    if size <= 60 {
+    // Fast symlinks consume no data blocks. Length alone is insufficient:
+    // e2fsprogs stores a 60-byte target in a regular data block.
+    if size <= 60 && inode.blocks_count() == 0 {
         let mut raw = [0u8; 60];
         for (i, word) in inode.i_block.iter().take(15).enumerate() {
             raw[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
