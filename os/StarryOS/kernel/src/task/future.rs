@@ -189,7 +189,7 @@ impl IrqNotify {
             IrqRegisterResult::Registered(token)
             | IrqRegisterResult::NotificationInFlight(token) => {
                 self.park.wait_until(|| !token.is_attached());
-                scheduler::quiesce_irq_wait(&self.event, token)
+                scheduler::quiesce_irq_wait(token)
                     .unwrap_or_else(|error| panic!("Starry IRQ waiter could not quiesce: {error}"));
             }
             IrqRegisterResult::Occupied => {

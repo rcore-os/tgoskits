@@ -330,7 +330,6 @@ impl EventDev {
         loop {
             let registration = self.irq_notify.register(&waiter.registration);
             let completed = complete_irq_service_cycle(
-                &self.irq_notify,
                 registration,
                 |token| self.irq_service_park.wait_until(|| !token.is_attached()),
                 || self.drain_irq_events(),

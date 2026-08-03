@@ -12,8 +12,8 @@ use ax_kernel_guard::IrqSave;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
-    CpuId, CpuSet, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult, IrqUnregisterResult,
-    IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, RtPriority, SchedulePolicy,
+    CpuId, CpuSet, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult, IrqWaitCell,
+    IrqWaitDrain, IrqWaitRegistration, IrqWaitToken, Nice, RtPriority, SchedulePolicy,
     SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWorkDisposition, SwitchReason,
     TaskError, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadState,
     ThreadWakeHandle, WaitQueue, WakeResult, cpu_busy_runtime_ns, current_cpu_needs_resched,

@@ -271,7 +271,7 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
                 .wait_timeout_until(Duration::from_micros(timeout_us), || {
                     !token.is_attached() || hw.irq_pending()
                 });
-            scheduler::quiesce_irq_wait(&TPU_IRQ_NOTIFY, token)
+            scheduler::quiesce_irq_wait(token)
                 .unwrap_or_else(|error| panic!("TPU IRQ waiter could not quiesce: {error}"));
             hw.irq_pending()
         }

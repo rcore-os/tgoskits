@@ -106,7 +106,7 @@ impl RuntimeIrqBridge {
                 // an event coalesced before registration releases it
                 // synchronously without leaving a stale self-wake behind.
                 self.park.wait_until(|| !token.is_attached());
-                quiesce_irq_wait(&self.doorbell, token)
+                quiesce_irq_wait(token)
                     .unwrap_or_else(|error| panic!("serial IRQ waiter could not quiesce: {error}"));
             }
             IrqRegisterResult::Occupied => {
