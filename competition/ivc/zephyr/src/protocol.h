@@ -93,6 +93,11 @@ struct ivc_frame_view {
 	const uint8_t *payload;
 };
 
+struct ivc_decode_rejection {
+	struct ivc_header request;
+	enum ivc_error_code response_error;
+};
+
 struct ivc_control_command {
 	enum ivc_control_operation operation;
 	enum ivc_control_mode mode;
@@ -129,6 +134,10 @@ bool ivc_encode_frame(const struct ivc_header *header, const uint8_t *payload,
 
 enum ivc_decode_result ivc_decode_frame(const uint8_t *frame, size_t frame_length,
 					struct ivc_frame_view *view);
+
+bool ivc_decode_rejection_context(const uint8_t *frame, size_t frame_length,
+				  enum ivc_decode_result decode_result,
+				  struct ivc_decode_rejection *rejection);
 
 const char *ivc_decode_result_name(enum ivc_decode_result result);
 

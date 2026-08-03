@@ -9,7 +9,9 @@ use std::{
 };
 
 use ivcproto::{
-    control::{AckPayload, ControlCommand, ErrorReport, StatusReport},
+    control::{
+        AckPayload, ControlCommand, ControlMode, ControlOperation, ErrorReport, StatusReport,
+    },
     controller_csv::{ControllerSample, write_controller_samples},
     endpoint::{ControlEndpoint, EndpointConfig},
     neural::{
@@ -20,8 +22,8 @@ use ivcproto::{
         AckResult, Delivery, ReceiveWindow, ReliabilityConfig, RetryAction, StopAndWaitSender,
     },
     wire::{
-        ErrorCode, FrameFlags, HEADER_LEN, Header, MAX_PAYLOAD_LEN, MessageType, decode_frame,
-        encode_frame,
+        ErrorCode, FrameFlags, HEADER_LEN, Header, MAX_PAYLOAD_LEN, MessageType, VERSION,
+        decode_frame, encode_frame,
     },
 };
 
@@ -30,10 +32,59 @@ const BOARD_CONSOLE_RECORD_MAX_BYTES: usize = 160;
 const BOARD_CONSOLE_RECORD_COPIES: usize = 2;
 const BOARD_CONSOLE_RECORD_PAUSE: Duration = Duration::from_millis(10);
 const BOARD_CONSOLE_SUMMARY_SETTLE: Duration = Duration::from_millis(250);
+const ERROR_FAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+const ERROR_FAULT_SEQUENCE_BASE: u32 = 1_000;
+const VERSION_OFFSET: usize = 4;
+const PAYLOAD_LENGTH_OFFSET: usize = 24;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InferenceBackend {
     Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ControllerFaultProfile {
+    #[default]
+    None,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ErrorFaultKind {
+    UnsupportedVersion,
+    LengthMismatch,
+    ChecksumMismatch,
+    UnexpectedMessageType,
+    InvalidSessionTransition,
+}
+
+impl ErrorFaultKind {
+    const ALL: [Self; 5] = [
+        Self::UnsupportedVersion,
+        Self::LengthMismatch,
+        Self::ChecksumMismatch,
+        Self::UnexpectedMessageType,
+        Self::InvalidSessionTransition,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::UnsupportedVersion => "unsupported-version",
+            Self::LengthMismatch => "length-mismatch",
+            Self::ChecksumMismatch => "checksum-mismatch",
+            Self::UnexpectedMessageType => "unexpected-message-type",
+            Self::InvalidSessionTransition => "invalid-session-transition",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ErrorFaultProbe {
+    kind: ErrorFaultKind,
+    sequence: u32,
+    offending_type: MessageType,
+    expected_error: ErrorCode,
+    datagram: Vec<u8>,
 }
 
 impl InferenceBackend {
@@ -53,6 +104,7 @@ struct ControllerArguments {
     session_id: Option<u32>,
     backend: InferenceBackend,
     raw_csv: Option<PathBuf>,
+    fault_profile: ControllerFaultProfile,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -474,6 +526,148 @@ fn run_rtos_sim(bind: &str, expected: u32, drop_every: u32) -> Result<(), String
     Ok(())
 }
 
+fn build_error_fault_probe(
+    kind: ErrorFaultKind,
+    session_id: u32,
+    sequence: u32,
+    timestamp_us: u64,
+) -> Result<ErrorFaultProbe, String> {
+    let command = ControlCommand {
+        operation: ControlOperation::SetActuator,
+        mode: ControlMode::Neural,
+        actuator_permille: 0,
+        setpoint_milli_c: 45_000,
+        sample_id: sequence,
+    };
+    let control_payload = command.encode().map_err(|error| error.to_string())?;
+    let offending_type = if kind == ErrorFaultKind::UnexpectedMessageType {
+        MessageType::Status
+    } else {
+        MessageType::Control
+    };
+    let probe_session_id = if kind == ErrorFaultKind::InvalidSessionTransition {
+        0
+    } else {
+        session_id
+    };
+    let header = Header::new(offending_type, probe_session_id, sequence, timestamp_us);
+    let payload = if offending_type == MessageType::Control {
+        control_payload.as_slice()
+    } else {
+        &[]
+    };
+    let mut buffer = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
+    let length = encode_frame(header, payload, &mut buffer).map_err(|error| error.to_string())?;
+    let mut datagram = buffer[..length].to_vec();
+    let expected_error = match kind {
+        ErrorFaultKind::UnsupportedVersion => {
+            datagram[VERSION_OFFSET] = VERSION.wrapping_add(1);
+            ErrorCode::UnsupportedVersion
+        }
+        ErrorFaultKind::LengthMismatch => {
+            let declared = u16::try_from(payload.len() + 1)
+                .map_err(|_| "fault payload length exceeds u16".to_owned())?;
+            datagram[PAYLOAD_LENGTH_OFFSET..PAYLOAD_LENGTH_OFFSET + 2]
+                .copy_from_slice(&declared.to_le_bytes());
+            ErrorCode::MalformedFrame
+        }
+        ErrorFaultKind::ChecksumMismatch => {
+            let last = datagram
+                .last_mut()
+                .ok_or_else(|| "fault datagram is unexpectedly empty".to_owned())?;
+            *last ^= 1;
+            ErrorCode::ChecksumMismatch
+        }
+        ErrorFaultKind::UnexpectedMessageType => ErrorCode::InvalidControl,
+        ErrorFaultKind::InvalidSessionTransition => ErrorCode::SequenceOutsideWindow,
+    };
+    Ok(ErrorFaultProbe {
+        kind,
+        sequence,
+        offending_type,
+        expected_error,
+        datagram,
+    })
+}
+
+fn receive_error_fault_response(
+    socket: &UdpSocket,
+    probe: &ErrorFaultProbe,
+) -> Result<ErrorCode, String> {
+    let started = Instant::now();
+    loop {
+        let mut response = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
+        let received = match socket.recv(&mut response) {
+            Ok(received) => received,
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && started.elapsed() < ERROR_FAULT_RESPONSE_TIMEOUT =>
+            {
+                continue;
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err(format!(
+                    "timed out waiting for {} ERROR response",
+                    probe.kind.name()
+                ));
+            }
+            Err(error) => return Err(format!("receive fault response: {error}")),
+        };
+        let frame = decode_frame(&response[..received])
+            .map_err(|error| format!("decode {} ERROR response: {error}", probe.kind.name()))?;
+        if frame.header.message_type != MessageType::Error
+            || frame.header.sequence != probe.sequence
+        {
+            return Err(format!(
+                "unexpected response while waiting for {} ERROR",
+                probe.kind.name()
+            ));
+        }
+        let report = ErrorReport::decode(frame.payload).map_err(|error| error.to_string())?;
+        if frame.header.error != probe.expected_error
+            || report.offending_type != probe.offending_type
+            || report.offending_sequence != probe.sequence
+        {
+            return Err(format!(
+                "{} ERROR response does not match the injected frame",
+                probe.kind.name()
+            ));
+        }
+        return Ok(frame.header.error);
+    }
+}
+
+fn run_error_fault_probes(
+    socket: &UdpSocket,
+    session_id: u32,
+    clock: Instant,
+) -> Result<u32, String> {
+    let mut errors_received = 0u32;
+    for (index, kind) in ErrorFaultKind::ALL.into_iter().enumerate() {
+        let sequence = ERROR_FAULT_SEQUENCE_BASE + index as u32 + 1;
+        let probe = build_error_fault_probe(kind, session_id, sequence, elapsed_us(clock))?;
+        socket
+            .send(&probe.datagram)
+            .map_err(|error| format!("send {} fault probe: {error}", kind.name()))?;
+        let observed_error = receive_error_fault_response(socket, &probe)?;
+        errors_received += 1;
+        for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
+            println!(
+                "IVC-CONTROLLER-FAULT kind={} seq={} expected_code={} observed_code={}",
+                kind.name(),
+                sequence,
+                probe.expected_error as u16,
+                observed_error as u16
+            );
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush fault evidence: {error}"))?;
+            std::thread::sleep(BOARD_CONSOLE_RECORD_PAUSE);
+        }
+    }
+    Ok(errors_received)
+}
+
 fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     let ControllerArguments {
         peer,
@@ -483,6 +677,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         session_id,
         backend,
         raw_csv,
+        fault_profile,
     } = arguments;
     if count == 0 {
         return Err("command count must be nonzero".to_owned());
@@ -501,6 +696,10 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     let mut sender =
         StopAndWaitSender::new(session_id, reliability).map_err(|error| error.to_string())?;
     let clock = Instant::now();
+    let fault_errors_received = match fault_profile {
+        ControllerFaultProfile::None => 0,
+        ControllerFaultProfile::Error => run_error_fault_probes(&socket, session_id, clock)?,
+    };
     let run_start = Instant::now();
     let mut measured_milli_c = 20_000;
     let mut previous_measured_milli_c = measured_milli_c;
@@ -736,6 +935,21 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         }
     }
     println!("{}", summary.legacy_record());
+    if fault_profile == ControllerFaultProfile::Error {
+        for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
+            println!(
+                "IVC-CONTROLLER-FAULT-RESULT profile=error injected={} errors_received={} \
+                 normal_acknowledged={} continued=1",
+                ErrorFaultKind::ALL.len(),
+                fault_errors_received,
+                metrics.acknowledged
+            );
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush fault result: {error}"))?;
+            std::thread::sleep(BOARD_CONSOLE_RECORD_PAUSE);
+        }
+    }
     Ok(())
 }
 
@@ -865,6 +1079,8 @@ fn parse_controller_arguments(
     let mut backend = InferenceBackend::Native;
     let mut backend_was_set = false;
     let mut raw_csv = None;
+    let mut fault_profile = ControllerFaultProfile::None;
+    let mut fault_profile_was_set = false;
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -897,6 +1113,22 @@ fn parse_controller_arguments(
                     "controller raw CSV path",
                 )?));
             }
+            "--fault-profile" => {
+                if fault_profile_was_set {
+                    return Err("--fault-profile may only be specified once".to_owned());
+                }
+                let value = required(&mut arguments, "controller fault profile")?;
+                fault_profile = match value.as_str() {
+                    "none" => ControllerFaultProfile::None,
+                    "error" => ControllerFaultProfile::Error,
+                    _ => {
+                        return Err(format!(
+                            "controller fault profile must be 'none' or 'error', got '{value}'"
+                        ));
+                    }
+                };
+                fault_profile_was_set = true;
+            }
             _ if argument.starts_with('-') => {
                 return Err(format!(
                     "unsupported controller option '{argument}'\n{}",
@@ -926,6 +1158,7 @@ fn parse_controller_arguments(
         session_id,
         backend,
         raw_csv,
+        fault_profile,
     })
 }
 
@@ -994,7 +1227,8 @@ fn improvement(baseline: f64, candidate: f64) -> f64 {
 fn usage() -> &'static str {
     "usage:\n  ivcproto evaluate\n  ivcproto evaluate-csv <output.csv>\n  ivcproto rtos-sim <bind> \
      <expected-count> [drop-every]\n  ivcproto controller <peer> <count> <manual|neural> \
-     [period-ms] [session-id] [--backend <native|onnxruntime>] [--raw-csv <path>]"
+     [period-ms] [session-id] [--backend <native|onnxruntime>] [--raw-csv <path>] [--fault-profile \
+     <none|error>]"
 }
 
 #[cfg(test)]
@@ -1117,6 +1351,89 @@ mod tests {
             parsed.raw_csv.as_deref(),
             Some(std::path::Path::new("/var/lib/ivc/raw.csv"))
         );
+        assert_eq!(parsed.fault_profile, ControllerFaultProfile::None);
+    }
+
+    #[test]
+    fn controller_arguments_enable_the_error_evidence_profile_explicitly() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "100",
+            "neural",
+            "100",
+            "--fault-profile",
+            "error",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let parsed = parse_controller_arguments(arguments)
+            .expect("controller arguments should accept the error profile");
+
+        assert_eq!(parsed.fault_profile, ControllerFaultProfile::Error);
+    }
+
+    #[test]
+    fn error_profile_builds_all_five_deterministic_fault_probes() {
+        let cases = [
+            (
+                ErrorFaultKind::UnsupportedVersion,
+                ErrorCode::UnsupportedVersion,
+            ),
+            (ErrorFaultKind::LengthMismatch, ErrorCode::MalformedFrame),
+            (
+                ErrorFaultKind::ChecksumMismatch,
+                ErrorCode::ChecksumMismatch,
+            ),
+            (
+                ErrorFaultKind::UnexpectedMessageType,
+                ErrorCode::InvalidControl,
+            ),
+            (
+                ErrorFaultKind::InvalidSessionTransition,
+                ErrorCode::SequenceOutsideWindow,
+            ),
+        ];
+
+        for (index, (kind, expected_error)) in cases.into_iter().enumerate() {
+            let probe = build_error_fault_probe(kind, 0x4354_524c, index as u32 + 1, 1234)
+                .expect("fault probe should be constructible");
+
+            assert_eq!(probe.expected_error, expected_error);
+            assert_eq!(probe.sequence, index as u32 + 1);
+            match kind {
+                ErrorFaultKind::UnsupportedVersion => assert!(matches!(
+                    decode_frame(&probe.datagram),
+                    Err(ivcproto::wire::ProtocolError::UnsupportedVersion(_))
+                )),
+                ErrorFaultKind::LengthMismatch => assert!(matches!(
+                    decode_frame(&probe.datagram),
+                    Err(ivcproto::wire::ProtocolError::LengthMismatch { .. })
+                )),
+                ErrorFaultKind::ChecksumMismatch => assert!(matches!(
+                    decode_frame(&probe.datagram),
+                    Err(ivcproto::wire::ProtocolError::ChecksumMismatch { .. })
+                )),
+                ErrorFaultKind::UnexpectedMessageType => {
+                    assert_eq!(
+                        decode_frame(&probe.datagram)
+                            .expect("unexpected-type probe remains a valid frame")
+                            .header
+                            .message_type,
+                        MessageType::Status
+                    );
+                }
+                ErrorFaultKind::InvalidSessionTransition => {
+                    assert_eq!(
+                        decode_frame(&probe.datagram)
+                            .expect("invalid-session probe remains a valid frame")
+                            .header
+                            .session_id,
+                        0
+                    );
+                }
+            }
+        }
     }
 
     #[test]

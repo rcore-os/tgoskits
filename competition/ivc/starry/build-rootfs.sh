@@ -17,6 +17,7 @@ Options:
   --profile <smoke|full>             Select the workload size.
   --policy <neural|manual>           Select the controller policy.
   --backend <native|onnxruntime>      Select the inference backend.
+  --fault-profile <none|error>        Select deterministic controller faults.
   --count <commands>                  Override the profile command count.
   --period-ms <milliseconds>          Set the control period (default: 100).
   --output <image>                    Override the generated rootfs path.
@@ -44,6 +45,7 @@ default_output_image() {
     local policy_suffix=
     local backend_suffix=
     local profile_suffix=
+    local fault_suffix=
 
     if [[ "$policy" == manual ]]; then
         policy_suffix=-manual
@@ -54,8 +56,11 @@ default_output_image() {
     if [[ "$profile" == smoke ]]; then
         profile_suffix=-smoke
     fi
-    printf '%s/starry-ivc-rootfs%s%s%s.img\n' \
-        "$output_dir" "$policy_suffix" "$backend_suffix" "$profile_suffix"
+    if [[ "$fault_profile" == error ]]; then
+        fault_suffix=-error
+    fi
+    printf '%s/starry-ivc-rootfs%s%s%s%s.img\n' \
+        "$output_dir" "$policy_suffix" "$backend_suffix" "$profile_suffix" "$fault_suffix"
 }
 
 find_base_image() {
@@ -74,6 +79,7 @@ find_base_image() {
 profile=full
 policy=neural
 backend=native
+fault_profile=none
 command_count=
 period_ms=100
 output_image=
@@ -94,6 +100,10 @@ while (($# > 0)); do
             ;;
         --backend)
             backend=${2:?--backend requires a value}
+            shift 2
+            ;;
+        --fault-profile)
+            fault_profile=${2:?--fault-profile requires a value}
             shift 2
             ;;
         --count)
@@ -146,6 +156,13 @@ case "$backend" in
         exit 2
         ;;
 esac
+case "$fault_profile" in
+    none|error) ;;
+    *)
+        echo "fault profile must be 'none' or 'error': $fault_profile" >&2
+        exit 2
+        ;;
+esac
 require_positive_integer --count "$command_count"
 require_positive_integer --period-ms "$period_ms"
 
@@ -186,8 +203,9 @@ cleanup() {
     rm -f -- "$profile_file"
 }
 trap cleanup EXIT HUP INT TERM
-printf 'ivc_mode=%s\nivc_backend=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\n' \
-    "$policy" "$backend" "$profile" "$command_count" "$period_ms" >"$profile_file"
+printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\n' \
+    "$policy" "$backend" "$fault_profile" "$profile" "$command_count" "$period_ms" \
+    >"$profile_file"
 for directory in /root /usr /usr/bin /usr/local /usr/local/bin /etc /var /var/lib /var/lib/ivc; do
     debugfs -w -R "mkdir $directory" "$output_image" >/dev/null 2>&1 || true
 done
@@ -217,4 +235,4 @@ debugfs -R "stat /usr/local/bin/ivcproto" "$output_image"
 debugfs -R "stat /usr/bin/starry-run-case-tests" "$output_image"
 debugfs -R "cat /etc/ivc-profile" "$output_image"
 sha256sum "$controller" "$output_image"
-echo "IVC StarryOS profile=$profile policy=$policy backend=$backend rootfs ready at $output_image"
+echo "IVC StarryOS profile=$profile policy=$policy backend=$backend fault_profile=$fault_profile rootfs ready at $output_image"

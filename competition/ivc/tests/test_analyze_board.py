@@ -131,6 +131,45 @@ class BoardAnalysisTests(unittest.TestCase):
             )
         )
 
+    def error_profile_log(self, raw_csv: str = RAW_CSV) -> str:
+        normal_outcome = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=normal "
+            "accepted=4 applied=4 duplicates=0 acks_dropped=0\n"
+        )
+        fault_records = """\
+[guest-console:pl011-zephyr] IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_drop_every=0 expected_commands=4 expected_protocol_errors=5 exit_after_expected=1
+[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=unsupported-version seq=1001 expected_code=2 observed_code=2
+[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1001 code=2 reason=unsupported-version
+[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=length-mismatch seq=1002 expected_code=1 observed_code=1
+[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1002 code=1 reason=length-mismatch
+[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=checksum-mismatch seq=1003 expected_code=3 observed_code=3
+[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1003 code=3 reason=checksum-mismatch
+[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=unexpected-message-type seq=1004 expected_code=5 observed_code=5
+[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1004 code=5 reason=unexpected-message-type
+[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=invalid-session-transition seq=1005 expected_code=4 observed_code=4
+[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1005 code=4 reason=zero-session-or-sequence
+[guest-console:pl011-starry] IVC-CONTROLLER-FAULT-RESULT profile=error injected=5 errors_received=5 normal_acknowledged=4 continued=1
+[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=error accepted=4 applied=4 duplicates=0 acks_dropped=0
+"""
+        return (
+            self.raw_log(raw_csv)
+            .replace(
+                "backend=native count=4",
+                "backend=native fault_profile=error count=4",
+            )
+            .replace(normal_outcome, fault_records)
+            .replace(
+                "IVC-RTOS-MESSAGES status_sent=4 acks_sent=4 errors_sent=0 "
+                "protocol_errors=0",
+                "IVC-RTOS-MESSAGES status_sent=4 acks_sent=4 errors_sent=5 "
+                "protocol_errors=5",
+            )
+            .replace(
+                "/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img",
+                "/home/orangepi/ivc-e",
+            )
+        )
+
     def test_compact_records_survive_a_corrupted_legacy_result(self) -> None:
         result = analyzer.analyze(self.write_log(VALID_LOG), 1_800)
 
@@ -425,6 +464,58 @@ class BoardAnalysisTests(unittest.TestCase):
                 self.write_raw_csv(),
                 profile="ack-loss",
                 drop_ack_every=2,
+            )
+
+    def test_error_profile_cross_checks_every_error_and_normal_continuation(self) -> None:
+        result = analyzer.analyze(
+            self.write_log(self.error_profile_log()),
+            4,
+            self.write_raw_csv(),
+            profile="error",
+        )
+
+        self.assertEqual(result["profile"], "error")
+        self.assertEqual(result["rtos"]["errors_sent"], 5)
+        self.assertEqual(result["rtos"]["protocol_errors"], 5)
+        self.assertEqual(
+            [fault["kind"] for fault in result["error_evidence"]],
+            [
+                "unsupported-version",
+                "length-mismatch",
+                "checksum-mismatch",
+                "unexpected-message-type",
+                "invalid-session-transition",
+            ],
+        )
+        self.assertTrue(result["error_recovery"]["continued"])
+        self.assertEqual(result["error_recovery"]["normal_acknowledged"], 4)
+
+    def test_error_profile_rejects_a_missing_rtos_error_marker(self) -> None:
+        log = self.error_profile_log().replace(
+            "[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1003 code=3 "
+            "reason=checksum-mismatch\n",
+            "",
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "error evidence"):
+            analyzer.analyze(
+                self.write_log(log),
+                4,
+                self.write_raw_csv(),
+                profile="error",
+            )
+
+    def test_error_profile_rejects_a_non_error_starry_boot_profile(self) -> None:
+        log = self.error_profile_log().replace(
+            "fault_profile=error", "fault_profile=none"
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "fault profile"):
+            analyzer.analyze(
+                self.write_log(log),
+                4,
+                self.write_raw_csv(),
+                profile="error",
             )
 
     def test_normal_capture_rejects_ack_loss_markers(self) -> None:

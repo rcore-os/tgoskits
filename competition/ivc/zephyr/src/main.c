@@ -53,10 +53,14 @@ static bool validate_fault_configuration(void)
 {
 	const uint32_t drop_every = (uint32_t)CONFIG_IVC_DROP_ACK_EVERY;
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
+	const uint32_t expected_errors = (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS;
 
-	if ((drop_every != 0U && expected_commands == 0U) || drop_every > expected_commands) {
-		printk("IVC-RTOS-FATAL stage=fault-config drop_ack_every=%u expected_commands=%u\n",
-		       drop_every, expected_commands);
+	if ((drop_every != 0U && expected_commands == 0U) || drop_every > expected_commands ||
+	    (expected_errors != 0U && expected_commands == 0U) ||
+	    (expected_errors != 0U && drop_every != 0U)) {
+		printk("IVC-RTOS-FATAL stage=fault-config drop_ack_every=%u "
+		       "expected_commands=%u expected_protocol_errors=%u\n",
+		       drop_every, expected_commands, expected_errors);
 		return false;
 	}
 	return true;
@@ -207,7 +211,10 @@ static void report_compact_result(const struct ivc_server *server, const char *p
 static void report_result_if_complete(struct ivc_server *server)
 {
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
-#if CONFIG_IVC_DROP_ACK_EVERY > 0
+#if CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
+	const uint64_t expected_errors = (uint64_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS;
+	const char *profile = "error";
+#elif CONFIG_IVC_DROP_ACK_EVERY > 0
 	const uint64_t expected_drops =
 		(uint64_t)(expected_commands / (uint32_t)CONFIG_IVC_DROP_ACK_EVERY);
 	const char *profile = "ack-loss";
@@ -219,7 +226,11 @@ static void report_result_if_complete(struct ivc_server *server)
 	    server->receive_window.metrics.accepted != expected_commands) {
 		return;
 	}
-#if CONFIG_IVC_DROP_ACK_EVERY > 0
+#if CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
+	if (server->protocol_errors != expected_errors || server->errors_sent != expected_errors) {
+		return;
+	}
+#elif CONFIG_IVC_DROP_ACK_EVERY > 0
 	if (server->receive_window.metrics.duplicates != expected_drops ||
 	    server->ack_loss.acknowledgements_dropped != expected_drops) {
 		return;
@@ -358,6 +369,7 @@ static void process_control(struct ivc_server *server, int socket_fd,
 static void process_datagram(struct ivc_server *server, int socket_fd,
 			     const struct sockaddr *peer, socklen_t peer_length, size_t length)
 {
+	struct ivc_decode_rejection rejection;
 	struct ivc_frame_view frame;
 	struct ivc_control_command command;
 	enum ivc_decode_result decode_result;
@@ -365,8 +377,19 @@ static void process_datagram(struct ivc_server *server, int socket_fd,
 	decode_result = ivc_decode_frame(receive_frame, length, &frame);
 	if (decode_result != IVC_DECODE_OK) {
 		++server->protocol_errors;
-		printk("IVC-RTOS-DROP reason=%s length=%u\n", ivc_decode_result_name(decode_result),
-		       (unsigned int)length);
+		if (ivc_decode_rejection_context(receive_frame, length, decode_result,
+						 &rejection)) {
+			printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n",
+			       rejection.request.sequence, (unsigned int)rejection.response_error,
+			       ivc_decode_result_name(decode_result));
+			if (send_error(socket_fd, peer, peer_length, &rejection.request,
+				       rejection.response_error)) {
+				++server->errors_sent;
+			}
+		} else {
+			printk("IVC-RTOS-DROP reason=%s length=%u\n",
+			       ivc_decode_result_name(decode_result), (unsigned int)length);
+		}
 		return;
 	}
 	if (frame.header.message_type != IVC_MESSAGE_CONTROL) {
@@ -438,9 +461,11 @@ int main(void)
 		.events = ZSOCK_POLLIN,
 	};
 	printk("IVC-RTOS-READY bind=%s:%u mac=52:54:00:00:00:02 window_bits=%u "
-	       "ack_loss_drop_every=%u expected_commands=%u exit_after_expected=%u\n",
+	       "ack_loss_drop_every=%u expected_commands=%u expected_protocol_errors=%u "
+	       "exit_after_expected=%u\n",
 	       IVC_LOCAL_IPV4, IVC_LOCAL_UDP_PORT, IVC_RECEIVE_WINDOW_BITS,
 	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY, (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS,
+	       (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS,
 	       (uint32_t)IS_ENABLED(CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS));
 
 	for (;;) {

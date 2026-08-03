@@ -10,10 +10,10 @@ metadata_writer=$script_dir/write_board_metadata.py
 
 usage() {
     cat <<EOF
-Usage: $0 [smoke|full|manual-smoke|manual-full|fault-ack-loss] [options]
+Usage: $0 [smoke|full|manual-smoke|manual-full|fault-ack-loss|fault-error] [options]
 
 Options:
-  --profile <name>        Select a normal/manual run or the ACK-loss campaign.
+  --profile <name>        Select a normal/manual run or deterministic fault campaign.
   --repeat <count>        Run the selected profile repeatedly (default: 1).
   --board <type>          Select the board service type.
   --result-dir <path>     Store structured run results below this directory.
@@ -143,6 +143,16 @@ case "$profile" in
         result_image_name=ivc-a
         analyzer_profile=ack-loss
         drop_ack_every=5
+        ;;
+    fault-error)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-error.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-error.toml
+        expected_count=100
+        model_id=thermal-4x6x1-v1
+        inference_backend=native
+        guest_image_name=starry-ivc-rootfs-error.img
+        result_image_name=ivc-e
+        analyzer_profile=error
         ;;
     *)
         echo "Unsupported Orange Pi profile: $profile" >&2

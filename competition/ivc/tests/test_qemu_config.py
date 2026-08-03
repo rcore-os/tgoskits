@@ -23,6 +23,7 @@ ORANGEPI_BOARD_CONFIGS = (
     / "competition/ivc/config/board-orangepi-5-plus-manual-smoke.toml",
     REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-manual.toml",
     REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-ack-loss.toml",
+    REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-error.toml",
 )
 ORANGEPI_BOARD_SNAPSHOT_CONFIGS = (
     (ORANGEPI_BOARD_CONFIGS[0], "/home/orangepi/ivc-ns"),
@@ -30,6 +31,7 @@ ORANGEPI_BOARD_SNAPSHOT_CONFIGS = (
     (ORANGEPI_BOARD_CONFIGS[2], "/home/orangepi/ivc-ms"),
     (ORANGEPI_BOARD_CONFIGS[3], "/home/orangepi/ivc-m"),
     (ORANGEPI_BOARD_CONFIGS[4], "/home/orangepi/ivc-a"),
+    (ORANGEPI_BOARD_CONFIGS[5], "/home/orangepi/ivc-e"),
 )
 LINUX_ACK_LOSS_CONFIG = (
     REPOSITORY_ROOT / "competition/ivc/config/linux-smp2-ack-loss.toml"
@@ -41,6 +43,7 @@ ZEPHYR_ACK_LOSS_CONF = REPOSITORY_ROOT / "competition/ivc/zephyr/ack-loss.conf"
 ZEPHYR_BOARD_ACK_LOSS_CONF = (
     REPOSITORY_ROOT / "competition/ivc/zephyr/board-ack-loss.conf"
 )
+ZEPHYR_BOARD_ERROR_CONF = REPOSITORY_ROOT / "competition/ivc/zephyr/board-error.conf"
 ZEPHYR_KCONFIG = REPOSITORY_ROOT / "competition/ivc/zephyr/Kconfig"
 ZEPHYR_GITIGNORE = REPOSITORY_ROOT / "competition/ivc/zephyr/.gitignore"
 ORANGEPI_RUN_SCRIPT = REPOSITORY_ROOT / "competition/ivc/run-orangepi-5-plus.sh"
@@ -508,6 +511,8 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("starry-ivc-rootfs-manual.img", staging)
         self.assertIn("fault-ack-loss", entrypoint)
         self.assertIn("starry-ivc-rootfs-ack-loss.img", staging)
+        self.assertIn("fault-error", entrypoint)
+        self.assertIn("starry-ivc-rootfs-error.img", staging)
 
     def test_success_waits_for_complete_linux_result_line(self) -> None:
         with QEMU_CONFIG.open("rb") as source:
@@ -778,6 +783,47 @@ class QemuConfigContractTests(unittest.TestCase):
         )
         self.assertEqual(starry["base"]["phys_cpu_sets"], [0x2, 0x4])
         self.assertEqual(zephyr["base"]["phys_cpu_sets"], [0x1])
+
+    def test_orangepi_error_profile_pins_five_error_responses(self) -> None:
+        paths = (
+            REPOSITORY_ROOT
+            / "competition/ivc/config/axvisor-orangepi-5-plus-error.toml",
+            REPOSITORY_ROOT
+            / "competition/ivc/config/orangepi-5-plus-starry-smp2-error.toml",
+            REPOSITORY_ROOT
+            / "competition/ivc/config/orangepi-5-plus-zephyr-error.toml",
+        )
+        with paths[0].open("rb") as source:
+            build = tomllib.load(source)
+        with paths[1].open("rb") as source:
+            starry = tomllib.load(source)
+        with paths[2].open("rb") as source:
+            zephyr = tomllib.load(source)
+        board_overlay = ZEPHYR_BOARD_ERROR_CONF.read_text(encoding="utf-8")
+        kconfig = ZEPHYR_KCONFIG.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            build["vm_configs"],
+            [
+                paths[1].relative_to(REPOSITORY_ROOT).as_posix(),
+                paths[2].relative_to(REPOSITORY_ROOT).as_posix(),
+            ],
+        )
+        self.assertEqual(
+            starry["kernel"]["disk_path"],
+            "/home/orangepi/axvisor-guest/starry-ivc-rootfs-error.img",
+        )
+        self.assertEqual(
+            zephyr["kernel"]["kernel_path"],
+            "../zephyr/build-board-error/zephyr/zephyr.bin",
+        )
+        self.assertIn("CONFIG_IVC_EXPECTED_COMMANDS=100", board_overlay)
+        self.assertIn("CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS=5", board_overlay)
+        self.assertIn("CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS=y", board_overlay)
+        self.assertRegex(
+            kconfig,
+            r"(?s)config IVC_EXPECTED_PROTOCOL_ERRORS.*?default 0",
+        )
 
 
 if __name__ == "__main__":

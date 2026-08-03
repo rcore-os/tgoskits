@@ -23,6 +23,49 @@ static void test_protocol_golden_vector(void)
 	assert(ivc_protocol_self_test());
 }
 
+static void test_decode_failures_preserve_safe_error_response_context(void)
+{
+	const struct ivc_header header = {
+		.message_type = IVC_MESSAGE_CONTROL,
+		.flags = IVC_FLAG_ACK_REQUIRED,
+		.session_id = UINT32_C(0x4354524c),
+		.sequence = 7U,
+		.timestamp_us = UINT64_C(1234),
+		.payload_length = 1U,
+		.error_code = IVC_ERROR_NONE,
+	};
+	const uint8_t payload[] = {0x5a};
+	struct ivc_decode_rejection rejection;
+	uint8_t frame[IVC_MAX_FRAME_LENGTH];
+	size_t frame_length;
+
+	assert(ivc_encode_frame(&header, payload, frame, sizeof(frame), &frame_length));
+	frame[4] = IVC_PROTOCOL_VERSION + 1U;
+	assert(ivc_decode_frame(frame, frame_length, &(struct ivc_frame_view){0}) ==
+	       IVC_DECODE_UNSUPPORTED_VERSION);
+	assert(ivc_decode_rejection_context(frame, frame_length,
+					    IVC_DECODE_UNSUPPORTED_VERSION, &rejection));
+	assert(rejection.response_error == IVC_ERROR_UNSUPPORTED_VERSION);
+	assert(rejection.request.session_id == header.session_id);
+	assert(rejection.request.sequence == header.sequence);
+
+	assert(ivc_encode_frame(&header, payload, frame, sizeof(frame), &frame_length));
+	frame[24] = 2U;
+	assert(ivc_decode_rejection_context(frame, frame_length, IVC_DECODE_LENGTH_MISMATCH,
+					    &rejection));
+	assert(rejection.response_error == IVC_ERROR_MALFORMED_FRAME);
+
+	assert(ivc_encode_frame(&header, payload, frame, sizeof(frame), &frame_length));
+	frame[frame_length - 1U] ^= 1U;
+	assert(ivc_decode_rejection_context(frame, frame_length,
+					    IVC_DECODE_CHECKSUM_MISMATCH, &rejection));
+	assert(rejection.response_error == IVC_ERROR_CHECKSUM_MISMATCH);
+
+	frame[0] = 0U;
+	assert(!ivc_decode_rejection_context(frame, frame_length, IVC_DECODE_BAD_MAGIC,
+					     &rejection));
+}
+
 static void test_receive_window_exact_once_and_reordering(void)
 {
 	struct ivc_receive_window window;
@@ -179,6 +222,7 @@ static void test_thermal_plant_step_matches_rust_reference(void)
 int main(void)
 {
 	test_protocol_golden_vector();
+	test_decode_failures_preserve_safe_error_response_context();
 	test_receive_window_exact_once_and_reordering();
 	test_controller_restart_resets_replay_state_without_session_rollback();
 	test_endpoint_rejects_replay_and_stale_time();

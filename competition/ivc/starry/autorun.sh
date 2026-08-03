@@ -29,6 +29,10 @@ case "${ivc_backend:-}" in
     onnxruntime) fatal onnxruntime-backend-not-installed ;;
     *) fatal invalid-inference-backend ;;
 esac
+case "${ivc_fault_profile:-none}" in
+    none|error) ;;
+    *) fatal invalid-fault-profile ;;
+esac
 case "${ivc_count:-}" in
     ''|*[!0-9]*) fatal invalid-command-count ;;
 esac
@@ -40,7 +44,7 @@ esac
 cpu_count=$($BB grep -c '^processor' /proc/cpuinfo 2>/dev/null || true)
 [ "$cpu_count" -ge 2 ] || fatal insufficient-vcpus
 
-echo "IVC-STARRY-BOOT mode=$ivc_mode backend=$ivc_backend count=$ivc_count period_ms=$ivc_period_ms vcpus=$cpu_count"
+echo "IVC-STARRY-BOOT mode=$ivc_mode backend=$ivc_backend fault_profile=${ivc_fault_profile:-none} count=$ivc_count period_ms=$ivc_period_ms vcpus=$cpu_count"
 
 attempt=0
 while [ "$attempt" -lt 60 ]; do
@@ -64,7 +68,8 @@ echo "IVC-STARRY-NET iface=eth0 mac=$mac ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5
 
 if /usr/local/bin/ivcproto controller \
     10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
-    --backend "$ivc_backend" --raw-csv "$ivc_raw_csv"; then
+    --backend "$ivc_backend" --raw-csv "$ivc_raw_csv" \
+    --fault-profile "${ivc_fault_profile:-none}"; then
     [ -r "$ivc_raw_csv" ] || fatal raw-csv-not-found
     raw_lines=$("$BB" wc -l < "$ivc_raw_csv") || fatal raw-csv-count-failed
     expected_raw_lines=$((ivc_count + 1))

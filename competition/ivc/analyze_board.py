@@ -30,6 +30,9 @@ RTOS_POWEROFF_PREFIX = "IVC-RTOS-POWEROFF "
 RTOS_READY_PREFIX = "IVC-RTOS-READY "
 ACK_LOSS_INJECT_PREFIX = "IVC-RTOS-INJECT "
 DUPLICATE_PREFIX = "IVC-RTOS-DUPLICATE "
+RTOS_ERROR_PREFIX = "IVC-RTOS-ERROR "
+CONTROLLER_FAULT_PREFIX = "IVC-CONTROLLER-FAULT "
+CONTROLLER_FAULT_RESULT_PREFIX = "IVC-CONTROLLER-FAULT-RESULT "
 STARRY_BOOT_PREFIX = "IVC-STARRY-BOOT "
 STARRY_NETWORK_PREFIX = "IVC-STARRY-NET "
 STARRY_RAW_PREFIX = "IVC-STARRY-RAW "
@@ -59,7 +62,14 @@ RAW_COLUMNS = (
     "status_actuator_permille",
     "error_milli_c",
 )
-RUN_PROFILES = {"normal", "ack-loss"}
+RUN_PROFILES = {"normal", "ack-loss", "error"}
+ERROR_FAULT_CONTRACT = (
+    ("unsupported-version", 1001, 2, "unsupported-version"),
+    ("length-mismatch", 1002, 1, "length-mismatch"),
+    ("checksum-mismatch", 1003, 3, "checksum-mismatch"),
+    ("unexpected-message-type", 1004, 5, "unexpected-message-type"),
+    ("invalid-session-transition", 1005, 4, "zero-session-or-sequence"),
+)
 
 
 class AnalysisError(ValueError):
@@ -93,7 +103,13 @@ def analyze(
         console_metrics_required=raw_path is None,
     )
     rtos = parse_rtos(lines, expected_count, profile, drop_ack_every)
-    starry = parse_starry_boot(lines, expected_count, str(controller["policy"]))
+    error_evidence = None
+    error_recovery = None
+    if profile == "error":
+        error_evidence, error_recovery = parse_error_evidence(lines, expected_count)
+    starry = parse_starry_boot(
+        lines, expected_count, str(controller["policy"]), profile
+    )
     raw_samples = None
     board = None
     if raw_path is not None:
@@ -142,6 +158,9 @@ def analyze(
         result["raw_samples"] = raw_samples
     if board is not None:
         result["board"] = board
+    if error_evidence is not None and error_recovery is not None:
+        result["error_evidence"] = error_evidence
+        result["error_recovery"] = error_recovery
     return result
 
 
@@ -362,8 +381,10 @@ def parse_rtos(
         raise AnalysisError("RTOS profile does not match the selected run profile")
     if profile == "normal":
         validate_normal_rtos(lines, result, expected_count)
-    else:
+    elif profile == "ack-loss":
         validate_ack_loss_rtos(lines, result, expected_count, drop_ack_every)
+    else:
+        validate_error_rtos(lines, result, expected_count)
 
     poweroff = find_record(lines, RTOS_POWEROFF_PREFIX, ("accepted",))
     if integer(poweroff, "accepted", RTOS_POWEROFF_PREFIX) != expected_count:
@@ -384,6 +405,11 @@ def validate_normal_rtos(
         line.startswith((ACK_LOSS_INJECT_PREFIX, DUPLICATE_PREFIX)) for line in lines
     ):
         raise AnalysisError("normal run contains ACK-loss evidence markers")
+    if any(
+        line.startswith((CONTROLLER_FAULT_PREFIX, CONTROLLER_FAULT_RESULT_PREFIX))
+        for line in lines
+    ):
+        raise AnalysisError("normal run contains error-profile evidence markers")
 
 
 def validate_ack_loss_rtos(
@@ -452,6 +478,166 @@ def validate_ack_loss_rtos(
             "duplicate_sequences": duplicate_sequences,
         }
     )
+    if any(
+        line.startswith((CONTROLLER_FAULT_PREFIX, CONTROLLER_FAULT_RESULT_PREFIX))
+        for line in lines
+    ):
+        raise AnalysisError("ACK-loss run contains error-profile evidence markers")
+
+
+def validate_error_rtos(
+    lines: list[str], result: dict[str, object], expected_count: int
+) -> None:
+    expected_errors = len(ERROR_FAULT_CONTRACT)
+    ready = find_record(
+        lines,
+        RTOS_READY_PREFIX,
+        (
+            "ack_loss_drop_every",
+            "expected_commands",
+            "expected_protocol_errors",
+            "exit_after_expected",
+        ),
+    )
+    ready_contract = {
+        "ack_loss_drop_every": 0,
+        "expected_commands": expected_count,
+        "expected_protocol_errors": expected_errors,
+        "exit_after_expected": 1,
+    }
+    for field, expected in ready_contract.items():
+        if integer(ready, field, RTOS_READY_PREFIX) != expected:
+            raise AnalysisError(
+                f"RTOS READY {field} does not match the error profile"
+            )
+    expected_fields = {
+        "accepted": expected_count,
+        "applied": expected_count,
+        "duplicates": 0,
+        "acks_dropped": 0,
+        "status_sent": expected_count,
+        "acks_sent": expected_count,
+        "errors_sent": expected_errors,
+        "protocol_errors": expected_errors,
+    }
+    for field, expected in expected_fields.items():
+        if result[field] != expected:
+            raise AnalysisError(
+                f"RTOS {field}={result[field]} does not match deterministic "
+                f"error-profile value {expected}"
+            )
+    if any(
+        line.startswith((ACK_LOSS_INJECT_PREFIX, DUPLICATE_PREFIX)) for line in lines
+    ):
+        raise AnalysisError("error profile contains ACK-loss evidence markers")
+
+
+def parse_distinct_records(
+    lines: list[str],
+    prefix: str,
+    required_fields: tuple[str, ...],
+    identity_field: str,
+) -> dict[str, dict[str, str]]:
+    records: dict[str, dict[str, str]] = {}
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        try:
+            fields = parse_fields(line, prefix)
+        except AnalysisError:
+            continue
+        if not all(field in fields for field in required_fields):
+            continue
+        identity = fields[identity_field]
+        previous = records.get(identity)
+        if previous is not None and previous != fields:
+            raise AnalysisError(
+                f"conflicting error evidence records for {identity_field}={identity}"
+            )
+        records[identity] = fields
+    return records
+
+
+def parse_error_evidence(
+    lines: list[str], expected_count: int
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    controller_records = parse_distinct_records(
+        lines,
+        CONTROLLER_FAULT_PREFIX,
+        ("kind", "seq", "expected_code", "observed_code"),
+        "kind",
+    )
+    rtos_records = parse_distinct_records(
+        lines,
+        RTOS_ERROR_PREFIX,
+        ("seq", "code", "reason"),
+        "seq",
+    )
+    if len(controller_records) != len(ERROR_FAULT_CONTRACT) or len(
+        rtos_records
+    ) != len(ERROR_FAULT_CONTRACT):
+        raise AnalysisError("error evidence does not contain all five fault records")
+
+    evidence: list[dict[str, object]] = []
+    for kind, sequence, error_code, reason in ERROR_FAULT_CONTRACT:
+        controller = controller_records.get(kind)
+        rtos = rtos_records.get(str(sequence))
+        if controller is None or rtos is None:
+            raise AnalysisError(f"error evidence is missing {kind}")
+        controller_contract = {
+            "seq": sequence,
+            "expected_code": error_code,
+            "observed_code": error_code,
+        }
+        for field, expected in controller_contract.items():
+            if integer(controller, field, CONTROLLER_FAULT_PREFIX) != expected:
+                raise AnalysisError(
+                    f"controller error evidence for {kind} has invalid {field}"
+                )
+        if integer(rtos, "code", RTOS_ERROR_PREFIX) != error_code:
+            raise AnalysisError(f"RTOS error evidence for {kind} has the wrong code")
+        if required(rtos, "reason", RTOS_ERROR_PREFIX) != reason:
+            raise AnalysisError(f"RTOS error evidence for {kind} has the wrong reason")
+        evidence.append(
+            {
+                "kind": kind,
+                "sequence": sequence,
+                "error_code": error_code,
+                "reason": reason,
+                "controller_observed": True,
+                "rtos_observed": True,
+            }
+        )
+
+    terminal = find_record(
+        lines,
+        CONTROLLER_FAULT_RESULT_PREFIX,
+        (
+            "profile",
+            "injected",
+            "errors_received",
+            "normal_acknowledged",
+            "continued",
+        ),
+    )
+    require_equal_fields = {
+        "profile": "error",
+        "injected": str(len(ERROR_FAULT_CONTRACT)),
+        "errors_received": str(len(ERROR_FAULT_CONTRACT)),
+        "normal_acknowledged": str(expected_count),
+        "continued": "1",
+    }
+    for field, expected in require_equal_fields.items():
+        if required(terminal, field, CONTROLLER_FAULT_RESULT_PREFIX) != expected:
+            raise AnalysisError(
+                f"controller error recovery {field} does not match the profile"
+            )
+    return evidence, {
+        "injected": len(ERROR_FAULT_CONTRACT),
+        "errors_received": len(ERROR_FAULT_CONTRACT),
+        "normal_acknowledged": expected_count,
+        "continued": True,
+    }
 
 
 def parse_sequence_records(
@@ -511,7 +697,10 @@ def validate_ack_loss_marker_order(
 
 
 def parse_starry_boot(
-    lines: list[str], expected_count: int, controller_policy: str
+    lines: list[str],
+    expected_count: int,
+    controller_policy: str,
+    run_profile: str,
 ) -> dict[str, object]:
     fields = find_record(
         lines, STARRY_BOOT_PREFIX, ("mode", "count", "period_ms", "vcpus")
@@ -520,6 +709,10 @@ def parse_starry_boot(
     expected_mode = "manual" if controller_policy == "manual-fixed" else controller_policy
     if mode != expected_mode:
         raise AnalysisError("StarryOS boot mode does not match controller policy")
+    fault_profile = fields.get("fault_profile", "none")
+    expected_fault_profile = "error" if run_profile == "error" else "none"
+    if fault_profile != expected_fault_profile:
+        raise AnalysisError("StarryOS boot fault profile does not match the run profile")
     count = integer(fields, "count", STARRY_BOOT_PREFIX)
     if count != expected_count:
         raise AnalysisError("StarryOS boot count does not match expected count")
@@ -531,6 +724,7 @@ def parse_starry_boot(
         raise AnalysisError("StarryOS must boot at least two vCPUs")
     return {
         "mode": mode,
+        "fault_profile": fault_profile,
         "count": count,
         "period_ms": period_ms,
         "vcpus": vcpus,
@@ -679,7 +873,12 @@ def parse_block_snapshot(lines: list[str], profile: str) -> dict[str, object]:
     legacy_result_path = image_path.startswith(
         "/home/orangepi/"
     ) and image_path.endswith(".result.img")
-    compact_names = ("a",) if profile == "ack-loss" else ("n", "ns", "m", "ms")
+    if profile == "ack-loss":
+        compact_names = ("a",)
+    elif profile == "error":
+        compact_names = ("e",)
+    else:
+        compact_names = ("n", "ns", "m", "ms")
     compact_result_path = image_path in {
         f"/home/orangepi/ivc-{name}" for name in compact_names
     }
@@ -953,6 +1152,10 @@ def validate_profile(profile: str, expected_count: int, drop_ack_every: int) -> 
     if profile == "normal":
         if drop_ack_every != 0:
             raise AnalysisError("normal profile requires drop-ack-every=0")
+        return
+    if profile == "error":
+        if drop_ack_every != 0:
+            raise AnalysisError("error profile requires drop-ack-every=0")
         return
     if drop_ack_every <= 0:
         raise AnalysisError("ack-loss profile requires a positive drop-ack-every value")

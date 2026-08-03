@@ -126,12 +126,25 @@ west build -p always -b qemu_cortex_a53 \
   -d <repo>/competition/ivc/zephyr/build-board-ack-loss \
   <repo>/competition/ivc/zephyr -- \
   -DEXTRA_CONF_FILE=board-ack-loss.conf
+
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board-error \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board-error.conf
 ```
 
 The third image is the physical 100-command ACK-loss campaign: it drops the
 first ACK for every fifth fresh command and powers off only after all 20
 deterministic retransmissions have been observed. Use these images only with
 the matching `orangepi-5-plus-zephyr-*.toml` description.
+
+The fourth image is the physical malformed-frame campaign. Before normal
+control begins, StarryOS injects one unsupported-version frame, length
+mismatch, checksum mismatch, unexpected message type, and invalid session
+transition. Zephyr returns the contractually mapped `ERROR` for all five and
+then accepts exactly 100 normal commands. It emits its terminal result only
+when `errors_sent=protocol_errors=5`, so a missing response or failure to
+continue cannot be accepted as evidence.
 
 After building and staging the matching StarryOS artifacts, run the physical
 campaign from a clean worktree. The wrapper preserves every failed attempt,
@@ -141,6 +154,12 @@ restores board Linux after each repeat:
 ```sh
 competition/ivc/run-orangepi-5-plus.sh \
   --profile fault-ack-loss \
+  --repeat 3 \
+  --require-clean \
+  --result-dir competition/results/orangepi-5-plus/<campaign-id>
+
+competition/ivc/run-orangepi-5-plus.sh \
+  --profile fault-error \
   --repeat 3 \
   --require-clean \
   --result-dir competition/results/orangepi-5-plus/<campaign-id>

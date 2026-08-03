@@ -26,6 +26,15 @@ config IVC_EXPECTED_COMMANDS
 	  deterministic ACK-loss profile additionally waits for the expected
 	  retransmitted duplicates.
 
+config IVC_EXPECTED_PROTOCOL_ERRORS
+	int "Expected ERROR responses in a finite evidence run"
+	range 0 1000000
+	default 0
+	help
+	  Set to zero for normal and ACK-loss endpoints. A positive value selects
+	  the deterministic malformed-frame profile and delays the terminal result
+	  until every expected protocol rejection has produced an ERROR response.
+
 config IVC_EXIT_AFTER_EXPECTED_COMMANDS
 	bool "Power off after a finite evidence run"
 	depends on IVC_EXPECTED_COMMANDS > 0
