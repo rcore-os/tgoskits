@@ -239,8 +239,11 @@ Linux v7.1 的 Fair 唤醒不再用旧的物理时间 `wakeup_granularity` 修�
 deadline。当前实现直接使用 wrap-safe 的虚拟时间顺序，并保留最新 EEVDF 的请求保护：
 
 - wake 后先以包含 current 的加权平均虚拟时间判断 eligibility；
-- 普通 Fair 基础 request 与 Linux v7.1 一致为 700 us；初始实体只获得半个 request，
-  之后的 request 以及 sleep 后新 request 使用完整 slice；
+- 普通 Fair 的 normalized request 与 Linux v7.1 一致为 700 us，并按
+  `sched_tunable_scaling = SCHED_TUNABLESCALING_LOG` 使用
+  `1 + ilog2(min(nr_cpu_ids, 8))` 放大；因此 4 CPU 配置的实际 request 为 2.1 ms。
+  初始实体只获得半个实际 request，之后的 request 以及 sleep 后新 request 使用完整
+  slice；
 - eligible current 的活动请求未结束时继续运行，不因任意更早 deadline 立即切换；
 - current 已 ineligible 时保护失效，正 `vlag` 的唤醒线程可在本次 safe point 抢占；
 - Fair request 到期由 task deadline/clockevent 保证有界重选，不依赖旧粒度阈值。
@@ -383,7 +386,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | Fair sleep wake | wake 清空正 `vlag`，维护线程 Ready 后仍等到偶然 timer | dequeue 保存有界 `vlag`，ineligible current 在 IRQ-return safe point 立即让出 |
 | Fair virtual-time wrap | `saturating_add` 与普通 `<` 在 wrap 后颠倒 deadline | 所有虚拟 deadline 使用 modular `virtual_before` |
 | Fair current 过度抢占 | 删除旧 wakeup granularity 后，任意更早 deadline 都打断 eligible current | 最新 EEVDF 请求保护保留到 request boundary；ineligible current 不受保护 |
-| Fair 初始放置 | 新线程直接获得完整 1 ms request，与 Linux v7.1 `PLACE_DEADLINE_INITIAL` 不同 | 默认基础 slice 改为 700 us；初始 deadline 与 oneshot 只给半 request，后续 request 恢复完整 slice |
+| Fair 初始放置 | 新线程直接获得完整 1 ms request，与 Linux v7.1 `PLACE_DEADLINE_INITIAL` 不同 | normalized slice 改为 700 us 并按 CPU 数对数放大；初始 deadline 与 oneshot 只给半个实际 request，后续 request 恢复完整 slice |
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
 

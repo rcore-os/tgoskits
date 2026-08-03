@@ -1,7 +1,7 @@
 //! Scheduler configuration and topology identifiers.
 
-/// Default fair scheduling request in nanoseconds.
-pub const DEFAULT_FAIR_SLICE_NS: u64 = 700_000;
+/// Normalized fair scheduling request in nanoseconds.
+pub const NORMALIZED_FAIR_SLICE_NS: u64 = 700_000;
 /// Default scheduler timing granularity used to bound EEVDF lag.
 pub const DEFAULT_TIMING_GRANULARITY_NS: u64 = 1_000_000;
 /// Default periodic fair balancing interval in nanoseconds.
@@ -61,7 +61,7 @@ impl TaskSystemConfig {
     pub const fn new(cpu_count: usize) -> Self {
         Self {
             cpu_count,
-            fair_slice_ns: DEFAULT_FAIR_SLICE_NS,
+            fair_slice_ns: NORMALIZED_FAIR_SLICE_NS * linux_logarithmic_cpu_factor(cpu_count),
             timing_granularity_ns: DEFAULT_TIMING_GRANULARITY_NS,
             balance_interval_ns: DEFAULT_BALANCE_INTERVAL_NS,
             rr_quantum_ns: DEFAULT_RR_QUANTUM_NS,
@@ -148,12 +148,31 @@ impl TaskSystemConfig {
     }
 }
 
+const fn linux_logarithmic_cpu_factor(cpu_count: usize) -> u64 {
+    let capped = if cpu_count == 0 {
+        1
+    } else if cpu_count > 8 {
+        8
+    } else {
+        cpu_count
+    };
+    1 + capped.ilog2() as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn default_fair_request_matches_linux_v71_base_slice() {
+    fn single_cpu_fair_request_uses_the_normalized_linux_v71_base_slice() {
         assert_eq!(TaskSystemConfig::new(1).fair_slice_ns(), 700_000);
+    }
+
+    #[test]
+    fn default_fair_request_scales_with_the_linux_v71_cpu_factor() {
+        assert_eq!(TaskSystemConfig::new(2).fair_slice_ns(), 1_400_000);
+        assert_eq!(TaskSystemConfig::new(4).fair_slice_ns(), 2_100_000);
+        assert_eq!(TaskSystemConfig::new(8).fair_slice_ns(), 2_800_000);
+        assert_eq!(TaskSystemConfig::new(16).fair_slice_ns(), 2_800_000);
     }
 }
