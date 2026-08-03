@@ -25,7 +25,7 @@ qemu = [
 # The profiling command selects this package-level preset; axbuild must not assemble the
 # individual driver feature list at runtime.
 qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
-qperf-metrics = []
+qperf-metrics = ["starry-kernel/qperf-metrics"]
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 
 k230 = [

@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "OS-independent IRQ-safe SMP task scheduling core"
 
+[features]
+default = []
+qperf-metrics = []
+
 [dependencies]
 thiserror.workspace = true
 trait-ffi = "0.2.11"

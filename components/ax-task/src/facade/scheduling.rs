@@ -285,6 +285,8 @@ pub(super) fn execute_switch_plan(
         decision.next_base_policy(),
         next.extension(),
     );
+    #[cfg(feature = "qperf-metrics")]
+    crate::metrics::record_context_switch();
     // SAFETY: the scheduler committed both endpoint states before releasing its
     // locks. Runtime handles remain live, and local IRQs stay disabled here.
     unsafe { task_runtime::switch_context(previous.context(), next.context()) };

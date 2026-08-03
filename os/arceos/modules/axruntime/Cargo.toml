@@ -35,6 +35,7 @@ multitask = [
   "dep:ax-task",
   "ax-kernel-guard/preempt",
 ]
+qperf-metrics = ["multitask", "ax-task/qperf-metrics"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]

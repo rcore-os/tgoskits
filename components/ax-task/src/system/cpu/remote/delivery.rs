@@ -42,6 +42,10 @@ impl CpuRemote {
             .delivery
             .wake_inbox
             .publish_with_head_transition(node, message);
+        #[cfg(feature = "qperf-metrics")]
+        if result == PublishResult::Published {
+            crate::metrics::record_remote_wake_publication(head_became_non_empty);
+        }
         if matches!(
             result,
             PublishResult::Published | PublishResult::AlreadyPending

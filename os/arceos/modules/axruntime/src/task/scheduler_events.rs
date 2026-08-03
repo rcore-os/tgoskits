@@ -17,6 +17,20 @@ use super::with_current_cpu_pin;
 const TASK_CLOCK_EVENT_IRQ_BUDGET: usize = 64;
 
 static TASK_TIMER_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static SCHEDULER_IPI_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static SCHEDULER_IPI_CONSUME_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Aggregate scheduler delivery counters for feature-gated qperf diagnostics.
+#[cfg(feature = "qperf-metrics")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QperfRuntimeSchedulerMetricsSnapshot {
+    pub task: ax_task::QperfSchedulerMetricsSnapshot,
+    pub scheduler_ipi_sends: u64,
+    pub scheduler_ipi_consumes: u64,
+    pub clockevent_irqs: u64,
+}
 
 /// Allocation-free transport ownership for the shared physical IPI vector.
 ///
@@ -61,6 +75,22 @@ pub fn timer_irq_count() -> u64 {
     TASK_TIMER_IRQ_COUNT.load(Ordering::Relaxed)
 }
 
+/// Returns aggregate task and physical-delivery counters without locking.
+#[cfg(feature = "qperf-metrics")]
+pub fn qperf_runtime_scheduler_metrics_snapshot() -> QperfRuntimeSchedulerMetricsSnapshot {
+    QperfRuntimeSchedulerMetricsSnapshot {
+        task: ax_task::qperf_scheduler_metrics_snapshot(),
+        scheduler_ipi_sends: SCHEDULER_IPI_SEND_COUNT.load(Ordering::Relaxed),
+        scheduler_ipi_consumes: SCHEDULER_IPI_CONSUME_COUNT.load(Ordering::Relaxed),
+        clockevent_irqs: timer_irq_count(),
+    }
+}
+
+#[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
+pub(super) fn record_scheduler_ipi_send() {
+    SCHEDULER_IPI_SEND_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Performs bounded task accounting and publishes a sticky reschedule request.
 #[cfg(feature = "irq")]
 pub(crate) fn on_clock_event(now_ns: u64, scheduler_tick: bool) -> Option<TaskDeadlineUpdate> {
@@ -94,11 +124,16 @@ fn account_clock_event(now_ns: u64, scheduler_tick: bool) -> Option<TaskDeadline
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(crate) fn consume_scheduler_ipi_doorbell() -> bool {
     // SAFETY: the IPI handler pins the current CPU for the complete operation.
-    unsafe {
+    let consumed = unsafe {
         with_current_cpu_pin(|pin| {
             SCHEDULER_IPI_DOORBELL.with_current(pin, SchedulerIpiDoorbell::consume)
         })
+    };
+    #[cfg(feature = "qperf-metrics")]
+    if consumed {
+        SCHEDULER_IPI_CONSUME_COUNT.fetch_add(1, Ordering::Relaxed);
     }
+    consumed
 }
 
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]

@@ -151,7 +151,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | --- | --- | --- | --- |
 | placement | `try_to_wake_up()`、rq locking | 一个线程只能有一个物理 owner | 已用 `SchedulerPlacement` 状态机收敛 |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
-| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 当前 owner inbox 正确但与 RT 热路径仍有性能差距，待确定性模型后重构 |
+| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 计数已排除 lost wake；当前 owner inbox 造成 78.6% remote-wake/IPI 比例，必须直接替换为 target-rq 事务 |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
@@ -185,18 +185,37 @@ enqueue、dequeue、wake、migration、switch-tail 和回收只能通过状态�
 
 ### owner-CPU 与 runqueue
 
-`CpuLocal` 为固定、不可移动的 per-CPU owner，内部拆为：
+`CpuLocal` 为固定、不可移动的 per-CPU owner。当前实现把 runqueue 也放在
+owner-only `OwnerDispatchState`，导致远程 waker 只能先投递 inbox。Linux v7.1
+PREEMPT_RT 的目标模型要求继续拆分为：
 
-- `OwnerDispatchState`：current/idle、runqueue、RT/Fair、switch handoff；
+- remotely lockable `RunQueue`：Fair/RT 队列、runnable load、调度策略时钟和 admission
+  记账；使用 IRQ-safe raw rq lock，四架构共享同一事务模型；
+- owner-only `OwnerDispatchState`：current/idle、current dispatch、switch handoff；
 - `DeadlineClassState`：Deadline admission、GRUB/CBS；
 - `LocalTaskDeadlineState`：deadline heap、expired buffer、物理 deadline 发布；
-- `OwnerDrainScratch`：远程 wake 与 control 的预分配 drain buffer。
+- `OwnerDrainScratch`：只保留 migration/control 等必须由 switch-tail owner 完成的控制消息。
 
-公开 owner 操作必须证明持有 runtime IRQ pin 或 scheduler baton。仅有一个嵌套的 `NoPreempt`/锁 guard 不构成 runqueue ownership。
+公开 owner-only 操作必须证明持有 runtime IRQ pin 或 scheduler baton。runqueue
+操作改为持有目标 rq raw lock；仅有一个嵌套的 `NoPreempt`/锁 guard 既不构成
+owner ownership，也不能替代 rq lock。rq lock 内禁止 callback、资源释放和任意 wake。
+
+远程 wake 的状态事务固定为：
+
+```text
+lock thread state -> wait/validate on_cpu release -> select target
+-> lock target rq -> validate placement/CPU admission -> activate
+-> check preemption -> unlock rq -> optional reschedule IPI
+```
+
+`switch_handoff`、current publication、前一任务 `on_cpu` release 和资源回收继续只允许
+owner CPU 执行。CPU offline 先关闭 rq admission，再等待在途 rq lock holder，最后迁移
+queued 实体；不能把旧 inbox quiescent 当作 offline 完成条件。
 
 ### 物理门铃
 
-ax-task 只发布逻辑 sticky work 和 payload。ax-runtime 的 `SchedulerIpiDoorbell` 是唯一物理 coalescer：
+deadline、owner control 与 deferred task-work 仍使用逻辑 sticky work。ax-runtime 的
+`SchedulerIpiDoorbell` 是这些 owner-only 工作的唯一物理 coalescer：
 
 1. producer 发布 inbox/payload；
 2. 设置 sticky/epoch；
@@ -205,6 +224,12 @@ ax-task 只发布逻辑 sticky work 和 payload。ax-runtime 的 `SchedulerIpiDo
 5. drain 后若发现更新的 epoch 或 remainder，再发新门铃。
 
 idle polling 与 work pending 共用原子状态，确保“观察到 polling 就省略 IPI”和“退出 polling 后新工作一定有物理边”之间没有丢唤醒窗口。
+
+普通 remote wake 不再进入这个门铃。waker 已在 target rq 内完成 activate 后，只有
+`wakeup_preempt()` 等价判断确认新实体应抢占目标 current，才发布 target
+`need_resched` 并发送 reschedule IPI；目标处于 polling idle 时只发布状态，不发送
+物理 IPI。旧 `RemoteWake` inbox、嵌入线程的 wake node 和 drain batch 在切换完成后
+直接删除，不保留 feature fallback 或兼容别名。
 
 ### Fair/EEVDF 唤醒与迁移
 
@@ -478,6 +503,44 @@ FP 模式原先会覆盖内核链接 rustflags，postprocess 也无法转发 `-c
 单元红绿测试修复。FP 插件仍会在 x86_64 早期 `mmu_entry` 阶段尝试解栈并使宿主
 QEMU SIGSEGV，因此现阶段不能把不完整 FP 报告用于归因；该诊断边界需要在插件
 侧按采样窗口延迟启用，或对 early-boot FP 读取做显式有效性检查。
+
+### 2026-08-03 remote wake 精确计数窗口
+
+qperf 现在可以直接选择正式 Starry QEMU case，并复用同一构建配置、设备配置、基础
+rootfs 和目标二进制。grouped case 的执行所有权被类型化为：
+
+```text
+GuestInit | ShellCommand | External
+```
+
+Starry 正式测试使用 `GuestInit`，Axvisor 使用 `ShellCommand`，qperf 使用 `External`。
+旧 `/etc/profile.d` autorun 实现及其配置字段已删除；`External` 资产不会注入 grouped
+runner，因此 init 不会在性能窗口前抢先启动 workload。x86 qperf 与正式 ostool 路径
+统一默认 `q35`，不再意外退回缺少 ACPI MCFG 的 i440fx。
+
+在 x86_64、4 vCPU、正式 `qemu/test-ext4-inode-unique` 的 30.6237922 秒窗口内，指标
+增量为：
+
+| 指标 | 增量 | 每秒 |
+| --- | ---: | ---: |
+| remote wake publication | 48,657 | 1,588.9 |
+| remote wake inbox drain | 48,657 | 1,588.9 |
+| lifecycle activation / owner enqueue | 41,648 / 41,648 | 1,360.0 |
+| scheduler IPI send / consume | 38,251 / 38,251 | 1,249.1 |
+| clockevent IRQ | 31,722 | 1,035.9 |
+| context switch | 127,581 | 4,166.1 |
+
+publication 与 drain 完全相等、send 与 consume 完全相等、activation 与 owner enqueue
+完全相等，因此没有 remote message、IPI 或真实激活的永久丢失。publication 比
+activation 多 7,009 次表示并发/重复 wake 在 lifecycle winner 处合并，不能解释为
+lost wake。问题是结构性放大：96.7% 的 publication 遇到空 inbox 边，78.6% 最终发送
+物理 scheduler IPI，而 Linux RT 的普通 remote wake 不需要 wake-list IPI。
+
+本次 qperf 使用 leaf callchain；6,080 个样本均只有一层，不能据此伪造完整调用链。
+单叶聚合仍显示 CPU-local current/area 查询约占 19.9%，guard/preempt 约占 8.3%，
+timer/deadline 约占 19.5%。这些热点将在 target-rq 重构后用相同窗口复测；接受标准是
+remote wake 不再计入 scheduler-work IPI，且只有实际抢占目标 current 的 wake 产生
+reschedule IPI。
 
 ## 模块化结果
 
