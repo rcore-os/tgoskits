@@ -127,6 +127,8 @@ struct ivc_error_payload {
 	uint32_t offending_sequence;
 };
 
+uint32_t ivc_crc32_bytes(const uint8_t *bytes, size_t length);
+
 uint32_t ivc_crc32(const uint8_t *frame, size_t frame_length);
 
 bool ivc_encode_frame(const struct ivc_header *header, const uint8_t *payload,

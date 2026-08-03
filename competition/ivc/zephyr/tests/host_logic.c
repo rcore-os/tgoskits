@@ -23,6 +23,13 @@ static void test_protocol_golden_vector(void)
 	assert(ivc_protocol_self_test());
 }
 
+static void test_crc32_bytes_matches_the_standard_check_value(void)
+{
+	static const uint8_t check_value[] = "123456789";
+
+	assert(ivc_crc32_bytes(check_value, sizeof(check_value) - 1U) == UINT32_C(0xcbf43926));
+}
+
 static void test_decode_failures_preserve_safe_error_response_context(void)
 {
 	const struct ivc_header header = {
@@ -222,6 +229,7 @@ static void test_thermal_plant_step_matches_rust_reference(void)
 int main(void)
 {
 	test_protocol_golden_vector();
+	test_crc32_bytes_matches_the_standard_check_value();
 	test_decode_failures_preserve_safe_error_response_context();
 	test_receive_window_exact_once_and_reordering();
 	test_controller_restart_resets_replay_state_without_session_rollback();

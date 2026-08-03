@@ -22,6 +22,7 @@
 #define IVC_SOCKET_POLL_MS 100
 #define IVC_ETHERNET_ADDRESS_LENGTH 6U
 #define IVC_ERROR_EVIDENCE_CAPACITY 8U
+#define IVC_ERROR_EVIDENCE_BODY_CAPACITY 96U
 #define IVC_ERROR_EVIDENCE_REPLAY_COPIES 2U
 #define IVC_READY_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_COPIES 2U
@@ -60,6 +61,21 @@ struct ivc_server {
 static uint64_t monotonic_us(void)
 {
 	return (uint64_t)k_uptime_get() * UINT64_C(1000);
+}
+
+static void report_error_evidence(const struct ivc_error_evidence *evidence)
+{
+	char body[IVC_ERROR_EVIDENCE_BODY_CAPACITY];
+	int length;
+
+	length = snprintk(body, sizeof(body), "seq=%u code=%u reason=%s", evidence->sequence,
+			  (unsigned int)evidence->error_code, evidence->reason);
+	if (length < 0 || (size_t)length >= sizeof(body)) {
+		printk("IVC-RTOS-FATAL stage=error-evidence-format\n");
+		return;
+	}
+	printk("IVC-ERROR-Z %s crc=%08x\n", body,
+	       (unsigned int)ivc_crc32_bytes((const uint8_t *)body, (size_t)length));
 }
 
 static bool validate_fault_configuration(void)
@@ -310,17 +326,17 @@ static void reject_datagram(struct ivc_server *server, int socket_fd,
 			    const struct ivc_header *request, enum ivc_error_code error_code,
 			    const char *reason)
 {
+	const struct ivc_error_evidence evidence = {
+		.sequence = request->sequence,
+		.error_code = error_code,
+		.reason = reason,
+	};
+
 	++server->protocol_errors;
 	if (server->error_evidence_count < IVC_ERROR_EVIDENCE_CAPACITY) {
-		server->error_evidence[server->error_evidence_count++] =
-			(struct ivc_error_evidence){
-				.sequence = request->sequence,
-				.error_code = error_code,
-				.reason = reason,
-			};
+		server->error_evidence[server->error_evidence_count++] = evidence;
 	}
-	printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n", request->sequence,
-	       (unsigned int)error_code, reason);
+	report_error_evidence(&evidence);
 	if (send_error(socket_fd, peer, peer_length, request, error_code)) {
 		++server->errors_sent;
 	}
@@ -343,8 +359,7 @@ static void replay_error_evidence_if_complete(struct ivc_server *server)
 		for (index = 0U; index < server->error_evidence_count; ++index) {
 			const struct ivc_error_evidence *evidence = &server->error_evidence[index];
 
-			printk("IVC-RTOS-ERROR seq=%u code=%u reason=%s\n", evidence->sequence,
-			       (unsigned int)evidence->error_code, evidence->reason);
+			report_error_evidence(evidence);
 		}
 	}
 	server->error_evidence_replayed = true;

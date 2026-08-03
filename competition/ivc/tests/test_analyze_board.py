@@ -6,6 +6,7 @@ import gzip
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 
@@ -66,6 +67,12 @@ BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=4 sha256={raw_sha256}
 BOARD_RAW_RESULT_HARVESTED path=/tmp/results/raw.csv samples=4 sha256={raw_sha256}
 BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=42500
 """
+
+
+def integrity_record(prefix: str, fields: tuple[tuple[str, object], ...]) -> str:
+    body = " ".join(f"{name}={value}" for name, value in fields)
+    checksum = zlib.crc32(body.encode("ascii")) & 0xFFFF_FFFF
+    return f"{prefix}{body} crc={checksum:08x}"
 
 
 class BoardAnalysisTests(unittest.TestCase):
@@ -136,28 +143,57 @@ class BoardAnalysisTests(unittest.TestCase):
             "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=normal "
             "accepted=4 applied=4 duplicates=0 acks_dropped=0\n"
         )
-        fault_records = """\
-[guest-console:pl011-zephyr] IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_drop_every=0 expected_commands=4 expected_protocol_errors=5 exit_after_expected=1
-[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=unsupported-version seq=1001 expected_code=2 observed_code=2
-[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1001 code=2 reason=unsupported-version
-[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=length-mismatch seq=1002 expected_code=1 observed_code=1
-[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1002 code=1 reason=length-mismatch
-[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=checksum-mismatch seq=1003 expected_code=3 observed_code=3
-[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1003 code=3 reason=checksum-mismatch
-[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=unexpected-message-type seq=1004 expected_code=5 observed_code=5
-[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1004 code=5 reason=unexpected-message-type
-[guest-console:pl011-starry] IVC-CONTROLLER-FAULT kind=invalid-session-transition seq=1005 expected_code=4 observed_code=4
-[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1005 code=4 reason=zero-session-or-sequence
-[guest-console:pl011-starry] IVC-CONTROLLER-FAULT-RESULT profile=error injected=5 errors_received=5 normal_acknowledged=4 continued=1
-[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=error accepted=4 applied=4 duplicates=0 acks_dropped=0
-"""
+        fault_records = [
+            "[guest-console:pl011-zephyr] IVC-RTOS-READY "
+            "bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 "
+            "ack_loss_drop_every=0 expected_commands=4 expected_protocol_errors=5 "
+            "exit_after_expected=1"
+        ]
+        for kind, sequence, error_code, reason in analyzer.ERROR_FAULT_CONTRACT:
+            fault_records.append(
+                "[guest-console:pl011-starry] "
+                + integrity_record(
+                    "IVC-ERROR-C ",
+                    (
+                        ("kind", kind),
+                        ("seq", sequence),
+                        ("expected", error_code),
+                        ("observed", error_code),
+                    ),
+                )
+            )
+            fault_records.append(
+                "[guest-console:pl011-zephyr] "
+                + integrity_record(
+                    "IVC-ERROR-Z ",
+                    (("seq", sequence), ("code", error_code), ("reason", reason)),
+                )
+            )
+        fault_records.extend(
+            [
+                "[guest-console:pl011-starry] "
+                + integrity_record(
+                    "IVC-ERROR-RESULT ",
+                    (
+                        ("profile", "error"),
+                        ("injected", 5),
+                        ("received", 5),
+                        ("acknowledged", 4),
+                        ("continued", 1),
+                    ),
+                ),
+                "[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=error "
+                "accepted=4 applied=4 duplicates=0 acks_dropped=0",
+            ]
+        )
+        fault_records_text = "\n".join(fault_records) + "\n"
         return (
             self.raw_log(raw_csv)
             .replace(
                 "backend=native count=4",
                 "backend=native fault_profile=error count=4",
             )
-            .replace(normal_outcome, fault_records)
+            .replace(normal_outcome, fault_records_text)
             .replace(
                 "IVC-RTOS-MESSAGES status_sent=4 acks_sent=4 errors_sent=0 "
                 "protocol_errors=0",
@@ -491,13 +527,52 @@ class BoardAnalysisTests(unittest.TestCase):
         self.assertEqual(result["error_recovery"]["normal_acknowledged"], 4)
 
     def test_error_profile_rejects_a_missing_rtos_error_marker(self) -> None:
+        marker = integrity_record(
+            "IVC-ERROR-Z ",
+            (("seq", 1003), ("code", 3), ("reason", "checksum-mismatch")),
+        )
         log = self.error_profile_log().replace(
-            "[guest-console:pl011-zephyr] IVC-RTOS-ERROR seq=1003 code=3 "
-            "reason=checksum-mismatch\n",
+            f"[guest-console:pl011-zephyr] {marker}\n",
             "",
         )
 
         with self.assertRaisesRegex(analyzer.AnalysisError, "error evidence"):
+            analyzer.analyze(
+                self.write_log(log),
+                4,
+                self.write_raw_csv(),
+                profile="error",
+            )
+
+    def test_error_profile_ignores_checksum_invalid_uart_corruption(self) -> None:
+        valid = integrity_record(
+            "IVC-ERROR-Z ",
+            (("seq", 1001), ("code", 2), ("reason", "unsupported-version")),
+        )
+        corrupted = valid.replace("unsupported-version", "unsupported-sion")
+        log = self.error_profile_log().replace(valid, f"{valid}\n{corrupted}")
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            profile="error",
+        )
+
+        self.assertEqual(result["error_evidence"][0]["reason"], "unsupported-version")
+
+    def test_error_profile_rejects_conflicting_checksum_valid_evidence(self) -> None:
+        valid = integrity_record(
+            "IVC-ERROR-Z ",
+            (("seq", 1001), ("code", 2), ("reason", "unsupported-version")),
+        )
+        conflicting = integrity_record(
+            "IVC-ERROR-Z ",
+            (("seq", 1001), ("code", 2), ("reason", "different-reason")),
+        )
+        log = self.error_profile_log().replace(valid, f"{valid}\n{conflicting}")
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "conflicting error evidence"):
             analyzer.analyze(
                 self.write_log(log),
                 4,

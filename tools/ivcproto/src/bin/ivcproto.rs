@@ -36,6 +36,7 @@ const ERROR_FAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const ERROR_FAULT_RESULT_SETTLE: Duration = Duration::from_millis(750);
 const ERROR_FAULT_RESULT_RECORD_COPIES: usize = 3;
 const ERROR_FAULT_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(25);
+const ERROR_EVIDENCE_RECORD_MAX_BYTES: usize = 96;
 const ERROR_FAULT_SEQUENCE_BASE: u32 = 1_000;
 const VERSION_OFFSET: usize = 4;
 const PAYLOAD_LENGTH_OFFSET: usize = 24;
@@ -672,13 +673,16 @@ fn report_error_fault_record(
     sequence: u32,
     observed_error: ErrorCode,
 ) -> Result<(), String> {
-    println!(
-        "IVC-CONTROLLER-FAULT kind={} seq={} expected_code={} observed_code={}",
+    let body = format!(
+        "kind={} seq={} expected={} observed={}",
         kind.name(),
         sequence,
         kind.expected_error() as u16,
         observed_error as u16
     );
+    let record = checksummed_console_record("IVC-ERROR-C ", &body);
+    debug_assert!(record.len() <= ERROR_EVIDENCE_RECORD_MAX_BYTES);
+    println!("{record}");
     std::io::stdout()
         .flush()
         .map_err(|error| format!("flush fault evidence: {error}"))?;
@@ -964,18 +968,20 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     }
     println!("{}", summary.legacy_record());
     if fault_profile == ControllerFaultProfile::Error {
+        let fault_result_body = format!(
+            "profile=error injected={} received={} acknowledged={} continued=1",
+            ErrorFaultKind::ALL.len(),
+            fault_errors_received,
+            metrics.acknowledged
+        );
+        let fault_result = checksummed_console_record("IVC-ERROR-RESULT ", &fault_result_body);
+        debug_assert!(fault_result.len() <= ERROR_EVIDENCE_RECORD_MAX_BYTES);
         // AxVisor reports the RTOS guest shutdown asynchronously on the same
         // physical UART. Keep the terminal recovery proof outside that burst.
         replay_verified_error_fault_records()?;
         std::thread::sleep(ERROR_FAULT_RESULT_SETTLE);
         for _ in 0..ERROR_FAULT_RESULT_RECORD_COPIES {
-            println!(
-                "IVC-CONTROLLER-FAULT-RESULT profile=error injected={} errors_received={} \
-                 normal_acknowledged={} continued=1",
-                ErrorFaultKind::ALL.len(),
-                fault_errors_received,
-                metrics.acknowledged
-            );
+            println!("{fault_result}");
             std::io::stdout()
                 .flush()
                 .map_err(|error| format!("flush fault result: {error}"))?;
@@ -1215,6 +1221,25 @@ fn percentile(sorted: &[u64], percentage: usize) -> u64 {
     sorted[index]
 }
 
+fn console_evidence_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn checksummed_console_record(prefix: &str, body: &str) -> String {
+    format!(
+        "{prefix}{body} crc={:08x}",
+        console_evidence_crc32(body.as_bytes())
+    )
+}
+
 fn elapsed_us(clock: Instant) -> u64 {
     clock.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
@@ -1284,6 +1309,33 @@ mod tests {
     #[test]
     fn generated_session_id_never_uses_the_reserved_value() {
         assert_ne!(generate_session_id(), 0);
+    }
+
+    #[test]
+    fn console_evidence_crc32_matches_the_standard_check_value() {
+        assert_eq!(console_evidence_crc32(b"123456789"), 0xcbf4_3926);
+    }
+
+    #[test]
+    fn checksummed_error_evidence_records_fit_the_uart_mux_chunk() {
+        for kind in ErrorFaultKind::ALL {
+            let body = format!(
+                "kind={} seq=1005 expected={} observed={}",
+                kind.name(),
+                kind.expected_error() as u16,
+                kind.expected_error() as u16
+            );
+            let record = checksummed_console_record("IVC-ERROR-C ", &body);
+            assert!(record.len() <= ERROR_EVIDENCE_RECORD_MAX_BYTES, "{record}");
+        }
+        let terminal = checksummed_console_record(
+            "IVC-ERROR-RESULT ",
+            "profile=error injected=5 received=5 acknowledged=100 continued=1",
+        );
+        assert!(
+            terminal.len() <= ERROR_EVIDENCE_RECORD_MAX_BYTES,
+            "{terminal}"
+        );
     }
 
     #[test]

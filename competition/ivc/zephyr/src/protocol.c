@@ -82,6 +82,27 @@ static bool frame_error_code_valid(enum ivc_message_type message_type,
 	return error_code == IVC_ERROR_NONE;
 }
 
+static uint32_t crc32_update(uint32_t crc, uint8_t byte)
+{
+	crc ^= byte;
+	for (unsigned int bit = 0; bit < 8U; ++bit) {
+		uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+
+		crc = (crc >> 1) ^ (UINT32_C(0xedb88320) & mask);
+	}
+	return crc;
+}
+
+uint32_t ivc_crc32_bytes(const uint8_t *bytes, size_t length)
+{
+	uint32_t crc = UINT32_MAX;
+
+	for (size_t index = 0; index < length; ++index) {
+		crc = crc32_update(crc, bytes[index]);
+	}
+	return ~crc;
+}
+
 uint32_t ivc_crc32(const uint8_t *frame, size_t frame_length)
 {
 	uint32_t crc = UINT32_MAX;
@@ -92,12 +113,7 @@ uint32_t ivc_crc32(const uint8_t *frame, size_t frame_length)
 		if (index >= IVC_CHECKSUM_OFFSET && index < IVC_CHECKSUM_OFFSET + 4U) {
 			byte = 0U;
 		}
-		crc ^= byte;
-		for (unsigned int bit = 0; bit < 8U; ++bit) {
-			uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
-
-			crc = (crc >> 1) ^ (UINT32_C(0xedb88320) & mask);
-		}
+		crc = crc32_update(crc, byte);
 	}
 	return ~crc;
 }

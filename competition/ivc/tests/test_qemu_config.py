@@ -840,7 +840,13 @@ class QemuConfigContractTests(unittest.TestCase):
 
         self.assertIn("struct ivc_error_evidence", zephyr_source)
         self.assertIn("replay_error_evidence_if_complete(server);", zephyr_source)
+        self.assertIn('printk("IVC-ERROR-Z %s crc=%08x', zephyr_source)
+        self.assertIn("ivc_crc32_bytes", zephyr_source)
         self.assertIn("replay_verified_error_fault_records()?;", controller_source)
+        self.assertIn('checksummed_console_record("IVC-ERROR-C "', controller_source)
+        self.assertIn(
+            'checksummed_console_record("IVC-ERROR-RESULT "', controller_source
+        )
 
     def test_error_profile_settles_shared_uart_before_terminal_result(self) -> None:
         controller_source = IVCPROTO_BIN.read_text(encoding="utf-8")

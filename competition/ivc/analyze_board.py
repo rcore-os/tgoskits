@@ -11,6 +11,7 @@ import json
 import math
 import re
 import sys
+import zlib
 from pathlib import Path
 
 
@@ -30,9 +31,14 @@ RTOS_POWEROFF_PREFIX = "IVC-RTOS-POWEROFF "
 RTOS_READY_PREFIX = "IVC-RTOS-READY "
 ACK_LOSS_INJECT_PREFIX = "IVC-RTOS-INJECT "
 DUPLICATE_PREFIX = "IVC-RTOS-DUPLICATE "
-RTOS_ERROR_PREFIX = "IVC-RTOS-ERROR "
-CONTROLLER_FAULT_PREFIX = "IVC-CONTROLLER-FAULT "
-CONTROLLER_FAULT_RESULT_PREFIX = "IVC-CONTROLLER-FAULT-RESULT "
+CONTROLLER_ERROR_PREFIX = "IVC-ERROR-C "
+RTOS_ERROR_PREFIX = "IVC-ERROR-Z "
+CONTROLLER_ERROR_RESULT_PREFIX = "IVC-ERROR-RESULT "
+ERROR_EVIDENCE_PREFIXES = (
+    CONTROLLER_ERROR_PREFIX,
+    RTOS_ERROR_PREFIX,
+    CONTROLLER_ERROR_RESULT_PREFIX,
+)
 STARRY_BOOT_PREFIX = "IVC-STARRY-BOOT "
 STARRY_NETWORK_PREFIX = "IVC-STARRY-NET "
 STARRY_RAW_PREFIX = "IVC-STARRY-RAW "
@@ -406,7 +412,7 @@ def validate_normal_rtos(
     ):
         raise AnalysisError("normal run contains ACK-loss evidence markers")
     if any(
-        line.startswith((CONTROLLER_FAULT_PREFIX, CONTROLLER_FAULT_RESULT_PREFIX))
+        line.startswith(ERROR_EVIDENCE_PREFIXES)
         for line in lines
     ):
         raise AnalysisError("normal run contains error-profile evidence markers")
@@ -479,7 +485,7 @@ def validate_ack_loss_rtos(
         }
     )
     if any(
-        line.startswith((CONTROLLER_FAULT_PREFIX, CONTROLLER_FAULT_RESULT_PREFIX))
+        line.startswith(ERROR_EVIDENCE_PREFIXES)
         for line in lines
     ):
         raise AnalysisError("ACK-loss run contains error-profile evidence markers")
@@ -532,21 +538,41 @@ def validate_error_rtos(
         raise AnalysisError("error profile contains ACK-loss evidence markers")
 
 
-def parse_distinct_records(
+def parse_integrity_fields(
+    line: str, prefix: str, field_order: tuple[str, ...]
+) -> dict[str, str] | None:
+    try:
+        fields = parse_fields(line, prefix)
+    except AnalysisError:
+        return None
+    if set(fields) != set(field_order) | {"crc"}:
+        return None
+    checksum = fields["crc"]
+    if re.fullmatch(r"[0-9a-f]{8}", checksum) is None:
+        return None
+    body = " ".join(f"{field}={fields[field]}" for field in field_order)
+    try:
+        encoded_body = body.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    expected = zlib.crc32(encoded_body) & 0xFFFF_FFFF
+    if checksum != f"{expected:08x}":
+        return None
+    return {field: fields[field] for field in field_order}
+
+
+def parse_distinct_integrity_records(
     lines: list[str],
     prefix: str,
-    required_fields: tuple[str, ...],
+    field_order: tuple[str, ...],
     identity_field: str,
 ) -> dict[str, dict[str, str]]:
     records: dict[str, dict[str, str]] = {}
     for line in lines:
         if not line.startswith(prefix):
             continue
-        try:
-            fields = parse_fields(line, prefix)
-        except AnalysisError:
-            continue
-        if not all(field in fields for field in required_fields):
+        fields = parse_integrity_fields(line, prefix, field_order)
+        if fields is None:
             continue
         identity = fields[identity_field]
         previous = records.get(identity)
@@ -558,16 +584,35 @@ def parse_distinct_records(
     return records
 
 
+def find_integrity_record(
+    lines: list[str], prefix: str, field_order: tuple[str, ...]
+) -> dict[str, str]:
+    records = [
+        fields
+        for line in lines
+        if line.startswith(prefix)
+        and (fields := parse_integrity_fields(line, prefix, field_order)) is not None
+    ]
+    if not records:
+        raise AnalysisError(f"missing complete checksummed {prefix.strip()} record")
+    reference = records[0]
+    if any(record != reference for record in records[1:]):
+        raise ConflictingRecordsError(
+            f"conflicting complete checksummed {prefix.strip()} records"
+        )
+    return reference
+
+
 def parse_error_evidence(
     lines: list[str], expected_count: int
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    controller_records = parse_distinct_records(
+    controller_records = parse_distinct_integrity_records(
         lines,
-        CONTROLLER_FAULT_PREFIX,
-        ("kind", "seq", "expected_code", "observed_code"),
+        CONTROLLER_ERROR_PREFIX,
+        ("kind", "seq", "expected", "observed"),
         "kind",
     )
-    rtos_records = parse_distinct_records(
+    rtos_records = parse_distinct_integrity_records(
         lines,
         RTOS_ERROR_PREFIX,
         ("seq", "code", "reason"),
@@ -586,11 +631,11 @@ def parse_error_evidence(
             raise AnalysisError(f"error evidence is missing {kind}")
         controller_contract = {
             "seq": sequence,
-            "expected_code": error_code,
-            "observed_code": error_code,
+            "expected": error_code,
+            "observed": error_code,
         }
         for field, expected in controller_contract.items():
-            if integer(controller, field, CONTROLLER_FAULT_PREFIX) != expected:
+            if integer(controller, field, CONTROLLER_ERROR_PREFIX) != expected:
                 raise AnalysisError(
                     f"controller error evidence for {kind} has invalid {field}"
                 )
@@ -609,26 +654,26 @@ def parse_error_evidence(
             }
         )
 
-    terminal = find_record(
+    terminal = find_integrity_record(
         lines,
-        CONTROLLER_FAULT_RESULT_PREFIX,
+        CONTROLLER_ERROR_RESULT_PREFIX,
         (
             "profile",
             "injected",
-            "errors_received",
-            "normal_acknowledged",
+            "received",
+            "acknowledged",
             "continued",
         ),
     )
     require_equal_fields = {
         "profile": "error",
         "injected": str(len(ERROR_FAULT_CONTRACT)),
-        "errors_received": str(len(ERROR_FAULT_CONTRACT)),
-        "normal_acknowledged": str(expected_count),
+        "received": str(len(ERROR_FAULT_CONTRACT)),
+        "acknowledged": str(expected_count),
         "continued": "1",
     }
     for field, expected in require_equal_fields.items():
-        if required(terminal, field, CONTROLLER_FAULT_RESULT_PREFIX) != expected:
+        if required(terminal, field, CONTROLLER_ERROR_RESULT_PREFIX) != expected:
             raise AnalysisError(
                 f"controller error recovery {field} does not match the profile"
             )
