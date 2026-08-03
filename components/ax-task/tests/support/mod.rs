@@ -31,6 +31,7 @@ std::thread_local! {
     static ACTIVE_PREEMPT_TOKENS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static CURRENT_CPU: Cell<u32> = const { Cell::new(0) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
+    static LOCAL_SCHEDULER_WORK_PENDING: Cell<bool> = const { Cell::new(false) };
     static LAST_ONESHOT_NS: Cell<u64> = const { Cell::new(0) };
     static LAST_DEADLINE_GENERATION: Cell<u64> = const { Cell::new(0) };
     static LAST_DEFERRED_WORK: Cell<bool> = const { Cell::new(false) };
@@ -148,8 +149,9 @@ impl_trait! {
             });
         }
 
-        fn local_scheduler_work_is_self_serviced() -> bool {
-            false
+        fn publish_local_scheduler_work() -> bool {
+            LOCAL_SCHEDULER_WORK_PENDING.with(|pending| pending.set(true));
+            IN_HARD_IRQ.with(Cell::get)
         }
 
         fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
@@ -328,6 +330,10 @@ pub fn consume_ipi(cpu: u32) -> bool {
     })
 }
 
+pub fn consume_local_scheduler_work() -> bool {
+    LOCAL_SCHEDULER_WORK_PENDING.with(|pending| pending.replace(false))
+}
+
 pub fn resource_release_counts() -> (usize, usize, usize) {
     (
         DESTROYED_CONTEXTS.with(Cell::get),
@@ -373,6 +379,7 @@ pub fn clear_handles() {
     }
     CURRENT_CPU.with(|cpu| cpu.set(0));
     set_hard_irq(false);
+    let _cleared_local_scheduler_work = consume_local_scheduler_work();
     set_online_cpu_count(1);
     reset_resource_release_counts();
     LAST_ONESHOT_NS.with(|deadline| deadline.set(0));

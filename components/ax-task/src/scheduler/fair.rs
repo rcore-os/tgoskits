@@ -39,6 +39,20 @@ pub struct FairEntity {
     service_request_ns: u64,
     remaining_request_ns: u64,
     virtual_deadline: u64,
+    placement: FairPlacement,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FairPlacement {
+    Initial,
+    Active,
+    Sleeping {
+        virtual_lag: i64,
+    },
+    Migrating {
+        virtual_lag: i64,
+        relative_deadline: u64,
+    },
 }
 
 impl FairEntity {
@@ -56,6 +70,7 @@ impl FairEntity {
             service_request_ns: 1,
             remaining_request_ns: 1,
             virtual_deadline,
+            placement: FairPlacement::Active,
         }
     }
 
@@ -74,6 +89,7 @@ impl FairEntity {
             service_request_ns: request_ns,
             remaining_request_ns: request_ns,
             virtual_deadline: virtual_time.wrapping_add(weighted_request),
+            placement: FairPlacement::Initial,
         }
     }
 
@@ -98,6 +114,98 @@ impl FairEntity {
         let shift = virtual_time.wrapping_sub(self.vruntime);
         self.vruntime = virtual_time;
         self.virtual_deadline = self.virtual_deadline.wrapping_add(shift);
+    }
+
+    /// Saves the bounded virtual lag at the point this entity stops competing.
+    ///
+    /// Linux records `se->vlag` against `avg_vruntime()` before dequeue. The
+    /// sleeping task must retain that service credit while it is absent from
+    /// the weighted average; deriving lag at wake time would instead reward
+    /// arbitrary sleep duration.
+    pub(crate) fn capture_sleep_lag(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
+        let virtual_lag = self.bounded_virtual_lag(virtual_time, timing_granularity_ns);
+        self.placement = FairPlacement::Sleeping { virtual_lag };
+    }
+
+    /// Saves lag and the active request deadline before changing runqueues.
+    pub(crate) fn capture_migration(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
+        if matches!(self.placement, FairPlacement::Migrating { .. }) {
+            return;
+        }
+        let virtual_lag = self.bounded_virtual_lag(virtual_time, timing_granularity_ns);
+        self.placement = FairPlacement::Migrating {
+            virtual_lag,
+            relative_deadline: self.virtual_deadline.wrapping_sub(self.vruntime),
+        };
+    }
+
+    /// Cancels an unpublished migration without changing the active request.
+    pub(crate) fn cancel_migration(&mut self) {
+        if matches!(self.placement, FairPlacement::Migrating { .. }) {
+            self.placement = FairPlacement::Active;
+        }
+    }
+
+    /// Restores a sleeping entity's saved lag before it joins the runqueue.
+    ///
+    /// Adding the entity changes the weighted average itself. Inflate the
+    /// placement lag by `(W + w) / W` so the post-insert lag equals the value
+    /// captured at dequeue, matching Linux `place_entity()`.
+    pub(crate) fn place_after_wake(&mut self, virtual_time: u64, runnable_weight: u64) {
+        let saved_lag = match self.placement {
+            FairPlacement::Sleeping { virtual_lag } => virtual_lag,
+            FairPlacement::Initial | FairPlacement::Active | FairPlacement::Migrating { .. } => 0,
+        };
+        let placement_lag = self.inflated_placement_lag(saved_lag, runnable_weight);
+        self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
+        self.remaining_request_ns = self.service_request_ns;
+        self.virtual_deadline = self
+            .vruntime
+            .wrapping_add(weighted_delta(self.service_request_ns, self.nice.weight()));
+        self.placement = FairPlacement::Active;
+    }
+
+    /// Restores state after an owner-to-owner transfer.
+    ///
+    /// A wake forwarded through another CPU retains sleep placement, while an
+    /// already-runnable migration retains its active request. The entity state,
+    /// rather than the transport message, owns this semantic distinction.
+    pub(crate) fn place_after_transfer(&mut self, virtual_time: u64, runnable_weight: u64) {
+        match self.placement {
+            FairPlacement::Sleeping { .. } => {
+                self.place_after_wake(virtual_time, runnable_weight);
+            }
+            FairPlacement::Migrating {
+                virtual_lag,
+                relative_deadline,
+            } => {
+                let placement_lag = self.inflated_placement_lag(virtual_lag, runnable_weight);
+                self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
+                self.virtual_deadline = self.vruntime.wrapping_add(relative_deadline);
+                self.placement = FairPlacement::Active;
+            }
+            FairPlacement::Initial | FairPlacement::Active => self.place_at_least(virtual_time),
+        }
+    }
+
+    fn bounded_virtual_lag(self, virtual_time: u64, timing_granularity_ns: u64) -> i64 {
+        let limit = weighted_delta(
+            self.service_request_ns
+                .saturating_add(timing_granularity_ns),
+            self.nice.weight(),
+        )
+        .min(i64::MAX as u64) as i64;
+        virtual_delta(virtual_time, self.vruntime).clamp(-limit, limit)
+    }
+
+    fn inflated_placement_lag(self, saved_lag: i64, runnable_weight: u64) -> i64 {
+        if saved_lag == 0 || runnable_weight == 0 {
+            return 0;
+        }
+        let weight = u64::from(self.nice.weight());
+        (i128::from(saved_lag).saturating_mul(i128::from(runnable_weight.saturating_add(weight)))
+            / i128::from(runnable_weight))
+        .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
     }
 
     /// Starts a new request after expiry or explicit yield.
@@ -185,6 +293,16 @@ impl FairEntity {
         self.virtual_deadline
     }
 
+    /// Returns whether this entity owns the earlier EEVDF deadline.
+    ///
+    /// Linux v7.1 compares virtual deadlines on the modular virtual-time
+    /// timeline and lets EEVDF eligibility and slice protection decide wakeup
+    /// preemption. A legacy physical-time wakeup granularity must not be added
+    /// to these weighted virtual deadlines.
+    pub(crate) const fn deadline_precedes(self, current: Self) -> bool {
+        virtual_before(self.virtual_deadline, current.virtual_deadline)
+    }
+
     /// Returns the physical service request used for this EEVDF slice.
     pub const fn service_request_ns(self) -> u64 {
         self.service_request_ns
@@ -193,6 +311,32 @@ impl FairEntity {
     /// Returns physical service left in the active request.
     pub const fn remaining_request_ns(self) -> u64 {
         self.remaining_request_ns
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn saved_sleep_lag(self) -> Option<i64> {
+        match self.placement {
+            FairPlacement::Sleeping { virtual_lag } => Some(virtual_lag),
+            FairPlacement::Initial | FairPlacement::Active | FairPlacement::Migrating { .. } => {
+                None
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn migration_pending(self) -> bool {
+        matches!(self.placement, FairPlacement::Migrating { .. })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn saved_migration(self) -> Option<(i64, u64)> {
+        match self.placement {
+            FairPlacement::Migrating {
+                virtual_lag,
+                relative_deadline,
+            } => Some((virtual_lag, relative_deadline)),
+            FairPlacement::Initial | FairPlacement::Active | FairPlacement::Sleeping { .. } => None,
+        }
     }
 }
 
@@ -251,5 +395,36 @@ mod tests {
 
         assert_eq!(reconfigured.vruntime(), 29);
         assert_eq!(reconfigured.virtual_deadline(), 30);
+    }
+
+    #[test]
+    fn wakeup_deadline_comparison_survives_virtual_time_wrap() {
+        let woken =
+            FairEntity::test_state(Nice::ZERO, FairMode::Normal, u64::MAX - 30, u64::MAX - 20);
+        let current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 0, 5);
+
+        assert!(woken.deadline_precedes(current));
+    }
+
+    #[test]
+    fn earlier_eevdf_deadline_is_not_hidden_by_legacy_wakeup_granularity() {
+        let woken = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 1_000, 1_500);
+        let current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 2_000, 3_000);
+
+        assert!(woken.deadline_precedes(current));
+    }
+
+    #[test]
+    fn forwarded_wake_keeps_sleep_placement_instead_of_an_active_deadline() {
+        let mut entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 950);
+        entity.capture_sleep_lag(1_000, 1_000);
+
+        entity.place_after_transfer(2_000, u64::from(Nice::ZERO.weight()));
+
+        assert_eq!(
+            (entity.vruntime(), entity.virtual_deadline()),
+            (1_800, 1_801)
+        );
+        assert_eq!(entity.remaining_request_ns(), entity.service_request_ns());
     }
 }

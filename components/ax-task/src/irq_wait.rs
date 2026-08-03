@@ -106,11 +106,20 @@ enum IrqWaitWake {
     Test(IrqWakeHandle),
 }
 
+#[derive(Clone, Copy)]
+enum WakeContext {
+    HardIrq,
+    Task,
+}
+
 impl IrqWaitWake {
-    fn wake(&self) {
+    fn wake(&self, context: WakeContext) {
         match self {
             Self::Thread(wake) => {
-                let _result = wake.wake();
+                let _result = match context {
+                    WakeContext::HardIrq => wake.wake(),
+                    WakeContext::Task => wake.wake_from_task(),
+                };
             }
             #[cfg(test)]
             Self::Test(wake) => wake.wake(),
@@ -562,6 +571,10 @@ impl IrqWaitCell {
     /// after waking the displaced waiter. It never scans a wait queue or
     /// allocates.
     pub fn notify(&self) -> IrqNotifyResult {
+        self.notify_with_context(WakeContext::HardIrq)
+    }
+
+    fn notify_with_context(&self, context: WakeContext) -> IrqNotifyResult {
         let pending = pending_waiter();
         let mut observed = self.waiter.load(Ordering::Acquire);
         for _ in 0..IRQ_NOTIFY_CAS_BUDGET {
@@ -605,7 +618,7 @@ impl IrqWaitCell {
                         // successful transition removes it. The pending
                         // sentinel is handled before this branch and is never
                         // dereferenced.
-                        Self::notify_registration(&*waiter);
+                        Self::notify_registration(&*waiter, context);
                     }
                     return IrqNotifyResult::Notified;
                 }
@@ -623,9 +636,22 @@ impl IrqWaitCell {
         unsafe {
             // The swap owns the displaced pinned registration. The pending
             // sentinel remains installed and is never dereferenced.
-            Self::notify_registration(&*waiter);
+            Self::notify_registration(&*waiter, context);
         }
         IrqNotifyResult::Notified
+    }
+
+    /// Wakes the sole registered thread from ordinary task context.
+    ///
+    /// This preserves the same pending and registration lifetime protocol as
+    /// [`Self::notify`], while allowing the scheduler to activate a same-CPU
+    /// waiter directly. Callers must not invoke it from hard IRQ context.
+    pub fn notify_from_task(&self) -> IrqNotifyResult {
+        assert!(
+            !crate::runtime::task_runtime::in_hard_irq(),
+            "task IRQ-cell notification is not valid in hard IRQ context"
+        );
+        self.notify_with_context(WakeContext::Task)
     }
 
     /// Reports whether an IRQ is coalesced for the next registration.
@@ -633,9 +659,9 @@ impl IrqWaitCell {
         self.waiter.load(Ordering::Acquire) == pending_waiter()
     }
 
-    fn notify_registration(registration: &IrqWaitNode) {
+    fn notify_registration(registration: &IrqWaitNode, context: WakeContext) {
         let generation = registration.begin_notification();
-        registration.wake.wake();
+        registration.wake.wake(context);
         registration.finish_notification(generation);
     }
 }

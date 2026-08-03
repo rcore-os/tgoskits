@@ -62,6 +62,29 @@ impl TaskSystem {
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
         {
             let mut sched = previous_core.sched().lock();
+            let timing_granularity_ns = self.config.timing_granularity_ns();
+            if let Some(fair) = sched.policy.effective_entity.fair() {
+                let virtual_time = cpu
+                    .dispatch_state()
+                    .run_queue
+                    .virtual_time_for_mode(fair.mode());
+                sched
+                    .policy
+                    .effective_entity
+                    .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+            }
+            if !sched.is_pi_boosted()
+                && let Some(fair) = sched.policy.base_entity.fair()
+            {
+                let virtual_time = cpu
+                    .dispatch_state()
+                    .run_queue
+                    .virtual_time_for_mode(fair.mode());
+                sched
+                    .policy
+                    .base_entity
+                    .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+            }
             sched.transition(&previous_core, ThreadState::Blocked)?;
             sched.placement.set_running_cpu(None)?;
         }

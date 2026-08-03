@@ -2,7 +2,7 @@
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
-use super::{fair_queue::FairRunQueue, virtual_max};
+use super::fair_queue::FairRunQueue;
 use crate::{
     FairEntity, FairMode, SchedulePolicy, SchedulingEntity, SchedulingKey, TaskError, ThreadCore,
     ThreadId,
@@ -131,8 +131,6 @@ pub(crate) struct RunQueue {
     fair: FairRunQueue,
     idle_fair: FairRunQueue,
     membership: Vec<Option<QueueMembership>>,
-    virtual_time: u64,
-    idle_virtual_time: u64,
     earliest_deadline_event_ns: Option<u64>,
     pushable_summary: Option<PushableSummary>,
     next_sequence: u64,
@@ -148,8 +146,6 @@ impl RunQueue {
             fair: FairRunQueue::new(),
             idle_fair: FairRunQueue::new(),
             membership: Vec::new(),
-            virtual_time: 0,
-            idle_virtual_time: 0,
             earliest_deadline_event_ns: None,
             pushable_summary: None,
             next_sequence: 0,
@@ -163,31 +159,33 @@ impl RunQueue {
 
     #[cfg(test)]
     pub(crate) const fn virtual_time(&self) -> u64 {
-        self.virtual_time
+        self.fair.virtual_time()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_virtual_time_for_test(&mut self, virtual_time: u64) {
+        self.fair.set_virtual_time_for_test(virtual_time);
     }
 
     pub(crate) const fn virtual_time_for_mode(&self, mode: FairMode) -> u64 {
         if matches!(mode, FairMode::Idle) {
-            self.idle_virtual_time
+            self.idle_fair.virtual_time()
         } else {
-            self.virtual_time
+            self.fair.virtual_time()
         }
     }
 
-    /// Advances each fair class's lag origin from its runnable weighted mean.
+    /// Updates each fair class's authoritative weighted-average virtual time.
     ///
     /// `current` is supplied because the running entity is temporarily absent
-    /// from the owner runqueue. Virtual time is monotonic; dequeueing a sleeper
-    /// cannot move it backward and manufacture positive lag.
+    /// from the owner runqueue. Like Linux `avg_vruntime()`, insertion and
+    /// removal may move this average in either direction; saved `vlag` protects
+    /// entities from those membership changes.
     pub(crate) fn update_fair_virtual_time(&mut self, current: Option<FairEntity>) {
         let normal_current = current.filter(|entity| entity.mode() != FairMode::Idle);
         let idle_current = current.filter(|entity| entity.mode() == FairMode::Idle);
-        if let Some(mean) = self.fair.weighted_virtual_time(normal_current) {
-            self.virtual_time = virtual_max(self.virtual_time, mean);
-        }
-        if let Some(mean) = self.idle_fair.weighted_virtual_time(idle_current) {
-            self.idle_virtual_time = virtual_max(self.idle_virtual_time, mean);
-        }
+        self.fair.update_virtual_time(normal_current);
+        self.idle_fair.update_virtual_time(idle_current);
     }
 
     pub(crate) fn has_rt(&self) -> bool {
@@ -269,6 +267,7 @@ impl RunQueue {
         entity: SchedulingEntity,
         core: Arc<ThreadCore>,
         reason: EnqueueReason,
+        current_fair: Option<FairEntity>,
     ) -> Result<SchedulingEntity, TaskError> {
         if self.contains(id) {
             return Err(TaskError::AlreadyQueued);
@@ -283,10 +282,41 @@ impl RunQueue {
         };
         if let SchedulingEntity::Fair(fair) = &mut entry.entity {
             let virtual_time = self.virtual_time_for_mode(fair.mode());
-            fair.place_at_least(virtual_time);
-            if matches!(reason, EnqueueReason::Yield) {
-                fair.yield_request(virtual_time);
-            } else if fair.request_exhausted() {
+            match reason {
+                EnqueueReason::Wake => {
+                    let (queue_weight, current_weight) =
+                        self.fair_placement_weights(*fair, current_fair);
+                    fair.place_after_wake(
+                        virtual_time,
+                        queue_weight.saturating_add(current_weight),
+                    );
+                }
+                EnqueueReason::Preempted => {}
+                EnqueueReason::Yield => fair.yield_request(virtual_time),
+                EnqueueReason::Migrated => {
+                    let (queue_weight, current_weight) =
+                        self.fair_placement_weights(*fair, current_fair);
+                    fair.place_after_transfer(
+                        virtual_time,
+                        queue_weight.saturating_add(current_weight),
+                    );
+                }
+                EnqueueReason::PolicyChanged => {
+                    let (queue_weight, current_weight) =
+                        self.fair_placement_weights(*fair, current_fair);
+                    fair.place_after_transfer(
+                        virtual_time,
+                        queue_weight.saturating_add(current_weight),
+                    );
+                }
+                EnqueueReason::Replenished => {
+                    fair.place_at_least(virtual_time);
+                }
+            }
+            if reason != EnqueueReason::Wake
+                && reason != EnqueueReason::Yield
+                && fair.request_exhausted()
+            {
                 fair.renew_request(virtual_time);
             }
         }
@@ -350,6 +380,22 @@ impl RunQueue {
         Ok(queued_entity)
     }
 
+    fn fair_placement_weights(
+        &self,
+        fair: FairEntity,
+        current_fair: Option<FairEntity>,
+    ) -> (u64, u64) {
+        let queue_weight = if fair.mode() == FairMode::Idle {
+            self.idle_fair.total_weight()
+        } else {
+            self.fair.total_weight()
+        };
+        let current_weight = current_fair
+            .filter(|current| current.mode() == fair.mode())
+            .map_or(0, |current| u64::from(current.weight()));
+        (queue_weight, current_weight)
+    }
+
     #[cfg(test)]
     fn enqueue_test(
         &mut self,
@@ -361,7 +407,7 @@ impl RunQueue {
     ) -> Result<SchedulingEntity, TaskError> {
         let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
         let core = Arc::new(ThreadCore::new(id, policy, sched, None, None, None));
-        self.enqueue(id, policy, entity, core, reason)
+        self.enqueue(id, policy, entity, core, reason, None)
     }
 
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
@@ -394,9 +440,15 @@ impl RunQueue {
         Some(removed)
     }
 
-    pub(crate) fn detach_for_transfer(&mut self, id: ThreadId) -> Option<DetachedQueueEntry> {
+    pub(crate) fn detach_for_transfer(
+        &mut self,
+        id: ThreadId,
+        current_fair: Option<FairEntity>,
+        timing_granularity_ns: u64,
+    ) -> Option<DetachedQueueEntry> {
+        self.update_fair_virtual_time(current_fair);
         let class = self.membership_class(id)?;
-        let (thread, restore_point) = match class {
+        let (mut thread, restore_point) = match class {
             QueueMembershipClass::Deadline => {
                 let position = self.deadline.iter().position(|thread| thread.id == id)?;
                 (
@@ -420,6 +472,12 @@ impl RunQueue {
                 (self.idle_fair.remove(id)?, QueueRestorePoint::IdleFair)
             }
         };
+        if let Some(fair) = thread.entity.fair() {
+            thread.entity.capture_fair_migration(
+                self.virtual_time_for_mode(fair.mode()),
+                timing_granularity_ns,
+            );
+        }
         self.len -= 1;
         self.unregister_membership(thread.id);
         if matches!(class, QueueMembershipClass::Deadline) {
@@ -431,6 +489,7 @@ impl RunQueue {
         {
             self.recompute_pushable_summary();
         }
+        self.update_fair_virtual_time(current_fair);
         Some(DetachedQueueEntry {
             thread,
             restore_point,
@@ -439,9 +498,10 @@ impl RunQueue {
 
     pub(crate) fn restore_detached(&mut self, detached: DetachedQueueEntry) {
         let DetachedQueueEntry {
-            thread,
+            mut thread,
             restore_point,
         } = detached;
+        thread.entity.cancel_fair_migration();
         let id = thread.id;
         assert!(
             !self.contains(id),
@@ -549,16 +609,12 @@ impl RunQueue {
 
     fn pick_fair(&mut self, idle: bool) -> Option<QueuedThread> {
         self.update_fair_virtual_time(None);
-        let virtual_time = if idle {
-            self.idle_virtual_time
-        } else {
-            self.virtual_time
-        };
         let queue = if idle {
             &mut self.idle_fair
         } else {
             &mut self.fair
         };
+        let virtual_time = queue.virtual_time();
         if queue.is_empty() {
             return None;
         }
@@ -751,7 +807,7 @@ mod tests {
     #[test]
     fn first_fair_placement_cannot_start_behind_runqueue_virtual_time() {
         let mut queue = RunQueue::new();
-        queue.virtual_time = 10_000;
+        queue.set_virtual_time_for_test(10_000);
         let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
         let thread = ThreadId::from_parts(0, 1);
 
@@ -768,6 +824,147 @@ mod tests {
         let entity = queue.dequeue(thread).unwrap().entity.fair().unwrap();
         assert_eq!(entity.vruntime(), 10_000);
         assert_eq!(entity.virtual_deadline(), 11_000);
+    }
+
+    #[test]
+    fn fair_preemption_preserves_positive_lag_and_active_deadline() {
+        let mut queue = RunQueue::new();
+        queue.set_virtual_time_for_test(1_000);
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let thread = ThreadId::from_parts(0, 1);
+
+        queue
+            .enqueue_test(
+                thread,
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    900,
+                    950,
+                )),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+
+        let entity = queue.dequeue(thread).unwrap().entity.fair().unwrap();
+        assert_eq!(
+            (entity.vruntime(), entity.virtual_deadline()),
+            (900, 950),
+            "a same-rq preemption must not erase the current EEVDF request's lag"
+        );
+    }
+
+    #[test]
+    fn fair_migration_preserves_positive_lag_and_active_deadline() {
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let migrating = ThreadId::from_parts(0, 1);
+        let peer = ThreadId::from_parts(1, 1);
+        let mut source = RunQueue::new();
+        source
+            .enqueue_test(
+                migrating,
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    900,
+                    950,
+                )),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+        source
+            .enqueue_test(
+                peer,
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    1_100,
+                    1_200,
+                )),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+        let detached = source
+            .detach_for_transfer(migrating, None, 500_000)
+            .unwrap();
+
+        let mut destination = RunQueue::new();
+        destination.set_virtual_time_for_test(2_000);
+        destination
+            .enqueue_test(
+                peer,
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    2_000,
+                    2_100,
+                )),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+        destination
+            .enqueue(
+                migrating,
+                policy,
+                detached.thread.entity,
+                detached.thread.core,
+                EnqueueReason::Migrated,
+                None,
+            )
+            .unwrap();
+
+        let entity = destination
+            .dequeue(migrating)
+            .unwrap()
+            .entity
+            .fair()
+            .unwrap();
+        assert_eq!(
+            (entity.vruntime(), entity.virtual_deadline()),
+            (1_800, 1_850),
+            "migration must restore source vlag and relative deadline on the destination rq"
+        );
+    }
+
+    #[test]
+    fn failed_fair_migration_restores_active_source_placement() {
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let thread = ThreadId::from_parts(0, 1);
+        let mut queue = RunQueue::new();
+        queue.set_virtual_time_for_test(1_000);
+        queue
+            .enqueue_test(
+                thread,
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    900,
+                    950,
+                )),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+
+        let detached = queue.detach_for_transfer(thread, None, 1_000).unwrap();
+        assert!(detached.thread.entity.fair().unwrap().migration_pending());
+        queue.restore_detached(detached);
+
+        let restored = queue.dequeue(thread).unwrap().entity.fair().unwrap();
+        assert_eq!(
+            (restored.vruntime(), restored.virtual_deadline()),
+            (900, 950)
+        );
+        assert!(!restored.migration_pending());
     }
 
     #[test]
@@ -839,7 +1036,7 @@ mod tests {
         let mut queue = RunQueue::new();
         let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
         let virtual_time = u64::MAX - 100;
-        queue.virtual_time = virtual_time;
+        queue.set_virtual_time_for_test(virtual_time);
         let later = ThreadId::from_parts(0, 1);
         let earlier = ThreadId::from_parts(1, 1);
 
@@ -874,7 +1071,7 @@ mod tests {
         let mut queue = RunQueue::new();
         let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
         let before_wrap = u64::MAX - 100;
-        queue.virtual_time = before_wrap;
+        queue.set_virtual_time_for_test(before_wrap);
         queue
             .enqueue_test(
                 ThreadId::from_parts(0, 1),
@@ -907,7 +1104,7 @@ mod tests {
         let mut queue = RunQueue::new();
         let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
         let virtual_time = u64::MAX - 10;
-        queue.virtual_time = virtual_time;
+        queue.set_virtual_time_for_test(virtual_time);
         for (slot, deadline) in [(0, 5), (1, u64::MAX - 1)] {
             queue
                 .enqueue_test(

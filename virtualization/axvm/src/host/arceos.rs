@@ -9,7 +9,7 @@ use core::{
 
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::{
-    os::arceos::{api, modules},
+    os::arceos::{api, modules, task as runtime_task},
     thread,
 };
 use axvm_types::{HostPhysAddr, HostVirtAddr};
@@ -104,10 +104,10 @@ impl HostCpu for ArceOsHost {
     }
 }
 
-pub(crate) type ArceOsTaskHandle = modules::ax_runtime::task::ThreadHandle;
-pub(crate) type ArceOsWaitQueue = modules::ax_runtime::task::WaitQueue;
+pub(crate) type ArceOsTaskHandle = runtime_task::ThreadHandle;
+pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
-pub(crate) use modules::ax_runtime::task::{
+pub(crate) use runtime_task::{
     CpuId as ArceOsTaskCpuId, CpuSet as ArceOsTaskCpuSet, SchedulePolicy as ArceOsSchedulePolicy,
     SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
     ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
@@ -115,7 +115,7 @@ pub(crate) use modules::ax_runtime::task::{
 };
 
 pub(crate) fn current_task() -> ArceOsTaskHandle {
-    modules::ax_runtime::task::current_thread_handle()
+    runtime_task::current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
 }
 
@@ -132,20 +132,20 @@ where
     // SAFETY: the caller transfers unique ownership of `extension`; this
     // adapter forwards it exactly once to the ArceOS runtime.
     unsafe {
-        modules::ax_runtime::task::spawn_raw_with_extension_and_affinity(
+        runtime_task::spawn_raw_with_extension_and_affinity(
             entry, name, stack_size, extension, affinity,
         )
     }
 }
 
 pub(crate) fn join_task(task: ArceOsTaskHandle) -> Result<i32, ArceOsTaskError> {
-    modules::ax_runtime::task::join_thread(task)
+    runtime_task::join_thread(task)
 }
 
 pub(crate) fn task_extension(
     task: &ArceOsTaskHandle,
-) -> Result<Option<modules::ax_runtime::task::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
-    modules::ax_runtime::task::thread_os_extension(task)
+) -> Result<Option<runtime_task::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
+    runtime_task::thread_os_extension(task)
 }
 
 pub(crate) fn task_cpu_set_from_raw_bits(bits: usize) -> ArceOsTaskCpuSet {

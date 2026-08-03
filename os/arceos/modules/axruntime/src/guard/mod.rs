@@ -141,7 +141,7 @@ pub(crate) fn exit_irq(owner: &'static str) {
 }
 
 #[cfg(all(feature = "multitask", not(test)))]
-pub(crate) fn local_scheduler_work_is_self_serviced() -> bool {
+pub(crate) fn publish_local_scheduler_work() -> bool {
     assert!(
         !ax_hal::asm::irqs_enabled(),
         "local scheduler-work query requires an IRQ publication guard"

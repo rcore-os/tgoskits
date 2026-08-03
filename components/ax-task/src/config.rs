@@ -2,8 +2,8 @@
 
 /// Default fair scheduling request in nanoseconds.
 pub const DEFAULT_FAIR_SLICE_NS: u64 = 1_000_000;
-/// Default fair wake-up preemption granularity in nanoseconds.
-pub const DEFAULT_WAKEUP_GRANULARITY_NS: u64 = 500_000;
+/// Default scheduler timing granularity used to bound EEVDF lag.
+pub const DEFAULT_TIMING_GRANULARITY_NS: u64 = 1_000_000;
 /// Default periodic fair balancing interval in nanoseconds.
 pub const DEFAULT_BALANCE_INTERVAL_NS: u64 = 10_000_000;
 /// Default round-robin quantum in nanoseconds.
@@ -46,7 +46,7 @@ impl CpuId {
 pub struct TaskSystemConfig {
     cpu_count: usize,
     fair_slice_ns: u64,
-    wakeup_granularity_ns: u64,
+    timing_granularity_ns: u64,
     balance_interval_ns: u64,
     rr_quantum_ns: u64,
     rt_period_ns: u64,
@@ -62,7 +62,7 @@ impl TaskSystemConfig {
         Self {
             cpu_count,
             fair_slice_ns: DEFAULT_FAIR_SLICE_NS,
-            wakeup_granularity_ns: DEFAULT_WAKEUP_GRANULARITY_NS,
+            timing_granularity_ns: DEFAULT_TIMING_GRANULARITY_NS,
             balance_interval_ns: DEFAULT_BALANCE_INTERVAL_NS,
             rr_quantum_ns: DEFAULT_RR_QUANTUM_NS,
             rt_period_ns: DEFAULT_RT_PERIOD_NS,
@@ -83,9 +83,9 @@ impl TaskSystemConfig {
         self.fair_slice_ns
     }
 
-    /// Returns the fair wake-up granularity.
-    pub const fn wakeup_granularity_ns(self) -> u64 {
-        self.wakeup_granularity_ns
+    /// Returns the scheduler timing granularity used to bound EEVDF lag.
+    pub const fn timing_granularity_ns(self) -> u64 {
+        self.timing_granularity_ns
     }
 
     /// Returns the balancing interval.

@@ -221,7 +221,6 @@ impl CurrentDispatch {
         woken_policy: SchedulePolicy,
         woken_entity: SchedulingEntity,
         fair_virtual_time: u64,
-        wakeup_granularity_ns: u64,
     ) -> bool {
         match woken_policy {
             SchedulePolicy::Deadline(_) => match self.policy {
@@ -263,8 +262,20 @@ impl CurrentDispatch {
                     {
                         false
                     } else {
-                        fair_deadline(woken_entity).saturating_add(wakeup_granularity_ns)
-                            < fair_deadline(self.entity)
+                        let woken = woken_entity
+                            .fair()
+                            .expect("fair policy must own a fair scheduling entity");
+                        let current = self
+                            .entity
+                            .fair()
+                            .expect("fair policy must own a fair scheduling entity");
+                        // Linux v7.1 EEVDF protects an eligible current entity's
+                        // active request. This is a request-state invariant,
+                        // not the removed physical-time wakeup granularity. An
+                        // ineligible current entity loses protection so a
+                        // positive-lag wake can run at this safe point.
+                        (!current.is_eligible(fair_virtual_time) || current.request_exhausted())
+                            && woken.deadline_precedes(current)
                     }
                 }
             },
@@ -276,12 +287,6 @@ fn deadline_key(entity: SchedulingEntity) -> u64 {
     entity
         .deadline()
         .map_or(u64::MAX, |deadline| deadline.absolute_deadline_ns())
-}
-
-fn fair_deadline(entity: SchedulingEntity) -> u64 {
-    entity
-        .fair()
-        .map_or(u64::MAX, |fair| fair.virtual_deadline())
 }
 
 /// Result of one allocation-free local dispatch charge.

@@ -71,7 +71,7 @@ impl_task_runtime! {
         }
         unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {}
 
-        fn local_scheduler_work_is_self_serviced() -> bool {
+        fn publish_local_scheduler_work() -> bool {
             false
         }
         fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }

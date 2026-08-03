@@ -225,12 +225,17 @@ impl TaskSystem {
         {
             return Err(TaskError::InvalidConfiguration);
         }
-        let detached = cpu
-            .as_mut()
-            .dispatch_state_mut()
-            .run_queue
-            .detach_for_transfer(core.id())
-            .ok_or(TaskError::NotReady)?;
+        let detached = {
+            let dispatch = cpu.as_mut().dispatch_state_mut();
+            let current_fair = dispatch
+                .current_dispatch
+                .as_ref()
+                .and_then(|current| current.entity.fair());
+            dispatch
+                .run_queue
+                .detach_for_transfer(core.id(), current_fair, self.config.timing_granularity_ns())
+                .ok_or(TaskError::NotReady)?
+        };
         let queued_entity = detached.thread.entity;
         let prepare_result = (|| {
             Self::detach_owner_deadline_bandwidth_locked(&core, &mut sched, cpu.as_mut())?;
@@ -242,13 +247,14 @@ impl TaskSystem {
             if !sched.is_pi_boosted() {
                 sched.policy.base_entity = queued_entity;
             }
+            self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
             sched.placement.begin_queued_migration(source, target)?;
             core.set_target_cpu(target);
             Ok(())
         })();
         drop(sched);
         if let Err(error) = prepare_result {
-            self.rollback_owner_balance_transfer(cpu.as_mut(), &core, detached, source, target)?;
+            self.rollback_owner_queued_migration(cpu.as_mut(), &core, detached, source, target)?;
             return Err(error);
         }
         let migrated_fair = matches!(candidate.policy, SchedulePolicy::Fair { .. });
@@ -263,7 +269,7 @@ impl TaskSystem {
         #[cfg(test)]
         drop(publication_exit);
         if let Err(error) = publication_result {
-            self.rollback_owner_balance_transfer(cpu.as_mut(), &core, detached, source, target)?;
+            self.rollback_owner_queued_migration(cpu.as_mut(), &core, detached, source, target)?;
             return Err(error);
         }
         self.publish_owner_cpu_load_summary(cpu.as_mut());
@@ -275,7 +281,7 @@ impl TaskSystem {
         Ok(Some(core.id()))
     }
 
-    fn rollback_owner_balance_transfer(
+    pub(super) fn rollback_owner_queued_migration(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         core: &Arc<ThreadCore>,
@@ -289,6 +295,12 @@ impl TaskSystem {
                 Err(error) => Err(error),
                 Ok(()) => {
                     core.set_target_cpu(source);
+                    sched.policy.effective_entity.cancel_fair_migration();
+                    if !sched.is_pi_boosted() {
+                        sched.policy.base_entity = sched.policy.effective_entity;
+                    } else {
+                        sched.policy.base_entity.cancel_fair_migration();
+                    }
                     Self::activate_owner_deadline_bandwidth(core, &mut sched, cpu.as_mut(), source)
                         .and_then(|()| {
                             Self::refresh_owner_deadline_timers_locked(

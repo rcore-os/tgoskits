@@ -108,7 +108,7 @@ impl_task_runtime! {
             assert!(PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) > 0);
         }
 
-        fn local_scheduler_work_is_self_serviced() -> bool {
+        fn publish_local_scheduler_work() -> bool {
             false
         }
         fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }

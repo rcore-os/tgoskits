@@ -164,11 +164,11 @@ impl CpuRemote {
         if current.as_u32() != self.owner.as_u32() {
             return false;
         }
-        // Hard IRQ return consumes the sticky request through its outer
+        // Publish into the architecture preemption word before suppressing a
+        // self-IPI. Hard IRQ return consumes that state through its outer
         // preemption guard. Ordinary task publication instead converts the
-        // final IRQ guard directly into the scheduler baton. In both cases a
-        // self-IPI would add an unnecessary interrupt round trip.
-        task_runtime::in_hard_irq() || task_runtime::local_scheduler_work_is_self_serviced()
+        // final IRQ guard directly into the scheduler baton.
+        task_runtime::publish_local_scheduler_work()
     }
 
     /// Tests the sticky reschedule request without consuming it.

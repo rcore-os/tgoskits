@@ -113,26 +113,27 @@ impl TaskSystem {
             return Ok(false);
         }
         let fields = cpu.as_mut().dispatch_state_mut();
-        let queued_entity =
-            fields
-                .run_queue
-                .enqueue(core.id(), policy, queued_entity, Arc::clone(core), reason)?;
         let current_fair = fields
             .current_dispatch
             .as_ref()
             .and_then(|dispatch| dispatch.entity.fair());
         fields.run_queue.update_fair_virtual_time(current_fair);
+        let queued_entity = fields.run_queue.enqueue(
+            core.id(),
+            policy,
+            queued_entity,
+            Arc::clone(core),
+            reason,
+            current_fair,
+        )?;
+        fields.run_queue.update_fair_virtual_time(current_fair);
         let fair_virtual_time = queued_entity.fair().map_or(0, |fair| {
             fields.run_queue.virtual_time_for_mode(fair.mode())
         });
-        let preempts_current = fields.current_dispatch.as_ref().is_none_or(|current| {
-            current.should_preempt(
-                policy,
-                queued_entity,
-                fair_virtual_time,
-                self.config.wakeup_granularity_ns(),
-            )
-        });
+        let preempts_current = fields
+            .current_dispatch
+            .as_ref()
+            .is_none_or(|current| current.should_preempt(policy, queued_entity, fair_virtual_time));
         sched.policy.effective_entity = queued_entity;
         if !sched.is_pi_boosted() {
             sched.policy.base_entity = queued_entity;

@@ -46,6 +46,7 @@ std::thread_local! {
     static HOOK_REENTRY_ERROR: Cell<Option<crate::TaskError>> = const { Cell::new(None) };
     static IRQ_EXIT_SCHEDULE_REMAINING: Cell<usize> = const { Cell::new(0) };
     static IRQ_EXIT_SCHEDULE_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static LOCAL_SCHEDULER_WORK_PUBLICATIONS: Cell<usize> = const { Cell::new(0) };
     static MONOTONIC_NS: Cell<u64> = const { Cell::new(0) };
     static MONOTONIC_READS: Cell<usize> = const { Cell::new(0) };
     static LAST_TASK_DEADLINE_UPDATE: Cell<Option<TaskDeadlineUpdate>> = const { Cell::new(None) };
@@ -239,7 +240,8 @@ impl TaskRuntime for UnitTestRuntime {
         });
     }
 
-    fn local_scheduler_work_is_self_serviced() -> bool {
+    fn publish_local_scheduler_work() -> bool {
+        LOCAL_SCHEDULER_WORK_PUBLICATIONS.with(|count| count.set(count.get() + 1));
         IN_HARD_IRQ.with(Cell::get)
             || IRQ_EXIT_SCHEDULE_REMAINING.with(|remaining| remaining.get() != 0)
     }
@@ -566,6 +568,14 @@ pub(crate) fn set_scheduler_frame_enter_status(status: RuntimeStatus) {
 
 pub(crate) fn set_hard_irq(active: bool) {
     IN_HARD_IRQ.with(|state| state.set(active));
+}
+
+pub(crate) fn reset_local_scheduler_work_publications() {
+    LOCAL_SCHEDULER_WORK_PUBLICATIONS.with(|count| count.set(0));
+}
+
+pub(crate) fn local_scheduler_work_publications() -> usize {
+    LOCAL_SCHEDULER_WORK_PUBLICATIONS.with(Cell::get)
 }
 
 pub(crate) fn reenter_current_thread_from_next_hook() {
