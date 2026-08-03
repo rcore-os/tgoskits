@@ -296,9 +296,12 @@ pub(super) fn execute_switch_plan(
     }
 }
 
-fn install_next_address_space(address_space: crate::runtime::AddressSpaceHandle, thread: ThreadId) {
-    if task_runtime::install_address_space(address_space) != crate::runtime::RuntimeStatus::Success
-    {
+fn activate_next_address_space(
+    address_space: crate::runtime::AddressSpaceHandle,
+    thread: ThreadId,
+) {
+    let activation = crate::runtime::AddressSpaceActivation::for_thread(address_space);
+    if task_runtime::activate_address_space(activation) != crate::runtime::RuntimeStatus::Success {
         task_runtime::fatal_invariant(3, thread.as_u64() as usize);
     }
 }
@@ -309,7 +312,7 @@ pub(super) fn prepare_next_context(
     policy: crate::SchedulePolicy,
     extension: Option<crate::ThreadExtensionView>,
 ) {
-    install_next_address_space(address_space, thread);
+    activate_next_address_space(address_space, thread);
     if let Some(extension) = extension {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // the address space is now active and no scheduler lock is held.

@@ -46,6 +46,8 @@ CONFIG_HOTPLUG_CPU=y
 - IRQ/驱动：`drivers/tty/serial`、`net/core/dev.c` 及控制器 IRQ 实现。
 
 Linux 用于核对状态所有权、锁序和发布顺序，不复制其对象布局，也不把 callback API 原样带入 crate 边界。
+只参考 v7.1 当前主路径；为旧内核、旧平台模型或本分支旧 API 保留的 compatibility
+分支、fallback 和 deprecated wrapper 一律不引入。
 
 ## 四架构统一模型
 
@@ -153,9 +155,10 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
+| active mm | `context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | kthread 借用 active mm；最后 CPU lease 释放后才能回收 owner | move-only token + per-CPU active lease 已实现 |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
-| switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收 | baton 与可重试 tail 已实现 |
+| switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | baton 与一次性、失败即 fatal 的 tail 已实现 |
 | PI | `rtmutex` | 注册、deboost、grant 同一事务；锁外 wake | generation-bearing PI 已实现 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
@@ -246,7 +249,10 @@ deadline。当前实现直接使用 wrap-safe 的虚拟时间顺序，并保留�
   slice；
 - eligible current 的活动请求未结束时继续运行，不因任意更早 deadline 立即切换；
 - current 已 ineligible 时保护失效，正 `vlag` 的唤醒线程可在本次 safe point 抢占；
-- Fair request 到期由 task deadline/clockevent 保证有界重选，不依赖旧粒度阈值。
+- Fair request 到期由 task deadline/clockevent 保证有界重选，不依赖旧粒度阈值；
+- wakee 只有同时击败 current 的 request protection，并且确实是整个 runqueue 的
+  earliest eligible EEVDF 候选时，才能发布抢占。只比较 current 与 wakee 会在队列里
+  已有更优候选时重复发送 reschedule，Linux v7.1 的 `pick_next_entity()` 不允许这种放大。
 
 `FairRunQueue::zero_vruntime` 是每个 Fair mode 唯一的平均虚拟时间状态。插入和移除
 实体允许平均值前后移动；公平性由 dequeue 前保存的 `vlag` 保证，不能再用第二个
@@ -264,6 +270,45 @@ update source V -> capture vlag/relative deadline -> detach
 
 affinity 和 periodic balance 不再各自维护一条裸 `dequeue` 路径。失败回滚恢复原队列
 位置、placement、deadline bandwidth 和 Fair 请求状态。
+
+## Active mm 与地址空间所有权
+
+Linux v7.1 的 `context_switch()` 不在 user task 切到 kthread 时恢复一个独立 kernel mm。
+kthread 通过 `enter_lazy_tlb()` 借用前一任务的 `active_mm`；切回同一 mm 时无需再次写
+CR3/SATP 或刷新 TLB。真正的 mm 引用释放在 `finish_task_switch()` 之后，PREEMPT_RT
+通过 `mmdrop_sched()` 把可能阻塞的最后释放推迟到安全上下文。
+
+TGOSKits 采用同一套最新语义，不保留旧的“`usize` 页表根 + kernel thread 强制恢复
+kernel root”接口：
+
+1. Starry 为每个调度线程创建 move-only `TaskAddressSpace`，其中保存 OS owner；
+2. ax-task 只复制借用型 `AddressSpaceHandle` 到 dispatch 元数据，唯一销毁权保存在
+   `AddressSpaceToken`；
+3. 四架构 `TaskContext` 只保存寄存器、TLS 和 FP 状态，不保存页表根；context 创建请求
+   也不携带地址空间，彻底删除第二条隐式安装路径；
+4. ax-task 在切换边界提交显式 `KernelLazy` 或 `User(handle)` 激活事务，不再把
+   `AddressSpaceHandle::NONE` 作为 runtime 自行猜测的兼容入口；
+5. ax-runtime 的每 CPU `ACTIVE_ADDRESS_SPACE` 持有物理 active-mm lease；
+6. user -> kthread 保留 lease，kthread -> same user 不重新写根或 flush；
+7. CPU offline 的 kernel-root 恢复是独立事务，不复用 kernel-thread lazy 激活路径；
+8. 切到另一个地址空间或 CPU offline 时，先提交新硬件根和 per-CPU pointer，再释放旧
+   lease；最后一个 lease 若观察到 reclaim waiter，只发布 allocation-free task-work；
+9. 地址空间 OS owner 和页表只在 readiness edge 后由普通任务上下文 reaper 销毁；
+   thread-private 资源不受 active-mm lease 拖延。
+
+统一的是 owner/token/lease 生命周期，物理安装按架构实现：
+
+| 架构 | kernel thread 执行时的用户根 | active-mm 语义 |
+| --- | --- | --- |
+| x86_64 | 保留借用 mm 的 CR3 | 同 root 不写 CR3，不 flush |
+| RISC-V | 保留借用 mm 的 SATP | 同 root 不写 SATP，不 flush |
+| AArch64 | TTBR1 保持 kernel，TTBR0 使用禁用值 | owner lease 仍保留到下一次切换 |
+| LoongArch64 | 保留借用 mm 的 PGDL，PGDH 保持 kernel | 同 root 不写 PGDL，不 flush |
+
+exec 的提交边界固定为：IRQ-off 内先验证 current context 和新 runtime object，再转移
+scheduler token；转移之后只有不可失败的 context/root/active-mm 提交。旧 token 的
+销毁、OS owner drop 和回收队列扩容只能在恢复 IRQ 后发生。创建失败时 token 仍由
+`TaskAddressSpace` 持有并按事务逆序释放，不提供 raw-root 构造或回退入口。
 
 ## Task deadline 与 clockevent
 
@@ -361,6 +406,10 @@ IRQ 只做 status、ACK/mask、有界 FIFO drain、值入队和 signal。普通 
 
 USB hard IRQ 按 acknowledge/mask、task drain、rearm 三阶段处理。xHCI 的 IMAN/ERDP gate 仍是硬件协议的一部分，不能机械替换成睡眠 mutex。
 
+xHCI host 初始化必须取得真实 IRQ binding；缺少 IRQ 时 probe 直接失败。旧的可选 IRQ、
+永久 1 ms USBFS event ticker 和 PCI interrupt-disable fallback 已删除，不保留 feature
+开关或兼容入口。
+
 vsock hard/poll 路径只发布固定事件与 credit snapshot，connection manager 和 socket wake 在释放设备 gate 后由 worker 处理。第三方 manager 吞掉 `CREDIT_REQUEST` 细节的问题由 issue #1724 跟踪。
 
 ## 主要确定性红绿证据
@@ -389,6 +438,9 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | Fair 初始放置 | 新线程直接获得完整 1 ms request，与 Linux v7.1 `PLACE_DEADLINE_INITIAL` 不同 | normalized slice 改为 700 us 并按 CPU 数对数放大；初始 deadline 与 oneshot 只给半个实际 request，后续 request 恢复完整 slice |
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
+| user/kthread 地址空间切换 | user -> blk worker -> same user 每次恢复 kernel root，再次写 CR3/SATP 并全量 flush | kthread 借用 per-CPU active mm；move-only token 和 active lease 将回收推迟到 switch-tail 后任务上下文 |
+| active-mm 过期 readiness edge | `destroy_address_space()` 仍报告 `Active` 时也把回收计为成功；同一 token 在一个 pass 内重试 64 次并永久 yield | `AddressSpaceDestroyOutcome::Active` 只重新 arm waiter，不算 progress；下一次尝试必须由新的最后-CPU lease edge 驱动 |
+| coroutine 最终引用 | 普通任务上下文也把每个零引用 header 投递给单一全局 reaper | 普通任务上下文按最终引用直接释放；只有 hard IRQ 发布类型化 coroutine header，删除任意 callback node、公开 drain 和 shutdown leak fallback |
 
 bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。纯文件移动和可见性收敛阶段例外。
 
@@ -413,6 +465,15 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 - same-CPU hard IRQ wake 发布架构 `need_resched` 后直接由 IRQ return 消费，不发送 self-IPI；
 - Fair sleep/wake 与 migration 保留 Linux EEVDF `vlag`，避免维护线程 Ready 后仍排在错误位置；
 - eligible current 使用 request protection，避免删除旧 granularity 后形成 wake 驱动的上下文切换风暴。
+
+资源回收进一步采用 Linux v7.1 的最终所有权规则：能在当前任务上下文完成的最后引用
+直接释放，不能在 hard IRQ 运行的析构才进入有界 task-work。ax-task 不再提供通用
+`DeferredReclaimNode` callback，也不允许 executor 主动 drain 全局 reaper。hard IRQ 只
+发布 `CoroutineHeader` 的内嵌类型化节点；consumer 根据固定类型回收，不解释驱动或
+OS callback。active-mm 的 `AddressSpaceDestroyOutcome::Active` 表示“没有完成”，不能
+消耗 worker progress budget。runtime 边界只接受 `Released / Active` 和 `Ready / Armed`
+两组封闭结果；旧的通用 `RuntimeStatus`、`Unsupported`、`InvalidHandle` 兼容返回不再存在，
+无效 owning handle 直接作为 provider 不变量失败。
 
 性能接受必须用同一 workload、同一 QEMU 参数、正式 success marker 对比 Linux RT 或已确认基线；发现慢于基线即可中止全量并缩小到目标 case，用 qperf/GDB 检查 wake、lock、IPI 和 safe-point 调用链。
 
@@ -550,6 +611,45 @@ timer/deadline 约占 19.5%。这些数据仅作为已经删除的 inbox 架构�
 接口或指标名。重构后使用
 `direct_wake_attempts / activations / enqueues / preemptions` 复测相同窗口；接受标准是
 `activations == enqueues`，且只有 `preemptions` 对应的跨 CPU wake 产生 reschedule IPI。
+
+### 2026-08-03 active-mm 回收风暴修复
+
+同一 x86_64、4 vCPU、正式 `qemu/system` 资产和
+`test-ext4-inode-unique` 3 秒窗口中，修复前 task-work class 指标为：
+
+| 指标 | 窗口增量 |
+| --- | ---: |
+| worker pass / processed | 451 / 28,674 |
+| worker yield / wait | 448 / 3 |
+| 聚合 resource reclaim | 28,670 |
+| exit callback / reap | 2 / 2 |
+
+doorbell 只新增 13 次 publication，而 worker 却处理 28,670 次 resource，说明不是
+28,670 个唤醒事件。确定性红测注入一个过期 readiness edge，并让 runtime 继续返回
+`Busy`：旧实现单次 `service_deferred_task_work(64)` 稳定报告 64 项 progress，同一
+address-space token 被反复 pop/push。修复后该 pass 报告 0，且只执行一次 destroy 和
+一次 re-arm。
+
+同时，普通 coroutine 的最后引用改为任务上下文直接释放；另一个确定性红测用
+`SharedExecutor` 强引用数证明旧实现完成一个空 coroutine 后仍保留全局 reaper 引用，
+新实现立即回到唯一 owner 引用。hard-IRQ 零分配、零释放、零 poll 测试继续通过，证明
+IRQ 边界仍只做类型化 publication。
+
+修复后相同 ext4 3 秒窗口为：
+
+| 指标 | 窗口增量 |
+| --- | ---: |
+| worker pass / processed | 5 / 8 |
+| worker yield / wait | 0 / 5 |
+| coroutine reclaim / active-mm 成功回收 | 0 / 4 |
+| exit callback / reap | 2 / 2 |
+| scheduler IPI send / consume | 586 / 586 |
+
+8 项 work 完全由 4 次真正完成的 active-mm 销毁、2 次 exit callback 和 2 次 reap
+组成；没有饱和 pass、没有 yield 自旋、没有 coroutine backlog，IPI 仍保持一一消费。
+这证明此前所谓“deferred reclaim 吞吐不足”实际是 `Busy` 状态被错误计成成功，而不是
+需要放大 batch 或增加兼容 worker。首次 system 资产启动曾在 shell 前出现一次瞬时
+停顿，随后同一构建的 GDB-capable boot 与 ext4 复跑均正常完成，未形成可复现缺陷。
 
 ## 模块化结果
 

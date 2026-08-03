@@ -157,18 +157,18 @@ fn task_switch_owns_tls_but_never_percpu() {
 }
 
 #[test]
-fn current_scheduler_installs_address_space_before_the_raw_switch() {
+fn task_context_does_not_install_the_scheduler_address_space() {
     let prepare = section(
         TASK_CONTEXT,
         "pub fn prepare_switch_to(&mut self, _next_ctx: &Self)",
         "pub unsafe fn switch_to_prepared",
     );
     assert!(
-        TASK_CONTEXT.contains("page_table_root: usize")
-            && TASK_CONTEXT.contains("pub fn set_page_table_root")
-            && prepare.contains("write_user_page_table")
-            && prepare.contains("flush_tlb"),
-        "the task runtime model must retain task-owned address-space selection"
+        !TASK_CONTEXT.contains("page_table_root")
+            && !TASK_CONTEXT.contains("pub fn set_page_table_root")
+            && !prepare.contains("write_user_page_table")
+            && !prepare.contains("flush_tlb"),
+        "TaskContext must not retain the scheduler-owned address-space state"
     );
 
     let raw_switch = section(

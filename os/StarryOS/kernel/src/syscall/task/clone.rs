@@ -522,10 +522,8 @@ impl CloneArgs {
         let mut pending_pid_namespace = None;
         let mut prepared_process = None;
 
-        let (new_proc_data, page_table_root, namespace_init) = if flags.contains(CloneFlags::THREAD)
-        {
-            let page_table_root = old_proc_data.aspace().lock().page_table_root().as_usize();
-            (old_proc_data.clone(), page_table_root, false)
+        let (new_proc_data, namespace_init) = if flags.contains(CloneFlags::THREAD) {
+            (old_proc_data.clone(), false)
         } else {
             let parent_process = if flags.contains(CloneFlags::PARENT) {
                 old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
@@ -541,8 +539,6 @@ impl CloneArgs {
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
             };
-            let page_table_root = aspace.lock().page_table_root().as_usize();
-
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
             } else if flags.contains(CloneFlags::CLEAR_SIGHAND) {
@@ -609,7 +605,6 @@ impl CloneArgs {
                     new_nsproxy,
                     exit_signal,
                     curr_thread.tid(),
-                    flags.contains(CloneFlags::VM),
                 )
                 .with_cgroup(inherited_cgroup),
             );
@@ -625,7 +620,7 @@ impl CloneArgs {
             proc_data.set_dumpable(old_proc_data.dumpable());
             proc_data.set_thp_disable(old_proc_data.thp_disable());
 
-            (proc_data, page_table_root, namespace_init)
+            (proc_data, namespace_init)
         };
 
         let unpublished_thread = UnpublishedThread::register(new_proc_data.proc.clone(), tid);
@@ -717,7 +712,6 @@ impl CloneArgs {
             new_user_task(new_uctx, set_child_tid),
             alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
-            page_table_root,
             child_fp_state,
             thr,
             child_policy,
@@ -729,7 +723,6 @@ impl CloneArgs {
             new_user_task(new_uctx, set_child_tid),
             alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
-            page_table_root,
             thr,
             child_policy,
             child_reset_on_fork,

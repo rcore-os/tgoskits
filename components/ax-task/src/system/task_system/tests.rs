@@ -353,7 +353,7 @@ fn eligible_fair_current_keeps_latest_eevdf_slice_protection_on_wake() {
     assert!(current.is_eligible(1_000));
     assert!(woken.deadline_precedes(current));
     assert!(
-        !dispatch.should_preempt(
+        !dispatch.schedule_snapshot().should_preempt(
             SchedulePolicy::default(),
             SchedulingEntity::Fair(woken),
             1_000,
@@ -1367,7 +1367,7 @@ fn context_is_bound_to_the_allocated_thread_before_new_is_published() {
             context,
             crate::runtime::StackHandle::NONE,
             crate::runtime::TlsHandle::NONE,
-            crate::runtime::AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::NONE,
         )
     };
 
@@ -1403,7 +1403,7 @@ fn context_binding_runs_outside_irq_disabled_registry_section() {
             context,
             crate::runtime::StackHandle::NONE,
             crate::runtime::TlsHandle::NONE,
-            crate::runtime::AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::NONE,
         )
     };
 
@@ -1423,6 +1423,7 @@ fn context_binding_runs_outside_irq_disabled_registry_section() {
 
 #[test]
 fn failed_context_binding_retires_the_allocated_generation() {
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Success);
     crate::test_runtime::configure_context_binding(RuntimeStatus::InvalidHandle);
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let context = unsafe {
@@ -1436,7 +1437,7 @@ fn failed_context_binding_retires_the_allocated_generation() {
             context,
             crate::runtime::StackHandle::NONE,
             crate::runtime::TlsHandle::NONE,
-            crate::runtime::AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::NONE,
         )
     };
 
@@ -1458,6 +1459,7 @@ fn failed_context_binding_retires_the_allocated_generation() {
         .unwrap();
     assert_eq!(replacement.id().slot(), failed.identity.slot);
     assert_ne!(replacement.id().generation(), failed.identity.generation);
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Unsupported);
 }
 
 #[test]
@@ -1481,7 +1483,7 @@ fn rejected_thread_releases_runtime_resources_before_extension() {
             ExecutionContextHandle::from_raw(0x3000),
             crate::runtime::StackHandle::from_raw(0x4000),
             crate::runtime::TlsHandle::from_raw(0x5000),
-            crate::runtime::AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::NONE,
         )
     };
     let extension = unsafe {
@@ -1510,7 +1512,7 @@ fn rejected_thread_releases_runtime_resources_before_extension() {
 }
 
 #[test]
-fn rejected_thread_retains_extension_until_resource_release_retry() {
+fn busy_address_space_does_not_retain_completed_thread_resources() {
     use crate::test_runtime::ResourceReleaseEvent;
 
     static RETRY_RELEASE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
@@ -1521,7 +1523,9 @@ fn rejected_thread_retains_extension_until_resource_release_retry() {
         drop: record_release_order_extension_drop,
     };
 
-    crate::test_runtime::configure_resource_release(RuntimeStatus::Busy);
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Success);
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Active);
+    crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Armed);
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let resources = unsafe {
         // SAFETY: the unit runtime accepts these unique modeled handles and
@@ -1530,7 +1534,7 @@ fn rejected_thread_retains_extension_until_resource_release_retry() {
             ExecutionContextHandle::from_raw(0x6000),
             crate::runtime::StackHandle::from_raw(0x7000),
             crate::runtime::TlsHandle::from_raw(0x8000),
-            crate::runtime::AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::from_raw(0x9000),
         )
     };
     let extension = unsafe {
@@ -1548,12 +1552,25 @@ fn rejected_thread_retains_extension_until_resource_release_retry() {
     assert_eq!(result.unwrap_err(), TaskError::InvalidConfiguration);
     assert_eq!(
         crate::test_runtime::resource_release_events(),
-        [ResourceReleaseEvent::DestroyContext],
-        "the extension must remain owned while context destruction is retryable"
+        [
+            ResourceReleaseEvent::DestroyContext,
+            ResourceReleaseEvent::DeallocateTls,
+            ResourceReleaseEvent::DeallocateStack,
+            ResourceReleaseEvent::DropExtension,
+            ResourceReleaseEvent::DestroyAddressSpace,
+        ],
+        "active-mm lifetime must not retain thread-private resources"
     );
-    assert!(system.deferred_task_work_pending());
 
-    crate::test_runtime::configure_resource_release(RuntimeStatus::Success);
+    let doorbell = system.task_work_doorbell();
+    assert!(
+        !doorbell.take_pending(),
+        "a busy active-mm token must wait without an initial worker retry"
+    );
+
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Released);
+    system.publish_resource_release_ready();
+    assert!(doorbell.take_pending());
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
     assert_eq!(
         crate::test_runtime::resource_release_events(),
@@ -1562,9 +1579,108 @@ fn rejected_thread_retains_extension_until_resource_release_retry() {
             ResourceReleaseEvent::DeallocateTls,
             ResourceReleaseEvent::DeallocateStack,
             ResourceReleaseEvent::DropExtension,
+            ResourceReleaseEvent::DestroyAddressSpace,
+            ResourceReleaseEvent::DestroyAddressSpace,
         ]
     );
+    crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Ready);
     crate::test_runtime::configure_resource_release(RuntimeStatus::Unsupported);
+}
+
+#[test]
+fn thread_private_resource_release_failure_is_fatal() {
+    let failure = std::thread::spawn(|| {
+        crate::test_runtime::configure_resource_release(RuntimeStatus::Busy);
+        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+        let resources = unsafe {
+            // SAFETY: the unit runtime models a unique context destruction right.
+            ThreadResources::new(
+                ExecutionContextHandle::from_raw(0xa000),
+                crate::runtime::StackHandle::NONE,
+                crate::runtime::TlsHandle::NONE,
+                crate::runtime::AddressSpaceToken::NONE,
+            )
+        };
+
+        system.release_unpublished_resources(resources);
+    })
+    .join();
+    assert!(failure.is_err(), "runtime teardown failure must be fatal");
+}
+
+#[test]
+fn busy_address_space_reclaim_waits_for_the_runtime_readiness_edge() {
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Active);
+    crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Armed);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let resources = unsafe {
+        // SAFETY: the unit runtime treats this unique token as an inert owning
+        // identity until the configured reclaim operation succeeds.
+        ThreadResources::new(
+            ExecutionContextHandle::NONE,
+            crate::runtime::StackHandle::NONE,
+            crate::runtime::TlsHandle::NONE,
+            crate::runtime::AddressSpaceToken::from_raw(0x9000),
+        )
+    };
+
+    system.release_unpublished_resources(resources);
+    let doorbell = system.task_work_doorbell();
+    assert!(
+        !doorbell.take_pending(),
+        "a busy active-mm token must wait for a readiness edge without polling"
+    );
+
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Released);
+    system.publish_resource_release_ready();
+    assert!(doorbell.take_pending());
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+
+    crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Ready);
+}
+
+#[test]
+fn stale_address_space_readiness_edge_does_not_spin_the_task_worker() {
+    use crate::test_runtime::ResourceReleaseEvent;
+
+    crate::test_runtime::clear_resource_release_events();
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Active);
+    crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Armed);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let resources = unsafe {
+        // SAFETY: the unit runtime treats this token as a unique address-space
+        // destruction right until a later readiness edge makes release succeed.
+        ThreadResources::new(
+            ExecutionContextHandle::NONE,
+            crate::runtime::StackHandle::NONE,
+            crate::runtime::TlsHandle::NONE,
+            crate::runtime::AddressSpaceToken::from_raw(0xa000),
+        )
+    };
+
+    system.release_unpublished_resources(resources);
+    system.publish_resource_release_ready();
+    assert!(system.task_work_doorbell().take_pending());
+
+    let batch = system.service_deferred_task_work(64).unwrap();
+    assert_eq!(
+        batch.processed(),
+        0,
+        "a stale readiness edge must re-arm the active-mm waiter instead of reporting progress"
+    );
+    assert_eq!(
+        crate::test_runtime::resource_release_events(),
+        [
+            ResourceReleaseEvent::DestroyAddressSpace,
+            ResourceReleaseEvent::DestroyAddressSpace,
+        ],
+        "one readiness edge permits exactly one destroy attempt"
+    );
+
+    crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Ready);
+    crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Released);
+    system.publish_resource_release_ready();
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
 }
 
 unsafe extern "Rust" fn record_release_order_extension_drop(_data: usize) {
@@ -1927,7 +2043,7 @@ fn public_task_work_consumers_cannot_bypass_single_consumer_ownership() {
         Err(TaskError::ThreadBusy)
     );
     assert_eq!(
-        system.drain_deferred_reclaims(1),
+        system.service_deferred_task_work(1),
         Err(TaskError::ThreadBusy)
     );
 }
@@ -1988,9 +2104,7 @@ fn owned_reap_returns_handle_until_other_wake_references_are_gone() {
 
     let error = system.reap_thread_handle(thread).unwrap_err();
     assert_eq!(error.task_error(), TaskError::ThreadBusy);
-    let thread = error
-        .into_retry_handle()
-        .expect("busy owned reap must retain its generation-pinning handle");
+    let thread = error.into_retry_handle();
     assert_eq!(system.reap_unreferenced_exited(1).unwrap(), 0);
 
     drop(late_wake);
@@ -2270,42 +2384,6 @@ fn failed_owner_batch_releases_all_detached_payloads() {
 }
 
 #[test]
-fn failed_runtime_switch_tail_keeps_outgoing_context_unreclaimable() {
-    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
-    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
-    let bootstrap = system
-        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
-        .unwrap();
-    system
-        .register_idle_thread(
-            cpu.as_mut(),
-            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
-        )
-        .unwrap();
-    system.bring_cpu_online(cpu.as_mut()).unwrap();
-
-    let exiting = bootstrap.id();
-    drop(bootstrap);
-    system.exit_current(cpu.as_mut(), 0).unwrap();
-    crate::test_runtime::configure_context_switch_tail(RuntimeStatus::InvalidHandle);
-
-    assert_eq!(
-        system.complete_context_switch(cpu.as_mut()),
-        Err(TaskError::RuntimeFailure(
-            RuntimeStatus::InvalidHandle as u32
-        ))
-    );
-    assert_eq!(crate::test_runtime::context_switch_tail_count(), 1);
-    assert!(cpu.switch_handoff().is_some());
-    assert_eq!(system.reap_thread(exiting), Err(TaskError::ThreadBusy));
-
-    crate::test_runtime::configure_context_switch_tail(RuntimeStatus::Success);
-    system.complete_context_switch(cpu.as_mut()).unwrap();
-    assert_eq!(crate::test_runtime::context_switch_tail_count(), 1);
-    system.reap_thread(exiting).unwrap();
-}
-
-#[test]
 fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
@@ -2324,7 +2402,7 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
     let exiting_core = Arc::clone(&bootstrap.core);
     drop(bootstrap);
     system.exit_current(cpu.as_mut(), 0).unwrap();
-    crate::test_runtime::configure_context_switch_tail(RuntimeStatus::Success);
+    crate::test_runtime::reset_context_switch_tail_count();
 
     exiting_core.sched().lock().placement.inject_detached();
     assert_eq!(

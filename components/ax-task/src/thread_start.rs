@@ -12,8 +12,8 @@ use crate::{
     facade::{RuntimeIrqGuard, runtime_current_cpu_mut, runtime_task_system},
     lock::PreemptTicketLock,
     runtime::{
-        AddressSpaceHandle, ExecutionContextHandle, KernelContextRequest, RuntimeStatus,
-        StackHandle, StackRequest, TlsHandle, TlsRequest, task_runtime,
+        ExecutionContextHandle, KernelContextRequest, RuntimeStatus, StackHandle, StackRequest,
+        TlsHandle, TlsRequest, task_runtime,
     },
 };
 
@@ -159,9 +159,7 @@ fn reap_joined_thread(mut handle: ThreadHandle) -> Result<(), TaskError> {
                 TaskError::ThreadBusy | TaskError::NotExited
             ) =>
         {
-            handle = error
-                .into_retry_handle()
-                .expect("retryable owned reap must return its handle");
+            handle = error.into_retry_handle();
             drop(handle);
             Ok(())
         }
@@ -496,7 +494,6 @@ fn allocate_thread_resources(
         stack,
         entry: kernel_thread_entry,
         tls,
-        address_space: AddressSpaceHandle::NONE,
     });
     if context_result.status != RuntimeStatus::Success {
         return Err(release_partial_thread_resources(
@@ -521,7 +518,7 @@ fn allocate_thread_resources(
             ExecutionContextHandle::from_raw(context_result.handle),
             stack,
             tls,
-            AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::NONE,
         )
     })
 }
@@ -539,10 +536,10 @@ fn release_partial_thread_resources(
             ExecutionContextHandle::NONE,
             stack,
             tls,
-            AddressSpaceHandle::NONE,
+            crate::runtime::AddressSpaceToken::NONE,
         )
     };
-    let _release = system.release_unpublished_resources(resources);
+    system.release_unpublished_resources(resources);
     creation_error
 }
 

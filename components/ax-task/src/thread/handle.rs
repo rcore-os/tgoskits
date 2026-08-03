@@ -162,8 +162,8 @@ impl WeakThreadHandle {
 ///
 /// [`Self::wake`] performs only bounded atomic operations and is safe in hard IRQ
 /// context. Creating, cloning, and dropping this owning reference are task-context
-/// operations; coroutine wakers defer their final release to the task-system
-/// reaper.
+/// operations. A coroutine whose last raw-waker reference is released in hard IRQ
+/// defers only that zero-reference allocation to the typed task-system reaper.
 #[derive(Debug)]
 pub struct ThreadWakeHandle {
     pub(crate) core: ManuallyDrop<Arc<ThreadCore>>,

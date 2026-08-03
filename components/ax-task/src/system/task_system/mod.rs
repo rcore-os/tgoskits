@@ -41,14 +41,16 @@ pub use outcome::{
 };
 pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};
 use registry::{
-    CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, PendingResourceRelease,
-    PiRecomputeProof, PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
+    CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, PiRecomputeProof,
+    PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
 };
 use thread_callbacks::ThreadCallbackState;
 
 use super::thread_sched::{DeadlineActivity, ThreadSchedCell, ThreadSchedState};
 #[cfg(test)]
 use crate::runtime::ExecutionContextHandle;
+#[cfg(feature = "qperf-metrics")]
+use crate::system::cpu::WakePreemptionDecision;
 use crate::{
     CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot, DeadlineAdmission,
     DeadlineBandwidthSnapshot, DeadlineEntity, DetachedQueueEntry, EnqueueReason, FairMode,
@@ -57,12 +59,12 @@ use crate::{
     ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease,
     ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources, ThreadRuntimeSnapshot,
     ThreadSpec, ThreadState, WakeResult,
+    executor::CoroutineHeader,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, PreemptTicketLock, SequenceCounter},
-    reclaim::DeferredReclaimNode,
     runtime::{
-        ContextThreadBinding, CpuRemoteHandle, RuntimeCpuId, RuntimeStatus, ThreadIdentityV1,
-        task_runtime,
+        AddressSpaceDestroyOutcome, AddressSpaceReclaimArmOutcome, ContextThreadBinding,
+        CpuRemoteHandle, RuntimeCpuId, RuntimeStatus, ThreadIdentityV1, task_runtime,
     },
     system::cpu::{CurrentDispatch, CurrentDispatchState, CurrentSchedule, IdlePullReservation},
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
@@ -102,7 +104,7 @@ impl<'system> UnpublishedThreadGuard<'system> {
 impl Drop for UnpublishedThreadGuard<'_> {
     fn drop(&mut self) {
         if let Some(record) = self.record.take() {
-            let _release = self.system.release_unpublished_thread(record);
+            self.system.release_unpublished_thread(record);
         }
     }
 }
@@ -149,16 +151,16 @@ impl TaskSystem {
                 cpus: cpu_registrations,
                 slots: Vec::new(),
                 free_slots: Vec::new(),
-                pending_resource_releases: Vec::new(),
+                pending_address_space_reclaims: Vec::new(),
                 task_work_class_cursor: DeferredTaskWorkClass::Deadline,
-                thread_release_first: true,
+                address_space_reclaim_first: true,
                 exited_work: ExitedThreadWork::new(),
                 deadline_admission: DeadlineAdmission::new(config.deadline_cap_percent()),
             }),
             root_domain: PreemptTicketLock::new(RootDomainState {
                 online: CpuSet::empty(config.cpu_count()),
             }),
-            deferred_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
+            deferred_coroutine_reclaims: SchedulerInbox::new(InboxKind::Reclaim),
             deferred_deadline_callbacks: SchedulerInbox::new(InboxKind::TaskWork),
             deferred_scheduler_ticks: SchedulerInbox::new(InboxKind::TaskWork),
             task_work,

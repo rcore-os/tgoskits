@@ -133,9 +133,9 @@ impl TaskSystem {
         let fair_virtual_time = queued_entity
             .fair()
             .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
-        let preempts_current = run_queue
-            .current()
-            .is_none_or(|current| current.should_preempt(policy, queued_entity, fair_virtual_time));
+        let preemption =
+            run_queue.wakee_preemption(core.id(), policy, queued_entity, fair_virtual_time);
+        let preempts_current = preemption.requests_reschedule();
         sched.policy.effective_entity = queued_entity;
         if !sched.is_pi_boosted() {
             sched.policy.base_entity = queued_entity;
@@ -155,6 +155,16 @@ impl TaskSystem {
         #[cfg(feature = "qperf-metrics")]
         if preempts_current {
             crate::metrics::record_direct_wake_preemption();
+        }
+        #[cfg(feature = "qperf-metrics")]
+        match preemption {
+            WakePreemptionDecision::KeepCurrent => {
+                crate::metrics::record_direct_wake_current_kept()
+            }
+            WakePreemptionDecision::QueuedCandidateSelected => {
+                crate::metrics::record_direct_wake_queued_candidate_selected()
+            }
+            WakePreemptionDecision::WakeeSelected => {}
         }
         if deadline_wake {
             if preempts_current {
@@ -260,11 +270,9 @@ impl TaskSystem {
         let fair_virtual_time = queued_entity
             .fair()
             .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
-        let preempts_current = cpu
-            .dispatch_state()
-            .current_dispatch
-            .as_ref()
-            .is_none_or(|current| current.should_preempt(policy, queued_entity, fair_virtual_time));
+        let preempts_current = run_queue
+            .wakee_preemption(core.id(), policy, queued_entity, fair_virtual_time)
+            .requests_reschedule();
         sched.policy.effective_entity = queued_entity;
         if !sched.is_pi_boosted() {
             sched.policy.base_entity = queued_entity;

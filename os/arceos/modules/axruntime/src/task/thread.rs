@@ -522,11 +522,7 @@ pub fn join_thread(handle: ThreadHandle) -> Result<i32, TaskError> {
             if !matches!(task_error, TaskError::ThreadBusy | TaskError::NotExited) {
                 return Err(task_error);
             }
-            drop(
-                error
-                    .into_retry_handle()
-                    .expect("busy owned reap must return its handle"),
-            );
+            drop(error.into_retry_handle());
         }
     }
     Ok(exit_code)

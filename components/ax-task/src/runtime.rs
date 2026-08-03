@@ -1,8 +1,8 @@
 //! Operating-system capability boundary used by the scheduler.
 //!
 //! The boundary deliberately passes only scalar values, function pointers and
-//! transparent opaque handles. Ownership of contexts, stacks and address
-//! spaces remains in the runtime that created them.
+//! transparent opaque handles. Runtime resources remain owned by explicit,
+//! move-only tokens held by the scheduler until task-context reclamation.
 
 use trait_ffi::def_extern_trait;
 
@@ -86,9 +86,129 @@ opaque_handle!(
     TlsHandle
 );
 opaque_handle!(
-    /// Opaque handle to a runtime-owned address space.
+    /// Borrowed opaque handle to a runtime-owned address space.
     AddressSpaceHandle
 );
+
+/// Address-space state selected for the next scheduler context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum AddressSpaceActivationKind {
+    /// A kernel thread borrows the CPU's current active address space.
+    KernelLazy = 0,
+    /// A user thread activates the supplied runtime-owned address space.
+    User       = 1,
+}
+
+/// Explicit address-space transaction passed to the runtime switch boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct AddressSpaceActivation {
+    kind: AddressSpaceActivationKind,
+    address_space: AddressSpaceHandle,
+}
+
+impl AddressSpaceActivation {
+    /// Enters the architecture's current lazy kernel address-space state.
+    pub const KERNEL_LAZY: Self = Self {
+        kind: AddressSpaceActivationKind::KernelLazy,
+        address_space: AddressSpaceHandle::NONE,
+    };
+
+    /// Selects one user address space.
+    pub const fn user(address_space: AddressSpaceHandle) -> Self {
+        assert!(
+            !address_space.is_none(),
+            "a user activation requires a runtime address-space handle"
+        );
+        Self {
+            kind: AddressSpaceActivationKind::User,
+            address_space,
+        }
+    }
+
+    /// Derives the scheduler activation from a thread's nullable `mm` handle.
+    pub const fn for_thread(address_space: AddressSpaceHandle) -> Self {
+        if address_space.is_none() {
+            Self::KERNEL_LAZY
+        } else {
+            Self::user(address_space)
+        }
+    }
+
+    /// Returns the requested activation kind.
+    pub const fn kind(self) -> AddressSpaceActivationKind {
+        self.kind
+    }
+
+    /// Returns the user handle, if this activates a user address space.
+    pub const fn user_handle(self) -> Option<AddressSpaceHandle> {
+        match self.kind {
+            AddressSpaceActivationKind::KernelLazy => None,
+            AddressSpaceActivationKind::User => Some(self.address_space),
+        }
+    }
+}
+
+/// Unique destruction right for one runtime-owned address-space object.
+///
+/// The scheduler may copy [`AddressSpaceHandle`] values derived from this
+/// token into dispatch metadata, but exactly one token owns the eventual
+/// [`TaskRuntime::destroy_address_space`] operation.
+#[repr(transparent)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct AddressSpaceToken(usize);
+
+impl AddressSpaceToken {
+    /// Empty token used by kernel threads and pure scheduler models.
+    pub const NONE: Self = Self(0);
+
+    /// Creates an owning token from a fresh runtime object.
+    ///
+    /// # Safety
+    ///
+    /// A non-zero value must identify a live runtime-owned address-space
+    /// object whose unique destruction right is transferred to the caller.
+    pub const unsafe fn from_raw(raw: usize) -> Self {
+        Self(raw)
+    }
+
+    /// Borrows the opaque identity without transferring destruction rights.
+    pub const fn handle(&self) -> AddressSpaceHandle {
+        // SAFETY: a live owning token keeps the same runtime object alive for
+        // the duration of the returned scalar borrow.
+        unsafe { AddressSpaceHandle::from_raw(self.0) }
+    }
+
+    /// Returns whether this token owns no runtime object.
+    pub const fn is_none(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// Result of consuming an address-space destruction attempt.
+///
+/// The runtime accepts only a live handle derived from the matching
+/// [`AddressSpaceToken`]. A stale or malformed handle is an unrecoverable
+/// provider invariant and is not represented here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum AddressSpaceDestroyOutcome {
+    /// No CPU retains the address space and the runtime consumed its object.
+    Released = 0,
+    /// At least one CPU still retains the address space as its active mm.
+    Active   = 1,
+}
+
+/// Result of arming the active-mm last-user notification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum AddressSpaceReclaimArmOutcome {
+    /// No CPU lease remains; the scheduler must retry destruction now.
+    Ready = 0,
+    /// The runtime will publish a readiness edge when the last lease leaves.
+    Armed = 1,
+}
 opaque_handle!(
     /// Token returned by the nested IRQ guard service.
     IrqGuardToken
@@ -248,14 +368,13 @@ pub struct KernelContextRequest {
     pub entry: KernelEntry,
     /// Optional TLS allocation.
     pub tls: TlsHandle,
-    /// Optional address space installed before first entry.
-    pub address_space: AddressSpaceHandle,
 }
 
 /// Architecture-neutral request for a context that will enter userspace.
 ///
-/// The initial entry is still a trusted runtime trampoline; unlike a kernel
-/// context, the request must name the address space that trampoline will enter.
+/// The initial entry is still a trusted runtime trampoline. Address-space
+/// ownership and activation are scheduler resources, not register-context
+/// construction inputs.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct UserContextRequest {
@@ -265,8 +384,6 @@ pub struct UserContextRequest {
     pub entry: KernelEntry,
     /// Optional TLS allocation.
     pub tls: TlsHandle,
-    /// Mandatory user address space installed before first entry.
-    pub address_space: AddressSpaceHandle,
 }
 
 /// Versioned generation-bearing thread identity for runtime context binding.
@@ -550,9 +667,9 @@ pub trait TaskRuntime {
     /// disabled and before the scheduler clears the outgoing thread's
     /// `on_cpu` publication. The implementation must not allocate, block,
     /// invoke callbacks, consume the scheduler baton, or re-enter ax-task. A
-    /// failure must leave the tail transaction retryable because the
-    /// scheduler deliberately keeps the outgoing context unreclaimable.
-    fn finish_context_switch_tail() -> RuntimeStatus;
+    /// Any failure is an unrecoverable runtime invariant: the raw switch has
+    /// already committed, so there is no compatibility retry path.
+    fn finish_context_switch_tail();
 
     /// Consumes the CPU-local scheduler switch baton on a fresh context.
     ///
@@ -656,9 +773,11 @@ pub trait TaskRuntime {
 
     /// Releases a stack after the reaper proves no context can reference it.
     ///
-    /// A non-success result must leave `stack` live and accepted by a later
-    /// retry. Ownership transfers to the runtime only on success.
-    fn deallocate_stack(stack: StackHandle) -> RuntimeStatus;
+    /// Ownership transfers exactly once. The scheduler has already crossed the
+    /// switch-tail lifetime boundary, so a provider must treat an inability to
+    /// release this handle as a fatal runtime invariant rather than inventing a
+    /// polling retry protocol.
+    fn deallocate_stack(stack: StackHandle);
 
     /// Allocates a TLS area satisfying `request`.
     ///
@@ -668,9 +787,9 @@ pub trait TaskRuntime {
 
     /// Releases a TLS area after its execution context has been destroyed.
     ///
-    /// A non-success result must leave `tls` live and accepted by a later
-    /// retry. Ownership transfers to the runtime only on success.
-    fn deallocate_tls(tls: TlsHandle) -> RuntimeStatus;
+    /// Ownership transfers exactly once after no context can reference the
+    /// allocation. Failure is a fatal runtime invariant.
+    fn deallocate_tls(tls: TlsHandle);
 
     /// Creates a kernel execution context.
     ///
@@ -698,10 +817,32 @@ pub trait TaskRuntime {
 
     /// Destroys an execution context that cannot be scheduled again.
     ///
-    /// A non-success result must leave `context` live and accepted by a later
-    /// retry. It may continue to reference the associated TLS, stack, and
-    /// address-space objects until destruction succeeds.
-    fn destroy_context(context: ExecutionContextHandle) -> RuntimeStatus;
+    /// The registry makes a record reclaimable only after switch tail clears
+    /// physical CPU ownership. Destruction is therefore a single, infallible
+    /// ownership transfer; a provider must report an impossible live-context
+    /// state through its own fatal invariant path rather than return `Busy`.
+    fn destroy_context(context: ExecutionContextHandle);
+
+    /// Releases an address-space object after no CPU retains it as active mm.
+    ///
+    /// [`AddressSpaceDestroyOutcome::Active`] leaves the object live and
+    /// accepted by a later retry. This task-context operation may drop the OS
+    /// ownership lease; it is never invoked from the IRQ-off context-switch
+    /// path. The runtime must treat an invalid handle as a fatal provider
+    /// invariant rather than expose a compatibility status.
+    fn destroy_address_space(address_space: AddressSpaceHandle) -> AddressSpaceDestroyOutcome;
+
+    /// Arms one deferred retry after destruction observed an active CPU lease.
+    ///
+    /// The token is already queued in ax-task before this call. The runtime
+    /// returns [`AddressSpaceReclaimArmOutcome::Ready`] if no CPU lease remains,
+    /// or records an allocation-free notification obligation and returns
+    /// [`AddressSpaceReclaimArmOutcome::Armed`]. The CPU that drops the last
+    /// lease must then call [`crate::notify_address_space_reclaim`]. An invalid
+    /// handle is a fatal provider invariant.
+    fn arm_address_space_reclaim(
+        address_space: AddressSpaceHandle,
+    ) -> AddressSpaceReclaimArmOutcome;
 
     /// Switches from `previous` to `next` with local interrupts disabled.
     ///
@@ -711,12 +852,13 @@ pub trait TaskRuntime {
     /// caller must have committed scheduler state and released runqueue locks.
     unsafe fn switch_context(previous: ExecutionContextHandle, next: ExecutionContextHandle);
 
-    /// Installs the next context's address space before its switch-in hook.
+    /// Activates the next context's explicit address-space state.
     ///
-    /// [`AddressSpaceHandle::NONE`] is an active request to restore the
-    /// runtime's kernel-only address-space state; it must not inherit the
-    /// previous user context's translation root.
-    fn install_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus;
+    /// [`AddressSpaceActivationKind::KernelLazy`] follows the architecture's
+    /// current Linux lazy-TLB rule. The runtime keeps any borrowed active-mm
+    /// owner unreclaimable until a later user activation or CPU-offline
+    /// transaction releases that CPU lease.
+    fn activate_address_space(activation: AddressSpaceActivation) -> RuntimeStatus;
 
     /// Flushes the current address space's local translation cache.
     fn flush_tlb_local(start: usize, size: usize);

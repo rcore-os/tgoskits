@@ -1,0 +1,350 @@
+//! Runtime-owned address-space tokens and per-CPU active-mm state.
+
+use alloc::boxed::Box;
+use core::{
+    mem::align_of,
+    ptr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+use ax_memory_addr::PhysAddr;
+use ax_task::{
+    TaskError,
+    runtime::{
+        AddressSpaceActivation, AddressSpaceActivationKind, AddressSpaceDestroyOutcome,
+        AddressSpaceHandle, AddressSpaceReclaimArmOutcome, AddressSpaceToken, RuntimeStatus,
+    },
+};
+
+#[cfg(feature = "uspace")]
+use super::with_current_cpu_pin;
+
+/// OS-owned lifetime anchor retained by a scheduler address-space token.
+///
+/// The runtime never invokes methods on this object. Its destructor runs only
+/// from the task-context resource reaper after every CPU active-mm lease has
+/// been released.
+trait TaskAddressSpaceOwner: Send + Sync {}
+
+impl<T: Send + Sync> TaskAddressSpaceOwner for T {}
+
+struct RuntimeAddressSpace {
+    #[cfg(feature = "uspace")]
+    root: usize,
+    active_cpus: AtomicUsize,
+    reclaim_waiting: AtomicUsize,
+    _owner: Box<dyn TaskAddressSpaceOwner>,
+}
+
+/// Move-only runtime token for one user address space.
+pub struct TaskAddressSpace(Option<AddressSpaceToken>);
+
+impl TaskAddressSpace {
+    /// Creates a scheduler token that owns `owner` until address-space reap.
+    pub fn new(root: PhysAddr, owner: impl Send + Sync + 'static) -> Result<Self, TaskError> {
+        if root.as_usize() == 0 {
+            return Err(TaskError::InvalidRuntimeHandle);
+        }
+        let address_space = Box::new(RuntimeAddressSpace {
+            #[cfg(feature = "uspace")]
+            root: root.as_usize(),
+            active_cpus: AtomicUsize::new(0),
+            reclaim_waiting: AtomicUsize::new(0),
+            _owner: Box::new(owner),
+        });
+        let raw = Box::into_raw(address_space).expose_provenance();
+        // SAFETY: the fresh allocation transfers its unique destruction right
+        // into this move-only token.
+        Ok(Self(Some(unsafe { AddressSpaceToken::from_raw(raw) })))
+    }
+
+    pub(super) fn handle(&self) -> AddressSpaceHandle {
+        self.0
+            .as_ref()
+            .unwrap_or_else(|| unreachable!("address-space token already transferred"))
+            .handle()
+    }
+
+    #[cfg(feature = "uspace")]
+    pub(super) fn token_mut(&mut self) -> &mut AddressSpaceToken {
+        self.0
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("address-space token already transferred"))
+    }
+
+    pub(super) fn take_token(&mut self) -> AddressSpaceToken {
+        self.0
+            .take()
+            .unwrap_or_else(|| unreachable!("address-space token already transferred"))
+    }
+}
+
+impl Drop for TaskAddressSpace {
+    fn drop(&mut self) {
+        let Some(address_space) = self.0.take() else {
+            return;
+        };
+        let outcome = destroy_runtime_address_space(address_space.handle());
+        assert_eq!(
+            outcome,
+            AddressSpaceDestroyOutcome::Released,
+            "unpublished address space retained an active CPU lease"
+        );
+    }
+}
+
+#[ax_percpu::def_percpu]
+static ACTIVE_ADDRESS_SPACE: usize = 0;
+
+fn runtime_address_space(
+    address_space: AddressSpaceHandle,
+) -> Result<&'static RuntimeAddressSpace, RuntimeStatus> {
+    let raw = address_space.into_raw();
+    if raw == 0 || !raw.is_multiple_of(align_of::<RuntimeAddressSpace>()) {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    let address_space = ptr::with_exposed_provenance::<RuntimeAddressSpace>(raw);
+    // SAFETY: a borrowed handle is reachable only while its owning token or a
+    // per-CPU active lease keeps this allocation live.
+    Ok(unsafe { &*address_space })
+}
+
+#[cfg(feature = "uspace")]
+pub(super) fn validate_address_space_handle(
+    address_space: AddressSpaceHandle,
+) -> Result<(), RuntimeStatus> {
+    runtime_address_space(address_space).map(|_| ())
+}
+
+#[cfg(feature = "uspace")]
+fn offline_kernel_root() -> usize {
+    if cfg!(any(target_arch = "x86_64", target_arch = "riscv64")) {
+        // SAFETY: CPU offline holds IRQ exclusion, and bring-up published the
+        // immutable root before the CPU became scheduler-visible.
+        unsafe { with_current_cpu_pin(super::bootstrap::offline_kernel_root) }
+    } else {
+        // AArch64 and LoongArch keep kernel mappings in their separate upper
+        // root. Zero leaves no lower/user translation active while offline.
+        0
+    }
+}
+
+#[cfg(feature = "uspace")]
+pub(super) fn current_hardware_root() -> usize {
+    ax_hal::asm::read_user_page_table().as_usize()
+}
+
+#[cfg(feature = "uspace")]
+fn install_hardware_root(root: usize) {
+    if current_hardware_root() != root {
+        let root = ax_memory_addr::PhysAddr::from(root);
+        // SAFETY: callers retain local IRQ exclusion for the complete active-mm
+        // transaction.
+        unsafe { ax_hal::asm::write_user_page_table(root) };
+        // Writing CR3 already invalidates the non-global x86 TLB. The other
+        // architecture backends only update their root register and require an
+        // explicit invalidation.
+        #[cfg(not(target_arch = "x86_64"))]
+        ax_hal::asm::flush_tlb(None);
+    }
+}
+
+#[cfg(feature = "uspace")]
+fn enter_lazy_kernel_address_space() {
+    // Linux's current x86, RISC-V and LoongArch enter_lazy_tlb paths retain the
+    // loaded user root and only change scheduler/ASID bookkeeping. AArch64
+    // installs its reserved lower root so a kernel thread cannot use the
+    // previous task's user mappings.
+    #[cfg(target_arch = "aarch64")]
+    install_hardware_root(0);
+}
+
+pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation) -> RuntimeStatus {
+    #[cfg(feature = "uspace")]
+    {
+        // SAFETY: the scheduler baton or exec IRQ guard pins this operation to
+        // one CPU until the active-mm publication is complete.
+        unsafe {
+            with_current_cpu_pin(|pin| {
+                let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
+                if activation.kind() == AddressSpaceActivationKind::KernelLazy {
+                    enter_lazy_kernel_address_space();
+                    return RuntimeStatus::Success;
+                }
+
+                let Some(address_space) = activation.user_handle() else {
+                    return RuntimeStatus::InvalidHandle;
+                };
+
+                let next = match runtime_address_space(address_space) {
+                    Ok(next) => next,
+                    Err(status) => return status,
+                };
+                let next_raw = address_space.into_raw();
+                if next_raw == previous_raw {
+                    install_hardware_root(next.root);
+                    return RuntimeStatus::Success;
+                }
+
+                next.active_cpus.fetch_add(1, Ordering::AcqRel);
+                install_hardware_root(next.root);
+                ACTIVE_ADDRESS_SPACE.write_current(pin, next_raw);
+                if previous_raw != 0 {
+                    let previous = AddressSpaceHandle::from_raw(previous_raw);
+                    let previous = runtime_address_space(previous)
+                        .unwrap_or_else(|_| panic!("active address-space handle became stale"));
+                    release_active_cpu(previous);
+                }
+                RuntimeStatus::Success
+            })
+        }
+    }
+    #[cfg(not(feature = "uspace"))]
+    {
+        if activation.kind() == AddressSpaceActivationKind::KernelLazy {
+            RuntimeStatus::Success
+        } else {
+            RuntimeStatus::Unsupported
+        }
+    }
+}
+
+pub(super) fn release_current_active_address_space() {
+    #[cfg(feature = "uspace")]
+    unsafe {
+        with_current_cpu_pin(|pin| {
+            let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
+            if previous_raw == 0 {
+                return;
+            }
+            install_hardware_root(offline_kernel_root());
+            ACTIVE_ADDRESS_SPACE.write_current(pin, 0);
+            let previous = AddressSpaceHandle::from_raw(previous_raw);
+            let previous = runtime_address_space(previous)
+                .unwrap_or_else(|_| panic!("offline CPU retained a stale active address space"));
+            release_active_cpu(previous);
+        })
+    }
+}
+
+pub(super) fn destroy_runtime_address_space(
+    address_space: AddressSpaceHandle,
+) -> AddressSpaceDestroyOutcome {
+    let address_space = runtime_address_space(address_space)
+        .unwrap_or_else(|_| panic!("address-space destruction received an invalid owning handle"));
+    if address_space.active_cpus.load(Ordering::Acquire) != 0 {
+        return AddressSpaceDestroyOutcome::Active;
+    }
+    let raw = address_space as *const RuntimeAddressSpace as *mut RuntimeAddressSpace;
+    // SAFETY: the caller owns the unique AddressSpaceToken destruction right,
+    // and the zero active count proves no CPU retains a borrowed pointer.
+    drop(unsafe { Box::from_raw(raw) });
+    AddressSpaceDestroyOutcome::Released
+}
+
+pub(super) fn arm_runtime_address_space_reclaim(
+    address_space: AddressSpaceHandle,
+) -> AddressSpaceReclaimArmOutcome {
+    let address_space = runtime_address_space(address_space)
+        .unwrap_or_else(|_| panic!("address-space reclaim arm received an invalid owning handle"));
+    address_space.reclaim_waiting.store(1, Ordering::Release);
+    if address_space.active_cpus.load(Ordering::Acquire) == 0 {
+        address_space.reclaim_waiting.store(0, Ordering::Release);
+        AddressSpaceReclaimArmOutcome::Ready
+    } else {
+        AddressSpaceReclaimArmOutcome::Armed
+    }
+}
+
+#[cfg(any(feature = "uspace", test))]
+fn release_active_cpu(address_space: &RuntimeAddressSpace) {
+    let active = address_space.active_cpus.fetch_sub(1, Ordering::AcqRel);
+    assert!(active >= 1, "active address-space CPU count underflow");
+    if active == 1 && address_space.reclaim_waiting.swap(0, Ordering::AcqRel) != 0 {
+        ax_task::notify_address_space_reclaim();
+    }
+}
+
+/// Replaces the running user task's owning address-space token.
+pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(), TaskError> {
+    #[cfg(feature = "uspace")]
+    {
+        let mut address_space = address_space;
+        let previous = {
+            let _irq = ax_kernel_guard::IrqSave::new();
+            let next_handle = address_space.handle();
+            validate_address_space_handle(next_handle).map_err(super::runtime_status_error)?;
+            let previous = ax_task::replace_current_address_space(address_space.token_mut())?;
+
+            // No fallible operation may follow the ownership transfer above.
+            // The validated runtime object supplies the root, and the IRQ guard
+            // keeps the CPU active-mm slot exclusive.
+            let status = activate_runtime_address_space(AddressSpaceActivation::user(next_handle));
+            assert_eq!(
+                status,
+                RuntimeStatus::Success,
+                "validated address-space activation failed after ownership transfer"
+            );
+            let transferred = address_space.take_token();
+            debug_assert!(transferred.is_none());
+            previous
+        };
+
+        // Reclaim may allocate or drop an OS ownership anchor. It therefore
+        // runs only after the exec transaction has restored normal IRQ state.
+        ax_task::release_address_space_token(previous)
+    }
+    #[cfg(not(feature = "uspace"))]
+    {
+        let _ = address_space;
+        Err(TaskError::RuntimeFailure(RuntimeStatus::Unsupported as u32))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct CountDrop(Arc<AtomicUsize>);
+
+    impl Drop for CountDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn active_cpu_lease_blocks_owner_destruction_until_release() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut token = TaskAddressSpace::new(
+            ax_memory_addr::PhysAddr::from(0x4000),
+            CountDrop(Arc::clone(&drops)),
+        )
+        .unwrap();
+        let handle = token.handle();
+        let runtime = runtime_address_space(handle).unwrap();
+        runtime.active_cpus.fetch_add(1, Ordering::AcqRel);
+        let owned = token.take_token();
+
+        assert_eq!(
+            destroy_runtime_address_space(handle),
+            AddressSpaceDestroyOutcome::Active
+        );
+        assert_eq!(
+            arm_runtime_address_space_reclaim(handle),
+            AddressSpaceReclaimArmOutcome::Armed
+        );
+        assert_eq!(drops.load(Ordering::Acquire), 0);
+
+        release_active_cpu(runtime);
+        assert_eq!(
+            destroy_runtime_address_space(handle),
+            AddressSpaceDestroyOutcome::Released
+        );
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+        assert!(!owned.is_none());
+    }
+}

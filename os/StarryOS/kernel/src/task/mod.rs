@@ -76,7 +76,9 @@ use self::{
     process_memory::ProcessMemoryState, process_policy::ProcessPolicyState,
     process_ptrace::ProcessPtraceState, process_wait::ProcessWaitState,
 };
-pub(crate) use self::{pid_namespace::*, process_identity::*};
+pub(crate) use self::{
+    pid_namespace::*, process_identity::*, process_memory::scheduler_address_space,
+};
 use crate::mm::AddrSpace;
 
 pub struct ProcessData {
@@ -133,7 +135,6 @@ pub struct ProcessDataInit {
     cgroup: Arc<ax_cgroup::CgroupNode>,
     exit_signal: Option<Signo>,
     wait_parent_tid: Pid,
-    vm_aspace_shared: bool,
 }
 
 impl ProcessDataInit {
@@ -145,7 +146,6 @@ impl ProcessDataInit {
         nsproxy: axnsproxy::NsProxy,
         exit_signal: Option<Signo>,
         wait_parent_tid: Pid,
-        vm_aspace_shared: bool,
     ) -> Self {
         Self {
             image,
@@ -155,7 +155,6 @@ impl ProcessDataInit {
             cgroup: crate::cgroup::root(),
             exit_signal,
             wait_parent_tid,
-            vm_aspace_shared,
         }
     }
 
@@ -177,7 +176,6 @@ impl ProcessData {
             cgroup,
             exit_signal,
             wait_parent_tid,
-            vm_aspace_shared,
         } = init;
         let pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]> =
             axnsproxy::pid_namespace_lineage(&nsproxy.pid_ns).into();
@@ -193,7 +191,7 @@ impl ProcessData {
                 proc,
                 identity,
                 image: ProcessImageState::new(image),
-                memory: ProcessMemoryState::new(aspace, vm_aspace_shared),
+                memory: ProcessMemoryState::new(aspace),
                 wait,
                 uprobe_manager: crate::kprobe::KprobeManager::new(),
                 uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),

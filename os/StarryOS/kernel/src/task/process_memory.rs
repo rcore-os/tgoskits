@@ -8,32 +8,41 @@ use ax_sync::{PiMutex, spin::SpinNoIrq};
 use super::ProcessData;
 use crate::mm::AddrSpace;
 
+struct SchedulerAddressSpaceLease {
+    aspace: Arc<PiMutex<AddrSpace>>,
+}
+
+impl Drop for SchedulerAddressSpaceLease {
+    fn drop(&mut self) {
+        crate::mm::release_scheduler_slot(&self.aspace);
+    }
+}
+
+pub(crate) fn scheduler_address_space(
+    aspace: Arc<PiMutex<AddrSpace>>,
+) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
+    let root = crate::mm::attach_scheduler_slot(&aspace);
+    ax_runtime::task::TaskAddressSpace::new(root, SchedulerAddressSpaceLease { aspace })
+}
+
 /// Address-space state whose release must follow scheduler switch-tail rules.
 pub(super) struct ProcessMemoryState {
     aspace: SpinNoIrq<Arc<PiMutex<AddrSpace>>>,
     heap_top: AtomicUsize,
-    vm_aspace_shared: AtomicBool,
     aspace_slot_released: AtomicBool,
 }
 
 impl ProcessMemoryState {
-    pub(super) fn new(aspace: Arc<PiMutex<AddrSpace>>, vm_aspace_shared: bool) -> Self {
+    pub(super) fn new(aspace: Arc<PiMutex<AddrSpace>>) -> Self {
         Self {
             aspace: SpinNoIrq::new(aspace),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
-            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
             aspace_slot_released: AtomicBool::new(false),
         }
     }
 }
 
 impl ProcessData {
-    /// Marks the freshly installed exec address space as private.
-    #[inline]
-    pub fn mark_vm_aspace_private_after_exec(&self) {
-        self.memory.vm_aspace_shared.store(false, Ordering::Release);
-    }
-
     /// Releases this process's [`AddrSpace::process_slots`] entry once.
     pub fn release_aspace_slot_if_needed(&self) {
         if self
@@ -62,13 +71,20 @@ impl ProcessData {
         self.memory.aspace.lock().clone()
     }
 
+    /// Creates one owning scheduler token for the current address space.
+    pub(crate) fn scheduler_address_space(
+        &self,
+    ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
+        scheduler_address_space(self.aspace())
+    }
+
     /// Publishes a new address space while retaining the replaced one.
     ///
-    /// The caller must install the new hardware page-table root before
-    /// releasing the returned address-space slot. Moving the old `Arc` out of
-    /// the non-sleeping gate prevents its destructor from acquiring a sleepable
-    /// lock while IRQs and preemption are disabled.
-    #[must_use = "the old address space must be released after installing the new page-table root"]
+    /// The caller must transfer the new scheduler token and install its active
+    /// mm before releasing the returned process slot. Moving the old `Arc` out
+    /// of the non-sleeping gate prevents its destructor from acquiring a
+    /// sleepable lock while IRQs and preemption are disabled.
+    #[must_use = "release the old process slot after committing the new active mm"]
     pub fn stage_aspace_replacement(
         &self,
         new_aspace: Arc<PiMutex<AddrSpace>>,

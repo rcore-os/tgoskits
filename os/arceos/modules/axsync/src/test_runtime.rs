@@ -10,12 +10,13 @@ use core::{
 use ax_task::{
     CpuId, CpuRemote, TaskSystem, impl_trait as impl_task_runtime,
     runtime::{
-        AddressSpaceHandle, ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle,
-        ExecutionContextHandle, IrqGuardToken, KernelContextRequest, PreemptGuardToken,
-        RuntimeCpuId, RuntimeHandleResult, RuntimeScheduleOrigin, RuntimeSchedulerEntry,
-        RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord, StackHandle, StackRequest,
-        TaskDeadlineUpdate, TaskRuntime, TaskSystemHandle, ThreadIdentityV1, TlsHandle, TlsRequest,
-        UserContextRequest,
+        AddressSpaceActivation, AddressSpaceDestroyOutcome, AddressSpaceHandle,
+        AddressSpaceReclaimArmOutcome, ContextThreadBinding, CpuRemoteHandle,
+        CurrentCpuLocalHandle, ExecutionContextHandle, IrqGuardToken, KernelContextRequest,
+        PreemptGuardToken, RuntimeCpuId, RuntimeHandleResult, RuntimeScheduleOrigin,
+        RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
+        StackHandle, StackRequest, TaskDeadlineUpdate, TaskRuntime, TaskSystemHandle,
+        ThreadIdentityV1, TlsHandle, TlsRequest, UserContextRequest,
     },
 };
 
@@ -111,7 +112,7 @@ impl_task_runtime! {
         fn publish_local_scheduler_work() -> bool {
             false
         }
-        fn finish_context_switch_tail() -> RuntimeStatus { RuntimeStatus::Success }
+        fn finish_context_switch_tail() {}
         fn finish_initial_context_switch() {}
         fn scheduler_frame_guard_enter(
             _origin: RuntimeScheduleOrigin,
@@ -139,26 +140,30 @@ impl_task_runtime! {
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
-        fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus { RuntimeStatus::Unsupported }
+        fn deallocate_stack(_stack: StackHandle) {}
         fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
-        fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus { RuntimeStatus::Unsupported }
+        fn deallocate_tls(_tls: TlsHandle) {}
         fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
         fn create_user_context(_request: UserContextRequest) -> RuntimeHandleResult {
-            if _request.address_space.is_none() {
-                RuntimeHandleResult::failure(RuntimeStatus::InvalidHandle)
-            } else {
-                RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
-            }
+            RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
         fn bind_context_thread(_binding: ContextThreadBinding) -> RuntimeStatus {
             RuntimeStatus::Success
         }
-        fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
-            RuntimeStatus::Unsupported
+        fn destroy_context(_context: ExecutionContextHandle) {}
+        fn destroy_address_space(
+            _address_space: AddressSpaceHandle,
+        ) -> AddressSpaceDestroyOutcome {
+            panic!("ax-sync unit tests do not own address-space tokens")
+        }
+        fn arm_address_space_reclaim(
+            _address_space: AddressSpaceHandle,
+        ) -> AddressSpaceReclaimArmOutcome {
+            panic!("ax-sync unit tests do not own address-space tokens")
         }
         unsafe fn switch_context(
             _previous: ExecutionContextHandle,
@@ -166,7 +171,7 @@ impl_task_runtime! {
         ) {
             panic!("unit-test runtime has no execution contexts")
         }
-        fn install_address_space(_address_space: AddressSpaceHandle) -> RuntimeStatus {
+        fn activate_address_space(_activation: AddressSpaceActivation) -> RuntimeStatus {
             RuntimeStatus::Unsupported
         }
         fn flush_tlb_local(_start: usize, _size: usize) {}

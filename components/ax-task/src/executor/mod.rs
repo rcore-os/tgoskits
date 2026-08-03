@@ -3,6 +3,8 @@
 //! Futures are polled and destroyed only by the owner thread. Wakers may cross
 //! CPUs and may run in hard interrupt context; their operations only touch
 //! atomics, publish intrusive nodes, and invoke a direct thread wake header.
+//! Zero-reference allocations are freed immediately in task context; hard IRQ
+//! transfers only the typed coroutine header to the task-work reaper.
 
 mod coroutine;
 mod inbox;
@@ -33,9 +35,6 @@ use crate::{
 
 /// Maximum number of futures polled by one executor turn.
 pub const DEFAULT_POLL_BATCH: usize = 64;
-
-/// Default bound for task-context deferred reclamation.
-pub const DEFAULT_RECLAIM_BATCH: usize = 64;
 
 const NOTIFIED: usize = 1 << 0;
 const PARKING: usize = 1 << 1;
@@ -164,7 +163,6 @@ impl LocalExecutor {
             .take()
             .unwrap_or_else(|| unreachable!("completed root future must publish output"));
         drop(guard);
-        let _reclaimed = self.reclaim_completed(DEFAULT_RECLAIM_BATCH);
         result
     }
 
@@ -202,15 +200,6 @@ impl LocalExecutor {
             completed,
             has_more: self.has_ready(),
         }
-    }
-
-    /// Runs a bounded task-system pass over zero-reference coroutine headers.
-    ///
-    /// Future destructors have already run on their owner. This pass may free
-    /// headers whose last waker was dropped by any CPU or hard interrupt.
-    pub fn reclaim_completed(&self, limit: usize) -> usize {
-        self.assert_owner_context();
-        crate::facade::drain_deferred_reclaims(limit).unwrap_or(0)
     }
 
     /// Reports whether this executor has a coroutine ready for a future batch.
@@ -468,7 +457,6 @@ impl LocalExecutor {
                 }
             }
         }
-        let _reclaimed = self.reclaim_completed(DEFAULT_RECLAIM_BATCH);
     }
 
     fn discard_ready_references(&self) {

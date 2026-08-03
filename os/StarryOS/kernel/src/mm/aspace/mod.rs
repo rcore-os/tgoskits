@@ -60,6 +60,9 @@ pub struct AddrSpace {
     /// transient clones from `ProcessData::aspace()` and is not reliable for
     /// SMP teardown decisions.
     pub(crate) process_slots: AtomicUsize,
+    /// Number of scheduler tokens that may still be installed or borrowed as
+    /// a CPU's active address space.
+    pub(crate) scheduler_slots: AtomicUsize,
     /// All VmX counters for this address space.  Maintained automatically by
     /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
     pub vm_stat: ProcessVmStat,
@@ -92,11 +95,6 @@ impl AddrSpace {
         &mut self.pt
     }
 
-    /// Returns the root physical address of the inner page table.
-    pub const fn page_table_root(&self) -> PhysAddr {
-        self.pt.root_paddr()
-    }
-
     /// Checks if the address space contains the given address range.
     pub fn contains_range(&self, start: VirtAddr, size: usize) -> bool {
         self.va_range.contains(start) && (self.va_range.end - start) >= size
@@ -109,6 +107,7 @@ impl AddrSpace {
             areas: MemorySet::new(),
             pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
             process_slots: AtomicUsize::new(0),
+            scheduler_slots: AtomicUsize::new(0),
             vm_stat: ProcessVmStat::new(),
             rss: MemoryAccounting::new(),
         })
@@ -718,6 +717,21 @@ pub(crate) fn attach_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
     aspace.lock().process_slots.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Pins one address space for a move-only scheduler token and returns its root.
+pub(crate) fn attach_scheduler_slot(aspace: &Arc<PiMutex<AddrSpace>>) -> PhysAddr {
+    let guard = aspace.lock();
+    guard.scheduler_slots.fetch_add(1, Ordering::AcqRel);
+    guard.pt.root_paddr()
+}
+
+fn clear_unreferenced_address_space(aspace: &mut AddrSpace) {
+    if aspace.process_slots.load(Ordering::Acquire) == 0
+        && aspace.scheduler_slots.load(Ordering::Acquire) == 0
+    {
+        aspace.clear();
+    }
+}
+
 /// One [`crate::task::ProcessData`] releases its logical slot. When the last slot
 /// is dropped while holding [`PiMutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
 /// so inode-scoped accounting (memfd, etc.) is torn down before the page table
@@ -727,7 +741,17 @@ pub(crate) fn release_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
     let prev = guard.process_slots.fetch_sub(1, Ordering::AcqRel);
     debug_assert!(prev >= 1, "AddrSpace::process_slots underflow");
     if prev == 1 {
-        guard.clear();
+        clear_unreferenced_address_space(&mut guard);
+    }
+}
+
+/// Releases one scheduler token after runtime active-mm reclamation.
+pub(crate) fn release_scheduler_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
+    let mut guard = aspace.lock();
+    let prev = guard.scheduler_slots.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev >= 1, "AddrSpace::scheduler_slots underflow");
+    if prev == 1 {
+        clear_unreferenced_address_space(&mut guard);
     }
 }
 
@@ -738,6 +762,10 @@ impl fmt::Debug for AddrSpace {
             .field("page_table_root", &self.pt.root_paddr())
             .field("areas", &self.areas)
             .field("process_slots", &self.process_slots.load(Ordering::Relaxed))
+            .field(
+                "scheduler_slots",
+                &self.scheduler_slots.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }

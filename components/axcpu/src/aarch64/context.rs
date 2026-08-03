@@ -211,9 +211,6 @@ pub struct TaskContext {
     lr: u64, // r30
     /// Architecture-neutral current-header and kernel-TLS switch state.
     task_local: TaskLocalState,
-    /// The `TTBR0_EL1` value restored for this task's userspace address space.
-    #[cfg(feature = "uspace")]
-    page_table_root: ax_memory_addr::PhysAddr,
     #[cfg(feature = "fp-simd")]
     fp_state: FpState,
 }
@@ -263,24 +260,12 @@ impl TaskContext {
         self.task_local.current_header()
     }
 
-    /// Changes the page table root restored for this task.
-    #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
-        self.page_table_root = page_table_root;
-    }
-
     /// Completes FP/SIMD work before current-thread publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.fp_state.save();
             _next_ctx.fp_state.restore();
-        }
-        #[cfg(feature = "uspace")]
-        if self.page_table_root != _next_ctx.page_table_root {
-            // SAFETY: the scheduler owns both contexts with IRQs disabled.
-            unsafe { crate::asm::write_user_page_table(_next_ctx.page_table_root) };
-            crate::asm::flush_tlb(None);
         }
     }
 

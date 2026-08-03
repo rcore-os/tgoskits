@@ -41,8 +41,8 @@ impl TaskSystem {
     pub fn replace_current_address_space(
         &self,
         cpu: Pin<&mut CpuLocal>,
-        address_space: crate::runtime::AddressSpaceHandle,
-    ) -> Result<crate::runtime::AddressSpaceHandle, TaskError> {
+        address_space: &mut crate::runtime::AddressSpaceToken,
+    ) -> Result<crate::runtime::AddressSpaceToken, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         if address_space.is_none() {
             return Err(TaskError::InvalidConfiguration);
@@ -60,8 +60,10 @@ impl TaskSystem {
         {
             return Err(TaskError::InvalidConfiguration);
         }
-        let previous = record.resources.replace_address_space(address_space);
-        sched.runtime.address_space = address_space;
+        let next = core::mem::replace(address_space, crate::runtime::AddressSpaceToken::NONE);
+        let next_handle = next.handle();
+        let previous = record.resources.replace_address_space(next);
+        sched.runtime.address_space = next_handle;
         Ok(previous)
     }
 

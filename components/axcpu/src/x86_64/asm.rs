@@ -1,15 +1,23 @@
 //! Wrapper functions for assembly instructions.
 
 use core::arch::asm;
+#[cfg(feature = "host-test")]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr};
+#[cfg(not(feature = "host-test"))]
+use ax_memory_addr::MemoryAddr;
+use ax_memory_addr::{PhysAddr, VirtAddr};
 #[cfg(feature = "tls")]
 use x86::msr;
+#[cfg(not(feature = "host-test"))]
 use x86::{controlregs, tlb};
 use x86_64::instructions::interrupts;
 
 #[cfg(feature = "tls")]
 use crate::KernelTlsBase;
+
+#[cfg(feature = "host-test")]
+static HOST_PAGE_TABLE_ROOT: AtomicUsize = AtomicUsize::new(0);
 
 /// Allows the current CPU to respond to interrupts.
 #[inline]
@@ -63,6 +71,10 @@ pub fn halt() {
 /// Returns the physical address of the page table root.
 #[inline]
 pub fn read_user_page_table() -> PhysAddr {
+    #[cfg(feature = "host-test")]
+    return PhysAddr::from(HOST_PAGE_TABLE_ROOT.load(Ordering::Acquire));
+
+    #[cfg(not(feature = "host-test"))]
     pa!(unsafe { controlregs::cr3() } as usize).align_down_4k()
 }
 
@@ -90,7 +102,14 @@ pub fn read_kernel_page_table() -> PhysAddr {
 /// This function is unsafe as it changes the virtual memory address space.
 #[inline]
 pub unsafe fn write_user_page_table(root_paddr: PhysAddr) {
-    unsafe { controlregs::cr3_write(root_paddr.as_usize() as _) }
+    #[cfg(feature = "host-test")]
+    {
+        HOST_PAGE_TABLE_ROOT.store(root_paddr.as_usize(), Ordering::Release);
+    }
+    #[cfg(not(feature = "host-test"))]
+    unsafe {
+        controlregs::cr3_write(root_paddr.as_usize() as _)
+    }
 }
 
 /// Writes the register to update the current page table root for kernel space
@@ -119,10 +138,15 @@ pub fn flush_icache_all() {}
 /// entry that maps the given virtual address.
 #[inline]
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
-    if let Some(vaddr) = vaddr {
-        unsafe { tlb::flush(vaddr.into()) }
-    } else {
-        unsafe { tlb::flush_all() }
+    #[cfg(feature = "host-test")]
+    let _ = vaddr;
+    #[cfg(not(feature = "host-test"))]
+    {
+        if let Some(vaddr) = vaddr {
+            unsafe { tlb::flush(vaddr.into()) }
+        } else {
+            unsafe { tlb::flush_all() }
+        }
     }
 }
 

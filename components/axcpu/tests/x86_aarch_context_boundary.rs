@@ -3,13 +3,13 @@
 use std::{fs, path::PathBuf};
 
 #[test]
-fn x86_task_context_switches_tls_only_in_the_naked_window() {
+fn x86_task_context_does_not_own_address_space_selection() {
     let source = read_arch_source("x86_64/context.rs");
     let rust_switch = function_body(&source, "pub fn prepare_switch_to");
     let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
 
     assert!(!rust_switch.contains("write_thread_pointer"));
-    assert!(rust_switch.contains("write_user_page_table"));
+    assert!(!rust_switch.contains("write_user_page_table"));
     assert!(!naked_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("rdmsr"));
     assert!(naked_switch.contains("wrmsr"));
@@ -19,13 +19,13 @@ fn x86_task_context_switches_tls_only_in_the_naked_window() {
 }
 
 #[test]
-fn aarch64_task_context_switches_tls_only_in_the_naked_window() {
+fn aarch64_task_context_does_not_own_address_space_selection() {
     let source = read_arch_source("aarch64/context.rs");
     let rust_switch = function_body(&source, "pub fn prepare_switch_to");
     let naked_switch = function_body(&source, r#"unsafe extern "C" fn context_switch_raw"#);
 
     assert!(!rust_switch.contains("write_thread_pointer"));
-    assert!(rust_switch.contains("write_user_page_table"));
+    assert!(!rust_switch.contains("write_user_page_table"));
     assert!(!naked_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("tpidr_el0"));
     assert!(!source.contains("pub fn switch_to("));

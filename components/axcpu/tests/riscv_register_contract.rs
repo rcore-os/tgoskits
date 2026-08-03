@@ -104,7 +104,7 @@ fn fp_switch_enables_hardware_before_restoring_registers() {
 }
 
 #[test]
-fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
+fn task_context_owns_kernel_tls_but_not_scheduler_address_space_state() {
     let task_fields = section(CONTEXT, "pub struct TaskContext", "impl TaskContext");
     assert!(
         CONTEXT.contains("tls_area: KernelTlsBase"),
@@ -133,11 +133,11 @@ fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
         "pub unsafe fn switch_to_prepared",
     );
     assert!(
-        task_fields.contains("page_table_root: ax_memory_addr::PhysAddr")
-            && CONTEXT.contains("pub fn set_page_table_root")
-            && prepare.contains("write_user_page_table")
-            && prepare.contains("flush_tlb"),
-        "the task runtime model must retain task-owned address-space selection"
+        !task_fields.contains("page_table_root")
+            && !CONTEXT.contains("pub fn set_page_table_root")
+            && !prepare.contains("write_user_page_table")
+            && !prepare.contains("flush_tlb"),
+        "TaskContext must not retain the scheduler-owned address-space state"
     );
 
     let raw_switches = CONTEXT

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct InitialContextState {
-    pub(super) address_space: AddressSpaceHandle,
+    pub(super) address_space: Option<TaskAddressSpace>,
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     pub(super) fp_state: Option<ax_hal::cpu::FpState>,
 }
@@ -9,15 +9,15 @@ pub(super) struct InitialContextState {
 impl InitialContextState {
     pub(super) const fn kernel() -> Self {
         Self {
-            address_space: AddressSpaceHandle::NONE,
+            address_space: None,
             #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
             fp_state: None,
         }
     }
 
-    pub(super) const fn user(address_space: TaskAddressSpace) -> Self {
+    pub(super) fn user(address_space: TaskAddressSpace) -> Self {
         Self {
-            address_space: address_space.0,
+            address_space: Some(address_space),
             #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
             fp_state: None,
         }
@@ -60,7 +60,6 @@ pub(super) fn create_idle_resources() -> ThreadResources {
         stack,
         entry: idle_context_entry,
         tls,
-        address_space: AddressSpaceHandle::NONE,
     });
     if context.status != RuntimeStatus::Success {
         let _ = deallocate_runtime_tls(tls);
@@ -74,7 +73,7 @@ pub(super) fn create_idle_resources() -> ThreadResources {
             ExecutionContextHandle::from_raw(context.handle),
             stack,
             tls,
-            AddressSpaceHandle::NONE,
+            ax_task::runtime::AddressSpaceToken::NONE,
         )
     }
 }
@@ -122,7 +121,12 @@ pub(super) fn assemble_bootstrap_resources(
         // SAFETY: the caller transfers the fresh bootstrap context and TLS
         // handles exactly once. Its architecture boot stack is externally
         // owned, so this resource bundle intentionally has no stack handle.
-        ThreadResources::new(context, StackHandle::NONE, tls, AddressSpaceHandle::NONE)
+        ThreadResources::new(
+            context,
+            StackHandle::NONE,
+            tls,
+            ax_task::runtime::AddressSpaceToken::NONE,
+        )
     })
 }
 
@@ -143,7 +147,7 @@ pub(super) fn create_thread_resources(
             if let Some(unreleased) = unreleased {
                 let resources = unreleased.into_resources();
                 let system = task_system().ok_or(TaskError::NotInitialized)?;
-                let _release = system.release_unpublished_resources(resources);
+                system.release_unpublished_resources(resources);
             }
             Err(error)
         }
@@ -205,7 +209,7 @@ impl UnreleasedThreadResources {
                 ExecutionContextHandle::NONE,
                 self.stack,
                 self.tls,
-                AddressSpaceHandle::NONE,
+                ax_task::runtime::AddressSpaceToken::NONE,
             )
         }
     }
@@ -243,7 +247,7 @@ pub(super) fn create_thread_resources_with(
     backend: &mut impl ThreadResourceBackend,
     stack_size: usize,
     entry: ax_task::runtime::KernelEntry,
-    context_state: InitialContextState,
+    mut context_state: InitialContextState,
 ) -> Result<ThreadResources, ThreadResourceCreationFailure> {
     let guard_size = if cfg!(feature = "stack-guard-page") {
         PAGE_SIZE
@@ -292,20 +296,14 @@ pub(super) fn create_thread_resources_with(
             ));
         }
     };
-    let context_result = if context_state.address_space.is_none() {
-        backend.create_kernel_context(KernelContextRequest {
-            stack,
-            entry,
-            tls,
-            address_space: AddressSpaceHandle::NONE,
-        })
+    let address_space_handle = context_state
+        .address_space
+        .as_ref()
+        .map_or(AddressSpaceHandle::NONE, TaskAddressSpace::handle);
+    let context_result = if address_space_handle.is_none() {
+        backend.create_kernel_context(KernelContextRequest { stack, entry, tls })
     } else {
-        backend.create_user_context(UserContextRequest {
-            stack,
-            entry,
-            tls,
-            address_space: context_state.address_space,
-        })
+        backend.create_user_context(UserContextRequest { stack, entry, tls })
     };
     if context_result.status != RuntimeStatus::Success {
         return Err(rollback_thread_resource_creation(
@@ -327,6 +325,10 @@ pub(super) fn create_thread_resources_with(
     if let Some(fp_state) = context_state.fp_state {
         context::install_initial_fp_state(context_result.handle, fp_state);
     }
+    let address_space = context_state.address_space.as_mut().map_or(
+        ax_task::runtime::AddressSpaceToken::NONE,
+        TaskAddressSpace::take_token,
+    );
     Ok(unsafe {
         // SAFETY: the active runtime created each live handle above and this is
         // the only owning bundle constructed from those scalar identities.
@@ -334,7 +336,7 @@ pub(super) fn create_thread_resources_with(
             ExecutionContextHandle::from_raw(context_result.handle),
             stack,
             tls,
-            context_state.address_space,
+            address_space,
         )
     })
 }

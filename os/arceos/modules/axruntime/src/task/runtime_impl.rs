@@ -107,6 +107,7 @@ impl_task_runtime! {
             }
             #[cfg(feature = "irq")]
             crate::clock_event_runtime::take_current_clock_event_offline();
+            release_current_active_address_space();
             RuntimeStatus::Success
         }
 
@@ -166,7 +167,7 @@ impl_task_runtime! {
             }
         }
 
-        fn finish_context_switch_tail() -> RuntimeStatus {
+        fn finish_context_switch_tail() {
             finish_runtime_context_switch_tail()
         }
 
@@ -280,16 +281,24 @@ impl_task_runtime! {
             }
         }
 
-        fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus {
-            deallocate_runtime_stack(_stack)
+        fn deallocate_stack(_stack: StackHandle) {
+            assert_eq!(
+                deallocate_runtime_stack(_stack),
+                RuntimeStatus::Success,
+                "reclaimable task stack destruction failed"
+            );
         }
 
         fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
             allocate_runtime_tls(_request)
         }
 
-        fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus {
-            deallocate_runtime_tls(_tls)
+        fn deallocate_tls(_tls: TlsHandle) {
+            assert_eq!(
+                deallocate_runtime_tls(_tls),
+                RuntimeStatus::Success,
+                "reclaimable task TLS destruction failed"
+            );
         }
 
         fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
@@ -304,8 +313,24 @@ impl_task_runtime! {
             bind_runtime_context_thread(binding)
         }
 
-        fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
-            destroy_runtime_context(_context)
+        fn destroy_context(_context: ExecutionContextHandle) {
+            assert_eq!(
+                destroy_runtime_context(_context),
+                RuntimeStatus::Success,
+                "task context remained live after scheduler switch tail"
+            );
+        }
+
+        fn destroy_address_space(
+            address_space: AddressSpaceHandle,
+        ) -> AddressSpaceDestroyOutcome {
+            destroy_runtime_address_space(address_space)
+        }
+
+        fn arm_address_space_reclaim(
+            address_space: AddressSpaceHandle,
+        ) -> AddressSpaceReclaimArmOutcome {
+            arm_runtime_address_space_reclaim(address_space)
         }
 
         unsafe fn switch_context(
@@ -317,8 +342,8 @@ impl_task_runtime! {
             unsafe { switch_runtime_context(previous, next) };
         }
 
-        fn install_address_space(address_space: AddressSpaceHandle) -> RuntimeStatus {
-            install_runtime_address_space(address_space)
+        fn activate_address_space(activation: AddressSpaceActivation) -> RuntimeStatus {
+            activate_runtime_address_space(activation)
         }
 
         fn flush_tlb_local(_start: usize, _size: usize) {

@@ -233,6 +233,20 @@ impl RunQueue {
         !self.idle_fair.is_empty()
     }
 
+    pub(crate) fn fair_wakee_is_selected(
+        &self,
+        wakee: ThreadId,
+        mode: FairMode,
+        virtual_time: u64,
+    ) -> bool {
+        let queue = if mode == FairMode::Idle {
+            &self.idle_fair
+        } else {
+            &self.fair
+        };
+        queue.earliest_eligible(virtual_time) == Some(wakee)
+    }
+
     pub(crate) const fn earliest_deadline_event_ns(&self) -> Option<u64> {
         self.earliest_deadline_event_ns
     }
@@ -816,7 +830,57 @@ fn remove_from_rt_queue(queue: &mut VecDeque<QueuedThread>, id: ThreadId) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DeadlineFlags, DeadlinePolicy, FairEntity, FairMode, Nice, RtPriority};
+    use crate::{
+        CurrentSchedule, DeadlineFlags, DeadlinePolicy, FairEntity, FairMode, Nice, RtPriority,
+    };
+
+    #[test]
+    fn fair_wakeup_preemption_requires_the_wakee_to_be_the_eevdf_pick() {
+        let mut queue = RunQueue::new();
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let contender = ThreadId::from_parts(1, 1);
+        let wakee = ThreadId::from_parts(2, 1);
+        let contender_entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 1_000);
+        let wakee_entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 950, 1_100);
+        queue
+            .enqueue_test(
+                contender,
+                policy,
+                SchedulingEntity::Fair(contender_entity),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+        queue
+            .enqueue_test(
+                wakee,
+                policy,
+                SchedulingEntity::Fair(wakee_entity),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+        let mut current_entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 1_000, 1_200);
+        assert!(current_entity.charge(1, 0));
+        queue.update_fair_virtual_time(Some(current_entity));
+        let virtual_time = queue.virtual_time_for_mode(FairMode::Normal);
+        let current = CurrentSchedule::test_state(
+            ThreadId::from_parts(0, 1),
+            policy,
+            SchedulingEntity::Fair(current_entity),
+        );
+
+        assert!(queue.fair_wakee_is_selected(contender, FairMode::Normal, virtual_time));
+        assert!(!queue.fair_wakee_is_selected(wakee, FairMode::Normal, virtual_time));
+        assert!(wakee_entity.deadline_precedes(current_entity));
+        let preempts_current =
+            current.should_preempt(policy, SchedulingEntity::Fair(wakee_entity), virtual_time)
+                && queue.fair_wakee_is_selected(wakee, FairMode::Normal, virtual_time);
+        assert!(
+            !preempts_current,
+            "a wakee that loses the full EEVDF pick must not request preemption",
+        );
+    }
 
     #[test]
     fn deadline_precedes_rt_and_fair() {

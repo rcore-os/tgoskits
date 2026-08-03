@@ -1,22 +1,25 @@
 use super::*;
 
-pub(crate) fn publish_deferred_reclaim(node: Pin<&'static DeferredReclaimNode>, data: usize) {
-    let Ok(system) = runtime_task_system() else {
-        // Runtime handles remain published until shutdown. A wake released after
-        // teardown cannot safely free in its current context, so leaking the
-        // already-inert header is the only UAF-free shutdown fallback.
-        return;
-    };
-    match system.publish_deferred_reclaim(node, data) {
+pub(crate) fn publish_deferred_coroutine_reclaim(header: Pin<&'static CoroutineHeader>) {
+    let system = runtime_task_system().unwrap_or_else(|_| {
+        task_runtime::fatal_invariant(0x4558_0008, header.address());
+    });
+    match system.publish_deferred_coroutine_reclaim(header) {
         PublishResult::Published => {}
         PublishResult::AlreadyPending | PublishResult::WrongKind => {
-            task_runtime::fatal_invariant(0x4558_0004, data);
+            task_runtime::fatal_invariant(0x4558_0004, header.address());
         }
     }
 }
 
-pub(crate) fn drain_deferred_reclaims(limit: usize) -> Result<usize, TaskError> {
-    runtime_task_system()?.drain_deferred_reclaims(limit)
+/// Notifies the resource reaper after a runtime drops the last active-mm lease.
+///
+/// This allocation-free publication is valid from the IRQ-off switch tail and
+/// carries no OS callback or address-space pointer.
+pub fn notify_address_space_reclaim() {
+    if let Ok(system) = runtime_task_system() {
+        system.publish_resource_release_ready();
+    }
 }
 
 /// Creates the shutdown-lifetime service thread for callbacks and reclamation.
@@ -84,11 +87,17 @@ pub(super) fn task_work_service_action(
     pending_after_pass: bool,
     limit: usize,
 ) -> TaskWorkServiceAction {
-    match batch {
+    let action = match batch {
         None => TaskWorkServiceAction::Yield,
         Some(batch) if batch.saturated(limit) || pending_after_pass => TaskWorkServiceAction::Yield,
         Some(_) => TaskWorkServiceAction::Wait,
+    };
+    #[cfg(feature = "qperf-metrics")]
+    match action {
+        TaskWorkServiceAction::Yield => crate::metrics::record_task_work_worker_yield(),
+        TaskWorkServiceAction::Wait => crate::metrics::record_task_work_worker_wait(),
     }
+    action
 }
 
 pub(super) fn service_task_work_pass(
@@ -97,7 +106,11 @@ pub(super) fn service_task_work_pass(
     limit: usize,
 ) -> Result<Option<crate::DeferredTaskWorkBatch>, TaskError> {
     match system.service_deferred_task_work(limit) {
-        Ok(batch) => Ok(Some(batch)),
+        Ok(batch) => {
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::record_task_work_worker_pass(batch.processed());
+            Ok(Some(batch))
+        }
         Err(TaskError::ThreadBusy) => {
             doorbell.reassert_pending();
             Ok(None)

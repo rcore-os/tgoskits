@@ -47,6 +47,102 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "direct_wake_current_kept {}",
+        task.direct_wake_current_kept
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "direct_wake_queued_candidate_selected {}",
+        task.direct_wake_queued_candidate_selected
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_publish_calls {}",
+        task.task_work_publish_calls
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_publish_edges {}",
+        task.task_work_publish_edges
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_pending_consumed {}",
+        task.task_work_pending_consumed
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_reassertions {}",
+        task.task_work_reassertions
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_worker_passes {}",
+        task.task_work_worker_passes
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_worker_processed {}",
+        task.task_work_worker_processed
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_worker_yields {}",
+        task.task_work_worker_yields
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_worker_waits {}",
+        task.task_work_worker_waits
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_deadline_events {}",
+        task.task_work_deadline_events
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_scheduler_tick_events {}",
+        task.task_work_scheduler_tick_events
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_exit_callbacks {}",
+        task.task_work_exit_callbacks
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_reaped_threads {}",
+        task.task_work_reaped_threads
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_coroutine_reclaims {}",
+        task.task_work_coroutine_reclaims
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "task_work_address_space_reclaims {}",
+        task.task_work_address_space_reclaims
+    )
+    .unwrap();
+    writeln!(
+        output,
         "scheduler_ipi_sends {}",
         metrics.scheduler_ipi_sends
     )
@@ -79,6 +175,22 @@ mod tests {
                 "direct_wake_activations",
                 "direct_wake_enqueues",
                 "direct_wake_preemptions",
+                "direct_wake_current_kept",
+                "direct_wake_queued_candidate_selected",
+                "task_work_publish_calls",
+                "task_work_publish_edges",
+                "task_work_pending_consumed",
+                "task_work_reassertions",
+                "task_work_worker_passes",
+                "task_work_worker_processed",
+                "task_work_worker_yields",
+                "task_work_worker_waits",
+                "task_work_deadline_events",
+                "task_work_scheduler_tick_events",
+                "task_work_exit_callbacks",
+                "task_work_reaped_threads",
+                "task_work_coroutine_reclaims",
+                "task_work_address_space_reclaims",
                 "scheduler_ipi_sends",
                 "scheduler_ipi_consumes",
                 "clockevent_irqs",

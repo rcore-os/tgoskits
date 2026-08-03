@@ -160,16 +160,16 @@ impl UserTaskRef {
             .store(reset, Ordering::Release);
     }
 
-    /// Commits an exec-time page-table replacement for the running thread.
-    pub fn switch_page_table(&self, root: ax_memory_addr::PhysAddr) {
+    /// Commits an exec-time address-space replacement for the running thread.
+    pub fn switch_address_space(&self, address_space: scheduler::TaskAddressSpace) {
         assert_eq!(
             self.id(),
             scheduler::current_thread_id()
                 .unwrap_or_else(|error| panic!("page-table switch has no current task: {error}")),
             "only the running task may replace its page table"
         );
-        ax_runtime::task::switch_current_page_table(root.as_usize())
-            .unwrap_or_else(|error| panic!("failed to replace current page table: {error}"));
+        ax_runtime::task::switch_current_address_space(address_space)
+            .unwrap_or_else(|error| panic!("failed to replace current address space: {error}"));
     }
 
     /// Creates a non-owning generation-checked task reference.
@@ -481,18 +481,17 @@ pub fn might_sleep() {
     );
 }
 
-/// Creates and enqueues a Starry user thread bound to one page-table root.
+/// Creates and enqueues a Starry user thread with an owning address-space token.
 pub fn spawn_user_thread<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    page_table_root: usize,
     thread: Box<Thread>,
 ) -> Result<UserTaskRef, scheduler::TaskError>
 where
     F: FnOnce() + Send + 'static,
 {
-    let address_space = scheduler::TaskAddressSpace::from_page_table_root(page_table_root)?;
+    let address_space = thread.proc_data.scheduler_address_space()?;
     spawn_user_thread_inner(
         entry,
         name,
@@ -508,7 +507,6 @@ pub fn prepare_user_thread_with_policy<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    page_table_root: usize,
     thread: Box<Thread>,
     policy: scheduler::SchedulePolicy,
     reset_on_fork: bool,
@@ -516,7 +514,7 @@ pub fn prepare_user_thread_with_policy<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    let address_space = scheduler::TaskAddressSpace::from_page_table_root(page_table_root)?;
+    let address_space = thread.proc_data.scheduler_address_space()?;
     prepare_user_thread_inner(
         entry,
         name,
@@ -532,7 +530,6 @@ pub fn prepare_user_thread_with_fp_state_and_policy<F>(
     entry: F,
     name: String,
     stack_size: usize,
-    page_table_root: usize,
     fp_state: ax_cpu::FpState,
     thread: Box<Thread>,
     policy: scheduler::SchedulePolicy,
@@ -541,7 +538,7 @@ pub fn prepare_user_thread_with_fp_state_and_policy<F>(
 where
     F: FnOnce() + Send + 'static,
 {
-    let address_space = scheduler::TaskAddressSpace::from_page_table_root(page_table_root)?;
+    let address_space = thread.proc_data.scheduler_address_space()?;
     prepare_user_thread_inner(
         entry,
         name,

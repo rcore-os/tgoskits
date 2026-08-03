@@ -35,6 +35,12 @@ impl TaskWorkDoorbell {
 
     /// Publishes work before waking the fixed service thread.
     pub(crate) fn publish(&self) {
+        #[cfg(feature = "qperf-metrics")]
+        {
+            let edge = !self.pending.swap(true, Ordering::AcqRel);
+            crate::metrics::record_task_work_publish(edge);
+        }
+        #[cfg(not(feature = "qperf-metrics"))]
         self.pending.store(true, Ordering::Release);
         #[cfg(test)]
         self.wait_at_test_publish_barrier();
@@ -58,11 +64,18 @@ impl TaskWorkDoorbell {
     }
 
     pub(crate) fn take_pending(&self) -> bool {
-        self.pending.swap(false, Ordering::AcqRel)
+        let pending = self.pending.swap(false, Ordering::AcqRel);
+        #[cfg(feature = "qperf-metrics")]
+        if pending {
+            crate::metrics::record_task_work_pending_consumed();
+        }
+        pending
     }
 
     pub(crate) fn reassert_pending(&self) {
         self.pending.store(true, Ordering::Release);
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_task_work_reassertion();
     }
 
     pub(crate) fn is_pending(&self) -> bool {

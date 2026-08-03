@@ -303,15 +303,15 @@ fn do_execve(
     // Replace the aspace Arc so the parent's shared Arc<PiMutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
     // keeps pointing at the original still-live AddrSpace.
-    let new_pt_root = new_aspace.page_table_root();
     let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
+    let scheduler_address_space = crate::task::scheduler_address_space(newaspace_arc.clone())
+        .unwrap_or_else(|error| panic!("new exec address space has no scheduler owner: {error}"));
     commit_address_space_handoff(
         || {
             let old_aspace = proc_data.stage_aspace_replacement(newaspace_arc);
-            proc_data.mark_vm_aspace_private_after_exec();
             old_aspace
         },
-        || curr.switch_page_table(new_pt_root),
+        || curr.switch_address_space(scheduler_address_space),
         |old_aspace| crate::mm::release_process_slot(&old_aspace),
     );
 

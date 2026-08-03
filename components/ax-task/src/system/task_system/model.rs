@@ -4,39 +4,28 @@ use super::*;
 
 /// Failure returned by [`TaskSystem::reap_thread_handle`].
 ///
-/// A retryable failure returns ownership of the strong handle, keeping the
-/// registry generation pinned while the caller yields and retries. A committed
-/// teardown failure happens only after the registry record was removed and
-/// therefore cannot be retried by handle.
+/// A failed registry transition returns ownership of the strong handle, keeping
+/// the registry generation pinned while the caller handles the error.
 #[derive(Debug, thiserror::Error)]
-pub enum OwnedThreadReapError {
-    /// The record could not yet be removed; the handle remains valid.
-    #[error("{error}")]
-    Retry {
-        /// Scheduler error that prevented removal.
-        error: TaskError,
-        /// Original owning handle returned for retry.
-        handle: ThreadHandle,
-    },
-    /// Registry removal committed, but an OS resource teardown failed.
-    #[error("{0}")]
-    Committed(TaskError),
+#[error("{error}")]
+pub struct OwnedThreadReapError {
+    error: TaskError,
+    handle: ThreadHandle,
 }
 
 impl OwnedThreadReapError {
-    /// Returns the underlying scheduler error.
-    pub const fn task_error(&self) -> TaskError {
-        match self {
-            Self::Retry { error, .. } | Self::Committed(error) => *error,
-        }
+    pub(super) const fn new(error: TaskError, handle: ThreadHandle) -> Self {
+        Self { error, handle }
     }
 
-    /// Returns the still-valid handle when the operation can be retried.
-    pub fn into_retry_handle(self) -> Option<ThreadHandle> {
-        match self {
-            Self::Retry { handle, .. } => Some(handle),
-            Self::Committed(_) => None,
-        }
+    /// Returns the underlying scheduler error.
+    pub const fn task_error(&self) -> TaskError {
+        self.error
+    }
+
+    /// Returns the still-valid handle.
+    pub fn into_retry_handle(self) -> ThreadHandle {
+        self.handle
     }
 }
 
@@ -49,7 +38,8 @@ pub struct DeferredTaskWorkBatch {
     pub(super) scheduler_tick_callbacks: usize,
     pub(super) exit_callbacks: usize,
     pub(super) reaped_threads: usize,
-    pub(super) reclaimed_resources: usize,
+    pub(super) coroutine_reclaims: usize,
+    pub(super) address_space_reclaims: usize,
 }
 
 impl DeferredTaskWorkBatch {
@@ -59,7 +49,8 @@ impl DeferredTaskWorkBatch {
             + self.scheduler_tick_events
             + self.exit_callbacks
             + self.reaped_threads
-            + self.reclaimed_resources
+            + self.coroutine_reclaims
+            + self.address_space_reclaims
     }
 
     /// Returns the number of Deadline extension callbacks invoked.
@@ -70,6 +61,16 @@ impl DeferredTaskWorkBatch {
     /// Returns the number of scheduler-tick extension callbacks invoked.
     pub const fn scheduler_tick_callbacks(self) -> usize {
         self.scheduler_tick_callbacks
+    }
+
+    /// Returns zero-reference coroutine allocations reclaimed after hard IRQ.
+    pub const fn coroutine_reclaims(self) -> usize {
+        self.coroutine_reclaims
+    }
+
+    /// Returns active-mm ownership tokens whose final CPU lease was released.
+    pub const fn address_space_reclaims(self) -> usize {
+        self.address_space_reclaims
     }
 
     /// Returns whether another pass should run before the worker parks.
@@ -107,7 +108,7 @@ pub struct TaskSystem {
     // Wake and placement hot paths lock thread state before the target runqueue.
     pub(super) state: PreemptTicketLock<TaskSystemState>,
     pub(super) root_domain: PreemptTicketLock<RootDomainState>,
-    pub(super) deferred_reclaims: SchedulerInbox,
+    pub(super) deferred_coroutine_reclaims: SchedulerInbox,
     pub(super) deferred_deadline_callbacks: SchedulerInbox,
     pub(super) deferred_scheduler_ticks: SchedulerInbox,
     pub(super) task_work: Arc<TaskWorkDoorbell>,

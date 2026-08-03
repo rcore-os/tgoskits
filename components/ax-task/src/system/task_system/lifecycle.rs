@@ -116,7 +116,8 @@ impl TaskSystem {
             let mut state = self.state.lock();
             state.remove_exited_thread(thread)?
         };
-        self.release_thread_record(record)
+        self.release_thread_record(record);
+        Ok(())
     }
 
     /// Atomically removes an exited thread while consuming its owning handle.
@@ -126,21 +127,18 @@ impl TaskSystem {
     /// reap. Retryable failures return the same handle to the caller.
     pub fn reap_thread_handle(&self, handle: ThreadHandle) -> Result<(), OwnedThreadReapError> {
         if task_runtime::in_hard_irq() {
-            return Err(OwnedThreadReapError::Retry {
-                error: TaskError::UnsafeContext,
-                handle,
-            });
+            return Err(OwnedThreadReapError::new(TaskError::UnsafeContext, handle));
         }
         let record = {
             let mut state = self.state.lock();
             match state.remove_exited_thread_with_handle(&handle) {
                 Ok(record) => record,
-                Err(error) => return Err(OwnedThreadReapError::Retry { error, handle }),
+                Err(error) => return Err(OwnedThreadReapError::new(error, handle)),
             }
         };
         drop(handle);
-        self.release_thread_record(record)
-            .map_err(OwnedThreadReapError::Committed)
+        self.release_thread_record(record);
+        Ok(())
     }
 
     /// Reaps exited records for which no external strong handle remains.
@@ -167,63 +165,52 @@ impl TaskSystem {
             let Some(record) = record else {
                 break;
             };
-            // Registry removal is already committed. A failed runtime release
-            // moves the complete record into the task-work retry queue instead
-            // of losing its resource handles or terminating the service loop.
-            let _release = self.release_thread_record(record);
+            self.release_thread_record(record);
             reaped += 1;
         }
         Ok(reaped)
     }
 
-    pub(super) fn release_thread_record(&self, mut record: ThreadRecord) -> Result<(), TaskError> {
-        match record.resources.try_release() {
-            Ok(()) => {
-                drop(record.extension.take());
-                Ok(())
-            }
-            Err(error) => {
-                self.state
-                    .lock()
-                    .pending_resource_releases
-                    .push(PendingResourceRelease::Thread(record));
-                self.task_work.publish();
-                Err(error)
-            }
-        }
+    pub(super) fn release_thread_record(&self, mut record: ThreadRecord) {
+        let address_space = record.resources.release();
+        drop(record.extension.take());
+        self.release_address_space_token(address_space);
     }
 
-    pub(super) fn release_unpublished_thread(
-        &self,
-        mut record: DetachedThreadRecord,
-    ) -> Result<(), TaskError> {
-        match record.try_release_resources() {
-            Ok(()) => {
-                record.finish_release();
-                Ok(())
-            }
-            Err(error) => {
-                self.state
-                    .lock()
-                    .pending_resource_releases
-                    .push(PendingResourceRelease::Detached(record));
-                self.task_work.publish();
-                Err(error)
-            }
-        }
+    pub(super) fn release_unpublished_thread(&self, record: DetachedThreadRecord) {
+        let address_space = record.release();
+        self.release_address_space_token(address_space);
     }
 
     /// Releases a construction transaction that failed before thread registry
     /// publication.
     ///
-    /// If the runtime reports a retryable failure, this method retains the
-    /// complete bundle and publishes task-context reaper work. The returned
-    /// error describes the first failed release operation; ownership never
-    /// returns to the caller.
-    pub fn release_unpublished_resources(
-        &self,
-        resources: ThreadResources,
-    ) -> Result<(), TaskError> {
+    /// Thread-private destruction is a one-way ownership transfer. Only the
+    /// independent active-mm token may outlive this call through the runtime's
+    /// explicit last-CPU readiness edge.
+    pub fn release_unpublished_resources(&self, resources: ThreadResources) {
         self.release_unpublished_thread(DetachedThreadRecord::new(resources, None))
+    }
+
+    pub(crate) fn release_address_space_token(
+        &self,
+        address_space: crate::runtime::AddressSpaceToken,
+    ) {
+        if address_space.is_none() {
+            return;
+        }
+        let handle = address_space.handle();
+        match task_runtime::destroy_address_space(handle) {
+            AddressSpaceDestroyOutcome::Released => return,
+            AddressSpaceDestroyOutcome::Active => {}
+        }
+        self.state
+            .lock()
+            .pending_address_space_reclaims
+            .push(address_space);
+        match task_runtime::arm_address_space_reclaim(handle) {
+            AddressSpaceReclaimArmOutcome::Ready => self.task_work.publish(),
+            AddressSpaceReclaimArmOutcome::Armed => {}
+        }
     }
 }

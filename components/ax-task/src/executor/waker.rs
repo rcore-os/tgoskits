@@ -70,7 +70,7 @@ unsafe fn wake_by_ref(data: *const ()) {
     }
 }
 
-/// Releases one raw-waker reference through deferred owner reclamation.
+/// Releases one raw-waker reference.
 ///
 /// # Safety
 ///
@@ -78,8 +78,8 @@ unsafe fn wake_by_ref(data: *const ()) {
 unsafe fn drop_waker(data: *const ()) {
     let header = data.cast_mut().cast::<CoroutineHeader>();
     unsafe {
-        // Releasing the last reference only publishes an intrusive reclaim node;
-        // no memory is freed and no user destructor runs in this operation.
+        // Task context reclaims the final reference immediately. Hard IRQ only
+        // publishes the embedded typed reclaim node and never runs destructors.
         release_reference(header);
     }
 }

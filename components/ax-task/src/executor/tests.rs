@@ -190,9 +190,26 @@ fn reclaims_a_completed_coroutine_only_after_the_last_waker_drop() {
     executor.run_ready_batch();
 
     assert_eq!(future_drop.load(Ordering::Relaxed), 1);
-    assert_eq!(executor.reclaim_completed(DEFAULT_RECLAIM_BATCH), 0);
+    assert_eq!(Arc::strong_count(&executor.shared), 2);
     saved_waker.borrow_mut().take();
-    assert_eq!(executor.reclaim_completed(DEFAULT_RECLAIM_BATCH), 1);
+    assert_eq!(Arc::strong_count(&executor.shared), 1);
+}
+
+#[test]
+fn ordinary_task_context_reclaims_the_last_coroutine_reference_inline() {
+    let fixture = executor();
+    let executor = fixture.local();
+    assert_eq!(Arc::strong_count(&executor.shared), 1);
+
+    executor.spawn(async {});
+    assert_eq!(executor.run_ready_batch().completed(), 1);
+
+    assert_eq!(
+        Arc::strong_count(&executor.shared),
+        1,
+        "ordinary task context must release the completed allocation without waking the global \
+         task worker"
+    );
 }
 
 #[test]
@@ -222,11 +239,18 @@ fn shutdown_reclaims_the_header_when_a_future_destructor_panics() {
 
     assert!(panic.is_err());
     assert_eq!(future_drop.get(), 1);
-    assert_eq!(fixture.system().drain_deferred_reclaims(1).unwrap(), 1);
+    assert_eq!(
+        fixture
+            .system()
+            .service_deferred_task_work(1)
+            .unwrap()
+            .processed(),
+        0
+    );
 }
 
 #[test]
-fn late_waker_is_inert_after_shutdown_and_reaped_by_the_task_system() {
+fn late_waker_is_inert_after_shutdown_and_reclaimed_on_task_drop() {
     let mut fixture = executor();
     let saved_waker = Rc::new(RefCell::new(None::<Waker>));
     fixture.local().spawn(StoreWakerThenReady {
@@ -234,13 +258,14 @@ fn late_waker_is_inert_after_shutdown_and_reaped_by_the_task_system() {
         drop_count: Arc::new(AtomicUsize::new(0)),
     });
     fixture.local().run_ready_batch();
+    let shared = Arc::clone(&fixture.local().shared);
     let late = saved_waker.borrow_mut().take().unwrap();
 
     fixture.shutdown();
+    assert_eq!(Arc::strong_count(&shared), 2);
     late.wake_by_ref();
     drop(late);
-
-    assert_eq!(fixture.system().drain_deferred_reclaims(1).unwrap(), 1);
+    assert_eq!(Arc::strong_count(&shared), 1);
 }
 
 #[test]
@@ -260,7 +285,7 @@ fn run_supports_a_borrowing_non_send_future_without_leaking_its_header() {
 
     assert_eq!(output, 11);
     assert_eq!(observed.get(), 7);
-    assert_eq!(fixture.system().drain_deferred_reclaims(1).unwrap(), 0);
+    assert_eq!(Arc::strong_count(&executor.shared), 1);
 }
 
 #[test]
@@ -281,11 +306,11 @@ fn borrowing_root_late_waker_is_safe_after_run_returns() {
 
     assert_eq!(output, 13);
     assert_eq!(stack_value.get(), 5);
-    assert_eq!(executor.reclaim_completed(1), 0);
+    assert_eq!(Arc::strong_count(&executor.shared), 2);
     let late = saved_waker.borrow_mut().take().unwrap();
     late.wake_by_ref();
     drop(late);
-    assert_eq!(executor.reclaim_completed(1), 1);
+    assert_eq!(Arc::strong_count(&executor.shared), 1);
 }
 
 #[test]
@@ -309,20 +334,7 @@ fn poll_panic_cancels_and_drops_a_borrowing_future_on_its_owner() {
     assert!(panic.is_err());
     assert_eq!(borrowed_state.get(), 2);
     assert_eq!(dropped_on.get(), Some(owner));
-    assert_eq!(executor.reclaim_completed(1), 1);
-}
-
-#[test]
-fn task_system_reclaimer_obeys_the_requested_bound() {
-    let fixture = executor();
-    let executor = fixture.local();
-    executor.spawn(async {});
-    executor.spawn(async {});
-    assert_eq!(executor.run_ready_batch().completed(), 2);
-
-    assert_eq!(executor.reclaim_completed(1), 1);
-    assert_eq!(executor.reclaim_completed(1), 1);
-    assert_eq!(executor.reclaim_completed(1), 0);
+    assert_eq!(Arc::strong_count(&executor.shared), 1);
 }
 
 #[test]
@@ -426,9 +438,9 @@ impl ExecutorFixture {
     fn drain_runtime_work(&mut self) {
         while self
             .system
-            .drain_deferred_reclaims(DEFAULT_RECLAIM_BATCH)
-            .expect("test reaper must run in task context")
-            != 0
+            .service_deferred_task_work(crate::DEFAULT_BATCH_LIMIT)
+            .expect("test task worker must run in task context")
+            .made_progress()
         {}
     }
 }
