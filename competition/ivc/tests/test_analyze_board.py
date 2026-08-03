@@ -775,6 +775,42 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertTrue(result["restart_recovery"]["actual_vm_reset"])
         self.assertEqual(result["restart_recovery"]["host_cpu"], 3)
 
+    def test_restart_profile_orders_replayed_rtos_evidence_from_its_first_prefix(
+        self,
+    ) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        stale_replay = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-STALE-REPLAY "
+            "old_session=286331153 old_sequence=20 new_session=572662306 "
+            "stale_status_sent=1 stale_acks_sent=1"
+        )
+        truncated_stale_replay = stale_replay.rsplit("=", maxsplit=2)[0]
+        recovery = (
+            "[guest-console:pl011-zephyr] IVC-RTOS-RECOVERY "
+            "session=572662306 seq=1 from=controller-timeout mode=Neural "
+            "actuator_permille=500 recoveries=1"
+        )
+        log = self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw).replace(
+            stale_replay,
+            truncated_stale_replay,
+            1,
+        ).replace(
+            recovery,
+            f"{recovery}\n{stale_replay}",
+            1,
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            profile="restart",
+            pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+            expected_pre_reset_count=20,
+        )
+
+        self.assertTrue(result["restart_recovery"]["recovered"])
+
     def test_restart_profile_does_not_let_unterminated_guest_prefix_consume_host_records(
         self,
     ) -> None:

@@ -1433,8 +1433,14 @@ def parse_restart_recovery(
             ),
         ),
     )
+    replayed_event_prefixes = {
+        RTOS_STALE_REPLAY_PREFIX,
+        RTOS_RECOVERY_PREFIX,
+    }
     event_indexes = [
-        first_complete_record_index(lines, prefix, fields)
+        first_record_start_index(lines, prefix)
+        if prefix in replayed_event_prefixes
+        else first_complete_record_index(lines, prefix, fields)
         for prefix, fields in ordered_events
     ]
     if event_indexes != sorted(event_indexes) or len(set(event_indexes)) != len(
@@ -1690,6 +1696,19 @@ def first_complete_record_index(
         if all(field in fields for field in required_fields):
             return index
     raise AnalysisError(f"missing complete {prefix.strip()} record")
+
+
+def first_record_start_index(lines: list[str], prefix: str) -> int:
+    """Return the initial emission point for a replayable UART record.
+
+    Record contents are validated separately from an intact replay. The exact
+    prefix of a truncated first copy is still sufficient to preserve causal
+    order when the complete durability copy is emitted later.
+    """
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            return index
+    raise AnalysisError(f"missing {prefix.strip()} record prefix")
 
 
 def find_optional_record(
