@@ -143,6 +143,10 @@ pub fn futex_false_wait_condition_avoids_waiter_allocation() -> bool {
     super::task::false_wait_condition_allocations_for_test() == 0
 }
 
+pub fn futex_queued_waiter_avoids_state_allocation() -> bool {
+    super::task::queued_waiter_state_allocations_for_test() == 0
+}
+
 pub fn futex_park_prepare_error_cleans_waiter() -> bool {
     super::task::park_prepare_error_cleans_waiter_for_test()
 }

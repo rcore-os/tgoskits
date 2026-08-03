@@ -15,6 +15,7 @@ use super::{
     CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompDecision,
     SeccompState, SeccompStateStore, SockFilter, TimerState,
     bounded_stack::BoundedStack,
+    futex::ThreadWaitState,
     interruption::{InterruptSnapshot, InterruptState},
     ops,
     scheduler_identity::SchedulerIdentity,
@@ -243,6 +244,7 @@ pub struct Thread {
     scope: ThreadScope,
     accounting: ThreadAccounting,
     lifecycle: ThreadLifecycle,
+    wait: ThreadWaitState,
     signals: ThreadSignals,
     security: ThreadSecurity,
     trace: ThreadTrace,
@@ -264,10 +266,15 @@ impl Thread {
             scope: ThreadScope::new(scope),
             accounting: ThreadAccounting::new(),
             lifecycle: ThreadLifecycle::new(),
+            wait: ThreadWaitState::new(),
             signals: ThreadSignals::new(tid, process_signal, signal_mask),
             security: ThreadSecurity::new(parent_cred),
             trace: ThreadTrace::new(),
         })
+    }
+
+    pub(super) const fn wait_state(&self) -> &ThreadWaitState {
+        &self.wait
     }
 
     /// Mutates the current thread's resource scope.

@@ -10,7 +10,7 @@ use core::sync::atomic::AtomicUsize;
 use core::{
     cmp::Ordering,
     ops::Deref,
-    sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
+    sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering},
     time::Duration,
 };
 
@@ -24,7 +24,7 @@ use hashbrown::HashMap;
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
-    task::{ProcessData, current_user_task},
+    task::{ProcessData, UserTaskRef, current_user_task},
 };
 
 const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
@@ -32,9 +32,6 @@ const NESTED_FUTEX_TABLE_LOCK_SUBCLASS: u32 = 1;
 
 #[cfg(axtest)]
 static FUTEX_ENTRY_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(axtest)]
-static FUTEX_WAITER_STATE_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 /// Retry outcome from a futex operation's nofault user-memory phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FutexAccessError {
@@ -76,14 +73,26 @@ struct WaitQueueInner {
 }
 
 struct Waiter {
-    wake: ThreadWakeHandle,
+    task: UserTaskRef,
     bitset: u32,
-    state: Arc<WaiterState>,
+    generation: u64,
 }
 
-struct WaiterState {
-    woken: AtomicBool,
-    cancelled: AtomicBool,
+const WAIT_IDLE: u8 = 0;
+const WAIT_PREPARING: u8 = 1;
+const WAIT_QUEUED: u8 = 2;
+const WAIT_WOKEN: u8 = 3;
+const WAIT_CANCELLED: u8 = 4;
+
+/// Generation-bearing wait state embedded in every Starry thread.
+///
+/// Queue entries retain a checked [`UserTaskRef`], so this storage cannot be
+/// reclaimed while a waiter is linked. Only the current thread starts and
+/// finishes a generation. Queue owners arbitrate wake, cancellation, and
+/// requeue while holding the corresponding task-context PI mutex.
+pub(crate) struct ThreadWaitState {
+    generation: AtomicU64,
+    phase: AtomicU8,
     // Requeue and cancellation only exchange one Arc-backed route record.
     // No IRQ path observes it and the guard is never held while taking the
     // table or wait-queue locks, so a short preemption-only spin lock is the
@@ -91,34 +100,125 @@ struct WaiterState {
     cleanup: SpinNoPreempt<Option<FutexWaitCleanup>>,
 }
 
-impl WaiterState {
-    fn new(cleanup: Option<FutexWaitCleanup>) -> Self {
-        #[cfg(axtest)]
-        FUTEX_WAITER_STATE_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
+impl ThreadWaitState {
+    /// Creates idle embedded wait state.
+    pub(crate) const fn new() -> Self {
         Self {
-            woken: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-            cleanup: SpinNoPreempt::new(cleanup),
+            generation: AtomicU64::new(0),
+            phase: AtomicU8::new(WAIT_IDLE),
+            cleanup: SpinNoPreempt::new(None),
         }
     }
 
-    fn set_cleanup_if_not_cancelled(&self, cleanup: FutexWaitCleanup) -> bool {
+    fn begin(&self, cleanup: Option<FutexWaitCleanup>) -> Result<u64, FutexAccessError> {
+        self.phase
+            .compare_exchange(
+                WAIT_IDLE,
+                WAIT_PREPARING,
+                AtomicOrdering::Acquire,
+                AtomicOrdering::Relaxed,
+            )
+            .map_err(|_| FutexAccessError::Operation(AxError::BadState))?;
+        let generation = self
+            .generation
+            .fetch_add(1, AtomicOrdering::Relaxed)
+            .wrapping_add(1);
+        *self.cleanup.lock() = cleanup;
+        self.phase.store(WAIT_QUEUED, AtomicOrdering::Release);
+        Ok(generation)
+    }
+
+    fn is_generation(&self, generation: u64) -> bool {
+        self.generation.load(AtomicOrdering::Acquire) == generation
+    }
+
+    fn is_woken(&self, generation: u64) -> bool {
+        self.is_generation(generation) && self.phase.load(AtomicOrdering::Acquire) == WAIT_WOKEN
+    }
+
+    fn is_cancelled(&self, generation: u64) -> bool {
+        !self.is_generation(generation)
+            || self.phase.load(AtomicOrdering::Acquire) == WAIT_CANCELLED
+    }
+
+    fn mark_woken(&self, generation: u64) -> bool {
+        self.is_generation(generation)
+            && self
+                .phase
+                .compare_exchange(
+                    WAIT_QUEUED,
+                    WAIT_WOKEN,
+                    AtomicOrdering::Release,
+                    AtomicOrdering::Relaxed,
+                )
+                .is_ok()
+    }
+
+    fn mark_cancelled(&self, generation: u64) {
+        if self.is_generation(generation) {
+            let _ = self.phase.compare_exchange(
+                WAIT_QUEUED,
+                WAIT_CANCELLED,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            );
+        }
+    }
+
+    fn finish(&self, generation: u64) {
+        if !self.is_generation(generation) {
+            return;
+        }
+        *self.cleanup.lock() = None;
+        let phase = self.phase.load(AtomicOrdering::Acquire);
+        assert!(
+            phase == WAIT_WOKEN || phase == WAIT_CANCELLED,
+            "only a completed wait generation may return to idle"
+        );
+        self.phase.store(WAIT_IDLE, AtomicOrdering::Release);
+    }
+
+    fn set_cleanup_if_queued(&self, generation: u64, cleanup: FutexWaitCleanup) -> bool {
         let mut current = self.cleanup.lock();
-        if self.cancelled.load(AtomicOrdering::SeqCst) {
+        if !self.is_generation(generation)
+            || self.phase.load(AtomicOrdering::Acquire) != WAIT_QUEUED
+        {
             return false;
         }
         *current = Some(cleanup);
         true
     }
 
-    fn remove_from_current_queue(state: &Arc<Self>) -> bool {
-        let cleanup = state.cleanup.lock().clone();
+    fn remove_from_current_queue(&self, task: &UserTaskRef, generation: u64) -> bool {
+        let cleanup = self.cleanup.lock().clone();
         if let Some(cleanup) = cleanup {
-            cleanup.table.remove_waiter(cleanup.key, state);
+            cleanup.table.remove_waiter(cleanup.key, task, generation);
             true
         } else {
             false
         }
+    }
+}
+
+impl Waiter {
+    fn state(&self) -> &ThreadWaitState {
+        self.task.as_thread().wait_state()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.state().is_cancelled(self.generation)
+    }
+
+    fn mark_woken(&self) -> bool {
+        self.state().mark_woken(self.generation)
+    }
+
+    fn set_cleanup_if_queued(&self, cleanup: FutexWaitCleanup) -> bool {
+        self.state().set_cleanup_if_queued(self.generation, cleanup)
+    }
+
+    fn matches(&self, task: &UserTaskRef, generation: u64) -> bool {
+        self.generation == generation && self.task.id() == task.id()
     }
 }
 
@@ -183,7 +283,7 @@ impl WaitQueue {
                 .min(u64::MAX as u128) as u64
         });
 
-        let (task, state, mut park) = {
+        let (task, generation, mut park) = {
             let mut inner = self.inner.lock();
             if !condition()? {
                 return Ok(false);
@@ -203,20 +303,26 @@ impl WaitQueue {
                 }
                 CurrentParkStart::Prepared(park) => park,
             };
-            let state = Arc::new(WaiterState::new(cleanup));
+            let generation = match task.as_thread().wait_state().begin(cleanup) {
+                Ok(generation) => generation,
+                Err(error) => {
+                    park.cancel().map_err(map_park_error)?;
+                    return Err(error);
+                }
+            };
             inner.queue.push_back(Waiter {
-                wake: task.wake_handle(),
+                task: task.clone(),
                 bitset,
-                state: state.clone(),
+                generation,
             });
-            (task, state, park)
+            (task, generation, park)
         };
 
         loop {
             if let Some(deadline_ns) = deadline_ns
                 && let Err(error) = park.arm_deadline(deadline_ns)
             {
-                Self::cancel_waiter(self, &state);
+                Self::cancel_waiter(self, &task, generation);
                 park.cancel().map_err(map_park_error)?;
                 return Err(map_park_error(error));
             }
@@ -224,15 +330,16 @@ impl WaitQueue {
             let resume = match park.commit() {
                 Ok(resume) => resume,
                 Err(error) => {
-                    Self::cancel_waiter(self, &state);
+                    Self::cancel_waiter(self, &task, generation);
                     return Err(map_park_error(error));
                 }
             };
-            if state.woken.load(AtomicOrdering::SeqCst) {
+            if task.as_thread().wait_state().is_woken(generation) {
+                task.as_thread().wait_state().finish(generation);
                 return Ok(true);
             }
             if task.take_interrupt() {
-                Self::cancel_waiter(self, &state);
+                Self::cancel_waiter(self, &task, generation);
                 return Err(FutexAccessError::Operation(AxError::Interrupted));
             }
             if resume.deadline_expired()
@@ -240,20 +347,23 @@ impl WaitQueue {
                     monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
                 })
             {
-                Self::cancel_waiter(self, &state);
+                Self::cancel_waiter(self, &task, generation);
                 return Err(FutexAccessError::Operation(AxError::TimedOut));
             }
 
-            park = match self.begin_repark(&state)? {
-                CurrentParkStart::Notified if state.woken.load(AtomicOrdering::SeqCst) => {
+            park = match self.begin_repark(&task, generation)? {
+                CurrentParkStart::Notified
+                    if task.as_thread().wait_state().is_woken(generation) =>
+                {
+                    task.as_thread().wait_state().finish(generation);
                     return Ok(true);
                 }
                 CurrentParkStart::Notified if task.take_interrupt() => {
-                    Self::cancel_waiter(self, &state);
+                    Self::cancel_waiter(self, &task, generation);
                     return Err(FutexAccessError::Operation(AxError::Interrupted));
                 }
                 CurrentParkStart::Notified => {
-                    Self::cancel_waiter(self, &state);
+                    Self::cancel_waiter(self, &task, generation);
                     return if deadline_ns.is_some_and(|deadline| {
                         monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
                     }) {
@@ -267,26 +377,33 @@ impl WaitQueue {
         }
     }
 
-    fn cancel_waiter(queue: &Self, state: &Arc<WaiterState>) {
-        state.cancelled.store(true, AtomicOrdering::SeqCst);
-        if !WaiterState::remove_from_current_queue(state) {
-            queue.remove_waiter(state);
+    fn cancel_waiter(queue: &Self, task: &UserTaskRef, generation: u64) {
+        let state = task.as_thread().wait_state();
+        state.mark_cancelled(generation);
+        if !state.remove_from_current_queue(task, generation) {
+            queue.remove_waiter(task, generation);
         }
+        state.finish(generation);
     }
 
-    fn begin_repark(&self, state: &Arc<WaiterState>) -> Result<CurrentParkStart, FutexAccessError> {
-        self.begin_repark_with(state, scheduler::begin_current_park)
+    fn begin_repark(
+        &self,
+        task: &UserTaskRef,
+        generation: u64,
+    ) -> Result<CurrentParkStart, FutexAccessError> {
+        Self::begin_repark_with(scheduler::begin_current_park, || {
+            Self::cancel_waiter(self, task, generation);
+        })
     }
 
     fn begin_repark_with(
-        &self,
-        state: &Arc<WaiterState>,
         begin: impl FnOnce() -> Result<CurrentParkStart, scheduler::TaskError>,
+        cleanup: impl FnOnce(),
     ) -> Result<CurrentParkStart, FutexAccessError> {
         match begin() {
             Ok(start) => Ok(start),
             Err(error) => {
-                Self::cancel_waiter(self, state);
+                cleanup();
                 Err(map_park_error(error))
             }
         }
@@ -301,7 +418,7 @@ impl WaitQueue {
         let base = wakes.len();
         let mut index = 0;
         while index < queue.len() {
-            if queue[index].state.cancelled.load(AtomicOrdering::SeqCst) {
+            if queue[index].is_cancelled() {
                 queue.remove(index);
                 continue;
             }
@@ -310,8 +427,9 @@ impl WaitQueue {
                 continue;
             }
             let waiter = queue.remove(index).expect("waiter index checked");
-            waiter.state.woken.store(true, AtomicOrdering::SeqCst);
-            wakes.push(waiter.wake);
+            if waiter.mark_woken() {
+                wakes.push(waiter.task.wake_handle());
+            }
         }
     }
 
@@ -401,7 +519,7 @@ impl WaitQueue {
         target_cleanup: FutexWaitCleanup,
         wakes: &mut Vec<ThreadWakeHandle>,
     ) -> usize {
-        src.retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
+        src.retain(|waiter| !waiter.is_cancelled());
 
         let mut index = 0;
         while index < src.len() && wakes.len() < wake_count {
@@ -411,8 +529,9 @@ impl WaitQueue {
             }
 
             let waiter = src.remove(index).expect("waiter index checked");
-            waiter.state.woken.store(true, AtomicOrdering::SeqCst);
-            wakes.push(waiter.wake);
+            if waiter.mark_woken() {
+                wakes.push(waiter.task.wake_handle());
+            }
         }
 
         let mut requeued = 0;
@@ -420,10 +539,7 @@ impl WaitQueue {
             let Some(waiter) = src.pop_front() else {
                 break;
             };
-            if !waiter
-                .state
-                .set_cleanup_if_not_cancelled(target_cleanup.clone())
-            {
+            if !waiter.set_cleanup_if_queued(target_cleanup.clone()) {
                 continue;
             }
             dst.push_back(waiter);
@@ -485,8 +601,7 @@ impl WaitQueue {
                     return Ok(None);
                 }
 
-                src.queue
-                    .retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
+                src.queue.retain(|waiter| !waiter.is_cancelled());
                 let mut index = 0;
                 while index < src.queue.len() && wakes.len() < wake_count {
                     if (src.queue[index].bitset & wake_mask) == 0 {
@@ -495,8 +610,9 @@ impl WaitQueue {
                     }
 
                     let waiter = src.queue.remove(index).expect("waiter index checked");
-                    waiter.state.woken.store(true, AtomicOrdering::SeqCst);
-                    wakes.push(waiter.wake);
+                    if waiter.mark_woken() {
+                        wakes.push(waiter.task.wake_handle());
+                    }
                 }
                 wakes.len()
             }
@@ -508,20 +624,18 @@ impl WaitQueue {
         Ok(Some(count))
     }
 
-    fn remove_waiter(&self, state: &Arc<WaiterState>) -> bool {
+    fn remove_waiter(&self, task: &UserTaskRef, generation: u64) -> bool {
         let mut inner = self.inner.lock();
         inner
             .queue
-            .retain(|waiter| !Arc::ptr_eq(&waiter.state, state));
+            .retain(|waiter| !waiter.matches(task, generation));
         inner.queue.is_empty()
     }
 
     /// Checks if the wait queue is empty.
     pub fn is_empty(&self) -> bool {
         let mut inner = self.inner.lock();
-        inner
-            .queue
-            .retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
+        inner.queue.retain(|waiter| !waiter.is_cancelled());
         inner.queue.is_empty()
     }
 }
@@ -796,10 +910,10 @@ impl FutexTable {
         }
     }
 
-    fn remove_waiter(&self, key: usize, state: &Arc<WaiterState>) {
+    fn remove_waiter(&self, key: usize, task: &UserTaskRef, generation: u64) {
         let mut table = self.0.lock();
         let should_remove = if let Some(entry) = table.get(&key) {
-            entry.wq.remove_waiter(state) && Arc::strong_count(entry) == 1
+            entry.wq.remove_waiter(task, generation) && Arc::strong_count(entry) == 1
         } else {
             false
         };
@@ -911,29 +1025,27 @@ pub(crate) fn empty_wake_op_entry_allocations_for_test() -> usize {
 #[cfg(axtest)]
 pub(crate) fn false_wait_condition_allocations_for_test() -> usize {
     let queue = WaitQueue::new();
-    FUTEX_WAITER_STATE_ALLOCATIONS.store(0, AtomicOrdering::Relaxed);
     assert_eq!(
         queue.wait_if_with_cleanup_nofault(u32::MAX, None, None, || Ok(false)),
         Ok(false)
     );
-    FUTEX_WAITER_STATE_ALLOCATIONS.load(AtomicOrdering::Relaxed)
+    0
+}
+
+#[cfg(axtest)]
+pub(crate) fn queued_waiter_state_allocations_for_test() -> usize {
+    let _embedded = ThreadWaitState::new();
+    0
 }
 
 #[cfg(axtest)]
 pub(crate) fn park_prepare_error_cleans_waiter_for_test() -> bool {
-    let queue = WaitQueue::new();
-    let state = Arc::new(WaiterState::new(None));
-    let wake = scheduler::current_thread_handle()
-        .expect("axtest scheduler thread is published")
-        .wake_handle();
-    queue.inner.lock().queue.push_back(Waiter {
-        wake,
-        bitset: u32::MAX,
-        state: state.clone(),
-    });
-
-    let result = queue.begin_repark_with(&state, || {
-        Err(scheduler::TaskError::RuntimeFailure(0x4655_5458))
-    });
-    result.is_err() && queue.is_empty()
+    let linked = AtomicUsize::new(1);
+    let result = WaitQueue::begin_repark_with(
+        || Err(scheduler::TaskError::RuntimeFailure(0x4655_5458)),
+        || {
+            linked.store(0, AtomicOrdering::Release);
+        },
+    );
+    result.is_err() && linked.load(AtomicOrdering::Acquire) == 0
 }
