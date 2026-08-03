@@ -66,6 +66,10 @@ class AnalysisError(ValueError):
     """The physical-board console log violates the acceptance contract."""
 
 
+class ConflictingRecordsError(AnalysisError):
+    """Multiple complete UART records disagree."""
+
+
 def analyze(
     log_path: Path,
     expected_count: int,
@@ -231,7 +235,6 @@ def select_controller_record(
 def parse_console_metrics(
     lines: list[str], metrics_required: bool
 ) -> dict[str, object]:
-    record_reader = find_record if metrics_required else find_optional_record
     latency_fields = ("p50_us", "p95_us", "p99_us", "max_us")
     latency_records = (
         (FULL_LOOP_PREFIX, "full_loop", latency_fields),
@@ -244,7 +247,12 @@ def parse_console_metrics(
     )
     result: dict[str, object] = {}
     for prefix, family, required_fields in latency_records:
-        fields = record_reader(lines, prefix, required_fields)
+        fields = read_console_metric_record(
+            lines,
+            prefix,
+            required_fields,
+            metrics_required=metrics_required,
+        )
         if fields is None:
             continue
         result.update(parse_latency_fields(fields, family))
@@ -253,10 +261,11 @@ def parse_console_metrics(
                 fields, "throughput_msg_s", TRANSPORT_PREFIX
             )
 
-    control = record_reader(
+    control = read_console_metric_record(
         lines,
         CONTROL_PREFIX,
         ("rmse_milli_c", "iae_milli_c_s", "max_overshoot_milli_c"),
+        metrics_required=metrics_required,
     )
     if control is not None:
         result.update(
@@ -273,6 +282,22 @@ def parse_console_metrics(
             }
         )
     return result
+
+
+def read_console_metric_record(
+    lines: list[str],
+    prefix: str,
+    required_fields: tuple[str, ...],
+    *,
+    metrics_required: bool,
+) -> dict[str, str] | None:
+    if metrics_required:
+        return find_record(lines, prefix, required_fields)
+    try:
+        return find_optional_record(lines, prefix, required_fields)
+    except ConflictingRecordsError:
+        # Hash-verified raw samples replace UART metric copies damaged in transit.
+        return None
 
 
 def parse_latency_fields(fields: dict[str, str], family: str) -> dict[str, int]:
@@ -832,7 +857,9 @@ def find_optional_record(
         return None
     reference = complete_records[0]
     if any(record != reference for record in complete_records[1:]):
-        raise AnalysisError(f"conflicting complete {prefix.strip()} records")
+        raise ConflictingRecordsError(
+            f"conflicting complete {prefix.strip()} records"
+        )
     return reference
 
 

@@ -343,6 +343,34 @@ class BoardAnalysisTests(unittest.TestCase):
             result["controller"]["rmse_milli_c"], 1224.744871, places=6
         )
 
+    def test_raw_samples_replace_conflicting_uart_metric_summaries(self) -> None:
+        raw_path = self.write_raw_csv()
+        transport = (
+            "[guest-console:pl011-starry] IVC-CONTROLLER-TRANSPORT "
+            "p50_us=120 p95_us=150 p99_us=150 max_us=200 "
+            "throughput_msg_s=9.000\n"
+        )
+        damaged_copy = transport.replace(
+            "throughput_msg_s=9.000", "throughput_msg_s=9.0"
+        )
+        log = self.raw_log().replace(transport, damaged_copy + transport)
+
+        result = analyzer.analyze(self.write_log(log), 4, raw_path)
+
+        self.assertEqual(result["controller"]["transport_p50_us"], 120)
+        self.assertEqual(result["controller"]["transport_max_us"], 200)
+
+    def test_conflicting_uart_metric_summaries_without_raw_are_rejected(self) -> None:
+        full_loop = (
+            "[guest-console:pl011-starry] IVC-CONTROLLER-FULL-LOOP "
+            "p50_us=6644 p95_us=11282 p99_us=11719 max_us=20115\n"
+        )
+        conflicting = full_loop.replace("p50_us=6644", "p50_us=6643")
+        log = VALID_LOG.replace(full_loop, conflicting + full_loop)
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "conflicting complete"):
+            analyzer.analyze(self.write_log(log), 1_800)
+
     def test_tampered_raw_samples_are_rejected_by_guest_hash(self) -> None:
         raw_path = self.write_raw_csv(RAW_CSV.replace(",43000,500,500,2000", ",43001,500,500,1999"))
 
