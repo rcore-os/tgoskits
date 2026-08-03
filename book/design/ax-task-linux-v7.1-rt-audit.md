@@ -318,6 +318,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | clone publication | PID/TID 可见后 placement 失败再回滚 | stage scheduler first，identity commit 后只做 infallible activate |
 | futex wake | syscall 每次 wake 后额外 yield | wake publication 自己驱动 reschedule |
 | futex waiter | 每次排队单独分配 `Arc<WaiterState>`，取消与 requeue 依赖对象地址 | 稳定 `Thread` 内嵌 generation 状态；队列用 `UserTaskRef + generation` 校验唯一胜者 |
+| alarm worker | `event-listener` 的 no-std 内部自旋锁持有者被抢占后，唯一 alarm worker 永久自旋，进程退出与父进程 wait 停止推进 | 类型化 alarm heap 与 `epoch + WaitQueue` 分离；生产者先发布 generation，释放 alarm 锁后再唤醒固定 worker |
 | Deadline scan | 每次 schedule 扫描无关 reservation | typed timer node 和 owner heap |
 
 bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。纯文件移动和可见性收敛阶段例外。
@@ -339,6 +340,34 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 - task-only scheduler metadata 使用 preempt-only ticket lock，不扩大 IRQ-off 区间。
 
 性能接受必须用同一 workload、同一 QEMU 参数、正式 success marker 对比 Linux RT 或已确认基线；发现慢于基线即可中止全量并缩小到目标 case，用 qperf/GDB 检查 wake、lock、IPI 和 safe-point 调用链。
+
+2026-08-03 的同机 x86_64 `qemu/system` 对照先用 `origin/dev` 完整组确定优先级：
+dev 为 398/398、guest 汇总 391 秒。本分支在未修复 alarm transport 时两次出现
+runner 已打印子测例 BEGIN 或测试主体 PASS、但父进程永久等不到退出的停顿。QEMU
+GDB 显示 CPU0--2 均在 idle，CPU3 在
+`alarm_task -> timeout_at_wall -> event_listener::Event::listen` 的 no-std 内部自旋锁
+循环，且 IF 仍开启。该库在没有 `std` 和 `critical-section` feature 时明确使用不带
+内核抢占/IRQ 语义的 `AtomicBool` 自旋锁，并在锁内调用 waker，不能作为可抢占内核
+的等待原语。
+
+alarm worker 现已改为同步固定 worker：`ALARM_LIST` 只保存类型化 alarm 值，
+`ALARM_EPOCH` 发布变更，`ALARM_WAIT` 负责任务态 park。worker 必须先读取 epoch，
+再快照 alarm heap；生产者先修改 heap、再递增 epoch，最后在 heap 锁外 notify。
+确定性测试覆盖“publish 正好发生在 worker 快照期间”时 wait predicate 必须立即为真。
+修复后的完整轮次连续通过此前两个停点，并完成 398 个与 dev 同名的子测例；最后在
+USB audio 驱动路径停止，已作为范围外问题 #1838 单独跟踪。
+
+这轮单次逐项差值只用于选择下一分析对象，不作为 Linux RT 性能结论：
+
+- `test-ext4-inode-unique`：110 秒，对 dev 57 秒，增加 53 秒；
+- `test-pagecache-cap`：80 秒，对 dev 51 秒，增加 29 秒；
+- `test-x86-avx-ctxsw`：20 秒，对 dev 2 秒，增加 18 秒；
+- `test-futex-wake-op-smp`：16 秒，对 dev 4 秒，增加 12 秒；
+- `bug-dir-cookie-unlink-rmdir`：21 秒，对 dev 10 秒，增加 11 秒。
+
+因此下一阶段先从最大正回退 `test-ext4-inode-unique` 开始，但必须用 Linux RT 同源
+程序区分 ext4/page-cache 自身成本与通用 schedule/wake 放大；qperf 与架构接受指标
+只和 Linux v7.1 PREEMPT_RT 对照，不把 dev 当优化目标。
 
 ### Linux v7.1 PREEMPT_RT 同源 futex 对照
 
@@ -412,6 +441,7 @@ QEMU SIGSEGV，因此现阶段不能把不完整 FP 报告用于归因；该诊�
 - #1767：Starry system 大组超时、缺少逐 case 持久 timing；
 - #1772：Starry ktest 错误启用 `log/std` 的 feature graph；
 - #1773：Starry target-aware clippy 永久 CI 能力；
+- #1838：Starry USBFS no-std `event-listener` wake transport 可能在长序列 USB audio 中永久自旋；
 - USB 控制器、USBFS、第三方 connection manager 的外围协议缺陷，除非它们破坏调度交接契约。
 
 ## 验证策略

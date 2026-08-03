@@ -8,18 +8,14 @@ use core::{
 
 use ax_kernel_guard::NoPreempt;
 use ax_runtime::hal::time::{NANOS_PER_SEC, TimeValue, monotonic_time_nanos, wall_time};
-use ax_std::os::arceos::task as scheduler;
+use ax_std::os::arceos::task::{self as scheduler, WaitQueue};
 use ax_sync::PiMutex;
-use event_listener::{Event, listener};
 use spin::LazyLock;
 use starry_process::Pid;
 use starry_signal::Signo;
 use strum::FromRepr;
 
-use crate::task::{
-    future::{block_on, timeout_at_wall},
-    poll_process_timer_for_alarm,
-};
+use crate::task::poll_process_timer_for_alarm;
 
 mod accounting;
 mod alarm;
