@@ -532,7 +532,6 @@ fn kpu_irq_service() {
     loop {
         let registration = KPU_IRQ_NOTIFY.register(&waiter.registration);
         let completed = complete_irq_service_cycle(
-            &KPU_IRQ_NOTIFY,
             registration,
             |token| KPU_SERVICE_PARK.wait_until(|| !token.is_attached()),
             || KPU_DONE_WQ.notify_all(),

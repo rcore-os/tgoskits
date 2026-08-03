@@ -121,7 +121,7 @@ fn wait_for_task_work(
         IrqRegisterResult::ConsumedPending => Ok(()),
         IrqRegisterResult::Registered(token) | IrqRegisterResult::NotificationInFlight(token) => {
             let wait = park.try_wait_until(|| !token.is_attached());
-            quiesce_irq_wait(event, token)?;
+            quiesce_irq_wait(token)?;
             wait
         }
     }
@@ -132,21 +132,15 @@ fn wait_for_task_work(
 ///
 /// Callers must invoke this in schedulable task context before reusing or
 /// releasing storage reachable through the matching
-/// [`IrqWaitRegistration`]. Hard-IRQ teardown must instead defer the token to a
-/// task-context worker.
-pub fn quiesce_irq_wait<'cell, 'registration>(
-    event: &'cell IrqWaitCell,
-    mut token: IrqWaitToken<'cell, 'registration>,
-) -> Result<(), TaskError> {
-    match event.unregister(&token) {
-        IrqUnregisterResult::Detached | IrqUnregisterResult::NotificationInFlight => {}
-        IrqUnregisterResult::Stale => return Err(TaskError::InvalidConfiguration),
-    }
+/// [`IrqWaitRegistration`]. Hard-IRQ teardown must instead move the token or its
+/// drain state to a task-context worker.
+pub fn quiesce_irq_wait(token: IrqWaitToken<'_, '_>) -> Result<(), TaskError> {
+    let mut drain = token.detach();
     loop {
-        match token.try_quiesce() {
+        match drain.try_finish() {
             Ok(()) => return Ok(()),
             Err(in_flight) => {
-                token = in_flight;
+                drain = in_flight;
                 let _decision = yield_current_cpu()?;
             }
         }

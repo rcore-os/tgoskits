@@ -833,7 +833,7 @@ fn net_poll_worker() {
                         || NET_IRQ_EVENT.load(Ordering::Acquire)
                         || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
                 });
-                quiesce_irq_wait(&NET_IRQ_WAIT, token)
+                quiesce_irq_wait(token)
                     .unwrap_or_else(|error| panic!("net IRQ waiter could not quiesce: {error}"));
                 timed_out
             }

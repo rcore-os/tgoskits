@@ -139,7 +139,7 @@ Unpublished -> Published -> Draining -> Dead
 - UART 已拆成 control、IRQ、emergency-TX 三端点；
 - Starry perf overflow 使用 owner-CPU registry、generation 和本地 IRQ grace，不获取上层睡眠锁；
 - timer IRQ 仍直接调用 ax-task 的 owner-CPU deadline 服务，但该接口被限制为有界、无分配、无任意 callback；
-- `IrqWaitCell` 的并发通知协议能避免 UAF，但当前 token 未完成 quiesce 时以泄漏存储兜底，尚未形成可回收的 `Draining -> Dead` 生命周期。这是本轮仍需关闭的 ax-task finding。
+- `IrqWaitCell` 已将任务侧 publication token 与 grace-period drain 拆成不同 move-only 类型。IRQ 完成只进入 `Draining`，任务侧 `try_finish()` 后才重新进入可复用的 `Detached`；正常生命周期不再依赖永久泄漏，也不会在 hard IRQ 中等待或析构。
 
 USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交接契约，否则单独登记 issue。
 
@@ -154,7 +154,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
 | switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收 | baton 与可重试 tail 已实现 |
 | PI | `rtmutex` | 注册、deboost、grant 同一事务；锁外 wake | generation-bearing PI 已实现 |
-| IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | 通知正确；可回收 Dead 生命周期未关闭 |
+| IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
 | process | `exit_notify()`、`do_wait()` | 单一 PID generation 与关系锁序 | 采用 dev `ProcessIdentity` |
 | perf | `perf_install_in_context()` | task 与 CPU target 分离；owner CPU teardown | 已类型化并有 IRQ grace |
@@ -311,6 +311,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | clockevent 丢边 | overdue sleeper 永久挂起 | scheduler safe point 有界恢复 overdue deadline |
 | PI 地址复用 | 新锁可匹配旧 donation edge | `PiLockIdentity` generation 永不复用 |
 | IRQ waiter | 第二次 IRQ 可被注册尾清掉 | 单原子状态线性化 Pending/Waiter/Notifying |
+| IRQ registration ABA | 旧 detach 在 generation 检查后暂停，IRQ 完成并以同地址发布新 generation；恢复后旧 CAS 删除新 waiter 并 panic | IRQ 完成进入 `Draining`；旧 token 完成 grace 前同地址节点不可 rearm |
 | signal ack | scan 后并发 SIGKILL 被 boolean clear 擦除 | generation ack 不越过新 publication |
 | perf migration | 旧 CPU slot 留下 stale wake pointer | owner-CPU teardown + registry generation + grace |
 | CPU timer | reader等待已被抢占 writer，系统 livelock | owner-only vtime writer + 原子 group aggregate |
@@ -353,7 +354,6 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 
 ### 本轮必须继续处理
 
-- `IrqWaitCell` 增加可回收的 `Draining/Dead` 生命周期，替代未 quiesce 时永久泄漏；
 - 完成四架构 current-head build/QEMU 与 CI terminal 结果；
 - 对新 dev 合入的 AxVM CPU_ON/CPU_OFF/reset 生命周期保持 `TaskHandle` 适配；
 - 继续检查高频 wake/yield workload 的 scheduler-work amplification。
@@ -407,4 +407,4 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 5. 阶段提交并推送检查点；
 6. PR 描述同步问题、修改、设计依据、红绿证据和当前未完成项。
 
-最终完成要求：审计矩阵内无未处理的任务调度 finding，IRQ 生命周期不依赖裸指针或永久泄漏兜底，四架构 QEMU 与 GitHub CI terminal 全绿。范围外问题必须有可接续的 issue 证据，而不是通过跳过或放宽测试隐藏。
+最终完成要求：审计矩阵内无未处理的任务调度 finding，正常 IRQ 生命周期不依赖裸指针或永久泄漏兜底，四架构 QEMU 与 GitHub CI terminal 全绿。显式 `mem::forget` 等协议破坏仍以泄漏而非 UAF 失效。范围外问题必须有可接续的 issue 证据，而不是通过跳过或放宽测试隐藏。

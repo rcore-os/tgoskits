@@ -1,8 +1,6 @@
 //! Task-context completion for one fixed hard-IRQ service waiter.
 
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitToken, TaskError,
-};
+use ax_std::os::arceos::task::{self as scheduler, IrqRegisterResult, IrqWaitToken, TaskError};
 
 /// Completes one register/park/fan-out cycle without exposing IRQ-owned
 /// registration storage to a device implementation.
@@ -11,7 +9,6 @@ use ax_std::os::arceos::task::{
 /// the task-context fan-out immediately. A published token remains alive until
 /// both cell ownership and any in-flight hard-IRQ wake have ended.
 pub(super) fn complete_irq_service_cycle<'cell, 'registration, P, F>(
-    cell: &'cell IrqWaitCell,
     registration: IrqRegisterResult<'cell, 'registration>,
     park: P,
     fanout: F,
@@ -27,7 +24,7 @@ where
         }
         IrqRegisterResult::Registered(token) | IrqRegisterResult::NotificationInFlight(token) => {
             park(&token);
-            scheduler::quiesce_irq_wait(cell, token)?;
+            scheduler::quiesce_irq_wait(token)?;
             fanout();
             Ok(true)
         }
@@ -45,7 +42,6 @@ mod tests {
     fn pending_before_register_fans_out_without_parking() {
         let step = Cell::new(0);
         let completed = complete_irq_service_cycle(
-            &IrqWaitCell::new(),
             IrqRegisterResult::ConsumedPending,
             |_| panic!("a synchronously consumed IRQ must not park"),
             || {
@@ -63,7 +59,6 @@ mod tests {
     fn occupied_registration_does_not_run_callbacks() {
         let step = Cell::new(0);
         let completed = complete_irq_service_cycle(
-            &IrqWaitCell::new(),
             IrqRegisterResult::Occupied,
             |_| step.set(1),
             || step.set(2),

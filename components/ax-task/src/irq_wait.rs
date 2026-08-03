@@ -27,6 +27,7 @@ enum RegistrationPhase {
     Detached  = 0,
     Attached  = 1,
     Notifying = 2,
+    Draining  = 3,
 }
 
 const fn registration_state(generation: u64, phase: RegistrationPhase) -> u64 {
@@ -51,7 +52,8 @@ fn registration_phase(state: u64) -> RegistrationPhase {
         0 => RegistrationPhase::Detached,
         1 => RegistrationPhase::Attached,
         2 => RegistrationPhase::Notifying,
-        _ => unreachable!("invalid IRQ wait registration phase"),
+        3 => RegistrationPhase::Draining,
+        _ => unreachable!("registration phase exceeds its bit mask"),
     }
 }
 
@@ -190,7 +192,7 @@ impl IrqWaitNode {
         self.state
             .compare_exchange(
                 registration_state(generation, RegistrationPhase::Notifying),
-                registration_state(generation, RegistrationPhase::Detached),
+                registration_state(generation, RegistrationPhase::Draining),
                 Ordering::Release,
                 Ordering::Acquire,
             )
@@ -205,7 +207,34 @@ impl IrqWaitNode {
     fn is_quiescent(&self, generation: u64) -> bool {
         let state = self.state.load(Ordering::Acquire);
         registration_generation(state) != generation
-            || registration_phase(state) == RegistrationPhase::Detached
+            || matches!(
+                registration_phase(state),
+                RegistrationPhase::Detached | RegistrationPhase::Draining
+            )
+    }
+
+    fn finish_drain(&self, generation: u64) -> bool {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if registration_generation(state) != generation {
+                return true;
+            }
+            match registration_phase(state) {
+                RegistrationPhase::Detached => return true,
+                RegistrationPhase::Attached | RegistrationPhase::Notifying => return false,
+                RegistrationPhase::Draining => {
+                    match self.state.compare_exchange_weak(
+                        state,
+                        registration_state(generation, RegistrationPhase::Detached),
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return true,
+                        Err(observed) => state = observed,
+                    }
+                }
+            }
+        }
     }
 
     fn is_detached(&self) -> bool {
@@ -218,8 +247,8 @@ impl IrqWaitNode {
 /// The registration owns the direct wake capability; callers cannot publish an
 /// arbitrary hard-IRQ callback or separately release its payload. Dropping a
 /// correctly detached registration releases that ownership. If a caller
-/// abandons an attached token, drop intentionally leaks the pinned allocation
-/// so a later IRQ cannot dereference freed storage.
+/// abandons a published token or unfinished drain, drop intentionally leaks the
+/// pinned allocation so a later IRQ cannot dereference freed storage.
 #[derive(Debug)]
 pub struct IrqWaitRegistration {
     node: ManuallyDrop<Pin<Box<IrqWaitNode>>>,
@@ -266,20 +295,20 @@ impl Drop for IrqWaitRegistration {
     }
 }
 
-/// Move-only identity for one IRQ waiter registration generation.
+/// Published identity for one IRQ waiter registration generation.
 ///
 /// A token remains attached while its cell owns the waiter. Once
 /// [`is_attached`](Self::is_attached) becomes false, the task may avoid or
-/// abort its park. The backing registration and wake payload must remain alive
-/// until [`try_quiesce`](Self::try_quiesce) succeeds.
-#[must_use = "an IRQ wait token must be detached and quiesced before its storage is reused"]
+/// abort its park. It must then be consumed by [`detach`](Self::detach) before
+/// the backing registration or wake payload is reused.
+#[must_use = "an IRQ wait token must enter its drain lifetime before storage is reused"]
 pub struct IrqWaitToken<'cell, 'registration> {
     registration: Pin<&'registration IrqWaitNode>,
     generation: u64,
     cell: &'cell IrqWaitCell,
 }
 
-impl IrqWaitToken<'_, '_> {
+impl<'cell, 'registration> IrqWaitToken<'cell, 'registration> {
     /// Returns this one-shot registration generation.
     pub const fn generation(&self) -> u64 {
         self.generation
@@ -293,23 +322,15 @@ impl IrqWaitToken<'_, '_> {
         self.registration.is_attached(self.generation)
     }
 
-    /// Returns whether neither the cell nor an in-flight notifier can access
-    /// this generation.
-    pub fn is_quiescent(&self) -> bool {
-        self.registration.is_quiescent(self.generation)
-    }
-
-    /// Consumes a quiescent token, or returns it unchanged when an IRQ wake is
-    /// still in flight.
+    /// Stops publication of this generation and enters its drain lifetime.
     ///
-    /// This method never waits. Task-context callers may yield and retry; hard
-    /// IRQ paths must defer reclamation instead.
-    pub fn try_quiesce(self) -> Result<(), Self> {
-        if self.is_quiescent() {
-            Ok(())
-        } else {
-            Err(self)
-        }
+    /// This operation never waits. If a notifier already removed the waiter,
+    /// the returned drain observes that notifier until its direct wake has
+    /// finished. Task context may poll the drain; hard-IRQ teardown must defer
+    /// it to a task worker.
+    pub fn detach(self) -> IrqWaitDrain<'registration> {
+        let cell = self.cell;
+        cell.detach(self)
     }
 
     fn belongs_to(&self, cell: &IrqWaitCell) -> bool {
@@ -323,6 +344,45 @@ impl core::fmt::Debug for IrqWaitToken<'_, '_> {
             .debug_struct("IrqWaitToken")
             .field("generation", &self.generation)
             .field("attached", &self.is_attached())
+            .finish()
+    }
+}
+
+/// Revoked IRQ registration waiting for its in-flight notifier grace period.
+///
+/// A drain no longer retains the cell: publication admission for its generation
+/// is already closed. It only retains the pinned registration until the hard
+/// IRQ reader has left the trusted direct-wake operation.
+#[must_use = "an IRQ wait drain must finish before registration storage is reused"]
+pub struct IrqWaitDrain<'registration> {
+    registration: Pin<&'registration IrqWaitNode>,
+    generation: u64,
+}
+
+impl IrqWaitDrain<'_> {
+    /// Returns whether the notifier grace period has completed.
+    pub fn is_quiescent(&self) -> bool {
+        self.registration.is_quiescent(self.generation)
+    }
+
+    /// Consumes a completed drain, or returns it while an IRQ wake is in flight.
+    ///
+    /// This method never waits. Task-context callers may yield and retry; hard
+    /// IRQ paths must defer reclamation instead.
+    pub fn try_finish(self) -> Result<(), Self> {
+        if self.registration.finish_drain(self.generation) {
+            Ok(())
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl core::fmt::Debug for IrqWaitDrain<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("IrqWaitDrain")
+            .field("generation", &self.generation)
             .field("quiescent", &self.is_quiescent())
             .finish()
     }
@@ -343,19 +403,8 @@ pub enum IrqRegisterResult<'cell, 'registration> {
     /// The task may abort its park once the token is detached, but it must
     /// quiesce the token before reusing the registration or wake payload.
     NotificationInFlight(IrqWaitToken<'cell, 'registration>),
-    /// Another waiter is registered or this registration belongs to another cell.
+    /// Another waiter is registered, or this registration is still draining.
     Occupied,
-}
-
-/// Outcome of cancelling one generation-bearing IRQ waiter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IrqUnregisterResult {
-    /// The generation is detached and has no in-flight notifier.
-    Detached,
-    /// An IRQ notifier owns this generation and must finish before reclamation.
-    NotificationInFlight,
-    /// The token belongs to another cell or an older registration generation.
-    Stale,
 }
 
 /// Outcome of one bounded hard-IRQ notification.
@@ -375,6 +424,10 @@ pub struct IrqWaitCell {
     register_published: AtomicBool,
     #[cfg(test)]
     pause_after_register_publish: AtomicBool,
+    #[cfg(test)]
+    detach_generation_checked: AtomicBool,
+    #[cfg(test)]
+    pause_after_detach_generation_check: AtomicBool,
 }
 
 impl IrqWaitCell {
@@ -386,6 +439,10 @@ impl IrqWaitCell {
             register_published: AtomicBool::new(false),
             #[cfg(test)]
             pause_after_register_publish: AtomicBool::new(false),
+            #[cfg(test)]
+            detach_generation_checked: AtomicBool::new(false),
+            #[cfg(test)]
+            pause_after_detach_generation_check: AtomicBool::new(false),
         }
     }
 
@@ -455,33 +512,45 @@ impl IrqWaitCell {
         }
     }
 
-    /// Removes a matching generation before it blocks or after cancellation.
-    pub fn unregister(&self, token: &IrqWaitToken<'_, '_>) -> IrqUnregisterResult {
-        if !token.belongs_to(self) {
-            return IrqUnregisterResult::Stale;
-        }
+    fn detach<'registration>(
+        &self,
+        token: IrqWaitToken<'_, 'registration>,
+    ) -> IrqWaitDrain<'registration> {
+        assert!(
+            token.belongs_to(self),
+            "an IRQ wait token must be detached by its publishing cell"
+        );
         let registration = token.registration;
         let state = registration.state.load(Ordering::Acquire);
-        if registration_generation(state) != token.generation {
-            return IrqUnregisterResult::Stale;
+        if registration_generation(state) == token.generation {
+            #[cfg(test)]
+            {
+                self.detach_generation_checked
+                    .store(true, Ordering::Release);
+                while self
+                    .pause_after_detach_generation_check
+                    .load(Ordering::Acquire)
+                {
+                    core::hint::spin_loop();
+                }
+            }
+            let registration_ptr = registration.get_ref() as *const IrqWaitNode as *mut _;
+            if self
+                .waiter
+                .compare_exchange(
+                    registration_ptr,
+                    ptr::null_mut(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                registration.cancel(token.generation);
+            }
         }
-        let registration_ptr = registration.get_ref() as *const IrqWaitNode as *mut _;
-        if self
-            .waiter
-            .compare_exchange(
-                registration_ptr,
-                ptr::null_mut(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            registration.cancel(token.generation);
-            IrqUnregisterResult::Detached
-        } else if token.is_quiescent() {
-            IrqUnregisterResult::Detached
-        } else {
-            IrqUnregisterResult::NotificationInFlight
+        IrqWaitDrain {
+            registration,
+            generation: token.generation,
         }
     }
 

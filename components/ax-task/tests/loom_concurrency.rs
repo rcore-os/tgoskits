@@ -916,6 +916,7 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
     const DETACHED_GENERATION_1: usize = 1 << 2;
     const ATTACHED_GENERATION_1: usize = DETACHED_GENERATION_1 | 1;
     const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
+    const DRAINING_GENERATION_1: usize = DETACHED_GENERATION_1 | 3;
 
     loom::model(|| {
         let waiter = Arc::new(AtomicUsize::new(EMPTY));
@@ -1033,7 +1034,7 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
                             registration
                                 .compare_exchange(
                                     NOTIFYING_GENERATION_1,
-                                    DETACHED_GENERATION_1,
+                                    DRAINING_GENERATION_1,
                                     Ordering::Release,
                                     Ordering::Acquire,
                                 )
@@ -1048,6 +1049,12 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
 
         register.join().unwrap();
         notify.join().unwrap();
+        let _ = registration.compare_exchange(
+            DRAINING_GENERATION_1,
+            DETACHED_GENERATION_1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         assert_eq!(
             wakes.load(Ordering::Acquire) + synchronous_consumes.load(Ordering::Acquire),
             1
@@ -1063,6 +1070,7 @@ fn second_irq_during_an_in_flight_wake_stays_pending() {
     const PENDING: usize = 2;
     const DETACHED_GENERATION_1: usize = 1 << 2;
     const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
+    const DRAINING_GENERATION_1: usize = DETACHED_GENERATION_1 | 3;
 
     loom::model(|| {
         // The first IRQ has removed the published waiter and owns its wake
@@ -1080,7 +1088,7 @@ fn second_irq_during_an_in_flight_wake_stays_pending() {
                 registration
                     .compare_exchange(
                         NOTIFYING_GENERATION_1,
-                        DETACHED_GENERATION_1,
+                        DRAINING_GENERATION_1,
                         Ordering::Release,
                         Ordering::Acquire,
                     )
@@ -1123,7 +1131,7 @@ fn second_irq_during_an_in_flight_wake_stays_pending() {
         first_irq_and_register_tail.join().unwrap();
         second_irq.join().unwrap();
         assert_eq!(waiter.load(Ordering::Acquire), PENDING);
-        assert_eq!(registration.load(Ordering::Acquire), DETACHED_GENERATION_1);
+        assert_eq!(registration.load(Ordering::Acquire), DRAINING_GENERATION_1);
     });
 }
 
@@ -1132,6 +1140,7 @@ fn irq_wait_reclamation_waits_for_notifying_to_finish() {
     const DETACHED: usize = 1 << 2;
     const ATTACHED: usize = DETACHED | 1;
     const NOTIFYING: usize = DETACHED | 2;
+    const DRAINING: usize = DETACHED | 3;
 
     loom::model(|| {
         let waiter = Arc::new(AtomicUsize::new(1));
@@ -1157,7 +1166,7 @@ fn irq_wait_reclamation_waits_for_notifying_to_finish() {
                     "the wake payload was reclaimed while the notifier still used it"
                 );
                 registration
-                    .compare_exchange(NOTIFYING, DETACHED, Ordering::Release, Ordering::Acquire)
+                    .compare_exchange(NOTIFYING, DRAINING, Ordering::Release, Ordering::Acquire)
                     .unwrap();
             })
         };
@@ -1175,8 +1184,25 @@ fn irq_wait_reclamation_waits_for_notifying_to_finish() {
                         .compare_exchange(ATTACHED, DETACHED, Ordering::Release, Ordering::Acquire)
                         .unwrap();
                 }
-                while registration.load(Ordering::Acquire) != DETACHED {
-                    thread::yield_now();
+                loop {
+                    match registration.load(Ordering::Acquire) {
+                        DETACHED => break,
+                        DRAINING => {
+                            if registration
+                                .compare_exchange(
+                                    DRAINING,
+                                    DETACHED,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .is_ok()
+                            {
+                                break;
+                            }
+                        }
+                        ATTACHED | NOTIFYING => thread::yield_now(),
+                        state => panic!("unexpected IRQ wait state {state}"),
+                    }
                 }
                 payload_alive.store(false, Ordering::Release);
                 reclaimed.store(true, Ordering::Release);
@@ -1191,71 +1217,122 @@ fn irq_wait_reclamation_waits_for_notifying_to_finish() {
 }
 
 #[test]
-fn stale_irq_wait_generation_cannot_detach_a_rearmed_waiter() {
+fn irq_wait_drain_closes_pointer_aba_before_rearm() {
+    const EMPTY: usize = 0;
+    const WAITER: usize = 1;
     const DETACHED_GENERATION_1: usize = 1 << 2;
+    const ATTACHED_GENERATION_1: usize = DETACHED_GENERATION_1 | 1;
     const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
+    const DRAINING_GENERATION_1: usize = DETACHED_GENERATION_1 | 3;
     const ATTACHED_GENERATION_2: usize = (2 << 2) | 1;
+    const NOTIFYING_GENERATION_2: usize = (2 << 2) | 2;
+    const DRAINING_GENERATION_2: usize = (2 << 2) | 3;
 
     loom::model(|| {
-        let registration = Arc::new(AtomicUsize::new(NOTIFYING_GENERATION_1));
-        let rearmed = Arc::new(AtomicBool::new(false));
+        let waiter = Arc::new(AtomicUsize::new(WAITER));
+        let registration = Arc::new(AtomicUsize::new(ATTACHED_GENERATION_1));
 
         let notifier = {
+            let waiter = Arc::clone(&waiter);
             let registration = Arc::clone(&registration);
             thread::spawn(move || {
-                registration
-                    .compare_exchange(
-                        NOTIFYING_GENERATION_1,
-                        DETACHED_GENERATION_1,
-                        Ordering::Release,
-                        Ordering::Acquire,
-                    )
-                    .unwrap();
+                if waiter
+                    .compare_exchange(WAITER, EMPTY, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    let (attached, notifying, draining) = match registration.load(Ordering::Acquire)
+                    {
+                        ATTACHED_GENERATION_1 => (
+                            ATTACHED_GENERATION_1,
+                            NOTIFYING_GENERATION_1,
+                            DRAINING_GENERATION_1,
+                        ),
+                        ATTACHED_GENERATION_2 => (
+                            ATTACHED_GENERATION_2,
+                            NOTIFYING_GENERATION_2,
+                            DRAINING_GENERATION_2,
+                        ),
+                        state => panic!("IRQ removed a waiter in invalid state {state}"),
+                    };
+                    registration
+                        .compare_exchange(attached, notifying, Ordering::AcqRel, Ordering::Acquire)
+                        .unwrap();
+                    thread::yield_now();
+                    registration
+                        .compare_exchange(notifying, draining, Ordering::Release, Ordering::Acquire)
+                        .unwrap();
+                }
             })
         };
-        let registrar = {
+        let old_owner = {
+            let waiter = Arc::clone(&waiter);
             let registration = Arc::clone(&registration);
-            let rearmed = Arc::clone(&rearmed);
             thread::spawn(move || {
-                while registration.load(Ordering::Acquire) != DETACHED_GENERATION_1 {
-                    thread::yield_now();
-                }
-                registration
-                    .compare_exchange(
-                        DETACHED_GENERATION_1,
-                        ATTACHED_GENERATION_2,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .unwrap();
-                rearmed.store(true, Ordering::Release);
-            })
-        };
-        let stale_owner = {
-            let registration = Arc::clone(&registration);
-            let rearmed = Arc::clone(&rearmed);
-            thread::spawn(move || {
-                while !rearmed.load(Ordering::Acquire) {
-                    thread::yield_now();
-                }
-                assert!(
+                let observed = registration.load(Ordering::Acquire);
+                thread::yield_now();
+                if observed == ATTACHED_GENERATION_1
+                    && waiter
+                        .compare_exchange(WAITER, EMPTY, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
                     registration
                         .compare_exchange(
-                            DETACHED_GENERATION_1 | 1,
+                            ATTACHED_GENERATION_1,
                             DETACHED_GENERATION_1,
                             Ordering::Release,
                             Ordering::Acquire,
                         )
-                        .is_err(),
-                    "an old token detached a reused registration slot"
+                        .unwrap();
+                }
+                let _ = registration.compare_exchange(
+                    DRAINING_GENERATION_1,
+                    DETACHED_GENERATION_1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
                 );
             })
         };
 
+        if registration
+            .compare_exchange(
+                DETACHED_GENERATION_1,
+                ATTACHED_GENERATION_2,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            waiter
+                .compare_exchange(EMPTY, WAITER, Ordering::Release, Ordering::Acquire)
+                .unwrap();
+        }
+
         notifier.join().unwrap();
-        registrar.join().unwrap();
-        stale_owner.join().unwrap();
-        assert_eq!(registration.load(Ordering::Acquire), ATTACHED_GENERATION_2);
+        old_owner.join().unwrap();
+        let _ = registration.compare_exchange(
+            DRAINING_GENERATION_1,
+            DETACHED_GENERATION_1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if registration
+            .compare_exchange(
+                DETACHED_GENERATION_1,
+                ATTACHED_GENERATION_2,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            waiter
+                .compare_exchange(EMPTY, WAITER, Ordering::Release, Ordering::Acquire)
+                .unwrap();
+        }
+        match registration.load(Ordering::Acquire) {
+            ATTACHED_GENERATION_2 => assert_eq!(waiter.load(Ordering::Acquire), WAITER),
+            DRAINING_GENERATION_2 => assert_eq!(waiter.load(Ordering::Acquire), EMPTY),
+            state => panic!("new generation ended in invalid state {state}"),
+        }
     });
 }
 

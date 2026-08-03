@@ -339,7 +339,7 @@ fn wait_for_timer_work(
     };
 
     if state.publication_generation.load(Ordering::Acquire) != observed || state.has_commands() {
-        quiesce_irq_wait(&state.wake, token)
+        quiesce_irq_wait(token)
             .unwrap_or_else(|error| panic!("AxVM timer waiter could not quiesce: {error}"));
         return;
     }
@@ -355,7 +355,7 @@ fn wait_for_timer_work(
             !token.is_attached() || state.publication_generation.load(Ordering::Acquire) != observed
         }),
     }
-    quiesce_irq_wait(&state.wake, token)
+    quiesce_irq_wait(token)
         .unwrap_or_else(|error| panic!("AxVM timer waiter could not quiesce: {error}"));
 }
 

@@ -98,7 +98,7 @@ impl RuntimeNotification {
                         false
                     }
                 };
-                quiesce_irq_wait(&self.event, token).unwrap_or_else(|error| {
+                quiesce_irq_wait(token).unwrap_or_else(|error| {
                     panic!("block IRQ notification could not quiesce: {error}")
                 });
                 timed_out

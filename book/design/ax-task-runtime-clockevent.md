@@ -191,7 +191,7 @@ Unpublished -> Published -> Draining -> Dead
 
 IRQ endpoint 只保存固定值状态和稳定 registration；任务态对象通过 `Arc`、generation token 或 move-only lease 保活。不得以“外部通常不会同时销毁”为安全条件。
 
-当前 `IrqWaitCell` 的 notify/registration 协议能区分 Attached、Notifying、Detached 并阻止 UAF；但未 quiesce token 的 Drop 仍以泄漏存储兜底。后续要把这一兜底替换成显式 Draining/Dead 回收，而不是在 hard IRQ 中等待。
+`IrqWaitCell` 的 registration 使用 `Detached -> Attached -> Notifying -> Draining -> Detached`。IRQ 完成 direct wake 后只进入 `Draining`，不立即开放同地址节点复用；任务侧 move-only `IrqWaitToken` 先撤销 publication，转换为 `IrqWaitDrain`，再在 notifier grace 完成后通过 `try_finish()` 开放复用。registration 最终 Drop 对应 `Dead`。正常 API 路径不泄漏，hard IRQ 不等待也不析构；只有调用者显式遗忘 token、违反回收协议时，Drop 才以泄漏代替 UAF，这是 Rust 允许的失效安全兜底，不是正常生命周期的一部分。
 
 ## 通用 timer 消费者
 
@@ -250,7 +250,7 @@ panic TX 有固定字节预算，竞争时丢弃。它与 IRQ endpoint 共用同
 - CPU offline/re-online；
 - IRQ endpoint revoke/quiesce/reclaim。
 
-loom 覆盖 generation publication、publish-before-IPI、park 唯一 winner、`IrqWaitCell` notify/drop 和 doorbell claim race。
+loom 覆盖 generation publication、publish-before-IPI、park 唯一 winner、`IrqWaitCell` notify/drain、同地址 pointer ABA 和 doorbell claim race。
 
 UART 测试覆盖 hard IRQ 无分配/无阻塞、有界 drain、overflow、worker wake race、`try_write` 与 emergency/normal TX 互斥。
 

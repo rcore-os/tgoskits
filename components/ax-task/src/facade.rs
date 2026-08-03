@@ -5,10 +5,10 @@ use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
     CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CpuWakeCarrier, IrqRegisterResult,
-    IrqUnregisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit,
-    ParkPrepare, PiLockId, PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority,
-    ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
-    ThreadCore, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
+    IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit, ParkPrepare, PiLockId,
+    PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority, ScheduleDecision,
+    SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore,
+    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
     ThreadWakeHandle, WaitQueue, WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
