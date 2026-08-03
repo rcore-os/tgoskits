@@ -5,64 +5,44 @@ use super::*;
 impl TaskSystem {
     /// Marks a non-queued thread exited and queues its task-context exit hook.
     pub fn mark_exited(&self, thread: ThreadId) -> Result<(), TaskError> {
+        let core = {
+            let state = self.state.lock();
+            Arc::clone(&state.thread_record(thread)?.core)
+        };
+        let mut scheduler_exit = core
+            .close_owned_scheduler_activity()
+            .ok_or(TaskError::ThreadBusy)?;
         let exited_core = {
             let mut state = self.state.lock();
-            let cleanup_deadline_member = {
-                let record = state.thread_record_mut(thread)?;
-                let mut sched = record.sched.lock();
-                if sched.placement.queued_cpu().is_some() || sched.placement.running_cpu().is_some()
-                {
-                    return Err(TaskError::AlreadyQueued);
-                }
-                if sched.placement.on_cpu().is_some() {
-                    return Err(TaskError::ThreadBusy);
-                }
-                if record.blocked_on.is_some()
-                    || record.pi_waiter_head.is_some()
-                    || sched.pi.blocked_waiters != 0
-                {
-                    return Err(TaskError::InvalidPiState);
-                }
-                if sched.pi.deadline_cbs_borrower.is_some() {
-                    return Err(TaskError::ThreadBusy);
-                }
-                if sched.deadline.bandwidth_cpu.is_some() {
-                    sched.deadline.cleanup_pending = true;
-                    true
-                } else {
-                    false
-                }
-            };
-            if cleanup_deadline_member {
+            let record = state.thread_record_mut(thread)?;
+            if !Arc::ptr_eq(&record.core, &core) {
+                return Err(TaskError::StaleThreadId);
+            }
+            let mut sched = record.sched.lock();
+            if sched.placement.queued_cpu().is_some() || sched.placement.running_cpu().is_some() {
+                return Err(TaskError::AlreadyQueued);
+            }
+            if sched.placement.on_cpu().is_some() || sched.pi.deadline_cbs_borrower.is_some() {
+                return Err(TaskError::ThreadBusy);
+            }
+            if record.blocked_on.is_some()
+                || record.pi_waiter_head.is_some()
+                || sched.pi.blocked_waiters != 0
+            {
+                return Err(TaskError::InvalidPiState);
+            }
+            if sched.deadline.bandwidth_cpu.is_some() {
+                sched.deadline.cleanup_pending = true;
+                drop(sched);
                 state.request_owner_reschedule(thread);
                 return Err(TaskError::ThreadBusy);
             }
-            let exited_core = {
-                let record = state.thread_record_mut(thread)?;
-                let exited_core = Arc::clone(&record.core);
-                let _exit = record
-                    .core
-                    .try_scheduler_exit()
-                    .ok_or(TaskError::ThreadBusy)?;
-                let mut sched = record.sched.lock();
-                if sched.placement.queued_cpu().is_some() || sched.placement.running_cpu().is_some()
-                {
-                    return Err(TaskError::AlreadyQueued);
-                }
-                if sched.placement.on_cpu().is_some() || sched.pi.deadline_cbs_borrower.is_some() {
-                    return Err(TaskError::ThreadBusy);
-                }
-                if record.blocked_on.is_some()
-                    || record.pi_waiter_head.is_some()
-                    || sched.pi.blocked_waiters != 0
-                {
-                    return Err(TaskError::InvalidPiState);
-                }
-                sched.placement.set_migration_target(None)?;
-                sched.transition(&record.core, ThreadState::Exited)?;
-                record.callbacks.prepare_exit(record.extension.is_some())?;
-                exited_core
-            };
+            sched.placement.set_migration_target(None)?;
+            sched.transition(&record.core, ThreadState::Exited)?;
+            scheduler_exit.seal();
+            record.callbacks.prepare_exit(record.extension.is_some())?;
+            let exited_core = Arc::clone(&record.core);
+            drop(sched);
             state.queue_exited_thread(thread);
             state.release_deadline_reservation_on_exit(thread)?;
             exited_core

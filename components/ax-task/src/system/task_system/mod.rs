@@ -39,6 +39,7 @@ pub use outcome::{
     ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, OwnerControlDrain,
     ScheduleDecision, SchedulerOutcome,
 };
+pub(crate) use park_exit::CurrentExitPermit;
 pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};
 use registry::{
     CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, PiRecomputeProof,
@@ -54,11 +55,11 @@ use crate::system::cpu::WakePreemptionDecision;
 use crate::{
     CpuId, CpuLocal, CpuRemote, CpuRemotePublication, CpuSet, CpuSnapshot, DeadlineAdmission,
     DeadlineBandwidthSnapshot, DeadlineEntity, DetachedQueueEntry, EnqueueReason, FairMode,
-    ParkCommit, ParkPrepare, ParkTicket, PiLockId, PiWaitToken, QueuedThread, SchedulePolicy,
-    SchedulingClass, SchedulingEntity, SwitchReason, TaskError, TaskSystemConfig,
-    ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease,
-    ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources, ThreadRuntimeSnapshot,
-    ThreadSpec, ThreadState, WakeResult,
+    OwnedThreadSchedulerExit, ParkCommit, ParkPrepare, ParkTicket, PiLockId, PiWaitToken,
+    QueuedThread, SchedulePolicy, SchedulingClass, SchedulingEntity, SwitchReason, TaskError,
+    TaskSystemConfig, ThreadAffinityChange, ThreadCore, ThreadExtension, ThreadExtensionBorrow,
+    ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId, ThreadResources,
+    ThreadRuntimeSnapshot, ThreadSpec, ThreadState, WakeResult,
     executor::CoroutineHeader,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, PreemptTicketLock, SequenceCounter},

@@ -2,6 +2,62 @@
 
 use super::*;
 
+#[cfg(test)]
+static PARK_COMMIT_WAKE_RACE_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static PARK_COMMIT_WAKE_RACE_ENTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static PARK_COMMIT_WAKE_RACE_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(super) fn arm_park_commit_wake_race() {
+    PARK_COMMIT_WAKE_RACE_ENTERED.store(false, Ordering::Release);
+    PARK_COMMIT_WAKE_RACE_COMPLETED.store(false, Ordering::Release);
+    assert!(
+        !PARK_COMMIT_WAKE_RACE_ARMED.swap(true, Ordering::AcqRel),
+        "only one deterministic park race may be armed"
+    );
+}
+
+#[cfg(test)]
+pub(super) fn park_commit_wake_race_entered() -> bool {
+    PARK_COMMIT_WAKE_RACE_ENTERED.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(super) fn complete_park_commit_wake_race() {
+    PARK_COMMIT_WAKE_RACE_COMPLETED.store(true, Ordering::Release);
+}
+
+#[cfg(test)]
+fn park_commit_wake_race_hook() {
+    if !PARK_COMMIT_WAKE_RACE_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    PARK_COMMIT_WAKE_RACE_ENTERED.store(true, Ordering::Release);
+    while !PARK_COMMIT_WAKE_RACE_COMPLETED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+pub(crate) struct CurrentExitPermit {
+    thread: ThreadId,
+    scheduler_exit: OwnedThreadSchedulerExit,
+}
+
+impl CurrentExitPermit {
+    pub(crate) const fn thread(&self) -> ThreadId {
+        self.thread
+    }
+
+    fn seal(&mut self) {
+        self.scheduler_exit.seal();
+    }
+}
+
 impl TaskSystem {
     /// Publishes `PARKING` after consuming a wake-before-park notification.
     pub fn prepare_park(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ParkPrepare, TaskError> {
@@ -57,31 +113,52 @@ impl TaskSystem {
             token.mark_resolved();
             return Ok(ParkCommit::Notified);
         }
-        cpu.as_mut().scheduler_enter();
-        cpu.finish_park_preemption(false);
+        let scheduler_requested = cpu.as_mut().scheduler_enter();
+        cpu.defer_park_preemption(scheduler_requested);
         self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
-        {
+        #[cfg(test)]
+        park_commit_wake_race_hook();
+        let resumed_dispatch = {
             let mut sched = previous_core.sched().lock();
-            let timing_granularity_ns = self.config.timing_granularity_ns();
-            if let Some(fair) = sched.policy.effective_entity.fair() {
-                let virtual_time = cpu.lock_run_queue().virtual_time_for_mode(fair.mode());
-                sched
-                    .policy
-                    .effective_entity
-                    .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+            // This is the serialization edge shared with wake_thread_direct.
+            // A wake that observes Parking publishes PARK_NOTIFIED while
+            // holding this same lock. Rechecking and either restoring Running
+            // or publishing Blocked in one transaction makes that wake the
+            // unique winner instead of dropping it between two observations.
+            if previous_core.take_park_notification() {
+                sched.transition(&previous_core, ThreadState::Running)?;
+                Some(Self::owner_dispatch(&previous_core, &sched, now_ns)?)
+            } else {
+                let timing_granularity_ns = self.config.timing_granularity_ns();
+                if let Some(fair) = sched.policy.effective_entity.fair() {
+                    let virtual_time = cpu.lock_run_queue().virtual_time_for_mode(fair.mode());
+                    sched
+                        .policy
+                        .effective_entity
+                        .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+                }
+                if !sched.is_pi_boosted()
+                    && let Some(fair) = sched.policy.base_entity.fair()
+                {
+                    let virtual_time = cpu.lock_run_queue().virtual_time_for_mode(fair.mode());
+                    sched
+                        .policy
+                        .base_entity
+                        .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+                }
+                sched.transition(&previous_core, ThreadState::Blocked)?;
+                sched.placement.set_running_cpu(None)?;
+                None
             }
-            if !sched.is_pi_boosted()
-                && let Some(fair) = sched.policy.base_entity.fair()
-            {
-                let virtual_time = cpu.lock_run_queue().virtual_time_for_mode(fair.mode());
-                sched
-                    .policy
-                    .base_entity
-                    .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
-            }
-            sched.transition(&previous_core, ThreadState::Blocked)?;
-            sched.placement.set_running_cpu(None)?;
+        };
+        if let Some(dispatch) = resumed_dispatch {
+            cpu.as_mut().install_dispatch(dispatch);
+            cpu.finish_park_preemption(true);
+            self.publish_owner_cpu_load_summary(cpu.as_mut());
+            token.mark_resolved();
+            return Ok(ParkCommit::Notified);
         }
+        cpu.finish_park_preemption(false);
         Self::mark_owner_deadline_non_contending(&previous_core, cpu.as_mut(), now_ns)?;
         cpu.as_mut().clear_current();
         let next = self.pick_owner_next(cpu.as_mut(), now_ns, Some(token.thread()))?;
@@ -164,21 +241,44 @@ impl TaskSystem {
 
     /// Validates all fallible current-thread exit prerequisites without
     /// publishing the thread as exited.
-    pub fn prepare_current_exit(
+    pub(crate) fn prepare_current_exit(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        now_ns: u64,
+    ) -> Result<CurrentExitPermit, TaskError> {
+        self.prepare_current_exit_inner(cpu, now_ns, true)
+    }
+
+    pub(super) fn prepare_current_exit_inner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
-    ) -> Result<ThreadId, TaskError> {
+        require_runtime_context: bool,
+    ) -> Result<CurrentExitPermit, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
-        let state = self.state.lock();
-        state.ensure_cpu_online(&cpu)?;
         let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
         if cpu.idle() == Some(current) {
             return Err(TaskError::InvalidConfiguration);
         }
+        let current_core = cpu
+            .current_core()
+            .cloned()
+            .ok_or(TaskError::NoRunnableThread)?;
+        // Close before taking registry or thread-state locks. An activity that
+        // won before this edge may need either lock to finish, just as Linux
+        // takes p->pi_lock before rq/task-state validation rather than waiting
+        // for a reader while holding rq.
+        let scheduler_exit = current_core
+            .close_owned_scheduler_activity()
+            .ok_or(TaskError::ThreadBusy)?;
+        let state = self.state.lock();
+        state.ensure_cpu_online(&cpu)?;
         let record = state.thread_record(current)?;
+        if !Arc::ptr_eq(&record.core, &current_core) {
+            return Err(TaskError::StaleThreadId);
+        }
         let sched = record.sched.lock();
         let lifecycle = sched.lifecycle.state();
         if lifecycle != ThreadState::Running {
@@ -198,42 +298,67 @@ impl TaskSystem {
         {
             return Err(TaskError::ThreadBusy);
         }
-        if record.resources.context().is_none() {
+        if require_runtime_context && record.resources.context().is_none() {
             return Err(TaskError::InvalidRuntimeHandle);
         }
-        Ok(current)
+        Ok(CurrentExitPermit {
+            thread: current,
+            scheduler_exit,
+        })
     }
 
-    /// Commits current-thread exit and selects a replacement.
+    /// Atomically prepares and commits current-thread exit.
     ///
-    /// `now_ns` is the single monotonic snapshot shared by dispatch
-    /// accounting, successor selection, tracing, and the runtime switch.
+    /// Runtime integrations that publish OS completion between those phases
+    /// use the crate-private prepared form instead.
     pub fn exit_current(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
+        // Pure scheduler users may model a transition without installing an
+        // architecture context. The runtime facade uses the stricter prepared
+        // form before publishing OS-visible completion.
+        let permit = self.prepare_current_exit_inner(cpu.as_mut(), now_ns, false)?;
+        self.commit_current_exit_after_owner_drain(cpu, permit, now_ns)
+    }
+
+    /// Commits a prepared current-thread exit and selects a replacement.
+    ///
+    /// `now_ns` is the single monotonic snapshot shared by dispatch
+    /// accounting, successor selection, tracing, and the runtime switch.
+    pub(crate) fn commit_prepared_current_exit(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        permit: CurrentExitPermit,
+        now_ns: u64,
+    ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
-        self.commit_current_exit_after_owner_drain(cpu, now_ns)
+        self.commit_current_exit_after_owner_drain(cpu, permit, now_ns)
     }
 
     /// Commits the non-returning half of current exit after owner work drained.
     ///
-    /// The scheduler activity gate closes the intentional drain-to-commit
-    /// window against a newly publishing remote policy or affinity update. A
-    /// message that won before the gate remains an in-flight late delivery and
-    /// pins registry resources until its owner drains it as an exited no-op.
+    /// The move-only permit has already closed new scheduler activity. A
+    /// message whose delivery reservation predates that close remains an
+    /// in-flight late delivery and pins registry resources until its owner
+    /// drains it as an exited no-op.
     pub(super) fn commit_current_exit_after_owner_drain(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
+        mut permit: CurrentExitPermit,
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
+        let exiting = permit.thread();
         let (decision, exited_core) = {
             let mut state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
             let previous = cpu.current().ok_or(TaskError::NoRunnableThread)?;
+            if previous != exiting {
+                return Err(TaskError::StaleThreadId);
+            }
             let previous_core = cpu.current_core().cloned();
             if state.thread_record(previous)?.has_live_pi_edges() {
                 return Err(TaskError::InvalidPiState);
@@ -242,13 +367,14 @@ impl TaskSystem {
             self.commit_owner_current_dispatch(cpu.as_mut(), now_ns)?;
             let previous_core = previous_core.ok_or(TaskError::NoRunnableThread)?;
             Self::detach_owner_deadline_bandwidth(&previous_core, cpu.as_mut())?;
-            let _exit = previous_core
-                .try_scheduler_exit()
-                .ok_or(TaskError::ThreadBusy)?;
             {
                 let mut sched = previous_core.sched().lock();
                 sched.placement.set_migration_target(None)?;
                 sched.transition(&previous_core, ThreadState::Exited)?;
+                // From this point a recoverable return is impossible. Keep the
+                // gate permanently closed so reaping may treat a zero delivery
+                // count as stable after observing Exited.
+                permit.seal();
                 sched.placement.mark_exited_awaiting_tail(cpu.owner())?;
                 let record = state.thread_record_mut(previous)?;
                 record.callbacks.prepare_exit(record.extension.is_some())?;
@@ -274,6 +400,7 @@ impl TaskSystem {
             )
         };
         exited_core.notify_affinity_waiters();
+        drop(permit);
         Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 

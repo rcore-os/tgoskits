@@ -1101,6 +1101,44 @@ fn kernel_thread_submits_explicit_lazy_address_space_before_switch_in() {
     }
 
     #[test]
+    fn preparing_exit_closes_scheduler_activity_until_permit_drops() {
+        use crate::{
+            ThreadResources,
+            runtime::{ExecutionContextHandle, StackHandle, TlsHandle},
+        };
+
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let resources = unsafe {
+            ThreadResources::new(
+                ExecutionContextHandle::from_raw(1),
+                StackHandle::NONE,
+                TlsHandle::NONE,
+                AddressSpaceToken::NONE,
+            )
+        };
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), unsafe {
+                ThreadSpec::new(SchedulePolicy::default()).with_resources(resources)
+            })
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        let permit = prepare_current_exit().unwrap();
+
+        assert!(
+            running.core.try_scheduler_activity().is_none(),
+            "exit preparation must close new scheduler activity before OS completion publication"
+        );
+        drop(permit);
+        assert!(
+            running.core.try_scheduler_activity().is_some(),
+            "dropping an uncommitted exit permit must reopen scheduler activity"
+        );
+    }
+
+    #[test]
     fn exit_commit_separates_transition_from_unrelated_deadline_service() {
         use crate::{
             ThreadResources,
