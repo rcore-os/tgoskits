@@ -1,24 +1,44 @@
-async fn alarm_task() {
+struct AlarmWorkerSnapshot {
+    epoch: u64,
+    action: AlarmAction,
+}
+
+fn take_alarm_worker_snapshot(
+    epoch: &AtomicU64,
+    snapshot_action: impl FnOnce() -> AlarmAction,
+) -> AlarmWorkerSnapshot {
+    // Producers mutate ALARM_LIST before incrementing the epoch. Taking the
+    // baseline first means a producer racing the queue snapshot cannot be
+    // absorbed into the worker's sleep predicate.
+    let observed_epoch = epoch.load(Ordering::Acquire);
+    let action = snapshot_action();
+    AlarmWorkerSnapshot {
+        epoch: observed_epoch,
+        action,
+    }
+}
+
+fn alarm_task() {
     loop {
-        match next_alarm_action(wall_time()) {
+        let snapshot = take_alarm_worker_snapshot(&ALARM_EPOCH, || {
+            next_alarm_action(wall_time())
+        });
+        match snapshot.action {
             AlarmAction::AwaitNewTimer => {
-                listener!(EVENT_NEW_TIMER => listener);
-                if ALARM_LIST.lock().is_empty() {
-                    listener.await;
-                }
+                ALARM_WAIT.wait_until(|| {
+                    ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch
+                });
             }
             AlarmAction::Fire {
                 token,
                 target: AlarmTarget::Process(pid),
             } => poll_process_timer_for_alarm(pid, &token),
             AlarmAction::AwaitDeadline(deadline) => {
-                listener!(EVENT_NEW_TIMER => listener);
-                let deadline_is_current = ALARM_LIST
-                    .lock()
-                    .earliest_deadline()
-                    .is_some_and(|current| current == deadline);
-                if deadline_is_current {
-                    let _ = timeout_at_wall(Some(deadline), listener).await;
+                let remaining = deadline.saturating_sub(wall_time());
+                if !remaining.is_zero() {
+                    let _timed_out = ALARM_WAIT.wait_timeout_until(remaining, || {
+                        ALARM_EPOCH.load(Ordering::Acquire) != snapshot.epoch
+                    });
                 }
             }
         }
@@ -50,7 +70,7 @@ fn next_alarm_action(now: Duration) -> AlarmAction {
 pub fn spawn_alarm_task() {
     info!("Initialize alarm...");
     crate::task::try_spawn_kernel_thread_with_stack(
-        || block_on(alarm_task()),
+        alarm_task,
         "alarm_task".to_owned(),
         crate::config::KERNEL_STACK_SIZE,
     )

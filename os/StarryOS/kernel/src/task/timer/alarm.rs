@@ -132,6 +132,7 @@ impl<T> AlarmQueue<T> {
         }
     }
 
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -194,7 +195,8 @@ impl<T> AlarmQueue<T> {
 
 static ALARM_LIST: LazyLock<PiMutex<AlarmQueue<AlarmTarget>>> =
     LazyLock::new(|| PiMutex::new(AlarmQueue::new()));
-static EVENT_NEW_TIMER: LazyLock<Event> = LazyLock::new(Event::new);
+static ALARM_WAIT: WaitQueue = WaitQueue::new();
+static ALARM_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 include!("alarm/change.rs");
 include!("alarm/worker.rs");

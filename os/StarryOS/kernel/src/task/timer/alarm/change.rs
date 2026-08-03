@@ -25,7 +25,7 @@ impl AlarmChange {
         let earliest_changed = alarms.earliest_deadline() != previous_earliest;
         drop(alarms);
         if earliest_changed {
-            EVENT_NEW_TIMER.notify(1);
+            publish_alarm_change();
         }
     }
 
@@ -46,6 +46,14 @@ fn cancel_alarm_generation(token: &AlarmToken) {
     let earliest_changed = alarms.earliest_deadline() != previous_earliest;
     drop(alarms);
     if earliest_changed {
-        EVENT_NEW_TIMER.notify(1);
+        publish_alarm_change();
     }
+}
+
+fn publish_alarm_change() {
+    // Publish the queue mutation before waking the fixed alarm worker. Loading
+    // this epoch before the worker snapshots ALARM_LIST closes both the
+    // publish-before-park and publish-during-snapshot races.
+    ALARM_EPOCH.fetch_add(1, Ordering::AcqRel);
+    ALARM_WAIT.notify_one();
 }

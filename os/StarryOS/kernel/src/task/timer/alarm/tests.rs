@@ -151,6 +151,21 @@ mod tests {
         ));
         assert_eq!(queue.entries.len(), 1);
     }
+
+    #[test]
+    fn alarm_worker_does_not_absorb_a_publish_during_its_queue_snapshot() {
+        let epoch = AtomicU64::new(0);
+        let snapshot = take_alarm_worker_snapshot(&epoch, || {
+            epoch.fetch_add(1, Ordering::AcqRel);
+            AlarmAction::AwaitNewTimer
+        });
+
+        assert_ne!(
+            epoch.load(Ordering::Acquire),
+            snapshot.epoch,
+            "a queue update racing the snapshot must make the worker's wait predicate true",
+        );
+    }
 }
 
 #[cfg(axtest)]
