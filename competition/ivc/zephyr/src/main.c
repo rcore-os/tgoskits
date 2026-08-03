@@ -51,6 +51,10 @@ struct ivc_server {
 	uint64_t status_sent;
 	uint64_t acknowledgements_sent;
 	uint64_t errors_sent;
+	uint64_t safe_fallbacks;
+	uint64_t recoveries;
+	uint64_t stale_status_sent;
+	uint64_t stale_acknowledgements_sent;
 	struct ivc_error_evidence error_evidence[IVC_ERROR_EVIDENCE_CAPACITY];
 	uint32_t error_evidence_count;
 	bool error_evidence_replayed;
@@ -83,14 +87,31 @@ static bool validate_fault_configuration(void)
 	const uint32_t drop_every = (uint32_t)CONFIG_IVC_DROP_ACK_EVERY;
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
 	const uint32_t expected_errors = (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS;
+	const uint32_t expected_session_resets = (uint32_t)CONFIG_IVC_EXPECTED_SESSION_RESETS;
+	const uint32_t expected_session_rejections =
+		(uint32_t)CONFIG_IVC_EXPECTED_SESSION_REJECTIONS;
+	const uint32_t expected_safe_fallbacks =
+		(uint32_t)CONFIG_IVC_EXPECTED_SAFE_FALLBACKS;
+	const bool restart_profile = expected_session_resets != 0U ||
+				     expected_session_rejections != 0U ||
+				     expected_safe_fallbacks != 0U;
 
 	if ((drop_every != 0U && expected_commands == 0U) || drop_every > expected_commands ||
 	    (expected_errors != 0U && expected_commands == 0U) ||
 	    (expected_errors != 0U && drop_every != 0U) ||
+	    (restart_profile && expected_commands == 0U) ||
+	    (restart_profile && drop_every != 0U) ||
+	    (restart_profile && (expected_session_resets == 0U ||
+				 expected_session_rejections == 0U ||
+				 expected_safe_fallbacks == 0U)) ||
+	    (restart_profile && expected_errors != expected_session_rejections) ||
 	    expected_errors > IVC_ERROR_EVIDENCE_CAPACITY) {
 		printk("IVC-RTOS-FATAL stage=fault-config drop_ack_every=%u "
-		       "expected_commands=%u expected_protocol_errors=%u evidence_capacity=%u\n",
+		       "expected_commands=%u expected_protocol_errors=%u session_resets=%u "
+		       "session_rejections=%u safe_fallbacks=%u evidence_capacity=%u\n",
 		       drop_every, expected_commands, expected_errors,
+		       expected_session_resets, expected_session_rejections,
+		       expected_safe_fallbacks,
 		       (unsigned int)IVC_ERROR_EVIDENCE_CAPACITY);
 		return false;
 	}
@@ -231,6 +252,22 @@ static void report_ready(void)
 	       (uint32_t)IS_ENABLED(CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS));
 }
 
+static void report_restart_ready(void)
+{
+	if (CONFIG_IVC_EXPECTED_SESSION_RESETS == 0) {
+		return;
+	}
+	printk("IVC-RTOS-RESTART-READY commands=%u errors=%u resets=%u rejections=%u "
+	       "safe=%u drop=%u exit=%u\n",
+	       (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS,
+	       (uint32_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS,
+	       (uint32_t)CONFIG_IVC_EXPECTED_SESSION_RESETS,
+	       (uint32_t)CONFIG_IVC_EXPECTED_SESSION_REJECTIONS,
+	       (uint32_t)CONFIG_IVC_EXPECTED_SAFE_FALLBACKS,
+	       (uint32_t)CONFIG_IVC_DROP_ACK_EVERY,
+	       (uint32_t)IS_ENABLED(CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS));
+}
+
 static void replay_ready_if_needed(struct ivc_server *server)
 {
 	uint32_t copy;
@@ -241,6 +278,7 @@ static void replay_ready_if_needed(struct ivc_server *server)
 	server->ready_replayed = true;
 	for (copy = 0U; copy < IVC_READY_RECORD_COPIES; ++copy) {
 		report_ready();
+		report_restart_ready();
 		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
 	}
 }
@@ -261,13 +299,32 @@ static void report_compact_result(const struct ivc_server *server, const char *p
 		       server->status_sent, server->acknowledgements_sent,
 		       server->errors_sent, server->protocol_errors);
 		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
+		if (strcmp(profile, "restart") == 0) {
+			printk("IVC-RTOS-RESTART session_resets=%llu session_rejections=%llu "
+			       "safe_fallbacks=%llu recoveries=%llu stale_status_sent=%llu "
+			       "stale_acks_sent=%llu\n",
+			       server->receive_window.metrics.session_resets,
+			       server->receive_window.metrics.session_rejections,
+			       server->safe_fallbacks, server->recoveries,
+			       server->stale_status_sent,
+			       server->stale_acknowledgements_sent);
+			k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
+		}
 	}
 }
 
 static void report_result_if_complete(struct ivc_server *server)
 {
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
-#if CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
+#if CONFIG_IVC_EXPECTED_SESSION_RESETS > 0
+	const uint64_t expected_errors = (uint64_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS;
+	const uint64_t expected_session_resets = (uint64_t)CONFIG_IVC_EXPECTED_SESSION_RESETS;
+	const uint64_t expected_session_rejections =
+		(uint64_t)CONFIG_IVC_EXPECTED_SESSION_REJECTIONS;
+	const uint64_t expected_safe_fallbacks =
+		(uint64_t)CONFIG_IVC_EXPECTED_SAFE_FALLBACKS;
+	const char *profile = "restart";
+#elif CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
 	const uint64_t expected_errors = (uint64_t)CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS;
 	const char *profile = "error";
 #elif CONFIG_IVC_DROP_ACK_EVERY > 0
@@ -282,7 +339,17 @@ static void report_result_if_complete(struct ivc_server *server)
 	    server->receive_window.metrics.accepted != expected_commands) {
 		return;
 	}
-#if CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
+#if CONFIG_IVC_EXPECTED_SESSION_RESETS > 0
+	if (server->protocol_errors != expected_errors || server->errors_sent != expected_errors ||
+	    !server->error_evidence_replayed ||
+	    server->receive_window.metrics.session_resets != expected_session_resets ||
+	    server->receive_window.metrics.session_rejections != expected_session_rejections ||
+	    server->safe_fallbacks != expected_safe_fallbacks ||
+	    server->recoveries != expected_safe_fallbacks || server->stale_status_sent != 1U ||
+	    server->stale_acknowledgements_sent != 1U) {
+		return;
+	}
+#elif CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
 	if (server->protocol_errors != expected_errors || server->errors_sent != expected_errors ||
 	    !server->error_evidence_replayed) {
 		return;
@@ -373,8 +440,16 @@ static void process_control(struct ivc_server *server, int socket_fd,
 	enum ivc_delivery delivery;
 	enum ivc_apply_result apply_result;
 	bool drop_ack;
+	bool had_previous_session;
+	bool was_safe_fallback;
+	uint32_t previous_sequence;
+	uint32_t previous_session;
 	uint64_t received_us;
 
+	had_previous_session = server->receive_window.has_session;
+	previous_session = server->receive_window.session_id;
+	previous_sequence = server->endpoint.last_sequence;
+	was_safe_fallback = server->endpoint.fault == IVC_ERROR_CONTROLLER_TIMEOUT;
 	delivery = ivc_receive_window_observe(&server->receive_window, frame->header.session_id,
 					      frame->header.sequence);
 	if (delivery == IVC_DELIVERY_NEW_OUT_OF_ORDER ||
@@ -401,6 +476,27 @@ static void process_control(struct ivc_server *server, int socket_fd,
 
 	if (ivc_delivery_applies_control(delivery)) {
 		if (delivery == IVC_DELIVERY_NEW_SESSION) {
+			if (had_previous_session && CONFIG_IVC_EXPECTED_SESSION_RESETS > 0) {
+				struct ivc_header stale_request = frame->header;
+
+				stale_request.session_id = previous_session;
+				stale_request.sequence = previous_sequence;
+				if (send_status(socket_fd, peer, peer_length, &stale_request,
+						&server->endpoint, &server->plant)) {
+					++server->status_sent;
+					++server->stale_status_sent;
+				}
+				if (send_ack(socket_fd, peer, peer_length, &stale_request,
+					     &server->receive_window)) {
+					++server->acknowledgements_sent;
+					++server->stale_acknowledgements_sent;
+				}
+				printk("IVC-RTOS-STALE-REPLAY old_session=%u old_sequence=%u "
+				       "new_session=%u stale_status_sent=%llu stale_acks_sent=%llu\n",
+				       previous_session, previous_sequence, frame->header.session_id,
+				       server->stale_status_sent,
+				       server->stale_acknowledgements_sent);
+			}
 			ivc_endpoint_begin_session(&server->endpoint);
 		}
 		received_us = monotonic_us();
@@ -415,6 +511,15 @@ static void process_control(struct ivc_server *server, int socket_fd,
 				       apply_error_code(apply_result),
 				       ivc_apply_result_name(apply_result));
 			return;
+		}
+		if (was_safe_fallback) {
+			++server->recoveries;
+			printk("IVC-RTOS-RECOVERY session=%u seq=%u from=controller-timeout "
+			       "mode=%s actuator_permille=%u recoveries=%llu\n",
+			       frame->header.session_id, frame->header.sequence,
+			       ivc_control_mode_name(command->mode),
+			       (unsigned int)server->endpoint.actuator_permille,
+			       server->recoveries);
 		}
 		ivc_thermal_plant_step(&server->plant, server->endpoint.actuator_permille,
 				       server->applied_commands);
@@ -496,10 +601,12 @@ static void check_safe_timeout(struct ivc_server *server)
 	enum ivc_timeout_result result = ivc_endpoint_check_timeout(&server->endpoint, monotonic_us());
 
 	if (result == IVC_TIMEOUT_ENTERED_SAFE_STATE) {
+		++server->safe_fallbacks;
 		printk("IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=%u "
-		       "last_sequence=%u\n",
+		       "last_sequence=%u session=%u safe_fallbacks=%llu\n",
 		       (unsigned int)server->endpoint.actuator_permille,
-		       server->endpoint.last_sequence);
+		       server->endpoint.last_sequence, server->receive_window.session_id,
+		       server->safe_fallbacks);
 	} else if (result == IVC_TIMEOUT_CLOCK_MOVED_BACKWARD) {
 		++server->protocol_errors;
 		printk("IVC-RTOS-ERROR seq=%u code=%u reason=clock-moved-backward\n",
@@ -541,6 +648,10 @@ int main(void)
 	server.status_sent = 0U;
 	server.acknowledgements_sent = 0U;
 	server.errors_sent = 0U;
+	server.safe_fallbacks = 0U;
+	server.recoveries = 0U;
+	server.stale_status_sent = 0U;
+	server.stale_acknowledgements_sent = 0U;
 	server.error_evidence_count = 0U;
 	server.error_evidence_replayed = false;
 	server.ready_replayed = false;

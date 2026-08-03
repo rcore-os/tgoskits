@@ -20,6 +20,8 @@ shutdown_marker_required=${ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED:-0}
 no_host_fs=${ORANGEPI_AXVISOR_NO_HOST_FS:-0}
 restore_linux_required=${ORANGEPI_RESTORE_LINUX:-1}
 raw_output=${ORANGEPI_IVC_RAW_CSV:-}
+pre_reset_raw_output=${ORANGEPI_IVC_PRE_RESET_RAW_CSV:-}
+expected_pre_reset_count=${ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT:-0}
 guest_image=${ORANGEPI_IVC_GUEST_IMAGE:-}
 result_image=${ORANGEPI_IVC_RESULT_IMAGE:-}
 expected_count=${ORANGEPI_IVC_EXPECTED_COUNT:-}
@@ -206,6 +208,22 @@ if [[ -n "$raw_output" ]]; then
         echo "Result harvest requires guest image, result image, and expected count" >&2
         exit 2
     fi
+    case "$expected_pre_reset_count" in
+        ''|*[!0-9]*)
+            echo "ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT must be a nonnegative integer" >&2
+            exit 2
+            ;;
+    esac
+    if ((expected_pre_reset_count > 0)); then
+        if [[ -z "$pre_reset_raw_output" || "$pre_reset_raw_output" != /* ]]; then
+            echo "Pre-reset result harvest requires an absolute output path" >&2
+            exit 2
+        fi
+        if [[ "$pre_reset_raw_output" == "$raw_output" ]]; then
+            echo "Pre-reset and post-reset raw output paths must differ" >&2
+            exit 2
+        fi
+    fi
     for remote_image in "$guest_image" "$result_image"; do
         case "$remote_image" in
             /home/orangepi/*) ;;
@@ -379,6 +397,8 @@ if ((runner_status == 0 && restore_status == 0)) && [[ -n "$raw_output" ]]; then
     ORANGEPI_IVC_RAW_CSV="$raw_output" \
     ORANGEPI_IVC_RESULT_IMAGE="$result_image" \
     ORANGEPI_IVC_EXPECTED_COUNT="$expected_count" \
+    ORANGEPI_IVC_PRE_RESET_RAW_CSV="$pre_reset_raw_output" \
+    ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT="$expected_pre_reset_count" \
         bash "$harvest_result"
     harvest_status=$?
 fi

@@ -47,6 +47,7 @@ fn to_cargo_config(
     reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
     let max_cpu_num = config.build_info.max_cpu_num;
     let host_noise = config.host_noise;
+    let guest_restart = config.guest_restart;
     let mut cargo = config
         .build_info
         .into_prepared_base_cargo_config_with_metadata(
@@ -56,7 +57,37 @@ fn to_cargo_config(
         )?;
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     inject_host_noise_config(&mut cargo, host_noise.as_ref(), max_cpu_num)?;
+    inject_guest_restart_config(&mut cargo, guest_restart.as_ref())?;
     Ok(cargo)
+}
+
+fn inject_guest_restart_config(
+    cargo: &mut Cargo,
+    guest_restart: Option<&config::AxvisorGuestRestartConfig>,
+) -> anyhow::Result<()> {
+    let Some(guest_restart) = guest_restart else {
+        return Ok(());
+    };
+    if guest_restart.delay_ms == 0 {
+        bail!("Axvisor guest_restart.delay_ms must be positive");
+    }
+    if guest_restart.ready_timeout_ms == 0 {
+        bail!("Axvisor guest_restart.ready_timeout_ms must be positive");
+    }
+
+    cargo.env.insert(
+        "AXVISOR_GUEST_RESTART_VM_ID".to_string(),
+        guest_restart.vm_id.to_string(),
+    );
+    cargo.env.insert(
+        "AXVISOR_GUEST_RESTART_DELAY_MS".to_string(),
+        guest_restart.delay_ms.to_string(),
+    );
+    cargo.env.insert(
+        "AXVISOR_GUEST_RESTART_READY_TIMEOUT_MS".to_string(),
+        guest_restart.ready_timeout_ms.to_string(),
+    );
+    Ok(())
 }
 
 fn inject_host_noise_config(

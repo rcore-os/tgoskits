@@ -17,7 +17,7 @@ Options:
   --profile <smoke|full>             Select the workload size.
   --policy <neural|manual>           Select the controller policy.
   --backend <native|onnxruntime>      Select the inference backend.
-  --fault-profile <none|error>        Select deterministic controller faults.
+  --fault-profile <none|error|restart> Select deterministic controller faults.
   --count <commands>                  Override the profile command count.
   --period-ms <milliseconds>          Set the control period (default: 100).
   --output <image>                    Override the generated rootfs path.
@@ -56,9 +56,10 @@ default_output_image() {
     if [[ "$profile" == smoke ]]; then
         profile_suffix=-smoke
     fi
-    if [[ "$fault_profile" == error ]]; then
-        fault_suffix=-error
-    fi
+    case "$fault_profile" in
+        error) fault_suffix=-error ;;
+        restart) fault_suffix=-restart ;;
+    esac
     printf '%s/starry-ivc-rootfs%s%s%s%s.img\n' \
         "$output_dir" "$policy_suffix" "$backend_suffix" "$profile_suffix" "$fault_suffix"
 }
@@ -83,6 +84,9 @@ fault_profile=none
 command_count=
 period_ms=100
 output_image=
+ivc_restart_previous_session=286331153
+ivc_restart_current_session=572662306
+ivc_restart_first_count=20
 
 if (($# > 0)) && [[ "$1" != -* ]]; then
     profile=$1
@@ -157,14 +161,18 @@ case "$backend" in
         ;;
 esac
 case "$fault_profile" in
-    none|error) ;;
+    none|error|restart) ;;
     *)
-        echo "fault profile must be 'none' or 'error': $fault_profile" >&2
+        echo "fault profile must be 'none', 'error', or 'restart': $fault_profile" >&2
         exit 2
         ;;
 esac
 require_positive_integer --count "$command_count"
 require_positive_integer --period-ms "$period_ms"
+if [[ "$fault_profile" == restart && "$command_count" != 100 ]]; then
+    echo "restart fault profile requires exactly 100 post-reset commands" >&2
+    exit 2
+fi
 
 output_image=${output_image:-$(default_output_image)}
 if [[ "$output_image" != /* ]]; then
@@ -203,8 +211,10 @@ cleanup() {
     rm -f -- "$profile_file"
 }
 trap cleanup EXIT HUP INT TERM
-printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\n' \
+printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\nivc_restart_previous_session=%s\nivc_restart_current_session=%s\nivc_restart_first_count=%s\n' \
     "$policy" "$backend" "$fault_profile" "$profile" "$command_count" "$period_ms" \
+    "$ivc_restart_previous_session" "$ivc_restart_current_session" \
+    "$ivc_restart_first_count" \
     >"$profile_file"
 for directory in /root /usr /usr/bin /usr/local /usr/local/bin /etc /var /var/lib /var/lib/ivc; do
     debugfs -w -R "mkdir $directory" "$output_image" >/dev/null 2>&1 || true

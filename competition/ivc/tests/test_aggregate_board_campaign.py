@@ -57,9 +57,9 @@ def write_json(path: Path, value: object) -> None:
     )
 
 
-def raw_bytes() -> bytes:
+def raw_bytes(count: int = 100) -> bytes:
     rows = [RAW_HEADER]
-    for sequence in range(1, 101):
+    for sequence in range(1, count + 1):
         cycle = sequence * 100_000
         rows.append(
             f"{sequence},{cycle},{cycle + 10},{cycle + 1010},1010,10,1000,"
@@ -340,14 +340,18 @@ def refresh_run_identity(run_dir: Path) -> None:
     metadata["outputs"]["summary"]["sha256"] = sha256_file(summary_path)
     metadata["outputs"]["summary"]["size_bytes"] = summary_path.stat().st_size
     write_json(metadata_path, metadata)
-    manifest_files = (
+    manifest_files = [
         "console.log",
         "console.log.gz",
         "metadata.json",
         "summary.json",
         "raw.csv",
         "raw.csv.gz",
-    )
+    ]
+    if (run_dir / "raw-before-reset.csv").is_file():
+        manifest_files.extend(
+            ("raw-before-reset.csv", "raw-before-reset.csv.gz")
+        )
     (run_dir / "checksums.sha256").write_text(
         "".join(
             f"{sha256_file(run_dir / name)}  {name}\n" for name in manifest_files
@@ -487,7 +491,172 @@ def write_error_campaign(root: Path) -> tuple[Path, Path, Path]:
     return result_root, latest_amendment_path, final_check
 
 
+def write_restart_campaign(root: Path) -> tuple[Path, Path, Path]:
+    ack_result_root, amendment_path, final_check = write_campaign(root)
+    preregistration_path = root / "campaign-preregistration.json"
+    preregistration = json.loads(preregistration_path.read_text(encoding="utf-8"))
+    preregistration["campaign_id"] = "formal-restart-test"
+    preregistration["capture_contract"] = {
+        "runner_profile": "fault-restart",
+        "analyzer_profile": "restart",
+        "repeat_count": 3,
+        "execution_order": RUN_ORDER,
+        "controller_policy": "neural",
+        "inference_backend": "native",
+        "controller_fault_profile": "restart",
+        "command_count": 100,
+        "pre_reset_command_count": 20,
+        "period_ms": 100,
+        "expected_retransmissions": 0,
+        "expected_recoveries": 0,
+        "expected_fresh_applications": 120,
+        "expected_duplicate_receives": 0,
+        "expected_status_frames": 121,
+        "expected_ack_frames": 121,
+        "expected_error_frames": 1,
+        "expected_protocol_errors": 1,
+        "expected_session_resets": 1,
+        "expected_session_rejections": 1,
+        "expected_safe_fallbacks": 1,
+        "expected_endpoint_recoveries": 1,
+        "expected_stale_status_frames": 1,
+        "expected_stale_ack_frames": 1,
+        "expected_retired_control_rejections": 1,
+        "restart_vm_id": 1,
+        "restart_delay_ms": 20_000,
+        "restart_ready_timeout_ms": 30_000,
+        "previous_session": 286_331_153,
+        "current_session": 572_662_306,
+        "actual_vm_reset_required": True,
+    }
+    preregistration["statistics_policy"]["latency_claim"] = (
+        "descriptive restart recovery overhead only; this campaign is not the "
+        "preregistered RT isolation comparison"
+    )
+    write_json(preregistration_path, preregistration)
+
+    amendment = json.loads(amendment_path.read_text(encoding="utf-8"))
+    amendment["preregistration"]["sha256"] = sha256_file(preregistration_path)
+    write_json(amendment_path, amendment)
+
+    result_root = ack_result_root.with_name("fault-restart")
+    ack_result_root.rename(result_root)
+    pre_reset_raw = raw_bytes(20)
+    pre_reset_gzip = gzip.compress(pre_reset_raw, mtime=0)
+    pre_reset_sha256 = sha256_bytes(pre_reset_raw)
+    for run_id in RUN_ORDER:
+        run_dir = result_root / run_id
+        (run_dir / "raw-before-reset.csv").write_bytes(pre_reset_raw)
+        (run_dir / "raw-before-reset.csv.gz").write_bytes(pre_reset_gzip)
+
+        summary_path = run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["profile"] = "restart"
+        summary["controller"].update(
+            {"retransmissions": 0, "recoveries": 0, "deadline_misses": 0}
+        )
+        summary["rtos"] = {
+            "profile": "restart",
+            "accepted": 120,
+            "applied": 120,
+            "duplicates": 0,
+            "acks_dropped": 0,
+            "status_sent": 121,
+            "acks_sent": 121,
+            "errors_sent": 1,
+            "protocol_errors": 1,
+            "session_resets": 1,
+            "session_rejections": 1,
+            "safe_fallbacks": 1,
+            "recoveries": 1,
+            "stale_status_sent": 1,
+            "stale_acks_sent": 1,
+        }
+        summary["starry"]["fault_profile"] = "restart"
+        summary["raw_samples"]["deadline_misses"] = 0
+        summary["pre_reset_raw_samples"] = {
+            "path": str(run_dir / "raw-before-reset.csv.gz"),
+            "sha256": pre_reset_sha256,
+            "artifact_sha256": sha256_bytes(pre_reset_gzip),
+            "guest_manifest_sha256": pre_reset_sha256,
+            "uart_sha256": pre_reset_sha256,
+            "uart_sha256_complete": True,
+            "sample_count": 20,
+            "dropped_samples": 0,
+            "deadline_misses": 0,
+            "full_loop_p99_us": 1010,
+            "full_loop_max_us": 1010,
+        }
+        summary["restart_recovery"] = {
+            "actual_vm_reset": True,
+            "vm_id": 1,
+            "reset_count": 1,
+            "ready_wait_ms": 450,
+            "requested_delay_ms": 20_000,
+            "observed_delay_ms": 20_001,
+            "old_session": 286_331_153,
+            "new_session": 572_662_306,
+            "pre_reset_samples": 20,
+            "post_reset_samples": 100,
+            "safe_fallback_observed": True,
+            "recovered": True,
+            "stale_ack_ignored": 1,
+            "stale_status_ignored": 1,
+            "retired_control_rejected": 1,
+        }
+        write_json(summary_path, summary)
+
+        metadata_path = run_dir / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["run"]["profile"] = "fault-restart"
+        metadata["result"]["deadline_misses"] = 0
+        write_json(metadata_path, metadata)
+        refresh_run_identity(run_dir)
+
+    final_check_value = json.loads(final_check.read_text(encoding="utf-8"))
+    final_check_value["campaign_id"] = "formal-restart-test"
+    write_json(final_check, final_check_value)
+    return result_root, amendment_path, final_check
+
+
 class BoardCampaignAggregationTests(unittest.TestCase):
+    def test_three_valid_restart_runs_require_actual_reset_and_both_raw_phases(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_restart_campaign(root)
+
+            result = aggregate.aggregate_campaign(
+                root, result_root, amendment, final_check
+            )
+
+        self.assertTrue(result["assessment"]["campaign_gate_met"])
+        self.assertEqual(result["campaign"]["profile"], "fault-restart")
+        self.assertEqual(result["fault_contract"]["analyzer_profile"], "restart")
+        self.assertTrue(result["fault_contract"]["actual_vm_reset_required"])
+        for run in result["evidence"]["runs"]:
+            self.assertEqual(run["pre_reset_raw"]["sample_count"], 20)
+            self.assertTrue(run["restart_recovery"]["actual_vm_reset"])
+
+    def test_rejects_rehashed_restart_summary_without_actual_vm_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_restart_campaign(root)
+            run_dir = result_root / "run-002"
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["restart_recovery"]["actual_vm_reset"] = False
+            write_json(summary_path, summary)
+            refresh_run_identity(run_dir)
+
+            with self.assertRaisesRegex(
+                aggregate.AggregationError, "restart_recovery"
+            ):
+                aggregate.aggregate_campaign(
+                    root, result_root, amendment, final_check
+                )
+
     def test_three_valid_error_runs_meet_exact_error_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

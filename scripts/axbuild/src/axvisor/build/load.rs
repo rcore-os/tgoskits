@@ -93,6 +93,7 @@ pub(super) fn load_build_config(
                 target: request.target.clone(),
                 vm_configs: Vec::new(),
                 host_noise: None,
+                guest_restart: None,
             };
             apply_request_smp(&mut loaded, request);
             loaded
@@ -145,6 +146,7 @@ fn load_or_create_missing_build_config(
         target: request.target.clone(),
         vm_configs: Vec::new(),
         host_noise: None,
+        guest_restart: None,
     };
     apply_request_smp(&mut loaded, request);
     Ok(loaded)

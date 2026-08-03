@@ -31,6 +31,7 @@ use ax_std as _;
 
 mod banner;
 mod config;
+mod guest_restart;
 mod host_noise;
 mod manager;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -53,9 +54,16 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
+    let guest_restart = guest_restart::GuestRestartTask::start_configured()
+        .unwrap_or_else(|error| panic!("failed to start guest restart: {error:#}"));
     let host_noise = host_noise::HostNoiseTask::start_configured()
         .unwrap_or_else(|error| panic!("failed to start host interference: {error:#}"));
     manager.start_default_vms();
+    if let Some(guest_restart) = guest_restart {
+        guest_restart
+            .join_and_publish()
+            .unwrap_or_else(|error| panic!("guest restart validation failed: {error:#}"));
+    }
     if let Some(host_noise) = host_noise {
         host_noise
             .stop_and_publish()

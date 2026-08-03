@@ -23,6 +23,10 @@ MANIFEST_FILES = (
     "raw.csv",
     "raw.csv.gz",
 )
+RESTART_MANIFEST_FILES = MANIFEST_FILES + (
+    "raw-before-reset.csv",
+    "raw-before-reset.csv.gz",
+)
 LATENCY_METRICS = (
     "full_loop_p50_us",
     "full_loop_p95_us",
@@ -50,6 +54,7 @@ MANIFEST_PATTERN = re.compile(r"([0-9a-f]{64})  ([^/\\]+)")
 SUPPORTED_PROFILE_PAIRS = {
     ("fault-ack-loss", "ack-loss"),
     ("fault-error", "error"),
+    ("fault-restart", "restart"),
 }
 
 
@@ -394,7 +399,9 @@ def validate_result_root(
     return result_root
 
 
-def parse_manifest(run_dir: Path, run_id: str) -> dict[str, str]:
+def parse_manifest(
+    run_dir: Path, run_id: str, capture: dict[str, object]
+) -> dict[str, str]:
     path = run_dir / "checksums.sha256"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -411,7 +418,12 @@ def parse_manifest(run_dir: Path, run_id: str) -> dict[str, str]:
         if name in manifest:
             raise AggregationError(f"{run_id} checksum manifest repeats {name}")
         manifest[name] = digest
-    if set(manifest) != set(MANIFEST_FILES):
+    expected_files = (
+        RESTART_MANIFEST_FILES
+        if capture["analyzer_profile"] == "restart"
+        else MANIFEST_FILES
+    )
+    if set(manifest) != set(expected_files):
         raise AggregationError(f"{run_id} checksum manifest has the wrong file set")
     for name, expected in manifest.items():
         observed = sha256_file(run_dir / name)
@@ -420,11 +432,16 @@ def parse_manifest(run_dir: Path, run_id: str) -> dict[str, str]:
     return manifest
 
 
-def validate_compressed_twins(run_dir: Path, run_id: str) -> None:
-    for plain_name, gzip_name in (
+def validate_compressed_twins(
+    run_dir: Path, run_id: str, capture: dict[str, object]
+) -> None:
+    twins = [
         ("console.log", "console.log.gz"),
         ("raw.csv", "raw.csv.gz"),
-    ):
+    ]
+    if capture["analyzer_profile"] == "restart":
+        twins.append(("raw-before-reset.csv", "raw-before-reset.csv.gz"))
+    for plain_name, gzip_name in twins:
         try:
             decompressed = gzip.decompress((run_dir / gzip_name).read_bytes())
             plain = (run_dir / plain_name).read_bytes()
@@ -438,22 +455,30 @@ def validate_compressed_twins(run_dir: Path, run_id: str) -> None:
             )
 
 
-def validate_raw_csv(run_dir: Path, run_id: str, expected_count: int) -> None:
+def validate_raw_csv(
+    run_dir: Path,
+    run_id: str,
+    expected_count: int,
+    filename: str = "raw.csv",
+) -> None:
     try:
-        with (run_dir / "raw.csv").open(newline="", encoding="utf-8") as stream:
+        with (run_dir / filename).open(newline="", encoding="utf-8") as stream:
             rows = list(csv.DictReader(stream))
     except (OSError, csv.Error) as error:
-        raise AggregationError(f"{run_id} cannot parse raw.csv: {error}") from error
+        raise AggregationError(f"{run_id} cannot parse {filename}: {error}") from error
     if len(rows) != expected_count:
         raise AggregationError(
-            f"{run_id} raw sample count must be {expected_count}, got {len(rows)}"
+            f"{run_id} {filename} sample count must be {expected_count}, "
+            f"got {len(rows)}"
         )
     try:
         sequences = [int(row["sequence"]) for row in rows]
     except (KeyError, TypeError, ValueError) as error:
-        raise AggregationError(f"{run_id} raw sequence column is invalid") from error
+        raise AggregationError(
+            f"{run_id} {filename} sequence column is invalid"
+        ) from error
     if sequences != list(range(1, expected_count + 1)):
-        raise AggregationError(f"{run_id} raw sequences are not contiguous")
+        raise AggregationError(f"{run_id} {filename} sequences are not contiguous")
 
 
 def validate_output_identity(
@@ -536,6 +561,85 @@ def validate_error_summary(
         raise AggregationError(f"{label} error_recovery differs from the contract")
 
 
+def validate_restart_summary(
+    summary: dict[str, object],
+    run_dir: Path,
+    capture: dict[str, object],
+    label: str,
+) -> None:
+    require_equal(
+        capture,
+        "actual_vm_reset_required",
+        True,
+        "capture contract",
+    )
+    pre_reset_count = require_integer(
+        capture, "pre_reset_command_count", "capture contract"
+    )
+    pre_reset = require_object(summary, "pre_reset_raw_samples", label)
+    pre_reset_hash = sha256_file(run_dir / "raw-before-reset.csv")
+    require_equal(pre_reset, "sha256", pre_reset_hash, f"{label} pre-reset raw")
+    require_equal(
+        pre_reset,
+        "guest_manifest_sha256",
+        pre_reset_hash,
+        f"{label} pre-reset raw",
+    )
+    require_equal(
+        pre_reset,
+        "artifact_sha256",
+        sha256_file(run_dir / "raw-before-reset.csv.gz"),
+        f"{label} pre-reset raw",
+    )
+    require_equal(
+        pre_reset, "uart_sha256", pre_reset_hash, f"{label} pre-reset raw"
+    )
+    require_equal(
+        pre_reset, "uart_sha256_complete", True, f"{label} pre-reset raw"
+    )
+    require_equal(
+        pre_reset, "sample_count", pre_reset_count, f"{label} pre-reset raw"
+    )
+    require_equal(pre_reset, "dropped_samples", 0, f"{label} pre-reset raw")
+
+    recovery = require_object(summary, "restart_recovery", label)
+    ready_wait_ms = require_integer(recovery, "ready_wait_ms", f"{label} restart")
+    observed_delay_ms = require_integer(
+        recovery, "observed_delay_ms", f"{label} restart"
+    )
+    ready_timeout_ms = require_integer(
+        capture, "restart_ready_timeout_ms", "capture contract"
+    )
+    requested_delay_ms = require_integer(
+        capture, "restart_delay_ms", "capture contract"
+    )
+    if not 0 <= ready_wait_ms <= ready_timeout_ms:
+        raise AggregationError(f"{label} restart ready wait exceeds its bound")
+    if observed_delay_ms < requested_delay_ms:
+        raise AggregationError(f"{label} restart occurred before its requested delay")
+    recovery_contract = {
+        "actual_vm_reset": True,
+        "vm_id": capture["restart_vm_id"],
+        "reset_count": 1,
+        "ready_wait_ms": ready_wait_ms,
+        "requested_delay_ms": requested_delay_ms,
+        "observed_delay_ms": observed_delay_ms,
+        "old_session": capture["previous_session"],
+        "new_session": capture["current_session"],
+        "pre_reset_samples": pre_reset_count,
+        "post_reset_samples": capture["command_count"],
+        "safe_fallback_observed": True,
+        "recovered": True,
+        "stale_ack_ignored": capture["expected_stale_ack_frames"],
+        "stale_status_ignored": capture["expected_stale_status_frames"],
+        "retired_control_rejected": capture[
+            "expected_retired_control_rejections"
+        ],
+    }
+    if recovery != recovery_contract:
+        raise AggregationError(f"{label} restart_recovery differs from the contract")
+
+
 def validate_summary(
     summary: dict[str, object],
     run_dir: Path,
@@ -591,6 +695,20 @@ def validate_summary(
                 "duplicate_sequences": capture["injected_sequences"],
             }
         )
+    elif capture["analyzer_profile"] == "restart":
+        rtos_contract.update(
+            {
+                "acks_dropped": 0,
+                "session_resets": capture["expected_session_resets"],
+                "session_rejections": capture[
+                    "expected_session_rejections"
+                ],
+                "safe_fallbacks": capture["expected_safe_fallbacks"],
+                "recoveries": capture["expected_endpoint_recoveries"],
+                "stale_status_sent": capture["expected_stale_status_frames"],
+                "stale_acks_sent": capture["expected_stale_ack_frames"],
+            }
+        )
     else:
         rtos_contract["acks_dropped"] = 0
     for key, expected in rtos_contract.items():
@@ -610,6 +728,8 @@ def validate_summary(
 
     if capture["analyzer_profile"] == "error":
         validate_error_summary(summary, capture, label)
+    elif capture["analyzer_profile"] == "restart":
+        validate_restart_summary(summary, run_dir, capture, label)
 
     lifecycle = require_object(summary, "lifecycle", label)
     for key in (
@@ -661,12 +781,22 @@ def validate_run(
     rootfs_sha256: str,
     expected_board_id: str | None,
 ) -> tuple[dict[str, object], str]:
-    parse_manifest(run_dir, run_id)
-    validate_compressed_twins(run_dir, run_id)
+    parse_manifest(run_dir, run_id, capture)
+    validate_compressed_twins(run_dir, run_id, capture)
     command_count = capture.get("command_count")
     if isinstance(command_count, bool) or not isinstance(command_count, int):
         raise AggregationError("capture contract command_count must be an integer")
     validate_raw_csv(run_dir, run_id, command_count)
+    if capture["analyzer_profile"] == "restart":
+        pre_reset_count = require_integer(
+            capture, "pre_reset_command_count", "capture contract"
+        )
+        validate_raw_csv(
+            run_dir,
+            run_id,
+            pre_reset_count,
+            filename="raw-before-reset.csv",
+        )
 
     summary = load_object(run_dir / "summary.json", f"{run_id} summary")
     metadata = load_object(run_dir / "metadata.json", f"{run_id} metadata")
@@ -773,6 +903,16 @@ def validate_run(
     if capture["analyzer_profile"] == "error":
         run_evidence["error_evidence"] = summary["error_evidence"]
         run_evidence["error_recovery"] = summary["error_recovery"]
+    elif capture["analyzer_profile"] == "restart":
+        pre_reset = require_object(
+            summary, "pre_reset_raw_samples", f"{run_id} summary"
+        )
+        run_evidence["pre_reset_raw"] = {
+            "sample_count": pre_reset["sample_count"],
+            "content_sha256": pre_reset["sha256"],
+            "gzip_sha256": pre_reset["artifact_sha256"],
+        }
+        run_evidence["restart_recovery"] = summary["restart_recovery"]
     return run_evidence, board_id
 
 
@@ -922,7 +1062,7 @@ def aggregate_campaign(
             "all three preregistered physical ACK-loss runs and the final "
             "Linux restoration gate passed"
         )
-    else:
+    elif capture["analyzer_profile"] == "error":
         fault_contract.update(
             {
                 "expected_error_frames_per_run": capture["expected_error_frames"],
@@ -937,6 +1077,50 @@ def aggregate_campaign(
         )
         assessment_reason = (
             "all three preregistered physical ERROR runs and the final "
+            "Linux restoration gate passed"
+        )
+    else:
+        fault_contract.update(
+            {
+                "actual_vm_reset_required": capture[
+                    "actual_vm_reset_required"
+                ],
+                "pre_reset_commands_per_run": capture[
+                    "pre_reset_command_count"
+                ],
+                "post_reset_commands_per_run": capture["command_count"],
+                "expected_session_resets_per_run": capture[
+                    "expected_session_resets"
+                ],
+                "expected_session_rejections_per_run": capture[
+                    "expected_session_rejections"
+                ],
+                "expected_safe_fallbacks_per_run": capture[
+                    "expected_safe_fallbacks"
+                ],
+                "expected_endpoint_recoveries_per_run": capture[
+                    "expected_endpoint_recoveries"
+                ],
+                "expected_stale_status_frames_per_run": capture[
+                    "expected_stale_status_frames"
+                ],
+                "expected_stale_ack_frames_per_run": capture[
+                    "expected_stale_ack_frames"
+                ],
+                "expected_retired_control_rejections_per_run": capture[
+                    "expected_retired_control_rejections"
+                ],
+                "restart_vm_id": capture["restart_vm_id"],
+                "restart_delay_ms": capture["restart_delay_ms"],
+                "restart_ready_timeout_ms": capture[
+                    "restart_ready_timeout_ms"
+                ],
+                "previous_session": capture["previous_session"],
+                "current_session": capture["current_session"],
+            }
+        )
+        assessment_reason = (
+            "all three preregistered physical guest-restart runs and the final "
             "Linux restoration gate passed"
         )
 

@@ -14,6 +14,13 @@ pub struct AxvisorHostNoiseConfig {
     pub max_duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AxvisorGuestRestartConfig {
+    pub vm_id: usize,
+    pub delay_ms: u64,
+    pub ready_timeout_ms: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
     #[serde(flatten, default)]
@@ -22,6 +29,8 @@ pub struct AxvisorBoardConfig {
     pub vm_configs: Vec<PathBuf>,
     #[serde(default)]
     pub host_noise: Option<AxvisorHostNoiseConfig>,
+    #[serde(default)]
+    pub guest_restart: Option<AxvisorGuestRestartConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +39,7 @@ pub(super) struct LoadedAxvisorBuildConfig {
     pub(super) target: String,
     pub(super) vm_configs: Vec<PathBuf>,
     pub(super) host_noise: Option<AxvisorHostNoiseConfig>,
+    pub(super) guest_restart: Option<AxvisorGuestRestartConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -63,6 +73,7 @@ impl AxvisorBoardConfig {
             target,
             vm_configs: self.vm_configs,
             host_noise: self.host_noise,
+            guest_restart: self.guest_restart,
         }
     }
 }

@@ -10,7 +10,7 @@ metadata_writer=$script_dir/write_board_metadata.py
 
 usage() {
     cat <<EOF
-Usage: $0 [smoke|full|manual-smoke|manual-full|fault-ack-loss|fault-error] [options]
+Usage: $0 [smoke|full|manual-smoke|manual-full|fault-ack-loss|fault-error|fault-restart] [options]
 
 Options:
   --profile <name>        Select a normal/manual run or deterministic fault campaign.
@@ -96,6 +96,7 @@ done
 
 analyzer_profile=normal
 drop_ack_every=0
+expected_pre_reset_count=0
 case "$profile" in
     smoke)
         build_config=competition/ivc/config/axvisor-orangepi-5-plus-smoke.toml
@@ -153,6 +154,17 @@ case "$profile" in
         guest_image_name=starry-ivc-rootfs-error.img
         result_image_name=ivc-e
         analyzer_profile=error
+        ;;
+    fault-restart)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-restart.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-restart.toml
+        expected_count=100
+        expected_pre_reset_count=20
+        model_id=thermal-4x6x1-v1
+        inference_backend=native
+        guest_image_name=starry-ivc-rootfs-restart.img
+        result_image_name=ivc-r
+        analyzer_profile=restart
         ;;
     *)
         echo "Unsupported Orange Pi profile: $profile" >&2
@@ -213,6 +225,9 @@ write_checksums() {
     if [[ -f "$run_dir/raw.csv" ]]; then
         files+=(raw.csv raw.csv.gz)
     fi
+    if [[ -f "$run_dir/raw-before-reset.csv" ]]; then
+        files+=(raw-before-reset.csv raw-before-reset.csv.gz)
+    fi
     (
         cd "$run_dir"
         sha256sum "${files[@]}" >checksums.sha256
@@ -250,12 +265,16 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     metadata_path=$run_dir/metadata.json
     raw_csv_path=$run_dir/raw.csv
     raw_csv_gzip=$run_dir/raw.csv.gz
+    pre_reset_raw_csv_path=$run_dir/raw-before-reset.csv
+    pre_reset_raw_csv_gzip=$run_dir/raw-before-reset.csv.gz
     console_gzip=$run_dir/console.log.gz
     rm -f -- \
         "$summary_path" \
         "$metadata_path" \
         "$raw_csv_path" \
         "$raw_csv_gzip" \
+        "$pre_reset_raw_csv_path" \
+        "$pre_reset_raw_csv_gzip" \
         "$console_gzip" \
         "$run_dir/checksums.sha256"
 
@@ -273,6 +292,8 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     ORANGEPI_IVC_RESULT_IMAGE=$result_image \
     ORANGEPI_IVC_EXPECTED_COUNT=$expected_count \
     ORANGEPI_IVC_RAW_CSV=$raw_csv_path \
+    ORANGEPI_IVC_PRE_RESET_RAW_CSV=$pre_reset_raw_csv_path \
+    ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT=$expected_pre_reset_count \
         "${runner_command[@]}" 2>&1 | tee "$log_path"
     pipeline_status=("${PIPESTATUS[@]}")
     set -e
@@ -293,17 +314,37 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
         echo "Orange Pi runner completed without harvested raw samples" >&2
         compression_status=1
     fi
+    if ((expected_pre_reset_count > 0)); then
+        if [[ -f "$pre_reset_raw_csv_path" ]]; then
+            compress_evidence "$pre_reset_raw_csv_path" "$pre_reset_raw_csv_gzip"
+            pre_reset_compression_status=$?
+            if ((compression_status == 0 && pre_reset_compression_status != 0)); then
+                compression_status=$pre_reset_compression_status
+            fi
+        elif ((runner_status == 0)); then
+            echo "Orange Pi runner completed without harvested pre-reset samples" >&2
+            compression_status=1
+        fi
+    fi
     set -e
     analysis_status=0
     if ((runner_status == 0 && tee_status == 0 && compression_status == 0)); then
         set +e
-        python3 "$analyzer" \
-            "$console_gzip" \
-            --raw-csv "$raw_csv_gzip" \
-            --expected-count "$expected_count" \
-            --profile "$analyzer_profile" \
-            --drop-ack-every "$drop_ack_every" \
+        analyzer_arguments=(
+            "$console_gzip"
+            --raw-csv "$raw_csv_gzip"
+            --expected-count "$expected_count"
+            --profile "$analyzer_profile"
+            --drop-ack-every "$drop_ack_every"
             --output "$summary_path"
+        )
+        if ((expected_pre_reset_count > 0)); then
+            analyzer_arguments+=(
+                --pre-reset-raw-csv "$pre_reset_raw_csv_gzip"
+                --expected-pre-reset-count "$expected_pre_reset_count"
+            )
+        fi
+        python3 "$analyzer" "${analyzer_arguments[@]}"
         analysis_status=$?
         set -e
     fi

@@ -35,6 +35,7 @@ artifact_sources=(
     "$output_dir/starry-ivc-rootfs-manual-smoke.img"
     "$output_dir/starry-ivc-rootfs-ack-loss.img"
     "$output_dir/starry-ivc-rootfs-error.img"
+    "$output_dir/starry-ivc-rootfs-restart.img"
     "$output_dir/starry-orangepi-5-plus.dtb"
 )
 artifact_names=(
@@ -45,6 +46,7 @@ artifact_names=(
     starry-ivc-rootfs-manual-smoke.img
     starry-ivc-rootfs-ack-loss.img
     starry-ivc-rootfs-error.img
+    starry-ivc-rootfs-restart.img
     starry-orangepi-5-plus.dtb
 )
 for artifact in "${artifact_sources[@]}" "$ssh_identity"; do

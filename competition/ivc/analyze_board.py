@@ -29,11 +29,18 @@ RTOS_OUTCOME_PREFIX = "IVC-RTOS-OUTCOME "
 RTOS_MESSAGES_PREFIX = "IVC-RTOS-MESSAGES "
 RTOS_POWEROFF_PREFIX = "IVC-RTOS-POWEROFF "
 RTOS_READY_PREFIX = "IVC-RTOS-READY "
+RTOS_RESTART_PREFIX = "IVC-RTOS-RESTART "
+RTOS_RESTART_READY_PREFIX = "IVC-RTOS-RESTART-READY "
+RTOS_SAFE_FALLBACK_PREFIX = "IVC-RTOS-SAFE-FALLBACK "
+RTOS_RECOVERY_PREFIX = "IVC-RTOS-RECOVERY "
+RTOS_STALE_REPLAY_PREFIX = "IVC-RTOS-STALE-REPLAY "
 ACK_LOSS_INJECT_PREFIX = "IVC-RTOS-INJECT "
 DUPLICATE_PREFIX = "IVC-RTOS-DUPLICATE "
 CONTROLLER_ERROR_PREFIX = "IVC-ERROR-C "
 RTOS_ERROR_PREFIX = "IVC-ERROR-Z "
 CONTROLLER_ERROR_RESULT_PREFIX = "IVC-ERROR-RESULT "
+CONTROLLER_RESTART_PREFIX = "IVC-RESTART-C "
+CONTROLLER_RESTART_RESULT_PREFIX = "IVC-RESTART-RESULT "
 ERROR_EVIDENCE_PREFIXES = (
     CONTROLLER_ERROR_PREFIX,
     RTOS_ERROR_PREFIX,
@@ -42,8 +49,13 @@ ERROR_EVIDENCE_PREFIXES = (
 STARRY_BOOT_PREFIX = "IVC-STARRY-BOOT "
 STARRY_NETWORK_PREFIX = "IVC-STARRY-NET "
 STARRY_RAW_PREFIX = "IVC-STARRY-RAW "
+STARRY_RESTART_ARMED_PREFIX = "IVC-STARRY-RESTART-ARMED "
+STARRY_RESTART_RAW_PREFIX = "IVC-STARRY-RESTART-RAW "
+STARRY_RESTART_RESUME_PREFIX = "IVC-STARRY-RESTART-RESUME "
 GUEST_RAW_MANIFEST_PREFIX = "BOARD_GUEST_RAW_MANIFEST "
 HARVEST_RAW_PREFIX = "BOARD_RAW_RESULT_HARVESTED "
+GUEST_PRE_RESET_RAW_MANIFEST_PREFIX = "BOARD_GUEST_PRE_RESET_RAW_MANIFEST "
+HARVEST_PRE_RESET_RAW_PREFIX = "BOARD_PRE_RESET_RAW_RESULT_HARVESTED "
 BOARD_IDENTITY_PREFIX = "BOARD_IDENTITY "
 BLOCK_SNAPSHOT_PREFIX = "BOARD_RESULT_IMAGE_VALIDATED "
 STARRY_DONE = "IVC-STARRY-DONE exit=0"
@@ -68,7 +80,14 @@ RAW_COLUMNS = (
     "status_actuator_permille",
     "error_milli_c",
 )
-RUN_PROFILES = {"normal", "ack-loss", "error"}
+AXVISOR_RESTART_ARMED_PREFIX = "AXVISOR_GUEST_RESTART_ARMED "
+AXVISOR_RESTART_RUNNING_PREFIX = "AXVISOR_GUEST_RESTART_RUNNING "
+AXVISOR_RESTART_TRIGGER_PREFIX = "AXVISOR_GUEST_RESTART_TRIGGER "
+AXVISOR_RESTART_COMPLETE_PREFIX = "AXVISOR_GUEST_RESTART_COMPLETE "
+AXVISOR_RESTART_TIMING_PREFIX = "AXVISOR_GUEST_RESTART_TIMING "
+RUN_PROFILES = {"normal", "ack-loss", "error", "restart"}
+RESTART_PREVIOUS_SESSION = 0x1111_1111
+RESTART_CURRENT_SESSION = 0x2222_2222
 ERROR_FAULT_CONTRACT = (
     ("unsupported-version", 1001, 2, "unsupported-version"),
     ("length-mismatch", 1002, 1, "length-mismatch"),
@@ -93,10 +112,18 @@ def analyze(
     *,
     profile: str = "normal",
     drop_ack_every: int = 0,
+    pre_reset_raw_path: Path | None = None,
+    expected_pre_reset_count: int = 0,
 ) -> dict[str, object]:
     if expected_count <= 0:
         raise AnalysisError("expected count must be positive")
-    validate_profile(profile, expected_count, drop_ack_every)
+    validate_profile(
+        profile,
+        expected_count,
+        drop_ack_every,
+        pre_reset_raw_path,
+        expected_pre_reset_count,
+    )
 
     with open_evidence_text(log_path, errors="replace") as source:
         text = ANSI_ESCAPE.sub("", source.read())
@@ -108,7 +135,8 @@ def analyze(
         drop_ack_every,
         console_metrics_required=raw_path is None,
     )
-    rtos = parse_rtos(lines, expected_count, profile, drop_ack_every)
+    rtos_expected_count = expected_count + expected_pre_reset_count
+    rtos = parse_rtos(lines, rtos_expected_count, profile, drop_ack_every)
     error_evidence = None
     error_recovery = None
     if profile == "error":
@@ -117,6 +145,7 @@ def analyze(
         lines, expected_count, str(controller["policy"]), profile
     )
     raw_samples = None
+    pre_reset_raw_samples = None
     board = None
     if raw_path is not None:
         raw_samples = parse_raw_samples(
@@ -127,6 +156,20 @@ def analyze(
             controller,
         )
         board = parse_board_identity(lines)
+    if pre_reset_raw_path is not None:
+        pre_reset_raw_samples = parse_pre_reset_raw_samples(
+            lines,
+            pre_reset_raw_path,
+            expected_pre_reset_count,
+            int(starry["period_ms"]),
+        )
+    restart_recovery = None
+    if profile == "restart":
+        restart_recovery = parse_restart_recovery(
+            lines,
+            expected_count,
+            expected_pre_reset_count,
+        )
     network = parse_starry_network(lines)
     block_snapshot = parse_block_snapshot(lines, profile)
     require_marker(lines, STARRY_DONE)
@@ -162,11 +205,15 @@ def analyze(
     }
     if raw_samples is not None:
         result["raw_samples"] = raw_samples
+    if pre_reset_raw_samples is not None:
+        result["pre_reset_raw_samples"] = pre_reset_raw_samples
     if board is not None:
         result["board"] = board
     if error_evidence is not None and error_recovery is not None:
         result["error_evidence"] = error_evidence
         result["error_recovery"] = error_recovery
+    if restart_recovery is not None:
+        result["restart_recovery"] = restart_recovery
     return result
 
 
@@ -389,8 +436,10 @@ def parse_rtos(
         validate_normal_rtos(lines, result, expected_count)
     elif profile == "ack-loss":
         validate_ack_loss_rtos(lines, result, expected_count, drop_ack_every)
-    else:
+    elif profile == "error":
         validate_error_rtos(lines, result, expected_count)
+    else:
+        validate_restart_rtos(lines, result, expected_count)
 
     poweroff = find_record(lines, RTOS_POWEROFF_PREFIX, ("accepted",))
     if integer(poweroff, "accepted", RTOS_POWEROFF_PREFIX) != expected_count:
@@ -536,6 +585,84 @@ def validate_error_rtos(
         line.startswith((ACK_LOSS_INJECT_PREFIX, DUPLICATE_PREFIX)) for line in lines
     ):
         raise AnalysisError("error profile contains ACK-loss evidence markers")
+
+
+def validate_restart_rtos(
+    lines: list[str], result: dict[str, object], expected_count: int
+) -> None:
+    ready = find_record(
+        lines,
+        RTOS_RESTART_READY_PREFIX,
+        (
+            "commands",
+            "errors",
+            "resets",
+            "rejections",
+            "safe",
+            "drop",
+            "exit",
+        ),
+    )
+    ready_contract = {
+        "commands": expected_count,
+        "errors": 1,
+        "resets": 1,
+        "rejections": 1,
+        "safe": 1,
+        "drop": 0,
+        "exit": 1,
+    }
+    for field, expected in ready_contract.items():
+        if integer(ready, field, RTOS_RESTART_READY_PREFIX) != expected:
+            raise AnalysisError(
+                f"RTOS restart READY {field} does not match the profile"
+            )
+
+    expected_fields = {
+        "accepted": expected_count,
+        "applied": expected_count,
+        "duplicates": 0,
+        "acks_dropped": 0,
+        "status_sent": expected_count + 1,
+        "acks_sent": expected_count + 1,
+        "errors_sent": 1,
+        "protocol_errors": 1,
+    }
+    for field, expected in expected_fields.items():
+        if result[field] != expected:
+            raise AnalysisError(
+                f"RTOS {field}={result[field]} does not match deterministic "
+                f"restart-profile value {expected}"
+            )
+
+    restart = find_record(
+        lines,
+        RTOS_RESTART_PREFIX,
+        (
+            "session_resets",
+            "session_rejections",
+            "safe_fallbacks",
+            "recoveries",
+            "stale_status_sent",
+            "stale_acks_sent",
+        ),
+    )
+    for field in (
+        "session_resets",
+        "session_rejections",
+        "safe_fallbacks",
+        "recoveries",
+        "stale_status_sent",
+        "stale_acks_sent",
+    ):
+        value = integer(restart, field, RTOS_RESTART_PREFIX)
+        if value != 1:
+            raise AnalysisError(f"RTOS restart {field} must equal one")
+        result[field] = value
+    if any(
+        line.startswith((ACK_LOSS_INJECT_PREFIX, DUPLICATE_PREFIX)) for line in lines
+    ):
+        raise AnalysisError("restart profile contains ACK-loss evidence markers")
 
 
 def parse_integrity_fields(
@@ -755,7 +882,9 @@ def parse_starry_boot(
     if mode != expected_mode:
         raise AnalysisError("StarryOS boot mode does not match controller policy")
     fault_profile = fields.get("fault_profile", "none")
-    expected_fault_profile = "error" if run_profile == "error" else "none"
+    expected_fault_profile = (
+        run_profile if run_profile in {"error", "restart"} else "none"
+    )
     if fault_profile != expected_fault_profile:
         raise AnalysisError("StarryOS boot fault profile does not match the run profile")
     count = integer(fields, "count", STARRY_BOOT_PREFIX)
@@ -870,6 +999,376 @@ def parse_raw_samples(
     }
 
 
+def parse_pre_reset_raw_samples(
+    lines: list[str],
+    raw_path: Path,
+    expected_count: int,
+    period_ms: int,
+) -> dict[str, object]:
+    uart_record = find_record(
+        lines, STARRY_RESTART_RAW_PREFIX, ("path", "samples", "sha256")
+    )
+    guest_manifest_record = find_record(
+        lines,
+        GUEST_PRE_RESET_RAW_MANIFEST_PREFIX,
+        ("path", "samples", "sha256"),
+    )
+    harvest_record = find_record(
+        lines,
+        HARVEST_PRE_RESET_RAW_PREFIX,
+        ("path", "samples", "sha256"),
+    )
+    guest_raw_path = "/var/lib/ivc/raw-before-reset.csv"
+    if required(uart_record, "path", STARRY_RESTART_RAW_PREFIX) != guest_raw_path:
+        raise AnalysisError("unexpected StarryOS pre-reset raw CSV path")
+    if (
+        required(
+            guest_manifest_record, "path", GUEST_PRE_RESET_RAW_MANIFEST_PREFIX
+        )
+        != guest_raw_path
+    ):
+        raise AnalysisError("unexpected snapshot guest pre-reset raw CSV path")
+    for record, prefix in (
+        (uart_record, STARRY_RESTART_RAW_PREFIX),
+        (guest_manifest_record, GUEST_PRE_RESET_RAW_MANIFEST_PREFIX),
+        (harvest_record, HARVEST_PRE_RESET_RAW_PREFIX),
+    ):
+        if integer(record, "samples", prefix) != expected_count:
+            raise AnalysisError(
+                f"{prefix.strip()} sample count does not match expected count"
+            )
+
+    uart_sha256 = required(uart_record, "sha256", STARRY_RESTART_RAW_PREFIX)
+    if re.fullmatch(r"[0-9a-f]{1,64}", uart_sha256) is None:
+        raise AnalysisError("invalid SHA-256 fragment in pre-reset raw record")
+    guest_manifest_sha256 = complete_sha256(
+        guest_manifest_record, GUEST_PRE_RESET_RAW_MANIFEST_PREFIX
+    )
+    harvest_sha256 = complete_sha256(harvest_record, HARVEST_PRE_RESET_RAW_PREFIX)
+    actual_sha256 = sha256_evidence_content(raw_path)
+    if actual_sha256 not in {guest_manifest_sha256, harvest_sha256} or (
+        guest_manifest_sha256 != harvest_sha256
+    ):
+        raise AnalysisError(
+            "pre-reset raw CSV SHA-256 does not match snapshot and harvest records"
+        )
+    if len(uart_sha256) == 64 and actual_sha256 != uart_sha256:
+        raise AnalysisError("complete pre-reset UART SHA-256 conflicts with raw CSV")
+
+    rows = read_raw_rows(raw_path, expected_count)
+    derived = derive_raw_metrics(rows, period_ms)
+    return {
+        "path": str(raw_path),
+        "sha256": actual_sha256,
+        "artifact_sha256": sha256_file(raw_path),
+        "guest_manifest_sha256": guest_manifest_sha256,
+        "uart_sha256": uart_sha256,
+        "uart_sha256_complete": len(uart_sha256) == 64,
+        "sample_count": len(rows),
+        "dropped_samples": expected_count - len(rows),
+        "deadline_misses": derived["deadline_misses"],
+        "full_loop_p99_us": derived["full_loop_p99_us"],
+        "full_loop_max_us": derived["full_loop_max_us"],
+    }
+
+
+def parse_restart_recovery(
+    lines: list[str], expected_count: int, expected_pre_reset_count: int
+) -> dict[str, object]:
+    armed = find_record(
+        lines,
+        AXVISOR_RESTART_ARMED_PREFIX,
+        ("schema", "vm_id", "delay_ms", "ready_timeout_ms"),
+    )
+    running = find_record(
+        lines,
+        AXVISOR_RESTART_RUNNING_PREFIX,
+        ("schema", "vm_id", "ready_wait_ms", "status"),
+    )
+    trigger = find_record(
+        lines,
+        AXVISOR_RESTART_TRIGGER_PREFIX,
+        (
+            "schema",
+            "vm_id",
+            "requested_delay_ms",
+            "observed_delay_ms",
+            "before_status",
+            "reset_count",
+        ),
+    )
+    complete = find_record(
+        lines,
+        AXVISOR_RESTART_COMPLETE_PREFIX,
+        ("schema", "vm_id", "before_status", "after_status", "reset_count"),
+    )
+    timing = find_record(
+        lines,
+        AXVISOR_RESTART_TIMING_PREFIX,
+        (
+            "schema",
+            "vm_id",
+            "ready_wait_ms",
+            "requested_delay_ms",
+            "observed_delay_ms",
+        ),
+    )
+    for record, prefix in (
+        (armed, AXVISOR_RESTART_ARMED_PREFIX),
+        (running, AXVISOR_RESTART_RUNNING_PREFIX),
+        (trigger, AXVISOR_RESTART_TRIGGER_PREFIX),
+        (complete, AXVISOR_RESTART_COMPLETE_PREFIX),
+        (timing, AXVISOR_RESTART_TIMING_PREFIX),
+    ):
+        if integer(record, "schema", prefix) != 1:
+            raise AnalysisError(f"{prefix.strip()} schema must equal one")
+        if integer(record, "vm_id", prefix) != 1:
+            raise AnalysisError(f"{prefix.strip()} must target StarryOS VM 1")
+    if required(running, "status", AXVISOR_RESTART_RUNNING_PREFIX) != "running":
+        raise AnalysisError("Axvisor restart target was not observed running")
+    for record, prefix in (
+        (trigger, AXVISOR_RESTART_TRIGGER_PREFIX),
+        (complete, AXVISOR_RESTART_COMPLETE_PREFIX),
+    ):
+        if required(record, "before_status", prefix) != "running":
+            raise AnalysisError("Axvisor reset did not start from a running VM")
+        if integer(record, "reset_count", prefix) != 1:
+            raise AnalysisError("Axvisor reset count must equal one")
+    if required(complete, "after_status", AXVISOR_RESTART_COMPLETE_PREFIX) != "running":
+        raise AnalysisError("Axvisor reset did not produce a running replacement VM")
+
+    requested_delay_ms = integer(armed, "delay_ms", AXVISOR_RESTART_ARMED_PREFIX)
+    ready_timeout_ms = integer(
+        armed, "ready_timeout_ms", AXVISOR_RESTART_ARMED_PREFIX
+    )
+    ready_wait_ms = integer(running, "ready_wait_ms", AXVISOR_RESTART_RUNNING_PREFIX)
+    observed_delay_ms = integer(
+        trigger, "observed_delay_ms", AXVISOR_RESTART_TRIGGER_PREFIX
+    )
+    if requested_delay_ms <= 0 or ready_timeout_ms <= 0:
+        raise AnalysisError("Axvisor restart bounds must be positive")
+    if ready_wait_ms > ready_timeout_ms:
+        raise AnalysisError("Axvisor restart target exceeded its ready timeout")
+    if observed_delay_ms < requested_delay_ms:
+        raise AnalysisError("Axvisor guest reset fired before its configured delay")
+    timing_contract = {
+        "ready_wait_ms": ready_wait_ms,
+        "requested_delay_ms": requested_delay_ms,
+        "observed_delay_ms": observed_delay_ms,
+    }
+    if integer(trigger, "requested_delay_ms", AXVISOR_RESTART_TRIGGER_PREFIX) != (
+        requested_delay_ms
+    ):
+        raise AnalysisError("Axvisor restart trigger delay conflicts with armed config")
+    for field, expected in timing_contract.items():
+        if integer(timing, field, AXVISOR_RESTART_TIMING_PREFIX) != expected:
+            raise AnalysisError(f"Axvisor restart timing {field} conflicts")
+
+    starry_armed = find_record(
+        lines,
+        STARRY_RESTART_ARMED_PREFIX,
+        ("phase", "session_id", "samples"),
+    )
+    starry_resume = find_record(
+        lines,
+        STARRY_RESTART_RESUME_PREFIX,
+        ("phase", "old_session", "new_session", "first_samples"),
+    )
+    if required(starry_armed, "phase", STARRY_RESTART_ARMED_PREFIX) != "before-reset":
+        raise AnalysisError("StarryOS restart arm phase is invalid")
+    if required(starry_resume, "phase", STARRY_RESTART_RESUME_PREFIX) != "after-reset":
+        raise AnalysisError("StarryOS restart resume phase is invalid")
+    starry_contract = (
+        (starry_armed, STARRY_RESTART_ARMED_PREFIX, "session_id", RESTART_PREVIOUS_SESSION),
+        (starry_armed, STARRY_RESTART_ARMED_PREFIX, "samples", expected_pre_reset_count),
+        (starry_resume, STARRY_RESTART_RESUME_PREFIX, "old_session", RESTART_PREVIOUS_SESSION),
+        (starry_resume, STARRY_RESTART_RESUME_PREFIX, "new_session", RESTART_CURRENT_SESSION),
+        (starry_resume, STARRY_RESTART_RESUME_PREFIX, "first_samples", expected_pre_reset_count),
+    )
+    for record, prefix, field, expected in starry_contract:
+        if integer(record, field, prefix) != expected:
+            raise AnalysisError(f"StarryOS restart {field} does not match the contract")
+
+    safe_fallback = find_record(
+        lines,
+        RTOS_SAFE_FALLBACK_PREFIX,
+        (
+            "reason",
+            "actuator_permille",
+            "last_sequence",
+            "session",
+            "safe_fallbacks",
+        ),
+    )
+    safe_contract = {
+        "actuator_permille": 0,
+        "last_sequence": expected_pre_reset_count,
+        "session": RESTART_PREVIOUS_SESSION,
+        "safe_fallbacks": 1,
+    }
+    if required(safe_fallback, "reason", RTOS_SAFE_FALLBACK_PREFIX) != (
+        "controller-timeout"
+    ):
+        raise AnalysisError("RTOS SAFE-FALLBACK reason is not controller timeout")
+    for field, expected in safe_contract.items():
+        if integer(safe_fallback, field, RTOS_SAFE_FALLBACK_PREFIX) != expected:
+            raise AnalysisError(f"RTOS SAFE-FALLBACK {field} is invalid")
+
+    stale_replay = find_record(
+        lines,
+        RTOS_STALE_REPLAY_PREFIX,
+        (
+            "old_session",
+            "old_sequence",
+            "new_session",
+            "stale_status_sent",
+            "stale_acks_sent",
+        ),
+    )
+    stale_contract = {
+        "old_session": RESTART_PREVIOUS_SESSION,
+        "old_sequence": expected_pre_reset_count,
+        "new_session": RESTART_CURRENT_SESSION,
+        "stale_status_sent": 1,
+        "stale_acks_sent": 1,
+    }
+    for field, expected in stale_contract.items():
+        if integer(stale_replay, field, RTOS_STALE_REPLAY_PREFIX) != expected:
+            raise AnalysisError(f"RTOS stale replay {field} is invalid")
+
+    recovery = find_record(
+        lines,
+        RTOS_RECOVERY_PREFIX,
+        ("session", "seq", "from", "mode", "actuator_permille", "recoveries"),
+    )
+    if integer(recovery, "session", RTOS_RECOVERY_PREFIX) != RESTART_CURRENT_SESSION:
+        raise AnalysisError("RTOS recovery used the wrong session")
+    if integer(recovery, "seq", RTOS_RECOVERY_PREFIX) != 1:
+        raise AnalysisError("RTOS recovery did not begin at sequence one")
+    if required(recovery, "from", RTOS_RECOVERY_PREFIX) != "controller-timeout":
+        raise AnalysisError("RTOS recovery did not follow controller timeout")
+    if required(recovery, "mode", RTOS_RECOVERY_PREFIX) != "Neural":
+        raise AnalysisError("RTOS recovery did not restore neural control")
+    actuator = integer(recovery, "actuator_permille", RTOS_RECOVERY_PREFIX)
+    if not 0 <= actuator <= 1000:
+        raise AnalysisError("RTOS recovery actuator is outside its valid range")
+    if integer(recovery, "recoveries", RTOS_RECOVERY_PREFIX) != 1:
+        raise AnalysisError("RTOS recovery count must equal one")
+
+    transport = find_integrity_record(
+        lines,
+        CONTROLLER_RESTART_PREFIX,
+        ("old", "new", "ack_ignored", "status_ignored", "control_rejected"),
+    )
+    transport_contract = {
+        "old": RESTART_PREVIOUS_SESSION,
+        "new": RESTART_CURRENT_SESSION,
+        "ack_ignored": 1,
+        "status_ignored": 1,
+        "control_rejected": 1,
+    }
+    for field, expected in transport_contract.items():
+        if integer(transport, field, CONTROLLER_RESTART_PREFIX) != expected:
+            raise AnalysisError(f"controller restart {field} is invalid")
+    controller_result = find_integrity_record(
+        lines,
+        CONTROLLER_RESTART_RESULT_PREFIX,
+        ("profile", "sent", "acknowledged", "continued"),
+    )
+    expected_controller_result = {
+        "profile": "restart",
+        "sent": str(expected_count),
+        "acknowledged": str(expected_count),
+        "continued": "1",
+    }
+    for field, expected in expected_controller_result.items():
+        if required(controller_result, field, CONTROLLER_RESTART_RESULT_PREFIX) != expected:
+            raise AnalysisError(f"controller restart result {field} is invalid")
+    retired_error = find_integrity_record(
+        lines, RTOS_ERROR_PREFIX, ("seq", "code", "reason")
+    )
+    retired_contract = {
+        "seq": expected_pre_reset_count + 1,
+        "code": 4,
+    }
+    for field, expected in retired_contract.items():
+        if integer(retired_error, field, RTOS_ERROR_PREFIX) != expected:
+            raise AnalysisError(f"retired-session ERROR {field} is invalid")
+    if required(retired_error, "reason", RTOS_ERROR_PREFIX) != (
+        "retired-or-invalid-session"
+    ):
+        raise AnalysisError("retired-session ERROR reason is invalid")
+
+    ordered_events = (
+        (AXVISOR_RESTART_ARMED_PREFIX, ("schema", "vm_id", "delay_ms", "ready_timeout_ms")),
+        (AXVISOR_RESTART_RUNNING_PREFIX, ("schema", "vm_id", "ready_wait_ms", "status")),
+        (STARRY_RESTART_ARMED_PREFIX, ("phase", "session_id", "samples")),
+        (
+            RTOS_SAFE_FALLBACK_PREFIX,
+            ("reason", "actuator_permille", "last_sequence", "session", "safe_fallbacks"),
+        ),
+        (
+            AXVISOR_RESTART_TRIGGER_PREFIX,
+            (
+                "schema",
+                "vm_id",
+                "requested_delay_ms",
+                "observed_delay_ms",
+                "before_status",
+                "reset_count",
+            ),
+        ),
+        (
+            STARRY_RESTART_RESUME_PREFIX,
+            ("phase", "old_session", "new_session", "first_samples"),
+        ),
+        (
+            RTOS_STALE_REPLAY_PREFIX,
+            (
+                "old_session",
+                "old_sequence",
+                "new_session",
+                "stale_status_sent",
+                "stale_acks_sent",
+            ),
+        ),
+        (
+            RTOS_RECOVERY_PREFIX,
+            ("session", "seq", "from", "mode", "actuator_permille", "recoveries"),
+        ),
+        (
+            AXVISOR_RESTART_COMPLETE_PREFIX,
+            ("schema", "vm_id", "before_status", "after_status", "reset_count"),
+        ),
+    )
+    event_indexes = [
+        first_complete_record_index(lines, prefix, fields)
+        for prefix, fields in ordered_events
+    ]
+    if event_indexes != sorted(event_indexes) or len(set(event_indexes)) != len(
+        event_indexes
+    ):
+        raise AnalysisError("restart evidence markers are not in causal order")
+
+    return {
+        "actual_vm_reset": True,
+        "vm_id": 1,
+        "reset_count": 1,
+        "ready_wait_ms": ready_wait_ms,
+        "requested_delay_ms": requested_delay_ms,
+        "observed_delay_ms": observed_delay_ms,
+        "old_session": RESTART_PREVIOUS_SESSION,
+        "new_session": RESTART_CURRENT_SESSION,
+        "pre_reset_samples": expected_pre_reset_count,
+        "post_reset_samples": expected_count,
+        "safe_fallback_observed": True,
+        "recovered": True,
+        "stale_ack_ignored": 1,
+        "stale_status_ignored": 1,
+        "retired_control_rejected": 1,
+    }
+
+
 def complete_sha256(record: dict[str, str], prefix: str) -> str:
     digest = required(record, "sha256", prefix)
     if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
@@ -922,6 +1421,8 @@ def parse_block_snapshot(lines: list[str], profile: str) -> dict[str, object]:
         compact_names = ("a",)
     elif profile == "error":
         compact_names = ("e",)
+    elif profile == "restart":
+        compact_names = ("r",)
     else:
         compact_names = ("n", "ns", "m", "ms")
     compact_result_path = image_path in {
@@ -1083,6 +1584,21 @@ def find_record(
     return record
 
 
+def first_complete_record_index(
+    lines: list[str], prefix: str, required_fields: tuple[str, ...]
+) -> int:
+    for index, line in enumerate(lines):
+        if not line.startswith(prefix):
+            continue
+        try:
+            fields = parse_fields(line, prefix)
+        except AnalysisError:
+            continue
+        if all(field in fields for field in required_fields):
+            return index
+    raise AnalysisError(f"missing complete {prefix.strip()} record")
+
+
 def find_optional_record(
     lines: list[str], prefix: str, required_fields: tuple[str, ...]
 ) -> dict[str, str] | None:
@@ -1191,17 +1707,31 @@ def open_evidence_text(
     )
 
 
-def validate_profile(profile: str, expected_count: int, drop_ack_every: int) -> None:
+def validate_profile(
+    profile: str,
+    expected_count: int,
+    drop_ack_every: int,
+    pre_reset_raw_path: Path | None,
+    expected_pre_reset_count: int,
+) -> None:
     if profile not in RUN_PROFILES:
         raise AnalysisError(f"unsupported run profile: {profile}")
-    if profile == "normal":
+    if profile in {"normal", "error"}:
         if drop_ack_every != 0:
-            raise AnalysisError("normal profile requires drop-ack-every=0")
+            raise AnalysisError(f"{profile} profile requires drop-ack-every=0")
+        if pre_reset_raw_path is not None or expected_pre_reset_count != 0:
+            raise AnalysisError(f"{profile} profile cannot use pre-reset raw samples")
         return
-    if profile == "error":
+    if profile == "restart":
         if drop_ack_every != 0:
-            raise AnalysisError("error profile requires drop-ack-every=0")
+            raise AnalysisError("restart profile requires drop-ack-every=0")
+        if pre_reset_raw_path is None or expected_pre_reset_count <= 0:
+            raise AnalysisError(
+                "restart profile requires positive pre-reset raw samples"
+            )
         return
+    if pre_reset_raw_path is not None or expected_pre_reset_count != 0:
+        raise AnalysisError("ack-loss profile cannot use pre-reset raw samples")
     if drop_ack_every <= 0:
         raise AnalysisError("ack-loss profile requires a positive drop-ack-every value")
     if drop_ack_every > expected_count:
@@ -1215,6 +1745,8 @@ def main() -> int:
     parser.add_argument("--expected-count", type=int, required=True)
     parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="normal")
     parser.add_argument("--drop-ack-every", type=int, default=0)
+    parser.add_argument("--pre-reset-raw-csv", type=Path)
+    parser.add_argument("--expected-pre-reset-count", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
 
@@ -1225,6 +1757,8 @@ def main() -> int:
             arguments.raw_csv,
             profile=arguments.profile,
             drop_ack_every=arguments.drop_ack_every,
+            pre_reset_raw_path=arguments.pre_reset_raw_csv,
+            expected_pre_reset_count=arguments.expected_pre_reset_count,
         )
         arguments.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"

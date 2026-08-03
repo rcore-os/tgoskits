@@ -131,6 +131,11 @@ west build -p always -b qemu_cortex_a53 \
   -d <repo>/competition/ivc/zephyr/build-board-error \
   <repo>/competition/ivc/zephyr -- \
   -DEXTRA_CONF_FILE=board-error.conf
+
+west build -p always -b qemu_cortex_a53 \
+  -d <repo>/competition/ivc/zephyr/build-board-restart \
+  <repo>/competition/ivc/zephyr -- \
+  -DEXTRA_CONF_FILE=board-restart.conf
 ```
 
 The third image is the physical 100-command ACK-loss campaign: it drops the
@@ -146,6 +151,14 @@ then accepts exactly 100 normal commands. It emits its terminal result only
 when `errors_sent=protocol_errors=5`, so a missing response or failure to
 continue cannot be accepted as evidence.
 
+The fifth image is the physical StarryOS VM-reset campaign. It accepts 20
+commands in the original controller session, enters the controller-timeout
+safe state while AxVisor resets VM 1, and then accepts 100 commands in a fixed
+replacement session. Before powering off it requires exactly one session
+reset, retired-session rejection, safe fallback, recovery, stale STATUS, and
+stale ACK. The matching analyzer additionally requires AxVisor's running →
+reset → running evidence and both hash-verified raw CSV phases.
+
 After building and staging the matching StarryOS artifacts, run the physical
 campaign from a clean worktree. The wrapper preserves every failed attempt,
 harvests and hashes the raw CSV, validates all 20 injection/recovery pairs, and
@@ -160,6 +173,12 @@ competition/ivc/run-orangepi-5-plus.sh \
 
 competition/ivc/run-orangepi-5-plus.sh \
   --profile fault-error \
+  --repeat 3 \
+  --require-clean \
+  --result-dir competition/results/orangepi-5-plus/<campaign-id>
+
+competition/ivc/run-orangepi-5-plus.sh \
+  --profile fault-restart \
   --repeat 3 \
   --require-clean \
   --result-dir competition/results/orangepi-5-plus/<campaign-id>

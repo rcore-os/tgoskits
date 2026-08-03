@@ -152,6 +152,37 @@ static void test_timeout_boundary_enters_safe_state_once(void)
 	assert(endpoint.fault == IVC_ERROR_CONTROLLER_TIMEOUT);
 }
 
+static void test_fresh_restart_session_recovers_from_controller_timeout(void)
+{
+	struct ivc_receive_window window;
+	struct ivc_endpoint endpoint;
+	const struct ivc_control_command first = neural_command(20);
+	const struct ivc_control_command restarted = neural_command(1);
+	const uint32_t first_session = UINT32_C(0x11111111);
+	const uint32_t restarted_session = UINT32_C(0x22222222);
+
+	ivc_receive_window_init(&window);
+	ivc_endpoint_init(&endpoint);
+	assert(ivc_receive_window_observe(&window, first_session, 1) ==
+	       IVC_DELIVERY_NEW_SESSION);
+	ivc_endpoint_begin_session(&endpoint);
+	assert(ivc_endpoint_apply(&endpoint, 1, &first, 1000, 1000) == IVC_APPLY_APPLIED);
+	assert(ivc_endpoint_check_timeout(&endpoint, 501001) ==
+	       IVC_TIMEOUT_ENTERED_SAFE_STATE);
+
+	assert(ivc_receive_window_observe(&window, restarted_session, 1) ==
+	       IVC_DELIVERY_NEW_SESSION);
+	ivc_endpoint_begin_session(&endpoint);
+	assert(ivc_endpoint_apply(&endpoint, 1, &restarted, 600000, 600000) ==
+	       IVC_APPLY_APPLIED);
+	assert(endpoint.fault == IVC_ERROR_NONE);
+	assert(endpoint.active_mode == IVC_MODE_NEURAL);
+	assert(endpoint.actuator_permille == restarted.actuator_permille);
+	assert(window.metrics.session_resets == 1U);
+	assert(ivc_receive_window_observe(&window, first_session, 21) ==
+	       IVC_DELIVERY_SESSION_REJECTED);
+}
+
 static void test_ack_loss_policy_drops_only_the_first_ack_for_selected_fresh_commands(void)
 {
 	struct ivc_ack_loss_policy disabled;
@@ -235,6 +266,7 @@ int main(void)
 	test_controller_restart_resets_replay_state_without_session_rollback();
 	test_endpoint_rejects_replay_and_stale_time();
 	test_timeout_boundary_enters_safe_state_once();
+	test_fresh_restart_session_recovers_from_controller_timeout();
 	test_ack_loss_policy_drops_only_the_first_ack_for_selected_fresh_commands();
 	test_ack_loss_retransmission_does_not_repeat_the_plant_step();
 	test_thermal_plant_step_matches_rust_reference();

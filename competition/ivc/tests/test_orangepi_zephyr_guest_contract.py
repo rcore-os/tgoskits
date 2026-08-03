@@ -39,6 +39,12 @@ class OrangePiZephyrGuestContractTests(unittest.TestCase):
         self.assertIn("IVC-RTOS-OUTCOME profile=%s", source)
         self.assertIn("IVC-RTOS-MESSAGES status_sent=%llu", source)
 
+    def test_restart_ready_contract_uses_a_separate_compact_record(self) -> None:
+        source = ZEPHYR_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("IVC-RTOS-RESTART-READY commands=%u", source)
+        self.assertIn("report_restart_ready();", source)
+
 
 if __name__ == "__main__":
     unittest.main()

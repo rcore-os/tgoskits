@@ -35,6 +35,32 @@ config IVC_EXPECTED_PROTOCOL_ERRORS
 	  the deterministic malformed-frame profile and delays the terminal result
 	  until every expected protocol rejection has produced an ERROR response.
 
+config IVC_EXPECTED_SESSION_RESETS
+	int "Expected accepted controller session replacements"
+	range 0 1000000
+	default 0
+	help
+	  A positive value selects the restart-recovery profile and delays the
+	  terminal result until this many fresh sessions have replaced a prior
+	  controller session.
+
+config IVC_EXPECTED_SESSION_REJECTIONS
+	int "Expected rejected retired-session controls"
+	range 0 1000000
+	default 0
+	help
+	  Number of delayed controls from retired sessions that must be rejected.
+	  This is independent from duplicate delivery within the active session.
+
+config IVC_EXPECTED_SAFE_FALLBACKS
+	int "Expected controller-timeout safe fallbacks"
+	range 0 1000000
+	default 0
+	help
+	  Number of controller-silence events that must enter the actuator safe
+	  state. Every expected fallback must subsequently recover through a valid
+	  command before the restart profile can complete.
+
 config IVC_EXIT_AFTER_EXPECTED_COMMANDS
 	bool "Power off after a finite evidence run"
 	depends on IVC_EXPECTED_COMMANDS > 0

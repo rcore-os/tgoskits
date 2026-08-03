@@ -44,6 +44,12 @@ install -m 0644 "$built_kernel" "$output_dir/starryos.bin"
     --output "$output_dir/starry-ivc-rootfs-manual.img"
 "$script_dir/build-rootfs.sh" --profile full --policy neural --backend native \
     --count 100 --output "$output_dir/starry-ivc-rootfs-ack-loss.img"
+"$script_dir/build-rootfs.sh" --profile full --policy neural --backend native \
+    --fault-profile error --count 100 \
+    --output "$output_dir/starry-ivc-rootfs-error.img"
+"$script_dir/build-rootfs.sh" --profile full --policy neural --backend native \
+    --fault-profile restart --count 100 \
+    --output "$output_dir/starry-ivc-rootfs-restart.img"
 
 sha256sum \
     "$output_dir/starryos.bin" \
@@ -52,5 +58,7 @@ sha256sum \
     "$output_dir/starry-ivc-rootfs.img" \
     "$output_dir/starry-ivc-rootfs-manual-smoke.img" \
     "$output_dir/starry-ivc-rootfs-manual.img" \
-    "$output_dir/starry-ivc-rootfs-ack-loss.img"
+    "$output_dir/starry-ivc-rootfs-ack-loss.img" \
+    "$output_dir/starry-ivc-rootfs-error.img" \
+    "$output_dir/starry-ivc-rootfs-restart.img"
 echo "IVC StarryOS guest artifacts ready at $output_dir"

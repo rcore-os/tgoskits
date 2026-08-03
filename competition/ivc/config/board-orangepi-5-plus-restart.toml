@@ -1,0 +1,17 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "AXVISOR_SHELL_READY"
+shell_init_cmd = "ss 1 0 /home/orangepi/ivc-r"
+success_regex = [
+  "(?m)^AXVISOR_SNAPSHOT_SYNC_OK\\r*$",
+]
+fail_regex = [
+  "(?m)^.*IVC-(STARRY|RTOS)-(SELFTEST FAIL|NET-ERROR|FATAL).*$",
+  "(?m)^.*IVC-STARRY-DONE exit=[1-9][0-9]*\\s*$",
+  "(?m)^.*Failed to initialize guest VM.*$",
+  "(?m)^.*VM\\[[0-9]+\\] run VCpu\\[[0-9]+\\] get error .*$",
+  "(?m)^.*AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:.*$",
+  "(?m)^.*AXVISOR_VM_BLOCK_SNAPSHOT_FAILED:.*$",
+  "(?m)^.*Unhandled synchronous exception from current EL:.*$",
+  "(?mi)^.*panicked at.*$",
+]
+timeout = 240

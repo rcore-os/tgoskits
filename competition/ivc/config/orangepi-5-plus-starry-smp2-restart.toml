@@ -1,0 +1,37 @@
+[base]
+id = 1
+name = "starry-ivc-orangepi-restart"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+phys_cpu_sets = [0x2, 0x4]
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/home/orangepi/axvisor-guest/starryos.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+dtb_path = "/home/orangepi/axvisor-guest/starry-orangepi-5-plus.dtb"
+disk_path = "/home/orangepi/axvisor-guest/starry-ivc-rootfs-restart.img"
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 root=/dev/vda rw"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "emulated"
+aarch64_virtual_timer_irq = 27
+passthrough_devices = []
+passthrough_addresses = []
+excluded_devices = []
+
+emu_devices = [
+  ["gppt-gicd-starry", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr-starry", 0x080a_0000, 0x2_0000, 0, 0x20, [2, 0x2_0000, 1]],
+  ["pl011-starry", 0x0900_0000, 0x1000, 33, 0x02, []],
+  ["virtio-blk-starry", 0x0a00_0000, 0x1000, 48, 0xE1, [0]],
+  ["virtio-net-starry", 0x0a00_1000, 0x1000, 56, 0xE2, [1, 1]],
+]

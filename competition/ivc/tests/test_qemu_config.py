@@ -24,6 +24,7 @@ ORANGEPI_BOARD_CONFIGS = (
     REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-manual.toml",
     REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-ack-loss.toml",
     REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-error.toml",
+    REPOSITORY_ROOT / "competition/ivc/config/board-orangepi-5-plus-restart.toml",
 )
 ORANGEPI_BOARD_SNAPSHOT_CONFIGS = (
     (ORANGEPI_BOARD_CONFIGS[0], "/home/orangepi/ivc-ns"),
@@ -32,6 +33,7 @@ ORANGEPI_BOARD_SNAPSHOT_CONFIGS = (
     (ORANGEPI_BOARD_CONFIGS[3], "/home/orangepi/ivc-m"),
     (ORANGEPI_BOARD_CONFIGS[4], "/home/orangepi/ivc-a"),
     (ORANGEPI_BOARD_CONFIGS[5], "/home/orangepi/ivc-e"),
+    (ORANGEPI_BOARD_CONFIGS[6], "/home/orangepi/ivc-r"),
 )
 LINUX_ACK_LOSS_CONFIG = (
     REPOSITORY_ROOT / "competition/ivc/config/linux-smp2-ack-loss.toml"
@@ -44,6 +46,9 @@ ZEPHYR_BOARD_ACK_LOSS_CONF = (
     REPOSITORY_ROOT / "competition/ivc/zephyr/board-ack-loss.conf"
 )
 ZEPHYR_BOARD_ERROR_CONF = REPOSITORY_ROOT / "competition/ivc/zephyr/board-error.conf"
+ZEPHYR_BOARD_RESTART_CONF = (
+    REPOSITORY_ROOT / "competition/ivc/zephyr/board-restart.conf"
+)
 ZEPHYR_KCONFIG = REPOSITORY_ROOT / "competition/ivc/zephyr/Kconfig"
 ZEPHYR_MAIN = REPOSITORY_ROOT / "competition/ivc/zephyr/src/main.c"
 ZEPHYR_GITIGNORE = REPOSITORY_ROOT / "competition/ivc/zephyr/.gitignore"
@@ -515,6 +520,8 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("starry-ivc-rootfs-ack-loss.img", staging)
         self.assertIn("fault-error", entrypoint)
         self.assertIn("starry-ivc-rootfs-error.img", staging)
+        self.assertIn("fault-restart", entrypoint)
+        self.assertIn("starry-ivc-rootfs-restart.img", staging)
 
     def test_success_waits_for_complete_linux_result_line(self) -> None:
         with QEMU_CONFIG.open("rb") as source:
@@ -833,6 +840,59 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("report_ready();", source)
         self.assertIn("replay_ready_if_needed(server);", source)
         self.assertIn("bool ready_replayed;", source)
+
+    def test_orangepi_restart_profile_pins_real_vm_reset_and_recovery_counts(self) -> None:
+        paths = (
+            REPOSITORY_ROOT
+            / "competition/ivc/config/axvisor-orangepi-5-plus-restart.toml",
+            REPOSITORY_ROOT
+            / "competition/ivc/config/orangepi-5-plus-starry-smp2-restart.toml",
+            REPOSITORY_ROOT
+            / "competition/ivc/config/orangepi-5-plus-zephyr-restart.toml",
+        )
+        with paths[0].open("rb") as source:
+            build = tomllib.load(source)
+        with paths[1].open("rb") as source:
+            starry = tomllib.load(source)
+        with paths[2].open("rb") as source:
+            zephyr = tomllib.load(source)
+        board_overlay = ZEPHYR_BOARD_RESTART_CONF.read_text(encoding="utf-8")
+        zephyr_source = ZEPHYR_MAIN.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            build["vm_configs"],
+            [
+                paths[1].relative_to(REPOSITORY_ROOT).as_posix(),
+                paths[2].relative_to(REPOSITORY_ROOT).as_posix(),
+            ],
+        )
+        self.assertEqual(
+            build["guest_restart"],
+            {"vm_id": 1, "delay_ms": 20000, "ready_timeout_ms": 30000},
+        )
+        self.assertEqual(
+            starry["kernel"]["disk_path"],
+            "/home/orangepi/axvisor-guest/starry-ivc-rootfs-restart.img",
+        )
+        self.assertEqual(
+            zephyr["kernel"]["kernel_path"],
+            "../zephyr/build-board-restart/zephyr/zephyr.bin",
+        )
+        for setting in (
+            "CONFIG_IVC_EXPECTED_COMMANDS=120",
+            "CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS=1",
+            "CONFIG_IVC_EXPECTED_SESSION_RESETS=1",
+            "CONFIG_IVC_EXPECTED_SESSION_REJECTIONS=1",
+            "CONFIG_IVC_EXPECTED_SAFE_FALLBACKS=1",
+        ):
+            self.assertIn(setting, board_overlay)
+        self.assertIn("AxvmManager::reset_vm(config.vm_id)?;", (
+            REPOSITORY_ROOT / "os/axvisor/src/guest_restart.rs"
+        ).read_text(encoding="utf-8"))
+        self.assertIn("IVC-RTOS-SAFE-FALLBACK", zephyr_source)
+        self.assertIn("IVC-RTOS-RECOVERY", zephyr_source)
+        self.assertIn("IVC-RTOS-STALE-REPLAY", zephyr_source)
+        self.assertIn("/build-board-restart/", ZEPHYR_GITIGNORE.read_text(encoding="utf-8"))
 
     def test_error_profile_replays_both_verified_fault_detail_sets(self) -> None:
         zephyr_source = ZEPHYR_MAIN.read_text(encoding="utf-8")

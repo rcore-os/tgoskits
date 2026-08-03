@@ -38,6 +38,9 @@ const ERROR_FAULT_RESULT_RECORD_COPIES: usize = 3;
 const ERROR_FAULT_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(25);
 const ERROR_EVIDENCE_RECORD_MAX_BYTES: usize = 96;
 const ERROR_FAULT_SEQUENCE_BASE: u32 = 1_000;
+const RESTART_PREVIOUS_FINAL_SEQUENCE: u32 = 20;
+const RESTART_STALE_CONTROL_SEQUENCE: u32 = RESTART_PREVIOUS_FINAL_SEQUENCE + 1;
+const RESTART_PROBE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const VERSION_OFFSET: usize = 4;
 const PAYLOAD_LENGTH_OFFSET: usize = 24;
 
@@ -51,6 +54,7 @@ enum ControllerFaultProfile {
     #[default]
     None,
     Error,
+    Restart,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,6 +123,7 @@ struct ControllerArguments {
     backend: InferenceBackend,
     raw_csv: Option<PathBuf>,
     fault_profile: ControllerFaultProfile,
+    restart_previous_session: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -700,6 +705,76 @@ fn replay_verified_error_fault_records() -> Result<(), String> {
     Ok(())
 }
 
+fn run_restart_stale_control_probe(
+    socket: &UdpSocket,
+    previous_session: u32,
+    command: ControlCommand,
+    clock: Instant,
+) -> Result<(), String> {
+    let mut datagram = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
+    let mut header = Header::new(
+        MessageType::Control,
+        previous_session,
+        RESTART_STALE_CONTROL_SEQUENCE,
+        elapsed_us(clock),
+    );
+    header.flags = FrameFlags::ACK_REQUIRED;
+    let payload = command.encode().map_err(|error| error.to_string())?;
+    let length =
+        encode_frame(header, &payload, &mut datagram).map_err(|error| error.to_string())?;
+    socket
+        .send(&datagram[..length])
+        .map_err(|error| format!("send retired-session control probe: {error}"))?;
+
+    let response_started = Instant::now();
+    loop {
+        let mut response = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
+        match socket.recv(&mut response) {
+            Ok(received) => {
+                let frame = decode_frame(&response[..received])
+                    .map_err(|error| format!("decode retired-session response: {error}"))?;
+                if frame.header.session_id != previous_session
+                    || frame.header.sequence != RESTART_STALE_CONTROL_SEQUENCE
+                    || frame.header.message_type != MessageType::Error
+                {
+                    return Err(format!(
+                        "unexpected response to retired-session probe: session={} sequence={} \
+                         type={:?}",
+                        frame.header.session_id, frame.header.sequence, frame.header.message_type
+                    ));
+                }
+                if frame.header.error != ErrorCode::SequenceOutsideWindow {
+                    return Err(format!(
+                        "retired-session probe returned {:?}, expected {:?}",
+                        frame.header.error,
+                        ErrorCode::SequenceOutsideWindow
+                    ));
+                }
+                let report =
+                    ErrorReport::decode(frame.payload).map_err(|error| error.to_string())?;
+                if report.offending_type != MessageType::Control
+                    || report.offending_sequence != RESTART_STALE_CONTROL_SEQUENCE
+                {
+                    return Err(format!(
+                        "retired-session ERROR payload identifies {:?}/{} instead of Control/{}",
+                        report.offending_type,
+                        report.offending_sequence,
+                        RESTART_STALE_CONTROL_SEQUENCE
+                    ));
+                }
+                return Ok(());
+            }
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && response_started.elapsed() < RESTART_PROBE_RESPONSE_TIMEOUT => {}
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("timed out waiting for retired-session rejection".to_owned());
+            }
+            Err(error) => return Err(format!("receive retired-session response: {error}")),
+        }
+    }
+}
+
 fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     let ControllerArguments {
         peer,
@@ -710,6 +785,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         backend,
         raw_csv,
         fault_profile,
+        restart_previous_session,
     } = arguments;
     if count == 0 {
         return Err("command count must be nonzero".to_owned());
@@ -725,12 +801,24 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     let reliability = ReliabilityConfig::new(SOCKET_TIMEOUT.as_micros() as u64, 20)
         .map_err(|error| error.to_string())?;
     let session_id = session_id.unwrap_or_else(generate_session_id);
+    if session_id == 0 {
+        return Err("session-id must be nonzero".to_owned());
+    }
+    if let Some(previous_session) = restart_previous_session {
+        if previous_session == 0 {
+            return Err("restart previous session must be nonzero".to_owned());
+        }
+        if previous_session == session_id {
+            return Err("restart previous and current sessions must differ".to_owned());
+        }
+    }
     let mut sender =
         StopAndWaitSender::new(session_id, reliability).map_err(|error| error.to_string())?;
     let clock = Instant::now();
     let fault_errors_received = match fault_profile {
         ControllerFaultProfile::None => 0,
         ControllerFaultProfile::Error => run_error_fault_probes(&socket, session_id, clock)?,
+        ControllerFaultProfile::Restart => 0,
     };
     let run_start = Instant::now();
     let mut measured_milli_c = 20_000;
@@ -741,6 +829,9 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     let mut transport_latency_us = Vec::with_capacity(count as usize);
     let mut controller_samples = raw_csv.as_ref().map(|_| Vec::with_capacity(count as usize));
     let mut protocol_errors = 0u64;
+    let mut stale_acknowledgements_ignored = 0u64;
+    let mut stale_statuses_ignored = 0u64;
+    let mut stale_controls_rejected = 0u64;
     let mut sum_squared_error = 0f64;
     let mut integrated_absolute_error = 0f64;
     let mut maximum_overshoot = 0i32;
@@ -818,6 +909,40 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
                             _ => protocol_errors += 1,
                         }
                     }
+                    Ok(frame)
+                        if fault_profile == ControllerFaultProfile::Restart
+                            && Some(frame.header.session_id) == restart_previous_session
+                            && frame.header.sequence == RESTART_PREVIOUS_FINAL_SEQUENCE =>
+                    {
+                        match frame.header.message_type {
+                            MessageType::Ack => {
+                                let ack = AckPayload::decode(frame.payload)
+                                    .map_err(|error| error.to_string())?;
+                                if ack.acknowledged_sequence != RESTART_PREVIOUS_FINAL_SEQUENCE {
+                                    return Err(format!(
+                                        "stale ACK identifies sequence {}, expected {}",
+                                        ack.acknowledged_sequence, RESTART_PREVIOUS_FINAL_SEQUENCE
+                                    ));
+                                }
+                                stale_acknowledgements_ignored =
+                                    stale_acknowledgements_ignored.saturating_add(1);
+                            }
+                            MessageType::Status => {
+                                let stale_status = StatusReport::decode(frame.payload)
+                                    .map_err(|error| error.to_string())?;
+                                if stale_status.applied_sequence != RESTART_PREVIOUS_FINAL_SEQUENCE
+                                {
+                                    return Err(format!(
+                                        "stale STATUS identifies sequence {}, expected {}",
+                                        stale_status.applied_sequence,
+                                        RESTART_PREVIOUS_FINAL_SEQUENCE
+                                    ));
+                                }
+                                stale_statuses_ignored = stale_statuses_ignored.saturating_add(1);
+                            }
+                            _ => protocol_errors += 1,
+                        }
+                    }
                     Ok(_) => protocol_errors += 1,
                     Err(error) => {
                         protocol_errors += 1;
@@ -883,6 +1008,12 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
                 }
             }
         };
+        if sample == 1 && fault_profile == ControllerFaultProfile::Restart {
+            let previous_session = restart_previous_session
+                .ok_or_else(|| "restart profile is missing its previous session".to_owned())?;
+            run_restart_stale_control_probe(&socket, previous_session, command, clock)?;
+            stale_controls_rejected = stale_controls_rejected.saturating_add(1);
+        }
         previous_measured_milli_c = measured_milli_c;
         measured_milli_c = status.measured_milli_c;
         previous_actuator = status.actuator_permille;
@@ -985,6 +1116,43 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
             std::io::stdout()
                 .flush()
                 .map_err(|error| format!("flush fault result: {error}"))?;
+            std::thread::sleep(ERROR_FAULT_RESULT_RECORD_PAUSE);
+        }
+    }
+    if fault_profile == ControllerFaultProfile::Restart {
+        if stale_acknowledgements_ignored != 1
+            || stale_statuses_ignored != 1
+            || stale_controls_rejected != 1
+        {
+            return Err(format!(
+                "restart evidence mismatch: stale ACKs ignored={}, stale STATUS ignored={}, stale \
+                 controls rejected={}",
+                stale_acknowledgements_ignored, stale_statuses_ignored, stale_controls_rejected
+            ));
+        }
+        let previous_session = restart_previous_session
+            .ok_or_else(|| "restart profile is missing its previous session".to_owned())?;
+        let transport_body = format!(
+            "old={} new={} ack_ignored={} status_ignored={} control_rejected={}",
+            previous_session,
+            session_id,
+            stale_acknowledgements_ignored,
+            stale_statuses_ignored,
+            stale_controls_rejected
+        );
+        let result_body = format!(
+            "profile=restart sent={} acknowledged={} continued=1",
+            metrics.started, metrics.acknowledged
+        );
+        let transport_record = checksummed_console_record("IVC-RESTART-C ", &transport_body);
+        let result_record = checksummed_console_record("IVC-RESTART-RESULT ", &result_body);
+        std::thread::sleep(ERROR_FAULT_RESULT_SETTLE);
+        for _ in 0..ERROR_FAULT_RESULT_RECORD_COPIES {
+            println!("{transport_record}");
+            println!("{result_record}");
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush restart evidence: {error}"))?;
             std::thread::sleep(ERROR_FAULT_RESULT_RECORD_PAUSE);
         }
     }
@@ -1119,6 +1287,7 @@ fn parse_controller_arguments(
     let mut raw_csv = None;
     let mut fault_profile = ControllerFaultProfile::None;
     let mut fault_profile_was_set = false;
+    let mut restart_previous_session = None;
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -1159,13 +1328,24 @@ fn parse_controller_arguments(
                 fault_profile = match value.as_str() {
                     "none" => ControllerFaultProfile::None,
                     "error" => ControllerFaultProfile::Error,
+                    "restart" => ControllerFaultProfile::Restart,
                     _ => {
                         return Err(format!(
-                            "controller fault profile must be 'none' or 'error', got '{value}'"
+                            "controller fault profile must be 'none', 'error', or 'restart', got \
+                             '{value}'"
                         ));
                     }
                 };
                 fault_profile_was_set = true;
+            }
+            "--restart-previous-session" => {
+                if restart_previous_session.is_some() {
+                    return Err("--restart-previous-session may only be specified once".to_owned());
+                }
+                restart_previous_session = Some(parse(
+                    &required(&mut arguments, "restart previous session")?,
+                    "restart previous session",
+                )?);
             }
             _ if argument.starts_with('-') => {
                 return Err(format!(
@@ -1188,6 +1368,19 @@ fn parse_controller_arguments(
         }
     }
 
+    if fault_profile == ControllerFaultProfile::Restart {
+        if session_id.is_none() {
+            return Err("restart profile requires an explicit current session-id".to_owned());
+        }
+        if restart_previous_session.is_none() {
+            return Err(
+                "restart profile requires --restart-previous-session <session-id>".to_owned(),
+            );
+        }
+    } else if restart_previous_session.is_some() {
+        return Err("--restart-previous-session requires --fault-profile restart".to_owned());
+    }
+
     Ok(ControllerArguments {
         peer,
         count,
@@ -1197,6 +1390,7 @@ fn parse_controller_arguments(
         backend,
         raw_csv,
         fault_profile,
+        restart_previous_session,
     })
 }
 
@@ -1285,7 +1479,7 @@ fn usage() -> &'static str {
     "usage:\n  ivcproto evaluate\n  ivcproto evaluate-csv <output.csv>\n  ivcproto rtos-sim <bind> \
      <expected-count> [drop-every]\n  ivcproto controller <peer> <count> <manual|neural> \
      [period-ms] [session-id] [--backend <native|onnxruntime>] [--raw-csv <path>] [--fault-profile \
-     <none|error>]"
+     <none|error|restart>] [--restart-previous-session <session-id>]"
 }
 
 #[cfg(test)]
@@ -1467,6 +1661,30 @@ mod tests {
             .expect("controller arguments should accept the error profile");
 
         assert_eq!(parsed.fault_profile, ControllerFaultProfile::Error);
+    }
+
+    #[test]
+    fn controller_arguments_require_an_explicit_retired_session_for_restart() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "100",
+            "neural",
+            "100",
+            "572662306",
+            "--fault-profile",
+            "restart",
+            "--restart-previous-session",
+            "286331153",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let parsed = parse_controller_arguments(arguments)
+            .expect("controller arguments should accept the restart profile");
+
+        assert_eq!(parsed.fault_profile, ControllerFaultProfile::Restart);
+        assert_eq!(parsed.session_id, Some(572_662_306));
+        assert_eq!(parsed.restart_previous_session, Some(286_331_153));
     }
 
     #[test]

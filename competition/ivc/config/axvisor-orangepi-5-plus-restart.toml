@@ -1,0 +1,19 @@
+features = [
+  "sdmmc",
+  "rockchip-dwmmc",
+  "rockchip-soc",
+  "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "competition/ivc/config/orangepi-5-plus-starry-smp2-restart.toml",
+  "competition/ivc/config/orangepi-5-plus-zephyr-restart.toml",
+]
+max_cpu_num = 4
+board_type = "OrangePi-5-Plus"
+
+[guest_restart]
+vm_id = 1
+delay_ms = 20000
+ready_timeout_ms = 30000

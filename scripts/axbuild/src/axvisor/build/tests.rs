@@ -274,6 +274,55 @@ max_duration_ms = 180000
 }
 
 #[test]
+fn load_cargo_config_injects_bounded_guest_restart_contract() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("guest-restart.toml");
+    fs::write(
+        &config_path,
+        r#"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std/sched-rr"]
+log = "Info"
+
+[guest_restart]
+vm_id = 1
+delay_ms = 12000
+ready_timeout_ms = 30000
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(
+        config_path,
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    ))
+    .unwrap();
+
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_VM_ID")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_DELAY_MS")
+            .map(String::as_str),
+        Some("12000")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_GUEST_RESTART_READY_TIMEOUT_MS")
+            .map(String::as_str),
+        Some("30000")
+    );
+}
+
+#[test]
 fn load_cargo_config_does_not_select_an_x86_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64.toml");

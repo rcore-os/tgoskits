@@ -75,6 +75,18 @@ def integrity_record(prefix: str, fields: tuple[tuple[str, object], ...]) -> str
     return f"{prefix}{body} crc={checksum:08x}"
 
 
+def repeated_raw_csv(count: int) -> str:
+    rows = [RAW_CSV.splitlines()[0]]
+    for sequence in range(1, count + 1):
+        cycle_started_us = (sequence - 1) * 200
+        rows.append(
+            f"{sequence},{cycle_started_us},{cycle_started_us + 10},"
+            f"{cycle_started_us + 110},110,10,100,45000,44000,44000,"
+            "500,500,1000"
+        )
+    return "\n".join(rows) + "\n"
+
+
 class BoardAnalysisTests(unittest.TestCase):
     def write_log(self, contents: str) -> Path:
         temporary = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False)
@@ -205,6 +217,76 @@ class BoardAnalysisTests(unittest.TestCase):
                 "/home/orangepi/ivc-e",
             )
         )
+
+    def restart_profile_log(
+        self, post_reset_raw_csv: str = RAW_CSV, pre_reset_raw_csv: str | None = None
+    ) -> str:
+        if pre_reset_raw_csv is None:
+            pre_reset_raw_csv = repeated_raw_csv(20)
+        post_digest = hashlib.sha256(post_reset_raw_csv.encode()).hexdigest()
+        pre_digest = hashlib.sha256(pre_reset_raw_csv.encode()).hexdigest()
+        old_session = 286_331_153
+        new_session = 572_662_306
+        stale_error = integrity_record(
+            "IVC-ERROR-Z ",
+            (("seq", 21), ("code", 4), ("reason", "retired-or-invalid-session")),
+        )
+        controller_restart = integrity_record(
+            "IVC-RESTART-C ",
+            (
+                ("old", old_session),
+                ("new", new_session),
+                ("ack_ignored", 1),
+                ("status_ignored", 1),
+                ("control_rejected", 1),
+            ),
+        )
+        controller_result = integrity_record(
+            "IVC-RESTART-RESULT ",
+            (("profile", "restart"), ("sent", 4), ("acknowledged", 4), ("continued", 1)),
+        )
+        return f"""\
+AXVISOR_GUEST_RESTART_ARMED schema=1 vm_id=1 delay_ms=20000 ready_timeout_ms=30000
+AXVISOR_GUEST_RESTART_RUNNING schema=1 vm_id=1 ready_wait_ms=450 status=running
+[guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native fault_profile=restart count=4 period_ms=100 vcpus=2
+[guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
+[guest-console:pl011-zephyr] IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_drop_every=0 expected_commands=24 expected_protocol_errors=1 exit_after_expected=1
+[guest-console:pl011-zephyr] IVC-RTOS-RESTART-READY commands=24 errors=1 resets=1 rejections=1 safe=1 drop=0 exit=1
+[guest-console:pl011-starry] IVC-STARRY-RESTART-ARMED phase=before-reset session_id={old_session} samples=20
+[guest-console:pl011-starry] IVC-STARRY-RESTART-RAW path=/var/lib/ivc/raw-before-reset.csv samples=20 sha256={pre_digest}
+[guest-console:pl011-zephyr] IVC-RTOS-SAFE-FALLBACK reason=controller-timeout actuator_permille=0 last_sequence=20 session={old_session} safe_fallbacks=1
+AXVISOR_GUEST_RESTART_TRIGGER schema=1 vm_id=1 requested_delay_ms=20000 observed_delay_ms=20001 before_status=running reset_count=1
+[guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native fault_profile=restart count=4 period_ms=100 vcpus=2
+[guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
+[guest-console:pl011-starry] IVC-STARRY-RESTART-RESUME phase=after-reset old_session={old_session} new_session={new_session} first_samples=20
+[guest-console:pl011-zephyr] IVC-RTOS-STALE-REPLAY old_session={old_session} old_sequence=20 new_session={new_session} stale_status_sent=1 stale_acks_sent=1
+[guest-console:pl011-zephyr] IVC-RTOS-RECOVERY session={new_session} seq=1 from=controller-timeout mode=Neural actuator_permille=500 recoveries=1
+[guest-console:pl011-starry] IVC-CONTROLLER-OUTCOME policy=neural sent=4 acknowledged=4 errors=0 timeouts=0
+[guest-console:pl011-starry] IVC-CONTROLLER-RELIABILITY retransmissions=0 recoveries=0 success_percent=100.000
+[guest-console:pl011-starry] IVC-CONTROLLER-FULL-LOOP p50_us=140 p95_us=180 p99_us=180 max_us=240
+[guest-console:pl011-starry] IVC-CONTROLLER-PRE-SEND p50_us=20 p95_us=30 p99_us=30 max_us=40
+[guest-console:pl011-starry] IVC-CONTROLLER-TRANSPORT p50_us=120 p95_us=150 p99_us=150 max_us=200 throughput_msg_s=9.000
+[guest-console:pl011-starry] IVC-CONTROLLER-CONTROL rmse_milli_c=1224.745 iae_milli_c_s=400.000 max_overshoot_milli_c=1000
+[guest-console:pl011-starry] {controller_restart}
+[guest-console:pl011-starry] {controller_result}
+[guest-console:pl011-zephyr] {stale_error}
+[guest-console:pl011-zephyr] IVC-RTOS-OUTCOME profile=restart accepted=24 applied=24 duplicates=0 acks_dropped=0
+[guest-console:pl011-zephyr] IVC-RTOS-MESSAGES status_sent=25 acks_sent=25 errors_sent=1 protocol_errors=1
+[guest-console:pl011-zephyr] IVC-RTOS-RESTART session_resets=1 session_rejections=1 safe_fallbacks=1 recoveries=1 stale_status_sent=1 stale_acks_sent=1
+[guest-console:pl011-zephyr] IVC-RTOS-POWEROFF accepted=24
+[guest-console:pl011-starry] IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=4 sha256={post_digest}
+[guest-console:pl011-starry] IVC-STARRY-DONE exit=0
+AXVISOR_GUEST_RESTART_COMPLETE schema=1 vm_id=1 before_status=running after_status=running reset_count=1
+AXVISOR_GUEST_RESTART_TIMING schema=1 vm_id=1 ready_wait_ms=450 requested_delay_ms=20000 observed_delay_ms=20001
+AXVISOR_SNAPSHOT_SYNC_OK
+BOARD_LINUX_RESTORED
+BOARD_RESULT_IMAGE_VALIDATED vm=1 index=0 path=/home/orangepi/ivc-r bytes=67108864 sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef fsck=clean
+BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=4 sha256={post_digest}
+BOARD_RAW_RESULT_HARVESTED path=/tmp/results/raw.csv samples=4 sha256={post_digest}
+BOARD_GUEST_PRE_RESET_RAW_MANIFEST path=/var/lib/ivc/raw-before-reset.csv samples=20 sha256={pre_digest}
+BOARD_PRE_RESET_RAW_RESULT_HARVESTED path=/tmp/results/raw-before-reset.csv samples=20 sha256={pre_digest}
+BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=42500
+"""
 
     def test_compact_records_survive_a_corrupted_legacy_result(self) -> None:
         result = analyzer.analyze(self.write_log(VALID_LOG), 1_800)
@@ -591,6 +673,60 @@ class BoardAnalysisTests(unittest.TestCase):
                 4,
                 self.write_raw_csv(),
                 profile="error",
+            )
+
+    def test_restart_profile_cross_checks_vm_reset_safe_state_and_sessions(self) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        result = analyzer.analyze(
+            self.write_log(self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw)),
+            4,
+            self.write_raw_csv(),
+            profile="restart",
+            pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+            expected_pre_reset_count=20,
+        )
+
+        self.assertEqual(result["profile"], "restart")
+        self.assertEqual(result["rtos"]["accepted"], 24)
+        self.assertEqual(result["rtos"]["session_resets"], 1)
+        self.assertEqual(result["rtos"]["session_rejections"], 1)
+        self.assertEqual(result["restart_recovery"]["old_session"], 286_331_153)
+        self.assertEqual(result["restart_recovery"]["new_session"], 572_662_306)
+        self.assertTrue(result["restart_recovery"]["safe_fallback_observed"])
+        self.assertTrue(result["restart_recovery"]["actual_vm_reset"])
+        self.assertEqual(result["pre_reset_raw_samples"]["sample_count"], 20)
+        self.assertEqual(
+            result["lifecycle"]["block_snapshot"]["image_path"],
+            "/home/orangepi/ivc-r",
+        )
+
+    def test_restart_ready_record_fits_the_shared_uart_budget(self) -> None:
+        line = (
+            "[guest-console:pl011-zephyr] "
+            "IVC-RTOS-RESTART-READY commands=120 errors=1 resets=1 "
+            "rejections=1 safe=1 drop=0 exit=1"
+        )
+
+        self.assertLessEqual(len(line.encode("ascii")), 160)
+
+    def test_restart_profile_rejects_missing_safe_fallback(self) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        log = "\n".join(
+            line
+            for line in self.restart_profile_log(
+                pre_reset_raw_csv=pre_reset_raw
+            ).splitlines()
+            if "IVC-RTOS-SAFE-FALLBACK" not in line
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "SAFE-FALLBACK"):
+            analyzer.analyze(
+                self.write_log(log + "\n"),
+                4,
+                self.write_raw_csv(),
+                profile="restart",
+                pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+                expected_pre_reset_count=20,
             )
 
     def test_normal_capture_rejects_ack_loss_markers(self) -> None:

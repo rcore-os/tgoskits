@@ -105,15 +105,15 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn("ivc_raw_csv=/var/lib/ivc/raw.csv", builder)
         self.assertIn("/var/lib/ivc", builder)
         self.assertIn('--raw-csv "$ivc_raw_csv"', autorun)
-        self.assertIn("expected_raw_lines=$((ivc_count + 1))", autorun)
-        self.assertIn('"$BB" wc -l < "$ivc_raw_csv"', autorun)
+        self.assertIn("expected_raw_lines=$((expected_samples + 1))", autorun)
+        self.assertIn('"$BB" wc -l < "$raw_path"', autorun)
         self.assertIn(
             "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256",
             autorun,
         )
-        self.assertIn("raw_manifest=$ivc_raw_csv.sha256", autorun)
+        self.assertIn("raw_manifest=$raw_path.sha256", autorun)
         self.assertIn(
-            "printf '%s  %s\\n' \"$raw_sha256\" \"$ivc_raw_csv\" >\"$raw_manifest\"",
+            "printf '%s  %s\\n' \"$validated_raw_sha256\" \"$raw_path\" >\"$raw_manifest\"",
             autorun,
         )
         self.assertIn('"$BB" sync || fatal final-sync-failed', autorun)
@@ -121,6 +121,45 @@ class StarryGuestContractTests(unittest.TestCase):
             autorun.index('"$BB" sync || fatal final-sync-failed'),
             autorun.index('echo "IVC-STARRY-DONE exit=$result"'),
         )
+
+    def test_restart_profile_persists_phase_one_before_waiting_for_vm_reset(self) -> None:
+        builder = STARRY_ROOTFS_BUILD.read_text(encoding="utf-8")
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+
+        self.assertIn("none|error|restart", builder)
+        self.assertIn(
+            "fault profile must be 'none', 'error', or 'restart'",
+            builder,
+        )
+        self.assertIn("ivc_restart_previous_session=286331153", builder)
+        self.assertIn("ivc_restart_current_session=572662306", builder)
+        self.assertIn("ivc_restart_first_count=20", builder)
+        self.assertIn("/var/lib/ivc/restart-phase-1.done", autorun)
+        self.assertIn("/var/lib/ivc/raw-before-reset.csv", autorun)
+        self.assertIn("IVC-STARRY-RESTART-ARMED", autorun)
+        self.assertIn("IVC-STARRY-RESTART-RESUME", autorun)
+        self.assertIn(
+            'restart_uart_sha256=$(printf \'%s\' "$restart_raw_sha256" | "$BB" cut -c1-12)',
+            autorun,
+        )
+        self.assertIn("sha256=$restart_uart_sha256", autorun)
+        self.assertIn('--fault-profile restart', autorun)
+        self.assertIn('--restart-previous-session "$ivc_restart_previous_session"', autorun)
+        self.assertLess(
+            autorun.index('"$BB" sync || fatal restart-phase-sync-failed'),
+            autorun.index('IVC-STARRY-RESTART-ARMED'),
+        )
+
+    def test_restart_raw_record_fits_the_shared_uart_budget(self) -> None:
+        record = (
+            "[guest-console:pl011-starry] "
+            "IVC-STARRY-RESTART-RAW "
+            "path=/var/lib/ivc/raw-before-reset.csv "
+            "samples=20 sha256="
+            + "a" * 12
+        )
+
+        self.assertLessEqual(len(record.encode("ascii")), 160)
 
     def test_virtio_net_driver_registers_an_fdt_mmio_probe(self) -> None:
         production_source = VIRTIO_NET_DRIVER.read_text(encoding="utf-8").split(
