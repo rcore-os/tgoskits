@@ -35,6 +35,7 @@ apps/starry/node-lang
 apps/starry/node-lib
 apps/starry/node-web
 apps/starry/k230-kpu-nncase
+apps/starry/futex-ping-pong-bench
 
 apps/starry/ffplay
 apps/starry/glibc-dynamic-smoke

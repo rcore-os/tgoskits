@@ -339,6 +339,34 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 
 性能接受必须用同一 workload、同一 QEMU 参数、正式 success marker 对比 Linux RT 或已确认基线；发现慢于基线即可中止全量并缩小到目标 case，用 qperf/GDB 检查 wake、lock、IPI 和 safe-point 调用链。
 
+### Linux v7.1 PREEMPT_RT 同源 futex 对照
+
+`apps/starry/futex-ping-pong-bench` 同时作为 Starry 应用和 Linux initramfs
+`/init` 的唯一源码。两边固定使用 `q35,accel=tcg`、`-cpu max`、2 个 vCPU、
+512 MiB 内存，主线程和工作线程分别固定到 CPU 0、CPU 1。每轮执行 2000 次
+往返，报告 7 轮单向 handoff 中位数。
+
+| 内核 | 中位 handoff | 最小 | 最大 |
+| --- | ---: | ---: | ---: |
+| Linux v7.1 `CONFIG_PREEMPT_RT=y` | 13,908 ns | 9,370 ns | 24,810 ns |
+| 当前 StarryOS | 221,878 ns | 136,991 ns | 250,738 ns |
+
+当前 StarryOS 是 Linux RT 的约 15.95 倍，尚未达到接受目标。这个结果只比较
+同一宿主机上的完整 guest 调用路径，不把 TCG 时间解释成硬件周期或实时延迟
+上界。
+
+源码审计显示，Starry 每次 `FUTEX_WAIT` 都创建并销毁临时 `LocalExecutor` 和
+`WaitQueue`，实际入队还分配 `Arc<WaiterState>`；wake 侧分配 `Vec<Waker>`。
+Linux v7.1 使用当前任务和栈上 `futex_q`/`wake_q`，不会为每次 wait 构造 executor。
+这些差异必须先用稳态分配计数和生命周期计数形成确定性红测，再进行破坏性内部
+接口重构，不能仅凭 TCG 时间直接删路径。
+
+qperf leaf 采样已能定位 CPU-local、guard、remote wake 和 schedule 小热点。完整
+FP 模式原先会覆盖内核链接 rustflags，postprocess 也无法转发 `-cpu`；两项已由
+单元红绿测试修复。FP 插件仍会在 x86_64 早期 `mmu_entry` 阶段尝试解栈并使宿主
+QEMU SIGSEGV，因此现阶段不能把不完整 FP 报告用于归因；该诊断边界需要在插件
+侧按采样窗口延迟启用，或对 early-boot FP 读取做显式有效性检查。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
