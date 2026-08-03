@@ -129,6 +129,27 @@ pub(super) enum BalanceReason {
     FairPeriodic,
 }
 
+/// Result of one opportunistic owner-to-owner balance attempt.
+///
+/// `Retry` means the transfer transaction observed a concurrent affinity,
+/// hotplug, or publication change and restored every local ownership record.
+/// It is not a failure of the already committed local scheduling decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BalanceTransferOutcome {
+    Migrated(ThreadId),
+    NoCandidate,
+    Retry,
+}
+
+impl BalanceTransferOutcome {
+    pub(super) const fn migrated(self) -> Option<ThreadId> {
+        match self {
+            Self::Migrated(thread) => Some(thread),
+            Self::NoCandidate | Self::Retry => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FairBalanceResult {
     Migrated(ThreadId),

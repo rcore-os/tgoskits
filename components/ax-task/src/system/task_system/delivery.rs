@@ -314,8 +314,8 @@ impl TaskSystem {
                 );
                 drop(claim);
                 match migrated {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
+                    Ok(BalanceTransferOutcome::Migrated(_)) => {}
+                    Ok(BalanceTransferOutcome::NoCandidate | BalanceTransferOutcome::Retry) => {
                         target_remote.kick_scheduler_work();
                     }
                     Err(error) => {
