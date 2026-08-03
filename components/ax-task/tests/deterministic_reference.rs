@@ -88,7 +88,12 @@ fn compare_scenario(seed: u64, scenario: Scenario) {
             }
             1 => {
                 let next = system.schedule(cpu.as_mut(), now_ns).unwrap().next();
-                assert_eq!(next, reference.preempt(now_ns));
+                assert_eq!(
+                    next,
+                    reference.preempt(now_ns),
+                    "scenario={scenario:?} seed={seed:#x} event={event_index} \
+                     reference={reference:?}"
+                );
             }
             2 => {
                 if scenario == Scenario::Deadline {
@@ -334,9 +339,7 @@ impl ReferenceScheduler {
             count += 1;
         }
         if let Some(average) = sum.checked_div(count) {
-            self.virtual_time = self
-                .virtual_time
-                .max(u64::try_from(average).unwrap_or(u64::MAX));
+            self.virtual_time = u64::try_from(average).unwrap_or(u64::MAX);
         }
     }
 }
@@ -396,16 +399,20 @@ impl ReferenceEntity {
                 remaining_request_ns,
                 virtual_deadline,
             } => {
-                if *vruntime < virtual_time {
-                    let shift = virtual_time - *vruntime;
-                    *vruntime = virtual_time;
-                    *virtual_deadline = virtual_deadline.saturating_add(shift);
-                }
-                if matches!(reason, ReferenceEnqueue::Yield) && *vruntime <= virtual_time {
-                    *vruntime = (*vruntime).max(*virtual_deadline);
-                    *remaining_request_ns = FAIR_SLICE_NS;
-                    *virtual_deadline = (*vruntime).max(virtual_time).saturating_add(FAIR_SLICE_NS);
+                if matches!(reason, ReferenceEnqueue::Yield) {
+                    if *vruntime <= virtual_time {
+                        *vruntime = (*vruntime).max(*virtual_deadline);
+                        *remaining_request_ns = FAIR_SLICE_NS;
+                        *virtual_deadline =
+                            (*vruntime).max(virtual_time).saturating_add(FAIR_SLICE_NS);
+                    } else if *remaining_request_ns == 0 {
+                        *remaining_request_ns = FAIR_SLICE_NS;
+                        *virtual_deadline =
+                            (*vruntime).max(virtual_time).saturating_add(FAIR_SLICE_NS);
+                    }
                 } else if *remaining_request_ns == 0 {
+                    // A scheduler preemption keeps the active EEVDF request and
+                    // positive lag. Only an exhausted request is renewed.
                     *remaining_request_ns = FAIR_SLICE_NS;
                     *virtual_deadline = (*vruntime).max(virtual_time).saturating_add(FAIR_SLICE_NS);
                 }
@@ -444,7 +451,7 @@ fn pick_reference(
             let (sum, count) = vruntimes.fold((0_u128, 0_u128), |(sum, count), vruntime| {
                 (sum.saturating_add(u128::from(vruntime)), count + 1)
             });
-            *virtual_time = (*virtual_time).max(u64::try_from(sum / count).unwrap_or(u64::MAX));
+            *virtual_time = u64::try_from(sum / count).unwrap_or(u64::MAX);
             ready
                 .iter()
                 .enumerate()

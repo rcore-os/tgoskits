@@ -16,8 +16,10 @@ Live -> Zombie -> Reaping -> Reaped
 
 - Starry Linux ABI 与 errno；
 - POSIX 和 axstd 可观察行为；
-- `ax_std::os::arceos::modules::ax_task` 兼容导出；
 - generation-bearing 调度身份不得直接当作 Linux TID/PID。
+
+内部路径不保留兼容别名。axstd 的任务扩展统一从
+`ax_std::os::arceos::task` 进入；旧 `modules::ax_task` 已删除，仓内消费者直接迁移。
 
 ## Linux 参考基线
 
@@ -148,6 +150,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | 领域 | Linux 对照 | 核心不变量 | 当前结论 |
 | --- | --- | --- | --- |
 | placement | `try_to_wake_up()`、rq locking | 一个线程只能有一个物理 owner | 已用 `SchedulerPlacement` 状态机收敛 |
+| Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
 | 远程投递 | `ttwu_queue_wakelist()`、`irq_work` | payload/epoch 先于 IPI；handler 先 claim 旧投递 | 已收敛到 runtime 物理门铃与 owner inbox |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
@@ -202,6 +205,33 @@ ax-task 只发布逻辑 sticky work 和 payload。ax-runtime 的 `SchedulerIpiDo
 5. drain 后若发现更新的 epoch 或 remainder，再发新门铃。
 
 idle polling 与 work pending 共用原子状态，确保“观察到 polling 就省略 IPI”和“退出 polling 后新工作一定有物理边”之间没有丢唤醒窗口。
+
+### Fair/EEVDF 唤醒与迁移
+
+Linux v7.1 的 Fair 唤醒不再用旧的物理时间 `wakeup_granularity` 修正虚拟
+deadline。当前实现直接使用 wrap-safe 的虚拟时间顺序，并保留最新 EEVDF 的请求保护：
+
+- wake 后先以包含 current 的加权平均虚拟时间判断 eligibility；
+- eligible current 的活动请求未结束时继续运行，不因任意更早 deadline 立即切换；
+- current 已 ineligible 时保护失效，正 `vlag` 的唤醒线程可在本次 safe point 抢占；
+- Fair request 到期由 task deadline/clockevent 保证有界重选，不依赖旧粒度阈值。
+
+`FairRunQueue::zero_vruntime` 是每个 Fair mode 唯一的平均虚拟时间状态。插入和移除
+实体允许平均值前后移动；公平性由 dequeue 前保存的 `vlag` 保证，不能再用第二个
+单调 `virtual_time` 把平均值强行取大。
+
+sleep 与 migration 语义分开：sleep 保存 `vlag`，wake 时开启新请求；runnable
+migration 同时保存 `vlag` 和相对 deadline，在目标 runqueue 恢复同一个活动请求。
+所有 queued migration 统一执行：
+
+```text
+update source V -> capture vlag/relative deadline -> detach
+-> begin_queued_migration -> publish carrier
+-> destination place / source rollback
+```
+
+affinity 和 periodic balance 不再各自维护一条裸 `dequeue` 路径。失败回滚恢复原队列
+位置、placement、deadline bandwidth 和 Fair 请求状态。
 
 ## Task deadline 与 clockevent
 
@@ -320,6 +350,12 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | futex waiter | 每次排队单独分配 `Arc<WaiterState>`，取消与 requeue 依赖对象地址 | 稳定 `Thread` 内嵌 generation 状态；队列用 `UserTaskRef + generation` 校验唯一胜者 |
 | alarm worker | `event-listener` 的 no-std 内部自旋锁持有者被抢占后，唯一 alarm worker 永久自旋，进程退出与父进程 wait 停止推进 | 类型化 alarm heap 与 `epoch + WaitQueue` 分离；生产者先发布 generation，释放 alarm 锁后再唤醒固定 worker |
 | Deadline scan | 每次 schedule 扫描无关 reservation | typed timer node 和 owner heap |
+| same-CPU hard IRQ wake | 测试 runtime 恒返回“不支持本地调度发布”，错误强制 self-IPI | sticky local scheduler publication 先于 self-IPI 抑制，由 IRQ return consume |
+| Fair sleep wake | wake 清空正 `vlag`，维护线程 Ready 后仍等到偶然 timer | dequeue 保存有界 `vlag`，ineligible current 在 IRQ-return safe point 立即让出 |
+| Fair virtual-time wrap | `saturating_add` 与普通 `<` 在 wrap 后颠倒 deadline | 所有虚拟 deadline 使用 modular `virtual_before` |
+| Fair current 过度抢占 | 删除旧 wakeup granularity 后，任意更早 deadline 都打断 eligible current | 最新 EEVDF 请求保护保留到 request boundary；ineligible current 不受保护 |
+| queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
+| Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
 
 bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。纯文件移动和可见性收敛阶段例外。
 
@@ -337,7 +373,10 @@ bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。
 - forced yield 不顺带 drain 无关 deadline/task-work；
 - unchanged semantic task deadline 不重复发布物理 clockevent；
 - futex wake 不额外强制 yield；
-- task-only scheduler metadata 使用 preempt-only ticket lock，不扩大 IRQ-off 区间。
+- task-only scheduler metadata 使用 preempt-only ticket lock，不扩大 IRQ-off 区间；
+- same-CPU hard IRQ wake 发布架构 `need_resched` 后直接由 IRQ return 消费，不发送 self-IPI；
+- Fair sleep/wake 与 migration 保留 Linux EEVDF `vlag`，避免维护线程 Ready 后仍排在错误位置；
+- eligible current 使用 request protection，避免删除旧 granularity 后形成 wake 驱动的上下文切换风暴。
 
 性能接受必须用同一 workload、同一 QEMU 参数、正式 success marker 对比 Linux RT 或已确认基线；发现慢于基线即可中止全量并缩小到目标 case，用 qperf/GDB 检查 wake、lock、IPI 和 safe-point 调用链。
 
@@ -368,6 +407,11 @@ USB audio 驱动路径停止，已作为范围外问题 #1838 单独跟踪。
 因此下一阶段先从最大正回退 `test-ext4-inode-unique` 开始，但必须用 Linux RT 同源
 程序区分 ext4/page-cache 自身成本与通用 schedule/wake 放大；qperf 与架构接受指标
 只和 Linux v7.1 PREEMPT_RT 对照，不把 dev 当优化目标。
+
+该目标在 Fair sleep `vlag` 首次修复后，按同一 runner 进度投影由约 110--120 秒降至
+约 70 秒，说明主要问题是“线程已经 Ready，但 EEVDF placement 使它等到后续 timer”，
+不是永久 lost-wake。这个运行按“慢于 dev 57 秒即停止”的规则提前终止，不能作为
+最终通过数据；完成单一 V、迁移事务和 request protection 后必须重新测量。
 
 ### Linux v7.1 PREEMPT_RT 同源 futex 对照
 

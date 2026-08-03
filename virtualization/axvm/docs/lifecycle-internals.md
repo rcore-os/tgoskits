@@ -23,7 +23,7 @@ VMM/控制面）。本文档回答四类实现问题：**状态到底带着什�
   - `wait_queue`：vCPU park/唤醒队列。**pause 不主动 park vCPU**：vCPU 在下一次 VM-exit
     观察到 `suspending()` 后自行 `wait_for(!suspending)` 入队（vcpus.rs:342-350）；resume 时
     `notify_all_vcpus` 才唤醒（runtime/mod.rs:106）；
-  - `vcpu_task_list`：`Mutex<BTreeMap<usize, AxTaskRef>>`，vCPU task 注册表（中断注入按
+  - `vcpu_task_list`：`Mutex<BTreeMap<usize, TaskHandle>>`，vCPU task 注册表（中断注入按
     vCPU id 查表）;
   - `pending_interrupts`：`Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>`，未注入的中断缓冲
     （生命周期见 §3.2）；

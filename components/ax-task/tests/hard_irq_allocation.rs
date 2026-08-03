@@ -112,6 +112,10 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
         "same-CPU IRQ wake must be consumed from IRQ return without a self-IPI"
     );
     assert!(
+        support::consume_local_scheduler_work(),
+        "suppressing the self-IPI must leave a sticky IRQ-return scheduler request"
+    );
+    assert!(
         cpu.has_remote_work(),
         "skipping the self-IPI must retain the wake publication for the owner safe point"
     );

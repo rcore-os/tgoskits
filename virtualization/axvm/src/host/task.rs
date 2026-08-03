@@ -4,7 +4,7 @@ use super::arceos;
 
 pub(crate) type TaskHandle = arceos::ArceOsTaskHandle;
 pub(crate) type TaskExtensionBorrow<'task> =
-    ax_std::os::arceos::modules::ax_runtime::task::ThreadOsExtensionBorrow<'task>;
+    ax_std::os::arceos::task::ThreadOsExtensionBorrow<'task>;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
 pub(crate) use arceos::{

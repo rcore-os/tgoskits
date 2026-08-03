@@ -132,6 +132,20 @@ impl FairRunQueue {
         self.len == 0
     }
 
+    pub(super) fn total_weight(&self) -> u64 {
+        u64::try_from(self.total_weight).expect("fair runqueue weight must remain non-negative")
+    }
+
+    pub(super) const fn virtual_time(&self) -> u64 {
+        self.zero_vruntime
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_virtual_time_for_test(&mut self, virtual_time: u64) {
+        let delta = virtual_delta(virtual_time, self.zero_vruntime);
+        self.rebase(delta);
+    }
+
     pub(super) fn insert(&mut self, thread: QueuedThread) {
         let key = FairQueueKey::for_thread(&thread);
         let slot = thread.id.slot() as usize;
@@ -202,7 +216,7 @@ impl FairRunQueue {
         find_first_matching(self.root.as_deref(), predicate).cloned()
     }
 
-    pub(super) fn weighted_virtual_time(&mut self, current: Option<FairEntity>) -> Option<u64> {
+    pub(super) fn update_virtual_time(&mut self, current: Option<FairEntity>) -> u64 {
         let mut sum_weighted_delta = self.sum_weighted_delta;
         let mut total_weight = self.total_weight;
         if let Some(current) = current {
@@ -211,7 +225,7 @@ impl FairRunQueue {
             total_weight += weight;
         }
         if total_weight == 0 {
-            return None;
+            return self.zero_vruntime;
         }
 
         // Rust integer division truncates toward zero. EEVDF needs the same
@@ -222,7 +236,7 @@ impl FairRunQueue {
         let delta = sum_weighted_delta / total_weight;
         let delta = i64::try_from(delta).expect("a weighted mean of i64 deltas must fit in i64");
         self.rebase(delta);
-        Some(self.zero_vruntime)
+        self.zero_vruntime
     }
 
     fn add_weighted_entity(&mut self, entity: FairEntity) {

@@ -3,6 +3,36 @@
 use super::*;
 
 impl TaskSystem {
+    pub(super) fn capture_owner_fair_migration(
+        &self,
+        cpu: &CpuLocal,
+        sched: &mut ThreadSchedState,
+    ) {
+        let timing_granularity_ns = self.config.timing_granularity_ns();
+        if let Some(fair) = sched.policy.effective_entity.fair() {
+            let virtual_time = cpu
+                .dispatch_state()
+                .run_queue
+                .virtual_time_for_mode(fair.mode());
+            sched
+                .policy
+                .effective_entity
+                .capture_fair_migration(virtual_time, timing_granularity_ns);
+        }
+        if !sched.is_pi_boosted() {
+            sched.policy.base_entity = sched.policy.effective_entity;
+        } else if let Some(fair) = sched.policy.base_entity.fair() {
+            let virtual_time = cpu
+                .dispatch_state()
+                .run_queue
+                .virtual_time_for_mode(fair.mode());
+            sched
+                .policy
+                .base_entity
+                .capture_fair_migration(virtual_time, timing_granularity_ns);
+        }
+    }
+
     /// Completes every owner-side selection through the same balance and
     /// one-shot programming sequence.
     ///
@@ -70,6 +100,7 @@ impl TaskSystem {
             sched.placement.set_migration_target(Some(target))?;
             sched.transition(&core, ThreadState::Ready)?;
             sched.placement.set_running_cpu(None)?;
+            self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
             core.set_target_cpu(target);
             cpu.as_mut().clear_current();
             return Ok(Some(target));
@@ -225,6 +256,7 @@ impl TaskSystem {
                 sched.policy.base_entity = queued.entity;
             }
             if let Some(target) = migration_target {
+                self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
                 let outgoing_candidate =
                     outgoing == Some(core.id()) && sched.placement.on_cpu() == Some(owner);
                 if !outgoing_candidate {

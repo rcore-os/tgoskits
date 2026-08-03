@@ -269,22 +269,44 @@ impl TaskSystem {
                 }
                 return Ok(());
             }
-            let queued = cpu
-                .as_mut()
-                .dispatch_state_mut()
-                .run_queue
-                .dequeue(core.id())
-                .ok_or(TaskError::NotReady)?;
-            Self::detach_owner_deadline_bandwidth_locked(core, &mut sched, cpu.as_mut())?;
-            sched.policy.effective_entity = queued.entity;
-            if !sched.is_pi_boosted() {
-                sched.policy.base_entity = queued.entity;
-            }
-            sched.placement.set_migration_target(Some(target))?;
-            sched.placement.set_queued_cpu(None)?;
+            let detached = {
+                let dispatch = cpu.as_mut().dispatch_state_mut();
+                let current_fair = dispatch
+                    .current_dispatch
+                    .as_ref()
+                    .and_then(|current| current.entity.fair());
+                dispatch
+                    .run_queue
+                    .detach_for_transfer(
+                        core.id(),
+                        current_fair,
+                        self.config.timing_granularity_ns(),
+                    )
+                    .ok_or(TaskError::NotReady)?
+            };
+            let queued_entity = detached.thread.entity;
+            let prepare_result = (|| {
+                Self::detach_owner_deadline_bandwidth_locked(core, &mut sched, cpu.as_mut())?;
+                sched.policy.effective_entity = queued_entity;
+                if !sched.is_pi_boosted() {
+                    sched.policy.base_entity = queued_entity;
+                }
+                self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
+                sched.placement.begin_queued_migration(owner, target)?;
+                core.set_target_cpu(target);
+                Ok(())
+            })();
             drop(sched);
+            if let Err(error) = prepare_result {
+                self.rollback_owner_queued_migration(cpu.as_mut(), core, detached, owner, target)?;
+                return Err(error);
+            }
+            if let Err(error) = self.publish_owner_migration(core, target, owner, target) {
+                self.rollback_owner_queued_migration(cpu.as_mut(), core, detached, owner, target)?;
+                return Err(error);
+            }
             self.publish_owner_cpu_load_summary(cpu.as_mut());
-            return self.publish_owner_migration(core, target, owner, target);
+            return Ok(());
         }
 
         if running_cpu == Some(owner) {

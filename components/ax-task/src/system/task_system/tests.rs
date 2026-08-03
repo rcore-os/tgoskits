@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
-use crate::PiLockIdentity;
+use crate::{FairEntity, PiLockIdentity};
 
 fn publish_test_scheduler_work(
     remote: &CpuRemote,
@@ -142,6 +142,7 @@ fn same_cpu_hard_irq_publication_uses_irq_return_instead_of_a_self_ipi() {
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
     let remote = &system.cpu_remotes[0];
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::reset_local_scheduler_work_publications();
 
     crate::test_runtime::set_hard_irq(true);
     publish_test_scheduler_work(remote, test_inbox_node(&node), 1);
@@ -153,6 +154,215 @@ fn same_cpu_hard_irq_publication_uses_irq_return_instead_of_a_self_ipi() {
     assert_eq!(
         scheduler_ipi_send_count, 0,
         "same-CPU hard-IRQ work must run from IRQ return without a self-IPI round trip"
+    );
+    assert_eq!(
+        crate::test_runtime::local_scheduler_work_publications(),
+        1,
+        "suppressing the self-IPI must first publish need_resched to the IRQ-return owner"
+    );
+}
+
+#[test]
+fn same_cpu_hard_irq_wake_is_runnable_at_the_irq_return_safe_point() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let bootstrap = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let service = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(1).unwrap(),
+        )))
+        .unwrap();
+    system.make_ready(service.id()).unwrap();
+    system.enqueue(cpu.as_mut(), service.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 1).unwrap().next(),
+        service.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    assert_eq!(
+        system.block_current(cpu.as_mut(), 2).unwrap().next(),
+        bootstrap.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::reset_local_scheduler_work_publications();
+    let cell = crate::IrqWaitCell::new();
+    let registration = crate::IrqWaitRegistration::new(service.wake_handle());
+    let token = match cell.register(&registration) {
+        crate::IrqRegisterResult::Registered(token) => token,
+        other => panic!("fresh hard-IRQ registration failed: {other:?}"),
+    };
+
+    crate::test_runtime::set_hard_irq(true);
+    assert_eq!(cell.notify(), crate::IrqNotifyResult::Notified);
+    crate::test_runtime::set_hard_irq(false);
+
+    assert!(system.cpu_remotes[0].remote_wake_inbox().has_pending());
+    assert_eq!(
+        system.thread_state(service.id()).unwrap(),
+        ThreadState::Blocked
+    );
+    let outcome = system.schedule_if_requested(cpu.as_mut(), 3).unwrap();
+    crate::quiesce_irq_wait(token).unwrap();
+
+    assert_eq!(outcome.decision().unwrap().next(), service.id());
+    assert_eq!(
+        system.thread_state(service.id()).unwrap(),
+        ThreadState::Running
+    );
+    assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 0);
+    assert_eq!(
+        crate::test_runtime::local_scheduler_work_publications(),
+        1,
+        "same-CPU IRQ completion must publish the IRQ-return reschedule edge"
+    );
+}
+
+#[test]
+fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let bootstrap = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    assert!(
+        system
+            .charge_current(cpu.as_mut(), 20_000_000, 20_000_000, 0)
+            .unwrap()
+            .slice_expired()
+    );
+    let service = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(service.id()).unwrap();
+    system
+        .enqueue(cpu.as_mut(), service.id(), 20_000_000)
+        .unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 20_000_000).unwrap().next(),
+        service.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    cpu.as_mut()
+        .dispatch_state_mut()
+        .current_dispatch
+        .as_mut()
+        .unwrap()
+        .entity = SchedulingEntity::Fair(FairEntity::test_state(
+        Nice::ZERO,
+        FairMode::Normal,
+        19_000_000,
+        19_500_000,
+    ));
+    assert_eq!(
+        system
+            .block_current(cpu.as_mut(), 20_000_000)
+            .unwrap()
+            .next(),
+        bootstrap.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    assert_eq!(
+        service
+            .core
+            .sched()
+            .lock()
+            .policy
+            .effective_entity
+            .fair()
+            .unwrap()
+            .saved_sleep_lag(),
+        Some(500_000)
+    );
+
+    let current_entity =
+        FairEntity::test_state(Nice::ZERO, FairMode::Normal, 20_000_000, 20_400_000);
+    let dispatch = cpu.as_mut().dispatch_state_mut();
+    dispatch.current_dispatch.as_mut().unwrap().entity = SchedulingEntity::Fair(current_entity);
+    dispatch
+        .run_queue
+        .update_fair_virtual_time(Some(current_entity));
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    let cell = crate::IrqWaitCell::new();
+    let registration = crate::IrqWaitRegistration::new(service.wake_handle());
+    let token = match cell.register(&registration) {
+        crate::IrqRegisterResult::Registered(token) => token,
+        other => panic!("fresh fair service registration failed: {other:?}"),
+    };
+
+    crate::test_runtime::set_hard_irq(true);
+    assert_eq!(cell.notify(), crate::IrqNotifyResult::Notified);
+    crate::test_runtime::set_hard_irq(false);
+    assert_eq!(
+        system
+            .drain_remote_wakes(cpu.as_mut(), 20_000_001)
+            .unwrap()
+            .drained(),
+        1
+    );
+    assert_eq!(
+        system.thread_state(service.id()).unwrap(),
+        ThreadState::Ready
+    );
+    let queued = service
+        .core
+        .sched()
+        .lock()
+        .policy
+        .effective_entity
+        .fair()
+        .unwrap();
+    assert_eq!(queued.vruntime(), 19_000_000);
+    assert_eq!(queued.virtual_deadline(), 19_000_001);
+    let outcome = system
+        .schedule_if_requested(cpu.as_mut(), 20_000_001)
+        .unwrap();
+    crate::quiesce_irq_wait(token).unwrap();
+
+    assert_eq!(
+        outcome.decision().map(|decision| decision.next()),
+        Some(service.id()),
+        "an IRQ-woken positive-lag service thread must run at IRQ return, not at a later timer"
+    );
+}
+
+#[test]
+fn eligible_fair_current_keeps_latest_eevdf_slice_protection_on_wake() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    let current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 1_200);
+    let woken = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 800, 1_000);
+    let dispatch = cpu
+        .as_mut()
+        .dispatch_state_mut()
+        .current_dispatch
+        .as_mut()
+        .unwrap();
+    dispatch.entity = SchedulingEntity::Fair(current);
+
+    assert!(current.is_eligible(1_000));
+    assert!(woken.deadline_precedes(current));
+    assert!(
+        !dispatch.should_preempt(
+            SchedulePolicy::default(),
+            SchedulingEntity::Fair(woken),
+            1_000,
+        ),
+        "latest EEVDF keeps an eligible current request protected until its request boundary"
     );
 }
 
@@ -238,6 +448,53 @@ fn same_cpu_task_wake_activates_the_owner_without_remote_inbox() {
     // SAFETY: this consumes the task-context owner token on the same host
     // thread after the snapshot borrow has ended.
     unsafe { task_runtime::irq_guard_exit(token) };
+}
+
+#[test]
+fn same_cpu_task_irq_cell_notification_activates_without_remote_inbox() {
+    crate::test_runtime::reset_irq_state();
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let bootstrap = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let sleeper = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(sleeper.id()).unwrap();
+    system.enqueue(cpu.as_mut(), sleeper.id(), 1).unwrap();
+    assert_eq!(
+        system.schedule(cpu.as_mut(), 1).unwrap().next(),
+        sleeper.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+    assert_eq!(
+        system.block_current(cpu.as_mut(), 0).unwrap().next(),
+        bootstrap.id()
+    );
+    system.complete_context_switch(cpu.as_mut()).unwrap();
+
+    let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    let cell = crate::IrqWaitCell::new();
+    let registration = crate::IrqWaitRegistration::new(sleeper.wake_handle());
+    let token = match cell.register(&registration) {
+        crate::IrqRegisterResult::Registered(token) => token,
+        other => panic!("fresh task notification registration failed: {other:?}"),
+    };
+
+    let notified = cell.notify_from_task();
+    let remote_wake_pending = system.cpu_remotes[0].remote_wake_inbox().has_pending();
+    let sleeper_state = system.thread_state(sleeper.id()).unwrap();
+    token.detach().try_finish().unwrap();
+
+    assert_eq!(notified, crate::IrqNotifyResult::Notified);
+    assert!(
+        !remote_wake_pending,
+        "task-context notification must not detour through the IRQ wake inbox"
+    );
+    assert_eq!(sleeper_state, ThreadState::Ready);
 }
 
 #[test]
@@ -2641,6 +2898,82 @@ fn running_migration_is_published_only_after_switch_tail() {
     let transfer = system.drain_policy_updates(cpu1.as_mut(), 2).unwrap();
     assert_eq!(transfer.drained(), 1);
     assert!(!transfer.pending());
+}
+
+#[test]
+fn queued_affinity_migration_captures_lag_before_detaching_from_source() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .install_bootstrap_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fifo(RtPriority::new(1).unwrap())),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let migrating = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let peer = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    for thread in [&migrating, &peer] {
+        system.make_ready(thread.id()).unwrap();
+    }
+
+    cpu0.as_mut()
+        .dispatch_state_mut()
+        .run_queue
+        .set_virtual_time_for_test(1_000);
+    for (thread, vruntime, deadline) in [(&migrating, 900, 950), (&peer, 1_100, 1_200)] {
+        let policy = SchedulePolicy::default();
+        let entity = SchedulingEntity::Fair(FairEntity::test_state(
+            Nice::ZERO,
+            FairMode::Normal,
+            vruntime,
+            deadline,
+        ));
+        cpu0.as_mut()
+            .dispatch_state_mut()
+            .run_queue
+            .enqueue(
+                thread.id(),
+                policy,
+                entity,
+                Arc::clone(&thread.core),
+                EnqueueReason::Preempted,
+                None,
+            )
+            .unwrap();
+        let mut sched = thread.core.sched().lock();
+        sched.policy.base_entity = entity;
+        sched.policy.effective_entity = entity;
+        sched.placement.set_queued_cpu(Some(CpuId::new(0))).unwrap();
+        thread.core.set_target_cpu(CpuId::new(0));
+    }
+
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
+    system.set_affinity(migrating.id(), cpu1_only).unwrap();
+    system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
+
+    assert_eq!(
+        migrating
+            .core
+            .sched()
+            .lock()
+            .policy
+            .effective_entity
+            .fair()
+            .unwrap()
+            .saved_migration(),
+        Some((100, 50)),
+        "source vlag must be saved against the weighted average before dequeue changes it"
+    );
 }
 
 #[test]

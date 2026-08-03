@@ -1,5 +1,5 @@
 use std::{
-    os::arceos::modules::{ax_hal, ax_task},
+    os::arceos::{modules::ax_hal, task},
     println,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,
@@ -78,7 +78,7 @@ fn test_sleep() {
 }
 
 fn test_wait_queue() {
-    use ax_task::WaitQueue;
+    use task::WaitQueue;
 
     static WQ1: WaitQueue = WaitQueue::new();
     static WQ2: WaitQueue = WaitQueue::new();

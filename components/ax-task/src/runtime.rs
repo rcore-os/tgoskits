@@ -531,15 +531,18 @@ pub trait TaskRuntime {
     /// exactly once. Tokens may be exited in non-LIFO order.
     unsafe fn preempt_guard_exit(token: PreemptGuardToken);
 
-    /// Reports whether sticky scheduler work for the current CPU has a local
-    /// safe point that makes a self-IPI unnecessary.
+    /// Publishes sticky scheduler work to the current CPU's architecture
+    /// preemption state and reports whether a local safe point makes a self-IPI
+    /// unnecessary.
     ///
-    /// The caller owns an IRQ guard and has already published the work. The
-    /// runtime may return `true` only when the work is guaranteed to reach the
-    /// scheduler before the CPU can sleep: through hard-IRQ return, an active
-    /// scheduler/preemption guard, or atomic conversion of the final
-    /// task-context IRQ guard into a scheduler baton.
-    fn local_scheduler_work_is_self_serviced() -> bool;
+    /// The caller owns an IRQ guard and has already published the scheduler
+    /// payload. Before returning, the runtime must set the architecture-owned
+    /// `need_resched` state observed by preemption and IRQ return. It may return
+    /// `true` only when that state is guaranteed to reach the scheduler before
+    /// the CPU can sleep: through hard-IRQ return, an active scheduler/preemption
+    /// guard, or atomic conversion of the final task-context IRQ guard into a
+    /// scheduler baton.
+    fn publish_local_scheduler_work() -> bool;
 
     /// Withdraws the outgoing runtime context's CPU binding after raw switch.
     ///

@@ -155,14 +155,14 @@ impl_task_runtime! {
             crate::guard::exit_preempt();
         }
 
-        fn local_scheduler_work_is_self_serviced() -> bool {
+        fn publish_local_scheduler_work() -> bool {
             #[cfg(test)]
             {
                 false
             }
             #[cfg(not(test))]
             {
-                crate::guard::local_scheduler_work_is_self_serviced()
+                crate::guard::publish_local_scheduler_work()
             }
         }
 

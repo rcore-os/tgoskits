@@ -147,8 +147,8 @@ wake 重新投递。
 - PI wait/wake 与 task-backed worker/executor API
 
 ArceOS 应用和 POSIX API 使用 `ax_runtime::task` 的 spawn、join、sleep、yield、
-address-space 和调度策略接口。`ax_std::os::arceos::modules::ax_task` 仅作为
-`ax_runtime::task` 的兼容 re-export。
+address-space 和调度策略接口。axstd 消费者统一使用
+`ax_std::os::arceos::task`，不再提供旧模块路径的兼容别名。
 
 ## 验证
 
