@@ -18,7 +18,6 @@ use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, pages_in,
 };
-use crate::mm::flush_tlb_range_sync;
 
 #[doc(hidden)]
 pub struct FileBackendInner {
@@ -72,8 +71,7 @@ impl FileBackendInner {
                     // — dropping the page here would leave a dangling PTE.
                     return false;
                 };
-                this.on_evict(pn, &mut aspace);
-                true
+                this.on_evict(pn, &mut aspace)
             },
             move |pn| -> bool {
                 let Some(this) = writeback.upgrade() else {
@@ -89,18 +87,31 @@ impl FileBackendInner {
         self.handle.store(handle, Ordering::Release);
     }
 
-    fn on_evict(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) {
-        let file_data = self.file_data.lock();
-        let Some(pn) = pn.checked_sub(file_data.offset_page) else {
-            return;
+    fn on_evict(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> bool {
+        match aspace.mutate_with_tlb_gather(&[], |aspace| self.unmap_evicted_page(pn, aspace)) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!("Failed to finish page-cache eviction TLB transaction: {error}");
+                false
+            }
+        }
+    }
+
+    fn unmap_evicted_page(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> AxResult {
+        let vaddr = {
+            let file_data = self.file_data.lock();
+            let Some(pn) = pn.checked_sub(file_data.offset_page) else {
+                return Ok(());
+            };
+            file_data.start + pn as usize * PageSize::Size4K as usize
         };
-        let vaddr = file_data.start + pn as usize * PageSize::Size4K as usize;
         if !aspace.find_area(vaddr).is_some_and(
             |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
         ) {
             // Ignore if the page is not controlled by this file mapping.
-            return;
+            return Ok(());
         }
+        let shootdown_range = super::super::tlb::checked_range(vaddr, PAGE_SIZE_4K)?;
 
         let kind = if self.shared {
             RssKind::Shmem
@@ -120,7 +131,9 @@ impl FileBackendInner {
         };
         if unmapped {
             aspace.rss().dec(kind, 1);
+            super::super::tlb::record_range_for_shootdown(shootdown_range);
         }
+        Ok(())
     }
 
     fn protect_dirty_page(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> bool {
@@ -154,7 +167,8 @@ impl FileBackendInner {
                         );
                         return false;
                     }
-                    if let Err(err) = flush_tlb_range_sync(vaddr, PAGE_SIZE_4K) {
+                    drop(cursor);
+                    if let Err(err) = aspace.flush_active_tlb_range(vaddr, PAGE_SIZE_4K) {
                         warn!(
                             "Failed to invalidate dirty mmap page {:?} on all CPUs: {:?}",
                             vaddr, err
@@ -375,8 +389,10 @@ impl BackendOps for FileBackend {
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
+                        let shootdown_range = super::super::tlb::checked_range(addr, PAGE_SIZE_4K)?;
                         self.0.cache.mark_mmap_dirty_page(pn)?;
                         pt.remap(addr, paddr, flags)?;
+                        super::super::tlb::record_range_for_shootdown(shootdown_range);
                         pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
@@ -428,35 +444,34 @@ impl BackendOps for FileBackend {
             } else {
                 let inner = self.0.clone();
                 Some(Box::new(move |aspace: &mut AddrSpace| {
-                    for (pn, page) in to_be_evicted {
-                        // Unmap (and TLB-flush via the cursor) the evicted VA first,
-                        // then drop the page to free its frame — never the reverse.
-                        //
-                        // The page cache is shared across all areas backed by the same
-                        // file. After mprotect splits a file mapping, `split` creates a
-                        // sibling FileBackendInner (same CachedFile, different
-                        // start/offset_page). A populate on one sub-area can evict a page
-                        // owned by another sub-area; `inner.on_evict` only covers
-                        // `inner`'s own page range (its `checked_sub` returns None
-                        // otherwise), so route the evicted page to every area sharing this
-                        // cache. `on_evict` self-validates (range + area ptr_eq), so only
-                        // the true owner unmaps. Without this, the sibling's PTE keeps
-                        // pointing at the just-freed frame — a use-after-free that
-                        // surfaces as a wild pointer (the JVM jimage on loongarch).
-                        let owners: Vec<_> = aspace
-                            .areas()
-                            .filter_map(|area| match area.backend() {
-                                Backend::File(fb) if fb.0.cache.ptr_eq(&inner.cache) => {
-                                    Some(fb.0.clone())
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        for owner in owners {
-                            owner.on_evict(pn, aspace);
+                    // The page cache is shared across split VMAs, so route
+                    // every evicted page to all matching backend owners. One
+                    // gather batches their invalidations and retains the page
+                    // objects until all active CPUs acknowledge the shootdown.
+                    let owners: Vec<_> = aspace
+                        .areas()
+                        .filter_map(|area| match area.backend() {
+                            Backend::File(fb) if fb.0.cache.ptr_eq(&inner.cache) => {
+                                Some(fb.0.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let evicted = to_be_evicted;
+                    let result = aspace.mutate_with_tlb_gather(&[], |aspace| {
+                        for (pn, _) in &evicted {
+                            for owner in &owners {
+                                owner.unmap_evicted_page(*pn, aspace)?;
+                            }
                         }
-                        drop(page);
+                        Ok(())
+                    });
+                    if result.is_err() {
+                        // The PTEs may already be gone, but freeing a page
+                        // after an incomplete shootdown is unsafe.
+                        core::mem::forget(evicted);
                     }
+                    result
                 }))
             },
         ))

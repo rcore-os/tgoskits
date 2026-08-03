@@ -1,6 +1,6 @@
 //! Runtime-owned address-space tokens and per-CPU active-mm state.
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     mem::align_of,
     ptr,
@@ -51,7 +51,60 @@ struct RuntimeAddressSpace {
     root: usize,
     active_cpus: AtomicUsize,
     reclaim_waiting: AtomicUsize,
+    #[cfg(feature = "uspace")]
+    cpu_tracker: Arc<AddressSpaceCpuTracker>,
     _owner: Box<dyn TaskAddressSpaceOwner>,
+}
+
+const _: () = assert!(crate::CPU_CAPACITY <= usize::BITS as usize);
+
+/// Shared CPU-footprint state for one hardware page-table root.
+///
+/// Every scheduler token for threads sharing one OS address space must carry
+/// the same tracker. The runtime publishes a CPU bit before installing the
+/// root and clears it only after replacing the hardware root, so page-table
+/// mutation can target every CPU that may retain a translation.
+pub struct AddressSpaceCpuTracker {
+    root: usize,
+    active_mask: AtomicUsize,
+}
+
+impl AddressSpaceCpuTracker {
+    /// Creates an inactive CPU tracker permanently bound to `root`.
+    pub fn new(root: PhysAddr) -> Self {
+        Self {
+            root: root.as_usize(),
+            active_mask: AtomicUsize::new(0),
+        }
+    }
+
+    fn matches_root(&self, root: PhysAddr) -> bool {
+        self.root == root.as_usize()
+    }
+
+    /// Returns the CPUs that may currently retain translations for this root.
+    pub fn active_mask(&self) -> usize {
+        self.active_mask.load(Ordering::Acquire)
+    }
+
+    #[cfg(any(feature = "uspace", test))]
+    fn cpu_bit(cpu_id: usize) -> usize {
+        1usize.checked_shl(cpu_id as u32).unwrap_or_else(|| {
+            panic!("CPU {cpu_id} cannot be represented in an address-space mask")
+        })
+    }
+
+    #[cfg(any(feature = "uspace", test))]
+    fn activate(&self, cpu_id: usize) {
+        self.active_mask
+            .fetch_or(Self::cpu_bit(cpu_id), Ordering::Release);
+    }
+
+    #[cfg(any(feature = "uspace", test))]
+    fn deactivate(&self, cpu_id: usize) {
+        self.active_mask
+            .fetch_and(!Self::cpu_bit(cpu_id), Ordering::Release);
+    }
 }
 
 /// Move-only runtime token for one user address space.
@@ -60,7 +113,11 @@ pub struct TaskAddressSpace(Option<AddressSpaceToken>);
 impl TaskAddressSpace {
     /// Creates a scheduler token that owns `owner` until address-space reap.
     pub fn new(root: PhysAddr, owner: impl Send + Sync + 'static) -> Result<Self, TaskError> {
-        Self::new_with_owner(root, Box::new(RetainedTaskAddressSpaceOwner(owner)))
+        Self::new_with_owner(
+            root,
+            Arc::new(AddressSpaceCpuTracker::new(root)),
+            Box::new(RetainedTaskAddressSpaceOwner(owner)),
+        )
     }
 
     /// Creates a scheduler token with task-detach ownership semantics.
@@ -71,11 +128,13 @@ impl TaskAddressSpace {
     /// drop after all active-CPU leases have drained.
     pub fn new_with_task_detach<T: Send + Sync + 'static>(
         root: PhysAddr,
+        cpu_tracker: Arc<AddressSpaceCpuTracker>,
         owner: T,
         detach: fn(&T),
     ) -> Result<Self, TaskError> {
         Self::new_with_owner(
             root,
+            cpu_tracker,
             Box::new(DetachableTaskAddressSpaceOwner {
                 owner,
                 detached: core::sync::atomic::AtomicBool::new(false),
@@ -86,9 +145,10 @@ impl TaskAddressSpace {
 
     fn new_with_owner(
         root: PhysAddr,
+        cpu_tracker: Arc<AddressSpaceCpuTracker>,
         owner: Box<dyn TaskAddressSpaceOwner>,
     ) -> Result<Self, TaskError> {
-        if root.as_usize() == 0 {
+        if root.as_usize() == 0 || !cpu_tracker.matches_root(root) {
             return Err(TaskError::InvalidRuntimeHandle);
         }
         let address_space = Box::new(RuntimeAddressSpace {
@@ -96,8 +156,12 @@ impl TaskAddressSpace {
             root: root.as_usize(),
             active_cpus: AtomicUsize::new(0),
             reclaim_waiting: AtomicUsize::new(0),
+            #[cfg(feature = "uspace")]
+            cpu_tracker,
             _owner: owner,
         });
+        #[cfg(not(feature = "uspace"))]
+        let _ = cpu_tracker;
         let raw = Box::into_raw(address_space).expose_provenance();
         // SAFETY: the fresh allocation transfers its unique destruction right
         // into this move-only token.
@@ -240,13 +304,35 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                     return RuntimeStatus::Success;
                 }
 
+                let cpu_id = pin.area().cpu_index().as_usize();
+                let previous = if previous_raw == 0 {
+                    None
+                } else {
+                    let previous = AddressSpaceHandle::from_raw(previous_raw);
+                    Some(
+                        runtime_address_space(previous)
+                            .unwrap_or_else(|_| panic!("active address-space handle became stale")),
+                    )
+                };
+                let same_address_space = previous
+                    .is_some_and(|previous| Arc::ptr_eq(&previous.cpu_tracker, &next.cpu_tracker));
+                if same_address_space {
+                    debug_assert_eq!(
+                        previous.map(|previous| previous.root),
+                        Some(next.root),
+                        "one address-space CPU tracker cannot describe different roots"
+                    );
+                }
                 next.active_cpus.fetch_add(1, Ordering::AcqRel);
+                if !same_address_space {
+                    next.cpu_tracker.activate(cpu_id);
+                }
                 install_hardware_root(next.root);
                 ACTIVE_ADDRESS_SPACE.write_current(pin, next_raw);
-                if previous_raw != 0 {
-                    let previous = AddressSpaceHandle::from_raw(previous_raw);
-                    let previous = runtime_address_space(previous)
-                        .unwrap_or_else(|_| panic!("active address-space handle became stale"));
+                if let Some(previous) = previous {
+                    if !same_address_space {
+                        previous.cpu_tracker.deactivate(cpu_id);
+                    }
                     release_active_cpu(previous);
                 }
                 RuntimeStatus::Success
@@ -276,6 +362,9 @@ pub(super) fn release_current_active_address_space() {
             let previous = AddressSpaceHandle::from_raw(previous_raw);
             let previous = runtime_address_space(previous)
                 .unwrap_or_else(|_| panic!("offline CPU retained a stale active address space"));
+            previous
+                .cpu_tracker
+                .deactivate(pin.area().cpu_index().as_usize());
             release_active_cpu(previous);
         })
     }
@@ -452,6 +541,7 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut token = TaskAddressSpace::new_with_task_detach(
             ax_memory_addr::PhysAddr::from(0x4000),
+            Arc::new(AddressSpaceCpuTracker::new(PhysAddr::from(0x4000))),
             CountDetach {
                 detaches: Arc::clone(&detaches),
                 drops: Arc::clone(&drops),
@@ -480,5 +570,26 @@ mod tests {
         );
         assert_eq!(drops.load(Ordering::Acquire), 1);
         assert!(!owned.is_none());
+    }
+
+    #[test]
+    fn shared_cpu_tracker_publishes_and_withdraws_cpu_footprints() {
+        let tracker = AddressSpaceCpuTracker::new(PhysAddr::from(0x4000));
+
+        tracker.activate(1);
+        tracker.activate(3);
+        assert_eq!(tracker.active_mask(), (1usize << 1) | (1usize << 3));
+
+        tracker.deactivate(1);
+        assert_eq!(tracker.active_mask(), 1usize << 3);
+    }
+
+    #[test]
+    fn address_space_cpu_tracker_rejects_mismatched_root() {
+        let tracker = Arc::new(AddressSpaceCpuTracker::new(PhysAddr::from(0x4000)));
+        let token =
+            TaskAddressSpace::new_with_task_detach(PhysAddr::from(0x8000), tracker, (), |_| {});
+
+        assert!(matches!(token, Err(TaskError::InvalidRuntimeHandle)));
     }
 }

@@ -21,6 +21,7 @@ mod file;
 mod linear;
 mod shared;
 
+pub(crate) use self::cow::DeferredFrameRelease;
 #[cfg(axtest)]
 pub(crate) use self::cow::{
     cow_file_max_read_len_boundary_rules_hold_for_test, private_mmap_eof_check_for_test,
@@ -64,7 +65,7 @@ fn pages_in(range: VirtAddrRange, align: PageSize) -> AxResult<DynPageIter<VirtA
     DynPageIter::new(range.start, range.end, align as usize).ok_or(AxError::InvalidInput)
 }
 
-type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace) -> AxResult>;
 
 #[enum_dispatch]
 pub trait BackendOps {
@@ -230,6 +231,7 @@ impl MappingBackend for Backend {
     fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
+        super::tlb::retain_backend_until_shootdown(self.clone());
         if let Err(err) = BackendOps::unmap(self, range, acct, &mut pt.cursor()) {
             warn!("Failed to unmap area: {:?}", err);
             false
