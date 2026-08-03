@@ -111,6 +111,11 @@ class StarryGuestContractTests(unittest.TestCase):
             "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256",
             autorun,
         )
+        self.assertIn("raw_manifest=$ivc_raw_csv.sha256", autorun)
+        self.assertIn(
+            "printf '%s  %s\\n' \"$raw_sha256\" \"$ivc_raw_csv\" >\"$raw_manifest\"",
+            autorun,
+        )
         self.assertIn('"$BB" sync || fatal final-sync-failed', autorun)
         self.assertLess(
             autorun.index('"$BB" sync || fatal final-sync-failed'),

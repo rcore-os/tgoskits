@@ -11,6 +11,7 @@ result_image=${ORANGEPI_IVC_RESULT_IMAGE:?set ORANGEPI_IVC_RESULT_IMAGE to the s
 raw_output=${ORANGEPI_IVC_RAW_CSV:?set ORANGEPI_IVC_RAW_CSV to the local result path}
 expected_count=${ORANGEPI_IVC_EXPECTED_COUNT:?set ORANGEPI_IVC_EXPECTED_COUNT to the controller sample count}
 guest_raw_path=/var/lib/ivc/raw.csv
+guest_raw_manifest_path=/var/lib/ivc/raw.csv.sha256
 lease_dir=$workspace/tmp/competition/ivc/board-lease
 csv_header='sequence,cycle_started_us,command_sent_us,response_completed_us,full_loop_us,pre_send_us,transport_us,setpoint_milli_c,observed_milli_c,measured_milli_c,command_actuator_permille,status_actuator_permille,error_milli_c'
 
@@ -121,6 +122,29 @@ if ((line_count != expected_lines)); then
 fi
 raw_sha256=$(sha256sum "$temporary_output")
 raw_sha256=${raw_sha256%% *}
+guest_raw_manifest=$(ssh "${ssh_options[@]}" "$ssh_target" sh -s -- \
+    "$result_image" "$guest_raw_manifest_path" <<'REMOTE'
+set -eu
+result_image=$1
+guest_raw_manifest_path=$2
+temporary=$(mktemp /tmp/ivc-raw-sha256.XXXXXX)
+cleanup() {
+    rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+debugfs_path=$(command -v debugfs)
+"$debugfs_path" -R "dump $guest_raw_manifest_path $temporary" \
+    "$result_image" >/dev/null
+test -s "$temporary"
+cat "$temporary"
+REMOTE
+)
+expected_guest_raw_manifest="$raw_sha256  $guest_raw_path"
+if [[ "$guest_raw_manifest" != "$expected_guest_raw_manifest" ]]; then
+    echo "Snapshot guest raw manifest does not match the harvested CSV" >&2
+    exit 1
+fi
 mv -f -- "$temporary_output" "$raw_output"
 temporary_output=
 
@@ -213,5 +237,6 @@ wait "$lease_pid" 2>/dev/null || true
 lease_pid=
 
 printf '%s\n' "$result_evidence"
+echo "BOARD_GUEST_RAW_MANIFEST path=$guest_raw_path samples=$expected_count sha256=$raw_sha256"
 echo "BOARD_RAW_RESULT_HARVESTED path=$raw_output samples=$expected_count sha256=$raw_sha256"
 printf '%s\n' "$board_identity"

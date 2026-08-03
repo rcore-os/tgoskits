@@ -71,6 +71,9 @@ if /usr/local/bin/ivcproto controller \
     [ "$raw_lines" -eq "$expected_raw_lines" ] || fatal raw-csv-count-mismatch
     raw_checksum=$("$BB" sha256sum "$ivc_raw_csv") || fatal raw-csv-hash-failed
     raw_sha256=${raw_checksum%% *}
+    raw_manifest=$ivc_raw_csv.sha256
+    "$BB" printf '%s  %s\n' "$raw_sha256" "$ivc_raw_csv" >"$raw_manifest" \
+        || fatal raw-manifest-write-failed
     echo "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256"
     result=0
 else

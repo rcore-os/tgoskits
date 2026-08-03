@@ -111,6 +111,7 @@ cat <<EOF
 AXVISOR_SNAPSHOT_SYNC_OK
 BOARD_LINUX_RESTORED
 BOARD_RESULT_IMAGE_VALIDATED vm=1 index=0 path=/home/orangepi/ivc-ns bytes=67108864 sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef fsck=clean
+BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=20 sha256=$raw_sha256
 BOARD_RAW_RESULT_HARVESTED path=$ORANGEPI_IVC_RAW_CSV samples=20 sha256=$raw_sha256
 BOARD_IDENTITY board_id=fake-rk3588 hostname=orangepi5plus cpu_temp_milli_c=42000
 EOF
@@ -165,6 +166,7 @@ cat <<EOF
 AXVISOR_SNAPSHOT_SYNC_OK
 BOARD_LINUX_RESTORED
 BOARD_RESULT_IMAGE_VALIDATED vm=1 index=0 path=$ORANGEPI_IVC_RESULT_IMAGE bytes=67108864 sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef fsck=clean
+BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=100 sha256=$raw_sha256
 BOARD_RAW_RESULT_HARVESTED path=$ORANGEPI_IVC_RAW_CSV samples=100 sha256=$raw_sha256
 BOARD_IDENTITY board_id=fake-rk3588 hostname=orangepi5plus cpu_temp_milli_c=42000
 EOF
@@ -334,6 +336,8 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("BOARD_RESULT_IMAGE_VALIDATED", harvest)
         self.assertIn("sha256sum", harvest)
         self.assertIn("/var/lib/ivc/raw.csv", harvest)
+        self.assertIn("/var/lib/ivc/raw.csv.sha256", harvest)
+        self.assertIn("BOARD_GUEST_RAW_MANIFEST", harvest)
         self.assertIn("sha256sum", harvest)
         self.assertIn("ORANGEPI_IVC_RESULT_IMAGE", harvest)
         self.assertNotIn("ORANGEPI_IVC_GUEST_IMAGE", harvest)

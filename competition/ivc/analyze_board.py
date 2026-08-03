@@ -33,6 +33,7 @@ DUPLICATE_PREFIX = "IVC-RTOS-DUPLICATE "
 STARRY_BOOT_PREFIX = "IVC-STARRY-BOOT "
 STARRY_NETWORK_PREFIX = "IVC-STARRY-NET "
 STARRY_RAW_PREFIX = "IVC-STARRY-RAW "
+GUEST_RAW_MANIFEST_PREFIX = "BOARD_GUEST_RAW_MANIFEST "
 HARVEST_RAW_PREFIX = "BOARD_RAW_RESULT_HARVESTED "
 BOARD_IDENTITY_PREFIX = "BOARD_IDENTITY "
 BLOCK_SNAPSHOT_PREFIX = "BOARD_RESULT_IMAGE_VALIDATED "
@@ -544,29 +545,49 @@ def parse_raw_samples(
     period_ms: int,
     controller: dict[str, object],
 ) -> dict[str, object]:
-    guest_record = find_record(
+    uart_record = find_record(
         lines, STARRY_RAW_PREFIX, ("path", "samples", "sha256")
+    )
+    guest_manifest_record = find_record(
+        lines, GUEST_RAW_MANIFEST_PREFIX, ("path", "samples", "sha256")
     )
     harvest_record = find_record(
         lines, HARVEST_RAW_PREFIX, ("path", "samples", "sha256")
     )
-    if required(guest_record, "path", STARRY_RAW_PREFIX) != "/var/lib/ivc/raw.csv":
+    guest_raw_path = "/var/lib/ivc/raw.csv"
+    if required(uart_record, "path", STARRY_RAW_PREFIX) != guest_raw_path:
         raise AnalysisError("unexpected StarryOS raw CSV path")
+    if (
+        required(guest_manifest_record, "path", GUEST_RAW_MANIFEST_PREFIX)
+        != guest_raw_path
+    ):
+        raise AnalysisError("unexpected snapshot guest raw CSV path")
+
     for record, prefix in (
-        (guest_record, STARRY_RAW_PREFIX),
+        (uart_record, STARRY_RAW_PREFIX),
+        (guest_manifest_record, GUEST_RAW_MANIFEST_PREFIX),
         (harvest_record, HARVEST_RAW_PREFIX),
     ):
         if integer(record, "samples", prefix) != expected_count:
-            raise AnalysisError(f"{prefix.strip()} sample count does not match expected count")
-        digest = required(record, "sha256", prefix)
-        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            raise AnalysisError(f"invalid SHA-256 in {prefix.strip()} record")
+            raise AnalysisError(
+                f"{prefix.strip()} sample count does not match expected count"
+            )
 
+    uart_sha256 = required(uart_record, "sha256", STARRY_RAW_PREFIX)
+    if re.fullmatch(r"[0-9a-f]{1,64}", uart_sha256) is None:
+        raise AnalysisError("invalid SHA-256 fragment in IVC-STARRY-RAW record")
+    uart_sha256_complete = len(uart_sha256) == 64
+    guest_manifest_sha256 = complete_sha256(
+        guest_manifest_record, GUEST_RAW_MANIFEST_PREFIX
+    )
+    harvest_sha256 = complete_sha256(harvest_record, HARVEST_RAW_PREFIX)
     actual_sha256 = sha256_evidence_content(raw_path)
-    guest_sha256 = required(guest_record, "sha256", STARRY_RAW_PREFIX)
-    harvest_sha256 = required(harvest_record, "sha256", HARVEST_RAW_PREFIX)
-    if actual_sha256 != guest_sha256 or actual_sha256 != harvest_sha256:
-        raise AnalysisError("raw CSV SHA-256 does not match guest and harvest records")
+    if actual_sha256 != guest_manifest_sha256 or actual_sha256 != harvest_sha256:
+        raise AnalysisError(
+            "raw CSV SHA-256 does not match snapshot guest manifest and harvest records"
+        )
+    if uart_sha256_complete and actual_sha256 != uart_sha256:
+        raise AnalysisError("complete UART SHA-256 conflicts with harvested raw CSV")
 
     rows = read_raw_rows(raw_path, expected_count)
     derived = derive_raw_metrics(rows, period_ms)
@@ -576,10 +597,20 @@ def parse_raw_samples(
         "path": str(raw_path),
         "sha256": actual_sha256,
         "artifact_sha256": sha256_file(raw_path),
+        "guest_manifest_sha256": guest_manifest_sha256,
+        "uart_sha256": uart_sha256,
+        "uart_sha256_complete": uart_sha256_complete,
         "sample_count": len(rows),
         "dropped_samples": expected_count - len(rows),
         "deadline_misses": derived["deadline_misses"],
     }
+
+
+def complete_sha256(record: dict[str, str], prefix: str) -> str:
+    digest = required(record, "sha256", prefix)
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise AnalysisError(f"invalid SHA-256 in {prefix.strip()} record")
+    return digest
 
 
 def parse_board_identity(lines: list[str]) -> dict[str, object]:

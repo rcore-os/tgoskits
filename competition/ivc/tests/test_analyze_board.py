@@ -62,6 +62,7 @@ RAW_LOG_TEMPLATE = """\
 AXVISOR_SNAPSHOT_SYNC_OK
 BOARD_LINUX_RESTORED
 BOARD_RESULT_IMAGE_VALIDATED vm=1 index=0 path=/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img bytes=67108864 sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef fsck=clean
+BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=4 sha256={raw_sha256}
 BOARD_RAW_RESULT_HARVESTED path=/tmp/results/raw.csv samples=4 sha256={raw_sha256}
 BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=42500
 """
@@ -279,6 +280,47 @@ class BoardAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(
             result["controller"]["rmse_milli_c"], 1224.744871, places=6
         )
+
+    def test_snapshot_guest_manifest_recovers_a_truncated_uart_hash(self) -> None:
+        raw_path = self.write_raw_csv()
+        digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
+        uart_record = (
+            "IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=4 "
+            f"sha256={digest}"
+        )
+        damaged_uart_record = uart_record.replace(digest, digest[:48])
+        log = self.raw_log().replace(uart_record, damaged_uart_record)
+
+        result = analyzer.analyze(self.write_log(log), 4, raw_path)
+
+        self.assertEqual(result["raw_samples"]["guest_manifest_sha256"], digest)
+        self.assertFalse(result["raw_samples"]["uart_sha256_complete"])
+
+    def test_snapshot_guest_manifest_mismatch_is_rejected(self) -> None:
+        digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
+        log = self.raw_log().replace(
+            "BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=4 "
+            f"sha256={digest}",
+            "BOARD_GUEST_RAW_MANIFEST path=/var/lib/ivc/raw.csv samples=4 "
+            f"sha256={'0' * 64}",
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "snapshot guest manifest"):
+            analyzer.analyze(self.write_log(log), 4, self.write_raw_csv())
+
+    def test_complete_conflicting_uart_hash_is_rejected(self) -> None:
+        digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
+        uart_record = (
+            "IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=4 "
+            f"sha256={digest}"
+        )
+        log = self.raw_log().replace(
+            uart_record,
+            uart_record.replace(digest, "0" * 64),
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "UART SHA-256 conflicts"):
+            analyzer.analyze(self.write_log(log), 4, self.write_raw_csv())
 
     def test_raw_samples_replace_missing_uart_metric_summaries(self) -> None:
         raw_path = self.write_raw_csv()
