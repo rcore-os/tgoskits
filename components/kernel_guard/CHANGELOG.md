@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12](https://github.com/rcore-os/tgoskits/compare/ax-kernel-guard-v0.3.11...ax-kernel-guard-v0.3.12) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.3.11](https://github.com/rcore-os/tgoskits/compare/ax-kernel-guard-v0.3.10...ax-kernel-guard-v0.3.11) - 2026-06-09
 
 ### Added

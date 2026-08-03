@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.6...axklib-v0.7.7) - 2026-08-03
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+
 ## [0.7.6](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.5...axklib-v0.7.6) - 2026-07-23
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.26...starryos-v0.5.27) - 2026-08-03
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
 ## [0.5.26](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.25...starryos-v0.5.26) - 2026-07-23
 
 ### Added

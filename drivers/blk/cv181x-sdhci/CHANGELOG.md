@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/cv181x-sdhci-v0.1.3...cv181x-sdhci-v0.1.4) - 2026-08-03
+
+### Other
+
+- *(cv181x-sdhci)* use tock-registers ([#1789](https://github.com/rcore-os/tgoskits/pull/1789))
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
 ### Changed
 
 - Forward owned DMA and IRQ lifecycle operations to the ADMA2-only SDHCI core.

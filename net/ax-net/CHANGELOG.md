@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.6](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.5...ax-net-v0.12.6) - 2026-08-03
+
+### Added
+
+- *(kernel)* browser-prerequisite syscall support and tests, aligned to Linux ([#1569](https://github.com/rcore-os/tgoskits/pull/1569))
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.12.5](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.4...ax-net-v0.12.5) - 2026-07-23
 
 ### Added
