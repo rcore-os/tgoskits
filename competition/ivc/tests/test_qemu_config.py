@@ -842,6 +842,17 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("replay_error_evidence_if_complete(server);", zephyr_source)
         self.assertIn("replay_verified_error_fault_records()?;", controller_source)
 
+    def test_error_profile_settles_shared_uart_before_terminal_result(self) -> None:
+        controller_source = IVCPROTO_BIN.read_text(encoding="utf-8")
+
+        self.assertRegex(
+            controller_source,
+            r"(?s)replay_verified_error_fault_records\(\)\?;\s*"
+            r"std::thread::sleep\(ERROR_FAULT_RESULT_SETTLE\);\s*"
+            r"for _ in 0\.\.ERROR_FAULT_RESULT_RECORD_COPIES",
+        )
+        self.assertIn("ERROR_FAULT_RESULT_RECORD_PAUSE", controller_source)
+
 
 if __name__ == "__main__":
     unittest.main()

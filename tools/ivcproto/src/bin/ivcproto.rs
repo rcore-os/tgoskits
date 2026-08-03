@@ -33,6 +33,9 @@ const BOARD_CONSOLE_RECORD_COPIES: usize = 2;
 const BOARD_CONSOLE_RECORD_PAUSE: Duration = Duration::from_millis(10);
 const BOARD_CONSOLE_SUMMARY_SETTLE: Duration = Duration::from_millis(250);
 const ERROR_FAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+const ERROR_FAULT_RESULT_SETTLE: Duration = Duration::from_millis(750);
+const ERROR_FAULT_RESULT_RECORD_COPIES: usize = 3;
+const ERROR_FAULT_RESULT_RECORD_PAUSE: Duration = Duration::from_millis(25);
 const ERROR_FAULT_SEQUENCE_BASE: u32 = 1_000;
 const VERSION_OFFSET: usize = 4;
 const PAYLOAD_LENGTH_OFFSET: usize = 24;
@@ -961,8 +964,11 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     }
     println!("{}", summary.legacy_record());
     if fault_profile == ControllerFaultProfile::Error {
+        // AxVisor reports the RTOS guest shutdown asynchronously on the same
+        // physical UART. Keep the terminal recovery proof outside that burst.
         replay_verified_error_fault_records()?;
-        for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
+        std::thread::sleep(ERROR_FAULT_RESULT_SETTLE);
+        for _ in 0..ERROR_FAULT_RESULT_RECORD_COPIES {
             println!(
                 "IVC-CONTROLLER-FAULT-RESULT profile=error injected={} errors_received={} \
                  normal_acknowledged={} continued=1",
@@ -973,7 +979,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
             std::io::stdout()
                 .flush()
                 .map_err(|error| format!("flush fault result: {error}"))?;
-            std::thread::sleep(BOARD_CONSOLE_RECORD_PAUSE);
+            std::thread::sleep(ERROR_FAULT_RESULT_RECORD_PAUSE);
         }
     }
     Ok(())
@@ -1341,6 +1347,18 @@ mod tests {
         assert!(
             BOARD_CONSOLE_SUMMARY_SETTLE >= Duration::from_millis(100),
             "controller summary must wait for the RTOS to finish using the shared UART"
+        );
+        assert!(
+            ERROR_FAULT_RESULT_SETTLE >= Duration::from_millis(500),
+            "error terminal evidence must outlive asynchronous RTOS shutdown logs"
+        );
+        assert!(
+            ERROR_FAULT_RESULT_RECORD_COPIES >= 3,
+            "error terminal evidence needs three copies on the multiplexed UART"
+        );
+        assert!(
+            ERROR_FAULT_RESULT_RECORD_PAUSE >= Duration::from_millis(15),
+            "error terminal records need enough time to drain at 1.5 Mbaud"
         );
     }
 
