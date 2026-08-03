@@ -62,7 +62,7 @@ fn secondary_vcpu_startup_is_reserved_until_task_activation() {
         .find("vcpu.reserve_startup()")
         .expect("secondary startup must atomically reserve a free vCPU");
     let configure = secondary_start
-        .find("vcpu.configure_startup")
+        .find("configure_reserved_vcpu_startup")
         .expect("secondary startup must configure only the reserved vCPU");
     let publish = secondary_start
         .find("runtime.publish_reserved_vcpu_task")

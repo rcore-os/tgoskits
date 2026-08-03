@@ -19,7 +19,8 @@ memory_regions = [
 ]
 
 [devices]
-interrupt_mode = "passthrough"
+interrupt_mode = "emulated"
+aarch64_virtual_timer_irq = 27
 passthrough_devices = []
 passthrough_addresses = []
 excluded_devices = []

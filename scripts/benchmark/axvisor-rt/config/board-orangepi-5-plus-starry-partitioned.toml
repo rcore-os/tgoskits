@@ -1,0 +1,18 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "AXVISOR_SHELL_READY"
+shell_init_cmd = "rs"
+success_regex = [
+  "(?m)^AXVISOR_SNAPSHOT_SYNC_OK\\r*$",
+]
+fail_regex = [
+  "(?m)^.*AXVISOR_RT_STARRY_CAPTURE_FAILED .*$",
+  "(?m)^.*Failed to initialize guest VM.*$",
+  "(?m)^.*VM\\[[0-9]+\\] run VCpu\\[[0-9]+\\] get error .*$",
+  "(?m)^.*AXVM_NESTED_VCPU_OPERATION .*$",
+  "(?m)^.*AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:.*$",
+  "(?m)^.*AXVISOR_VM_BLOCK_SNAPSHOT_FAILED:.*$",
+  "(?m)^.*ESR_EL2: 0x[0-9a-fA-F]+.*$",
+  "(?m)^.*Unhandled synchronous exception from current EL:.*$",
+  "(?mi)^.*panicked at.*$",
+]
+timeout = 900

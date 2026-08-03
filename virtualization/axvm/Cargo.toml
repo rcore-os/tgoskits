@@ -12,6 +12,7 @@ license = "Apache-2.0"
 [features]
 fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs"]
+rt-trace = []
 sstc = ["riscv_vcpu/sstc"]
 
 [dependencies]

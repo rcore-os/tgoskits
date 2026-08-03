@@ -8,12 +8,20 @@ pub type AxvisorBuildInfo = crate::build::BuildInfo;
 
 pub const AXVISOR_PACKAGE: &str = "axvisor";
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AxvisorHostNoiseConfig {
+    pub cpu: usize,
+    pub max_duration_ms: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct AxvisorBoardConfig {
     #[serde(flatten, default)]
     pub(crate) build_info: BuildInfo,
     #[serde(default)]
     pub vm_configs: Vec<PathBuf>,
+    #[serde(default)]
+    pub host_noise: Option<AxvisorHostNoiseConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +29,7 @@ pub(super) struct LoadedAxvisorBuildConfig {
     pub(super) build_info: AxvisorBuildInfo,
     pub(super) target: String,
     pub(super) vm_configs: Vec<PathBuf>,
+    pub(super) host_noise: Option<AxvisorHostNoiseConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -53,6 +62,7 @@ impl AxvisorBoardConfig {
             build_info: self.build_info,
             target,
             vm_configs: self.vm_configs,
+            host_noise: self.host_noise,
         }
     }
 }

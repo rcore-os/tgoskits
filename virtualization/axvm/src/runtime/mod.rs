@@ -39,13 +39,19 @@ pub fn init() {
 pub fn start() {
     info!("VMM starting, booting VMs...");
     for vm in crate::get_vm_list() {
+        #[cfg(feature = "rt-trace")]
+        crate::rt_trace::begin_vm(vm.id(), vm.vcpu_num());
         match vm.start() {
             Ok(_) => {
                 RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);
                 vcpus::notify_primary_vcpu(vm.id());
                 info!("VM[{}] boot success", vm.id())
             }
-            Err(err) => warn!("VM[{}] boot failed, error {:?}", vm.id(), err),
+            Err(err) => {
+                #[cfg(feature = "rt-trace")]
+                crate::rt_trace::abort_vm(vm.id());
+                warn!("VM[{}] boot failed, error {:?}", vm.id(), err);
+            }
         }
     }
 
@@ -83,6 +89,12 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
         return ax_err!(BadState, "VM cannot be started from its current state");
     }
 
+    #[cfg(feature = "rt-trace")]
+    crate::rt_trace::begin_vm(vm_id, vm.vcpu_num());
+    #[cfg(feature = "rt-trace")]
+    vm.start()
+        .inspect_err(|_| crate::rt_trace::abort_vm(vm_id))?;
+    #[cfg(not(feature = "rt-trace"))]
     vm.start()?;
     add_running_vm_count(1);
     vcpus::notify_primary_vcpu(vm_id);

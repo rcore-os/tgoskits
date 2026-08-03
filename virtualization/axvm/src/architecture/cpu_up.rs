@@ -99,9 +99,11 @@ fn vcpu_on(
             &runtime, vcpu_id, error,
         ));
     }
-    if let Err(error) = vcpu.configure_startup(entry_point, |arch_vcpu| {
-        <CurrentArch as CpuUpOps>::set_vcpu_on_args(arch_vcpu, vcpu_id, arg);
-    }) {
+    if let Err(error) =
+        super::vcpu_startup::configure_reserved_vcpu_startup(&vcpu, entry_point, |arch_vcpu| {
+            <CurrentArch as CpuUpOps>::set_vcpu_on_args(arch_vcpu, vcpu_id, arg);
+        })
+    {
         return Err(rollback_reserved_startup_after_error(
             &runtime, &vcpu, vcpu_id, error,
         ));

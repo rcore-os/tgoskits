@@ -1,5 +1,8 @@
+#[cfg(all(target_arch = "aarch64", feature = "hv"))]
+use core::sync::atomic::AtomicPtr;
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 use ax_plat::irq::IrqOutcome;
@@ -12,6 +15,8 @@ mod loongarch64_hv;
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 static VIRTUAL_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+#[cfg(all(target_arch = "aarch64", feature = "hv"))]
+static AARCH64_HARDWARE_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 static VIRTUAL_IRQ_TARGET_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -19,10 +24,16 @@ static VIRTUAL_IRQ_AFFINITY_CONFIGURED: [AtomicBool; RISCV_PLIC_SOURCE_COUNT] =
     [const { AtomicBool::new(false) }; RISCV_PLIC_SOURCE_COUNT];
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 const RISCV_PLIC_SOURCE_COUNT: usize = 1024;
+static UNHANDLED_IRQ_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 pub fn register_virtual_irq_injector(injector: fn(usize) -> bool) {
     VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "hv"))]
+pub fn register_aarch64_hardware_irq_injector(injector: fn(usize) -> bool) {
+    AARCH64_HARDWARE_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -71,6 +82,12 @@ impl IrqIf for IrqIfImpl {
             let active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
 
+            #[cfg(all(target_arch = "aarch64", feature = "hv"))]
+            if inject_aarch64_hardware_irq(irq.hwirq.0 as usize) {
+                active.defer_deactivation_for_hardware_vint();
+                return Some(irq);
+            }
+
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
             if should_forward_riscv_guest_irq(irq, IrqOutcome::default())
                 && inject_virtual_irq(irq.hwirq.0 as usize)
@@ -89,7 +106,13 @@ impl IrqIf for IrqIfImpl {
                 }
 
                 if outcome.called == 0 {
-                    warn!("Unhandled IRQ {irq:?} on CPU {}", cpu.0);
+                    let unhandled_count = UNHANDLED_IRQ_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                    if should_log_unhandled_irq(unhandled_count) {
+                        warn!(
+                            "Unhandled IRQ {irq:?} on CPU {} (total={unhandled_count})",
+                            cpu.0
+                        );
+                    }
                 } else {
                     debug!("Spurious IRQ {irq:?}");
                 }
@@ -138,6 +161,22 @@ impl IrqIf for IrqIfImpl {
 
 fn current_irq_cpu() -> CpuId {
     CpuId(ax_plat::percpu::this_cpu_id())
+}
+
+const fn should_log_unhandled_irq(unhandled_count: usize) -> bool {
+    unhandled_count.is_power_of_two()
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "hv"))]
+fn inject_aarch64_hardware_irq(irq: usize) -> bool {
+    let injector = AARCH64_HARDWARE_IRQ_INJECTOR.load(Ordering::Acquire);
+    if injector.is_null() {
+        trace!("skip AArch64 hardware virtual IRQ {irq}: injector is not registered");
+        return false;
+    }
+    // SAFETY: registration stores only function pointers with this exact
+    // signature, and Release/Acquire publishes the pointer before invocation.
+    unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
 }
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
@@ -275,5 +314,14 @@ mod tests {
 
         let out_of_range = IrqId::new(irq.domain, HwIrq(super::RISCV_PLIC_SOURCE_COUNT as u32));
         assert_eq!(super::riscv_plic_source_index(out_of_range), None);
+    }
+
+    #[test]
+    fn unhandled_irq_logging_is_exponentially_rate_limited() {
+        let logged: alloc::vec::Vec<_> = (1..=16)
+            .filter(|&count| super::should_log_unhandled_irq(count))
+            .collect();
+
+        assert_eq!(logged, alloc::vec![1, 2, 4, 8, 16]);
     }
 }

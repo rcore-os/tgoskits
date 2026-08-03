@@ -34,8 +34,8 @@ use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, FwCfg, PollableDeviceOps, VirtioNetHeaderMode, VirtioNetOptions,
-    range_alloc::RangeAllocator, virtio_net::VirtioNet,
+    DeviceManagerResult, FwCfg, MemoryBlockBackend, PollableDeviceOps, VirtioBlock,
+    VirtioNetHeaderMode, VirtioNetOptions, range_alloc::RangeAllocator, virtio_net::VirtioNet,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
@@ -97,6 +97,8 @@ pub struct AxVmDevices {
     ivc_channel: Option<Mutex<RangeAllocator>>,
     /// Emulated virtio-net devices — kept for virtqueue (TX/RX) routing.
     virtio_nets: Vec<Arc<VirtioNet>>,
+    /// Emulated virtio-blk devices — kept for request-queue routing.
+    virtio_blocks: Vec<Arc<VirtioBlock>>,
 }
 
 /// The implemention for AxVmDevices
@@ -120,6 +122,7 @@ impl AxVmDevices {
             fw_cfg: None,
             ivc_channel: None,
             virtio_nets: Vec::new(),
+            virtio_blocks: Vec::new(),
         }
     }
 
@@ -140,11 +143,36 @@ impl AxVmDevices {
         &self.virtio_nets
     }
 
+    /// Returns the virtio-blk device whose MMIO window contains `addr`, if any.
+    pub fn virtio_block_for_addr(&self, addr: GuestPhysAddr) -> Option<Arc<VirtioBlock>> {
+        self.virtio_blocks
+            .iter()
+            .find(|device| {
+                let base = device.base().as_usize();
+                addr.as_usize() >= base
+                    && addr.as_usize() < base + crate::virtio_blk::VIRTIO_BLOCK_MMIO_SIZE
+            })
+            .cloned()
+    }
+
+    /// Returns this VM's emulated virtio block devices.
+    pub fn virtio_blocks(&self) -> &[Arc<VirtioBlock>] {
+        &self.virtio_blocks
+    }
+
     /// According AxVmDeviceConfig to init the AxVmDevices
     pub fn new(config: AxVmDeviceConfig) -> DeviceManagerResult<Self> {
+        Self::new_with_block_backings(config, &[])
+    }
+
+    /// Builds devices with explicitly supplied VM-owned block backings.
+    pub fn new_with_block_backings(
+        config: AxVmDeviceConfig,
+        block_backings: &[Arc<MemoryBlockBackend>],
+    ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
 
-        Self::init(&mut this, &config.emu_configs)?;
+        Self::init(&mut this, &config.emu_configs, block_backings)?;
         Ok(this)
     }
 
@@ -154,12 +182,22 @@ impl AxVmDevices {
         factories: &DeviceFactoryRegistry,
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<Self> {
+        Self::build_with_factories_and_block_backings(config, factories, context, &[])
+    }
+
+    /// Builds devices with factories and VM-owned virtio block backings.
+    pub fn build_with_factories_and_block_backings(
+        config: AxVmDeviceConfig,
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+        block_backings: &[Arc<MemoryBlockBackend>],
+    ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
         for config in &config.emu_configs {
             if factories.get(config.emu_type).is_some() {
                 this.register_factory_device(config, factories, context)?;
             } else if Self::is_legacy_fallback(config.emu_type) {
-                Self::init(&mut this, core::slice::from_ref(config))?;
+                Self::init(&mut this, core::slice::from_ref(config), block_backings)?;
             } else {
                 return Err(DeviceManagerError::Unsupported {
                     operation: "build emulated device",
@@ -198,6 +236,7 @@ impl AxVmDevices {
                 | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::X86Pit
                 | EmulatedDeviceType::PPPTGlobal
+                | EmulatedDeviceType::VirtioBlk
                 | EmulatedDeviceType::VirtioNet
         )
     }
@@ -219,7 +258,11 @@ impl AxVmDevices {
     }
 
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> DeviceManagerResult {
+    fn init(
+        this: &mut Self,
+        emu_configs: &[EmulatedDeviceConfig],
+        block_backings: &[Arc<MemoryBlockBackend>],
+    ) -> DeviceManagerResult {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
@@ -453,6 +496,34 @@ impl AxVmDevices {
                     } else {
                         warn!("IVCChannel already initialized, ignoring additional config");
                     }
+                }
+                EmulatedDeviceType::VirtioBlk => {
+                    let backing_index = config.cfg_list.first().copied().unwrap_or(0);
+                    let backing = block_backings.get(backing_index).ok_or_else(|| {
+                        DeviceManagerError::InvalidConfig {
+                            operation: "initialize virtio block device",
+                            detail: format!(
+                                "device '{}' selects missing block backing index {backing_index}",
+                                config.name
+                            ),
+                        }
+                    })?;
+                    let block = Arc::new(VirtioBlock::new(
+                        config.base_gpa.into(),
+                        config.irq_id,
+                        backing.clone(),
+                    ));
+                    this.virtio_blocks.push(block.clone());
+                    this.register(MmioDeviceAdapter::from_arc(block) as Arc<dyn Device>)?;
+                    info!(
+                        "virtio-blk '{}' initialized at GPA {:#x} IRQ {} with backing {} ({} \
+                         bytes)",
+                        config.name,
+                        config.base_gpa,
+                        config.irq_id,
+                        backing_index,
+                        backing.len()
+                    );
                 }
                 EmulatedDeviceType::VirtioNet => {
                     // cfg_list is [MAC suffix, switch segment, optional header compatibility].

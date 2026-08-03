@@ -148,6 +148,13 @@ impl ActiveIrq {
             Self::V3(active) => active.id(),
         }
     }
+
+    pub fn defer_deactivation_for_hardware_vint(&mut self) {
+        match self {
+            Self::V2(active) => active.defer_deactivation_for_hardware_vint(),
+            Self::V3(active) => active.defer_deactivation_for_hardware_vint(),
+        }
+    }
 }
 
 pub fn begin_irq() -> Option<ActiveIrq> {

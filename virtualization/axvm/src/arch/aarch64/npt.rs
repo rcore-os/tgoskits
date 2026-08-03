@@ -51,7 +51,10 @@ impl DescriptorAttr {
 
     const fn from_mem_type(mem_type: MemType) -> Self {
         let bits = match mem_type {
-            MemType::Normal => Self::NORMAL_BIT | Self::SHAREABLE.bits(),
+            // Cacheable guest RAM is shared by vCPUs running on different
+            // physical cores. SH=0b11 keeps their cache-coherent atomics in
+            // the Inner Shareable domain.
+            MemType::Normal => Self::NORMAL_BIT | Self::INNER.bits() | Self::SHAREABLE.bits(),
             MemType::NormalNonCache => {
                 Self::PTE_S2_MEM_ATTR_NORMAL_INNER_WRITE_BACK_CACHEABLE
                     | Self::PTE_S2_MEM_ATTR_NORMAL_OUTER_WRITE_BACK_NOCACHEABLE

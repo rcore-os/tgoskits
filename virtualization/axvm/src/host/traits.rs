@@ -36,6 +36,14 @@ pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
 
+    /// Read the host architectural counter without unit conversion.
+    #[cfg(feature = "rt-trace")]
+    fn current_ticks(&self) -> u64;
+
+    /// Convert an architectural counter delta to nanoseconds.
+    #[cfg(feature = "rt-trace")]
+    fn ticks_to_nanos(&self, ticks: u64) -> u64;
+
     /// Program the host one-shot timer.
     fn set_oneshot_timer(&self, deadline_ns: u64);
 }
@@ -50,6 +58,10 @@ pub trait HostCpu {
 
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
+
+    /// Cumulative architectural-idle ticks for one host CPU.
+    #[cfg(feature = "rt-trace")]
+    fn idle_time_ticks(&self, cpu_id: usize, now_ticks: u64) -> Option<u64>;
 }
 
 /// Host platform lifecycle and virtualization controls.

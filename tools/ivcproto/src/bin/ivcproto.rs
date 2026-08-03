@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{ErrorKind, Write},
     net::{SocketAddr, UdpSocket},
+    path::PathBuf,
     process::ExitCode,
     str::FromStr,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -9,6 +10,7 @@ use std::{
 
 use ivcproto::{
     control::{AckPayload, ControlCommand, ErrorReport, StatusReport},
+    controller_csv::{ControllerSample, write_controller_samples},
     endpoint::{ControlEndpoint, EndpointConfig},
     neural::{
         ManualFixedController, NeuralController, Policy, ScenarioMetrics, ThermalObservation,
@@ -24,6 +26,34 @@ use ivcproto::{
 };
 
 const SOCKET_TIMEOUT: Duration = Duration::from_millis(100);
+const BOARD_CONSOLE_RECORD_MAX_BYTES: usize = 160;
+const BOARD_CONSOLE_RECORD_COPIES: usize = 2;
+const BOARD_CONSOLE_RECORD_PAUSE: Duration = Duration::from_millis(10);
+const BOARD_CONSOLE_SUMMARY_SETTLE: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InferenceBackend {
+    Native,
+}
+
+impl InferenceBackend {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ControllerArguments {
+    peer: String,
+    count: u32,
+    policy: Policy,
+    period_ms: u64,
+    session_id: Option<u32>,
+    backend: InferenceBackend,
+    raw_csv: Option<PathBuf>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ControlCycleTimeline {
@@ -37,6 +67,122 @@ struct ControlCycleLatency {
     full_loop_us: u64,
     pre_send_us: u64,
     transport_us: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LatencySummary {
+    p50_us: u64,
+    p95_us: u64,
+    p99_us: u64,
+    max_us: u64,
+}
+
+impl LatencySummary {
+    fn from_sorted_samples(samples: &[u64]) -> Self {
+        Self {
+            p50_us: percentile(samples, 50),
+            p95_us: percentile(samples, 95),
+            p99_us: percentile(samples, 99),
+            max_us: samples.last().copied().unwrap_or(0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ControllerResultSummary {
+    policy: &'static str,
+    sent: u64,
+    acknowledged: u64,
+    errors: u64,
+    timeouts: u64,
+    retransmissions: u64,
+    recoveries: u64,
+    success_percent: f64,
+    full_loop: LatencySummary,
+    pre_send: LatencySummary,
+    transport: LatencySummary,
+    throughput_msg_s: f64,
+    rmse_milli_c: f64,
+    iae_milli_c_s: f64,
+    max_overshoot_milli_c: i32,
+}
+
+impl ControllerResultSummary {
+    fn compact_records(self) -> [String; 6] {
+        [
+            format!(
+                "IVC-CONTROLLER-OUTCOME policy={} sent={} acknowledged={} errors={} timeouts={}",
+                self.policy, self.sent, self.acknowledged, self.errors, self.timeouts
+            ),
+            format!(
+                "IVC-CONTROLLER-RELIABILITY retransmissions={} recoveries={} success_percent={:.3}",
+                self.retransmissions, self.recoveries, self.success_percent
+            ),
+            format!(
+                "IVC-CONTROLLER-FULL-LOOP p50_us={} p95_us={} p99_us={} max_us={}",
+                self.full_loop.p50_us,
+                self.full_loop.p95_us,
+                self.full_loop.p99_us,
+                self.full_loop.max_us
+            ),
+            format!(
+                "IVC-CONTROLLER-PRE-SEND p50_us={} p95_us={} p99_us={} max_us={}",
+                self.pre_send.p50_us,
+                self.pre_send.p95_us,
+                self.pre_send.p99_us,
+                self.pre_send.max_us
+            ),
+            format!(
+                "IVC-CONTROLLER-TRANSPORT p50_us={} p95_us={} p99_us={} max_us={} \
+                 throughput_msg_s={:.3}",
+                self.transport.p50_us,
+                self.transport.p95_us,
+                self.transport.p99_us,
+                self.transport.max_us,
+                self.throughput_msg_s
+            ),
+            format!(
+                "IVC-CONTROLLER-CONTROL rmse_milli_c={:.3} iae_milli_c_s={:.3} \
+                 max_overshoot_milli_c={}",
+                self.rmse_milli_c, self.iae_milli_c_s, self.max_overshoot_milli_c
+            ),
+        ]
+    }
+
+    fn legacy_record(self) -> String {
+        format!(
+            "IVC-CONTROLLER-RESULT policy={} sent={} acknowledged={} errors={} timeouts={} \
+             retransmissions={} recoveries={} success_percent={:.3} full_loop_p50_us={} \
+             full_loop_p95_us={} full_loop_p99_us={} full_loop_max_us={} pre_send_p50_us={} \
+             pre_send_p95_us={} pre_send_p99_us={} pre_send_max_us={} transport_p50_us={} \
+             transport_p95_us={} transport_p99_us={} transport_max_us={} throughput_msg_s={:.3} \
+             rmse_milli_c={:.3} iae_milli_c_s={:.3} max_overshoot_milli_c={}",
+            self.policy,
+            self.sent,
+            self.acknowledged,
+            self.errors,
+            self.timeouts,
+            self.retransmissions,
+            self.recoveries,
+            self.success_percent,
+            self.full_loop.p50_us,
+            self.full_loop.p95_us,
+            self.full_loop.p99_us,
+            self.full_loop.max_us,
+            self.pre_send.p50_us,
+            self.pre_send.p95_us,
+            self.pre_send.p99_us,
+            self.pre_send.max_us,
+            self.transport.p50_us,
+            self.transport.p95_us,
+            self.transport.p99_us,
+            self.transport.max_us,
+            self.throughput_msg_s,
+            self.rmse_milli_c,
+            self.iae_milli_c_s,
+            self.max_overshoot_milli_c,
+        )
+    }
 }
 
 fn measure_control_cycle(timeline: ControlCycleTimeline) -> Result<ControlCycleLatency, String> {
@@ -85,14 +231,7 @@ fn run(mut arguments: impl Iterator<Item = String>) -> Result<(), String> {
             let drop_every = optional_parse(arguments.next(), "drop-every")?.unwrap_or(0);
             run_rtos_sim(&bind, expected, drop_every)
         }
-        Some("controller") => {
-            let peer = required(&mut arguments, "peer address")?;
-            let count = parse(&required(&mut arguments, "command count")?, "count")?;
-            let policy = parse_policy(&required(&mut arguments, "policy")?)?;
-            let period_ms = optional_parse(arguments.next(), "period-ms")?.unwrap_or(0);
-            let session_id = optional_parse(arguments.next(), "session-id")?;
-            run_controller(&peer, count, policy, period_ms, session_id)
-        }
+        Some("controller") => run_controller(parse_controller_arguments(arguments)?),
         Some(command) => Err(format!("unsupported command '{command}'\n{}", usage())),
         None => Err(usage().to_owned()),
     }
@@ -335,17 +474,20 @@ fn run_rtos_sim(bind: &str, expected: u32, drop_every: u32) -> Result<(), String
     Ok(())
 }
 
-fn run_controller(
-    peer: &str,
-    count: u32,
-    policy: Policy,
-    period_ms: u64,
-    session_id: Option<u32>,
-) -> Result<(), String> {
+fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
+    let ControllerArguments {
+        peer,
+        count,
+        policy,
+        period_ms,
+        session_id,
+        backend,
+        raw_csv,
+    } = arguments;
     if count == 0 {
         return Err("command count must be nonzero".to_owned());
     }
-    let peer = SocketAddr::from_str(peer).map_err(|error| format!("peer address: {error}"))?;
+    let peer = SocketAddr::from_str(&peer).map_err(|error| format!("peer address: {error}"))?;
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|error| format!("bind: {error}"))?;
     socket
         .connect(peer)
@@ -366,6 +508,7 @@ fn run_controller(
     let mut full_loop_latency_us = Vec::with_capacity(count as usize);
     let mut pre_send_latency_us = Vec::with_capacity(count as usize);
     let mut transport_latency_us = Vec::with_capacity(count as usize);
+    let mut controller_samples = raw_csv.as_ref().map(|_| Vec::with_capacity(count as usize));
     let mut protocol_errors = 0u64;
     let mut sum_squared_error = 0f64;
     let mut integrated_absolute_error = 0f64;
@@ -373,8 +516,9 @@ fn run_controller(
 
     println!(
         "IVC-CONTROLLER-START peer={peer} count={count} policy={} period_ms={period_ms} \
-         session_id={session_id}",
-        policy_name(policy)
+         session_id={session_id} backend={}",
+        policy_name(policy),
+        backend.name()
     );
     for sample in 1..=count {
         let cycle_start = Instant::now();
@@ -383,8 +527,9 @@ fn run_controller(
             .begin(elapsed_us(clock))
             .map_err(|error| error.to_string())?;
         let setpoint = setpoint_for_sample(sample, count);
+        let observed_milli_c = measured_milli_c;
         let observation = ThermalObservation {
-            temperature_milli_c: measured_milli_c,
+            temperature_milli_c: observed_milli_c,
             setpoint_milli_c: setpoint,
             previous_actuator_permille: previous_actuator,
             temperature_rate_milli_c_per_s: (measured_milli_c - previous_measured_milli_c) * 10,
@@ -412,7 +557,7 @@ fn run_controller(
 
         let mut got_ack = false;
         let mut status = None;
-        loop {
+        let (status, timeline, latency) = loop {
             let mut response = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
             match socket.recv(&mut response) {
                 Ok(received) => match decode_frame(&response[..received]) {
@@ -465,15 +610,19 @@ fn run_controller(
                         "acknowledgement state mismatch for sequence {sequence}"
                     ));
                 }
-                let latency = measure_control_cycle(ControlCycleTimeline {
+                let timeline = ControlCycleTimeline {
                     cycle_started_us: cycle_started_at_us,
                     command_sent_us: sent_at_us,
                     response_completed_us: now_us,
-                })?;
+                };
+                let latency = measure_control_cycle(timeline)?;
                 full_loop_latency_us.push(latency.full_loop_us);
                 pre_send_latency_us.push(latency.pre_send_us);
                 transport_latency_us.push(latency.transport_us);
-                break;
+                let status = status.ok_or_else(|| {
+                    format!("response loop completed without status for sequence {sequence}")
+                })?;
+                break (status, timeline, latency);
             }
 
             match sender
@@ -502,18 +651,34 @@ fn run_controller(
                     return Err(format!("command {sequence} timed out"));
                 }
             }
-        }
-
-        let status = status.ok_or_else(|| {
-            format!("response loop completed without status for sequence {sequence}")
-        })?;
+        };
         previous_measured_milli_c = measured_milli_c;
         measured_milli_c = status.measured_milli_c;
         previous_actuator = status.actuator_permille;
-        let error = i64::from(setpoint) - i64::from(measured_milli_c);
+        let error_milli_c = setpoint
+            .checked_sub(measured_milli_c)
+            .ok_or_else(|| format!("temperature error overflow for sequence {sequence}"))?;
+        let error = i64::from(error_milli_c);
         sum_squared_error += (error * error) as f64;
         integrated_absolute_error += error.unsigned_abs() as f64 * 0.1;
         maximum_overshoot = maximum_overshoot.max(measured_milli_c - setpoint);
+        if let Some(samples) = &mut controller_samples {
+            samples.push(ControllerSample {
+                sequence,
+                cycle_started_us: timeline.cycle_started_us,
+                command_sent_us: timeline.command_sent_us,
+                response_completed_us: timeline.response_completed_us,
+                full_loop_us: latency.full_loop_us,
+                pre_send_us: latency.pre_send_us,
+                transport_us: latency.transport_us,
+                setpoint_milli_c: setpoint,
+                observed_milli_c,
+                measured_milli_c,
+                command_actuator_permille: command.actuator_permille,
+                status_actuator_permille: status.actuator_permille,
+                error_milli_c,
+            });
+        }
         if should_report_progress(sample, count) {
             println!(
                 "IVC-CONTROLLER-STATUS seq={sequence} mode={:?} actuator_permille={} \
@@ -528,43 +693,49 @@ fn run_controller(
         }
     }
 
+    let elapsed = run_start.elapsed();
+    if let (Some(path), Some(samples)) = (&raw_csv, &controller_samples) {
+        write_controller_samples(path, samples).map_err(|error| error.to_string())?;
+        println!(
+            "IVC-CONTROLLER-RAW path={} samples={}",
+            path.display(),
+            samples.len()
+        );
+    }
     full_loop_latency_us.sort_unstable();
     pre_send_latency_us.sort_unstable();
     transport_latency_us.sort_unstable();
-    let elapsed = run_start.elapsed();
     let metrics = sender.metrics();
-    println!(
-        "IVC-CONTROLLER-RESULT policy={} sent={} acknowledged={} errors={} timeouts={} \
-         retransmissions={} recoveries={} success_percent={:.3} full_loop_p50_us={} \
-         full_loop_p95_us={} full_loop_p99_us={} full_loop_max_us={} pre_send_p50_us={} \
-         pre_send_p95_us={} pre_send_p99_us={} pre_send_max_us={} transport_p50_us={} \
-         transport_p95_us={} transport_p99_us={} transport_max_us={} throughput_msg_s={:.3} \
-         rmse_milli_c={:.3} iae_milli_c_s={:.3} max_overshoot_milli_c={}",
-        policy_name(policy),
-        metrics.started,
-        metrics.acknowledged,
-        protocol_errors,
-        metrics.timeouts,
-        metrics.retransmissions,
-        metrics.retransmissions,
-        metrics.acknowledged as f64 / metrics.started as f64 * 100.0,
-        percentile(&full_loop_latency_us, 50),
-        percentile(&full_loop_latency_us, 95),
-        percentile(&full_loop_latency_us, 99),
-        full_loop_latency_us.last().copied().unwrap_or(0),
-        percentile(&pre_send_latency_us, 50),
-        percentile(&pre_send_latency_us, 95),
-        percentile(&pre_send_latency_us, 99),
-        pre_send_latency_us.last().copied().unwrap_or(0),
-        percentile(&transport_latency_us, 50),
-        percentile(&transport_latency_us, 95),
-        percentile(&transport_latency_us, 99),
-        transport_latency_us.last().copied().unwrap_or(0),
-        f64::from(count) / elapsed.as_secs_f64(),
-        (sum_squared_error / f64::from(count)).sqrt(),
-        integrated_absolute_error,
-        maximum_overshoot,
-    );
+    let summary = ControllerResultSummary {
+        policy: policy_name(policy),
+        sent: metrics.started,
+        acknowledged: metrics.acknowledged,
+        errors: protocol_errors,
+        timeouts: metrics.timeouts,
+        retransmissions: metrics.retransmissions,
+        recoveries: metrics.retransmissions,
+        success_percent: metrics.acknowledged as f64 / metrics.started as f64 * 100.0,
+        full_loop: LatencySummary::from_sorted_samples(&full_loop_latency_us),
+        pre_send: LatencySummary::from_sorted_samples(&pre_send_latency_us),
+        transport: LatencySummary::from_sorted_samples(&transport_latency_us),
+        throughput_msg_s: f64::from(count) / elapsed.as_secs_f64(),
+        rmse_milli_c: (sum_squared_error / f64::from(count)).sqrt(),
+        iae_milli_c_s: integrated_absolute_error,
+        max_overshoot_milli_c: maximum_overshoot,
+    };
+    let compact_records = summary.compact_records();
+    std::thread::sleep(BOARD_CONSOLE_SUMMARY_SETTLE);
+    for _ in 0..BOARD_CONSOLE_RECORD_COPIES {
+        for record in &compact_records {
+            debug_assert!(record.len() <= BOARD_CONSOLE_RECORD_MAX_BYTES);
+            println!("{record}");
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush compact controller result: {error}"))?;
+            std::thread::sleep(BOARD_CONSOLE_RECORD_PAUSE);
+        }
+    }
+    println!("{}", summary.legacy_record());
     Ok(())
 }
 
@@ -682,6 +853,82 @@ fn parse_policy(value: &str) -> Result<Policy, String> {
     }
 }
 
+fn parse_controller_arguments(
+    arguments: impl Iterator<Item = String>,
+) -> Result<ControllerArguments, String> {
+    let mut arguments = arguments.peekable();
+    let peer = required(&mut arguments, "peer address")?;
+    let count = parse(&required(&mut arguments, "command count")?, "count")?;
+    let policy = parse_policy(&required(&mut arguments, "policy")?)?;
+    let mut period_ms = None;
+    let mut session_id = None;
+    let mut backend = InferenceBackend::Native;
+    let mut backend_was_set = false;
+    let mut raw_csv = None;
+
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--backend" => {
+                if backend_was_set {
+                    return Err("--backend may only be specified once".to_owned());
+                }
+                let value = required(&mut arguments, "controller backend")?;
+                backend = match value.as_str() {
+                    "native" => InferenceBackend::Native,
+                    "onnxruntime" => {
+                        return Err("controller backend 'onnxruntime' is not available in this \
+                                    build"
+                            .to_owned());
+                    }
+                    _ => {
+                        return Err(format!(
+                            "controller backend must be 'native' or 'onnxruntime', got '{value}'"
+                        ));
+                    }
+                };
+                backend_was_set = true;
+            }
+            "--raw-csv" => {
+                if raw_csv.is_some() {
+                    return Err("--raw-csv may only be specified once".to_owned());
+                }
+                raw_csv = Some(PathBuf::from(required(
+                    &mut arguments,
+                    "controller raw CSV path",
+                )?));
+            }
+            _ if argument.starts_with('-') => {
+                return Err(format!(
+                    "unsupported controller option '{argument}'\n{}",
+                    usage()
+                ));
+            }
+            _ if period_ms.is_none() => {
+                period_ms = Some(parse(&argument, "period-ms")?);
+            }
+            _ if session_id.is_none() => {
+                session_id = Some(parse(&argument, "session-id")?);
+            }
+            _ => {
+                return Err(format!(
+                    "unexpected controller argument '{argument}'\n{}",
+                    usage()
+                ));
+            }
+        }
+    }
+
+    Ok(ControllerArguments {
+        peer,
+        count,
+        policy,
+        period_ms: period_ms.unwrap_or(0),
+        session_id,
+        backend,
+        raw_csv,
+    })
+}
+
 fn setpoint_for_sample(sample: u32, count: u32) -> i32 {
     let segment = ((sample - 1) * 3) / count;
     match segment {
@@ -747,7 +994,7 @@ fn improvement(baseline: f64, candidate: f64) -> f64 {
 fn usage() -> &'static str {
     "usage:\n  ivcproto evaluate\n  ivcproto evaluate-csv <output.csv>\n  ivcproto rtos-sim <bind> \
      <expected-count> [drop-every]\n  ivcproto controller <peer> <count> <manual|neural> \
-     [period-ms] [session-id]"
+     [period-ms] [session-id] [--backend <native|onnxruntime>] [--raw-csv <path>]"
 }
 
 #[cfg(test)]
@@ -779,5 +1026,131 @@ mod tests {
         assert!(should_report_progress(100, 250));
         assert!(should_report_progress(250, 250));
         assert!(!should_report_progress(99, 250));
+    }
+
+    #[test]
+    fn compact_controller_result_records_fit_physical_uart_budget() {
+        let summary = ControllerResultSummary {
+            policy: "neural",
+            sent: 1_800,
+            acknowledged: 1_800,
+            errors: 0,
+            timeouts: 0,
+            retransmissions: 0,
+            recoveries: 0,
+            success_percent: 100.0,
+            full_loop: LatencySummary {
+                p50_us: 6_644,
+                p95_us: 11_282,
+                p99_us: 11_719,
+                max_us: 20_115,
+            },
+            pre_send: LatencySummary {
+                p50_us: 17,
+                p95_us: 17,
+                p99_us: 17,
+                max_us: 365,
+            },
+            transport: LatencySummary {
+                p50_us: 6_628,
+                p95_us: 11_266,
+                p99_us: 11_702,
+                max_us: 20_098,
+            },
+            throughput_msg_s: 9.995,
+            rmse_milli_c: 5_932.491,
+            iae_milli_c_s: 686_993.400,
+            max_overshoot_milli_c: 13_428,
+        };
+
+        let records = summary.compact_records();
+
+        assert_eq!(records.len(), 6);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.len() <= BOARD_CONSOLE_RECORD_MAX_BYTES),
+            "compact records must remain atomic-sized for the shared physical UART: {records:?}"
+        );
+        assert!(records[0].starts_with("IVC-CONTROLLER-OUTCOME "));
+        assert!(records[5].starts_with("IVC-CONTROLLER-CONTROL "));
+        assert!(
+            BOARD_CONSOLE_RECORD_COPIES >= 2,
+            "physical UART evidence needs a redundant compact-record copy"
+        );
+        assert!(
+            BOARD_CONSOLE_SUMMARY_SETTLE >= Duration::from_millis(100),
+            "controller summary must wait for the RTOS to finish using the shared UART"
+        );
+    }
+
+    #[test]
+    fn controller_arguments_accept_a_raw_csv_without_a_forced_session_id() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "manual",
+            "100",
+            "--backend",
+            "native",
+            "--raw-csv",
+            "/var/lib/ivc/raw.csv",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let parsed = parse_controller_arguments(arguments)
+            .expect("controller arguments should accept an explicit raw CSV path");
+
+        assert_eq!(parsed.peer, "10.0.0.2:5500");
+        assert_eq!(parsed.count, 20);
+        assert_eq!(
+            parsed.policy,
+            Policy::ManualFixed {
+                actuator_permille: 500
+            }
+        );
+        assert_eq!(parsed.period_ms, 100);
+        assert_eq!(parsed.session_id, None);
+        assert_eq!(parsed.backend, InferenceBackend::Native);
+        assert_eq!(
+            parsed.raw_csv.as_deref(),
+            Some(std::path::Path::new("/var/lib/ivc/raw.csv"))
+        );
+    }
+
+    #[test]
+    fn controller_raw_csv_retains_timing_and_control_values() {
+        let temporary = std::env::temp_dir().join(format!(
+            "ivcproto-controller-raw-{}-{}.csv",
+            std::process::id(),
+            generate_session_id()
+        ));
+        let sample = ControllerSample {
+            sequence: 7,
+            cycle_started_us: 100,
+            command_sent_us: 140,
+            response_completed_us: 210,
+            full_loop_us: 110,
+            pre_send_us: 40,
+            transport_us: 70,
+            setpoint_milli_c: 45_000,
+            observed_milli_c: 20_000,
+            measured_milli_c: 20_123,
+            command_actuator_permille: 650,
+            status_actuator_permille: 650,
+            error_milli_c: 24_877,
+        };
+
+        write_controller_samples(&temporary, &[sample])
+            .expect("one sample should be writable as CSV");
+        let csv = std::fs::read_to_string(&temporary)
+            .expect("controller CSV should be readable after writing");
+        std::fs::remove_file(&temporary).expect("temporary controller CSV should be removable");
+
+        assert!(
+            csv.starts_with("sequence,cycle_started_us,command_sent_us,response_completed_us,")
+        );
+        assert!(csv.contains("7,100,140,210,110,40,70,45000,20000,20123,650,650,24877\n"));
     }
 }

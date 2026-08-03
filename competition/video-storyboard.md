@@ -1,24 +1,32 @@
 # Approximately five-minute demonstration storyboard
 
 This is a recording plan and evidence checklist. It is **not** a generated or
-completed video. The post-IRQ-gate neural/manual cross-guest runs and native
-Zephyr baseline are available, as are the final shared/partitioned
-idle/stress/soak results and deterministic cross-guest ACK-loss run. The actual
-video still has to be recorded.
+completed video. The primary demonstration is the retained physical Orange Pi
+5 Plus run: a two-vCPU StarryOS guest executes the neural controller and drives
+a Zephyr guest over isolated UDP/IP on AxVisor. The QEMU Linux manual/neural,
+ACK-loss, AxVisor RT, and native Zephyr results remain supporting comparison
+evidence. The actual video still has to be recorded.
 
 ## Before recording
 
 - Use the committed implementation revision and show its hash plus a clean
   worktree when commit/PR work is authorized. Until then, show the base commit,
   dirty status, and source snapshot hash honestly.
-- Pre-build the Linux and Zephyr images; retain their hashes and build logs.
-- Retain the full QEMU console log independently of the screen recording.
-- Prepare two readable terminal panes: one following Linux/controller lines,
-  the other following Zephyr/AxVisor lines from the same raw log. Do not imply
-  separate serial devices if both panes are filtered views of one console.
+- Pre-build and stage the StarryOS kernel, two finite rootfs images, guest DTB,
+  Zephyr board images, and AxVisor binary; retain their hashes and build logs.
+- Run or replay the maintained `run-orangepi-5-plus.sh full` capture. Retain the
+  complete physical serial log and generated JSON independently of the screen
+  recording, then confirm the TF-card Linux system was restored.
+- Prepare two readable terminal panes: one following StarryOS/controller
+  lines, the other following Zephyr/AxVisor lines from the same CH340 capture.
+  State that these are filtered views of one shared physical UART.
 - Prepare the exact normal, fault-injection, manual, neural, idle, stress, and
   native-baseline result directories used in the video.
 - Verify the retained normal-run source-log hashes before recording:
+  `023ff07b40b4936453eee6d4bbd57bca1c1699e7305dc1af5fe601a5d67492d9`
+  for the physical full run and
+  `8dd16dbcc7608305da9fcf13f393a54e410e16ef26da63ca5c2821878efbf265`
+  for physical smoke. For the supporting QEMU evidence, verify
   `6c7f7e2e404a5c8ef8a9a3f632a24169b35d8be6a8c0ac496775bf9d32a07eb8`
   for neural and
   `39ac8deaf5382490a007bfd47ec7384989c64c6092eed70ac8ff682c076d8a57`
@@ -37,18 +45,19 @@ video still has to be recorded.
 
 ### 0:00-0:25 — Goal and provenance
 
-Show the title, repository revision, platform, QEMU version, Rust toolchain,
-Zephyr version/compiler, and image hashes. State the one-sentence goal:
-two-vCPU Linux neural control of a Zephyr endpoint over isolated UDP/IP on
-AxVisor.
+Show the title, repository revision, Orange Pi/RK3588 platform, WSL2 automation
+host, U-Boot, Rust toolchain, Zephyr version/compiler, and image hashes. State
+the one-sentence goal: two-vCPU StarryOS neural control of a Zephyr endpoint
+over isolated UDP/IP on AxVisor, with unattended boot, analysis, filesystem
+sync, and Linux recovery.
 
 Evidence on screen:
 
 ```sh
 git rev-parse HEAD
 git status --short
-qemu-system-aarch64 --version
 rustc +nightly-2026-07-15 --version
+cat competition/results/orangepi-starry-reference/metadata.json
 ```
 
 ### 0:25-1:05 — Resource and isolation design
@@ -56,8 +65,8 @@ rustc +nightly-2026-07-15 --version
 Show the CPU/memory/device table from [`design.md`](design.md) and briefly point
 out:
 
-- Linux vCPUs dedicated to pCPUs 1 and 2;
-- Zephyr on pCPU0 and pCPU3 left out of guest affinity masks;
+- StarryOS vCPUs dedicated to pCPUs 1 and 2;
+- Zephyr on pCPU0, with pCPU3 left out of all guest affinity masks;
 - non-overlapping guest memory regions;
 - virtio-net MMIO/IRQ assignments 56 and 64;
 - fixed MAC/IP identities in switch segment 1; and
@@ -68,12 +77,12 @@ AxVisor task/interrupt, and RR guest preemption is not claimed.
 
 ### 1:05-1:45 — Boot both guests
 
-Run or replay an uncut capture of the exact full QEMU command in
-[`reproduce.md`](reproduce.md). Show AxVisor accepting the partition, the
-Zephyr golden-vector pass, both MAC/IP values, and `IVC-RTOS-READY`. The mixed
-IVC log does not emit an online CPU-count assertion. Replay the separate
-validated two-vCPU Linux RT/partition gate for that proof, and label it as a
-separate run.
+Run or replay an uncut capture of the physical full command in
+[`reproduce.md`](reproduce.md). Show U-Boot entering AxVisor, AxVisor accepting
+the partition, the `IVC-STARRY-BOOT` record ending in `vcpus=2`, and StarryOS configuring
+`10.0.0.1/24`, the Zephyr golden-vector/MAC checks, and
+`IVC-RTOS-READY bind=10.0.0.2:5500`. Finish by showing the strict analyzer
+summary, AxVisor filesystem-sync confirmation, and the restored Linux rootfs.
 
 Do not use an edited success marker without keeping the original complete log.
 If either guest fails, stop the recording and fix/rerun instead of narrating it
@@ -83,24 +92,26 @@ as success.
 
 Use split filtered views of the same run:
 
-- left: Linux CONTROL sequence, returned STATUS, and aggregate result;
+- left: StarryOS CONTROL sequence, returned STATUS, and aggregate result;
 - right: Zephyr applied sequence, actuator/temperature, ACK, and counters.
 
-Overlay the 32-byte header fields briefly. Then replay the retained
+Overlay the 32-byte header fields briefly. Show that the physical analyzer
+requires matching controller and RTOS counters instead of trusting a terminal
+success line; explain that short terminal records are paced and emitted twice
+because all consoles share one UART. Then replay the supporting QEMU
 deterministic ACK-loss run and show a retransmission, a duplicate suppressed
 without a second actuator application, and eventual recovery. Show a malformed
-request producing a typed ERROR only from the host/unit evidence unless a new
-cross-guest capture is recorded; do not imply that the retained ACK-loss QEMU
-run injected malformed traffic. Show its controller-silence interval producing
-safe mode with actuator 0.
+request producing a typed ERROR only from host/unit evidence unless a new
+cross-guest capture is recorded. Show the ACK-loss run's controller-silence
+interval producing safe mode with actuator 0.
 
-End this section with the measured request success, errors, timeouts,
-recoveries, RTT percentiles/max, throughput, and the positive
-`IVC-SWITCH-TX`/`FORWARD`/`NOTIFY` forwarding counters from the retained
-cross-guest result—not the host loopback reference. Show anti-spoof and drop
-policy counters from the focused unit/regression evidence unless a new
-malicious-traffic cross-guest capture is recorded; the retained QEMU runs do
-not provide runtime drop totals.
+End this section with the physical full-run request success, errors, timeouts,
+recoveries, full-loop/transport percentiles and maximum, throughput, and the
+matching controller `sent`/`acknowledged` plus RTOS `accepted`/`applied`
+counters—not the host loopback reference. Show virtual-switch
+forwarding, anti-spoof, and drop-policy counters from the focused
+unit/regression evidence unless a new runtime metrics snapshot is recorded;
+the retained QEMU runs do not provide runtime switch totals.
 
 ### 2:35-3:45 — Neural closed loop
 
@@ -111,29 +122,29 @@ temperature/status -> 4 inputs -> 4x6x1 inference -> actuator CONTROL
 -> Zephyr applies/steps plant -> STATUS -> next observation
 ```
 
-Replay the same setpoint/disturbance scenario once with the fixed 500-permille
-baseline and once with the neural policy. Show live actuator and measured
-temperature changes, then show the validated cross-guest aggregate table for
-RMSE, integrated absolute error, and maximum overshoot. If a time-series plot
-or settling time is shown, derive it from
+Use the physical StarryOS run for the neural path and show live actuator and
+measured temperature changes. Then show the matched QEMU Linux fixed
+500-permille and neural summaries for the controlled comparison. The physical
+run reproduces the neural RMSE, integrated absolute error, and maximum
+overshoot. If a time-series plot or settling time is shown, derive it from
 `results/host-ai-reference/raw.csv`, label it as deterministic host functional
 evidence, and state that manual settling was not reached while neural settling
 was 27.9 seconds. Do not present those host-series values as cross-guest timing
 or imply that the cross-guest summaries retain individual control samples.
 
-Show the full input-before-inference to matching-status latency definition and
-its p50/p95/p99/maximum. The retained `full_loop` metric includes observation,
-policy evaluation, encoding, transport, RTOS application/plant step, returned
-STATUS plus ACK, and response decoding; keep the `pre_send` and `transport`
-sub-intervals visibly distinguished.
+Show the physical input-before-inference to matching-status latency definition
+and its p50/p95/p99/maximum. The retained `full_loop` metric includes
+observation, StarryOS policy evaluation, encoding, transport, RTOS
+application/plant step, returned STATUS plus ACK, and response decoding; keep
+the `pre_send` and `transport` sub-intervals visibly distinguished.
 
 ### 3:45-4:35 — Real-time validation
 
-Show the guest probe definitions and retained idle/stress/soak summaries for
-periodic jitter, scheduler dispatch, and the emulated timer-IRQ response proxy.
-Show actual duration, pCPU/vCPU affinity, CPU load distribution, and maximum
-latency. Then show the native Zephyr/equivalent baseline using the same nominal
-period and comparable load.
+Label this as supporting QEMU evidence. Show the guest probe definitions and
+retained idle/stress/soak summaries for periodic jitter, scheduler dispatch,
+and the emulated timer-IRQ response proxy. Show actual duration, pCPU/vCPU
+affinity, CPU load distribution, and maximum latency. Then show the native
+Zephyr/equivalent baseline using the same nominal period and comparable load.
 
 State the mixed outcome: partitioned stress improved dispatch p99/maximum by
 7.19%/31.24%, but jitter maximum and both timer-IRQ proxy tails worsened. Show
@@ -146,14 +157,16 @@ measurement.
 
 ### 4:35-5:00 — Reproduction and conclusion
 
-Show the `competition/` entry page, image-build commands, exact QEMU command,
-and result directories. Recap only claims backed by the displayed artifacts:
+Show the `competition/` entry page, WSL2 image/staging commands, physical board
+run command, strict summary, and retained result directories. Recap only claims
+backed by the displayed artifacts:
 
-- two-vCPU Linux boot and deterministic guest placement;
-- isolated IP-based bidirectional Linux/Zephyr link;
+- two-vCPU StarryOS boot and deterministic guest placement on Orange Pi;
+- isolated IP-based bidirectional StarryOS/Zephyr link;
 - reliable typed protocol and safe fallback;
-- observable neural-to-RTOS closed loop; and
-- measured control and real-time comparisons.
+- observable neural-to-RTOS physical closed loop and automatic Linux restore;
+  and
+- separately labeled QEMU manual/control and real-time comparisons.
 
 Close with any remaining limitations. Keep the final frame on the source hash,
 reproduction guide, and test report.
@@ -164,7 +177,7 @@ reproduction guide, and test report.
 - [ ] Source revision is committed and shown, or the pre-commit source
       fingerprint and dirty state are explicitly disclosed.
 - [ ] Commands shown match retained metadata.
-- [ ] Linux visibly has at least two online vCPUs.
+- [ ] StarryOS visibly has two online vCPUs on the physical board.
 - [ ] Both guest MAC/IP identities and UDP port are visible.
 - [ ] Data visibly flows in both directions over IP.
 - [ ] Retry, duplicate suppression, error notification, timeout safe fallback,
@@ -183,3 +196,5 @@ reproduction guide, and test report.
 - [ ] No host-loopback number is labeled cross-guest.
 - [ ] No planned/template value is presented as measured.
 - [ ] The complete unedited console log and all plotted raw data are archived.
+- [ ] Strict physical JSON analysis passes, AxVisor sync is confirmed, and the
+      TF-card Linux rootfs is visibly restored read-write.

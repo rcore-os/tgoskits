@@ -14,8 +14,9 @@
 
 //! Runtime configuration structures for an AxVM instance.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 
+use axdevice::MemoryBlockBackend;
 pub use axvm_types::{
     AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
     PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
@@ -80,6 +81,8 @@ pub struct AxVMConfig {
     pub cpu_config: AxVCpuConfig,
     /// VM image configuration.
     pub image_config: VMImageConfig,
+    /// Volatile block images available to emulated virtio-blk devices.
+    virtio_block_backings: Vec<Arc<MemoryBlockBackend>>,
     emu_devices: Vec<EmulatedDeviceConfig>,
     pass_through_devices: Vec<PassThroughDeviceConfig>,
     excluded_devices: Vec<Vec<String>>,
@@ -92,6 +95,9 @@ pub struct AxVMConfig {
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<u32>,
     interrupt_mode: VMInterruptMode,
+    // Guest-visible Arm architectural virtual-timer PPI, configured explicitly
+    // or derived from its FDT.
+    aarch64_virtual_timer_irq: Option<u32>,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -113,6 +119,7 @@ pub struct AxVMConfigParams {
     pub memory_regions: Vec<VmMemConfig>,
     pub boot_policy: GuestBootPolicy,
     pub interrupt_mode: VMInterruptMode,
+    pub aarch64_virtual_timer_irq: Option<u32>,
 }
 
 impl AxVMConfig {
@@ -124,6 +131,7 @@ impl AxVMConfig {
             phys_cpu_ls: params.phys_cpu_ls,
             cpu_config: params.cpu_config,
             image_config: params.image_config,
+            virtio_block_backings: Vec::new(),
             emu_devices: params.emu_devices,
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
@@ -135,6 +143,7 @@ impl AxVMConfig {
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
             interrupt_mode: params.interrupt_mode,
+            aarch64_virtual_timer_irq: params.aarch64_virtual_timer_irq,
         }
     }
 
@@ -176,6 +185,18 @@ impl AxVMConfig {
     /// Returns whether VM images are loaded from the host filesystem.
     pub fn images_loaded_from_filesystem(&self) -> bool {
         self.image_config.loaded_from_filesystem
+    }
+
+    /// Adds one VM-owned virtio block backing and returns its configuration index.
+    pub fn add_virtio_block_backing(&mut self, backing: Arc<MemoryBlockBackend>) -> usize {
+        let index = self.virtio_block_backings.len();
+        self.virtio_block_backings.push(backing);
+        index
+    }
+
+    /// Returns the VM-owned virtio block backings.
+    pub(crate) fn virtio_block_backings(&self) -> &[Arc<MemoryBlockBackend>] {
+        &self.virtio_block_backings
     }
 
     /// Returns the entry address in GPA for the Bootstrap Processor (BSP).
@@ -295,6 +316,16 @@ impl AxVMConfig {
     /// Returns the interrupt mode of the VM.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.interrupt_mode
+    }
+
+    /// Records the guest-visible Arm architectural virtual-timer PPI.
+    pub fn set_aarch64_virtual_timer_irq(&mut self, irq: Option<u32>) {
+        self.aarch64_virtual_timer_irq = irq;
+    }
+
+    /// Returns the guest-visible Arm architectural virtual-timer PPI.
+    pub fn aarch64_virtual_timer_irq(&self) -> Option<u32> {
+        self.aarch64_virtual_timer_irq
     }
 
     /// Relocate the guest kernel image while preserving the configured

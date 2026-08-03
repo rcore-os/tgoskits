@@ -5,20 +5,17 @@ use core::num::NonZeroU16;
 
 use axdevice_base::{DeviceError, DeviceResult};
 
-use super::{
-    descriptor::{DescriptorChain, DescriptorDirection, read_descriptor_chain},
-    memory::{GuestRead, GuestWrite, read_u16, write_u16, write_u32},
-};
+use super::memory::{GuestRead, GuestWrite, read_u16, write_u16, write_u32};
 use crate::{DeviceManagerError, DeviceManagerResult};
 
 const VIRTQ_DESCRIPTOR_SIZE: u64 = 16;
 const VIRTQ_AVAIL_HEADER_SIZE: u64 = 4;
 const VIRTQ_USED_HEADER_SIZE: u64 = 4;
 
-pub(super) const QUEUE_NUM_MAX: u16 = 256;
+pub(crate) const QUEUE_NUM_MAX: u16 = 256;
 
 #[derive(Clone, Copy)]
-pub(super) enum QueueAddressKind {
+pub(crate) enum QueueAddressKind {
     Descriptor,
     Driver,
     Device,
@@ -31,17 +28,17 @@ impl QueueSize {
     fn new(value: u32) -> DeviceResult<Self> {
         if value == 0 || value > u32::from(QUEUE_NUM_MAX) || !value.is_power_of_two() {
             return Err(DeviceError::InvalidInput {
-                operation: "configure virtio-net queue size",
+                operation: "configure virtio queue size",
                 detail: format!("queue size {value} must be a power of two in 1..={QUEUE_NUM_MAX}"),
             });
         }
         let value = u16::try_from(value).map_err(|_| DeviceError::InvalidInput {
-            operation: "configure virtio-net queue size",
+            operation: "configure virtio queue size",
             detail: format!("queue size {value} does not fit the split-ring index width"),
         })?;
         Ok(Self(NonZeroU16::new(value).ok_or_else(|| {
             DeviceError::InvalidInput {
-                operation: "configure virtio-net queue size",
+                operation: "configure virtio queue size",
                 detail: "queue size must not be zero".into(),
             }
         })?))
@@ -70,7 +67,7 @@ impl QueueAddress {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct QueueState {
+pub(crate) struct QueueState {
     size: Option<QueueSize>,
     ready: bool,
     descriptor: QueueAddress,
@@ -80,13 +77,13 @@ pub(super) struct QueueState {
 }
 
 impl QueueState {
-    pub(super) fn set_size(&mut self, value: u32) -> DeviceResult {
-        self.ensure_not_ready("change virtio-net queue size")?;
+    pub(crate) fn set_size(&mut self, value: u32) -> DeviceResult {
+        self.ensure_not_ready("change virtio queue size")?;
         self.size = Some(QueueSize::new(value)?);
         Ok(())
     }
 
-    pub(super) fn set_ready(&mut self, value: u32) -> DeviceResult {
+    pub(crate) fn set_ready(&mut self, value: u32) -> DeviceResult {
         match value {
             0 => {
                 self.ready = false;
@@ -99,23 +96,23 @@ impl QueueState {
                 Ok(())
             }
             _ => Err(DeviceError::InvalidInput {
-                operation: "configure virtio-net queue ready state",
+                operation: "configure virtio queue ready state",
                 detail: format!("queue ready value {value} must be zero or one"),
             }),
         }
     }
 
-    pub(super) fn ready_value(&self) -> u32 {
+    pub(crate) fn ready_value(&self) -> u32 {
         u32::from(self.ready)
     }
 
-    pub(super) fn set_address(
+    pub(crate) fn set_address(
         &mut self,
         kind: QueueAddressKind,
         high: bool,
         value: u32,
     ) -> DeviceResult {
-        self.ensure_not_ready("change virtio-net queue address")?;
+        self.ensure_not_ready("change virtio queue address")?;
         let address = match kind {
             QueueAddressKind::Descriptor => &mut self.descriptor,
             QueueAddressKind::Driver => &mut self.driver,
@@ -125,7 +122,7 @@ impl QueueState {
         Ok(())
     }
 
-    pub(super) fn active(
+    pub(crate) fn active(
         &self,
         operation: &'static str,
     ) -> DeviceManagerResult<Option<QueueSnapshot>> {
@@ -157,13 +154,13 @@ impl QueueState {
         }))
     }
 
-    pub(super) fn complete_available(&mut self) {
+    pub(crate) fn complete_available(&mut self) {
         self.last_avail = self.last_avail.wrapping_add(1);
     }
 
     fn validate_layout(&self) -> DeviceResult {
         let size = self.size.ok_or_else(|| DeviceError::InvalidState {
-            operation: "enable virtio-net queue",
+            operation: "enable virtio queue",
             detail: "queue size has not been configured".into(),
         })?;
         let descriptor = self.configured_address(self.descriptor, "descriptor")?;
@@ -185,7 +182,7 @@ impl QueueState {
             .configured
             .then_some(address.value)
             .ok_or_else(|| DeviceError::InvalidState {
-                operation: "enable virtio-net queue",
+                operation: "enable virtio queue",
                 detail: format!("queue {name} address has not been configured"),
             })
     }
@@ -203,7 +200,7 @@ impl QueueState {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct QueueSnapshot {
+pub(crate) struct QueueSnapshot {
     size: QueueSize,
     descriptor: u64,
     driver: u64,
@@ -212,12 +209,12 @@ pub(super) struct QueueSnapshot {
 }
 
 impl QueueSnapshot {
-    pub(super) fn last_avail(self) -> u16 {
+    pub(crate) fn last_avail(self) -> u16 {
         self.last_avail
     }
 
-    pub(super) fn pending_count(self, read: GuestRead<'_>) -> DeviceManagerResult<u16> {
-        let available = read_u16(read, self.driver, 2, "read virtio-net available index")?;
+    pub(crate) fn pending_count(self, read: GuestRead<'_>) -> DeviceManagerResult<u16> {
+        let available = read_u16(read, self.driver, 2, "read virtio available index")?;
         let pending = available.wrapping_sub(self.last_avail);
         if pending > self.size.get() {
             return Err(invalid_chain(format!(
@@ -228,7 +225,7 @@ impl QueueSnapshot {
         Ok(pending)
     }
 
-    pub(super) fn available_head(
+    pub(crate) fn available_head(
         self,
         read: GuestRead<'_>,
         available_index: u16,
@@ -237,34 +234,25 @@ impl QueueSnapshot {
         let offset = VIRTQ_AVAIL_HEADER_SIZE
             .checked_add(slot * 2)
             .ok_or_else(|| invalid_chain("available-ring offset overflow".into()))?;
-        read_u16(read, self.driver, offset, "read virtio-net available head")
+        read_u16(read, self.driver, offset, "read virtio available head")
     }
 
-    pub(super) fn read_chain(
-        self,
-        read: GuestRead<'_>,
-        head: u16,
-        direction: DescriptorDirection,
-        max_length: Option<usize>,
-    ) -> DeviceManagerResult<DescriptorChain> {
-        read_descriptor_chain(
-            read,
-            self.descriptor,
-            self.size.get(),
-            head,
-            direction,
-            max_length,
-        )
+    pub(crate) fn size(self) -> u16 {
+        self.size.get()
     }
 
-    pub(super) fn write_used(
+    pub(crate) fn descriptor_table(self) -> u64 {
+        self.descriptor
+    }
+
+    pub(crate) fn write_used(
         self,
         read: GuestRead<'_>,
         write: GuestWrite<'_>,
         head: u16,
         length: usize,
     ) -> DeviceManagerResult {
-        let used_index = read_u16(read, self.device, 2, "read virtio-net used index")?;
+        let used_index = read_u16(read, self.device, 2, "read virtio used index")?;
         let slot = u64::from(used_index % self.size.get());
         let entry = VIRTQ_USED_HEADER_SIZE
             .checked_add(slot * 8)
@@ -279,21 +267,21 @@ impl QueueSnapshot {
             self.device,
             entry,
             u32::from(head),
-            "write virtio-net used descriptor",
+            "write virtio used descriptor",
         )?;
         write_u32(
             write,
             self.device,
             entry + 4,
             length,
-            "write virtio-net used length",
+            "write virtio used length",
         )?;
         write_u16(
             write,
             self.device,
             2,
             used_index.wrapping_add(1),
-            "advance virtio-net used index",
+            "advance virtio used index",
         )
     }
 }
@@ -303,7 +291,7 @@ fn validate_alignment(address: u64, alignment: u64, name: &str) -> DeviceResult 
         Ok(())
     } else {
         Err(DeviceError::InvalidInput {
-            operation: "enable virtio-net queue",
+            operation: "enable virtio queue",
             detail: format!("queue {name} address {address:#x} is not {alignment}-byte aligned"),
         })
     }
@@ -313,13 +301,13 @@ fn validate_device_range(address: u64, length: u64, name: &str) -> DeviceResult 
     let end = address
         .checked_add(length)
         .ok_or_else(|| DeviceError::InvalidInput {
-            operation: "enable virtio-net queue",
+            operation: "enable virtio queue",
             detail: format!("queue {name} range {address:#x}+{length:#x} overflows"),
         })?;
     usize::try_from(address)
         .and_then(|_| usize::try_from(end))
         .map_err(|_| DeviceError::InvalidInput {
-            operation: "enable virtio-net queue",
+            operation: "enable virtio queue",
             detail: format!("queue {name} range does not fit the host address width"),
         })?;
     Ok(())
@@ -327,7 +315,7 @@ fn validate_device_range(address: u64, length: u64, name: &str) -> DeviceResult 
 
 fn invalid_chain(detail: alloc::string::String) -> DeviceManagerError {
     DeviceManagerError::InvalidInput {
-        operation: "validate virtio-net descriptor chain",
+        operation: "validate virtio descriptor chain",
         detail,
     }
 }

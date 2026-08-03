@@ -69,7 +69,7 @@ impl GuestBootPlatform for Aarch64Arch {
         vm_create_config: &mut axvmconfig::AxVMCrateConfig,
         provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
-        super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
+        super::fdt::handle_fdt_operations(vm_config, vm_create_config, provider)
     }
 }
 

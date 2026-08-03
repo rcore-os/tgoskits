@@ -12,12 +12,11 @@ use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 use crate::{DeviceManagerError, DeviceManagerResult};
 
 mod descriptor;
-mod memory;
 mod mmio;
-mod queue;
 
 use descriptor::DescriptorDirection;
-use queue::QueueState;
+
+use crate::virtio::queue::QueueState;
 
 const RX_QUEUE: usize = 0;
 const TX_QUEUE: usize = 1;
@@ -217,8 +216,10 @@ impl VirtioNet {
         let mut available_index = queue.last_avail();
         for _ in 0..pending {
             let head = queue.available_head(read, available_index)?;
-            let chain = queue.read_chain(
+            let chain = descriptor::read_descriptor_chain(
                 read,
+                queue.descriptor_table(),
+                queue.size(),
                 head,
                 DescriptorDirection::DeviceReadable,
                 Some(header_len + MAX_ETHERNET_FRAME_LEN),
@@ -270,7 +271,14 @@ impl VirtioNet {
         }
 
         let head = queue.available_head(read, queue.last_avail())?;
-        let chain = queue.read_chain(read, head, DescriptorDirection::DeviceWritable, None)?;
+        let chain = descriptor::read_descriptor_chain(
+            read,
+            queue.descriptor_table(),
+            queue.size(),
+            head,
+            DescriptorDirection::DeviceWritable,
+            None,
+        )?;
         if chain.capacity() < payload.len() {
             return Err(DeviceManagerError::InvalidInput {
                 operation: "deliver virtio-net RX packet",

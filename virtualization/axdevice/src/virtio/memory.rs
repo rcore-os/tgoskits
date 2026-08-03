@@ -6,10 +6,10 @@ use axvm_types::GuestPhysAddr;
 
 use crate::{DeviceManagerError, DeviceManagerResult};
 
-pub(super) type GuestRead<'a> = &'a dyn Fn(GuestPhysAddr, &mut [u8]) -> DeviceManagerResult;
-pub(super) type GuestWrite<'a> = &'a dyn Fn(GuestPhysAddr, &[u8]) -> DeviceManagerResult;
+pub(crate) type GuestRead<'a> = &'a dyn Fn(GuestPhysAddr, &mut [u8]) -> DeviceManagerResult;
+pub(crate) type GuestWrite<'a> = &'a dyn Fn(GuestPhysAddr, &[u8]) -> DeviceManagerResult;
 
-pub(super) fn read_u16(
+pub(crate) fn read_u16(
     read: GuestRead<'_>,
     base: u64,
     offset: u64,
@@ -20,7 +20,7 @@ pub(super) fn read_u16(
     Ok(u16::from_le_bytes(bytes))
 }
 
-pub(super) fn read_u32(
+pub(crate) fn read_u32(
     read: GuestRead<'_>,
     base: u64,
     offset: u64,
@@ -31,7 +31,7 @@ pub(super) fn read_u32(
     Ok(u32::from_le_bytes(bytes))
 }
 
-pub(super) fn read_u64(
+pub(crate) fn read_u64(
     read: GuestRead<'_>,
     base: u64,
     offset: u64,
@@ -42,7 +42,7 @@ pub(super) fn read_u64(
     Ok(u64::from_le_bytes(bytes))
 }
 
-pub(super) fn write_u16(
+pub(crate) fn write_u16(
     write: GuestWrite<'_>,
     base: u64,
     offset: u64,
@@ -52,7 +52,7 @@ pub(super) fn write_u16(
     write_guest_at(write, base, offset, &value.to_le_bytes(), operation)
 }
 
-pub(super) fn write_u32(
+pub(crate) fn write_u32(
     write: GuestWrite<'_>,
     base: u64,
     offset: u64,
@@ -62,7 +62,7 @@ pub(super) fn write_u32(
     write_guest_at(write, base, offset, &value.to_le_bytes(), operation)
 }
 
-pub(super) fn read_guest(
+pub(crate) fn read_guest(
     read: GuestRead<'_>,
     address: u64,
     buffer: &mut [u8],
@@ -72,7 +72,7 @@ pub(super) fn read_guest(
     read(address, buffer)
 }
 
-pub(super) fn write_guest(
+pub(crate) fn write_guest(
     write: GuestWrite<'_>,
     address: u64,
     buffer: &[u8],
@@ -82,7 +82,7 @@ pub(super) fn write_guest(
     write(address, buffer)
 }
 
-pub(super) fn checked_guest_address(
+pub(crate) fn checked_guest_address(
     address: u64,
     length: usize,
     operation: &'static str,

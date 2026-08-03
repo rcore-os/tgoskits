@@ -14,6 +14,7 @@
 
 use alloc::format;
 
+use ax_kernel_guard::NoPreempt;
 use axvmconfig::VcpuTaskAffinity;
 
 use crate::{
@@ -56,8 +57,17 @@ impl PreparedVcpuTask {
 
 /// Blocks a WFI exit until lifecycle state or queued vCPU work changes.
 fn wait(vm: &VMRef, vm_vcpus: &VmRuntimeHandle, vcpu_id: usize) {
+    #[cfg(feature = "rt-trace")]
+    let started_ticks = crate::rt_trace::current_ticks();
     vm_vcpus
         .wait_until(|| vm.status() != VmStatus::Running || vm_vcpus.has_pending_vcpu_work(vcpu_id));
+    #[cfg(feature = "rt-trace")]
+    crate::rt_trace::record_vcpu_wait(
+        vm.id(),
+        vcpu_id,
+        started_ticks,
+        crate::rt_trace::current_ticks(),
+    );
 }
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
@@ -72,6 +82,21 @@ where
     F: Fn() -> bool,
 {
     vm_vcpus.wait_until(condition);
+}
+
+#[cfg(feature = "rt-trace")]
+fn wait_for_vcpu<F>(vm_id: usize, vcpu_id: usize, vm_vcpus: &VmRuntimeHandle, condition: F)
+where
+    F: Fn() -> bool,
+{
+    let started_ticks = crate::rt_trace::current_ticks();
+    vm_vcpus.wait_until(condition);
+    crate::rt_trace::record_vcpu_wait(
+        vm_id,
+        vcpu_id,
+        started_ticks,
+        crate::rt_trace::current_ticks(),
+    );
 }
 
 /// Notifies the primary VCpu task associated with the specified VM to wake up and resume execution.
@@ -309,12 +334,37 @@ fn vcpu_run() {
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     CurrentArch::before_first_run(&vm, &vcpu);
+    info!(
+        "VM[{}] VCpu[{}] first-run architecture setup complete",
+        vm.id(),
+        vcpu.id()
+    );
     mark_vcpu_running(&vm);
 
     loop {
         CurrentArch::before_vcpu_run(&vm, &vcpu);
 
-        match CurrentArch::run_vcpu(&vm, &vcpu) {
+        #[cfg(feature = "rt-trace")]
+        let run_started_ticks = crate::rt_trace::current_ticks();
+        #[cfg(feature = "rt-trace")]
+        let run_pcpu_id = crate::rt_trace::current_pcpu_id();
+        let run_result = {
+            // A host timer IRQ may request an RR reschedule while the architecture
+            // backend still owns live guest state. Defer that switch until run_vcpu
+            // has handled the VM exit and unbound the backend from this pCPU.
+            let _preempt_guard = NoPreempt::new();
+            CurrentArch::run_vcpu(&vm, &vcpu)
+        };
+        #[cfg(feature = "rt-trace")]
+        crate::rt_trace::record_vcpu_run(
+            vm_id,
+            vcpu_id,
+            run_pcpu_id,
+            run_started_ticks,
+            crate::rt_trace::current_ticks(),
+        );
+
+        match run_result {
             Ok(VcpuRunAction {
                 stop_reason: Some(reason),
                 ..
@@ -345,6 +395,9 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
+            #[cfg(feature = "rt-trace")]
+            wait_for_vcpu(vm_id, vcpu_id, &runtime, || !vm.suspending());
+            #[cfg(not(feature = "rt-trace"))]
             wait_for(&runtime, || !vm.suspending());
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
@@ -352,6 +405,7 @@ fn vcpu_run() {
 
         // Check if the VM is stopping.
         if vm.stopping() {
+            CurrentArch::before_vcpu_task_exit(&vm, &vcpu);
             warn!(
                 "VM[{}] VCpu[{}] stopping because of VM stopping",
                 vm_id, vcpu_id
@@ -366,6 +420,9 @@ fn vcpu_run() {
                 info!("VM[{}] state changed to Stopped", vm_id);
 
                 CurrentArch::on_last_vcpu_exit(vm_id);
+
+                #[cfg(feature = "rt-trace")]
+                crate::rt_trace::end_vm(vm_id);
 
                 sub_running_vm_count(1);
                 crate::host::task::wait_queue_wake(&super::VMM, 1);

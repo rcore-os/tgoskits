@@ -14,6 +14,7 @@
 
 mod base;
 mod history;
+mod host;
 mod vm;
 
 pub use base::*;
@@ -392,6 +393,7 @@ fn build_command_tree() -> BTreeMap<String, CommandNode> {
     let mut tree = BTreeMap::new();
 
     build_base_cmd(&mut tree);
+    host::build_host_cmd(&mut tree);
     build_vm_cmd(&mut tree);
 
     tree

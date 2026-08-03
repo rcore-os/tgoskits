@@ -1,0 +1,39 @@
+[base]
+id = 1
+name = "starry-rt-shared-orangepi"
+vm_type = 1
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+# Keep each timer-owning vCPU on one pCPU. The shared baseline disables pCPU
+# reservation, so host tasks may still contend on CPUs 1 and 2; allowing vCPU
+# migration loses the RK3588 physical virtual-timer PPI while the vCPU sleeps.
+phys_cpu_sets = [0x2, 0x4]
+dedicated_cpus = false
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/home/orangepi/axvisor-guest/starryos.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+dtb_path = "/home/orangepi/axvisor-guest/starry-orangepi-5-plus.dtb"
+disk_path = "/home/orangepi/axvisor-guest/starry-rt-capture-rootfs.img"
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 root=/dev/vda rw"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "emulated"
+aarch64_virtual_timer_irq = 27
+passthrough_devices = []
+passthrough_addresses = []
+excluded_devices = []
+
+emu_devices = [
+  ["gppt-gicd-starry-rt", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr-starry-rt", 0x080a_0000, 0x2_0000, 0, 0x20, [2, 0x2_0000, 1]],
+  ["pl011-starry-rt", 0x0900_0000, 0x1000, 33, 0x02, []],
+  ["virtio-blk-starry-rt", 0x0a00_0000, 0x1000, 48, 0xE1, [0]],
+]

@@ -104,8 +104,12 @@ python3 competition/ivc/analyze_qemu.py <qemu.log> \
 
 The physical-board overlays keep the normal protocol behavior but make the
 endpoint finite. `board-smoke.conf` accepts 20 fresh commands and `board.conf`
-accepts 1,800; both emit `IVC-RTOS-RESULT`, print a compact poweroff marker,
-and request PSCI system-off so the AxVisor board runner can regain control:
+accepts 1,800. Both preserve the legacy `IVC-RTOS-RESULT` line and additionally
+split terminal counters into compact `IVC-RTOS-OUTCOME` and
+`IVC-RTOS-MESSAGES` records. Each compact record and the
+`IVC-RTOS-POWEROFF` marker is emitted twice with a 10 ms pause before the guest
+requests PSCI system-off, so the AxVisor board runner can regain control even
+when the shared physical UART loses one span:
 
 ```sh
 west build -p always -b qemu_cortex_a53 \
@@ -121,6 +125,22 @@ west build -p always -b qemu_cortex_a53 \
 
 Use these only with the matching `orangepi-5-plus-zephyr-*.toml` description.
 The normal QEMU image remains open-ended.
+
+The retained physical build produced:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| full `zephyr.bin` | 121,568 | `38c322b1181f09bde9dcb974bbffeaf576f8eac6dc97bd020a4e4ec831c3ec59` |
+| full `zephyr.elf` | 2,179,208 | `b34f44fb22ba4d19a7160e3e30cfc8b17bcc1687398c63c436d4cf861cce5674` |
+| smoke `zephyr.bin` | 121,568 | `d82d1f1a7a262a7f465990ce88ff7daa11c5034b68d82391efb10a5cddc61bb3` |
+| smoke `zephyr.elf` | 2,179,416 | `a54130d6f217debbc8b28519a98b68bd618bb6010ad2d9a5c3c757e9fff200fd` |
+
+`competition/ivc/analyze_board.py` accepts a run only when at least one
+complete copy of each compact record exists, all complete copies agree, the
+expected counts match, and StarryOS completion, Zephyr poweroff, AxVisor
+filesystem sync, and restored board Linux are all present. The validated raw
+logs and summaries are retained under
+[`../../results/orangepi-starry-reference`](../../results/orangepi-starry-reference/).
 
 The AxVisor image is built for non-secure EL1 (`CONFIG_ARMV8_A_NS=y`) and uses
 safe GIC initialization so it does not reinitialize a distributor that the
@@ -204,8 +224,10 @@ cargo run -p ivcproto --bin ivcproto -- \
 ```
 
 The default endpoint has no finite request-count exit condition. Stop the guest
-after the controller has collected its results. The two physical-board
-overlays above intentionally power off after their configured finite count.
+after the controller has collected its results. The physical StarryOS rootfs
+autorun invokes the same checked-in binary with the profile count and neural
+policy; the two physical-board overlays above intentionally power off after
+their configured finite count.
 
 ## Compatibility behavior
 
@@ -246,4 +268,6 @@ IVC-RTOS-READY bind=10.0.0.2:5500 mac=52:54:00:00:00:02 window_bits=64 ack_loss_
 
 Applied commands, duplicates, protocol errors, and timeout fallback use stable
 `IVC-RTOS-* key=value` console lines so the demonstration harness can collect
-them without parsing Zephyr's log prefixes.
+them without parsing Zephyr's log prefixes. Finite physical images use the
+redundant compact terminal records described above; the analyzer strips Zephyr
+and AxVisor console prefixes before validating them.

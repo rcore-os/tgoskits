@@ -21,6 +21,8 @@
 #define IVC_LOCAL_UDP_PORT 5500U
 #define IVC_SOCKET_POLL_MS 100
 #define IVC_ETHERNET_ADDRESS_LENGTH 6U
+#define IVC_RESULT_RECORD_COPIES 2U
+#define IVC_RESULT_RECORD_PAUSE_MS 10
 
 static const uint8_t expected_mac[IVC_ETHERNET_ADDRESS_LENGTH] = {
 	0x52, 0x54, 0x00, 0x00, 0x00, 0x02,
@@ -183,6 +185,25 @@ static bool send_ack(int socket_fd, const struct sockaddr *peer, socklen_t peer_
 			    payload, sizeof(payload));
 }
 
+static void report_compact_result(const struct ivc_server *server, const char *profile)
+{
+	uint32_t copy;
+
+	for (copy = 0U; copy < IVC_RESULT_RECORD_COPIES; ++copy) {
+		printk("IVC-RTOS-OUTCOME profile=%s accepted=%llu applied=%u duplicates=%llu "
+		       "acks_dropped=%llu\n",
+		       profile, server->receive_window.metrics.accepted,
+		       server->applied_commands, server->receive_window.metrics.duplicates,
+		       server->ack_loss.acknowledgements_dropped);
+		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
+		printk("IVC-RTOS-MESSAGES status_sent=%llu acks_sent=%llu errors_sent=%llu "
+		       "protocol_errors=%llu\n",
+		       server->status_sent, server->acknowledgements_sent,
+		       server->errors_sent, server->protocol_errors);
+		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
+	}
+}
+
 static void report_result_if_complete(struct ivc_server *server)
 {
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
@@ -204,6 +225,7 @@ static void report_result_if_complete(struct ivc_server *server)
 		return;
 	}
 #endif
+	report_compact_result(server, profile);
 	printk("IVC-RTOS-RESULT profile=%s accepted=%llu applied=%u duplicates=%llu "
 	       "acks_dropped=%llu status_sent=%llu acks_sent=%llu errors_sent=%llu "
 	       "protocol_errors=%llu\n",
@@ -213,7 +235,11 @@ static void report_result_if_complete(struct ivc_server *server)
 	       server->acknowledgements_sent, server->errors_sent, server->protocol_errors);
 	server->result_reported = true;
 #if CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS
-	printk("IVC-RTOS-POWEROFF accepted=%llu\n", server->receive_window.metrics.accepted);
+	for (uint32_t copy = 0U; copy < IVC_RESULT_RECORD_COPIES; ++copy) {
+		printk("IVC-RTOS-POWEROFF accepted=%llu\n",
+		       server->receive_window.metrics.accepted);
+		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
+	}
 	k_sleep(K_MSEC(100));
 	sys_poweroff();
 #endif

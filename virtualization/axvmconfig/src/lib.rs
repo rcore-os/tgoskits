@@ -898,6 +898,12 @@ pub struct VMDevicesConfig {
     )]
     #[serde(with = "vm_interrupt_mode_serde")]
     pub interrupt_mode: VMInterruptMode,
+    /// Guest-visible AArch64 architectural virtual-timer PPI.
+    ///
+    /// Set this when the guest uses a compile-time device tree and no external
+    /// DTB is available for AxVM to inspect.
+    #[serde(default)]
+    pub aarch64_virtual_timer_irq: Option<u32>,
     /// we would not like to pass through devices
     #[serde(default)]
     pub excluded_devices: Vec<Vec<String>>,

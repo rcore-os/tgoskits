@@ -28,7 +28,7 @@ pub(crate) fn build_passthrough_spi_registrations<P: PhysicalSpiPlatform>(
     }
 
     let devices = vm.get_devices()?;
-    if devices.virtio_nets().is_empty() {
+    if devices.virtio_blocks().is_empty() && devices.virtio_nets().is_empty() {
         return Ok(Vec::new());
     }
     let Some(target_mpidr) = P::physical_spi_target_mpidr(vm)? else {
@@ -36,11 +36,23 @@ pub(crate) fn build_passthrough_spi_registrations<P: PhysicalSpiPlatform>(
     };
 
     let mut registrations = Vec::new();
+    let registration_count = devices
+        .virtio_blocks()
+        .len()
+        .checked_add(devices.virtio_nets().len())
+        .ok_or(AxVmError::OutOfMemory {
+            operation: "counting emulated passthrough SPI registrations",
+        })?;
     registrations
-        .try_reserve_exact(devices.virtio_nets().len())
+        .try_reserve_exact(registration_count)
         .map_err(|_| AxVmError::OutOfMemory {
             operation: "preallocating emulated passthrough SPI registrations",
         })?;
+    registrations.extend(
+        devices.virtio_blocks().iter().map(|device| {
+            crate::vm::PassthroughSpiRegistration::new(0, device.irq(), target_mpidr)
+        }),
+    );
     registrations.extend(
         devices.virtio_nets().iter().map(|device| {
             crate::vm::PassthroughSpiRegistration::new(0, device.irq(), target_mpidr)

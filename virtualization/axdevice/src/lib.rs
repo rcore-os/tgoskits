@@ -37,6 +37,8 @@ mod loongarch_pch_pic;
 mod pl011;
 mod range_alloc;
 mod registration;
+mod virtio;
+mod virtio_blk;
 mod virtio_net;
 #[cfg(target_arch = "x86_64")]
 mod x86;
@@ -63,6 +65,7 @@ pub use fw_cfg::{
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
 pub use pl011::{Pl011ConsoleDevice, Pl011ConsoleHostOps};
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
+pub use virtio_blk::{MemoryBlockBackend, VirtioBlock};
 pub use virtio_net::{VirtioNet, VirtioNetHeaderMode, VirtioNetOptions};
 #[cfg(target_arch = "x86_64")]
 pub use x86::{

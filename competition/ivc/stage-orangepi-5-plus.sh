@@ -8,14 +8,8 @@ board_type=${ORANGEPI_BOARD_TYPE:-OrangePi-5-Plus}
 ssh_target=${ORANGEPI_SSH_TARGET:?set ORANGEPI_SSH_TARGET, for example orangepi@192.168.31.33}
 ssh_identity=${ORANGEPI_SSH_IDENTITY:?set ORANGEPI_SSH_IDENTITY to the board SSH private key}
 guest_dir=${ORANGEPI_IVC_GUEST_DIR:-/home/orangepi/axvisor-guest}
-kernel=${IVC_LINUX_KERNEL:-$workspace/tmp/competition/ivc/linux/linux-qemu}
-initramfs=$workspace/tmp/competition/ivc/linux/initramfs.cpio.gz
-guest_dtb=$workspace/tmp/competition/ivc/linux/orangepi-5-plus.dtb
+output_dir=$workspace/tmp/competition/ivc/starry
 lease_dir=$workspace/tmp/competition/ivc/board-lease
-
-if [[ "$kernel" != /* ]]; then
-    kernel=$workspace/$kernel
-fi
 
 case "$guest_dir" in
     /home/orangepi/*) ;;
@@ -28,24 +22,57 @@ if [[ "$guest_dir" =~ [^A-Za-z0-9_./-] ]]; then
     echo "ORANGEPI_IVC_GUEST_DIR contains unsupported characters: $guest_dir" >&2
     exit 1
 fi
-for artifact in "$kernel" "$initramfs" "$guest_dtb" "$ssh_identity"; do
+
+kernel=${IVC_STARRY_KERNEL:-$output_dir/starryos.bin}
+if [[ "$kernel" != /* ]]; then
+    kernel=$workspace/$kernel
+fi
+artifact_sources=(
+    "$kernel"
+    "$output_dir/starry-ivc-rootfs.img"
+    "$output_dir/starry-ivc-rootfs-smoke.img"
+    "$output_dir/starry-ivc-rootfs-manual.img"
+    "$output_dir/starry-ivc-rootfs-manual-smoke.img"
+    "$output_dir/starry-orangepi-5-plus.dtb"
+)
+artifact_names=(
+    starryos.bin
+    starry-ivc-rootfs.img
+    starry-ivc-rootfs-smoke.img
+    starry-ivc-rootfs-manual.img
+    starry-ivc-rootfs-manual-smoke.img
+    starry-orangepi-5-plus.dtb
+)
+for artifact in "${artifact_sources[@]}" "$ssh_identity"; do
     if [[ ! -r "$artifact" ]]; then
         echo "Required Orange Pi staging input is not readable: $artifact" >&2
+        exit 1
+    fi
+done
+for command_name in cargo cut grep rsync sha256sum ssh; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "Required Orange Pi staging tool not found: $command_name" >&2
         exit 1
     fi
 done
 
 mkdir -p "$lease_dir"
 lease_log=$(mktemp "$lease_dir/connect.XXXXXX.log")
+manifest=$(mktemp "$lease_dir/stage.XXXXXX.sha256")
 lease_pid=
 cleanup() {
     if [[ -n "$lease_pid" ]] && kill -0 "$lease_pid" 2>/dev/null; then
         kill -TERM "$lease_pid" 2>/dev/null || true
         wait "$lease_pid" 2>/dev/null || true
     fi
-    rm -f -- "$lease_log"
+    rm -f -- "$lease_log" "$manifest"
 }
 trap cleanup EXIT HUP INT TERM
+
+for index in "${!artifact_sources[@]}"; do
+    hash=$(sha256sum "${artifact_sources[index]}" | cut -d ' ' -f 1)
+    printf '%s  %s\n' "$hash" "${artifact_names[index]}" >>"$manifest"
+done
 
 cd "$workspace"
 cargo xtask board connect -b "$board_type" >"$lease_log" 2>&1 &
@@ -73,23 +100,32 @@ ssh_options=(
     -o ConnectTimeout=8
 )
 ssh "${ssh_options[@]}" "$ssh_target" mkdir -p -- "$guest_dir"
-printf -v rsync_shell 'ssh -i %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8' "$ssh_identity"
-rsync -a --info=stats1 -e "$rsync_shell" "$kernel" "$ssh_target:$guest_dir/linux-qemu.new"
-rsync -a --info=stats1 -e "$rsync_shell" "$initramfs" "$ssh_target:$guest_dir/initramfs.cpio.gz.new"
-rsync -a --info=stats1 -e "$rsync_shell" "$guest_dtb" "$ssh_target:$guest_dir/orangepi-5-plus.dtb.new"
+printf -v rsync_shell \
+    'ssh -i %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8' \
+    "$ssh_identity"
+for index in "${!artifact_sources[@]}"; do
+    rsync -a --info=stats1 -e "$rsync_shell" \
+        "${artifact_sources[index]}" \
+        "$ssh_target:$guest_dir/${artifact_names[index]}.new"
+done
+rsync -a -e "$rsync_shell" "$manifest" "$ssh_target:$guest_dir/.ivc-stage.sha256.new"
 
-ssh "${ssh_options[@]}" "$ssh_target" sh -s -- "$guest_dir" <<'REMOTE'
+ssh "${ssh_options[@]}" "$ssh_target" sh -s -- \
+    "$guest_dir" "${artifact_names[@]}" <<'REMOTE'
 set -eu
 guest_dir=$1
-mv -f -- "$guest_dir/linux-qemu.new" "$guest_dir/linux-qemu"
-mv -f -- "$guest_dir/initramfs.cpio.gz.new" "$guest_dir/initramfs.cpio.gz"
-mv -f -- "$guest_dir/orangepi-5-plus.dtb.new" "$guest_dir/orangepi-5-plus.dtb"
+shift
+for artifact_name in "$@"; do
+    mv -f -- "$guest_dir/$artifact_name.new" "$guest_dir/$artifact_name"
+done
+mv -f -- "$guest_dir/.ivc-stage.sha256.new" "$guest_dir/.ivc-stage.sha256"
 sync
-sha256sum \
-    "$guest_dir/linux-qemu" \
-    "$guest_dir/initramfs.cpio.gz" \
-    "$guest_dir/orangepi-5-plus.dtb"
+(
+    cd "$guest_dir"
+    sha256sum -c .ivc-stage.sha256
+)
 findmnt -n -o SOURCE,FSTYPE,OPTIONS /
+echo BOARD_STAGE_HASHES_VERIFIED
 REMOTE
 
-echo "BOARD_STAGE_PASS destination=$guest_dir"
+echo "BOARD_STAGE_PASS destination=$guest_dir artifacts=${#artifact_names[@]}"

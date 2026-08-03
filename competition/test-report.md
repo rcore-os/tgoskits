@@ -5,8 +5,10 @@ commit `263f89d8f3d0481d2712224a7b517a73b1165fb3` plus the then-uncommitted
 competition implementation. The final AxVisor RT and QEMU IVC campaigns share
 source snapshot SHA-256
 `8594ab76e903dd179db5f1aa91546c03a7d759454d300b2ac6c665933ab0216a`.
-The base commit alone does not contain the implementation. The later physical
-Orange Pi support belongs to the revision that last changes this report and is
+The base commit alone does not contain the implementation. The retained
+physical Orange Pi StarryOS captures used base commit
+`f808646899f51fde9addfbe60976f6667c760beb` plus the later uncommitted worktree
+recorded in `results/orangepi-starry-reference/metadata.json`. They are
 reported separately rather than relabeling the historical QEMU archives.
 
 ## 1. Requirement status
@@ -14,15 +16,16 @@ reported separately rather than relabeling the historical QEMU archives.
 | Requirement/evidence | Status | What the retained evidence establishes |
 | --- | --- | --- |
 | CPU-partition implementation | Complete | Global mask validation, maximum-matched initial placement, FDT CPU consistency, two-phase vCPU task preparation, activation-time revalidation, rollback, and frozen-registry behavior fail closed. |
-| Linux guest with at least two vCPUs | Complete QEMU and physical gates | The dedicated QEMU gate requires exactly two online CPUs; the maintained Orange Pi smoke observes `smp: Brought up 1 node, 2 CPUs`. |
+| Linux guest with at least two vCPUs | Complete QEMU gate | The dedicated QEMU Task 1 gate requires exactly two online Linux CPUs. The physical replacement profile separately proves two online StarryOS vCPUs. |
 | AxVisor idle/stress/soak validation | Complete | Five 10,000-sample runs retain raw logs, metadata, guest load, p99/max tails, QEMU exit, and source/config/image hashes. |
 | Native RTOS comparison | Complete retained reference | Native Zephyr v4.3.0 runs comparable periodic/dispatch loops under idle and verified CPU stress, with platform differences stated. |
-| Bidirectional guest IP path | Complete | Linux `10.0.0.1` and Zephyr `10.0.0.2` exchange CONTROL, STATUS, and ACK over UDP/IPv4 and two virtio-net devices on isolated segment 1. |
+| Bidirectional guest IP path | Complete | Linux in QEMU or StarryOS on Orange Pi at `10.0.0.1` and Zephyr at `10.0.0.2` exchange CONTROL, STATUS, and ACK over UDP/IPv4 and two virtio-net devices on isolated segment 1. |
 | Application protocol and reliability | Complete | Versioned framing, CRC, typed errors, receive window, retry, duplicate suppression, timeout, session restart logic, and safe fallback are implemented and tested. |
 | Cross-guest normal communication | Complete retained reference | Neural and manual runs each complete 1,800/1,800 with zero application errors/timeouts and zero RTOS duplicates/protocol errors. |
-| Physical Orange Pi communication | Complete local validation | One 1,800-command neural run and the maintained 20-command smoke complete on RK3588, synchronize the host filesystem, and restore Linux automatically. |
+| Physical Orange Pi communication | Complete retained reference | One 1,800-command neural run and one 20-command smoke run StarryOS/Zephyr on RK3588, pass strict log analysis, synchronize the host filesystem, and restore Linux automatically. |
 | Cross-guest ACK-loss recovery | Complete retained reference | A deterministic 1-in-5 first-ACK loss campaign recovers all 20 losses and applies every command once. |
-| Neural/RTOS closed loop and manual comparison | Complete retained reference | Linux neural inference drives Zephyr actuator/plant state and uses returned status as the next observation; two aggregate error metrics improve. |
+| Neural/RTOS closed loop and manual comparison | Complete retained reference | Linux/QEMU establishes the matched manual comparison; StarryOS/Orange Pi reproduces the neural controller result and uses returned Zephyr status as the next observation. |
+| StarryOS replacement path | Complete for physical Tasks 2 and 3 | A two-vCPU StarryOS guest executes the Linux-ABI controller, virtio block/network, UDP protocol, neural inference, and closed-loop feedback. Task 1 timing and the matched manual comparison remain Linux/QEMU evidence. |
 | Error notification | Implemented and host-tested | ERROR encode/decode and malformed-input behavior are covered by Rust/C tests; no retained malformed-packet cross-guest QEMU capture is claimed. |
 | Isolation/access control | Implemented and regression-tested | No host NIC/default route exists; segment separation, exact unicast, anti-spoofing, and secure unknown-unicast drop are unit-tested. No third-guest runtime negative capture is claimed. |
 | Demonstration video | Outstanding | The storyboard is complete; the actual approximately five-minute recording is not. |
@@ -123,9 +126,11 @@ Both compressed logs and summaries are retained in
 ## 4. Physical Orange Pi 5 Plus validation
 
 The physical profile ran on an RK3588 Orange Pi 5 Plus with 16 GiB DRAM. WSL2
-owned the CH340 serial connection at 1,500,000 baud, staged the Linux kernel,
-initramfs, and guest DTB over SSH while holding the board lease, started
-AxVisor through U-Boot, and restored the TF-card Linux system afterward.
+owned the CH340 serial connection at 1,500,000 baud, built and staged the
+StarryOS kernel, guest DTB, finite ext4 rootfs, and Zephyr v4.3.0 image over SSH
+while holding the board lease, started AxVisor through U-Boot, and restored the
+TF-card Linux system afterward. StarryOS reported two online vCPUs and ran the
+Linux-ABI neural controller at `10.0.0.1`; Zephyr used `10.0.0.2`.
 
 The full neural run completed the same 1,800-command plant trajectory used by
 the QEMU neural profile:
@@ -134,33 +139,38 @@ the QEMU neural profile:
 | --- | ---: |
 | Sent / acknowledged | 1,800 / 1,800 |
 | Errors / timeouts / retransmissions / recoveries | 0 / 0 / 0 / 0 |
-| Full-loop p50 / p95 / p99 / max | 4,195 / 4,228 / 7,812 / 23,216 us |
-| Pre-send p50 / p95 / p99 / max | 1 / 2 / 2 / 3 us |
-| Transport p50 / p95 / p99 / max | 4,194 / 4,227 / 7,810 / 23,213 us |
-| Effective throughput | 9.992 msg/s |
+| RTOS accepted / applied / STATUS / ACK | 1,800 / 1,800 / 1,800 / 1,800 |
+| RTOS duplicates / protocol errors | 0 / 0 |
+| Full-loop p50 / p95 / p99 / max | 6,751 / 11,265 / 11,695 / 14,405 us |
+| Pre-send p50 / p95 / p99 / max | 17 / 17 / 17 / 35 us |
+| Transport p50 / p95 / p99 / max | 6,734 / 11,249 / 11,678 / 14,388 us |
+| Effective throughput | 9.995 msg/s |
 | RMSE / integrated absolute error | 5,932.491 mC / 686,993.400 mC*s |
 | Maximum overshoot | 13,428 mC |
 
-The RTOS progress marker reached 1,800 with zero duplicates and protocol
-errors, both guests entered `SystemDown`, AxVisor confirmed host filesystem
-sync, and the board returned to `/dev/mmcblk1p2` ext4 `rw`. The local serial-log
-SHA-256 is
-`134bbd6b308c6babb0b43bb1f8906f4d4a74bb422ab1f0cae59f05fcf9209da5`.
+The maintained 20-command smoke also passed: 20/20 acknowledgements, zero
+controller or RTOS faults, full-loop p50/p95/p99/max
+`4,694/6,952/6,952/8,915 us`, transport
+`4,677/6,936/6,936/8,899 us`, and `9.970 msg/s`. In both runs, the analyzer
+required the two-vCPU StarryOS boot record, StarryOS network setup, complete
+controller and RTOS metrics, StarryOS completion, Zephyr poweroff, AxVisor
+filesystem-sync confirmation, and final Linux restoration. The board returned
+to kernel `6.1.43-rockchip-rk3588` with `/dev/mmcblk1p2` ext4 `rw`.
 
-After hardening PL011 byte/word access, GICR `Last` semantics, CPU idle-state
-filtering, guest-console locking, and the newline-complete success regex, the
-maintained 20-command smoke returned exit 0. It observed two online Linux
-CPUs, 20/20 acknowledgements, zero controller faults, zero recurring
-unsupported PSCI `CPU_SUSPEND` calls, a confirmed host sync, and automatic
-Linux restore. Its local log SHA-256 is
-`4432964c3bf5746f9cb3a0a55f50f98cec7bbc270fe6c20be16b572d7f8afcf7`.
+The full raw-console SHA-256 is
+`023ff07b40b4936453eee6d4bbd57bca1c1699e7305dc1af5fe601a5d67492d9`;
+the smoke raw-console SHA-256 is
+`8dd16dbcc7608305da9fcf13f393a54e410e16ef26da63ca5c2821878efbf265`.
+Deterministically compressed logs, generated JSON summaries, artifact and
+configuration hashes, timestamps, and reproduction commands are retained in
+[`results/orangepi-starry-reference`](results/orangepi-starry-reference/).
 
-These are local physical captures, not files in the committed QEMU result
-archive. The 1,800-command run is one observed hardware run, not a repeated
-statistical campaign. Long terminal records can lose spans on the shared
-physical UART; unattended success therefore uses the short newline-terminated
-`IVC-LINUX-DONE exit=0` marker, while the controller and RTOS progress records
-provide the detailed application evidence.
+Multiple guest and host consoles share the physical UART and can lose spans.
+Controller and RTOS terminal metrics are therefore split into short records,
+emitted twice with pacing, and accepted only when at least one complete copy
+exists and all complete copies agree. The analyzer never infers omitted
+metrics from a completion marker. These are one full and one smoke hardware
+observation, not a repeated statistical campaign.
 
 ## 5. Cross-guest deterministic ACK-loss run
 
@@ -268,56 +278,60 @@ cross-guest run.
 The final implementation sweep completed against the synchronized working tree:
 
 - the AxVisor RT harness passed 24 Python tests plus its shell/C integration
-  test; the IVC harness passed 15 Python and eight C tests; the isolated Zephyr
-  baseline passed five Python and seven C tests;
+  test; the IVC harness passed 28 Python contract tests and the strict Zephyr
+  host-logic C suite; the isolated Zephyr baseline passed five Python and seven
+  C tests;
 - syntax/static harness checks passed for nine Bash scripts, two POSIX shell
   scripts, ten Python modules, and the applicable shellcheck rules;
 - all five full-profile `axvmconfig check --config-path` invocations returned a
   valid configuration;
-- the final `axvm`/`axvm-types` run passed 106 `axvm` unit tests, 18 architecture
+- the final `axvm`/`axvm-types` run passed 107 `axvm` unit tests, 18 architecture
   boundary tests, 20 focused error/FDT/passthrough/vCPU integration tests, two
   `axvm-types` unit tests, three `axvm-types` error-contract tests, and doc tests;
 - the duplicate secondary `CPU_ON` regression was demonstrated failing before
   the startup-reservation fix, then passing in the four-test initial-placement
   contract suite after the fix;
 - focused suites passed for GICv3, `ax-task`, `somehal`, `arm_vcpu`, virtio-net,
-  the virtual switch, `axvmconfig`, and `ivcproto`, including parser, isolation,
-  DAIF/entry-hook, passthrough-SPI, restart, and ACK-recovery contracts;
+  virtio-blk, the virtual switch, `axdevice`, `arm_vgic`, `axvmconfig`, and
+  `ivcproto`, including parser, isolation, DAIF/entry-hook, passthrough-SPI,
+  PSCI, virtual-timer, stage-2 memory, restart, and ACK-recovery contracts;
 - targeted `cargo xtask clippy --package ...` checks passed across 37 relevant
   package/feature combinations, including the final `axvm-types` and `axvm`
-  variants, and `cargo +nightly-2026-07-15 fmt --all -- --check` passed;
+  variants. The exact target-configured release AxVisor command also passed
+  Clippy with `-D warnings`, and
+  `cargo +nightly-2026-07-15 fmt --all -- --check` passed;
 - final-tree AArch64 AxVisor Linux+Zephyr compilation passed, followed by the
   dedicated two-vCPU Linux QEMU gate (`1/1` pass with
   `AXVISOR_DEDICATED_PARTITION_PASS`); a final RISC-V SMP compile-only AxVisor
   build also passed;
 - both normal/fault Zephyr v4.3.0 endpoint builds passed with verified
   entry/load layout; and
-- all 21 retained JSON records parsed, all 12 gzip archives passed integrity
+- all 24 retained JSON records parsed, all 14 gzip archives passed integrity
   validation, all documented relative links resolved, retained-artifact hashes
   matched their metadata, and the final `git diff --check` passed.
 
-The later physical-board additions additionally passed six PL011 integration
-tests, the GICv3 redistributor unit regression, the AxVM guest-FDT idle-state
-regression, both Orange Pi success-regex contracts, four physical VM-config
-checks, targeted clippy for `axdevice`, `arm_vgic`, and `axvm`, and final Rust
-formatting. Both finite Zephyr board images and both physical AxVisor build
-profiles compiled. The final 20-command board smoke returned exit 0 and
-restored Linux after confirming the AxVisor filesystem sync marker.
+The later physical-board additions additionally passed the prepublished-GIC
+backend deadlock regression, shared vCPU startup helper contracts, six
+parallel-safe PL011 integration tests, GICv3 redistributor and guest-FDT
+idle-state regressions, both Orange Pi success-regex contracts, four physical
+VM-config checks, and the repository-owned `arm_vcpu` umbrella flow with its
+`.axci` fixture. `ivcproto` passed 21 library and four binary tests, including
+the physical UART record budget/redundancy contract, and both of its Clippy
+feature configurations. Both finite Zephyr board images and both physical
+AxVisor profiles compiled.
 
-The retained five-run RT comparison and three-run IVC campaign remain pinned to
-the source/config/image hashes recorded with those measurements. The later
-secondary-CPU startup hardening was validated by the complete host contract
-suites, both final target builds, and the dedicated two-vCPU QEMU gate; the
-performance campaign was not silently relabelled as a final-working-tree capture.
+The maintained board runner then passed one strict 20-command smoke and one
+strict 1,800-command full neural run. The current analyzer was rerun over both
+decompressed retained logs: uncompressed hashes matched metadata, generated
+metrics matched the retained summaries exactly, and both lifecycle checks
+proved AxVisor filesystem sync plus automatic TF-card Linux restoration.
 
-One configured lint limitation remains explicit: the target-specific AxVisor
-`-D warnings` command stops in existing dependency warnings in
-`axdevice::adapter` and `someboot::fdt` before linting the AxVisor binary. The
-xtask clippy driver intentionally skips that target-configured binary; AxVisor
-itself compiled successfully in the final AArch64, RISC-V, and QEMU gates. The
-default `arm_vcpu` umbrella test also requires the external
-`scripts/.axci/lib/test_flow.sh` fixture, which is absent in this checkout; its
-library and repository-owned integration contracts passed.
+The retained five-run RT comparison and three-run QEMU IVC campaign remain
+pinned to the source/config/image hashes recorded with those measurements. The
+later secondary-CPU startup hardening was validated by the complete host
+contract suites, both final target builds, and the dedicated two-vCPU QEMU
+gate; the performance campaign was not silently relabelled as a
+final-working-tree capture.
 
 ## 10. Measurement limits and remaining work
 
@@ -325,11 +339,13 @@ QEMU TCG, WSL2 host scheduling, host activity, guest scheduling, and platform
 differences contribute to observed tails. Serial output is outside individual
 RT sample intervals; IVC progress logging can still perturb surrounding guest
 scheduling. At 1,500,000 baud, long records on the shared physical UART may
-lose spans even when software print locking prevents interleaving, so compact
-completion markers are the automation contract. Reported maxima are observed
-sample maxima, not proven WCET or hardware bounds. The timerfd metric is a
-userspace IRQ-response proxy, not direct injection/handler timing. FIFO CPU
-partitioning does not establish bounded preemption of a non-yielding
+lose spans even when software print locking prevents interleaving. Physical
+automation therefore requires redundant paced short records, rejects
+conflicting complete copies, and separately validates lifecycle markers;
+missing metrics are never inferred from a completion line. Reported maxima are
+observed sample maxima, not proven WCET or hardware bounds. The timerfd metric
+is a userspace IRQ-response proxy, not direct injection/handler timing. FIFO
+CPU partitioning does not establish bounded preemption of a non-yielding
 passthrough guest or isolate every host task/physical interrupt.
 
 The three technical tasks, reproducible commands, source/config/image hashes,

@@ -17,6 +17,10 @@ ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task?/ipi"]
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
 wake-ipi = ["irq", "ax-hal/ipi"]
+# Fixed-capacity architectural timer IRQ entry trace for RT evidence builds.
+# This is opt-in because the preallocated buffer intentionally reserves
+# several MiB and is not needed by normal ArceOS/StarryOS images.
+rt-irq-trace = ["irq"]
 irq = [
   "ax-hal/irq",
   "ax-task?/irq",

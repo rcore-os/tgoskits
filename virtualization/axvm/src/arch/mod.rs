@@ -67,7 +67,7 @@ pub mod platform {
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
     };
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    pub use crate::host::arceos::shutdown_host_filesystems;
+    pub use crate::host::arceos::{shutdown_host_filesystems, sync_host_filesystems};
 }
 
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;

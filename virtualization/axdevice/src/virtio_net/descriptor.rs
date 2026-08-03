@@ -2,14 +2,16 @@
 
 use alloc::{format, vec::Vec};
 
-use super::{
-    memory::{
-        GuestRead, GuestWrite, checked_guest_address, read_guest, read_u16, read_u32, read_u64,
-        write_guest,
+use crate::{
+    DeviceManagerError, DeviceManagerResult,
+    virtio::{
+        memory::{
+            GuestRead, GuestWrite, checked_guest_address, read_guest, read_u16, read_u32, read_u64,
+            write_guest,
+        },
+        queue::QUEUE_NUM_MAX,
     },
-    queue::QUEUE_NUM_MAX,
 };
-use crate::{DeviceManagerError, DeviceManagerResult};
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;

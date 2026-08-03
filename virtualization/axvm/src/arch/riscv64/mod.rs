@@ -28,6 +28,8 @@ pub(crate) mod fdt;
 mod images;
 mod irq;
 mod npt;
+#[path = "../../architecture/vcpu_startup.rs"]
+mod vcpu_startup;
 mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};

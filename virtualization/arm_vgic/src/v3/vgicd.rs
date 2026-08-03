@@ -109,6 +109,38 @@ impl VGicD {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vgicd_nsacr_is_raz_wi_for_non_secure_guest() {
+        let base = GuestPhysAddr::from_usize(0x0800_0000);
+        let device = VGicD {
+            addr: base,
+            size: DEFAULT_GICD_SIZE,
+            assigned_irqs: SpinNoIrq::new(Bitmap::new()),
+            host_gicd_addr: HostPhysAddr::from_usize(0),
+        };
+
+        assert_eq!(
+            device
+                .handle_read(base + GICD_NSACR, AccessWidth::Dword)
+                .unwrap(),
+            0
+        );
+        device
+            .handle_write(base + GICD_NSACR, AccessWidth::Dword, 0x5555_5555)
+            .unwrap();
+        assert_eq!(
+            device
+                .handle_read(base + GICD_NSACR, AccessWidth::Dword)
+                .unwrap(),
+            0
+        );
+    }
+}
+
 impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
     fn emu_type(&self) -> axdevice_base::EmuDeviceType {
         EmuDeviceType::GPPTDistributor
@@ -170,6 +202,10 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_IPRIORITYR_RANGE.contains(&reg) => {
                 self.irq_masked_read(reg, reg & 0x3ff, 3, width, false)
             }
+            // Guests execute in the Non-secure state. GICD_NSACR is a
+            // Secure register, so the GIC architecture defines Non-secure
+            // accesses as Read-As-Zero / Writes-Ignored.
+            reg if GICD_NSACR_RANGE.contains(&reg) => Ok(0),
             reg if GICDV3_PIDR0_RANGE.contains(&reg)
                 || GICDV3_PIDR4_RANGE.contains(&reg)
                 || GICDV3_CIDR0_RANGE.contains(&reg)
@@ -242,6 +278,7 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_IPRIORITYR_RANGE.contains(&reg) => {
                 self.irq_masked_write(reg, reg & 0x3ff, 3, width, false, val)
             }
+            reg if GICD_NSACR_RANGE.contains(&reg) => Ok(()),
             reg if GICDV3_PIDR0_RANGE.contains(&reg)
                 || GICDV3_PIDR4_RANGE.contains(&reg)
                 || GICDV3_CIDR0_RANGE.contains(&reg)

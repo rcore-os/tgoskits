@@ -41,6 +41,9 @@ pub trait ArmVgicHostIf {
     /// Return host GICR base.
     fn get_host_gicr_base() -> PhysAddr;
 
+    /// Return SGI/PPI enable bits that a passthrough guest must not clear.
+    fn host_private_interrupt_enable_mask() -> u32;
+
     /// Inject a virtual interrupt.
     fn hardware_inject_virtual_interrupt(vector: u8);
 }
@@ -100,6 +103,11 @@ pub fn get_host_gicd_base() -> PhysAddr {
 
 pub fn get_host_gicr_base() -> PhysAddr {
     ax_crate_interface::call_interface!(ArmVgicHostIf::get_host_gicr_base())
+}
+
+#[cfg(feature = "vgicv3")]
+pub(crate) fn host_private_interrupt_enable_mask() -> u32 {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::host_private_interrupt_enable_mask())
 }
 
 pub fn hardware_inject_virtual_interrupt(vector: u8) {

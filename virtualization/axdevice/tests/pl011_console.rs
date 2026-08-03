@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::cell::RefCell;
 
 use axdevice::{AccessWidth, Device, GuestPhysAddr, Pl011ConsoleDevice, Pl011ConsoleHostOps};
 use axdevice_base::{BusAccess, BusKind, BusResponse, DeviceError, Resource};
@@ -20,27 +20,34 @@ const UARTCID3: usize = 0xffc;
 const UARTFR_RXFE: u64 = 1 << 4;
 const UARTFR_TXFE: u64 = 1 << 7;
 
-static OUTPUT: Mutex<Vec<(String, Vec<u8>)>> = Mutex::new(Vec::new());
+thread_local! {
+    static OUTPUT: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+}
 
 struct MockHost;
 
 impl Pl011ConsoleHostOps for MockHost {
     fn write_console_chunk(console: &str, bytes: &[u8]) {
-        OUTPUT
-            .lock()
-            .unwrap()
-            .push((console.to_owned(), bytes.to_vec()));
+        OUTPUT.with(|output| {
+            output
+                .borrow_mut()
+                .push((console.to_owned(), bytes.to_vec()));
+        });
     }
 }
 
 fn new_console() -> Pl011ConsoleDevice<MockHost> {
-    OUTPUT.lock().unwrap().clear();
+    OUTPUT.with(|output| output.borrow_mut().clear());
     Pl011ConsoleDevice::new(
         "linux-controller".into(),
         GuestPhysAddr::from_usize(UART_BASE),
         UART_SIZE,
     )
     .unwrap()
+}
+
+fn captured_output() -> Vec<(String, Vec<u8>)> {
+    OUTPUT.with(|output| output.borrow().clone())
 }
 
 fn read(device: &Pl011ConsoleDevice<MockHost>, offset: usize) -> Result<u64, DeviceError> {
@@ -120,7 +127,7 @@ fn preserves_driver_configuration_and_forwards_complete_lines() {
     }
 
     assert_eq!(
-        *OUTPUT.lock().unwrap(),
+        captured_output(),
         vec![(
             "linux-controller".to_owned(),
             b"IVC-RTOS-READY\r\n".to_vec()
@@ -148,7 +155,7 @@ fn forwards_linux_style_byte_writes_to_the_data_register() {
     }
 
     assert_eq!(
-        *OUTPUT.lock().unwrap(),
+        captured_output(),
         vec![("linux-controller".to_owned(), b"Linux console\n".to_vec())]
     );
 }
@@ -164,9 +171,40 @@ fn keeps_a_long_result_line_in_one_host_chunk() {
     }
 
     assert_eq!(
-        *OUTPUT.lock().unwrap(),
+        captured_output(),
         vec![("linux-controller".to_owned(), result_line)]
     );
+}
+
+#[test]
+fn concurrent_console_tests_keep_their_captured_output_isolated() {
+    let (first_written_tx, first_written_rx) = std::sync::mpsc::channel();
+    let (second_written_tx, second_written_rx) = std::sync::mpsc::channel();
+
+    let first = std::thread::spawn(move || {
+        let device = new_console();
+        for byte in b"first\n" {
+            write_with_width(&device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
+        }
+        first_written_tx.send(()).unwrap();
+        second_written_rx.recv().unwrap();
+
+        assert_eq!(
+            captured_output(),
+            vec![("linux-controller".to_owned(), b"first\n".to_vec())]
+        );
+    });
+    let second = std::thread::spawn(move || {
+        first_written_rx.recv().unwrap();
+        let device = new_console();
+        for byte in b"second\n" {
+            write_with_width(&device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
+        }
+        second_written_tx.send(()).unwrap();
+    });
+
+    first.join().unwrap();
+    second.join().unwrap();
 }
 
 #[test]

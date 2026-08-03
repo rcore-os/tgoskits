@@ -49,6 +49,11 @@ impl RedistributorPosition {
     }
 }
 
+fn guest_icenabler_value(value: usize, host_enable_mask: u32) -> usize {
+    let reserved = (1 << MAINTENACE_INTERRUPT) | host_enable_mask as usize;
+    value & !reserved
+}
+
 /// Virtual GICR registers.
 pub struct VGicRRegs {
     /// LPI configuration table base address.
@@ -121,11 +126,6 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
-        debug!(
-            "vGICR ({} @ {:#x}) read reg {:#x} width {:?}",
-            self.cpu_id, self.addr, reg, width
-        );
-
         let result = match reg {
             GICR_CTLR => {
                 // TODO: is cross vcpu access allowed?
@@ -185,11 +185,6 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
-        debug!(
-            "vGICR ({} @ {:#x}) write reg {:#x} width {:?} value {:#x}",
-            self.cpu_id, self.addr, reg, width, value
-        );
-
         let result = match reg {
             GICR_CTLR => {
                 // TODO: is cross zone access allowed?
@@ -227,9 +222,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
                 || GICR_ICFGR_RANGE.contains(&reg) =>
             {
                 let mut value = value;
-                // avoid linux disable maintenance interrupt
+                // Keep the EL2 runtime's private interrupts enabled while a
+                // passthrough guest owns the physical CPU interface.
                 if reg == GICR_ICENABLER {
-                    value &= !(1 << MAINTENACE_INTERRUPT);
+                    value =
+                        guest_icenabler_value(value, host::host_private_interrupt_enable_mask());
                     // value &= !(1 << SGI_IPI_ID);
                 }
                 perform_mmio_write(gicr_base + reg, width, value)
@@ -340,7 +337,9 @@ pub fn enable_one_lpi(lpi: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{GICR_TYPER_LAST, RedistributorPosition};
+    use super::{
+        GICR_TYPER_LAST, MAINTENACE_INTERRUPT, RedistributorPosition, guest_icenabler_value,
+    };
 
     #[test]
     fn exposes_the_last_bit_only_on_the_final_guest_redistributor() {
@@ -354,5 +353,15 @@ mod tests {
             RedistributorPosition::Last.apply_to_typer(host_typer) & GICR_TYPER_LAST,
             GICR_TYPER_LAST
         );
+    }
+
+    #[test]
+    fn guest_cannot_disable_host_private_interrupts() {
+        let host_timer_mask = 1u32 << 26;
+        let forwarded = guest_icenabler_value(usize::MAX, host_timer_mask);
+
+        assert_eq!(forwarded & host_timer_mask as usize, 0);
+        assert_eq!(forwarded & (1 << MAINTENACE_INTERRUPT), 0);
+        assert_ne!(forwarded & (1 << 27), 0);
     }
 }

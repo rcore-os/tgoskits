@@ -22,6 +22,14 @@ use axvm_types::VMInterruptMode;
 
 use crate::{AxVmResult, ax_err};
 
+/// Host platform hook for transferring an acknowledged AArch64 physical IRQ
+/// to the current guest through a hardware-backed virtual interrupt.
+#[ax_crate_interface::def_interface]
+pub trait Aarch64PlatformIrqInjectorIf {
+    /// Registers a callback that takes ownership of a forwarded physical IRQ.
+    fn register_hardware_irq_injector(injector: fn(usize) -> bool);
+}
+
 /// Host platform hook for registering the RISC-V physical IRQ injector.
 #[ax_crate_interface::def_interface]
 pub trait RiscvPlatformIrqInjectorIf {

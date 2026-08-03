@@ -27,6 +27,10 @@ pub(crate) fn gic_irq_id_checked(hwirq: HwIrq) -> Result<IrqId, IrqError> {
         .ok_or(IrqError::Unsupported)
 }
 
+pub(crate) fn defer_deactivation_for_hardware_vint(active: &mut gic::ActiveIrq) {
+    active.defer_deactivation_for_hardware_vint();
+}
+
 impl PlatOp for Plat {
     type ActiveIrq = gic::ActiveIrq;
 

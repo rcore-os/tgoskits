@@ -1,0 +1,25 @@
+[base]
+id = 2
+name = "aarch64-rt-noise"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+phys_cpu_sets = [0x8]
+dedicated_cpus = false
+
+[kernel]
+entry_point = 0x4000_0000
+image_location = "fs"
+kernel_path = "/home/orangepi/axvisor-guest/aarch64-rt-noise.bin"
+kernel_load_addr = 0x4000_0000
+
+memory_regions = [
+  [0x4000_0000, 0x0020_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "no_irq"
+passthrough_devices = []
+passthrough_addresses = []
+excluded_devices = []
+emu_devices = []

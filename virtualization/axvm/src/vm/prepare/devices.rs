@@ -16,12 +16,13 @@ impl PreparedDevices {
         interrupt_fabric: &InterruptFabric,
     ) -> AxVmResult<Self> {
         let build_context = DeviceBuildContext::new(interrupt_fabric);
-        let devices = AxVmDevices::build_with_factories(
+        let devices = AxVmDevices::build_with_factories_and_block_backings(
             AxVmDeviceConfig {
                 emu_configs: resources.config.emu_devices().to_vec(),
             },
             factories,
             &build_context,
+            resources.config.virtio_block_backings(),
         )?;
 
         Ok(Self { devices })

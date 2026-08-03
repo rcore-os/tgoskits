@@ -14,9 +14,11 @@
 
 mod command;
 
-use std::io::prelude::*;
+use core::time::Duration;
+use std::io::{self, prelude::*};
 use std::println;
 use std::string::ToString;
+use std::thread;
 
 use crate::shell::command::{
     CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, prompt_string,
@@ -30,11 +32,27 @@ const BS: u8 = b'\x08';
 const ESC: u8 = 0x1b; // ESC key
 
 const MAX_LINE_LEN: usize = 256;
+const SHELL_READY_MARKER: &str = "AXVISOR_SHELL_READY";
+const SHELL_READY_MARKER_COPIES: usize = 5;
+const SHELL_READY_MARKER_INTERVAL_MS: u64 = 200;
 
 enum InputState {
     Normal,
     Escape,
     EscapeSeq,
+}
+
+fn write_shell_ready_markers(output: &mut impl Write) -> io::Result<()> {
+    for copy_index in 0..SHELL_READY_MARKER_COPIES {
+        writeln!(output, "{SHELL_READY_MARKER}")?;
+        output.flush()?;
+        if copy_index + 1 < SHELL_READY_MARKER_COPIES {
+            // VM-exit logs from other CPUs share this UART. Spacing the copies
+            // keeps one marker observable when a concurrent burst is dropped.
+            thread::sleep(Duration::from_millis(SHELL_READY_MARKER_INTERVAL_MS));
+        }
+    }
+    Ok(())
 }
 
 // Initialize the console shell.
@@ -55,6 +73,9 @@ pub fn console_init() {
     #[cfg(not(feature = "fs"))]
     println!("Note: Running with limited features (filesystem support disabled).");
     println!();
+    if let Err(error) = write_shell_ready_markers(&mut stdout) {
+        println!("Failed to write shell-ready marker: {error}");
+    }
 
     print_prompt();
 

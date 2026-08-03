@@ -4,9 +4,10 @@
 
 The system targets the three required functions:
 
-1. deterministic guest-vCPU placement and a two-vCPU Linux guest;
-2. bidirectional Linux-to-RTOS communication over an IP network; and
-3. neural inference in Linux driving an observable RTOS control loop.
+1. deterministic guest-vCPU placement and a two-vCPU Linux or StarryOS guest;
+2. bidirectional Linux/StarryOS-to-RTOS communication over an IP network; and
+3. neural inference in Linux or StarryOS driving an observable RTOS control
+   loop.
 
 The selected, validated scheduling profile uses CPU partitioning with the existing FIFO
 host scheduler. It does not claim that AxVisor currently preempts a
@@ -56,8 +57,9 @@ guest Ethernet traffic is delivered by AxVisor's emulated virtio-net devices
 and internal switch.
 
 The physical Orange Pi 5 Plus profile preserves the guest GPA layout and
-three-vCPU partition on RK3588 hardware. AxVisor reads the Linux artifacts from
-the board's ext4 filesystem, embeds the Zephyr image at build time, and exposes
+three-vCPU partition on RK3588 hardware but replaces the controller guest with
+StarryOS. AxVisor reads the StarryOS kernel, DTB, and ext4 rootfs from the
+board's Linux filesystem, embeds the Zephyr image at build time, and exposes
 separate output-only PL011 consoles instead of passing through the physical
 debug UART.
 
@@ -84,20 +86,21 @@ The full profile is composed from:
 The maintained physical profiles use
 [`axvisor-orangepi-5-plus.toml`](ivc/config/axvisor-orangepi-5-plus.toml) and
 its smoke variant, matching `board-orangepi-5-plus*.toml` lifecycle checks,
-`orangepi-5-plus-linux-smp2*.toml`, and
-`orangepi-5-plus-zephyr*.toml`. Linux artifacts are staged below
+`orangepi-5-plus-starry-smp2*.toml`, and
+`orangepi-5-plus-zephyr*.toml`. StarryOS artifacts are staged below
 `/home/orangepi/axvisor-guest`; no sudo password is stored in the WSL host
 automation.
 
-| Resource | Linux VM 1 | Zephyr VM 2 |
+| Resource | Controller VM 1 | Zephyr VM 2 |
 | --- | --- | --- |
+| Guest OS | QEMU: Linux; Orange Pi: StarryOS | Zephyr v4.3.0 |
 | vCPUs | 2 | 1 |
 | Requested pCPU mask | vCPU0 `0x2` (pCPU1), vCPU1 `0x4` (pCPU2) | vCPU0 `0x1` (pCPU0) |
 | Partition policy | dedicated | dedicated |
 | Guest memory | `0x80000000..0x8fffffff`, 256 MiB, identity map | `0x40000000..0x47ffffff`, 128 MiB, allocated map |
 | Entry/load address | `0x80200000` | `0x40000000` |
 | DTB address | `0x80000000` | `0x47e00000` |
-| Image | QEMU: `/guest/linux/linux-qemu`; board: `/home/orangepi/axvisor-guest/linux-qemu` | QEMU: `ivc/zephyr/build/zephyr/zephyr.bin`; board: `ivc/zephyr/build-board/zephyr/zephyr.bin` |
+| Image | QEMU: `/guest/linux/linux-qemu`; board: `/home/orangepi/axvisor-guest/starryos.bin` plus `starry-ivc-rootfs.img` | QEMU: `ivc/zephyr/build/zephyr/zephyr.bin`; board: `ivc/zephyr/build-board/zephyr/zephyr.bin` |
 | virtio-net MMIO | `0x0a001000`, 4 KiB | `0x0a002000`, 4 KiB |
 | Guest interrupt | architectural INTID 56 | architectural INTID 64 (DTS `GIC_SPI 32`) |
 | MAC | `52:54:00:00:00:01` | `52:54:00:00:00:02` |
@@ -126,16 +129,24 @@ use `passthrough_devices = [["/"]]` to supply a guest device tree rooted at
 The passthrough interrupt mode routes Linux INTID 56 and Zephyr INTID 64
 through the AArch64 physical-SPI ownership gate described below.
 
+On the physical board, StarryOS boots from `starryos.bin` with a 64 MiB ext4
+virtio-block image. `/usr/bin/starry-run-case-tests` verifies at least two
+online CPUs, configures `eth0` as `10.0.0.1/24`, runs the same static
+`ivcproto` controller for either 20 or 1,800 commands, emits
+`IVC-STARRY-DONE`, synchronizes the guest filesystem, and requests system-off.
+The full and smoke VM descriptions use an emulated virtual timer PPI 27,
+output-only PL011 INTID 33, virtio-block INTID 48, and virtio-net INTID 56.
+
 Zephyr targets upstream `qemu_cortex_a53` v4.3.0. Its device-tree overlay
 enables virtio-mmio slot 16 and fixes the link address. Startup rejects a
 runtime MAC mismatch before binding the UDP socket.
 
-For physical Linux boot, the supplied minimal guest DTB describes GICv3 at
+For physical StarryOS boot, the supplied minimal guest DTB describes GICv3 at
 `0x08000000`, one 128 KiB redistributor frame per vCPU starting at
-`0x080a0000`, the architectural timer, PL011 at `0x09000000`, and virtio-net at
-`0x0a001000`. Host CPU IDs still replace the placeholder CPU nodes, but AxVisor
-removes `cpu-idle-states` because its PSCI implementation does not support
-`CPU_SUSPEND`. Only the last redistributor advertises `GICR_TYPER.Last`.
+`0x080a0000`, the architectural timer, PL011 at `0x09000000`, virtio-block at
+`0x0a000000`, and virtio-net at `0x0a001000`. Host CPU IDs replace the
+placeholder CPU nodes. Only the last redistributor advertises
+`GICR_TYPER.Last`.
 
 The virtio-net backend uses Linux-compatible feature negotiation: the 10-byte
 header is limited to a legacy driver that accepts neither
@@ -454,9 +465,11 @@ image hashes are retained under
   boundary and retain the on-wire contract.
 
 The required shared/partitioned idle/stress/soak campaign, deterministic
-cross-guest ACK-loss campaign, durable QEMU evidence, and one complete physical
-Orange Pi neural run are complete. The actual approximately five-minute video
-and dev-target PR remain outstanding.
+cross-guest ACK-loss campaign, durable QEMU evidence, and retained physical
+Orange Pi StarryOS smoke/full runs are complete. Physical raw logs, strict
+analyzer summaries, artifact hashes, and lifecycle evidence are under
+[`results/orangepi-starry-reference`](results/orangepi-starry-reference/). The
+actual approximately five-minute video and dev-target PR remain outstanding.
 
 Cross-guest malformed-ERROR, controller-restart, and a third-guest runtime
 cross-segment negative capture would strengthen the evidence, but the current

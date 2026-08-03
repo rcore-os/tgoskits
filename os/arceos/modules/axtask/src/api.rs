@@ -706,6 +706,11 @@ pub fn run_idle() -> ! {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
         #[cfg(all(feature = "irq", not(feature = "host-test")))]
-        ax_hal::asm::wait_for_irqs();
+        {
+            let started_ticks = ax_hal::time::current_ticks();
+            crate::idle_accounting::begin_idle_wait(started_ticks);
+            ax_hal::asm::wait_for_irqs();
+            crate::idle_accounting::finish_current_idle_wait(ax_hal::time::current_ticks());
+        }
     }
 }

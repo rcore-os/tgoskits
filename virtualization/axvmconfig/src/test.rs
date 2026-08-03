@@ -467,6 +467,18 @@ emu_devices = []
 }
 
 #[test]
+fn test_aarch64_virtual_timer_irq_deser() {
+    const DEVICE_CONFIG: &str = r#"
+passthrough_devices = []
+emu_devices = []
+aarch64_virtual_timer_irq = 27
+    "#;
+
+    let device_config: VMDevicesConfig = toml::from_str(DEVICE_CONFIG).unwrap();
+    assert_eq!(device_config.aarch64_virtual_timer_irq, Some(27));
+}
+
+#[test]
 fn test_vmtype_enum() {
     use crate::VMType;
 

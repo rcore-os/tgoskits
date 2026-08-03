@@ -48,6 +48,7 @@ const VIRTIO_MMIO_QUEUE_DRIVER_LOW: usize = 0x090;
 const VIRTIO_MMIO_QUEUE_DRIVER_HIGH: usize = 0x094;
 const VIRTIO_MMIO_QUEUE_DEVICE_LOW: usize = 0x0a0;
 const VIRTIO_MMIO_QUEUE_DEVICE_HIGH: usize = 0x0a4;
+const VIRTIO_MMIO_CONFIG: usize = 0x100;
 
 struct GuestMemory {
     bytes: Mutex<Vec<u8>>,
@@ -433,6 +434,20 @@ fn exposes_mac_and_network_segment_without_changing_default_segment() {
 }
 
 #[test]
+fn device_config_reads_pack_mac_bytes_for_the_requested_width() {
+    let device = new_device();
+
+    assert_eq!(
+        mmio_read_width(&device, VIRTIO_MMIO_CONFIG, AccessWidth::Dword),
+        0x0000_5452
+    );
+    assert_eq!(
+        mmio_read_width(&device, VIRTIO_MMIO_CONFIG + 4, AccessWidth::Word),
+        0x0100
+    );
+}
+
+#[test]
 fn device_config_assigns_mac_suffix_and_network_segment() {
     let devices =
         AxVmDevices::new(AxVmDeviceConfig::new(vec![virtio_net_config(vec![9, 7])])).unwrap();
@@ -631,11 +646,12 @@ fn deliver_rx(device: &VirtioNet, memory: &GuestMemory, frame: &[u8]) -> DeviceM
 }
 
 fn mmio_read(device: &VirtioNet, offset: usize) -> usize {
+    mmio_read_width(device, offset, AccessWidth::Dword)
+}
+
+fn mmio_read_width(device: &VirtioNet, offset: usize, width: AccessWidth) -> usize {
     device
-        .handle_read(
-            GuestPhysAddr::from_usize(MMIO_BASE + offset),
-            AccessWidth::Dword,
-        )
+        .handle_read(GuestPhysAddr::from_usize(MMIO_BASE + offset), width)
         .unwrap()
 }
 

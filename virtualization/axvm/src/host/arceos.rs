@@ -86,12 +86,24 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
+    #[cfg(feature = "rt-trace")]
+    fn current_ticks(&self) -> u64 {
+        modules::ax_hal::time::current_ticks()
+    }
+
+    #[cfg(feature = "rt-trace")]
+    fn ticks_to_nanos(&self, ticks: u64) -> u64 {
+        modules::ax_hal::time::ticks_to_nanos(ticks)
+    }
+
     fn set_oneshot_timer(&self, deadline_ns: u64) {
         crate::arch::set_oneshot_timer(deadline_ns);
     }
 }
 
 pub(crate) fn dispatch_host_irq(vector: usize) {
+    #[cfg(feature = "rt-trace")]
+    modules::ax_task::finish_current_idle_wait(modules::ax_hal::time::current_ticks());
     modules::ax_hal::irq::handle_irq(vector);
 }
 
@@ -104,6 +116,11 @@ impl HostCpu for ArceOsHost {
 
     fn this_cpu_id(&self) -> usize {
         modules::ax_hal::percpu::this_cpu_id()
+    }
+
+    #[cfg(feature = "rt-trace")]
+    fn idle_time_ticks(&self, cpu_id: usize, now_ticks: u64) -> Option<u64> {
+        modules::ax_task::idle_time_ticks(cpu_id, now_ticks)
     }
 }
 
@@ -173,9 +190,20 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-pub fn shutdown_host_filesystems() -> AxVmResult {
+/// Flushes cached host filesystem data while retaining block IRQ ownership.
+///
+/// This is intended for bounded writeback while the host filesystem remains in
+/// use. Call [`shutdown_host_filesystems`] before handing the block device to a
+/// guest or removing board power.
+pub fn sync_host_filesystems() -> AxVmResult {
     modules::ax_fs_ng::shutdown_filesystems()
-        .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
+        .map_err(|error| AxVmError::host("sync host filesystems", error))
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+/// Flushes host filesystems and releases their block IRQ registrations.
+pub fn shutdown_host_filesystems() -> AxVmResult {
+    sync_host_filesystems()?;
     let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
     if released != 0 {
         info!("Released {released} host filesystem block IRQ registration(s) before passthrough");

@@ -7,6 +7,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod control;
+#[cfg(feature = "std")]
+pub mod controller_csv;
 pub mod endpoint;
 pub mod neural;
 pub mod reliability;

@@ -31,8 +31,9 @@ use ax_std as _;
 
 mod banner;
 mod config;
+mod host_noise;
 mod manager;
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
 mod platform_irq;
 mod shell;
 
@@ -52,7 +53,14 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
+    let host_noise = host_noise::HostNoiseTask::start_configured()
+        .unwrap_or_else(|error| panic!("failed to start host interference: {error:#}"));
     manager.start_default_vms();
+    if let Some(host_noise) = host_noise {
+        host_noise
+            .stop_and_publish()
+            .unwrap_or_else(|error| panic!("host interference validation failed: {error:#}"));
+    }
 
     info!("[OK] Default guest initialized");
 

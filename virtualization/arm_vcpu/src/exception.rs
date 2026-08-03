@@ -222,8 +222,8 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmE
 
 /// Handles HVC or SMC exceptions that serve as psci (Power State Coordination Interface) calls.
 ///
-/// A hvc or smc call with the function in range 0x8000_0000..=0x8000_001F  (when the 32-bit
-/// hvc/smc calling convention is used) or 0xC000_0000..=0xC000_001F (when the 64-bit hvc/smc
+/// A hvc or smc call with the function in range 0x8400_0000..=0x8400_001F (when the 32-bit
+/// hvc/smc calling convention is used) or 0xC400_0000..=0xC400_001F (when the 64-bit hvc/smc
 /// calling convention is used) is a psci call. This function handles them all.
 ///
 /// Returns `None` if the HVC is not a psci call.
@@ -232,6 +232,7 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
     const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
 
     const PSCI_FN_VERSION: u64 = 0x0;
+    const PSCI_VERSION_0_2: u64 = 0x0000_0002;
     const _PSCI_FN_CPU_SUSPEND: u64 = 0x1;
     const PSCI_FN_CPU_OFF: u64 = 0x2;
     const PSCI_FN_CPU_ON: u64 = 0x3;
@@ -250,6 +251,10 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
     };
 
     match fn_offset {
+        Some(PSCI_FN_VERSION) => {
+            ctx.gpr[0] = PSCI_VERSION_0_2;
+            Some(Ok(ArmVmExit::Nothing))
+        }
         Some(PSCI_FN_CPU_OFF) => Some(Ok(ArmVmExit::CpuDown { state: ctx.gpr[1] })),
         Some(PSCI_FN_CPU_ON) => Some(Ok(ArmVmExit::CpuUp {
             target_cpu: ctx.gpr[1],
@@ -258,7 +263,7 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
         })),
         Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(ArmVmExit::SystemDown)),
         // We just forward these request to the ATF directly.
-        Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
+        Some(..=PSCI_FN_END) => None,
         _ => None,
     }
 }
@@ -300,7 +305,6 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
     error!("ESR_EL2: {:#x}", esr.get());
     error!("Exception Class: {ec:#x}");
     error!("Instruction Specific Syndrome: {iss:#x}");
-
     panic!(
         "Unhandled synchronous exception from current EL: {:#x?}",
         tf
@@ -318,8 +322,9 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
 ///       This function firstly adjusts the `sp` to skip the exception frame
 ///       according to the memory layout of [`crate::ArmVcpu`], which makes current `sp`
 ///       point to the address of `host.stack_top`.
-///       The saved host `SP_EL0` is restored before any host Rust runs again, then
-///       the host stack top value is restored by `ldr`.
+///       The guest `TPIDR_EL0` is captured and the saved host `SP_EL0` and
+///       `TPIDR_EL0` are restored before any host Rust runs again. The host
+///       stack top value is then restored by `ldr`.
 ///
 /// 2. **Restore Host Context:**
 ///     - The `restore_regs_from_stack!()` macro is invoked to restore the host function context
@@ -350,14 +355,21 @@ unsafe extern "C" fn vmexit_trampoline() -> ! {
         // Currently `sp` points to the base address of `ArmVcpu.ctx`, which stores guest's `TrapFrame`.
         "add x9, sp, {host_stack_top_offset}", // Skip the exception frame.
         // Currently `x9` points to `&ArmVcpu.host.stack_top`, see `run_guest()` in vcpu.rs.
+        "mrs x10, tpidr_el0", // Capture guest TLS before restoring the host value.
+        "str x10, [sp, {guest_tpidr_el0_offset}]",
         "ldr x11, [x9, {host_sp_el0_delta}]", // Restore host SP_EL0 before host Rust resumes.
         "msr sp_el0, x11",
+        "ldr x11, [x9, {host_tpidr_el0_delta}]",
+        "msr tpidr_el0, x11", // Restore host TLS before host Rust resumes.
         "ldr x10, [x9]", // Get `host_stack_top` value from `&ArmVcpu.host.stack_top`.
         "mov sp, x10",   // Set `sp` as the host stack top.
         restore_regs_from_stack!(), // Restore host function context frame.
         "ret", /* Control flow is handed back to ArmVcpu::run(), simulating the normal return of the `run_guest` function. */
         host_stack_top_offset = const crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
         host_sp_el0_delta = const crate::ARM_VCPU_HOST_SP_EL0_OFFSET - crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
+        host_tpidr_el0_delta = const crate::ARM_VCPU_HOST_TPIDR_EL0_OFFSET
+            - crate::ARM_VCPU_HOST_STACK_TOP_OFFSET,
+        guest_tpidr_el0_offset = const crate::ARM_VCPU_GUEST_TPIDR_EL0_OFFSET,
     )
 }
 

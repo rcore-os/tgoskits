@@ -617,6 +617,10 @@ pub struct HypervisorInterface {
 }
 
 unsafe impl Send for HypervisorInterface {}
+// SAFETY: `HypervisorInterface` contains only immutable MMIO base addresses.
+// GICH CPU-interface registers are banked per physical CPU, and its methods
+// perform volatile register accesses without mutating Rust-owned state.
+unsafe impl Sync for HypervisorInterface {}
 
 impl HypervisorInterface {
     /// Create a new HypervisorInterface

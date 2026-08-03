@@ -57,6 +57,8 @@ mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
+#[cfg(feature = "rt-irq-trace")]
+pub mod rt_irq_trace;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
@@ -401,6 +403,8 @@ fn init_allocator() {
 
 #[cfg(feature = "irq")]
 fn init_interrupt() {
+    #[cfg(feature = "rt-irq-trace")]
+    rt_irq_trace::start();
     init_percpu_irq(ax_hal::percpu::this_cpu_id());
 
     // Enable IRQs before starting app
@@ -501,6 +505,10 @@ fn program_next_timer() {
 
 #[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
+    #[cfg(feature = "rt-irq-trace")]
+    let pending_trace =
+        rt_irq_trace::begin_timer_irq(ctx.cpu.0, ctx.irq.hwirq.0, ax_hal::time::current_ticks());
+    #[cfg(not(feature = "rt-irq-trace"))]
     let _ = ctx;
     #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
@@ -509,6 +517,10 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     #[cfg(feature = "multitask")]
     ax_task::on_timer_irq(scheduler_tick);
     program_next_timer();
+    #[cfg(feature = "rt-irq-trace")]
+    if let Some(pending_trace) = pending_trace {
+        pending_trace.finish(ax_hal::time::current_ticks());
+    }
     ax_hal::irq::IrqReturn::Handled
 }
 

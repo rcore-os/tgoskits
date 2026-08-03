@@ -31,6 +31,37 @@ pub const ARM_VCPU_HOST_STACK_TOP_OFFSET: usize = ARM_VCPU_TRAP_FRAME_SIZE;
 /// Offset of [`HostRuntimeContext::sp_el0`] within [`ArmVcpu`].
 pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize =
     ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<u64>();
+/// Offset of the saved host `TPIDR_EL0` within [`ArmVcpu`].
+pub const ARM_VCPU_HOST_TPIDR_EL0_OFFSET: usize =
+    ARM_VCPU_HOST_SP_EL0_OFFSET + core::mem::size_of::<u64>();
+/// Offset of [`GuestSystemRegisters`] within [`ArmVcpu`].
+const ARM_VCPU_GUEST_SYSTEM_REGISTERS_OFFSET: usize = align_up_to(
+    ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<HostRuntimeContext>(),
+    core::mem::align_of::<GuestSystemRegisters>(),
+);
+/// Offset of the guest `TPIDR_EL0` slot within [`ArmVcpu`].
+pub const ARM_VCPU_GUEST_TPIDR_EL0_OFFSET: usize = ARM_VCPU_GUEST_SYSTEM_REGISTERS_OFFSET
+    + crate::context_frame::GUEST_SYSTEM_REGISTERS_TPIDR_EL0_OFFSET;
+
+const fn align_up_to(value: usize, alignment: usize) -> usize {
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+/// Disables guest timer interrupt sources on the current physical CPU.
+///
+/// This must run after saving every VM-exit context and before the host may
+/// schedule another task. It is also safe to repeat before a permanently
+/// stopped vCPU is unbound. The saved guest timer state remains untouched.
+pub fn disable_local_guest_timers() {
+    unsafe {
+        core::arch::asm!(
+            "msr CNTP_CTL_EL0, xzr",
+            "msr CNTV_CTL_EL0, xzr",
+            "isb",
+            options(nostack)
+        );
+    }
+}
 
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
@@ -50,6 +81,7 @@ pub struct VmCpuRegisters {
 struct HostRuntimeContext {
     stack_top: u64,
     sp_el0: u64,
+    tpidr_el0: u64,
 }
 
 /// A virtual CPU within a guest.
@@ -146,14 +178,19 @@ impl<H: ArmHostOps> ArmVcpu<H> {
                     self.run_guest()
                 };
 
-                match H::complete_guest_exit() {
+                let result = match H::complete_guest_exit() {
                     Ok(()) => {
                         let trap_kind =
                             TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
                         self.vmexit_handler(trap_kind)
                     }
                     Err(error) => Err(error),
-                }
+                };
+                // The IRQ exit handler must acknowledge and, when applicable,
+                // install a hardware LR before the level-triggered timer source
+                // is removed from this pCPU.
+                disable_local_guest_timers();
+                result
             }
             Err(error) => Err(error),
         };
@@ -281,7 +318,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         core::arch::naked_asm!(
             // Save host context.
             save_regs_to_stack!(),
-            // Save the host stack top and SP_EL0 to `self.host`.
+            // Save the host stack top, SP_EL0, and TPIDR_EL0 to `self.host`.
             //
             // 'extern "C"' here specifies the aapcs64 calling convention, according to which
             // the first and only parameter, the pointer of self, should be in x0.
@@ -290,12 +327,21 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             "str x9, [x10]",
             "mrs x9, sp_el0",
             "str x9, [x10, #8]",
+            "mrs x9, tpidr_el0",
+            "str x9, [x10, {host_tpidr_el0_delta}]",
+            // Install the guest TLS base only after every host value needed by
+            // the exit trampoline has been captured.
+            "ldr x9, [x0, {guest_tpidr_el0_offset}]",
+            "msr tpidr_el0, x9",
             // Go to `context_vm_entry` with x0 pointing to `self.host.stack_top`.
             "mov x0, x10",
             "b context_vm_entry",
             // Panic if the control flow comes back here, which should never happen.
             "b {run_guest_panic}",
             host_stack_top_offset = const ARM_VCPU_HOST_STACK_TOP_OFFSET,
+            host_tpidr_el0_delta = const ARM_VCPU_HOST_TPIDR_EL0_OFFSET
+                - ARM_VCPU_HOST_STACK_TOP_OFFSET,
+            guest_tpidr_el0_offset = const ARM_VCPU_GUEST_TPIDR_EL0_OFFSET,
             run_guest_panic = sym Self::run_guest_panic,
         );
     }
@@ -351,7 +397,6 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             // by the EL2 assembly before host SP_EL0 was restored.
             self.guest_system_regs.store();
         }
-
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
             TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt {

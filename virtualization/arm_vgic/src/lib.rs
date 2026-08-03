@@ -76,3 +76,68 @@ mod api_reexp {
 
     pub fn hardware_inject_virtual_interrupt(_vector: u8) {}
 }
+
+#[cfg(all(test, feature = "vgicv3", not(target_arch = "aarch64")))]
+mod test_host {
+    use alloc::boxed::Box;
+    use core::time::Duration;
+
+    use ax_memory_addr::{PhysAddr, VirtAddr};
+
+    use crate::host::ArmVgicHostIf;
+
+    struct TestArmVgicHostIf;
+
+    #[ax_crate_interface::impl_interface]
+    impl ArmVgicHostIf for TestArmVgicHostIf {
+        fn alloc_contiguous_frames(_frame_count: usize, _frame_align: usize) -> Option<PhysAddr> {
+            None
+        }
+
+        fn dealloc_contiguous_frames(_start_paddr: PhysAddr, _frame_count: usize) {}
+
+        fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+            VirtAddr::from_usize(paddr.as_usize())
+        }
+
+        fn host_cpu_num() -> usize {
+            1
+        }
+
+        fn current_vcpu_id() -> usize {
+            0
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) {
+        }
+
+        fn read_vgicd_iidr() -> u32 {
+            0
+        }
+
+        fn read_vgicd_typer() -> u32 {
+            0
+        }
+
+        fn get_host_gicd_base() -> PhysAddr {
+            PhysAddr::from_usize(0)
+        }
+
+        fn get_host_gicr_base() -> PhysAddr {
+            PhysAddr::from_usize(0)
+        }
+
+        fn host_private_interrupt_enable_mask() -> u32 {
+            1 << 26
+        }
+
+        fn hardware_inject_virtual_interrupt(_vector: u8) {}
+    }
+}

@@ -65,6 +65,27 @@ fn emulated_passthrough_spi_uses_the_vm_runtime_gate_without_a_host_ipi() {
 }
 
 #[test]
+fn passthrough_spi_preallocation_covers_block_and_network_devices() {
+    let capabilities = include_str!("../src/architecture/capabilities.rs");
+    let registrations = capabilities
+        .split_once("pub(crate) fn build_passthrough_spi_registrations")
+        .expect("the architecture capability must build passthrough SPI registrations")
+        .1
+        .split_once("pub(crate) fn try_inject_passthrough_device_irq")
+        .expect("device IRQ injection must follow registration")
+        .0;
+
+    assert!(
+        registrations.contains("devices.virtio_blocks()"),
+        "virtio-blk completion IRQs must be preallocated before the VM starts"
+    );
+    assert!(
+        registrations.contains("devices.virtio_nets()"),
+        "virtio-net queue IRQs must remain preallocated before the VM starts"
+    );
+}
+
+#[test]
 fn arm_host_hooks_drive_entry_delivery_and_exit_reclamation() {
     let adapter = include_str!("../src/arch/aarch64/mod.rs");
     let host_ops = adapter

@@ -196,24 +196,3 @@ pub fn virtual_switch_metrics() -> VirtualSwitchMetrics {
         delivery_errors: COUNTERS.delivery_errors.load(Ordering::Relaxed),
     }
 }
-
-pub(crate) const fn should_log_progress(count: u64) -> bool {
-    count != 0 && (count <= 10 || count.is_multiple_of(100))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_log_progress;
-
-    #[test]
-    fn progress_logging_is_rate_limited() {
-        assert!(should_log_progress(1));
-        assert!(should_log_progress(2));
-        assert!(should_log_progress(10));
-        assert!(should_log_progress(100));
-        assert!(should_log_progress(200));
-        assert!(!should_log_progress(0));
-        assert!(!should_log_progress(11));
-        assert!(!should_log_progress(99));
-    }
-}

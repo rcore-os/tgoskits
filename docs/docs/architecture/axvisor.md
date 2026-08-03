@@ -167,7 +167,7 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 | --- | --- |
 | `[base]` | VM id、name、vm_type、CPU 数和物理 CPU 绑定 |
 | `[kernel]` | entry point、image location、kernel path、load address、memory regions |
-| `[devices]` | passthrough devices、excluded devices、emu devices、interrupt mode |
+| `[devices]` | passthrough devices、excluded devices、emu devices、interrupt mode，以及无外部 DTB 时的 AArch64 virtual-timer PPI 回退值 |
 
 ## 关键执行流程
 

@@ -93,8 +93,13 @@
 - `emu_devices`
 - `passthrough_devices`
 - `interrupt_mode`
+- `aarch64_virtual_timer_irq`
 - `excluded_devices`
 - `passthrough_addresses`
+
+`aarch64_virtual_timer_irq` 通常由 AxVM 从 guest DTB 的 architectural timer
+节点推导。若 AArch64 guest 使用编译期内置设备树、没有外部 DTB，则应显式配置
+其 virtual timer PPI（GIC INTID `16..=31`）；外部 DTB 中的有效路由优先于该回退值。
 
 这使 `axvmconfig` 不只是“镜像配置文件”，而是完整的 VM 资源声明格式。
 

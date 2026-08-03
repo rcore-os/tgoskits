@@ -35,6 +35,8 @@ mod manager;
 mod network;
 mod npt;
 mod percpu;
+#[cfg(feature = "rt-trace")]
+pub mod rt_trace;
 mod runtime;
 mod task;
 mod timer;
@@ -47,6 +49,7 @@ pub mod config;
 
 pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
+pub use axdevice::MemoryBlockBackend;
 /// Compatibility export for legacy/common normalized VM events.
 ///
 /// Architecture-local raw exits are handled by `arch::CurrentArch` through

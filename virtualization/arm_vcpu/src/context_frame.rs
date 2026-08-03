@@ -209,6 +209,13 @@ pub struct GuestSystemRegisters {
     hpfar_el2: u64,
 }
 
+/// Offset of the guest thread pointer within [`GuestSystemRegisters`].
+///
+/// The EL2 entry/exit assembly uses this offset to exchange `TPIDR_EL0`
+/// without executing host Rust while the guest thread pointer is installed.
+pub(crate) const GUEST_SYSTEM_REGISTERS_TPIDR_EL0_OFFSET: usize =
+    core::mem::offset_of!(GuestSystemRegisters, tpidr_el0);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GuestTimerRegisters {
     cntvoff_el2: u64,
@@ -265,7 +272,9 @@ impl GuestSystemRegisters {
             asm!("mrs {0}, AMAIR_EL1", out(reg) self.amair_el1);
             asm!("mrs {0}, VBAR_EL1", out(reg) self.vbar_el1);
             asm!("mrs {0:x}, CONTEXTIDR_EL1", out(reg) self.contextidr_el1);
-            asm!("mrs {0}, TPIDR_EL0", out(reg) self.tpidr_el0);
+            // TPIDR_EL0 is captured by the VM-exit trampoline before the host
+            // thread pointer is restored. Reading it here would capture the
+            // host value instead of the guest value.
             asm!("mrs {0}, TPIDR_EL1", out(reg) self.tpidr_el1);
             asm!("mrs {0}, TPIDRRO_EL0", out(reg) self.tpidrro_el0);
 
@@ -325,7 +334,9 @@ impl GuestSystemRegisters {
             asm!("msr AMAIR_EL1, {0}", in(reg) self.amair_el1);
             asm!("msr VBAR_EL1, {0}", in(reg) self.vbar_el1);
             asm!("msr CONTEXTIDR_EL1, {0:x}", in(reg) self.contextidr_el1);
-            asm!("msr TPIDR_EL0, {0}", in(reg) self.tpidr_el0);
+            // TPIDR_EL0 is restored by the guest-entry trampoline after the
+            // host value has been saved. Installing it here would let the
+            // remaining host Rust epilogue execute with the guest TLS base.
             asm!("msr TPIDR_EL1, {0}", in(reg) self.tpidr_el1);
             asm!("msr TPIDRRO_EL0, {0}", in(reg) self.tpidrro_el0);
 

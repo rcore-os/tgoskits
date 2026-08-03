@@ -266,6 +266,13 @@ impl ActiveIrq {
     pub fn id(&self) -> IrqId {
         resolve_irq_route(Plat::active_irq_id(&self.inner))
     }
+
+    /// Completes priority drop now but leaves physical deactivation to the
+    /// guest EOI of a hardware-backed virtual interrupt.
+    #[cfg(target_arch = "aarch64")]
+    pub fn defer_deactivation_for_hardware_vint(mut self) {
+        crate::arch::defer_deactivation_for_hardware_vint(&mut self.inner);
+    }
 }
 
 pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {

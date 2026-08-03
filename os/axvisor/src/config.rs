@@ -22,7 +22,7 @@ use anyhow::{Context, Result, bail};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
 use axvm::{
-    AxVM, GuestPhysAddr,
+    AxVM, GuestPhysAddr, MemoryBlockBackend,
     boot::{
         BootImageProvider, StaticVmImage, boot_firmware_load_gpa, get_image_header,
         guest_boot_policy, init_guest_boot_resources, prepare_guest_boot,
@@ -34,7 +34,7 @@ use axvm::{
 };
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
-use axvmconfig::{AxVMCrateConfig, VMType};
+use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType, VMType};
 
 #[cfg(all(
     feature = "fs",
@@ -130,6 +130,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     let prepared_config = prepared_boot.config();
 
     sync_axvm_config_from_crate_config(&mut vm_config, prepared_config);
+    attach_virtio_block_backing(&mut vm_config, prepared_config, &image_provider)
+        .with_context(|| format!("attach block image for VM[{configured_vm_id}]"))?;
 
     vm_config.set_boot_policy(guest_boot_policy(prepared_config, &image_provider));
 
@@ -209,11 +211,63 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
         memory_regions: cfg.kernel.memory_regions.clone(),
         boot_policy: GuestBootPolicy::KeepConfigured,
         interrupt_mode: cfg.devices.interrupt_mode,
+        #[cfg(target_arch = "aarch64")]
+        aarch64_virtual_timer_irq: cfg.devices.aarch64_virtual_timer_irq,
     })
 }
 
 fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
+}
+
+#[cfg(feature = "fs")]
+fn attach_virtio_block_backing(
+    vm_config: &mut AxVMConfig,
+    cfg: &AxVMCrateConfig,
+    provider: &dyn BootImageProvider,
+) -> Result<()> {
+    let block_devices = cfg
+        .devices
+        .emu_devices
+        .iter()
+        .filter(|device| device.emu_type == EmulatedDeviceType::VirtioBlk)
+        .count();
+    match (block_devices, cfg.kernel.disk_path.as_deref()) {
+        (0, None) => Ok(()),
+        (0, Some(_)) => bail!("disk_path is configured without a virtio-blk device"),
+        (_, None) => bail!("virtio-blk device requires kernel.disk_path"),
+        (1, Some(path)) => {
+            let image = provider
+                .read_file(path)
+                .with_context(|| format!("read volatile virtio block image `{path}`"))?;
+            let backing = MemoryBlockBackend::new(image)
+                .with_context(|| format!("validate virtio block image `{path}`"))?;
+            let index = vm_config.add_virtio_block_backing(alloc::sync::Arc::new(backing));
+            debug_assert_eq!(index, 0);
+            Ok(())
+        }
+        (count, Some(_)) => bail!(
+            "kernel.disk_path provides one backing, but {count} virtio-blk devices are configured"
+        ),
+    }
+}
+
+#[cfg(not(feature = "fs"))]
+fn attach_virtio_block_backing(
+    _vm_config: &mut AxVMConfig,
+    cfg: &AxVMCrateConfig,
+    _provider: &dyn BootImageProvider,
+) -> Result<()> {
+    if cfg.kernel.disk_path.is_some()
+        || cfg
+            .devices
+            .emu_devices
+            .iter()
+            .any(|device| device.emu_type == EmulatedDeviceType::VirtioBlk)
+    {
+        bail!("virtio-blk disk images require the Axvisor `fs` feature");
+    }
+    Ok(())
 }
 
 #[cfg(all(

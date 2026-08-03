@@ -33,6 +33,19 @@ pub(crate) trait ArchOps {
 
     fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
+    /// Quiesces architecture-local hardware before a vCPU is permanently stopped.
+    ///
+    /// This runs while the vCPU is still bound to the physical CPU that last
+    /// executed it. Recoverable exits such as WFI do not call this hook.
+    fn before_vcpu_stop(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+
+    /// Performs final per-CPU cleanup before a stopping vCPU task exits.
+    ///
+    /// Another vCPU can publish the VM-wide stop after this vCPU has already
+    /// unbound from a recoverable exit. This hook still runs on the task's
+    /// assigned physical CPU and must be idempotent with [`Self::before_vcpu_stop`].
+    fn before_vcpu_task_exit(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+
     fn inject_pending_interrupt(
         _vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -100,9 +113,6 @@ pub(crate) trait ArchOps {
     where
         Self: Sized,
     {
-        let vm_id = vm.id();
-        let vcpu_id = vcpu.id();
-
         match vcpu.state() {
             VmVcpuState::Free => vcpu.bind()?,
             VmVcpuState::Starting => vcpu.bind_startup()?,
@@ -114,8 +124,19 @@ pub(crate) trait ArchOps {
                 );
             }
         }
+        vcpu.with_current_cpu_set(|| Self::run_bound_vcpu(vm, vcpu))
+    }
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
+    fn run_bound_vcpu(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult<VcpuRunAction>
+    where
+        Self: Sized,
+    {
+        let vm_id = vm.id();
+        let vcpu_id = vcpu.id();
+        let run_result = (|| -> AxVmResult<_> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
 
@@ -126,7 +147,18 @@ pub(crate) trait ArchOps {
                     action => break Ok(action),
                 }
             }
-        });
+        })();
+
+        let permanently_stopped = matches!(
+            &run_result,
+            Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                stop_reason: Some(_),
+                ..
+            })) | Err(_)
+        );
+        if permanently_stopped {
+            Self::before_vcpu_stop(vm, vcpu);
+        }
 
         let unbind_result = vcpu.unbind();
         match run_result {

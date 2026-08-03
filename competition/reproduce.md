@@ -1,8 +1,9 @@
 # Reproduction guide
 
-This guide reproduces the completed QEMU captures and the physical Orange Pi 5
-Plus flow, and identifies the video and upstream PR work separately. Run all
-commands from the repository root unless a step says otherwise.
+This guide reproduces the completed QEMU Linux/Zephyr captures and the physical
+Orange Pi 5 Plus StarryOS/Zephyr flow, and identifies the video and upstream PR
+work separately. Run all commands from the repository root unless a step says
+otherwise.
 
 ## 1. Pin and record the source
 
@@ -15,9 +16,9 @@ plus uncommitted competition changes:
 ```
 
 That base hash alone does **not** contain the historical QEMU implementation.
-The physical-board support is contained in the repository revision that last
-changes this guide; do not relabel the older retained QEMU archives as though
-they came from that later revision. For every new run, capture:
+The physical-board support is represented by the current worktree and its
+separate metadata below; do not relabel the older retained QEMU archives as
+though they came from that later source state. For every new run, capture:
 
 ```sh
 git rev-parse HEAD
@@ -27,6 +28,13 @@ git submodule status --recursive
 
 Do not compare measurements from different source states without recording the
 difference.
+
+The retained physical StarryOS captures used branch
+`feat/rt-axvisor-partition-virtio-net` at base commit
+`f808646899f51fde9addfbe60976f6667c760beb` plus the uncommitted implementation
+described by
+[`results/orangepi-starry-reference/metadata.json`](results/orangepi-starry-reference/metadata.json).
+That base commit alone also does not contain the physical implementation.
 
 The five retained AxVisor RT captures and the three final IVC captures used the
 same implementation source state. The harness recorded:
@@ -233,21 +241,18 @@ Output:
 tmp/competition/ivc/linux/rootfs.img
 ```
 
-The physical-board profile boots the same controller from a compact initramfs
-and a guest-specific DTB. Build both without mounting the ext4 image:
+The retained QEMU profiles use this Linux image. The current physical profile
+instead runs the same static controller under StarryOS. Build its two-vCPU
+kernel, guest DTB, and finite 20/1,800-command ext4 images with:
 
 ```sh
-bash competition/ivc/linux/build-initramfs.sh
-bash competition/ivc/linux/build-guest-dtb.sh
+bash competition/ivc/starry/build.sh
 ```
 
-The resulting files are
-`tmp/competition/ivc/linux/initramfs.cpio.gz` and
-`tmp/competition/ivc/linux/orangepi-5-plus.dtb`. The physical run also needs
-an AArch64 Linux `Image` with PL011, PSCI, GICv3, and virtio-mmio support at
-`tmp/competition/ivc/linux/linux-qemu`, or at the path supplied through
-`IVC_LINUX_KERNEL`. Record its provenance and SHA-256; the validated image hash
-was `c9ef196e448390a1bb94263c33a4cc9d80b5d98d9d966bc1a1f51254599c06c0`.
+The outputs are `tmp/competition/ivc/starry/starryos.bin`,
+`starry-orangepi-5-plus.dtb`, `starry-ivc-rootfs-smoke.img`, and
+`starry-ivc-rootfs.img`. The build script runs ext4 checks before and after
+injecting the controller, autorun entry point, and finite profile.
 
 The controller used by the final QEMU captures is 758,608 bytes with SHA-256
 `73a825d12ac79a268a28e10ff5e572a313a57f4ce4e2780a5de4df824e430965`.
@@ -448,18 +453,19 @@ are retained in
 [`results/axvisor-ivc-reference`](results/axvisor-ivc-reference/). Do not
 compare neural and manual unless every non-policy input remains identical.
 
-### Completed Orange Pi 5 Plus Linux + Zephyr runs
+### Completed Orange Pi 5 Plus StarryOS + Zephyr runs
 
-The physical profile loads Linux and Zephyr through AxVisor on the RK3588 and
-uses the board's Linux ext4 filesystem only as the AxVisor image store. Stage
-the three Linux guest files while holding a board lease; the maintained script
-uses the ordinary `orangepi` home directory, atomically renames each upload,
-calls `sync`, and prints the remote hashes:
+The physical profile loads StarryOS and Zephyr through AxVisor on the RK3588
+and uses the board's Linux ext4 filesystem as the AxVisor image store. First
+build the StarryOS artifacts as described above and both finite Zephyr board
+images from Section 6. Stage the StarryOS kernel, two rootfs profiles, and DTB
+while holding a board lease. The maintained script uses the ordinary
+`orangepi` home directory, atomically renames each upload, calls `sync`, and
+prints the remote hashes:
 
 ```sh
 export ORANGEPI_SSH_TARGET=orangepi@<board-ip>
 export ORANGEPI_SSH_IDENTITY=<board-ssh-private-key>
-export IVC_LINUX_KERNEL=tmp/competition/ivc/linux/linux-qemu
 
 bash competition/ivc/stage-orangepi-5-plus.sh
 ```
@@ -469,6 +475,9 @@ The run selector delegates reset/serial orchestration to
 `orangepi-axvisor-board-run`. That host integration must acquire the local
 board lease, reboot Linux only after `sync`, run `cargo xtask axvisor board`,
 require `AXVISOR_HOST_FILESYSTEM_SYNCED`, and restore the TF-card Linux system.
+The run script retains the console, invokes `analyze_board.py`, and exits zero
+only after the analyzer validates controller/RTOS counts, StarryOS two-vCPU and
+network records, both guest shutdowns, host filesystem sync, and Linux restore.
 With the validated board root selector:
 
 ```sh
@@ -477,6 +486,10 @@ export ORANGEPI_AXVISOR_HOST_ROOT=PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6
 bash competition/ivc/run-orangepi-5-plus.sh smoke
 bash competition/ivc/run-orangepi-5-plus.sh full
 ```
+
+By default, results are written to
+`tmp/competition/ivc/orangepi-last/{smoke,full}-{console.log,summary.json}`.
+Set `ORANGEPI_IVC_RESULT_DIR` for a different output directory.
 
 Discover and record the root selector on a different board with
 `findmnt -no SOURCE,FSTYPE,OPTIONS /` and `blkid`; do not copy this PARTUUID
@@ -489,19 +502,27 @@ cargo xtask axvisor board \
   -b OrangePi-5-Plus
 ```
 
-The operator must still arrange the Linux-to-U-Boot reboot after the runner
-acquires the serial lease and restore Linux after AxVisor shuts down.
+Without the integration helper, the operator must arrange the Linux-to-U-Boot
+reboot after the serial lease is acquired and restore Linux after AxVisor
+shuts down.
 
-The full neural capture completed 1,800/1,800 commands with zero errors,
-timeouts, retransmissions, or recoveries. Its full-loop p50/p95/p99/maximum was
-4,195/4,228/7,812/23,216 us and throughput was 9.992 msg/s. The local serial
-log SHA-256 is
-`134bbd6b308c6babb0b43bb1f8906f4d4a74bb422ab1f0cae59f05fcf9209da5`.
-The later maintained-tree smoke completed 20/20, observed two Linux CPUs, zero
-repeated unsupported PSCI `CPU_SUSPEND` calls, confirmed host filesystem sync,
-and restored `/dev/mmcblk1p2` as ext4 `rw`; its local log SHA-256 is
-`4432964c3bf5746f9cb3a0a55f50f98cec7bbc270fe6c20be16b572d7f8afcf7`.
-These local physical logs are not part of the committed QEMU result archive.
+The retained full neural capture completed 1,800/1,800 commands with zero
+errors, timeouts, retransmissions, or recoveries. Its full-loop
+p50/p95/p99/maximum was 6,751/11,265/11,695/14,405 us and throughput was
+9.995 msg/s. The raw-log SHA-256 is
+`023ff07b40b4936453eee6d4bbd57bca1c1699e7305dc1af5fe601a5d67492d9`.
+The retained smoke completed 20/20, observed two StarryOS CPUs, confirmed both
+guest poweroffs and host filesystem sync, and restored `/dev/mmcblk1p2` as
+ext4 `rw`; its raw-log SHA-256 is
+`8dd16dbcc7608305da9fcf13f393a54e410e16ef26da63ca5c2821878efbf265`.
+
+The shared physical UART can lose spans. Controller and RTOS terminal metrics
+are split into short, paced, redundant records. The analyzer requires at least
+one complete copy, rejects conflicting complete copies, and never treats the
+short success marker alone as sufficient evidence. Compressed logs, generated
+summaries, exact artifact/configuration hashes, and verification commands are
+retained under
+[`results/orangepi-starry-reference`](results/orangepi-starry-reference/).
 
 ## 8. Real-time benchmarks
 

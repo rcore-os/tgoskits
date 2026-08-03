@@ -358,18 +358,13 @@ fn do_exit(cmd: &ParsedCommand) {
 
 #[cfg(feature = "fs")]
 fn do_shutdown(_cmd: &ParsedCommand) {
-    if let Err(error) = axvm::shutdown_host_filesystems() {
-        println!("AXVISOR_HOST_FILESYSTEM_SYNC_FAILED: {error}");
+    if !super::host::sync_host_filesystems_and_report() {
         return;
     }
 
-    // This marker is the handoff contract with external board automation:
-    // power may be removed only after the filesystem state reaches storage.
-    println!("AXVISOR_HOST_FILESYSTEM_SYNCED");
-    std::io::stdout().flush().ok();
     // AxStd stdout is unbuffered, but a UART can still hold the final bytes in
     // its hardware FIFO. Give the transmitter time to drain before shutdown.
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(200));
     std::process::exit(0);
 }
 

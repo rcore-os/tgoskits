@@ -1,9 +1,10 @@
 # AxVisor real-time benchmark harness
 
-This directory contains reproducible measurement assets for the selected QEMU
-AArch64 partition profile. It intentionally contains no captured latency
-values. A run writes raw console output, provenance metadata, and a derived JSON
-summary under `tmp/axvisor-rt/` or a caller-selected output directory.
+This directory contains reproducible measurement assets for QEMU AArch64 and
+the OrangePi-5-Plus StarryOS board profiles. It intentionally contains no
+captured latency values. A run writes raw output, provenance metadata, and a
+derived JSON summary under `tmp/axvisor-rt/`, `competition/results/`, or a
+caller-selected output directory.
 
 The final shared/partitioned idle, CPU-stress, and partitioned-soak artifacts
 are retained separately in
@@ -26,10 +27,12 @@ warmup:
   injection measurement.
 
 The probe buffers samples and prints them after each measured loop so serial
-output is outside individual latency intervals. Hypervisor trap-entry and IRQ
-injection tracing is deliberately not added here: console or allocation-heavy
-instrumentation in those paths would perturb the result. A future low-overhead
-trace buffer may add those metrics under a distinct schema.
+output is outside individual latency intervals. The physical-board StarryOS
+flow additionally records virtual-timer injection and guest IRQ entry in
+preallocated fixed rings, with no allocation, lock, or printing in the hot
+path. `analyze_irq_trace.py` pairs both sides in the guest virtual-counter
+domain and rejects drops, incomplete records, injection failures, and counter
+frequency mismatches. The QEMU-only runner does not claim this direct metric.
 
 `--workload cpu-stress` starts the same static probe in a non-real-time busy-loop
 mode pinned to guest CPU 1 while all measured probes remain pinned to guest CPU
@@ -42,6 +45,9 @@ PID and CPU appear throughout, that `STOPPED` follows all measurements, and
 that CPU 1 was at least 50% busy between the paired CPU snapshots. Thus a
 successful `cpu-stress` capture proves sustained in-guest load rather than
 trusting a metadata label or an unobserved background process.
+It does not prove CPU partition isolation: the busy loop runs on guest CPU 1 of
+the same VM, whose vCPU remains pinned to the same pCPU in both profiles. Use an
+independently placed and observed interference source for an isolation claim.
 Before any workload branch, the guest runner also requires exactly two online
 Linux CPUs and emits `AXVISOR_RT_GUEST_CPUS`. This prevents an idle run with a
 failed secondary-vCPU boot from being accepted merely because CPU 0 produced
@@ -53,9 +59,9 @@ distribution in addition to the stress process's affinity evidence.
 
 QEMU is pinned to multi-threaded TCG for repeatability. TCG values support
 relative comparisons between otherwise identical runs; they are not hardware
-real-time guarantees. The partition currently excludes other registered guest
-vCPU tasks from host CPUs 2 and 3, but does not exclude every host task or
-interrupt from those CPUs.
+real-time guarantees. `dedicated_cpus` excludes reserved pCPUs from other
+registered shared guest-vCPU tasks. It does not automatically exclude ordinary
+AxVisor host tasks, housekeeping, or physical interrupts.
 
 ## Run
 
@@ -112,9 +118,80 @@ digits, dots, underscores, and hyphens.
 `--profile shared` selects the compatibility configuration in which both guest
 vCPUs may run on any of the four host CPUs. Running the same idle and
 `cpu-stress` cases under both profiles is the reproducible feature-off/feature-on
-comparison for the CPU-partition change; it is not presented as a historical
-binary comparison. Keep the rootfs, probe, QEMU version, sample count, period,
-and workload identical between paired captures.
+configuration comparison; it is not presented as a historical binary
+comparison or proof of isolation under independent contention. Keep the rootfs,
+probe, QEMU version, sample count, period, and workload identical between paired
+captures.
+
+## StarryOS physical-board path
+
+The board path uses `build-starry-kernel.sh`, `build-starry-rootfs.sh`,
+`stage-starry-board.sh`, and `harvest-starry-board.sh`. Raw samples and the
+compressed guest IRQ trace are written to the guest block image; the AxVisor
+shell writes the host trace and a synchronized snapshot before Linux recovery.
+The harvester checks the snapshot read-only, extracts raw evidence, and runs
+both StarryOS and direct-IRQ analyzers.
+
+The normal `axvisor-orangepi-5-plus-starry-{shared,partitioned}.toml` profiles
+remain single-guest baselines. Experimental cross-VM interference is isolated
+behind `axvisor-orangepi-5-plus-starry-noise-{shared,partitioned}.toml`. Both
+noise profiles use the same bounded `aarch64-rt-noise.bin`; only its singleton
+pCPU placement differs (`pCPU1` for shared contention, `pCPU3` for isolated
+placement).
+
+That cross-VM profile is diagnostic-only at present. OrangePi-5-Plus testing
+showed that a multi-pCPU noise-vCPU affinity can fail after migration, while
+two singleton-pinned AArch64 vCPUs time-sliced on pCPU1 can still produce a
+current-EL data abort after the second vCPU starts. A non-preemptible guest run
+slice removes the earlier nested-vCPU panic but does not close this correctness
+gap. Do not use these failed logs as latency samples or run the partitioned half
+as if it formed a valid pair. Either validate a pinned AxVisor host-noise task,
+or fix same-pCPU vCPU switching with deterministic and physical regressions
+before resuming cross-VM comparison.
+
+The maintained controlled-interference path now uses the single-guest
+`starry-host-noise-{shared,partitioned}` profiles. Their top-level
+`[host_noise]` configuration starts the same bounded busy-loop task before the
+default VM, enables round-robin host scheduling, and stops the task only after
+the VM exits. The shared task is singleton-pinned to pCPU1 with StarryOS vCPU0;
+the partitioned task is singleton-pinned to pCPU3. Both use the same 180-second
+safety bound. A valid run must retain `AXVISOR_RT_HOST_NOISE` and
+`AXVISOR_RT_HOST_NOISE_PCPU` in the host trace, prove that the observed mask is
+the requested singleton mask, and prove that the noise window covers the full
+VM trace. `observed_wall_ticks` is coverage wall time on the observed pCPU; it
+is deliberately not labeled as exclusive task CPU runtime. The independent
+host pCPU/vCPU accounting remains the authority for contention analysis.
+
+Use the matching board gate and tell the harvester which placement is expected.
+The board gate has one terminal success marker, `AXVISOR_SNAPSHOT_SYNC_OK`;
+host-noise completion is deliberately validated later from the persisted trace.
+Require that sync marker before the wrapper may cold-cycle back to Linux:
+
+```bash
+ORANGEPI_AXVISOR_BUILD_CONFIG=scripts/benchmark/axvisor-rt/config/axvisor-orangepi-5-plus-starry-host-noise-shared.toml \
+ORANGEPI_AXVISOR_BOARD_CONFIG=scripts/benchmark/axvisor-rt/config/board-orangepi-5-plus-starry-host-noise-shared.toml \
+ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED=1 \
+ORANGEPI_RESTORE_LINUX=1 \
+bash competition/ivc/orangepi/board-runner.sh
+
+ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU=1 \
+  scripts/benchmark/axvisor-rt/harvest-starry-board.sh
+```
+
+Use the partitioned build/board configs and expected pCPU3 for the paired half.
+Harvest immediately after each half because the next board run replaces
+`/home/rt`. A lossless host trace must explicitly report
+`unowned_virtual_timer_irqs=0` in addition to zero dropped, incomplete, failed
+injection, and counter-frequency-mismatch counts. Any nonzero value invalidates
+the run; the hard-IRQ path must not print synchronously.
+
+Do not replace the repository wrapper with a direct `cargo xtask axvisor board`
+invocation on the local automation host. The wrapper performs the Linux-side
+SSH reboot needed to expose U-Boot, applies the temporary U-Boot 2025.10
+`uboot-shell` compatibility patch, owns the serial lease, and restores Linux
+with the board-specific TF-card boot command before verifying a writable
+`/dev/mmcblk1p2` ext4 root filesystem. The local patch can be removed after
+drivercraft/ostool PR 164 is released as `uboot-shell` 0.2.7.
 
 ## Analyze and test
 

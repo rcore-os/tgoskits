@@ -25,6 +25,10 @@ use axvm_types::{
 
 use crate::{AxVmError, AxVmResult, ax_err};
 
+#[cfg(test)]
+#[path = "architecture/vcpu_startup.rs"]
+mod vcpu_startup_test_support;
+
 /// Mutable runtime state of a virtual CPU.
 pub struct AxVCpuInnerMut {
     state: VmVcpuState,
@@ -145,6 +149,14 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             if core::ptr::eq(current_vcpu, self) {
                 f()
             } else {
+                error!(
+                    "AXVM_NESTED_VCPU_OPERATION current_vm={} current_vcpu={} requested_vm={} \
+                     requested_vcpu={}",
+                    current_vcpu.vm_id(),
+                    current_vcpu.id(),
+                    self.vm_id(),
+                    self.id()
+                );
                 panic!("nested vCPU operation is not allowed");
             }
         } else {
@@ -199,30 +211,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         }
         inner_mut.state = to;
         Ok(())
-    }
-
-    #[cfg(any(test, target_arch = "aarch64", target_arch = "riscv64"))]
-    pub(crate) fn configure_startup<F>(&self, entry: GuestPhysAddr, configure_args: F) -> AxVmResult
-    where
-        F: FnOnce(&mut A),
-    {
-        // The reserved runtime task slot and `Starting` state exclusively own this inactive
-        // backend. A CPU-up exit is still handled with the caller vCPU recorded as current, so
-        // installing the target as current here would be a nested vCPU operation. Per-CPU binding
-        // belongs to the target task when it first runs on its selected host CPU.
-        self.with_state_transition(
-            VmVcpuState::Starting,
-            VmVcpuState::Starting,
-            VmVcpuState::Starting,
-            || {
-                let arch_vcpu = self.get_arch_vcpu();
-                arch_vcpu
-                    .set_entry(entry)
-                    .map_err(|error| map_vcpu_backend_error("set vCPU entry", error))?;
-                configure_args(arch_vcpu);
-                Ok(())
-            },
-        )
     }
 
     /// Consumes a startup reservation while binding the activated host task.
@@ -534,9 +522,12 @@ mod tests {
         let entry = GuestPhysAddr::from(0x8020_0000usize);
         let argument = 0x1234;
         primary.with_current_cpu_set(|| {
-            secondary
-                .configure_startup(entry, |backend| backend.set_gpr(0, argument))
-                .unwrap();
+            super::vcpu_startup_test_support::configure_reserved_vcpu_startup(
+                &secondary,
+                entry,
+                |backend| backend.set_gpr(0, argument),
+            )
+            .unwrap();
             let current = get_current_vcpu::<TestVcpu>().unwrap();
             assert!(core::ptr::eq(current, &primary));
         });

@@ -35,6 +35,8 @@ mod ipi;
 mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
+#[path = "../../architecture/vcpu_startup.rs"]
+mod vcpu_startup;
 mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
@@ -70,10 +72,28 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
+    fn register_platform_irq_injector() {
+        gic::register_guest_virtual_timer_irq_injector();
+    }
+
     fn before_first_run(vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        if vm.interrupt_mode() == crate::config::VMInterruptMode::Passthrough {
-            gic::prepare_passthrough_guest_cpu_interface();
+        match vm.interrupt_mode() {
+            crate::config::VMInterruptMode::Passthrough => {
+                gic::prepare_passthrough_guest_cpu_interface();
+            }
+            crate::config::VMInterruptMode::Emulated => {
+                gic::prepare_emulated_guest_cpu_interface();
+            }
+            crate::config::VMInterruptMode::NoIrq => {}
         }
+    }
+
+    fn before_vcpu_stop(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        arm_vcpu::disable_local_guest_timers();
+    }
+
+    fn before_vcpu_task_exit(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        arm_vcpu::disable_local_guest_timers();
     }
 
     fn handle_vcpu_exit_bound(
@@ -508,6 +528,13 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn get_host_gicr_base() -> PhysAddr {
         gic::host_gicr_base()
+    }
+
+    fn host_private_interrupt_enable_mask() -> u32 {
+        let timer_intid = ax_std::os::arceos::modules::ax_hal::time::irq_num().hwirq.0;
+        1u32.checked_shl(timer_intid).unwrap_or_else(|| {
+            panic!("host timer INTID {timer_intid} is not a GIC private interrupt")
+        })
     }
 
     fn hardware_inject_virtual_interrupt(vector: u8) {

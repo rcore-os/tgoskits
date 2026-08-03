@@ -3,7 +3,8 @@
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
-use super::{VIRTIO_F_VERSION_1, VIRTIO_NET_F_MRG_RXBUF, VirtioNet, queue::QueueAddressKind};
+use super::{VIRTIO_F_VERSION_1, VIRTIO_NET_F_MRG_RXBUF, VirtioNet};
+use crate::virtio::queue::{QUEUE_NUM_MAX, QueueAddressKind};
 
 const VIRTIO_MMIO_MAGIC_VALUE: usize = 0x000;
 const VIRTIO_MMIO_VERSION: usize = 0x004;
@@ -52,7 +53,7 @@ impl VirtioNet {
             },
             VIRTIO_MMIO_QUEUE_NUM_MAX => state
                 .selected_queue()
-                .map(|_| u32::from(super::queue::QUEUE_NUM_MAX))
+                .map(|_| u32::from(QUEUE_NUM_MAX))
                 .unwrap_or(0),
             VIRTIO_MMIO_QUEUE_READY => state
                 .selected_queue()
@@ -61,13 +62,22 @@ impl VirtioNet {
             VIRTIO_MMIO_INTERRUPT_STATUS => state.interrupt_status,
             VIRTIO_MMIO_STATUS => state.status,
             VIRTIO_MMIO_CONFIG_GENERATION => 0,
-            offset
-                if (VIRTIO_MMIO_CONFIG..VIRTIO_MMIO_CONFIG + self.mac.len()).contains(&offset) =>
-            {
-                u32::from(self.mac[offset - VIRTIO_MMIO_CONFIG])
-            }
             _ => 0,
         }
+    }
+
+    fn read_device_config(&self, offset: usize, width: AccessWidth) -> usize {
+        let Some(mac_offset) = offset.checked_sub(VIRTIO_MMIO_CONFIG) else {
+            return 0;
+        };
+        self.mac
+            .iter()
+            .skip(mac_offset)
+            .take(width.size())
+            .enumerate()
+            .fold(0_u64, |value, (byte_index, byte)| {
+                value | (u64::from(*byte) << (byte_index * u8::BITS as usize))
+            }) as usize
     }
 
     fn write_register(&self, offset: usize, value: u32) -> DeviceResult {
@@ -166,6 +176,9 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VirtioNet {
 
     fn handle_read(&self, address: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
         let offset = self.mmio_offset(address, width)?;
+        if offset >= VIRTIO_MMIO_CONFIG {
+            return Ok(self.read_device_config(offset, width));
+        }
         let value = match width {
             AccessWidth::Byte => self.read_register(offset) & 0xff,
             AccessWidth::Word => self.read_register(offset) & 0xffff,

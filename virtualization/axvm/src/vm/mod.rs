@@ -31,7 +31,9 @@ use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::AddrSpace;
-use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, VirtioNet};
+use axdevice::{
+    AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig, VirtioBlock, VirtioNet,
+};
 use axdevice_base::AccessWidth;
 use axvm_net::{
     MAX_SWITCH_PORTS, MacAddress, PortId, RouteDecision, SegmentId, SwitchPort, SwitchTopology,
@@ -649,6 +651,36 @@ impl AxVM {
         self.machine.lock().status()
     }
 
+    /// Copies one volatile virtio block backing after the VM has stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AxVmError::InvalidState`] unless the VM is stopped, or
+    /// [`AxVmError::InvalidInput`] when `index` does not identify a configured
+    /// virtio block backing.
+    pub fn snapshot_virtio_block_backing(&self, index: usize) -> AxVmResult<Vec<u8>> {
+        let machine = self.machine.lock();
+        let status = machine.status();
+        ensure_block_snapshot_status(self.id(), status)?;
+        let resources = machine
+            .resources()
+            .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available"))?;
+        let backing = resources
+            .config
+            .virtio_block_backings()
+            .get(index)
+            .ok_or_else(|| {
+                ax_err_type!(
+                    InvalidInput,
+                    format!(
+                        "VM[{}] has no virtio block backing at index {index}",
+                        self.id()
+                    )
+                )
+            })?;
+        Ok(backing.snapshot())
+    }
+
     /// Returns the configured VM interrupt mode.
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.with_resources(|resources| Ok(resources.config.interrupt_mode()))
@@ -937,7 +969,14 @@ impl AxVM {
                 .map_err(|error| AxVmError::resource_unavailable("reset resources", error))
         })?;
         self.prepare()?;
-        self.start()
+        #[cfg(feature = "rt-trace")]
+        crate::rt_trace::begin_vm(self.id(), self.vcpu_num());
+        let start_result = self.start();
+        #[cfg(feature = "rt-trace")]
+        if start_result.is_err() {
+            crate::rt_trace::abort_vm(self.id());
+        }
+        start_result
     }
 
     /// Returns this VM's emulated devices.
@@ -1049,6 +1088,15 @@ impl AxVM {
 
         devices.handle_mmio_write(addr, width, data)?;
 
+        // virtio-blk: a request-queue notification executes the bounded,
+        // memory-backed I/O batch synchronously before interrupt injection.
+        if let Some(block) = devices.virtio_block_for_addr(addr) {
+            let offset = addr.as_usize() - block.base().as_usize();
+            if block.is_queue_notify(offset, data as u32) {
+                self.drive_virtio_block(&block)?;
+            }
+        }
+
         // virtio-net: a QUEUE_NOTIFY to the transmit queue drives frame TX + the switch.
         if let Some(vnet) = devices.virtio_net_for_addr(addr) {
             let offset = addr.as_usize() - vnet.base().as_usize();
@@ -1059,16 +1107,35 @@ impl AxVM {
         Ok(())
     }
 
+    /// Completes pending virtio block requests and raises one queue interrupt.
+    fn drive_virtio_block(&self, block: &Arc<VirtioBlock>) -> AxVmResult {
+        let completed = block.process_queue(
+            &|gpa, buffer| {
+                self.read_from_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::UnexpectedResponse {
+                        operation: "read guest memory for virtio block request",
+                        detail: alloc::format!("{error}"),
+                    }
+                })
+            },
+            &|gpa, buffer| {
+                self.write_to_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::UnexpectedResponse {
+                        operation: "write guest memory for virtio block completion",
+                        detail: alloc::format!("{error}"),
+                    }
+                })
+            },
+        )?;
+        if completed != 0 {
+            self.inject_device_irq(block.irq())?;
+        }
+        Ok(())
+    }
+
     /// Drives TX completion and routes frames through the isolated L2 switch.
     fn drive_virtio_net_tx(&self, vnet: &Arc<VirtioNet>) -> AxVmResult {
-        let notifications = crate::network::record_tx_notification();
-        if crate::network::should_log_progress(notifications) {
-            info!(
-                "IVC-SWITCH-NOTIFY vm={} irq={} notifications={notifications}",
-                self.id(),
-                vnet.irq()
-            );
-        }
+        crate::network::record_tx_notification();
         let frames = vnet.process_tx(
             &|gpa, buffer| {
                 self.read_from_guest(gpa, buffer).map_err(|error| {
@@ -1090,26 +1157,11 @@ impl AxVM {
         // process_tx releases the sender queue lock before any receiver is
         // selected, so cross-VM delivery never nests two virtio-net locks.
         if frames.is_empty() {
-            let empty = crate::network::record_empty_tx_notification();
-            if crate::network::should_log_progress(empty) {
-                info!(
-                    "IVC-SWITCH-EMPTY-TX vm={} irq={} empty_notifications={empty}",
-                    self.id(),
-                    vnet.irq()
-                );
-            }
+            crate::network::record_empty_tx_notification();
             return Ok(());
         }
         for frame in &frames {
-            let transmitted = crate::network::record_transmission(frame.len());
-            if crate::network::should_log_progress(transmitted) {
-                info!(
-                    "IVC-SWITCH-TX vm={} irq={} frames={transmitted} last_bytes={}",
-                    self.id(),
-                    vnet.irq(),
-                    frame.len()
-                );
-            }
+            crate::network::record_transmission(frame.len());
         }
         self.inject_device_irq(vnet.irq())?;
 
@@ -1159,15 +1211,7 @@ impl AxVM {
                         };
                         match binding.vm.deliver_rx_frame_to(&binding.device, frame) {
                             Ok(true) => {
-                                let forwarded = crate::network::record_forwarded_copy();
-                                if crate::network::should_log_progress(forwarded) {
-                                    info!(
-                                        "IVC-SWITCH-FORWARD destination_vm={} irq={} \
-                                         copies={forwarded}",
-                                        binding.vm.id(),
-                                        binding.device.irq()
-                                    );
-                                }
+                                crate::network::record_forwarded_copy();
                             }
                             Ok(false) => crate::network::record_unavailable_rx_buffer(),
                             Err(error) => {
@@ -1744,8 +1788,20 @@ impl Drop for AxVM {
     }
 }
 
+fn ensure_block_snapshot_status(vm_id: usize, status: VmStatus) -> AxVmResult {
+    if status != VmStatus::Stopped {
+        return ax_err!(
+            BadState,
+            format!("VM[{vm_id}] cannot snapshot virtio block backing from {status:?}")
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     #[test]
@@ -1779,5 +1835,16 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    #[test]
+    fn block_snapshot_requires_a_stopped_vm() {
+        assert!(ensure_block_snapshot_status(7, VmStatus::Stopped).is_ok());
+
+        let error = ensure_block_snapshot_status(7, VmStatus::Running).unwrap_err();
+
+        assert!(matches!(error, AxVmError::InvalidState { .. }));
+        assert!(error.to_string().contains("VM[7]"));
+        assert!(error.to_string().contains("Running"));
     }
 }

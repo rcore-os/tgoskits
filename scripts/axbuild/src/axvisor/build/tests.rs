@@ -235,6 +235,45 @@ log = "Info"
 }
 
 #[test]
+fn load_cargo_config_injects_bounded_host_noise_contract() {
+    let root = tempdir().unwrap();
+    let config_path = root.path().join("host-noise.toml");
+    fs::write(
+        &config_path,
+        r#"
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-std/sched-rr"]
+log = "Info"
+max_cpu_num = 4
+
+[host_noise]
+cpu = 3
+max_duration_ms = 180000
+"#,
+    )
+    .unwrap();
+
+    let cargo = load_cargo_config(&request(
+        config_path,
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    ))
+    .unwrap();
+
+    assert_eq!(
+        cargo.env.get("AXVISOR_HOST_NOISE_CPU").map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        cargo
+            .env
+            .get("AXVISOR_HOST_NOISE_MAX_DURATION_MS")
+            .map(String::as_str),
+        Some("180000")
+    );
+}
+
+#[test]
 fn load_cargo_config_does_not_select_an_x86_backend() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("build-x86_64.toml");
