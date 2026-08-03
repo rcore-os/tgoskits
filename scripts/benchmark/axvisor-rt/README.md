@@ -154,8 +154,9 @@ The maintained controlled-interference path now uses the single-guest
 `[host_noise]` configuration starts the same bounded busy-loop task before the
 default VM, enables round-robin host scheduling, and stops the task only after
 the VM exits. The shared task is singleton-pinned to pCPU1 with StarryOS vCPU0;
-the partitioned task is singleton-pinned to pCPU3. Both use the same 180-second
-safety bound. A valid run must retain `AXVISOR_RT_HOST_NOISE` and
+the partitioned task is singleton-pinned to pCPU3. Smoke profiles use a
+180-second safety bound; formal 10k profiles use 600 seconds. A valid run must
+retain `AXVISOR_RT_HOST_NOISE` and
 `AXVISOR_RT_HOST_NOISE_PCPU` in the host trace, prove that the observed mask is
 the requested singleton mask, and prove that the noise window covers the full
 VM trace. `observed_wall_ticks` is coverage wall time on the observed pCPU; it
@@ -168,10 +169,12 @@ host-noise completion is deliberately validated later from the persisted trace.
 Require that sync marker before the wrapper may cold-cycle back to Linux:
 
 ```bash
-ORANGEPI_AXVISOR_BUILD_CONFIG=scripts/benchmark/axvisor-rt/config/axvisor-orangepi-5-plus-starry-host-noise-shared.toml \
-ORANGEPI_AXVISOR_BOARD_CONFIG=scripts/benchmark/axvisor-rt/config/board-orangepi-5-plus-starry-host-noise-shared.toml \
+ORANGEPI_POWER_PYTHON=/home/seven_wsl/.cache/tgoskits-board-power-venv/bin/python \
+ORANGEPI_AXVISOR_BUILD_CONFIG=scripts/benchmark/axvisor-rt/config/axvisor-orangepi-5-plus-starry-host-noise-formal-shared.toml \
+ORANGEPI_AXVISOR_BOARD_CONFIG=scripts/benchmark/axvisor-rt/config/board-orangepi-5-plus-starry-host-noise-formal-shared.toml \
 ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED=1 \
 ORANGEPI_RESTORE_LINUX=1 \
+ORANGEPI_RUN_TIMEOUT_SECONDS=1200 \
 bash competition/ivc/orangepi/board-runner.sh
 
 ORANGEPI_RT_EXPECTED_HOST_NOISE_PCPU=1 \
@@ -184,6 +187,23 @@ Harvest immediately after each half because the next board run replaces
 `unowned_virtual_timer_irqs=0` in addition to zero dropped, incomplete, failed
 injection, and counter-frequency-mismatch counts. Any nonzero value invalidates
 the run; the hard-IRQ path must not print synchronously.
+
+After generating all five pair comparisons in the preregistered order, aggregate
+them without copying values into a spreadsheet:
+
+```sh
+python3 scripts/benchmark/axvisor-rt/aggregate_starry_board.py \
+  pair-1/comparison.json pair-2/comparison.json pair-3/comparison.json \
+  pair-4/comparison.json pair-5/comparison.json \
+  --output campaign-summary.json
+```
+
+The aggregate validates the formal idle/10k/600-second contract, unique raw
+SHA-256 values, pCPU1/pCPU3 placement, direct-IRQ and host-accounting scope, and
+the frozen 5%/10% thresholds. It reports per-pair distributions and
+worst-of-runs. Passing `five_pair_matrix_gate_met` does not set
+`m2_exit_gate_met`: the latter remains false until the separately required
+shared and partitioned soak evidence is collected and checked.
 
 Do not replace the repository wrapper with a direct `cargo xtask axvisor board`
 invocation on the local automation host. The wrapper performs the Linux-side
