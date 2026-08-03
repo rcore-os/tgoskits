@@ -1,6 +1,6 @@
 //! EEVDF scheduling entity calculations.
 
-use crate::{FairMode, Nice};
+use crate::{FairMode, Nice, TaskError};
 
 const BASE_WEIGHT: u64 = 1024;
 const MAX_VIRTUAL_DELTA: u64 = i64::MAX as u64;
@@ -146,23 +146,32 @@ impl FairEntity {
         }
     }
 
-    /// Restores a sleeping entity's saved lag before it joins the runqueue.
+    /// Places a newly runnable entity into the runqueue competition.
     ///
-    /// Adding the entity changes the weighted average itself. Inflate the
-    /// placement lag by `(W + w) / W` so the post-insert lag equals the value
-    /// captured at dequeue, matching Linux `place_entity()`.
-    pub(crate) fn place_after_wake(&mut self, virtual_time: u64, runnable_weight: u64) {
-        let saved_lag = match self.placement {
-            FairPlacement::Sleeping { virtual_lag } => virtual_lag,
-            FairPlacement::Initial | FairPlacement::Active | FairPlacement::Migrating { .. } => 0,
+    /// Linux gives an initial entity half a service request so it joins peers
+    /// near their average progress. A sleeping entity instead restores its
+    /// saved lag and starts a full request. Adding either entity changes the
+    /// weighted average, so inflate saved lag by `(W + w) / W` before insert.
+    pub(crate) fn place_after_activation(
+        &mut self,
+        virtual_time: u64,
+        runnable_weight: u64,
+    ) -> Result<(), TaskError> {
+        let (saved_lag, request_ns) = match self.placement {
+            FairPlacement::Initial => (0, self.service_request_ns / 2),
+            FairPlacement::Sleeping { virtual_lag } => (virtual_lag, self.service_request_ns),
+            FairPlacement::Active | FairPlacement::Migrating { .. } => {
+                return Err(TaskError::InvalidConfiguration);
+            }
         };
         let placement_lag = self.inflated_placement_lag(saved_lag, runnable_weight);
         self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
-        self.remaining_request_ns = self.service_request_ns;
+        self.remaining_request_ns = request_ns;
         self.virtual_deadline = self
             .vruntime
-            .wrapping_add(weighted_delta(self.service_request_ns, self.nice.weight()));
+            .wrapping_add(weighted_delta(request_ns, self.nice.weight()));
         self.placement = FairPlacement::Active;
+        Ok(())
     }
 
     /// Restores state after an owner-to-owner transfer.
@@ -170,10 +179,14 @@ impl FairEntity {
     /// A wake forwarded through another CPU retains sleep placement, while an
     /// already-runnable migration retains its active request. The entity state,
     /// rather than the transport message, owns this semantic distinction.
-    pub(crate) fn place_after_transfer(&mut self, virtual_time: u64, runnable_weight: u64) {
+    pub(crate) fn place_after_transfer(
+        &mut self,
+        virtual_time: u64,
+        runnable_weight: u64,
+    ) -> Result<(), TaskError> {
         match self.placement {
-            FairPlacement::Sleeping { .. } => {
-                self.place_after_wake(virtual_time, runnable_weight);
+            FairPlacement::Initial | FairPlacement::Sleeping { .. } => {
+                self.place_after_activation(virtual_time, runnable_weight)
             }
             FairPlacement::Migrating {
                 virtual_lag,
@@ -183,8 +196,12 @@ impl FairEntity {
                 self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
                 self.virtual_deadline = self.vruntime.wrapping_add(relative_deadline);
                 self.placement = FairPlacement::Active;
+                Ok(())
             }
-            FairPlacement::Initial | FairPlacement::Active => self.place_at_least(virtual_time),
+            FairPlacement::Active => {
+                self.place_at_least(virtual_time);
+                Ok(())
+            }
         }
     }
 
@@ -369,6 +386,27 @@ mod tests {
     }
 
     #[test]
+    fn initial_entity_enters_competition_with_half_a_service_request() {
+        let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
+
+        entity.place_after_activation(10_000, 0).unwrap();
+
+        assert_eq!(entity.service_request_ns(), 1_000);
+        assert_eq!(entity.remaining_request_ns(), 500);
+        assert_eq!(entity.virtual_deadline(), 10_500);
+    }
+
+    #[test]
+    fn initial_entity_transferred_to_another_owner_keeps_initial_placement() {
+        let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
+
+        entity.place_after_transfer(10_000, 0).unwrap();
+
+        assert_eq!(entity.remaining_request_ns(), 500);
+        assert_eq!(entity.virtual_deadline(), 10_500);
+    }
+
+    #[test]
     fn sched_idle_always_uses_the_lowest_fair_weight() {
         let entity = FairEntity::new(Nice::new(-20).unwrap(), FairMode::Idle, 1_000, 0);
 
@@ -419,7 +457,9 @@ mod tests {
         let mut entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 950);
         entity.capture_sleep_lag(1_000, 1_000);
 
-        entity.place_after_transfer(2_000, u64::from(Nice::ZERO.weight()));
+        entity
+            .place_after_transfer(2_000, u64::from(Nice::ZERO.weight()))
+            .unwrap();
 
         assert_eq!(
             (entity.vruntime(), entity.virtual_deadline()),

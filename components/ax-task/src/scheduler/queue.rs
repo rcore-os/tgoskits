@@ -286,10 +286,10 @@ impl RunQueue {
                 EnqueueReason::Wake => {
                     let (queue_weight, current_weight) =
                         self.fair_placement_weights(*fair, current_fair);
-                    fair.place_after_wake(
+                    fair.place_after_activation(
                         virtual_time,
                         queue_weight.saturating_add(current_weight),
-                    );
+                    )?;
                 }
                 EnqueueReason::Preempted => {}
                 EnqueueReason::Yield => fair.yield_request(virtual_time),
@@ -299,7 +299,7 @@ impl RunQueue {
                     fair.place_after_transfer(
                         virtual_time,
                         queue_weight.saturating_add(current_weight),
-                    );
+                    )?;
                 }
                 EnqueueReason::PolicyChanged => {
                     let (queue_weight, current_weight) =
@@ -307,7 +307,7 @@ impl RunQueue {
                     fair.place_after_transfer(
                         virtual_time,
                         queue_weight.saturating_add(current_weight),
-                    );
+                    )?;
                 }
                 EnqueueReason::Replenished => {
                     fair.place_at_least(virtual_time);
@@ -823,7 +823,7 @@ mod tests {
 
         let entity = queue.dequeue(thread).unwrap().entity.fair().unwrap();
         assert_eq!(entity.vruntime(), 10_000);
-        assert_eq!(entity.virtual_deadline(), 11_000);
+        assert_eq!(entity.virtual_deadline(), 10_500);
     }
 
     #[test]

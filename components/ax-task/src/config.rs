@@ -1,7 +1,7 @@
 //! Scheduler configuration and topology identifiers.
 
 /// Default fair scheduling request in nanoseconds.
-pub const DEFAULT_FAIR_SLICE_NS: u64 = 1_000_000;
+pub const DEFAULT_FAIR_SLICE_NS: u64 = 700_000;
 /// Default scheduler timing granularity used to bound EEVDF lag.
 pub const DEFAULT_TIMING_GRANULARITY_NS: u64 = 1_000_000;
 /// Default periodic fair balancing interval in nanoseconds.
@@ -145,5 +145,15 @@ impl TaskSystemConfig {
     pub const fn with_batch_limit(mut self, limit: usize) -> Self {
         self.batch_limit = limit;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_fair_request_matches_linux_v71_base_slice() {
+        assert_eq!(TaskSystemConfig::new(1).fair_slice_ns(), 700_000);
     }
 }

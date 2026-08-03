@@ -2466,9 +2466,9 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .fair()
         .unwrap();
     assert_eq!(before.vruntime(), 650_000);
-    assert_eq!(before.remaining_request_ns(), 350_000);
+    assert_eq!(before.remaining_request_ns(), 450_000);
     let virtual_time = cpu.dispatch_state().run_queue.virtual_time();
-    assert_eq!(virtual_time, 825_000);
+    assert_eq!(virtual_time, 525_000);
 
     let nice = Nice::new(5).unwrap();
     system
@@ -2491,9 +2491,11 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
     let lag =
         (virtual_time as i128 - 650_000_i128) * Nice::ZERO.weight() as i128 / nice.weight() as i128;
     let expected_vruntime = (virtual_time as i128 - lag) as u64;
-    let expected_remaining_delta = (350_000_u128 * 1024 / nice.weight() as u128) as u64;
+    let remaining_request_ns = before.remaining_request_ns();
+    let expected_remaining_delta =
+        (u128::from(remaining_request_ns) * 1024 / u128::from(nice.weight())) as u64;
     assert_eq!(reweighted.vruntime(), expected_vruntime);
-    assert_eq!(reweighted.remaining_request_ns(), 350_000);
+    assert_eq!(reweighted.remaining_request_ns(), remaining_request_ns);
     assert_eq!(
         reweighted.virtual_deadline(),
         expected_vruntime + expected_remaining_delta
@@ -2518,7 +2520,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .unwrap();
     assert_eq!(batch.vruntime(), reweighted.vruntime());
     assert_eq!(batch.virtual_deadline(), reweighted.virtual_deadline());
-    assert_eq!(batch.remaining_request_ns(), 350_000);
+    assert_eq!(batch.remaining_request_ns(), remaining_request_ns);
 
     system
         .set_thread_policy(
@@ -2541,7 +2543,7 @@ fn fair_policy_update_reweights_lag_without_resetting_service_history() {
         .fair()
         .unwrap();
     assert_eq!(idle.nice(), Nice::LOWEST);
-    assert_eq!(idle.remaining_request_ns(), 350_000);
+    assert_eq!(idle.remaining_request_ns(), remaining_request_ns);
 }
 
 #[test]
