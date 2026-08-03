@@ -146,23 +146,28 @@ pub struct PlatformUsbHost {
 }
 
 impl PlatformUsbHost {
-    fn new(name: &'static str, host: USBHost, info: BindingInfo) -> Self {
-        Self::new_with_root_hub_speed(name, host, info, Speed::SuperSpeedPlus)
+    fn try_new(name: &'static str, host: USBHost, info: BindingInfo) -> Result<Self, OnProbeError> {
+        Self::try_new_with_root_hub_speed(name, host, info, Speed::SuperSpeedPlus)
     }
 
-    fn new_with_root_hub_speed(
+    fn try_new_with_root_hub_speed(
         name: &'static str,
         host: USBHost,
         info: BindingInfo,
         root_hub_speed: Speed,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, OnProbeError> {
+        if info.irq_cloned().is_none() {
+            return Err(OnProbeError::other(alloc::format!(
+                "USB host {name} has no interrupt binding"
+            )));
+        }
+        Ok(Self {
             name,
             info,
             host,
             root_hub_speed,
             irq_handler_taken: false,
-        }
+        })
     }
 
     pub fn host(&self) -> &USBHost {
@@ -171,18 +176,6 @@ impl PlatformUsbHost {
 
     pub fn host_mut(&mut self) -> &mut USBHost {
         &mut self.host
-    }
-
-    pub fn irq_num(&self) -> Option<usize> {
-        self.info.irq_num()
-    }
-
-    pub fn irq(&self) -> Option<&BindingIrq> {
-        self.info.irq()
-    }
-
-    pub fn irq_cloned(&self) -> Option<BindingIrq> {
-        self.info.irq_cloned()
     }
 
     pub fn binding_info(&self) -> &BindingInfo {
@@ -201,26 +194,15 @@ impl PlatformUsbHost {
         self.host.disable_irq()
     }
 
-    pub fn take_irq_handler(&mut self) -> Option<(usize, UsbHostIrqHandler)> {
-        let irq = self.info.irq_num()?;
-        let handler = self.take_event_handler()?;
-        Some((irq, handler))
-    }
-
     pub fn take_binding_irq_handler(&mut self) -> Option<(BindingIrq, UsbHostIrqHandler)> {
         let irq = self.info.irq_cloned()?;
-        let handler = self.take_event_handler()?;
-        Some((irq, handler))
-    }
-
-    pub fn take_event_handler(&mut self) -> Option<UsbHostIrqHandler> {
         if self.irq_handler_taken {
             return None;
         }
 
         self.irq_handler_taken = true;
         let handler = UsbHostIrqHandler::new(self.host.create_event_handler());
-        Some(handler)
+        Some((irq, handler))
     }
 }
 
@@ -266,32 +248,6 @@ impl UsbHostIrqHandler {
     }
 }
 
-pub trait PlatformDeviceUsbHost {
-    fn register_usb_host(self, name: &'static str, host: USBHost) -> Option<usize>;
-
-    fn register_usb_host_with_info(
-        self,
-        name: &'static str,
-        host: USBHost,
-        info: BindingInfo,
-    ) -> Option<usize>;
-}
-
-impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
-    fn register_usb_host(self, name: &'static str, host: USBHost) -> Option<usize> {
-        self.register_usb_host_with_info(name, host, BindingInfo::empty())
-    }
-
-    fn register_usb_host_with_info(
-        self,
-        name: &'static str,
-        host: USBHost,
-        info: BindingInfo,
-    ) -> Option<usize> {
-        register_usb_host_with_info(self, name, host, info)
-    }
-}
-
 pub trait ProbeFdtUsbHost {
     fn register_usb_host(
         self,
@@ -314,12 +270,7 @@ impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
         host: USBHost,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_fdt(self.info())?;
-        Ok(register_usb_host_with_info(
-            self.into_platform_device(),
-            name,
-            host,
-            info,
-        ))
+        register_usb_host_with_info(self.into_platform_device(), name, host, info)
     }
 
     fn register_usb_host_with_root_hub_speed(
@@ -329,13 +280,13 @@ impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
         root_hub_speed: Speed,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_fdt(self.info())?;
-        Ok(register_usb_host_with_info_and_root_hub_speed(
+        register_usb_host_with_info_and_root_hub_speed(
             self.into_platform_device(),
             name,
             host,
             info,
             root_hub_speed,
-        ))
+        )
     }
 }
 
@@ -354,12 +305,7 @@ impl ProbeAcpiUsbHost for rdrive::probe::acpi::ProbeAcpi<'_> {
         host: USBHost,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_acpi(self.info())?;
-        Ok(register_usb_host_with_info(
-            self.into_platform_device(),
-            name,
-            host,
-            info,
-        ))
+        register_usb_host_with_info(self.into_platform_device(), name, host, info)
     }
 }
 
@@ -382,12 +328,7 @@ impl ProbePciUsbHost for rdrive::probe::pci::ProbePci<'_> {
         requirement: PciIrqRequirement,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_pci(self.info(), requirement)?;
-        Ok(register_usb_host_with_info(
-            self.into_platform_device(),
-            name,
-            host,
-            info,
-        ))
+        register_usb_host_with_info(self.into_platform_device(), name, host, info)
     }
 }
 
@@ -396,8 +337,11 @@ fn register_usb_host_with_info(
     name: &'static str,
     host: USBHost,
     info: BindingInfo,
-) -> Option<usize> {
-    register_bound_device(plat_dev, PlatformUsbHost::new(name, host, info))
+) -> Result<Option<usize>, OnProbeError> {
+    Ok(register_bound_device(
+        plat_dev,
+        PlatformUsbHost::try_new(name, host, info)?,
+    ))
 }
 
 fn register_usb_host_with_info_and_root_hub_speed(
@@ -406,11 +350,11 @@ fn register_usb_host_with_info_and_root_hub_speed(
     host: USBHost,
     info: BindingInfo,
     root_hub_speed: Speed,
-) -> Option<usize> {
-    register_bound_device(
+) -> Result<Option<usize>, OnProbeError> {
+    Ok(register_bound_device(
         plat_dev,
-        PlatformUsbHost::new_with_root_hub_speed(name, host, info, root_hub_speed),
-    )
+        PlatformUsbHost::try_new_with_root_hub_speed(name, host, info, root_hub_speed)?,
+    ))
 }
 
 #[cfg(feature = "xhci-pci")]
@@ -497,18 +441,28 @@ mod tests {
         let binding =
             BindingIrq::fdt_interrupt_with_controller(rdrive::DeviceId::new(), [0, 30, 4]);
         let info = BindingInfo::with_binding_irq(Some(binding.clone()));
-        let mut host = PlatformUsbHost::new_with_root_hub_speed(
+        let mut host = PlatformUsbHost::try_new_with_root_hub_speed(
             "test-usb",
             test_usb_host(),
             info,
             Speed::High,
-        );
+        )
+        .expect("test host should accept an interrupt binding");
 
-        assert_eq!(host.irq_num(), None);
         let (actual, _handler) = host
             .take_binding_irq_handler()
             .expect("binding IRQ handler should be available");
         assert_eq!(actual, binding);
         assert!(host.take_binding_irq_handler().is_none());
+    }
+
+    #[test]
+    fn usb_host_rejects_missing_irq_binding() {
+        let result = PlatformUsbHost::try_new("test-usb", test_usb_host(), BindingInfo::empty());
+
+        assert!(
+            result.is_err(),
+            "an event-driven USB host must not silently fall back to polling"
+        );
     }
 }

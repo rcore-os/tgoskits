@@ -46,7 +46,7 @@ const USBFS_REFRESH_BATCH_LIMIT: usize = 64;
 pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
-    pub(super) irq: Option<IrqId>,
+    pub(super) irq: IrqId,
     pub(super) root_hub_speed: Speed,
     pub(super) refresh: HostRefreshState,
     pub(super) next_device_num: u8,
@@ -1430,35 +1430,30 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
             continue;
         }
 
-        if let Some(host_irq) = host_irq {
-            // DWC2 internal-DMA transfers complete through host-channel IRQs.
-            // Enable both the controller interrupt mask and the framework
-            // callback before the initial probe, because enumeration itself
-            // issues control transfers that wait for IRQ completions.
-            if let Err(err) = guard.enable_irq() {
-                warn!("usbfs: failed to enable host IRQ on bus {bus_num}: {err:?}");
-                failed_device_ids.push((device_id, Some(host_irq)));
-                continue;
-            }
-            if !irq::enable_device_irq(device_id) {
-                warn!("usbfs: failed to enable framework IRQ for bus {bus_num}");
-                if let Err(err) = guard.disable_irq() {
-                    warn!("usbfs: failed to roll back host IRQ on bus {bus_num}: {err:?}");
-                }
-                failed_device_ids.push((device_id, Some(host_irq)));
-                continue;
-            }
-            irq::bootstrap_device(device_id);
+        // USB transfers complete through the controller interrupt endpoint.
+        // Enable both the device source and framework callback before probing,
+        // because enumeration itself waits for IRQ-driven control transfers.
+        if let Err(err) = guard.enable_irq() {
+            warn!("usbfs: failed to enable host IRQ on bus {bus_num}: {err:?}");
+            failed_device_ids.push((device_id, host_irq));
+            continue;
         }
+        if !irq::enable_device_irq(device_id) {
+            warn!("usbfs: failed to enable framework IRQ for bus {bus_num}");
+            if let Err(err) = guard.disable_irq() {
+                warn!("usbfs: failed to roll back host IRQ on bus {bus_num}: {err:?}");
+            }
+            failed_device_ids.push((device_id, host_irq));
+            continue;
+        }
+        irq::bootstrap_device(device_id);
 
         manager.begin_initial_probe(device_id);
         let devices = match crate::task::future::block_on(guard.host_mut().probe_devices()) {
             Ok(devices) => devices,
             Err(err) => {
                 warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
-                if host_irq.is_some()
-                    && let Err(disable_err) = guard.disable_irq()
-                {
+                if let Err(disable_err) = guard.disable_irq() {
                     warn!(
                         "usbfs: failed to disable host IRQ after probe failure on bus {bus_num}: \
                          {disable_err:?}"
@@ -1596,33 +1591,28 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
             }
         };
 
-        let host_irq =
-            guard.irq_cloned().and_then(|irq| {
-                match ax_runtime::irq::resolve_binding_irq(irq.clone()) {
-                    Ok(id) => Some(id),
-                    Err(err) => {
-                        warn!(
-                            "usbfs: failed to resolve IRQ binding {irq:?} for {device_id:?}: \
-                             {err:?}"
-                        );
-                        None
-                    }
-                }
-            });
+        let Some((binding, handler)) = guard.take_binding_irq_handler() else {
+            warn!("usbfs: USB host {device_id:?} has no interrupt endpoint");
+            continue;
+        };
+        let host_irq = match ax_runtime::irq::resolve_binding_irq(binding.clone()) {
+            Ok(id) => id,
+            Err(err) => {
+                warn!(
+                    "usbfs: failed to resolve IRQ binding {binding:?} for {device_id:?}: {err:?}"
+                );
+                continue;
+            }
+        };
         let root_hub_speed = guard.root_hub_speed();
-        let irq_handler = guard
-            .take_event_handler()
-            .map(|handler| (host_irq, handler));
         drop(guard);
 
-        if let Some((slot_irq, handler)) = irq_handler {
-            irq_slots.push(PendingUsbIrqSlot {
-                irq: slot_irq,
-                device_id,
-                bus_num,
-                handler,
-            });
-        }
+        irq_slots.push(PendingUsbIrqSlot {
+            irq: host_irq,
+            device_id,
+            bus_num,
+            handler,
+        });
 
         initialized_hosts.push(UsbHostState {
             device_id,
