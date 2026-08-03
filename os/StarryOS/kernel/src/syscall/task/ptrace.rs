@@ -83,6 +83,15 @@ pub const PTRACE_EVENT_CLONE: u32 = 3;
 const PTRACE_EVENT_EXEC: u32 = 4;
 pub const PTRACE_EVENT_VFORK_DONE: u32 = 5;
 const PTRACE_EVENT_EXIT: u32 = 6;
+const PTRACE_EVENT_STOP: u32 = 128;
+
+const PTRACE_OPTION_MASK: usize = PTRACE_O_TRACESYSGOOD
+    | PTRACE_O_TRACEFORK
+    | PTRACE_O_TRACEVFORK
+    | PTRACE_O_TRACECLONE
+    | PTRACE_O_TRACEEXEC
+    | PTRACE_O_TRACEVFORKDONE
+    | PTRACE_O_TRACEEXIT;
 
 #[cfg(target_arch = "riscv64")]
 const EBREAK_INSN: u16 = 0x9002;
@@ -260,7 +269,7 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
         PTRACE_SETSIGINFO => ptrace_setsiginfo(pid, data),
         PTRACE_GETREGSET => ptrace_getregset(pid, addr, data),
         PTRACE_SETREGSET => ptrace_setregset(pid, addr, data),
-        PTRACE_SEIZE => ptrace_seize(pid, addr),
+        PTRACE_SEIZE => ptrace_seize(pid, data),
         PTRACE_INTERRUPT => ptrace_interrupt(pid),
         _ => Err(AxError::Unsupported),
     }
@@ -370,16 +379,7 @@ fn ptrace_syscall(pid: usize, data: usize) -> AxResult<isize> {
 
 fn ptrace_setoptions(pid: usize, options: usize) -> AxResult<isize> {
     let tracee = ptrace_stopped_tracee(pid)?;
-    let valid_mask = PTRACE_O_TRACESYSGOOD
-        | PTRACE_O_TRACEFORK
-        | PTRACE_O_TRACEVFORK
-        | PTRACE_O_TRACECLONE
-        | PTRACE_O_TRACEEXEC
-        | PTRACE_O_TRACEVFORKDONE
-        | PTRACE_O_TRACEEXIT;
-    if options & !valid_mask != 0 {
-        return Err(AxError::InvalidInput);
-    }
+    ptrace_validate_options(options)?;
     tracee.set_ptrace_options(options);
     Ok(0)
 }
@@ -598,13 +598,16 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     Err(AxError::Unsupported)
 }
 
-fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
+fn ptrace_seize(pid: usize, options: usize) -> AxResult<isize> {
+    ptrace_validate_options(options)?;
+
     let tracer_pid = current().as_thread().proc_data.proc.pid();
-    let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee_tid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
+    let tracee_pid = tracee.proc.pid();
     if tracee_pid == tracer_pid {
         return Err(AxError::from(LinuxError::EPERM));
     }
-    let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
         return Err(AxError::from(LinuxError::EPERM));
     }
@@ -612,8 +615,16 @@ fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
         return Err(AxError::from(LinuxError::EPERM));
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
+    tracee.set_ptrace_options(options);
     tracee.set_ptrace_attached();
     Ok(0)
+}
+
+fn ptrace_validate_options(options: usize) -> AxResult {
+    if options & !PTRACE_OPTION_MASK != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(())
 }
 
 fn ptrace_may_attach(tracer_pid: Pid, tracee_pid: Pid, tracee: &ProcessData) -> AxResult<bool> {
@@ -645,19 +656,21 @@ fn ptrace_creds_match_for_attach(tracer: &Cred, tracee: &Cred) -> bool {
 }
 
 fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
-    let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    let tracee = get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    if !tracee.is_ptrace_attached() && !tracee.is_ptrace_traceme() {
+    let tracee_tid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
+    let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
+    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    if !tracee.is_ptrace_attached() || tracee.ptrace_tracer_pid() != Some(tracer_pid) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
-    if tracee.ptrace_stop_signo().is_some() {
+    if tracee.ptrace_stop_signo_for(tracee_tid).is_some() {
         return Ok(0);
     }
-    use starry_signal::SignalInfo;
-    let _ = crate::task::send_signal_to_process(
-        tracee_pid,
-        Some(SignalInfo::new_kernel(Signo::SIGSTOP)),
-    );
+
+    tracee.set_ptrace_pending_event(tracee_tid, PTRACE_EVENT_STOP, 0);
+    // PTRACE_INTERRUPT creates a ptrace event stop, not a user-visible
+    // SIGTRAP. Interrupt the target so its user-return path consumes the
+    // pending event without leaving a second signal-delivery stop queued.
+    get_task(tracee_tid)?.interrupt();
     Ok(0)
 }
 
