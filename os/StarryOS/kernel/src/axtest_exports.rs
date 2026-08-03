@@ -151,6 +151,10 @@ pub fn futex_park_prepare_error_cleans_waiter() -> bool {
     super::task::park_prepare_error_cleans_waiter_for_test()
 }
 
+pub fn futex_park_notification_rechecks_condition() -> bool {
+    super::task::park_notification_rechecks_condition_for_test()
+}
+
 pub fn futex_wake_completion_is_scheduler_driven() -> bool {
     super::syscall::futex_wake_completion_is_scheduler_driven_for_test()
 }

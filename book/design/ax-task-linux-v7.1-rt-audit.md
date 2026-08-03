@@ -160,6 +160,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
 | switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | baton 与一次性、失败即 fatal 的 tail 已实现 |
 | PI | `rtmutex` | 注册、deboost、grant 同一事务；锁外 wake | generation-bearing PI 已实现 |
+| 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
 | process | `exit_notify()`、`do_wait()` | 单一 PID generation 与关系锁序 | 采用 dev `ProcessIdentity` |
@@ -602,6 +603,18 @@ wait 状态固定内嵌在稳定的 Starry `Thread` 中，队列只保留持有�
 `UserTaskRef` 和 wait generation，同一套状态机线性化 wake、signal、timeout、
 cancel 与 requeue，axtest 恢复为 394/394。generation 不匹配的旧队列项只能被
 清理，不能命中新一轮 wait，避免线程和 slot 复用形成 ABA。
+
+第三个确定性红测来自 x86_64 Starry system 大组中的 `F_SETLKW`：冲突等待线程在
+发布领域 waiter 前消费了 sticky scheduler notification，旧实现把这个正常调度提示
+混入 `FutexAccessError::Retry`，随后普通 `WaitQueue` 把它当作“不可能的 nofault
+访问重试”触发 panic。Linux v7.1 的 `do_lock_file_wait()` 只把 wake 当作重新执行
+`vfs_lock_file()` 的提示；信号或退出路径在返回前通过 `locks_delete_block()` 删除
+blocker 关系。Starry 因此新增独立的 `FutexWaitError::SchedulerNotification`：普通
+等待返回领域层并先析构 POSIX wait-for graph guard，futex nofault 路径清理嵌入 waiter
+后直接重试；用户内存 `UserFault/Retry` 仍只属于访问协议。不能在 `WaitQueue` 内部
+直接重跑任意条件闭包，否则 fcntl 会在旧 guard 尚未析构时重复注册 wait-for 边。
+最低层 axtest 在旧分类上稳定失败，修复后 x86_64 内核 axtest 为 395/395，定向
+`bug-fcntl-setlkw-blocks` 的 POSIX、OFD、EINTR 三阶段全部通过。
 
 同配置完整 guest benchmark 的中位 handoff 从 138,786 ns 降到 111,948 ns，
 改善约 19.3%；这证明分配与共享引用流量确实位于热路径，但仍为 Linux RT 的约

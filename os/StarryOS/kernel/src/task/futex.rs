@@ -43,6 +43,54 @@ pub enum FutexAccessError {
     Operation(AxError),
 }
 
+/// Failure to complete one serialized wait-queue attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FutexWaitError {
+    /// The nofault condition check or scheduler park transaction failed.
+    Access(FutexAccessError),
+    /// A sticky scheduler wake was consumed before the domain waiter became
+    /// authoritative, so the caller must discard its domain registration and
+    /// retry the condition from the owning layer.
+    SchedulerNotification,
+}
+
+impl From<FutexAccessError> for FutexWaitError {
+    fn from(error: FutexAccessError) -> Self {
+        Self::Access(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParkNotificationAction {
+    /// A scheduler notification is only a hint; the domain condition remains
+    /// authoritative and must be observed again before publishing a waiter.
+    RecheckCondition,
+}
+
+fn classify_park_notification(
+    interrupted: bool,
+    deadline_expired: bool,
+) -> Result<ParkNotificationAction, FutexAccessError> {
+    if interrupted {
+        Err(FutexAccessError::Operation(AxError::Interrupted))
+    } else if deadline_expired {
+        Err(FutexAccessError::Operation(AxError::TimedOut))
+    } else {
+        Ok(ParkNotificationAction::RecheckCondition)
+    }
+}
+
+fn finish_infallible_wait(result: Result<bool, FutexWaitError>) -> AxResult<bool> {
+    match result {
+        Ok(waited) => Ok(waited),
+        Err(FutexWaitError::SchedulerNotification) => Ok(false),
+        Err(FutexWaitError::Access(FutexAccessError::Operation(error))) => Err(error),
+        Err(FutexWaitError::Access(FutexAccessError::UserFault | FutexAccessError::Retry)) => {
+            unreachable!("infallible wait condition returned a nofault retry")
+        }
+    }
+}
+
 impl From<AxError> for FutexAccessError {
     fn from(error: AxError) -> Self {
         Self::Operation(error)
@@ -237,8 +285,9 @@ impl WaitQueue {
 
     /// Waits if the given condition is met.
     ///
-    /// Returns `false` if the condition is not met and no actual waiting
-    /// occurs.
+    /// Returns `false` when no waiter was committed, either because the
+    /// condition cleared or because a sticky scheduler notification requires
+    /// the condition owner to retry after discarding its temporary state.
     pub fn wait_if(
         &self,
         bitset: u32,
@@ -259,23 +308,23 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
-        match self.wait_if_with_cleanup_nofault(bitset, timeout, cleanup, || Ok(condition())) {
-            Ok(waited) => Ok(waited),
-            Err(FutexAccessError::Operation(error)) => Err(error),
-            Err(FutexAccessError::UserFault | FutexAccessError::Retry) => {
-                unreachable!("infallible wait condition returned a nofault retry")
-            }
-        }
+        finish_infallible_wait(
+            self.wait_if_with_cleanup_nofault(bitset, timeout, cleanup, || Ok(condition())),
+        )
     }
 
     /// Waits while serializing a nofault user-word check with queue insertion.
+    ///
+    /// Architecture access retries remain [`FutexWaitError::Access`], while a
+    /// scheduler wake-before-park is reported separately so callers do not
+    /// confuse a scheduling hint with a user-memory fault protocol.
     pub fn wait_if_with_cleanup_nofault(
         &self,
         bitset: u32,
         timeout: Option<Duration>,
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
-    ) -> Result<bool, FutexAccessError> {
+    ) -> Result<bool, FutexWaitError> {
         let deadline_ns = timeout.map(|timeout| {
             monotonic_time()
                 .as_nanos()
@@ -291,14 +340,16 @@ impl WaitQueue {
             let task = current_user_task();
             let park = match scheduler::begin_current_park().map_err(map_park_error)? {
                 CurrentParkStart::Notified => {
-                    return if task.take_interrupt() {
-                        Err(FutexAccessError::Operation(AxError::Interrupted))
-                    } else if deadline_ns.is_some_and(|deadline| {
+                    let deadline_expired = deadline_ns.is_some_and(|deadline| {
                         monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
-                    }) {
-                        Err(FutexAccessError::Operation(AxError::TimedOut))
-                    } else {
-                        Err(FutexAccessError::Retry)
+                    });
+                    return match classify_park_notification(
+                        task.take_interrupt(),
+                        deadline_expired,
+                    )? {
+                        ParkNotificationAction::RecheckCondition => {
+                            Err(FutexWaitError::SchedulerNotification)
+                        }
                     };
                 }
                 CurrentParkStart::Prepared(park) => park,
@@ -307,7 +358,7 @@ impl WaitQueue {
                 Ok(generation) => generation,
                 Err(error) => {
                     park.cancel().map_err(map_park_error)?;
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             inner.queue.push_back(Waiter {
@@ -324,14 +375,14 @@ impl WaitQueue {
             {
                 Self::cancel_waiter(self, &task, generation);
                 park.cancel().map_err(map_park_error)?;
-                return Err(map_park_error(error));
+                return Err(map_park_error(error).into());
             }
 
             let resume = match park.commit() {
                 Ok(resume) => resume,
                 Err(error) => {
                     Self::cancel_waiter(self, &task, generation);
-                    return Err(map_park_error(error));
+                    return Err(map_park_error(error).into());
                 }
             };
             if task.as_thread().wait_state().is_woken(generation) {
@@ -340,7 +391,7 @@ impl WaitQueue {
             }
             if task.take_interrupt() {
                 Self::cancel_waiter(self, &task, generation);
-                return Err(FutexAccessError::Operation(AxError::Interrupted));
+                return Err(FutexAccessError::Operation(AxError::Interrupted).into());
             }
             if resume.deadline_expired()
                 || deadline_ns.is_some_and(|deadline| {
@@ -348,7 +399,7 @@ impl WaitQueue {
                 })
             {
                 Self::cancel_waiter(self, &task, generation);
-                return Err(FutexAccessError::Operation(AxError::TimedOut));
+                return Err(FutexAccessError::Operation(AxError::TimedOut).into());
             }
 
             park = match self.begin_repark(&task, generation)? {
@@ -360,16 +411,17 @@ impl WaitQueue {
                 }
                 CurrentParkStart::Notified if task.take_interrupt() => {
                     Self::cancel_waiter(self, &task, generation);
-                    return Err(FutexAccessError::Operation(AxError::Interrupted));
+                    return Err(FutexAccessError::Operation(AxError::Interrupted).into());
                 }
                 CurrentParkStart::Notified => {
                     Self::cancel_waiter(self, &task, generation);
-                    return if deadline_ns.is_some_and(|deadline| {
+                    let deadline_expired = deadline_ns.is_some_and(|deadline| {
                         monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
-                    }) {
-                        Err(FutexAccessError::Operation(AxError::TimedOut))
-                    } else {
-                        Err(FutexAccessError::Retry)
+                    });
+                    return match classify_park_notification(false, deadline_expired)? {
+                        ParkNotificationAction::RecheckCondition => {
+                            Err(FutexWaitError::SchedulerNotification)
+                        }
                     };
                 }
                 CurrentParkStart::Prepared(park) => park,
@@ -1048,4 +1100,16 @@ pub(crate) fn park_prepare_error_cleans_waiter_for_test() -> bool {
         },
     );
     result.is_err() && linked.load(AtomicOrdering::Acquire) == 0
+}
+
+#[cfg(axtest)]
+pub(crate) fn park_notification_rechecks_condition_for_test() -> bool {
+    matches!(
+        classify_park_notification(false, false),
+        Ok(ParkNotificationAction::RecheckCondition)
+    ) && classify_park_notification(true, false)
+        == Err(FutexAccessError::Operation(AxError::Interrupted))
+        && classify_park_notification(false, true)
+            == Err(FutexAccessError::Operation(AxError::TimedOut))
+        && finish_infallible_wait(Err(FutexWaitError::SchedulerNotification)) == Ok(false)
 }

@@ -19,7 +19,8 @@ use crate::{
         read_user_u32_nofault,
     },
     task::{
-        FutexAccessError, FutexKey, FutexKeyMode, current_user_task, futex_table_for, get_task,
+        FutexAccessError, FutexKey, FutexKeyMode, FutexWaitError, current_user_task,
+        futex_table_for, get_task,
     },
     time::TimeValueLike,
 };
@@ -300,12 +301,17 @@ pub fn sys_futex(
                     }) {
                     Ok(true) => break,
                     Ok(false) => return Err(AxError::WouldBlock),
-                    Err(FutexAccessError::UserFault) => {
+                    Err(FutexWaitError::SchedulerNotification) => continue,
+                    Err(FutexWaitError::Access(FutexAccessError::UserFault)) => {
                         fault_in_user_u32_read(uaddr)?;
                         crate::task::yield_now();
                     }
-                    Err(FutexAccessError::Retry) => crate::task::yield_now(),
-                    Err(FutexAccessError::Operation(error)) => return Err(error),
+                    Err(FutexWaitError::Access(FutexAccessError::Retry)) => {
+                        crate::task::yield_now()
+                    }
+                    Err(FutexWaitError::Access(FutexAccessError::Operation(error))) => {
+                        return Err(error);
+                    }
                 }
             }
 

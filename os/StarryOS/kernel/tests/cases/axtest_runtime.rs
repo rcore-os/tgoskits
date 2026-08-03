@@ -112,6 +112,11 @@ fn futex_park_prepare_error_cleans_waiter() {
 }
 
 #[axtest]
+fn futex_park_notification_rechecks_condition() {
+    ax_assert!(axtest_exports::futex_park_notification_rechecks_condition());
+}
+
+#[axtest]
 fn futex_wake_completion_is_scheduler_driven() {
     ax_assert!(axtest_exports::futex_wake_completion_is_scheduler_driven());
 }
