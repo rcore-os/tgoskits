@@ -86,6 +86,14 @@ AXVISOR_RESTART_RUNNING_PREFIX = "AXVISOR_GUEST_RESTART_RUNNING "
 AXVISOR_RESTART_TRIGGER_PREFIX = "AXVISOR_GUEST_RESTART_TRIGGER "
 AXVISOR_RESTART_COMPLETE_PREFIX = "AXVISOR_GUEST_RESTART_COMPLETE "
 AXVISOR_RESTART_TIMING_PREFIX = "AXVISOR_GUEST_RESTART_TIMING "
+AXVISOR_RESTART_RECORD_PREFIXES = (
+    AXVISOR_RESTART_ARMED_PREFIX,
+    AXVISOR_RESTART_PLACED_PREFIX,
+    AXVISOR_RESTART_RUNNING_PREFIX,
+    AXVISOR_RESTART_TRIGGER_PREFIX,
+    AXVISOR_RESTART_COMPLETE_PREFIX,
+    AXVISOR_RESTART_TIMING_PREFIX,
+)
 RUN_PROFILES = {"normal", "ack-loss", "error", "restart"}
 RESTART_PREVIOUS_SESSION = 0x1111_1111
 RESTART_CURRENT_SESSION = 0x2222_2222
@@ -128,6 +136,7 @@ def analyze(
 
     with open_evidence_text(log_path, errors="replace") as source:
         text = ANSI_ESCAPE.sub("", source.read())
+    text = split_axvisor_restart_records(text)
     lines = GUEST_CONSOLE_PREFIX.sub("\n", text).splitlines()
     controller = parse_controller(
         lines,
@@ -216,6 +225,13 @@ def analyze(
     if restart_recovery is not None:
         result["restart_recovery"] = restart_recovery
     return result
+
+
+def split_axvisor_restart_records(text: str) -> str:
+    """Expose intact restart records even when adjacent UART text is damaged."""
+    for prefix in AXVISOR_RESTART_RECORD_PREFIXES:
+        text = text.replace(prefix, f"\n{prefix}")
+    return text
 
 
 def parse_controller(

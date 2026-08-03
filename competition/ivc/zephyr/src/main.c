@@ -55,8 +55,16 @@ struct ivc_server {
 	uint64_t recoveries;
 	uint64_t stale_status_sent;
 	uint64_t stale_acknowledgements_sent;
+	uint32_t restart_old_session;
+	uint32_t restart_old_sequence;
+	uint32_t restart_new_session;
+	uint32_t restart_recovery_sequence;
+	enum ivc_control_mode restart_recovery_mode;
+	uint16_t restart_recovery_actuator_permille;
 	struct ivc_error_evidence error_evidence[IVC_ERROR_EVIDENCE_CAPACITY];
 	uint32_t error_evidence_count;
+	bool restart_stale_observed;
+	bool restart_recovery_observed;
 	bool error_evidence_replayed;
 	bool ready_replayed;
 	bool result_reported;
@@ -283,6 +291,21 @@ static void replay_ready_if_needed(struct ivc_server *server)
 	}
 }
 
+static void report_restart_evidence(const struct ivc_server *server)
+{
+	printk("IVC-RTOS-STALE-REPLAY old_session=%u old_sequence=%u new_session=%u "
+	       "stale_status_sent=%llu stale_acks_sent=%llu\n",
+	       server->restart_old_session, server->restart_old_sequence,
+	       server->restart_new_session, server->stale_status_sent,
+	       server->stale_acknowledgements_sent);
+	printk("IVC-RTOS-RECOVERY session=%u seq=%u from=controller-timeout "
+	       "mode=%s actuator_permille=%u recoveries=%llu\n",
+	       server->restart_new_session, server->restart_recovery_sequence,
+	       ivc_control_mode_name(server->restart_recovery_mode),
+	       (unsigned int)server->restart_recovery_actuator_permille,
+	       server->recoveries);
+}
+
 static void report_compact_result(const struct ivc_server *server, const char *profile)
 {
 	uint32_t copy;
@@ -300,6 +323,8 @@ static void report_compact_result(const struct ivc_server *server, const char *p
 		       server->errors_sent, server->protocol_errors);
 		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
 		if (strcmp(profile, "restart") == 0) {
+			report_restart_evidence(server);
+			k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
 			printk("IVC-RTOS-RESTART session_resets=%llu session_rejections=%llu "
 			       "safe_fallbacks=%llu recoveries=%llu stale_status_sent=%llu "
 			       "stale_acks_sent=%llu\n",
@@ -346,7 +371,8 @@ static void report_result_if_complete(struct ivc_server *server)
 	    server->receive_window.metrics.session_rejections != expected_session_rejections ||
 	    server->safe_fallbacks != expected_safe_fallbacks ||
 	    server->recoveries != expected_safe_fallbacks || server->stale_status_sent != 1U ||
-	    server->stale_acknowledgements_sent != 1U) {
+	    server->stale_acknowledgements_sent != 1U || !server->restart_stale_observed ||
+	    !server->restart_recovery_observed) {
 		return;
 	}
 #elif CONFIG_IVC_EXPECTED_PROTOCOL_ERRORS > 0
@@ -491,6 +517,10 @@ static void process_control(struct ivc_server *server, int socket_fd,
 					++server->acknowledgements_sent;
 					++server->stale_acknowledgements_sent;
 				}
+				server->restart_old_session = previous_session;
+				server->restart_old_sequence = previous_sequence;
+				server->restart_new_session = frame->header.session_id;
+				server->restart_stale_observed = true;
 				printk("IVC-RTOS-STALE-REPLAY old_session=%u old_sequence=%u "
 				       "new_session=%u stale_status_sent=%llu stale_acks_sent=%llu\n",
 				       previous_session, previous_sequence, frame->header.session_id,
@@ -514,6 +544,12 @@ static void process_control(struct ivc_server *server, int socket_fd,
 		}
 		if (was_safe_fallback) {
 			++server->recoveries;
+			server->restart_new_session = frame->header.session_id;
+			server->restart_recovery_sequence = frame->header.sequence;
+			server->restart_recovery_mode = command->mode;
+			server->restart_recovery_actuator_permille =
+				server->endpoint.actuator_permille;
+			server->restart_recovery_observed = true;
 			printk("IVC-RTOS-RECOVERY session=%u seq=%u from=controller-timeout "
 			       "mode=%s actuator_permille=%u recoveries=%llu\n",
 			       frame->header.session_id, frame->header.sequence,
@@ -652,7 +688,15 @@ int main(void)
 	server.recoveries = 0U;
 	server.stale_status_sent = 0U;
 	server.stale_acknowledgements_sent = 0U;
+	server.restart_old_session = 0U;
+	server.restart_old_sequence = 0U;
+	server.restart_new_session = 0U;
+	server.restart_recovery_sequence = 0U;
+	server.restart_recovery_mode = IVC_MODE_SAFE;
+	server.restart_recovery_actuator_permille = 0U;
 	server.error_evidence_count = 0U;
+	server.restart_stale_observed = false;
+	server.restart_recovery_observed = false;
 	server.error_evidence_replayed = false;
 	server.ready_replayed = false;
 	server.result_reported = false;

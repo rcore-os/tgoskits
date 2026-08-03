@@ -142,7 +142,12 @@ if [ "${ivc_fault_profile:-none}" = restart ]; then
     validate_raw_csv "$restart_raw_csv" "$ivc_restart_first_count"
     [ "$validated_raw_sha256" = "$stored_raw_sha256" ] \
         || fatal restart-marker-raw-hash-mismatch
-    echo "IVC-STARRY-RESTART-RESUME phase=after-reset old_session=$ivc_restart_previous_session new_session=$ivc_restart_current_session first_samples=$ivc_restart_first_count"
+    restart_resume_copy=0
+    while [ "$restart_resume_copy" -lt 3 ]; do
+        echo "IVC-STARRY-RESTART-RESUME phase=after-reset old_session=$ivc_restart_previous_session new_session=$ivc_restart_current_session first_samples=$ivc_restart_first_count"
+        restart_resume_copy=$((restart_resume_copy + 1))
+        "$BB" sleep 0.1
+    done
     if /usr/local/bin/ivcproto controller \
         10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
         "$ivc_restart_current_session" --backend "$ivc_backend" \

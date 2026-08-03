@@ -897,6 +897,9 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn("IVC-RTOS-SAFE-FALLBACK", zephyr_source)
         self.assertIn("IVC-RTOS-RECOVERY", zephyr_source)
         self.assertIn("IVC-RTOS-STALE-REPLAY", zephyr_source)
+        self.assertIn("report_restart_evidence(server);", zephyr_source)
+        self.assertIn("restart_stale_observed", zephyr_source)
+        self.assertIn("restart_recovery_observed", zephyr_source)
         self.assertIn("/build-board-restart/", ZEPHYR_GITIGNORE.read_text(encoding="utf-8"))
 
     def test_error_profile_replays_both_verified_fault_detail_sets(self) -> None:

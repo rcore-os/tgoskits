@@ -716,6 +716,30 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
 
         self.assertLessEqual(len(line.encode("ascii")), 160)
 
+    def test_restart_profile_recovers_complete_host_records_after_uart_prefix_collision(
+        self,
+    ) -> None:
+        pre_reset_raw = repeated_raw_csv(20)
+        log = self.restart_profile_log(pre_reset_raw_csv=pre_reset_raw).replace(
+            "AXVISOR_GUEST_RESTART_ARMED schema=1",
+            "AXVISOR_AXVISOR_GUEST_RESTART_ARMED schema=1",
+        ).replace(
+            "AXVISOR_GUEST_RESTART_COMPLETE schema=1",
+            "[113.647781 axvm] VM[1AXVISOR_GUEST_RESTART_COMPLETE schema=1",
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            profile="restart",
+            pre_reset_raw_path=self.write_raw_csv(pre_reset_raw),
+            expected_pre_reset_count=20,
+        )
+
+        self.assertTrue(result["restart_recovery"]["actual_vm_reset"])
+        self.assertEqual(result["restart_recovery"]["host_cpu"], 3)
+
     def test_restart_profile_rejects_missing_safe_fallback(self) -> None:
         pre_reset_raw = repeated_raw_csv(20)
         log = "\n".join(

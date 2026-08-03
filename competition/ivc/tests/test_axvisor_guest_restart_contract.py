@@ -57,6 +57,8 @@ class AxvisorGuestRestartContractTests(unittest.TestCase):
         self.assertEqual(restart["cpu"], 3)
         self.assertIn("api::task::ax_set_current_affinity", source)
         self.assertIn("core::hint::spin_loop();", source)
+        self.assertIn("EVIDENCE_RECORD_COPIES: usize = 3", source)
+        self.assertIn("EVIDENCE_RECORD_PAUSE: Duration = Duration::from_millis(50)", source)
         self.assertNotIn("fn wait_cooperatively", source)
         self.assertNotIn("thread::sleep(", source)
 

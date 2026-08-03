@@ -138,6 +138,9 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn("/var/lib/ivc/raw-before-reset.csv", autorun)
         self.assertIn("IVC-STARRY-RESTART-ARMED", autorun)
         self.assertIn("IVC-STARRY-RESTART-RESUME", autorun)
+        self.assertIn("restart_resume_copy=0", autorun)
+        self.assertIn('while [ "$restart_resume_copy" -lt 3 ]', autorun)
+        self.assertIn('"$BB" sleep 0.1', autorun)
         self.assertIn(
             'restart_uart_sha256=$(printf \'%s\' "$restart_raw_sha256" | "$BB" cut -c1-12)',
             autorun,

@@ -14,8 +14,8 @@ use ax_std::os::arceos::{api, modules};
 use axvm::VmStatus;
 
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const EVIDENCE_RECORD_COPIES: usize = 2;
-const EVIDENCE_RECORD_PAUSE: Duration = Duration::from_millis(10);
+const EVIDENCE_RECORD_COPIES: usize = 3;
+const EVIDENCE_RECORD_PAUSE: Duration = Duration::from_millis(50);
 const WORKER_STARTING: u8 = 0;
 const WORKER_READY: u8 = 1;
 const WORKER_FAILED: u8 = 2;
