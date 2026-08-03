@@ -26,6 +26,13 @@ ROOTFS_SHA256 = "b" * 64
 BOARD_ID = "0123456789abcdef"
 RUN_ORDER = ["run-001", "run-002", "run-003"]
 INJECTED_SEQUENCES = list(range(5, 101, 5))
+ERROR_FAULTS = [
+    ("unsupported-version", 1001, 2, "unsupported-version"),
+    ("length-mismatch", 1002, 1, "length-mismatch"),
+    ("checksum-mismatch", 1003, 3, "checksum-mismatch"),
+    ("unexpected-message-type", 1004, 5, "unexpected-message-type"),
+    ("invalid-session-transition", 1005, 4, "zero-session-or-sequence"),
+]
 RAW_HEADER = (
     "sequence,cycle_started_us,command_sent_us,response_completed_us,"
     "full_loop_us,pre_send_us,transport_us,setpoint_milli_c,"
@@ -326,7 +333,202 @@ def write_campaign(root: Path) -> tuple[Path, Path, Path]:
     return result_root, amendment_path, final_check_path
 
 
+def refresh_run_identity(run_dir: Path) -> None:
+    summary_path = run_dir / "summary.json"
+    metadata_path = run_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["outputs"]["summary"]["sha256"] = sha256_file(summary_path)
+    metadata["outputs"]["summary"]["size_bytes"] = summary_path.stat().st_size
+    write_json(metadata_path, metadata)
+    manifest_files = (
+        "console.log",
+        "console.log.gz",
+        "metadata.json",
+        "summary.json",
+        "raw.csv",
+        "raw.csv.gz",
+    )
+    (run_dir / "checksums.sha256").write_text(
+        "".join(
+            f"{sha256_file(run_dir / name)}  {name}\n" for name in manifest_files
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def write_error_campaign(root: Path) -> tuple[Path, Path, Path]:
+    ack_result_root, ack_amendment, final_check = write_campaign(root)
+    preregistration_path = root / "campaign-preregistration.json"
+    preregistration = json.loads(preregistration_path.read_text(encoding="utf-8"))
+    preregistration["campaign_id"] = "formal-error-test"
+    preregistration["capture_contract"] = {
+        "runner_profile": "fault-error",
+        "analyzer_profile": "error",
+        "repeat_count": 3,
+        "execution_order": RUN_ORDER,
+        "controller_policy": "neural",
+        "inference_backend": "native",
+        "controller_fault_profile": "error",
+        "command_count": 100,
+        "period_ms": 100,
+        "drop_ack_every": 0,
+        "expected_retransmissions": 0,
+        "expected_recoveries": 0,
+        "expected_fresh_applications": 100,
+        "expected_duplicate_receives": 0,
+        "expected_status_frames": 100,
+        "expected_ack_frames": 100,
+        "expected_error_frames": 5,
+        "expected_protocol_errors": 5,
+        "normal_control_must_continue_after_faults": True,
+        "faults": [
+            {
+                "kind": kind,
+                "sequence": sequence,
+                "expected_error_code": error_code,
+                "expected_rtos_reason": reason,
+            }
+            for kind, sequence, error_code, reason in ERROR_FAULTS
+        ],
+    }
+    preregistration["statistics_policy"]["latency_claim"] = (
+        "descriptive recovery overhead only; this campaign is not the "
+        "preregistered RT isolation comparison"
+    )
+    write_json(preregistration_path, preregistration)
+
+    ack_amendment.unlink()
+    first_amendment = {
+        "schema_version": 1,
+        "campaign_id": "formal-error-test",
+        "amendment": 1,
+        "status": "frozen-before-amendment-first-board-capture",
+        "preregistration_sha256": sha256_file(preregistration_path),
+        "source": {"commit": SOURCE_COMMIT, "worktree_clean": True},
+        "artifacts": {"starry_rootfs": {"sha256": ROOTFS_SHA256}},
+        "continued_capture_contract": {
+            "result_root": "amendment-004",
+            "execution_order": RUN_ORDER,
+        },
+    }
+    first_amendment_path = root / "campaign-amendment-001-test.json"
+    write_json(first_amendment_path, first_amendment)
+    latest_amendment = {
+        "schema_version": 1,
+        "campaign_id": "formal-error-test",
+        "amendment": 2,
+        "status": "frozen-before-post-capture-aggregation",
+        "preregistration_sha256": sha256_file(preregistration_path),
+        "previous_amendment_sha256": sha256_file(first_amendment_path),
+        "source": {"commit": SOURCE_COMMIT, "worktree_clean": True},
+        "artifacts": {"starry_rootfs": {"sha256": ROOTFS_SHA256}},
+        "continued_capture_contract": {
+            "result_root": "amendment-005",
+            "execution_order": RUN_ORDER,
+        },
+    }
+    latest_amendment_path = root / "campaign-amendment-002-test.json"
+    write_json(latest_amendment_path, latest_amendment)
+
+    result_root = ack_result_root.with_name("fault-error")
+    ack_result_root.rename(result_root)
+    error_evidence = [
+        {
+            "controller_observed": True,
+            "error_code": error_code,
+            "kind": kind,
+            "reason": reason,
+            "rtos_observed": True,
+            "sequence": sequence,
+        }
+        for kind, sequence, error_code, reason in ERROR_FAULTS
+    ]
+    for run_id in RUN_ORDER:
+        run_dir = result_root / run_id
+        summary_path = run_dir / "summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["profile"] = "error"
+        summary["controller"].update(
+            {"retransmissions": 0, "recoveries": 0, "deadline_misses": 0}
+        )
+        summary["rtos"] = {
+            "profile": "error",
+            "accepted": 100,
+            "applied": 100,
+            "duplicates": 0,
+            "acks_dropped": 0,
+            "status_sent": 100,
+            "acks_sent": 100,
+            "errors_sent": 5,
+            "protocol_errors": 5,
+        }
+        summary["starry"]["fault_profile"] = "error"
+        summary["raw_samples"]["deadline_misses"] = 0
+        summary["error_evidence"] = error_evidence
+        summary["error_recovery"] = {
+            "continued": True,
+            "errors_received": 5,
+            "injected": 5,
+            "normal_acknowledged": 100,
+        }
+        write_json(summary_path, summary)
+
+        metadata_path = run_dir / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["run"]["profile"] = "fault-error"
+        metadata["result"]["deadline_misses"] = 0
+        write_json(metadata_path, metadata)
+        refresh_run_identity(run_dir)
+
+    final_check_value = json.loads(final_check.read_text(encoding="utf-8"))
+    final_check_value["campaign_id"] = "formal-error-test"
+    write_json(final_check, final_check_value)
+    return result_root, latest_amendment_path, final_check
+
+
 class BoardCampaignAggregationTests(unittest.TestCase):
+    def test_three_valid_error_runs_meet_exact_error_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_error_campaign(root)
+
+            result = aggregate.aggregate_campaign(
+                root, result_root, amendment, final_check
+            )
+
+        self.assertTrue(result["assessment"]["campaign_gate_met"])
+        self.assertEqual(result["campaign"]["profile"], "fault-error")
+        self.assertEqual(result["fault_contract"]["analyzer_profile"], "error")
+        self.assertEqual(result["fault_contract"]["expected_error_frames_per_run"], 5)
+        self.assertEqual(result["fault_contract"]["faults"], [
+            {
+                "error_code": error_code,
+                "kind": kind,
+                "reason": reason,
+                "sequence": sequence,
+            }
+            for kind, sequence, error_code, reason in ERROR_FAULTS
+        ])
+
+    def test_rejects_rehashed_error_evidence_contract_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_error_campaign(root)
+            run_dir = result_root / "run-002"
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["error_evidence"][0]["error_code"] = 1
+            write_json(summary_path, summary)
+            refresh_run_identity(run_dir)
+
+            with self.assertRaisesRegex(
+                aggregate.AggregationError, "error_evidence"
+            ):
+                aggregate.aggregate_campaign(
+                    root, result_root, amendment, final_check
+                )
+
     def test_three_valid_runs_meet_campaign_gate_with_inclusive_iqr(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

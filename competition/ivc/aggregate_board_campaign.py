@@ -47,6 +47,10 @@ DESCRIPTIVE_METRICS = (
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 MANIFEST_PATTERN = re.compile(r"([0-9a-f]{64})  ([^/\\]+)")
+SUPPORTED_PROFILE_PAIRS = {
+    ("fault-ack-loss", "ack-loss"),
+    ("fault-error", "error"),
+}
 
 
 class AggregationError(ValueError):
@@ -104,6 +108,13 @@ def require_number(parent: dict[str, object], key: str, label: str) -> int | flo
     return value
 
 
+def require_integer(parent: dict[str, object], key: str, label: str) -> int:
+    value = parent.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AggregationError(f"{label} {key} must be an integer")
+    return value
+
+
 def require_equal(
     parent: dict[str, object], key: str, expected: object, label: str
 ) -> None:
@@ -154,8 +165,14 @@ def validate_preregistration(
     platform = require_object(preregistration, "platform", "preregistration")
     require_string(platform, "board_type", "preregistration platform")
     capture = require_object(preregistration, "capture_contract", "preregistration")
-    require_equal(capture, "runner_profile", "fault-ack-loss", "capture contract")
-    require_equal(capture, "analyzer_profile", "ack-loss", "capture contract")
+    runner_profile = require_string(capture, "runner_profile", "capture contract")
+    analyzer_profile = require_string(
+        capture, "analyzer_profile", "capture contract"
+    )
+    if (runner_profile, analyzer_profile) not in SUPPORTED_PROFILE_PAIRS:
+        raise AggregationError(
+            "capture contract uses an unsupported runner/analyzer profile pair"
+        )
     require_equal(capture, "repeat_count", 3, "capture contract")
     order = require_list(capture, "execution_order", "capture contract")
     if order != ["run-001", "run-002", "run-003"]:
@@ -185,10 +202,15 @@ def validate_amendment_chain(
     preregistration_path: Path,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     expected_preregistration_hash = sha256_file(preregistration_path)
+    preregistration = load_object(preregistration_path, "preregistration")
+    expected_campaign_id = require_string(
+        preregistration, "campaign_id", "preregistration"
+    )
     current_path = resolve_inside(campaign_root, latest_path, "latest amendment")
     seen: set[Path] = set()
     reversed_chain: list[dict[str, object]] = []
     latest: dict[str, object] | None = None
+    expected_number: int | None = None
 
     while True:
         if current_path in seen:
@@ -198,20 +220,45 @@ def validate_amendment_chain(
         if latest is None:
             latest = amendment
         require_equal(amendment, "schema_version", 1, "amendment")
-        amendment_id = require_string(amendment, "amendment_id", "amendment")
-        preregistration = require_object(amendment, "preregistration", amendment_id)
-        require_equal(
-            preregistration,
-            "sha256",
-            expected_preregistration_hash,
-            f"{amendment_id} preregistration",
-        )
-        require_equal(
-            preregistration,
-            "modified",
-            False,
-            f"{amendment_id} preregistration",
-        )
+        numbered = "amendment" in amendment
+        amendment_number: int | None = None
+        if numbered:
+            amendment_number = require_integer(amendment, "amendment", "amendment")
+            if amendment_number < 1:
+                raise AggregationError("amendment number must be positive")
+            if expected_number is not None and amendment_number != expected_number:
+                raise AggregationError("numbered amendment chain is not contiguous")
+            amendment_id = f"campaign-amendment-{amendment_number:03d}"
+            require_equal(amendment, "campaign_id", expected_campaign_id, amendment_id)
+            status = require_string(amendment, "status", amendment_id)
+            if status not in {
+                "frozen-before-amendment-first-board-capture",
+                "frozen-before-post-capture-aggregation",
+            }:
+                raise AggregationError(f"{amendment_id} has an invalid frozen status")
+            require_equal(
+                amendment,
+                "preregistration_sha256",
+                expected_preregistration_hash,
+                amendment_id,
+            )
+        else:
+            amendment_id = require_string(amendment, "amendment_id", "amendment")
+            amendment_preregistration = require_object(
+                amendment, "preregistration", amendment_id
+            )
+            require_equal(
+                amendment_preregistration,
+                "sha256",
+                expected_preregistration_hash,
+                f"{amendment_id} preregistration",
+            )
+            require_equal(
+                amendment_preregistration,
+                "modified",
+                False,
+                f"{amendment_id} preregistration",
+            )
         reversed_chain.append(
             {
                 "amendment_id": amendment_id,
@@ -219,25 +266,58 @@ def validate_amendment_chain(
             }
         )
 
-        previous = amendment.get("previous_amendment")
-        if previous is None:
-            break
-        if not isinstance(previous, dict):
-            raise AggregationError(
-                f"{amendment_id} previous_amendment must be an object"
-            )
-        previous_path = resolve_inside(
-            campaign_root,
-            Path(
-                require_string(
-                    previous, "path", f"{amendment_id} previous amendment"
+        if numbered:
+            declared_hash_value = amendment.get("previous_amendment_sha256")
+            if declared_hash_value is None:
+                if amendment_number != 1:
+                    raise AggregationError(
+                        f"{amendment_id} is missing its previous amendment hash"
+                    )
+                break
+            if not isinstance(declared_hash_value, str):
+                raise AggregationError(
+                    f"{amendment_id} previous amendment hash must be a string"
                 )
-            ),
-            "previous amendment",
-        )
-        declared_hash = require_string(
-            previous, "sha256", f"{amendment_id} previous amendment"
-        )
+            declared_hash = declared_hash_value
+            if SHA256_PATTERN.fullmatch(declared_hash) is None:
+                raise AggregationError(
+                    f"{amendment_id} previous amendment hash is invalid"
+                )
+            candidates = [
+                candidate.resolve()
+                for candidate in campaign_root.glob("campaign-amendment-*.json")
+                if candidate.resolve() != current_path
+                and sha256_file(candidate) == declared_hash
+            ]
+            if len(candidates) != 1:
+                raise AggregationError(
+                    f"{amendment_id} previous amendment hash must identify "
+                    "exactly one campaign file"
+                )
+            previous_path = candidates[0]
+            if amendment_number is None:
+                raise AggregationError("numbered amendment has no number")
+            expected_number = amendment_number - 1
+        else:
+            previous = amendment.get("previous_amendment")
+            if previous is None:
+                break
+            if not isinstance(previous, dict):
+                raise AggregationError(
+                    f"{amendment_id} previous_amendment must be an object"
+                )
+            previous_path = resolve_inside(
+                campaign_root,
+                Path(
+                    require_string(
+                        previous, "path", f"{amendment_id} previous amendment"
+                    )
+                ),
+                "previous amendment",
+            )
+            declared_hash = require_string(
+                previous, "sha256", f"{amendment_id} previous amendment"
+            )
         if SHA256_PATTERN.fullmatch(declared_hash) is None:
             raise AggregationError(f"{amendment_id} previous amendment hash is invalid")
         if sha256_file(previous_path) != declared_hash:
@@ -252,15 +332,26 @@ def validate_amendment_chain(
 
 
 def expected_source_and_rootfs(latest: dict[str, object]) -> tuple[str, str]:
-    correction = require_object(latest, "correction", "latest amendment")
-    source_commit = require_string(correction, "source_commit", "latest correction")
+    correction = latest.get("correction")
+    if isinstance(correction, dict) and "source_commit" in correction:
+        source_commit = require_string(
+            correction, "source_commit", "latest correction"
+        )
+        require_equal(correction, "worktree_clean", True, "latest correction")
+    else:
+        source = require_object(latest, "source", "latest amendment")
+        source_commit = require_string(source, "commit", "latest source")
+        require_equal(source, "worktree_clean", True, "latest source")
     if COMMIT_PATTERN.fullmatch(source_commit) is None:
-        raise AggregationError("latest correction source_commit is invalid")
-    require_equal(correction, "worktree_clean", True, "latest correction")
+        raise AggregationError("latest source commit is invalid")
     artifacts = require_object(latest, "artifacts", "latest amendment")
-    rootfs_sha256 = require_string(
-        artifacts, "starry_rootfs_sha256", "latest amendment artifacts"
-    )
+    if "starry_rootfs_sha256" in artifacts:
+        rootfs_sha256 = require_string(
+            artifacts, "starry_rootfs_sha256", "latest amendment artifacts"
+        )
+    else:
+        rootfs = require_object(artifacts, "starry_rootfs", "latest artifacts")
+        rootfs_sha256 = require_string(rootfs, "sha256", "latest rootfs artifact")
     if SHA256_PATTERN.fullmatch(rootfs_sha256) is None:
         raise AggregationError("latest rootfs SHA-256 is invalid")
     return source_commit, rootfs_sha256
@@ -273,7 +364,12 @@ def validate_result_root(
     execution_order: list[object],
 ) -> Path:
     result_root = resolve_inside(campaign_root, result_root, "result root")
-    resumed_capture = require_object(latest, "resumed_capture", "latest amendment")
+    capture_key = (
+        "resumed_capture"
+        if isinstance(latest.get("resumed_capture"), dict)
+        else "continued_capture_contract"
+    )
+    resumed_capture = require_object(latest, capture_key, "latest amendment")
     amendment_result_root = require_string(
         resumed_capture, "result_root", "latest resumed capture"
     )
@@ -373,6 +469,73 @@ def validate_output_identity(
     require_equal(output, "size_bytes", (run_dir / filename).stat().st_size, label)
 
 
+def expected_error_faults(capture: dict[str, object]) -> list[dict[str, object]]:
+    faults = require_list(capture, "faults", "capture contract")
+    expected: list[dict[str, object]] = []
+    for index, value in enumerate(faults, start=1):
+        if not isinstance(value, dict):
+            raise AggregationError(f"capture fault {index} must be an object")
+        expected.append(
+            {
+                "kind": require_string(value, "kind", f"capture fault {index}"),
+                "sequence": require_integer(
+                    value, "sequence", f"capture fault {index}"
+                ),
+                "error_code": require_integer(
+                    value, "expected_error_code", f"capture fault {index}"
+                ),
+                "reason": require_string(
+                    value, "expected_rtos_reason", f"capture fault {index}"
+                ),
+            }
+        )
+    expected_error_frames = require_integer(
+        capture, "expected_error_frames", "capture contract"
+    )
+    expected_protocol_errors = require_integer(
+        capture, "expected_protocol_errors", "capture contract"
+    )
+    if len(expected) != expected_error_frames:
+        raise AggregationError("capture fault count differs from expected_error_frames")
+    if len(expected) != expected_protocol_errors:
+        raise AggregationError(
+            "capture fault count differs from expected_protocol_errors"
+        )
+    return expected
+
+
+def validate_error_summary(
+    summary: dict[str, object], capture: dict[str, object], label: str
+) -> None:
+    expected_faults = expected_error_faults(capture)
+    observed_faults = require_list(summary, "error_evidence", label)
+    expected_evidence = [
+        {
+            "controller_observed": True,
+            **fault,
+            "rtos_observed": True,
+        }
+        for fault in expected_faults
+    ]
+    if observed_faults != expected_evidence:
+        raise AggregationError(f"{label} error_evidence differs from the contract")
+    require_equal(
+        capture,
+        "normal_control_must_continue_after_faults",
+        True,
+        "capture contract",
+    )
+    recovery = require_object(summary, "error_recovery", label)
+    recovery_contract = {
+        "continued": True,
+        "errors_received": capture["expected_error_frames"],
+        "injected": len(expected_faults),
+        "normal_acknowledged": capture["command_count"],
+    }
+    if recovery != recovery_contract:
+        raise AggregationError(f"{label} error_recovery differs from the contract")
+
+
 def validate_summary(
     summary: dict[str, object],
     run_dir: Path,
@@ -408,21 +571,28 @@ def validate_summary(
         require_number(controller, metric, f"{label} controller")
 
     rtos = require_object(summary, "rtos", label)
-    rtos_contract = {
+    rtos_contract: dict[str, object] = {
         "profile": capture["analyzer_profile"],
-        "drop_ack_every": capture["drop_ack_every"],
-        "expected_recoveries": capture["expected_recoveries"],
         "accepted": capture["expected_fresh_applications"],
         "applied": capture["expected_fresh_applications"],
         "duplicates": capture["expected_duplicate_receives"],
-        "acks_dropped": capture["configured_ack_losses"],
         "status_sent": capture["expected_status_frames"],
         "acks_sent": capture["expected_ack_frames"],
         "errors_sent": capture["expected_error_frames"],
         "protocol_errors": capture["expected_protocol_errors"],
-        "injected_sequences": capture["injected_sequences"],
-        "duplicate_sequences": capture["injected_sequences"],
     }
+    if capture["analyzer_profile"] == "ack-loss":
+        rtos_contract.update(
+            {
+                "drop_ack_every": capture["drop_ack_every"],
+                "expected_recoveries": capture["expected_recoveries"],
+                "acks_dropped": capture["configured_ack_losses"],
+                "injected_sequences": capture["injected_sequences"],
+                "duplicate_sequences": capture["injected_sequences"],
+            }
+        )
+    else:
+        rtos_contract["acks_dropped"] = 0
     for key, expected in rtos_contract.items():
         require_equal(rtos, key, expected, f"{label} RTOS")
 
@@ -430,6 +600,16 @@ def validate_summary(
     require_equal(starry, "mode", capture["controller_policy"], f"{label} StarryOS")
     require_equal(starry, "count", capture["command_count"], f"{label} StarryOS")
     require_equal(starry, "period_ms", capture["period_ms"], f"{label} StarryOS")
+    if "controller_fault_profile" in capture:
+        require_equal(
+            starry,
+            "fault_profile",
+            capture["controller_fault_profile"],
+            f"{label} StarryOS",
+        )
+
+    if capture["analyzer_profile"] == "error":
+        validate_error_summary(summary, capture, label)
 
     lifecycle = require_object(summary, "lifecycle", label)
     for key in (
@@ -559,39 +739,41 @@ def validate_run(
     summary_board = require_object(summary, "board", f"{run_id} summary")
     raw = require_object(summary, "raw_samples", f"{run_id} summary")
     source_log = require_object(summary, "source_log", f"{run_id} summary")
-    return (
-        {
-            "run_id": run_id,
-            "execution_order": run_number,
-            "metadata": file_identity(run_dir, run_dir / "metadata.json"),
-            "summary": file_identity(run_dir, run_dir / "summary.json"),
-            "manifest": file_identity(run_dir, run_dir / "checksums.sha256"),
-            "raw": {
-                "sample_count": command_count,
-                "content_sha256": raw["sha256"],
-                "gzip_sha256": raw["artifact_sha256"],
-            },
-            "console": {
-                "content_sha256": source_log["content_sha256"],
-                "gzip_sha256": source_log["sha256"],
-            },
-            "fault_counts": {
-                "retransmissions": controller["retransmissions"],
-                "recoveries": controller["recoveries"],
-                "duplicate_receives": require_object(
-                    summary, "rtos", f"{run_id} summary"
-                )["duplicates"],
-            },
-            "lifecycle_gate_met": True,
-            "validated": True,
-            "controller": {
-                metric: controller[metric]
-                for metric in (*LATENCY_METRICS, *DESCRIPTIVE_METRICS)
-            },
-            "cpu_temp_milli_c": summary_board["cpu_temp_milli_c"],
+    summary_rtos = require_object(summary, "rtos", f"{run_id} summary")
+    run_evidence: dict[str, object] = {
+        "run_id": run_id,
+        "execution_order": run_number,
+        "metadata": file_identity(run_dir, run_dir / "metadata.json"),
+        "summary": file_identity(run_dir, run_dir / "summary.json"),
+        "manifest": file_identity(run_dir, run_dir / "checksums.sha256"),
+        "raw": {
+            "sample_count": command_count,
+            "content_sha256": raw["sha256"],
+            "gzip_sha256": raw["artifact_sha256"],
         },
-        board_id,
-    )
+        "console": {
+            "content_sha256": source_log["content_sha256"],
+            "gzip_sha256": source_log["sha256"],
+        },
+        "fault_counts": {
+            "retransmissions": controller["retransmissions"],
+            "recoveries": controller["recoveries"],
+            "duplicate_receives": summary_rtos["duplicates"],
+            "error_frames": summary_rtos["errors_sent"],
+            "protocol_errors": summary_rtos["protocol_errors"],
+        },
+        "lifecycle_gate_met": True,
+        "validated": True,
+        "controller": {
+            metric: controller[metric]
+            for metric in (*LATENCY_METRICS, *DESCRIPTIVE_METRICS)
+        },
+        "cpu_temp_milli_c": summary_board["cpu_temp_milli_c"],
+    }
+    if capture["analyzer_profile"] == "error":
+        run_evidence["error_evidence"] = summary["error_evidence"]
+        run_evidence["error_recovery"] = summary["error_recovery"]
+    return run_evidence, board_id
 
 
 def validate_final_board_check(
@@ -723,6 +905,40 @@ def aggregate_campaign(
     statistics_policy = require_object(
         preregistration, "statistics_policy", "preregistration"
     )
+    fault_contract: dict[str, object] = {
+        "analyzer_profile": capture["analyzer_profile"],
+        "expected_retransmissions_per_run": capture["expected_retransmissions"],
+        "expected_recoveries_per_run": capture["expected_recoveries"],
+        "expected_duplicate_receives_per_run": capture[
+            "expected_duplicate_receives"
+        ],
+        "exact_equality_gate_met": True,
+    }
+    if capture["analyzer_profile"] == "ack-loss":
+        fault_contract["configured_ack_losses_per_run"] = capture[
+            "configured_ack_losses"
+        ]
+        assessment_reason = (
+            "all three preregistered physical ACK-loss runs and the final "
+            "Linux restoration gate passed"
+        )
+    else:
+        fault_contract.update(
+            {
+                "expected_error_frames_per_run": capture["expected_error_frames"],
+                "expected_protocol_errors_per_run": capture[
+                    "expected_protocol_errors"
+                ],
+                "normal_control_must_continue_after_faults": capture[
+                    "normal_control_must_continue_after_faults"
+                ],
+                "faults": expected_error_faults(capture),
+            }
+        )
+        assessment_reason = (
+            "all three preregistered physical ERROR runs and the final "
+            "Linux restoration gate passed"
+        )
 
     return {
         "schema_version": 1,
@@ -743,15 +959,7 @@ def aggregate_campaign(
             "final_board_linux_root_check": final_check_identity,
             "runs": runs,
         },
-        "fault_contract": {
-            "configured_ack_losses_per_run": capture["configured_ack_losses"],
-            "expected_retransmissions_per_run": capture["expected_retransmissions"],
-            "expected_recoveries_per_run": capture["expected_recoveries"],
-            "expected_duplicate_receives_per_run": capture[
-                "expected_duplicate_receives"
-            ],
-            "exact_equality_gate_met": True,
-        },
+        "fault_contract": fault_contract,
         "latency": {
             "unit": "microseconds",
             "quartile_method": "inclusive quartiles",
@@ -772,10 +980,7 @@ def aggregate_campaign(
             "final_board_linux_root_rw": True,
             "rt_isolation_claim": False,
             "campaign_gate_met": True,
-            "reason": (
-                "all three preregistered physical ACK-loss runs and the final "
-                "Linux restoration gate passed"
-            ),
+            "reason": assessment_reason,
         },
     }
 
