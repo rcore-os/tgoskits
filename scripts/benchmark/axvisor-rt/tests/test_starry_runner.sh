@@ -108,6 +108,9 @@ grep -q -- '--expected-host-noise-pcpu' "$harvest_runner" || \
 
 grep -q '"rt-irq-trace"' "$config_dir/starry-aarch64-rt.toml" || \
     fail "StarryOS RT kernel must enable the guest IRQ trace feature"
+grep -Fq 'rustup run "$toolchain" llvm-objcopy --strip-all -O binary "$built_elf" "$built_kernel"' \
+    "$kernel_builder" || \
+    fail "StarryOS RT kernel build must materialize a fresh BIN from the clean-tree ELF"
 grep -q 'tmp/axvisor-rt/starryos-rt.bin' "$stage_runner" || \
     fail "board staging must default to the trace-enabled StarryOS kernel"
 
