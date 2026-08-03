@@ -156,6 +156,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
+| 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
 | task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
 | clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
 | switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | baton 与一次性、失败即 fatal 的 tail 已实现 |
@@ -342,6 +343,35 @@ root。Starry 的 `SchedulerAddressSpaceLease` 因此把“scheduler slot 已解
 `Arc<AddrSpace>` 存储”建模为同一对象的两个阶段，原子的一次性 release 同时覆盖正常
 退出、exec 替换和创建回滚，避免双减计数。
 
+### 用户地址空间 TLB shootdown 与延迟回收
+
+调度 token 与 Linux `mm_struct` 不是同一身份。一个 `CLONE_VM` 进程可以为每个线程
+创建独立的 runtime token，但所有 token 仍共享同一个页表根；因此 active CPU footprint
+必须属于 Starry `AddrSpace`，不能属于某一个 scheduler token。当前模型为：
+
+1. `AddrSpace` 创建唯一且永久绑定页表根的 `AddressSpaceCpuTracker`，同一页表根的所有
+   runtime token 都保存该 tracker 的强引用；构造器拒绝把 tracker 复用于另一个 root；
+2. CPU 切入新 mm 时先以 Release 发布 CPU bit，再安装页表根；切出时先安装新根，再清除
+   旧 mm 的 CPU bit；同一 tracker 的线程切换不反复清位；
+3. 修改方先完成 PTE mutation，再以 Acquire 快照 active mask。快照前已经发布的 CPU
+   必须参加 shootdown；快照后进入的 CPU 会在安装根时执行本地 invalidation，因此看到
+   新 PTE；
+4. `TlbGather` 只保存经过验证的虚拟地址值区间、待释放页框和 backend owner，不保存
+   task、回调或裸指针。范围验证必须发生在 PTE 修改前，修改后 range record 是不可失败
+   的内部不变量；
+5. 同步 IPI 完成前不递减 COW frame reference，也不释放 file/shared/linear backend。
+   shootdown 失败时宁可保留所有权，也不能把旧 TLB 指向的页框交回分配器；
+6. 单区间、单页框和单 backend 使用首项内联存储，普通 COW fault 与单页 cache eviction
+   不为 gather 分配容器；多个不相邻区间才扩展 overflow storage。
+
+这对应 Linux v7.1 的三条边界：RISC-V `switch_mm()` 在装载 SATP 前更新
+`mm_cpumask()`；`flush_tlb_mm_range()` 只向该 mask 发送同步 shootdown；
+`mm/mmu_gather.c` 在 TLB invalidation 完成后才释放页表和物理页。范围与全量 invalidation
+共享四架构统一前端，但成本策略由架构后端决定：当前 4 KiB 归一化接口采用 x86 默认
+33 页、RISC-V 默认 64 页；AArch64/LoongArch 暂沿用页表引擎已有的 32 项有界批次，
+不把该经验值描述为 Linux 固定常量。未来若引入 ASID/PCID 或大页 stride，必须把它们
+加入架构 cost model，而不是在 Starry 地址空间层复制另一套阈值。
+
 ## Task deadline 与 clockevent
 
 `ax-task::TaskDeadlineQueue` 只接受：
@@ -488,6 +518,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | user/kthread 地址空间切换 | user -> blk worker -> same user 每次恢复 kernel root，再次写 CR3/SATP 并全量 flush | kthread 借用 per-CPU active mm；move-only token 和 active lease 将回收推迟到 switch-tail 后任务上下文 |
 | zombie 前地址空间回收 | 12 轮 SIGKILL/waitpid 后 scheduler token 仍绑在异步 reap 的 thread record，RISC-V `MemFree` 少约 304 MiB，完整组随后小对象 OOM | 每线程按 `exit_mm()` 顺序同步 detach task-mm；process slot 清理后再发布 zombie；RISC-V/x86_64 仅剩约 6/7 MiB 合法开销 |
 | active-mm 过期 readiness edge | `destroy_address_space()` 仍报告 `Active` 时也把回收计为成功；同一 token 在一个 pass 内重试 64 次并永久 yield | `AddressSpaceDestroyOutcome::Active` 只重新 arm waiter，不算 progress；下一次尝试必须由新的最后-CPU lease edge 驱动 |
+| pthread 栈 VA 跨 CPU 复用 | RISC-V parent 已写入新页，remote child 仍用旧 TLB 把同一 VA 翻译到已回收页框并跳转到随机地址 | mm 共享 CPU tracker；PTE mutation -> targeted shootdown -> frame/backend reclaim；同一 `test-cargo-jobserver-wait` 13/13 阶段通过 |
 | coroutine 最终引用 | 普通任务上下文也把每个零引用 header 投递给单一全局 reaper | 普通任务上下文按最终引用直接释放；只有 hard IRQ 发布类型化 coroutine header，删除任意 callback node、公开 drain 和 shutdown leak fallback |
 
 bug fix 必须先证明旧实现稳定失败，再用同一测试证明修复。纯文件移动和可见性收敛阶段例外。
@@ -725,6 +756,23 @@ IRQ 边界仍只做类型化 publication。
 这证明此前所谓“deferred reclaim 吞吐不足”实际是 `Busy` 状态被错误计成成功，而不是
 需要放大 batch 或增加兼容 worker。首次 system 资产启动曾在 shell 前出现一次瞬时
 停顿，随后同一构建的 GDB-capable boot 与 ext4 复跑均正常完成，未形成可复现缺陷。
+
+### 2026-08-03 RISC-V pthread 栈复用与 mmu-gather
+
+正式 `qemu/system/test-cargo-jobserver-wait` 在第二轮 eventfd+pipe epoll pthread 波次
+稳定失败。修复前诊断日志证明 parent CPU 在 `0x57af0` 写入了新线程栈参数，而 child
+CPU 从同一 VA 读取到旧页框中的随机值，随后把随机值当作入口跳转并 SIGSEGV。clone ABI
+参数顺序与 Linux/musl 一致，根因不是局部线程创建参数，而是同一 `AddrSpace` 的线程
+各自持有 runtime token，旧实现却按 token 统计 active CPU，并在仅本地清 PTE 后立即
+回收 COW/file 页框。
+
+修复采用上文的 shared-mm CPU tracker 与 typed `TlbGather`。最初若把每个普通 page
+fault 都预登记为 shootdown，会把新 PTE 安装也变成同步 IPI，QEMU 立即出现数量级回退；
+按 Linux 语义收敛后，只有 removal、replacement 和 permission downgrade 动态登记，
+全新映射不 shootdown。大范围逐页 invalidation 同样改为架构阈值后的单次 full local
+flush。最终同一命令完成 13/13 阶段，guest elapsed 2 秒、QEMU run 4.33 秒，并打印
+`STARRY_GROUPED_TESTS_PASSED`。该证据同时约束正确性和“新 PTE 安装不得发送无意义
+shootdown”的性能边界。
 
 ## 模块化结果
 

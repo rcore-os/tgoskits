@@ -48,7 +48,8 @@ mod thread;
 mod thread_resources;
 
 pub use address_space::{
-    TaskAddressSpace, detach_current_address_space, switch_current_address_space,
+    AddressSpaceCpuTracker, TaskAddressSpace, detach_current_address_space,
+    switch_current_address_space,
 };
 use address_space::{
     activate_runtime_address_space, arm_runtime_address_space_reclaim,

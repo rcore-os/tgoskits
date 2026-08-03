@@ -34,9 +34,10 @@ fn detach_scheduler_address_space(lease: &SchedulerAddressSpaceLease) {
 pub(crate) fn scheduler_address_space(
     aspace: Arc<PiMutex<AddrSpace>>,
 ) -> Result<ax_runtime::task::TaskAddressSpace, ax_runtime::task::TaskError> {
-    let root = crate::mm::attach_scheduler_slot(&aspace);
+    let (root, active_cpus) = crate::mm::attach_scheduler_slot(&aspace);
     ax_runtime::task::TaskAddressSpace::new_with_task_detach(
         root,
+        active_cpus,
         SchedulerAddressSpaceLease {
             aspace,
             released: AtomicBool::new(false),

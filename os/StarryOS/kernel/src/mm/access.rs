@@ -677,13 +677,19 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::flush_tlb_range(start, size);
 }
 
-pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> AxResult {
-    ax_runtime::hal::cache::flush_tlb_range_all_cpus(start, size).map_err(|err| match err {
-        ax_runtime::hal::cache::TlbShootdownError::CpuOffline
-        | ax_runtime::hal::cache::TlbShootdownError::Unsupported => AxError::Unsupported,
-        ax_runtime::hal::cache::TlbShootdownError::Timeout => AxError::TimedOut,
-        ax_runtime::hal::cache::TlbShootdownError::Platform => AxError::Io,
-    })
+pub(crate) fn flush_tlb_range_on_cpus_sync(
+    cpu_mask: usize,
+    start: VirtAddr,
+    size: usize,
+) -> AxResult {
+    ax_runtime::hal::cache::flush_tlb_range_on_cpus(cpu_mask, start, size).map_err(
+        |err| match err {
+            ax_runtime::hal::cache::TlbShootdownError::CpuOffline
+            | ax_runtime::hal::cache::TlbShootdownError::Unsupported => AxError::Unsupported,
+            ax_runtime::hal::cache::TlbShootdownError::Timeout => AxError::TimedOut,
+            ax_runtime::hal::cache::TlbShootdownError::Platform => AxError::Io,
+        },
+    )
 }
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
