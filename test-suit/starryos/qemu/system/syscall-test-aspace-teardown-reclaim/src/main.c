@@ -3,16 +3,18 @@
  * (aspace-teardown-reclaim 回归).
  *
  * 回归背景 (为什么写这个测例):
- *   进程被组杀 (SIGKILL) 时，一个停在裸 WaitQueue 上的兄弟线程 (例如阻塞在空
- *   管道的 read()、或 futex 等待) **不会** 被 zap_thread 的 interrupt() 唤醒
- *   —— 裸 WaitQueue 没有注册 interrupt waker，interrupt() 对它是 no-op。于是
- *   该线程一直挂到异步 GC 才退，推迟了 AddrSpace::clear() 及其匿名页帧回收。
+ *   进程被组杀 (SIGKILL) 时，一个停在裸 WaitQueue 上的兄弟线程必须通过调度器
+ *   direct wake 退出。但仅让它执行 do_exit 仍不够：若 scheduler address-space
+ *   token 继续绑在线程记录上，AddrSpace::clear() 仍会等异步 reaper，匿名页在
+ *   waitpid 已返回后继续占用内存。
  *   在快速循环杀进程的场景下，被杀子进程的匿名内存 (usages[VirtMem]/AnonPages)
  *   一直不在退出时下降、持续累积 → 饿死内存。
  *
- * 修复 (kernel: zap_thread 对被杀线程调用 `ax_task::wake_task(&task)`):
- *   wake_task 是文档化的 escape hatch，强制解除一个 park 的线程。被杀兄弟因此
- *   返回、观察到 pending exit、同步跑 do_exit → 立即回收帧。
+ * 修复:
+ *   zap_thread 发布 sticky exit request 并通过 generation-bearing wake handle
+ *   直接唤醒目标；每个线程在 do_exit 中再按 Linux exit_mm 顺序解除 task-mm
+ *   所有权，最后一个线程释放 process slot 后即可同步回收匿名页。CPU 若仍携带
+ *   lazy mm，只继续保留页表根的 runtime wrapper，不再阻塞用户映射清理。
  *
  * 判别设计:
  *   循环 ITERS 次: fork 子进程; 子进程 (a) 起一个线程阻塞在空管道 read() (裸
@@ -54,9 +56,9 @@ static void *blocked_reader(void *arg)
 {
     (void)arg;
     char c;
-    /* 停在裸 WaitQueue: 空管道 read() 阻塞至有数据或 teardown。zap_thread 的
-     * interrupt() 对裸 WaitQueue 是 no-op, 故这个兄弟正是 SIGKILL 时必须被
-     * wake_task 强制唤醒的线程。 */
+    /* 停在裸 WaitQueue: 空管道 read() 阻塞至有数据或 teardown。这个兄弟要求
+     * SIGKILL 的调度器 direct wake 不依赖具体 waitqueue，并要求返回 do_exit 后
+     * 同步解除 task-mm 所有权。 */
     (void)read(g_block_rd, &c, 1);
     return NULL;
 }

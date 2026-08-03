@@ -167,6 +167,18 @@ pub fn replace_current_address_space(
     runtime_task_system()?.replace_current_address_space(cpu.as_mut(), address_space)
 }
 
+/// Detaches the current thread's scheduler-visible user address space.
+///
+/// The runtime must enter its lazy kernel address-space state before the outer
+/// IRQ-off transaction ends, then transfer the returned token to task-context
+/// reclamation.
+pub fn detach_current_address_space() -> Result<crate::runtime::AddressSpaceToken, TaskError> {
+    validate_task_context()?;
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    runtime_task_system()?.detach_current_address_space(cpu.as_mut())
+}
+
 /// Transfers an obsolete address-space token to task-context reclamation.
 ///
 /// The runtime may still report the object busy while another CPU retains it

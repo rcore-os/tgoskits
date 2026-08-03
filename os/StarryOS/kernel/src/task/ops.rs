@@ -602,6 +602,13 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // shared tables remain alive until their final sharer exits.
     crate::file::close_all_fds();
 
+    // Match Linux exit_mm(): every thread leaves its user mm in task context
+    // before it retires from the thread group. Consequently ThreadExit::Last
+    // proves that all scheduler address-space slots are detached before the
+    // process slot is released and the zombie becomes waitable.
+    ax_runtime::task::detach_current_address_space()
+        .unwrap_or_else(|error| panic!("failed to detach exiting task address space: {error}"));
+
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
