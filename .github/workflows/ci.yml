@@ -184,6 +184,7 @@ jobs:
               - "bootloader/**"
               - "components/**"
               - "drivers/**"
+              - "fs/**"
               - "memory/**"
               - "net/**"
               - "os/**"
