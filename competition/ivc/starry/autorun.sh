@@ -93,6 +93,13 @@ done
 mac=$($BB cat /sys/class/net/eth0/address 2>/dev/null || echo unknown)
 echo "IVC-STARRY-NET iface=eth0 mac=$mac ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1"
 
+# AxVisor notifies the StarryOS VM before the Zephyr VM. Give the peer enough
+# time to bind its UDP socket so the first measured command is not a startup
+# retransmission. This delay precedes raw-sample collection in every profile.
+peer_startup_delay_seconds=2
+echo "IVC-STARRY-PEER-WAIT seconds=2"
+"$BB" sleep "$peer_startup_delay_seconds"
+
 if [ "${ivc_fault_profile:-none}" = restart ] && [ ! -r "$restart_marker" ]; then
     if /usr/local/bin/ivcproto controller \
         10.0.0.2:5500 "$ivc_restart_first_count" "$ivc_mode" "$ivc_period_ms" \

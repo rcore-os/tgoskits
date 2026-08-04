@@ -209,6 +209,18 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertNotIn("ip link set eth0 up", script)
         self.assertIn("ip addr add 10.0.0.1/24 dev eth0", script)
 
+    def test_autorun_waits_for_the_peer_before_the_first_request(self) -> None:
+        script = STARRY_AUTORUN.read_text(encoding="utf-8")
+
+        network_ready = script.index('echo "IVC-STARRY-NET')
+        wait_marker = script.index('echo "IVC-STARRY-PEER-WAIT seconds=2"')
+        wait = script.index('"$BB" sleep "$peer_startup_delay_seconds"')
+        first_request = script.index("/usr/local/bin/ivcproto controller")
+        self.assertIn("peer_startup_delay_seconds=2", script)
+        self.assertLess(network_ready, wait_marker)
+        self.assertLess(wait_marker, wait)
+        self.assertLess(wait, first_request)
+
     def test_orangepi_guests_use_virtual_interrupt_delivery(self) -> None:
         for config_path in ORANGEPI_STARRY_CONFIGS:
             with self.subTest(config=config_path.name):
