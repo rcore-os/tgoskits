@@ -659,6 +659,7 @@ class QemuConfigContractTests(unittest.TestCase):
                     self.assertIn("starry_kernel", metadata["inputs"])
                     self.assertIn("starry_dtb", metadata["inputs"])
                     self.assertIn("rootfs", metadata["inputs"])
+                    self.assertIn("zephyr_guest", metadata["inputs"])
                     self.assertIn("artifact", metadata["model"])
                     self.assertEqual(
                         metadata["outputs"]["raw_csv"]["path"],

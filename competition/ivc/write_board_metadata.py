@@ -44,6 +44,9 @@ def build_metadata(arguments: argparse.Namespace) -> dict[str, object]:
             "starry_kernel": optional_file_record(arguments.starry_kernel, workspace),
             "starry_dtb": optional_file_record(arguments.starry_dtb, workspace),
             "rootfs": optional_file_record(arguments.rootfs, workspace),
+            "zephyr_guest": optional_file_record(
+                arguments.zephyr_guest, workspace
+            ),
         },
         "board": {
             "type": arguments.board_type,
@@ -208,6 +211,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--starry-kernel", type=Path, required=True)
     parser.add_argument("--starry-dtb", type=Path, required=True)
     parser.add_argument("--rootfs", type=Path, required=True)
+    parser.add_argument("--zephyr-guest", type=Path, required=True)
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--model-artifact", type=Path, required=True)
     parser.add_argument("--inference-backend", required=True)

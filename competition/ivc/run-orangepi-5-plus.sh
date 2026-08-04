@@ -105,6 +105,7 @@ case "$profile" in
         model_id=thermal-4x6x1-v1
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-smoke.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-smoke/zephyr/zephyr.bin
         result_image_name=ivc-ns
         ;;
     full)
@@ -114,6 +115,7 @@ case "$profile" in
         model_id=thermal-4x6x1-v1
         inference_backend=native
         guest_image_name=starry-ivc-rootfs.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board/zephyr/zephyr.bin
         result_image_name=ivc-n
         ;;
     manual-smoke)
@@ -123,6 +125,7 @@ case "$profile" in
         model_id=manual-fixed-500
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-manual-smoke.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-smoke/zephyr/zephyr.bin
         result_image_name=ivc-ms
         ;;
     manual-full)
@@ -132,6 +135,7 @@ case "$profile" in
         model_id=manual-fixed-500
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-manual.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board/zephyr/zephyr.bin
         result_image_name=ivc-m
         ;;
     fault-ack-loss)
@@ -141,6 +145,7 @@ case "$profile" in
         model_id=thermal-4x6x1-v1
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-ack-loss.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-ack-loss/zephyr/zephyr.bin
         result_image_name=ivc-a
         analyzer_profile=ack-loss
         drop_ack_every=5
@@ -152,6 +157,7 @@ case "$profile" in
         model_id=thermal-4x6x1-v1
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-error.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-error/zephyr/zephyr.bin
         result_image_name=ivc-e
         analyzer_profile=error
         ;;
@@ -163,6 +169,7 @@ case "$profile" in
         model_id=thermal-4x6x1-v1
         inference_backend=native
         guest_image_name=starry-ivc-rootfs-restart.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-restart/zephyr/zephyr.bin
         result_image_name=ivc-r
         analyzer_profile=restart
         ;;
@@ -379,6 +386,7 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
         --starry-kernel "$starry_kernel"
         --starry-dtb "$starry_dtb"
         --rootfs "$local_rootfs"
+        --zephyr-guest "$zephyr_guest_image"
         --model-id "$model_id"
         --model-artifact "$model_artifact"
         --inference-backend "$inference_backend"
