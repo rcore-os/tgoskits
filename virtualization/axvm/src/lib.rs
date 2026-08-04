@@ -44,19 +44,20 @@ mod timer;
 mod vcpu;
 mod vm;
 
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/shared_mmio.rs"]
+mod aarch64_shared_mmio_tests;
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/vtimer/percpu.rs"]
+mod aarch64_timer_percpu_tests;
+
 use crate::arch::ArchOps;
 
 pub mod config;
 
 pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
-pub use axdevice::SerialBackend;
-/// Compatibility export for legacy/common normalized VM events.
-///
-/// Architecture-local raw exits are handled by `arch::CurrentArch` through
-/// `VmArchVcpuOps::Exit`; new code should not treat this as the universal raw
-/// vCPU exit type.
-pub use axvm_types::VmExit;
+pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,

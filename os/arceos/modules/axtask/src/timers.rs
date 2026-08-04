@@ -130,9 +130,12 @@ pub(crate) fn begin_hardware_timer_irq() {
     // separately. Until that state machine exists, a nonzero deadline remains
     // outstanding even after wall time passes; replacing it can clear the
     // pending interrupt before its events run. Clear the record only after
-    // control reaches the matching timer IRQ entry. Remove this guard only when
-    // the IRQ acknowledge path explicitly consumes the comparator's pending
-    // state without relying on a comparator rewrite.
+    // control reaches the matching timer IRQ entry. This may retain an expired
+    // comparator as the scheduling reference for longer than necessary and
+    // therefore delay reprogramming to a later deadline, which is the accepted
+    // temporary performance cost. Remove this guard only when the IRQ
+    // acknowledge path explicitly consumes the comparator's pending state
+    // without relying on a comparator rewrite.
     note_programmed_deadline_nanos(0);
 }
 

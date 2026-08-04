@@ -57,6 +57,14 @@ impl TxIngress {
         accepted
     }
 
+    pub(super) fn try_write_text(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
+        let accepted = submit_text_locked(&mut self.state.lock(), bytes);
+        if accepted > 0 {
+            notify.notify();
+        }
+        accepted
+    }
+
     pub(super) fn try_write_log(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
         let Some(mut state) = self.state.try_lock() else {
             return 0;

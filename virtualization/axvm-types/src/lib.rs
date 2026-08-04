@@ -598,7 +598,7 @@ pub struct VmMemConfig {
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EmulatedDeviceConfig {
     /// The name of the device.
     pub name: String,

@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use ax_kspin::SpinRaw;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
-use super::{SerialBackend, fifo::ByteFifo};
+use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
 
 const REG_RBR_THR_DLL: usize = 0;
 const REG_IER_DLM: usize = 1;
@@ -117,8 +117,7 @@ impl Uart16550State {
 /// 16550-compatible UART core with an external byte backend and virtual IRQ.
 pub struct Uart16550 {
     state: SpinRaw<Uart16550State>,
-    backend: Arc<dyn SerialBackend>,
-    irq: IrqLine,
+    endpoint: SerialEndpoint,
 }
 
 impl Uart16550 {
@@ -126,23 +125,19 @@ impl Uart16550 {
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
             state: SpinRaw::new(Uart16550State::new()),
-            backend,
-            irq,
+            endpoint: SerialEndpoint::new(backend, irq, "signal 16550 IRQ"),
         }
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
     pub fn poll(&self) -> DeviceResult {
-        let mut bytes = [0; 64];
-        let count = self.backend.read(&mut bytes).min(bytes.len());
-        let asserted = {
+        self.endpoint.poll_rx(|bytes| {
             let mut state = self.state.lock();
-            for &byte in &bytes[..count] {
+            for &byte in bytes {
                 state.push_rx(byte);
             }
             state.irq_asserted()
-        };
-        self.signal_irq(asserted)
+        })
     }
 
     /// Reads one UART register.
@@ -177,7 +172,7 @@ impl Uart16550 {
             };
             (value, state.irq_asserted())
         };
-        self.signal_irq(asserted)?;
+        self.endpoint.set_irq_level(asserted)?;
         Ok(value as u64)
     }
 
@@ -233,9 +228,9 @@ impl Uart16550 {
             (output, completes_tx, state.irq_asserted())
         };
 
-        let consumed_result = self.signal_irq(asserted);
+        let consumed_result = self.endpoint.set_irq_level(asserted);
         if let Some(byte) = output {
-            self.backend.write(core::slice::from_ref(&byte));
+            self.endpoint.write(core::slice::from_ref(&byte));
         }
         if !completes_tx {
             return consumed_result;
@@ -252,19 +247,7 @@ impl Uart16550 {
             state.tx_interrupt_pending = true;
             state.irq_asserted()
         };
-        let completed_result = self.signal_irq(completed_asserted);
+        let completed_result = self.endpoint.set_irq_level(completed_asserted);
         consumed_result.and(completed_result)
-    }
-
-    fn signal_irq(&self, asserted: bool) -> DeviceResult {
-        let result = if asserted {
-            self.irq.raise()
-        } else {
-            self.irq.lower()
-        };
-        result.map_err(|error| DeviceError::Backend {
-            operation: "signal 16550 IRQ",
-            detail: alloc::format!("{error}"),
-        })
     }
 }

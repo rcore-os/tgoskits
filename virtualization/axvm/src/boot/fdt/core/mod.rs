@@ -58,10 +58,9 @@ fn resolve_machine_resources_from_host(
             format!("Failed to parse host FDT while resolving the virtual UART: {err:#?}")
         )
     })?;
+    let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
     let current = vm_config.serial_profile();
-    if let Some(interrupt_encoding) =
-        crate::machine::current_machine_profile(1).serial_fdt_interrupt
-    {
+    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt {
         if let Some(resolved) =
             serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
         {
@@ -84,7 +83,7 @@ fn resolve_machine_resources_from_host(
         );
         vm_config.replace_machine_gic(gic)?;
     }
-    if crate::machine::current_machine_profile(1).timer.is_some() {
+    if machine.timer.is_some() {
         let timer = timer::host_timer_profile(&host_fdt)?.ok_or_else(|| {
             ax_err_type!(
                 InvalidData,

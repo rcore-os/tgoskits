@@ -2,7 +2,7 @@
 
 本文定义 AArch64 透传型客户机如何继续访问同时被宿主虚拟设备依赖的物理固件 provider。它是 machine planning、driver capability、`DeviceRuntime` 与 stage-2 构建必须遵守的 MMIO 所有权和失败契约。
 
-实现基线：`origin/dev` 的 `e2fe59dd65a2283ce6e2fb70f828f0df810d3724`。
+本文与合入最新 `origin/dev` 后的当前实现同步；实现契约变化时必须在同一变更中更新本文。
 
 ## 问题与成功标准
 

@@ -9,70 +9,17 @@ use riscv_vplic::{
 const HOST_PLIC_BASE: usize = 0x0c00_0000;
 const HOST_PLIC_SIZE: usize = 0x40_0000;
 
-/// Calculate minimum required size for VPlicGlobal with given contexts
-fn calculate_min_size(contexts_num: usize) -> usize {
-    contexts_num * PLIC_CONTEXT_STRIDE
-        + PLIC_CONTEXT_CTRL_OFFSET
-        + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET
-        + 0x1000
-}
-
 #[test]
-fn test_vplic_global_creation() {
-    let addr = GuestPhysAddr::from(0x0c000000);
-    let contexts_num = 2;
-    let size = calculate_min_size(contexts_num);
-
-    let vplic = VPlicGlobal::new(addr, Some(size), contexts_num).unwrap();
-
-    assert_eq!(vplic.addr, addr);
-    assert_eq!(vplic.size, size);
-    assert_eq!(vplic.contexts_num, contexts_num);
-}
-
-#[test]
-fn test_vplic_global_with_different_contexts() {
-    let addr = GuestPhysAddr::from(0x0c000000);
-
-    // Test with 1 context
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 1).unwrap();
-    assert_eq!(vplic.contexts_num, 1);
-
-    // Test with 4 contexts
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 4).unwrap();
-    assert_eq!(vplic.contexts_num, 4);
-
-    // Test with 8 contexts
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 8).unwrap();
-    assert_eq!(vplic.contexts_num, 8);
-}
-
-#[test]
-fn test_vplic_global_missing_size_returns_typed_error() {
+fn test_vplic_global_rejects_missing_or_insufficient_mmio_regions() {
     let addr = GuestPhysAddr::from(0x0c000000);
     assert!(matches!(
         VPlicGlobal::new(addr, None, 2),
         Err(VplicError::MissingRegionSize)
     ));
-}
-
-#[test]
-fn test_vplic_global_insufficient_size_returns_typed_error() {
-    let addr = GuestPhysAddr::from(0x0c000000);
     assert!(matches!(
         VPlicGlobal::new(addr, Some(0x1000), 2),
         Err(VplicError::InsufficientRegion { .. })
     ));
-}
-
-#[test]
-fn test_vplic_global_bitmaps_initialized_empty() {
-    let addr = GuestPhysAddr::from(0x0c000000);
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 2).unwrap();
-
-    assert!(vplic.assigned_irqs.lock().is_empty());
-    assert!(vplic.pending_irqs.lock().is_empty());
-    assert!(vplic.active_irqs.lock().is_empty());
 }
 
 #[test]

@@ -239,7 +239,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         boot_policy: GuestBootPolicy::KeepConfigured,
         interrupt_mode: cfg.base.guest_type.interrupt_mode(),
         serial_profile: Some(serial_profile),
-        serial_backend: Some(crate::guest_console::serial_backend(cfg.base.id)),
+        serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
     })
 }
 

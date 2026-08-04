@@ -158,8 +158,10 @@ vCPU 位图发布 kick，并唤醒 `IrqNotify` worker；VM 查找、runtime noti
 
 ## 宿主控制台复用
 
-`GuestConsoleMux` 位于 Axvisor 应用层，是 `ax_hal::console::read_bytes` 的唯一调用者。
-设备层通过带 VM ID 的后端接口访问各客户机 RX/TX 队列。
+`GuestConsoleMux` 位于 Axvisor 应用层，是宿主控制台输入的唯一逻辑读取者。对于固件选定
+的硬件 UART，`RuntimeHostConsole` 通过准确匹配的串口 runtime 独占 RX subscription，
+启动中断驱动收发并接管日志输出；只有 SBI 等没有硬件 UART runtime 的控制台保留平台
+轮询路径。设备层通过带 VM ID 和运行代次的后端接口访问各客户机 RX/TX 队列。
 
 ```mermaid
 flowchart LR
@@ -178,12 +180,17 @@ flowchart LR
     mux --> hostUart
 ```
 
-默认前台是 ID 最小的运行中客户机。`Ctrl-A c` 在该客户机与 shell 之间切换，
-`Ctrl-A a` 向客户机发送原始 Ctrl-A，`Ctrl-A h` 显示帮助。`vm console <id>` 和
-`vm start --console <id>` 只允许附着运行中客户机。前台 VM 停止或删除时自动返回 shell。
+默认前台是 ID 最小的运行中客户机。`Ctrl+Alt+H` 返回 Axvisor shell，
+`Ctrl+Alt+[` 与 `Ctrl+Alt+]` 按 VM ID 循环切换到前一个或后一个运行中客户机。
+串口字节流分别以 `ESC Ctrl-H`、`ESC ESC` 与 `ESC Ctrl-]` 表示这些组合键；其他
+`ESC` 序列保持原顺序交给当前客户机或 shell，因此方向键不会被快捷键解析吞掉。
+`vm console <id>` 和 `vm start --console <id>` 只允许附着运行中客户机。前台 VM
+停止或删除时自动返回 shell，并使旧虚拟串口 backend 代次失效；reset 重建设备图时
+由 factory 创建新代次，旧 backend 不能读写替代实例。
 
 单 VM 输出不加前缀；多个 VM 同时运行时，复用器按完整行串行写出
-`[VM <id>] ` 前缀。前缀是宿主显示信息，不进入任何客户机输入队列。
+`[VM <id>] ` 前缀。另一个 VM 在当前未换行片段后输出时，复用器先补换行再切换，
+不会等待原 VM 的 prompt 结束。前缀是宿主显示信息，不进入任何客户机输入队列。
 
 ## 方案比较
 

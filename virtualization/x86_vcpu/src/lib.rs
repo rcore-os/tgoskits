@@ -26,6 +26,8 @@ use alloc::vec::Vec;
 
 #[cfg(test)]
 mod test_utils;
+#[cfg(test)]
+mod world_switch_tests;
 
 mod runtime;
 mod types;

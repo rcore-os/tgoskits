@@ -258,7 +258,7 @@ fn start_vm_by_id(vm_id: usize, attach_console: bool) {
             if attach_console {
                 match crate::guest_console::attach(vm_id) {
                     Ok(()) => println!(
-                        "✓ Attached VM[{vm_id}] console; use Ctrl-A c to return to the shell"
+                        "✓ Attached VM[{vm_id}] console; use Ctrl+Alt+H to return to the shell"
                     ),
                     Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
                 }
@@ -368,14 +368,6 @@ fn reset_vm_by_id(vm_id: usize) {
         }
         Err(err) => println!("✗ VM[{vm_id}] reset failed: {err:#}"),
     }
-}
-
-/// Compatibility alias for the old shell command name.
-fn vm_restart(cmd: &ParsedCommand) {
-    if cmd.flags.contains("force") {
-        println!("⚠ --force is ignored; reset always rebuilds runtime state");
-    }
-    vm_reset(cmd);
 }
 
 /// Suspend a running VM (functionality incomplete)
@@ -657,7 +649,7 @@ fn vm_console(cmd: &ParsedCommand) {
 
     match crate::guest_console::attach(vm_id) {
         Ok(()) => {
-            println!("✓ Attached VM[{vm_id}] console; use Ctrl-A c to return to the shell");
+            println!("✓ Attached VM[{vm_id}] console; use Ctrl+Alt+H to return to the shell");
         }
         Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
     }
@@ -1213,15 +1205,6 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         .with_handler(vm_reset)
         .with_usage("vm reset <VM_ID>...");
 
-    let restart_cmd = CommandNode::new("Restart a virtual machine (alias of reset)")
-        .with_handler(vm_restart)
-        .with_usage("vm restart [OPTIONS] <VM_ID>...")
-        .with_flag(
-            FlagDef::new("force", "Force restart")
-                .with_short('f')
-                .with_long("force"),
-        );
-
     let suspend_cmd = CommandNode::new("Suspend (pause) a running virtual machine")
         .with_handler(vm_suspend)
         .with_usage("vm suspend <VM_ID>...");
@@ -1291,7 +1274,6 @@ pub fn build_vm_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         .add_subcommand("suspend", suspend_cmd)
         .add_subcommand("resume", resume_cmd)
         .add_subcommand("reset", reset_cmd)
-        .add_subcommand("restart", restart_cmd)
         .add_subcommand("delete", delete_cmd)
         .add_subcommand("list", list_cmd)
         .add_subcommand("show", show_cmd);

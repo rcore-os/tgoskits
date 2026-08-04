@@ -293,6 +293,7 @@ impl SerialWorker {
         }
 
         if published {
+            self.shared.rx_progress.notify_all(true);
             // SAFETY: the worker Release-publishes ring entries before waking
             // task-context waiters.
             unsafe { self.shared.rx_source.wake(IoEvents::IN) };

@@ -11,7 +11,7 @@ use ax_kspin::SpinNoIrq;
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
     DeviceManagerResult, DeviceRegistration, ServiceCardinality, ServiceKey,
-    VirtualInterruptControllerKey,
+    VirtualInterruptControllerKey, validate_device_config,
 };
 use axdevice_base::{HostIrqId, VirtualInterruptController};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
@@ -226,55 +226,9 @@ impl GicV3VcpuWake for Aarch64VcpuWake {
     }
 }
 
-#[derive(Clone)]
-struct DeviceFingerprint {
-    name: alloc::string::String,
-    base_gpa: usize,
-    length: usize,
-    irq_id: usize,
-    device_type: EmulatedDeviceType,
-    cfg_list: Vec<usize>,
-}
-
-impl DeviceFingerprint {
-    fn from_config(config: &EmulatedDeviceConfig) -> Self {
-        Self {
-            name: config.name.clone(),
-            base_gpa: config.base_gpa,
-            length: config.length,
-            irq_id: config.irq_id,
-            device_type: config.emu_type,
-            cfg_list: config.cfg_list.clone(),
-        }
-    }
-
-    fn validate(
-        &self,
-        config: &EmulatedDeviceConfig,
-        operation: &'static str,
-    ) -> DeviceManagerResult {
-        if self.name != config.name
-            || self.base_gpa != config.base_gpa
-            || self.length != config.length
-            || self.irq_id != config.irq_id
-            || self.device_type != config.emu_type
-            || self.cfg_list != config.cfg_list
-        {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation,
-                detail: alloc::format!(
-                    "device '{}' does not match the immutable machine plan",
-                    config.name
-                ),
-            });
-        }
-        Ok(())
-    }
-}
-
 struct Aarch64VgicFactory {
     vm_id: usize,
-    expected: DeviceFingerprint,
+    expected: EmulatedDeviceConfig,
     runtime: Arc<Aarch64VgicRuntime>,
 }
 
@@ -288,8 +242,7 @@ impl DeviceFactory for Aarch64VgicFactory {
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        self.expected
-            .validate(config, "build AArch64 virtual GIC")?;
+        validate_device_config(&self.expected, config, "build AArch64 virtual GIC")?;
         let access_context: Arc<dyn VgicAccessContext> =
             Arc::new(AxvmVgicAccessContext { vm_id: self.vm_id });
         let devices = VgicDeviceSet::new(self.runtime.core.clone(), access_context)
@@ -306,7 +259,7 @@ impl DeviceFactory for Aarch64VgicFactory {
 }
 
 struct Aarch64GicCpuRegionMarkerFactory {
-    expected: DeviceFingerprint,
+    expected: EmulatedDeviceConfig,
 }
 
 impl DeviceFactory for Aarch64GicCpuRegionMarkerFactory {
@@ -319,8 +272,11 @@ impl DeviceFactory for Aarch64GicCpuRegionMarkerFactory {
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        self.expected
-            .validate(config, "validate AArch64 virtual GIC per-CPU region")?;
+        validate_device_config(
+            &self.expected,
+            config,
+            "validate AArch64 virtual GIC per-CPU region",
+        )?;
         // The Distributor contribution atomically registers every frontend
         // from one VgicCore. This marker consumes the machine descriptor so
         // neither the GICC nor Redistributor window gets a second construction
@@ -463,11 +419,11 @@ pub(crate) fn register_device_factories(
 
     registry.register(Arc::new(Aarch64VgicFactory {
         vm_id: vm.id(),
-        expected: DeviceFingerprint::from_config(distributor),
+        expected: distributor.clone(),
         runtime: runtime.clone(),
     }))?;
     registry.register(Arc::new(Aarch64GicCpuRegionMarkerFactory {
-        expected: DeviceFingerprint::from_config(cpu_region_descriptor),
+        expected: cpu_region_descriptor.clone(),
     }))?;
     Ok(runtime)
 }

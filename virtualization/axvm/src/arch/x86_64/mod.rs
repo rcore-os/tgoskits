@@ -12,10 +12,10 @@ use core::{
 
 use ax_kspin::SpinRaw;
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, ServiceCardinality, ServiceKey,
-    VirtualInterruptControllerKey, X86InterruptDomainKey, X86InterruptDomainOps,
-    X86IoApicDeviceOps, X86IoApicServiceKey, X86PitDeviceOps, X86PitServiceKey,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
+    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
+    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDeviceOps, X86IoApicServiceKey,
+    X86PitDeviceOps, X86PitServiceKey, validate_device_config,
 };
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, IrqError, IrqResult,
@@ -490,12 +490,12 @@ pub(crate) fn register_device_factories(
     let ioapic_config =
         unique_x86_machine_device(configs, EmulatedDeviceType::X86IoApic, "virtual IOAPIC")?;
     let pit_config = unique_x86_machine_device(configs, EmulatedDeviceType::X86Pit, "virtual PIT")?;
-    validate_x86_machine_device(
+    validate_device_config(
         expected_ioapic,
         ioapic_config,
         "validate x86 virtual IOAPIC machine descriptor",
     )?;
-    validate_x86_machine_device(
+    validate_device_config(
         expected_pit,
         pit_config,
         "validate x86 virtual PIT machine descriptor",
@@ -543,29 +543,6 @@ fn unique_x86_machine_device<'a>(
         ));
     }
     Ok(config)
-}
-
-fn validate_x86_machine_device(
-    expected: &EmulatedDeviceConfig,
-    actual: &EmulatedDeviceConfig,
-    operation: &'static str,
-) -> DeviceManagerResult {
-    if expected.name == actual.name
-        && expected.base_gpa == actual.base_gpa
-        && expected.length == actual.length
-        && expected.irq_id == actual.irq_id
-        && expected.emu_type == actual.emu_type
-        && expected.cfg_list == actual.cfg_list
-    {
-        return Ok(());
-    }
-    Err(DeviceManagerError::InvalidConfig {
-        operation,
-        detail: alloc::format!(
-            "descriptor for '{}' does not match the immutable x86 machine profile",
-            actual.name
-        ),
-    })
 }
 
 /// Adapts the IOAPIC device capability to the x86 interrupt-runtime boundary.
@@ -750,7 +727,7 @@ impl DeviceFactory for X86IoApicFactory {
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        validate_x86_machine_device(&self.expected, config, "build x86 virtual IOAPIC")?;
+        validate_device_config(&self.expected, config, "build x86 virtual IOAPIC")?;
         let service: Arc<dyn X86IoApicDeviceOps> = self.ioapic.clone();
         let domain: Arc<dyn X86InterruptDomainOps> = self.domain.clone();
         let controller: Arc<dyn VirtualInterruptController> = self.domain.clone();
@@ -778,7 +755,7 @@ impl DeviceFactory for X86PitFactory {
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        validate_x86_machine_device(&self.expected, config, "build x86 virtual PIT")?;
+        validate_device_config(&self.expected, config, "build x86 virtual PIT")?;
         let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
         let service: Arc<dyn X86PitDeviceOps> = pit.clone();
         DeviceBundle::from_registration(DeviceRegistration::Device(pit))

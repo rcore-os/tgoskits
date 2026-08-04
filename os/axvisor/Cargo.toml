@@ -82,8 +82,11 @@ ax-std = { workspace = true, default-features = false, features = [
   "hv",
   "tls",
   "std-compat",
+  "serial",
 ] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
+ax-runtime = { workspace = true, features = ["serial"] }
+ax-sync = { workspace = true, features = ["multitask"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }

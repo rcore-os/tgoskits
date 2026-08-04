@@ -42,17 +42,17 @@ fn print_shell_intro() {
     println!("Welcome to AxVisor Shell!");
     println!("Type 'help' to see available commands");
     println!("Use UP/DOWN arrows to navigate command history");
+    print_console_shortcuts();
     #[cfg(not(feature = "fs"))]
     println!("Note: Running with limited features (filesystem support disabled).");
     println!();
 }
 
-fn print_console_help() {
-    println!();
-    println!("Axvisor console escape keys:");
-    println!("  Ctrl-A c  switch between the guest console and Axvisor shell");
-    println!("  Ctrl-A a  send a literal Ctrl-A to the attached guest");
-    println!("  Ctrl-A h  show this help");
+fn print_console_shortcuts() {
+    println!("Console shortcuts:");
+    println!("  Ctrl+Alt+H  return to the Axvisor shell");
+    println!("  Ctrl+Alt+[  attach the previous running guest");
+    println!("  Ctrl+Alt+]  attach the next running guest");
 }
 
 // Initialize the console shell.
@@ -65,6 +65,7 @@ pub fn console_init() {
     let mut line_len = 0; // actual length of current line
 
     let mut input_state = InputState::Normal;
+    let mut pending_shell_byte = None;
     let mut shell_announced = false;
 
     if crate::guest_console::attached_vm().is_none() {
@@ -85,46 +86,58 @@ pub fn console_init() {
             clear_line_and_redraw(&mut stdout, &prompt_string(), current_content, cursor);
         }
 
-        let Some(host_byte) = crate::guest_console::read_host_byte() else {
-            std::thread::yield_now();
-            continue;
-        };
+        let ch = match pending_shell_byte.take() {
+            Some(ch) => ch,
+            None => {
+                let Some(host_byte) = crate::guest_console::read_host_byte() else {
+                    crate::guest_console::wait_for_host_input();
+                    continue;
+                };
 
-        let ch = match crate::guest_console::route_host_byte(host_byte) {
-            ConsoleInputEvent::ShellByte(ch) => ch,
-            ConsoleInputEvent::Consumed => continue,
-            ConsoleInputEvent::Attached(vm_id) => {
-                println!();
-                println!(
-                    "[Axvisor] attached VM[{vm_id}] console; use Ctrl-A c to return to the shell"
-                );
-                continue;
-            }
-            ConsoleInputEvent::Detached(vm_id) => {
-                println!();
-                println!("[Axvisor] detached VM[{vm_id}] console");
-                if !shell_announced {
-                    print_shell_intro();
-                    shell_announced = true;
+                match crate::guest_console::route_host_byte(host_byte) {
+                    ConsoleInputEvent::ShellByte(ch) => ch,
+                    ConsoleInputEvent::ShellSequence(first, second) => {
+                        pending_shell_byte = Some(second);
+                        first
+                    }
+                    ConsoleInputEvent::Consumed => continue,
+                    ConsoleInputEvent::Attached(vm_id) => {
+                        println!();
+                        println!(
+                            "[Axvisor] attached VM[{vm_id}] console; use Ctrl+Alt+H to return to \
+                             the shell"
+                        );
+                        continue;
+                    }
+                    ConsoleInputEvent::Detached(vm_id) => {
+                        println!();
+                        println!("[Axvisor] detached VM[{vm_id}] console");
+                        if !shell_announced {
+                            print_shell_intro();
+                            shell_announced = true;
+                        }
+                        let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
+                        clear_line_and_redraw(
+                            &mut stdout,
+                            &prompt_string(),
+                            current_content,
+                            cursor,
+                        );
+                        continue;
+                    }
+                    ConsoleInputEvent::NoRunningGuest => {
+                        println!();
+                        println!("[Axvisor] no running VM is available for console attachment");
+                        let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
+                        clear_line_and_redraw(
+                            &mut stdout,
+                            &prompt_string(),
+                            current_content,
+                            cursor,
+                        );
+                        continue;
+                    }
                 }
-                let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                clear_line_and_redraw(&mut stdout, &prompt_string(), current_content, cursor);
-                continue;
-            }
-            ConsoleInputEvent::Help => {
-                print_console_help();
-                if crate::guest_console::attached_vm().is_none() {
-                    let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                    clear_line_and_redraw(&mut stdout, &prompt_string(), current_content, cursor);
-                }
-                continue;
-            }
-            ConsoleInputEvent::NoRunningGuest => {
-                println!();
-                println!("[Axvisor] no running VM is available for console attachment");
-                let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                clear_line_and_redraw(&mut stdout, &prompt_string(), current_content, cursor);
-                continue;
             }
         };
 

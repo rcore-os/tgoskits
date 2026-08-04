@@ -102,7 +102,6 @@ impl ArmTimerVmConfig {
 pub struct ArmTimerContext {
     compare_value: u64,
     control: u32,
-    generation: u64,
 }
 
 impl ArmTimerContext {
@@ -114,11 +113,6 @@ impl ArmTimerContext {
     /// Returns the writable `ENABLE` and `IMASK` control bits.
     pub const fn writable_control(self) -> u32 {
         self.control
-    }
-
-    /// Returns the generation used to invalidate stale scheduled wakeups.
-    pub const fn generation(self) -> u64 {
-        self.generation
     }
 
     /// Reads `CTL`, deriving `ISTATUS` from the supplied guest counter.
@@ -136,22 +130,19 @@ impl ArmTimerContext {
         self.compare_value.wrapping_sub(guest_counter) as u32
     }
 
-    /// Updates the writable `CTL` bits and invalidates any scheduled wakeup.
+    /// Updates the writable `CTL` bits.
     pub fn write_control(&mut self, control: u32) {
         self.control = control & WRITABLE_CONTROL;
-        self.bump_generation();
     }
 
-    /// Updates `CVAL` and invalidates any scheduled wakeup.
+    /// Updates `CVAL`.
     pub fn write_compare(&mut self, compare_value: u64) {
         self.compare_value = compare_value;
-        self.bump_generation();
     }
 
     /// Updates `TVAL`, sign-extending the architectural 32-bit value.
     pub fn write_tval(&mut self, guest_counter: u64, timer_value: u32) {
         self.compare_value = guest_counter.wrapping_add((timer_value as i32 as i64) as u64);
-        self.bump_generation();
     }
 
     /// Returns whether the timer's level output is asserted.
@@ -180,16 +171,8 @@ impl ArmTimerContext {
         self.control & ENABLE != 0 && (guest_counter.wrapping_sub(self.compare_value) as i64) >= 0
     }
 
-    fn bump_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-    }
-
     fn reset(&mut self) {
-        let generation = self.generation.wrapping_add(1);
-        *self = Self {
-            generation,
-            ..Self::default()
-        };
+        *self = Self::default();
     }
 }
 
@@ -302,12 +285,10 @@ impl ArmVcpuTimer {
             virtual_timer: ArmTimerContext {
                 compare_value: 0,
                 control: 0,
-                generation: 0,
             },
             physical_timer: ArmTimerContext {
                 compare_value: 0,
                 control: 0,
-                generation: 0,
             },
             guest_hypervisor_control: 0,
             guest_kernel_control: 0,
@@ -324,12 +305,10 @@ impl ArmVcpuTimer {
             virtual_timer: ArmTimerContext {
                 compare_value: 0,
                 control: 0,
-                generation: 0,
             },
             physical_timer: ArmTimerContext {
                 compare_value: 0,
                 control: 0,
-                generation: 0,
             },
             guest_hypervisor_control,
             guest_kernel_control: 0,
@@ -469,7 +448,7 @@ impl ArmVcpuTimer {
         Ok(())
     }
 
-    /// Resets both timer contexts and invalidates scheduled callbacks.
+    /// Resets both timer contexts.
     pub fn reset(&mut self) -> ArmVcpuResult {
         if self.loaded != 0 {
             return Err(ArmVcpuError::BadState);
@@ -501,10 +480,6 @@ pub(crate) const TIMER_VIRTUAL_COMPARE_OFFSET: usize =
 pub(crate) const TIMER_VIRTUAL_CONTROL_OFFSET: usize =
     core::mem::offset_of!(ArmVcpuTimer, virtual_timer)
         + core::mem::offset_of!(ArmTimerContext, control);
-#[cfg(target_arch = "aarch64")]
-pub(crate) const TIMER_VIRTUAL_GENERATION_OFFSET: usize =
-    core::mem::offset_of!(ArmVcpuTimer, virtual_timer)
-        + core::mem::offset_of!(ArmTimerContext, generation);
 #[cfg(target_arch = "aarch64")]
 pub(crate) const TIMER_GUEST_HYPERVISOR_CONTROL_OFFSET: usize =
     core::mem::offset_of!(ArmVcpuTimer, guest_hypervisor_control);
@@ -735,23 +710,18 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_both_timer_outputs_and_invalidates_old_generations() {
+    fn reset_clears_both_timer_outputs() {
         let mut timer = configured_timer();
         timer
             .context_mut(ArmTimerKind::Physical)
             .unwrap()
             .write_control(ENABLE);
-        let before = timer.snapshot().unwrap();
-
         timer.reset().unwrap();
 
         let after = timer.snapshot().unwrap();
         for kind in [ArmTimerKind::Virtual, ArmTimerKind::Physical] {
             assert!(!after.irq_asserted(kind, u64::MAX));
-            assert_ne!(
-                before.context(kind).generation(),
-                after.context(kind).generation()
-            );
+            assert_eq!(after.context(kind), ArmTimerContext::default());
         }
     }
 

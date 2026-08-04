@@ -303,16 +303,6 @@ impl IrqLine {
         }
         Ok(())
     }
-
-    /// Compatibility alias for [`Self::assert`].
-    pub fn raise(&self) -> IrqResult {
-        self.set_asserted("raise", true)
-    }
-
-    /// Compatibility alias for [`Self::deassert`].
-    pub fn lower(&self) -> IrqResult {
-        self.set_asserted("lower", false)
-    }
 }
 
 impl core::fmt::Debug for IrqLine {

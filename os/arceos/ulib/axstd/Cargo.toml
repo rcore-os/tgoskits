@@ -106,6 +106,7 @@ usb = ["irq", "ax-driver/usb"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-runtime/rtc"]
+serial = ["ax-api/serial", "ax-posix-api/serial", "ax-runtime/serial"]
 
 # Backtrace
 backtrace = ["axbacktrace/alloc"]

@@ -10,6 +10,7 @@ use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
     DeviceManagerResult, SerialBackend, build_16550_mmio, build_16550_port, build_pl011_mmio,
+    validate_device_config,
 };
 use axdevice_base::AccessWidth;
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, InterruptTriggerMode};
@@ -514,14 +515,15 @@ pub(crate) fn register_machine_device_factories(
     vm: &crate::AxVM,
     factories: &mut DeviceFactoryRegistry,
 ) -> DeviceManagerResult {
-    let (profile, backend) =
-        vm.with_config(|config| (config.serial_profile(), config.serial_backend()));
+    let (profile, backend_factory) =
+        vm.with_config(|config| (config.serial_profile(), config.serial_backend_factory()));
+    let backend = backend_factory.create();
     factories.register(Arc::new(MachineSerialFactory::new(profile, backend)))
 }
 
 struct MachineSerialFactory {
     profile: GuestSerialProfile,
-    expected_config: EmulatedDeviceConfig,
+    expected: EmulatedDeviceConfig,
     backend: Arc<dyn SerialBackend>,
 }
 
@@ -529,29 +531,17 @@ impl MachineSerialFactory {
     fn new(profile: GuestSerialProfile, backend: Arc<dyn SerialBackend>) -> Self {
         Self {
             profile,
-            expected_config: serial_device_config(profile),
+            expected: serial_device_config(profile),
             backend,
         }
     }
 
     fn validate_config(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult {
-        let expected = &self.expected_config;
-        if config.name == expected.name
-            && config.base_gpa == expected.base_gpa
-            && config.length == expected.length
-            && config.irq_id == expected.irq_id
-            && config.emu_type == expected.emu_type
-            && config.cfg_list == expected.cfg_list
-        {
-            return Ok(());
-        }
-        Err(DeviceManagerError::InvalidConfig {
-            operation: "build machine-owned virtual serial device",
-            detail: alloc::format!(
-                "descriptor for '{}' does not match the immutable machine serial profile",
-                config.name
-            ),
-        })
+        validate_device_config(
+            &self.expected,
+            config,
+            "build machine-owned virtual serial device",
+        )
     }
 }
 

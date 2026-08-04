@@ -343,74 +343,18 @@ mod tests {
     }
 
     #[test]
-    fn mmio_16550_accepts_dword_access_for_four_byte_registers() {
+    fn mmio_16550_preserves_register_stride_and_bus_width_semantics() {
+        const BASE: u64 = 0xfeb5_0000;
+
         let backend = Arc::new(RecordingBackend::default());
-        let irq = level_irq(365);
-        let device = Uart16550MmioDevice::new(0xfeb5_0000, 0x100, 2, 365, backend.clone(), irq);
-
-        let response = device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: false,
-                    addr: 0xfeb5_0000,
-                    width: AccessWidth::Dword,
-                    data: b'A' as u64,
-                },
-                &mut axdevice_base::NoopDeviceAccess::new(axdevice_base::DeviceId::new(0)),
-            )
-            .unwrap();
-
-        assert!(matches!(response, BusResponse::Write));
-        assert_eq!(backend.output.lock().unwrap().as_slice(), b"A");
-    }
-
-    #[test]
-    fn mmio_16550_accepts_byte_access_for_dword_register_map() {
-        let irq = level_irq(365);
         let device = Uart16550MmioDevice::new(
-            0xfeb5_0000,
+            BASE as usize,
             0x100,
             2,
             365,
-            Arc::new(RecordingBackend::default()),
-            irq,
+            backend.clone(),
+            level_irq(365),
         );
-        let mut context = axdevice_base::NoopDeviceAccess::new(axdevice_base::DeviceId::new(0));
-
-        device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: false,
-                    addr: 0xfeb5_0004,
-                    width: AccessWidth::Byte,
-                    data: 1,
-                },
-                &mut context,
-            )
-            .unwrap();
-        let response = device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: true,
-                    addr: 0xfeb5_0004,
-                    width: AccessWidth::Byte,
-                    data: 0,
-                },
-                &mut context,
-            )
-            .unwrap();
-
-        assert!(matches!(response, BusResponse::Read { value: 1 }));
-    }
-
-    #[test]
-    fn mmio_16550_uses_the_low_byte_for_every_bus_width() {
-        let backend = Arc::new(RecordingBackend::default());
-        let irq = level_irq(365);
-        let device = Uart16550MmioDevice::new(0xfeb5_0000, 0x100, 2, 365, backend.clone(), irq);
         let mut context = axdevice_base::NoopDeviceAccess::new(axdevice_base::DeviceId::new(0));
 
         for width in [
@@ -424,7 +368,7 @@ mod tests {
                     &BusAccess {
                         kind: BusKind::Mmio,
                         is_read: false,
-                        addr: 0xfeb5_0000,
+                        addr: BASE,
                         width,
                         data: 0xfeed_0000_0000_005a,
                     },
@@ -432,48 +376,50 @@ mod tests {
                 )
                 .unwrap();
         }
-
         assert_eq!(backend.output.lock().unwrap().as_slice(), b"ZZZZ");
-    }
 
-    #[test]
-    fn mmio_16550_ignores_unimplemented_registers_inside_its_window() {
-        let irq = level_irq(365);
-        let device = Uart16550MmioDevice::new(
-            0xfeb5_0000,
-            0x100,
-            2,
-            365,
-            Arc::new(RecordingBackend::default()),
-            irq,
-        );
-
-        let write = device
+        device
             .access(
                 &BusAccess {
                     kind: BusKind::Mmio,
                     is_read: false,
-                    addr: 0xfeb5_0088,
-                    width: AccessWidth::Dword,
+                    addr: BASE + 4,
+                    width: AccessWidth::Byte,
                     data: 1,
                 },
-                &mut axdevice_base::NoopDeviceAccess::new(axdevice_base::DeviceId::new(0)),
+                &mut context,
             )
             .unwrap();
-        let read = device
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: true,
-                    addr: 0xfeb5_0088,
-                    width: AccessWidth::Dword,
-                    data: 0,
-                },
-                &mut axdevice_base::NoopDeviceAccess::new(axdevice_base::DeviceId::new(0)),
-            )
-            .unwrap();
+        assert!(matches!(
+            device
+                .access(
+                    &BusAccess {
+                        kind: BusKind::Mmio,
+                        is_read: true,
+                        addr: BASE + 4,
+                        width: AccessWidth::Byte,
+                        data: 0,
+                    },
+                    &mut context,
+                )
+                .unwrap(),
+            BusResponse::Read { value: 1 }
+        ));
 
-        assert!(matches!(write, BusResponse::Write));
-        assert!(matches!(read, BusResponse::Read { value: 0 }));
+        assert!(matches!(
+            device
+                .access(
+                    &BusAccess {
+                        kind: BusKind::Mmio,
+                        is_read: true,
+                        addr: BASE + 0x88,
+                        width: AccessWidth::Dword,
+                        data: 0,
+                    },
+                    &mut context,
+                )
+                .unwrap(),
+            BusResponse::Read { value: 0 }
+        ));
     }
 }

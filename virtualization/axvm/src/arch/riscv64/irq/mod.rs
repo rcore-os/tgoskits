@@ -14,13 +14,13 @@
 
 //! RISC-V virtual PLIC interrupt backend.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc};
 
 use ax_kspin::SpinNoIrq;
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, ServiceCardinality, ServiceKey,
-    VirtualInterruptControllerKey,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
+    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
+    validate_device_config,
 };
 use axdevice_base::{
     BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
@@ -253,54 +253,8 @@ impl WiredIrqSink for RiscvPlicWiredSink {
     }
 }
 
-#[derive(Clone)]
-struct DeviceFingerprint {
-    name: alloc::string::String,
-    base_gpa: usize,
-    length: usize,
-    irq_id: usize,
-    device_type: EmulatedDeviceType,
-    cfg_list: Vec<usize>,
-}
-
-impl DeviceFingerprint {
-    fn from_config(config: &EmulatedDeviceConfig) -> Self {
-        Self {
-            name: config.name.clone(),
-            base_gpa: config.base_gpa,
-            length: config.length,
-            irq_id: config.irq_id,
-            device_type: config.emu_type,
-            cfg_list: config.cfg_list.clone(),
-        }
-    }
-
-    fn validate(
-        &self,
-        config: &EmulatedDeviceConfig,
-        operation: &'static str,
-    ) -> DeviceManagerResult {
-        if self.name != config.name
-            || self.base_gpa != config.base_gpa
-            || self.length != config.length
-            || self.irq_id != config.irq_id
-            || self.device_type != config.emu_type
-            || self.cfg_list != config.cfg_list
-        {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation,
-                detail: alloc::format!(
-                    "device '{}' does not match the immutable machine plan",
-                    config.name
-                ),
-            });
-        }
-        Ok(())
-    }
-}
-
 struct RiscvPlicFactory {
-    expected: DeviceFingerprint,
+    expected: EmulatedDeviceConfig,
     runtime: Arc<RiscvPlicRuntime>,
 }
 
@@ -357,8 +311,7 @@ impl DeviceFactory for RiscvPlicFactory {
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        self.expected
-            .validate(config, "build RISC-V virtual PLIC")?;
+        validate_device_config(&self.expected, config, "build RISC-V virtual PLIC")?;
         let device: Arc<dyn Device> = Arc::new(RiscvPlicDevice {
             runtime: self.runtime.clone(),
         });
@@ -443,7 +396,7 @@ pub(crate) fn register_device_factory(
     let runtime =
         RiscvPlicRuntime::new(vm_id, vcpu_count, vplic, physical_irqs, physical_target_cpu)?;
     factories.register(Arc::new(RiscvPlicFactory {
-        expected: DeviceFingerprint::from_config(config),
+        expected: config.clone(),
         runtime: runtime.clone(),
     }))?;
     Ok(runtime)

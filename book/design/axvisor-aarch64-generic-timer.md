@@ -4,7 +4,7 @@
 
 本文定义 Axvisor 使用的、不兼容旧实现的 AArch64 通用定时器模型，也是实现必须遵守的所有权与 world switch 契约。凡修改定时器状态、计数器 offset、PPI 完成、vCPU 迁移或固件资源，均须在合入前同步更新本文。
 
-实现基线：`origin/dev` 的 `e2fe59dd65a2283ce6e2fb70f828f0df810d3724`。
+本文与合入最新 `origin/dev` 后的当前实现同步；实现契约变化时必须在同一变更中更新本文。
 
 本设计统一适用于 QEMU GICv2、QEMU GICv3、RK3568、RK3588 及其他 AArch64 host。不得通过板卡名称、SoC compatible 或 GIC 版本特判修复问题。
 
@@ -33,7 +33,7 @@
 
 ## 参考模型
 
-实现遵循 Linux commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 中 KVM nVHE 的所有权模型：
+实现遵循 Linux commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 中 KVM nVHE 的所有权模型。这里故意固定参考快照，避免上游后续重构改变本文所引用的具体状态机与操作顺序：
 
 - [`struct arch_timer_vm_data` 与 `struct arch_timer_context`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/kvm/arm_arch_timer.h) 将 VM offset 与每 vCPU 定时器 context 分离，并跟踪 context 是否已装载到硬件。
 - [`timer_save_state`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/kvm/arch_timer.c) 先读取 CTL/CVAL、禁用定时器并执行 ISB，之后才清除计数器 offset。
@@ -88,7 +88,7 @@ AxVM 记录每个已启用物理 CPU 的硬件 `CNTFRQ_EL0`。创建 VM 时，�
 - `CNTVCT = CNTPCT - virtual_offset`；
 - CNTV 直接在硬件运行；
 - CNTP/CNTPCT 访问陷入，并使用当前为零的 `physical_offset`；
-- pause、deschedule 和 restart 不重写 offset，因此客户机时间持续推进；
+- 暂停、调度离开和重启不重写 offset，因此客户机时间持续推进；
 - 不支持 nested virtualization 和客户机 EL2 timer。
 
 Stage-2 页表级数和 IPA 位宽取所有可能目标 CPU capability 的最小值。定时器和页表选择因而使用同一个完整 placement 集合，不能静默退化为创建 VM 时恰好所在 CPU 的能力。
@@ -117,13 +117,12 @@ VGIC 状态和当前 pCPU 的 timer-PPI route 在该事务前准备完成。
 随后，公共退出事务执行：
 
 1. 把 CNTV CTL 和 CVAL 读入 vCPU context；
-2. 推进 timer generation；
-3. 保存客户机 `CNTKCTL_EL1`；
-4. 写 `CNTV_CTL_EL0 = 0`，随后执行 ISB；
-5. 清除 `CNTVOFF_EL2`；
-6. 恢复 host `CNTHCTL_EL2` 与 `CNTKCTL_EL1`；
-7. 标记 timer context 已卸载，随后执行 ISB；
-8. 只有完成上述步骤后才调用 Rust。
+2. 保存客户机 `CNTKCTL_EL1`；
+3. 写 `CNTV_CTL_EL0 = 0`，随后执行 ISB；
+4. 清除 `CNTVOFF_EL2`；
+5. 恢复 host `CNTHCTL_EL2` 与 `CNTKCTL_EL1`；
+6. 标记 timer context 已卸载，随后执行 ISB；
+7. 只有完成上述步骤后才调用 Rust。
 
 恢复 host timer context 后，Rust 校验捕获的 IAR 值，执行 split-EOI priority drop，并把它转换为 opaque completion token。然后先发布当前 CNTV/CNTP level，再保存并合并 VGIC 状态。如果该退出源于 trapped DIR，那么客户机此前对 CVAL/CTL 的写入会在 deactivation 判断 level 是否需要重新 pending 前生效。
 
@@ -166,14 +165,16 @@ Assigned physical SPI 使用经过所有权校验的 HW-backed LR：
 
 每个已调度 callback 携带：
 
-- 一个 vCPU timer generation；
+- 一个由 `Aarch64TimerBinding` 分配的 WFI 等待代次；
 - 一个包含 owner CPU 和 timer token 的 `VmTimerHandle`。
 
-Callback 只校验 generation 并唤醒 vCPU。在 task context 中，vCPU 重新读取当前 physical counter、发布 timer level，并在事件过早到达时重新 arm。它绝不只根据 timer-wheel callback assert PPI。
+Callback 只校验 `Aarch64TimerBinding::wait_generation` 并唤醒 vCPU。在 task context 中，vCPU 重新读取当前 physical counter、发布 timer level，并在事件过早到达时重新 arm。它绝不只根据 timer-wheel callback assert PPI。
 
 取消操作使用 handle 中记录的 owner CPU。远程取消在该 owner 上执行并重新编程它的 one-shot comparator，避免迁移后取消错误 CPU 的 queue，或积累长期 stale event。
 
-Reset 会推进而不是重新初始化每个 timer generation。这样，reset 前使用的 generation 不会仅因为 timer context 被清空而再次有效。
+当前 `ax-task` 的通用硬件 comparator 尚未分别记录 programmed、pending 和 active 状态。为避免在 timer IRQ 事件被处理前，重写一个已经过期的 comparator 并清掉待处理硬件中断，`begin_hardware_timer_irq` 只在进入匹配的 IRQ 路径后清除已编程 deadline 记录。该兼容保护可能让过期 comparator 在一段时间内继续作为调度参考，延迟后续 deadline 的重新编程；这是已接受的临时性能代价，不改变定时器正确性。只有当 IRQ acknowledge 路径能显式消费 comparator pending 状态、且不再依赖 comparator rewrite 时，才能删除该保护。
+
+Reset、stop 和 drop 通过 `Aarch64TimerBinding::invalidate_wait` 推进等待代次。`ArmTimerContext` 只保存架构寄存器状态和 loaded 标志，不拥有调度代次；因此清空 timer context 不会让旧 callback 再次有效。
 
 ## 固件契约
 
@@ -212,10 +213,10 @@ Runtime vCPU 绑定和 FDT 安装校验并消费同一份 `GuestTimerProfile`；
 - 清除 CNTVOFF 前禁用 CNTV 并执行 ISB；
 - 完整 entry/exit 汇编操作顺序；
 - 停止 CNTV 前完成 lower-EL IAR acknowledgement；
-- CVAL/TVAL、ENABLE、IMASK、派生 ISTATUS、wraparound 和 reset generation；
+- CVAL/TVAL、ENABLE、IMASK、派生 ISTATUS、wraparound 和 timer context reset；
 - 最早的 CNTV/CNTP WFI deadline；
 - 目标 CPU 频率一致，以及目标 CPU capability 取最小值；
-- owner-aware timer cancel 与 stale generation；
+- owner-aware timer cancel 与 stale wait generation；
 - GICv2 和 GICv3 hypervisor host CPU interface 都启用 split EOI；
 - GICv2 EOI/DIR 与 GICv3 TDIR 退休；
 - GICv2/GICv3 HW-backed assigned-SPI LR identity，以及普通硬件退休不重复 host deactivation；

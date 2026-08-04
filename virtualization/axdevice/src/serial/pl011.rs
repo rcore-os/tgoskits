@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use ax_kspin::SpinRaw;
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
-use super::{SerialBackend, fifo::ByteFifo};
+use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
 
 const REG_DR: usize = 0x000;
 const REG_RSR_ECR: usize = 0x004;
@@ -102,8 +102,7 @@ impl Pl011State {
 /// PL011 UART core with an external byte backend and virtual IRQ.
 pub struct Pl011 {
     state: SpinRaw<Pl011State>,
-    backend: Arc<dyn SerialBackend>,
-    irq: IrqLine,
+    endpoint: SerialEndpoint,
 }
 
 impl Pl011 {
@@ -111,23 +110,19 @@ impl Pl011 {
     pub fn new(backend: Arc<dyn SerialBackend>, irq: IrqLine) -> Self {
         Self {
             state: SpinRaw::new(Pl011State::new()),
-            backend,
-            irq,
+            endpoint: SerialEndpoint::new(backend, irq, "signal PL011 IRQ"),
         }
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
     pub fn poll(&self) -> DeviceResult {
-        let mut bytes = [0; 64];
-        let count = self.backend.read(&mut bytes).min(bytes.len());
-        let asserted = {
+        self.endpoint.poll_rx(|bytes| {
             let mut state = self.state.lock();
-            for &byte in &bytes[..count] {
+            for &byte in bytes {
                 state.push_rx(byte);
             }
             state.irq_asserted()
-        };
-        self.signal_irq(asserted)
+        })
     }
 
     /// Reads one PL011 register.
@@ -158,7 +153,7 @@ impl Pl011 {
             };
             (value, state.irq_asserted())
         };
-        self.signal_irq(asserted)?;
+        self.endpoint.set_irq_level(asserted)?;
         Ok(value as u64)
     }
 
@@ -206,21 +201,9 @@ impl Pl011 {
         };
 
         if let Some(byte) = output {
-            self.backend.write(core::slice::from_ref(&byte));
+            self.endpoint.write(core::slice::from_ref(&byte));
         }
-        self.signal_irq(asserted)
-    }
-
-    fn signal_irq(&self, asserted: bool) -> DeviceResult {
-        let result = if asserted {
-            self.irq.raise()
-        } else {
-            self.irq.lower()
-        };
-        result.map_err(|error| DeviceError::Backend {
-            operation: "signal PL011 IRQ",
-            detail: alloc::format!("{error}"),
-        })
+        self.endpoint.set_irq_level(asserted)
     }
 }
 

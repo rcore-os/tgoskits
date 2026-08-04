@@ -19,8 +19,8 @@ use axdevice_base::{
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
-    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerResult, DeviceRegistration,
+    ServiceCardinality, ServiceKey, VirtualInterruptControllerKey, validate_device_config,
 };
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
@@ -293,22 +293,7 @@ impl LoongArchPchPicFactory {
     }
 
     fn validate(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult {
-        if self.expected.name != config.name
-            || self.expected.base_gpa != config.base_gpa
-            || self.expected.length != config.length
-            || self.expected.irq_id != config.irq_id
-            || self.expected.emu_type != config.emu_type
-            || self.expected.cfg_list != config.cfg_list
-        {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build LoongArch virtual PCH-PIC",
-                detail: alloc::format!(
-                    "device '{}' does not match the immutable machine plan",
-                    config.name
-                ),
-            });
-        }
-        Ok(())
+        validate_device_config(&self.expected, config, "build LoongArch virtual PCH-PIC")
     }
 }
 

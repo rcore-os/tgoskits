@@ -16,7 +16,7 @@
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use axdevice::{NullSerialBackend, SerialBackend};
+use axdevice::{NullSerialBackendFactory, SerialBackendFactory};
 pub use axvm_types::{
     AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
     PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
@@ -112,7 +112,7 @@ pub struct AxVMConfig {
     gic_profile: Option<GuestGicProfile>,
     plic_profile: Option<GuestPlicProfile>,
     timer_profile: Option<GuestTimerProfile>,
-    serial_backend: Arc<dyn SerialBackend>,
+    serial_backend_factory: Arc<dyn SerialBackendFactory>,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -135,8 +135,8 @@ pub struct AxVMConfigParams {
     pub interrupt_mode: VMInterruptMode,
     /// Machine-owned virtual serial resources.
     pub serial_profile: Option<GuestSerialProfile>,
-    /// App-owned byte stream used by the mandatory virtual serial device.
-    pub serial_backend: Option<Arc<dyn SerialBackend>>,
+    /// App-owned backend factory for the mandatory virtual serial device.
+    pub serial_backend_factory: Option<Arc<dyn SerialBackendFactory>>,
 }
 
 impl AxVMConfig {
@@ -165,9 +165,9 @@ impl AxVMConfig {
             gic_profile: None,
             plic_profile: None,
             timer_profile: machine.timer,
-            serial_backend: params
-                .serial_backend
-                .unwrap_or_else(|| Arc::new(NullSerialBackend)),
+            serial_backend_factory: params
+                .serial_backend_factory
+                .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
         }
     }
 
@@ -516,9 +516,9 @@ impl AxVMConfig {
         self.plic_profile.as_ref()
     }
 
-    /// Returns the byte stream attached to the mandatory virtual serial port.
-    pub fn serial_backend(&self) -> Arc<dyn SerialBackend> {
-        self.serial_backend.clone()
+    /// Returns the factory that creates a backend for each virtual UART graph.
+    pub fn serial_backend_factory(&self) -> Arc<dyn SerialBackendFactory> {
+        self.serial_backend_factory.clone()
     }
 
     /// Relocate the guest kernel image while preserving the configured

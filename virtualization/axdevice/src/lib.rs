@@ -28,6 +28,7 @@ extern crate std;
 #[macro_use]
 extern crate log;
 
+mod config_validation;
 mod device;
 mod error;
 mod factory;
@@ -46,6 +47,7 @@ mod x86;
 
 pub use axdevice_base::{AccessWidth, Device, Port, SysRegAddr};
 pub use axvm_types::GuestPhysAddr;
+pub use config_validation::validate_device_config;
 pub use device::{
     DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
 };
@@ -68,8 +70,8 @@ pub use loongarch_pch_pic::{
 pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
 pub use serial::{
-    NullSerialBackend, Pl011, SerialBackend, Uart16550, build_16550_mmio, build_16550_port,
-    build_pl011_mmio,
+    NullSerialBackend, NullSerialBackendFactory, Pl011, SerialBackend, SerialBackendFactory,
+    Uart16550, build_16550_mmio, build_16550_port, build_pl011_mmio,
 };
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 #[cfg(target_arch = "x86_64")]

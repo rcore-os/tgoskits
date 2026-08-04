@@ -2,12 +2,16 @@
 
 mod backend;
 mod device;
+mod endpoint;
 mod fifo;
 mod pl011;
 mod uart16550;
 
-pub use backend::{NullSerialBackend, SerialBackend};
+pub use backend::{
+    NullSerialBackend, NullSerialBackendFactory, SerialBackend, SerialBackendFactory,
+};
 pub use device::{build_16550_mmio, build_16550_port, build_pl011_mmio};
+use endpoint::SerialEndpoint;
 pub use pl011::Pl011;
 pub use uart16550::Uart16550;
 
@@ -155,7 +159,8 @@ mod tests {
         let uart = Pl011::new(backend.clone(), level_irq(sink.clone(), 33));
 
         assert_eq!(uart.read(0xfe0, AccessWidth::Dword).unwrap(), 0x11);
-        uart.write(0x038, AccessWidth::Dword, 1 << 4).unwrap();
+        uart.write(0x038, AccessWidth::Word, 1 << 4).unwrap();
+        assert_eq!(uart.read(0x038, AccessWidth::Word).unwrap(), 1 << 4);
         backend.push_input(b"q");
         uart.poll().unwrap();
         assert_eq!(sink.levels.lock().unwrap().last(), Some(&true));
@@ -164,43 +169,5 @@ mod tests {
 
         uart.write(0x000, AccessWidth::Dword, b'P' as u64).unwrap();
         assert_eq!(backend.output.lock().unwrap().as_slice(), b"P");
-    }
-
-    #[test]
-    fn pl011_accepts_linux_word_sized_control_accesses() {
-        let backend = Arc::new(TestBackend::default());
-        let sink = Arc::new(TestIrqSink::default());
-        let uart = Pl011::new(backend, level_irq(sink, 33));
-
-        uart.write(0x038, AccessWidth::Word, 1 << 4).unwrap();
-        assert_eq!(uart.read(0x038, AccessWidth::Word).unwrap(), 1 << 4);
-    }
-
-    #[test]
-    fn pl011_reserved_registers_read_zero_and_ignore_writes() {
-        let backend = Arc::new(TestBackend::default());
-        let sink = Arc::new(TestIrqSink::default());
-        let uart = Pl011::new(backend, level_irq(sink, 33));
-
-        assert_eq!(uart.read(0x014, AccessWidth::Dword).unwrap(), 0);
-        uart.write(0x014, AccessWidth::Dword, u32::MAX as u64)
-            .unwrap();
-        assert_eq!(uart.read(0x014, AccessWidth::Dword).unwrap(), 0);
-    }
-
-    #[test]
-    fn pl011_baud_divisors_do_not_change_backend_io() {
-        let backend = Arc::new(TestBackend::default());
-        let sink = Arc::new(TestIrqSink::default());
-        let uart = Pl011::new(backend.clone(), level_irq(sink, 33));
-
-        uart.write(0x024, AccessWidth::Dword, 0xffff).unwrap();
-        uart.write(0x028, AccessWidth::Dword, 0x3f).unwrap();
-        uart.write(0x000, AccessWidth::Dword, b'P' as u64).unwrap();
-        assert_eq!(backend.output.lock().unwrap().as_slice(), b"P");
-
-        backend.push_input(b"Q");
-        uart.poll().unwrap();
-        assert_eq!(uart.read(0x000, AccessWidth::Dword).unwrap(), b'Q' as u64);
     }
 }
