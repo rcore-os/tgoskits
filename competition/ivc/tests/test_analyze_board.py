@@ -472,6 +472,42 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertEqual(result["raw_samples"]["sample_count"], 4)
         self.assertTrue(result["raw_samples"]["uart_sha256_complete"])
 
+    def test_raw_hash_quorum_survives_one_uart_collision(self) -> None:
+        raw_path = self.write_raw_csv()
+        digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
+        uart_record = (
+            "IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=4 "
+            f"sha256={digest}"
+        )
+        damaged_record = uart_record.replace(digest, digest[:32] + digest[33:])
+        log = self.raw_log().replace(
+            uart_record,
+            "\n".join((damaged_record, uart_record, uart_record)),
+        )
+
+        result = analyzer.analyze(self.write_log(log), 4, raw_path)
+
+        self.assertEqual(result["raw_samples"]["uart_sha256"], digest)
+        self.assertTrue(result["raw_samples"]["uart_sha256_complete"])
+
+    def test_raw_hash_conflict_without_a_quorum_is_rejected(self) -> None:
+        digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
+        uart_record = (
+            "IVC-STARRY-RAW path=/var/lib/ivc/raw.csv samples=4 "
+            f"sha256={digest}"
+        )
+        damaged_record = uart_record.replace(digest, digest[:32] + digest[33:])
+        log = self.raw_log().replace(
+            uart_record,
+            "\n".join((damaged_record, uart_record)),
+        )
+
+        with self.assertRaisesRegex(
+            analyzer.ConflictingRecordsError,
+            "conflicting SHA-256 fragments",
+        ):
+            analyzer.analyze(self.write_log(log), 4, self.write_raw_csv())
+
     def test_snapshot_guest_manifest_mismatch_is_rejected(self) -> None:
         digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
         log = self.raw_log().replace(

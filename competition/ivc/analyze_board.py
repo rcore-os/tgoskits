@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 import gzip
 import hashlib
@@ -1704,6 +1705,24 @@ def find_hash_fragment_record(lines: list[str], prefix: str) -> dict[str, str]:
         for fragment in fragments
     ):
         raise AnalysisError(f"invalid SHA-256 fragment in {prefix.strip()} record")
+    fragment_counts = Counter(fragments)
+    quorum_fragments = [
+        fragment for fragment, count in fragment_counts.items() if count >= 2
+    ]
+    if quorum_fragments:
+        longest_fragment = max(quorum_fragments, key=len)
+        if any(
+            not longest_fragment.startswith(fragment)
+            for fragment in quorum_fragments
+        ):
+            raise ConflictingRecordsError(
+                f"conflicting SHA-256 quorums in {prefix.strip()} records"
+            )
+        return {
+            "path": reference["path"],
+            "samples": reference["samples"],
+            "sha256": longest_fragment,
+        }
     longest_fragment = max(fragments, key=len)
     if any(not longest_fragment.startswith(fragment) for fragment in fragments):
         raise ConflictingRecordsError(
