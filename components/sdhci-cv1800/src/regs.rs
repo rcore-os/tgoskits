@@ -74,7 +74,7 @@ pub const ERR_INT_CMD_MASK: u16 =
 
 pub const ERR_INT_DAT_MASK: u16 = ERR_INT_DAT_TIMEOUT | ERR_INT_DAT_CRC | ERR_INT_DAT_END_BIT;
 
-/// Signal Enable: 仅使能 CARD_INT (PIO 事件由 wait 函数直接轮询 INT_STATUS)
+/// Signal Enable: 仅使能 CARD_INT（XFER_COMPLETE 信号由 poll_int_status 阻塞前动态 un-mask）
 pub const NORM_INT_SIG_MASK: u16 = NORM_INT_CARD_INT;
 
 pub const ERR_INT_SIG_MASK: u16 = 0;
@@ -177,8 +177,4 @@ pub const CAPS_BASE_FREQ_MASK: u32 = 0xFF; // 基频字段掩码 (8 bits)
 pub const RESET_TIMEOUT: u32 = 100_000;
 pub const CLOCK_STABLE_TIMEOUT: u32 = 100_000;
 pub const CMD_RESPONSE_TIMEOUT: u32 = 100_000;
-pub const CMD5_READY_TIMEOUT: u32 = 1_000;
 pub const CMD5_OCR_RETRY: u32 = 1000;
-pub const PIO_TIMEOUT: u32 = 1_000_000;
-pub const FUNC_READY_TIMEOUT: u32 = 1_000;
-pub const FUNC_READY_DELAY: u32 = 100_000;

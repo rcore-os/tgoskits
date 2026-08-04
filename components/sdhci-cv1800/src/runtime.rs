@@ -1,9 +1,9 @@
 //! OS timing capability injection.
 //!
-//! The controller driver needs millisecond delays and a CPU-yield while polling
-//! hardware, but must not bind to any specific kernel's task runtime. The OS
-//! glue installs a [`SdhciDelay`] provider once via [`set_delay`]; the driver
-//! reaches it through [`delay`].
+//! The controller driver needs millisecond delays and an interrupt-driven
+//! blocking wait, but must not bind to any specific kernel's task runtime.
+//! The OS glue installs a [`SdhciDelay`] provider once via [`set_delay`];
+//! the driver reaches it through [`delay`].
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -11,14 +11,21 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 pub trait SdhciDelay: Send + Sync + 'static {
     /// Blocking delay for the given milliseconds.
     fn delay_ms(&self, ms: u64);
-    /// Yield the CPU to other tasks while polling hardware.
-    fn yield_now(&self);
+    /// Block the current task until a hardware interrupt wakes it, or timeout.
+    /// Returns `true` if the wait timed out, `false` if woken by interrupt.
+    ///
+    /// The default implementation uses a sleep-based fallback for compatibility
+    /// with OS glue that hasn't been updated with interrupt-driven wake support.
+    fn block_timeout(&self, timeout_ms: u64) -> bool {
+        self.delay_ms(timeout_ms);
+        true
+    }
 }
 
 static DELAY: AtomicPtr<&'static dyn SdhciDelay> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Installs the timing capability provider. Call once during init, before
-/// driving the controller.
+/// driving the controller. Must not be called concurrently with [`delay`].
 pub fn set_delay(provider: &'static dyn SdhciDelay) {
     let boxed = alloc::boxed::Box::new(provider);
     let ptr = alloc::boxed::Box::into_raw(boxed);

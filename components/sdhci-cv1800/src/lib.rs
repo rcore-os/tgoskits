@@ -3,13 +3,14 @@
 //! 职责:
 //!   - SDHCI 标准寄存器操作 (CMD52/CMD53/PIO)
 //!   - SDIO 卡枚举 (CMD5/CMD3/CMD7)
-//!   - 中断处理 (ISR 仅 CARD_INT, PIO 事件直接轮询 INT_STATUS)
+//!   - 中断处理 (ISR 处理 CARD_INT + XFER_COMPLETE)
 //!   - 时钟/电源/总线宽度配置
 //!
 //! 设计:
-//!   - ISR: 仅处理 CARD_INT (WiFi 芯片通知有数据可读)
-//!   - PIO: wait_* 方法直接轮询 INT_STATUS 寄存器，W1C 清除
-//!   - 分离 ISR/PIO 消除竞态条件
+//!   - ISR: 处理 CARD_INT (通知 WiFi 驱动) + XFER_COMPLETE (唤醒阻塞任务)
+//!   - PIO: wait_* 方法 Phase 1 轮询 INT_STATUS, Phase 2 中断驱动等待
+//!   - 单核串行化: ISR 与任务在单 hart 上执行。SIG_EN RMW 仍可被 ISR 抢占，
+//!     但依赖 XFER_COMPLETE sticky bit 自愈（详见 irq.rs 模块文档）。
 
 #![no_std]
 
@@ -27,6 +28,15 @@ pub use runtime::{SdhciDelay, set_delay};
 use sdio_host::{SdioCardIrq, SdioHost, cccr::*, cmd::*, error::SdioError};
 
 use crate::regs::*;
+
+/// Phase 1 快速自旋迭代次数（~50µs on C906 @1GHz）
+const PHASE1_SPIN_ITERS: u32 = 1000;
+/// Phase 2 单次等待时长 (ms)
+const PHASE2_STEP_MS: u64 = 10;
+/// Phase 2 最大迭代次数（总预算 = 20 × 10ms = 200ms）
+const PHASE2_MAX_ITERS: u32 = 20;
+/// Phase 2 中段警告阈值（迭代次数）
+const PHASE2_WARN_AT: u32 = 10;
 
 #[inline]
 pub(crate) fn delay_ms(ms: u64) {
@@ -108,65 +118,105 @@ impl CviSdhci {
         }
     }
 
+    /// W1C-clear only the given bits in INT_STATUS_NORM.
+    /// Never clears CARD_INT — that is exclusively managed by the ISR/mask protocol.
+    fn clear_int_status_norm(&self, bits: u16) {
+        self.write::<u16>(SDHCI_INT_STATUS_NORM, bits);
+    }
+
+    /// Poll INT_STATUS once: check for error or the wanted bit, consuming on match.
+    /// Returns:
+    /// - `Some(Ok(()))` if the wanted bit is set (W1C cleared)
+    /// - `Some(Err(...))` if an error interrupt is detected (W1C cleared + DAT reset)
+    /// - `None` if neither condition is met (keep polling/waiting)
+    fn poll_status_once(&self, bit: u16) -> Option<Result<(), SdioError>> {
+        let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
+        if norm & NORM_INT_ERROR != 0 {
+            let err = self.read::<u16>(SDHCI_INT_STATUS_ERR);
+            self.write::<u16>(SDHCI_INT_STATUS_ERR, err);
+            // Selective clear: only error bits + waited bit, preserving CARD_INT
+            // (mirrors the timeout path's narrowed clear policy).
+            self.clear_int_status_norm(NORM_INT_ERROR | bit);
+            self.reset_dat_line();
+            return Some(Err(Self::classify_error(err)));
+        }
+        if norm & bit != 0 {
+            self.clear_int_status_norm(bit);
+            return Some(Ok(()));
+        }
+        None
+    }
+
     /// 直接轮询 INT_STATUS_NORM，等待指定 bit 置位后 W1C 清除
+    ///
+    /// Phase 1: 快速自旋 (PHASE1_SPIN_ITERS 次, ~50µs)
+    /// Phase 2: XFER_COMPLETE 走硬件中断驱动等待；其他位使用 10ms 睡眠轮询
     ///
     /// 同时检测 Error 中断：如果 ERROR bit (bit 15) 置位，
     /// 读取 ERR_STATUS 并 W1C 清除所有状态位，然后返回错误。
     fn poll_int_status(&self, bit: u16) -> Result<(), SdioError> {
         // Phase 1: 快速自旋
-        for _ in 0..1000 {
-            let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
-            if norm & NORM_INT_ERROR != 0 {
-                let err = self.read::<u16>(SDHCI_INT_STATUS_ERR);
-                self.write::<u16>(SDHCI_INT_STATUS_ERR, err);
-                self.write::<u16>(SDHCI_INT_STATUS_NORM, norm);
-                self.reset_dat_line();
-                return Err(Self::classify_error(err));
-            }
-            if norm & bit != 0 {
-                self.write::<u16>(SDHCI_INT_STATUS_NORM, bit);
-                return Ok(());
+        for _ in 0..PHASE1_SPIN_ITERS {
+            if let Some(result) = self.poll_status_once(bit) {
+                return result;
             }
             core::hint::spin_loop();
         }
-        // Phase 2: 协作式等待
-        for i in 0..200_000 {
-            let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
-            if norm & NORM_INT_ERROR != 0 {
-                let err = self.read::<u16>(SDHCI_INT_STATUS_ERR);
-                self.write::<u16>(SDHCI_INT_STATUS_ERR, err);
-                self.write::<u16>(SDHCI_INT_STATUS_NORM, norm);
-                self.reset_dat_line();
-                return Err(Self::classify_error(err));
+        // Phase 2: XFER_COMPLETE 走硬件中断驱动等待；其他位走纯超时睡眠
+        // （不经过 WaitQueue——ISR 不会为这些位发 notify，经过 WQ 是无效开销）
+        let use_irq = bit == NORM_INT_XFER_COMPLETE;
+        let mut timeout_count: u32 = 0;
+        for i in 0..PHASE2_MAX_ITERS {
+            // Race guard: 阻塞前先检查状态寄存器。
+            // 注意：pre-check 不能关闭 unmask→block 之间的丢唤醒窗口，
+            // 真正的防护是 XFER_COMPLETE sticky bit + post-wake recheck。
+            if let Some(result) = self.poll_status_once(bit) {
+                return result;
             }
-            if norm & bit != 0 {
-                self.write::<u16>(SDHCI_INT_STATUS_NORM, bit);
-                return Ok(());
-            }
-            if i == 100_000 {
+
+            if i == PHASE2_WARN_AT {
                 let pres = self.read::<u32>(SDHCI_PRESENT_STATE);
+                let sts = self.read::<u16>(SDHCI_INT_STATUS_NORM);
                 log::warn!(
-                    "[SDHCI] poll_int mid-timeout: bit=0x{:04x} PRES=0x{:08x} INT_STS=0x{:04x}",
+                    "[SDHCI] poll_int mid-timeout: bit=0x{:04x} PRES=0x{:08x} INT_STS=0x{:04x} \
+                     timeouts={}",
                     bit,
                     pres,
-                    norm
+                    sts,
+                    timeout_count
                 );
             }
-            crate::runtime::delay().yield_now();
+
+            if use_irq {
+                irq::unmask_xfer_complete_signal();
+                let _timed_out = crate::runtime::delay().block_timeout(PHASE2_STEP_MS);
+            } else {
+                // 非 XFER 位：直接 sleep，不经过 WaitQueue——
+                // ISR 只对 XFER_COMPLETE 发 notify，经过 WQ 是无效开销。
+                crate::runtime::delay().delay_ms(PHASE2_STEP_MS);
+            }
+            timeout_count += 1;
+
+            // 被唤醒后检查状态寄存器
+            if let Some(result) = self.poll_status_once(bit) {
+                return result;
+            }
         }
         let pres = self.read::<u32>(SDHCI_PRESENT_STATE);
         let sts = self.read::<u16>(SDHCI_INT_STATUS_NORM);
         log::error!(
-            "[SDHCI] poll_int_status timeout: bit=0x{:04x} PRES=0x{:08x} INT_STS=0x{:04x}",
+            "[SDHCI] poll_int_status timeout: bit=0x{:04x} PRES=0x{:08x} INT_STS=0x{:04x} \
+             timeouts={}",
             bit,
             pres,
-            sts
+            sts,
+            timeout_count
         );
         // 超时后总线可能仍处于 DAT-busy(PRES bit1 DATA_INHIBIT 置位),若不复位
         // DAT 线状态机,后续任何数据命令的 wait_data_idle 都会一直超时,整条 SDIO
-        // 总线被焊死(连 WiFi 模式切回 AP 也起不来)。这里对齐错误中断分支:清残留
-        // INT_STATUS 并复位 DAT 线,让总线能从一次读超时中恢复。
-        self.write::<u16>(SDHCI_INT_STATUS_NORM, sts);
+        // 总线被焊死(连 WiFi 模式切回 AP 也起不来)。这里对齐错误中断分支:选择性
+        // 清除错误位 + 当前等待位（避免误清 CARD_INT），然后复位 DAT 线。
+        self.clear_int_status_norm(NORM_INT_ERROR | bit);
         self.reset_dat_line();
         Err(SdioError::Timeout)
     }
@@ -536,13 +586,14 @@ impl CviSdhci {
         self.set_clock(400_000)
     }
 
-    /// 使能中断状态位 + CARD_INT 信号
+    /// 使能中断状态位 + CARD_INT 信号。
+    /// XFER_COMPLETE 信号由 poll_int_status 阻塞前通过 unmask_xfer_complete_signal 动态启用。
     fn enable_interrupts_irq(&self) -> Result<(), SdioError> {
         irq::irq_state_init(self.base);
         // Status Enable: 使能所有状态位 (用于 poll_int_status 轮询)
         self.write::<u16>(SDHCI_NORM_INT_STS_EN, NORM_INT_ENABLE_MASK);
         self.write::<u16>(SDHCI_ERR_INT_STS_EN, ERR_INT_ENABLE_MASK);
-        // Signal Enable: 仅使能 CARD_INT (ISR 只处理 CARD_INT)
+        // Signal Enable: 仅使能 CARD_INT；XFER_COMPLETE 由 poll_int_status 动态 un-mask
         irq::enable_irq_signals();
         Ok(())
     }

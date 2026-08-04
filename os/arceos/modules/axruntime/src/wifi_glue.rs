@@ -14,6 +14,7 @@ use alloc::boxed::Box;
 use core::{future::poll_fn, time::Duration};
 
 use aic8800::{PollFn, SendPollFn, TimedOut, WifiRuntime};
+use ax_task::WaitQueue;
 use sdhci_cv1800::SdhciDelay;
 
 /// ArceOS-backed implementation of the Wi-Fi driver's runtime capabilities.
@@ -61,7 +62,16 @@ impl WifiRuntime for ArceosWifiRuntime {
     }
 }
 
-/// ArceOS-backed SDHCI delay/yield provider.
+/// WaitQueue for PIO interrupt-driven wakeup.
+/// The SDHCI ISR calls `sdhci_pio_wake_callback` which notifies this queue,
+/// waking tasks blocked in `ArceosDelay::block_timeout`.
+static SDHCI_PIO_WQ: WaitQueue = WaitQueue::new();
+
+fn sdhci_pio_wake_callback() {
+    SDHCI_PIO_WQ.notify_one_from_irq();
+}
+
+/// ArceOS-backed SDHCI delay/wake provider.
 struct ArceosDelay;
 
 impl SdhciDelay for ArceosDelay {
@@ -69,8 +79,8 @@ impl SdhciDelay for ArceosDelay {
         ax_task::sleep(Duration::from_millis(ms));
     }
 
-    fn yield_now(&self) {
-        ax_task::yield_now();
+    fn block_timeout(&self, timeout_ms: u64) -> bool {
+        SDHCI_PIO_WQ.wait_timeout(Duration::from_millis(timeout_ms))
     }
 }
 
@@ -80,6 +90,13 @@ static ARCEOS_DELAY: ArceosDelay = ArceosDelay;
 /// Installs the ArceOS runtime into the aic8800 driver core *and* the
 /// sdhci-cv1800 delay glue. Call once during init, before any Wi-Fi operation.
 pub(crate) fn install_runtime() {
+    // The ISR/task SIG_EN RMW protocol relies on single-core serialization;
+    // wake correctness under SMP requires additional fencing (see irq.rs).
+    debug_assert!(
+        ax_hal::cpu_num() == 1,
+        "sdhci-cv1800 ISR design assumes single-core; SMP not yet supported"
+    );
     sdhci_cv1800::set_delay(&ARCEOS_DELAY);
     aic8800::set_runtime(&ARCEOS_RUNTIME);
+    sdhci_cv1800::irq::register_pio_wake_callback(sdhci_pio_wake_callback);
 }
