@@ -7,11 +7,9 @@ use alloc::{
 };
 
 use anyhow::{Result, bail};
-use ax_kspin::SpinRaw as StateLock;
-use ax_sync::Mutex as TaskMutex;
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
 use core::ops::Bound::{Excluded, Unbounded};
-use spin::LazyLock;
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use super::host::write_host_bytes;
 
@@ -63,11 +61,11 @@ pub struct GuestConsoleMux {
 
 #[derive(Debug)]
 struct ConsoleCore {
-    state: StateLock<ConsoleState>,
+    state: Mutex<ConsoleState>,
     /// Serializes host writes with backend replacement and invalidation.
     ///
     /// Code that needs both locks must acquire `output_lock` before `state`.
-    output_lock: TaskMutex<()>,
+    output_lock: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -84,19 +82,10 @@ struct ConsoleState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BackendGeneration(u64);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct GuestState {
     backend_generation: Option<BackendGeneration>,
     input: VecDeque<u8>,
-}
-
-impl Default for GuestState {
-    fn default() -> Self {
-        Self {
-            backend_generation: None,
-            input: VecDeque::new(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -116,14 +105,14 @@ impl GuestConsoleMux {
     fn new() -> Self {
         Self {
             core: Arc::new(ConsoleCore {
-                state: StateLock::new(ConsoleState::default()),
-                output_lock: TaskMutex::new(()),
+                state: Mutex::new(ConsoleState::default()),
+                output_lock: Mutex::new(()),
             }),
         }
     }
 
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
-        let mut state = self.core.state.lock();
+        let mut state = self.core.lock_state();
         state.running.clear();
         for vm_id in running {
             state.running.insert(vm_id);
@@ -145,14 +134,14 @@ impl GuestConsoleMux {
     }
 
     fn mark_running(&self, vm_id: VMId) {
-        let mut state = self.core.state.lock();
+        let mut state = self.core.lock_state();
         state.running.insert(vm_id);
         state.guests.entry(vm_id).or_default();
     }
 
     fn mark_stopped(&self, vm_id: VMId) -> bool {
-        let _output_guard = self.core.output_lock.lock();
-        let mut state = self.core.state.lock();
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
         state.running.remove(&vm_id);
         if let Some(guest) = state.guests.get_mut(&vm_id) {
             guest.backend_generation = None;
@@ -168,8 +157,8 @@ impl GuestConsoleMux {
     }
 
     fn remove(&self, vm_id: VMId) -> bool {
-        let _output_guard = self.core.output_lock.lock();
-        let mut state = self.core.state.lock();
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
         state.running.remove(&vm_id);
         state.guests.remove(&vm_id);
         state.output.reset_guest(vm_id);
@@ -186,7 +175,7 @@ impl GuestConsoleMux {
 
     fn attach_default(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         self.set_running(running);
-        let mut state = self.core.state.lock();
+        let mut state = self.core.lock_state();
         let vm_id = state.running.first().copied()?;
         state.attached = Some(vm_id);
         state.last_attached = Some(vm_id);
@@ -194,7 +183,7 @@ impl GuestConsoleMux {
     }
 
     fn attach(&self, vm_id: VMId) -> bool {
-        let mut state = self.core.state.lock();
+        let mut state = self.core.lock_state();
         if !state.running.contains(&vm_id) {
             return false;
         }
@@ -205,11 +194,11 @@ impl GuestConsoleMux {
     }
 
     fn attached_vm(&self) -> Option<VMId> {
-        self.core.state.lock().attached
+        self.core.lock_state().attached
     }
 
     fn route_host_byte(&self, byte: u8) -> RoutedInput {
-        let mut state = self.core.state.lock();
+        let mut state = self.core.lock_state();
 
         if state.shortcut_prefix_pending {
             state.shortcut_prefix_pending = false;
@@ -306,10 +295,22 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
 }
 
 impl ConsoleCore {
+    fn lock_state(&self) -> MutexGuard<'_, ConsoleState> {
+        self.state
+            .lock()
+            .expect("guest console state mutex poisoned")
+    }
+
+    fn lock_output(&self) -> MutexGuard<'_, ()> {
+        self.output_lock
+            .lock()
+            .expect("guest console output mutex poisoned")
+    }
+
     fn create_serial_backend(self: &Arc<Self>, vm_id: VMId) -> Arc<GuestSerialBackend> {
-        let _output_guard = self.output_lock.lock();
+        let _output_guard = self.lock_output();
         let generation = {
-            let mut state = self.state.lock();
+            let mut state = self.lock_state();
             state.next_backend_generation = state
                 .next_backend_generation
                 .checked_add(1)
@@ -338,7 +339,7 @@ impl ConsoleCore {
         generation: BackendGeneration,
         buffer: &mut [u8],
     ) -> usize {
-        let mut state = self.state.lock();
+        let mut state = self.lock_state();
         let Some(guest) = state
             .guests
             .get_mut(&vm_id)
@@ -362,7 +363,7 @@ impl ConsoleCore {
         generation: BackendGeneration,
         bytes: &[u8],
     ) -> Option<Vec<u8>> {
-        let mut state = self.state.lock();
+        let mut state = self.lock_state();
         let multiple_running = state.running.len() > 1;
         state
             .guests
@@ -376,7 +377,7 @@ impl ConsoleCore {
             return;
         }
 
-        let _output_guard = self.output_lock.lock();
+        let _output_guard = self.lock_output();
         if let Some(output) = self.format_guest_output(vm_id, generation, bytes) {
             write_host_bytes(&output);
         }

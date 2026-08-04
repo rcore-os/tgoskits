@@ -30,7 +30,7 @@ mod arch;
 mod architecture;
 pub mod boot;
 mod error;
-mod host;
+pub mod host;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;

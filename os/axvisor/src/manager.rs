@@ -115,7 +115,7 @@ impl AxvmManager {
             "Failed to release host filesystem before guest passthrough devices take ownership",
         );
         #[cfg(target_arch = "x86_64")]
-        crate::config::prepare_x86_host_fs_passthrough_devices();
+        axvm::host::x86::prepare_qemu_block_passthrough_device();
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 

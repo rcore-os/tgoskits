@@ -46,24 +46,10 @@ host-xtask = []
 axtest = []
 fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 sstc = ["axvm/sstc"]
-rockchip-soc = ["ax-driver/rockchip-soc"]
-rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
-phytium-mci = ["ax-driver/phytium-mci"]
-ahci-fdt = ["ax-driver/ahci-fdt"]
-sdmmc = [
-    "ax-driver/rockchip-sdhci",
-    "ax-driver/rockchip-soc",
-]
-rockchip-pm = ["ax-driver/rockchip-pm"]
 stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
-
-[dependencies]
-spin = { workspace = true }
-ax-kspin = { workspace = true }
-ax-crate-interface = { workspace = true }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 anyhow.workspace = true
@@ -83,19 +69,12 @@ ax-std = { workspace = true, default-features = false, features = [
   "tls",
   "std-compat",
 ] }
-ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
-ax-sync = { workspace = true, features = ["multitask"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
-# System independent crates provided by ArceOS
-ax-driver.workspace = true
-axplat-dyn.workspace = true
+ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
-
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-axplat-dyn = { workspace = true, features = ["hv"] }
 
 [dev-dependencies]
 axtest.workspace = true
