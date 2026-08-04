@@ -669,7 +669,7 @@ impl Dwc {
 
         self.dwc3_init().await?;
 
-        self.xhci.init().await?;
+        self.xhci.prepare_controller().await?;
 
         // 输出关键寄存器状态用于调试
         self.dump_registers();
@@ -705,7 +705,7 @@ impl Dwc {
 // }
 
 impl CoreOp for Dwc {
-    fn init(&mut self) -> BoxFuture<'_, Result<()>> {
+    fn prepare_controller(&mut self) -> BoxFuture<'_, Result<()>> {
         self._init().boxed()
     }
 

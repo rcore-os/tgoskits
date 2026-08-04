@@ -7,7 +7,10 @@ use core::{
 
 use ::xhci::{
     extended_capabilities::usb_legacy_support_capability::UsbLegacySupport,
-    registers::{doorbell, runtime::InterrupterManagementRegister},
+    registers::{
+        doorbell,
+        runtime::{EventRingDequeuePointerRegister, InterrupterManagementRegister},
+    },
     ring::trb::{command, event::CommandCompletion},
 };
 use ax_kspin::{SpinRaw, SpinRawGuard, SpinRwLock as RwLock};
@@ -47,6 +50,7 @@ pub struct Xhci {
     pub(crate) transfer_result_handler: TransferResultHandler,
     root_hub: Option<XhciRootHub>,
     irq_state: ControllerIrqState,
+    irq_mask: Arc<XhciIrqMaskState>,
 }
 
 unsafe impl Send for Xhci {}
@@ -61,7 +65,7 @@ impl CoreOp for Xhci {
         )
     }
 
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, core::result::Result<(), USBError>> {
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, core::result::Result<(), USBError>> {
         self._init().boxed()
     }
 
@@ -136,6 +140,7 @@ impl Xhci {
         let transfer_result_handler = TransferResultHandler::new(reg_shared.clone());
         let ports = root_hub.waker();
         let irq_state = ControllerIrqState::new(false);
+        let irq_mask = Arc::new(XhciIrqMaskState::masked());
 
         Ok(Xhci {
             reg: reg_shared,
@@ -150,16 +155,22 @@ impl Xhci {
                 transfer_result_handler,
                 ports,
                 irq_state.clone(),
+                irq_mask.clone(),
             )),
             root_hub: Some(root_hub),
             event_ring_info,
             scratchpad_buf_arr: None,
             irq_state,
+            irq_mask,
         })
     }
 
     async fn _init(&mut self) -> Result {
-        self.disable_irq();
+        // Runtime interrupter registers are not writable until reset completes
+        // and CNR clears, so mask only the operational global gate here.
+        self.reg.write().operational.usbcmd.update_volatile(|r| {
+            r.clear_interrupter_enable();
+        });
         // 4.2 Host Controller Initialization
         self.init_ext_caps().await?;
         // After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
@@ -194,9 +205,6 @@ impl Xhci {
         mb();
 
         self.wait_for_running().await;
-
-        self.enable_irq();
-        // self.reset_ports().await;
 
         Ok(())
     }
@@ -341,7 +349,16 @@ impl Xhci {
     pub fn disable_irq(&mut self) {
         debug!("Disable interrupts");
         self.irq_state.set_enabled(false, || {
-            self.reg.write().operational.usbcmd.update_volatile(|r| {
+            self.irq_mask.begin_masking();
+            let mut regs = self.reg.write();
+            let mut primary = regs.interrupter_register_set.interrupter_mut(0);
+            primary
+                .iman
+                .update_volatile(|register| prepare_iman_rearm(register, false));
+            let _flushed = primary.iman.read_volatile();
+            self.irq_mask.finish_masking();
+
+            regs.operational.usbcmd.update_volatile(|r| {
                 r.clear_interrupter_enable();
             });
         });
@@ -350,9 +367,26 @@ impl Xhci {
     pub fn enable_irq(&mut self) {
         debug!("Enable interrupts");
         self.irq_state.set_enabled(true, || {
-            self.reg.write().operational.usbcmd.update_volatile(|r| {
+            let mut regs = self.reg.write();
+            regs.operational.usbcmd.update_volatile(|r| {
                 r.set_interrupter_enable();
             });
+            mb();
+
+            if !self.irq_mask.begin_rearm() {
+                return;
+            }
+            let mut primary = regs.interrupter_register_set.interrupter_mut(0);
+            primary
+                .iman
+                .update_volatile(|register| prepare_iman_rearm(register, true));
+            let _flushed = primary.iman.read_volatile();
+            if self.irq_mask.finish_rearm() == RearmCompletion::Remask {
+                primary
+                    .iman
+                    .update_volatile(|register| prepare_iman_rearm(register, false));
+                let _flushed = primary.iman.read_volatile();
+            }
         });
     }
 
@@ -391,20 +425,16 @@ impl Xhci {
             let mut reg = self.reg.write();
             let mut ir0 = reg.interrupter_register_set.interrupter_mut(0);
 
-            debug!("ERDP: {erdp:x}");
-
-            ir0.erdp.update_volatile(|r| {
-                r.set_event_ring_dequeue_pointer(erdp & !0xf);
-                r.set_dequeue_erst_segment_index((erdp & 0x7) as u8);
-                r.clear_event_handler_busy();
-            });
-
             debug!("ERSTZ: {erstz:x}");
             ir0.erstsz.update_volatile(|r| r.set(erstz as _));
             debug!("ERSTBA: {erstba:X}");
             ir0.erstba.update_volatile(|r| {
                 r.set(erstba);
             });
+
+            debug!("ERDP: {erdp:x}");
+            ir0.erdp
+                .update_volatile(|register| prepare_initial_erdp(register, erdp));
 
             ir0.imod.update_volatile(|im| {
                 im.set_interrupt_moderation_interval(0x1F);
@@ -413,16 +443,13 @@ impl Xhci {
         }
 
         {
-            debug!("Enabling primary interrupter.");
+            debug!("Masking primary interrupter during controller prepare.");
             self.reg
                 .write()
                 .interrupter_register_set
                 .interrupter_mut(0)
                 .iman
-                .update_volatile(|im| {
-                    im.set_interrupt_enable();
-                    im.clear_interrupt_pending();
-                });
+                .update_volatile(prepare_iman_initialization);
         }
 
         // Set the HCD state before we enable the irqs
@@ -532,7 +559,7 @@ pub struct EventHandler {
     transfer_result_handler: TransferResultHandler,
     ports: PortChangeWaker,
     irq_state: ControllerIrqState,
-    irq_mask: XhciIrqMaskState,
+    irq_mask: Arc<XhciIrqMaskState>,
     task_gate: SpinRaw<()>,
     event_gate: SpinRaw<()>,
 }
@@ -576,14 +603,26 @@ fn prepare_iman_rearm(register: &mut InterrupterManagementRegister, enabled: boo
     }
 }
 
+fn prepare_iman_initialization(register: &mut InterrupterManagementRegister) {
+    register.set_0_interrupt_pending();
+    register.clear_interrupt_enable();
+}
+
+fn prepare_initial_erdp(register: &mut EventRingDequeuePointerRegister, erdp: u64) {
+    register.set_event_ring_dequeue_pointer(erdp & !0xf);
+    register.set_dequeue_erst_segment_index((erdp & 0x7) as u8);
+    // EHB is RW1C. Writing zero keeps a pending handler-busy indication.
+    register.set_0_event_handler_busy();
+}
+
 impl XhciIrqMaskState {
+    #[cfg(test)]
     const fn unmasked() -> Self {
         Self {
             phase: AtomicU8::new(XhciIrqMaskPhase::Unmasked as u8),
         }
     }
 
-    #[cfg(test)]
     const fn masked() -> Self {
         Self {
             phase: AtomicU8::new(XhciIrqMaskPhase::Masked as u8),
@@ -657,6 +696,7 @@ impl EventHandler {
         transfer_result_handler: TransferResultHandler,
         ports: PortChangeWaker,
         irq_state: ControllerIrqState,
+        irq_mask: Arc<XhciIrqMaskState>,
     ) -> Self {
         Self {
             event_reg: UnsafeCell::new(reg.clone()),
@@ -667,7 +707,7 @@ impl EventHandler {
             transfer_result_handler,
             ports,
             irq_state,
-            irq_mask: XhciIrqMaskState::unmasked(),
+            irq_mask,
             task_gate: SpinRaw::new(()),
             event_gate: SpinRaw::new(()),
         }
@@ -904,5 +944,38 @@ mod tests {
             0,
             "RW1C IP must be written as zero so rearm cannot consume a new event"
         );
+    }
+
+    #[test]
+    fn initial_interrupter_setup_keeps_source_masked() {
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let mut register = unsafe { core::mem::transmute::<u32, InterrupterManagementRegister>(0) };
+
+        prepare_iman_initialization(&mut register);
+
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let write_value =
+            unsafe { core::mem::transmute::<InterrupterManagementRegister, u32>(register) };
+        assert_eq!(write_value & 0b10, 0, "prepare must leave IMAN.IE masked");
+    }
+
+    #[test]
+    fn initial_interrupter_setup_preserves_pending_and_ehb() {
+        // SAFETY: Both xHCI register wrappers are repr(transparent) over their
+        // corresponding integer register widths.
+        let mut iman = unsafe { core::mem::transmute::<u32, InterrupterManagementRegister>(1) };
+        let mut erdp =
+            unsafe { core::mem::transmute::<u64, EventRingDequeuePointerRegister>(1 << 3) };
+
+        prepare_iman_initialization(&mut iman);
+        prepare_initial_erdp(&mut erdp, 0x1000);
+
+        // SAFETY: See the representation argument above.
+        let iman_write =
+            unsafe { core::mem::transmute::<InterrupterManagementRegister, u32>(iman) };
+        let erdp_write =
+            unsafe { core::mem::transmute::<EventRingDequeuePointerRegister, u64>(erdp) };
+        assert_eq!(iman_write & 1, 0, "prepare must not acknowledge IMAN.IP");
+        assert_eq!(erdp_write & (1 << 3), 0, "prepare must not clear ERDP.EHB");
     }
 }

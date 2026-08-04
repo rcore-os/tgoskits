@@ -21,8 +21,8 @@ use crate::{
 };
 
 pub trait CoreOp: Send + 'static {
-    /// 初始化后端
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, Result<(), USBError>>;
+    /// Prepares and starts the controller while keeping its IRQ source masked.
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, Result<(), USBError>>;
 
     fn root_hub(&mut self) -> Box<dyn HubOp>;
 
@@ -33,13 +33,9 @@ pub trait CoreOp: Send + 'static {
 
     fn create_event_handler(&mut self) -> Box<dyn EventHandlerOp>;
 
-    fn enable_irq(&mut self) -> Result<(), USBError> {
-        Err(USBError::NotSupported)
-    }
+    fn enable_irq(&mut self) -> Result<(), USBError>;
 
-    fn disable_irq(&mut self) -> Result<(), USBError> {
-        Err(USBError::NotSupported)
-    }
+    fn disable_irq(&mut self) -> Result<(), USBError>;
 
     fn dwc2_transfer_stats(&self) -> Option<crate::Dwc2TransferStats> {
         None
@@ -54,6 +50,7 @@ pub struct Core {
     pub(crate) backend: Box<dyn CoreOp>,
     hubs: Arena<Hub>,
     root_hub: Option<Id<Hub>>,
+    pending_root_hub: Option<Box<dyn HubOp>>,
     inited_devices: BTreeMap<usize, Box<dyn DeviceOp>>,
 }
 
@@ -61,6 +58,7 @@ impl Core {
     pub(crate) fn new(backend: impl CoreOp) -> Self {
         Self {
             root_hub: None,
+            pending_root_hub: None,
             backend: Box::new(backend),
             hubs: Arena::new(),
             inited_devices: BTreeMap::new(),
@@ -172,9 +170,25 @@ impl Core {
 impl BackendOp for Core {
     fn init<'a>(&'a mut self) -> BoxFuture<'a, Result<(), USBError>> {
         async {
-            self.backend.init().await?;
-            let mut root_hub = Hub::new(self.backend.root_hub(), &self.hub_infos(), 0, None);
-            let info = root_hub.backend.init(root_hub.info.clone()).await?;
+            self.backend.prepare_controller().await?;
+            if let Err(error) = self.backend.enable_irq() {
+                let _rollback_result = self.backend.disable_irq();
+                return Err(error);
+            }
+
+            let root_hub_backend = self
+                .pending_root_hub
+                .take()
+                .unwrap_or_else(|| self.backend.root_hub());
+            let mut root_hub = Hub::new(root_hub_backend, &self.hub_infos(), 0, None);
+            let info = match root_hub.backend.init(root_hub.info.clone()).await {
+                Ok(info) => info,
+                Err(error) => {
+                    self.pending_root_hub = Some(root_hub.backend);
+                    let _rollback_result = self.backend.disable_irq();
+                    return Err(error);
+                }
+            };
             root_hub.info = info;
 
             let id = self.hubs.alloc(root_hub);
@@ -255,5 +269,163 @@ impl DeviceInfoOp for DeviceInfo {
 
     fn configuration_descriptors(&self) -> &[ConfigurationDescriptor] {
         &self.config_desc
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::{sync::Arc, vec, vec::Vec};
+    use core::{
+        future::Future,
+        pin::Pin,
+        ptr,
+        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    };
+    use std::sync::Mutex;
+
+    use futures::FutureExt;
+
+    use super::*;
+    use crate::backend::ty::{Event, EventHandlerOp};
+
+    struct TestCore {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        fail_root_hub: bool,
+    }
+
+    impl CoreOp for TestCore {
+        fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, Result<(), USBError>> {
+            self.calls.lock().unwrap().push("prepare");
+            async { Ok(()) }.boxed()
+        }
+
+        fn root_hub(&mut self) -> Box<dyn HubOp> {
+            Box::new(TestRootHub {
+                calls: self.calls.clone(),
+                fail_init: self.fail_root_hub,
+            })
+        }
+
+        fn new_addressed_device<'a>(
+            &'a mut self,
+            _addr: DeviceAddressInfo,
+        ) -> BoxFuture<'a, Result<Box<dyn DeviceOp>, USBError>> {
+            async { Err(USBError::NotSupported) }.boxed()
+        }
+
+        fn create_event_handler(&mut self) -> Box<dyn EventHandlerOp> {
+            Box::new(TestEventHandler)
+        }
+
+        fn enable_irq(&mut self) -> Result<(), USBError> {
+            self.calls.lock().unwrap().push("enable");
+            Ok(())
+        }
+
+        fn disable_irq(&mut self) -> Result<(), USBError> {
+            self.calls.lock().unwrap().push("disable");
+            Ok(())
+        }
+
+        fn kernel(&self) -> &Kernel {
+            unreachable!("the lifecycle test does not probe devices")
+        }
+    }
+
+    struct TestRootHub {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        fail_init: bool,
+    }
+
+    impl HubOp for TestRootHub {
+        fn init<'a>(&'a mut self, info: HubInfo) -> BoxFuture<'a, Result<HubInfo, USBError>> {
+            self.calls.lock().unwrap().push("root-hub-init");
+            async move {
+                if self.fail_init {
+                    Err(USBError::NotInitialized)
+                } else {
+                    Ok(info)
+                }
+            }
+            .boxed()
+        }
+
+        fn changed_ports<'a>(&'a mut self) -> BoxFuture<'a, Result<Vec<PortChangeInfo>, USBError>> {
+            async { Ok(Vec::new()) }.boxed()
+        }
+
+        fn slot_id(&self) -> u8 {
+            0
+        }
+    }
+
+    struct TestEventHandler;
+
+    impl EventHandlerOp for TestEventHandler {
+        fn acknowledge_irq(&self) -> bool {
+            false
+        }
+
+        fn drain_event(&self) -> Event {
+            Event::Nothing
+        }
+
+        fn rearm_irq(&self) {}
+    }
+
+    fn block_on_ready<F: Future>(mut future: F) -> F::Output {
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        match unsafe { Pin::new_unchecked(&mut future) }.poll(&mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("test future unexpectedly pending"),
+        }
+    }
+
+    fn noop_waker() -> Waker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(ptr::null(), &VTABLE)
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+
+        unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
+    }
+
+    #[test]
+    fn core_arms_irq_before_root_hub_commands() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut core = Core::new(TestCore {
+            calls: calls.clone(),
+            fail_root_hub: false,
+        });
+
+        block_on_ready(core.init()).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["prepare", "enable", "root-hub-init"]
+        );
+    }
+
+    #[test]
+    fn root_hub_failure_masks_controller_once() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut core = Core::new(TestCore {
+            calls: calls.clone(),
+            fail_root_hub: true,
+        });
+
+        assert!(block_on_ready(core.init()).is_err());
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["prepare", "enable", "root-hub-init", "disable"]
+        );
     }
 }

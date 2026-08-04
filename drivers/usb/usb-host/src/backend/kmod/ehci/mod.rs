@@ -640,7 +640,7 @@ impl Ehci {
 }
 
 impl CoreOp for Ehci {
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
         self.init_controller().boxed()
     }
 
