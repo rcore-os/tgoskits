@@ -283,7 +283,7 @@ impl WaiterPointer {
     }
 }
 
-// SAFETY: list pointers are accessed only while the owning mutex's SpinNoIrq
+// SAFETY: list pointers are accessed only while the owning mutex's SpinNoPreempt
 // metadata lock is held. Nodes remain pinned until they are removed and granted.
 unsafe impl Send for WaiterQueue {}
 

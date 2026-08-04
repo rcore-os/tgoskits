@@ -293,10 +293,11 @@ impl PiMutexRelease<'_> {
     ///
     /// # Safety
     ///
-    /// The owning mutex must hold its metadata lock, publish the ownerless
-    /// `HAS_WAITERS` owner word, and store `selected` as its pending-chain
-    /// anchor before this method is called. It must retain that metadata lock
-    /// until this method returns.
+    /// The owning mutex must already have published the ownerless
+    /// `HAS_WAITERS` owner word and stored `selected` as its pending-chain
+    /// anchor. The local publication must still match the state validated by
+    /// [`TaskSystem::prepare_pi_mutex_release`]. No mutex-local lock may be
+    /// held while this scheduler transaction is committed.
     pub unsafe fn commit_after_local_release(self) {
         let Self {
             mut state,
@@ -396,10 +397,11 @@ impl PiMutexClaim<'_> {
     ///
     /// # Safety
     ///
-    /// The owning mutex must hold its metadata lock, remove `claimant` from
-    /// the local waiter queue, publish `claimant` in the owner word, and clear
-    /// its pending-chain anchor before this method is called. It must retain
-    /// that metadata lock until this method returns.
+    /// The owning mutex must already have removed `claimant` from the local
+    /// waiter queue, published `claimant` in the owner word, and cleared its
+    /// pending-chain anchor. The local publication must still match the state
+    /// validated by [`TaskSystem::prepare_pi_mutex_claim`]. No mutex-local lock
+    /// may be held while this scheduler transaction is committed.
     pub unsafe fn commit_after_local_claim(self) {
         let Self {
             mut state,
@@ -649,6 +651,11 @@ impl TaskSystem {
     }
 
     /// Validates and locks the scheduler half of a contended mutex release.
+    ///
+    /// Callers must invoke this outside their mutex-local metadata gate, then
+    /// reacquire that gate and validate their local sequence before publishing
+    /// the ownerless handoff. A stale local snapshot must drop the returned
+    /// transaction and retry without changing local ownership.
     pub fn prepare_pi_mutex_release(
         &self,
         lock: PiLockId,
@@ -699,6 +706,11 @@ impl TaskSystem {
     }
 
     /// Validates and locks the scheduler half of an ownerless mutex claim.
+    ///
+    /// Callers must invoke this outside their mutex-local metadata gate, then
+    /// reacquire that gate and validate their local sequence before publishing
+    /// the new owner. A stale local snapshot must drop the returned transaction
+    /// and retry without changing local ownership.
     pub fn prepare_pi_mutex_claim(
         &self,
         lock: PiLockId,

@@ -520,10 +520,22 @@ Linux 在 `dequeue_task_dl()`、`inactive_task_timer()` 与 switch-tail 的
 
 ax-sync 与 ax-task 的 PI handoff 遵循 Linux rtmutex 的事务边界：
 
-1. 在 metadata 临界区验证 waiter、owner、generation 和 donation chain；
-2. 发布新 owner 与 deboost/grant；
-3. 释放 raw metadata gate；
-4. 最后唤醒选中的 waiter。
+1. mutex-local metadata 只在任务上下文由短暂的 `SpinNoPreempt` 门保护；硬中断不访问
+   该状态，也不为这个局部临界区关闭中断；
+2. 在局部门内只读取 owner、waiter、pending head 和单调 sequence，形成不可变快照；
+3. 释放局部门后，锁定并验证 ax-task 的 donation graph，得到 move-only 的 prepared
+   transaction；禁止以 `metadata -> scheduler` 锁序调用 PI 图操作；
+4. 保持 scheduler transaction 排他权，重新进入局部门并校验 sequence。若快照过期，
+   不发布任何局部状态，丢弃 transaction 后重试；
+5. 在局部门内发布 ownerless handoff 或新 owner/grant，然后立即释放局部门；
+6. 提交 donation graph 的 deboost、pending-chain 或 grant，最后通过定向 wake 唤醒被选中的
+   waiter。wake 不得发生在局部门或 scheduler graph lock 内。
+
+这个顺序对应 Linux `rt_mutex` 的 `wait_lock`/`pi_lock` 分层和 `wake_q` 锁外唤醒语义。
+局部 sequence 不是第二套 owner 真值，只用于判断准备全局事务期间 local snapshot 是否仍
+有效；owner word 与 ax-task donation graph 分别保持各自层次的唯一权威。旧实现把可能
+遍历 donation chain 的 ax-task PI 调用放在 `SpinNoIrq` metadata 门内，会形成广域
+IRQ-off 临界区和反向锁序，现已删除，不保留兼容路径。
 
 `PiLockId` 与 waiter registration 均带 generation，锁销毁前必须 quiesce，防止地址复用 ABA。任务等待通过 park/completion 睡眠，不在禁抢占区做无界 spin。
 
