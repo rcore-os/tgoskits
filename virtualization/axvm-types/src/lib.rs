@@ -67,8 +67,8 @@ pub type InterruptVector = u8;
 /// Interrupt trigger mode.
 ///
 /// Represents the trigger mode of an interrupt in a platform-neutral way.
-/// Architectures that do not distinguish between edge and level triggering
-/// can ignore this parameter.
+/// Every architecture adapter must explicitly define where this metadata is
+/// consumed, even when its vCPU backend does not distinguish the modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterruptTriggerMode {
     /// Edge-triggered interrupt.
@@ -422,6 +422,12 @@ pub trait VmArchVcpuOps: Sized {
 
     /// Creates a new architecture-specific vCPU.
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> VmBackendResult<Self>;
+
+    /// Returns the guest-visible MPIDR encoded in a vCPU create config, if any.
+    fn guest_mpidr_from_create_config(_config: &Self::CreateConfig) -> Option<u64> {
+        None
+    }
+
     /// Sets the guest entry point.
     fn set_entry(&mut self, entry: GuestPhysAddr) -> VmBackendResult;
     /// Sets the nested page table selected by AxVM.
@@ -452,16 +458,19 @@ pub trait VmArchVcpuOps: Sized {
     /// Injects an interrupt into the vCPU.
     fn inject_interrupt(&mut self, vector: usize) -> VmBackendResult;
     /// Injects an interrupt with trigger-mode metadata.
+    ///
+    /// The compatibility default delegates edge-triggered interrupts to
+    /// [`Self::inject_interrupt`]. Backends must override this method to
+    /// support level-triggered injection.
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
     ) -> VmBackendResult {
-        debug_assert!(
-            trigger == InterruptTriggerMode::EdgeTriggered,
-            "level-triggered interrupt injection requires an architecture-specific implementation"
-        );
-        self.inject_interrupt(vector)
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered => self.inject_interrupt(vector),
+            InterruptTriggerMode::LevelTriggered => Err(VmBackendError::Unsupported),
+        }
     }
     /// Processes a guest EOI and returns an external EOI vector when needed.
     fn handle_eoi(&mut self) -> Option<u8> {
@@ -492,23 +501,31 @@ pub trait VmArchPerCpuOps: Sized {
             _ => 48,
         }
     }
+    /// Returns the architectural counter frequency recorded on this CPU.
+    ///
+    /// Architectures without an ARM-style shared counter return `None`.
+    fn timer_frequency_hz(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Execution state of an AxVM-owned vCPU wrapper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VmVcpuState {
     /// Invalid state.
-    Invalid = 0,
+    Invalid  = 0,
     /// Initial state after vCPU creation.
-    Created = 1,
+    Created  = 1,
     /// vCPU is initialized and free.
-    Free    = 2,
+    Free     = 2,
     /// vCPU is bound and ready to run.
-    Ready   = 3,
+    Ready    = 3,
     /// vCPU is currently running.
-    Running = 4,
+    Running  = 4,
     /// vCPU is blocked.
-    Blocked = 5,
+    Blocked  = 5,
+    /// vCPU is reserved by PSCI CPU_ON and not yet runnable.
+    Starting = 6,
 }
 
 /// A part of `AxVMConfig`, which represents guest VM type.
@@ -581,7 +598,7 @@ pub struct VmMemConfig {
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EmulatedDeviceConfig {
     /// The name of the device.
     pub name: String,
@@ -689,6 +706,8 @@ pub enum EmulatedDeviceType {
     Console             = 0x2,
     /// QEMU fw_cfg MMIO device.
     FwCfg               = 0x3,
+    /// Machine-owned mediator for a physical MMIO provider shared with a guest.
+    SharedMmio          = 0x4,
     /// An emulated device that provides Inter-VM Communication (IVC) channel.
     ///
     /// This device is used for communication between different VMs,
@@ -698,8 +717,11 @@ pub enum EmulatedDeviceType {
 
     // Arch-specific interrupt controller devices.
     // 0x20 - 0x22: GPPT (GIC Partial Passthrough) devices.
-    /// ARM GIC Partial Passthrough Redistributor device.
-    GPPTRedistributor   = 0x20,
+    /// ARM GIC per-CPU register region.
+    ///
+    /// This is the GICC CPU-interface window for GICv2 and the redistributor
+    /// window for GICv3. The immutable machine profile selects the model.
+    GicCpuRegion        = 0x20,
     /// ARM GIC Partial Passthrough Distributor device.
     GPPTDistributor     = 0x21,
     /// ARM GIC Partial Passthrough Interrupt Translation Service device.
@@ -712,7 +734,8 @@ pub enum EmulatedDeviceType {
     X86Pit              = 0x24,
     /// LoongArch virtual PCH-PIC device.
     LoongArchPchPic     = 0x25,
-
+    /// x86 host I/O port passthrough range.
+    X86PortPassthrough  = 0x26,
     // 0x30: PPPT (PLIC Partial Passthrough) devices.
     /// RISC-V PLIC Partial Passthrough Global device.
     PPPTGlobal          = 0x30,
@@ -813,6 +836,14 @@ mod tests {
             Ok(())
         }
 
+        fn inject_interrupt_with_trigger(
+            &mut self,
+            _vector: usize,
+            _trigger: InterruptTriggerMode,
+        ) -> VmBackendResult {
+            Ok(())
+        }
+
         fn set_return_value(&mut self, _val: usize) {}
     }
 
@@ -867,15 +898,15 @@ impl Display for EmulatedDeviceType {
         match self {
             EmulatedDeviceType::Console => write!(f, "console"),
             EmulatedDeviceType::FwCfg => write!(f, "fw_cfg"),
+            EmulatedDeviceType::SharedMmio => write!(f, "shared mmio provider"),
             EmulatedDeviceType::InterruptController => write!(f, "interrupt controller"),
-            EmulatedDeviceType::GPPTRedistributor => {
-                write!(f, "gic partial passthrough redistributor")
-            }
+            EmulatedDeviceType::GicCpuRegion => write!(f, "gic per-cpu register region"),
             EmulatedDeviceType::GPPTDistributor => write!(f, "gic partial passthrough distributor"),
             EmulatedDeviceType::GPPTITS => write!(f, "gic partial passthrough its"),
             EmulatedDeviceType::X86IoApic => write!(f, "x86 io apic"),
             EmulatedDeviceType::X86Pit => write!(f, "x86 pit"),
             EmulatedDeviceType::LoongArchPchPic => write!(f, "loongarch pch pic"),
+            EmulatedDeviceType::X86PortPassthrough => write!(f, "x86 port passthrough"),
             EmulatedDeviceType::PPPTGlobal => write!(f, "plic partial passthrough global"),
             // EmulatedDeviceType::IOMMU => write!(f, "iommu"),
             // EmulatedDeviceType::ICCSRE => write!(f, "interrupt icc sre"),
@@ -892,18 +923,20 @@ impl Display for EmulatedDeviceType {
 
 impl EmulatedDeviceType {
     /// All known emulated device types.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         EmulatedDeviceType::Dummy,
         EmulatedDeviceType::InterruptController,
         EmulatedDeviceType::Console,
         EmulatedDeviceType::FwCfg,
+        EmulatedDeviceType::SharedMmio,
         EmulatedDeviceType::IVCChannel,
-        EmulatedDeviceType::GPPTRedistributor,
+        EmulatedDeviceType::GicCpuRegion,
         EmulatedDeviceType::GPPTDistributor,
         EmulatedDeviceType::GPPTITS,
         EmulatedDeviceType::X86IoApic,
         EmulatedDeviceType::X86Pit,
         EmulatedDeviceType::LoongArchPchPic,
+        EmulatedDeviceType::X86PortPassthrough,
         EmulatedDeviceType::PPPTGlobal,
         EmulatedDeviceType::VirtioBlk,
         EmulatedDeviceType::VirtioNet,
@@ -922,7 +955,7 @@ impl EmulatedDeviceType {
             EmulatedDeviceType::InterruptController
                 // | EmulatedDeviceType::SGIR
                 // | EmulatedDeviceType::ICCSRE
-                | EmulatedDeviceType::GPPTRedistributor
+                | EmulatedDeviceType::GicCpuRegion
                 | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::X86Pit
                 | EmulatedDeviceType::VirtioBlk
@@ -939,13 +972,15 @@ impl EmulatedDeviceType {
             0x1 => Some(EmulatedDeviceType::InterruptController),
             0x2 => Some(EmulatedDeviceType::Console),
             0x3 => Some(EmulatedDeviceType::FwCfg),
+            0x4 => Some(EmulatedDeviceType::SharedMmio),
             0xA => Some(EmulatedDeviceType::IVCChannel),
-            0x20 => Some(EmulatedDeviceType::GPPTRedistributor),
+            0x20 => Some(EmulatedDeviceType::GicCpuRegion),
             0x21 => Some(EmulatedDeviceType::GPPTDistributor),
             0x22 => Some(EmulatedDeviceType::GPPTITS),
             0x23 => Some(EmulatedDeviceType::X86IoApic),
             0x24 => Some(EmulatedDeviceType::X86Pit),
             0x25 => Some(EmulatedDeviceType::LoongArchPchPic),
+            0x26 => Some(EmulatedDeviceType::X86PortPassthrough),
             0x30 => Some(EmulatedDeviceType::PPPTGlobal),
             0xE1 => Some(EmulatedDeviceType::VirtioBlk),
             0xE2 => Some(EmulatedDeviceType::VirtioNet),

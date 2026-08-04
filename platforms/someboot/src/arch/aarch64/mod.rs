@@ -24,6 +24,8 @@ use aarch64_cpu::registers::*;
 use elx::*;
 pub(crate) use entry::_secondary_entry;
 pub use paging::Entry;
+#[cfg(efi)]
+pub(crate) use relocate::apply as relocate;
 
 use crate::{
     ArchTrait,
@@ -235,9 +237,17 @@ impl ArchTrait for Arch {
     }
 
     // Safety: the EFI stub guarantees the same contract as the trait docs.
-    unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
-        unsafe { crate::arch::entry::kernel_entry(0) };
-        unreachable!()
+    unsafe fn efi_enter_kernel(system_table: *const ::core::ffi::c_void) -> bool {
+        #[cfg(efi)]
+        {
+            crate::efi_stub::setup_service(system_table);
+            unsafe { crate::arch::entry::enter_with_boot_state() }
+        }
+        #[cfg(not(efi))]
+        {
+            let _ = system_table;
+            false
+        }
     }
 }
 

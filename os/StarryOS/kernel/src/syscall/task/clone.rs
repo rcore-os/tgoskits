@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{AxTaskExt, current, spawn_task};
+use ax_task::{AxTaskExt, current, spawn_task_with};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
@@ -148,12 +148,6 @@ impl CloneArgs {
             return Err(AxError::InvalidInput);
         }
 
-        // CLONE_NEWCGROUP is not yet implemented.
-        if flags.contains(CloneFlags::NEWCGROUP) {
-            error!("sys_clone/sys_clone3: unsupported namespace flag CLONE_NEWCGROUP");
-            return Err(AxError::InvalidInput);
-        }
-
         Ok(())
     }
 
@@ -213,6 +207,9 @@ impl CloneArgs {
         let curr = current();
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
+        if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
+            return Err(AxError::OperationNotPermitted);
+        }
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
         #[cfg(target_arch = "riscv64")]
@@ -281,6 +278,8 @@ impl CloneArgs {
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
+            let inherited_cgroup = old_proc_data.cgroup.read().clone();
+            *proc_data.cgroup.write() = inherited_cgroup.clone();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -314,6 +313,9 @@ impl CloneArgs {
             }
             if flags.contains(CloneFlags::NEWUSER) {
                 new_nsproxy.unshare_user();
+            }
+            if flags.contains(CloneFlags::NEWCGROUP) {
+                new_nsproxy.unshare_cgroup(inherited_cgroup);
             }
 
             // Consume a pending child PID namespace prepared by
@@ -382,10 +384,14 @@ impl CloneArgs {
             thr.set_clear_child_tid(child_tid);
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+            // The pidfd and the later registry publication share the identity
+            // embedded in ProcessData. A failed clone therefore cannot leave a
+            // prematurely registered PID behind.
+            let identity = new_proc_data.identity();
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(&thr, tid)
+                PidFd::new_thread(identity, &thr, tid)
             } else {
-                PidFd::new_process(&new_proc_data)
+                PidFd::new_process(identity)
             };
             let fd = pidfd_obj.add_to_fd_table(true)?;
             if let Err(err) = (pidfd as *mut i32).vm_write(fd) {
@@ -430,8 +436,19 @@ impl CloneArgs {
             new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
-        let task = spawn_task(new_task);
-        add_task_to_table(&task);
+        let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
+            None
+        } else {
+            Some(
+                crate::cgroup::begin_fork(new_proc_data.cgroup.read().clone(), tid as u32)
+                    .map_err(crate::cgroup::cgroup_error)?,
+            )
+        };
+        if let Some(guard) = &mut cgroup_guard {
+            guard.commit();
+        }
+
+        spawn_task_with(new_task, add_task_to_table);
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -537,6 +554,91 @@ pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
 pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
     sys_clone(uctx, flags, 0, 0, 0, 0)
+}
+
+#[cfg(axtest)]
+pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
+    let parent_signal_allowed = CloneArgs {
+        flags: CloneFlags::PARENT,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+    let thread_signal_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let sighand_without_vm_rejected = CloneArgs {
+        flags: CloneFlags::SIGHAND,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let newns_with_fs_rejected = CloneArgs {
+        flags: CloneFlags::NEWNS | CloneFlags::FS,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    // Cover the remaining validation arms to keep the full state machine under
+    // axtest coverage (the host `#[cfg(test)]` mod below mirrors these but does
+    // not execute during the kernel coverage run).
+    let thread_without_vm_sighand_rejected = CloneArgs {
+        flags: CloneFlags::THREAD,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let vfork_with_thread_rejected = CloneArgs {
+        flags: CloneFlags::VFORK | CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let pidfd_with_detached_rejected = CloneArgs {
+        flags: CloneFlags::PIDFD | CloneFlags::DETACHED,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let newcgroup_allowed = CloneArgs {
+        flags: CloneFlags::NEWCGROUP,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+    // Empty flags + no exit signal is the minimal valid configuration.
+    let minimal_valid = CloneArgs {
+        flags: CloneFlags::empty(),
+        exit_signal: 0,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+    // A plain thread clone with VM|SIGHAND and no exit signal is the canonical
+    // valid pthread spawn configuration.
+    let thread_valid = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        exit_signal: 0,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+
+    parent_signal_allowed
+        && thread_signal_rejected
+        && sighand_without_vm_rejected
+        && newns_with_fs_rejected
+        && thread_without_vm_sighand_rejected
+        && vfork_with_thread_rejected
+        && pidfd_with_detached_rejected
+        && newcgroup_allowed
+        && minimal_valid
+        && thread_valid
 }
 
 #[cfg(test)]

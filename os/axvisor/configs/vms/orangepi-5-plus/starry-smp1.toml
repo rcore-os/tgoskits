@@ -1,0 +1,27 @@
+# VM base information.
+[base]
+id = 1
+name = "starry"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+# StarryOS is an AArch64 Image and receives the generated guest DTB in x0.
+[kernel]
+entry_point = 0x4008_0000
+image_location = "fs"
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/starry/orangepi-5-plus"
+dtb_load_addr = 0x4000_0000
+
+# Keep a fixed 256 MiB region below 4 GiB for the kernel and DMA32 devices,
+# while allowing ordinary allocations to use the 2 GiB high-memory region.
+memory_regions = [
+    [0x4000_0000, 0x1000_0000, 0x7, 2],
+    [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+disabled = [{ path = "/pcie@fe150000" }, { path = "/pcie@fe160000" }, { path = "/pcie@fe170000" }, { path = "/pcie@fe180000" }, { path = "/pcie@fe190000" }]

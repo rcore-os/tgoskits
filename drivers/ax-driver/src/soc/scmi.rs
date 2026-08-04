@@ -162,6 +162,44 @@ pub fn set_clock_rate(_phandle: Phandle, clock_id: u32, rate: u64) -> Option<()>
     }
 }
 
+/// Query the rates the platform permits for `clock_id`
+/// (SCMI `CLOCK_DESCRIBE_RATES`, message 0x4).
+///
+/// This is a **read-only** operation: it changes no clock state and is intended
+/// as a safety preflight to confirm the firmware actually services a clock
+/// before any rate is programmed. Returns `Some(())` when the platform answers
+/// the query (the clock exists and its operations are serviced) and `None` when
+/// it rejects it. The permitted rates are logged for diagnostics. `_phandle` is
+/// ignored (single global agent), mirroring the other helpers here.
+pub fn describe_rates(_phandle: Phandle, clock_id: u32) -> Option<()> {
+    if !SCMI_REGISTERED.load(Ordering::Acquire) {
+        warn!(
+            "SCMI describe rates requested before SCMI registration: clock_id={:#x}",
+            clock_id
+        );
+        return None;
+    }
+    let mut guard = SCMI.lock();
+    let scmi = guard.as_mut()?;
+    let mut clock = scmi.protocol_clk_no_init();
+    match clock.describe_rates(clock_id, 0) {
+        Ok(rates) => {
+            info!(
+                "SCMI describe rates: clock_id={:#x}, rates={:?}",
+                clock_id, rates
+            );
+            Some(())
+        }
+        Err(err) => {
+            warn!(
+                "SCMI describe rates failed: clock_id={:#x}, {:?}",
+                clock_id, err
+            );
+            None
+        }
+    }
+}
+
 struct ScmiDevice;
 
 impl DriverGeneric for ScmiDevice {

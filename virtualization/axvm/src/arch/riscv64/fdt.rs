@@ -22,6 +22,8 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
         decode_interrupt: super::capabilities::decode_plic_source,
+        resolve_cpu_index: super::capabilities::resolve_cpu_index,
+        host_cpu_count: super::capabilities::host_cpu_count,
     }
 }
 
@@ -53,7 +55,7 @@ pub(super) fn ensure_chosen_from_host(
 
 pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+    vm_create_config: &mut axvmconfig::GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<GuestDtbImage>> {
     core::prepare_dtb_guest(vm_config, vm_create_config, provider)

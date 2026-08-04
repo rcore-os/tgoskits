@@ -8,13 +8,12 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_io::prelude::*;
-use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
+use ax_net::{InterfaceId, InterfaceInfo, InterfaceKind};
 use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
-    ioctl::{SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX},
     net::{AF_PACKET, sockaddr},
 };
 use starry_vm::{vm_read_slice, vm_write_slice};
@@ -34,13 +33,6 @@ const ETH_P_IP: u16 = 0x0800;
 const ETH_P_ARP: u16 = 0x0806;
 const ARPOP_REQUEST: u16 = 1;
 const ARPOP_REPLY: u16 = 2;
-const IFF_UP: i16 = 0x0001;
-const IFF_BROADCAST: i16 = 0x0002;
-const IFF_LOOPBACK: i16 = 0x0008;
-const IFF_RUNNING: i16 = 0x0040;
-const IFF_MULTICAST: i16 = 0x1000;
-const IFREQ_NAME_LEN: usize = 16;
-const IFREQ_DATA_OFFSET: usize = 16;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -236,37 +228,6 @@ fn read_user_bytes<const N: usize>(ptr: *const u8) -> AxResult<[u8; N]> {
     Ok(buf.map(|b| unsafe { b.assume_init() }))
 }
 
-fn ifreq_interface(arg: usize) -> AxResult<InterfaceInfo> {
-    let name = read_user_bytes::<IFREQ_NAME_LEN>(arg as *const u8)?;
-    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-    let name = core::str::from_utf8(&name[..end]).map_err(|_| AxError::InvalidInput)?;
-    ax_net::interface_by_name(name).ok_or(AxError::NoSuchDevice)
-}
-
-fn write_ifreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
-    Ok(vm_write_slice((arg + IFREQ_DATA_OFFSET) as *mut u8, data)?)
-}
-
-fn linux_flags(info: &InterfaceInfo) -> i16 {
-    let mut flags = 0;
-    if info.flags.contains(InterfaceFlags::UP) {
-        flags |= IFF_UP;
-    }
-    if info.flags.contains(InterfaceFlags::BROADCAST) {
-        flags |= IFF_BROADCAST;
-    }
-    if info.flags.contains(InterfaceFlags::LOOPBACK) {
-        flags |= IFF_LOOPBACK;
-    }
-    if info.flags.contains(InterfaceFlags::RUNNING) {
-        flags |= IFF_RUNNING;
-    }
-    if info.flags.contains(InterfaceFlags::MULTICAST) {
-        flags |= IFF_MULTICAST;
-    }
-    flags
-}
-
 impl FileLike for PacketSocket {
     fn stat(&self) -> AxResult<Kstat> {
         Ok(Kstat {
@@ -294,25 +255,14 @@ impl FileLike for PacketSocket {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
-        if !in_root_net_ns() {
-            return Err(AxError::NoSuchDevice);
+        // The SIOCGIF* device ioctls are family-agnostic in Linux sock_ioctl ->
+        // dev_ioctl, so AF_PACKET answers them through the same shared helper as
+        // the other socket families. Interface visibility (and thus netns
+        // scoping) is enforced by device_ioctl's own lookups.
+        if let Some(result) = crate::file::net::device_ioctl(cmd, arg) {
+            return result;
         }
-        let info = ifreq_interface(arg)?;
-
-        match cmd {
-            SIOCGIFINDEX => write_ifreq_data(arg, &info.id.to_linux_ifindex().to_ne_bytes())?,
-            SIOCGIFFLAGS => write_ifreq_data(arg, &linux_flags(&info).to_ne_bytes())?,
-            SIOCGIFHWADDR => {
-                let mac = info.mac.ok_or(AxError::NoSuchDevice)?;
-                let mut hwaddr = [0; 16];
-                hwaddr[..2].copy_from_slice(&ARPHRD_ETHER.to_ne_bytes());
-                hwaddr[2..2 + mac.0.len()].copy_from_slice(&mac.0);
-                write_ifreq_data(arg, &hwaddr)?;
-            }
-            _ => return Err(AxError::NotATty),
-        }
-
-        Ok(0)
+        Err(AxError::NotATty)
     }
 }
 

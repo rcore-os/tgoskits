@@ -37,10 +37,13 @@ use crate::{AxTaskRef, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt
 /// architecture interrupt router output.  The vCPU run loop drains pending
 /// interrupts before each vCPU entry and injects them through the
 /// architecture-specific injection path.
-#[allow(dead_code)]
 pub struct VcpuIrqDispatcher {
     queue: VcpuInterruptQueue,
     vcpu_tasks: Mutex<BTreeMap<usize, AxTaskRef>>,
+    /// Test-only cpu_id registry so that round-trip tests can exercise
+    /// enqueue / drain without a full ArceOS task infrastructure.
+    #[cfg(all(test, feature = "host-test"))]
+    test_vcpu_cpu_ids: Mutex<BTreeMap<usize, usize>>,
 }
 
 impl VcpuIrqDispatcher {
@@ -48,11 +51,12 @@ impl VcpuIrqDispatcher {
     ///
     /// Called by `VmRuntimeHandle::new` when a VM transitions into the
     /// Running state.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             queue: VcpuInterruptQueue::new(),
             vcpu_tasks: Mutex::new(BTreeMap::new()),
+            #[cfg(all(test, feature = "host-test"))]
+            test_vcpu_cpu_ids: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -61,9 +65,26 @@ impl VcpuIrqDispatcher {
     ///
     /// Called from `VmRuntimeHandle::add_vcpu_task` when a vCPU task is
     /// spawned and bound to the VM runtime.
-    #[allow(dead_code)]
     pub fn register_vcpu_task(&self, vcpu_id: usize, task: AxTaskRef) {
         self.vcpu_tasks.lock().insert(vcpu_id, task);
+    }
+
+    #[cfg(all(test, feature = "host-test"))]
+    pub(crate) fn register_test_vcpu(&self, vcpu_id: usize, cpu_id: usize) {
+        self.test_vcpu_cpu_ids.lock().insert(vcpu_id, cpu_id);
+    }
+
+    #[cfg(all(test, feature = "host-test"))]
+    pub(crate) fn test_lookup_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
+        self.lookup_cpu_id(vcpu_id)
+    }
+
+    /// Unregisters a vCPU task after the vCPU powers off.
+    pub fn unregister_vcpu_task(&self, vcpu_id: usize) {
+        self.vcpu_tasks.lock().remove(&vcpu_id);
+        self.queue.drain(vcpu_id);
+        #[cfg(all(test, feature = "host-test"))]
+        self.test_vcpu_cpu_ids.lock().remove(&vcpu_id);
     }
 
     /// Enqueues a pending interrupt for the given vCPU.
@@ -85,19 +106,24 @@ impl VcpuIrqDispatcher {
     ///
     /// Called by `VmRuntimeHandle::dispatch_vcpu_interrupt` when an
     /// architecture interrupt router requests delivery to a vCPU.
-    #[allow(dead_code)]
     pub fn enqueue(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> AxVmResult<usize> {
-        let cpu_id = {
-            let tasks = self.vcpu_tasks.lock();
-            tasks
-                .get(&vcpu_id)
-                .map(|t| t.cpu_id() as usize)
-                .ok_or_else(|| {
-                    ax_err_type!(NotFound, format_args!("vCPU {vcpu_id} task not found"))
-                })?
-        };
+        let cpu_id = self.lookup_cpu_id(vcpu_id)?;
         self.queue.push(vcpu_id, interrupt);
         Ok(cpu_id)
+    }
+
+    fn lookup_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
+        #[cfg(all(test, feature = "host-test"))]
+        {
+            if let Some(&cpu_id) = self.test_vcpu_cpu_ids.lock().get(&vcpu_id) {
+                return Ok(cpu_id);
+            }
+        }
+        let tasks = self.vcpu_tasks.lock();
+        tasks
+            .get(&vcpu_id)
+            .map(|t| t.cpu_id() as usize)
+            .ok_or_else(|| ax_err_type!(NotFound, format_args!("vCPU {vcpu_id} task not found")))
     }
 
     /// Drains all pending interrupts for the given vCPU, leaving its queue
@@ -106,27 +132,7 @@ impl VcpuIrqDispatcher {
     /// The caller (vCPU run loop) runs on the target pCPU and injects each
     /// returned interrupt through the architecture-specific vCPU injection
     /// path before entering the guest.
-    #[allow(dead_code)]
     pub fn drain(&self, vcpu_id: usize) -> Vec<PendingVcpuInterrupt> {
         self.queue.drain(vcpu_id)
-    }
-}
-
-#[cfg(all(test, feature = "host-test"))]
-mod tests {
-    use super::*;
-    use crate::irq::model::VirtualInterruptId;
-
-    #[test]
-    fn enqueue_unregistered_vcpu_returns_error() {
-        let d = VcpuIrqDispatcher::new();
-        let result = d.enqueue(
-            0,
-            PendingVcpuInterrupt {
-                id: VirtualInterruptId(1),
-                trigger: crate::InterruptTriggerMode::EdgeTriggered,
-            },
-        );
-        assert!(result.is_err());
     }
 }

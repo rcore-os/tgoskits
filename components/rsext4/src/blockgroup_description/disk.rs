@@ -93,3 +93,21 @@ impl DiskFormat for Ext4GroupDesc {
         64
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn block_group_desc_disk_format_rules_hold_for_test() -> bool {
+    // DiskFormat for Ext4GroupDesc: disk_size should be 64
+    assert!(<Ext4GroupDesc as DiskFormat>::disk_size() == 64);
+
+    // Test from_disk_bytes with 32-byte input (short form)
+    let short_bytes = [0u8; 32];
+    let desc = Ext4GroupDesc::from_disk_bytes(&short_bytes);
+    assert!(desc.bg_block_bitmap_lo == 0);
+    assert!(desc.bg_inode_bitmap_lo == 0);
+    assert!(desc.bg_inode_table_lo == 0);
+    // High parts should be zero for short form
+    assert!(desc.bg_block_bitmap_hi == 0);
+    assert!(desc.bg_reserved == 0);
+
+    true
+}

@@ -29,6 +29,7 @@ pub fn fdt_addr_phys() -> Option<usize> {
     Some(fdt_addr)
 }
 
+#[cfg(any(efi, target_arch = "loongarch64", test))]
 pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
     if fdt_addr == 0 {
         return false;

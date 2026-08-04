@@ -50,6 +50,8 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
+#[cfg(feature = "paging")]
+mod kernel_mapping;
 mod klib;
 
 mod devices;
@@ -350,6 +352,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::wait_for_all_cpus_ready();
 
+    #[cfg(all(feature = "smp", feature = "ipi"))]
+    fs::online_smp();
+
     ax_app_entry();
 
     #[cfg(feature = "multitask")]
@@ -510,7 +515,9 @@ fn program_next_timer() {
         with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, deadline));
     }
     #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = ax_task::next_timer_deadline_nanos() {
+    let task_deadline = ax_task::next_timer_deadline_nanos();
+    #[cfg(feature = "multitask")]
+    if let Some(task_deadline) = task_deadline {
         deadline = core::cmp::min(deadline, task_deadline);
     }
 
@@ -555,6 +562,6 @@ fn init_tls() {
 mod tests {
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
-        crate::fs::init(Some("root=/dev/vda"));
+        crate::fs::init(Some("root=/dev/nvme0n1"));
     }
 }

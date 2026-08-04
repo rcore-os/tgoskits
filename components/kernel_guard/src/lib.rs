@@ -55,6 +55,10 @@
 
 #![no_std]
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for kernel guard state transitions.
+pub mod axtest;
+
 mod arch;
 
 /// Low-level interfaces that must be implemented by the crate user.

@@ -566,7 +566,7 @@ mod tests {
             panic!("test should not allocate coherent DMA")
         }
 
-        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) -> Result<(), DmaError> {
             panic!("test should not deallocate coherent DMA")
         }
 

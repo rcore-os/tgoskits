@@ -1,25 +1,35 @@
-extern crate alloc;
+//! PCI/FDT resource preparation for the portable `ahci-driver` crate.
 
-use alloc::format;
-use core::sync::atomic::{Ordering, compiler_fence};
+use alloc::{format, string::String};
 
+use ahci_driver::{AhciConfig, AhciHost};
+use dma_api::DeviceDma;
+use log::info;
+use mmio_api::Mmio;
 #[cfg(feature = "ahci")]
 use pcie::CommandRegister;
+use rdif_block::DriverGeneric;
 use rdrive::probe::OnProbeError;
 #[cfg(feature = "ahci")]
 use rdrive::probe::pci::{FnOnProbe, ProbePci};
-#[cfg(feature = "ls2k1000-ahci")]
-use rdrive::register::ProbeFdt;
-use simple_ahci::{AhciDriver as SimpleAhciDriver, Hal as AhciHal};
+#[cfg(feature = "ahci-fdt")]
+use rdrive::{
+    probe::fdt::ResourcePrepareConfig,
+    register::{FdtInfo, ProbeFdt},
+};
 
-use super::{SyncBlockOps, register_sync_block};
+#[cfg(feature = "ahci")]
+use crate::{PciIrqRequirement, block::ProbePciBlockGroup};
+#[cfg(feature = "ahci-fdt")]
+use crate::{binding_info_from_fdt, block::PlatformDeviceBlockGroup};
 
-pub const DEVICE_NAME: &str = "ahci";
-#[cfg(feature = "ls2k1000-ahci")]
-const LS2K1000_DEVICE_NAME: &str = "ls2k1000-ahci";
-#[cfg(feature = "ls2k1000-ahci")]
-const LS2K1000_DEFAULT_MMIO_SIZE: usize = 0x10_000;
-const NANOS_PER_MILLIS: u64 = 1_000_000;
+#[cfg(feature = "ahci-fdt")]
+const AHCI_FDT_COMPATIBLES: &[&str] = &[
+    "generic-ahci",
+    "loongson,ls-ahci",
+    "loongson,ls2k1000-ahci",
+    "loongson,2k1000-ahci",
+];
 
 #[cfg(feature = "ahci")]
 crate::model_register!(
@@ -31,153 +41,128 @@ crate::model_register!(
     }],
 );
 
-#[cfg(feature = "ls2k1000-ahci")]
+#[cfg(feature = "ahci-fdt")]
 crate::model_register!(
-    name: "LS2K1000 AHCI",
+    name: "FDT AHCI",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Fdt {
-        compatibles: &[
-            "loongson,ls-ahci",
-            "loongson,ls2k1000-ahci",
-            "loongson,2k1000-ahci",
-            "generic-ahci",
-            "snps,dwc-ahci",
-        ],
+        compatibles: AHCI_FDT_COMPATIBLES,
         on_probe: probe_fdt,
     }],
 );
 
-struct AxAhciHal;
-
-impl AhciHal for AxAhciHal {
-    fn virt_to_phys(va: usize) -> usize {
-        axklib::mem::virt_to_phys(va.into()).as_usize()
-    }
-
-    fn current_ms() -> u64 {
-        axklib::time::monotonic_nanos() / NANOS_PER_MILLIS
-    }
-
-    fn flush_dcache() {
-        #[cfg(target_arch = "loongarch64")]
-        unsafe {
-            core::arch::asm!("dbar 0");
-        }
-
-        compiler_fence(Ordering::SeqCst);
-    }
-}
-
-struct AhciBlock {
-    name: &'static str,
-    driver: SimpleAhciDriver<AxAhciHal>,
-}
-
-impl AhciBlock {
-    /// # Safety
-    ///
-    /// `mmio_base` must point to a valid, exclusively-owned AHCI MMIO register
-    /// block that is already mapped with device/uncached semantics.
-    unsafe fn try_new(name: &'static str, mmio_base: usize) -> Option<Self> {
-        let driver = unsafe { SimpleAhciDriver::<AxAhciHal>::try_new(mmio_base) }?;
-        Some(Self { name, driver })
-    }
-}
-
-impl SyncBlockOps for AhciBlock {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn num_blocks(&self) -> u64 {
-        self.driver.capacity()
-    }
-
-    fn block_size(&self) -> usize {
-        self.driver.block_size()
-    }
-
-    fn read_blocks(&mut self, block_id: u64, buf: &mut [u8]) -> Result<(), rdif_block::BlkError> {
-        if !buf.len().is_multiple_of(self.block_size()) {
-            return Err(rdif_block::BlkError::InvalidRequest);
-        }
-        if self.driver.read(block_id, buf) {
-            Ok(())
-        } else {
-            Err(rdif_block::BlkError::Other("AHCI read failed"))
-        }
-    }
-
-    fn write_blocks(&mut self, block_id: u64, buf: &[u8]) -> Result<(), rdif_block::BlkError> {
-        if !buf.len().is_multiple_of(self.block_size()) {
-            return Err(rdif_block::BlkError::InvalidRequest);
-        }
-        if self.driver.write(block_id, buf) {
-            Ok(())
-        } else {
-            Err(rdif_block::BlkError::Other("AHCI write failed"))
-        }
-    }
-}
-
 #[cfg(feature = "ahci")]
 fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
-    let endpoint = probe.endpoint_mut();
-    let class = endpoint.revision_and_class();
+    let class = probe.endpoint().revision_and_class();
     if (class.base_class, class.sub_class) != (0x01, 0x06) {
         return Err(OnProbeError::NotMatch);
     }
-
-    let Some(bar) = endpoint.bar_mmio(5).or_else(|| endpoint.bar_mmio(0)) else {
-        return Err(OnProbeError::other("AHCI MMIO BAR missing"));
-    };
-
-    endpoint.update_command(|mut cmd| {
-        cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
-        cmd
+    let bar = probe
+        .endpoint()
+        .bar_mmio(5)
+        .or_else(|| probe.endpoint().bar_mmio(0))
+        .ok_or_else(|| OnProbeError::other("AHCI MMIO BAR5/BAR0 is missing"))?;
+    probe.endpoint_mut().update_command(|mut command| {
+        command.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
+        command.remove(CommandRegister::INTERRUPT_DISABLE);
+        command
     });
-
-    let mmio = crate::mmio::iomap(bar.start, bar.count().max(1))
-        .map_err(|err| OnProbeError::other(format!("failed to map AHCI BAR: {err:?}")))?;
-    let Some(driver) = (unsafe { AhciBlock::try_new(DEVICE_NAME, mmio.as_ptr() as usize) }) else {
-        return Err(OnProbeError::other("failed to initialize AHCI controller"));
-    };
-    register_sync_block(probe.into_platform_device(), driver);
+    let name = format!("ahci-pci-{:?}", probe.info().address);
+    let mmio = map_mmio(bar.start, bar.count().max(1))?;
+    let host = create_host(name, mmio, AhciConfig::generic())?;
+    probe.register_block_group(host, PciIrqRequirement::Required)?;
     Ok(())
 }
 
-#[cfg(feature = "ls2k1000-ahci")]
+#[cfg(feature = "ahci-fdt")]
 fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
-    let (info, plat_dev) = probe.into_parts();
-    let reg = info
+    let info = probe.info();
+    let binding = binding_info_from_fdt(info)?;
+    if binding.irq().is_none() {
+        return Err(OnProbeError::other(
+            "AHCI requires an interrupt; polling fallback is unsupported",
+        ));
+    }
+    let register = info
         .node
         .regs()
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let resource_addr = reg.address as usize;
-    let size = reg.size.unwrap_or(LS2K1000_DEFAULT_MMIO_SIZE as u64) as usize;
-    let mmio = crate::mmio::iomap(resource_addr, size)?;
-    let vaddr = mmio.as_ptr() as usize;
-
-    log::debug!(
-        "probing {LS2K1000_DEVICE_NAME}: node={}, reg={resource_addr:#x}, vaddr={vaddr:#x}, \
-         size={size:#x}",
-        info.node.name(),
-    );
-
-    let Some(driver) = (unsafe { AhciBlock::try_new(LS2K1000_DEVICE_NAME, vaddr) }) else {
-        return Err(OnProbeError::other(format!(
-            "failed to initialize {LS2K1000_DEVICE_NAME} controller"
-        )));
-    };
-    let blocks = driver.num_blocks();
-    let block_size = driver.block_size();
-
-    register_sync_block(plat_dev, driver);
-    log::info!(
-        "registered {LS2K1000_DEVICE_NAME} block device: blocks={blocks}, block_size={block_size}",
-    );
+    prepare_fdt_resources(info)?;
+    let size = register.size.unwrap_or(0x1000) as usize;
+    let address = register.address as usize;
+    let config = fdt_profile(info);
+    let name = format!("ahci-fdt-{}-{address:x}", info.node.name());
+    let mmio = map_mmio(address, size)?;
+    let host = create_host(name, mmio, config)?;
+    let (_, platform) = probe.into_parts();
+    platform.register_block_group_with_info(host, binding);
     Ok(())
+}
+
+#[cfg(feature = "ahci-fdt")]
+fn prepare_fdt_resources(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    info.prepare_resources(
+        ResourcePrepareConfig::default()
+            .with_assigned_clocks()
+            .with_power_domains()
+            .with_supply("target-supply"),
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "ahci-fdt")]
+fn fdt_profile(info: &FdtInfo<'_>) -> AhciConfig {
+    profile_for_compatibles(info.node.as_node().compatibles())
+}
+
+#[cfg(feature = "ahci-fdt")]
+fn profile_for_compatibles<'a>(mut compatibles: impl Iterator<Item = &'a str>) -> AhciConfig {
+    if compatibles.any(|compatible| {
+        matches!(
+            compatible,
+            "loongson,ls-ahci" | "loongson,ls2k1000-ahci" | "loongson,2k1000-ahci"
+        )
+    }) {
+        AhciConfig::ls2k()
+    } else {
+        AhciConfig::generic()
+    }
+}
+
+fn map_mmio(address: usize, size: usize) -> Result<Mmio, OnProbeError> {
+    axklib::mmio::ioremap(address.into(), size)
+        .map_err(|error| OnProbeError::other(format!("AHCI MMIO mapping failed: {error:?}")))
+}
+
+fn create_host(name: String, mmio: Mmio, config: AhciConfig) -> Result<AhciHost, OnProbeError> {
+    let dma: DeviceDma = axklib::dma::device_with_mask(u64::MAX);
+    let host = AhciHost::new(name, mmio, dma, config)
+        .map_err(|error| OnProbeError::other(format!("AHCI host creation failed: {error}")))?;
+    info!("registered portable AHCI controller group {}", host.name());
+    Ok(host)
+}
+
+#[cfg(all(test, feature = "ahci-fdt"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generic_and_ls2k_fdt_nodes_select_distinct_profiles() {
+        assert_eq!(
+            profile_for_compatibles(["generic-ahci"].into_iter()),
+            AhciConfig::generic()
+        );
+        assert_eq!(
+            profile_for_compatibles(["vendor,board", "loongson,ls2k1000-ahci"].into_iter()),
+            AhciConfig::ls2k()
+        );
+    }
+
+    #[test]
+    fn dwc_ahci_is_not_claimed_by_the_generic_driver() {
+        assert!(!AHCI_FDT_COMPATIBLES.contains(&"snps,dwc-ahci"));
+    }
 }

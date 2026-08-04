@@ -1,0 +1,6 @@
+target = "x86_64-unknown-none"
+log = "Info"
+features = [
+  "ax-driver/ahci",
+]
+max_cpu_num = 4

@@ -349,15 +349,21 @@ pub fn sys_getsockopt(
             if *optlen == 0 {
                 return Ok(0);
             }
-            let so_type = match &**socket {
-                SocketInner::Tcp(_) => SOCK_STREAM,
-                SocketInner::Udp(_) => SOCK_DGRAM,
-                SocketInner::Raw(_) => SOCK_RAW,
-                SocketInner::Unix(_) => SOCK_STREAM,
+            let so_type: i32 = match &**socket {
+                SocketInner::Tcp(_) => SOCK_STREAM as i32,
+                SocketInner::Udp(_) => SOCK_DGRAM as i32,
+                SocketInner::Raw(_) => SOCK_RAW as i32,
+                // Unix sockets carry stream/dgram/seqpacket; the concrete type
+                // lives in the transport's socket options, not the enum variant.
+                SocketInner::Unix(_) => {
+                    let mut t = 0i32;
+                    socket.get_option(GetSocketOption::SocketType(&mut t))?;
+                    t
+                }
                 #[cfg(feature = "vsock")]
-                SocketInner::Vsock(_) => SOCK_STREAM,
+                SocketInner::Vsock(_) => SOCK_STREAM as i32,
             };
-            *get(optval, optlen)? = so_type as i32;
+            *get(optval, optlen)? = so_type;
             return Ok(0);
         }
         if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
@@ -563,4 +569,35 @@ pub fn sys_setsockopt(
     call_dispatch!(dispatch, (level, optname));
 
     Ok(0)
+}
+
+#[cfg(axtest)]
+pub(crate) fn net_opt_normalization_rules_hold_for_test() -> bool {
+    // normalize_ip_tos: strips ECN bits (lower 2 bits masked)
+    assert!(normalize_ip_tos(0x00) == 0x00); // No TOS, no ECN
+    assert!(normalize_ip_tos(0xFF) == 0xFC); // Full TOS, ECN stripped
+    assert!(normalize_ip_tos(0x03) == 0x00); // Only ECN bits
+    assert!(normalize_ip_tos(0xA4) == 0xA4); // High bits unchanged
+
+    // normalize_ipv6_tclass: -1 maps to 0
+    assert!(normalize_ipv6_tclass(-1).unwrap() == 0);
+
+    // normalize_ipv6_tclass: valid range 0-255, then normalize_ip_tos applied
+    assert!(normalize_ipv6_tclass(0).unwrap() == 0);
+    assert!(normalize_ipv6_tclass(252).unwrap() == 252); // No ECN bits
+    assert!(normalize_ipv6_tclass(128).unwrap() == 128); // High bits unchanged
+    assert!(normalize_ipv6_tclass(255).unwrap() == 252); // ECN bits stripped by normalize_ip_tos
+
+    // normalize_ipv6_tclass: out of range fails
+    assert!(normalize_ipv6_tclass(256).is_err());
+    assert!(normalize_ipv6_tclass(-2).is_err());
+
+    // IP_TOS_ECN_MASK constant check
+    assert!(IP_TOS_ECN_MASK == 0x03);
+
+    // Protocol constants
+    assert!(PROTO_TCP == 6);
+    assert!(PROTO_IP == 0);
+
+    true
 }

@@ -1,6 +1,6 @@
 [package]
 name = "somehal-macros"
-version = "0.1.5"
+version = "0.1.6"
 authors.workspace = true
 license.workspace = true
 categories.workspace = true
@@ -13,7 +13,7 @@ repository.workspace = true
 proc-macro = true
 
 [dependencies]
-quote = "1.0"
-proc-macro2 = "1.0"
-syn = { version = "2.0", features = ["extra-traits", "full"] }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+syn = { workspace = true, features = ["extra-traits", "full"] }
 darling = "0.23"

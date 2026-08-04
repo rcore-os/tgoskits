@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.5...ax-task-v0.6.6) - 2026-08-03
+
+### Added
+
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+
+### Fixed
+
+- *(ax-task)* initialize tasks before scheduling ([#1783](https://github.com/rcore-os/tgoskits/pull/1783))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.4...ax-task-v0.6.5) - 2026-07-23
+
+### Other
+
+- *(ax-runtime)* centralize UART scheduling ([#1675](https://github.com/rcore-os/tgoskits/pull/1675))
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
 ### Changed
 
 - *(host-test)* initialize and bind CPU zero's dynamic CPU-local area before scheduler startup.

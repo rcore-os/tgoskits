@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod cgroup;
 mod ipc;
 mod mnt;
 mod net;
@@ -11,7 +12,9 @@ mod uts;
 
 use alloc::sync::Arc;
 
+pub use ax_cgroup::{CgroupNamespace, CgroupNode};
 use ax_kspin::SpinNoIrq;
+pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
 pub use net::{NetNamespace, ROOT_NET_NS};
@@ -42,6 +45,8 @@ pub struct NsProxy {
     pub net_ns: Arc<SpinNoIrq<NetNamespace>>,
     /// The user namespace (UID/GID mappings).
     pub user_ns: Arc<SpinNoIrq<UserNamespace>>,
+    /// The cgroup namespace (cgroup hierarchy view).
+    pub cgroup_ns: Arc<SpinNoIrq<CgroupNamespace>>,
 }
 
 impl NsProxy {
@@ -55,6 +60,7 @@ impl NsProxy {
             child_pid_ns: None,
             net_ns: ROOT_NET_NS.clone(),
             user_ns: ROOT_USER_NS.clone(),
+            cgroup_ns: ROOT_CGROUP_NS.clone(),
         }
     }
 
@@ -72,6 +78,7 @@ impl NsProxy {
             child_pid_ns: None,
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
+            cgroup_ns: self.cgroup_ns.clone(),
         }
     }
 
@@ -89,6 +96,7 @@ impl NsProxy {
             child_pid_ns: self.child_pid_ns.clone(),
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
+            cgroup_ns: self.cgroup_ns.clone(),
         }
     }
 
@@ -133,6 +141,10 @@ impl NsProxy {
         self.user_ns = Arc::new(SpinNoIrq::new(new_inner));
     }
 
+    pub fn unshare_cgroup(&mut self, root: Arc<CgroupNode>) {
+        self.cgroup_ns = new_cgroup_namespace(root);
+    }
+
     /// Replace the UTS namespace with an existing one (used by `setns(2)`).
     pub fn set_ns_uts(&mut self, ns: Arc<SpinNoIrq<UtNamespace>>) {
         self.uts_ns = ns;
@@ -167,5 +179,55 @@ impl NsProxy {
     /// Replace the user namespace with an existing one (used by `setns(2)`).
     pub fn set_ns_user(&mut self, ns: Arc<SpinNoIrq<UserNamespace>>) {
         self.user_ns = ns;
+    }
+
+    /// Replace the cgroup namespace with an existing one (used by `setns(2)`).
+    pub fn set_ns_cgroup(&mut self, ns: Arc<SpinNoIrq<CgroupNamespace>>) {
+        self.cgroup_ns = ns;
+    }
+
+    /// Release the process-owned cgroup namespace after its final thread exits.
+    ///
+    /// Exited scheduler tasks may retain `ProcessData` after userspace has
+    /// reaped the process, so cgroup root ownership cannot rely on `NsProxy`
+    /// destruction being synchronous with process exit.
+    pub fn release_cgroup_namespace(&mut self) {
+        self.cgroup_ns = ROOT_CGROUP_NS.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    fn init_cgroup() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(ax_cgroup::init);
+    }
+
+    #[test]
+    fn clone_for_unshare_preserves_cgroup_namespace() {
+        init_cgroup();
+        let nsproxy = NsProxy::new_root();
+        let cloned = nsproxy.clone_for_unshare();
+
+        assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &cloned.cgroup_ns));
+    }
+
+    #[test]
+    fn final_process_exit_releases_cgroup_namespace_root() {
+        init_cgroup();
+        let mut nsproxy = NsProxy::new_root();
+        nsproxy.unshare_cgroup(ax_cgroup::root());
+        let exiting_namespace = nsproxy.cgroup_ns.clone();
+
+        assert!(!Arc::ptr_eq(&exiting_namespace, &ROOT_CGROUP_NS));
+        assert_eq!(Arc::strong_count(&exiting_namespace), 2);
+        nsproxy.release_cgroup_namespace();
+
+        assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &ROOT_CGROUP_NS));
+        assert_eq!(Arc::strong_count(&exiting_namespace), 1);
     }
 }

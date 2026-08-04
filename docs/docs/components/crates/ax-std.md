@@ -71,7 +71,6 @@ graph LR
 - `axbacktrace`
 - `ax-cpu`
 - `ax-display`
-- `ax-dma`
 - 另外还有 `60` 个同类项未在此展开
 
 ### 3.3 被依赖情况

@@ -11,28 +11,24 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "sg2002")]
+pub mod ion;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
-#[cfg(feature = "ext4")]
-mod loop_block;
-#[cfg(feature = "jpeg")]
-mod mpp_service;
-#[cfg(feature = "rga")]
-pub(crate) mod rga;
-#[cfg(feature = "ext4")]
-pub use r#loop::LoopDevice;
-#[cfg(feature = "sg2002")]
-pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
+#[cfg(feature = "jpeg")]
+mod mpp_service;
 #[cfg(feature = "sg2002")]
 mod pinmux;
 #[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
 pub(super) mod pwm;
+#[cfg(feature = "rga")]
+pub(crate) mod rga;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
@@ -54,7 +50,6 @@ use core::{
 use ax_errno::AxError;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
-#[cfg(feature = "sg2002")]
 use spin::Once;
 
 #[cfg(feature = "sg2002")]
@@ -68,6 +63,7 @@ use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, Simple
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
+static INITIAL_PTS_INSTANCE: Once<Arc<tty::PtsInstance>> = Once::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
 pub(super) struct IrqRegistration {
@@ -108,6 +104,28 @@ pub(super) fn request_shared_disabled(
 
 pub(crate) fn new_devfs() -> Filesystem {
     SimpleFs::new_with("devfs".into(), 0x01021994, builder)
+}
+
+pub(crate) fn new_devptsfs(mount: tty::DevPtsMount) -> Filesystem {
+    SimpleFs::new_with("devpts".into(), 0x00001cd1, move |fs| {
+        devpts_builder(fs, mount)
+    })
+}
+
+fn devpts_builder(fs: Arc<SimpleFs>, mount: tty::DevPtsMount) -> DirMaker {
+    let instance = match mount {
+        tty::DevPtsMount::Legacy(options) => initial_pts_instance(options),
+        tty::DevPtsMount::NewInstance(options) => tty::PtsInstance::new(options),
+    };
+    SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs, instance)))
+}
+
+fn initial_pts_instance(options: tty::DevPtsOptions) -> Arc<tty::PtsInstance> {
+    let instance = INITIAL_PTS_INSTANCE
+        .call_once(|| tty::PtsInstance::new(options))
+        .clone();
+    instance.update_options(options);
+    instance
 }
 
 struct Null;
@@ -311,6 +329,46 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
     }
 
     baseline_next != mixed_next
+        && splitmix64_determinism_rules_hold()
+        && fold_seed_word_xors_into_byte_indices()
+}
+
+#[cfg(axtest)]
+fn splitmix64_determinism_rules_hold() -> bool {
+    // splitmix64 is a pure bijection: the same input always yields the same
+    // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
+    // outputs (no fixed-point within a small sample).
+    let a = splitmix64(0);
+    let b = splitmix64(1);
+    let c = splitmix64(0xffff_ffff_ffff_ffff);
+    a == splitmix64(0)
+        && b == splitmix64(1)
+        && c == splitmix64(0xffff_ffff_ffff_ffff)
+        && a != b
+        && b != c
+        && a != c
+}
+
+#[cfg(axtest)]
+fn fold_seed_word_xors_into_byte_indices() -> bool {
+    // fold_seed_word XORs splitmix64(word) into seed[idx*4 % 32]. Repeatedly
+    // folding the same word twice must cancel out (XOR is its own inverse).
+    let mut seed = [0u8; 32];
+    let snapshot_before = seed;
+    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
+    let mutated = seed;
+    // Folding again with the same word must restore the original bytes.
+    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
+    let cancelled = seed == snapshot_before;
+    // The mutated seed must be different from the all-zero baseline at least at
+    // one byte (proves fold_seed_word actually wrote something).
+    let mutated_differs_from_zero = mutated.iter().any(|byte| *byte != 0);
+    // Folding word 0 affects byte indices {0, 4, 8, 12, 16, 20, 24, 28}.
+    let affected_indices = [0, 4, 8, 12, 16, 20, 24, 28];
+    let affected_bytes_differ = affected_indices
+        .iter()
+        .any(|&idx| mutated.get(idx).copied() != snapshot_before.get(idx).copied());
+    cancelled && mutated_differs_from_zero && affected_bytes_differ
 }
 
 struct Full;
@@ -356,6 +414,7 @@ impl DeviceOps for CpuDmaLatency {
 
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
+    let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
     root.add(
         "null",
         Device::new(
@@ -407,7 +466,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // st_rdev) can find it. The root mount is the first mount, so its
     // `DEVICE_COUNTER` id is 1 (== `DeviceId::new(0, 1).0`).
     root.add(
-        "vda",
+        ax_fs_ng::root::root_block_identity().name,
         Device::new(
             fs.clone(),
             NodeType::BlockDevice,
@@ -477,12 +536,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(tty::Ptmx(fs.clone())),
+            Arc::new(tty::Ptmx::new(fs.clone(), pts_instance.clone())),
         ),
     );
     root.add(
         "pts",
-        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir)),
+        SimpleDir::new_maker(
+            fs.clone(),
+            Arc::new(tty::PtsDir::new(fs.clone(), pts_instance)),
+        ),
     );
     #[cfg(feature = "dev-log")]
     root.add(

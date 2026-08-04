@@ -91,6 +91,19 @@ impl ProcessSignalManager {
         result
     }
 
+    /// Dequeues a synchronous (instruction-generated) shared pending signal, if
+    /// any. Mirrors [`PendingSignals::dequeue_synchronous_signal`]; used by the
+    /// delivery path to give a process-directed fault priority over other
+    /// pending signals.
+    pub(crate) fn dequeue_synchronous_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
+        let mut guard = self.pending.lock();
+        let result = guard.dequeue_synchronous_signal(mask);
+        if guard.set.is_empty() {
+            self.possibly_has_signal.store(false, Ordering::Release);
+        }
+        result
+    }
+
     /// Sends a signal to the process.
     ///
     /// Returns `Some(tid)` if the signal wakes up a thread.

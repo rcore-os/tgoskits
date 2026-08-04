@@ -1,0 +1,22 @@
+board_type = "JL-LSGD2K10"
+shell_prefix = "root@starry:"
+success_regex = [
+  '(?m)^JL_LSGD2K10_BLOCK_RW_BENCH_PASSED$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^JL_LSGD2K10_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^block-rw-bench: error: .*$',
+  '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
+  '(?i)(block-rw-bench|sh): .*not found',
+  '(?i)\bI/O error\b',
+]
+timeout = 1200
+
+shell_init_cmd = """
+export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/blk0'
+export BLOCK_RW_BENCH_CONTROLLER='ls2k1000-ahci'
+export BLOCK_RW_BENCH_SUCCESS_MARKER='JL_LSGD2K10_BLOCK_RW_BENCH_PASSED'
+export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='4194304'
+export BLOCK_RW_BENCH_STAGED_PROGRAM='/home/loongson/block-rw-bench'
+"""

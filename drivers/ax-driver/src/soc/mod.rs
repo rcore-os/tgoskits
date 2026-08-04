@@ -15,8 +15,8 @@
 #[cfg(feature = "pinctrl")]
 mod fixed_regulator;
 #[cfg(feature = "rockchip-soc")]
-mod rockchip;
-#[cfg(feature = "rockchip-dwmmc")]
+pub(crate) mod rockchip;
+#[cfg(feature = "rk3588-cpufreq")]
 pub mod scmi;
 #[cfg(feature = "starfive-soc")]
 mod starfive;

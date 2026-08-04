@@ -71,6 +71,8 @@ trap_handler_table:
 .endm
 
 .section .text
+.type trap_vector_entries, @function
+trap_vector_entries:
 .set i, 0
 .rept NUM_INT
     DEF_HANDLER %i
@@ -95,6 +97,7 @@ trap_handler_table:
     POP_GENERAL_REGS
     add     rsp, 16                     # pop vector, error_code
     iretq
+.size trap_vector_entries, . - trap_vector_entries
 
 .global syscall_entry
 syscall_entry:

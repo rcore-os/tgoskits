@@ -4,11 +4,19 @@ use core::ffi::{c_char, c_void};
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use ax_task::current;
+use axfs_ng_vfs::NodePermission;
 
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
     mm::vm_load_string,
-    pseudofs::{MemoryFs, overlay::OverlayOptions},
+    pseudofs::{
+        MemoryFs,
+        dev::{
+            new_devptsfs,
+            tty::{DevPtsMount, DevPtsOptions},
+        },
+        overlay::OverlayOptions,
+    },
     task::{AsThread, tasks},
 };
 
@@ -39,6 +47,47 @@ const MOUNT_OPTION_FLAGS: i32 =
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+fn parse_devpts_mode(value: &str) -> AxResult<NodePermission> {
+    let mode = u16::from_str_radix(value, 8).map_err(|_| AxError::InvalidInput)?;
+    NodePermission::from_bits(mode).ok_or(AxError::InvalidInput)
+}
+
+enum DevPtsInstanceKind {
+    Legacy,
+    New,
+}
+
+fn parse_devpts_options(data: *const c_void) -> AxResult<DevPtsMount> {
+    let mut options = DevPtsOptions::mounted();
+    let mut instance = DevPtsInstanceKind::Legacy;
+    if data.is_null() {
+        return Ok(DevPtsMount::Legacy(options));
+    }
+
+    for item in vm_load_string(data.cast())?.split(',') {
+        if item.is_empty() {
+            continue;
+        }
+        if item == "newinstance" {
+            instance = DevPtsInstanceKind::New;
+            continue;
+        }
+        let (key, value) = item.split_once('=').ok_or(AxError::InvalidInput)?;
+        match key {
+            "mode" => options.slave_mode = parse_devpts_mode(value)?,
+            "gid" => {
+                options.slave_gid = value.parse().map_err(|_| AxError::InvalidInput)?;
+            }
+            "ptmxmode" => options.ptmx_mode = parse_devpts_mode(value)?,
+            _ => return Err(AxError::InvalidInput),
+        }
+    }
+    Ok(match instance {
+        DevPtsInstanceKind::Legacy => DevPtsMount::Legacy(options),
+        DevPtsInstanceKind::New => DevPtsMount::NewInstance(options),
+    })
+}
 
 fn parse_overlay_options(
     data: *const c_void,
@@ -209,7 +258,7 @@ pub fn sys_mount(
     }
 
     match fs_type.as_str() {
-        "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
+        "proc" | "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
@@ -218,10 +267,26 @@ pub fn sys_mount(
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
+        "devpts" => {
+            let fs = new_devptsfs(parse_devpts_options(data)?);
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount(&fs)?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        }
         "cgroup2" => {
-            let fs = crate::pseudofs::cgroup::new_cgroup2fs();
+            let (cgroup_root, cgroup_root_pin) = {
+                let task = current();
+                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                let namespace = nsproxy.cgroup_ns.lock();
+                (namespace.root(), namespace.pin_root())
+            };
+            let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
@@ -265,69 +330,17 @@ fn mount_source(source: &str) -> &str {
 }
 
 #[cfg(feature = "ext4")]
-fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
-    use alloc::{boxed::Box, sync::Arc};
-
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let ctx = fs_context.lock();
-
-    // Resolve source device path (e.g., "/dev/loop0") to a block device
-    let source_loc = ctx.resolve(source)?;
-    let device = source_loc
-        .entry()
-        .downcast::<crate::pseudofs::Device>()
-        .map_err(|_| {
-            warn!("mount_ext4: {:?} is not a device", source);
-            AxError::NoSuchDevice
-        })?;
-    let loop_dev = device
-        .inner()
-        .as_any()
-        .downcast_ref::<crate::pseudofs::dev::LoopDevice>()
-        .ok_or_else(|| {
-            warn!("mount_ext4: {:?} is not a loop device", source);
-            AxError::NoSuchDevice
-        })?;
-    let handle = loop_dev.block_handle().inspect_err(|e| {
-        warn!("mount_ext4: loop device block handle failed: {:?}", e);
-    })?;
-
-    let num_blocks = handle.device_info().num_blocks;
-    let region = ax_fs_ng::BlockRegion::from_num_blocks(num_blocks);
-
-    // Create ext4 filesystem from the native block runtime handle
-    let fs = ax_fs_ng::vfs::new_filesystem_from_handle(handle, region).map_err(|e| {
-        warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
-        AxError::Io
-    })?;
-
-    // Mount at the target location
-    let target_loc = ctx.resolve(target)?;
-    let mountpoint = target_loc.mount_with_source(&fs, source).map_err(|e| {
-        warn!("mount_ext4: failed to mount at {:?}: {:?}", target, e);
-        AxError::Io
-    })?;
-    mountpoint.set_readonly(readonly);
-
-    // Store a writeback callback in the mount root's user_data so that
-    // sys_umount2 can flush the loop device's block cache to the backing
-    // file after the filesystem is unmounted.
-    let ops: Arc<dyn crate::pseudofs::DeviceOps> = device.inner().clone();
-    {
-        let mount_root = ctx.resolve(target)?;
-        mount_root.user_data().insert(Box::new(move || {
-            if let Some(ld) = ops
-                .as_any()
-                .downcast_ref::<crate::pseudofs::dev::LoopDevice>()
-            {
-                ld.flush_cache_to_file()
-            } else {
-                Ok(())
-            }
-        }) as Box<dyn Fn() -> AxResult<()> + Send + Sync>);
-    }
-
-    Ok(())
+fn mount_ext4(source: &str, _target: &str, _readonly: bool) -> AxResult<()> {
+    // The old loop-backed ext4 adapter implemented the removed synchronous
+    // polling queue API. Keep its source for the later virtual-device
+    // migration, but do not expose it through mount(2) as an IRQ-capable
+    // device. Linux uses ENODEV when the requested filesystem/device backend
+    // is not available in the running kernel.
+    warn!(
+        "mount_ext4: block backend for source {:?} has not been migrated",
+        source
+    );
+    Err(AxError::NoSuchDevice)
 }
 
 pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
@@ -475,4 +488,36 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
 
     Ok(0)
+}
+
+#[cfg(axtest)]
+pub(crate) fn mount_flags_validation_rules_hold_for_test() -> bool {
+    // Test umount flag validation
+    const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+    let flags = 0i32;
+    assert!(flags & !VALID_UMOUNT_FLAGS == 0);
+
+    let force_only = MNT_FORCE;
+    assert!(force_only & !VALID_UMOUNT_FLAGS == 0);
+
+    let detach_only = MNT_DETACH;
+    assert!(detach_only & !VALID_UMOUNT_FLAGS == 0);
+
+    let all_valid = VALID_UMOUNT_FLAGS;
+    assert!(all_valid & !VALID_UMOUNT_FLAGS == 0);
+
+    // Invalid flag should be detected
+    let invalid_flags = 0xFFFFi32;
+    assert!(invalid_flags & !VALID_UMOUNT_FLAGS != 0);
+
+    // Test propagation flags
+    const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
+
+    assert!(MS_SHARED & PROPAGATION_FLAGS != 0);
+    assert!(MS_PRIVATE & PROPAGATION_FLAGS != 0);
+    assert!(MS_SLAVE & PROPAGATION_FLAGS != 0);
+    assert!(MS_UNBINDABLE & PROPAGATION_FLAGS != 0);
+
+    true
 }

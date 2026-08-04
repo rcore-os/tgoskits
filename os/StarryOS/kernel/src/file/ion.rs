@@ -36,7 +36,7 @@ impl IonBufferFile {
     /// 获取物理地址范围
     pub fn phys_range(&self) -> PhysAddrRange {
         PhysAddrRange::from_start_size(
-            ax_memory_addr::PhysAddr::from(self.buffer.dma_info.bus_addr.as_u64() as usize),
+            ax_memory_addr::PhysAddr::from(self.buffer.dma_addr().as_u64() as usize),
             self.buffer.size,
         )
     }

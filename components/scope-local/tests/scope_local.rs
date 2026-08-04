@@ -11,8 +11,18 @@ use std::{
 use ctor::ctor;
 use scope_local::{ActiveScope, Scope, scope_local};
 
+struct KernelGuardIfImpl;
+
+#[ax_crate_interface::impl_interface]
+impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
+    fn enable_preempt() {}
+
+    fn disable_preempt() {}
+}
+
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static UNUSED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
 static NEXT_TEST_CPU: AtomicUsize = AtomicUsize::new(1);
 
@@ -68,7 +78,7 @@ fn scope_init() {
 }
 
 #[test]
-fn scope_init_is_per_item_lazy() {
+fn scope_new_initializes_all_items() {
     let _guard = test_guard();
     UNUSED_INIT_COUNT.store(0, Ordering::Relaxed);
     scope_local! {
@@ -79,26 +89,39 @@ fn scope_init_is_per_item_lazy() {
         };
     }
 
-    assert_eq!(DATA.with(|value| *value), 42);
-    assert_eq!(UNUSED_INIT_COUNT.load(Ordering::Relaxed), 0);
+    let scope = Scope::new();
+
+    assert_eq!(*DATA.scope(&scope), 42);
+    assert_eq!(UNUSED_INIT_COUNT.load(Ordering::Relaxed), 1);
+    assert_eq!(*UNUSED.scope(&scope), 7);
+    assert_eq!(UNUSED_INIT_COUNT.load(Ordering::Relaxed), 1);
 }
 
 #[test]
 fn pinned_access_does_not_initialize_an_item() {
     let _guard = test_guard();
+    PINNED_INIT_COUNT.store(0, Ordering::Relaxed);
     scope_local! {
-        static DATA: usize = 7;
+        static DATA: usize = {
+            PINNED_INIT_COUNT.fetch_add(1, Ordering::Relaxed);
+            7
+        };
     }
+    let scope = Scope::new();
+    assert_eq!(PINNED_INIT_COUNT.load(Ordering::Relaxed), 1);
+    // SAFETY: `scope` remains live until the global scope is restored.
+    unsafe { ActiveScope::set(&scope) };
 
     // SAFETY: the serialized host test cannot migrate between modeled CPUs.
     unsafe {
         ax_percpu::with_cpu_pin(|pin| {
-            assert_eq!(DATA.try_with_pinned(pin, |value| *value), None);
-            assert_eq!(DATA.with(|value| *value), 7);
+            assert_eq!(DATA.with_pinned(pin, |value| *value), 7);
             assert_eq!(DATA.try_with_pinned(pin, |value| *value), Some(7));
         })
     }
     .unwrap();
+    ActiveScope::set_global();
+    assert_eq!(PINNED_INIT_COUNT.load(Ordering::Relaxed), 1);
 }
 
 #[test]

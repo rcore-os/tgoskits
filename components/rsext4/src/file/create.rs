@@ -99,7 +99,7 @@ pub fn create_symbol_link_with_owner<B: BlockDevice>(
         new_inode.i_blocks_lo = 0;
         new_inode.l_i_blocks_high = 0;
         new_inode.i_block = [0; 15];
-    } else if target_len <= 60 {
+    } else if target_len < 60 {
         // Fast symlink: store the target directly inside `i_block`.
         let mut raw = [0u8; 60];
         raw[..target_len].copy_from_slice(target_bytes);

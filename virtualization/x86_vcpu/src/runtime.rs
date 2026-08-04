@@ -5,8 +5,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use raw_cpuid::CpuId;
 
 use crate::{
-    X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86NestedPagingConfig, X86VcpuCreateConfig,
-    X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit,
+    X86_LOCAL_APIC_GPA, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86NestedPagingConfig,
+    X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit,
     svm::{SvmPerCpuState, SvmVcpu},
     vmx::{VmxPerCpuState, VmxVcpu},
 };
@@ -315,9 +315,7 @@ pub fn requires_apic_access_page() -> X86VcpuResult<bool> {
 /// [`X86VcpuError::Unsupported`] when the selected backend is SVM.
 pub fn apic_access_page_gpa() -> X86VcpuResult<X86GuestPhysAddr> {
     match selected_backend() {
-        Some(X86VirtualizationBackend::Vmx) => {
-            Ok(X86GuestPhysAddr::from(crate::vmx::X86_APIC_ACCESS_GPA))
-        }
+        Some(X86VirtualizationBackend::Vmx) => Ok(X86GuestPhysAddr::from(X86_LOCAL_APIC_GPA)),
         Some(X86VirtualizationBackend::Svm) => Err(X86VcpuError::Unsupported),
         None => Err(X86VcpuError::BadState),
     }

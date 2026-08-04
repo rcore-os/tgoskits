@@ -57,11 +57,19 @@ impl TxIngress {
         accepted
     }
 
+    pub(super) fn try_write_text(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
+        let accepted = submit_text_locked(&mut self.state.lock(), bytes);
+        if accepted > 0 {
+            notify.notify();
+        }
+        accepted
+    }
+
     pub(super) fn try_write_log(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
         let Some(mut state) = self.state.try_lock() else {
             return 0;
         };
-        let accepted = submit_locked(&mut state, bytes);
+        let accepted = submit_text_locked(&mut state, bytes);
         drop(state);
         if accepted > 0 {
             if ax_hal::irq::in_irq_context() {
@@ -131,6 +139,39 @@ fn submit_locked(state: &mut TxQueueState, bytes: &[u8]) -> usize {
     accepted
 }
 
+fn submit_text_locked(state: &mut TxQueueState, bytes: &[u8]) -> usize {
+    if bytes.is_empty() || !state.accepting {
+        return 0;
+    }
+
+    let mut accepted = 0;
+    while accepted < bytes.len() && state.frames.len() < TX_FRAME_CAPACITY {
+        let mut encoded = [0; TX_FRAME_BYTES];
+        let mut encoded_len = 0;
+        while accepted < bytes.len() {
+            let byte = bytes[accepted];
+            let required = if byte == b'\n' { 2 } else { 1 };
+            if encoded_len + required > encoded.len() {
+                break;
+            }
+            if byte == b'\n' {
+                encoded[encoded_len] = b'\r';
+                encoded_len += 1;
+            }
+            encoded[encoded_len] = byte;
+            encoded_len += 1;
+            accepted += 1;
+        }
+        state
+            .frames
+            .push_back(TxFrame::new(&encoded[..encoded_len]));
+    }
+    if accepted > 0 {
+        state.idle = false;
+    }
+    accepted
+}
+
 fn publish_idle_locked(state: &mut TxQueueState, worker_empty: bool, hardware_idle: bool) -> bool {
     let idle = worker_empty && state.frames.is_empty() && hardware_idle;
     let became_idle = idle && !state.idle;
@@ -172,6 +213,24 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn text_log_submission_expands_line_feeds_to_crlf() {
+        let mut state = TxQueueState {
+            accepting: true,
+            idle: true,
+            frames: VecDeque::new(),
+        };
+
+        assert_eq!(submit_text_locked(&mut state, b"first\nsecond\n"), 13);
+
+        let output = state
+            .frames
+            .drain(..)
+            .flat_map(|frame| frame.bytes().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(output, b"first\r\nsecond\r\n");
+    }
 
     #[test]
     fn queue_order_is_the_lock_linearization_order() {

@@ -16,43 +16,61 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::{InterruptTriggerMode, IrqLine};
+use axdevice_base::{ControllerInputId, InterruptTriggerMode, IrqLine, VirtualInterruptController};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
+use crate::{
+    DeviceBundle, DeviceManagerError, DeviceManagerResult, GuestRangeAllocatorKey,
+    ServiceCardinality, ServiceKey, range_alloc::IvcGuestRangeAllocator,
+};
 
-/// Resolves a VM-local interrupt line for a device under construction.
-pub trait IrqResolver: Send + Sync {
-    /// Resolves `line` with the requested trigger mode.
-    fn resolve_irq(
-        &self,
-        line: usize,
-        trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine>;
+/// Typed service key for the VM's canonical virtual interrupt controller.
+pub struct VirtualInterruptControllerKey;
+
+impl ServiceKey for VirtualInterruptControllerKey {
+    type Service = dyn VirtualInterruptController;
+
+    const NAME: &'static str = "virtual-interrupt-controller";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
 /// VM-owned services available while a device factory is building a device.
 pub struct DeviceBuildContext<'a> {
-    irq_resolver: &'a dyn IrqResolver,
+    interrupt_controller: &'a dyn VirtualInterruptController,
 }
 
 impl<'a> DeviceBuildContext<'a> {
-    /// Creates a device build context backed by `irq_resolver`.
-    pub const fn new(irq_resolver: &'a dyn IrqResolver) -> Self {
-        Self { irq_resolver }
+    /// Creates a device build context backed by the VM's canonical controller.
+    pub const fn new(interrupt_controller: &'a dyn VirtualInterruptController) -> Self {
+        Self {
+            interrupt_controller,
+        }
     }
 
-    /// Resolves a VM-local interrupt line.
+    /// Returns the VM's canonical virtual interrupt controller.
+    pub const fn interrupt_controller(&self) -> &'a dyn VirtualInterruptController {
+        self.interrupt_controller
+    }
+
+    /// Claims a source connection on one VM-local controller input.
     pub fn resolve_irq(
         &self,
         line: usize,
         trigger: InterruptTriggerMode,
     ) -> DeviceManagerResult<IrqLine> {
-        self.irq_resolver.resolve_irq(line, trigger)
+        Ok(self
+            .interrupt_controller
+            .wired_input(ControllerInputId::new(line), trigger)?
+            .connect()?)
     }
 }
 
 /// Builds all capabilities contributed by one emulated device type.
+///
+/// A factory that exposes an architecture-owned, pre-created controller must
+/// capture the same shared controller instance and validate that each build
+/// request matches the configuration used to create it, including its MMIO
+/// base, length, and type-specific arguments.
 pub trait DeviceFactory: Send + Sync {
     /// Returns the configuration type handled by this factory.
     fn device_type(&self) -> EmulatedDeviceType;
@@ -66,6 +84,15 @@ pub trait DeviceFactory: Send + Sync {
 }
 
 /// A registry containing at most one factory for each emulated device type.
+///
+/// Registered factories are authoritative for their device type: during
+/// [`DeviceRuntime::build_with_factories`](crate::DeviceRuntime::build_with_factories),
+/// each configured device has exactly one construction path. A factory error
+/// is propagated and never causes a fallback to create another device.
+///
+/// Architectures that pre-create an interrupt controller must first reject
+/// duplicate controller configurations, then register exactly one factory that
+/// captures the shared controller and its validated configuration fingerprint.
 #[derive(Default)]
 pub struct DeviceFactoryRegistry {
     factories: Vec<(EmulatedDeviceType, Arc<dyn DeviceFactory>)>,
@@ -124,6 +151,23 @@ impl DeviceFactoryRegistry {
 
 struct MetaDeviceFactory;
 
+struct IvcChannelFactory;
+
+impl DeviceFactory for IvcChannelFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::IVCChannel
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let allocator = IvcGuestRangeAllocator::new(config.base_gpa, config.length)?.into_service();
+        DeviceBundle::new().with_service::<GuestRangeAllocatorKey>(allocator)
+    }
+}
+
 impl DeviceFactory for MetaDeviceFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::Dummy
@@ -140,5 +184,6 @@ impl DeviceFactory for MetaDeviceFactory {
 
 /// Registers device factories that do not depend on an architecture backend.
 pub fn register_builtin_factories(registry: &mut DeviceFactoryRegistry) -> DeviceManagerResult {
-    registry.register(Arc::new(MetaDeviceFactory))
+    registry.register(Arc::new(MetaDeviceFactory))?;
+    registry.register(Arc::new(IvcChannelFactory))
 }

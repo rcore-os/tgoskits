@@ -174,12 +174,11 @@ flowchart LR
         arceos_api["arceos_api"]
         posix_api["arceos_posix_api"]
     end
-    subgraph mods["内核模块 (12)"]
+    subgraph mods["内核模块"]
         hal["axhal"]
         task["axtask"]
         mm["axmm"]
         fs["axfs-ng"]
-        dma["axdma"]
         sync["axsync"]
         other["..."]
     end
@@ -191,7 +190,7 @@ flowchart LR
 
 | 层次 | 内容 | 职责 |
 |------|------|------|
-| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axfs-ng`, `axdma`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、DMA、文件系统、同步原语与运行时初始化 |
+| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axfs-ng`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、文件系统、同步原语与运行时初始化；DMA 能力由 `dma-api` 与 `axklib` 提供 |
 | API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api` | 向上提供统一 API 接口与 POSIX 兼容层 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 

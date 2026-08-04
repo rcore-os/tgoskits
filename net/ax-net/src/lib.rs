@@ -66,6 +66,9 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
+#[cfg(all(axtest, feature = "axtest"))]
+mod axtest;
+
 use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };
@@ -448,13 +451,35 @@ pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
     }
 }
 
-fn poll_until_idle() {
+#[derive(Clone, Copy)]
+enum PollOwnership {
+    Opportunistic,
+    Required,
+}
+
+fn acquire_poll_ownership(
+    polling: &AtomicBool,
+    ownership: PollOwnership,
+    mut wait: impl FnMut(),
+) -> bool {
+    loop {
+        if polling
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+            .is_ok()
+        {
+            return true;
+        }
+        match ownership {
+            PollOwnership::Opportunistic => return false,
+            PollOwnership::Required => wait(),
+        }
+    }
+}
+
+fn poll_until_idle(ownership: PollOwnership) {
     POLL_AGAIN.store(true, Ordering::Release);
     loop {
-        if POLLING_INTERFACES
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
-            .is_err()
-        {
+        if !acquire_poll_ownership(&POLLING_INTERFACES, ownership, ax_task::yield_now) {
             return;
         }
 
@@ -486,7 +511,7 @@ pub fn request_poll() {
 /// datagram already sits in the peer's receive buffer and `close()` cannot
 /// unsend it. Must not be called while holding `SOCKET_SET.inner`.
 pub(crate) fn flush_egress() {
-    poll_until_idle();
+    poll_until_idle(PollOwnership::Required);
 }
 
 fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
@@ -774,7 +799,7 @@ fn net_poll_worker() {
             get_service().wake_all_devices();
         }
         drain_deferred_poll_wakes();
-        poll_until_idle();
+        poll_until_idle(PollOwnership::Opportunistic);
         drain_deferred_poll_wakes();
     }
 }
@@ -799,7 +824,10 @@ mod tests {
         time::Duration,
     };
 
-    use super::{device_poll_fallback_due, publish_poll_request, take_poll_request};
+    use super::{
+        PollOwnership, acquire_poll_ownership, device_poll_fallback_due, publish_poll_request,
+        take_poll_request,
+    };
 
     #[test]
     fn poll_request_after_worker_drain_stays_pending() {
@@ -827,6 +855,21 @@ mod tests {
     fn immediate_socket_poll_does_not_force_device_fallback() {
         assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
         assert!(device_poll_fallback_due(false, true, Duration::ZERO));
+    }
+
+    #[test]
+    fn synchronous_flush_waits_for_active_poll_owner() {
+        let polling = AtomicBool::new(true);
+        let mut waits = 0;
+
+        let acquired = acquire_poll_ownership(&polling, PollOwnership::Required, || {
+            waits += 1;
+            polling.store(false, Ordering::Release);
+        });
+
+        assert!(acquired);
+        assert_eq!(waits, 1);
+        assert!(polling.load(Ordering::Acquire));
     }
 }
 

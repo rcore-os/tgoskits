@@ -23,47 +23,63 @@
 //! The module is structured into two main parts: `config` and `device`, which manage the configuration and handling of AxVm devices respectively.
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 #[macro_use]
 extern crate log;
 
-mod adapter;
-mod config;
+mod config_validation;
 mod device;
 mod error;
 mod factory;
 mod fw_cfg;
-#[cfg(target_arch = "loongarch64")]
+// Keep the LoongArch-only implementation out of other production targets, but
+// compile its unit tests on the host so output-port behavior is covered by CI.
+#[cfg(any(target_arch = "loongarch64", test))]
+#[cfg_attr(test, allow(dead_code))]
 mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
+mod serial;
+mod service;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
-#[cfg(target_arch = "aarch64")]
-pub use adapter::create_vtimer_devices;
-pub use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
-    MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
-};
+pub use axdevice_base::{AccessWidth, Device, Port, SysRegAddr};
 pub use axvm_types::GuestPhysAddr;
-pub use config::AxVmDeviceConfig;
-pub use device::AxVmDevices;
+pub use config_validation::validate_device_config;
+pub use device::{
+    DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
+};
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
-    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
+    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, VirtualInterruptControllerKey,
     register_builtin_factories,
 };
 pub use fw_cfg::{
-    FwCfg, FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
-    FwCfgSerialConfig,
+    FwCfg, FwCfgAcpiBlobs, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice,
+    FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPlatformConfig, FwCfgRamRegion,
 };
 #[cfg(target_arch = "loongarch64")]
-pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
-pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
+// Reusable LoongArch device models. These are target-gated device packages,
+// not part of the architecture-neutral framework core.
+pub use loongarch_pch_pic::{
+    LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent, PchPicOutputPort,
+    PchPicOutputPortKey,
+};
+pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
+pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
+pub use serial::{
+    NullSerialBackend, NullSerialBackendFactory, Pl011, SerialBackend, SerialBackendFactory,
+    Uart16550, build_16550_mmio, build_16550_port, build_pl011_mmio,
+};
+pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 #[cfg(target_arch = "x86_64")]
+// Reusable x86 device models and narrow typed services. These are target-gated
+// device packages, not part of the architecture-neutral framework core.
 pub use x86::{
-    X86IoApicDevice, X86IoApicDeviceOps, X86PitDevice, X86PitDeviceOps, X86SerialDeviceOps,
-    X86SerialPortDevice,
+    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDevice, X86IoApicDeviceOps,
+    X86IoApicServiceKey, X86PitDevice, X86PitDeviceOps, X86PitServiceKey,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

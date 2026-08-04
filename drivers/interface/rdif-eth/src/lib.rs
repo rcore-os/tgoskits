@@ -8,6 +8,9 @@ use core::ptr::NonNull;
 pub use dma_api;
 pub use rdif_base::{DriverGeneric, KError, io};
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------

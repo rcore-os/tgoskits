@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.8...rdif-eth-v0.3.9) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.3.8](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.7...rdif-eth-v0.3.8) - 2026-07-08
 
 ### Other

@@ -19,11 +19,17 @@ pub use core::{
     update_fdt, update_provided_fdt,
 };
 
+pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
+    core::interrupt::host_gic_maintenance_intid(fdt)
+}
+
 pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
         decode_interrupt: super::capabilities::decode_gic_spi,
+        resolve_cpu_index: super::capabilities::resolve_cpu_index,
+        host_cpu_count: super::capabilities::host_cpu_count,
     }
 }
 
@@ -45,7 +51,7 @@ pub(super) fn initrd_start_size_from_image_config(
 pub(super) fn update_cpu_node(
     fdt: &Fdt,
     host_fdt: Option<&Fdt>,
-    crate_config: &axvmconfig::AxVMCrateConfig,
+    crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
     let Some(host_fdt) = host_fdt else {
         return Ok(fdt.encode().as_ref().to_vec());
@@ -90,7 +96,7 @@ pub(super) fn update_cpu_node(
 
 pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+    vm_create_config: &mut axvmconfig::GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<GuestDtbImage>> {
     core::prepare_dtb_guest(vm_config, vm_create_config, provider)

@@ -42,7 +42,7 @@ tmp/axbuild/config/starryos/build-<target>.toml
 target = "riscv64gc-unknown-none-elf"
 features = [
   "ax-driver/serial",
-  "ax-driver/virtio-blk",
+  "ax-driver/nvme",
   "ax-driver/virtio-net",
 ]
 log = "Warn"

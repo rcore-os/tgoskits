@@ -6,7 +6,7 @@ args = [
   "-machine",
   "q35",
   "-device",
-  "virtio-blk-pci,drive=disk0",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspaceFolder}/tmp/rootfs.img",
   "-nographic",
@@ -17,5 +17,5 @@ args = [
 ]
 fail_regex = ["System will reboot, press any key to continue ..."]
 success_regex = ["usertests passed!"]
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true

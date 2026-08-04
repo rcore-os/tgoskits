@@ -18,7 +18,6 @@ use axfs_ng_vfs::Location;
 
 pub mod api;
 pub mod block;
-pub mod block_runtime;
 pub mod file;
 pub mod fops;
 mod fs;
@@ -30,7 +29,10 @@ pub mod volume;
 
 pub use block::{
     BlockRegion,
-    runtime::{BlockDeviceHandle, block_io_stats, release_block_irqs_for_passthrough},
+    runtime::{
+        BlockBatchStats, BlockDeviceHandle, CompletionGroup, CompletionSubscription,
+        block_batch_stats, block_io_stats, release_block_irqs_for_passthrough,
+    },
 };
 #[cfg(feature = "vfs")]
 pub use highlevel::*;

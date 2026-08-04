@@ -6,8 +6,8 @@ use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, Registry,
-    ShareMode, TrapVector,
+    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
+    Registry, ShareMode, TrapVector,
 };
 use spin::Once;
 
@@ -15,6 +15,10 @@ use spin::Once;
 pub mod loongarch64_hv;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64_hv::LoongArchHvIrqIf;
+#[cfg(target_arch = "riscv64")]
+pub mod riscv64_hv;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64_hv::RiscvHvIrqIf;
 
 /// Compatibility IRQ domain used while non-domainized platforms migrate.
 pub const LEGACY_IRQ_DOMAIN: IrqDomainId = IrqDomainId(0);
@@ -103,12 +107,11 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn cpu_online(&self, cpu: CpuId) -> bool {
-        cpu.0 < usize::BITS as usize
-            && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu.0)) != 0
+        is_cpu_online(cpu.0)
     }
 
     fn in_irq_context(&self) -> bool {
-        in_irq_context_on(self.current_cpu())
+        crate::irq::in_irq_context()
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
@@ -174,7 +177,17 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    in_irq_context_on(PlatIrqOps.current_cpu())
+    let _guard = ax_kernel_guard::NoPreempt::new();
+    // SAFETY: the guard prevents migration across both CPU identity resolution
+    // and the matching context-bit read. Releasing an inner guard between these
+    // operations could resume this thread on another CPU with a stale ID.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            let cpu = CpuId(crate::percpu::this_cpu_id_pinned(pin));
+            in_irq_context_on(cpu)
+        })
+    }
+    .expect("the current CPU-local area must remain bound")
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -242,6 +255,11 @@ pub fn cpu_online(cpu: usize) -> Result<(), IrqError> {
     }
     ONLINE_CPUS.fetch_or(1usize << cpu, Ordering::AcqRel);
     registry().cpu_online(CpuId(cpu))
+}
+
+/// Returns whether a CPU has entered the platform IRQ runtime.
+pub fn is_cpu_online(cpu: usize) -> bool {
+    cpu < usize::BITS as usize && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu)) != 0
 }
 
 /// Prepares CPU-local runtime state before the common IRQ guard is entered.
@@ -329,6 +347,9 @@ pub trait IrqIf {
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError>;
 
+    /// Configures the trigger mode of the given IRQ.
+    fn set_trigger(irq: IrqId, trigger: IrqTrigger) -> Result<(), IrqError>;
+
     /// Routes a global IRQ to a fixed CPU when supported.
     fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError>;
 
@@ -387,6 +408,10 @@ mod tests {
             if FAIL_ENABLE.load(Ordering::Relaxed) != 0 {
                 return Err(IrqError::Controller);
             }
+            Ok(())
+        }
+
+        fn set_trigger(_irq: IrqId, _trigger: IrqTrigger) -> Result<(), IrqError> {
             Ok(())
         }
 

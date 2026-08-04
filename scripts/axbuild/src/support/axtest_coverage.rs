@@ -229,6 +229,17 @@ mod capture {
                         Ok(0) => break,
                         Ok(n) => {
                             let chunk = String::from_utf8_lossy(&buf[..n]);
+                            if let Ok(mut state) = reader_state.lock() {
+                                state.push_bytes(&buf[..n]);
+                                // If coverage was just extracted, signal completion
+                                // to ostool so it can stop waiting.
+                                if state.dumped && !state.completion_signaled {
+                                    state.completion_signaled = true;
+                                    let marker = format!("{COVERAGE_DONE_MARKER}\n");
+                                    terminal.write_all(marker.as_bytes())?;
+                                }
+                            }
+
                             tee_buf.push_str(&chunk);
                             // Flush complete lines to terminal, filtering out
                             // AXTEST_SUITE_OK so ostool doesn't kill QEMU before
@@ -239,16 +250,6 @@ mod capture {
                                     terminal.write_all(line.as_bytes())?;
                                 }
                                 tee_buf.drain(..=newline);
-                            }
-                            if let Ok(mut state) = reader_state.lock() {
-                                state.push_bytes(&buf[..n]);
-                                // If coverage was just extracted, signal completion
-                                // to ostool so it can stop waiting.
-                                if state.dumped && !state.completion_signaled {
-                                    state.completion_signaled = true;
-                                    let marker = format!("{COVERAGE_DONE_MARKER}\n");
-                                    terminal.write_all(marker.as_bytes())?;
-                                }
                             }
                         }
                         Err(err) if err.kind() == io::ErrorKind::Interrupted => {}

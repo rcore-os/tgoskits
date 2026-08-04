@@ -1,126 +1,229 @@
-use alloc::{boxed::Box, string::String};
+use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
+use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinRwLock as RwLock;
 
-pub trait BlockTaskOps: Send + Sync {
-    fn current_task_id(&self) -> Option<u64>;
-    fn can_block(&self) -> bool {
-        self.current_task_id().is_some()
+/// Wait/notify object created and owned by the block runtime.
+pub trait BlockNotification: Send + Sync + 'static {
+    /// Publishes work from normal task context.
+    fn notify(&self);
+
+    /// Publishes work from hard IRQ context without allocation or sleeping.
+    fn notify_from_irq(&self);
+
+    /// Blocks until a notification is pending and consumes that notification.
+    fn wait(&self);
+
+    /// Blocks until notified or the duration expires.
+    ///
+    /// Returns `true` when the wait timed out.
+    fn wait_timeout(&self, duration: Duration) -> bool;
+}
+
+/// Join token for one block maintenance task.
+pub trait BlockThread: Send + Sync + 'static {
+    /// Waits for the maintenance task to exit.
+    fn join(&self);
+}
+
+/// Scheduler and CPU-affinity capabilities consumed by the block runtime.
+pub trait BlockRuntimeOps: Send + Sync {
+    /// Returns the logical CPU executing the caller.
+    fn current_cpu(&self) -> usize;
+
+    /// Returns the number of CPUs whose scheduler, IPI, and local IRQ path are
+    /// fully online.
+    fn online_cpu_count(&self) -> usize;
+
+    /// Returns whether the current context may block.
+    fn can_block(&self) -> bool;
+
+    /// Creates an independent lost-wakeup-safe wait/notify object.
+    fn notification(&self) -> Arc<dyn BlockNotification>;
+
+    /// Starts a maintenance task and binds it to one online CPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the task cannot be created or the requested CPU
+    /// cannot be used. On error, `entry` has not run.
+    fn spawn_pinned(
+        &self,
+        name: String,
+        cpu: usize,
+        entry: Box<dyn FnOnce() + Send + 'static>,
+    ) -> AxResult<Box<dyn BlockThread>>;
+}
+
+static RUNTIME_OPS: RwLock<Option<&'static dyn BlockRuntimeOps>> = RwLock::new(None);
+static RUNTIME_READY: AtomicBool = AtomicBool::new(false);
+
+/// Installs the runtime task capability implementation.
+pub fn set_runtime_ops(ops: &'static dyn BlockRuntimeOps) {
+    *RUNTIME_OPS.write() = Some(ops);
+    RUNTIME_READY.store(true, Ordering::Release);
+}
+
+/// Returns the installed block runtime capabilities.
+///
+/// # Errors
+///
+/// Returns [`AxError::BadState`] before `axruntime` installs the adapter.
+pub fn runtime_ops() -> AxResult<&'static dyn BlockRuntimeOps> {
+    RUNTIME_OPS
+        .read()
+        .as_ref()
+        .copied()
+        .ok_or(AxError::BadState)
+}
+
+/// Returns whether the runtime adapter has been installed.
+pub fn has_runtime_ops() -> bool {
+    RUNTIME_READY.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_runtime_ops() {
+    set_runtime_ops(&tests::TEST_RUNTIME_OPS);
+    crate::os::time::set_time_provider(&tests::TEST_TIME_PROVIDER);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_wait_timeout_count() {
+    tests::TEST_WAIT_TIMEOUTS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn test_wait_timeout_count() -> usize {
+    tests::TEST_WAIT_TIMEOUTS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, string::String, sync::Arc};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+    use std::{
+        sync::{Condvar, Mutex, OnceLock},
+        thread::{self, JoinHandle},
+        time::Instant,
+    };
+
+    use ax_errno::AxResult;
+
+    use super::{BlockNotification, BlockRuntimeOps, BlockThread};
+    use crate::os::time::BlockTimeProvider;
+
+    pub(super) static TEST_RUNTIME_OPS: TestRuntimeOps = TestRuntimeOps;
+    pub(super) static TEST_TIME_PROVIDER: TestTimeProvider = TestTimeProvider;
+    pub(super) static TEST_WAIT_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_START: OnceLock<Instant> = OnceLock::new();
+
+    pub(super) struct TestRuntimeOps;
+    pub(super) struct TestTimeProvider;
+
+    struct TestNotification {
+        pending: Mutex<bool>,
+        ready: Condvar,
     }
-    fn task_yield(&self);
-    fn task_wait(&self);
-    fn task_wait_timeout(&self, dur: Duration) -> bool {
-        let _ = dur;
-        self.task_yield();
-        true
+
+    struct TestThread {
+        join: Mutex<Option<JoinHandle<()>>>,
     }
-    fn task_wait_until(&self, condition: &dyn Fn() -> bool) {
-        while !condition() {
-            self.task_wait();
+
+    impl TestNotification {
+        const fn new() -> Self {
+            Self {
+                pending: Mutex::new(false),
+                ready: Condvar::new(),
+            }
+        }
+
+        fn publish(&self) {
+            *self.pending.lock().unwrap() = true;
+            self.ready.notify_one();
         }
     }
-    fn wake_task(&self, task_id: u64);
-    fn notify_waiters(&self) {}
-    fn notify_drain(&self) {
-        self.notify_waiters();
-    }
-    fn notify_drain_from_irq(&self) {
-        self.notify_drain();
-    }
-    fn wait_for_drain_notification(&self) {
-        self.task_wait();
-    }
-    fn spawn(&self, _name: String, _f: Box<dyn FnOnce() + Send + 'static>) {}
-}
 
-static TASK_OPS: RwLock<Option<&'static dyn BlockTaskOps>> = RwLock::new(None);
-static TASK_READY: AtomicBool = AtomicBool::new(false);
+    impl BlockNotification for TestNotification {
+        fn notify(&self) {
+            self.publish();
+        }
 
-pub fn set_task_ops(ops: &'static dyn BlockTaskOps) {
-    *TASK_OPS.write() = Some(ops);
-    TASK_READY.store(true, Ordering::Release);
-}
+        fn notify_from_irq(&self) {
+            self.publish();
+        }
 
-fn task_ops() -> Option<&'static dyn BlockTaskOps> {
-    TASK_OPS.read().as_ref().copied()
-}
+        fn wait(&self) {
+            let mut pending = self.pending.lock().unwrap();
+            while !*pending {
+                pending = self.ready.wait(pending).unwrap();
+            }
+            *pending = false;
+        }
 
-pub fn current_task_id() -> Option<u64> {
-    task_ops().and_then(|ops| ops.current_task_id())
-}
-
-pub fn task_can_block() -> bool {
-    task_ops().is_some_and(|ops| ops.can_block())
-}
-
-pub fn task_yield() {
-    if let Some(ops) = task_ops() {
-        ops.task_yield();
-    }
-}
-
-pub fn task_wait() {
-    if let Some(ops) = task_ops() {
-        ops.task_wait();
-    }
-}
-
-pub fn task_wait_timeout(dur: Duration) -> bool {
-    task_ops().is_some_and(|ops| ops.task_wait_timeout(dur))
-}
-
-pub fn task_wait_until(condition: impl Fn() -> bool) {
-    if let Some(ops) = task_ops() {
-        ops.task_wait_until(&condition);
-    } else {
-        while !condition() {
-            core::hint::spin_loop();
+        fn wait_timeout(&self, duration: Duration) -> bool {
+            TEST_WAIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+            let mut pending = self.pending.lock().unwrap();
+            if !*pending {
+                let (next, timeout) = self.ready.wait_timeout(pending, duration).unwrap();
+                pending = next;
+                if timeout.timed_out() && !*pending {
+                    return true;
+                }
+            }
+            *pending = false;
+            false
         }
     }
-}
 
-pub fn wake_task(task_id: u64) {
-    if let Some(ops) = task_ops() {
-        ops.wake_task(task_id);
+    impl BlockThread for TestThread {
+        fn join(&self) {
+            if let Some(join) = self.join.lock().unwrap().take() {
+                join.join().unwrap();
+            }
+        }
     }
-}
 
-pub fn notify_waiters() {
-    if let Some(ops) = task_ops() {
-        ops.notify_waiters();
+    impl BlockRuntimeOps for TestRuntimeOps {
+        fn current_cpu(&self) -> usize {
+            0
+        }
+
+        fn online_cpu_count(&self) -> usize {
+            1
+        }
+
+        fn can_block(&self) -> bool {
+            true
+        }
+
+        fn notification(&self) -> Arc<dyn BlockNotification> {
+            Arc::new(TestNotification::new())
+        }
+
+        fn spawn_pinned(
+            &self,
+            name: String,
+            _cpu: usize,
+            entry: Box<dyn FnOnce() + Send + 'static>,
+        ) -> AxResult<Box<dyn BlockThread>> {
+            let join = thread::Builder::new().name(name).spawn(entry).unwrap();
+            Ok(Box::new(TestThread {
+                join: Mutex::new(Some(join)),
+            }))
+        }
     }
-}
 
-pub fn notify_drain() {
-    if let Some(ops) = task_ops() {
-        ops.notify_drain();
+    impl BlockTimeProvider for TestTimeProvider {
+        fn wall_time(&self) -> Duration {
+            TEST_START.get_or_init(Instant::now).elapsed()
+        }
     }
-}
-
-pub fn notify_drain_from_irq() {
-    if let Some(ops) = task_ops() {
-        ops.notify_drain_from_irq();
-    }
-}
-
-pub fn wait_for_drain_notification() {
-    if let Some(ops) = task_ops() {
-        ops.wait_for_drain_notification();
-    } else {
-        core::hint::spin_loop();
-    }
-}
-
-pub fn spawn_task(name: String, f: Box<dyn FnOnce() + Send + 'static>) {
-    if let Some(ops) = task_ops() {
-        ops.spawn(name, f);
-    }
-}
-
-pub fn has_task_ops() -> bool {
-    TASK_READY.load(Ordering::Acquire)
 }

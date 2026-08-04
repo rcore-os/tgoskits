@@ -9,10 +9,10 @@ args = [
   "-drive",
   "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
   "-device",
-  "nvme,serial=starry-nvme-rootfs,drive=nvm",
+  "nvme,serial=starry-nvme-rootfs,drive=nvm,max_ioqpairs=64,msix_qsize=65",
 ]
 to_bin = true
-uefi = false
+uefi = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
 fail() {
@@ -22,16 +22,22 @@ fail() {
 mkdir -p /root/nvme-rootfs-rw-20m
 src=/root/nvme-rootfs-rw-20m/source.bin
 copy=/root/nvme-rootfs-rw-20m/copy.bin
-(yes 'nvme-rdif-block-submit-poll-0123456789abcdef' | head -c 20971520 > "$src") || fail
+(yes 'nvme-rdif-block-submit-irq-0123456789abcdef' | head -c 20971520 > "$src") || fail
+echo 'NVME_ROOTFS_RW_20M_WRITE_DONE'
 sync || fail
+echo 'NVME_ROOTFS_RW_20M_FIRST_SYNC_DONE'
 cp "$src" "$copy" || fail
+echo 'NVME_ROOTFS_RW_20M_COPY_DONE'
 sync || fail
+echo 'NVME_ROOTFS_RW_20M_SECOND_SYNC_DONE'
 size=$(wc -c < "$copy" | tr -d ' ')
 [ "$size" = "20971520" ] || fail
 hash=$(sha256sum "$copy" | awk '{print $1}')
-[ "$hash" = "2c05845aa65c70c952edbcf0838d340ec5552bafba6dd8571b245a090e891b85" ] || fail
+[ "$hash" = "4bb665fec527d206c06c0fd61111af3379af423649b323bb29769db0f8c34fc1" ] || fail
+echo 'NVME_ROOTFS_RW_20M_VERIFY_DONE'
 echo 'NVME_ROOTFS_RW_20M_TEST_PASSED'
 '''
 success_regex = ["(?m)^NVME_ROOTFS_RW_20M_TEST_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^NVME_ROOTFS_RW_20M_TEST_FAILED\\s*$"]
-timeout = 300
+# LoongArch TCG needs about 15 minutes for the complete write/copy/flush workload.
+timeout = 1200

@@ -15,6 +15,7 @@ extern crate log;
 
 mod boot;
 mod console;
+mod cpu;
 pub mod drivers;
 mod generic_timer;
 mod init;
@@ -35,5 +36,3 @@ pub fn enable_timer_irq() {
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }
-#[cfg(all(feature = "irq", target_arch = "riscv64", feature = "hv"))]
-pub use irq::{register_virtual_irq_injector, set_virtual_irq_targets};

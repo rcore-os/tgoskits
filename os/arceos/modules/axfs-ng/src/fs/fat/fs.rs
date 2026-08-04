@@ -9,7 +9,7 @@ use slab::Slab;
 use super::{dir::FatDirNode, disk::SeekableDisk, ff, util::into_vfs_err};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{IrqMutex as Mutex, IrqMutexGuard as MutexGuard},
+    os::sync::{IrqMutex, SleepMutex, SleepMutexGuard},
 };
 
 pub struct FatFilesystemInner {
@@ -29,8 +29,8 @@ impl FatFilesystemInner {
 }
 
 pub struct FatFilesystem {
-    inner: Mutex<FatFilesystemInner>,
-    root_dir: Mutex<Option<DirEntry>>,
+    inner: SleepMutex<FatFilesystemInner>,
+    root_dir: IrqMutex<Option<DirEntry>>,
 }
 
 impl FatFilesystem {
@@ -44,8 +44,8 @@ impl FatFilesystem {
         };
         let root_inode = inner.alloc_inode();
         let result = Arc::new(Self {
-            inner: Mutex::new(inner),
-            root_dir: Mutex::default(),
+            inner: SleepMutex::new(inner),
+            root_dir: IrqMutex::default(),
         });
 
         let root_dir = DirEntry::new_dir(
@@ -67,12 +67,9 @@ impl FatFilesystem {
 impl FatFilesystem {
     /// Locks the shared FAT state.
     ///
-    /// FAT operations may perform block I/O while this guard is held. The
-    /// current rootfs setup can also run in early atomic contexts where a
-    /// blocking mutex trips `might_sleep()`, so use an IRQ-safe mutex instead
-    /// of a sleepable lock to close same-CPU IRQ reentry without changing the
-    /// boot-time calling contract.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, FatFilesystemInner> {
+    /// FAT operations may block on channel-backed block completion while this
+    /// guard is held, so this state must never use an IRQ-disabling lock.
+    pub(crate) fn lock(&self) -> SleepMutexGuard<'_, FatFilesystemInner> {
         self.inner.lock()
     }
 }

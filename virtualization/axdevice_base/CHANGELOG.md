@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.6.2...axdevice_base-v0.6.3) - 2026-08-03
+
+### Other
+
+- *(axvisor)* implement unified emulated device framework ([#1722](https://github.com/rcore-os/tgoskits/pull/1722))
+
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.6.1...axdevice_base-v0.6.2) - 2026-07-23
+
+### Added
+
+- *(axdevice)* register exclusive IRQ line resources ([#1630](https://github.com/rcore-os/tgoskits/pull/1630))
+
+### Other
+
+- *(axdevice)* replace errno contracts ([#1595](https://github.com/rcore-os/tgoskits/pull/1595))
+- *(axvm-types)* introduce backend errors ([#1591](https://github.com/rcore-os/tgoskits/pull/1591))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.6.0...axdevice_base-v0.6.1) - 2026-07-07
 
 ### Other
@@ -80,14 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial release of `axdevice_base` crate.
-- `BaseDeviceOps` trait: Core interface for all emulated devices.
-- `EmulatedDeviceConfig`: Configuration structure for device initialization.
-- `EmuDeviceType`: Re-exported device type enumeration from `axvmconfig`.
-- `map_device_of_type`: Helper function for runtime device type checking and casting.
-- Trait aliases for common device types:
-  - `BaseMmioDeviceOps`: For MMIO (Memory-Mapped I/O) devices.
-  - `BaseSysRegDeviceOps`: For system register devices (ARM).
-  - `BasePortDeviceOps`: For port I/O devices (x86).
+- Initial legacy per-bus emulated-device abstractions and helper aliases.
+- Initial configuration helper structures for device initialization.
 - Support for multiple architectures: x86_64, AArch64, RISC-V64.
 - `no_std` compatible design.
 

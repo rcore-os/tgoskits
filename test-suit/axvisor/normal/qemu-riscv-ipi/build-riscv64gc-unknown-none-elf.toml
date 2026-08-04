@@ -1,0 +1,9 @@
+features = [
+    "ax-driver/nvme",
+    "fs",
+    "sstc",
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"
+vm_configs = ["os/axvisor/configs/vms/qemu/riscv64/linux-smp1.toml"]
+max_cpu_num = 4

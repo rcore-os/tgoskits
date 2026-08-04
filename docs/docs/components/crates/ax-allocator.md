@@ -6,7 +6,7 @@
 > 版本：`0.2.0`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/bitmap.rs`、`src/buddy.rs`、`src/slab.rs`、`src/tlsf.rs`、`tests/allocator.rs`
 
-`ax-allocator` 是一个“统一接口下的多种分配算法库”。它提供页级、字节级和 ID 分配的 trait 与若干实现，供 `ax-alloc`、`ax-dma` 等上层模块挑选和组合。它属于叶子基础件：负责算法和接口，不负责全局分配器注册、锁保护、内存发现或地址空间策略。
+`ax-allocator` 是一个“统一接口下的多种分配算法库”。它提供页级、字节级和 ID 分配的 trait 与若干实现，供 `ax-alloc` 等上层模块挑选和组合。它属于叶子基础件：负责算法和接口，不负责全局分配器注册、锁保护、内存发现或地址空间策略。
 
 ## 架构设计
 ### 设计定位
@@ -76,7 +76,6 @@ graph LR
     ax_errno["ax-errno (optional)"] --> ax-allocator
 
     ax-allocator --> ax-alloc["ax-alloc"]
-    ax-allocator --> ax_dma["ax-dma"]
 ```
 
 ### 直接依赖
@@ -88,7 +87,6 @@ graph LR
 
 ### 主要消费者
 - `ax-alloc`：默认全局分配器装配层。
-- `ax-dma`：DMA 内存场景中直接使用字节分配 trait 和错误类型。
 
 ## 开发指南
 ### 接入方式
@@ -100,7 +98,7 @@ ax-allocator = { workspace = true, features = ["bitmap", "tlsf"] }
 是否启用 `bitmap`、`buddy`、`slab`、`tlsf`，应由具体上层模块的使用场景决定。
 
 ### 注意事项
-1. 如果扩展某个 trait，必须同步检查 `ax-alloc`、`ax-dma` 等现有消费者是否需要适配。
+1. 如果扩展某个 trait，必须同步检查 `ax-alloc` 等现有消费者是否需要适配。
 2. `BitmapPageAllocator` 的地址/对齐规则比较严格，修改初始化逻辑时要同时保住容量上界和 `MAX_ALIGN_1GB` 约束。
 3. `AllocatorRc` 只是一层测试/适配包装，不应把正式内核路径的策略塞进去。
 4. 若新增算法实现，应先判断它属于字节级、页级还是 ID 级，再决定实现哪个 trait，而不是硬往现有 trait 里塞特例。
@@ -125,7 +123,7 @@ ax-allocator = { workspace = true, features = ["bitmap", "tlsf"] }
 
 ### 集成测试
 - 通过 `ax-alloc` 验证算法在真实 `#[global_allocator]` 场景下仍成立。
-- 通过 `ax-dma` 验证对 `AllocResult`、`ByteAllocator` trait 的直接复用不回归。
+- 通过 `ax-alloc` 的集成测试验证 `AllocResult` 与 allocator trait 的复用不回归。
 
 ### 覆盖率
 - 不同算法至少各有一条“初始化 -> 申请 -> 回收 -> 统计”的完整覆盖。
@@ -133,7 +131,7 @@ ax-allocator = { workspace = true, features = ["bitmap", "tlsf"] }
 
 ## 跨项目定位
 ### ArceOS
-在 ArceOS 中，`ax-allocator` 是 `ax-alloc` 和 `ax-dma` 的算法底座。它不直接参与系统 bring-up，而是为运行时分配层提供可选实现。
+在 ArceOS 中，`ax-allocator` 是 `ax-alloc` 的算法底座。它不直接参与系统 bring-up，而是为运行时分配层提供可选实现。
 
 ### StarryOS
 StarryOS 主要通过共享的 ArceOS 基础栈间接受用 `ax-allocator`。它在 StarryOS 里仍然是算法叶子件，而不是内核内存管理模块。

@@ -86,9 +86,14 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
-    fn set_oneshot_timer(&self, deadline_ns: u64) {
-        crate::arch::set_oneshot_timer(deadline_ns);
+    fn request_timer_deadline(&self, deadline_ns: u64) {
+        crate::arch::request_timer_deadline(deadline_ns);
     }
+}
+
+/// Returns the platform IRQ owned by the runtime-selected physical console.
+pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
+    modules::ax_hal::console::irq_num()
 }
 
 pub(crate) fn dispatch_host_irq(vector: usize) {
@@ -117,6 +122,7 @@ pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
 pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
 pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
+pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use modules::ax_task::TaskExt as ArceOsTaskExt;
 
@@ -151,6 +157,16 @@ pub(crate) fn send_ipi(cpu_id: usize) {
         modules::ax_hal::irq::ipi_irq(),
         modules::ax_hal::irq::IpiTarget::Other { cpu_id },
     );
+}
+
+pub(crate) fn run_on_cpu_sync(
+    cpu_id: usize,
+    f: unsafe fn(*mut ()),
+    arg: *mut (),
+) -> Result<(), ArceOsIrqError> {
+    // SAFETY: the caller guarantees that `arg` stays valid until the target CPU
+    // has executed `f`; `ax_hal` provides the synchronous completion boundary.
+    unsafe { modules::ax_hal::irq::run_on_cpu_sync(modules::ax_hal::irq::CpuId(cpu_id), f, arg) }
 }
 
 fn send_ipi_to_all_except_current(cpu_num: usize) {

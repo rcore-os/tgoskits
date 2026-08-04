@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use object::{Object, ObjectSymbol};
+use object::{Object, ObjectSection, ObjectSymbol};
 use regex::Regex;
 
 const MAX_QPERF_RECORD_BYTES: usize = 256 * 1024;
@@ -375,6 +375,13 @@ fn read_qperf_records_v3(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
     let mut records = Vec::new();
     loop {
+        if input
+            .fill_buf()
+            .context("failed to inspect qperf v3 input")?
+            .is_empty()
+        {
+            break;
+        }
         match bincode::decode_from_std_read(
             &mut input,
             bincode::config::standard().with_limit::<MAX_QPERF_RECORD_BYTES>(),
@@ -415,6 +422,13 @@ fn read_qperf_records_v2(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
     let mut records = Vec::new();
     loop {
+        if input
+            .fill_buf()
+            .context("failed to inspect qperf v2 input")?
+            .is_empty()
+        {
+            break;
+        }
         match bincode::decode_from_std_read(
             &mut input,
             bincode::config::standard().with_limit::<MAX_QPERF_RECORD_BYTES>(),
@@ -447,6 +461,13 @@ fn read_qperf_records_v1(path: &Path) -> anyhow::Result<Vec<DecodedRecord>> {
     let mut input = BufReader::new(File::open(path).context("failed to open input file")?);
     let mut records = Vec::new();
     loop {
+        if input
+            .fill_buf()
+            .context("failed to inspect qperf v1 input")?
+            .is_empty()
+        {
+            break;
+        }
         let trace: Vec<u64> = match bincode::decode_from_std_read(
             &mut input,
             bincode::config::standard().with_limit::<MAX_QPERF_RECORD_BYTES>(),
@@ -732,6 +753,10 @@ fn resolve_symbols(
     demangle: bool,
     style: SymbolStyle,
 ) -> Vec<String> {
+    if let Some(symbol) = zero_sized_text_symbol(elf_obj, ip, demangle, style) {
+        return vec![symbol];
+    }
+
     let mut result = Vec::new();
     let Ok(mut frames) = loader.find_frames(ip) else {
         return symtab_fallback(elf_obj, ip, demangle, style);
@@ -766,28 +791,75 @@ fn symtab_fallback(
     demangle: bool,
     style: SymbolStyle,
 ) -> Vec<String> {
-    let nearest = elf_obj
+    let symbol_map = elf_obj.symbol_map();
+    symbol_map
+        .get(ip)
+        .filter(|symbol| !should_skip_symbol_name(symbol.name()))
+        .map(|symbol| {
+            vec![format_symbol_name(
+                symbol.name(),
+                ip - symbol.address(),
+                demangle,
+                style,
+            )]
+        })
+        .unwrap_or_else(|| vec![format!("0x{ip:x}")])
+}
+
+struct TextSymbol {
+    address: u64,
+    size: u64,
+    name: String,
+}
+
+fn zero_sized_text_symbol(
+    elf_obj: &object::File<'_>,
+    ip: u64,
+    demangle: bool,
+    style: SymbolStyle,
+) -> Option<String> {
+    let mut symbols = elf_obj
         .symbols()
         .filter_map(|symbol| {
-            if !symbol.is_definition() || symbol.kind() != object::SymbolKind::Text {
+            let in_text_section = symbol
+                .section_index()
+                .and_then(|index| elf_obj.section_by_index(index).ok())
+                .is_some_and(|section| {
+                    section.kind() == object::SectionKind::Text
+                        || matches!(section.name(), Ok(".head.text" | ".text"))
+                });
+            if !in_text_section
+                && !(symbol.is_definition() && symbol.kind() == object::SymbolKind::Text)
+            {
                 return None;
             }
-            let addr = symbol.address();
-            if ip < addr {
-                return None;
-            }
-            let name = symbol.name().ok()?;
-            if should_skip_symbol_name(name) {
-                return None;
-            }
-            let offset = ip - addr;
-            Some((offset, format_symbol_name(name, offset, demangle, style)))
+            Some(TextSymbol {
+                address: symbol.address(),
+                size: symbol.size(),
+                name: symbol.name().ok()?.to_string(),
+            })
         })
-        .min_by_key(|(offset, _)| *offset);
+        .collect::<Vec<_>>();
+    symbols.sort_unstable_by_key(|symbol| symbol.address);
+    let (symbol, offset) = select_zero_sized_text_symbol(&symbols, ip)?;
+    if should_skip_symbol_name(&symbol.name) {
+        return None;
+    }
+    Some(format_symbol_name(&symbol.name, offset, demangle, style))
+}
 
-    nearest
-        .map(|(_, name)| vec![name])
-        .unwrap_or_else(|| vec![format!("0x{ip:x}")])
+fn select_zero_sized_text_symbol(symbols: &[TextSymbol], ip: u64) -> Option<(&TextSymbol, u64)> {
+    let index = symbols.partition_point(|symbol| symbol.address <= ip);
+    let index = index.checked_sub(1)?;
+    let symbol = &symbols[index];
+    if symbol.size != 0 {
+        return None;
+    }
+    let next_address = symbols
+        .get(index + 1)
+        .map(|next| next.address)
+        .unwrap_or(u64::MAX);
+    (ip < next_address).then_some((symbol, ip - symbol.address))
 }
 
 fn should_skip_symbol_name(name: &str) -> bool {
@@ -889,7 +961,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{ResolveStats, read_qperf_records};
+    use super::{ResolveStats, TextSymbol, read_qperf_records, select_zero_sized_text_symbol};
 
     #[test]
     fn malformed_legacy_trace_length_returns_error_without_panic() {
@@ -918,5 +990,32 @@ mod tests {
         let _ = fs::remove_file(path);
         assert!(result.is_ok());
         assert!(result.unwrap().is_err());
+    }
+
+    #[test]
+    fn zero_sized_assembly_symbol_owns_addresses_until_the_next_symbol() {
+        let symbols = vec![
+            TextSymbol {
+                address: 0x1000,
+                size: 0x80,
+                name: "rust_function".to_string(),
+            },
+            TextSymbol {
+                address: 0x1080,
+                size: 0,
+                name: "user_copy".to_string(),
+            },
+            TextSymbol {
+                address: 0x1200,
+                size: 0,
+                name: "syscall_entry".to_string(),
+            },
+        ];
+
+        let (symbol, offset) = select_zero_sized_text_symbol(&symbols, 0x1100).unwrap();
+
+        assert_eq!(symbol.name, "user_copy");
+        assert_eq!(offset, 0x80);
+        assert!(select_zero_sized_text_symbol(&symbols, 0x107f).is_none());
     }
 }

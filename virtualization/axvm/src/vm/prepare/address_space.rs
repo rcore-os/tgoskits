@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use axdevice::AxVmDevices;
+use axdevice::DeviceRuntime;
 use axdevice_base::Resource;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
@@ -11,10 +11,18 @@ use crate::{
     layout::{GuestOwnedRegion, VmRegionKind, build_address_layout},
 };
 
+fn stage2_guest_address_space_size(gpa_bits: usize) -> usize {
+    if gpa_bits >= usize::BITS as usize {
+        VM_ASPACE_SIZE
+    } else {
+        VM_ASPACE_SIZE.min(1usize << gpa_bits)
+    }
+}
+
 pub(crate) fn map_guest_address_space(
     vm: &AxVM,
     resources: &mut AxVMResources,
-    devices: &AxVmDevices,
+    devices: &DeviceRuntime,
     owned_regions: &[GuestOwnedRegion],
 ) -> AxVmResult {
     let emulated_resources = devices
@@ -24,7 +32,7 @@ pub(crate) fn map_guest_address_space(
     let address_layout = build_address_layout(
         resources.config.address_space_policy(),
         VM_ASPACE_BASE,
-        VM_ASPACE_SIZE,
+        stage2_guest_address_space_size(resources.nested_paging.gpa_bits),
         resources.config.pass_through_devices(),
         resources.config.pass_through_addresses(),
         owned_regions,
@@ -80,4 +88,15 @@ pub(crate) fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRe
     );
 
     regions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_address_space_is_capped_by_stage2_gpa_width() {
+        assert_eq!(stage2_guest_address_space_size(39), 1usize << 39);
+        assert_eq!(stage2_guest_address_space_size(48), VM_ASPACE_SIZE);
+    }
 }

@@ -1,6 +1,6 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, verify required tests and their placement/discovery/execution, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or select and assign recommended reviewers from .github/MAINTAINERS.md after review.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, build and close a PR-specific review todo before deciding, verify required tests and their placement/discovery/execution, locally run every added or changed StarryOS or ArceOS app from its documented environment setup even when CI passes, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or select and assign recommended reviewers from .github/MAINTAINERS.md after review.
 ---
 
 # Review Single PR
@@ -13,9 +13,19 @@ Before judging code quality, maintainability, or merge readiness, fully read `bo
 
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
-After reading the full skill, `book/guideline/code-quality.md`, and every applicable guideline, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, baseline code quality, new-feature applicability and `feature-development.md` compliance, domain-guideline applicability and compliance, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
-
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
+
+## Review Todo Gate
+
+Before detailed code judgment, runtime validation, or any review conclusion, inspect only enough current-head metadata, PR body, changed paths, commits, and semantic scope to identify every required instruction and reference. Then fully read this skill, repository instructions, `book/guideline/code-quality.md`, conditionally applicable `book/guideline/feature-development.md`, every applicable domain guideline, and the app or runbook documentation needed to plan validation.
+
+Immediately after those reads, create a complete, user-visible, PR-specific review todo. When a todo or plan tool such as `update_plan` is available, calling it is a mandatory action, not a future recommendation: invoke it and wait for success before continuing, and do not merely say that it should be used or substitute a prose or Markdown checklist. Keep using the same tool throughout the review, keep no more than one item in progress, and append newly discovered scope before investigating it. Treat an empty successful tool response as success unless the tool reports an error. If a call fails, inspect the actual result and retry or diagnose it before falling back. Use a visible Markdown checklist only when no todo tool is available or the tool is confirmed unusable, and state that fallback reason. If the tool exposes only pending, in-progress, and completed states, mark an item completed only after recording its evidence-backed completed, not-applicable, or blocking outcome in the tool explanation or review evidence ledger.
+
+Make every todo item name the concrete surface and expected evidence. Cover current-head intake, prior review threads, CI, worktree setup, merge conflicts when applicable, each affected module and review lens, baseline code quality, feature-development applicability, domain semantics, required tests and their placement/build/discovery/selection/execution, duplicate and overlap analysis, exact validation commands, blocking findings and comments, head refresh and submission, recommended reviewer assignment, and cleanup. Add separate items for every affected app, its documented environment preparation, each required architecture/runtime command, and each newly added or relocated test. Do not use generic items such as "review code" or "run tests".
+
+Before submitting `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment, audit the todo item by item. Close each item only as completed with evidence, not applicable with a concrete reason, or completed with a blocking finding and evidence. A blocking result completes the investigation item but must appear in the Chinese review text and final decision. Any required item that remains pending, unverifiable, or unsupported by evidence forbids `APPROVE`; submit `REQUEST_CHANGES` when the PR caused the gap, or report an explicit no-submit blocker when an external review-system limitation prevents completion.
+
+After review submission, reviewer assignment, and cleanup, perform one final audit in the same todo tool or fallback checklist. The final user summary must report completed items, concrete not-applicable reasons, blocking items, and anything still unfinished.
 
 ## Offline Benchmark Mode
 
@@ -44,6 +54,11 @@ Return only the JSON object required by `.agent-review-context/review.schema.jso
 introduced by `bench-base..HEAD`, anchor each finding to a changed line on the `HEAD` side, and use
 an empty `findings` array when no actionable issue exists. Do not submit or draft GitHub-facing
 review text in this mode.
+
+Still create and audit the review todo in offline benchmark mode. Prefer the available todo tool and
+mark command execution, remote operations, worktrees, submission, reviewer assignment, and cleanup
+not applicable with the harness restriction as evidence. If no todo tool is available, track the
+checklist internally without violating the JSON-only output contract.
 
 ## Goal
 
@@ -281,15 +296,15 @@ For bug fixes (修复 bug), require a regression or reproduction test that fails
 
 For any PR that adds behavior, changes semantics, fixes a bug, or claims coverage for a newly exposed path, require tests at the correct project layer unless the PR is clearly documentation-only or the review records a concrete reason tests are impossible. Verify that the tests are not merely present in the diff: they must be in the expected suite or wrapper, discovered by the project runner, built or installed into the runtime image when applicable, selected by the documented command, and capable of failing when the behavior regresses. Treat misplaced tests, orphan assets, tests hidden behind opt-in/manual-only paths, or tests that CI/runner silently skips as missing coverage.
 
-For PRs that add StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
+For PRs that add or change StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
 
 - App-level smoke, demo, rootfs preparation, board/QEMU run scripts, and long-running or opt-in workflows belong under `apps/starry/<app-or-scenario>/`, following `apps/starry/README.md`.
 - Kernel ABI, syscall, filesystem, process, networking, or other bugfix coverage exposed while enabling the app belongs under `test-suit/starryos/<case>` or the closest existing grouped wrapper, such as a `qemu/system/<subcase>` grouped C subcase.
 - If the PR adds a syscall or changes syscall semantics for the app, require a minimal test-suit syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
 - If the PR fixes a bug found through the app, require a test-suit bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
 - Do not approve app-support PRs that put app workflows only into `test-suit/starryos`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
-- If the PR adds or changes an app-oriented Starry QEMU case under either `apps/starry` or `test-suit/starryos`, run the actual documented app command or exact `cargo xtask starry test qemu ... -c <case>` path in QEMU for at least the changed/claimed architecture. For multi-arch `qemu-*.toml` additions, run the architecture most likely to fail from CI or PR history; if any newly added required architecture is already failing in CI, reproduce or classify that architecture before approval.
-- Do not approve when the app/test cannot be run as described by the PR, when its success depends on an unavailable or unstable external service without a controlled fallback, or when the command only passes on a narrower target than the PR claims. Report the exact command, architecture, guest-visible failure marker, and whether the failure matches remote CI.
+- For every directly added or changed app and every app explicitly named in the PR's support claim, add separate environment-preparation and runtime todo items and run the actual documented app command on the current head. For a generic change, run each affected app on at least one claimed, highest-risk architecture; for an architecture-specific change, run the corresponding architecture. Remote CI does not replace this local run.
+- Do not approve when the documented environment cannot be prepared, the app/test cannot be run as described by the PR, an undocumented workaround is needed, an external dependency is unavailable or unstable, or the command passes on a narrower target than the PR claims. Report the setup source, exact commands, architecture, failure stage, guest-visible marker, and whether the failure matches remote CI.
 
 Apply the same runtime-validation expectation to ArceOS apps and app-facing tools. A PR that adds or changes an ArceOS app, `apps/**` demo, QEMU wrapper, rootfs/app preparation tool, symbolizer/log parser, packaging helper, or other tool that claims to make a StarryOS/ArceOS app usable must be reviewed as an executable workflow, not as a syntax-only or docs-only change.
 
@@ -395,10 +410,14 @@ cargo tree -p starry-kernel | sed -n '/kbpf-basic v0.5.7/,+12p'
 
 The expected result for that example is that local workspace crates still use local `components/axerrno`, while `kbpf-basic` resolves its own crates.io `ax-errno` and local Starry eBPF/perf code performs explicit error conversion at the boundary.
 
-For app/tool workflows that CI does not execute exactly, manual runtime validation is a hard gate. This applies when the PR adds or changes:
+For every added or changed app, local runtime validation is a hard gate even when current-head CI executes or passes a similar workflow. This applies when the PR adds, directly changes, or explicitly claims support for:
 
 - StarryOS user-space app support, `apps/starry/**` scenarios, Starry rootfs/app preparation, or Starry QEMU run docs/scripts;
 - ArceOS apps, `apps/**` demos, `test-suit/arceos/**` app configs, or ArceOS QEMU run docs/scripts;
+- an app's source, configuration, assets, prebuild/run scripts, or documented support path outside those directories.
+
+For app-facing tools or wrappers that do not add, change, or explicitly claim a concrete app, manual runtime validation remains a hard gate when CI does not execute the exact workflow. This includes:
+
 - tools or wrappers that prepare, launch, inspect, symbolize, package, or otherwise operate on a StarryOS or ArceOS app workflow;
 - README/PR-body runbooks that claim the app/tool is usable while the current CI matrix does not run that exact command and success condition.
 
@@ -406,13 +425,16 @@ Do not approve based only on `cargo fmt`, clippy, shellcheck, `--help`, script r
 
 Required manual flow:
 
-1. Read the PR body, README, scripts, and config files to find the exact documented workflow and expected success marker.
-2. Do the documented preparation first, such as `cargo xtask starry rootfs --arch <arch>`, managed rootfs download/patching, app asset generation, tool build steps, or log/artifact capture.
-3. Run the current PR head through the actual runtime command, such as `cargo xtask starry app qemu ...`, `cargo xtask starry test qemu ...`, `cargo xtask arceos test qemu ...`, or the documented wrapper script that reaches QEMU.
-4. Verify guest-visible behavior and the tool's real output: success markers, app command output, generated logs, symbolized blocks, packaged artifacts, or other documented postconditions. A command that exits 0 but skips the app behavior is not sufficient.
-5. For multi-architecture support, run the newly added or most failure-prone architecture, prioritizing any architecture skipped or failing in CI. If the PR claims all-arch support and CI covers only part of it, local validation must cover at least one CI-missing or highest-risk architecture.
-6. If the workflow cannot be run because required documentation, rootfs preparation, assets, or tool outputs are missing or wrong, submit `REQUEST_CHANGES`; that is a PR problem, not an environment limitation.
-7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a test-suit regression test, or explicit user acceptance before approval.
+1. Identify every affected app from the diff and explicit PR claims and create separate todo items for its environment preparation, required architecture, runtime command, and observable postcondition.
+2. Require the PR body or documentation added or changed by the PR to describe every extra package, toolchain, rootfs, permission, hardware dependency, credential, network service, environment variable, and asset needed by the app. The instructions must include actual commands or parameters and an observable readiness check. A vague reference to an existing environment is insufficient; a reference to canonical documentation is acceptable only when it names a section that completely covers this app's setup.
+3. Follow those documented preparation steps exactly, such as `cargo xtask starry rootfs --arch <arch>`, managed rootfs download/patching, app asset generation, tool build steps, permission setup, service readiness, or log/artifact capture. Do not silently add commands from local knowledge or rely on undocumented pre-existing machine state.
+4. Run the current PR head through the actual runtime command, such as `cargo xtask starry app qemu ...`, `cargo xtask starry test qemu ...`, `cargo xtask arceos test qemu ...`, or the documented wrapper script that reaches QEMU.
+5. Verify guest-visible behavior and the tool's real output: success markers, app command output, generated logs, symbolized blocks, packaged artifacts, or other documented postconditions. A command that exits 0 but skips the app behavior is not sufficient.
+6. For each affected app, run at least one claimed, highest-risk architecture for a generic change. Run every architecture specifically added or changed by an architecture-specific change, prioritizing any architecture skipped or failing in CI.
+7. If any documented setup or runtime step fails, a readiness condition is not met, an undocumented workaround is required, or hardware, credentials, permissions, network services, or host capabilities are unavailable, submit `REQUEST_CHANGES`. Environment unavailability is not an approval exception for an added or changed app.
+8. In the Chinese review, report the app, architecture, current head, PR section or documentation path used for setup, exact setup and runtime commands attempted, failure stage, key error or unmet readiness condition, and the required documentation, reproducible environment, fallback, or implementation fix. Prefer a current changed line in the app setup/runbook; otherwise put the blocker in the review body.
+
+For a tool-only workflow with no affected app, record any genuine unavailable hardware, credentials, service, or host capability and require a controlled fallback or reproducible validation before approval. This tool-only rule never overrides the stricter per-app gate above.
 
 For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. For current `qemu/system` grouped C cases, prefer the smallest current-structure command that covers the change, such as `cargo xtask starry test qemu --arch x86_64 -c qemu/<subcase>`, or run the aggregate `-c qemu/system` when wrapper-level behavior is changed. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, wrong grouped/system subcase layout, unreliable `success_regex`/`fail_regex`, hidden exit status, or tests that accept both broken and fixed behavior as blocking.
 
@@ -424,18 +446,18 @@ For bugfix tests in grouped cases, inspect the new test's assertions as well as 
 
 For StarryOS app-support PRs, validate both sides when both are present:
 
-- Run the relevant `apps/starry` command or an equivalent documented app workflow when the PR adds or changes app support, unless it needs unavailable hardware, credentials, or long-running services; record any limitation.
+- Run the relevant `apps/starry` command or an equivalent documented app workflow on the current head for every app the PR adds, changes, or explicitly claims to support. Hardware, credentials, permissions, services, or host limitations do not waive this requirement; an unsuccessful run requires `REQUEST_CHANGES` with the exact reason.
 - Run the corresponding `cargo xtask starry test qemu --arch <arch> -c <case>` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims test-suit coverage. For `qemu/system` subcases, use `-c qemu/<subcase>` when possible. App validation does not replace test-suit regression validation.
 - If the app scenario and test-suit regression cover different risks, mention both results in the review body.
 - Do not stop at `--list`, TOML parsing, script inspection, or another reviewer saying an older head passed. Those checks prove discovery only, not that the app works. Run the current head in QEMU whenever the changed app/test is intended to run in QEMU.
-- If `tmp/axbuild/rootfs` is empty, still try the relevant `cargo xtask starry rootfs --arch <arch>` or `cargo xtask starry test qemu ...` path before declaring QEMU unavailable; the xtask flow can download managed rootfs images automatically. Record a blocker only after the xtask download/run path itself fails for an environmental reason.
+- If `tmp/axbuild/rootfs` is empty, still try the relevant documented `cargo xtask starry rootfs --arch <arch>` or `cargo xtask starry test qemu ...` path; the xtask flow can download managed rootfs images automatically. If the documented download, preparation, or run path fails for any reason, record the exact blocker and submit `REQUEST_CHANGES`.
 - Do not run multiple Starry QEMU cases concurrently in one worktree. Run one architecture/case to completion, then move to the next architecture if needed.
 
 When the PR does not add or modify a test case, inspect the PR body and commit messages for any claimed non-board validation method, such as QEMU, host unit tests, `cargo xtask`, `cargo test`, `cargo clippy`, shell scripts, emulators, or reproducible manual commands that do not require physical hardware:
 
 - If such validation is claimed, run it or an equivalent local command before approval. Compare the actual command, target, output, and pass/fail condition with the PR's claim.
 - If the claimed validation fails, is not reproducible as written, exercises a different target than claimed, silently skips the changed behavior, or cannot be run for an avoidable reason, submit `REQUEST_CHANGES`. Explain the mismatch and the expected fix direction: either make the validation true and reproducible, add an appropriate test, or correct the PR description.
-- If the claimed validation cannot be run because the environment is genuinely unavailable, record the exact limitation and do not treat the claim as proof. Require another reproducible non-board validation method or a test unless the user explicitly accepts the limitation.
+- If a non-app validation claim cannot be run because the environment is genuinely unavailable, record the exact limitation and do not treat the claim as proof. Require another reproducible non-board validation method or a test unless the user explicitly accepts the limitation. For every affected app, the stricter per-app gate always applies: inability to prepare or run the documented workflow requires `REQUEST_CHANGES`.
 - If the PR has no test changes and neither the PR body nor commit messages describe a reproducible non-board validation method, do not approve. Request changes asking the author to add a test or document and provide a runnable validation command that covers the changed behavior.
 - Physical board-only validation may be useful evidence, but it does not satisfy this no-test fallback rule by itself unless the user explicitly scopes the review to board-only behavior.
 
@@ -458,11 +480,12 @@ Treat these as blocking unless clearly non-blocking:
 - a high-risk feature identified by `book/guideline/feature-development.md` lacks independently reviewable design material or an appropriately qualified domain reviewer;
 - a feature uses an unexplained cross-layer shortcut, hard-coded special path, duplicated source of truth, fake success, or silent fallback, or adds speculative abstractions, public APIs, configuration, or extension points without a current consumer and demonstrated need;
 - targeted tests, formatting, clippy, or PR-related CI fail;
-- a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
+- a newly added or changed StarryOS or ArceOS app/QEMU case fails when run as documented on the current head, including an architecture specifically added or changed by the PR;
 - a Starry QEMU test failure is visible in guest logs but does not make `cargo xtask starry test qemu ...` fail, including hidden `$?`, missing failure marker, overly loose `success_regex`, or missing `fail_regex` coverage;
 - a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
-- a PR adds or changes CI-missing StarryOS user-space support, an ArceOS app, or an app-facing tool/wrapper, but the documented preparation plus QEMU/runtime workflow was not run on the current head;
-- an app/tool workflow's documentation is incomplete or wrong enough that the reviewer cannot prepare the environment, launch QEMU, or verify the documented postcondition;
+- a PR adds, directly changes, or explicitly claims support for an app, but every affected app's documented preparation plus QEMU/runtime workflow was not completed locally on the current head, regardless of CI status;
+- an app workflow's PR body or added/changed documentation omits required environment setup, commands, parameters, or observable readiness checks, or is wrong enough that the reviewer cannot prepare the environment, launch the app, or verify the documented postcondition;
+- an affected app requires unavailable hardware, credentials, permissions, network services, host capabilities, or an undocumented workaround to configure or run;
 - required tests are missing for new behavior, semantic changes, or bug fixes, without a concrete documented impossibility;
 - new or relocated tests are misplaced, not discovered by the project test runner, not built/installed into the runtime image, not selected by the documented command, or do not exercise the fixed ABI surface;
 - CI passes only because new coverage is skipped by layout, path filters, feature gating, grouped subcase selection, missing install rules, or manual-only placement;
@@ -479,12 +502,15 @@ Treat these as blocking unless clearly non-blocking:
 - a change weakens CI or normal-regression coverage by removing cases, narrowing architectures, loosening pass/fail regexes, skipping relevant workflows, or moving required coverage to manual-only paths without an equivalent validated replacement;
 - the PR duplicates existing base-branch behavior, weakens an existing implementation, conflicts with a related open PR, or is superseded by a newer base-branch or open-PR fix;
 - the review cannot explain how this PR differs from a plausible related open PR after duplicate and overlap analysis.
+- a required review todo remains pending, unverifiable, or closed without concrete evidence or a specific not-applicable reason.
 
 All GitHub review text, including inline comments, review body, and replies, must be in Chinese, neutral, and project-focused. Each blocking comment should include the grounding, severity, concrete problem, evidence, and suggested fix direction required by the review-lens discipline above.
 
 Prefer changed lines on the PR diff. Before submitting, verify every inline `line` exists on the current right side of the diff; if GitHub cannot resolve a line, move to the nearest changed line that demonstrates the issue or put the finding in the review body. Context or unchanged lines may be rejected by the review API.
 
 ## Submit Review
+
+Before submitting, audit every review todo using the same todo tool or documented fallback checklist. Do not submit `APPROVE` while any required item remains pending, unverifiable, or unsupported by evidence. When the PR causes the missing evidence, environment setup failure, or app runtime failure, include that blocker in a `REQUEST_CHANGES` review. When an external review-system limitation prevents submission itself, report an explicit no-submit blocker instead of claiming completion.
 
 Before submitting, confirm through the GitHub MCP/connector that the PR head SHA has not changed. Fallback only when connector data is unavailable:
 
@@ -527,7 +553,8 @@ Review body must explain in Chinese:
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
 - required test coverage status, including why tests were required or not applicable, where new tests were placed, how the runner discovers/selects them, and whether local or current-head CI evidence shows the specific tests executing;
-- for CI-missing app/tool workflows, the documented preparation performed, the exact QEMU/runtime command run, the architecture, and the guest-visible or tool-output postcondition that proved usability;
+- for every added, changed, or explicitly claimed app, the app name, current head, setup source, documented preparation performed, exact local QEMU/runtime command, architecture, and guest-visible or tool-output postcondition; when setup or runtime failed, include the failure stage, key error or unmet readiness condition, and required fix;
+- the final review-todo audit, including completed evidence, concrete not-applicable reasons, blocking items, and any unfinished item that prevented approval or submission;
 - when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
 - CI status, including any unrelated failing checks, the evidence for unrelatedness, the linked tracking issue, and whether that issue was updated or created during review;
 - duplicate and overlap analysis: base-branch evidence checked, related open PRs inspected, and why the PR is distinct, complementary, duplicate, conflicting, or superseded;
@@ -605,3 +632,4 @@ After review submission or an explicit no-submit stop, clean temporary resources
 - Delete temporary files created for review payloads, GraphQL queries, comments, logs, or conflict notes unless the user asked to keep them.
 - Do not remove a worktree that has uncommitted conflict-repair work, diagnostics needed for a reported failure, or user-created changes; report the path and reason instead.
 - Confirm the main worktree status was not changed by the review workflow.
+- After cleanup, perform the final todo audit with the same tool or fallback checklist and include completed, not-applicable, blocking, and unfinished items in the user summary.

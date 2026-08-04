@@ -19,6 +19,9 @@
 //! This crate contains:
 //! - [`AxVM`]: The main structure representing a VM.
 
+#[cfg(any(test, feature = "host-test"))]
+extern crate std;
+
 extern crate alloc;
 #[macro_use]
 extern crate log;
@@ -31,6 +34,7 @@ mod host;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
+pub mod machine;
 mod manager;
 mod npt;
 mod percpu;
@@ -40,18 +44,20 @@ mod timer;
 mod vcpu;
 mod vm;
 
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/shared_mmio.rs"]
+mod aarch64_shared_mmio_tests;
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/vtimer/percpu.rs"]
+mod aarch64_timer_percpu_tests;
+
 use crate::arch::ArchOps;
 
 pub mod config;
 
 pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
-/// Compatibility export for legacy/common normalized VM events.
-///
-/// Architecture-local raw exits are handled by `arch::CurrentArch` through
-/// `VmArchVcpuOps::Exit`; new code should not treat this as the universal raw
-/// vCPU exit type.
-pub use axvm_types::VmExit;
+pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,
@@ -62,11 +68,10 @@ pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
-pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
-    AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
-    inject_current_vcpu_interrupt, register_vm,
+    AxvmRuntime, current_vcpu_id, current_vm_id, dispatch_current_vcpu_interrupt, get_vm_by_id,
+    get_vm_list, inject_current_vcpu_interrupt, notify_vm_vcpu, register_vm,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{

@@ -5,6 +5,10 @@
 
 extern crate alloc;
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for polling events and wait lists.
+pub mod axtest;
+
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     mem::MaybeUninit,

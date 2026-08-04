@@ -69,11 +69,14 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 
 ## Failure Propagation
 
-- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; do not force board cases into the QEMU grouped/C runner structure.
+- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; a board case may reuse the C asset builder only to populate its session upload root.
 - Starry QEMU tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test qemu ...` exit successfully.
 - QEMU `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
 - In QEMU grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
 - In QEMU shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
+- Keep grouped/system logs compact but traceable: print a begin marker before each binary, one passed or failed result with its binary path and elapsed seconds, and one suite summary. Do not repeat the same per-binary durations in a trailing timing block.
+- Test-suit CMake configure, build, and install commands are quiet on success. On failure, the runner must replay the command, stdout, stderr, exit status, and phase context; prebuild and guest/QEMU output remain live.
+- Select rootfs extraction privileges before starting `debugfs`: direct `rdump` requires full host ownership privileges; otherwise enter `fakeroot` first. On Linux, check EUID, full UID/GID identity mappings, and effective `CAP_CHOWN`. If `fakeroot` is unavailable when required, fail before `debugfs` starts; do not emit and then filter ownership warnings or silently retry with weaker semantics.
 - Explicit QEMU skips are allowed only when the test prints a clear skip marker and the review or case comment explains why the environment cannot require success. Bugfix and regression QEMU tests should fail loudly when the fixed behavior is absent.
 
 ## Editing Rules
@@ -87,6 +90,23 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - For grouped cases, keep `test_commands` aligned with installed guest paths and include the grouped success/fail regexes.
 - For `qemu/system` C subcases, install binaries to `usr/bin/starry-test-suit`. Put shared system rootfs preparation in `system/prebuild.sh`, not in subcase-local `prebuild.sh`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
 - Board case names and board config names should match the actual board target, such as `board-orangepi-5-plus.toml`.
+- Board cases may declare `session_files` relative to the directory containing
+  `board-<board>.toml`. Keep each path unchanged from local lookup through the
+  session endpoint; do not add aliases or remote names. Use
+  `${sessionFile:<relative-path>}`, `${boardServerIp}`, or
+  `${boardServerHttpBaseUrl}` in `shell_init_cmd` when a board must download a
+  session asset or contact the board-facing server address.
+- A board case with `c/CMakeLists.txt` installs into
+  `target/<target>/board-cases/<case>/runs/<run-id>/upload/`. Every regular
+  installed file is uploaded automatically with the same relative path. Do not
+  list generated files in `session_files`; keep explicit `wget`, `chmod`, and
+  execution commands in `shell_init_cmd` because ostool does not execute them.
+- Keep heavy board workloads under `apps/starry` instead of moving them into
+  test-suit. A Starry app with `rust/Cargo.toml` may use `starry app board` to
+  cross-compile its static helper into the per-run session upload root. Its
+  `init.sh` must explicitly download `${sessionFile:usr/bin/<program>}` over
+  HTTP, set the executable bit, and run it; do not deploy it through SSH or
+  preinstall it in the persistent board rootfs.
 
 ## Validation
 

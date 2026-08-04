@@ -65,7 +65,7 @@ graph LR
 - `axaddrspace`
 - `ax-allocator`
 - `ax-cpu`
-- `ax-dma`
+- `dma-api`
 - `rdrive`
 - `rdif-block`
 - `rd-net`

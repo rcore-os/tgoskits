@@ -22,11 +22,7 @@ mod vmcs;
 use x86_vlapic::EmulatedLocalApic;
 
 use self::structs::VmxBasic;
-pub use self::{
-    percpu::VmxPerCpuState,
-    vcpu::{VmxVcpu, X86_APIC_ACCESS_GPA},
-    vmcs::VmxExitInfo,
-};
+pub use self::{percpu::VmxPerCpuState, vcpu::VmxVcpu, vmcs::VmxExitInfo};
 use crate::{X86HostOps, X86HostPhysAddr, X86VcpuError};
 
 pub fn read_vmcs_revision_id() -> u32 {

@@ -33,7 +33,10 @@ use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "lockdep")]
 use crate::lockdep::HeldLockStack;
-use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
+use crate::{
+    AxCpuMask, AxTask, AxTaskRef, WaitQueue,
+    interrupt::{InterruptSnapshot, InterruptState},
+};
 
 #[cfg(target_pointer_width = "64")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
@@ -129,7 +132,7 @@ pub struct TaskInner {
     #[cfg(feature = "preempt")]
     preempt_disable_count: AtomicUsize,
 
-    interrupted: AtomicBool,
+    interrupted: InterruptState,
     interrupt_waker: AtomicWaker,
 
     exit_code: AtomicI32,
@@ -322,25 +325,28 @@ impl TaskInner {
         // allow `interrupt()` to run and call `wake()` on an empty waker
         // slot — the wake is lost. Registering first closes the window.
         self.interrupt_waker.register(cx.waker());
-        if self.interrupted.swap(false, Ordering::AcqRel) {
+        if self.interrupted.consume() {
             Poll::Ready(())
         } else {
             Poll::Pending
         }
     }
 
-    /// Clears the interrupt state of the task.
+    /// Acknowledges all interruption publications visible at this call.
+    ///
+    /// Publications that race after the internal snapshot remain pending.
     #[inline]
     pub fn clear_interrupt(&self) {
-        self.interrupted.store(false, Ordering::Release);
+        let snapshot = self.interrupt_snapshot();
+        self.acknowledge_interrupt(snapshot);
     }
 
-    /// Atomically checks and clears the interrupt flag.
+    /// Consumes the interruption publications currently visible to this task.
     ///
     /// Returns `true` if the task was interrupted.
     #[inline]
     pub fn take_interrupt(&self) -> bool {
-        self.interrupted.swap(false, Ordering::AcqRel)
+        self.interrupted.consume()
     }
 
     /// Checks whether the task has been interrupted without clearing
@@ -351,14 +357,26 @@ impl TaskInner {
     /// consumers (e.g., an [`interruptible`] future wrapper).
     #[inline]
     pub fn interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
+        self.interrupted.is_pending()
     }
 
     /// Interrupts the task.
     #[inline]
     pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::Release);
+        self.interrupted.publish();
         self.interrupt_waker.wake();
+    }
+
+    /// Captures the interruption publications visible before a safe-point scan.
+    #[inline]
+    pub fn interrupt_snapshot(&self) -> InterruptSnapshot {
+        self.interrupted.snapshot()
+    }
+
+    /// Acknowledges the interruption publications covered by `snapshot`.
+    #[inline]
+    pub fn acknowledge_interrupt(&self, snapshot: InterruptSnapshot) {
+        self.interrupted.acknowledge(snapshot);
     }
 }
 
@@ -390,7 +408,7 @@ impl TaskInner {
             force_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             preempt_disable_count: AtomicUsize::new(0),
-            interrupted: AtomicBool::new(false),
+            interrupted: InterruptState::new(),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
@@ -591,6 +609,15 @@ impl TaskInner {
     #[cfg(feature = "preempt")]
     pub(crate) fn enable_preempt(&self, resched: bool) {
         if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1 && resched {
+            // Keep local IRQs masked until the preemption check has completely
+            // unwound. A device IRQ may wake a pinned maintenance task and
+            // immediately become pending again when that task rearms the
+            // source. If IRQs are restored by the scheduler's inner guard
+            // before this frame returns, every pending IRQ can recursively
+            // enter another preemption check on the interrupted task's stack.
+            // The outer IRQ guard turns that chain into successive IRQ exits
+            // instead of unbounded scheduler-stack growth.
+            let _irq_guard = ax_kernel_guard::IrqSave::new();
             // If current task is pending to be preempted, do rescheduling.
             Self::current_check_preempt_pending();
         }
@@ -1092,4 +1119,74 @@ extern "C" fn task_entry() -> ! {
         entry()
     }
     crate::exit(0);
+}
+
+#[cfg(axtest)]
+pub(crate) fn task_id_and_state_hold_for_test() -> bool {
+    // Test TaskId
+    let id1 = TaskId(1);
+    let id2 = TaskId(2);
+    assert!(id1 != id2);
+    assert!(id1 == id1);
+
+    // Test TaskState variants
+    assert!(TaskState::Running as u8 == 1);
+    assert!(TaskState::Ready as u8 == 2);
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn task_constants_hold_for_test() -> bool {
+    // Test TASK_STACK_ALIGN constant
+    assert_eq!(TASK_STACK_ALIGN, 16);
+
+    // Test STACK_END_MAGIC for 64-bit
+    #[cfg(target_pointer_width = "64")]
+    assert!(STACK_END_MAGIC == 0x57AC_CE11_57AC_CE11usize);
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn task_id_operations_hold_for_test() -> bool {
+    // Test TaskId operations
+    let id1 = TaskId(100);
+    let id2 = TaskId(200);
+
+    // Test equality
+    assert!(id1 == id1);
+    assert!(id1 != id2);
+
+    // Test clone
+    let id3 = id1.clone();
+    assert!(id1 == id3);
+
+    // Test copy
+    let id4 = id1;
+    assert!(id4 == id1);
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn task_state_all_variants_hold_for_test() -> bool {
+    // Test all TaskState variants
+    let running = TaskState::Running;
+    let ready = TaskState::Ready;
+    let blocked = TaskState::Blocked;
+    let exited = TaskState::Exited;
+
+    // Verify all are different
+    assert!(core::mem::discriminant(&running) != core::mem::discriminant(&ready));
+    assert!(core::mem::discriminant(&ready) != core::mem::discriminant(&blocked));
+    assert!(core::mem::discriminant(&blocked) != core::mem::discriminant(&exited));
+
+    // Verify ordinal values
+    assert!(running as u8 == 1);
+    assert!(ready as u8 == 2);
+    assert!(blocked as u8 == 3);
+    assert!(exited as u8 == 4);
+
+    true
 }

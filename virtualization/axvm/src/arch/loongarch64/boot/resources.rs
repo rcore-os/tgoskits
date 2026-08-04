@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_lazyinit::LazyInit;
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::GuestConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
 use crate::{
@@ -41,7 +41,7 @@ pub fn get_guest_irq_routes(vm_id: usize) -> Vec<LoongArchGuestIrqRoute> {
 
 pub fn prepare_uefi_fdt_config(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut AxVMCrateConfig,
+    vm_create_config: &mut GuestConfig,
 ) -> AxVmResult {
     info!(
         "VM[{}] uses LoongArch UEFI boot protocol, keeping firmware FDT at {:#x}",
@@ -54,13 +54,13 @@ pub fn prepare_uefi_fdt_config(
     Ok(())
 }
 
-pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &AxVMCrateConfig) {
+pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) {
     store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config));
 }
 
 fn expand_root_passthrough(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &AxVMCrateConfig,
+    vm_create_config: &GuestConfig,
 ) -> AxVmResult {
     let has_root_passthrough = vm_config
         .pass_through_devices()
@@ -101,16 +101,15 @@ fn expand_root_passthrough(
 
 fn passthrough_range_is_occupied(
     range: &AcpiPassthroughRange,
-    vm_create_config: &AxVMCrateConfig,
+    vm_create_config: &GuestConfig,
 ) -> bool {
     vm_create_config
         .kernel
         .memory_regions
         .iter()
         .any(|memory| ranges_overlap(range.base, range.size, memory.gpa, memory.size))
-        || vm_create_config
-            .devices
-            .emu_devices
+        || crate::machine::current_machine_profile(vm_create_config.base.cpu_num)
+            .emulated_devices
             .iter()
             .any(|device| ranges_overlap(range.base, range.size, device.base_gpa, device.length))
 }
@@ -156,10 +155,6 @@ fn acpi_passthrough_ranges(
                 range.size,
             )?;
         }
-    }
-
-    if let Some(range) = acpi.serial_console_memory_range() {
-        add_acpi_passthrough_range(&mut ranges, "acpi-spcr-uart".into(), range.base, range.size)?;
     }
 
     for (index, region) in acpi.pci_ecam_regions().iter().enumerate() {

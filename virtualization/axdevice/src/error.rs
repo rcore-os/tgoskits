@@ -26,6 +26,14 @@ pub enum DeviceManagerError {
         /// Diagnostic detail describing the invalid input.
         detail: String,
     },
+    /// Device manager state does not allow the requested operation.
+    #[error("invalid device manager state for {operation}: {detail}")]
+    InvalidState {
+        /// The operation rejected by the current state.
+        operation: &'static str,
+        /// Diagnostic detail describing the current state.
+        detail: String,
+    },
     /// A required device resource was not found.
     #[error("device resource {resource} was not found during {operation}")]
     ResourceNotFound {
@@ -103,6 +111,9 @@ impl From<DeviceManagerError> for DeviceError {
             }
             DeviceManagerError::InvalidInput { operation, detail } => {
                 Self::InvalidInput { operation, detail }
+            }
+            DeviceManagerError::InvalidState { operation, detail } => {
+                Self::InvalidState { operation, detail }
             }
             DeviceManagerError::ResourceNotFound {
                 operation,

@@ -54,6 +54,13 @@ sidebar_label: "检查机制总览"
 - `platforms/ax-plat/src/irq.rs`
 - `os/StarryOS/kernel/src/mm/access.rs`
 
+默认 CI 的 `Test with std` job 会通过 `cargo xtask test` 运行两组 `ax-task`
+专项 host profile：`host-test,multitask` 覆盖未启用 IRQ feature 时的基础行为，
+`host-test,multitask,preempt,lockdep` 覆盖 preempt-disabled 与 held-lock 诊断。
+每组 profile 都先用 `--list` 校验预期的 `might_sleep` 测试集合，再只执行
+`might_sleep` 过滤项，避免完整 `preempt+lockdep` host suite 的既有不稳定路径。
+这部分覆盖不经过 QEMU 或真实 IRQ handler；显式 IRQ context 的 QEMU 回归仍是后续工作。
+
 后续改进方向：
 
 - 继续补 QEMU 级 IRQ handler 回归，验证显式 IRQ context 路径。
@@ -249,8 +256,8 @@ Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtr
 
 ## CI 默认启用边界
 
-除 `lockdep` 外，这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep` 与 task stack canary 在默认 CI 的 `multitask` 构建中启用。
+这些机制已进入默认 CI 覆盖范围：`sync-lint` 作为独立 CI job 运行，panic/oops 递归保护随 runtime 默认编译；`might_sleep` 与 task stack canary 在默认 CI 的 `multitask` 构建中启用。此外，默认 std job 会运行上述两组 `ax-task` 专项 host profile，其中诊断 profile 显式启用 `lockdep`，但只执行经过发现校验的 `might_sleep` 过滤测试。
 
 需要注意的是，`might_sleep` 与 task stack canary 并不是对所有单线程 ArceOS 测试包无条件启用。它们覆盖 StarryOS、Axvisor 以及多数 ArceOS QEMU 测试，但不覆盖未启用 `multitask` 的单线程测试包。
 
-`lockdep` 由于运行时开销、诊断输出和行为侵入性更强，当前不作为默认 CI feature 启用，而是通过显式 `lockdep` feature 和专门回归用例维护。
+`lockdep` 由于运行时开销、诊断输出和行为侵入性更强，当前仍不作为 runtime 或完整测试套件的全局默认 feature；默认 CI 仅在专项 host profile 和专门回归用例中显式启用。

@@ -73,6 +73,6 @@ StarryOS can load glibc dynamic ELF through PT_INTERP on aarch64, riscv64, and x
 
 | 架构 | 特殊要求 |
 |------|----------|
-| aarch64 | QEMU 需要 `-append root=/dev/sda` |
+| aarch64 | QEMU 需要 `-append root=/dev/nvme0n1` |
 | riscv64 | 不需要 `-append`，kernel 自动检测 |
 | x86_64 | 需要 `-cpu max`，`to_bin=false`，不需要 `-append` |

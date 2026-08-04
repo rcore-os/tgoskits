@@ -573,6 +573,15 @@ impl NetlinkSocket {
 }
 
 impl FileLike for NetlinkSocket {
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        // Device ioctls (SIOCGIF*) are family-agnostic in Linux sock_ioctl, so a
+        // netlink socket answers them too rather than returning ENOTTY.
+        if let Some(result) = crate::file::net::device_ioctl(cmd, arg) {
+            return result;
+        }
+        Err(AxError::NotATty)
+    }
+
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             self.read_one(dst, false, false)

@@ -7,6 +7,10 @@ mod error;
 mod event;
 mod interface;
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for vsock connection ids, events, and interface defaults.
+pub mod axtest;
+
 pub use addr::*;
 pub use error::*;
 pub use event::*;

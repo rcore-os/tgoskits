@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.5...ax-fs-ng-v0.8.6) - 2026-08-03
+
+### Added
+
+- *(ahci-driver)* add portable multi-disk AHCI support ([#1795](https://github.com/rcore-os/tgoskits/pull/1795))
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+- *(ax-fs-ng)* preserve zero-fill across cached resize ([#1790](https://github.com/rcore-os/tgoskits/pull/1790))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+### Added
+
+- Add bounded sequential page-cache readahead and runtime batch/commit/completion diagnostics.
+
+### Changed
+
+- Submit every planner-generated filesystem I/O window before blocking for its completion group.
+- Defer regular ext4 data, append, and size-change durability to the explicit sync/fsync boundary.
+- Split block lifecycle I/O and page-cache readahead, writeback, reclaim, and tests into focused modules.
+- Replace the compatibility block runtime with per-CPU bounded submission
+  channels and one pinned maintenance task per hardware queue.
+- Make filesystem reads, writes, and flushes blocking wrappers over one-shot
+  completion subscriptions.
+- Expand hardware queues only after scheduler, IPI, and local IRQ startup
+  completes on every CPU.
+- Aggregate single and grouped channel submissions into bounded hardware
+  batches while preserving partial acceptance and flush ordering.
+
+### Fixed
+
+- Quiesce hctx workers before controller shutdown and retain partially installed queues until hardware can no longer DMA into them.
+- Alternate retry suffixes with fresh per-CPU submissions and share one scheduler notification across each completion group.
+
+### Removed
+
+- Remove synchronous polling, timer repoll fallback, task-ID wakeups, and the duplicate `block_runtime` module.
+
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.4...ax-fs-ng-v0.8.5) - 2026-07-23
+
+### Added
+
+- *(starry)* complete mount tree semantics ([#1644](https://github.com/rcore-os/tgoskits/pull/1644))
+- *(starry)* run x86_64 self-build through the Starry app ([#1076](https://github.com/rcore-os/tgoskits/pull/1076))
+
+### Fixed
+
+- *(starry)* support Nix openat2 resolve flags ([#1637](https://github.com/rcore-os/tgoskits/pull/1637))
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
 
 ### Other

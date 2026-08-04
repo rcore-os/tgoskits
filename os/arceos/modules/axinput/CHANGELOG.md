@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.6...ax-input-v0.6.7) - 2026-08-03
+
+### Other
+
+- updated the following local packages: ax-lazyinit, irq-framework, rdif-input, ax-sync
+
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.5...ax-input-v0.6.6) - 2026-07-23
+
+### Other
+
+- updated the following local packages: ax-sync
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-input-v0.6.4...ax-input-v0.6.5) - 2026-07-10
 
 ### Other

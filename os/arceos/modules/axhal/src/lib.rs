@@ -79,6 +79,29 @@ pub mod power {
     pub use ax_plat::power::{system_off, system_reset};
 }
 
+/// CPU topology.
+pub mod topology {
+    /// Maps a firmware or hardware CPU ID to the runtime logical CPU index.
+    #[cfg(any(test, feature = "host-test"))]
+    pub const fn resolve_cpu_index(hardware_id: usize) -> Option<usize> {
+        if hardware_id == 0 { Some(0) } else { None }
+    }
+
+    #[cfg(not(any(test, feature = "host-test")))]
+    pub use ax_plat::cpu::resolve_cpu_index;
+
+    #[cfg(test)]
+    mod tests {
+        use super::resolve_cpu_index;
+
+        #[test]
+        fn dummy_topology_only_maps_the_boot_cpu() {
+            assert_eq!(resolve_cpu_index(0), Some(0));
+            assert_eq!(resolve_cpu_index(1), None);
+        }
+    }
+}
+
 /// Trap handling.
 pub mod trap {
     #[cfg(target_arch = "x86_64")]

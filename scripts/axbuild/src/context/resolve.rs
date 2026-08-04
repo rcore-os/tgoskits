@@ -208,8 +208,11 @@ impl AppContext {
             }
         });
         let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
-        let smp = cli.smp.or(snapshot.smp);
-        let inherit_snapshot_runtime = cli.arch.is_none() && cli.target.is_none();
+        let inherit_snapshot_runtime =
+            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
+        let smp = cli
+            .smp
+            .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
         let runtime_paths = self.resolve_runtime_paths(
             qemu_config,
             if inherit_snapshot_runtime {

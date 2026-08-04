@@ -1,14 +1,14 @@
 use ax_fs_ng::root::RootSpec;
 
 #[test]
-fn parses_sd_and_virtio_root_device_paths() {
+fn parses_sd_and_nvme_root_device_paths() {
     let sd = RootSpec::parse_bootargs(Some("console=ttyS0 root=/dev/sdb3 rw"));
     assert_eq!(sd.disk_index, Some(1));
     assert_eq!(sd.partition_index, Some(2));
 
-    let virtio = RootSpec::parse_bootargs(Some("root=/dev/vda2"));
-    assert_eq!(virtio.disk_index, Some(0));
-    assert_eq!(virtio.partition_index, Some(1));
+    let nvme = RootSpec::parse_bootargs(Some("root=/dev/nvme0n1p2"));
+    assert_eq!(nvme.disk_index, Some(0));
+    assert_eq!(nvme.partition_index, Some(1));
 }
 
 #[test]

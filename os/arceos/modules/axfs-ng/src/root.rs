@@ -6,12 +6,13 @@ use alloc::{
 };
 
 use axfs_ng_vfs::{Location, NodePermission, NodeType, VfsError};
+use spin::Once;
 
 use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
     block::{
         FsBlockDevice, boxed_native_handle_block_device,
-        runtime::{BlockRuntime, RdifBlockDevice},
+        runtime::{BlockRuntime, RdifBlockDevice, RdifBlockGroup},
     },
     detect_filesystem, fs, init_detected_filesystem, init_filesystem,
     volume::{
@@ -21,6 +22,29 @@ use crate::{
 };
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
+static ROOT_BLOCK_IDENTITY: Once<RootBlockIdentity> = Once::new();
+
+/// Linux-facing identity of the selected physical root block device.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootBlockIdentity {
+    pub name: &'static str,
+    pub major: u32,
+    pub minor: u32,
+}
+
+const DEFAULT_ROOT_BLOCK_IDENTITY: RootBlockIdentity = RootBlockIdentity {
+    name: "blk0",
+    major: 0,
+    minor: 0,
+};
+
+/// Returns the identity selected while mounting the root filesystem.
+pub fn root_block_identity() -> RootBlockIdentity {
+    ROOT_BLOCK_IDENTITY
+        .get()
+        .copied()
+        .unwrap_or(DEFAULT_ROOT_BLOCK_IDENTITY)
+}
 
 /// Root filesystem selector parsed from boot arguments.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -57,7 +81,7 @@ impl RootSpec {
         }
 
         if let Some((disk_index, partition_index)) = parse_sd_like(root, "/dev/sd")
-            .or_else(|| parse_sd_like(root, "/dev/vd"))
+            .or_else(|| parse_nvme(root))
             .or_else(|| parse_mmcblk(root))
         {
             return Self {
@@ -175,6 +199,8 @@ pub fn init_root(
         .position(|disk| disk.disk_index == selected_disk_index)
         .unwrap_or_else(|| panic!("selected root disk disappeared during initialization"));
     let selected = disks.swap_remove(selected_disk_pos);
+    ROOT_BLOCK_IDENTITY
+        .call_once(|| block_identity(selected.handle.device_info(), selected.disk_index));
     let selected_partition_info = selected_partition.and_then(|part_index| {
         selected
             .partitions
@@ -182,7 +208,14 @@ pub fn init_root(
             .find(|partition| partition.info.index == part_index)
     });
     let description = describe_selection(selected.disk_index, selected_partition_info);
-    let source = bootargs.and_then(root_value).unwrap_or("/dev/vda");
+    let default_source = default_root_source(
+        selected.handle.device_info(),
+        selected.disk_index,
+        selected_partition,
+    );
+    let source = bootargs
+        .and_then(root_value)
+        .unwrap_or(default_source.as_str());
     let region = selected_partition_info.map_or_else(
         || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
         |part| part.info.region,
@@ -194,6 +227,55 @@ pub fn init_root(
         init_filesystem(selected.handle.clone(), region, &description, source)
     };
     mount_additional_partitions(&root, &selected, selected_partition);
+    for disk in &disks {
+        mount_additional_partitions(&root, disk, None);
+    }
+}
+
+const SD_NAMES: [&str; 26] = [
+    "sda", "sdb", "sdc", "sdd", "sde", "sdf", "sdg", "sdh", "sdi", "sdj", "sdk", "sdl", "sdm",
+    "sdn", "sdo", "sdp", "sdq", "sdr", "sds", "sdt", "sdu", "sdv", "sdw", "sdx", "sdy", "sdz",
+];
+
+fn block_identity(info: rdif_block::DeviceInfo, disk_index: usize) -> RootBlockIdentity {
+    match info.name {
+        Some("nvme") => RootBlockIdentity {
+            name: "nvme0n1",
+            major: 259,
+            minor: 0,
+        },
+        Some("ahci") => RootBlockIdentity {
+            name: SD_NAMES.get(disk_index).copied().unwrap_or("sdz"),
+            major: 8,
+            minor: u32::try_from(disk_index)
+                .unwrap_or(u32::MAX / 16)
+                .saturating_mul(16),
+        },
+        Some("rockchip-sdhci") => RootBlockIdentity {
+            name: "mmcblk0",
+            major: 179,
+            minor: 0,
+        },
+        _ => DEFAULT_ROOT_BLOCK_IDENTITY,
+    }
+}
+
+fn default_root_source(
+    info: rdif_block::DeviceInfo,
+    disk_index: usize,
+    partition_index: Option<usize>,
+) -> String {
+    let identity = block_identity(info, disk_index);
+    partition_index.map_or_else(
+        || format!("/dev/{}", identity.name),
+        |index| {
+            if identity.name.starts_with("sd") {
+                format!("/dev/{}{}", identity.name, index + 1)
+            } else {
+                format!("/dev/{}p{}", identity.name, index + 1)
+            }
+        },
+    )
 }
 
 pub fn init_root_from_rdif(
@@ -201,6 +283,15 @@ pub fn init_root_from_rdif(
     bootargs: Option<&str>,
 ) {
     let runtime = BlockRuntime::install_from_rdif_devices(block_devs);
+    init_root(runtime.devices().iter().cloned(), bootargs);
+}
+
+pub fn init_root_from_rdif_sources(
+    block_devs: impl IntoIterator<Item = RdifBlockDevice>,
+    block_groups: impl IntoIterator<Item = RdifBlockGroup>,
+    bootargs: Option<&str>,
+) {
+    let runtime = BlockRuntime::install_from_rdif_sources(block_devs, block_groups);
     init_root(runtime.devices().iter().cloned(), bootargs);
 }
 
@@ -656,6 +747,25 @@ fn parse_sd_like(root: &str, prefix: &str) -> Option<(usize, Option<usize>)> {
     Some((disk_index, partition))
 }
 
+fn parse_nvme(root: &str) -> Option<(usize, Option<usize>)> {
+    let rest = root.strip_prefix("/dev/nvme")?;
+    let (controller, namespace_and_partition) = rest.split_once('n')?;
+    let controller = controller.parse::<usize>().ok()?;
+    let (namespace, partition) = namespace_and_partition
+        .split_once('p')
+        .map_or((namespace_and_partition, None), |(namespace, partition)| {
+            (namespace, Some(partition))
+        });
+    if namespace != "1" {
+        return None;
+    }
+    let partition = match partition {
+        Some(partition) => Some(partition.parse::<usize>().ok()?.checked_sub(1)?),
+        None => None,
+    };
+    Some((controller, partition))
+}
+
 fn parse_mmcblk(root: &str) -> Option<(usize, Option<usize>)> {
     let rest = root.strip_prefix("/dev/mmcblk")?;
     let (disk, partition) = match rest.split_once('p') {
@@ -696,12 +806,13 @@ mod tests {
         Reference, StatFs, VfsResult, WeakDirEntry,
     };
     use rdif_block::{
-        BlkError, DeviceInfo, DriverGeneric, IQueue, QueueInfo, QueueLimits, Request, RequestId,
-        RequestStatus,
+        BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
+        ControllerState, ControllerUpdate, DeviceInfo, DriverGeneric, HardwareQueue,
+        OwnedRequestBatch, QueueInfo, QueueLimits, SubmissionSink,
     };
 
     use super::*;
-    use crate::block::runtime::{BlockIrqBridge, BlockRuntimeConfig, NoopDrainWake};
+    use crate::block::runtime::{BlockRuntime, RdifBlockDevice};
 
     struct TestQueue;
     struct FlakyMetadataDevice {
@@ -955,9 +1066,7 @@ mod tests {
         }
     }
 
-    // SAFETY: This queue is only used to construct a `BlockDeviceHandle` for
-    // root selection tests and never stores request segments.
-    unsafe impl IQueue for TestQueue {
+    impl HardwareQueue for TestQueue {
         fn id(&self) -> usize {
             0
         }
@@ -970,18 +1079,35 @@ mod tests {
             }
         }
 
-        fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
+        fn submit_batch_owned(
+            &mut self,
+            requests: &mut OwnedRequestBatch,
+            _sink: &mut dyn SubmissionSink,
+        ) -> BatchSubmitResult {
+            let _ = requests;
             unreachable!("root selection tests do not submit block requests")
         }
 
-        fn poll_request(&mut self, _request: RequestId) -> Result<RequestStatus, BlkError> {
-            unreachable!("root selection tests do not poll block requests")
+        fn commit_submissions(&mut self) -> Result<(), BlkError> {
+            unreachable!("root selection tests do not commit block requests")
+        }
+
+        fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+            unreachable!("root selection tests do not drain block requests")
+        }
+
+        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+            Ok(())
         }
     }
 
-    impl DriverGeneric for TestQueue {
+    struct TestController {
+        queue: Option<TestQueue>,
+    }
+
+    impl DriverGeneric for TestController {
         fn name(&self) -> &str {
-            "test-queue"
+            "test-controller"
         }
 
         fn raw_any(&self) -> Option<&dyn Any> {
@@ -990,6 +1116,28 @@ mod tests {
 
         fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
             Some(self)
+        }
+    }
+
+    impl BlockController for TestController {
+        fn device_info(&self) -> DeviceInfo {
+            DeviceInfo::new(16, 512)
+        }
+
+        fn max_io_queues(&self) -> usize {
+            1
+        }
+
+        fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+            match event {
+                ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                    ControllerState::Ready,
+                    alloc::vec![Box::new(self.queue.take().unwrap())],
+                    Vec::new(),
+                )),
+                ControllerEvent::Shutdown => Ok(ControllerUpdate::state(ControllerState::Shutdown)),
+                _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+            }
         }
     }
 
@@ -1030,6 +1178,23 @@ mod tests {
             buf.copy_from_slice(block);
             Ok(())
         }
+
+        #[cfg(any(feature = "ext4", feature = "fat"))]
+        fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+            let start = usize::try_from(block_id)
+                .ok()
+                .and_then(|block| block.checked_mul(self.block_size()))
+                .ok_or(AxError::InvalidInput)?;
+            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+            let target = self.data.get_mut(start..end).ok_or(AxError::InvalidInput)?;
+            target.copy_from_slice(buf);
+            Ok(())
+        }
+
+        #[cfg(feature = "ext4")]
+        fn flush(&mut self) -> AxResult {
+            Ok(())
+        }
     }
 
     fn mbr_partition(
@@ -1054,16 +1219,17 @@ mod tests {
     }
 
     fn raw_disk(filesystem: Option<FilesystemKind>) -> DiscoveredDisk {
-        let config = BlockRuntimeConfig::new(Arc::new(NoopDrainWake));
+        crate::os::task::install_test_runtime_ops();
+        let runtime = BlockRuntime::from_rdif_devices([RdifBlockDevice::new_with_irqs(
+            "test-disk",
+            [],
+            Box::new(TestController {
+                queue: Some(TestQueue),
+            }),
+        )]);
         DiscoveredDisk {
             disk_index: 0,
-            handle: BlockDeviceHandle::new(
-                "test-disk",
-                [Box::new(TestQueue) as Box<dyn IQueue>],
-                Arc::new(BlockIrqBridge::new()),
-                config,
-            )
-            .unwrap(),
+            handle: runtime.devices()[0].clone(),
             raw_filesystem: filesystem,
             partitions: Vec::new(),
         }
@@ -1192,5 +1358,28 @@ mod tests {
         ];
 
         assert_eq!(select_default_root(&candidates), Some((0, Some(1))));
+    }
+
+    #[test]
+    fn default_root_source_tracks_the_selected_hardware_device() {
+        let nvme = DeviceInfo {
+            name: Some("nvme"),
+            ..DeviceInfo::new(16, 512)
+        };
+        let emmc = DeviceInfo {
+            name: Some("rockchip-sdhci"),
+            ..DeviceInfo::new(16, 512)
+        };
+        let ahci = DeviceInfo {
+            name: Some("ahci"),
+            ..DeviceInfo::new(16, 512)
+        };
+
+        assert_eq!(default_root_source(nvme, 0, None), "/dev/nvme0n1");
+        assert_eq!(default_root_source(nvme, 0, Some(1)), "/dev/nvme0n1p2");
+        assert_eq!(default_root_source(emmc, 0, None), "/dev/mmcblk0");
+        assert_eq!(default_root_source(emmc, 0, Some(0)), "/dev/mmcblk0p1");
+        assert_eq!(default_root_source(ahci, 0, None), "/dev/sda");
+        assert_eq!(default_root_source(ahci, 1, Some(0)), "/dev/sdb1");
     }
 }

@@ -1,0 +1,9 @@
+# Build-time config for StarryOS on PhytiumPi.
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/serial",
+  "ax-driver/ahci-fdt",
+  "ax-driver/phytium-mci",
+]
+log = "Info"
+max_cpu_num = 4

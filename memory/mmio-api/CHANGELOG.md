@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/mmio-api-v0.2.2...mmio-api-v0.2.3) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.2.2](https://github.com/rcore-os/tgoskits/compare/mmio-api-v0.2.1...mmio-api-v0.2.2) - 2026-05-18
 
 ### Added

@@ -2,7 +2,7 @@
 name = "axvisor"
 authors = ["Keyang Hu <keyang.hu@qq.com>", "周睿 <zrufo747@outlook.com>"]
 edition.workspace = true
-version = "0.5.21"
+version = "0.5.23"
 description = "A lightweight type-1 hypervisor based on ArceOS"
 repository = "https://github.com/arceos-hypervisor/axvisor"
 homepage = "https://github.com/arceos-hypervisor/axvisor"
@@ -48,18 +48,21 @@ fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 sstc = ["axvm/sstc"]
 rockchip-soc = ["ax-driver/rockchip-soc"]
 rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
-rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
 phytium-mci = ["ax-driver/phytium-mci"]
+ahci-fdt = ["ax-driver/ahci-fdt"]
 sdmmc = [
     "ax-driver/rockchip-sdhci",
     "ax-driver/rockchip-soc",
-    "ax-driver/phytium-mci",
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
 stack-protector = ["ax-std/stack-protector"]
+backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
+test-backtrace-panic = ["backtrace"]
+test-panic-no-backtrace = ["dep:axbacktrace"]
 
 [dependencies]
 spin = { workspace = true }
+ax-kspin = { workspace = true }
 ax-crate-interface = { workspace = true }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
@@ -81,6 +84,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "std-compat",
 ] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
+ax-sync = { workspace = true, features = ["multitask"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }
@@ -88,6 +92,7 @@ axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
 ax-driver.workspace = true
 axplat-dyn.workspace = true
+axbacktrace = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 axplat-dyn = { workspace = true, features = ["hv"] }
@@ -103,9 +108,9 @@ clap = { version = "4.6", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]
-anyhow = "1.0"
-prettyplease = "0.2"
-proc-macro2 = "1.0"
-quote = "1.0"
-syn = "2.0"
-toml = "0.9"
+anyhow = { workspace = true, features = ["std"] }
+prettyplease = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+toml = { workspace = true, features = ["std", "serde", "parse", "display"] }

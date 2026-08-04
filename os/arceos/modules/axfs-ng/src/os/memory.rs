@@ -65,7 +65,11 @@ pub fn has_page_provider() -> bool {
 #[cfg(test)]
 pub mod test_support {
     use core::sync::atomic::AtomicUsize;
-    use std::sync::Mutex;
+    use std::{
+        alloc::{Layout, alloc_zeroed, dealloc},
+        ptr::NonNull,
+        sync::Mutex,
+    };
 
     use super::*;
 
@@ -101,11 +105,20 @@ pub mod test_support {
 
     impl FsPageProvider for TestPageProvider {
         fn alloc_page(&self) -> VfsResult<FsPage> {
+            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
+            // SAFETY: `layout` has non-zero size and page alignment. The
+            // returned allocation is owned by `FsPage` and released with the
+            // identical layout in `dealloc_page`.
+            let page = NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or(VfsError::NoMemory)?;
             self.alloc_count.fetch_add(1, Ordering::AcqRel);
-            Ok(unsafe { FsPage::from_raw(0x1000) })
+            Ok(unsafe { FsPage::from_raw(page.as_ptr() as usize) })
         }
 
-        fn dealloc_page(&self, _page: FsPage) {
+        fn dealloc_page(&self, page: FsPage) {
+            let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
+            // SAFETY: `page` was allocated by `alloc_page` with this exact
+            // layout and is transferred here exactly once by `FsPage::drop`.
+            unsafe { dealloc(page.as_mut_ptr(), layout) };
             self.dealloc_count.fetch_add(1, Ordering::AcqRel);
         }
 
@@ -123,7 +136,9 @@ pub mod test_support {
         translate: bool,
         f: impl FnOnce(&TestPageProvider) -> R,
     ) -> R {
-        let _guard = TEST_PAGE_PROVIDER_LOCK.lock().unwrap();
+        let _guard = TEST_PAGE_PROVIDER_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         install_page_provider(&TEST_PAGE_PROVIDER);
         TEST_PAGE_PROVIDER.reset(translate);
         let result = f(&TEST_PAGE_PROVIDER);
@@ -140,8 +155,9 @@ mod tests {
     fn page_provider_allocates_and_deallocates_pages() {
         with_test_page_provider(true, |provider| {
             let page = alloc_page().unwrap();
-            assert_eq!(page.addr(), 0x1000);
-            assert_eq!(virt_to_phys(page.addr()), Some(0x1000_1000));
+            assert_ne!(page.addr(), 0);
+            assert_eq!(page.addr() % PAGE_SIZE, 0);
+            assert_eq!(virt_to_phys(page.addr()), Some(page.addr() + 0x1000_0000));
             dealloc_page(page);
             assert_eq!(provider.alloc_count(), 1);
             assert_eq!(provider.dealloc_count(), 1);

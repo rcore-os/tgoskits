@@ -1,60 +1,264 @@
 /*
- * test_madvise.c -- madvise 系统调用边界语义测试
+ * !test-madvise — madvise(2) MADV_FREE / MADV_REMOVE / MADV_DONTNEED 穷尽测试
  *
- * 测试内容（每条对应一个已知 Linux 返回分支）：
- *   1. 合法映射 + MADV_NORMAL 应返回 0
- *   2. advice 值非法 → errno=EINVAL
- *   3. addr 非页对齐 → errno=EINVAL
- *   4. 区间已 munmap 且 advice=MADV_DONTNEED → errno=ENOMEM
+ * ground truth: man 2 madvise + Linux v7.2 mm/madvise.c。覆盖浏览器内存管理:
+ * MADV_FREE(V8/分配器惰性回收, 仅私有匿名) / MADV_REMOVE(shmem 打洞释放共享内存) /
+ * MADV_DONTNEED(立即丢弃) + errno(EINVAL 映射类型不符 / 未对齐 / 非法 advice, ENOMEM 未映射)。
  *
- * 针对 StarryOS：kernel/src/syscall/mm/mmap.rs 的 sys_madvise 是 Ok(0) 桩，
- * 上述 2/3/4 三条断言会 FAIL。
+ * =====================================================================
+ * 语义 (man 2 madvise)
+ * =====================================================================
+ *   MADV_FREE(4.5+): 仅私有匿名页; 惰性回收(可延迟到内存压力); 写后取消 free。
+ *     文件后备 -> EINVAL。回收后读到 0 或原值(实现定义), 不可依赖内容。
+ *   MADV_REMOVE(2.6.16+): 释放该范围页及后备存储(等价 fallocate PUNCH_HOLE);
+ *     要求 shared+writable 文件后备(shmem/tmpfs); 匿名 -> EINVAL。打洞后读到 0。
+ *   MADV_DONTNEED: 立即丢弃; 匿名下次访问得零页。
+ *   addr 须页对齐否则 EINVAL; 非法 advice -> EINVAL; 范围含未映射 -> ENOMEM。
+ *
+ * =====================================================================
+ * Linux v7.2 源码对齐 (mm/madvise.c)
+ * =====================================================================
+ *   madvise_remove L1000: !VM_LOCKED, 无文件后备(!f||!f_mapping||!host) -> EINVAL;
+ *     否则 vfs_fallocate PUNCH_HOLE。
+ *   madvise_free_single_vma L799: !vma_is_anonymous -> EINVAL(L813)。
+ *   check_input_range: addr 未对齐 -> EINVAL; 范围 gap -> ENOMEM。
+ *   StarryOS: syscall/mm/mmap.rs sys_madvise。
+ * =====================================================================
  */
 
-#define _GNU_SOURCE
 #include "test_framework.h"
+
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
+#include <string.h>
+
+#ifndef MADV_FREE
+#define MADV_FREE 8
+#endif
+#ifndef MADV_REMOVE
+#define MADV_REMOVE 9
+#endif
+#ifndef MADV_DONTFORK
+#define MADV_DONTFORK 10
+#endif
+#ifndef MADV_DOFORK
+#define MADV_DOFORK 11
+#endif
+#ifndef MADV_HUGEPAGE
+#define MADV_HUGEPAGE 14
+#endif
+#ifndef MADV_NOHUGEPAGE
+#define MADV_NOHUGEPAGE 15
+#endif
+#ifndef MADV_DONTDUMP
+#define MADV_DONTDUMP 16
+#endif
+#ifndef MADV_DODUMP
+#define MADV_DODUMP 17
+#endif
+#ifndef MADV_COLD
+#define MADV_COLD 20
+#endif
+#ifndef MADV_PAGEOUT
+#define MADV_PAGEOUT 21
+#endif
+
+static long PS;
+
+static void alarm_handler(int s)
+{
+    (void)s;
+    const char *m = "\n  FAIL | TIMEOUT | 测试挂死\n==== test-madvise 汇总: FAIL ====\n";
+    ssize_t r = write(2, m, strlen(m));
+    (void)r;
+    _exit(1);
+}
+
+/* 建一个 memfd 后备的共享可写映射(shmem 语义), 写入 pattern。返回映射地址, *fd_out=fd。 */
+static void *memfd_shared_map(int *fd_out, unsigned char pattern)
+{
+    int fd = memfd_create("madv", 0);
+    if (fd < 0) return NULL;
+    if (ftruncate(fd, PS) != 0) { close(fd); return NULL; }
+    void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) { close(fd); return NULL; }
+    memset(p, pattern, (size_t)PS);
+    *fd_out = fd;
+    return p;
+}
+
+/* ===== A. MADV_FREE 私有匿名: 成功 + 写后取消 free ===== */
+static int test_madv_free_anon(void)
+{
+    TEST_START("A. MADV_FREE 私有匿名 + 写取消 free");
+    void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED, "mmap 匿名私有");
+    if (p == MAP_FAILED) { TEST_DONE(); }
+
+    memset(p, 0xAB, (size_t)PS);
+    CHECK(madvise(p, (size_t)PS, MADV_FREE) == 0, "MADV_FREE 私有匿名 -> 成功");
+    /* 写后取消 free: 写入的值必须持久可读 */
+    *(volatile unsigned char *)p = 0x5A;
+    CHECK(*(volatile unsigned char *)p == 0x5A, "MADV_FREE 后写入的值持久(写取消 free)");
+    munmap(p, (size_t)PS);
+    TEST_DONE();
+}
+
+/* ===== B. MADV_FREE errno: 文件后备 -> EINVAL ===== */
+static int test_madv_free_errno(void)
+{
+    TEST_START("B. MADV_FREE 文件后备 -> EINVAL");
+    int fd = -1;
+    void *p = memfd_shared_map(&fd, 0x11);
+    if (!p) { CHECK(0, "memfd 前置"); TEST_DONE(); }
+    errno = 0;
+    /* MADV_FREE 只对私有匿名; 文件后备(memfd shared)-> EINVAL */
+    CHECK(madvise(p, (size_t)PS, MADV_FREE) == -1 && errno == EINVAL,
+          "MADV_FREE 文件后备映射 -> EINVAL");
+    munmap(p, (size_t)PS);
+    close(fd);
+    TEST_DONE();
+}
+
+/* ===== C. MADV_REMOVE 匿名 -> EINVAL(要求文件后备) ===== */
+static int test_madv_remove_anon(void)
+{
+    TEST_START("C. MADV_REMOVE 匿名 -> EINVAL");
+    void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { CHECK(0, "mmap"); TEST_DONE(); }
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, MADV_REMOVE) == -1 && errno == EINVAL,
+          "MADV_REMOVE 私有匿名 -> EINVAL(无文件后备)");
+    munmap(p, (size_t)PS);
+    TEST_DONE();
+}
+
+/* ===== D. MADV_REMOVE shmem/memfd -> 打洞置零 ===== */
+static int test_madv_remove_shmem(void)
+{
+    TEST_START("D. MADV_REMOVE shmem(memfd) -> 打洞置零");
+    int fd = -1;
+    void *p = memfd_shared_map(&fd, 0xCD);
+    if (!p) { CHECK(0, "memfd 前置"); TEST_DONE(); }
+    CHECK(((volatile unsigned char *)p)[0] == 0xCD, "打洞前有数据 0xCD");
+    int r = madvise(p, (size_t)PS, MADV_REMOVE);
+    CHECK(r == 0, "MADV_REMOVE shmem 成功");
+    if (r == 0) {
+        int zero = 1;
+        for (long i = 0; i < PS; i++) {
+            if (((volatile unsigned char *)p)[i] != 0) { zero = 0; break; }
+        }
+        CHECK(zero, "MADV_REMOVE 后该范围读到全 0(打洞释放后备)");
+    }
+    munmap(p, (size_t)PS);
+    close(fd);
+    TEST_DONE();
+}
+
+/* ===== E. MADV_DONTNEED 匿名 + errno 边界 ===== */
+static int test_dontneed_and_errno(void)
+{
+    TEST_START("E. MADV_DONTNEED + errno(未对齐/非法advice/未映射)");
+    void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { CHECK(0, "mmap"); TEST_DONE(); }
+    memset(p, 0xEE, (size_t)PS);
+    CHECK(madvise(p, (size_t)PS, MADV_DONTNEED) == 0, "MADV_DONTNEED 匿名 -> 成功");
+    CHECK(*(volatile unsigned char *)p == 0, "MADV_DONTNEED 后重访问得零页");
+
+    /* 非法 advice -> EINVAL */
+    errno = 0;
+    CHECK(madvise(p, (size_t)PS, 0x7fff) == -1 && errno == EINVAL, "非法 advice -> EINVAL");
+    /* addr 未页对齐 -> EINVAL (man: addr is not page-aligned) */
+    errno = 0;
+    CHECK(madvise((char *)p + 1, (size_t)PS, MADV_DONTNEED) == -1 && errno == EINVAL,
+          "addr 未页对齐 -> EINVAL");
+    /* len=0 -> 0 no-op */
+    CHECK(madvise(p, 0, MADV_DONTNEED) == 0, "len=0 -> 0(no-op)");
+    munmap(p, (size_t)PS);
+
+    /* 未映射范围 -> ENOMEM */
+    void *u = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (u != MAP_FAILED) {
+        munmap(u, (size_t)PS);
+        errno = 0;
+        CHECK(madvise(u, (size_t)PS, MADV_DONTNEED) == -1 && errno == ENOMEM,
+              "未映射范围 -> ENOMEM");
+    }
+    TEST_DONE();
+}
+
+/* ===== F. MADV_DONTNEED shared 文件后备 -> 从后备重读(非零), 区别于匿名得零页 ===== */
+static int test_dontneed_file_backed(void)
+{
+    TEST_START("F. MADV_DONTNEED shared 文件后备 -> 重访问从后备重读");
+    int fd = -1;
+    void *p = memfd_shared_map(&fd, 0x3C);
+    if (!p) { CHECK(0, "memfd 前置"); TEST_DONE(); }
+    CHECK(((volatile unsigned char *)p)[0] == 0x3C, "DONTNEED 前有数据 0x3C");
+    CHECK(madvise(p, (size_t)PS, MADV_DONTNEED) == 0,
+          "MADV_DONTNEED shared 文件后备 -> 成功");
+    /* man: shared 文件后备下 DONTNEED 后重访问从后备重填(非零), 匿名才得零页 */
+    int same = 1;
+    for (long i = 0; i < PS; i++) {
+        if (((volatile unsigned char *)p)[i] != 0x3C) { same = 0; break; }
+    }
+    CHECK(same, "MADV_DONTNEED 后 shared 映射从后备重读原值 0x3C(非零页)");
+    munmap(p, (size_t)PS);
+    close(fd);
+    TEST_DONE();
+}
+
+/* ===== G. 合法但 no-op 的 advice hint 逐一返回 0 ===== */
+static int test_noop_advice(void)
+{
+    TEST_START("G. 合法 no-op advice hint -> 0");
+    void *p = mmap(NULL, (size_t)PS, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { CHECK(0, "mmap"); TEST_DONE(); }
+    memset(p, 0x77, (size_t)PS);
+
+    /* man: 这些 hint 不改变语义, 合法映射上一律返回 0。与"非法 advice -> EINVAL"
+     * 形成对照, 防白名单误删回归无法捕获。 */
+    CHECK(madvise(p, (size_t)PS, MADV_NORMAL) == 0, "MADV_NORMAL -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_RANDOM) == 0, "MADV_RANDOM -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_SEQUENTIAL) == 0, "MADV_SEQUENTIAL -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_WILLNEED) == 0, "MADV_WILLNEED -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_DONTFORK) == 0, "MADV_DONTFORK -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_DOFORK) == 0, "MADV_DOFORK -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_HUGEPAGE) == 0, "MADV_HUGEPAGE -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_NOHUGEPAGE) == 0, "MADV_NOHUGEPAGE -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_DONTDUMP) == 0, "MADV_DONTDUMP -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_DODUMP) == 0, "MADV_DODUMP -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_COLD) == 0, "MADV_COLD -> 0");
+    CHECK(madvise(p, (size_t)PS, MADV_PAGEOUT) == 0, "MADV_PAGEOUT -> 0");
+
+    CHECK(*(volatile unsigned char *)p == 0x77, "no-op hint 后内容不变(0x77 持久)");
+    munmap(p, (size_t)PS);
+    TEST_DONE();
+}
 
 int main(void)
 {
-    TEST_START("madvise");
-
-    long pagesize = sysconf(_SC_PAGESIZE);
-    CHECK(pagesize > 0, "sysconf _SC_PAGESIZE");
-
-    /* 分配一页用于后续测试 */
-    void *page = mmap(NULL, (size_t)pagesize, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(page != MAP_FAILED, "mmap 分配一页");
-
-    /* 1. happy path: MADV_NORMAL 合法映射 → 0 */
-    CHECK_RET(madvise(page, (size_t)pagesize, MADV_NORMAL), 0,
-              "madvise MADV_NORMAL 合法映射");
-
-    /* 2. 非法 advice 值 → EINVAL
-     *    0x12345 不在任何已定义的 MADV_* 常量里。 */
-    CHECK_ERR(madvise(page, (size_t)pagesize, 0x12345),
-              EINVAL,
-              "madvise 非法 advice → EINVAL");
-
-    /* 3. addr 非页对齐 → EINVAL */
-    CHECK_ERR(madvise((char *)page + 1, (size_t)pagesize, MADV_NORMAL),
-              EINVAL,
-              "madvise addr 未页对齐 → EINVAL");
-
-    /* 4. 已 munmap 的区间 + MADV_DONTNEED → ENOMEM
-     *    man 2 madvise: "Addresses in the specified range are not currently
-     *    mapped, or are outside the address space of the process." */
-    void *gone = mmap(NULL, (size_t)pagesize, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(gone != MAP_FAILED, "mmap 另一页用于测 ENOMEM");
-    CHECK_RET(munmap(gone, (size_t)pagesize), 0, "munmap 释放该页");
-    CHECK_ERR(madvise(gone, (size_t)pagesize, MADV_DONTNEED),
-              ENOMEM,
-              "madvise 未映射区间 MADV_DONTNEED → ENOMEM");
-
-    munmap(page, (size_t)pagesize);
-
-    TEST_DONE();
+    setvbuf(stdout, NULL, _IONBF, 0);
+    signal(SIGALRM, alarm_handler);
+    alarm(60);
+    PS = sysconf(_SC_PAGESIZE);
+    int fail = 0;
+    fail |= test_madv_free_anon();
+    fail |= test_madv_free_errno();
+    fail |= test_madv_remove_anon();
+    fail |= test_madv_remove_shmem();
+    fail |= test_dontneed_and_errno();
+    fail |= test_dontneed_file_backed();
+    fail |= test_noop_advice();
+    printf("\n==== test-madvise 汇总: %s ====\n", fail ? "FAIL" : "PASS");
+    return fail;
 }

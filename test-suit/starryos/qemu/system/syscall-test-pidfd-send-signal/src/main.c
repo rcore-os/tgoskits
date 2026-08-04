@@ -3,9 +3,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -54,6 +56,95 @@ static int x_pidfd_open(pid_t pid, unsigned int flags)
 static int x_pidfd_send_signal(int pidfd, int sig, void *info, unsigned int flags)
 {
     return (int)syscall(__NR_pidfd_send_signal, pidfd, sig, info, flags);
+}
+
+static int epoll_pidfd(int pidfd, unsigned int interests,
+                       unsigned int *ready_events)
+{
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd < 0) {
+        return -1;
+    }
+
+    struct epoll_event event = {
+        .events = interests,
+        .data.fd = pidfd,
+    };
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, pidfd, &event) != 0) {
+        close(epfd);
+        return -1;
+    }
+
+    int ready = epoll_wait(epfd, &event, 1, 0);
+    if (ready == 1) {
+        *ready_events = event.events;
+    }
+    close(epfd);
+    return ready;
+}
+
+struct pidfd_hup_wait {
+    int pidfd;
+    int ready_pipe[2];
+    int result;
+    unsigned int ready_events;
+};
+
+static void *wait_for_pidfd_hup(void *arg)
+{
+    struct pidfd_hup_wait *wait = arg;
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd < 0) {
+        wait->result = -1;
+        return NULL;
+    }
+
+    struct epoll_event event = {
+        .events = EPOLLHUP,
+        .data.fd = wait->pidfd,
+    };
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, wait->pidfd, &event) != 0) {
+        close(epfd);
+        wait->result = -1;
+        return NULL;
+    }
+
+    if (write(wait->ready_pipe[1], "x", 1) != 1) {
+        close(epfd);
+        wait->result = -1;
+        return NULL;
+    }
+
+    wait->result = epoll_wait(epfd, &event, 1, 2000);
+    if (wait->result == 1) {
+        wait->ready_events = event.events;
+    }
+    close(epfd);
+    return NULL;
+}
+
+static int wait_for_zombie_without_reaping(pid_t child, int expected_status)
+{
+    siginfo_t info;
+
+    for (int i = 0; i < 3000; i++) {
+        memset(&info, 0, sizeof(info));
+        if (syscall(SYS_waitid, P_PID, child, &info,
+                    WEXITED | WNOWAIT | WNOHANG, NULL) != 0) {
+            return -1;
+        }
+        if (info.si_pid == child) {
+            if (info.si_code != CLD_EXITED || info.si_status != expected_status) {
+                errno = EPROTO;
+                return -1;
+            }
+            return 0;
+        }
+        usleep(1000);
+    }
+
+    errno = ETIMEDOUT;
+    return -1;
 }
 
 /* Child blocks on sync[0] until parent writes one byte to sync[1]. */
@@ -336,9 +427,9 @@ static void test_send_signal_null_info_fills_pid(void)
     block_usr1();
 }
 
-static void test_send_signal_zero_probes(void)
+static void test_send_signal_zombie_identity(void)
 {
-    printf("--- pidfd_send_signal signo=0 探活 ---\n");
+    printf("--- pidfd_send_signal zombie identity 生命周期 ---\n");
 
     int pfd = x_pidfd_open(getpid(), 0);
     CHECK(pfd >= 0, "pidfd_open 成功");
@@ -353,22 +444,95 @@ static void test_send_signal_zero_probes(void)
         return;
     }
     if (child == 0) {
-        _exit(0);
+        _exit(23);
     }
 
-    for (int i = 0; i < 1000 && kill(child, 0) != 0; i++) {
-        usleep(1000);
+    int zombie_wait = wait_for_zombie_without_reaping(child, 23);
+    CHECK_RET(zombie_wait, 0, "waitid(WNOWAIT) 确认 zombie 且不 reap");
+    if (zombie_wait != 0) {
+        waitpid(child, NULL, 0);
+        return;
     }
-    CHECK(kill(child, 0) == 0, "子进程 zombie 未 reap");
 
     pfd = x_pidfd_open(child, 0);
-    if (pfd >= 0) {
-        CHECK_RET(x_pidfd_send_signal(pfd, 0, NULL, 0), 0, "zombie signo=0 探活");
-        close(pfd);
+    CHECK(pfd >= 0, "未 reap zombie 的 pidfd_open 成功");
+    if (pfd < 0) {
+        waitpid(child, NULL, 0);
+        return;
+    }
+
+    struct pollfd pollfd = {
+        .fd = pfd,
+        .events = POLLIN | POLLRDNORM | POLLHUP,
+    };
+    CHECK_RET(poll(&pollfd, 1, 0), 1, "未 reap zombie 的 pidfd 已就绪");
+    CHECK((pollfd.revents & (POLLIN | POLLRDNORM)) ==
+              (POLLIN | POLLRDNORM),
+          "未 reap zombie 返回 POLLIN|POLLRDNORM");
+    CHECK((pollfd.revents & POLLHUP) == 0, "未 reap zombie 不返回 POLLHUP");
+    unsigned int epoll_events = 0;
+    CHECK_RET(epoll_pidfd(pfd, EPOLLRDNORM, &epoll_events), 1,
+              "EPOLLRDNORM 单独监听未 reap zombie");
+    CHECK((epoll_events & EPOLLRDNORM) != 0,
+          "未 reap zombie 的 epoll 结果包含 EPOLLRDNORM");
+
+    CHECK_RET(x_pidfd_send_signal(pfd, 0, NULL, 0), 0,
+              "未 reap zombie 的 signo=0 探活成功");
+    CHECK_RET(x_pidfd_send_signal(pfd, SIGUSR1, NULL, 0), 0,
+              "未 reap zombie 接受非零信号并保持退出状态");
+    CHECK_RET(wait_for_zombie_without_reaping(child, 23), 0,
+              "非零信号不改变 zombie 的原退出状态");
+
+    struct pidfd_hup_wait hup_wait = {
+        .pidfd = pfd,
+        .result = -1,
+        .ready_events = 0,
+    };
+    int hup_pipe = pipe(hup_wait.ready_pipe);
+    CHECK_RET(hup_pipe, 0, "创建 pidfd reap 通知同步管道");
+    pthread_t hup_thread;
+    int hup_thread_started = -1;
+    if (hup_pipe == 0) {
+        hup_thread_started =
+            pthread_create(&hup_thread, NULL, wait_for_pidfd_hup, &hup_wait);
+        CHECK_RET(hup_thread_started, 0, "启动 EPOLLHUP 等待线程");
+        if (hup_thread_started == 0) {
+            char ready;
+            CHECK_RET(read(hup_wait.ready_pipe[0], &ready, 1), 1,
+                      "EPOLLHUP waiter 已完成注册");
+        }
     }
 
     int status = 0;
-    waitpid(child, &status, 0);
+    CHECK_RET(waitpid(child, &status, 0), child, "waitpid 唯一 reap zombie");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 23, "reap 返回原退出状态");
+    if (hup_thread_started == 0) {
+        CHECK_RET(pthread_join(hup_thread, NULL), 0, "等待 EPOLLHUP waiter 完成");
+        CHECK_RET(hup_wait.result, 1, "reap 唤醒已有 pidfd 的 EPOLLHUP waiter");
+        CHECK((hup_wait.ready_events & EPOLLHUP) != 0,
+              "reap 唤醒结果包含 EPOLLHUP");
+    }
+    if (hup_pipe == 0) {
+        close(hup_wait.ready_pipe[0]);
+        close(hup_wait.ready_pipe[1]);
+    }
+    pollfd.revents = 0;
+    CHECK_RET(poll(&pollfd, 1, 0), 1, "reap 后已有 pidfd 仍为终止态");
+    CHECK((pollfd.revents & (POLLIN | POLLRDNORM | POLLHUP)) ==
+              (POLLIN | POLLRDNORM | POLLHUP),
+          "reap 后已有 pidfd 返回 POLLIN|POLLRDNORM|POLLHUP");
+    epoll_events = 0;
+    CHECK_RET(epoll_pidfd(pfd, EPOLLRDNORM, &epoll_events), 1,
+              "EPOLLRDNORM 单独监听 reap 后 pidfd");
+    CHECK((epoll_events & (EPOLLRDNORM | EPOLLHUP)) ==
+              (EPOLLRDNORM | EPOLLHUP),
+          "reap 后 pidfd 的 epoll 结果包含 EPOLLRDNORM|EPOLLHUP");
+    CHECK_ERR(x_pidfd_send_signal(pfd, 0, NULL, 0), ESRCH,
+              "已有 pidfd 在 reap 后 signo=0 -> ESRCH");
+    CHECK_ERR(x_pidfd_send_signal(pfd, SIGUSR1, NULL, 0), ESRCH,
+              "已有 pidfd 在 reap 后 SIGUSR1 -> ESRCH");
+    close(pfd);
+
     errno = 0;
     pfd = x_pidfd_open(child, 0);
     CHECK(pfd == -1 && errno == ESRCH, "reap 后 pidfd_open -> ESRCH");
@@ -513,7 +677,7 @@ int main(void)
     test_send_signal_valid_info();
     test_send_signal_default_self();
     test_send_signal_null_info_fills_pid();
-    test_send_signal_zero_probes();
+    test_send_signal_zombie_identity();
     test_send_signal_flag_thread_with_thread_pidfd();
     test_send_signal_thread_pidfd_thread_group_flag();
 

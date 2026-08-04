@@ -5,6 +5,9 @@ extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
+
 pub use irq_framework::{IrqAffinity, IrqError, IrqId};
 pub use rdif_base::DriverGeneric;
 

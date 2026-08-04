@@ -149,6 +149,22 @@ impl PreparedDma {
         self.buffer
     }
 
+    /// Returns backing for a request rejected before hardware submission.
+    ///
+    /// This is not request cancellation: callers may use it only while the
+    /// prepared buffer has never been transferred to device ownership.
+    pub fn complete_without_device(self) -> CompletedDma {
+        if matches!(
+            self.buffer.direction(),
+            DmaDirection::FromDevice | DmaDirection::Bidirectional
+        ) {
+            self.buffer.complete_for_cpu_all();
+        }
+        CompletedDma {
+            buffer: self.buffer,
+        }
+    }
+
     /// # Safety
     ///
     /// The caller must start hardware ownership using this prepared backing

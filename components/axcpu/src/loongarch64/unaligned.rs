@@ -9,39 +9,167 @@ use crate::{GeneralRegisters, TrapFrame};
 core::arch::global_asm!(include_asm_macros!(), include_str!("unaligned.S"));
 
 unsafe extern "C" {
-    fn _unaligned_read(addr: u64, value: &mut u64, n: u64, symbol: bool) -> i32;
-    fn _unaligned_write(addr: u64, value: u64, n: u64) -> i32;
+    fn _unaligned_read(
+        addr: u64,
+        value: &mut u64,
+        n: u64,
+        symbol: bool,
+        fault_addr: &mut u64,
+    ) -> i32;
+    fn _unaligned_write(addr: u64, value: u64, n: u64, fault_addr: &mut u64) -> i32;
 }
 
-/// Error type for unaligned access operations.
-#[derive(Copy, Eq, PartialEq, Clone, Debug)]
-pub struct UnalignedError {
-    addr: u64,
-    n: Option<u64>,
+/// The memory access performed by an emulated unaligned instruction.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnalignedAccessType {
+    /// A load from memory.
+    Read,
+    /// A store to memory.
+    Write,
+}
+
+/// A decoded LoongArch unaligned memory operation.
+#[derive(Debug)]
+pub struct UnalignedAccess {
+    address: u64,
+    size: u8,
+    access_type: UnalignedAccessType,
+    register: usize,
+    register_file: RegisterFile,
+    signed: bool,
+}
+
+impl UnalignedAccess {
+    /// Returns the first byte address of the memory operation.
+    pub const fn address(&self) -> u64 {
+        self.address
+    }
+
+    /// Returns the number of bytes accessed by the instruction.
+    pub const fn size(&self) -> usize {
+        self.size as usize
+    }
+
+    /// Returns whether the instruction reads or writes memory.
+    pub const fn access_type(&self) -> UnalignedAccessType {
+        self.access_type
+    }
+
+    const fn page_fault(&self, fault_address: u64) -> UnalignedError {
+        UnalignedError::PageFault(UnalignedPageFault {
+            fault_address,
+            access_address: self.address,
+            size: self.size,
+            access_type: self.access_type,
+        })
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum RegisterFile {
+    General,
+    FloatingPoint,
+}
+
+/// A page fault encountered while emulating an unaligned memory operation.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct UnalignedPageFault {
+    fault_address: u64,
+    access_address: u64,
+    size: u8,
+    access_type: UnalignedAccessType,
+}
+
+impl UnalignedPageFault {
+    /// Returns the exact byte address whose memory operation faulted.
+    pub const fn fault_address(&self) -> u64 {
+        self.fault_address
+    }
+
+    /// Returns the first byte address of the emulated operation.
+    pub const fn access_address(&self) -> u64 {
+        self.access_address
+    }
+
+    /// Returns the total size of the emulated operation.
+    pub const fn size(&self) -> usize {
+        self.size as usize
+    }
+
+    /// Returns whether the fault was caused by a read or write.
+    pub const fn access_type(&self) -> UnalignedAccessType {
+        self.access_type
+    }
+}
+
+/// Error returned while decoding or emulating an unaligned instruction.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnalignedError {
+    /// A byte access faulted and must be classified by the owning OS address space.
+    PageFault(UnalignedPageFault),
+    /// The faulting instruction is not supported by the software emulator.
+    UnsupportedInstruction {
+        /// The unaligned address reported by the CPU.
+        address: u64,
+        /// The instruction word that could not be decoded.
+        instruction: u32,
+    },
 }
 
 impl fmt::Display for UnalignedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(n) = self.n {
-            write!(f, "unaligned access at {:#x} (n={})", self.addr, n)
-        } else {
-            write!(f, "unaligned access at {:#x} (unknown op)", self.addr)
+        match self {
+            Self::PageFault(fault) => write!(
+                f,
+                "unaligned {:?} page fault at {:#x} while accessing {:#x} (n={})",
+                fault.access_type, fault.fault_address, fault.access_address, fault.size,
+            ),
+            Self::UnsupportedInstruction {
+                address,
+                instruction,
+            } => write!(
+                f,
+                "unsupported unaligned instruction {instruction:#010x} at {address:#x}"
+            ),
         }
     }
 }
 
 impl core::error::Error for UnalignedError {}
 
-fn unaligned_read(addr: u64, value: &mut u64, n: u64, symbol: bool) -> Result<(), UnalignedError> {
-    if unsafe { _unaligned_read(addr, value, n, symbol) } == -1 {
-        return Err(UnalignedError { addr, n: Some(n) });
+fn unaligned_read(
+    access: &UnalignedAccess,
+    value: &mut u64,
+    symbol: bool,
+) -> Result<(), UnalignedError> {
+    let mut fault_address = access.address;
+    if unsafe {
+        _unaligned_read(
+            access.address,
+            value,
+            access.size.into(),
+            symbol,
+            &mut fault_address,
+        )
+    } == -1
+    {
+        return Err(access.page_fault(fault_address));
     }
     Ok(())
 }
 
-fn unaligned_write(addr: u64, value: u64, n: u64) -> Result<(), UnalignedError> {
-    if unsafe { _unaligned_write(addr, value, n) } == -1 {
-        return Err(UnalignedError { addr, n: Some(n) });
+fn unaligned_write(access: &UnalignedAccess, value: u64) -> Result<(), UnalignedError> {
+    let mut fault_address = access.address;
+    if unsafe {
+        _unaligned_write(
+            access.address,
+            value,
+            access.size.into(),
+            &mut fault_address,
+        )
+    } == -1
+    {
+        return Err(access.page_fault(fault_address));
     }
     Ok(())
 }
@@ -545,87 +673,152 @@ const FSTXD_OP: u32 = 0x7078;
 const FLDXS_OP: u32 = 0x7060;
 const FLDXD_OP: u32 = 0x7068;
 
+fn decode_unaligned_access(
+    instruction: u32,
+    address: u64,
+) -> Result<UnalignedAccess, UnalignedError> {
+    let register = (instruction & 0x1f) as usize;
+    let op22 = instruction >> 22;
+    let op24 = instruction >> 24;
+    let op15 = instruction >> 15;
+
+    let (access_type, size, register_file, signed) =
+        if op22 == LDD_OP || op24 == LDPTRD_OP || op15 == LDXD_OP {
+            (UnalignedAccessType::Read, 8, RegisterFile::General, true)
+        } else if op22 == LDW_OP || op24 == LDPTRW_OP || op15 == LDXW_OP {
+            (UnalignedAccessType::Read, 4, RegisterFile::General, true)
+        } else if op22 == LDWU_OP || op15 == LDXWU_OP {
+            (UnalignedAccessType::Read, 4, RegisterFile::General, false)
+        } else if op22 == LDH_OP || op15 == LDXH_OP {
+            (UnalignedAccessType::Read, 2, RegisterFile::General, true)
+        } else if op22 == LDHU_OP || op15 == LDXHU_OP {
+            (UnalignedAccessType::Read, 2, RegisterFile::General, false)
+        } else if op22 == STD_OP || op24 == STPTRD_OP || op15 == STXD_OP {
+            (UnalignedAccessType::Write, 8, RegisterFile::General, false)
+        } else if op22 == STW_OP || op24 == STPTRW_OP || op15 == STXW_OP {
+            (UnalignedAccessType::Write, 4, RegisterFile::General, false)
+        } else if op22 == STH_OP || op15 == STXH_OP {
+            (UnalignedAccessType::Write, 2, RegisterFile::General, false)
+        } else if op22 == FLDD_OP || op15 == FLDXD_OP {
+            (
+                UnalignedAccessType::Read,
+                8,
+                RegisterFile::FloatingPoint,
+                true,
+            )
+        } else if op22 == FLDS_OP || op15 == FLDXS_OP {
+            (
+                UnalignedAccessType::Read,
+                4,
+                RegisterFile::FloatingPoint,
+                true,
+            )
+        } else if op22 == FSTD_OP || op15 == FSTXD_OP {
+            (
+                UnalignedAccessType::Write,
+                8,
+                RegisterFile::FloatingPoint,
+                false,
+            )
+        } else if op22 == FSTS_OP || op15 == FSTXS_OP {
+            (
+                UnalignedAccessType::Write,
+                4,
+                RegisterFile::FloatingPoint,
+                false,
+            )
+        } else {
+            return Err(UnalignedError::UnsupportedInstruction {
+                address,
+                instruction,
+            });
+        };
+
+    Ok(UnalignedAccess {
+        address,
+        size,
+        access_type,
+        register,
+        register_file,
+        signed,
+    })
+}
+
 impl TrapFrame {
     /// Emulates an unaligned memory access triggered by a trap.
     ///
     /// # Safety
+    ///
     /// This function uses raw pointers and inline assembly to handle unaligned memory accesses,
     /// so it must only be called in a valid trap context with a properly initialized TrapFrame.
     pub unsafe fn emulate_unaligned(&mut self) -> Result<(), UnalignedError> {
         unsafe { self.emulate_unaligned_at(badv::read().vaddr() as u64) }
     }
 
+    /// Decodes the unaligned memory operation at the saved instruction pointer.
+    ///
+    /// The returned token describes the complete memory range without accessing
+    /// it, allowing an OS to validate or populate the range before a store.
+    ///
+    /// # Safety
+    ///
+    /// The saved instruction pointer must identify a readable LoongArch
+    /// instruction in a valid trap context.
+    pub unsafe fn decode_unaligned_access_at(
+        &self,
+        fault_addr: u64,
+    ) -> Result<UnalignedAccess, UnalignedError> {
+        let instruction = unsafe { core::ptr::read(self.era as *const u32) };
+        decode_unaligned_access(instruction, fault_addr)
+    }
+
     /// Emulates an unaligned memory access using the fault address captured at trap entry.
     ///
     /// # Safety
+    ///
     /// This function uses raw pointers and inline assembly to handle unaligned memory accesses,
     /// so it must only be called in a valid trap context with a properly initialized TrapFrame.
     pub unsafe fn emulate_unaligned_at(&mut self, fault_addr: u64) -> Result<(), UnalignedError> {
+        let access = unsafe { self.decode_unaligned_access_at(fault_addr)? };
+        unsafe { self.emulate_unaligned_access(access) }
+    }
+
+    /// Executes a previously decoded unaligned memory operation.
+    ///
+    /// The saved instruction pointer advances only after the complete operation
+    /// succeeds. A read commits its destination register only after every byte
+    /// has been loaded.
+    ///
+    /// # Safety
+    ///
+    /// `access` must have been decoded from this trap frame at the current saved
+    /// instruction pointer. The caller owns address-space policy; before a
+    /// write, it must validate the complete range if a fault must not leave a
+    /// partial store.
+    pub unsafe fn emulate_unaligned_access(
+        &mut self,
+        access: UnalignedAccess,
+    ) -> Result<(), UnalignedError> {
         let mut value: u64 = 0;
-
-        let badv = fault_addr;
-        let badi = unsafe { core::ptr::read(self.era as *const u32) };
-        let rd = (badi & 0x1f) as usize;
-        let op22 = badi >> 22;
-        let op24 = badi >> 24;
-        let op15 = badi >> 15;
-
         let regs = unsafe {
             core::mem::transmute::<&mut GeneralRegisters, &mut [usize; 32]>(&mut self.regs)
         };
 
-        if (badi >> 22) == LDD_OP || (badi >> 24) == LDPTRD_OP || (badi >> 15) == LDXD_OP {
-            unaligned_read(badv, &mut value, 8, true)?;
-            regs[rd] = value as usize;
-        } else if (badi >> 22) == LDW_OP || (badi >> 24) == LDPTRW_OP || (badi >> 15) == LDXW_OP {
-            unaligned_read(badv, &mut value, 4, true)?;
-            regs[rd] = value as usize;
-        } else if (badi >> 22) == LDWU_OP || (badi >> 15) == LDXWU_OP {
-            unaligned_read(badv, &mut value, 4, false)?;
-            regs[rd] = value as usize;
-        } else if (badi >> 22) == LDH_OP || (badi >> 15) == LDXH_OP {
-            unaligned_read(badv, &mut value, 2, true)?;
-            regs[rd] = value as usize;
-        } else if (badi >> 22) == LDHU_OP || (badi >> 15) == LDXHU_OP {
-            unaligned_read(badv, &mut value, 2, false)?;
-            regs[rd] = value as usize;
-        } else if (badi >> 22) == STD_OP || (badi >> 24) == STPTRD_OP || (badi >> 15) == STXD_OP {
-            value = regs[rd] as u64;
-            unaligned_write(badv, value, 8)?;
-        } else if (badi >> 22) == STW_OP || (badi >> 24) == STPTRW_OP || (badi >> 15) == STXW_OP {
-            value = regs[rd] as u64;
-            unaligned_write(badv, value, 4)?;
-        } else if (badi >> 22) == STH_OP || (badi >> 15) == STXH_OP {
-            value = regs[rd] as u64;
-            unaligned_write(badv, value, 2)?;
-        } else if (badi >> 22) == FLDD_OP || (badi >> 15) == FLDXD_OP {
-            unaligned_read(badv, &mut value, 8, true)?;
-            write_fpr(rd, value);
-        } else if (badi >> 22) == FLDS_OP || (badi >> 15) == FLDXS_OP {
-            unaligned_read(badv, &mut value, 4, true)?;
-            write_fpr(rd, value);
-        } else if (badi >> 22) == FSTD_OP || (badi >> 15) == FSTXD_OP {
-            value = read_fpr(rd);
-            unaligned_write(badv, value, 8)?;
-        } else if (badi >> 22) == FSTS_OP || (badi >> 15) == FSTXS_OP {
-            value = read_fpr(rd);
-            unaligned_write(badv, value, 4)?;
-        } else {
-            log::warn!(
-                "loongarch64 unaligned unknown op: era={:#x}, badv={:#x}, badi={:#010x}, \
-                 op22={:#x}, op24={:#x}, op15={:#x}, rd={}",
-                self.era,
-                badv,
-                badi,
-                op22,
-                op24,
-                op15,
-                rd,
-            );
-            return Err(UnalignedError {
-                addr: badv,
-                n: None,
-            });
+        match access.access_type {
+            UnalignedAccessType::Read => {
+                unaligned_read(&access, &mut value, access.signed)?;
+                match access.register_file {
+                    RegisterFile::General => regs[access.register] = value as usize,
+                    RegisterFile::FloatingPoint => write_fpr(access.register, value),
+                }
+            }
+            UnalignedAccessType::Write => {
+                value = match access.register_file {
+                    RegisterFile::General => regs[access.register] as u64,
+                    RegisterFile::FloatingPoint => read_fpr(access.register),
+                };
+                unaligned_write(&access, value)?;
+            }
         }
 
         self.era += 4;

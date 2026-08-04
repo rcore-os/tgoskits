@@ -64,7 +64,6 @@ graph LR
 - `axbacktrace`
 - `ax-cpu`
 - `ax-display`
-- `ax-dma`
 - `ax-driver`
 - `rdrive`
 - 另外还有 `52` 个同类项未在此展开

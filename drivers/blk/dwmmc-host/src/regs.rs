@@ -6,10 +6,9 @@
 //! Linux `dw_mmc` driver and vendor SDK headers can be cross-referenced
 //! without translation.
 //!
-//! The data FIFO is *not* part of [`RegisterBlock`]: different DW_mmc
-//! variants place it at offset `0x100`, `0x200`, or `0x400`, and the
-//! host driver accesses it through a raw pointer offset chosen at
-//! construction time (see [`crate::host::DwMmc::new_with_fifo_offset`]).
+//! The data FIFO is intentionally not part of [`RegisterBlock`]. Production
+//! transfers are IDMAC-only, so variant-specific FIFO offsets never cross the
+//! portable driver boundary.
 
 use bitfield_struct::bitfield;
 use volatile::{VolatileFieldAccess, access::ReadOnly};

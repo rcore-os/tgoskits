@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.14...starry-process-v0.4.15) - 2026-08-03
+
+### Fixed
+
+- *(starry-task)* retain zombie PID identity through reap ([#1706](https://github.com/rcore-os/tgoskits/pull/1706))
+
 ## [0.4.14](https://github.com/rcore-os/tgoskits/compare/starry-process-v0.4.13...starry-process-v0.4.14) - 2026-07-08
 
 ### Other

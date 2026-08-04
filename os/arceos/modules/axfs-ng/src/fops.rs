@@ -175,7 +175,7 @@ impl File {
     }
 
     pub fn truncate(&self, size: u64) -> AxResult {
-        self.inner.location().entry().as_file()?.set_len(size)?;
+        self.inner.set_len(size)?;
         Ok(())
     }
 

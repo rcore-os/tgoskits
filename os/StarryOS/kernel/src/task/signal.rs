@@ -17,7 +17,7 @@ use starry_vm::vm_read_slice;
 
 use super::{
     AsThread, ProcessData, Thread, do_exit, get_process_data, get_process_group, get_task,
-    is_zombie_pid,
+    is_zombie_pid, signal_publication::publish_before_release,
 };
 
 /// Information needed to restart a syscall if SA_RESTART applies.
@@ -206,7 +206,8 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 }
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
-    current().clear_interrupt();
+    let stale_interrupts = current().interrupt_snapshot();
+    current().acknowledge_interrupt(stale_interrupts);
     let wait_result = block_on(interruptible(poll_fn(|cx| {
         if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
             Poll::Ready(())
@@ -561,7 +562,6 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
             Signo::SIGCONT if proc_data.set_job_continued() => {
                 notify_parent_job_change(&proc_data, CLD_CONTINUED as i32, Signo::SIGCONT as i32);
             }
-            Signo::SIGKILL => proc_data.clear_job_stop_for_kill(),
             _ => {}
         }
     }
@@ -569,36 +569,17 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
     if let Some(sig) = sig {
         let signo = sig.signo();
         info!("Send signal {signo:?} to process {pid}");
-        if signo == Signo::SIGKILL && proc_data.ptrace_stop_signo().is_some() {
-            proc_data.clear_ptrace_stop();
-        }
-        if let Some(tid) = proc_data.signal.send_signal(sig) {
-            // A thread was found that doesn't have the signal blocked.
-            // Mark it interrupted so blocking syscalls wrapped by
-            // `future::interruptible` can return EINTR promptly.
-            if let Ok(task) = get_task(tid) {
-                task.interrupt();
-            }
-        } else {
-            // All threads have this signal blocked — the signal is now pending
-            // at the process level.  Only wake threads that are sleeping
-            // in rt_sigtimedwait/sigwaitinfo waiting for this specific signal:
-            // those are the only threads that can dequeue a blocked signal.
-            // Waking other threads (e.g. ones blocked in waitpid) would cause
-            // spurious EINTR.
-            for tid in proc_data.proc.threads() {
-                if let Ok(task) = get_task(tid)
-                    && task
-                        .as_thread()
-                        .signal
-                        .sigwait_set
-                        .lock()
-                        .is_some_and(|s| s.has(signo))
-                {
-                    ax_task::wake_task(&task);
+        let ptrace_stop_tid = (signo == Signo::SIGKILL)
+            .then(|| proc_data.selected_ptrace_stop_tid())
+            .flatten();
+        let _wake_tid = publish_before_release(
+            || publish_process_signal(&proc_data, sig, ptrace_stop_tid),
+            || {
+                if signo == Signo::SIGKILL {
+                    proc_data.clear_job_stop_for_kill();
                 }
-            }
-        }
+            },
+        );
         // Wake signalfd waiters on every thread: even blocked process-level
         // signals must be visible from signalfd in an epoll event loop.
         for tid in proc_data.proc.threads() {
@@ -611,6 +592,48 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
     }
 
     Ok(())
+}
+
+fn publish_process_signal(
+    proc_data: &ProcessData,
+    sig: SignalInfo,
+    ptrace_stop_tid: Option<u32>,
+) -> Option<u32> {
+    let signo = sig.signo();
+    let wake_tid = proc_data.signal.send_signal(sig);
+    if let Some(tid) = wake_tid
+        && let Ok(task) = get_task(tid)
+    {
+        // The pending signal is visible before the direct scheduler wake.
+        task.interrupt();
+    }
+    if let Some(tid) = ptrace_stop_tid
+        && Some(tid) != wake_tid
+        && let Ok(task) = get_task(tid)
+    {
+        // A fatal signal must abort the exact traced thread even when the
+        // process signal manager selected an unblocked sibling.
+        task.interrupt();
+    }
+    if wake_tid.is_none() {
+        // All threads have this signal blocked — the signal is now pending at
+        // the process level. Only wake threads that are sleeping in
+        // rt_sigtimedwait/sigwaitinfo for this signal; waking unrelated
+        // waitpid callers would cause spurious EINTR.
+        for tid in proc_data.proc.threads() {
+            if let Ok(task) = get_task(tid)
+                && task
+                    .as_thread()
+                    .signal
+                    .sigwait_set
+                    .lock()
+                    .is_some_and(|set| set.has(signo))
+            {
+                ax_task::wake_task(&task);
+            }
+        }
+    }
+    wake_tid
 }
 
 /// Sends a signal to a process group.

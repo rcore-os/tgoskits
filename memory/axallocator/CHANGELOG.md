@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6](https://github.com/rcore-os/tgoskits/compare/ax-allocator-v0.5.5...ax-allocator-v0.5.6) - 2026-08-03
+
+### Other
+
+- updated the following local packages: ax-errno
+
 ## [0.5.5](https://github.com/rcore-os/tgoskits/compare/ax-allocator-v0.5.4...ax-allocator-v0.5.5) - 2026-07-02
 
 ### Other

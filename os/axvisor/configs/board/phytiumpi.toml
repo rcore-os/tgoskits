@@ -1,5 +1,6 @@
 features = [
     "fs",
+    "ahci-fdt",
     "phytium-mci",
 ]
 log = "Info"

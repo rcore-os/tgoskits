@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.18...riscv_vcpu-v0.5.19) - 2026-07-23
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
 ## [0.5.18](https://github.com/rcore-os/tgoskits/compare/riscv_vcpu-v0.5.17...riscv_vcpu-v0.5.18) - 2026-07-10
 
 ### Other

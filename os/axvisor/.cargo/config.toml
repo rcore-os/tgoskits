@@ -1,3 +1,6 @@
+[alias]
+xtask = "run --package axvisor --bin xtask --features host-xtask --"
+
 include = [{path = "../../../.cargo/.config-local.toml", optional = true}]
 
 [net]
@@ -32,6 +35,3 @@ rustflags = [
 
 [target.'cfg(target_os = "none")']
 runner = "cargo osrun"
-
-[alias]
-xtask = "run --features host-xtask --bin xtask --"

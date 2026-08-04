@@ -1,6 +1,6 @@
 [package]
 name = "rdif-power"
-version = "0.8.0"
+version = "0.8.1"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true
@@ -10,5 +10,12 @@ keywords = ["os", "driver"]
 categories = ["embedded", "no-std"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

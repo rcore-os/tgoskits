@@ -216,41 +216,32 @@ impl FileNodeOps for Inode {
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> VfsResult<usize> {
-        {
-            let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            // Use inode-number-based write so open-unlinked regular files
-            // remain writable after their directory entry has been removed.
-            // Path-based write_file() fails with NotFound after unlink.
-            rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
-        }
-        self.fs.sync_to_disk()?;
+        let mut state = self.fs.lock();
+        let (fs, dev) = state.split();
+        // Use inode-number-based write so open-unlinked regular files remain
+        // writable after their directory entry has been removed. The modified
+        // rsext4 cache stays dirty until NodeOps::sync supplies the fsync
+        // durability boundary.
+        rsext4::write_inode_data(dev, fs, self.ino, offset, buf).map_err(into_vfs_err)?;
         Ok(buf.len())
     }
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
-        let length = {
-            let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
-            let length = inode.size();
-            rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
-            length
-        };
-        self.fs.sync_to_disk()?;
+        let mut state = self.fs.lock();
+        let (fs, dev) = state.split();
+        let inode = fs.get_inode_by_num(dev, self.ino).map_err(into_vfs_err)?;
+        let length = inode.size();
+        rsext4::write_inode_data(dev, fs, self.ino, length, buf).map_err(into_vfs_err)?;
         Ok((buf.len(), length + buf.len() as u64))
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
-        {
-            let mut state = self.fs.lock();
-            let (fs, dev) = state.split();
-            // An open-unlinked regular file stays alive by inode number, not by
-            // a directory entry.  set_len must operate on the inode directly
-            // because path re-resolution would fail after unlink.
-            rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)?;
-        }
-        self.fs.sync_to_disk()
+        let mut state = self.fs.lock();
+        let (fs, dev) = state.split();
+        // An open-unlinked regular file stays alive by inode number, not by a
+        // directory entry. Keep the size update dirty with the data; fsync
+        // flushes both through NodeOps::sync.
+        rsext4::truncate_inode(dev, fs, self.ino, len).map_err(into_vfs_err)
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
