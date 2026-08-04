@@ -84,6 +84,7 @@ fault_profile=none
 command_count=
 period_ms=100
 output_image=
+ivc_ack_timeout_ms=1000
 ivc_restart_previous_session=286331153
 ivc_restart_current_session=572662306
 ivc_restart_first_count=20
@@ -212,8 +213,9 @@ cleanup() {
     rm -f -- "$profile_file"
 }
 trap cleanup EXIT HUP INT TERM
-printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\nivc_restart_previous_session=%s\nivc_restart_current_session=%s\nivc_restart_first_count=%s\nivc_restart_ack_timeout_ms=%s\n' \
+printf 'ivc_mode=%s\nivc_backend=%s\nivc_fault_profile=%s\nivc_profile=%s\nivc_count=%s\nivc_period_ms=%s\nivc_ack_timeout_ms=%s\nivc_raw_csv=/var/lib/ivc/raw.csv\nivc_restart_previous_session=%s\nivc_restart_current_session=%s\nivc_restart_first_count=%s\nivc_restart_ack_timeout_ms=%s\n' \
     "$policy" "$backend" "$fault_profile" "$profile" "$command_count" "$period_ms" \
+    "$ivc_ack_timeout_ms" \
     "$ivc_restart_previous_session" "$ivc_restart_current_session" \
     "$ivc_restart_first_count" "$ivc_restart_ack_timeout_ms" \
     >"$profile_file"

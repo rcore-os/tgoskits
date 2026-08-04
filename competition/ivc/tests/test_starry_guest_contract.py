@@ -221,6 +221,18 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertLess(wait_marker, wait)
         self.assertLess(wait, first_request)
 
+    def test_physical_controller_timeout_covers_network_warmup(self) -> None:
+        builder = STARRY_ROOTFS_BUILD.read_text(encoding="utf-8")
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+
+        self.assertIn("ivc_ack_timeout_ms=1000", builder)
+        self.assertIn("ivc_ack_timeout_ms=%s", builder)
+        self.assertIn('[ "${ivc_ack_timeout_ms:-}" = 1000 ]', autorun)
+        self.assertEqual(
+            autorun.count('--ack-timeout-ms "$ivc_ack_timeout_ms"'),
+            1,
+        )
+
     def test_orangepi_guests_use_virtual_interrupt_delivery(self) -> None:
         for config_path in ORANGEPI_STARRY_CONFIGS:
             with self.subTest(config=config_path.name):

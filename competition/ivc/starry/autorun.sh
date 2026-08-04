@@ -42,6 +42,7 @@ esac
 case "${ivc_period_ms:-}" in
     ''|*[!0-9]*) fatal invalid-period ;;
 esac
+[ "${ivc_ack_timeout_ms:-}" = 1000 ] || fatal invalid-ack-timeout
 [ "${ivc_raw_csv:-}" = /var/lib/ivc/raw.csv ] || fatal invalid-raw-csv-path
 if [ "${ivc_fault_profile:-none}" = restart ]; then
     [ "${ivc_restart_previous_session:-}" = 286331153 ] \
@@ -171,7 +172,8 @@ if [ "${ivc_fault_profile:-none}" = restart ]; then
 elif /usr/local/bin/ivcproto controller \
     10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
     --backend "$ivc_backend" --raw-csv "$ivc_raw_csv" \
-    --fault-profile "${ivc_fault_profile:-none}"; then
+    --fault-profile "${ivc_fault_profile:-none}" \
+    --ack-timeout-ms "$ivc_ack_timeout_ms"; then
     result=0
 else
     result=$?
