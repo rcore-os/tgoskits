@@ -347,6 +347,47 @@ def matching_runtime_marker(console: str) -> tuple[str, str, int, int]:
     return api_version, driver_version, compact_sets, compact_sets
 
 
+def matching_handoff_markers(console: str) -> tuple[int, int]:
+    legacy_handoff = re.compile(
+        r"AXVISOR_RK3588_NPU_HANDOFF_READY cores=3 power_domains=3 clocks=8 "
+        r"resets=6 scmi_clock_id=6 scmi_rate_hz=200000000 host_submit=false"
+    )
+    legacy_copies = len(legacy_handoff.findall(console))
+    compact_contract = (
+        ("AXVISOR_RK3588_NPU_HANDOFF_READY", {}),
+        (
+            "AXVISOR_RK3588_NPU_RESOURCES",
+            {
+                "cores": "3",
+                "power_domains": "3",
+                "clocks": "8",
+                "resets": "6",
+            },
+        ),
+        (
+            "AXVISOR_RK3588_NPU_SCMI",
+            {"clock_id": "6", "rate_hz": "200000000"},
+        ),
+        (
+            "AXVISOR_RK3588_NPU_OWNERSHIP",
+            {"host_submit": "false"},
+        ),
+    )
+    compact_copies = [
+        sum(
+            all(fields.get(name) == value for name, value in expected.items())
+            for fields in marker_candidates(console, marker)
+        )
+        for marker, expected in compact_contract
+    ]
+    compact_sets = min(compact_copies)
+    reference.require(
+        legacy_copies > 0 or compact_sets > 0,
+        "NPU handoff marker is missing",
+    )
+    return legacy_copies, compact_sets
+
+
 def matching_result_marker(console: str) -> tuple[dict[str, str], int, int]:
     legacy_expected = {
         "status": "pass",
@@ -437,11 +478,7 @@ def validate_console(
     ):
         reference.require(forbidden not in console, f"console contains failure marker: {forbidden}")
 
-    handoff = re.compile(
-        r"AXVISOR_RK3588_NPU_HANDOFF_READY cores=3 power_domains=3 clocks=8 "
-        r"resets=6 scmi_clock_id=6 scmi_rate_hz=200000000 host_submit=false"
-    )
-    reference.require(handoff.search(console) is not None, "NPU handoff marker is missing")
+    legacy_handoff_copies, compact_handoff_sets = matching_handoff_markers(console)
     reference.require("NPU registered successfully" in console, "guest NPU registration is missing")
     for completed in range(1000, reference.EXPECTED_VECTORS + 1, 1000):
         reference.require(
@@ -521,10 +558,12 @@ def validate_console(
     return {
         "api_version": api_version,
         "begin": begin,
+        "compact_handoff_marker_sets": compact_handoff_sets,
         "compact_result_marker_sets": compact_result_marker_sets,
         "compact_runtime_marker_sets": compact_runtime_marker_sets,
         "driver_version": driver_version,
         "host_sync_marker_copies": host_sync_markers,
+        "legacy_handoff_marker_copies": legacy_handoff_copies,
         "legacy_pass_artifact_marker_copies": legacy_pass_artifact_copies,
         "legacy_result_marker_copies": legacy_result_marker_copies,
         "result": result,
@@ -657,6 +696,9 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             "warmup_vectors": int(console["result"]["warmup"]),
         },
         "console_evidence": {
+            "compact_handoff_marker_sets": console[
+                "compact_handoff_marker_sets"
+            ],
             "compact_result_marker_sets": console[
                 "compact_result_marker_sets"
             ],
@@ -666,6 +708,9 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             "host_sync_marker_copies": console["host_sync_marker_copies"],
             "legacy_pass_artifact_marker_copies": console[
                 "legacy_pass_artifact_marker_copies"
+            ],
+            "legacy_handoff_marker_copies": console[
+                "legacy_handoff_marker_copies"
             ],
             "legacy_result_marker_copies": console[
                 "legacy_result_marker_copies"

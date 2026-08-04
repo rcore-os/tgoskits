@@ -109,10 +109,31 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
             "SCMI_NPU_CLOCK_ID",
             "SCMI_NPU_CLOCK_RATE_HZ",
             "AXVISOR_RK3588_NPU_HANDOFF_READY",
+            "AXVISOR_RK3588_NPU_RESOURCES",
+            "AXVISOR_RK3588_NPU_SCMI",
+            "AXVISOR_RK3588_NPU_OWNERSHIP",
+            "report_rk3588_npu_handoff",
             "host_submit=false",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, source)
+
+    def test_handoff_evidence_is_redundant_and_paced_by_axvisor(self) -> None:
+        main_source = AXVISOR_MAIN.read_text(encoding="utf-8")
+
+        self.assertIn("NPU_HANDOFF_MARKER_COPIES: usize = 5", main_source)
+        self.assertIn("NPU_HANDOFF_MARKER_INTERVAL_MS: u64 = 100", main_source)
+        self.assertIn("write_rk3588_npu_handoff_markers", main_source)
+        self.assertIn("report_rk3588_npu_handoff", main_source)
+        self.assertRegex(
+            main_source,
+            re.compile(
+                r"write_rk3588_npu_handoff_markers\(\).*?"
+                r"std::thread::sleep\(\s*core::time::Duration::from_millis\(\s*"
+                r"NPU_HANDOFF_MARKER_INTERVAL_MS\s*,?\s*\)\s*\)",
+                re.DOTALL,
+            ),
+        )
 
     def test_smoke_build_enables_handoff_without_host_rknpu(self) -> None:
         with HOST_BUILD_CONFIG.open("rb") as source:

@@ -21,10 +21,10 @@ pub mod scmi;
 #[cfg(feature = "starfive-soc")]
 mod starfive;
 
-#[cfg(feature = "rk3588-npu-handoff")]
-pub use rockchip::require_rk3588_npu_handoff;
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{RockchipFdtPinctrlParser, RockchipPinCtrl};
+#[cfg(feature = "rk3588-npu-handoff")]
+pub use rockchip::{report_rk3588_npu_handoff, require_rk3588_npu_handoff};
 
 #[cfg(not(feature = "rockchip-soc"))]
 pub struct RockchipPinCtrl;

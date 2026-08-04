@@ -118,6 +118,7 @@ impl HostNoiseTask {
 }
 
 /// Writes the completed host-noise record into the durable host RT trace.
+#[cfg(feature = "rt-trace")]
 pub(crate) fn write_persisted_evidence(output: &mut impl Write) -> io::Result<()> {
     let report = LAST_REPORT.lock().clone();
     if let Some(report) = report {

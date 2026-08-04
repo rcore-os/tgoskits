@@ -38,6 +38,11 @@ mod manager;
 mod platform_irq;
 mod shell;
 
+#[cfg(feature = "rk3588-npu-handoff")]
+const NPU_HANDOFF_MARKER_COPIES: usize = 5;
+#[cfg(feature = "rk3588-npu-handoff")]
+const NPU_HANDOFF_MARKER_INTERVAL_MS: u64 = 100;
+
 /// Axvisor kernel entry point.
 ///
 /// The startup sequence is:
@@ -52,6 +57,8 @@ fn main() {
     info!("Starting virtualization...");
     #[cfg(feature = "rk3588-npu-handoff")]
     ax_driver::soc::require_rk3588_npu_handoff();
+    #[cfg(feature = "rk3588-npu-handoff")]
+    write_rk3588_npu_handoff_markers();
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
@@ -75,4 +82,18 @@ fn main() {
     info!("[OK] Default guest initialized");
 
     shell::console_init();
+}
+
+#[cfg(feature = "rk3588-npu-handoff")]
+fn write_rk3588_npu_handoff_markers() {
+    for copy_index in 0..NPU_HANDOFF_MARKER_COPIES {
+        ax_driver::soc::report_rk3588_npu_handoff();
+        if copy_index + 1 < NPU_HANDOFF_MARKER_COPIES {
+            // Early boot logs from multiple CPUs share this UART. Spacing the
+            // copies keeps a complete contract observable across a lossy burst.
+            std::thread::sleep(core::time::Duration::from_millis(
+                NPU_HANDOFF_MARKER_INTERVAL_MS,
+            ));
+        }
+    }
 }

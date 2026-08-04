@@ -25,6 +25,6 @@ mod npu_handoff;
 mod pinctrl;
 
 #[cfg(feature = "rk3588-npu-handoff")]
-pub use npu_handoff::require_rk3588_npu_handoff;
+pub use npu_handoff::{report_rk3588_npu_handoff, require_rk3588_npu_handoff};
 #[cfg(feature = "rockchip-soc")]
 pub use pinctrl::{RockchipFdtPinctrlParser, RockchipPinCtrl};

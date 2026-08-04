@@ -59,11 +59,36 @@ crate::model_register!(
 /// AxVisor calls this before it creates any guest so a missing node or failed
 /// power/clock/reset operation cannot degrade into a guest-visible timeout.
 pub fn require_rk3588_npu_handoff() {
+    assert_handoff_ready();
+    info!("AXVISOR_RK3588_NPU_HANDOFF_REQUIRED ready=true");
+}
+
+/// Report the validated handoff as short, independently recoverable markers.
+///
+/// The AxVisor runtime owns pacing and repetition because a portable driver
+/// capability must not depend on task scheduling or sleep primitives.
+pub fn report_rk3588_npu_handoff() {
+    assert_handoff_ready();
+    info!("AXVISOR_RK3588_NPU_HANDOFF_READY");
+    info!(
+        "AXVISOR_RK3588_NPU_RESOURCES cores={} power_domains={} clocks={} resets={}",
+        EXPECTED_CORE_REGIONS.len(),
+        EXPECTED_POWER_DOMAINS.len(),
+        EXPECTED_CLOCKS.len(),
+        EXPECTED_RESETS.len()
+    );
+    info!(
+        "AXVISOR_RK3588_NPU_SCMI clock_id={} rate_hz={}",
+        SCMI_NPU_CLOCK_ID, SCMI_NPU_CLOCK_RATE_HZ
+    );
+    info!("AXVISOR_RK3588_NPU_OWNERSHIP host_submit=false");
+}
+
+fn assert_handoff_ready() {
     assert!(
         HANDOFF_READY.load(Ordering::Acquire),
         "RK3588 NPU resources were not prepared for exclusive guest handoff"
     );
-    info!("AXVISOR_RK3588_NPU_HANDOFF_REQUIRED ready=true");
 }
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
