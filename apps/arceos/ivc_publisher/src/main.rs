@@ -69,7 +69,7 @@ mod publisher {
             println!("ivc publish failed: map shared page base={shm_base_gpa:#x}");
             return;
         };
-        region.initialize(demo_config::PUBLISHER_VM_ID, demo_config::CHANNEL_KEY);
+        region.initialize();
         let region: &'static IvcRegion = region;
         // SAFETY: this app is the only publisher side of this channel and
         // creates each endpoint exactly once; the producer moves into the
