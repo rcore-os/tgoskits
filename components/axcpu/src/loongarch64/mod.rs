@@ -15,5 +15,5 @@ pub(crate) use self::context::TrapFrame;
 pub use self::{
     context::{FpuState, GeneralRegisters, TaskContext, TrapFrame as UserRegisters},
     trap::KernelTrapFrame,
-    unaligned::UnalignedError,
+    unaligned::{UnalignedAccess, UnalignedAccessType, UnalignedError, UnalignedPageFault},
 };
