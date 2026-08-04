@@ -6,7 +6,41 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 
 use super::ProcessData;
-use crate::mm::AddrSpace;
+use crate::{mm::AddrSpace, task::futex::FutexDomain};
+
+/// One Linux mm generation and every facility whose identity follows it.
+///
+/// `CLONE_VM` shares this object even when it creates a distinct process.
+/// `fork` and `exec` create a new object. Keeping the private futex domain next
+/// to the address space prevents process/thread-group identity from becoming a
+/// second, conflicting definition of private-futex ownership.
+struct ProcessMemoryOwner {
+    aspace: Arc<PiMutex<AddrSpace>>,
+    private_futexes: Arc<FutexDomain>,
+}
+
+impl ProcessMemoryOwner {
+    fn new(aspace: Arc<PiMutex<AddrSpace>>) -> Self {
+        Self {
+            aspace,
+            private_futexes: Arc::new(FutexDomain::new_private()),
+        }
+    }
+}
+
+/// Opaque strong reference used to share or retire one mm generation.
+#[derive(Clone)]
+pub(crate) struct ProcessMemoryShare(Arc<ProcessMemoryOwner>);
+
+impl ProcessMemoryShare {
+    pub(crate) fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
+        self.0.aspace.clone()
+    }
+
+    pub(crate) fn private_futexes(&self) -> Arc<FutexDomain> {
+        self.0.private_futexes.clone()
+    }
+}
 
 struct SchedulerAddressSpaceLease {
     aspace: Arc<PiMutex<AddrSpace>>,
@@ -48,15 +82,18 @@ pub(crate) fn scheduler_address_space(
 
 /// Address-space state whose release must follow scheduler switch-tail rules.
 pub(super) struct ProcessMemoryState {
-    aspace: SpinNoIrq<Arc<PiMutex<AddrSpace>>>,
+    owner: SpinNoIrq<Arc<ProcessMemoryOwner>>,
     heap_top: AtomicUsize,
     aspace_slot_released: AtomicBool,
 }
 
 impl ProcessMemoryState {
-    pub(super) fn new(aspace: Arc<PiMutex<AddrSpace>>) -> Self {
+    pub(super) fn new(aspace: Arc<PiMutex<AddrSpace>>, shared: Option<ProcessMemoryShare>) -> Self {
         Self {
-            aspace: SpinNoIrq::new(aspace),
+            owner: SpinNoIrq::new(shared.map_or_else(
+                || Arc::new(ProcessMemoryOwner::new(aspace)),
+                |share| share.0,
+            )),
             heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
             aspace_slot_released: AtomicBool::new(false),
         }
@@ -73,7 +110,7 @@ impl ProcessData {
         {
             return;
         }
-        let aspace = self.memory.aspace.lock().clone();
+        let aspace = self.memory.owner.lock().aspace.clone();
         crate::mm::release_process_slot(&aspace);
     }
 
@@ -89,7 +126,12 @@ impl ProcessData {
 
     /// Returns a strong reference to the current address space.
     pub fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
-        self.memory.aspace.lock().clone()
+        self.memory.owner.lock().aspace.clone()
+    }
+
+    /// Captures the current mm generation once for clone/futex/teardown.
+    pub(crate) fn memory_share(&self) -> ProcessMemoryShare {
+        ProcessMemoryShare(self.memory.owner.lock().clone())
     }
 
     /// Creates one owning scheduler token for the current address space.
@@ -106,14 +148,13 @@ impl ProcessData {
     /// of the non-sleeping gate prevents its destructor from acquiring a
     /// sleepable lock while IRQs and preemption are disabled.
     #[must_use = "release the old process slot after committing the new active mm"]
-    pub fn stage_aspace_replacement(
+    pub fn stage_memory_replacement(
         &self,
         new_aspace: Arc<PiMutex<AddrSpace>>,
-    ) -> Arc<PiMutex<AddrSpace>> {
+    ) -> ProcessMemoryShare {
         crate::mm::attach_process_slot(&new_aspace);
-        {
-            let mut guard = self.memory.aspace.lock();
-            core::mem::replace(&mut *guard, new_aspace)
-        }
+        let new_owner = Arc::new(ProcessMemoryOwner::new(new_aspace));
+        let mut guard = self.memory.owner.lock();
+        ProcessMemoryShare(core::mem::replace(&mut *guard, new_owner))
     }
 }

@@ -21,15 +21,19 @@
  *   5. stress_contention — 8 waiters on same futex, 40 rounds
  *   6. private_flag     — FUTEX_WAIT_PRIVATE / WAKE_PRIVATE, 50 rounds
  *   7. bitset_selective — WAIT_BITSET / WAKE_BITSET with selective masks
+ *   8. clone_vm_private  — distinct processes sharing one mm use one private key
  */
 #define _GNU_SOURCE
 #include "test_framework.h"
 
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
@@ -621,6 +625,67 @@ static void test_bitset_selective(void)
 
 /* ================================================================ */
 
+/* ================================================================
+ * Test 8 — FUTEX_PRIVATE_FLAG follows mm identity, not thread-group identity
+ *
+ * Linux keys private futexes by current->mm. clone(CLONE_VM | SIGCHLD)
+ * therefore creates a distinct process whose private futex operations still
+ * share a bucket with the parent. The timed child wait makes a wrong
+ * per-process key fail deterministically instead of hanging the suite.
+ * ================================================================ */
+
+#define T8_STACK_SIZE (64u * 1024u)
+
+static _Alignas(16) unsigned char t8_stack[T8_STACK_SIZE];
+static _Atomic uint32_t t8_futex;
+static _Atomic int t8_ready;
+static _Atomic int t8_completed;
+
+static int t8_clone_vm_waiter(void *arg)
+{
+    (void)arg;
+    const struct timespec timeout = { .tv_sec = 1, .tv_nsec = 0 };
+
+    atomic_store_explicit(&t8_ready, 1, memory_order_release);
+    while (atomic_load_explicit(&t8_futex, memory_order_acquire) == 0) {
+        long result = syscall(SYS_futex, &t8_futex,
+                              FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+                              0, &timeout, NULL, 0);
+        if (result < 0 && errno != EAGAIN && errno != EINTR)
+            return 1;
+    }
+    atomic_store_explicit(&t8_completed, 1, memory_order_release);
+    return 0;
+}
+
+static void test_clone_vm_private_identity(void)
+{
+    atomic_store(&t8_futex, 0);
+    atomic_store(&t8_ready, 0);
+    atomic_store(&t8_completed, 0);
+
+    void *stack_top = t8_stack + sizeof(t8_stack);
+    pid_t child = clone(t8_clone_vm_waiter, stack_top, CLONE_VM | SIGCHLD, NULL);
+    CHECK(child > 0, "T8 clone(CLONE_VM|SIGCHLD) created a distinct process");
+    if (child <= 0)
+        return;
+
+    CHECK(wait_until_ready(&t8_ready, 1, "T8"), "T8 child published its wait");
+    usleep(5000);
+    atomic_store_explicit(&t8_futex, 1, memory_order_release);
+    long woke = futex_wake_private(&t8_futex, 1);
+
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child, "T8 reaped CLONE_VM child");
+    CHECK(woke == 1, "T8 WAKE_PRIVATE found the waiter in the shared mm");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "T8 child returned from WAIT_PRIVATE before timeout");
+    CHECK(atomic_load_explicit(&t8_completed, memory_order_acquire) == 1,
+          "T8 child observed the shared futex publication");
+}
+
+/* ================================================================ */
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -633,6 +698,7 @@ int main(void)
     test_stress_contention();
     test_private_flag();
     test_bitset_selective();
+    test_clone_vm_private_identity();
 
     TEST_DONE();
 }

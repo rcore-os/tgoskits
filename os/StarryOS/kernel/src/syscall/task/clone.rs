@@ -589,25 +589,26 @@ impl CloneArgs {
             let fork = parent_process.prepare_fork(tid);
             let proc = fork.process().clone();
             prepared_process = Some(fork);
-            let proc_data = ProcessData::new(
-                proc,
-                ProcessDataInit::new(
-                    ProcessImage::new(
-                        old_proc_data.exe_path().as_ref().clone(),
-                        old_proc_data.cmdline(),
-                        old_proc_data.envp(),
-                        old_proc_data.auxv().to_vec(),
-                        old_proc_data.root_path().as_ref().clone(),
-                        old_proc_data.cwd_path().as_ref().clone(),
-                    ),
-                    aspace,
-                    signal_actions,
-                    new_nsproxy,
-                    exit_signal,
-                    curr_thread.tid(),
-                )
-                .with_cgroup(inherited_cgroup),
-            );
+            let mut process_init = ProcessDataInit::new(
+                ProcessImage::new(
+                    old_proc_data.exe_path().as_ref().clone(),
+                    old_proc_data.cmdline(),
+                    old_proc_data.envp(),
+                    old_proc_data.auxv().to_vec(),
+                    old_proc_data.root_path().as_ref().clone(),
+                    old_proc_data.cwd_path().as_ref().clone(),
+                ),
+                aspace,
+                signal_actions,
+                new_nsproxy,
+                exit_signal,
+                curr_thread.tid(),
+            )
+            .with_cgroup(inherited_cgroup);
+            if flags.contains(CloneFlags::VM) {
+                process_init = process_init.with_shared_memory(old_proc_data);
+            }
+            let proc_data = ProcessData::new(proc, process_init);
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());

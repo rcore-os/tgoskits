@@ -229,8 +229,8 @@ impl FileBackend {
         Self(inner, aspace.downgrade())
     }
 
-    pub fn futex_handle(&self) -> Weak<()> {
-        Arc::downgrade(&self.0.futex_handle)
+    pub fn futex_handle(&self) -> Arc<()> {
+        self.0.futex_handle.clone()
     }
 
     /// `true` when this file mapping is shared with the page cache (MAP_SHARED).

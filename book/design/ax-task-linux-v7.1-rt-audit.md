@@ -151,16 +151,16 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 
 | 领域 | Linux 对照 | 核心不变量 | 当前结论 |
 | --- | --- | --- | --- |
-| placement | `try_to_wake_up()`、rq locking | 一个线程只能有一个物理 owner | 已用 `SchedulerPlacement` 状态机收敛 |
+| placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 二次审计发现 task 仍保存 `SwitchingOut/ExitedAwaitingTail`，与 `CpuLocal::SwitchHandoff` 重复；必须删除 task 级切换暂态 |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
-| task deadline | `hrtimer` | IRQ 只处理 generation-bearing 值记录 | park/CBS/zero-lag 已类型化 |
-| clockevent | `clockevents_program_event()` | 每 CPU 单一物理 owner；无期限用 `Option` | `Offline/Idle/Armed/Firing` 已实现 |
-| switch tail | `finish_task_switch()` | 清 `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | baton 与一次性、失败即 fatal 的 tail 已实现 |
-| PI | `rtmutex` | 注册、deboost、grant 同一事务；锁外 wake | generation-bearing PI 已实现 |
+| task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | park 已类型化；Deadline rq 仍为 O(n) `Vec`，CBS registration/cache/flag 重复，待整体替换 |
+| clockevent/nohz | `clockevents_program_event()`、`tick_nohz_idle_enter()` | 每 CPU 单一物理 owner；idle 无调度事件时停止 tick；无期限用 `Option` | clockevent 状态机已实现；idle 仍永久保持 periodic tick，待引入 idle token 并删除 periodic 常驻源 |
+| switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | runtime baton 已一次性；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
+| PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；deboost/grant 后锁外 wake | handoff generation 与锁外 wake 已有；`PreemptTicketLock` 仍可能跨 CPU 无界禁抢占自旋，待按 owner 分拆 |
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
@@ -169,24 +169,72 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | tracepoint | RCU/SRCU probe arrays | 完整 generation 先发布；读侧 grace 后释放 | 快照与 epoch reclaimer 已实现 |
 | 通用 timer | threaded hrtimer/task work | 任意 callback 不进 hard IRQ | Starry/AxVM worker 独立于 ax-task |
 | serial | serial core/PREEMPT_RT handler | IRQ 只 ACK/drain/publish | 三 endpoint 已实现 |
-| architecture idle | 各架构 idle entry | pending recheck 与 idle 原子提交 | 四架构已有注入测试 |
+| architecture idle | `do_idle()`、各架构 idle entry | IRQ-off final recheck、nohz enter/exit 与原子等待是一个 CPU-local 事务 | 已有 polling/recheck；缺少拥有 nohz 状态的 idle token |
+
+## 二次全量审计后的目标架构
+
+2026-08-04 对当前分支相对 `origin/dev` 的全部调度改动再次逐链路核对 Linux
+v7.1 PREEMPT_RT。此次不再把“已有枚举/guard/缓存”当作完成标准，而以状态事实是否只有
+一个 owner、锁是否对应真实执行上下文、失败是否能在同一事务中回滚作为验收标准。
+
+下列结构必须作为一个目标模型落地，不保留旧新双轨、兼容 facade 或回退状态：
+
+1. **rq 是物理 placement 的唯一 owner**。线程只保存 affinity、policy、生命周期与
+   `on_cpu` 发布位；queued/running 由目标 rq 及 `rq->curr` 表示。`Migrating` 是源 rq
+   dequeue 到目标 rq enqueue 之间唯一允许的 carrier。`SwitchingOut` 和
+   `ExitedAwaitingTail` 不再写入线程 placement。
+2. **switch 暂态只在 CPU 上存在**。`SwitchHandoff` 持有 outgoing thread、最终目的地、
+   exit 标志、deadline bandwidth lease 与 generation。raw switch 前一次 stage，目标
+   continuation 的 switch tail 一次 consume；只有它能清 `on_cpu`、发布迁移或允许回收。
+3. **调度类通过共同 rq 边界组合**。class rank 固定为 Deadline、RT、Fair、Idle；各类
+   自己拥有 enqueue/dequeue/pick/tick/yield 后端。Deadline 使用有序 rq 和 CBS
+   replenishment 状态机，删除 O(n) `Vec` 扫描、`replenish_pending` 手工轮询和
+   `u64::MAX` 无期限哨兵。
+4. **wait/wake 遵循 state-condition-rq 事务**。waiter 在领域 bucket 锁内发布 park
+   generation，wake 在同一锁内选择胜者并放入 task-embedded wake batch，释放领域锁后
+   才进入 rq。不得把 callback、分配或上层对象带进 rq/IRQ gate。
+5. **futex private identity 属于 mm**。`CLONE_VM` 共享 `MmIdentity + FutexDomain`；fork
+   创建新 domain；exec 原子替换 mm，并让旧 domain 随旧 waiters 延迟销毁。private key
+   为 `(mm generation, address)`，shared key 为稳定对象 identity 与 offset；固定 bucket
+   是唯一排队锁，删除 `ProcessData::futex_table`、动态每 key table 和 teardown
+   `try_lock` fallback。
+6. **锁按上下文分四层**：rq raw IRQ lock、设备/IRQ raw gate、sleeping PiMutex、
+   task-local CPU/preempt lease。跨 CPU 可竞争的 scheduler state 不得使用
+   `PreemptTicketLock` 无界等待；PI metadata 中完成 owner generation、deboost、grant
+   和 wake-batch 选择，锁外 wake。
+7. **clockevent 与 nohz 是同一个 CPU-local 状态机**。physical clockevent 只合并 typed
+   task deadline 与处于非 idle 状态时的 scheduler tick。idle enter token 在 IRQ-off
+   final recheck 后停 tick，idle exit/过期恢复一次性重算；无 work 时不得保留永久
+   periodic source。
+8. **scheduler entry、active-mm 与 switch plan 一次提交**。typed entry token 独占
+   scheduler baton；next active-mm lease/root/current publication 在 raw switch 前准备，
+   previous lease 与资源仅在 switch tail 释放。四架构只允许汇编 idle/switch 细节不同，
+   Rust 状态机、锁序和生命周期一致。
+
+删除顺序由依赖关系决定，但每个阶段必须直接切断旧入口；禁止用 feature flag、兼容别名、
+双写字段或“先更新旧字段再同步新字段”的方式过渡。当前两条确定性架构红测为：
+
+- aarch64 `task-affinity`：当前 head 在 affinity 已成功返回后仍可观察到 CPU 3，而 mask
+  只允许 CPU 2；修复必须证明 owner rq、switch handoff 和 CPU-local publication 的事务；
+- Starry `clone(CLONE_VM | SIGCHLD)` + `FUTEX_PRIVATE`：父进程 wake 找不到同 mm 子进程
+  waiter；修复必须来自 mm-owned futex domain，而不是跨 `ProcessData` 搜索或 fallback。
 
 ## 调度与远程投递
 
 ### placement
 
-`SchedulerPlacement` 是唯一 placement 状态源：
+目标模型中，thread placement 只保留稳定状态：
 
 ```text
 Detached
 Queued(cpu)
 Running(cpu)
-SwitchingOut(cpu)
-Migrating(from, to)
-ExitedAwaitingTail(cpu)
+Migrating(target)
 ```
 
-enqueue、dequeue、wake、migration、switch-tail 和回收只能通过状态转换方法。blocked
+其中 `Queued/Running` 是 rq 所有权的观测结果，不是可独立更新的第二组事实；
+`SwitchingOut/ExitedAwaitingTail` 由 per-CPU `SwitchHandoff` 表示。enqueue、dequeue、wake、
+migration、switch-tail 和回收只能通过 rq 事务与 handoff 方法。blocked
 thread 的 `target_cpu` 只是直接唤醒的首选目标，不是物理 owner；CPU offline 关闭新
 runqueue publication 后，将该提示重定向到仍 online 且满足 affinity 的 CPU。
 
@@ -400,10 +448,10 @@ timer IRQ 顺序：
 
 1. platform claim/ACK；
 2. `Armed -> Firing`，旧 arm 立即失效；
-3. 更新 periodic source；
+3. 非 idle CPU 更新 scheduler tick；idle/nohz 状态不生成 periodic source；
 4. 调用有界 `on_clock_event(now, budget)`；
 5. 发布 sticky deadline work / need-resched；
-6. 合并 task deadline 与 periodic tick，统一编程一次；
+6. 合并 task deadline 与当前有效的 scheduler tick，统一编程一次；
 7. 返回平台做 EOI。
 
 无期限用 `Option<MonotonicDeadline>`，不能用 `u64::MAX` 直接下发硬件。ns 到 tick 使用向上取整和饱和转换；已过期值钳制到设备最小非零 delta。

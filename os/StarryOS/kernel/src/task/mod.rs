@@ -50,7 +50,11 @@ pub use self::{
 };
 #[cfg(axtest)]
 pub(crate) use self::{
-    futex::{empty_wake_op_entry_allocations_for_test, queued_waiter_state_allocations_for_test},
+    futex::{
+        empty_wake_op_leaves_fixed_buckets_empty_for_test,
+        futex_keys_follow_mm_and_backing_identity_for_test,
+        queued_waiter_state_allocations_for_test,
+    },
     ops::decode_wait_status_rules_hold_for_test,
     posix_timer::{
         posix_timer_active_gate_rules_hold_for_test,
@@ -115,9 +119,6 @@ pub struct ProcessData {
     /// The process signal manager
     pub signal: Arc<ProcessSignalManager>,
 
-    /// The futex table.
-    futex_table: Arc<FutexTable>,
-
     /// CPU accounting and process-owned timer tables.
     accounting: ProcessAccountingState,
 
@@ -137,6 +138,7 @@ pub struct ProcessDataInit {
     cgroup: Arc<ax_cgroup::CgroupNode>,
     exit_signal: Option<Signo>,
     wait_parent_tid: Pid,
+    shared_memory: Option<process_memory::ProcessMemoryShare>,
 }
 
 impl ProcessDataInit {
@@ -157,7 +159,14 @@ impl ProcessDataInit {
             cgroup: crate::cgroup::root(),
             exit_signal,
             wait_parent_tid,
+            shared_memory: None,
         }
+    }
+
+    /// Makes a non-thread clone share the parent's Linux mm generation.
+    pub(crate) fn with_shared_memory(mut self, parent: &ProcessData) -> Self {
+        self.shared_memory = Some(parent.memory_share());
+        self
     }
 
     /// Selects inherited membership for a prepared non-thread child.
@@ -178,6 +187,7 @@ impl ProcessData {
             cgroup,
             exit_signal,
             wait_parent_tid,
+            shared_memory,
         } = init;
         let pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]> =
             axnsproxy::pid_namespace_lineage(&nsproxy.pid_ns).into();
@@ -193,7 +203,7 @@ impl ProcessData {
                 proc,
                 identity,
                 image: ProcessImageState::new(image),
-                memory: ProcessMemoryState::new(aspace),
+                memory: ProcessMemoryState::new(aspace, shared_memory),
                 wait,
                 uprobe_manager: crate::kprobe::KprobeManager::new(),
                 uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
@@ -205,9 +215,6 @@ impl ProcessData {
                     signal_actions,
                     crate::config::SIGNAL_TRAMPOLINE,
                 )),
-
-                futex_table: Arc::new(FutexTable::new()),
-
                 nsproxy: SpinNoIrq::new(Arc::new(nsproxy)),
                 namespace_update: PiMutex::new(()),
                 cgroup: ProcessCgroupState::new(cgroup),

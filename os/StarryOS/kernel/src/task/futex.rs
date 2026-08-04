@@ -1,14 +1,10 @@
 //! Futex implementation.
 
-use alloc::{
-    collections::{btree_map::BTreeMap, vec_deque::VecDeque},
-    sync::{Arc, Weak},
-};
+use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 #[cfg(axtest)]
 use core::sync::atomic::AtomicUsize;
 use core::{
     cmp::Ordering,
-    ops::Deref,
     sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering},
     time::Duration,
 };
@@ -19,23 +15,20 @@ use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::time::monotonic_time;
 use ax_std::os::arceos::task::{self as scheduler, CurrentParkStart, ThreadWakeBatch};
 use ax_sync::{LockdepMutexExt, PiMutex};
-use hashbrown::HashMap;
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
-    task::{ProcessData, UserTaskRef, current_user_task},
+    task::{ProcessData, UserTaskRef, current_user_task, process_memory::ProcessMemoryShare},
 };
 
-const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
-const NESTED_FUTEX_TABLE_LOCK_SUBCLASS: u32 = 1;
+const NESTED_FUTEX_BUCKET_LOCK_SUBCLASS: u32 = 1;
+const FUTEX_BUCKET_COUNT: usize = 64;
 type WakeBatch = ThreadWakeBatch;
 
 fn wake_batch(wakes: WakeBatch) -> usize {
     wakes.wake_all()
 }
 
-#[cfg(axtest)]
-static FUTEX_ENTRY_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 /// Retry outcome from a futex operation's nofault user-memory phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FutexAccessError {
@@ -242,13 +235,24 @@ impl ThreadWaitState {
     }
 
     fn remove_from_current_queue(&self, task: &UserTaskRef, generation: u64) -> bool {
-        let cleanup = self.cleanup.lock().clone();
-        if let Some(cleanup) = cleanup {
-            cleanup.table.remove_waiter(cleanup.key, task, generation);
-            true
-        } else {
-            false
+        let Some(first) = self.cleanup.lock().clone() else {
+            return false;
+        };
+        if first.remove_waiter(task, generation) {
+            return true;
         }
+
+        // Requeue publishes the new cleanup route before moving the waiter
+        // while holding both buckets. A canceller may have sampled the old
+        // route just before that publication; after marking the generation
+        // cancelled no later requeue can win, so one route refresh is enough.
+        let Some(current) = self.cleanup.lock().clone() else {
+            return true;
+        };
+        if !first.same_route(&current) {
+            current.remove_waiter(task, generation);
+        }
+        true
     }
 }
 
@@ -277,8 +281,20 @@ impl Waiter {
 /// Identifies where a queued waiter must be removed if its wait is cancelled.
 #[derive(Clone)]
 pub struct FutexWaitCleanup {
-    table: Arc<FutexTable>,
-    key: usize,
+    domain: FutexDomainOwner,
+    key: FutexKey,
+}
+
+impl FutexWaitCleanup {
+    fn remove_waiter(&self, task: &UserTaskRef, generation: u64) -> bool {
+        self.domain
+            .domain()
+            .remove_waiter(&self.key, task, generation)
+    }
+
+    fn same_route(&self, other: &Self) -> bool {
+        self.domain.same(&other.domain) && self.key.same(&other.key)
+    }
 }
 
 impl WaitQueue {
@@ -516,179 +532,6 @@ impl WaitQueue {
         wake_batch(wakes)
     }
 
-    fn collect_wake_op(
-        source: Option<&Self>,
-        wake_count: usize,
-        target: Option<&Self>,
-        wake2_count: usize,
-        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<WakeBatch, FutexAccessError> {
-        let mut condition = Some(condition);
-        let mut wakes = WakeBatch::new();
-
-        match (source, target) {
-            (Some(source), Some(target)) => {
-                match core::ptr::from_ref(source).cmp(&core::ptr::from_ref(target)) {
-                    Ordering::Less => {
-                        let mut src = source.inner.lock();
-                        let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
-                        let wake_second = condition.take().expect("condition used once")()?;
-                        Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakes);
-                        if wake_second {
-                            Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakes);
-                        }
-                    }
-                    Ordering::Greater => {
-                        let mut dst = target.inner.lock();
-                        let mut src = source.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
-                        let wake_second = condition.take().expect("condition used once")()?;
-                        Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakes);
-                        if wake_second {
-                            Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakes);
-                        }
-                    }
-                    Ordering::Equal => {
-                        let mut src = source.inner.lock();
-                        let wake_second = condition.take().expect("condition used once")()?;
-                        Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakes);
-                        if wake_second {
-                            Self::wake_locked(&mut src.queue, wake2_count, u32::MAX, &mut wakes);
-                        }
-                    }
-                }
-            }
-            (Some(source), None) => {
-                let mut src = source.inner.lock();
-                let _ = condition.take().expect("condition used once")()?;
-                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakes);
-            }
-            (None, Some(target)) => {
-                let mut dst = target.inner.lock();
-                let wake_second = condition.take().expect("condition used once")()?;
-                if wake_second {
-                    Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakes);
-                }
-            }
-            (None, None) => {
-                let _ = condition.take().expect("condition used once")()?;
-            }
-        }
-
-        Ok(wakes)
-    }
-
-    fn wake_requeue_locked(
-        src: &mut VecDeque<Waiter>,
-        dst: &mut VecDeque<Waiter>,
-        wake_count: usize,
-        wake_mask: u32,
-        requeue_count: usize,
-        target_cleanup: FutexWaitCleanup,
-        wakes: &mut WakeBatch,
-    ) -> usize {
-        src.retain(|waiter| !waiter.is_cancelled());
-
-        let mut index = 0;
-        while index < src.len() && wakes.len() < wake_count {
-            if (src[index].bitset & wake_mask) == 0 {
-                index += 1;
-                continue;
-            }
-
-            let waiter = src.remove(index).expect("waiter index checked");
-            if waiter.mark_woken() {
-                Self::push_wake(wakes, waiter);
-            }
-        }
-
-        let mut requeued = 0;
-        while requeued < requeue_count {
-            let Some(waiter) = src.pop_front() else {
-                break;
-            };
-            if !waiter.set_cleanup_if_queued(target_cleanup.clone()) {
-                continue;
-            }
-            dst.push_back(waiter);
-            requeued += 1;
-        }
-        wakes.len() + requeued
-    }
-
-    /// Serializes a condition check with waking and requeueing waiters from
-    /// this queue to `target`.
-    pub fn wake_requeue_if(
-        &self,
-        wake_count: usize,
-        wake_mask: u32,
-        requeue_count: usize,
-        target_cleanup: FutexWaitCleanup,
-        target: &WaitQueue,
-        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<Option<usize>, FutexAccessError> {
-        let mut condition = Some(condition);
-        let mut wakes = WakeBatch::new();
-
-        let count = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
-            Ordering::Less => {
-                let mut src = self.inner.lock();
-                let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
-                if !condition.take().expect("condition used once")()? {
-                    return Ok(None);
-                }
-                Self::wake_requeue_locked(
-                    &mut src.queue,
-                    &mut dst.queue,
-                    wake_count,
-                    wake_mask,
-                    requeue_count,
-                    target_cleanup,
-                    &mut wakes,
-                )
-            }
-            Ordering::Greater => {
-                let mut dst = target.inner.lock();
-                let mut src = self.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
-                if !condition.take().expect("condition used once")()? {
-                    return Ok(None);
-                }
-                Self::wake_requeue_locked(
-                    &mut src.queue,
-                    &mut dst.queue,
-                    wake_count,
-                    wake_mask,
-                    requeue_count,
-                    target_cleanup,
-                    &mut wakes,
-                )
-            }
-            Ordering::Equal => {
-                let mut src = self.inner.lock();
-                if !condition.take().expect("condition used once")()? {
-                    return Ok(None);
-                }
-
-                src.queue.retain(|waiter| !waiter.is_cancelled());
-                let mut index = 0;
-                while index < src.queue.len() && wakes.len() < wake_count {
-                    if (src.queue[index].bitset & wake_mask) == 0 {
-                        index += 1;
-                        continue;
-                    }
-
-                    let waiter = src.queue.remove(index).expect("waiter index checked");
-                    if waiter.mark_woken() {
-                        Self::push_wake(&mut wakes, waiter);
-                    }
-                }
-                wakes.len()
-            }
-        };
-
-        wake_batch(wakes);
-        Ok(Some(count))
-    }
-
     fn remove_waiter(&self, task: &UserTaskRef, generation: u64) -> bool {
         let mut inner = self.inner.lock();
         inner
@@ -696,29 +539,42 @@ impl WaitQueue {
             .retain(|waiter| !waiter.matches(task, generation));
         inner.queue.is_empty()
     }
+}
 
-    /// Checks if the wait queue is empty.
-    pub fn is_empty(&self) -> bool {
-        let mut inner = self.inner.lock();
-        inner.queue.retain(|waiter| !waiter.is_cancelled());
-        inner.queue.is_empty()
+/// Stable backing-object identity retained by a shared futex waiter.
+#[derive(Clone)]
+pub(crate) enum SharedFutexIdentity {
+    Pages(Arc<SharedPages>),
+    File(Arc<()>),
+}
+
+impl SharedFutexIdentity {
+    fn address(&self) -> usize {
+        match self {
+            Self::Pages(pages) => Arc::as_ptr(pages) as usize,
+            Self::File(file) => Arc::as_ptr(file) as usize,
+        }
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Pages(left), Self::Pages(right)) => Arc::ptr_eq(left, right),
+            (Self::File(left), Self::File(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
     }
 }
 
 /// A key that uniquely identifies a futex in the system.
-pub enum FutexKey {
-    /// A futex that is private to the current process.
-    Private {
-        /// The memory address of the futex.
-        address: usize,
-    },
+#[derive(Clone)]
+pub(crate) enum FutexKey {
+    /// A private futex follows Linux `current->mm`, not the process/TGID.
+    Private { mm_generation: u64, address: usize },
 
-    /// A futex in a shared memory region.
+    /// A shared futex follows a stable backing object and mapping offset.
     Shared {
-        /// The offset of the futex within the shared memory region.
         offset: usize,
-        /// The shared memory region.
-        region: Result<Weak<SharedPages>, Weak<()>>,
+        identity: SharedFutexIdentity,
     },
 }
 
@@ -733,7 +589,7 @@ pub enum FutexKeyMode {
 
 impl FutexKey {
     /// Creates a new `FutexKey`.
-    pub fn new(aspace: &AddrSpace, address: usize, mode: FutexKeyMode) -> Self {
+    fn new(aspace: &AddrSpace, mm_generation: u64, address: usize, mode: FutexKeyMode) -> Self {
         if matches!(mode, FutexKeyMode::Auto)
             && let Some(area) = aspace.find_area(VirtAddr::from_usize(address))
         {
@@ -741,48 +597,154 @@ impl FutexKey {
                 Backend::Shared(backend) => {
                     return Self::Shared {
                         offset: address - area.start().as_usize(),
-                        region: Ok(Arc::downgrade(backend.pages())),
+                        identity: SharedFutexIdentity::Pages(backend.pages().clone()),
                     };
                 }
                 Backend::File(file) => {
                     return Self::Shared {
                         offset: address - area.start().as_usize(),
-                        region: Err(file.futex_handle()),
+                        identity: SharedFutexIdentity::File(file.futex_handle()),
                     };
                 }
                 _ => {}
             }
         }
-        Self::Private { address }
-    }
-
-    /// Teardown variant that is anchored to the exiting process instead of
-    /// whatever scheduler task is currently running on this CPU.
-    pub fn new_for_process_teardown(proc_data: &ProcessData, address: usize) -> Self {
-        let aspace_arc = proc_data.aspace();
-        let Some(aspace) = aspace_arc.try_lock() else {
-            return Self::Private { address };
-        };
-        Self::new(&aspace, address, FutexKeyMode::Auto)
-    }
-
-    fn as_usize(&self) -> usize {
-        match self {
-            FutexKey::Private { address } => *address,
-            FutexKey::Shared { offset, .. } => *offset,
+        Self::Private {
+            mm_generation,
+            address,
         }
     }
 
-    fn shares_table_with(&self, other: &Self) -> bool {
+    fn bucket_hash(&self) -> usize {
+        match self {
+            Self::Private {
+                mm_generation,
+                address,
+            } => mix_futex_hash(*address, *mm_generation as usize),
+            Self::Shared { offset, identity } => mix_futex_hash(*offset, identity.address()),
+        }
+    }
+
+    fn same(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Private { .. }, Self::Private { .. }) => true,
-            (Self::Shared { region: left, .. }, Self::Shared { region: right, .. }) => {
-                match (left, right) {
-                    (Ok(left), Ok(right)) => Weak::ptr_eq(left, right),
-                    (Err(left), Err(right)) => Weak::ptr_eq(left, right),
-                    _ => false,
-                }
-            }
+            (
+                Self::Private {
+                    mm_generation: left_mm,
+                    address: left_address,
+                },
+                Self::Private {
+                    mm_generation: right_mm,
+                    address: right_address,
+                },
+            ) => left_mm == right_mm && left_address == right_address,
+            (
+                Self::Shared {
+                    offset: left_offset,
+                    identity: left_identity,
+                },
+                Self::Shared {
+                    offset: right_offset,
+                    identity: right_identity,
+                },
+            ) => left_offset == right_offset && left_identity.same(right_identity),
+            _ => false,
+        }
+    }
+}
+
+fn mix_futex_hash(first: usize, second: usize) -> usize {
+    let mut value = first ^ second.rotate_left(17);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9usize);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11ebusize);
+    value ^ (value >> 31)
+}
+
+struct FutexBucketWaiter {
+    key: FutexKey,
+    waiter: Waiter,
+}
+
+struct FutexBucket {
+    waiters: PiMutex<VecDeque<FutexBucketWaiter>>,
+}
+
+impl FutexBucket {
+    const fn new() -> Self {
+        Self {
+            waiters: PiMutex::new(VecDeque::new()),
+        }
+    }
+}
+
+static NEXT_PRIVATE_FUTEX_DOMAIN: AtomicU64 = AtomicU64::new(1);
+static SHARED_FUTEX_DOMAIN: FutexDomain = FutexDomain::new_shared();
+
+/// Fixed Linux-style futex hash buckets owned by one mm generation.
+pub(crate) struct FutexDomain {
+    generation: u64,
+    buckets: [FutexBucket; FUTEX_BUCKET_COUNT],
+}
+
+impl FutexDomain {
+    const fn new_shared() -> Self {
+        Self {
+            generation: 0,
+            buckets: [const { FutexBucket::new() }; FUTEX_BUCKET_COUNT],
+        }
+    }
+
+    pub(crate) fn new_private() -> Self {
+        let generation = NEXT_PRIVATE_FUTEX_DOMAIN.fetch_add(1, AtomicOrdering::Relaxed);
+        assert_ne!(generation, 0, "private futex mm generation exhausted");
+        Self {
+            generation,
+            buckets: [const { FutexBucket::new() }; FUTEX_BUCKET_COUNT],
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn bucket(&self, key: &FutexKey) -> (usize, &FutexBucket) {
+        let index = key.bucket_hash() % FUTEX_BUCKET_COUNT;
+        (index, &self.buckets[index])
+    }
+
+    fn remove_waiter(&self, key: &FutexKey, task: &UserTaskRef, generation: u64) -> bool {
+        let (_, bucket) = self.bucket(key);
+        let mut waiters = bucket.waiters.lock();
+        let Some(index) = waiters
+            .iter()
+            .position(|entry| entry.key.same(key) && entry.waiter.matches(task, generation))
+        else {
+            return false;
+        };
+        waiters.remove(index);
+        true
+    }
+}
+
+#[derive(Clone)]
+enum FutexDomainOwner {
+    Private(Arc<FutexDomain>),
+    Shared,
+}
+
+impl FutexDomainOwner {
+    fn domain(&self) -> &FutexDomain {
+        match self {
+            Self::Private(domain) => domain,
+            Self::Shared => &SHARED_FUTEX_DOMAIN,
+        }
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Private(left), Self::Private(right)) => Arc::ptr_eq(left, right),
+            (Self::Shared, Self::Shared) => true,
             _ => false,
         }
     }
@@ -795,13 +757,14 @@ impl FutexKey {
 /// re-resolved after a fault because their VMA backing may have changed.
 pub(crate) struct FutexContext {
     task: UserTaskRef,
+    memory: ProcessMemoryShare,
 }
 
 impl FutexContext {
     pub(crate) fn current() -> Self {
-        Self {
-            task: current_user_task(),
-        }
+        let task = current_user_task();
+        let memory = task.as_thread().proc_data.memory_share();
+        Self { task, memory }
     }
 
     pub(crate) fn task(&self) -> &UserTaskRef {
@@ -815,28 +778,41 @@ impl FutexContext {
         mode: FutexKeyMode,
     ) -> (FutexKey, Option<FutexKey>) {
         if matches!(mode, FutexKeyMode::Private) {
+            let mm_generation = self.memory.private_futexes().generation();
             return (
                 FutexKey::Private {
+                    mm_generation,
                     address: first_address,
                 },
-                second_address.map(|address| FutexKey::Private { address }),
+                second_address.map(|address| FutexKey::Private {
+                    mm_generation,
+                    address,
+                }),
             );
         }
 
-        let aspace = self.task.as_thread().proc_data.aspace();
+        let aspace = self.memory.aspace();
         let aspace = aspace.lock();
+        let mm_generation = self.memory.private_futexes().generation();
         (
-            FutexKey::new(&aspace, first_address, mode),
-            second_address.map(|address| FutexKey::new(&aspace, address, mode)),
+            FutexKey::new(&aspace, mm_generation, first_address, mode),
+            second_address.map(|address| FutexKey::new(&aspace, mm_generation, address, mode)),
         )
+    }
+
+    fn domain_for(&self, key: &FutexKey) -> FutexDomainOwner {
+        match key {
+            FutexKey::Private { .. } => FutexDomainOwner::Private(self.memory.private_futexes()),
+            FutexKey::Shared { .. } => FutexDomainOwner::Shared,
+        }
     }
 
     pub(crate) fn resolve(&self, address: usize, mode: FutexKeyMode) -> ResolvedFutex {
         let (key, None) = self.resolve_keys(address, None, mode) else {
             unreachable!("single futex resolution returned a second key")
         };
-        let table = futex_table_for_process(self.task.as_thread().proc_data.as_ref(), &key);
-        ResolvedFutex { key, table }
+        let domain = self.domain_for(&key);
+        ResolvedFutex { key, domain }
     }
 
     pub(crate) fn resolve_pair(
@@ -850,21 +826,16 @@ impl FutexContext {
         else {
             unreachable!("paired futex resolution omitted the second key")
         };
-        let process = self.task.as_thread().proc_data.as_ref();
-        let first_table = futex_table_for_process(process, &first_key);
-        let second_table = if first_key.shares_table_with(&second_key) {
-            Arc::clone(&first_table)
-        } else {
-            futex_table_for_process(process, &second_key)
-        };
+        let first_domain = self.domain_for(&first_key);
+        let second_domain = self.domain_for(&second_key);
         (
             ResolvedFutex {
                 key: first_key,
-                table: first_table,
+                domain: first_domain,
             },
             ResolvedFutex {
                 key: second_key,
-                table: second_table,
+                domain: second_domain,
             },
         )
     }
@@ -873,302 +844,493 @@ impl FutexContext {
 /// Key and ownership domain resolved together for one futex operation.
 pub(crate) struct ResolvedFutex {
     key: FutexKey,
-    table: Arc<FutexTable>,
+    domain: FutexDomainOwner,
 }
 
 impl ResolvedFutex {
-    pub(crate) fn key(&self) -> &FutexKey {
-        &self.key
-    }
-
-    pub(crate) fn table(&self) -> &Arc<FutexTable> {
-        &self.table
-    }
-}
-
-/// The futex entry structure
-pub struct FutexEntry {
-    /// The wait queue associated with this futex.
-    pub wq: WaitQueue,
-}
-
-impl FutexEntry {
-    fn new() -> Self {
-        #[cfg(axtest)]
-        FUTEX_ENTRY_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
-        Self {
-            wq: WaitQueue::new(),
-        }
-    }
-}
-
-/// A table mapping memory addresses to futex wait queues.
-pub struct FutexTable(PiMutex<HashMap<usize, Arc<FutexEntry>>>);
-
-impl FutexTable {
-    /// Creates a new `FutexTable`.
-    #[allow(clippy::new_without_default)]
-    pub fn new() -> Self {
-        Self(PiMutex::new(HashMap::new()))
-    }
-
-    /// Checks if the futex table is empty.
-    pub fn is_empty(&self) -> bool {
-        self.0.lock().is_empty()
-    }
-
-    /// Gets the wait queue associated with the given address.
-    pub fn get(&self, key: &FutexKey) -> Option<FutexGuard<'_>> {
-        let key = key.as_usize();
-        let entry = self.0.lock().get(&key).cloned()?;
-        Some(FutexGuard {
-            table: self,
-            key,
-            inner: entry,
-        })
-    }
-
-    /// Gets the wait queue associated with the given address, or inserts a a
-    /// new one if it doesn't exist.
-    pub fn get_or_insert(&self, key: &FutexKey) -> FutexGuard<'_> {
-        let key = key.as_usize();
-        let mut table = self.0.lock();
-        let entry = table
-            .entry(key)
-            .or_insert_with(|| Arc::new(FutexEntry::new()));
-        FutexGuard {
-            table: self,
-            key,
-            inner: entry.clone(),
+    fn cleanup(&self) -> FutexWaitCleanup {
+        FutexWaitCleanup {
+            domain: self.domain.clone(),
+            key: self.key.clone(),
         }
     }
 
-    fn remove_unused_locked(table: &mut HashMap<usize, Arc<FutexEntry>>, key: usize) {
-        let should_remove = table
-            .get(&key)
-            .is_some_and(|entry| Arc::strong_count(entry) == 1 && entry.wq.is_empty());
-        if should_remove {
-            table.remove(&key);
-        }
-    }
-
-    fn collect_wake_op_locked(
-        source_table: &mut HashMap<usize, Arc<FutexEntry>>,
-        source_key: usize,
-        wake_count: usize,
-        target_table: &mut HashMap<usize, Arc<FutexEntry>>,
-        target_key: usize,
-        wake2_count: usize,
-        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<WakeBatch, FutexAccessError> {
-        let wakes = WaitQueue::collect_wake_op(
-            source_table.get(&source_key).map(|entry| &entry.wq),
-            wake_count,
-            target_table.get(&target_key).map(|entry| &entry.wq),
-            wake2_count,
-            condition,
-        )?;
-        Self::remove_unused_locked(source_table, source_key);
-        Self::remove_unused_locked(target_table, target_key);
-        Ok(wakes)
-    }
-
-    fn collect_wake_op_same_table_locked(
-        table: &mut HashMap<usize, Arc<FutexEntry>>,
-        source_key: usize,
-        wake_count: usize,
-        target_key: usize,
-        wake2_count: usize,
-        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<WakeBatch, FutexAccessError> {
-        let wakes = WaitQueue::collect_wake_op(
-            table.get(&source_key).map(|entry| &entry.wq),
-            wake_count,
-            table.get(&target_key).map(|entry| &entry.wq),
-            wake2_count,
-            condition,
-        )?;
-        Self::remove_unused_locked(table, source_key);
-        if source_key != target_key {
-            Self::remove_unused_locked(table, target_key);
-        }
-        Ok(wakes)
-    }
-
-    /// Executes `FUTEX_WAKE_OP` while serializing waiter lookup and the user
-    /// RMW with both futex tables.
-    ///
-    /// Empty keys are not materialized. Holding the table lock across the
-    /// condition prevents a waiter from being inserted between an empty lookup
-    /// and the operation, matching Linux futex hash-bucket serialization.
-    pub fn wake_op(
+    pub(crate) fn wait_nofault_for(
         &self,
-        source_key: &FutexKey,
+        task: &UserTaskRef,
+        bitset: u32,
+        timeout: Option<Duration>,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
+    ) -> Result<bool, FutexWaitError> {
+        let deadline_ns = timeout.map(|timeout| {
+            monotonic_time()
+                .as_nanos()
+                .saturating_add(timeout.as_nanos())
+                .min(u64::MAX as u128) as u64
+        });
+        let task = task.clone();
+        let (_, bucket) = self.domain.domain().bucket(&self.key);
+        let (generation, mut park) = {
+            let mut waiters = bucket.waiters.lock();
+            if !condition()? {
+                return Ok(false);
+            }
+            let park = match scheduler::begin_current_park().map_err(map_park_error)? {
+                CurrentParkStart::Notified => {
+                    let deadline_expired = deadline_ns.is_some_and(|deadline| {
+                        monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
+                    });
+                    return match classify_park_notification(
+                        task.take_interrupt(),
+                        deadline_expired,
+                    )? {
+                        ParkNotificationAction::RecheckCondition => {
+                            Err(FutexWaitError::SchedulerNotification)
+                        }
+                    };
+                }
+                CurrentParkStart::Prepared(park) => park,
+            };
+            let generation = match task.as_thread().wait_state().begin(Some(self.cleanup())) {
+                Ok(generation) => generation,
+                Err(error) => {
+                    park.cancel().map_err(map_park_error)?;
+                    return Err(error.into());
+                }
+            };
+            waiters.push_back(FutexBucketWaiter {
+                key: self.key.clone(),
+                waiter: Waiter {
+                    task: task.clone(),
+                    bitset,
+                    generation,
+                },
+            });
+            (generation, park)
+        };
+
+        loop {
+            if let Some(deadline_ns) = deadline_ns
+                && let Err(error) = park.arm_deadline(deadline_ns)
+            {
+                cancel_futex_waiter(&task, generation);
+                park.cancel().map_err(map_park_error)?;
+                return Err(map_park_error(error).into());
+            }
+
+            let resume = match park.commit() {
+                Ok(resume) => resume,
+                Err(error) => {
+                    cancel_futex_waiter(&task, generation);
+                    return Err(map_park_error(error).into());
+                }
+            };
+            if task.as_thread().wait_state().is_woken(generation) {
+                task.as_thread().wait_state().finish(generation);
+                return Ok(true);
+            }
+            if task.take_interrupt() {
+                cancel_futex_waiter(&task, generation);
+                return Err(FutexAccessError::Operation(AxError::Interrupted).into());
+            }
+            if resume.deadline_expired()
+                || deadline_ns.is_some_and(|deadline| {
+                    monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
+                })
+            {
+                cancel_futex_waiter(&task, generation);
+                return Err(FutexAccessError::Operation(AxError::TimedOut).into());
+            }
+
+            park = match scheduler::begin_current_park() {
+                Ok(CurrentParkStart::Notified)
+                    if task.as_thread().wait_state().is_woken(generation) =>
+                {
+                    task.as_thread().wait_state().finish(generation);
+                    return Ok(true);
+                }
+                Ok(CurrentParkStart::Notified) if task.take_interrupt() => {
+                    cancel_futex_waiter(&task, generation);
+                    return Err(FutexAccessError::Operation(AxError::Interrupted).into());
+                }
+                Ok(CurrentParkStart::Notified) => {
+                    cancel_futex_waiter(&task, generation);
+                    let deadline_expired = deadline_ns.is_some_and(|deadline| {
+                        monotonic_time().as_nanos().min(u64::MAX as u128) as u64 >= deadline
+                    });
+                    return match classify_park_notification(false, deadline_expired)? {
+                        ParkNotificationAction::RecheckCondition => {
+                            Err(FutexWaitError::SchedulerNotification)
+                        }
+                    };
+                }
+                Ok(CurrentParkStart::Prepared(park)) => park,
+                Err(error) => {
+                    cancel_futex_waiter(&task, generation);
+                    return Err(map_park_error(error).into());
+                }
+            };
+        }
+    }
+
+    pub(crate) fn wake(&self, count: usize, mask: u32) -> usize {
+        let (_, bucket) = self.domain.domain().bucket(&self.key);
+        let mut wakes = WakeBatch::new();
+        {
+            let mut waiters = bucket.waiters.lock();
+            collect_futex_wakes(&mut waiters, &self.key, count, mask, &mut wakes);
+        }
+        wake_batch(wakes)
+    }
+
+    pub(crate) fn requeue_to(
+        &self,
+        target: &Self,
         wake_count: usize,
-        target_table: &Self,
-        target_key: &FutexKey,
+        wake_mask: u32,
+        requeue_count: usize,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<Option<usize>, FutexAccessError> {
+        let request = FutexRequeueRequest {
+            wake_count,
+            wake_mask,
+            requeue_count,
+        };
+        let (_, source_bucket) = self.domain.domain().bucket(&self.key);
+        let (_, target_bucket) = target.domain.domain().bucket(&target.key);
+        let mut condition = Some(condition);
+        let mut wakes = WakeBatch::new();
+
+        let count =
+            match core::ptr::from_ref(source_bucket).cmp(&core::ptr::from_ref(target_bucket)) {
+                Ordering::Less => {
+                    let mut source_waiters = source_bucket.waiters.lock();
+                    let mut target_waiters = target_bucket
+                        .waiters
+                        .lock_nested(NESTED_FUTEX_BUCKET_LOCK_SUBCLASS);
+                    if !condition.take().expect("condition used once")()? {
+                        return Ok(None);
+                    }
+                    collect_futex_requeue(
+                        &mut source_waiters,
+                        &self.key,
+                        &mut target_waiters,
+                        target,
+                        request,
+                        &mut wakes,
+                    )
+                }
+                Ordering::Greater => {
+                    let mut target_waiters = target_bucket.waiters.lock();
+                    let mut source_waiters = source_bucket
+                        .waiters
+                        .lock_nested(NESTED_FUTEX_BUCKET_LOCK_SUBCLASS);
+                    if !condition.take().expect("condition used once")()? {
+                        return Ok(None);
+                    }
+                    collect_futex_requeue(
+                        &mut source_waiters,
+                        &self.key,
+                        &mut target_waiters,
+                        target,
+                        request,
+                        &mut wakes,
+                    )
+                }
+                Ordering::Equal => {
+                    let mut waiters = source_bucket.waiters.lock();
+                    if !condition.take().expect("condition used once")()? {
+                        return Ok(None);
+                    }
+                    collect_futex_requeue_same_bucket(
+                        &mut waiters,
+                        &self.key,
+                        target,
+                        request,
+                        &mut wakes,
+                    )
+                }
+            };
+        let woken = wake_batch(wakes);
+        debug_assert!(count >= woken);
+        Ok(Some(count))
+    }
+
+    pub(crate) fn wake_op(
+        &self,
+        wake_count: usize,
+        target: &Self,
         wake2_count: usize,
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
     ) -> Result<usize, FutexAccessError> {
-        let source_key = source_key.as_usize();
-        let target_key = target_key.as_usize();
+        let (_, source_bucket) = self.domain.domain().bucket(&self.key);
+        let (_, target_bucket) = target.domain.domain().bucket(&target.key);
         let mut condition = Some(condition);
-
-        let wakes = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target_table)) {
+        let mut wakes = WakeBatch::new();
+        match core::ptr::from_ref(source_bucket).cmp(&core::ptr::from_ref(target_bucket)) {
             Ordering::Less => {
-                let mut source_table = self.0.lock();
-                let mut target_table = target_table.0.lock_nested(NESTED_FUTEX_TABLE_LOCK_SUBCLASS);
-                Self::collect_wake_op_locked(
-                    &mut source_table,
-                    source_key,
+                let mut source_waiters = source_bucket.waiters.lock();
+                let mut target_waiters = target_bucket
+                    .waiters
+                    .lock_nested(NESTED_FUTEX_BUCKET_LOCK_SUBCLASS);
+                let wake_second = condition.take().expect("condition used once")()?;
+                collect_futex_wakes(
+                    &mut source_waiters,
+                    &self.key,
                     wake_count,
-                    &mut target_table,
-                    target_key,
-                    wake2_count,
-                    condition.take().expect("condition used once"),
-                )?
+                    u32::MAX,
+                    &mut wakes,
+                );
+                if wake_second {
+                    collect_futex_wakes(
+                        &mut target_waiters,
+                        &target.key,
+                        wake2_count,
+                        u32::MAX,
+                        &mut wakes,
+                    );
+                }
             }
             Ordering::Greater => {
-                let mut target_table_guard = target_table.0.lock();
-                let mut source_table = self.0.lock_nested(NESTED_FUTEX_TABLE_LOCK_SUBCLASS);
-                Self::collect_wake_op_locked(
-                    &mut source_table,
-                    source_key,
+                let mut target_waiters = target_bucket.waiters.lock();
+                let mut source_waiters = source_bucket
+                    .waiters
+                    .lock_nested(NESTED_FUTEX_BUCKET_LOCK_SUBCLASS);
+                let wake_second = condition.take().expect("condition used once")()?;
+                collect_futex_wakes(
+                    &mut source_waiters,
+                    &self.key,
                     wake_count,
-                    &mut target_table_guard,
-                    target_key,
-                    wake2_count,
-                    condition.take().expect("condition used once"),
-                )?
+                    u32::MAX,
+                    &mut wakes,
+                );
+                if wake_second {
+                    collect_futex_wakes(
+                        &mut target_waiters,
+                        &target.key,
+                        wake2_count,
+                        u32::MAX,
+                        &mut wakes,
+                    );
+                }
             }
             Ordering::Equal => {
-                let mut table = self.0.lock();
-                Self::collect_wake_op_same_table_locked(
-                    &mut table,
-                    source_key,
-                    wake_count,
-                    target_key,
-                    wake2_count,
-                    condition.take().expect("condition used once"),
-                )?
+                let mut waiters = source_bucket.waiters.lock();
+                let wake_second = condition.take().expect("condition used once")()?;
+                collect_futex_wakes(&mut waiters, &self.key, wake_count, u32::MAX, &mut wakes);
+                if wake_second {
+                    collect_futex_wakes(
+                        &mut waiters,
+                        &target.key,
+                        wake2_count,
+                        u32::MAX,
+                        &mut wakes,
+                    );
+                }
             }
-        };
-
+        }
         Ok(wake_batch(wakes))
     }
+}
 
-    /// Returns cleanup metadata for a waiter queued under `key`.
-    pub fn cleanup_for(self: &Arc<Self>, key: &FutexKey) -> FutexWaitCleanup {
-        FutexWaitCleanup {
-            table: self.clone(),
-            key: key.as_usize(),
+fn cancel_futex_waiter(task: &UserTaskRef, generation: u64) {
+    let state = task.as_thread().wait_state();
+    state.mark_cancelled(generation);
+    let _ = state.remove_from_current_queue(task, generation);
+    state.finish(generation);
+}
+
+fn collect_futex_wakes(
+    waiters: &mut VecDeque<FutexBucketWaiter>,
+    key: &FutexKey,
+    count: usize,
+    mask: u32,
+    wakes: &mut WakeBatch,
+) {
+    let base = wakes.len();
+    let mut index = 0;
+    while index < waiters.len() {
+        if waiters[index].waiter.is_cancelled() {
+            waiters.remove(index);
+            continue;
         }
-    }
-
-    fn remove_waiter(&self, key: usize, task: &UserTaskRef, generation: u64) {
-        let mut table = self.0.lock();
-        let should_remove = if let Some(entry) = table.get(&key) {
-            entry.wq.remove_waiter(task, generation) && Arc::strong_count(entry) == 1
-        } else {
-            false
-        };
-        if should_remove {
-            table.remove(&key);
+        if !waiters[index].key.same(key)
+            || wakes.len() - base >= count
+            || (waiters[index].waiter.bitset & mask) == 0
+        {
+            index += 1;
+            continue;
         }
-    }
-}
-
-#[doc(hidden)]
-pub struct FutexGuard<'a> {
-    table: &'a FutexTable,
-    key: usize,
-    inner: Arc<FutexEntry>,
-}
-
-impl Deref for FutexGuard<'_> {
-    type Target = Arc<FutexEntry>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl Drop for FutexGuard<'_> {
-    fn drop(&mut self) {
-        // Lock the table BEFORE checking strong_count to prevent a TOCTOU
-        // race: on SMP, another core could call get_or_insert() on the same
-        // key between the count check and the remove() call, creating a new
-        // reference that would be invalidated when we remove the entry.
-        // Checking inside the lock makes check-and-remove atomic.
-        let mut table = self.table.0.lock();
-        // Re-check strong_count under lock — a concurrent get_or_insert may
-        // have cloned the Arc in the meantime. The <= 2 threshold accounts
-        // for the strong refs held by the table entry and this guard
-        // (self.inner). If there are more refs, someone else is using the
-        // entry, so we must not remove it from the table.
-        if Arc::strong_count(&self.inner) <= 2 && self.inner.wq.is_empty() {
-            table.remove(&self.key);
+        let waiter = waiters
+            .remove(index)
+            .expect("futex waiter index checked")
+            .waiter;
+        if waiter.mark_woken() {
+            WaitQueue::push_wake(wakes, waiter);
         }
     }
 }
 
-struct FutexTables {
-    map: BTreeMap<usize, Arc<FutexTable>>,
-    operations: usize,
+fn collect_futex_requeue(
+    source: &mut VecDeque<FutexBucketWaiter>,
+    source_key: &FutexKey,
+    target_waiters: &mut VecDeque<FutexBucketWaiter>,
+    target: &ResolvedFutex,
+    request: FutexRequeueRequest,
+    wakes: &mut WakeBatch,
+) -> usize {
+    let wake_base = wakes.len();
+    collect_futex_wakes(
+        source,
+        source_key,
+        request.wake_count,
+        request.wake_mask,
+        wakes,
+    );
+    let woken = wakes.len() - wake_base;
+    let mut requeued = 0;
+    let mut index = 0;
+    while index < source.len() && requeued < request.requeue_count {
+        if source[index].waiter.is_cancelled() {
+            source.remove(index);
+            continue;
+        }
+        if !source[index].key.same(source_key) {
+            index += 1;
+            continue;
+        }
+        let mut entry = source.remove(index).expect("futex waiter index checked");
+        if !entry.waiter.set_cleanup_if_queued(target.cleanup()) {
+            continue;
+        }
+        entry.key = target.key.clone();
+        target_waiters.push_back(entry);
+        requeued += 1;
+    }
+    woken + requeued
 }
-impl FutexTables {
-    const fn new() -> Self {
-        Self {
-            map: BTreeMap::new(),
-            operations: 0,
-        }
-    }
 
-    fn get_or_insert(&mut self, key: usize) -> Arc<FutexTable> {
-        self.operations += 1;
-        if self.operations == 100 {
-            self.operations = 0;
-            self.map
-                .retain(|_, table| Arc::strong_count(table) > 1 || !table.is_empty());
-        }
-        self.map
-            .entry(key)
-            .or_insert_with(|| Arc::new(FutexTable::new()))
-            .clone()
+fn collect_futex_requeue_same_bucket(
+    waiters: &mut VecDeque<FutexBucketWaiter>,
+    source_key: &FutexKey,
+    target: &ResolvedFutex,
+    request: FutexRequeueRequest,
+    wakes: &mut WakeBatch,
+) -> usize {
+    let wake_base = wakes.len();
+    collect_futex_wakes(
+        waiters,
+        source_key,
+        request.wake_count,
+        request.wake_mask,
+        wakes,
+    );
+    let woken = wakes.len() - wake_base;
+    if source_key.same(&target.key) {
+        return woken;
     }
+    let mut requeued = 0;
+    for entry in waiters.iter_mut() {
+        if requeued == request.requeue_count {
+            break;
+        }
+        if entry.key.same(source_key)
+            && !entry.waiter.is_cancelled()
+            && entry.waiter.set_cleanup_if_queued(target.cleanup())
+        {
+            entry.key = target.key.clone();
+            requeued += 1;
+        }
+    }
+    woken + requeued
 }
 
-static SHARED_FUTEX_TABLES: PiMutex<FutexTables> = PiMutex::new(FutexTables::new());
+#[derive(Clone, Copy)]
+struct FutexRequeueRequest {
+    wake_count: usize,
+    wake_mask: u32,
+    requeue_count: usize,
+}
 
-/// Returns the futex table for a key in a known process context.
-pub fn futex_table_for_process(proc_data: &ProcessData, key: &FutexKey) -> Arc<FutexTable> {
-    match key {
-        FutexKey::Private { .. } => proc_data.futex_table.clone(),
-        FutexKey::Shared { region, .. } => {
-            let ptr = match region {
-                Ok(pages) => Weak::as_ptr(pages) as usize,
-                Err(key) => Weak::as_ptr(key) as usize,
-            };
-            SHARED_FUTEX_TABLES.lock().get_or_insert(ptr)
-        }
-    }
+/// Resolves an exit-time futex against the exiting process's captured mm.
+pub(crate) fn resolve_futex_for_process_teardown(
+    proc_data: &ProcessData,
+    address: usize,
+) -> ResolvedFutex {
+    let memory = proc_data.memory_share();
+    let private = memory.private_futexes();
+    let aspace = memory.aspace();
+    let key = FutexKey::new(
+        &aspace.lock(),
+        private.generation(),
+        address,
+        FutexKeyMode::Auto,
+    );
+    let domain = match key {
+        FutexKey::Private { .. } => FutexDomainOwner::Private(private),
+        FutexKey::Shared { .. } => FutexDomainOwner::Shared,
+    };
+    ResolvedFutex { key, domain }
 }
 
 #[cfg(axtest)]
-pub(crate) fn empty_wake_op_entry_allocations_for_test() -> usize {
-    let table = FutexTable::new();
-    let source_key = FutexKey::Private { address: 0x1000 };
-    let target_key = FutexKey::Private { address: 0x2000 };
-    FUTEX_ENTRY_ALLOCATIONS.store(0, AtomicOrdering::Relaxed);
+pub(crate) fn empty_wake_op_leaves_fixed_buckets_empty_for_test() -> bool {
+    let domain = Arc::new(FutexDomain::new_private());
+    let source = ResolvedFutex {
+        key: FutexKey::Private {
+            mm_generation: domain.generation(),
+            address: 0x1000,
+        },
+        domain: FutexDomainOwner::Private(domain.clone()),
+    };
+    let target = ResolvedFutex {
+        key: FutexKey::Private {
+            mm_generation: domain.generation(),
+            address: 0x2000,
+        },
+        domain: FutexDomainOwner::Private(domain.clone()),
+    };
+    assert_eq!(source.wake_op(0, &target, 0, || Ok(false)), Ok(0));
+    domain
+        .buckets
+        .iter()
+        .all(|bucket| bucket.waiters.lock().is_empty())
+}
 
-    {
-        assert_eq!(
-            table.wake_op(&source_key, 0, &table, &target_key, 0, || Ok(false)),
-            Ok(0)
-        );
-    }
+#[cfg(axtest)]
+pub(crate) fn futex_keys_follow_mm_and_backing_identity_for_test() -> bool {
+    let first_mm = FutexDomain::new_private();
+    let second_mm = FutexDomain::new_private();
+    let first = FutexKey::Private {
+        mm_generation: first_mm.generation(),
+        address: 0x1000,
+    };
+    let same_mm = FutexKey::Private {
+        mm_generation: first_mm.generation(),
+        address: 0x1000,
+    };
+    let other_mm = FutexKey::Private {
+        mm_generation: second_mm.generation(),
+        address: 0x1000,
+    };
+    let file = Arc::new(());
+    let same_file = FutexKey::Shared {
+        offset: 0x20,
+        identity: SharedFutexIdentity::File(file.clone()),
+    };
+    let alias = FutexKey::Shared {
+        offset: 0x20,
+        identity: SharedFutexIdentity::File(file),
+    };
+    let different_file = FutexKey::Shared {
+        offset: 0x20,
+        identity: SharedFutexIdentity::File(Arc::new(())),
+    };
 
-    FUTEX_ENTRY_ALLOCATIONS.load(AtomicOrdering::Relaxed)
+    first.same(&same_mm)
+        && !first.same(&other_mm)
+        && same_file.same(&alias)
+        && !same_file.same(&different_file)
 }
 
 #[cfg(axtest)]

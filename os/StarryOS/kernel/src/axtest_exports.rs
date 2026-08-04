@@ -135,8 +135,12 @@ pub fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
         && acct.rss_anon_pages() == 1
 }
 
-pub fn futex_empty_wake_op_avoids_entry_allocation() -> bool {
-    super::task::empty_wake_op_entry_allocations_for_test() == 0
+pub fn futex_empty_wake_op_leaves_fixed_buckets_empty() -> bool {
+    super::task::empty_wake_op_leaves_fixed_buckets_empty_for_test()
+}
+
+pub fn futex_keys_follow_mm_and_backing_identity() -> bool {
+    super::task::futex_keys_follow_mm_and_backing_identity_for_test()
 }
 
 pub fn futex_false_wait_condition_avoids_waiter_allocation() -> bool {

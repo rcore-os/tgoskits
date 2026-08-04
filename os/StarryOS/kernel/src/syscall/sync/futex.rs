@@ -291,15 +291,9 @@ pub fn sys_futex(
 
             loop {
                 let futex = context.resolve(uaddr.addr(), op.key_mode);
-                let entry = futex.table().get_or_insert(futex.key());
-                let cleanup = futex.table().cleanup_for(futex.key());
-                match entry.wq.wait_if_with_cleanup_nofault_for(
-                    context.task(),
-                    bitset,
-                    timeout,
-                    Some(cleanup),
-                    || futex_read_user_nofault(uaddr).map(|observed| observed == value),
-                ) {
+                match futex.wait_nofault_for(context.task(), bitset, timeout, || {
+                    futex_read_user_nofault(uaddr).map(|observed| observed == value)
+                }) {
                     Ok(true) => break,
                     Ok(false) => return Err(AxError::WouldBlock),
                     Err(FutexWaitError::SchedulerNotification) => continue,
@@ -323,16 +317,12 @@ pub fn sys_futex(
             validate_futex_word(uaddr)?;
 
             let futex = FutexContext::current().resolve(uaddr.addr(), op.key_mode);
-            let entry = futex.table().get(futex.key());
-            let mut count = 0;
-            if let Some(entry) = entry {
-                let bitset = if op.command == FutexCommand::WakeBitset {
-                    value3
-                } else {
-                    u32::MAX
-                };
-                count = entry.wq.wake(wake_count, bitset);
-            }
+            let bitset = if op.command == FutexCommand::WakeBitset {
+                value3
+            } else {
+                u32::MAX
+            };
+            let count = futex.wake(wake_count, bitset);
             complete_futex_wake(count)
         }
         FutexCommand::Requeue | FutexCommand::CmpRequeue => {
@@ -347,22 +337,11 @@ pub fn sys_futex(
             let count = loop {
                 let (source_futex, target_futex) =
                     context.resolve_pair(uaddr.addr(), uaddr2.addr(), op.key_mode);
-                let target = target_futex.table().get_or_insert(target_futex.key());
-                let target_cleanup = target_futex.table().cleanup_for(target_futex.key());
-
-                let Some(source) = source_futex.table().get(source_futex.key()) else {
-                    if op.command == FutexCommand::CmpRequeue && uaddr.vm_read()? != value3 {
-                        return Err(AxError::WouldBlock);
-                    }
-                    return Ok(0);
-                };
-
-                match source.wq.wake_requeue_if(
+                match source_futex.requeue_to(
+                    &target_futex,
                     wake_count,
                     u32::MAX,
                     requeue_count,
-                    target_cleanup,
-                    &target.wq,
                     || {
                         if op.command == FutexCommand::CmpRequeue {
                             futex_read_user_nofault(uaddr).map(|observed| observed == value3)
@@ -406,14 +385,9 @@ pub fn sys_futex(
                     // recomputed after fault-in, matching Linux futex retry.
                     let (source, target) =
                         context.resolve_pair(uaddr.addr(), uaddr2.addr(), op.key_mode);
-                    match source.table().wake_op(
-                        source.key(),
-                        wake_count,
-                        target.table(),
-                        target.key(),
-                        wake2_count,
-                        || futex_atomic_op_in_user_nofault(uaddr2, wake_operation),
-                    ) {
+                    match source.wake_op(wake_count, &target, wake2_count, || {
+                        futex_atomic_op_in_user_nofault(uaddr2, wake_operation)
+                    }) {
                         Ok(count) => break count,
                         Err(FutexAccessError::UserFault) => {
                             fault_in_user_u32_write(uaddr2)?;

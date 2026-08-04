@@ -92,8 +92,13 @@ fn untraced_syscall_boundary_skips_ptrace_maps() {
 }
 
 #[axtest]
-fn futex_empty_wake_op_avoids_entry_allocation() {
-    ax_assert!(axtest_exports::futex_empty_wake_op_avoids_entry_allocation());
+fn futex_empty_wake_op_leaves_fixed_buckets_empty() {
+    ax_assert!(axtest_exports::futex_empty_wake_op_leaves_fixed_buckets_empty());
+}
+
+#[test]
+fn futex_keys_follow_mm_and_backing_identity() {
+    ax_assert!(axtest_exports::futex_keys_follow_mm_and_backing_identity());
 }
 
 #[axtest]

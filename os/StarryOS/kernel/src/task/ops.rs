@@ -18,13 +18,13 @@ use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AlarmTarget, AlarmToken, Cred, FutexKey, OrphanReaper, PendingTimerActions, ProcessData,
-    Thread, TimerState, UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task,
-    futex_table_for_process, get_process_data, get_zombie_cred, is_zombie_process,
-    namespace_shutdown_parent, orphan_reaper_for, process_belongs_to_pid_namespace, processes,
-    publish_zombie, published_victim_tids, reap_process, register_prepared_process_identity,
-    register_process_identity, release_thread_pid, send_signal_to_process, send_signal_to_thread,
-    unregister_prepared_process_identity, wait_for_victims,
+    AlarmTarget, AlarmToken, Cred, OrphanReaper, PendingTimerActions, ProcessData, Thread,
+    TimerState, UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task, get_process_data,
+    get_zombie_cred, is_zombie_process, namespace_shutdown_parent, orphan_reaper_for,
+    process_belongs_to_pid_namespace, processes, publish_zombie, published_victim_tids,
+    reap_process, register_prepared_process_identity, register_process_identity,
+    release_thread_pid, resolve_futex_for_process_teardown, send_signal_to_process,
+    send_signal_to_thread, unregister_prepared_process_identity, wait_for_victims,
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
@@ -398,14 +398,7 @@ fn robust_futex_address(entry: *mut RobustList, offset: i64) -> AxResult<usize> 
 }
 
 fn wake_robust_futex(proc_data: &ProcessData, address: usize) {
-    let key = FutexKey::new_for_process_teardown(proc_data, address);
-
-    let futex_table = futex_table_for_process(proc_data, &key);
-
-    let Some(futex) = futex_table.get(&key) else {
-        return;
-    };
-    futex.wq.wake(1, u32::MAX);
+    resolve_futex_for_process_teardown(proc_data, address).wake(1, u32::MAX);
 }
 
 fn handle_futex_death(
@@ -586,12 +579,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let clear_child_tid = thr.clear_child_tid() as *mut u32;
     if clear_child_tid.vm_write(0).is_ok() {
-        let key = FutexKey::new_for_process_teardown(&thr.proc_data, clear_child_tid as usize);
-        let table = futex_table_for_process(&thr.proc_data, &key);
-        let guard = table.get(&key);
-        if let Some(futex) = guard {
-            futex.wq.wake(1, u32::MAX);
-        }
+        resolve_futex_for_process_teardown(&thr.proc_data, clear_child_tid as usize)
+            .wake(1, u32::MAX);
         let _decision = yield_current_cpu();
     }
 
