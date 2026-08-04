@@ -26,7 +26,6 @@ pub mod host;
 mod lock;
 mod pit;
 mod regs;
-mod serial;
 mod timer;
 mod types;
 mod utils;
@@ -55,7 +54,6 @@ pub struct EmulatedLocalApic<H: host::X86VlapicHostOps> {
 pub use self::{
     host::X86VlapicHostOps,
     pit::EmulatedPit,
-    serial::EmulatedSerialPort,
     types::{
         X86AccessWidth, X86GuestPhysAddr, X86GuestPhysAddrRange, X86HostPhysAddr, X86HostVirtAddr,
         X86InterruptVector, X86MsrAddr, X86MsrAddrRange, X86Port, X86PortRange, X86TimerCallback,

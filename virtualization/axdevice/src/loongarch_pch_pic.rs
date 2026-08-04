@@ -8,7 +8,10 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(not(test))]
 use ax_kspin::SpinNoIrq as Mutex;
+#[cfg(test)]
+use ax_kspin::SpinRaw as Mutex;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
     Resource,
@@ -17,7 +20,7 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerResult, DeviceRegistration,
-    ServiceCardinality, ServiceKey,
+    ServiceCardinality, ServiceKey, VirtualInterruptControllerKey, validate_device_config,
 };
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
@@ -269,7 +272,30 @@ impl PchPicOutputPort for LoongArchPchPic {
 }
 
 /// Factory for the guest-visible LoongArch PCH-PIC contribution.
-pub struct LoongArchPchPicFactory;
+pub struct LoongArchPchPicFactory {
+    expected: EmulatedDeviceConfig,
+    pic: Arc<LoongArchPchPic>,
+    interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController>,
+}
+
+impl LoongArchPchPicFactory {
+    /// Creates the only factory for an architecture-owned PCH-PIC instance.
+    pub fn new(
+        expected: EmulatedDeviceConfig,
+        pic: Arc<LoongArchPchPic>,
+        interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController>,
+    ) -> Self {
+        Self {
+            expected,
+            pic,
+            interrupt_controller,
+        }
+    }
+
+    fn validate(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult {
+        validate_device_config(&self.expected, config, "build LoongArch virtual PCH-PIC")
+    }
+}
 
 impl DeviceFactory for LoongArchPchPicFactory {
     fn device_type(&self) -> EmulatedDeviceType {
@@ -281,11 +307,12 @@ impl DeviceFactory for LoongArchPchPicFactory {
         config: &EmulatedDeviceConfig,
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        let pic = Arc::new(LoongArchPchPic::new(config.base_gpa.into(), config.length));
-        let device: Arc<dyn Device> = pic.clone();
-        let output: Arc<dyn PchPicOutputPort> = pic;
+        self.validate(config)?;
+        let device: Arc<dyn Device> = self.pic.clone();
+        let output: Arc<dyn PchPicOutputPort> = self.pic.clone();
         DeviceBundle::from_registration(DeviceRegistration::Device(device))
-            .with_service::<PchPicOutputPortKey>(output)
+            .with_service::<PchPicOutputPortKey>(output)?
+            .with_service::<VirtualInterruptControllerKey>(self.interrupt_controller.clone())
     }
 }
 

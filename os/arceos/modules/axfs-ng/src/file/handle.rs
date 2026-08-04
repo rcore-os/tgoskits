@@ -1,3 +1,5 @@
+#[cfg(test)]
+use core::sync::atomic::AtomicUsize;
 use core::{
     sync::atomic::{AtomicU8, Ordering},
     task::Context,
@@ -387,10 +389,15 @@ fn needs_metadata_update_on_drop(location: &Location, access_flags: u8) -> bool 
     access_flags != 0 && !location.is_readonly()
 }
 
+#[cfg(test)]
+static DROP_METADATA_UPDATE_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
 impl Drop for File {
     fn drop(&mut self) {
         let flags = self.access_flags.load(Ordering::Acquire);
         if needs_metadata_update_on_drop(self.inner.location(), flags) {
+            #[cfg(test)]
+            DROP_METADATA_UPDATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
             let mut update = axfs_ng_vfs::MetadataUpdate::default();
             if flags & 1 != 0 {
                 update.atime = Some(crate::os::wall_time());
@@ -408,7 +415,12 @@ impl Drop for File {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use core::{any::Any, task::Context, time::Duration};
+    use core::{
+        any::Any,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Context,
+        time::Duration,
+    };
 
     use axfs_ng_vfs::{
         DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
@@ -418,21 +430,37 @@ mod tests {
 
     use super::*;
 
-    struct ReadonlyTestFilesystem;
+    struct TestFilesystem {
+        name: &'static str,
+        readonly: bool,
+    }
 
-    static READONLY_TEST_FILESYSTEM: ReadonlyTestFilesystem = ReadonlyTestFilesystem;
+    static READONLY_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
+        name: "readonly-file-drop-test",
+        readonly: true,
+    };
 
-    impl FilesystemOps for ReadonlyTestFilesystem {
+    static WRITABLE_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
+        name: "writable-file-drop-test",
+        readonly: false,
+    };
+
+    static DROP_METADATA_UPDATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    impl FilesystemOps for TestFilesystem {
         fn name(&self) -> &str {
-            "readonly-file-drop-test"
+            self.name
         }
 
         fn is_readonly(&self) -> bool {
-            true
+            self.readonly
         }
 
         fn root_dir(&self) -> DirEntry {
-            test_entry(Arc::new(ReadonlyTestFile::new()))
+            test_entry(Arc::new(MetadataTrackingTestFile::new(
+                &READONLY_TEST_FILESYSTEM,
+                Arc::new(AtomicUsize::new(0)),
+            )))
         }
 
         fn stat(&self) -> VfsResult<StatFs> {
@@ -440,15 +468,21 @@ mod tests {
         }
     }
 
-    struct ReadonlyTestFile {}
+    struct MetadataTrackingTestFile {
+        filesystem: &'static dyn FilesystemOps,
+        metadata_updates: Arc<AtomicUsize>,
+    }
 
-    impl ReadonlyTestFile {
-        const fn new() -> Self {
-            Self {}
+    impl MetadataTrackingTestFile {
+        fn new(filesystem: &'static dyn FilesystemOps, metadata_updates: Arc<AtomicUsize>) -> Self {
+            Self {
+                filesystem,
+                metadata_updates,
+            }
         }
     }
 
-    impl NodeOps for ReadonlyTestFile {
+    impl NodeOps for MetadataTrackingTestFile {
         fn inode(&self) -> u64 {
             1
         }
@@ -473,11 +507,12 @@ mod tests {
         }
 
         fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            self.metadata_updates.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
 
         fn filesystem(&self) -> &dyn FilesystemOps {
-            &READONLY_TEST_FILESYSTEM
+            self.filesystem
         }
 
         fn sync(&self, _data_only: bool) -> VfsResult<()> {
@@ -493,7 +528,7 @@ mod tests {
         }
     }
 
-    impl FsPollable for ReadonlyTestFile {
+    impl FsPollable for MetadataTrackingTestFile {
         fn poll(&self) -> FsIoEvents {
             FsIoEvents::IN | FsIoEvents::OUT
         }
@@ -501,9 +536,11 @@ mod tests {
         fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
     }
 
-    impl FileNodeOps for ReadonlyTestFile {
-        fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-            if let Some(byte) = buf.first_mut() {
+    impl FileNodeOps for MetadataTrackingTestFile {
+        fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+            if offset == 0
+                && let Some(byte) = buf.first_mut()
+            {
                 *byte = 0;
                 Ok(1)
             } else {
@@ -528,7 +565,7 @@ mod tests {
         }
     }
 
-    fn test_entry(node: Arc<ReadonlyTestFile>) -> DirEntry {
+    fn test_entry(node: Arc<MetadataTrackingTestFile>) -> DirEntry {
         DirEntry::new_file(
             FileNode::new(node),
             NodeType::RegularFile,
@@ -536,12 +573,65 @@ mod tests {
         )
     }
 
-    #[test]
-    fn readonly_mount_skips_read_access_metadata_update() {
-        let filesystem = Filesystem::new(Arc::new(ReadonlyTestFilesystem));
-        let mountpoint = Mountpoint::new_root(&filesystem);
-        let location = Location::new(mountpoint, test_entry(Arc::new(ReadonlyTestFile::new())));
+    fn reset_drop_metadata_update_attempts() {
+        DROP_METADATA_UPDATE_ATTEMPTS.store(0, Ordering::Relaxed);
+    }
 
-        assert!(!needs_metadata_update_on_drop(&location, 1));
+    #[test]
+    fn readonly_file_drop_skips_metadata_update_after_read() {
+        let _guard = DROP_METADATA_UPDATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_drop_metadata_update_attempts();
+        let metadata_updates = Arc::new(AtomicUsize::new(0));
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+            name: "readonly-file-drop-test",
+            readonly: true,
+        }));
+        let mountpoint = Mountpoint::new_root(&filesystem);
+        let location = Location::new(
+            mountpoint,
+            test_entry(Arc::new(MetadataTrackingTestFile::new(
+                &READONLY_TEST_FILESYSTEM,
+                metadata_updates.clone(),
+            ))),
+        );
+
+        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let mut byte = [0];
+        assert_eq!(file.read(&mut byte[..]).unwrap(), 1);
+        drop(file);
+
+        assert_eq!(metadata_updates.load(Ordering::Relaxed), 0);
+        assert_eq!(DROP_METADATA_UPDATE_ATTEMPTS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn writable_file_drop_updates_metadata_after_read() {
+        let _guard = DROP_METADATA_UPDATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_drop_metadata_update_attempts();
+        let metadata_updates = Arc::new(AtomicUsize::new(0));
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+            name: "writable-file-drop-test",
+            readonly: false,
+        }));
+        let mountpoint = Mountpoint::new_root(&filesystem);
+        let location = Location::new(
+            mountpoint,
+            test_entry(Arc::new(MetadataTrackingTestFile::new(
+                &WRITABLE_TEST_FILESYSTEM,
+                metadata_updates.clone(),
+            ))),
+        );
+
+        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let mut byte = [0];
+        assert_eq!(file.read(&mut byte[..]).unwrap(), 1);
+        drop(file);
+
+        assert_eq!(metadata_updates.load(Ordering::Relaxed), 1);
+        assert_eq!(DROP_METADATA_UPDATE_ATTEMPTS.load(Ordering::Relaxed), 1);
     }
 }

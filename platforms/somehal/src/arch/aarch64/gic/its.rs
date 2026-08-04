@@ -57,7 +57,7 @@ fn probe_its(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let size = reg.size.unwrap_or((GITS_TRANSLATER_OFFSET + 8) as u64) as usize;
+    let size = reg.size.unwrap_or(GITS_TRANSLATER_OFFSET + 8) as usize;
     let mmio = ioremap(reg.address, size)
         .map_err(|err| OnProbeError::other(format!("failed to map ITS: {err:?}")))?;
     let its = unsafe { Its::new(mmio.as_ptr().into(), reg.address) };

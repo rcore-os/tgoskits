@@ -23,6 +23,33 @@ pub struct Gic {
 
 unsafe impl Send for Gic {}
 
+/// Lock-free access to GICv2 Distributor state used by IRQ completion paths.
+#[derive(Clone, Copy)]
+pub struct DistributorOperations {
+    gicd: *mut DistributorReg,
+}
+
+// SAFETY: the pointer names the immutable, permanently mapped GICD register
+// block. Individual Distributor registers provide the required MMIO
+// synchronization; this capability does not expose ordinary Rust memory.
+unsafe impl Send for DistributorOperations {}
+// SAFETY: see the `Send` implementation. Concurrent reads of GICD_ISPENDR are
+// architecturally supported and do not create Rust aliases to mutable memory.
+unsafe impl Sync for DistributorOperations {}
+
+impl DistributorOperations {
+    fn gicd(&self) -> &DistributorReg {
+        // SAFETY: `Gic::distributor_operations` only constructs this capability
+        // from the live GICD mapping established during platform discovery.
+        unsafe { &*self.gicd }
+    }
+
+    /// Returns the Distributor pending state for one interrupt.
+    pub fn is_pending(&self, intid: IntId) -> bool {
+        self.gicd().ISPENDR.get_irq_bit(intid.into())
+    }
+}
+
 pub struct HyperAddress {
     pub gich: VirtAddr,
     pub gicv: VirtAddr,
@@ -63,6 +90,16 @@ impl Gic {
 
     pub fn gicd_addr(&self) -> VirtAddr {
         self.gicd
+    }
+
+    /// Returns an IRQ-safe view of stable Distributor state.
+    ///
+    /// The returned capability does not own the register mapping. It remains
+    /// valid for the lifetime of the initialized GIC driver.
+    pub fn distributor_operations(&self) -> DistributorOperations {
+        DistributorOperations {
+            gicd: self.gicd.as_ptr(),
+        }
     }
 
     pub fn max_intid(&self) -> u32 {
@@ -863,6 +900,55 @@ impl HypervisorInterface {
     /// Get the number of implemented list registers
     pub fn get_list_register_count(&self) -> usize {
         (self.gich().VTR.read(gich::VTR::ListRegs) + 1) as usize
+    }
+
+    /// Returns the number of implemented priority bits.
+    pub fn priority_bits(&self) -> u8 {
+        (self.gich().VTR.read(gich::VTR::PRIbits) + 1) as u8
+    }
+
+    /// Returns the raw GICH_HCR value for vCPU context save.
+    pub fn hcr_raw(&self) -> u32 {
+        self.gich().HCR.get()
+    }
+
+    /// Restores a raw GICH_HCR value for vCPU context load.
+    pub fn set_hcr_raw(&self, value: u32) {
+        self.gich().HCR.set(value);
+    }
+
+    /// Returns the raw GICH_VMCR value for vCPU context save.
+    pub fn vmcr_raw(&self) -> u32 {
+        self.gich().VMCR.get()
+    }
+
+    /// Restores a raw GICH_VMCR value for vCPU context load.
+    pub fn set_vmcr_raw(&self, value: u32) {
+        self.gich().VMCR.set(value);
+    }
+
+    /// Returns the raw GICH_APR value for vCPU context save.
+    pub fn apr_raw(&self) -> u32 {
+        self.gich().APR.get()
+    }
+
+    /// Restores the raw GICH_APR value for vCPU context load.
+    pub fn set_apr_raw(&self, value: u32) {
+        self.gich().APR.set(value);
+    }
+
+    /// Returns one raw GICH_LR value after validating the hardware index.
+    pub fn list_register_raw(&self, index: usize) -> Option<u32> {
+        (index < self.get_list_register_count()).then(|| self.gich().LR[index].get())
+    }
+
+    /// Restores one raw GICH_LR value after validating the hardware index.
+    pub fn set_list_register_raw(&self, index: usize, value: u32) -> Result<(), &'static str> {
+        if index >= self.get_list_register_count() {
+            return Err("list register index exceeds the implemented GICH range");
+        }
+        self.gich().LR[index].set(value);
+        Ok(())
     }
 
     /// Get EOI status registers

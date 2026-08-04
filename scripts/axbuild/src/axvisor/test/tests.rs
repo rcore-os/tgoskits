@@ -24,6 +24,7 @@ struct TestVmKernelConfig {
 
 #[derive(serde::Deserialize)]
 struct TestVmKernel {
+    #[serde(default)]
     cmdline: String,
 }
 
@@ -188,6 +189,42 @@ fn orangepi_guest_board_cases_use_matching_vm_configs() {
             "{board_name} should select its matching guest VM config"
         );
     }
+}
+
+#[test]
+fn orangepi_linux_guest_does_not_use_uart_clock_workaround() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    // The Rockchip assignment and AxVM shared-MMIO tests pin the protection itself. This
+    // board-level contract prevents the guest config from silently bypassing that path.
+    assert!(
+        !config.kernel.cmdline.contains("clk_ignore_unused"),
+        "{path} must protect the host-owned UART clock through shared-provider mediation"
+    );
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the guest console through the machine-owned virtual UART"
+    );
+}
+
+#[test]
+fn rk3568_linux_guest_uses_the_virtual_16550_console() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/roc-rk3568-pc/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the login console through the machine-owned virtual 16550"
+    );
+    assert!(
+        !config.kernel.cmdline.contains("console=ttyFIQ0"),
+        "{path} must not route the login console through the removed physical FIQ debugger"
+    );
 }
 
 #[test]

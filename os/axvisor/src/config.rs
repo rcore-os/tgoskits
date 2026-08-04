@@ -38,7 +38,7 @@ use axvm::{
 };
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
-use axvmconfig::{AxVMCrateConfig, VMType};
+use axvmconfig::{GuestConfig, GuestType, PassThroughDeviceConfig};
 
 #[cfg(all(
     feature = "fs",
@@ -66,7 +66,7 @@ pub mod vmcfg {
         crate::manager::AxvmManager::filesystem_vm_configs(config_dir)
             .into_iter()
             .filter_map(
-                |content| match axvmconfig::AxVMCrateConfig::from_toml(&content) {
+                |content| match axvmconfig::GuestConfig::from_toml(&content) {
                     Ok(_) => Some(content),
                     Err(e) => {
                         warn!("Filesystem VM config is invalid: {:?}", e);
@@ -116,7 +116,7 @@ pub fn init_guest_vms() {
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     let image_provider = AxvisorBootImageProvider;
     let vm_create_config =
-        AxVMCrateConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+        GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
 
     #[cfg(all(
@@ -191,11 +191,24 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     Ok(vm_id)
 }
 
-pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
+pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
+    let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
+    let serial_profile = machine.serial;
+    let mut passthrough_devices = cfg.devices.unresolved_passthrough_devices();
+    if cfg.base.guest_type == GuestType::Passthrough
+        && let Some(path) = machine.default_passthrough_device_path
+    {
+        passthrough_devices.insert(
+            0,
+            PassThroughDeviceConfig {
+                name: path.into(),
+                ..Default::default()
+            },
+        );
+    }
     AxVMConfig::new(AxVMConfigParams {
         id: cfg.base.id,
         name: cfg.base.name.clone(),
-        vm_type: VMType::from(cfg.base.vm_type),
         phys_cpu_ls: PhysCpuList::new(
             cfg.base.cpu_num,
             cfg.base.phys_cpu_ids.clone(),
@@ -215,21 +228,22 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
                 size: None,
             }),
         },
-        emu_devices: cfg.devices.emu_devices.clone(),
-        pass_through_irqs: cfg.devices.passthrough_irqs.clone(),
-        pass_through_devices: cfg.devices.passthrough_devices.clone(),
-        excluded_devices: cfg.devices.excluded_devices.clone(),
-        pass_through_addresses: cfg.devices.passthrough_addresses.clone(),
+        emu_devices: machine.emulated_devices,
+        pass_through_devices: passthrough_devices,
+        excluded_devices: cfg.devices.disabled_device_paths(),
+        pass_through_addresses: Vec::new(),
         reserved_address_ranges: Vec::new(),
-        pass_through_ports: cfg.devices.passthrough_ports.clone(),
-        address_space_policy: cfg.devices.address_space_policy,
+        pass_through_ports: Vec::new(),
+        address_space_policy: cfg.base.guest_type.address_space_policy(),
         memory_regions: cfg.kernel.memory_regions.clone(),
         boot_policy: GuestBootPolicy::KeepConfigured,
-        interrupt_mode: cfg.devices.interrupt_mode,
+        interrupt_mode: cfg.base.guest_type.interrupt_mode(),
+        serial_profile: Some(serial_profile),
+        serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
     })
 }
 
-fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
+fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestConfig) {
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
@@ -241,11 +255,10 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrat
         target_arch = "loongarch64"
     )
 ))]
-fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
+fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
     config.kernel.image_location.as_deref() == Some("fs")
-        && (!config.devices.passthrough_devices.is_empty()
-            || !config.devices.passthrough_addresses.is_empty()
-            || !config.devices.passthrough_ports.is_empty())
+        && (config.base.guest_type == GuestType::Passthrough
+            || !config.devices.passthrough.is_empty())
 }
 
 #[cfg(all(
@@ -442,7 +455,7 @@ mod tests {
 
     #[test]
     fn sync_axvm_config_keeps_fdt_reserved_memory_regions() {
-        let mut crate_config = AxVMCrateConfig::default();
+        let mut crate_config = GuestConfig::default();
         crate_config.kernel.memory_regions.push(memory_region(
             0x8000_0000,
             0x200000,

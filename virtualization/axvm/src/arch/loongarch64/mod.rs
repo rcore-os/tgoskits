@@ -290,7 +290,7 @@ fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
             );
             continue;
         }
-        if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
+        if let Err(err) = inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
             warn!(
                 "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
                 vm.id(),
@@ -298,6 +298,20 @@ fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
             );
         }
     }
+}
+
+fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    use crate::AsVCpuTask;
+
+    let current = crate::host::task::current_task();
+    if let Some(task) = current.try_as_vcpu_task()
+        && task.vm().id() == vm_id
+        && task.vcpu.id() == vcpu_id
+    {
+        return task.vcpu.inject_interrupt(vector);
+    }
+
+    crate::manager::inject_interrupt(vm_id, vcpu_id, vector)
 }
 
 struct AxvmLoongArchHostOps;

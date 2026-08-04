@@ -372,6 +372,15 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: "1"
+          - name: Run axvisor shell regression tests
+            use_container: false
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              bash os/axvisor/scripts/test_bootstrap_registry.sh
+              bash os/axvisor/scripts/test_quick_start_x86_64.sh
+            cache_key: ""
+            container_image: base
+            fetch_depth: "1"
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -464,6 +473,19 @@ jobs:
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
             command: cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
+            cache_key: ""
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
+          - name: Test axvisor aarch64 qemu (timer stress)
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
+            timeout_minutes: 30
+            command: |
+              cargo xtask image pull qemu-aarch64 --output-dir tmp/axbuild/images
+              cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+              cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
             cache_key: ""
             container_image: base
             limit_to_owner: ""

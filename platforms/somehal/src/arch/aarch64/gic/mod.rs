@@ -4,6 +4,7 @@ use rdif_intc::{Intc, Interface};
 use rdrive::Device;
 
 mod its;
+mod trigger;
 mod v2;
 mod v3;
 
@@ -82,11 +83,34 @@ pub fn with_primary_gic<T: Interface, R>(
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
-    match backend() {
+    let result = match backend() {
         GicBackend::V2 => v2::irq_set_enable(irq, enable),
         GicBackend::V3 => v3::irq_set_enable(irq, enable),
         GicBackend::None => Err(crate::irq::IrqError::Unsupported),
+    };
+    if result.is_ok() {
+        controller_sync_barrier();
     }
+    result
+}
+
+pub fn irq_set_trigger(
+    irq: IrqId,
+    trigger: crate::irq::IrqTrigger,
+) -> Result<(), crate::irq::IrqError> {
+    let trigger = match trigger {
+        crate::irq::IrqTrigger::Edge => arm_gic_driver::v3::Trigger::Edge,
+        crate::irq::IrqTrigger::Level => arm_gic_driver::v3::Trigger::Level,
+    };
+    let result = match backend() {
+        GicBackend::V2 => v2::irq_set_trigger(irq, trigger),
+        GicBackend::V3 => v3::irq_set_trigger(irq, trigger),
+        GicBackend::None => Err(crate::irq::IrqError::Unsupported),
+    };
+    if result.is_ok() {
+        controller_sync_barrier();
+    }
+    result
 }
 
 pub fn irq_set_affinity(
@@ -129,6 +153,14 @@ pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
                 v2::send_ipi(raw, target);
             }
         }
+    }
+}
+
+fn controller_sync_barrier() {
+    // SAFETY: this only orders prior GIC MMIO/system-register writes before
+    // subsequent interrupt delivery on the current CPU.
+    unsafe {
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
     }
 }
 

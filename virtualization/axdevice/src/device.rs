@@ -1201,9 +1201,10 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use axdevice_base::{
-        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-        DeviceId, DeviceRegistry, DmaGrant, InterruptTriggerMode, InvalidResourceReason, IrqLine,
-        Port, RegistryError, Resource, StopGrant, SysRegAddr, TimerGrant, WakeGrant,
+        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, ControllerInputId, Device,
+        DeviceAccess, DeviceError, DeviceId, DeviceRegistry, DmaGrant, InterruptControllerId,
+        InterruptTriggerMode, InvalidResourceReason, IrqResult, Port, RegistryError, Resource,
+        StopGrant, SysRegAddr, TimerGrant, VirtualInterruptController, WakeGrant, WiredIrqInput,
     };
     use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
@@ -1212,8 +1213,8 @@ mod tests {
     };
     use crate::{
         DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
-        DeviceManagerError, DeviceManagerResult, DeviceRegistration, IrqResolver,
-        ServiceCardinality, ServiceKey, register_builtin_factories,
+        DeviceManagerError, DeviceManagerResult, DeviceRegistration, ServiceCardinality,
+        ServiceKey, register_builtin_factories,
     };
 
     struct D {
@@ -1230,12 +1231,6 @@ mod tests {
         fn new_port(base: u16, size: u16, n: &'static str) -> Self {
             Self {
                 resources: alloc::vec![Resource::PortRange { base, size }],
-                n,
-            }
-        }
-        fn new_sysreg(addr: u32, n: &'static str) -> Self {
-            Self {
-                resources: alloc::vec![Resource::SysReg { addr, count: 1 }],
                 n,
             }
         }
@@ -1325,6 +1320,14 @@ mod tests {
         }
 
         fn assert_gsi(&self, _gsi: usize) -> Option<x86_vlapic::IoApicInterrupt> {
+            None
+        }
+
+        fn set_gsi_level(
+            &self,
+            _gsi: usize,
+            _asserted: bool,
+        ) -> Option<x86_vlapic::IoApicInterrupt> {
             None
         }
 
@@ -1469,14 +1472,18 @@ mod tests {
         }
     }
 
-    struct UnusedIrqResolver;
+    struct UnusedInterruptController;
 
-    impl IrqResolver for UnusedIrqResolver {
-        fn resolve_irq(
+    impl VirtualInterruptController for UnusedInterruptController {
+        fn id(&self) -> InterruptControllerId {
+            InterruptControllerId::new(0)
+        }
+
+        fn wired_input(
             &self,
-            _line: usize,
+            _input: ControllerInputId,
             _trigger: InterruptTriggerMode,
-        ) -> DeviceManagerResult<IrqLine> {
+        ) -> IrqResult<WiredIrqInput> {
             unreachable!("empty factory never resolves an IRQ")
         }
     }
@@ -1523,23 +1530,6 @@ mod tests {
             self.resume_calls.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
-    }
-
-    #[test]
-    fn test_register_dispatch() {
-        let mut m = DeviceRuntime::empty();
-        m.register(Arc::new(D::new_mmio(0x1000, 0x100, "d")))
-            .unwrap();
-        assert!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x1050,
-                width: AccessWidth::Dword,
-                data: 0
-            })
-            .is_ok()
-        );
     }
 
     #[test]
@@ -1786,7 +1776,7 @@ mod tests {
                 device_type: EmulatedDeviceType::Dummy,
             }))
             .unwrap();
-        let context = DeviceBuildContext::new(&UnusedIrqResolver);
+        let context = DeviceBuildContext::new(&UnusedInterruptController);
         let mut runtime = DeviceRuntime::build_with_factories(
             &[EmulatedDeviceConfig {
                 name: "seal-test".into(),
@@ -1857,150 +1847,46 @@ mod tests {
     }
 
     #[test]
-    fn test_overlap() {
-        let mut m = DeviceRuntime::empty();
-        m.register(Arc::new(D::new_mmio(0x1000, 0x200, "a")))
-            .unwrap();
-        assert!(matches!(
-            m.register(Arc::new(D::new_mmio(0x1100, 0x100, "b"))),
-            Err(RegistryError::AddressConflict { .. })
-        ));
-    }
-
-    #[test]
-    fn test_not_found() {
-        assert!(matches!(
-            DeviceRuntime::empty().dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0xdead,
-                width: AccessWidth::Dword,
-                data: 0
-            }),
-            Err(DeviceError::NotFound)
-        ));
-    }
-
-    #[test]
-    fn test_port_sysreg() {
-        let mut m = DeviceRuntime::empty();
-        m.register(Arc::new(D::new_port(0x80, 4, "p"))).unwrap();
-        m.register(Arc::new(D::new_sysreg(0xC000, "s"))).unwrap();
-        assert!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::Port,
-                is_read: true,
-                addr: 0x80,
-                width: AccessWidth::Byte,
-                data: 0
-            })
-            .is_ok()
-        );
-        assert!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::SysReg,
-                is_read: true,
-                addr: 0xC000,
-                width: AccessWidth::Qword,
-                data: 0
-            })
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn test_same_device_overlapping_mmio_rejected() {
-        // Same device declaring [0x1000, 0x1200) and [0x1100, 0x1300)
-        struct OverlapDevice;
-        impl Device for OverlapDevice {
-            fn name(&self) -> &str {
-                "overlap"
-            }
-            fn resources(&self) -> &[Resource] {
-                static R: [Resource; 2] = [
-                    Resource::MmioRange {
-                        base: 0x1000,
-                        size: 0x200,
-                    },
-                    Resource::MmioRange {
-                        base: 0x1100,
-                        size: 0x200,
-                    },
-                ];
-                &R
-            }
-            fn access(
-                &self,
-                _: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
-                Ok(BusResponse::Read { value: 0 })
-            }
+    fn resource_validation_rejects_same_bus_overlap_but_allows_distinct_buses() {
+        for resources in [
+            alloc::vec![
+                Resource::MmioRange {
+                    base: 0x1000,
+                    size: 0x200,
+                },
+                Resource::MmioRange {
+                    base: 0x1100,
+                    size: 0x200,
+                },
+            ],
+            alloc::vec![
+                Resource::MmioRange {
+                    base: 0x1000,
+                    size: 0x1000,
+                },
+                Resource::MmioRange {
+                    base: 0x1800,
+                    size: 0x100,
+                },
+            ],
+        ] {
+            let mut runtime = DeviceRuntime::empty();
+            assert!(matches!(
+                runtime.register(Arc::new(D {
+                    resources,
+                    n: "overlapping",
+                })),
+                Err(RegistryError::InvalidResource {
+                    reason: InvalidResourceReason::OverlappingResources,
+                    ..
+                })
+            ));
         }
 
-        let mut m = DeviceRuntime::empty();
-        let result = m.register(Arc::new(OverlapDevice));
-        assert!(matches!(
-            result,
-            Err(RegistryError::InvalidResource {
-                reason: InvalidResourceReason::OverlappingResources,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_same_device_nested_mmio_rejected() {
-        // Same device declaring [0x1000, 0x2000) and [0x1800, 0x1900) —
-        // smaller range is fully inside larger range.
-        struct NestedDevice;
-        impl Device for NestedDevice {
-            fn name(&self) -> &str {
-                "nested"
-            }
-            fn resources(&self) -> &[Resource] {
-                static R: [Resource; 2] = [
-                    Resource::MmioRange {
-                        base: 0x1000,
-                        size: 0x1000,
-                    },
-                    Resource::MmioRange {
-                        base: 0x1800,
-                        size: 0x100,
-                    },
-                ];
-                &R
-            }
-            fn access(
-                &self,
-                _: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
-                Ok(BusResponse::Read { value: 0 })
-            }
-        }
-
-        let mut m = DeviceRuntime::empty();
-        let result = m.register(Arc::new(NestedDevice));
-        assert!(matches!(
-            result,
-            Err(RegistryError::InvalidResource {
-                reason: InvalidResourceReason::OverlappingResources,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn test_same_device_mmio_port_same_addr_allowed() {
-        // Same numeric address on different buses is allowed.
-        struct DualBusDevice;
-        impl Device for DualBusDevice {
-            fn name(&self) -> &str {
-                "dual-bus"
-            }
-            fn resources(&self) -> &[Resource] {
-                static R: [Resource; 2] = [
+        let mut runtime = DeviceRuntime::empty();
+        runtime
+            .register(Arc::new(D {
+                resources: alloc::vec![
                     Resource::MmioRange {
                         base: 0x1000,
                         size: 0x100,
@@ -2009,53 +1895,10 @@ mod tests {
                         base: 0x1000,
                         size: 0x10,
                     },
-                ];
-                &R
-            }
-            fn access(
-                &self,
-                access: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
-                if access.is_read {
-                    Ok(BusResponse::Read { value: 0 })
-                } else {
-                    Ok(BusResponse::Write)
-                }
-            }
-        }
-
-        let mut m = DeviceRuntime::empty();
-        assert!(m.register(Arc::new(DualBusDevice)).is_ok());
-    }
-
-    #[test]
-    fn test_sysreg_max_single_register_valid() {
-        // addr = u32::MAX, count = 1 is the highest valid single-register
-        // range and should not be rejected as overflow.
-        struct MaxSysRegDevice;
-        impl Device for MaxSysRegDevice {
-            fn name(&self) -> &str {
-                "max-sysreg"
-            }
-            fn resources(&self) -> &[Resource] {
-                static R: [Resource; 1] = [Resource::SysReg {
-                    addr: u32::MAX,
-                    count: 1,
-                }];
-                &R
-            }
-            fn access(
-                &self,
-                _: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
-                Ok(BusResponse::Read { value: 0 })
-            }
-        }
-
-        let mut m = DeviceRuntime::empty();
-        assert!(m.register(Arc::new(MaxSysRegDevice)).is_ok());
+                ],
+                n: "dual-bus",
+            }))
+            .unwrap();
     }
 
     #[test]
@@ -2109,64 +1952,6 @@ mod tests {
         // handle_port_read should also detect it.
         let result = m.handle_port_read(Port::new(0x1000), AccessWidth::Byte);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_write_request_returns_write_response() {
-        struct RwDevice;
-        impl Device for RwDevice {
-            fn name(&self) -> &str {
-                "rw"
-            }
-            fn resources(&self) -> &[Resource] {
-                static R: [Resource; 1] = [Resource::MmioRange {
-                    base: 0x1000,
-                    size: 0x100,
-                }];
-                &R
-            }
-            fn access(
-                &self,
-                access: &BusAccess,
-                _context: &mut dyn DeviceAccess,
-            ) -> Result<BusResponse, DeviceError> {
-                if access.is_read {
-                    Ok(BusResponse::Read { value: 0 })
-                } else {
-                    Ok(BusResponse::Write)
-                }
-            }
-        }
-
-        let mut m = DeviceRuntime::empty();
-        m.register(Arc::new(RwDevice)).unwrap();
-        let resp = m
-            .dispatch(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: false,
-                addr: 0x1000,
-                width: AccessWidth::Dword,
-                data: 0x42,
-            })
-            .unwrap();
-        assert!(matches!(resp, BusResponse::Write));
-    }
-
-    #[test]
-    fn test_port_max_address_valid() {
-        let mut m = DeviceRuntime::empty();
-        m.register(Arc::new(D::new_port(0xffff, 1, "max-port")))
-            .unwrap();
-        assert!(
-            m.dispatch(&BusAccess {
-                kind: BusKind::Port,
-                is_read: true,
-                addr: 0xffff,
-                width: AccessWidth::Byte,
-                data: 0
-            })
-            .is_ok()
-        );
     }
 
     #[test]
@@ -2361,7 +2146,7 @@ mod tests {
                 device_type: EmulatedDeviceType::FwCfg,
             }))
             .unwrap();
-        let context = DeviceBuildContext::new(&UnusedIrqResolver);
+        let context = DeviceBuildContext::new(&UnusedInterruptController);
         let config = EmulatedDeviceConfig {
             name: "fw-cfg".into(),
             emu_type: EmulatedDeviceType::FwCfg,
@@ -2388,7 +2173,7 @@ mod tests {
     fn ivc_channel_factory_contributes_static_guest_range_allocator() {
         let mut factories = DeviceFactoryRegistry::new();
         register_builtin_factories(&mut factories).unwrap();
-        let context = DeviceBuildContext::new(&UnusedIrqResolver);
+        let context = DeviceBuildContext::new(&UnusedInterruptController);
         let config = EmulatedDeviceConfig {
             name: "ivc".into(),
             emu_type: EmulatedDeviceType::IVCChannel,

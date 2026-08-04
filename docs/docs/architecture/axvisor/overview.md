@@ -8,7 +8,7 @@ slug: /architecture/axvisor
 
 Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor。它既非直接包裹 KVM 的用户态工具，也非单体式虚拟机管理程序，而是建立在 ArceOS 运行时、虚拟化组件库与分层配置系统之上的 Hypervisor 软件栈。
 
-本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)。
+本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)；客户机配置、设备直通与强制虚拟串口的详细语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
 
 ## 系统定位
 
@@ -92,13 +92,15 @@ fn main() {
     ensure_hardware_support();
     hal::enable_virtualization();
     vmm::init();
-    vmm::start();
+    let started_vms = vmm::launch_default_vms();
+    guest_console::attach_default(started_vms);
+    spawn_vm_completion_waiter();
     info!("[OK] Default guest initialized");
     shell::console_init();
 }
 ```
 
-运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM → 进入 shell。真正的复杂度集中在 `hal`、`vmm` 和配置解析中。
+运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者，默认把输入附着到 ID 最小的运行中客户机；`Ctrl+Alt+H` 返回 shell，`Ctrl+Alt+[` 与 `Ctrl+Alt+]` 在运行中客户机之间循环切换。
 
 ### 架构适配
 
@@ -166,9 +168,11 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 
 | 配置段 | 说明 |
 | --- | --- |
-| `[base]` | VM id、name、vm_type、CPU 数和物理 CPU 绑定 |
+| `[base]` | VM id、name、guest_type、CPU 数和物理 CPU 绑定 |
 | `[kernel]` | entry point、image location、kernel path、load address、memory regions |
-| `[devices]` | passthrough devices、excluded devices、emu devices、interrupt mode |
+| `[devices]` | 结构化的 `passthrough` 与 `disabled` 物理设备选择器 |
+
+虚拟串口、中断控制器、定时器和固件接口由架构 machine profile 固定创建，不属于 VM 配置。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再为 RAM、禁用设备、宿主物理 UART 和所有虚拟平台设备打洞。配置不接受旧 `vm_type`、`emu_devices`、裸地址/IRQ 或 `interrupt_mode` 字段。
 
 ## 关键执行流程
 
@@ -225,10 +229,12 @@ sequenceDiagram
     Config->>Vm: VM::new + 分配内存 + 加载镜像 + vm.init()
     Config-->>Vmm: VM 状态进入 Loaded
     Vmm->>VcpuTask: setup_vm_primary_vcpu()
-    Main->>Vmm: start()
+    Main->>Vmm: launch_default_vms()
     Vmm->>Vm: vm.boot()
     Vmm->>VcpuTask: notify_primary_vcpu()
     VcpuTask->>Vm: run_vcpu() 循环执行
+    Main->>Main: spawn wait_for_all_vms task
+    Main->>Main: run GuestConsoleMux + shell
 ```
 
 ### vCPU 运行循环

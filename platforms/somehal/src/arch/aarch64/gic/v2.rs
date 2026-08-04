@@ -160,6 +160,26 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
     })?
 }
 
+pub fn irq_set_trigger(irq: IrqId, trigger: Trigger) -> Result<(), crate::irq::IrqError> {
+    super::trigger::dispatch_trigger_configuration(
+        irq.hwirq.0,
+        None,
+        |raw| {
+            let intid = checked_private_intid(raw)?;
+            CPU_IF.set_cfg(intid, trigger);
+            Ok(())
+        },
+        |raw| {
+            super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+                let intid = checked_runtime_intid(raw, gic.max_intid())?;
+                gic.set_cfg(intid, trigger);
+                Ok(())
+            })?
+        },
+        || crate::irq::IrqError::Unsupported,
+    )
+}
+
 pub fn irq_set_affinity(
     irq: IrqId,
     affinity: crate::irq::IrqAffinity,

@@ -44,6 +44,18 @@ pub enum AxVmConfigError {
         /// The boot protocol requiring a firmware load address.
         protocol: VMBootProtocol,
     },
+    /// A physical-device selector is not an absolute, concrete device-tree path.
+    #[error("physical device path must be absolute and must not select the root: {path}")]
+    InvalidPhysicalDevicePath {
+        /// The invalid path.
+        path: String,
+    },
+    /// The same physical device was both assigned and disabled.
+    #[error("physical device is present in both passthrough and disabled lists: {path}")]
+    ConflictingPhysicalDeviceSelection {
+        /// The conflicting path.
+        path: String,
+    },
 }
 
 impl From<toml::de::Error> for AxVmConfigError {

@@ -27,6 +27,23 @@ pub(crate) fn read_text_file(
     rootfs_img: &Path,
     guest_path: &str,
 ) -> anyhow::Result<Option<String>> {
+    let Some(contents) = read_binary_file(rootfs_img, guest_path)? else {
+        return Ok(None);
+    };
+
+    String::from_utf8(contents)
+        .map(Some)
+        .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
+}
+
+/// Reads a binary file from a rootfs image with `debugfs`.
+///
+/// Returns `Ok(None)` when the image is readable but the guest path does not
+/// exist.
+pub(crate) fn read_binary_file(
+    rootfs_img: &Path,
+    guest_path: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
     ensure!(
         guest_path.starts_with('/'),
         "guest path must be absolute: `{guest_path}`"
@@ -51,9 +68,7 @@ pub(crate) fn read_text_file(
         return Ok(None);
     }
 
-    String::from_utf8(output.stdout)
-        .map(Some)
-        .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
+    Ok(Some(output.stdout))
 }
 
 /// Replaces one regular file inside a rootfs image with a host file.

@@ -31,9 +31,8 @@ use ax_std as _;
 
 mod banner;
 mod config;
+mod guest_console;
 mod manager;
-#[cfg(target_arch = "riscv64")]
-mod platform_irq;
 mod shell;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
@@ -55,7 +54,7 @@ fn init_panic_hook() {
 /// 1. Print the startup banner.
 /// 2. Check and enable hardware virtualization on every CPU.
 /// 3. Build and start configured guest VMs.
-/// 4. Enter the management shell after the default guests have exited.
+/// 4. Run the VM completion waiter and management console concurrently.
 fn main() {
     #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
     init_panic_hook();
@@ -75,7 +74,16 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
-    manager.start_default_vms();
+    let default_vms = manager::AxvmManager::vm_list();
+    guest_console::configure_host_console_reader(&default_vms)
+        .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
+    let started_vms = manager.launch_default_vms();
+    guest_console::attach_default(started_vms);
+
+    std::thread::Builder::new()
+        .name("axvisor-vm-wait".into())
+        .spawn(manager::AxvmManager::wait_for_default_vms)
+        .unwrap_or_else(|error| panic!("failed to start VM completion waiter: {error}"));
 
     info!("[OK] Default guest initialized");
 
