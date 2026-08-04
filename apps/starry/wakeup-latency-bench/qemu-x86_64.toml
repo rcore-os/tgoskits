@@ -16,16 +16,16 @@ args = [
 uefi = true
 to_bin = true
 shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/futex-ping-pong-bench.sh"
+shell_init_cmd = "/usr/bin/wakeup-latency-bench.sh"
 success_regex = [
-    "(?m)^FUTEX_PING_PONG_PASSED\\s*$",
-    "(?m)^FUTEX_PING_PONG_APP_PASSED\\s*$",
+    "(?m)^WAKEUP_LATENCY_PASSED\\s*$",
+    "(?m)^WAKEUP_LATENCY_APP_PASSED\\s*$",
 ]
 fail_regex = [
     "(?i)\\bpanic(?:ked)?\\b",
     "(?i)segmentation fault",
     "(?i)kernel panic",
     "(?i)panicked at",
-    "(?m)^FUTEX_PING_PONG_APP_FAILED\\s*$",
+    "(?m)^WAKEUP_LATENCY_APP_FAILED\\s*$",
 ]
 timeout = 300

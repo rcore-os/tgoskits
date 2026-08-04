@@ -9,7 +9,7 @@ if [[ -z "$overlay_dir" ]]; then
     exit 1
 fi
 if [[ "${STARRY_ARCH:-}" != "x86_64" ]]; then
-    echo "error: futex-ping-pong-bench currently supports x86_64 only" >&2
+    echo "error: wakeup-latency-bench currently supports x86_64 only" >&2
     exit 1
 fi
 
@@ -37,12 +37,16 @@ trap 'rm -rf "$build_dir"' EXIT
     -Werror \
     -pthread \
     -static \
-    "$app_dir/futex-ping-pong-bench.c" \
-    -o "$build_dir/futex-ping-pong-bench"
+    "$app_dir/main.c" \
+    "$app_dir/handoff.c" \
+    "$app_dir/timer.c" \
+    "$app_dir/stats.c" \
+    -lm \
+    -o "$build_dir/wakeup-latency-bench"
 
 install -Dm0755 \
-    "$build_dir/futex-ping-pong-bench" \
-    "$overlay_dir/usr/bin/futex-ping-pong-bench"
+    "$build_dir/wakeup-latency-bench" \
+    "$overlay_dir/usr/bin/wakeup-latency-bench"
 install -Dm0755 \
-    "$app_dir/futex-ping-pong-bench.sh" \
-    "$overlay_dir/usr/bin/futex-ping-pong-bench.sh"
+    "$app_dir/wakeup-latency-bench.sh" \
+    "$overlay_dir/usr/bin/wakeup-latency-bench.sh"
