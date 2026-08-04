@@ -8,5 +8,6 @@ set(CMAKE_C_EXTENSIONS ON)
 
 add_executable(bugfix-signalfd-epoll-wakeup src/main.c)
 target_compile_options(bugfix-signalfd-epoll-wakeup PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(bugfix-signalfd-epoll-wakeup PRIVATE pthread)
 
 install(TARGETS bugfix-signalfd-epoll-wakeup RUNTIME DESTINATION usr/bin/starry-test-suit)

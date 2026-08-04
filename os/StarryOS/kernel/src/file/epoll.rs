@@ -491,6 +491,15 @@ impl Epoll {
         file.register(&mut context, register_events(interest.event.events));
     }
 
+    /// Registers enabled interests with the thread currently waiting in epoll.
+    pub fn register_waiter_wakers(&self) -> AxResult {
+        let interests = self.inner.snapshot_interests()?;
+        for interest in &interests {
+            self.register_waker_only(interest);
+        }
+        Ok(())
+    }
+
     // for add/modify
     fn check_and_register_waker(&self, interest: &Arc<EpollInterest>) {
         let Some(file) = interest.key.get_file() else {

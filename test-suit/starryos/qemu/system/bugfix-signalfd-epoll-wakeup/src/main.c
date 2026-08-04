@@ -2,18 +2,31 @@
 
 #include <errno.h>
 #include <signal.h>
-#include <stdint.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int passed;
 static int failed;
+static _Atomic int waiter_entered;
+
+struct waiter_context {
+    int epoll_fd;
+    int signal_fd;
+    int wait_result;
+    int wait_errno;
+    ssize_t read_length;
+    int read_errno;
+    struct epoll_event event;
+    struct signalfd_siginfo signal_info;
+};
 
 static void expect_true(int condition, const char *name)
 {
@@ -26,14 +39,50 @@ static void expect_true(int condition, const char *name)
     failed++;
 }
 
+static void *wait_for_signalfd_event(void *opaque)
+{
+    struct waiter_context *context = opaque;
+
+    atomic_store_explicit(&waiter_entered, 1, memory_order_release);
+    errno = 0;
+    context->wait_result = epoll_wait(context->epoll_fd, &context->event, 1, 2000);
+    context->wait_errno = errno;
+    if (context->wait_result != 1) {
+        return NULL;
+    }
+
+    errno = 0;
+    context->read_length = read(
+        context->signal_fd,
+        &context->signal_info,
+        sizeof(context->signal_info)
+    );
+    context->read_errno = errno;
+    return NULL;
+}
+
+static int wait_for_epoll_waiter(void)
+{
+    const struct timespec settle = {
+        .tv_sec = 0,
+        .tv_nsec = 100 * 1000 * 1000,
+    };
+
+    while (atomic_load_explicit(&waiter_entered, memory_order_acquire) == 0) {
+        sched_yield();
+    }
+
+    return nanosleep(&settle, NULL);
+}
+
 int main(void)
 {
     printf("=== bugfix-signalfd-epoll-wakeup ===\n");
 
     sigset_t mask;
     sigemptyset(&mask);
-    sigaddset(&mask, SIGCHLD);
-    expect_true(sigprocmask(SIG_BLOCK, &mask, NULL) == 0, "block SIGCHLD");
+    sigaddset(&mask, SIGUSR1);
+    expect_true(sigprocmask(SIG_BLOCK, &mask, NULL) == 0, "block SIGUSR1");
 
     int signal_fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
     expect_true(signal_fd >= 0, "create nonblocking signalfd");
@@ -50,46 +99,32 @@ int main(void)
                               &interest) == 0,
                 "register signalfd with epoll");
 
-    pid_t child = fork();
-    expect_true(child >= 0, "fork delayed child");
-    if (child == 0) {
-        usleep(200000);
-        _exit(7);
-    }
+    struct waiter_context context = {
+        .epoll_fd = epoll_fd,
+        .signal_fd = signal_fd,
+        .wait_result = -1,
+        .wait_errno = 0,
+        .read_length = -1,
+        .read_errno = 0,
+    };
+    pthread_t waiter;
+    int waiter_started = signal_fd >= 0 && epoll_fd >= 0 &&
+                         pthread_create(&waiter, NULL, wait_for_signalfd_event, &context) == 0;
+    expect_true(waiter_started, "start epoll_wait thread");
 
-    if (child > 0 && signal_fd >= 0 && epoll_fd >= 0) {
-        struct epoll_event event = {0};
-        errno = 0;
-        int ready = epoll_wait(epoll_fd, &event, 1, 2000);
-        expect_true(ready == 1 && event.data.fd == signal_fd &&
-                        (event.events & EPOLLIN) != 0,
-                    "epoll wakes when blocked SIGCHLD reaches signalfd");
-
-        struct signalfd_siginfo signal_info = {0};
-        ssize_t length = read(signal_fd, &signal_info, sizeof(signal_info));
-        expect_true(length == (ssize_t)sizeof(signal_info),
-                    "read SIGCHLD from signalfd");
-        expect_true(length == (ssize_t)sizeof(signal_info) &&
-                        signal_info.ssi_signo == SIGCHLD &&
-                        signal_info.ssi_pid == (uint32_t)child,
-                    "signalfd reports exiting child");
-
-        siginfo_t child_info = {0};
-        expect_true(waitid(P_ALL, 0, &child_info,
-                           WEXITED | WNOHANG | WNOWAIT) == 0 &&
-                        child_info.si_pid == child &&
-                        child_info.si_code == CLD_EXITED &&
-                        child_info.si_status == 7,
-                    "waitid WNOWAIT observes child after signalfd wake");
-
-        memset(&child_info, 0, sizeof(child_info));
-        expect_true(waitid(P_PID, (id_t)child, &child_info, WEXITED) == 0 &&
-                        child_info.si_pid == child &&
-                        child_info.si_code == CLD_EXITED &&
-                        child_info.si_status == 7,
-                    "waitid P_PID reaps observed child");
-    } else if (child > 0) {
-        waitpid(child, NULL, 0);
+    if (waiter_started) {
+        expect_true(wait_for_epoll_waiter() == 0, "wait for epoll_wait thread to block");
+        expect_true(pthread_kill(waiter, SIGUSR1) == 0,
+                    "send blocked SIGUSR1 to epoll_wait thread");
+        expect_true(pthread_join(waiter, NULL) == 0, "join epoll_wait thread");
+        expect_true(context.wait_result == 1 && context.event.data.fd == signal_fd &&
+                        (context.event.events & EPOLLIN) != 0,
+                    "epoll wakes when target thread receives blocked SIGUSR1");
+        expect_true(context.read_length == (ssize_t)sizeof(context.signal_info),
+                    "read SIGUSR1 from signalfd in epoll_wait thread");
+        expect_true(context.read_length == (ssize_t)sizeof(context.signal_info) &&
+                        context.signal_info.ssi_signo == SIGUSR1,
+                    "signalfd reports target thread SIGUSR1");
     }
 
     if (epoll_fd >= 0) {
