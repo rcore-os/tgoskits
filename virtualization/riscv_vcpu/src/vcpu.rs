@@ -557,30 +557,25 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                         }
                         legacy::LEGACY_SEND_IPI => {
-                            let send_to_all = param[0] == 0;
-                            let hart_mask = if send_to_all {
-                                0
-                            } else {
-                                let mut mask_bytes = [0u8; core::mem::size_of::<usize>()];
-                                let copied = guest_mem::copy_from_guest_va(
-                                    &mut mask_bytes,
-                                    RiscvGuestVirtAddr::from(param[0]),
-                                );
-                                if copied != mask_bytes.len() {
-                                    warn!(
-                                        "failed to read legacy SBI IPI hart mask at {:#x}",
-                                        param[0]
-                                    );
-                                    self.advance_pc(4);
-                                    return Ok(RiscvVmExit::Nothing);
-                                }
-                                usize::from_ne_bytes(mask_bytes)
-                            };
+                            let mut mask_bytes = [0u8; core::mem::size_of::<usize>()];
+                            let copied = guest_mem::copy_from_guest_va(
+                                &mut mask_bytes,
+                                RiscvGuestVirtAddr::from(param[0]),
+                            );
+                            if copied != mask_bytes.len() {
+                                warn!("failed to read legacy SBI IPI hart mask at {:#x}", param[0]);
+                                self.set_gpr_from_gpr_index(GprIndex::A0, usize::MAX);
+                                self.advance_pc(4);
+                                return Ok(RiscvVmExit::Nothing);
+                            }
+
+                            let hart_mask = usize::from_ne_bytes(mask_bytes);
+                            self.set_gpr_from_gpr_index(GprIndex::A0, 0);
                             self.advance_pc(4);
                             return Ok(RiscvVmExit::SendIPI {
                                 target_cpu: hart_mask as u64,
                                 target_cpu_aux: 0,
-                                send_to_all,
+                                send_to_all: false,
                                 send_to_self: false,
                                 vector: S_SOFT as u64,
                             });
