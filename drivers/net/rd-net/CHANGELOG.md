@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.2...rd-net-v0.2.3) - 2026-08-03
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+
 ## [0.2.2](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.1...rd-net-v0.2.2) - 2026-07-08
 
 ### Other

@@ -14,10 +14,17 @@
 
 //! Virtual machine state, resources, and lifecycle entry points.
 
-use alloc::{boxed::Box, collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::String,
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     alloc::Layout,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use ax_cpumask::CpuMask;
@@ -180,9 +187,12 @@ pub(crate) enum PendingInterrupt {
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
+    cpu_on_start_acks: Mutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
+    cpu_off_exit_reservations: Mutex<BTreeSet<usize>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
-    irq_dispatcher: VcpuIrqDispatcher,
+    irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
     running_halting_vcpu_count: AtomicUsize,
+    deferred_reset_requested: AtomicBool,
 }
 
 pub(crate) fn dispatch_vcpu_interrupt_with(
@@ -208,17 +218,70 @@ impl VmRuntimeHandle {
         Self {
             wait_queue: crate::WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
+            cpu_on_start_acks: Mutex::new(BTreeMap::new()),
+            cpu_off_exit_reservations: Mutex::new(BTreeSet::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
-            irq_dispatcher: VcpuIrqDispatcher::new(),
+            irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
             running_halting_vcpu_count: AtomicUsize::new(0),
+            deferred_reset_requested: AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
+    #[allow(dead_code)]
+    pub(crate) fn has_vcpu_task(&self, vcpu_id: usize) -> bool {
+        self.vcpu_task_list.lock().contains_key(&vcpu_id)
+    }
+
+    pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) -> AxVmResult {
+        let mut vcpu_task_list = self.vcpu_task_list.lock();
+        if vcpu_task_list.contains_key(&vcpu_id) {
+            return ax_err!(BadState, format!("vCPU {vcpu_id} task already exists"));
+        }
+
         self.irq_dispatcher
             .register_vcpu_task(vcpu_id, vcpu_task.clone());
-        self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
+        vcpu_task_list.insert(vcpu_id, vcpu_task);
+        drop(vcpu_task_list);
+
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
+        Ok(())
+    }
+
+    pub(crate) fn remove_cpu_on_start_ack(
+        &self,
+        vcpu_id: usize,
+    ) -> Option<Arc<crate::runtime::vcpus::CpuOnStartAck>> {
+        self.cpu_on_start_acks.lock().remove(&vcpu_id)
+    }
+
+    pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::AxTaskRef> {
+        self.pending_interrupts.lock().remove(&vcpu_id);
+        self.irq_dispatcher.unregister_vcpu_task(vcpu_id);
+        self.vcpu_task_list.lock().remove(&vcpu_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn insert_cpu_on_start_ack(
+        &self,
+        vcpu_id: usize,
+        ack: Arc<crate::runtime::vcpus::CpuOnStartAck>,
+    ) -> AxVmResult {
+        let mut acks = self.cpu_on_start_acks.lock();
+        if acks.contains_key(&vcpu_id) {
+            return ax_err!(
+                AlreadyExists,
+                format!("vCPU {vcpu_id} CPU_ON ack already exists")
+            );
+        }
+        acks.insert(vcpu_id, ack);
+        Ok(())
+    }
+
+    pub(crate) fn cpu_on_start_ack(
+        &self,
+        vcpu_id: usize,
+    ) -> Option<Arc<crate::runtime::vcpus::CpuOnStartAck>> {
+        self.cpu_on_start_acks.lock().get(&vcpu_id).cloned()
     }
 
     pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) -> AxVmResult<usize> {
@@ -321,12 +384,43 @@ impl VmRuntimeHandle {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn publish_cpu_on_start_success(&self, ack: &crate::runtime::vcpus::CpuOnStartAck) {
+        self.mark_vcpu_running();
+        ack.complete(Ok(()));
+    }
+
     pub(crate) fn mark_vcpu_exiting(&self) -> bool {
         self.running_halting_vcpu_count
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_sub(1)
             })
             == Ok(1)
+    }
+
+    pub(crate) fn request_deferred_reset(&self) -> bool {
+        !self.deferred_reset_requested.swap(true, Ordering::AcqRel)
+    }
+
+    pub(crate) fn take_deferred_reset_request(&self) -> bool {
+        self.deferred_reset_requested.swap(false, Ordering::AcqRel)
+    }
+
+    pub(crate) fn try_reserve_cpu_off(&self, vcpu_id: usize) -> bool {
+        let reserved = self
+            .running_halting_vcpu_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count > 1).then_some(count - 1)
+            })
+            .is_ok();
+
+        if reserved {
+            self.cpu_off_exit_reservations.lock().insert(vcpu_id);
+        }
+        reserved
+    }
+
+    pub(crate) fn consume_cpu_off_reservation(&self, vcpu_id: usize) -> bool {
+        self.cpu_off_exit_reservations.lock().remove(&vcpu_id)
     }
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) {
@@ -351,6 +445,90 @@ impl VmRuntimeHandle {
             debug!("VM[{vm_id}] VCpu task[{idx}] exited with code: {exit_code}");
         }
         info!("VM[{vm_id}] VCpu resources cleaned up, {task_count} VCpu tasks joined");
+    }
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod runtime_handle_tests {
+
+    #[test]
+    fn runtime_cpu_on_success_publishes_online_count_before_ack() {
+        let runtime = VmRuntimeHandle::new();
+        let ack = crate::runtime::vcpus::CpuOnStartAck::new();
+
+        runtime.mark_vcpu_running();
+        assert!(ack.begin_startup());
+
+        runtime.publish_cpu_on_start_success(&ack);
+
+        assert!(ack.is_complete());
+        assert!(runtime.try_reserve_cpu_off(0));
+    }
+
+    #[test]
+    fn runtime_cpu_on_ack_rejects_duplicate_and_can_be_removed() {
+        let runtime = VmRuntimeHandle::new();
+        let first = Arc::new(crate::runtime::vcpus::CpuOnStartAck::new());
+        let second = Arc::new(crate::runtime::vcpus::CpuOnStartAck::new());
+
+        assert!(runtime.insert_cpu_on_start_ack(1, first.clone()).is_ok());
+        assert!(runtime.insert_cpu_on_start_ack(1, second).is_err());
+
+        let stored = runtime.cpu_on_start_ack(1).unwrap();
+        assert!(Arc::ptr_eq(&stored, &first));
+
+        assert!(runtime.remove_cpu_on_start_ack(1).is_some());
+        assert!(runtime.cpu_on_start_ack(1).is_none());
+    }
+
+    #[test]
+    fn runtime_deferred_reset_request_is_single_consumer() {
+        let runtime = VmRuntimeHandle::new();
+
+        assert!(!runtime.take_deferred_reset_request());
+        assert!(runtime.request_deferred_reset());
+        assert!(!runtime.request_deferred_reset());
+        assert!(runtime.take_deferred_reset_request());
+        assert!(!runtime.take_deferred_reset_request());
+        assert!(runtime.request_deferred_reset());
+    }
+
+    #[test]
+    fn runtime_cpu_off_reservation_rejects_second_parallel_last_vcpu() {
+        let runtime = VmRuntimeHandle::new();
+
+        runtime.mark_vcpu_running();
+        runtime.mark_vcpu_running();
+
+        assert!(runtime.try_reserve_cpu_off(0));
+        assert!(!runtime.try_reserve_cpu_off(1));
+
+        assert!(runtime.consume_cpu_off_reservation(0));
+        assert!(!runtime.consume_cpu_off_reservation(0));
+
+        assert!(runtime.mark_vcpu_exiting());
+    }
+
+    use super::*;
+
+    #[test]
+    fn remove_vcpu_task_clears_pending_interrupts_and_dispatcher_registration() {
+        let runtime = VmRuntimeHandle::new();
+
+        runtime.pending_interrupts.lock().entry(3).or_default();
+        runtime.irq_dispatcher.register_test_vcpu(3, 11);
+
+        assert!(runtime.pending_interrupts.lock().contains_key(&3));
+        assert_eq!(runtime.irq_dispatcher.test_lookup_cpu_id(3).unwrap(), 11);
+
+        runtime.remove_vcpu_task(3);
+
+        assert!(!runtime.pending_interrupts.lock().contains_key(&3));
+        assert!(runtime.irq_dispatcher.test_lookup_cpu_id(3).is_err());
+
+        runtime.remove_vcpu_task(3);
+        assert!(!runtime.pending_interrupts.lock().contains_key(&3));
+        assert!(runtime.irq_dispatcher.test_lookup_cpu_id(3).is_err());
     }
 }
 
@@ -804,7 +982,7 @@ impl AxVM {
         })?;
 
         let task = crate::host::task::spawn_task(primary_task);
-        runtime.add_vcpu_task(0, task);
+        runtime.add_vcpu_task(0, task)?;
         Ok(())
     }
 
@@ -1173,6 +1351,13 @@ impl AxVM {
     pub fn get_vcpu_affinities_pcpu_ids(&self) -> Vec<(usize, Option<usize>, usize)> {
         self.with_resources(|resources| Ok(resources.phys_cpu_ls.get_vcpu_affinities_pcpu_ids()))
             .unwrap_or_default()
+    }
+
+    pub fn get_vcpu_guest_mpidrs(&self) -> Vec<(usize, u64)> {
+        self.vcpu_list()
+            .iter()
+            .filter_map(|vcpu| vcpu.guest_mpidr().map(|mpidr| (vcpu.id(), mpidr)))
+            .collect()
     }
 
     /// Maps a region of host physical memory to guest physical memory.

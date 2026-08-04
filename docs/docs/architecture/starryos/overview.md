@@ -1,6 +1,7 @@
 ---
-sidebar_position: 3
-sidebar_label: "StarryOS"
+sidebar_position: 1
+sidebar_label: "概览"
+slug: /architecture/starryos
 ---
 
 # StarryOS 架构
@@ -10,6 +11,7 @@ StarryOS 是建立在 ArceOS 基础能力之上的组件化宏内核系统，继
 本文聚焦 StarryOS 的内部结构、syscall 分发机制和执行路径。若尚未运行过 StarryOS，建议先阅读 [StarryOS 快速上手](/docs/quickstart/starryos)。
 
 ## 系统定位
+
 
 StarryOS 并非从零构建一个全新的内核，而是在 ArceOS 的模块化基础设施之上，补齐 Linux 兼容所需的进程管理、syscall 分发、信号、伪文件系统等宏内核语义。这种设计让 StarryOS 能够复用底层能力，同时将精力集中在 Linux 用户态程序的兼容性上。
 

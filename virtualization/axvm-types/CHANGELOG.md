@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.1...axvm-types-v0.7.2) - 2026-08-03
+
+### Added
+
+- *(axvm)* add VmInterruptSender and integrate dispatcher into VmRuntimeHandle ([#1679](https://github.com/rcore-os/tgoskits/pull/1679))
+
+### Fixed
+
+- *(axhvc)* handle PSCI_VERSION hypercall ([#1692](https://github.com/rcore-os/tgoskits/pull/1692))
+
+### Other
+
+- *(axvisor)* implement unified emulated device framework ([#1722](https://github.com/rcore-os/tgoskits/pull/1722))
+
 ## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.0...axvm-types-v0.7.1) - 2026-07-23
 
 ### Other

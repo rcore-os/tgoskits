@@ -141,6 +141,9 @@ work even when the kernel image and CPU topology are correct.
   Cortex-A72 MPIDRs `0x100` through `0x103`. Keep these hardware IDs separate
   from dense logical CPU indices. Both the maintained single-core board test
   and an eight-core boot have been validated.
+- GICv2 CPU target bits are firmware/controller interface IDs, not dense
+  logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
+  per-CPU initialization and reuse that mask for SPI affinity and SGIs.
 - The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
   `0x50000`. Early driver evidence should include
   `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by
@@ -209,6 +212,7 @@ device-specific drivers.
 
 ## LoongArch Lessons
 
+- On LS2K1000, repeated `failed to lock LS2K1000 LIOINTC when claiming LIOINTC IRQ` messages immediately after block hctx activation identify a hard-IRQ/controller-lock inversion, not a harmless spurious interrupt. Follow the AArch64 GIC pattern: keep the `rdif_intc` controller and its configuration registers task-owned, and publish a separate LIOINTC CPU interface containing only the ISR/domain/parent/atomic-enable state used by claim/complete. Looking up or locking the controller from hard IRQ lets a level interrupt continuously re-enter before the interrupted task releases its device guard.
 - For U-Boot FIT boot, keep the producer and handoff contracts aligned: use the canonical FIT architecture name `loongarch`, ensure U-Boot passes the DTB at a DTSpec-compliant 8-byte-aligned address, and hand a FIT-provided FDT to someboot through the UHI convention (`a0 = -2`, `a1 = fdt`). Vendor `CONFIG_LOONGSON_BOOT_FIXUP` paths that inspect `legacy_hdr_os` must not run for FIT images.
 - TLB refill entry and general exception entry use different registers and may require different address forms. Do not reuse a high-half virtual symbol where a physical TLB refill vector is required.
 - Relocated symbols must be resolved relative to the running image. In the LoongArch SMP path, the secondary exception vector had to use a runtime symbol helper such as `sym_running_addr!(__exception_vectors)`, while the TLB refill entry needed the corresponding physical address.

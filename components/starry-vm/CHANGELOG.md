@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.11...starry-vm-v0.5.12) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.5.11](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.10...starry-vm-v0.5.11) - 2026-07-02
 
 ### Other

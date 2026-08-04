@@ -422,6 +422,12 @@ pub trait VmArchVcpuOps: Sized {
 
     /// Creates a new architecture-specific vCPU.
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> VmBackendResult<Self>;
+
+    /// Returns the guest-visible MPIDR encoded in a vCPU create config, if any.
+    fn guest_mpidr_from_create_config(_config: &Self::CreateConfig) -> Option<u64> {
+        None
+    }
+
     /// Sets the guest entry point.
     fn set_entry(&mut self, entry: GuestPhysAddr) -> VmBackendResult;
     /// Sets the nested page table selected by AxVM.
@@ -501,17 +507,19 @@ pub trait VmArchPerCpuOps: Sized {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VmVcpuState {
     /// Invalid state.
-    Invalid = 0,
+    Invalid  = 0,
     /// Initial state after vCPU creation.
-    Created = 1,
+    Created  = 1,
     /// vCPU is initialized and free.
-    Free    = 2,
+    Free     = 2,
     /// vCPU is bound and ready to run.
-    Ready   = 3,
+    Ready    = 3,
     /// vCPU is currently running.
-    Running = 4,
+    Running  = 4,
     /// vCPU is blocked.
-    Blocked = 5,
+    Blocked  = 5,
+    /// vCPU is reserved by PSCI CPU_ON and not yet runnable.
+    Starting = 6,
 }
 
 /// A part of `AxVMConfig`, which represents guest VM type.

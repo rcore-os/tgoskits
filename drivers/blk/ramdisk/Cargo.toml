@@ -7,4 +7,4 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "ramdisk"
 repository.workspace = true
-version = "0.1.10"
+version = "0.1.11"

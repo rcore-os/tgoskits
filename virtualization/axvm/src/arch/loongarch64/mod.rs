@@ -116,9 +116,12 @@ impl ArchOps for LoongArch64Arch {
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
-            LoongArchVmExit::Hypercall { nr, args } => {
-                super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
-            }
+            LoongArchVmExit::Hypercall { nr, args } => super::handle_hypercall(
+                vm,
+                vcpu,
+                HypercallExit { nr, args },
+                crate::runtime::hvc::HyperCallAbi::Generic,
+            ),
             LoongArchVmExit::MmioRead {
                 addr,
                 width,
@@ -164,11 +167,15 @@ impl ArchOps for LoongArch64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             })),
             _ => Err(AxVmError::unsupported(
                 "handle LoongArch VM exit",
@@ -191,6 +198,8 @@ impl ArchOps for LoongArch64Arch {
         Ok(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         })
     }
 
@@ -220,6 +229,8 @@ fn handle_loongarch_nested_page_fault(
             return Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             }));
         };
         return LoongArch64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
@@ -239,6 +250,8 @@ fn handle_loongarch_nested_page_fault(
         Ok(BoundVcpuExit::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         }))
     }
 }

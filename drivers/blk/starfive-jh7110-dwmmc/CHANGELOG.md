@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.3...starfive-jh7110-dwmmc-v0.1.4) - 2026-08-03
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
 ### Changed
 
 - Keep only JH7110 clock, bus-width, voltage, and profile policy while

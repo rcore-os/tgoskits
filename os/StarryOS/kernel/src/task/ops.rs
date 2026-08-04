@@ -488,6 +488,16 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
         let is_clone_child = thr.proc_data.is_clone_child();
         let wait_parent_tid = thr.proc_data.wait_parent_tid;
+
+        // A parent that observes this child as a zombie must not see IPC
+        // resources that still belong to the exiting process. In particular,
+        // a vfork parent resumes only after this cleanup.
+        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
+
+        // Drop memfd inode accounting before waitpid returns (SMP); use
+        // process_slots refcounting — not vm_aspace_shared + clear().
+        thr.proc_data.release_aspace_slot_if_needed();
+
         publish_zombie(
             &thr.proc_data,
             ZombieSnapshot {
@@ -579,12 +589,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
         // Unblock a vfork parent waiting for this child to exit.
         thr.proc_data.notify_vfork_done();
-
-        crate::syscall::clear_proc_shm(process.pid(), &thr.proc_data.aspace());
-
-        // Drop memfd inode accounting before waitpid returns (SMP); use
-        // process_slots refcounting — not vm_aspace_shared + clear().
-        thr.proc_data.release_aspace_slot_if_needed();
     }
     // Thread exit state is published before waking waiters.
     unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
