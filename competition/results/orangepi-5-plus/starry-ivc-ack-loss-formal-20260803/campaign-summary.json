@@ -1,0 +1,533 @@
+{
+  "assessment": {
+    "all_lifecycle_gates_met": true,
+    "all_manifests_verified": true,
+    "all_raw_and_gzip_twins_verified": true,
+    "all_runs_validated": true,
+    "campaign_gate_met": true,
+    "exact_fault_contract_met": true,
+    "final_board_linux_root_rw": true,
+    "reason": "all three preregistered physical ACK-loss runs and the final Linux restoration gate passed",
+    "registered_run_count_met": true,
+    "rt_isolation_claim": false
+  },
+  "board_temperature_milli_c": {
+    "iqr": 0,
+    "median": 42538,
+    "q1": 42538,
+    "q3": 42538,
+    "single_run_maximum": 42538,
+    "single_run_minimum": 42538,
+    "values_by_run": [
+      42538,
+      42538,
+      42538
+    ],
+    "worst_direction": "maximum",
+    "worst_of_runs": 42538
+  },
+  "campaign": {
+    "board_id": "bf61f4d4a1d994ad",
+    "board_type": "OrangePi-5-Plus",
+    "campaign_id": "starry-ivc-ack-loss-formal-20260803",
+    "profile": "fault-ack-loss",
+    "repeat_count": 3,
+    "result_root": "amendment-005/fault-ack-loss",
+    "rootfs_sha256": "8f66c25d34b0190007e4b684c334854a7fb7fb7f4b4b08ce1849eac961a19efe",
+    "run_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "source_commit": "bac4ad16b4adf673942e6c31897872c2c5c116dc"
+  },
+  "descriptive_metrics": {
+    "deadline_misses": {
+      "iqr": 0,
+      "median": 20,
+      "q1": 20,
+      "q3": 20,
+      "single_run_maximum": 20,
+      "single_run_minimum": 20,
+      "values_by_run": [
+        20,
+        20,
+        20
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 20
+    },
+    "iae_milli_c_s": {
+      "iqr": 0,
+      "median": 218972.1,
+      "q1": 218972.1,
+      "q3": 218972.1,
+      "single_run_maximum": 218972.1,
+      "single_run_minimum": 218972.1,
+      "values_by_run": [
+        218972.1,
+        218972.1,
+        218972.1
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 218972.1
+    },
+    "max_overshoot_milli_c": {
+      "iqr": 0,
+      "median": 0,
+      "q1": 0,
+      "q3": 0,
+      "single_run_maximum": 0,
+      "single_run_minimum": 0,
+      "values_by_run": [
+        0,
+        0,
+        0
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 0
+    },
+    "rmse_milli_c": {
+      "iqr": 0,
+      "median": 23600.087153,
+      "q1": 23600.087153,
+      "q3": 23600.087153,
+      "single_run_maximum": 23600.087152593314,
+      "single_run_minimum": 23600.087152593314,
+      "values_by_run": [
+        23600.087152593314,
+        23600.087152593314,
+        23600.087152593314
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 23600.087152593314
+    },
+    "throughput_msg_s": {
+      "iqr": 0.000622,
+      "median": 9.626814,
+      "q1": 9.626659,
+      "q3": 9.627281,
+      "single_run_maximum": 9.627747518448077,
+      "single_run_minimum": 9.626504274994415,
+      "values_by_run": [
+        9.626504274994415,
+        9.627747518448077,
+        9.626814119638546
+      ],
+      "worst_direction": "minimum",
+      "worst_of_runs": 9.626504274994415
+    }
+  },
+  "evidence": {
+    "amendment_chain": [
+      {
+        "amendment_id": "campaign-amendment-001-board-config-and-lockfile",
+        "path": "campaign-amendment-001-board-config-and-lockfile.json",
+        "sha256": "af3bb0ff77d80052f7cc1528dbb6413d71d0d6be41578490cf49c78d4e63308f",
+        "size_bytes": 3534
+      },
+      {
+        "amendment_id": "campaign-amendment-002-outer-timeout",
+        "path": "campaign-amendment-002-outer-timeout.json",
+        "sha256": "f60d6aa6971ef3e94d1e45feff06430f72e00aa9c24ed07324b82bb8142ab9af",
+        "size_bytes": 3943
+      },
+      {
+        "amendment_id": "campaign-amendment-003-wsl-power-config-bridge",
+        "path": "campaign-amendment-003-wsl-power-config-bridge.json",
+        "sha256": "f675f200bdbd615d74c0914c7d87de3c3d61ea827beb2cf0286588a38bc55ef7",
+        "size_bytes": 4588
+      },
+      {
+        "amendment_id": "campaign-amendment-004-snapshot-guest-manifest",
+        "path": "campaign-amendment-004-snapshot-guest-manifest.json",
+        "sha256": "f9cb1d30b707797cb9441ab882049b74c6ce45d94a5d3d18646841d3682a8ea9",
+        "size_bytes": 7258
+      },
+      {
+        "amendment_id": "campaign-amendment-005-raw-derived-metrics",
+        "path": "campaign-amendment-005-raw-derived-metrics.json",
+        "sha256": "9500345bb336b05662920007191bb06d287af47ddc75ddd396b1dbedc33ef1af",
+        "size_bytes": 5632
+      },
+      {
+        "amendment_id": "campaign-amendment-006-post-capture-aggregation",
+        "path": "campaign-amendment-006-post-capture-aggregation.json",
+        "sha256": "f2ea649ceadd29b0ffe96be2dee6fdb2755f1c22df4c58c23320b32fa7cc036a",
+        "size_bytes": 3739
+      }
+    ],
+    "final_board_linux_root_check": {
+      "path": "final-board-linux-root-check.json",
+      "sha256": "5b1cab3599d735c726b323a4323d6003bc9d86531ecd683b80144df305a6617d",
+      "size_bytes": 666
+    },
+    "preregistration": {
+      "path": "campaign-preregistration.json",
+      "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+      "size_bytes": 7606
+    },
+    "runs": [
+      {
+        "console": {
+          "content_sha256": "806bf3cf6430a1c6c295cb3a5fcb085922e0584d101df707ff348b6b4ef5d98f",
+          "gzip_sha256": "0724f1f43426ed71e427c8ffec863d0e8005b303c343e041da6ec7295261cbd0"
+        },
+        "controller": {
+          "deadline_misses": 20,
+          "full_loop_max_us": 122376,
+          "full_loop_p50_us": 8585,
+          "full_loop_p95_us": 119793,
+          "full_loop_p99_us": 120765,
+          "iae_milli_c_s": 218972.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 343,
+          "pre_send_p50_us": 16,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 17,
+          "rmse_milli_c": 23600.087152593314,
+          "throughput_msg_s": 9.626504274994415,
+          "transport_max_us": 122360,
+          "transport_p50_us": 8569,
+          "transport_p95_us": 119776,
+          "transport_p99_us": 120749
+        },
+        "cpu_temp_milli_c": 42538,
+        "execution_order": 1,
+        "fault_counts": {
+          "duplicate_receives": 20,
+          "recoveries": 20,
+          "retransmissions": 20
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "685a8c6fa8bfba781498801d052c8e921d523c10b53467e69c51ce42d83390b3",
+          "size_bytes": 469
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "9a5df6eb36624035ca483b37782308ef7edcd30a883db99524712f91ebd322f1",
+          "size_bytes": 3182
+        },
+        "raw": {
+          "content_sha256": "fdda15e9a6de6a182beae315351ab3699c08f7cc81f17b2f18cfec3ae74a9a74",
+          "gzip_sha256": "118f2447d9ac00a9d7eb689f490a859d3d45da2df019cd3103fca42d74907381",
+          "sample_count": 100
+        },
+        "run_id": "run-001",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "8b3fb9d271417bbb4ba3f38734ddf6a0f57aca9b045880727973e159fdd8d8a1",
+          "size_bytes": 3460
+        },
+        "validated": true
+      },
+      {
+        "console": {
+          "content_sha256": "228892d3e86db0bdb7f9116581b84025b2215f36eae2d96bf38f141ae1c87b89",
+          "gzip_sha256": "db6ed411dfa23e0824ea7f3da653d63dcddc89c6889a5e4101281e3628f69e89"
+        },
+        "controller": {
+          "deadline_misses": 20,
+          "full_loop_max_us": 122307,
+          "full_loop_p50_us": 9451,
+          "full_loop_p95_us": 119798,
+          "full_loop_p99_us": 119830,
+          "iae_milli_c_s": 218972.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 343,
+          "pre_send_p50_us": 16,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 17,
+          "rmse_milli_c": 23600.087152593314,
+          "throughput_msg_s": 9.627747518448077,
+          "transport_max_us": 122290,
+          "transport_p50_us": 9435,
+          "transport_p95_us": 119781,
+          "transport_p99_us": 119813
+        },
+        "cpu_temp_milli_c": 42538,
+        "execution_order": 2,
+        "fault_counts": {
+          "duplicate_receives": 20,
+          "recoveries": 20,
+          "retransmissions": 20
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "9429c6de253eca62cbe8480908ffeb8ce5bf6bd0303b066fdf4d0eaf0f5fbd35",
+          "size_bytes": 469
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "be6ed08951b2279fbca2ba992cd8b400d72faf5c53d5ea49b3ae650a91dfc9fc",
+          "size_bytes": 3182
+        },
+        "raw": {
+          "content_sha256": "6f1a48b03714b9b0d2103deeb95540a163ee379429930f67bebfb175a543e752",
+          "gzip_sha256": "ac0338c8ab6058686f9d39632d9bf5d96512c6be865d2f15820af18fdd66f4c7",
+          "sample_count": 100
+        },
+        "run_id": "run-002",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "f02819ae79a4f8af98b111c37a2fb07c841c3be90b6bc5eb4d8616e4f08ff313",
+          "size_bytes": 3475
+        },
+        "validated": true
+      },
+      {
+        "console": {
+          "content_sha256": "da96eccde12065dfde85e3d9b371259302e7111bf3596c5612d303806a27177b",
+          "gzip_sha256": "2d79b383465248caeffe7963421ea878a02eb03b2acda3f927c075ce0533892d"
+        },
+        "controller": {
+          "deadline_misses": 20,
+          "full_loop_max_us": 123494,
+          "full_loop_p50_us": 8496,
+          "full_loop_p95_us": 119791,
+          "full_loop_p99_us": 119843,
+          "iae_milli_c_s": 218972.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 343,
+          "pre_send_p50_us": 17,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 32,
+          "rmse_milli_c": 23600.087152593314,
+          "throughput_msg_s": 9.626814119638546,
+          "transport_max_us": 123462,
+          "transport_p50_us": 8480,
+          "transport_p95_us": 119774,
+          "transport_p99_us": 119826
+        },
+        "cpu_temp_milli_c": 42538,
+        "execution_order": 3,
+        "fault_counts": {
+          "duplicate_receives": 20,
+          "recoveries": 20,
+          "retransmissions": 20
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "a0aecd26efa0ce696d0ea34bb77e1e67218d1bcba6e2b5436e373e895c4bb2f3",
+          "size_bytes": 469
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "f192eab90a96ee7061f32f1516b05c6a651acef8fb6294892b8b87410e5c0564",
+          "size_bytes": 3182
+        },
+        "raw": {
+          "content_sha256": "767b962fca311ee23524b33c076fe2787dbb62d0f88a6a0f3517a57f14c371db",
+          "gzip_sha256": "32ff065162d7a2effda95dde9f428100397a80db528f7c24dd0c13bd6ade11fd",
+          "sample_count": 100
+        },
+        "run_id": "run-003",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "b405dbaa23718b8e3fa116f6dbee79fd565f9c4a0748638fd321552a25416726",
+          "size_bytes": 3475
+        },
+        "validated": true
+      }
+    ]
+  },
+  "fault_contract": {
+    "configured_ack_losses_per_run": 20,
+    "exact_equality_gate_met": true,
+    "expected_duplicate_receives_per_run": 20,
+    "expected_recoveries_per_run": 20,
+    "expected_retransmissions_per_run": 20
+  },
+  "latency": {
+    "claim_scope": "descriptive reliability overhead only; this campaign is not an RT isolation comparison",
+    "metrics": {
+      "full_loop_max_us": {
+        "iqr": 593.5,
+        "median": 122376,
+        "q1": 122341.5,
+        "q3": 122935,
+        "single_run_maximum": 123494,
+        "single_run_minimum": 122307,
+        "values_by_run": [
+          122376,
+          122307,
+          123494
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 123494
+      },
+      "full_loop_p50_us": {
+        "iqr": 477.5,
+        "median": 8585,
+        "q1": 8540.5,
+        "q3": 9018,
+        "single_run_maximum": 9451,
+        "single_run_minimum": 8496,
+        "values_by_run": [
+          8585,
+          9451,
+          8496
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 9451
+      },
+      "full_loop_p95_us": {
+        "iqr": 3.5,
+        "median": 119793,
+        "q1": 119792,
+        "q3": 119795.5,
+        "single_run_maximum": 119798,
+        "single_run_minimum": 119791,
+        "values_by_run": [
+          119793,
+          119798,
+          119791
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 119798
+      },
+      "full_loop_p99_us": {
+        "iqr": 467.5,
+        "median": 119843,
+        "q1": 119836.5,
+        "q3": 120304,
+        "single_run_maximum": 120765,
+        "single_run_minimum": 119830,
+        "values_by_run": [
+          120765,
+          119830,
+          119843
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 120765
+      },
+      "pre_send_max_us": {
+        "iqr": 0,
+        "median": 343,
+        "q1": 343,
+        "q3": 343,
+        "single_run_maximum": 343,
+        "single_run_minimum": 343,
+        "values_by_run": [
+          343,
+          343,
+          343
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 343
+      },
+      "pre_send_p50_us": {
+        "iqr": 0.5,
+        "median": 16,
+        "q1": 16,
+        "q3": 16.5,
+        "single_run_maximum": 17,
+        "single_run_minimum": 16,
+        "values_by_run": [
+          16,
+          16,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 17
+      },
+      "pre_send_p95_us": {
+        "iqr": 0,
+        "median": 17,
+        "q1": 17,
+        "q3": 17,
+        "single_run_maximum": 17,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          17,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 17
+      },
+      "pre_send_p99_us": {
+        "iqr": 7.5,
+        "median": 17,
+        "q1": 17,
+        "q3": 24.5,
+        "single_run_maximum": 32,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          17,
+          32
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 32
+      },
+      "transport_max_us": {
+        "iqr": 586,
+        "median": 122360,
+        "q1": 122325,
+        "q3": 122911,
+        "single_run_maximum": 123462,
+        "single_run_minimum": 122290,
+        "values_by_run": [
+          122360,
+          122290,
+          123462
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 123462
+      },
+      "transport_p50_us": {
+        "iqr": 477.5,
+        "median": 8569,
+        "q1": 8524.5,
+        "q3": 9002,
+        "single_run_maximum": 9435,
+        "single_run_minimum": 8480,
+        "values_by_run": [
+          8569,
+          9435,
+          8480
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 9435
+      },
+      "transport_p95_us": {
+        "iqr": 3.5,
+        "median": 119776,
+        "q1": 119775,
+        "q3": 119778.5,
+        "single_run_maximum": 119781,
+        "single_run_minimum": 119774,
+        "values_by_run": [
+          119776,
+          119781,
+          119774
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 119781
+      },
+      "transport_p99_us": {
+        "iqr": 468,
+        "median": 119826,
+        "q1": 119819.5,
+        "q3": 120287.5,
+        "single_run_maximum": 120749,
+        "single_run_minimum": 119813,
+        "values_by_run": [
+          120749,
+          119813,
+          119826
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 120749
+      }
+    },
+    "quartile_method": "inclusive quartiles",
+    "unit": "microseconds"
+  },
+  "schema_version": 1
+}

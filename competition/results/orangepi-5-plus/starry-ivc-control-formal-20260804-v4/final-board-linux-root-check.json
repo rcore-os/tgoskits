@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-control-formal-20260804-v4",
+  "checked_at_utc": "2026-08-04T04:51:53Z",
+  "finished_at_utc": "2026-08-04T04:53:40Z",
+  "board": {
+    "type": "OrangePi-5-Plus",
+    "pool_id": "orangepi-5-plus-1",
+    "hostname": "orangepi5plus",
+    "linux_machine_id_prefix": "0c111c08c183464f",
+    "cpu_temp_milli_c": 40692
+  },
+  "lease": {
+    "session_id": "aaf7c2b1-b935-4ae7-9ef9-08c3a2057b40",
+    "allocated_before_ssh": true,
+    "released_after_ssh": true,
+    "released_at_utc": "2026-08-04T04:53:40Z",
+    "available_after_release": 1,
+    "total_boards": 1
+  },
+  "linux_root": {
+    "source": "/dev/mmcblk1p2",
+    "filesystem": "ext4",
+    "options": "rw,noatime,errors=remount-ro,commit=600",
+    "read_write": true
+  },
+  "probe": {
+    "path": "/home/orangepi/.ivc-final-linux-rw-probe",
+    "operations": [
+      "write",
+      "sync",
+      "readback",
+      "remove",
+      "sync"
+    ],
+    "exit_status": 0,
+    "success_marker": "BOARD_FINAL_LINUX_RW_VERIFIED"
+  },
+  "result": "PASS"
+}

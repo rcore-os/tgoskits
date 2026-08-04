@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "amendment_id": "campaign-amendment-006-post-capture-aggregation",
+  "created_at_utc": "2026-08-03T16:42:01Z",
+  "preregistration": {
+    "path": "campaign-preregistration.json",
+    "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+    "modified": false
+  },
+  "previous_amendment": {
+    "path": "campaign-amendment-005-raw-derived-metrics.json",
+    "sha256": "9500345bb336b05662920007191bb06d287af47ddc75ddd396b1dbedc33ef1af",
+    "modified": false
+  },
+  "scope": {
+    "stage": "post-capture validation and descriptive aggregation",
+    "capture_data_modified": false,
+    "formal_result_root": "amendment-005/fault-ack-loss",
+    "formal_run_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "capture_source_commit": "bac4ad16b4adf673942e6c31897872c2c5c116dc"
+  },
+  "correction": {
+    "source_commit": "bac4ad16b4adf673942e6c31897872c2c5c116dc",
+    "worktree_clean": true,
+    "inherited_from_previous_amendment": true
+  },
+  "artifacts": {
+    "starry_rootfs_sha256": "8f66c25d34b0190007e4b684c334854a7fb7fb7f4b4b08ce1849eac961a19efe",
+    "inherited_from_previous_amendment": true
+  },
+  "resumed_capture": {
+    "result_root": "amendment-005",
+    "execution_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "post_capture_only": true
+  },
+  "aggregation_implementation": {
+    "source_commit": "e13dd8f5ed3d0aa2f8f98380064eaaeca5da5e6c",
+    "source_tree": "964d87f1c5d717d0bacb2a5c8d76334b4684a132",
+    "worktree_clean": true,
+    "changed_file_hashes": {
+      "competition/ivc/aggregate_board_campaign.py": "152c8f0123fa76194568f85d1dc95106a4c7e2244ba1a7c8f17ccf528d10c778",
+      "competition/ivc/tests/test_aggregate_board_campaign.py": "1492d131a22cb5d34e093090891ce127c6ad6c18a8f1e59d3c2657d6cd1687f5"
+    },
+    "independent_gates": [
+      "verify every per-run checksums.sha256 entry against retained bytes",
+      "decompress raw.csv.gz and console.log.gz and require byte equality with their uncompressed twins",
+      "require exactly 100 contiguous raw sample sequences per run",
+      "require the preregistered clean source commit, artifact hash, run order, board identity, and model backend",
+      "require exact controller and RTOS fault counts plus every lifecycle marker",
+      "require the final lease-protected Linux root probe to report ext4 read-write and board availability after release"
+    ]
+  },
+  "regression_first": {
+    "pre_implementation": "the new campaign aggregation test failed because competition/ivc/aggregate_board_campaign.py did not exist",
+    "post_implementation": {
+      "targeted_aggregation_tests": "5 passed",
+      "all_ivc_python_tests": "75 passed",
+      "python_compileall": "PASS",
+      "formal_campaign_read_only_replay": "PASS",
+      "cargo_fmt_check": "PASS",
+      "git_diff_check": "PASS",
+      "cargo_clippy": "not applicable because no Rust crate was modified"
+    }
+  },
+  "statistics": {
+    "quartile_method": "inclusive quartiles (Python statistics.quantiles with method=inclusive)",
+    "reported_for_each_latency_metric": [
+      "values by run",
+      "median",
+      "Q1",
+      "Q3",
+      "IQR",
+      "single-run minimum",
+      "single-run maximum",
+      "worst-of-runs"
+    ],
+    "claim_scope": "descriptive reliability overhead only; this campaign is not an RT isolation comparison"
+  },
+  "final_board_linux_root_check": {
+    "path": "final-board-linux-root-check.json",
+    "sha256": "5b1cab3599d735c726b323a4323d6003bc9d86531ecd683b80144df305a6617d",
+    "lease_protected": true,
+    "root_source": "/dev/mmcblk1p2",
+    "filesystem": "ext4",
+    "read_write": true,
+    "board_available_after_release": true,
+    "result": "PASS"
+  }
+}

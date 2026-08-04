@@ -1,0 +1,26 @@
+Formal campaign status: INVALID (aggregate gate failed)
+
+Source commit: 5e72b9c99b9860649b4ee94638d52111c445a5d3
+Campaign ID: starry-ivc-control-formal-20260804-v4
+Capture result: 5 paired runs / 10 halves completed and passed their per-run gates.
+Final Linux root check: PASS.
+
+Failing command:
+
+python3 competition/ivc/aggregate_control_campaign.py \
+  /tmp/starry-ivc-control-formal-5e72b9c-20260804-v4 \
+  --result-root /tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/capture-001 \
+  --final-board-check /tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/final-board-linux-root-check.json \
+  --output /tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/campaign-summary.json
+
+Observed error:
+
+control campaign aggregation failed: pair-001 manual StarryOS backend must be 'native', got None
+
+Root cause:
+
+The UART record contains `backend=native`, but `analyze_board.py` omitted that
+field from the generated summary's `starry` object. The campaign aggregator
+correctly rejected the incomplete summary schema. Evidence is retained exactly;
+metadata and summaries must not be hand-edited and this attempt must not be used
+as formal evidence.

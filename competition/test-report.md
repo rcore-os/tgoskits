@@ -1,6 +1,6 @@
 # Test and evidence report
 
-Report date: 2026-08-02. The retained QEMU evidence was produced from base
+Report date: 2026-08-04. The retained QEMU evidence was produced from base
 commit `263f89d8f3d0481d2712224a7b517a73b1165fb3` plus the then-uncommitted
 competition implementation. The final AxVisor RT and QEMU IVC campaigns share
 source snapshot SHA-256
@@ -9,7 +9,10 @@ The base commit alone does not contain the implementation. The retained
 physical Orange Pi StarryOS captures used base commit
 `f808646899f51fde9addfbe60976f6667c760beb` plus the later uncommitted worktree
 recorded in `results/orangepi-starry-reference/metadata.json`. They are
-reported separately rather than relabeling the historical QEMU archives.
+reported separately rather than relabeling the historical QEMU archives. The
+current same-board StarryOS manual/neural campaign is a distinct, preregistered
+clean-commit capture from `f4ced37584964aba56e07ff060ae58374608bc26` and is
+reported below without rewriting the historical archives.
 
 ## 1. Requirement status
 
@@ -17,16 +20,17 @@ reported separately rather than relabeling the historical QEMU archives.
 | --- | --- | --- |
 | CPU-partition implementation | Complete | Global mask validation, maximum-matched initial placement, FDT CPU consistency, two-phase vCPU task preparation, activation-time revalidation, rollback, and frozen-registry behavior fail closed. |
 | Linux guest with at least two vCPUs | Complete QEMU gate | The dedicated QEMU Task 1 gate requires exactly two online Linux CPUs. The physical replacement profile separately proves two online StarryOS vCPUs. |
-| AxVisor idle/stress/soak validation | Complete | Five 10,000-sample runs retain raw logs, metadata, guest load, p99/max tails, QEMU exit, and source/config/image hashes. |
+| AxVisor idle/stress/soak validation | Complete | The physical StarryOS controlled-interference five-pair matrix and two >=30-minute soak runs pass the preregistered M2 gate. A separate five-pair guest CPU1 stress campaign is retained with its mixed dispatch-tail result and is not relabelled as isolation evidence. |
 | Native RTOS comparison | Complete retained reference | Native Zephyr v4.3.0 runs comparable periodic/dispatch loops under idle and verified CPU stress, with platform differences stated. |
 | Bidirectional guest IP path | Complete | Linux in QEMU or StarryOS on Orange Pi at `10.0.0.1` and Zephyr at `10.0.0.2` exchange CONTROL, STATUS, and ACK over UDP/IPv4 and two virtio-net devices on isolated segment 1. |
 | Application protocol and reliability | Complete | Versioned framing, CRC, typed errors, receive window, retry, duplicate suppression, timeout, session restart logic, and safe fallback are implemented and tested. |
-| Cross-guest normal communication | Complete retained reference | Neural and manual runs each complete 1,800/1,800 with zero application errors/timeouts and zero RTOS duplicates/protocol errors. |
-| Physical Orange Pi communication | Complete retained reference | One 1,800-command neural run and one 20-command smoke run StarryOS/Zephyr on RK3588, pass strict log analysis, synchronize the host filesystem, and restore Linux automatically. |
-| Cross-guest ACK-loss recovery | Complete retained reference | A deterministic 1-in-5 first-ACK loss campaign recovers all 20 losses and applies every command once. |
-| Neural/RTOS closed loop and manual comparison | Complete retained reference | Linux/QEMU establishes the matched manual comparison; StarryOS/Orange Pi reproduces the neural controller result and uses returned Zephyr status as the next observation. |
-| StarryOS replacement path | Complete for physical Tasks 2 and 3 | A two-vCPU StarryOS guest executes the Linux-ABI controller, virtio block/network, UDP protocol, neural inference, and closed-loop feedback. Task 1 timing and the matched manual comparison remain Linux/QEMU evidence. |
-| Error notification | Implemented and host-tested | ERROR encode/decode and malformed-input behavior are covered by Rust/C tests; no retained malformed-packet cross-guest QEMU capture is claimed. |
+| Cross-guest normal communication | Complete formal physical campaign | Five StarryOS manual/neural pairs produce ten validated 1,800-command halves with zero application errors/timeouts/retransmissions/recoveries and zero RTOS duplicates/protocol errors. |
+| Physical Orange Pi communication | Complete formal physical campaign | The preregistered ten-half campaign runs on board `bf61f4d4a1d994ad`, verifies `backend=native`, synchronizes and snapshots every result disk, and restores `/dev/mmcblk1p2` as ext4 `rw` after the campaign. |
+| Cross-guest ACK-loss recovery | Complete formal physical campaign | Three deterministic 1-in-5 first-ACK loss runs each recover all 20 losses, suppress all 20 duplicate applications, and pass the exact fault and lifecycle gates. |
+| Neural/RTOS closed loop and manual comparison | Complete formal physical campaign | StarryOS manual and native-neural policies run on the same Orange Pi, binaries, topology, trajectory, and sample count. RMSE and IAE favor neural in 5/5 pairs; overshoot and mixed latency results are disclosed below. |
+| StarryOS replacement path | Complete for physical Tasks 1, 2, and 3 | Two-vCPU StarryOS runs the physical RT probes, Linux-ABI controller, virtio block/network, UDP protocol, neural inference, and closed-loop feedback. Linux/QEMU remains historical reference evidence rather than the sole Task 1/manual result. |
+| Error notification | Complete formal physical campaign | Three runs each inject the five preregistered malformed classes, receive the exact cross-guest ERROR code/reason evidence, and then complete 100/100 normal commands. |
+| Guest restart recovery | Complete formal physical campaign | Three actual VM-reset runs reject retired CONTROL and stale STATUS/ACK frames, observe safe fallback, establish a new session, and complete all post-reset commands. |
 | Isolation/access control | Implemented and regression-tested | No host NIC/default route exists; segment separation, exact unicast, anti-spoofing, and secure unknown-unicast drop are unit-tested. No third-guest runtime negative capture is claimed. |
 | Demonstration video | Outstanding | The storyboard is complete; the actual approximately five-minute recording is not. |
 | Dev-target PR | Outstanding | The Windows/WSL local synchronization does not claim an upstream push, conflict check, or PR. |
@@ -125,6 +129,8 @@ Both compressed logs and summaries are retained in
 
 ## 4. Physical Orange Pi 5 Plus validation
 
+### Retained single-run reference
+
 The physical profile ran on an RK3588 Orange Pi 5 Plus with 16 GiB DRAM. WSL2
 owned the CH340 serial connection at 1,500,000 baud, built and staged the
 StarryOS kernel, guest DTB, finite ext4 rootfs, and Zephyr v4.3.0 image over SSH
@@ -172,7 +178,56 @@ exists and all complete copies agree. The analyzer never infers omitted
 metrics from a completion marker. These are one full and one smoke hardware
 observation, not a repeated statistical campaign.
 
-## 5. Cross-guest deterministic ACK-loss run
+### Formal same-board StarryOS control campaign
+
+The formal campaign
+[`starry-ivc-control-formal-20260804-v5`](results/orangepi-5-plus/starry-ivc-control-formal-20260804-v5/)
+was preregistered before capture and ran from clean commit
+`f4ced37584964aba56e07ff060ae58374608bc26`. It used the frozen
+AB/BA/AB/BA/AB order on physical board `bf61f4d4a1d994ad`. All five pairs and
+all ten halves passed: each half contains 1,800 contiguous raw samples,
+1,800/1,800 acknowledgements, `starry.backend=native`, zero application
+errors/timeouts/retransmissions/recoveries, zero RTOS duplicates/protocol
+errors, and a verified manifest/raw/gzip/lifecycle chain. The final board check
+again found `/dev/mmcblk1p2` mounted as ext4 `rw` and passed a synchronized
+write/read/remove probe.
+
+The profile-level values below are medians across the five runs except where a
+worst-of-runs value is shown. A positive paired delta is defined as favorable
+to neural for the lower-is-better metrics.
+
+| Metric | Starry manual | Starry neural native | Paired result |
+| --- | ---: | ---: | --- |
+| Valid full runs / samples per run | 5 / 1,800 | 5 / 1,800 | 10/10 halves validated |
+| RMSE (mC) | 9,258.906 | 5,932.491 | neural lower by 35.93%; favorable in 5/5 |
+| IAE (mC*s) | 1,429,224.7 | 686,993.4 | neural lower by 51.94%; favorable in 5/5 |
+| Maximum overshoot (mC) | 6,840 | 13,428 | neural higher by 96.32%; unfavorable in 5/5 |
+| Full-loop p99 median / worst (us) | 11,721 / 11,995 | 11,742 / 12,000 | neural favorable in 2/5; median paired delta -5 us |
+| Full-loop max median / worst (us) | 104,349 / 126,733 | 105,435 / 108,442 | neural favorable in 3/5; median paired delta +1,180 us |
+| Deadline misses per run | 1 | 1 | equal in 5/5 |
+| Throughput median (msg/s) | 9.994927 | 9.994888 | effectively equal; neural favorable in 3/5 |
+
+The defensible conclusion is therefore limited: the fixed neural policy
+consistently improves RMSE and IAE on this deterministic trajectory, but it
+does not improve overshoot and does not establish a latency advantage. In
+particular, the lower neural worst-of-runs full-loop maximum must not be used to
+hide the mixed 3/5 pairwise maximum or 2/5 p99 directions.
+
+The frozen preregistration SHA-256 is
+`88233934bc4080ee3695951ffda2d27ebf235c6a9d389ba83c3015afcf913776`;
+the independently reproducible `campaign-summary.json` SHA-256 is
+`1dd3f8ff52a09fd795395c7fab19587de0786b7b014e9df4f0efb08b502aca62`.
+An earlier complete capture,
+[`starry-ivc-control-formal-20260804-v4`](results/orangepi-5-plus/starry-ivc-control-formal-20260804-v4/),
+is deliberately excluded: aggregation failed because the analyzer omitted the
+already observed `backend=native` field from `summary.starry`. The original ten
+raw captures and failure marker remain unchanged. A regression-first fix added
+the required field at the clean v5 commit; v5 was newly preregistered and
+captured rather than reconstructed from v4.
+
+## 5. Cross-guest fault campaigns
+
+### Retained single-run ACK-loss reference
 
 The fault Zephyr image suppresses only the first ACK for each selected fresh
 sequence while returning STATUS. Linux retransmits after 100 ms; Zephyr treats
@@ -196,6 +251,40 @@ The analyzer verifies the identical exact injection and duplicate sequence set
 `f15c88c6671db67934ce178e3f113b65ac2811a1538a0c36412f6c156bd279fd`.
 The 100 ms retry delay intentionally dominates p95 and above. The terminal log
 also observes controller-silence safe fallback to actuator zero.
+
+### Formal ACK-loss campaign
+
+The physical
+[`starry-ivc-ack-loss-formal-20260803`](results/orangepi-5-plus/starry-ivc-ack-loss-formal-20260803/)
+campaign completed 3/3 registered runs. Each run contains 100 contiguous
+samples and the exact `{5, 10, ..., 100}` loss set, with 20 retransmissions, 20
+recoveries, 20 duplicate receives, 100 controller acknowledgements, and only
+100 RTOS applications. Every manifest, gzip twin, snapshot/fsck, lifecycle,
+Linux-restoration, and final board-pool gate passed.
+
+### Formal malformed/ERROR campaign
+
+The physical
+[`starry-ivc-error-formal-20260804`](results/orangepi-5-plus/starry-ivc-error-formal-20260804/)
+campaign completed 3/3 registered runs. Each run observed exactly one version,
+length, CRC, message-type, and session-transition fault with matching sequence,
+ERROR code, and reason evidence from the controller and Zephyr. After injection,
+each run completed 100/100 normal commands with zero controller faults and
+exactly five ERROR/protocol-error responses. All lifecycle and Linux-restoration
+gates passed.
+
+### Formal guest-restart campaign
+
+The physical
+[`starry-ivc-restart-formal-20260804`](results/orangepi-5-plus/starry-ivc-restart-formal-20260804/)
+campaign completed 3/3 registered runs from clean commit
+`6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c`. In every run, VM 1 was actually
+reset after 20 pre-reset commands, safe fallback was observed, and a new
+session completed 100 post-reset commands. The exact contract rejected one
+retired CONTROL and ignored one stale STATUS and one stale ACK per run; no old
+session data entered the new session. Manifest/raw/gzip/lifecycle and final
+Linux ext4 `rw` gates all passed. The campaign-summary SHA-256 is
+`935db25de96c83267b8d11ea8e55a2909a42a07ca8f2614cef687dce153e2302`.
 
 ## 6. Native Zephyr real-time baseline
 
@@ -269,9 +358,10 @@ penetration test with a malicious third guest.
 The Rust and C protocol suites cover version, type, payload length, session,
 sequence/timestamp, error code, CRC, exact payloads, malformed input, typed
 ERROR behavior, ACK retry, duplicate/out-of-order handling, session restart,
-and safe fallback. CONTROL, STATUS, and ACK are demonstrated cross-guest;
-ERROR is implemented and host-tested but not malformed-injected in the retained
-cross-guest run.
+and safe fallback. CONTROL, STATUS, ACK, all five registered malformed ERROR
+classes, deterministic ACK loss, and actual guest restart are now demonstrated
+on the physical cross-guest path. A malicious third-guest runtime capture is
+still not claimed.
 
 ## 9. Executed validation
 
@@ -326,6 +416,15 @@ decompressed retained logs: uncompressed hashes matched metadata, generated
 metrics matched the retained summaries exactly, and both lifecycle checks
 proved AxVisor filesystem sync plus automatic TF-card Linux restoration.
 
+The subsequent IVC implementation sweep passed 126/126 Python and host-logic
+tests, including the fail-first regression for retaining and requiring the
+StarryOS backend identity. The current analyzer replayed all ten v4 raw
+UART/CSV pairs as `backend=native`; those replays diagnosed the analyzer defect
+but were not substituted for formal capture. The fresh v5 archive then passed
+all ten per-run analyzers, campaign aggregation, final Linux-root verification,
+and an independent reaggregation from the canonical Windows archive. The
+reaggregated campaign summary was byte-identical to the captured summary.
+
 The retained five-run RT comparison and three-run QEMU IVC campaign remain
 pinned to the source/config/image hashes recorded with those measurements. The
 later secondary-CPU startup hardening was validated by the complete host
@@ -349,12 +448,14 @@ CPU partitioning does not establish bounded preemption of a non-yielding
 passthrough guest or isolate every host task/physical interrupt.
 
 The three technical tasks, reproducible commands, source/config/image hashes,
-and retained result archives are present. Formal remaining deliverables are:
+same-board manual/neural baseline, and all three formal physical fault profiles
+are present. Formal remaining deliverables are:
 
-1. record the actual approximately five-minute demonstration video; and
-2. when authorized, verify a conflict-free dev target, push, and submit the
+1. complete M4's deterministic ONNX source, RKNN NPU path, and ONNX Runtime CPU
+   feasibility gate without presenting CPU emulation as NPU execution;
+2. record the actual approximately five-minute demonstration video; and
+3. when authorized, verify a conflict-free dev target, push, and submit the
    required PR.
 
-Additional cross-guest malformed-ERROR, restart, or third-guest isolation
-captures would strengthen the evidence, but are not misrepresented as existing
-or treated as completed artifacts here.
+A third-guest runtime isolation capture would strengthen the policy evidence,
+but is not misrepresented as existing or treated as a completed artifact here.

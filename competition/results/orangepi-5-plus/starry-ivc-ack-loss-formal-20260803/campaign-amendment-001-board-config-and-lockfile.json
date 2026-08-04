@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "amendment_id": "campaign-amendment-001-board-config-and-lockfile",
+  "created_at_utc": "2026-08-03T15:32:34Z",
+  "preregistration": {
+    "path": "campaign-preregistration.json",
+    "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+    "modified": false
+  },
+  "trigger": {
+    "stage": "before guest image build, board reboot, or protocol measurement",
+    "failed_attempt": "fault-ack-loss/run-001",
+    "console_log": {
+      "path": "fault-ack-loss/run-001/console.log",
+      "bytes": 1724,
+      "sha256": "8dbbca6f4c0c9cd0f383f274b2d640326c070405c8ce3447ac563468cf150707"
+    },
+    "console_log_gzip": {
+      "path": "fault-ack-loss/run-001/console.log.gz",
+      "bytes": 776,
+      "sha256": "3e98d5cddc7dc99e6b2176e40e3574fa632226170c1ca5df5dcf6a663c75082a",
+      "content_sha256": "8dbbca6f4c0c9cd0f383f274b2d640326c070405c8ce3447ac563468cf150707"
+    },
+    "board_linux_restored": true,
+    "board_root_after_failure": "/dev/mmcblk1p2 ext4 rw,noatime,errors=remount-ro,commit=600"
+  },
+  "root_causes": [
+    "The newly added board TOML omitted the board_type field required by the current AxVisor board-file schema.",
+    "The temporary local uboot-shell Cargo patch rewrote Cargo.lock, so the formal metadata clean-worktree gate correctly rejected the failed attempt."
+  ],
+  "regression_first": {
+    "pre_fix": [
+      "test_board_profiles_snapshot_the_matching_volatile_disk failed with KeyError: board_type",
+      "test_board_runner_restores_the_lockfile_after_a_local_cargo_patch failed because the backup/restore lifecycle was absent"
+    ],
+    "post_fix": {
+      "ivc_python_tests": "65 passed",
+      "starry_runner_contract": "PASS",
+      "cargo_fmt": "PASS",
+      "git_diff_check": "PASS",
+      "axbuild_clippy": "PASS with -D warnings"
+    }
+  },
+  "correction": {
+    "source_commit": "3ec3eaba09c889835c8eb84e1ec4739310d57b43",
+    "source_tree": "9fa653d0065c84480bd62a71d6631ac841a01e41",
+    "worktree_clean": true,
+    "changed_file_hashes": {
+      "competition/ivc/config/board-orangepi-5-plus-ack-loss.toml": "75344985b3f4d27a7067c6ccfbae34dc18fbac48860286b4c0a7705724911d94",
+      "competition/ivc/orangepi/board-runner.sh": "f201549589b93ddeb225ca65a5677fdab226f9288f4549aec0801c6c2bcf6c06",
+      "competition/ivc/tests/test_qemu_config.py": "1ce83117b40f1ea412cd78384046c74c2c6ec031f5b6de2b1c6c39d273814135"
+    },
+    "behavior": [
+      "The ACK-loss board file now declares board_type=OrangePi-5-Plus.",
+      "When the local ostool patch is active, board-runner backs up Cargo.lock before Cargo starts and restores the exact prior bytes on normal, failure, interrupt, and timeout cleanup paths."
+    ]
+  },
+  "unchanged_contract": {
+    "protocol_counts_and_sequences": true,
+    "analyzer_thresholds": true,
+    "repeat_count": 3,
+    "guest_artifacts_rebuilt": false,
+    "artifact_hashes_unchanged": {
+      "starryos_kernel": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+      "starry_dtb": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "starry_rootfs": "6ecdadaacb657bc8abbc4daaed5b1332b2e04a2325d0065dd0f02c993ba614a3",
+      "zephyr_bin": "1c9635a636d86eaaea7ed37fb265c457dd11ed11bea43d6a18f2bd3aaff779af",
+      "zephyr_elf": "5ec77b4fa83dbb17426d658587f3452b200b5a402dbcbaf3800c4c686357dcae"
+    }
+  },
+  "resumed_capture": {
+    "result_root": "amendment-001",
+    "preserves_failed_original": true,
+    "execution_order": ["run-001", "run-002", "run-003"]
+  }
+}

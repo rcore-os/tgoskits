@@ -1,0 +1,66 @@
+{
+  "controller": {
+    "acknowledged": 20,
+    "errors": 0,
+    "full_loop_max_us": 8915,
+    "full_loop_p50_us": 4694,
+    "full_loop_p95_us": 6952,
+    "full_loop_p99_us": 6952,
+    "iae_milli_c_s": 61355.8,
+    "max_overshoot_milli_c": 0,
+    "policy": "neural",
+    "pre_send_max_us": 17,
+    "pre_send_p50_us": 16,
+    "pre_send_p95_us": 17,
+    "pre_send_p99_us": 17,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 31799.089,
+    "sent": 20,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.97,
+    "timeouts": 0,
+    "transport_max_us": 8899,
+    "transport_p50_us": 4677,
+    "transport_p95_us": 6936,
+    "transport_p99_us": 6936
+  },
+  "guest": "starryos",
+  "lifecycle": {
+    "board_linux_restored": true,
+    "host_filesystem_synced": true,
+    "rtos_powered_off": true,
+    "starry_done": true
+  },
+  "network": {
+    "iface": "eth0",
+    "ip": "10.0.0.1/24",
+    "mac": "unknown",
+    "peer": "10.0.0.2",
+    "segment": 1,
+    "udp_port": 5500
+  },
+  "platform": "orangepi-5-plus",
+  "rtos": {
+    "accepted": 20,
+    "acks_dropped": 0,
+    "acks_sent": 20,
+    "applied": 20,
+    "duplicates": 0,
+    "errors_sent": 0,
+    "profile": "normal",
+    "protocol_errors": 0,
+    "status_sent": 20
+  },
+  "schema_version": 1,
+  "source_log": {
+    "path": "tmp/competition/ivc/orangepi-last/smoke-console.log",
+    "sha256": "8dd16dbcc7608305da9fcf13f393a54e410e16ef26da63ca5c2821878efbf265"
+  },
+  "starry": {
+    "count": 20,
+    "mode": "neural",
+    "period_ms": 100,
+    "vcpus": 2
+  }
+}

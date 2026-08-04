@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "amendment": 1,
+  "status": "frozen-before-amendment-first-board-capture",
+  "created_at_utc": "2026-08-03T17:26:44Z",
+  "preregistration_sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+  "reason": "The first formal attempt completed all five ERROR exchanges, 100 normal commands, raw-data harvest, snapshot fsck, and Linux restoration, but the one-shot Zephyr READY line was emitted before the physical UART stream became observable. The unchanged strict analyzer rejected the attempt because READY was absent.",
+  "failed_attempt": {
+    "path": "fault-error/run-001",
+    "accepted_as_formal_evidence": false,
+    "source_commit": "c01bdebf887e8549e53ffed4b836721c1f357df7",
+    "analysis_failure": "missing complete IVC-RTOS-READY record",
+    "marker_counts": {
+      "rtos_selftest": 0,
+      "rtos_ready": 0,
+      "rtos_errors": 5,
+      "controller_fault_records_including_redundant_copies": 10,
+      "controller_fault_results": 2,
+      "rtos_terminal_results": 1,
+      "starry_success": 1,
+      "linux_restored": 1
+    },
+    "raw_samples": 100,
+    "raw_sha256": "89a00dba755b71628e00f86eb711a6a7f7f48a939ae0e588592c38a9230260a1",
+    "console_content_sha256": "4953081e8b716aacffc8644ec3321c0a7453f16e5697607f41548e7e7505d1ee",
+    "console_gzip_sha256": "95eb18ee22bb0bd5ba9088dffd8858b8f51574531fd8257cee6ed3040f67a7cc",
+    "metadata_sha256": "646d1bbd8c35bd491b59ee3fb05cd5e4e731356eee7c47da00cb49a225a91c28",
+    "checksums_manifest_sha256": "ce1317ca3dbc081401477703007800226fc61d25d8e14078dfa0fcedd6a566c0",
+    "snapshot_sha256": "246bca272e5d9c74e214ee78a621ba5760fa4bffc3a58ebba3a3cc58ac28e6cd",
+    "snapshot_fsck": "clean"
+  },
+  "correction": {
+    "kind": "evidence-observability-only",
+    "protocol_or_acceptance_contract_changed": false,
+    "implementation": "Retain the initial READY record and replay the identical READY contract twice, with 10 ms spacing, immediately before processing the first controller datagram.",
+    "why_this_is_safe": [
+      "The first datagram is already buffered by UDP before the replay and is processed afterward.",
+      "The controller fault-response deadline is two seconds, so the bounded 20 ms replay does not relax or approach the response gate.",
+      "All READY fields and every protocol, control, lifecycle, and artifact acceptance value remain unchanged.",
+      "The analyzer already accepts identical redundant UART records and rejects conflicting complete copies."
+    ]
+  },
+  "source": {
+    "commit": "ee4a56ccb75d72bf8ec9222854270d80c8aa860c",
+    "tree": "42dd0aa1a0b27d1a6facf35ff7ca08cfed23bf99",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "parent_error_profile_commit": "c01bdebf887e8549e53ffed4b836721c1f357df7"
+  },
+  "changed_files": {
+    "competition/ivc/zephyr/src/main.c": "f3f8f95a91f0d9a831ed1b7486b3394406385a2f049668825cd9e43e16bafc2b",
+    "competition/ivc/tests/test_qemu_config.py": "7f8db38c68ab78b61c49b44221bb22c42329ceb018014bd40976498a5300fe57"
+  },
+  "artifacts": {
+    "zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "80ab84594c74b97250c62fa7274700e23c29462c7d15cddfc0b9bd610a07696f"
+    },
+    "zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.elf",
+      "bytes": 2183544,
+      "sha256": "ad7f231b376ec91080a1479774092a6de3c08472dbc11f53d7acbfa50fe28af3"
+    },
+    "unchanged_starry_rootfs_sha256": "a13b224853f9db392a21a3ffa378d3b8356aa5509525bc81a6429c9de313ea06",
+    "unchanged_controller_sha256": "0c7944c926e1ee416fb8758aaa0324ccb030a87f78e21b7206096a424711e2a5",
+    "unchanged_starryos_kernel_sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+    "unchanged_starry_dtb_sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+  },
+  "validation": {
+    "regression_first": "The source-contract test failed before the replay implementation and passed afterward.",
+    "ivc_python_tests": "80 passed",
+    "zephyr_host_logic": "passed",
+    "ivcproto_clippy_checks": "2 passed",
+    "cargo_fmt": "passed",
+    "zephyr_full_build": "passed with -Wall -Wextra -Werror"
+  },
+  "continued_capture_contract": {
+    "result_root": "amendment-001",
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "all_original_preregistration_gates_apply": true,
+    "original_failed_attempt_remains_retained": true,
+    "never_overwrite_or_promote_original_failed_attempt": true
+  }
+}

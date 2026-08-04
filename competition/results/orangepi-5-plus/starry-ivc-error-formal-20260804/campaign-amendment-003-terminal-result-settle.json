@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "amendment": 3,
+  "status": "frozen-before-amendment-first-board-capture",
+  "created_at_utc": "2026-08-03T17:53:40Z",
+  "preregistration_sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+  "previous_amendment_sha256": "a483be720cbf6efb10e43f921dbfca641b85d26364d7771f80fc508e1ef22314",
+  "reason": "Amendment-002 run-001 completed the five ERROR exchanges, 100 normal commands, raw-data harvest, clean snapshot fsck, and Linux restoration. The terminal-detail replay also produced complete redundant fault records. However, both controller terminal fault-result copies overlapped the asynchronous AxVisor VM[2] SystemDown/Stopped log burst on the multiplexed physical UART, so neither copy remained complete and the unchanged strict analyzer rejected the run.",
+  "previous_batch": {
+    "path": "amendment-002/fault-error",
+    "accepted_as_final_three_run_batch": false,
+    "run_001": {
+      "strict_analysis": "failed",
+      "analysis_failure": "missing complete IVC-CONTROLLER-FAULT-RESULT record",
+      "source_commit": "475e8ae9b7cda7cc11430423ca539dbf56fec964",
+      "ready_records": 3,
+      "complete_rtos_error_records_including_replays": 15,
+      "complete_controller_fault_records_including_replays": 19,
+      "corrupted_controller_fault_result_prefix_occurrences": 2,
+      "complete_controller_fault_results": 0,
+      "rtos_terminal_results": 1,
+      "starry_success": 1,
+      "linux_restored": 1,
+      "raw_samples": 100,
+      "raw_sha256": "50e937da91ed040685bcf3eecfaca6f85edcf374a7291264edf579b0a88de6c6",
+      "console_content_sha256": "839f5df045febdef47947eda62bdd11113f5ca6446dd8b3e24c716a4a8e6d597",
+      "console_gzip_sha256": "25378a4601ce3206e4936d92529ea4ea29e3b96c83a9ea510547e767347b4561",
+      "metadata_sha256": "e5b581df4e180ae56c547c14b94aae2ea805583badda8d4e47fb416c10aa1f34",
+      "checksums_manifest_sha256": "b3af1f9ad012d1416f5fffb791a32a3d7ace2c569443114edbd55fe2cfb3dc84",
+      "snapshot_sha256": "6b026894f6fc0c795f951715e1f4bc4d5e32dca39abdee683c02d1de322f1658",
+      "snapshot_fsck": "clean"
+    },
+    "retention_policy": "The failed run remains immutable and is not combined with any later run to manufacture a three-run batch."
+  },
+  "correction": {
+    "kind": "evidence-observability-only",
+    "protocol_or_acceptance_contract_changed": false,
+    "implementation": [
+      "Keep the existing immediate and terminal per-fault detail records unchanged.",
+      "After the terminal detail replay, wait 750 ms so the asynchronous RTOS guest shutdown messages can drain from the shared UART.",
+      "Emit three identical controller fault-result records with 25 ms between records."
+    ],
+    "why_this_is_safe": [
+      "The wait starts only after all fault responses were decoded, all 100 normal commands were acknowledged, raw CSV was written, and latency metrics were finalized.",
+      "It does not alter any network response deadline, retransmission gate, protocol counter, control output, or recorded latency sample.",
+      "The analyzer still requires an exact complete result and rejects conflicting complete copies.",
+      "Three records provide an independently parseable copy even if one record meets an unrelated console burst."
+    ]
+  },
+  "source": {
+    "commit": "01e87ec01b5a3ca5dea234e81fb3288af09d5774",
+    "tree": "319dc57a29559b36fd532c8938f4ff6ec643051c",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "parent_terminal_detail_replay_commit": "475e8ae9b7cda7cc11430423ca539dbf56fec964"
+  },
+  "changed_files": {
+    "tools/ivcproto/src/bin/ivcproto.rs": "a6d02207ed20e5aad46c44ea304be315e51ca3ddf189b6e4607a8d6ec1362d97",
+    "competition/ivc/tests/test_qemu_config.py": "5f2ef2c223bb0aff5d1f6851b551340b005ead5726f739c02433485a57365ef2"
+  },
+  "artifacts": {
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-error.img",
+      "bytes": 67108864,
+      "sha256": "6b17f2eb4da0487ba0fa69f6c15cb2eabd22cc640ad2cb37cb755715142edaa1",
+      "filesystem_state": "clean"
+    },
+    "controller": {
+      "path": "tmp/competition/ivc/starry/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 786712,
+      "sha256": "896d9a96835827136ae8ac3b90412ce69f6e6b0c0b04e6b2becb307a09355605",
+      "embedded_copy_sha256": "896d9a96835827136ae8ac3b90412ce69f6e6b0c0b04e6b2becb307a09355605"
+    },
+    "unchanged_zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "89bc2db6a343c7c7cab629b2fd526df1188cae62b92928abaa07db8b1bda83a8"
+    },
+    "unchanged_zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.elf",
+      "bytes": 2184408,
+      "sha256": "c06b09132c7fe3bcc8f0b3e75cdc6a7857591480e5cd1655c574e97d7452a557"
+    },
+    "unchanged_starryos_kernel_sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+    "unchanged_starry_dtb_sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+  },
+  "validation": {
+    "regression_first": "The shared-UART terminal-settle source-contract test failed on the amendment-002 implementation and passed after the correction.",
+    "ivc_python_tests": "82 passed",
+    "ivcproto_tests": "29 passed",
+    "ivcproto_clippy_checks": "2 passed",
+    "zephyr_host_logic": "passed",
+    "cargo_fmt": "passed",
+    "zephyr_full_build": "passed with -Wall -Wextra -Werror; unchanged binary hashes confirmed",
+    "rootfs_e2fsck": "clean"
+  },
+  "continued_capture_contract": {
+    "result_root": "amendment-003",
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "all_original_preregistration_gates_apply": true,
+    "all_prior_attempts_remain_retained": true,
+    "never_overwrite_or_promote_prior_failed_batches": true
+  }
+}

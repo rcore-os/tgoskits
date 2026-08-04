@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "amendment": 2,
+  "status": "frozen-before-amendment-first-board-capture",
+  "created_at_utc": "2026-08-03T17:40:12Z",
+  "preregistration_sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+  "previous_amendment_sha256": "d0ddb4fe8afe2c12eaa0b667c19015f31b235f51ed04dd894f5383ec70b2ac90",
+  "reason": "The READY replay fixed startup observability and amendment-001 run-001 passed. During run-002, simultaneous StarryOS and Zephyr console traffic corrupted one or both immediate copies of some individual fault-detail lines. Terminal counts, responses, 100 normal commands, raw harvest, fsck, and Linux restoration remained correct, but the strict analyzer correctly rejected the incomplete per-fault text evidence.",
+  "previous_batch": {
+    "path": "amendment-001/fault-error",
+    "accepted_as_final_three_run_batch": false,
+    "run_001": {
+      "strict_analysis": "passed",
+      "summary_sha256": "01471fb56555260d17841dfe9bceb5eace790dd4f610e32f2837977f28be0cec",
+      "console_content_sha256": "ce6e047074e1aadfc1695126c6a8e2c5b8091bbda3ac35aa09db7bf9434f7399",
+      "raw_sha256": "c6c15769d6a9847dbc11b4a85ca1badc0611a5586f96df22a76d04e36c24a040",
+      "checksums_manifest_sha256": "fbcb9f718cee2f6d80c0e2dfe87c49a50967b14e7c448f6afa2451fdecd8620c"
+    },
+    "run_002": {
+      "strict_analysis": "failed",
+      "analysis_failure": "error evidence does not contain all five fault records",
+      "ready_records": 3,
+      "complete_rtos_error_records": 4,
+      "complete_controller_fault_records_including_redundant_copies": 7,
+      "rtos_terminal_results": 1,
+      "controller_fault_results": 2,
+      "starry_success": 1,
+      "linux_restored": 1,
+      "raw_samples": 100,
+      "console_content_sha256": "8baf69240019a1bd625a5f69c520522ae74e7718eb9a427e55378a4d17aeea34",
+      "console_gzip_sha256": "4f0b75eee2daf6cad3b2deaa9f42495c6ecb5b410ddb82f3664fc69e31dba91e",
+      "raw_sha256": "02556623ce10a0cada76d66f67561616e2d95c61588e6bfa5323bf922570f7a7",
+      "metadata_sha256": "badde7dd32a3f95aa3b1892aacca6dfb8e1569458bdd2d71faebd2a0fd60bdf2",
+      "checksums_manifest_sha256": "bd04525b90e0e042be2a910508c64ee581dde75021ba2d7be40625e8d01234bb"
+    },
+    "retention_policy": "Both runs remain immutable; the passing run is useful supporting evidence but is not combined with later runs to manufacture a three-run batch."
+  },
+  "correction": {
+    "kind": "evidence-observability-only",
+    "protocol_or_acceptance_contract_changed": false,
+    "zephyr": [
+      "Store every actual ERROR sequence, code, and static reason when the response is generated.",
+      "Require exactly the configured five stored observations before terminal success.",
+      "Replay two identical copies of the observed five-record set before sending the final normal STATUS/ACK, while the controller is blocked and cannot contend for the UART.",
+      "Keep the original immediate records and reject configurations exceeding the fixed evidence capacity."
+    ],
+    "controller": [
+      "After all five responses have been decoded and validated and after normal control completes, replay the verified five-record contract before the terminal fault result.",
+      "Keep the original immediate records; the analyzer continues to reject conflicting complete copies."
+    ],
+    "timing_bound": "The Zephyr replay has no sleeps and emits at most 620 serial bytes for this fixed profile, approximately 54 ms at 115200 baud, before the 100 ms normal response deadline. Any resulting retransmission would still violate the unchanged zero-retransmission gate."
+  },
+  "source": {
+    "commit": "475e8ae9b7cda7cc11430423ca539dbf56fec964",
+    "tree": "3ffd32094fd6cbfc168aedac76b88a8a28137b40",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "parent_ready_replay_commit": "ee4a56ccb75d72bf8ec9222854270d80c8aa860c"
+  },
+  "changed_files": {
+    "competition/ivc/zephyr/src/main.c": "884d7cfed915df9d0f84ebfe95c4042e2902245cb8a42fdf63fcc8544c493a8f",
+    "tools/ivcproto/src/bin/ivcproto.rs": "d8ef75f6bb6dcf658f5cc7a119196989cc46433ceeeed55ff63eaa210e5f20ff",
+    "competition/ivc/tests/test_qemu_config.py": "694be6e614ad1bab371787b998f9aa79d2764d13a058ed6318464bbe05725b6e"
+  },
+  "artifacts": {
+    "zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "89bc2db6a343c7c7cab629b2fd526df1188cae62b92928abaa07db8b1bda83a8"
+    },
+    "zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.elf",
+      "bytes": 2184408,
+      "sha256": "c06b09132c7fe3bcc8f0b3e75cdc6a7857591480e5cd1655c574e97d7452a557"
+    },
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-error.img",
+      "bytes": 67108864,
+      "sha256": "3eda5014b7d9ac6c3c3ea35617b81070291d4e2243ce3459ea167bfe225bd6b0",
+      "filesystem_state": "clean"
+    },
+    "controller": {
+      "path": "tmp/competition/ivc/starry/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 786696,
+      "sha256": "1784b2397d8caa267d849bd7785746e5464fad1692e00023b4b189d97124827e",
+      "embedded_copy_sha256": "1784b2397d8caa267d849bd7785746e5464fad1692e00023b4b189d97124827e"
+    },
+    "unchanged_starryos_kernel_sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+    "unchanged_starry_dtb_sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+  },
+  "validation": {
+    "regression_first": "The dual-detail-replay source-contract test failed before implementation and passed afterward.",
+    "ivc_python_tests": "81 passed",
+    "ivcproto_tests": "29 passed",
+    "ivcproto_clippy_checks": "2 passed",
+    "zephyr_host_logic": "passed",
+    "cargo_fmt": "passed",
+    "zephyr_full_build": "passed with -Wall -Wextra -Werror",
+    "rootfs_e2fsck": "clean"
+  },
+  "continued_capture_contract": {
+    "result_root": "amendment-002",
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "all_original_preregistration_gates_apply": true,
+    "original_and_amendment_001_attempts_remain_retained": true,
+    "never_overwrite_or_promote_prior_failed_batches": true
+  }
+}

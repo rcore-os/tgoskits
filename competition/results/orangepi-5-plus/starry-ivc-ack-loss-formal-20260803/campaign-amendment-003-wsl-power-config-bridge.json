@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "amendment_id": "campaign-amendment-003-wsl-power-config-bridge",
+  "created_at_utc": "2026-08-03T15:49:36Z",
+  "preregistration": {
+    "path": "campaign-preregistration.json",
+    "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+    "modified": false
+  },
+  "previous_amendment": {
+    "path": "campaign-amendment-002-outer-timeout.json",
+    "sha256": "f60d6aa6971ef3e94d1e45feff06430f72e00aa9c24ed07324b82bb8142ab9af",
+    "modified": false
+  },
+  "trigger": {
+    "stage": "after a complete physical protocol run and AxVisor snapshot sync, while restoring board Linux before result harvesting",
+    "failed_attempt": "amendment-002/fault-ack-loss/run-001",
+    "cause": "The restore script selected Windows python.exe for smart-plug control. TGOS_BOARD_POWER_CONFIG contained a WSL path, but it was not listed in WSLENV with path translation, so Windows Python fell back to the clean worktree's absent .board-power.toml.",
+    "runner_exit_status": 2,
+    "validated": false,
+    "console_log": {
+      "path": "amendment-002/fault-ack-loss/run-001/console.log",
+      "bytes": 71320,
+      "sha256": "7663a3262de8033a47c1ce7d12c45a2cb81720114967d00f88ac6b5d0b71f77b"
+    },
+    "console_log_gzip": {
+      "path": "amendment-002/fault-ack-loss/run-001/console.log.gz",
+      "bytes": 15356,
+      "sha256": "8ae0b0aeff0d03aeb9a03c9b66cb64bca880a90c847f19989b1858d29977d944",
+      "content_sha256": "7663a3262de8033a47c1ce7d12c45a2cb81720114967d00f88ac6b5d0b71f77b"
+    },
+    "metadata": {
+      "path": "amendment-002/fault-ack-loss/run-001/metadata.json",
+      "bytes": 2561,
+      "sha256": "64f0a8b40172b569681852b7f2fdfc6ace3752d38c3bd8e07e7f0e8a1db16620",
+      "started_at": "2026-08-03T15:44:01Z",
+      "finished_at": "2026-08-03T15:46:16Z",
+      "source_commit": "3ec3eaba09c889835c8eb84e1ec4739310d57b43",
+      "worktree_clean": true
+    },
+    "checksums": {
+      "path": "amendment-002/fault-ack-loss/run-001/checksums.sha256",
+      "bytes": 239,
+      "sha256": "c7a0a872e895db10c5d7579359f5cd5595893bacb2e66441ab7322e17c0493f2",
+      "verified": true
+    }
+  },
+  "invalidated_observation": {
+    "ready_markers": 1,
+    "ack_loss_injections": 20,
+    "duplicate_receives": 20,
+    "controller_result_markers": 1,
+    "rtos_result_markers": 1,
+    "snapshot_sync_observed": true,
+    "host_filesystem_sync_observed": true,
+    "board_linux_restored_in_run": false,
+    "raw_csv_present": false,
+    "summary_json_present": false,
+    "interpretation": "The protocol completed, but the preregistered lifecycle gate requires Linux restoration and harvested raw evidence. This attempt is retained and excluded from all campaign results."
+  },
+  "procedural_correction": {
+    "source_files_changed": false,
+    "private_config_copied": false,
+    "environment": {
+      "TGOS_BOARD_POWER_CONFIG": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/.board-power.toml",
+      "WSLENV_entry": "TGOS_BOARD_POWER_CONFIG/p"
+    },
+    "preflight": "From the clean experiment worktree, Windows python.exe successfully performed the read-only smart-plug status action using the translated WSL config path.",
+    "preflight_result": "power=on, fault_code=0",
+    "security": "The private configuration and token were neither copied into the experiment worktree nor printed."
+  },
+  "cleanup_verification": {
+    "cargo_lock_restored": true,
+    "source_worktree_clean": true,
+    "board_linux_restored_out_of_band": true,
+    "board_root_after_recovery": "/dev/mmcblk1p2 ext4 rw,noatime,errors=remount-ro,commit=600"
+  },
+  "unchanged_contract": {
+    "source_commit": "3ec3eaba09c889835c8eb84e1ec4739310d57b43",
+    "source_tree": "9fa653d0065c84480bd62a71d6631ac841a01e41",
+    "protocol_counts_and_sequences": true,
+    "analyzer_thresholds": true,
+    "repeat_count": 3,
+    "guest_artifacts_rebuilt": false,
+    "artifact_hashes_unchanged": {
+      "starryos_kernel": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+      "starry_dtb": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "starry_rootfs": "6ecdadaacb657bc8abbc4daaed5b1332b2e04a2325d0065dd0f02c993ba614a3",
+      "zephyr_bin": "1c9635a636d86eaaea7ed37fb265c457dd11ed11bea43d6a18f2bd3aaff779af",
+      "zephyr_elf": "5ec77b4fa83dbb17426d658587f3452b200b5a402dbcbaf3800c4c686357dcae"
+    }
+  },
+  "resumed_capture": {
+    "result_root": "amendment-003",
+    "preserves_all_previous_attempts": true,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "host_shell_runtime_limit_ms": 1800000
+  }
+}

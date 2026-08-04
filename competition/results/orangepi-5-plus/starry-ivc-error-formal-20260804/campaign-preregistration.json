@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "status": "frozen-before-first-board-capture",
+  "created_at_utc": "2026-08-03T17:16:43Z",
+  "purpose": "Provide repeatable physical cross-guest evidence that StarryOS observes five deterministic protocol ERROR responses and then completes normal control without restarting either guest.",
+  "platform": {
+    "board_type": "OrangePi-5-Plus",
+    "soc": "RK3588",
+    "dram_bytes": 17179869184,
+    "automation_host": "WSL2 Ubuntu",
+    "serial_device": "/dev/ttyUSB0",
+    "linux_root": "PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6"
+  },
+  "source": {
+    "repository": "tgoskits-rt-ivc",
+    "commit": "c01bdebf887e8549e53ffed4b836721c1f357df7",
+    "tree": "3fa1fcebd7134e61bbb0fb1c624320c3b55c8874",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "rust_toolchain": "nightly-2026-07-15",
+    "rustc": "rustc 1.99.0-nightly (da80ed070 2026-07-14)",
+    "cargo": "cargo 1.99.0-nightly (59800466c 2026-07-07)",
+    "zephyr": "v4.3.0",
+    "west": "v1.5.0",
+    "zephyr_gcc": "aarch64-linux-gnu-gcc 11.4.0",
+    "cmake": "4.1.0",
+    "python": "3.13.7",
+    "e2fsck": "1.46.5"
+  },
+  "capture_contract": {
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "controller_policy": "neural",
+    "inference_backend": "native",
+    "controller_fault_profile": "error",
+    "command_count": 100,
+    "period_ms": 100,
+    "drop_ack_every": 0,
+    "expected_retransmissions": 0,
+    "expected_recoveries": 0,
+    "expected_fresh_applications": 100,
+    "expected_duplicate_receives": 0,
+    "expected_status_frames": 100,
+    "expected_ack_frames": 100,
+    "expected_error_frames": 5,
+    "expected_protocol_errors": 5,
+    "normal_control_must_continue_after_faults": true,
+    "faults": [
+      {
+        "kind": "unsupported-version",
+        "sequence": 1001,
+        "offending_type": "control",
+        "mutation": "protocol version incremented from 1 to 2",
+        "expected_error_code": 2,
+        "expected_rtos_reason": "unsupported-version"
+      },
+      {
+        "kind": "length-mismatch",
+        "sequence": 1002,
+        "offending_type": "control",
+        "mutation": "declared payload length incremented without adding a byte",
+        "expected_error_code": 1,
+        "expected_rtos_reason": "length-mismatch"
+      },
+      {
+        "kind": "checksum-mismatch",
+        "sequence": 1003,
+        "offending_type": "control",
+        "mutation": "last payload byte flipped after checksum generation",
+        "expected_error_code": 3,
+        "expected_rtos_reason": "checksum-mismatch"
+      },
+      {
+        "kind": "unexpected-message-type",
+        "sequence": 1004,
+        "offending_type": "status",
+        "mutation": "valid STATUS frame delivered to the control-only endpoint",
+        "expected_error_code": 5,
+        "expected_rtos_reason": "unexpected-message-type"
+      },
+      {
+        "kind": "invalid-session-transition",
+        "sequence": 1005,
+        "offending_type": "control",
+        "mutation": "reserved zero session identifier",
+        "expected_error_code": 4,
+        "expected_rtos_reason": "zero-session-or-sequence"
+      }
+    ],
+    "result_snapshot_path": "/home/orangepi/ivc-e",
+    "vcpu_placement": {
+      "starry_vcpu_masks": ["0x2", "0x4"],
+      "zephyr_vcpu_masks": ["0x1"],
+      "dedicated_cpus": true
+    }
+  },
+  "artifacts": {
+    "starryos_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "bytes": 13639728,
+      "sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee"
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "bytes": 1766,
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+    },
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-error.img",
+      "bytes": 67108864,
+      "sha256": "a13b224853f9db392a21a3ffa378d3b8356aa5509525bc81a6429c9de313ea06",
+      "filesystem_state": "clean",
+      "embedded_profile": "neural/native/error, full, count=100, period_ms=100"
+    },
+    "controller": {
+      "path": "tmp/competition/ivc/starry/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 785904,
+      "sha256": "0c7944c926e1ee416fb8758aaa0324ccb030a87f78e21b7206096a424711e2a5",
+      "embedded_copy_sha256": "0c7944c926e1ee416fb8758aaa0324ccb030a87f78e21b7206096a424711e2a5"
+    },
+    "zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "1ccc1f174f4f4a0df9ea8c88bffae899eb43aff0368c1c4c73a53226e0372658"
+    },
+    "zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.elf",
+      "bytes": 2182920,
+      "sha256": "fe09947449805892b05514044a4335aa2f64756a7e1e4d4d826e42e40137a21f"
+    },
+    "model_source": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "bytes": 12259,
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff"
+    }
+  },
+  "frozen_file_hashes": {
+    "competition/ivc/run-orangepi-5-plus.sh": "3db8296f50fad620c99fb186e8a6a02c082c8e80f5f81649199ff140e4cbf3e7",
+    "competition/ivc/analyze_board.py": "cff9d2b9c7584e2cc06d832046c524d5525bd92905016a1c1e81875d33ae8c71",
+    "competition/ivc/write_board_metadata.py": "c3c63a3c3e1a1bba29792a60315530f69a1544f11f2815b6959fcf04c59092fd",
+    "competition/ivc/orangepi/board-runner.sh": "f201549589b93ddeb225ca65a5677fdab226f9288f4549aec0801c6c2bcf6c06",
+    "competition/ivc/stage-orangepi-5-plus.sh": "780656c1f6093aa3d339924aab3a9f0b8eb8a43cb91d5de4c98643d89240c9b9",
+    "competition/ivc/starry/build.sh": "989197361d7f80b82400c9e5dbdaa099e54933349b64e27a290036e4e04943ba",
+    "competition/ivc/starry/build-rootfs.sh": "d9f1400245b5f2895678c5543d36504c828fc1952757b63e2b06fa224ce7b80e",
+    "competition/ivc/starry/autorun.sh": "01fba0559d446538b2f3a416a02708c23d8a7acd75f45fadb20b67a08d95f7c2",
+    "competition/ivc/config/axvisor-orangepi-5-plus-error.toml": "dc467e8e450a7f077b4d8b94faf25081edd0b63216794549fa295fe22f968b08",
+    "competition/ivc/config/board-orangepi-5-plus-error.toml": "cb846ae0dfa6bbd7c831c4c3b41ea6e3d293c8d4d68c087d2a5f14969c6b032f",
+    "competition/ivc/config/orangepi-5-plus-starry-smp2-error.toml": "dc9f41da1c499d732d0dbd0d80cdb34a307dfbfabb59e60dce66b77aea5631b0",
+    "competition/ivc/config/orangepi-5-plus-zephyr-error.toml": "c341be24684920f86a301aa35315727995a5ec7e9e24bd438a16c03362587944",
+    "competition/ivc/zephyr/board-error.conf": "517066df1d720ad3bb99a2aa0b4c9068345b08a7e85b29cbda1b8c5240312b25",
+    "competition/ivc/zephyr/src/main.c": "3fecfcdfda661946c490d8796a008db28868e190536c0d280a73d606ea1d0a01",
+    "competition/ivc/zephyr/src/protocol.c": "068de0ebe0de13cb7609c7f4dbd3cc1d4de1a91500e0b4fcf91b4c275a0d49a5",
+    "competition/ivc/zephyr/src/protocol.h": "d0a6b1741156e5bfd51dbff3cc5930e16d8fa89a7cfe1f00c09707d5cf1a8f00",
+    "tools/ivcproto/src/bin/ivcproto.rs": "adf5ea1f8a2df457320a537612a3262e951fdc79bebd4078410400e7fb305d3a",
+    "tools/ivcproto/src/neural.rs": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff"
+  },
+  "validity_gates": {
+    "each_run": [
+      "metadata records the frozen clean source commit and exact input hashes",
+      "StarryOS boot records mode=neural, backend=native, fault_profile=error, count=100, period_ms=100, and at least two vCPUs",
+      "the five preregistered controller fault records appear with exact sequence and expected/observed ERROR code",
+      "the same five faults appear in Zephyr ERROR records with exact sequence, code, and reason",
+      "controller terminal fault evidence reports injected=errors_received=5, normal_acknowledged=100, and continued=1",
+      "controller reports sent=acknowledged=100, errors=timeouts=retransmissions=recoveries=0, and success=100 percent",
+      "RTOS READY records drop_ack_every=0, expected_commands=100, expected_protocol_errors=5, and exit_after_expected=1",
+      "RTOS reports accepted=applied=status_sent=acks_sent=100, errors_sent=protocol_errors=5, and duplicates=acks_dropped=0",
+      "raw CSV contains exactly 100 contiguous samples and matches guest plus harvest SHA-256 markers",
+      "StarryOS completion, Zephyr poweroff, AxVisor snapshot sync, clean snapshot fsck, and BOARD_LINUX_RESTORED markers are all present",
+      "board identity and CPU temperature are available",
+      "console contains no fatal, panic, unhandled synchronous exception, VM run error, or stale result-image marker"
+    ],
+    "campaign": [
+      "all three preregistered runs pass the strict analyzer",
+      "all three raw and console content hashes are independently retained",
+      "all result manifests verify",
+      "every run uses the same frozen source and artifact hashes",
+      "board Linux is restored to a read-write ext4 root after the final run"
+    ]
+  },
+  "statistics_policy": {
+    "protocol_counts": "exact equality gates; no tolerance",
+    "latency_summary": ["median", "IQR", "single-run maximum", "worst-of-runs"],
+    "latency_claim": "descriptive recovery overhead only; this campaign is not the preregistered RT isolation comparison"
+  },
+  "evidence_policy": {
+    "root": "competition/results/orangepi-5-plus/starry-ivc-error-formal-20260804",
+    "stage_frozen_artifacts_before_capture": true,
+    "restore_linux_after_every_run": true,
+    "retain_failed_attempts": true,
+    "failed_batch_policy": "Do not rerun into the same batch directory; preserve it and use a numbered amendment result root.",
+    "debug_evidence_excluded": "competition/results/orangepi-5-plus/starry-ivc-error-debug-20260803/fault-error/run-001",
+    "never_relabel_debug_data_as_formal": true,
+    "never_modify_this_file_after_first_board_capture": true,
+    "post_freeze_corrections": "append a numbered amendment JSON without replacing this file"
+  }
+}

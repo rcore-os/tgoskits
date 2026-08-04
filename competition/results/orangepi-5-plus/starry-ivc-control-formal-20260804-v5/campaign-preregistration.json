@@ -1,0 +1,219 @@
+{
+  "artifacts": {
+    "model_source": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff",
+      "size_bytes": 12259
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "size_bytes": 1766
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "sha256": "dd7e125104ce103f00b634ce31eaca214bbee85ffb1378468a3da10a4837cd53",
+      "size_bytes": 13639728
+    },
+    "zephyr_guest": {
+      "path": "competition/ivc/zephyr/build-board/zephyr/zephyr.bin",
+      "sha256": "b3fdba64504011e5273b5a6094ddab98b36de0d48fe39e2514559c17cf321ca5",
+      "size_bytes": 121568
+    }
+  },
+  "campaign_id": "starry-ivc-control-formal-20260804-v5",
+  "capture_contract": {
+    "ack_timeout_ms": 1000,
+    "analyzer_profile": "normal",
+    "command_count": 1800,
+    "execution_order": [
+      {
+        "order": [
+          "manual",
+          "neural"
+        ],
+        "pair_id": "pair-001"
+      },
+      {
+        "order": [
+          "neural",
+          "manual"
+        ],
+        "pair_id": "pair-002"
+      },
+      {
+        "order": [
+          "manual",
+          "neural"
+        ],
+        "pair_id": "pair-003"
+      },
+      {
+        "order": [
+          "neural",
+          "manual"
+        ],
+        "pair_id": "pair-004"
+      },
+      {
+        "order": [
+          "manual",
+          "neural"
+        ],
+        "pair_id": "pair-005"
+      }
+    ],
+    "expected_duplicates": 0,
+    "expected_errors": 0,
+    "expected_protocol_errors": 0,
+    "expected_recoveries": 0,
+    "expected_retransmissions": 0,
+    "network": {
+      "iface": "eth0",
+      "ip": "10.0.0.1/24",
+      "peer": "10.0.0.2",
+      "segment": 1,
+      "udp_port": 5500
+    },
+    "pair_count": 5,
+    "period_ms": 100,
+    "profiles": {
+      "manual": {
+        "controller_policy": "manual-fixed",
+        "inference_backend": "native",
+        "inputs": {
+          "board_config": {
+            "path": "competition/ivc/config/board-orangepi-5-plus-manual.toml",
+            "sha256": "feacea208fdcdbbd3a7cba4af39eacd7b1c67d4ad5219eee01edecff979877cf",
+            "size_bytes": 621
+          },
+          "build_config": {
+            "path": "competition/ivc/config/axvisor-orangepi-5-plus-manual.toml",
+            "sha256": "1a6eb506bdb98eec303d64fe367b8ce182c2c8530eb3f7ab315aea06078bdf6e",
+            "size_bytes": 289
+          },
+          "rootfs": {
+            "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-manual.img",
+            "sha256": "40eded49850a186c2198497be0c4c66636febd5851bf285fc20d366f99bb6a33",
+            "size_bytes": 67108864
+          }
+        },
+        "model_id": "manual-fixed-500",
+        "result_snapshot_path": "/home/orangepi/ivc-m",
+        "runner_profile": "manual-full",
+        "starry_mode": "manual"
+      },
+      "neural": {
+        "controller_policy": "neural",
+        "inference_backend": "native",
+        "inputs": {
+          "board_config": {
+            "path": "competition/ivc/config/board-orangepi-5-plus.toml",
+            "sha256": "43c59ed91e1fdb02a84ee98cdd7db1e9684f4841861d8d1354f342b2c42185e8",
+            "size_bytes": 621
+          },
+          "build_config": {
+            "path": "competition/ivc/config/axvisor-orangepi-5-plus.toml",
+            "sha256": "cbe5fe9cd8f1315c32cc9bd6dc446f831b2f9dd4f6b1d24b73e040ede6d4b2a2",
+            "size_bytes": 282
+          },
+          "rootfs": {
+            "path": "tmp/competition/ivc/starry/starry-ivc-rootfs.img",
+            "sha256": "ecb11df0c4d8cce78897986d7bc69f95643cebcd15943e7adc194a3ea3ad0d14",
+            "size_bytes": 67108864
+          }
+        },
+        "model_id": "thermal-4x6x1-v1",
+        "result_snapshot_path": "/home/orangepi/ivc-n",
+        "runner_profile": "full",
+        "starry_mode": "neural"
+      }
+    },
+    "raw_identity_uart": {
+      "copies": 5,
+      "interval_seconds": 1,
+      "peer_shutdown_quiet_seconds": 4,
+      "selection": "unique-largest-count-then-harvest-prefix"
+    },
+    "repeat_count_per_half": 1,
+    "setpoint_schedule": [
+      {
+        "end_sequence": 600,
+        "setpoint_milli_c": 45000,
+        "start_sequence": 1
+      },
+      {
+        "end_sequence": 1200,
+        "setpoint_milli_c": 65000,
+        "start_sequence": 601
+      },
+      {
+        "end_sequence": 1800,
+        "setpoint_milli_c": 50000,
+        "start_sequence": 1201
+      }
+    ],
+    "settling_band_milli_c": 1000,
+    "settling_minimum_samples": 20,
+    "startup_delay_seconds": 2
+  },
+  "failure_policy": {
+    "failed_attempts_are_retained": true,
+    "result_root_reuse_forbidden": true,
+    "runs_from_different_attempts_must_not_be_stitched": true
+  },
+  "frozen_at": "2026-08-04T05:00:26Z",
+  "performance_policy": {
+    "primary_metrics": [
+      "rmse_milli_c",
+      "iae_milli_c_s"
+    ],
+    "report_favorable_and_unfavorable_results": true,
+    "superiority_required_for_campaign_validity": false
+  },
+  "platform": {
+    "board_model": "Xunlong Orange Pi 5 Plus",
+    "board_type": "OrangePi-5-Plus",
+    "soc": "RK3588"
+  },
+  "schema_version": 1,
+  "source": {
+    "commit": "f4ced37584964aba56e07ff060ae58374608bc26",
+    "worktree_clean": true
+  },
+  "statistics_policy": {
+    "pairing": "within-pair manual versus neural on the same physical board",
+    "summary": [
+      "paired values",
+      "median",
+      "IQR",
+      "single-run maximum",
+      "worst-of-runs"
+    ]
+  },
+  "status": "frozen-before-first-board-capture",
+  "toolchain": {
+    "aarch64_gcc": "aarch64-linux-gnu-gcc 11.4.0",
+    "python": "3.13.7",
+    "rust": "nightly-2026-07-15 (rustc 1.99.0-nightly da80ed070)",
+    "west": "1.5.0",
+    "zephyr": "v4.3.0"
+  },
+  "tools": {
+    "aggregator": {
+      "path": "competition/ivc/aggregate_control_campaign.py",
+      "sha256": "e8b4f2a30e39fd1c6c1d93ad9e06fea3d2ed0e419f5059c55d8e6ea11dd5dae4",
+      "size_bytes": 35671
+    },
+    "analyzer": {
+      "path": "competition/ivc/analyze_board.py",
+      "sha256": "5b56b46456e4fd4671129a6fd81040c7fae79cfcda3640447a419d2339991eb2",
+      "size_bytes": 72120
+    },
+    "runner": {
+      "path": "competition/ivc/run-control-campaign.sh",
+      "sha256": "381b14c5a5d1081dbd95ea26b320839c83ea84c903e3ca8e64bc906078a6a803",
+      "size_bytes": 4464
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "board": {
+    "board_id": "bf61f4d4a1d994ad",
+    "cpu_temp_milli_c": 44384,
+    "hostname": "orangepi5plus"
+  },
+  "controller": {
+    "acknowledged": 1800,
+    "deadline_misses": 1,
+    "errors": 0,
+    "full_loop_max_us": 101829,
+    "full_loop_p50_us": 7887,
+    "full_loop_p95_us": 11633,
+    "full_loop_p99_us": 12049,
+    "iae_milli_c_s": 686993.4,
+    "max_overshoot_milli_c": 13428,
+    "policy": "neural",
+    "pre_send_max_us": 367,
+    "pre_send_p50_us": 17,
+    "pre_send_p95_us": 17,
+    "pre_send_p99_us": 18,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 5932.49136235734,
+    "sent": 1800,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.99502748771456,
+    "timeouts": 0,
+    "transport_max_us": 101462,
+    "transport_p50_us": 7870,
+    "transport_p95_us": 11616,
+    "transport_p99_us": 12033
+  },
+  "guest": "starryos",
+  "lifecycle": {
+    "block_snapshot": {
+      "backing_index": 0,
+      "filesystem_check": "clean",
+      "image_bytes": 67108864,
+      "image_path": "/home/orangepi/ivc-n",
+      "image_sha256": "090dcd9d8eda79cfa1e6eccbfbd6d93950870e2189d27ae363c0b12780c3eb55",
+      "vm_id": 1
+    },
+    "board_linux_restored": true,
+    "host_filesystem_synced": true,
+    "rtos_powered_off": true,
+    "starry_done": true,
+    "volatile_block_snapshotted": true
+  },
+  "network": {
+    "iface": "eth0",
+    "ip": "10.0.0.1/24",
+    "mac": "unknown",
+    "peer": "10.0.0.2",
+    "segment": 1,
+    "udp_port": 5500
+  },
+  "platform": "orangepi-5-plus",
+  "profile": "normal",
+  "raw_samples": {
+    "artifact_sha256": "c9ffaf327f89b7018902c85fa1989626b317f309d730179d18d987a4d189dc9f",
+    "deadline_misses": 1,
+    "dropped_samples": 0,
+    "guest_manifest_sha256": "763cad9b0b83a045e51690f67b5d009ce79965379bc573b06b692b63f8b1cf97",
+    "path": "/tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/capture-001/pair-005/full/run-001/raw.csv.gz",
+    "sample_count": 1800,
+    "sha256": "763cad9b0b83a045e51690f67b5d009ce79965379bc573b06b692b63f8b1cf97",
+    "uart_sha256": "763cad9b0b83a045e51690f67b5d009ce79965379bc573b06b692b63f8b1cf97",
+    "uart_sha256_complete": true
+  },
+  "rtos": {
+    "accepted": 1800,
+    "acks_dropped": 0,
+    "acks_sent": 1800,
+    "applied": 1800,
+    "duplicates": 0,
+    "errors_sent": 0,
+    "profile": "normal",
+    "protocol_errors": 0,
+    "status_sent": 1800
+  },
+  "schema_version": 2,
+  "source_log": {
+    "content_sha256": "41587ae3d5214ba74e77edb19aa6f294c842adadbe1065a121af93399dbf6b5b",
+    "path": "/tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/capture-001/pair-005/full/run-001/console.log.gz",
+    "sha256": "a8a8359625f80e638d69e1c67b4af96744248e12e9b940efd56af2c76976f75e"
+  },
+  "starry": {
+    "count": 1800,
+    "fault_profile": "none",
+    "mode": "neural",
+    "period_ms": 100,
+    "vcpus": 2
+  }
+}

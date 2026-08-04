@@ -1,0 +1,143 @@
+{
+  "board": {
+    "board_id": "bf61f4d4a1d994ad",
+    "cpu_temp_milli_c": 45307,
+    "hostname": "orangepi5plus"
+  },
+  "controller": {
+    "acknowledged": 100,
+    "deadline_misses": 0,
+    "errors": 0,
+    "full_loop_max_us": 21342,
+    "full_loop_p50_us": 4552,
+    "full_loop_p95_us": 6684,
+    "full_loop_p99_us": 9548,
+    "iae_milli_c_s": 218972.1,
+    "max_overshoot_milli_c": 0,
+    "policy": "neural",
+    "pre_send_max_us": 17,
+    "pre_send_p50_us": 16,
+    "pre_send_p95_us": 17,
+    "pre_send_p99_us": 17,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 23600.087152593314,
+    "sent": 100,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.995287070702421,
+    "timeouts": 0,
+    "transport_max_us": 21326,
+    "transport_p50_us": 4536,
+    "transport_p95_us": 6668,
+    "transport_p99_us": 9532
+  },
+  "error_evidence": [
+    {
+      "controller_observed": true,
+      "error_code": 2,
+      "kind": "unsupported-version",
+      "reason": "unsupported-version",
+      "rtos_observed": true,
+      "sequence": 1001
+    },
+    {
+      "controller_observed": true,
+      "error_code": 1,
+      "kind": "length-mismatch",
+      "reason": "length-mismatch",
+      "rtos_observed": true,
+      "sequence": 1002
+    },
+    {
+      "controller_observed": true,
+      "error_code": 3,
+      "kind": "checksum-mismatch",
+      "reason": "checksum-mismatch",
+      "rtos_observed": true,
+      "sequence": 1003
+    },
+    {
+      "controller_observed": true,
+      "error_code": 5,
+      "kind": "unexpected-message-type",
+      "reason": "unexpected-message-type",
+      "rtos_observed": true,
+      "sequence": 1004
+    },
+    {
+      "controller_observed": true,
+      "error_code": 4,
+      "kind": "invalid-session-transition",
+      "reason": "zero-session-or-sequence",
+      "rtos_observed": true,
+      "sequence": 1005
+    }
+  ],
+  "error_recovery": {
+    "continued": true,
+    "errors_received": 5,
+    "injected": 5,
+    "normal_acknowledged": 100
+  },
+  "guest": "starryos",
+  "lifecycle": {
+    "block_snapshot": {
+      "backing_index": 0,
+      "filesystem_check": "clean",
+      "image_bytes": 67108864,
+      "image_path": "/home/orangepi/ivc-e",
+      "image_sha256": "4b76ba18cf0ed2d0954cab27c04cf17bc10001a2ddb5b2ab61dedf8eb06fbc92",
+      "vm_id": 1
+    },
+    "board_linux_restored": true,
+    "host_filesystem_synced": true,
+    "rtos_powered_off": true,
+    "starry_done": true,
+    "volatile_block_snapshotted": true
+  },
+  "network": {
+    "iface": "eth0",
+    "ip": "10.0.0.1/24",
+    "mac": "unknown",
+    "peer": "10.0.0.2",
+    "segment": 1,
+    "udp_port": 5500
+  },
+  "platform": "orangepi-5-plus",
+  "profile": "error",
+  "raw_samples": {
+    "artifact_sha256": "0b25546a130507f3bb3365a90c3229dd2bef811a3d939b275f488608a56be442",
+    "deadline_misses": 0,
+    "dropped_samples": 0,
+    "guest_manifest_sha256": "fdd1647dbbf2a90200c02f4848b14d4e7e35b2f8ebf4221b06b9b04585cd721e",
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-error-formal-20260804/amendment-005/fault-error/run-003/raw.csv.gz",
+    "sample_count": 100,
+    "sha256": "fdd1647dbbf2a90200c02f4848b14d4e7e35b2f8ebf4221b06b9b04585cd721e",
+    "uart_sha256": "fdd1647dbbf2a90200c02f4848b14d4e7e35b2f",
+    "uart_sha256_complete": false
+  },
+  "rtos": {
+    "accepted": 100,
+    "acks_dropped": 0,
+    "acks_sent": 100,
+    "applied": 100,
+    "duplicates": 0,
+    "errors_sent": 5,
+    "profile": "error",
+    "protocol_errors": 5,
+    "status_sent": 100
+  },
+  "schema_version": 2,
+  "source_log": {
+    "content_sha256": "2d703608115a8cdad63c4cd417daec4e0b4382bbe5d0724cb236a983d4edf67c",
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-error-formal-20260804/amendment-005/fault-error/run-003/console.log.gz",
+    "sha256": "0ab1830215a2e0cfaaeeddfb01fe753459dcac36e63e013f566ed228d3f3359e"
+  },
+  "starry": {
+    "count": 100,
+    "fault_profile": "error",
+    "mode": "neural",
+    "period_ms": 100,
+    "vcpus": 2
+  }
+}

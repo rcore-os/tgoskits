@@ -1,0 +1,26 @@
+BOARD_HOST_LIBCLANG path=/usr/lib/llvm-14/lib source=environment
+orangepi5plus
+BOARD_SERVICE_DTB_READY path=/home/seven_wsl/.local/share/ostool-server/dtbs/orangepi-5-plus-starry.dtb root=PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6
+     Locking 1 package to latest compatible version
+      Adding uboot-shell v0.2.6 (/home/seven_wsl/Workspace/starry/ostool/uboot-shell)
+   Compiling uboot-shell v0.2.6 (/home/seven_wsl/Workspace/starry/ostool/uboot-shell)
+   Compiling ostool v0.24.1
+   Compiling axbuild v0.4.20 (/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m3-formal-20260803/scripts/axbuild)
+   Compiling tg-xtask v0.5.11 (/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m3-formal-20260803/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.09s
+     Running `target/debug/tg-xtask axvisor board -c competition/ivc/config/axvisor-orangepi-5-plus-ack-loss.toml --board-config competition/ivc/config/board-orangepi-5-plus-ack-loss.toml -b OrangePi-5-Plus`
+[2026-08-03T15:27:25Z INFO  axbuild::context] Workspace root: /home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m3-formal-20260803
+[2026-08-03T15:27:25Z INFO  axbuild::context] Workspace member dir for axvisor: /home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m3-formal-20260803/os/axvisor
+Using build config: competition/ivc/config/axvisor-orangepi-5-plus-ack-loss.toml
+Error: failed to parse board config: competition/ivc/config/board-orangepi-5-plus-ack-loss.toml
+
+Caused by:
+    TOML parse error at line 1, column 1
+      |
+    1 | shell_prefix = "AXVISOR_SHELL_READY"
+      | ^
+    missing field `board_type`
+    
+/dev/mmcblk1p2 ext4   rw,noatime,errors=remount-ro,commit=600
+BOARD_LINUX_RESTORED
+Orange Pi is already running Linux

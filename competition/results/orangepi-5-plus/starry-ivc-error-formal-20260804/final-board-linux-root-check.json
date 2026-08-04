@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "checked_at_utc": "2026-08-03T18:32:36Z",
+  "board": {
+    "type": "OrangePi-5-Plus",
+    "hostname": "orangepi5plus"
+  },
+  "lease": {
+    "allocated_before_ssh": true,
+    "released_after_ssh": true,
+    "available_after_release": 1,
+    "total": 1
+  },
+  "linux_root": {
+    "source": "/dev/mmcblk1p2",
+    "filesystem": "ext4",
+    "options": "rw,noatime,errors=remount-ro,commit=600",
+    "read_write": true
+  },
+  "probe": {
+    "transport": "lease-protected SSH from WSL2",
+    "exit_status": 0,
+    "success_marker": "BOARD_FINAL_LINUX_RW_VERIFIED"
+  },
+  "result": "PASS"
+}

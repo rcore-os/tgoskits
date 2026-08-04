@@ -1,8 +1,8 @@
 # Competition Improvement Plan
 
-> 状态：执行中（M0 已闭环；M1 的 StarryOS 同板 manual/neural 5 对正式矩阵已完成，10/10 个 half 和最终 Linux 根文件系统门均通过；M2 的 controlled-interference 5 对正式矩阵、shared/partitioned 双 soak 和 guest CPU1 stress 5 对正式矩阵均已完成；M3 的 ACK loss、ERROR、restart recovery 三种实体 profile 均已完成 3/3 次并通过正式 campaign 门。M0-M3 证据冻结，当前进入 M4；M5 待执行）
+> 状态：执行中（M0/M1 调试闭环和 M2 无损采集已通过；PPI27 热路径串口扰动已从根因消除，修复后的 AxVisor host-noise 实体 smoke 已按 AB/BA/AB 完成 3/3 组，direct IRQ p99/max 三组均改善约 91%/83%–86%；这些运行来自 dirty worktree 且每项仅 20 个用户态样本，因此 clean-commit 正式矩阵仍为 0/5，最坏延迟正式出口门尚未通过）
 >
-> 更新日期：2026-08-04
+> 更新日期：2026-08-03
 >
 > 范围：补齐 `competition/requirement.md` 中 StarryOS 实体板、实时最坏延迟、手动控制基线、协议故障和重复性证据；以 ONNX 为唯一跨后端部署模型来源，在 StarryOS 上形成 RKNN NPU 主后端及 ONNX Runtime CPU 对照后端。
 >
@@ -12,11 +12,11 @@
 
 | 优先级 | 当前不足 | 本计划的完成目标 |
 | --- | --- | --- |
-| P0（已关闭） | 任务一原先只由 Linux/QEMU 完成 | OrangePi 5 Plus 上的 StarryOS shared/partitioned 正式矩阵、双 soak 和 stress 覆盖均已完成 |
-| P0（已关闭） | 实时测试原先没有证明最坏延迟改善 | 直接虚拟定时器/IRQ 指标的受控干扰 5 对正式矩阵已证明 p99 和 worst-of-runs 同时改善；同 VM stress 的混合结果单独披露 |
-| P0（已关闭） | 实体板原先没有 StarryOS 手动控制基线 | 同一实体板、同一工作负载的 StarryOS manual/neural 5 对正式矩阵已完成 |
-| P1（已关闭） | ERROR、ACK 丢失和重启恢复原先缺少完整实体证据 | 三种 fault profile 均已完成 3/3 次、自动结束并通过实体 campaign 门 |
-| P1（部分关闭） | 实体板 full/smoke 原先只有一次运行 | native manual/neural full 已各 5 次，三种故障已各 3 次；M4 新增后端仍需各自完成规定次数 |
+| P0 | 任务一仍由 Linux/QEMU 完成 | 在 OrangePi 5 Plus 上由 StarryOS 完成任务一，并保留 shared/partitioned 同源对照 |
+| P0 | 实时测试没有证明最坏延迟改善 | 增加直接虚拟定时器/IRQ 延迟指标，以多次配对运行证明 p99 和 worst-case 同时改善 |
+| P0 | 实体板没有 StarryOS 手动控制基线 | 在同一实体板、同一工作负载下完成 StarryOS manual/neural 配对实验 |
+| P1 | ERROR、重启恢复、ACK 丢失缺少实体跨客户机证据 | 为三种故障建立可自动结束、可重复的实体板 profile |
+| P1 | 实体板 full/smoke 只有一次运行 | full 至少 5 次，smoke 和故障 profile 至少 3 次，并统计跨运行最坏值 |
 | P2 | 4×6×1 网络缺少标准模型来源和硬件推理证据 | 不训练；把固定权重确定性导出为 ONNX，同源生成 `.rknn` 与 `.ort`，优先在 StarryOS 实体板完成 RK3588 NPU 推理，并保留 ONNX Runtime CPU 对照 |
 
 完成顺序为：
@@ -36,12 +36,8 @@ M4 的 WSL2 转换、宿主差分和构建 spike 可以在等待实体板时进�
 
 - WSL2 单命令完成 AxVisor 构建、OrangePi 启动、StarryOS/Zephyr 双客户机运行、结果盘快照、Linux 恢复和证据采集。
 - StarryOS neural/manual smoke 各累计 3 次；每次均完成 20/20 命令，零错误、零超时、零重传、零恢复和零 deadline miss。
-- 6 次 smoke 都来自同一实体板 `bf61f4d4a1d994ad`。manual 的 RMSE/IAE 固定为 `33170.156`/`64133.3`，neural 固定为 `31799.089`/`61355.8`，调试数据中分别改善约 4.1%/4.3%；这些 dirty-worktree smoke 只作为正式矩阵之前的自动化健康检查。
+- 6 次 smoke 都来自同一实体板 `bf61f4d4a1d994ad`。manual 的 RMSE/IAE 固定为 `33170.156`/`64133.3`，neural 固定为 `31799.089`/`61355.8`，调试数据中分别改善约 4.1%/4.3%；正式结论仍等待 full 配对运行。
 - 两组 dirty-worktree full AB/BA 调试配对已取得完整 raw 数据：每种策略每轮 1800 个样本且零 deadline miss。两组中 neural 的 RMSE/IAE 相对 manual 都改善约 35.9%/51.9%，但最大超调都由 `6840` 增至 `13428`，该退化必须进入最终报告；延迟差异处于几十微秒量级且方向不稳定。
-- M1 正式活动 `starry-ivc-control-formal-20260804-v5` 已从 clean commit `f4ced37584964aba56e07ff060ae58374608bc26` 按 AB/BA/AB/BA/AB 完成 5 对、10 个有效 half；每个 half 均为 1800/1800，`starry.backend=native`、生命周期、manifest、raw/gzip twin、同板身份和最终 Linux `ext4,rw` 门全部通过。预注册和汇总 SHA-256 分别为 `88233934bc4080ee3695951ffda2d27ebf235c6a9d389ba83c3015afcf913776`、`1dd3f8ff52a09fd795395c7fab19587de0786b7b014e9df4f0efb08b502aca62`。
-- 正式控制质量结论为：neural 的 RMSE 从 `9258.906` 降至 `5932.491`（改善约 35.93%），IAE 从 `1429224.7` 降至 `686993.4`（改善约 51.94%），两项均为 5/5 配对有利；最大超调却从 `6840` 增至 `13428`（退化约 96.32%，5/5 不利）。full-loop p99 只有 2/5 配对有利，中位配对差为 `-5 us`；full-loop max 只有 3/5 有利。M1 只证明控制误差改善，不宣称 neural 带来实时延迟优势。
-- 更早的 v4 活动完整保留，但聚合器发现 `summary.starry` 漏存已在 UART 中验证的 `backend=native`，因此该批次被标记为无效且不进入统计。回归先行修复由 commit `f4ced37584964aba56e07ff060ae58374608bc26` 完成；旧 v4 的 10 份 raw capture 未被改写，v5 是修复后重新预注册、重新采集的独立正式批次。
-- M3 restart recovery 正式活动已从 clean commit `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c` 完成 3/3 次。每次都执行实际 VM reset，拒绝恰好 1 条 retired CONTROL、1 条 stale STATUS 和 1 条 stale ACK，观测安全回退并以新 session 完成 100 条 post-reset 命令；最终 Linux 根文件系统恢复门通过。
 - 64 MiB volatile virtio block backing 已持久化，Linux 侧 `e2fsck -fn`、镜像大小和 SHA-256 校验通过。
 - 客户机 raw CSV 的 20 个样本已从快照中提取；控制器打印的 raw SHA-256 与 Linux 采集结果一致。
 - `metadata.json`、`summary.json`、`raw.csv.gz`、`console.log.gz` 和 `checksums.sha256` 已生成并在 WSL/Windows 两侧通过哈希复核。
@@ -61,16 +57,13 @@ M4 的 WSL2 转换、宿主差分和构建 spike 可以在等待实体板时进�
 - `cpu-stress` 只让同一 StarryOS VM 的 guest CPU1 忙循环；shared 与 partitioned 的 host pCPU1 busy 分别为 99.750%/99.796%，pCPU2 busy 分别为 83.189%/83.229%，两个 vCPU 均零迁移。它证明 guest stress 生命周期和负载采集有效，但没有制造“只有 shared 侧存在”的跨 VM 或宿主竞争，不能作为 `dedicated_cpus` 隔离效果证据。
 - 为构造跨 VM 干扰，已增加同一 180 秒、24 MHz virtual-counter 的 AArch64 noise guest，并把实验性 profile 与常规单 guest profile 隔离。初版多 pCPU affinity 在迁移后触发 hwirq 26/current-EL data-abort 风暴；改成共享侧单核 pCPU1 后，两条 vCPU 虽均按预期固定在 pCPU1，noise 首次运行约 9 ms 后仍触发 `ESR_EL2=0x96000021` 并破坏宿主串口输出。`NoPreempt` guest run-slice 已消除原来的 nested-vCPU panic，但没有证明同一 pCPU 上两个 AArch64 vCPU 能安全轮转。该路径当前是 M2 的明确 blocker，不得采集 partitioned 数值拼成无效对比。
 - 噪声 profile 隔离后，常规单 guest shared 实体回归再次通过：StarryOS 双 vCPU 固定在 pCPU1/2，CPU-stress 生命周期完整，三项各完成 20 个样本，64 MiB snapshot、695 条 host trace、filesystem sync 和 `/dev/mmcblk1p2` Linux 恢复全部成功，且无 `ESR_EL2`/panic。它证明主采集路径未被实验性第二 VM 破坏，但仍只是 dirty-worktree 健康检查。
-- 已实现维护用的 AxVisor host-noise 路线：顶层 `[host_noise]` 配置在默认 VM 启动前创建有界 busy-loop，使用 round-robin 调度，shared 固定 pCPU1、partitioned 固定 pCPU3；调试 smoke 的安全上限为 180 秒，正式 10k 矩阵为 600 秒。guest 结束后停止并把请求/观测 affinity、起止 tick、迭代数、停止原因和逐 pCPU wall ticks 同时写入 UART 与持久 host trace。分析器会拒绝缺失、越界、错误 placement、`max-duration` 或未覆盖完整 host trace 的记录。
+- 已实现维护用的 AxVisor host-noise 路线：顶层 `[host_noise]` 配置在默认 VM 启动前创建有界 busy-loop，使用 round-robin 调度，shared 固定 pCPU1、partitioned 固定 pCPU3，最长 180 秒；guest 结束后停止并把请求/观测 affinity、起止 tick、迭代数、停止原因和逐 pCPU wall ticks 同时写入 UART 与持久 host trace。分析器会拒绝缺失、越界、错误 placement、`max-duration` 或未覆盖完整 host trace 的记录。
 - 初版 host-noise smoke 的 shared UART 记录了 `5,825` 次 pCPU1 `Unhandled IRQ ... hwirq 27`，partitioned 为零；该组 direct IRQ p99/max 改善 `91.498%/88.171%`，但同步串口 warning 会放大长尾，因此只保留为根因诊断，不能进入改善结论。
 - 根因是每次 VM exit 保存了 guest `CNTV_CTL_EL0`/`CNTP_CTL_EL0`，却让定时器源在宿主任务运行期间继续使能。修复流程现在先保存状态并完成 GIC 应答/硬件 LR 转移，再关闭本地 guest 定时器，且在下一次 guest entry 恢复 `CVAL/CTL`。实体板回归证明不能在 GIC 应答前关闭 level PPI，否则客户机会卡在中断初始化。
 - 修复后的 host-noise smoke 使用同一 StarryOS kernel、DTB、64 MiB idle rootfs、双 vCPU 映射、1 ms 周期和每项 20 个用户态样本，按 AB/BA/AB 完成三组。pair-1 的 shared/partitioned direct IRQ p99/max 为 `41,902,000/44,061,208 ns` 与 `3,745,291/7,597,916 ns`，改善 `91.062%/82.756%`；pair-2 为 `43,193,500/49,487,083 ns` 与 `3,751,708/7,806,458 ns`，改善 `91.314%/84.225%`；pair-3 为 `41,842,791/53,339,125 ns` 与 `3,728,083/7,655,958 ns`，改善 `91.090%/85.647%`。
-- 三组共六次调试运行的 `unowned_virtual_timer_irqs`、`dropped`、`incomplete`、`failed_injections` 和 `counter_frequency_mismatches` 均为零，所有控制台的未处理 IRQ、`ESR_EL2`、panic 和 nested-vCPU 标记也均为零；placement、coverage、snapshot/fsck、同步后恢复 Linux 及零迁移全部通过。重复 smoke 门已达到 3/3。随后从 clean commit `0588743ecb807d7363a3dec90c17a159179933b0` 完成 5 组 AB/BA 正式矩阵；每侧每项均为 10,000 样本。又从 clean commit `2e97430f2171667d4ec16c3a02931653f7ddedf8` 完成 shared/partitioned 双 soak；最终机器汇总给出 `five_pair_matrix_gate_met=true`、`soak_evidence_collected=true`、`m2_exit_gate_met=true`。
+- 三组共六次运行的 `unowned_virtual_timer_irqs`、`dropped`、`incomplete`、`failed_injections` 和 `counter_frequency_mismatches` 均为零，所有控制台的未处理 IRQ、`ESR_EL2`、panic 和 nested-vCPU 标记也均为零；placement、coverage、snapshot/fsck、同步后恢复 Linux 及零迁移全部通过。重复 smoke 门已达到 3/3，但每个 comparison 仍正确输出 `m2_exit_gate_met=false`，clean-commit 正式矩阵仍为 0/5。
 - 板卡 gate 现在只把 `AXVISOR_SNAPSHOT_SYNC_OK` 作为终止成功条件，host-noise 完成由回收分析器独立验证；本地实体运行必须经仓库内 `competition/ivc/orangepi/board-runner.sh`，由它完成 SSH 重启、临时 `uboot-shell` 兼容补丁、串口 lease、同步后冷启动和 Linux 根文件系统恢复，不得用裸 `cargo xtask axvisor board` 代替完整状态机。
 - Windows 与 WSL2 的本次 host-noise/PPI27 修复源码、配置、分析器、说明和证据已精确同步；AArch64 timer/GIC 顺序回归、RT trace 合约、Python 分析器、shell runner、格式化、相关 crate clippy，以及 shared/partitioned 两套 OrangePi 构建均已通过。
-- guest CPU1 stress 正式矩阵已从 clean capture commit `96ff161270f5d16c7a08e491f19436b925e8b3e1` 按 AB/BA/AB/BA/AB 完成 5 对、10 个有效半程；每半程包含三项各 10,000 个用户态样本，总计 300,000 个 raw samples。10 个快照均 fsck clean，Linux 均恢复为 `/dev/mmcblk1p2 ext4 rw`，host/guest trace 全部无损，vCPU0/1 固定为 `0x2`/`0x4` 且迁移数为零。
-- stress 结果只证明同 VM CPU1 忙循环下采集链路和固定放置稳定：periodic 与 direct IRQ p99 均 5/5 通过 5% 不退化门，但 dispatch p99 只有 2/5 通过，且 dispatch max 的 worst-of-runs 退化 10.443%；因此不能把它描述为隔离或最坏延迟改善证据，M2 的改善结论仍只来自受控 host interference 矩阵。
-- 实测完成后以回归优先方式修复聚合器对 `controlled_interference: null` 的误拒绝，分析 commit 为 `6f1cd83b2d3330ef5813e7283a68d692d73d28bb`；专项 6/6、完整 Python 64/64 和 shell 契约测试均通过。四份 amendment 均为追加记录，未改写预注册或 raw/summary/trace；`checksums.sha256` 覆盖 120 个证据文件并在 WSL2/Windows 两侧逐项验证通过。
 
 当前调试证据位于
 `competition/results/orangepi-5-plus/snapshot-shortcmd-20260803/smoke/run-001/`。
@@ -94,24 +87,14 @@ guest CPU-stress direct 调试配对位于
 `competition/results/orangepi-5-plus/starry-rt-host-noise-smoke-20260803/`；目录包含两侧 console、raw、guest IRQ trace、host trace、summary 和 comparison。该配对来自 dirty 工作树，只证明路线可行并暴露 hwirq 27 日志扰动，不纳入正式统计。
 PPI27 修复后的三组有效 AB/BA/AB smoke 位于
 `competition/results/orangepi-5-plus/starry-rt-host-noise-ppi27-fix-smoke-20260803/`；目录包含原始 console、raw、guest/host trace、summary、comparison、冻结配置和校验和。这三组证明移除 UART 热路径扰动后改善方向仍一致，但仍来自 dirty 工作树且每项只有 20 个用户态样本，不纳入正式统计。
-guest CPU1 stress 正式 5-pair 证据位于
-`competition/results/orangepi-5-plus/starry-rt-stress-formal-20260803/`；目录包含冻结预注册、四份追加 amendment、五对 comparison、10 个有效 half 的 raw/summary/host/guest trace、保留的测量前 U-Boot 失败尝试、最终 `stress-campaign-summary.json` 和覆盖全目录的 `checksums.sha256`。
-M1 正式同板控制证据位于
-`competition/results/orangepi-5-plus/starry-ivc-control-formal-20260804-v5/`；无效但完整保留的前一批证据位于
-`competition/results/orangepi-5-plus/starry-ivc-control-formal-20260804-v4/`，其中 `aggregation-failure.txt` 记录了拒绝原因。
-M3 restart recovery 正式证据位于
-`competition/results/orangepi-5-plus/starry-ivc-restart-formal-20260804/`。
 
 下一步按顺序执行：
 
 1. 保持常规 `starry-rt-shared/partitioned` 为单 guest 可用基线；跨 VM noise 只允许通过显式 `starry-noise-*` 诊断 profile 启动，不再作为当前正式路线。
-2. 保持已冻结的 AxVisor host-noise/PPI27 修复：pCPU1/pCPU3、RR、正式 600 秒上限、先 GIC 应答后关闭 guest timer、持久 trace schema、`unowned_virtual_timer_irqs=0` 和 snapshot-sync 唯一成功门均不得随实验轮次变化。
-3. 正式矩阵已冻结在 clean commit `0588743ecb807d7363a3dec90c17a159179933b0`；镜像/配置哈希、AB/BA/AB/BA/AB 顺序、10,000 样本数、门槛和结果目录记录在 `campaign-preregistration.json`，运行时修正只允许追加 amendment，不得改写预注册文件或把调试 smoke 重新标记为正式证据。
-4. 正式 5 组 AB/BA controlled-interference、shared/partitioned 双 soak 和 guest CPU1 stress 5-pair 矩阵均已完成并通过各自机器门；冻结这三组 M2 正式证据，不再依据结果调整阈值或重跑成功 half。
-5. 冻结 ACK loss、ERROR 和 restart recovery 各 3/3 次的 M3 正式证据，不再依据结果修改故障契约或删除失败批次。
-6. 冻结 M1 v5 的 5 对 manual/native 正式证据；v4 仅作为分析器缺陷和 fail-closed 行为的无效档案，不得拼接或重标为成功批次。
-7. 进入 M4：先冻结 canonical weights、golden corpus 和确定性 ONNX 导出，再完成 RKNN 转换/Linux reference/StarryOS NPU 验证；ORT CPU 同时做可行性门，但不得阻塞 RKNN 主路线。
-8. M4 通过后执行 M5 的报告一致性复核、复现材料和视频录制。
+2. 冻结已通过实体回归的 AxVisor host-noise/PPI27 修复：pCPU1/pCPU3、RR、180 秒上限、先 GIC 应答后关闭 guest timer、持久 trace schema、`unowned_virtual_timer_irqs=0` 和 snapshot-sync 唯一成功门均不得随实验轮次变化。
+3. 从当前变更生成可审计的 clean commit，冻结正式矩阵的 commit、镜像/配置哈希、五组 AB/BA 顺序、样本数、门槛和结果目录；调试 smoke 不得重新标记为正式证据。
+4. 在该 clean commit 上执行 5 组 AB/BA、每侧每次至少 10,000 个主要指标样本，再执行 shared/partitioned 各 30 分钟 soak；每半次运行后立即回收 `/home/rt`，保留所有失败运行，并按 pair 报告 p99/max、4/5 方向门和 worst-of-runs。
+5. 完成 M2 正式门后再按顺序补齐 M3 的 ACK loss/ERROR/restart 实体证据；M4 的 ONNX/RKNN/ORT 无板 spike 可利用板卡空闲并行准备，但不得抢占 P0/P1 板卡矩阵。
 
 ## 2. 执行约束
 
@@ -135,16 +118,14 @@ WSL2 是唯一板卡自动化主机，负责构建、部署、串口控制、结
 配置，使用唯一 snapshot-sync 成功门，并在结束后恢复 Linux：
 
 ```bash
-ORANGEPI_POWER_PYTHON=/home/seven_wsl/.cache/tgoskits-board-power-venv/bin/python \
-ORANGEPI_AXVISOR_BUILD_CONFIG=scripts/benchmark/axvisor-rt/config/axvisor-orangepi-5-plus-starry-host-noise-formal-shared.toml \
-ORANGEPI_AXVISOR_BOARD_CONFIG=scripts/benchmark/axvisor-rt/config/board-orangepi-5-plus-starry-host-noise-formal-shared.toml \
+ORANGEPI_AXVISOR_BUILD_CONFIG=scripts/benchmark/axvisor-rt/config/axvisor-orangepi-5-plus-starry-host-noise-shared.toml \
+ORANGEPI_AXVISOR_BOARD_CONFIG=scripts/benchmark/axvisor-rt/config/board-orangepi-5-plus-starry-host-noise-shared.toml \
 ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED=1 \
 ORANGEPI_RESTORE_LINUX=1 \
-ORANGEPI_RUN_TIMEOUT_SECONDS=1200 \
 bash competition/ivc/orangepi/board-runner.sh
 ```
 
-partitioned 半轮只替换两项配置为对应的 `formal-partitioned.toml`。调试 smoke 仍使用非 formal 配置和 180 秒上限，不得与正式结果混放。不得以裸
+partitioned 半轮只替换两项配置为对应的 `partitioned.toml`。不得以裸
 `cargo xtask axvisor board` 替代 wrapper：本机 board service 的 power 命令为空操作，
 而 wrapper 还负责 Linux SSH 重启、U-Boot 2025.10 兼容配置、精确 TF 卡启动命令和
 `/dev/mmcblk1p2` 可写 ext4 验证。
@@ -278,13 +259,11 @@ manual 和 neural 必须使用相同的：
 
 ### 4.3 M1 退出条件
 
-当前正式状态（2026-08-04）：v5 活动的五组 manual/neural 配对全部通过。两种策略分别使用相同 kernel、DTB、Zephyr、rootfs、网络、采样数和同一实体板，只切换 `policy`；机器汇总给出 `campaign_gate_met=true`、`all_ten_runs_validated=true`、`same_physical_board=true`。RMSE 和 IAE 在 5/5 配对中改善，最大超调在 5/5 中退化，p99/max 延迟方向混合，全部写入测试报告。
-
-- [x] 五组 manual/neural 配对实验全部成功。
-- [x] 每组原始样本数、哈希和执行顺序完整。
-- [x] 至少两项控制质量指标在 neural 中稳定优于 manual。
-- [x] 所有退化项也进入报告，不选择性隐藏结果。
-- [x] `competition/test-report.md` 的手动基线改为 StarryOS 同实体平台数据。
+- [ ] 五组 manual/neural 配对实验全部成功。
+- [ ] 每组原始样本数、哈希和执行顺序完整。
+- [ ] 至少两项控制质量指标在 neural 中稳定优于 manual。
+- [ ] 所有退化项也进入报告，不选择性隐藏结果。
+- [ ] `competition/test-report.md` 的手动基线改为 StarryOS 同实体平台数据。
 
 ## 5. M2：StarryOS 实体任务一和最坏延迟证明
 
@@ -462,8 +441,7 @@ shared/partitioned 的 pCPU1 busy 为 99.750%/99.796%，pCPU2 busy 为
 #### 5.4.5 AxVisor host-noise 受控干扰调试配对
 
 当前维护路线使用单 StarryOS guest 和独立 AxVisor host task，避免跨 VM vCPU 轮转
-故障。两侧都使用 round-robin 和同一 busy-loop；调试 smoke 使用 180 秒安全上限，正式
-10k 矩阵使用 600 秒上限。shared 把 task
+故障。两侧都使用 round-robin、同一 busy-loop 和 180 秒安全上限；shared 把 task
 固定到 StarryOS vCPU0 所在的 pCPU1，partitioned 把 task 固定到 pCPU3。task 必须在
 guest 前 ready，在 guest 完成后以 `guest-complete` 停止，并把精确 affinity 和覆盖
 窗口写入持久 host trace。
@@ -495,101 +473,23 @@ host trace 并以 `guest-complete` 结束；snapshot 均通过只读 fsck，vCPU
 确认文件系统同步后自动冷启动回 Linux。
 
 三组 direct IRQ p99/max 改善方向一致，故调试用重复 smoke 门达到 3/3。每个比较器
-仍正确输出 `m2_exit_gate_met=false`：这些 smoke 来自 dirty worktree 且每项仅 20 个
-用户态样本，不能重标为正式数据。
-
-正式矩阵位于
-`competition/results/orangepi-5-plus/starry-rt-host-noise-formal-20260803/`，冻结源 commit 为
-`0588743ecb807d7363a3dec90c17a159179933b0`。预注册文件冻结 5 组
-AB/BA/AB/BA/AB、每项 10,000 样本、p99 不退化超过 5%、max 改善至少 10%，以及 direct
-IRQ max 至少 4/5 改善。5 组现已全部完成：direct IRQ p99 改善范围为
-`99.639%`–`99.643%`，max 改善范围为 `86.704%`–`87.999%`，5/5 均超过 10% 目标；direct
-IRQ max 的 worst-of-runs 改善为 `87.771%`。periodic jitter 与 dispatch max 的
-worst-of-runs 分别改善 `99.882%`、`99.773%`，所有主要 p99 也通过不退化门。
-`campaign-summary.json` 因此给出 `five_pair_matrix_gate_met=true`。pair 1/shared 的前三次
-无效尝试、trace 持久化修复及两份 campaign amendment 均原样保留；pair 1/partitioned 的
-测量后恢复事件另有 `run-recovery.json`，pair 5/shared 的测量前 U-Boot 超时也保留为
-`attempt-001-uboot-timeout.log`。
-
-正式目录的 10 个有效半程均通过 30,000 总样本、3×10,000 主指标、host-noise
-placement/coverage、host accounting 和只读 snapshot fsck 审计；禁用 console 标记匹配数为
-零。`checksums.sha256` 覆盖 75 个预注册、修正、有效及无效证据文件，在 Windows 与 WSL 两侧
-逐项验证通过，双向 checksum dry-run 无内容差异。测量后的五对汇总工具及 LF 确定性回归记录
-在 `campaign-amendment-003.json`，不改变任何正式测量或阈值。
-
-#### 5.4.6 正式 30 分钟 soak
-
-双 soak 使用 clean commit `2e97430f2171667d4ec16c3a02931653f7ddedf8`、相同
-StarryOS kernel/DTB/64 MiB rootfs 与 10,000 样本/指标，定时指标周期改为
-90,000 us，使两段定时窗口名义合计 1,800 秒。soak-only feature 把 host/guest
-trace 容量扩大到 1,048,576 条，并给客户机 512 MiB 内存；普通正式矩阵仍保持原容量。
-运行顺序按预注册固定为 shared 后 partitioned，host noise 分别固定 pCPU1/pCPU3。
-
-| profile | host-noise 覆盖 | host/guest trace records | periodic max | dispatch max | direct IRQ max |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| shared | 2,101.161 秒 | 392,752 / 387,684 | 43,645,500 ns | 50,089,667 ns | 51,717,166 ns |
-| partitioned | 1,962.161 秒 | 460,214 / 456,620 | 58,750 ns | 91,875 ns | 7,461,125 ns |
-
-两次运行的 `dropped`、`incomplete`、`failed_injections`、
-`counter_frequency_mismatches` 和 `unowned_virtual_timer_irqs` 均为零，host noise
-都以 `guest-complete` 停止，snapshot fsck clean，控制台异常扫描为零，结束后恢复
-`/dev/mmcblk1p2 ext4 rw` Linux。soak 对比中 periodic/dispatch/direct IRQ max
-分别改善 99.865%/99.817%/85.573%，所有主要 p99 均通过 5% 不退化门。
-
-首次汇总被分析器的 profile 元数据拦截：summary 仍标记普通 10k VM config，而非
-soak VM config。原始 raw/host/guest trace 无变化，无需重跑板卡；先加入失败回归，
-再由 commit `b3ee834574df336a1bec0faf442f49856b0fb0ff` 增加显式
-`ORANGEPI_RT_SOAK=1` 合同并重新生成 summary。原/新 summary 哈希、失败原因和不变的
-测量哈希记录在 `soak-amendment-001-analysis-contract.json`，预注册文件未被改写。
-最终 `campaign-summary.json` 给出 `five_pair_matrix_gate_met=true`、
-`soak_evidence_collected=true`、`m2_exit_gate_met=true`。
-
-#### 5.4.7 guest CPU1 stress 正式矩阵
-
-本矩阵按独立预注册执行，capture commit 为
-`96ff161270f5d16c7a08e491f19436b925e8b3e1`，固定顺序为
-AB/BA/AB/BA/AB。shared/partitioned 都使用普通非 soak 双 vCPU 配置、相同
-`cpu-stress` workload、每项 10,000 样本、vCPU mask `0x2`/`0x4`，且都不配置
-host noise。10 个有效半程共回收 300,000 个用户态 raw samples；每次均在启动前
-重置 rootfs，在结束后立即快照、只读 fsck、恢复 Linux 并回收 host/guest trace。
-
-五对聚合结果如下；正数表示 partitioned 延迟较低：
-
-| 指标 | p99 中位改善（范围） | p99 通过 5% 不退化门 | max 中位改善（范围） | max 改善 pair | worst-of-runs max 改善 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| periodic jitter | +0.248%（-0.123%–+0.373%） | 5/5 | -0.085%（-6.233%–+4.448%） | 1/5 | -1.508% |
-| dispatch latency | -6.171%（-17.261%–-1.219%） | 2/5 | -2.631%（-11.859%–+1.269%） | 1/5 | -10.443% |
-| emulated IRQ response | -0.082%（-29.412%–+0.731%） | 3/5 | -1.577%（-19.826%–+3.036%） | 2/5 | -0.881% |
-| direct virtual timer injection -> guest IRQ | +0.244%（-0.493%–+0.966%） | 5/5 | +0.029%（-0.227%–+0.302%） | 3/5 | +0.029% |
-
-10 个 half 的 host/guest trace 均为 lossless，所有 drop/incomplete/failed injection/
-unowned virtual timer IRQ/counter-frequency mismatch 计数为零；vCPU 迁移为零，快照
-均为 clean，10 个 raw 哈希和 20 个 trace 哈希均唯一。聚合器因此给出
-`formal_stress_coverage_met=true`、`all_captures_lossless=true` 和
-`fixed_vcpu_placement_met=true`，同时给出 `isolation_claim_allowed=false`：同 VM
-CPU1 stress 在两侧都存在，不是隔离处理变量，而且数据本身也没有显示稳定延迟改善。
-
-实际 comparison 始终序列化可选字段 `controlled_interference: null`。冻结采集完成后，
-回归用例先证明旧聚合器会误拒绝该合法表示，再由分析 commit
-`6f1cd83b2d3330ef5813e7283a68d692d73d28bb` 只放宽 null、继续拒绝非 null payload。
-该变更记录在 `stress-amendment-004-analysis-null-metadata.json`，没有修改任何板卡
-测量。最终 `stress-campaign-summary.json` SHA-256 为
-`417b49477385ff99962e83cbfe88612ce5bf85ea80cfd997600a0e25283c3bbc`；
-120 项 manifest 在 WSL2 与 Windows 两侧验证通过。
+仍正确输出 `m2_exit_gate_met=false`：当前证据来自 dirty worktree 且每项仅 20 个
+用户态样本，clean-commit 正式矩阵仍为 0/5。下一步冻结当前实现、schema、阈值和
+AB/BA 顺序，在 clean commit 上执行 5×10,000 和 shared/partitioned 30 分钟 soak。
 
 ### 5.5 M2 退出条件
 
 - [x] 调试前置门：单 guest host-noise 的实现、强度、实际 placement、停止原因和 trace 覆盖已在一组实体配对中验证。
 - [x] PPI27 测量扰动门：每次 VM exit 在 GIC 应答后暂停 guest timer，下一次 entry 恢复；修复后实体配对的 unowned/未处理 timer IRQ 与同步热路径输出均为零。
 - [x] 重复 smoke 门：固定配置的 3 组 AB/BA 中 direct IRQ p99/max 改善方向一致（AB/BA/AB，3/3；仅作为 dirty-worktree 调试门）。
-- [x] 任务一的正式客户机是 StarryOS，且有 2 个 vCPU（clean-commit 正式矩阵已完成 5/5）。
-- [x] idle、soak 与 guest CPU1 stress 均有正式 raw samples；stress 已按 AB/BA/AB/BA/AB 完成 5 对、10 个有效半程。
-- [x] 主要指标 p99 不退化超过 5%（正式矩阵 5/5 通过）。
-- [x] worst-case 在至少 4/5 配对运行中下降（正式矩阵 5/5 下降）。
-- [x] 汇总最大值相对 shared 至少改善 10%（direct IRQ/periodic/dispatch worst-of-runs 均通过）。
-- [x] 无丢样、死锁、客户机重启或调度饥饿（5 对 10 个有效半程审计通过）。
-- [x] 受控干扰源在两侧具有相同实现/强度，实际 placement 与预设一致，且运行中无 nested-vCPU、current-EL exception 或 vCPU 迁移错误。
-- [x] controlled-interference 五对与双 soak 数值门槛均满足，机器汇总的 M2 出口门已通过；stress 覆盖机器门也已通过，并明确不用于隔离结论。
+- [ ] 任务一的正式客户机是 StarryOS，且至少有 2 个 vCPU。
+- [ ] idle、stress 和 soak 均有 raw samples。
+- [ ] 主要指标 p99 不退化超过 5%。
+- [ ] worst-case 在至少 4/5 配对运行中下降。
+- [ ] 汇总最大值相对 shared 至少改善 10%。
+- [ ] 无丢样、死锁、客户机重启或调度饥饿。
+- [ ] 受控干扰源在两侧具有相同实现/强度，实际 placement 与预设一致，且运行中无 nested-vCPU、current-EL exception 或 vCPU 迁移错误。
+- [ ] 若门槛未满足，继续定位 IRQ affinity、housekeeping、锁竞争或日志路径，不将仅有 p99 改善描述为完成。
 
 ## 6. M3：协议故障和重复性证据
 
@@ -601,29 +501,6 @@ CPU1 stress 在两侧都存在，不是隔离处理变量，而且数据本身�
 - 明确记录配置丢失数和实际丢失数；
 - 保存发送、重发、重复接收、ACK 和最终确认序号；
 - 验证重发上限、幂等性和正常恢复。
-
-当前正式状态（2026-08-03）：ACK 丢失 profile 已完成实体板闭环，证据位于
-`competition/results/orangepi-5-plus/starry-ivc-ack-loss-formal-20260803/`：
-
-- 冻结的正式批次在 clean commit
-  `bac4ad16b4adf673942e6c31897872c2c5c116dc` 上按 `run-001`、`run-002`、
-  `run-003` 顺序完成 3 次；每次均包含 100 个连续 raw sample，且 guest manifest、
-  host harvest 和保留文件的 SHA-256 一致；
-- 每次均按固定序列 `5, 10, ..., 100` 丢弃 20 个 ACK，观测到恰好 20 次重发、
-  20 次恢复和 20 次重复接收；控制器 100 条命令全部确认，RTOS 只应用 100 次，
-  因而同时证明了恢复和幂等性；
-- 每次均通过 StarryOS 完成、Zephyr 关机、结果盘同步与快照、只读 fsck clean、
-  Linux 恢复门；最后一次运行后又在板卡 lease 内通过 SSH 确认
-  `/dev/mmcblk1p2` 为 `ext4,rw`，释放后板卡池仍为 1/1 可用；
-- `competition/ivc/aggregate_board_campaign.py` 在 commit
-  `e13dd8f5ed3d0aa2f8f98380064eaaeca5da5e6c` 上独立复核所有 manifest、gzip
-  字节、样本序号、故障计数、源码/镜像身份和生命周期。最终
-  `campaign-summary.json` 的 `campaign_gate_met=true`；
-- full-loop p99 的三次值为 `120765/119830/119843 us`，median 为 `119843 us`、
-  IQR 为 `467.5 us`；单次 max 的 worst-of-runs 为 `123494 us`。这些数据只描述
-  ACK 恢复开销，不作为实时隔离改善结论；
-- 首次正式成功批次之前的 5 组失败尝试及 6 个只追加 amendment 均原样保留，
-  没有把调试数据重标为正式结果。
 
 ### 6.2 ERROR
 
@@ -637,37 +514,6 @@ CPU1 stress 在两侧都存在，不是隔离处理变量，而且数据本身�
 
 接收方必须返回对应 `ERROR`，并能继续处理下一条正常消息。host/unit 测试继续保留，但不能代替实体跨客户机证据。
 
-当前正式状态（2026-08-04）：ERROR profile 已完成实体板闭环，证据位于
-`competition/results/orangepi-5-plus/starry-ivc-error-formal-20260804/`：
-
-- 正式成功批次固定使用 clean capture commit
-  `29be4fc4c8668b8e94cd253fb4484bbeba1d8481`，按 `run-001`、`run-002`、
-  `run-003` 顺序完成 3 次；每次均包含 100 个连续 raw sample，快照回收内容的
-  SHA-256 与 guest manifest 一致，run-002/003 被 UART 截断的显示哈希不参与数据
-  完整性判定；
-- 每次均严格观测到 5 类已预注册错误：版本、长度、CRC、消息类型和 session
-  转换错误；控制端与 Zephyr 端的 sequence、ERROR code 和 reason 一一对应，且
-  带 CRC-32 的紧凑证据记录通过完整性校验；
-- 故障注入后每次都继续完成 100/100 条正常控制命令。控制器的错误、超时、重传、
-  恢复均为 0；RTOS 的 accepted/applied/status/ACK 均为 100，ERROR 与协议错误均
-  为 5，duplicate 与 ACK drop 均为 0；
-- 每次均通过 StarryOS 完成、Zephyr 关机、结果盘同步与快照、只读 fsck clean、
-  Linux 恢复门；最后一次运行后又在板卡 lease 内确认 `/dev/mmcblk1p2` 为
-  `ext4,rw`，释放后板卡池仍为 1/1 可用；
-- post-capture 聚合器在 commit `bff7a1f310c15c3f35743d3c3cbe52f15b9df078`
-  上以回归优先方式扩展为 ACK-loss/ERROR 双 profile，并逐项复核 amendment 1→6
-  哈希链、manifest、gzip/plain 字节、样本序号、故障契约、源码/镜像身份和生命周期。
-  全部 IVC Python 测试为 86/86，旧 ACK-loss 正式活动只读重放仍通过；最终
-  `campaign-summary.json` 的 `campaign_gate_met=true`；
-- full-loop p99 的三次值为 `10261/12043/9548 us`，median 为 `10261 us`、IQR
-  为 `1247.5 us`；单次 max 的三次值为 `21484/31625/21342 us`，
-  worst-of-runs 为 `31625 us`。这些数据只描述 ERROR 处理后的继续运行开销，不作为
-  实时隔离改善结论；
-- 首次正式成功批次之前的所有失败批次均保留；5 个采集修正 amendment 与 1 个
-  post-capture aggregation amendment 都是追加记录，没有改写预注册、失败证据或
-  amendment-005 的正式采集字节。Windows/WSL2 镜像通过 `rsync -rcn --delete`
-  零差异复核。
-
 ### 6.3 重启恢复
 
 增加 `fault-restart` profile：
@@ -677,15 +523,6 @@ CPU1 stress 在两侧都存在，不是隔离处理变量，而且数据本身�
 - 新 session/epoch 不接受旧 ACK、旧状态或延迟报文；
 - 客户机恢复后自动重新建立会话；
 - 记录恢复用时和期间丢失的控制周期。
-
-当前正式状态（2026-08-04）：restart recovery profile 已完成实体板闭环，证据位于
-`competition/results/orangepi-5-plus/starry-ivc-restart-formal-20260804/`：
-
-- clean capture commit 为 `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c`，同一实体板按 `run-001`、`run-002`、`run-003` 完成 3 次；
-- 每次都在 20 条 pre-reset 命令后对 VM 1 执行一次实际 reset，等待 20 秒并以新 session `0x22222222` 恢复 100 条 post-reset 命令；
-- 每次都恰好拒绝 1 条旧 session CONTROL、忽略 1 条 stale STATUS 和 1 条 stale ACK，观测 1 次 endpoint session reset、1 次 duplicate receive、1 个协议 ERROR 和安全输出；没有旧 session 数据被计入新会话；
-- 三次均通过 lifecycle、manifest、raw/gzip twin、只读 fsck、StarryOS/Zephyr 终止和 Linux 根文件系统恢复门；最终汇总给出 `campaign_gate_met=true`、`exact_fault_contract_met=true`、`all_runs_validated=true`，汇总 SHA-256 为 `935db25de96c83267b8d11ea8e55a2909a42a07ca8f2614cef687dce153e2302`；
-- 每次故障契约和 post-reset 控制数据完全相同，因此恢复时间数据只用于描述固定的 20 秒注入设置，不声称为随机故障恢复时间分布或实时隔离结果。
 
 ### 6.4 重复次数和统计
 
@@ -697,11 +534,11 @@ CPU1 stress 在两侧都存在，不是隔离处理变量，而且数据本身�
 
 ### 6.5 M3 退出条件
 
-- [x] ACK 丢失的配置值、观测值、重发和恢复结果一致。
-- [x] 每类 malformed packet 都有实体客户机返回的正确 `ERROR`。
-- [x] 重启后没有旧 session 数据污染新会话。
-- [x] 所有 profile 达到规定重复次数且原始数据完整。
-- [x] 分析器能够拒绝样本缺失、哈希不一致或 marker 不完整的运行。
+- [ ] ACK 丢失的配置值、观测值、重发和恢复结果一致。
+- [ ] 每类 malformed packet 都有实体客户机返回的正确 `ERROR`。
+- [ ] 重启后没有旧 session 数据污染新会话。
+- [ ] 所有 profile 达到规定重复次数且原始数据完整。
+- [ ] 分析器能够拒绝样本缺失、哈希不一致或 marker 不完整的运行。
 
 ## 7. M4：同源 ONNX、RKNN NPU 与 ONNX Runtime CPU 推理
 
@@ -963,8 +800,6 @@ M4-plus 增强项：
 | 故障 | restart recovery | 3 |
 | 健康检查 | 每个最终 smoke 镜像 | 3 |
 
-截至 2026-08-04，表中 M1 的 `Starry manual full`、`Starry neural native full` 已各完成 5 次；M2 的 controlled-interference、双 soak 和 guest CPU1 stress 正式项目已完成；M3 的 ACK loss、malformed/ERROR、restart recovery 已各完成 3 次。RKNN NPU、ONNX Runtime CPU 及其最终镜像健康检查仍属于 M4 待执行项。
-
 正式结果必须按运行顺序保存，失败运行不得删除。允许修复后建立新 result set，但必须保留失败原因和废弃标记。manual/native/RKNN/ORT 的正式顺序使用轮换表预先固定，并在 metadata 中保存，避免温度和先后顺序偏差。
 
 ## 9. M5：报告、复现和视频
@@ -992,10 +827,10 @@ M4-plus 增强项：
 
 ## 10. 最终完成定义
 
-- [x] 任务一、二、三均存在 StarryOS 实体板结果。
-- [x] manual 和 neural 基线来自同一实体平台和同源配置。
-- [x] 实时测试在预注册的受控干扰边界内证明 p99 和 worst-case 同时改善；同 VM stress 的混合结果单独披露。
-- [x] ERROR、ACK 丢失和重启恢复均有实体跨客户机原始证据。
+- [ ] 任务一、二、三均存在 StarryOS 实体板结果。
+- [ ] manual 和 neural 基线来自同一实体平台和同源配置。
+- [ ] 实时测试证明 p99 和 worst-case 同时改善。
+- [ ] ERROR、ACK 丢失和重启恢复均有实体跨客户机原始证据。
 - [ ] 正式结论达到规定重复次数，并报告跨运行 worst-case。
 - [ ] 固定权重可由 WSL2 确定性导出为 ONNX，并同源生成经验证的 RKNN 部署模型。
 - [ ] RKNN Runtime 通过 StarryOS RKNPU 驱动在 RK3588 NPU 完成 5 次 full 闭环，并有实际 submit/device-time 证据。

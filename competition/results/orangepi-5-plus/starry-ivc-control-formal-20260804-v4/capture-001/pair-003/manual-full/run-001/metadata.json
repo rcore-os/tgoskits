@@ -1,0 +1,94 @@
+{
+  "board": {
+    "cpu_temp_milli_c": 45307,
+    "hostname": "orangepi5plus",
+    "id": "bf61f4d4a1d994ad",
+    "type": "OrangePi-5-Plus"
+  },
+  "inputs": {
+    "board_config": {
+      "path": "competition/ivc/config/board-orangepi-5-plus-manual.toml",
+      "sha256": "feacea208fdcdbbd3a7cba4af39eacd7b1c67d4ad5219eee01edecff979877cf",
+      "size_bytes": 621
+    },
+    "build_config": {
+      "path": "competition/ivc/config/axvisor-orangepi-5-plus-manual.toml",
+      "sha256": "1a6eb506bdb98eec303d64fe367b8ce182c2c8530eb3f7ab315aea06078bdf6e",
+      "size_bytes": 289
+    },
+    "rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-manual.img",
+      "sha256": "40eded49850a186c2198497be0c4c66636febd5851bf285fc20d366f99bb6a33",
+      "size_bytes": 67108864
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "size_bytes": 1766
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "sha256": "dd7e125104ce103f00b634ce31eaca214bbee85ffb1378468a3da10a4837cd53",
+      "size_bytes": 13639728
+    },
+    "zephyr_guest": {
+      "path": "competition/ivc/zephyr/build-board/zephyr/zephyr.bin",
+      "sha256": "b3fdba64504011e5273b5a6094ddab98b36de0d48fe39e2514559c17cf321ca5",
+      "size_bytes": 121568
+    }
+  },
+  "model": {
+    "artifact": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff",
+      "size_bytes": 12259
+    },
+    "backend": "native",
+    "id": "manual-fixed-500",
+    "runtime_version": "native"
+  },
+  "outputs": {
+    "console_log": {
+      "path": "/tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/capture-001/pair-003/manual-full/run-001/console.log.gz",
+      "sha256": "6ca0e6d60f5b7fbb5c654e627365ee89e1799bd7f32fe5374a798ebaa2aa0f27",
+      "size_bytes": 14705
+    },
+    "raw_csv": {
+      "path": "/tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/capture-001/pair-003/manual-full/run-001/raw.csv.gz",
+      "sha256": "77ac0f93021722ae5c3784620d82d6bbc7c76294d0e88f687ceeb45638e6fec8",
+      "size_bytes": 50614
+    },
+    "summary": {
+      "path": "/tmp/starry-ivc-control-formal-5e72b9c-20260804-v4/capture-001/pair-003/manual-full/run-001/summary.json",
+      "sha256": "b443989a0a6f5d252736108e1e8c93b8fead6395857728a263fae23a68c3f2c1",
+      "size_bytes": 2823
+    }
+  },
+  "result": {
+    "controller_policy": "manual-fixed",
+    "deadline_misses": 1,
+    "dropped_samples": 0,
+    "sample_count": 1800,
+    "successful_marker": true,
+    "validated": true
+  },
+  "run": {
+    "board_type": "OrangePi-5-Plus",
+    "execution_order": 1,
+    "exit_status": 0,
+    "finished_at": "2026-08-04T04:15:06Z",
+    "profile": "manual-full",
+    "repeat_count": 1,
+    "run_id": "run-001",
+    "run_number": 1,
+    "started_at": "2026-08-04T04:08:48Z"
+  },
+  "schema_version": 1,
+  "source": {
+    "branch": null,
+    "commit": "5e72b9c99b9860649b4ee94638d52111c445a5d3",
+    "dirty": false,
+    "tracked_change_count": 0,
+    "untracked_file_count": 0
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "amendment": 5,
+  "status": "frozen-before-amendment-first-board-capture",
+  "created_at_utc": "2026-08-03T18:18:19Z",
+  "preregistration_sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+  "previous_amendment_sha256": "f546d90f07a24b2f73a4c5153cdbe6497b50e1e2fd5ccb31db9348026cea036f",
+  "reason": "Amendment-004 run-001 completed all five ERROR exchanges, 100 normal commands, raw-data harvest, clean snapshot fsck, and Linux restoration. Multiplexed UART corruption changed one replayed Zephyr reason from unsupported-version to unsupported-sion while leaving seq/code/reason fields syntactically complete. The strict analyzer therefore observed two conflicting complete records for sequence 1001 and correctly rejected the run. The same capture also showed that unprotected terminal records can be truncated even after the RTOS shutdown settle window.",
+  "previous_batch": {
+    "path": "amendment-004/fault-error",
+    "accepted_as_final_three_run_batch": false,
+    "run_001": {
+      "strict_analysis": "failed",
+      "analysis_failure": "conflicting error evidence records for seq=1001",
+      "source_commit": "01e87ec01b5a3ca5dea234e81fb3288af09d5774",
+      "starry_boot_records": 1,
+      "rtos_ready_records": 2,
+      "rtos_error_prefix_occurrences": 13,
+      "controller_fault_prefix_occurrences": 20,
+      "controller_terminal_prefix_occurrences": 3,
+      "starry_success": 1,
+      "linux_restored": 1,
+      "raw_samples": 100,
+      "raw_sha256": "ecbfbb91a8a39f69fbf409413bc641b9294bf6aa690ec85a5d141086b97f62a7",
+      "console_content_sha256": "52b09daab1ec36d3e9e7801b566b94a4840272a189ae5c36335ff5a8b54e88f6",
+      "console_gzip_sha256": "8f27af0165cdb174a65866d786fb86e7678d53477d8c2b58973427925d96fca8",
+      "metadata_sha256": "2025e6b3d0c215630e55841713dfe35e9f0a529df10a85bb1c7f4fe97ead26df",
+      "checksums_manifest_sha256": "6c11ac734cddcb52642375e8a0431214e6562c30ee34b2154f50738dce15011d",
+      "snapshot_sha256": "a78035ff3a6d583a10d5a1ae69a0615c7c66f67d4a3a8927e4d752096f66462d",
+      "snapshot_fsck": "clean"
+    },
+    "retention_policy": "The failed run remains immutable and is not combined with any later run."
+  },
+  "correction": {
+    "kind": "checksummed-evidence-observability",
+    "ivc_wire_protocol_changed": false,
+    "control_behavior_changed": false,
+    "semantic_acceptance_gates_changed": false,
+    "evidence_encoding_and_validation_changed": true,
+    "implementation": [
+      "Replace the long controller and Zephyr fault-detail records with compact IVC-ERROR-C and IVC-ERROR-Z records.",
+      "Replace the long terminal record with a 94-byte IVC-ERROR-RESULT record.",
+      "Append an eight-hex-digit IEEE CRC-32 over the exact ordered ASCII field body to every compact evidence record.",
+      "Require the exact field set and a valid CRC before a record can participate in analysis.",
+      "Ignore truncated, spliced, non-ASCII, extra-field, and CRC-invalid UART fragments as transport noise.",
+      "Continue to reject any two CRC-valid records that conflict, require all five original fault contracts, and require the exact terminal continuation contract."
+    ],
+    "bounded_record_sizes_bytes": {
+      "controller_fault_max": 87,
+      "zephyr_fault_max": 72,
+      "controller_terminal": 94,
+      "enforced_controller_limit": 96
+    },
+    "timing_bound": "The two Zephyr replay sets total 686 serial bytes including newlines, approximately 59.6 ms at a conservative 115200 baud, before the unchanged 100 ms response deadline. Any retransmission still violates the unchanged zero-retransmission gate."
+  },
+  "source": {
+    "commit": "29be4fc4c8668b8e94cd253fb4484bbeba1d8481",
+    "tree": "a54df247fae859c0b160b4dcd456fd1a23840975",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "parent_terminal_settle_commit": "01e87ec01b5a3ca5dea234e81fb3288af09d5774"
+  },
+  "changed_files": {
+    "competition/ivc/analyze_board.py": "a454007dc3a56a79b1ba20a122fe2b5c841a6a35401d4976bc92d9c20f6e79b0",
+    "competition/ivc/tests/test_analyze_board.py": "9a9c705b9bd2b34e71a000ce11de2355a53861ae4ba0a016f28551b4cf937ef6",
+    "competition/ivc/tests/test_qemu_config.py": "e708faafda14bfaa8800dbb617c26272591a733fc299d137cd4db773e36f34bb",
+    "competition/ivc/zephyr/src/main.c": "1cadb3b64bcb6b8e98aec51c1545858c0559bd1b2b825713e68952f52b880340",
+    "competition/ivc/zephyr/src/protocol.c": "ccad7ff502fc3b4cbcf1985aae244d63736eeb215602812736799a4df067bf0e",
+    "competition/ivc/zephyr/src/protocol.h": "0ff297e9299503e466443b6ec8178d4a4289e49737657f520fd1dcd7d28c1563",
+    "competition/ivc/zephyr/tests/host_logic.c": "1cb3a8a272e667fe08e68b41d8944bbf3b89c22ab79acae3b1a3ed12a3acc267",
+    "tools/ivcproto/src/bin/ivcproto.rs": "8c8e2572b05ea481f6a4b306803bc233b715609ebd741ee71f4b3bf6c3bd27e8"
+  },
+  "artifacts": {
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-error.img",
+      "bytes": 67108864,
+      "sha256": "9e79b326bdb27c77accccebaed02757e4b83d270dbf4be5b83f54c33e0c1f9b2",
+      "filesystem_state": "clean"
+    },
+    "controller": {
+      "path": "tmp/competition/ivc/starry/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 787552,
+      "sha256": "70a69db88a0900d4d5aab07b7aeb3d365081a1a209ea754e1e2a480bbe62013e",
+      "embedded_copy_sha256": "70a69db88a0900d4d5aab07b7aeb3d365081a1a209ea754e1e2a480bbe62013e"
+    },
+    "zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "ceed74be19a5f3c35e8d6404d4fe45049670b3ed6095257ab0918defa862935a"
+    },
+    "zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-error/zephyr/zephyr.elf",
+      "bytes": 2186720,
+      "sha256": "0f7bbfb2d4499d2c3a868444a3db93062929159b516b6dc7f9b14436f4e78729"
+    },
+    "unchanged_starryos_kernel_sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+    "unchanged_starry_dtb_sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+  },
+  "validation": {
+    "regression_first": "The analyzer test using only checksummed evidence plus the observed checksum-invalid corruption failed before implementation and passed afterward.",
+    "negative_integrity_gate": "A checksum-valid conflicting record is still rejected.",
+    "ivc_python_tests": "84 passed",
+    "ivcproto_tests": "31 passed",
+    "ivcproto_clippy_checks": "2 passed",
+    "zephyr_host_logic": "passed, including the standard CRC-32 check value",
+    "cargo_fmt": "passed",
+    "zephyr_full_build": "passed with -Wall -Wextra -Werror",
+    "rootfs_e2fsck": "clean"
+  },
+  "continued_capture_contract": {
+    "result_root": "amendment-005",
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "all_original_semantic_gates_apply": true,
+    "checksummed_evidence_is_mandatory": true,
+    "all_prior_attempts_remain_retained": true,
+    "never_overwrite_or_promote_prior_failed_batches": true
+  }
+}

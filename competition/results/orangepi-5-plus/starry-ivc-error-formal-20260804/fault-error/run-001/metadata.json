@@ -1,0 +1,85 @@
+{
+  "board": {
+    "cpu_temp_milli_c": null,
+    "hostname": null,
+    "id": null,
+    "type": "OrangePi-5-Plus"
+  },
+  "inputs": {
+    "board_config": {
+      "path": "competition/ivc/config/board-orangepi-5-plus-error.toml",
+      "sha256": "cb846ae0dfa6bbd7c831c4c3b41ea6e3d293c8d4d68c087d2a5f14969c6b032f",
+      "size_bytes": 621
+    },
+    "build_config": {
+      "path": "competition/ivc/config/axvisor-orangepi-5-plus-error.toml",
+      "sha256": "dc467e8e450a7f077b4d8b94faf25081edd0b63216794549fa295fe22f968b08",
+      "size_bytes": 320
+    },
+    "rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-error.img",
+      "sha256": "a13b224853f9db392a21a3ffa378d3b8356aa5509525bc81a6429c9de313ea06",
+      "size_bytes": 67108864
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "size_bytes": 1766
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+      "size_bytes": 13639728
+    }
+  },
+  "model": {
+    "artifact": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff",
+      "size_bytes": 12259
+    },
+    "backend": "native",
+    "id": "thermal-4x6x1-v1",
+    "runtime_version": "native"
+  },
+  "outputs": {
+    "console_log": {
+      "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-error-formal-20260804/fault-error/run-001/console.log.gz",
+      "sha256": "95eb18ee22bb0bd5ba9088dffd8858b8f51574531fd8257cee6ed3040f67a7cc",
+      "size_bytes": 14159
+    },
+    "raw_csv": {
+      "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-error-formal-20260804/fault-error/run-001/raw.csv.gz",
+      "sha256": "99491a955c79f31ec64e9a7eb136f4c3f9e71b5e841684baff4ed1ba4ab38f6a",
+      "size_bytes": 3173
+    },
+    "summary": null
+  },
+  "result": {
+    "controller_policy": null,
+    "deadline_misses": null,
+    "dropped_samples": null,
+    "sample_count": null,
+    "successful_marker": null,
+    "validated": false
+  },
+  "run": {
+    "board_type": "OrangePi-5-Plus",
+    "execution_order": 1,
+    "exit_status": 1,
+    "finished_at": "2026-08-03T17:23:19Z",
+    "profile": "fault-error",
+    "repeat_count": 3,
+    "run_id": "run-001",
+    "run_number": 1,
+    "started_at": "2026-08-03T17:19:53Z"
+  },
+  "schema_version": 1,
+  "source": {
+    "branch": "experiment/m3-formal-20260803",
+    "commit": "c01bdebf887e8549e53ffed4b836721c1f357df7",
+    "dirty": false,
+    "tracked_change_count": 0,
+    "untracked_file_count": 0
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "result_kind": "orangepi-5-plus-starryos-zephyr-ip-control-reference",
+  "repository": {
+    "branch": "feat/rt-axvisor-partition-virtio-net",
+    "base_commit": "f808646899f51fde9addfbe60976f6667c760beb",
+    "worktree_state": "implementation and evidence changes not yet committed; the base commit alone does not contain this result"
+  },
+  "environment": {
+    "automation_host": "WSL2 Ubuntu",
+    "host_kernel": "Linux 6.18.33.2-microsoft-standard-WSL2 x86_64",
+    "board": "Xunlong Orange Pi 5 Plus",
+    "soc": "RK3588",
+    "dram_bytes": 17179869184,
+    "serial_adapter": "CH340",
+    "serial_baud": 1500000,
+    "uboot": "2025.10-00002-g6deb7e9d65a3-dirty",
+    "uboot_shell": "0.2.6 with the local U-Boot 2025.10 prompt-compatibility patch",
+    "board_linux_kernel": "6.1.43-rockchip-rk3588",
+    "board_linux_root": "PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6",
+    "board_linux_root_after_runs": "/dev/mmcblk1p2 ext4 rw"
+  },
+  "artifacts": {
+    "axvisor_bin": {
+      "bytes": 3321904,
+      "sha256": "193a356419b33d716a042d403b122656ec363cd252f03b04b20c6f20347ace3c"
+    },
+    "starryos_bin": {
+      "bytes": 13639728,
+      "sha256": "e631258c5b74d1db0d85cc45c0209b9dd705a10c2e90964f1cd064fe6bf79aa7"
+    },
+    "starry_guest_dtb": {
+      "bytes": 1766,
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+    },
+    "starry_full_rootfs": {
+      "bytes": 67108864,
+      "sha256": "9e5972b15bbb33dc802cf7aa55fc9345fda9e883dd6ce8bf73efc24b767da4ba"
+    },
+    "starry_smoke_rootfs": {
+      "bytes": 67108864,
+      "sha256": "301d2902d4c1d7400d03bdebe00357aaf46011a5acd5805f3ba363694706a9bb"
+    },
+    "zephyr_source": {
+      "version": "v4.3.0",
+      "commit": "3568e1b6d5cdd51a6b964a2a1d6d29200fea2056"
+    },
+    "zephyr_full_bin": {
+      "bytes": 121568,
+      "sha256": "38c322b1181f09bde9dcb974bbffeaf576f8eac6dc97bd020a4e4ec831c3ec59"
+    },
+    "zephyr_full_elf": {
+      "bytes": 2179208,
+      "sha256": "b34f44fb22ba4d19a7160e3e30cfc8b17bcc1687398c63c436d4cf861cce5674"
+    },
+    "zephyr_smoke_bin": {
+      "bytes": 121568,
+      "sha256": "d82d1f1a7a262a7f465990ce88ff7daa11c5034b68d82391efb10a5cddc61bb3"
+    },
+    "zephyr_smoke_elf": {
+      "bytes": 2179416,
+      "sha256": "a54130d6f217debbc8b28519a98b68bd618bb6010ad2d9a5c3c757e9fff200fd"
+    }
+  },
+  "configuration_sha256": {
+    "axvisor-orangepi-5-plus.toml": "cbe5fe9cd8f1315c32cc9bd6dc446f831b2f9dd4f6b1d24b73e040ede6d4b2a2",
+    "axvisor-orangepi-5-plus-smoke.toml": "75612c17202cb7391a457697c4d2eab996bf5ed32f97abd4c2e6c85072df713e",
+    "orangepi-5-plus-starry-smp2.toml": "85b90c74e134f47660b0d4a7025fb9cee94a9b44b8ffb82b84513d60b7515500",
+    "orangepi-5-plus-starry-smp2-smoke.toml": "4ad456781d2d599f8e9078dea514a90852ac5fb078976cfca140656a5303ff79",
+    "orangepi-5-plus-zephyr-smp1.toml": "30e57dea2f73aaac1baece74c160f2bf3e7afdc8bbf048ad4a8d0acfb98adcfc",
+    "orangepi-5-plus-zephyr-smoke.toml": "e8d3e85528313cc1fa36e9f5359d932c75e80d38a22b180dbdfad1eda2701abf",
+    "analyze_board.py": "fee83f380df4ecdaf0e1c04d5fc4c518fd2cd593fdf67253b9c44cbd9e6184b4",
+    "run-orangepi-5-plus.sh": "3ade7e167f8bd390faefa906ab1f9ec41539d8c197dca37ae33c38e1128d41dd"
+  },
+  "runs": {
+    "smoke": {
+      "started_at_utc": "2026-08-02T12:21:16Z",
+      "finished_at_utc": "2026-08-02T12:23:48Z",
+      "exit_code": 0,
+      "expected_commands": 20,
+      "summary": "smoke-summary.json",
+      "raw_log_gzip": "smoke-console.log.gz",
+      "raw_log_bytes": 62531,
+      "raw_log_sha256": "8dd16dbcc7608305da9fcf13f393a54e410e16ef26da63ca5c2821878efbf265",
+      "gzip_bytes": 14077,
+      "gzip_sha256": "bc5d41ae7ef7d0883da1e95419f3f1f10b2eb41443f81bb642118dea59899e21"
+    },
+    "full": {
+      "started_at_utc": "2026-08-02T12:24:18Z",
+      "finished_at_utc": "2026-08-02T12:29:48Z",
+      "exit_code": 0,
+      "expected_commands": 1800,
+      "summary": "full-summary.json",
+      "raw_log_gzip": "full-console.log.gz",
+      "raw_log_bytes": 67427,
+      "raw_log_sha256": "023ff07b40b4936453eee6d4bbd57bca1c1699e7305dc1af5fe601a5d67492d9",
+      "gzip_bytes": 14409,
+      "gzip_sha256": "b2f5607703221bda9acb01e1f97176fd51cf25ffa7282e9d861b5696d697df3f"
+    }
+  },
+  "limitations": [
+    "The full and smoke results are one physical observation each, not a repeated statistical campaign.",
+    "The shared physical UART can lose spans; redundant paced compact records and strict analysis prevent missing data from being inferred as success.",
+    "StarryOS sysfs returned an unknown MAC string in the autorun shell; the boot record and virtio configuration pin 52:54:00:00:00:01.",
+    "The measurements demonstrate this hardware and software configuration, not a universal hard-real-time bound.",
+    "The source worktree was intentionally uncommitted when captured, so the base commit alone does not reproduce the implementation."
+  ]
+}

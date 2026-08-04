@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "amendment_id": "campaign-amendment-004-snapshot-guest-manifest",
+  "created_at_utc": "2026-08-03T16:03:16Z",
+  "preregistration": {
+    "path": "campaign-preregistration.json",
+    "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+    "modified": false
+  },
+  "previous_amendment": {
+    "path": "campaign-amendment-003-wsl-power-config-bridge.json",
+    "sha256": "f675f200bdbd615d74c0914c7d87de3c3d61ea827beb2cf0286588a38bc55ef7",
+    "modified": false
+  },
+  "trigger": {
+    "stage": "strict post-harvest analysis after a complete physical run, clean snapshot, Linux restoration, and raw CSV harvest",
+    "failed_attempt": "amendment-003/fault-ack-loss/run-001",
+    "cause": "The shared UART dropped 16 hexadecimal characters from the guest's 64-character IVC-STARRY-RAW SHA-256 field. The analyzer correctly rejected the resulting 48-character value instead of trusting only the host harvest marker.",
+    "runner_exit_status": 1,
+    "validated": false,
+    "run_window": {
+      "started_at": "2026-08-03T15:51:10Z",
+      "finished_at": "2026-08-03T15:54:26Z"
+    },
+    "console_log": {
+      "path": "amendment-003/fault-ack-loss/run-001/console.log",
+      "bytes": 71691,
+      "sha256": "5a576e2c5a3008a692fb12e63fca42deba18fc4eb6de2780ed8a63789f59c16c"
+    },
+    "console_log_gzip": {
+      "path": "amendment-003/fault-ack-loss/run-001/console.log.gz",
+      "bytes": 15714,
+      "sha256": "8330aa39b409c3fb5c96d13f72f4794a33ad43041b4ca13542fa9a8207e0501a",
+      "content_sha256": "5a576e2c5a3008a692fb12e63fca42deba18fc4eb6de2780ed8a63789f59c16c"
+    },
+    "raw_csv": {
+      "path": "amendment-003/fault-ack-loss/run-001/raw.csv",
+      "bytes": 7540,
+      "sha256": "dd468cc1e8398a2ca57df8fc01c14a16b60af8ba7dd81928be0e360ca4fae2c5",
+      "samples": 100
+    },
+    "raw_csv_gzip": {
+      "path": "amendment-003/fault-ack-loss/run-001/raw.csv.gz",
+      "bytes": 3098,
+      "sha256": "9d438b3aff3462c212d90c37bdb4c6df1bd54d729033137641aa2515838345d1",
+      "content_sha256": "dd468cc1e8398a2ca57df8fc01c14a16b60af8ba7dd81928be0e360ca4fae2c5"
+    },
+    "metadata": {
+      "path": "amendment-003/fault-ack-loss/run-001/metadata.json",
+      "bytes": 2859,
+      "sha256": "0276b97e4f6a912266f27eaff33ece3e9889333a4cb380192a818c54b7d26b5f",
+      "source_commit": "3ec3eaba09c889835c8eb84e1ec4739310d57b43",
+      "worktree_clean": true
+    },
+    "checksums": {
+      "path": "amendment-003/fault-ack-loss/run-001/checksums.sha256",
+      "bytes": 390,
+      "sha256": "0af0e5c7e367313a0b14f6ae1e2e2ac1477654d29cdbf0589bfebf5bb3f1d013",
+      "verified": true
+    }
+  },
+  "invalidated_observation": {
+    "ack_loss_injections": 20,
+    "duplicate_receives": 20,
+    "controller_result_markers": 1,
+    "rtos_result_markers": 1,
+    "snapshot_validated": true,
+    "snapshot_fsck": "clean",
+    "board_linux_restored": true,
+    "raw_csv_harvested": true,
+    "harvest_sha256": "dd468cc1e8398a2ca57df8fc01c14a16b60af8ba7dd81928be0e360ca4fae2c5",
+    "uart_sha256_fragment": "dd468cc1e8398a2ca57df8fc01c14a16b60af8bca4fae2c5",
+    "uart_sha256_fragment_length": 48,
+    "interpretation": "The protocol and lifecycle completed, but the preregistered guest-plus-harvest hash gate failed. This attempt remains excluded from campaign statistics."
+  },
+  "regression_first": {
+    "pre_fix": [
+      "test_snapshot_guest_manifest_recovers_a_truncated_uart_hash failed because the analyzer rejected the 48-character UART hash and no snapshot guest manifest existed",
+      "test_starry_guest_persists_and_validates_raw_controller_samples failed because autorun did not persist a raw hash sidecar",
+      "test_repository_runner_harvests_starry_raw_samples_after_linux_restore failed because harvest-result did not extract a guest hash sidecar"
+    ],
+    "post_fix": {
+      "ivc_python_tests": "68 passed",
+      "python_compileall": "PASS",
+      "shell_syntax": "PASS",
+      "shellcheck_error_level": "PASS; the pre-existing dynamic profile-source SC1090 warning remains informational",
+      "cargo_fmt_check": "PASS",
+      "git_diff_check": "PASS",
+      "cargo_clippy": "not applicable because no Rust crate was modified"
+    }
+  },
+  "correction": {
+    "source_commit": "8d5d96ca543979f488557076f683631177e2718f",
+    "source_tree": "f5a3d3cd28d15cd44c1347a1c33c215d8323eba0",
+    "worktree_clean": true,
+    "changed_file_hashes": {
+      "competition/ivc/analyze_board.py": "8e508636d998b0289918456bc538b6e156b38b3e44685ffbcbf7ec0240dbb6bd",
+      "competition/ivc/starry/autorun.sh": "1afc0c6a7ba46924eefeb456cfe58ccf1803c35ac63422a565cf77fc41794d7a",
+      "competition/ivc/orangepi/harvest-result.sh": "8a309c3c3c0b6649a4477f1227276f72073b8a18bb308a10e88cb742959f6585",
+      "competition/ivc/tests/test_analyze_board.py": "f1cff21fab5bd37ba9a894c22a925fbcdcc57319493c73e066a93126a3efc5ec",
+      "competition/ivc/tests/test_starry_guest_contract.py": "38f7bfd086d2a17b9cefcd54b41e892b97351b9c23f938550804c54f0b96dc8c",
+      "competition/ivc/tests/test_qemu_config.py": "b2246880bb506b59689bc4bd69155620404f16b03b0077ca0b997c25ef453f31"
+    },
+    "evidence_contract": [
+      "StarryOS computes the raw CSV SHA-256, writes it with the fixed guest path to /var/lib/ivc/raw.csv.sha256, and syncs it into the volatile guest disk before poweroff.",
+      "After AxVisor snapshots that disk and Linux fsck passes, harvest-result extracts both raw.csv and the guest-created sidecar through debugfs and requires exact equality.",
+      "The host recomputes the harvested raw CSV SHA-256 and emits separate snapshot-guest-manifest and harvest markers.",
+      "A complete 64-character UART hash remains mandatory as an additional equality check. Only a lowercase hexadecimal UART fragment of 1 through 63 characters may be treated as transport damage, and only when the snapshot guest manifest, harvest marker, and actual raw bytes all match.",
+      "Missing, malformed, or mismatched snapshot sidecars and complete-but-conflicting UART hashes remain hard failures."
+    ]
+  },
+  "artifacts": {
+    "rebuilt": {
+      "starry_rootfs": {
+        "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-ack-loss.img",
+        "bytes": 67108864,
+        "sha256": "8f66c25d34b0190007e4b684c334854a7fb7fb7f4b4b08ce1849eac961a19efe",
+        "filesystem_state": "clean",
+        "embedded_profile": "neural/native, count=100, period_ms=100"
+      }
+    },
+    "unchanged": {
+      "starryos_kernel": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+      "starry_dtb": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "controller": "4edf46eede1e671a0ad49dc567d6888a27d8f03b839e949f3856e1d8edde473c",
+      "zephyr_bin": "1c9635a636d86eaaea7ed37fb265c457dd11ed11bea43d6a18f2bd3aaff779af",
+      "zephyr_elf": "5ec77b4fa83dbb17426d658587f3452b200b5a402dbcbaf3800c4c686357dcae",
+      "model_source": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff"
+    }
+  },
+  "resumed_capture": {
+    "result_root": "amendment-004",
+    "preserves_all_previous_attempts": true,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "host_shell_runtime_limit_ms": 1800000,
+    "wsl_power_config_path_translation": true
+  }
+}

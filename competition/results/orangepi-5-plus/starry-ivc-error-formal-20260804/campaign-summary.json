@@ -1,0 +1,718 @@
+{
+  "assessment": {
+    "all_lifecycle_gates_met": true,
+    "all_manifests_verified": true,
+    "all_raw_and_gzip_twins_verified": true,
+    "all_runs_validated": true,
+    "campaign_gate_met": true,
+    "exact_fault_contract_met": true,
+    "final_board_linux_root_rw": true,
+    "reason": "all three preregistered physical ERROR runs and the final Linux restoration gate passed",
+    "registered_run_count_met": true,
+    "rt_isolation_claim": false
+  },
+  "board_temperature_milli_c": {
+    "iqr": 923,
+    "median": 45307,
+    "q1": 44384,
+    "q3": 45307,
+    "single_run_maximum": 45307,
+    "single_run_minimum": 43461,
+    "values_by_run": [
+      45307,
+      43461,
+      45307
+    ],
+    "worst_direction": "maximum",
+    "worst_of_runs": 45307
+  },
+  "campaign": {
+    "board_id": "bf61f4d4a1d994ad",
+    "board_type": "OrangePi-5-Plus",
+    "campaign_id": "starry-ivc-error-formal-20260804",
+    "profile": "fault-error",
+    "repeat_count": 3,
+    "result_root": "amendment-005/fault-error",
+    "rootfs_sha256": "9e79b326bdb27c77accccebaed02757e4b83d270dbf4be5b83f54c33e0c1f9b2",
+    "run_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "source_commit": "29be4fc4c8668b8e94cd253fb4484bbeba1d8481"
+  },
+  "descriptive_metrics": {
+    "deadline_misses": {
+      "iqr": 0,
+      "median": 0,
+      "q1": 0,
+      "q3": 0,
+      "single_run_maximum": 0,
+      "single_run_minimum": 0,
+      "values_by_run": [
+        0,
+        0,
+        0
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 0
+    },
+    "iae_milli_c_s": {
+      "iqr": 0,
+      "median": 218972.1,
+      "q1": 218972.1,
+      "q3": 218972.1,
+      "single_run_maximum": 218972.1,
+      "single_run_minimum": 218972.1,
+      "values_by_run": [
+        218972.1,
+        218972.1,
+        218972.1
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 218972.1
+    },
+    "max_overshoot_milli_c": {
+      "iqr": 0,
+      "median": 0,
+      "q1": 0,
+      "q3": 0,
+      "single_run_maximum": 0,
+      "single_run_minimum": 0,
+      "values_by_run": [
+        0,
+        0,
+        0
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 0
+    },
+    "rmse_milli_c": {
+      "iqr": 0,
+      "median": 23600.087153,
+      "q1": 23600.087153,
+      "q3": 23600.087153,
+      "single_run_maximum": 23600.087152593314,
+      "single_run_minimum": 23600.087152593314,
+      "values_by_run": [
+        23600.087152593314,
+        23600.087152593314,
+        23600.087152593314
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 23600.087152593314
+    },
+    "throughput_msg_s": {
+      "iqr": 0.000109,
+      "median": 9.99538,
+      "q1": 9.995333,
+      "q3": 9.995442,
+      "single_run_maximum": 9.995505051667674,
+      "single_run_minimum": 9.995287070702421,
+      "values_by_run": [
+        9.995379913284527,
+        9.995505051667674,
+        9.995287070702421
+      ],
+      "worst_direction": "minimum",
+      "worst_of_runs": 9.995287070702421
+    }
+  },
+  "evidence": {
+    "amendment_chain": [
+      {
+        "amendment_id": "campaign-amendment-001",
+        "path": "campaign-amendment-001-observable-ready-replay.json",
+        "sha256": "d0ddb4fe8afe2c12eaa0b667c19015f31b235f51ed04dd894f5383ec70b2ac90",
+        "size_bytes": 4700
+      },
+      {
+        "amendment_id": "campaign-amendment-002",
+        "path": "campaign-amendment-002-terminal-error-detail-replay.json",
+        "sha256": "a483be720cbf6efb10e43f921dbfca641b85d26364d7771f80fc508e1ef22314",
+        "size_bytes": 6361
+      },
+      {
+        "amendment_id": "campaign-amendment-003",
+        "path": "campaign-amendment-003-terminal-result-settle.json",
+        "sha256": "704d4d0f2e41066fa55a0b22dec94db976527e4bcadd3b32982021fd75f91334",
+        "size_bytes": 5987
+      },
+      {
+        "amendment_id": "campaign-amendment-004",
+        "path": "campaign-amendment-004-cold-boot-recovery.json",
+        "sha256": "f546d90f07a24b2f73a4c5153cdbe6497b50e1e2fd5ccb31db9348026cea036f",
+        "size_bytes": 4606
+      },
+      {
+        "amendment_id": "campaign-amendment-005",
+        "path": "campaign-amendment-005-checksummed-error-evidence.json",
+        "sha256": "0178f98cd07d82d50f1f70d991733d5ec5e8cbdc26a156f16934590f11677edb",
+        "size_bytes": 7165
+      },
+      {
+        "amendment_id": "campaign-amendment-006",
+        "path": "campaign-amendment-006-post-capture-aggregation.json",
+        "sha256": "f40ff4afd029fffbbeb9a45ff5ab976c49a131082360498777aeb4705897e4ae",
+        "size_bytes": 4469
+      }
+    ],
+    "final_board_linux_root_check": {
+      "path": "final-board-linux-root-check.json",
+      "sha256": "3f36192818d09a5b25e4e23d9f45df3fbc3f7c69f26df5a0ed3419b8c1267761",
+      "size_bytes": 663
+    },
+    "preregistration": {
+      "path": "campaign-preregistration.json",
+      "sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+      "size_bytes": 10026
+    },
+    "runs": [
+      {
+        "console": {
+          "content_sha256": "a7b39d636d603946c393b7771e7c3c4a48fd023238b706d61af87bec0d8cdfd1",
+          "gzip_sha256": "8a9fc7d4dc40f66687170987b69b0d9a1356926ba888abdccef1a59d987860a9"
+        },
+        "controller": {
+          "deadline_misses": 0,
+          "full_loop_max_us": 21484,
+          "full_loop_p50_us": 5688,
+          "full_loop_p95_us": 7760,
+          "full_loop_p99_us": 10261,
+          "iae_milli_c_s": 218972.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 17,
+          "pre_send_p50_us": 16,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 17,
+          "rmse_milli_c": 23600.087152593314,
+          "throughput_msg_s": 9.995379913284527,
+          "transport_max_us": 21468,
+          "transport_p50_us": 5672,
+          "transport_p95_us": 7743,
+          "transport_p99_us": 10245
+        },
+        "cpu_temp_milli_c": 45307,
+        "error_evidence": [
+          {
+            "controller_observed": true,
+            "error_code": 2,
+            "kind": "unsupported-version",
+            "reason": "unsupported-version",
+            "rtos_observed": true,
+            "sequence": 1001
+          },
+          {
+            "controller_observed": true,
+            "error_code": 1,
+            "kind": "length-mismatch",
+            "reason": "length-mismatch",
+            "rtos_observed": true,
+            "sequence": 1002
+          },
+          {
+            "controller_observed": true,
+            "error_code": 3,
+            "kind": "checksum-mismatch",
+            "reason": "checksum-mismatch",
+            "rtos_observed": true,
+            "sequence": 1003
+          },
+          {
+            "controller_observed": true,
+            "error_code": 5,
+            "kind": "unexpected-message-type",
+            "reason": "unexpected-message-type",
+            "rtos_observed": true,
+            "sequence": 1004
+          },
+          {
+            "controller_observed": true,
+            "error_code": 4,
+            "kind": "invalid-session-transition",
+            "reason": "zero-session-or-sequence",
+            "rtos_observed": true,
+            "sequence": 1005
+          }
+        ],
+        "error_recovery": {
+          "continued": true,
+          "errors_received": 5,
+          "injected": 5,
+          "normal_acknowledged": 100
+        },
+        "execution_order": 1,
+        "fault_counts": {
+          "duplicate_receives": 0,
+          "error_frames": 5,
+          "protocol_errors": 5,
+          "recoveries": 0,
+          "retransmissions": 0
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "360ee881b96f1a69e5a8a32cb429ab79ebc2b8b81328f768b96bbdc3a45c4639",
+          "size_bytes": 469
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "b3c14a0749fe113db897e4b69f635ad5f66b462427d3b60b6c0d89fa63c67bb9",
+          "size_bytes": 3151
+        },
+        "raw": {
+          "content_sha256": "61113841de16a0f706118c21f3db9ffd45ca68986f21b1bd081ec8534ab054b4",
+          "gzip_sha256": "c24bc4bf681a92a1c92302422ebb51f80e26a0bfc2b33ab0719013027606b789",
+          "sample_count": 100
+        },
+        "run_id": "run-001",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "754e3278b31654d204e7ccbf0c5b607df1bb41f6af83c43673e3a09e59f2da34",
+          "size_bytes": 4102
+        },
+        "validated": true
+      },
+      {
+        "console": {
+          "content_sha256": "3604a5e559d04f21312f0d17f3671744cfa60749042c2a43f96b8c9dae076bb5",
+          "gzip_sha256": "8bcf142a79c9de68e90d25107e53d690fc5477d0a6a835713d4bbf275c475b6f"
+        },
+        "controller": {
+          "deadline_misses": 0,
+          "full_loop_max_us": 31625,
+          "full_loop_p50_us": 4936,
+          "full_loop_p95_us": 6931,
+          "full_loop_p99_us": 12043,
+          "iae_milli_c_s": 218972.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 34,
+          "pre_send_p50_us": 16,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 17,
+          "rmse_milli_c": 23600.087152593314,
+          "throughput_msg_s": 9.995505051667674,
+          "transport_max_us": 31608,
+          "transport_p50_us": 4920,
+          "transport_p95_us": 6914,
+          "transport_p99_us": 12027
+        },
+        "cpu_temp_milli_c": 43461,
+        "error_evidence": [
+          {
+            "controller_observed": true,
+            "error_code": 2,
+            "kind": "unsupported-version",
+            "reason": "unsupported-version",
+            "rtos_observed": true,
+            "sequence": 1001
+          },
+          {
+            "controller_observed": true,
+            "error_code": 1,
+            "kind": "length-mismatch",
+            "reason": "length-mismatch",
+            "rtos_observed": true,
+            "sequence": 1002
+          },
+          {
+            "controller_observed": true,
+            "error_code": 3,
+            "kind": "checksum-mismatch",
+            "reason": "checksum-mismatch",
+            "rtos_observed": true,
+            "sequence": 1003
+          },
+          {
+            "controller_observed": true,
+            "error_code": 5,
+            "kind": "unexpected-message-type",
+            "reason": "unexpected-message-type",
+            "rtos_observed": true,
+            "sequence": 1004
+          },
+          {
+            "controller_observed": true,
+            "error_code": 4,
+            "kind": "invalid-session-transition",
+            "reason": "zero-session-or-sequence",
+            "rtos_observed": true,
+            "sequence": 1005
+          }
+        ],
+        "error_recovery": {
+          "continued": true,
+          "errors_received": 5,
+          "injected": 5,
+          "normal_acknowledged": 100
+        },
+        "execution_order": 2,
+        "fault_counts": {
+          "duplicate_receives": 0,
+          "error_frames": 5,
+          "protocol_errors": 5,
+          "recoveries": 0,
+          "retransmissions": 0
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "27fb47658a2f1e192710a61dc4209bfdb6e60842e526cc4feb323623a6db3bd1",
+          "size_bytes": 469
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "0132e53cac281e4ae3929acd494903d765369409a8f2f59568330f4180731f42",
+          "size_bytes": 3151
+        },
+        "raw": {
+          "content_sha256": "abeff9688d5ae9c4c966ea101b84cbb315e0a3a65eb7763efe5f96f3c205354a",
+          "gzip_sha256": "1d4d58f557a580c86bd7e0840782e48d969107cf8cec8e5e1eb2ce485718a866",
+          "sample_count": 100
+        },
+        "run_id": "run-002",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "5accc6cb222cd99168f54b70a64a10d715f7065a1da73b82506c533e9f69acbe",
+          "size_bytes": 4078
+        },
+        "validated": true
+      },
+      {
+        "console": {
+          "content_sha256": "2d703608115a8cdad63c4cd417daec4e0b4382bbe5d0724cb236a983d4edf67c",
+          "gzip_sha256": "0ab1830215a2e0cfaaeeddfb01fe753459dcac36e63e013f566ed228d3f3359e"
+        },
+        "controller": {
+          "deadline_misses": 0,
+          "full_loop_max_us": 21342,
+          "full_loop_p50_us": 4552,
+          "full_loop_p95_us": 6684,
+          "full_loop_p99_us": 9548,
+          "iae_milli_c_s": 218972.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 17,
+          "pre_send_p50_us": 16,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 17,
+          "rmse_milli_c": 23600.087152593314,
+          "throughput_msg_s": 9.995287070702421,
+          "transport_max_us": 21326,
+          "transport_p50_us": 4536,
+          "transport_p95_us": 6668,
+          "transport_p99_us": 9532
+        },
+        "cpu_temp_milli_c": 45307,
+        "error_evidence": [
+          {
+            "controller_observed": true,
+            "error_code": 2,
+            "kind": "unsupported-version",
+            "reason": "unsupported-version",
+            "rtos_observed": true,
+            "sequence": 1001
+          },
+          {
+            "controller_observed": true,
+            "error_code": 1,
+            "kind": "length-mismatch",
+            "reason": "length-mismatch",
+            "rtos_observed": true,
+            "sequence": 1002
+          },
+          {
+            "controller_observed": true,
+            "error_code": 3,
+            "kind": "checksum-mismatch",
+            "reason": "checksum-mismatch",
+            "rtos_observed": true,
+            "sequence": 1003
+          },
+          {
+            "controller_observed": true,
+            "error_code": 5,
+            "kind": "unexpected-message-type",
+            "reason": "unexpected-message-type",
+            "rtos_observed": true,
+            "sequence": 1004
+          },
+          {
+            "controller_observed": true,
+            "error_code": 4,
+            "kind": "invalid-session-transition",
+            "reason": "zero-session-or-sequence",
+            "rtos_observed": true,
+            "sequence": 1005
+          }
+        ],
+        "error_recovery": {
+          "continued": true,
+          "errors_received": 5,
+          "injected": 5,
+          "normal_acknowledged": 100
+        },
+        "execution_order": 3,
+        "fault_counts": {
+          "duplicate_receives": 0,
+          "error_frames": 5,
+          "protocol_errors": 5,
+          "recoveries": 0,
+          "retransmissions": 0
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "5106fb0584ad7b411ac9c3f4d1bab42347a0451917ed36f6203b18dbe2a0010b",
+          "size_bytes": 469
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "76ca88b1f89966706777d168c8239c9f64c3b272c879253c6d93d18c9959f3fb",
+          "size_bytes": 3151
+        },
+        "raw": {
+          "content_sha256": "fdd1647dbbf2a90200c02f4848b14d4e7e35b2f8ebf4221b06b9b04585cd721e",
+          "gzip_sha256": "0b25546a130507f3bb3365a90c3229dd2bef811a3d939b275f488608a56be442",
+          "sample_count": 100
+        },
+        "run_id": "run-003",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "50ce28ee8ab7d7b3b192deea61a58eb0129627fd744c342d8c02468b9851f40c",
+          "size_bytes": 4076
+        },
+        "validated": true
+      }
+    ]
+  },
+  "fault_contract": {
+    "analyzer_profile": "error",
+    "exact_equality_gate_met": true,
+    "expected_duplicate_receives_per_run": 0,
+    "expected_error_frames_per_run": 5,
+    "expected_protocol_errors_per_run": 5,
+    "expected_recoveries_per_run": 0,
+    "expected_retransmissions_per_run": 0,
+    "faults": [
+      {
+        "error_code": 2,
+        "kind": "unsupported-version",
+        "reason": "unsupported-version",
+        "sequence": 1001
+      },
+      {
+        "error_code": 1,
+        "kind": "length-mismatch",
+        "reason": "length-mismatch",
+        "sequence": 1002
+      },
+      {
+        "error_code": 3,
+        "kind": "checksum-mismatch",
+        "reason": "checksum-mismatch",
+        "sequence": 1003
+      },
+      {
+        "error_code": 5,
+        "kind": "unexpected-message-type",
+        "reason": "unexpected-message-type",
+        "sequence": 1004
+      },
+      {
+        "error_code": 4,
+        "kind": "invalid-session-transition",
+        "reason": "zero-session-or-sequence",
+        "sequence": 1005
+      }
+    ],
+    "normal_control_must_continue_after_faults": true
+  },
+  "latency": {
+    "claim_scope": "descriptive recovery overhead only; this campaign is not the preregistered RT isolation comparison",
+    "metrics": {
+      "full_loop_max_us": {
+        "iqr": 5141.5,
+        "median": 21484,
+        "q1": 21413,
+        "q3": 26554.5,
+        "single_run_maximum": 31625,
+        "single_run_minimum": 21342,
+        "values_by_run": [
+          21484,
+          31625,
+          21342
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 31625
+      },
+      "full_loop_p50_us": {
+        "iqr": 568,
+        "median": 4936,
+        "q1": 4744,
+        "q3": 5312,
+        "single_run_maximum": 5688,
+        "single_run_minimum": 4552,
+        "values_by_run": [
+          5688,
+          4936,
+          4552
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 5688
+      },
+      "full_loop_p95_us": {
+        "iqr": 538,
+        "median": 6931,
+        "q1": 6807.5,
+        "q3": 7345.5,
+        "single_run_maximum": 7760,
+        "single_run_minimum": 6684,
+        "values_by_run": [
+          7760,
+          6931,
+          6684
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 7760
+      },
+      "full_loop_p99_us": {
+        "iqr": 1247.5,
+        "median": 10261,
+        "q1": 9904.5,
+        "q3": 11152,
+        "single_run_maximum": 12043,
+        "single_run_minimum": 9548,
+        "values_by_run": [
+          10261,
+          12043,
+          9548
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 12043
+      },
+      "pre_send_max_us": {
+        "iqr": 8.5,
+        "median": 17,
+        "q1": 17,
+        "q3": 25.5,
+        "single_run_maximum": 34,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          34,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 34
+      },
+      "pre_send_p50_us": {
+        "iqr": 0,
+        "median": 16,
+        "q1": 16,
+        "q3": 16,
+        "single_run_maximum": 16,
+        "single_run_minimum": 16,
+        "values_by_run": [
+          16,
+          16,
+          16
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 16
+      },
+      "pre_send_p95_us": {
+        "iqr": 0,
+        "median": 17,
+        "q1": 17,
+        "q3": 17,
+        "single_run_maximum": 17,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          17,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 17
+      },
+      "pre_send_p99_us": {
+        "iqr": 0,
+        "median": 17,
+        "q1": 17,
+        "q3": 17,
+        "single_run_maximum": 17,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          17,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 17
+      },
+      "transport_max_us": {
+        "iqr": 5141,
+        "median": 21468,
+        "q1": 21397,
+        "q3": 26538,
+        "single_run_maximum": 31608,
+        "single_run_minimum": 21326,
+        "values_by_run": [
+          21468,
+          31608,
+          21326
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 31608
+      },
+      "transport_p50_us": {
+        "iqr": 568,
+        "median": 4920,
+        "q1": 4728,
+        "q3": 5296,
+        "single_run_maximum": 5672,
+        "single_run_minimum": 4536,
+        "values_by_run": [
+          5672,
+          4920,
+          4536
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 5672
+      },
+      "transport_p95_us": {
+        "iqr": 537.5,
+        "median": 6914,
+        "q1": 6791,
+        "q3": 7328.5,
+        "single_run_maximum": 7743,
+        "single_run_minimum": 6668,
+        "values_by_run": [
+          7743,
+          6914,
+          6668
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 7743
+      },
+      "transport_p99_us": {
+        "iqr": 1247.5,
+        "median": 10245,
+        "q1": 9888.5,
+        "q3": 11136,
+        "single_run_maximum": 12027,
+        "single_run_minimum": 9532,
+        "values_by_run": [
+          10245,
+          12027,
+          9532
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 12027
+      }
+    },
+    "quartile_method": "inclusive quartiles",
+    "unit": "microseconds"
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "amendment": 6,
+  "status": "frozen-before-post-capture-aggregation",
+  "created_at_utc": "2026-08-03T18:40:44Z",
+  "preregistration_sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+  "previous_amendment_sha256": "0178f98cd07d82d50f1f70d991733d5ec5e8cbdc26a156f16934590f11677edb",
+  "reason": "The three-run amendment-005 capture is complete. This amendment freezes a post-capture-only, profile-aware aggregation implementation and the lease-protected final Linux root check before the implementation is first applied to the retained ERROR campaign bytes.",
+  "scope": {
+    "stage": "post-capture validation and descriptive aggregation",
+    "capture_data_modified": false,
+    "formal_result_root": "amendment-005/fault-error",
+    "formal_run_order": ["run-001", "run-002", "run-003"],
+    "capture_source_commit": "29be4fc4c8668b8e94cd253fb4484bbeba1d8481"
+  },
+  "source": {
+    "commit": "29be4fc4c8668b8e94cd253fb4484bbeba1d8481",
+    "tree": "a54df247fae859c0b160b4dcd456fd1a23840975",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true
+  },
+  "artifacts": {
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-error.img",
+      "bytes": 67108864,
+      "sha256": "9e79b326bdb27c77accccebaed02757e4b83d270dbf4be5b83f54c33e0c1f9b2",
+      "inherited_from_amendment": 5
+    }
+  },
+  "continued_capture_contract": {
+    "result_root": "amendment-005",
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "post_capture_only": true
+  },
+  "aggregation_implementation": {
+    "commit": "bff7a1f310c15c3f35743d3c3cbe52f15b9df078",
+    "tree": "b146f14563de7589d202efb611a0707ce2a8ff46",
+    "worktree_clean": true,
+    "changed_files": {
+      "competition/ivc/aggregate_board_campaign.py": "4a1107e6a2ca615768fd455e8ffac47e63798c6a2f9864ff76998f3ecd383f9b",
+      "competition/ivc/tests/test_aggregate_board_campaign.py": "40f05065745c8cc155098ac0f41c81cb95827cbafe4bd04e594fa028fca5b363"
+    },
+    "independent_gates": [
+      "verify the complete numbered amendment chain by SHA-256 back to amendment-001 and the frozen preregistration",
+      "verify every per-run checksums.sha256 entry and exact gzip/plain byte equality",
+      "require exactly 100 contiguous raw samples whose content hash matches the guest manifest",
+      "require the clean capture source commit, rootfs hash, run order, board identity, and native model backend",
+      "require all five preregistered controller and RTOS ERROR records with exact sequence, code, reason, and continuation result",
+      "require controller and RTOS normal-control counts, zero retransmission/timeout/duplicate gates, and every lifecycle marker",
+      "require the final lease-protected Linux root probe to report read-write ext4 and board availability after release"
+    ]
+  },
+  "regression_first": {
+    "pre_implementation": "The formal ERROR fixture failed because the previous aggregator required runner_profile=fault-ack-loss.",
+    "post_implementation": {
+      "targeted_aggregation_tests": "7 passed",
+      "all_ivc_python_tests": "86 passed",
+      "python_compileall": "PASS",
+      "cargo_fmt": "PASS",
+      "formal_ack_loss_read_only_replay": "PASS",
+      "git_diff_check": "PASS",
+      "cargo_clippy": "not applicable because no Rust crate was modified"
+    },
+    "negative_integrity_gate": "A rehashed summary and manifest with a changed ERROR code are still rejected against the preregistered fault contract."
+  },
+  "statistics": {
+    "quartile_method": "inclusive quartiles (Python statistics.quantiles with method=inclusive)",
+    "reported_for_each_latency_metric": [
+      "values by run",
+      "median",
+      "Q1",
+      "Q3",
+      "IQR",
+      "single-run minimum",
+      "single-run maximum",
+      "worst-of-runs"
+    ],
+    "claim_scope": "descriptive ERROR recovery overhead only; this campaign is not the preregistered RT isolation comparison"
+  },
+  "final_board_linux_root_check": {
+    "path": "final-board-linux-root-check.json",
+    "sha256": "3f36192818d09a5b25e4e23d9f45df3fbc3f7c69f26df5a0ed3419b8c1267761",
+    "lease_protected": true,
+    "root_source": "/dev/mmcblk1p2",
+    "filesystem": "ext4",
+    "read_write": true,
+    "board_available_after_release": true,
+    "result": "PASS"
+  }
+}

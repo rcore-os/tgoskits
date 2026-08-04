@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "amendment_id": "campaign-amendment-002-outer-timeout",
+  "created_at_utc": "2026-08-03T15:41:51Z",
+  "preregistration": {
+    "path": "campaign-preregistration.json",
+    "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+    "modified": false
+  },
+  "previous_amendment": {
+    "path": "campaign-amendment-001-board-config-and-lockfile.json",
+    "sha256": "af3bb0ff77d80052f7cc1528dbb6413d71d0d6be41578490cf49c78d4e63308f",
+    "modified": false
+  },
+  "trigger": {
+    "stage": "physical protocol execution after StarryOS and Zephyr had booted",
+    "failed_attempt": "amendment-001/fault-ack-loss/run-001",
+    "cause": "The WSL host command was launched with an unintended 120000 ms outer shell runtime limit, shorter than the repository runner's preregistered three-run physical-board batch.",
+    "runner_exit_status": 141,
+    "validated": false,
+    "console_log": {
+      "path": "amendment-001/fault-ack-loss/run-001/console.log",
+      "bytes": 76193,
+      "sha256": "56f56678b66ddd081c52dc6ea638b580da759a04c354a1b849ecfabd25e78283"
+    },
+    "console_log_gzip": {
+      "path": "amendment-001/fault-ack-loss/run-001/console.log.gz",
+      "bytes": 15626,
+      "sha256": "a5aa8049eecfb5662de27a1287a8280a00f343af153a293483286b2e17d81c31",
+      "content_sha256": "56f56678b66ddd081c52dc6ea638b580da759a04c354a1b849ecfabd25e78283"
+    },
+    "metadata": {
+      "path": "amendment-001/fault-ack-loss/run-001/metadata.json",
+      "bytes": 2563,
+      "sha256": "9cba639bde61e0e913fa86caaba8966031769fffe89c086c0d70958e1fdd2da2",
+      "source_commit": "3ec3eaba09c889835c8eb84e1ec4739310d57b43",
+      "worktree_clean": true
+    }
+  },
+  "partial_observation": {
+    "ready_markers": 1,
+    "ack_loss_injections": 17,
+    "duplicate_receives": 17,
+    "last_injected_sequence": 85,
+    "last_duplicate_sequence": 85,
+    "expected_ack_loss_injections": 20,
+    "expected_duplicate_receives": 20,
+    "controller_result_markers": 0,
+    "rtos_result_markers": 0,
+    "raw_csv_present": false,
+    "summary_json_present": false,
+    "interpretation": "This is an invalid host-orchestration attempt, not evidence of a protocol failure or success. It is retained and excluded from campaign statistics."
+  },
+  "cleanup_verification": {
+    "cargo_lock_restored": true,
+    "source_worktree_clean": true,
+    "axvisor_host_filesystem_sync_marker_observed": true,
+    "board_linux_restored_out_of_band": true,
+    "board_root_after_recovery": "/dev/mmcblk1p2 ext4 rw,noatime,errors=remount-ro,commit=600",
+    "recovery_note": "The clean experiment worktree intentionally lacked the private board-power configuration, so the already-configured WSL main worktree performed the cold cycle after AxVisor host-filesystem sync."
+  },
+  "unchanged_contract": {
+    "source_commit": "3ec3eaba09c889835c8eb84e1ec4739310d57b43",
+    "source_tree": "9fa653d0065c84480bd62a71d6631ac841a01e41",
+    "source_files_changed": false,
+    "protocol_counts_and_sequences": true,
+    "analyzer_thresholds": true,
+    "repeat_count": 3,
+    "guest_artifacts_rebuilt": false,
+    "artifact_hashes_unchanged": {
+      "starryos_kernel": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+      "starry_dtb": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "starry_rootfs": "6ecdadaacb657bc8abbc4daaed5b1332b2e04a2325d0065dd0f02c993ba614a3",
+      "zephyr_bin": "1c9635a636d86eaaea7ed37fb265c457dd11ed11bea43d6a18f2bd3aaff779af",
+      "zephyr_elf": "5ec77b4fa83dbb17426d658587f3452b200b5a402dbcbaf3800c4c686357dcae"
+    }
+  },
+  "resumed_capture": {
+    "result_root": "amendment-002",
+    "preserves_all_previous_attempts": true,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "host_shell_runtime_limit_ms": 1800000,
+    "monitoring": "The long-running command is yielded periodically without shortening the repository runner timeout."
+  }
+}

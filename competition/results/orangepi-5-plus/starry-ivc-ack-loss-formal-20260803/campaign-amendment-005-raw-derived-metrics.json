@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "amendment_id": "campaign-amendment-005-raw-derived-metrics",
+  "created_at_utc": "2026-08-03T16:11:53Z",
+  "preregistration": {
+    "path": "campaign-preregistration.json",
+    "sha256": "e2683847fab1804ca8cfc43526e79108ec63da4eb437dca95fa1236162c89534",
+    "modified": false
+  },
+  "previous_amendment": {
+    "path": "campaign-amendment-004-snapshot-guest-manifest.json",
+    "sha256": "f9cb1d30b707797cb9441ab882049b74c6ce45d94a5d3d18646841d3682a8ea9",
+    "modified": false
+  },
+  "trigger": {
+    "stage": "strict post-harvest analysis after the snapshot guest manifest, harvested raw CSV, and Linux restoration had all passed",
+    "failed_attempt": "amendment-004/fault-ack-loss/run-001",
+    "cause": "One duplicated UART transport summary was truncated to throughput_msg_s=9.6 while the second complete copy reported 9.607. Both retained every required field, so the analyzer correctly detected conflicting complete records before deriving the same metrics from verified raw samples.",
+    "runner_exit_status": 1,
+    "validated": false,
+    "console_log": {
+      "path": "amendment-004/fault-ack-loss/run-001/console.log",
+      "bytes": 71931,
+      "sha256": "9a60d2b089348f216660f251e743205fb65b9b8e94f99dd8e41f147a89b37957"
+    },
+    "console_log_gzip": {
+      "path": "amendment-004/fault-ack-loss/run-001/console.log.gz",
+      "bytes": 15790,
+      "sha256": "ec1a8e3937c0313c68b076cf7da3c40f763e41413efe535ce1eaa41b48009f2c",
+      "content_sha256": "9a60d2b089348f216660f251e743205fb65b9b8e94f99dd8e41f147a89b37957"
+    },
+    "raw_csv": {
+      "path": "amendment-004/fault-ack-loss/run-001/raw.csv",
+      "bytes": 7540,
+      "sha256": "f79155d92119eed076cd6c808564209be0f0071d35b2a56929f85680ea64d458",
+      "samples": 100
+    },
+    "raw_csv_gzip": {
+      "path": "amendment-004/fault-ack-loss/run-001/raw.csv.gz",
+      "bytes": 3131,
+      "sha256": "5b254c5b30512468a29d38e756c5fa2abc8f789b37e35c96b4ec1ee675b89dea",
+      "content_sha256": "f79155d92119eed076cd6c808564209be0f0071d35b2a56929f85680ea64d458"
+    },
+    "metadata": {
+      "path": "amendment-004/fault-ack-loss/run-001/metadata.json",
+      "bytes": 2859,
+      "sha256": "201684c180f72b49e60f40d9a1db34a9089c2d022eeca5f9b2257ace2c855774",
+      "source_commit": "8d5d96ca543979f488557076f683631177e2718f",
+      "worktree_clean": true
+    },
+    "checksums": {
+      "path": "amendment-004/fault-ack-loss/run-001/checksums.sha256",
+      "bytes": 390,
+      "sha256": "a35fc418dee542e7cecfafd72d4c95f99f759965ffb611dd741f44be2ec48af3",
+      "verified": true
+    }
+  },
+  "invalidated_observation": {
+    "ack_loss_injections": 20,
+    "duplicate_receives": 20,
+    "controller_result_markers": 1,
+    "rtos_result_markers": 1,
+    "snapshot_guest_manifest_sha256": "f79155d92119eed076cd6c808564209be0f0071d35b2a56929f85680ea64d458",
+    "harvest_sha256": "f79155d92119eed076cd6c808564209be0f0071d35b2a56929f85680ea64d458",
+    "snapshot_fsck": "clean",
+    "board_linux_restored": true,
+    "board_id": "bf61f4d4a1d994ad",
+    "cpu_temp_milli_c": 41615,
+    "conflicting_transport_throughput_msg_s": [9.6, 9.607],
+    "interpretation": "All primary protocol and raw-data gates completed, but this attempt remains excluded because its then-current analyzer returned failure. A read-only replay with the corrected analyzer passed and was used only as regression evidence, not as a campaign result."
+  },
+  "regression_first": {
+    "pre_fix": "test_raw_samples_replace_conflicting_uart_metric_summaries failed with conflicting complete IVC-CONTROLLER-TRANSPORT records",
+    "post_fix": {
+      "targeted_conflict_tests": "PASS with verified raw; PASS rejection without raw",
+      "real_failed_run_read_only_replay": "PASS without modifying amendment-004 evidence",
+      "ivc_python_tests": "70 passed",
+      "python_compileall": "PASS",
+      "cargo_fmt_check": "PASS",
+      "git_diff_check": "PASS",
+      "cargo_clippy": "not applicable because no Rust crate was modified"
+    }
+  },
+  "correction": {
+    "source_commit": "bac4ad16b4adf673942e6c31897872c2c5c116dc",
+    "source_tree": "c3c4892691836af8503959c8c059ea0b437c8cda",
+    "worktree_clean": true,
+    "changed_file_hashes": {
+      "competition/ivc/analyze_board.py": "1bff5368131d608d636986ab44ecd3464748d3077398ea38eb5ee5461c698c43",
+      "competition/ivc/tests/test_analyze_board.py": "e55bd6fc6ab94aed23d7db7c2652ac0ab85e20e420bb07c1be69fac73f44b094"
+    },
+    "evidence_contract": [
+      "When no raw CSV is supplied, conflicting complete UART metric records remain a hard failure.",
+      "When a raw CSV has passed snapshot guest-manifest, harvest, byte-hash, schema, sample-count, sequence, timestamp, actuator, and control-error checks, conflicting duplicate UART metric summaries are treated as transport damage and that metric family is derived from raw rows.",
+      "A unique UART metric summary is still cross-checked against raw-derived values; a mismatch remains a hard failure.",
+      "Controller outcome and reliability counts, RTOS counts and sequences, result hashes, and lifecycle markers remain strict and are never replaced by this fallback."
+    ]
+  },
+  "artifacts": {
+    "rebuilt": false,
+    "starry_rootfs_sha256": "8f66c25d34b0190007e4b684c334854a7fb7fb7f4b4b08ce1849eac961a19efe",
+    "artifact_hashes_unchanged_from_amendment_004": true
+  },
+  "resumed_capture": {
+    "result_root": "amendment-005",
+    "preserves_all_previous_attempts": true,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "host_shell_runtime_limit_ms": 1800000,
+    "wsl_power_config_path_translation": true
+  }
+}

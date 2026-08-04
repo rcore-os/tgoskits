@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-error-formal-20260804",
+  "amendment": 4,
+  "status": "frozen-before-amendment-first-board-capture",
+  "created_at_utc": "2026-08-03T18:04:13Z",
+  "preregistration_sha256": "7e71aca56982c599343af78e23820521117e369a4fc634aac7c71012ee87b2b7",
+  "previous_amendment_sha256": "704d4d0f2e41066fa55a0b22dec94db976527e4bcadd3b32982021fd75f91334",
+  "reason": "Amendment-003 run-001 passed every strict protocol, control, raw-data, snapshot, fsck, and Linux-restoration gate. Run-002 failed before AxVisor or either guest started because the U-Boot transport timed out on its first setenv command after three retries. Recovery subsequently confirmed an interactive U-Boot prompt and restored Linux, so this was a pre-measurement board-session failure rather than an ERROR-profile result.",
+  "previous_batch": {
+    "path": "amendment-003/fault-error",
+    "accepted_as_final_three_run_batch": false,
+    "run_001": {
+      "strict_analysis": "passed",
+      "source_commit": "01e87ec01b5a3ca5dea234e81fb3288af09d5774",
+      "summary_sha256": "b183c9bd51d77dcd683c42842d99a8dd3cb6e7e242c5f5f0c925fce5beac31cb",
+      "console_content_sha256": "dcae80d72e4756d4f46e7e08f12c252872c9f97311593a560a2e0f86d88e3ceb",
+      "raw_sha256": "9a3c252b34455ec964963b2f93f8182acc77ce8262f5e3dce3a605facbcdae94",
+      "metadata_sha256": "7b3859f347ec23010fe1b993a0f7acf4781a36ec2f0f5a3ba3b9ec195ddad755",
+      "checksums_manifest_sha256": "c364e80772d28bbb0ead7a7a45134b07673411e8937bc1c09c51c615203d8d92"
+    },
+    "run_002": {
+      "strict_analysis": "not_started",
+      "analysis_failure": "U-Boot command setenv autoload yes failed after retries",
+      "measurement_started": false,
+      "starry_boot_records": 0,
+      "rtos_ready_records": 0,
+      "controller_terminal_records": 0,
+      "linux_restored": 1,
+      "console_content_sha256": "628fad3d528fe89cc89787a2801b970d2cbaa0da75610fa6d8906961503ba01d",
+      "console_gzip_sha256": "65dcc5fda06d1623dcae2214df998a8b2fd42cca74de861f9d097d6cd27634e0",
+      "metadata_sha256": "9275e8292818b9f3635befb887ba1fbc84d1e1c566f19151a57b36132ed0c30e",
+      "checksums_manifest_sha256": "cc1b99c51895e6ffa32ee08575f727f87640c3cacb8a3ad290635809d559478f"
+    },
+    "retention_policy": "Both runs remain immutable. The passing run is supporting evidence only and is not combined with a later batch."
+  },
+  "correction": {
+    "kind": "pre-capture-board-session-recovery",
+    "source_or_artifact_changed": false,
+    "protocol_or_acceptance_contract_changed": false,
+    "actions_completed_before_freeze": [
+      "Verified that no board-service lease or filesystem write was active.",
+      "Queried smart-plug state and observed power=on with fault_code=0.",
+      "Performed one confirmed cold power cycle with fault_code=0.",
+      "Waited for and interacted with the SPI U-Boot prompt over the physical serial link.",
+      "Loaded the TF-card Linux boot script without changing persistent U-Boot environment.",
+      "Verified /dev/mmcblk1p2 is a read-write ext4 Linux root and rechecked all eight staged artifact hashes."
+    ],
+    "recovery_result": {
+      "power_status": "on",
+      "plug_temperature_celsius": 46,
+      "fault_code": 0,
+      "linux_root": "/dev/mmcblk1p2 ext4 rw",
+      "board_stage_hashes_verified": true,
+      "marker": "BOARD_COLD_RECOVERY_READY"
+    }
+  },
+  "source": {
+    "commit": "01e87ec01b5a3ca5dea234e81fb3288af09d5774",
+    "tree": "319dc57a29559b36fd532c8938f4ff6ec643051c",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "unchanged_from_amendment": 3
+  },
+  "artifacts": {
+    "starry_rootfs_sha256": "6b17f2eb4da0487ba0fa69f6c15cb2eabd22cc640ad2cb37cb755715142edaa1",
+    "controller_sha256": "896d9a96835827136ae8ac3b90412ce69f6e6b0c0b04e6b2becb307a09355605",
+    "zephyr_bin_sha256": "89bc2db6a343c7c7cab629b2fd526df1188cae62b92928abaa07db8b1bda83a8",
+    "zephyr_elf_sha256": "c06b09132c7fe3bcc8f0b3e75cdc6a7857591480e5cd1655c574e97d7452a557",
+    "starryos_kernel_sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+    "starry_dtb_sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+  },
+  "continued_capture_contract": {
+    "result_root": "amendment-004",
+    "runner_profile": "fault-error",
+    "analyzer_profile": "error",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "all_original_preregistration_gates_apply": true,
+    "all_prior_attempts_remain_retained": true,
+    "never_overwrite_or_promote_prior_failed_batches": true
+  }
+}

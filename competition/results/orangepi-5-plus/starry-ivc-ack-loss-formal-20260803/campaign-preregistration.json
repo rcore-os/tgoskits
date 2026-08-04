@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-ack-loss-formal-20260803",
+  "status": "frozen-before-first-board-capture",
+  "created_at_utc": "2026-08-03T15:24:10Z",
+  "purpose": "Provide repeatable physical cross-guest evidence that StarryOS recovers from deterministic ACK loss without duplicate actuator application.",
+  "platform": {
+    "board_type": "OrangePi-5-Plus",
+    "soc": "RK3588",
+    "dram_bytes": 17179869184,
+    "automation_host": "WSL2 Ubuntu",
+    "serial_device": "/dev/ttyUSB0",
+    "linux_root": "PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6"
+  },
+  "source": {
+    "repository": "tgoskits-rt-ivc",
+    "commit": "027de4545ed2c5500168b87956ccffe3ea885240",
+    "tree": "7891f793af1339bf11ff0116366973f1f58aa1d5",
+    "branch": "experiment/m3-formal-20260803",
+    "worktree_clean": true,
+    "rust_toolchain": "nightly-2026-07-15",
+    "rustc": "rustc 1.99.0-nightly (da80ed070 2026-07-14)",
+    "zephyr": "v4.3.0",
+    "west": "v1.5.0"
+  },
+  "capture_contract": {
+    "runner_profile": "fault-ack-loss",
+    "analyzer_profile": "ack-loss",
+    "repeat_count": 3,
+    "execution_order": ["run-001", "run-002", "run-003"],
+    "controller_policy": "neural",
+    "inference_backend": "native",
+    "command_count": 100,
+    "period_ms": 100,
+    "drop_ack_every": 5,
+    "configured_ack_losses": 20,
+    "expected_retransmissions": 20,
+    "expected_recoveries": 20,
+    "expected_fresh_applications": 100,
+    "expected_duplicate_receives": 20,
+    "expected_status_frames": 120,
+    "expected_ack_frames": 100,
+    "expected_error_frames": 0,
+    "expected_protocol_errors": 0,
+    "injected_sequences": [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100],
+    "result_snapshot_path": "/home/orangepi/ivc-a",
+    "vcpu_placement": {
+      "starry_vcpu_masks": ["0x2", "0x4"],
+      "zephyr_vcpu_masks": ["0x1"],
+      "dedicated_cpus": true
+    }
+  },
+  "artifacts": {
+    "starryos_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "bytes": 13639728,
+      "sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee"
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "bytes": 1766,
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+    },
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-ack-loss.img",
+      "bytes": 67108864,
+      "sha256": "6ecdadaacb657bc8abbc4daaed5b1332b2e04a2325d0065dd0f02c993ba614a3",
+      "filesystem_state": "clean",
+      "embedded_profile": "neural/native, count=100, period_ms=100"
+    },
+    "controller": {
+      "path": "tmp/competition/ivc/starry/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 779600,
+      "sha256": "4edf46eede1e671a0ad49dc567d6888a27d8f03b839e949f3856e1d8edde473c"
+    },
+    "zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-ack-loss/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "1c9635a636d86eaaea7ed37fb265c457dd11ed11bea43d6a18f2bd3aaff779af"
+    },
+    "zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-ack-loss/zephyr/zephyr.elf",
+      "bytes": 2179240,
+      "sha256": "5ec77b4fa83dbb17426d658587f3452b200b5a402dbcbaf3800c4c686357dcae"
+    },
+    "model_source": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "bytes": 12259,
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff"
+    }
+  },
+  "frozen_file_hashes": {
+    "competition/ivc/run-orangepi-5-plus.sh": "88e8eda5510507f6e3f7190860dfc53d498c8d7394c4af7ce70d442c50206ee2",
+    "competition/ivc/analyze_board.py": "0539dc7682394757629731d01dc61c77017fd93d34cb442d81f905de9a0df03c",
+    "competition/ivc/write_board_metadata.py": "c3c63a3c3e1a1bba29792a60315530f69a1544f11f2815b6959fcf04c59092fd",
+    "competition/ivc/orangepi/board-runner.sh": "4b777384925c262796e28108aa9b9916d0adc55e1b2953922df519e50d898966",
+    "competition/ivc/stage-orangepi-5-plus.sh": "5665c0e1ca9d4dcd3e94a1119c946255f7ee54454d475d46e8bc1ee66a429354",
+    "competition/ivc/starry/build.sh": "989197361d7f80b82400c9e5dbdaa099e54933349b64e27a290036e4e04943ba",
+    "competition/ivc/starry/build-rootfs.sh": "4518f8bad180722ef85e1e06d5d9ea73643d67a22d5f693eb307b70357217f6d",
+    "competition/ivc/starry/autorun.sh": "ca388acab33bf66175097f2285944a301bc12d9c29b36ae968ebde9e8c2bfec0",
+    "competition/ivc/config/axvisor-orangepi-5-plus-ack-loss.toml": "d8e631691b8b2be0c3584c56c53c09b9f909a4887c4b22f54bfd7216013d3271",
+    "competition/ivc/config/board-orangepi-5-plus-ack-loss.toml": "627cc87dd109b303015096ab9752d5d18926b3dde1c7c08fa77be5f260593743",
+    "competition/ivc/config/orangepi-5-plus-starry-smp2-ack-loss.toml": "9c6029ba164fd38add75216b75df408c0aee36be1e22ddbbaa65dc34e18c6eb1",
+    "competition/ivc/config/orangepi-5-plus-zephyr-ack-loss.toml": "71349b4c0e7606c3e91f88cadd6654ca12d9a12a7fa2a8a8b0a22cb4dfbdeda3",
+    "competition/ivc/zephyr/board-ack-loss.conf": "da28f2512514ab4936a2c61f6ddd32e5fc3050c4242f44bc6b2aa933b8eec17c",
+    "competition/ivc/zephyr/src/main.c": "b61ac96cb4ed11b946102b39f2f31f36a28511b84ae2ad1177d81437455e7d92",
+    "tools/ivcproto/src/bin/ivcproto.rs": "48e5c0bff1950dfda8b2c382e8d1e1154231250605ed3549cd71129da5adaa77",
+    "tools/ivcproto/src/reliability.rs": "e19ce5b2677fb97bae7c6b71b0a436b86138af52ee5f9457b8ebc2b9558047e2"
+  },
+  "validity_gates": {
+    "each_run": [
+      "metadata records the frozen clean source commit and exact input hashes",
+      "raw CSV contains exactly 100 contiguous samples and matches guest plus harvest SHA-256 markers",
+      "READY records drop_ack_every=5, expected_commands=100, and exit_after_expected=1",
+      "all 20 preregistered IVC-RTOS-INJECT sequences appear exactly once and in order",
+      "the same 20 sequences appear as ordered duplicate receives",
+      "controller reports sent=acknowledged=100, errors=timeouts=0, retransmissions=recoveries=20, and success=100 percent",
+      "RTOS reports accepted=applied=100, duplicates=acks_dropped=20, status_sent=120, acks_sent=100, and zero error/protocol-error frames",
+      "StarryOS completion, Zephyr poweroff, AxVisor snapshot sync, clean snapshot fsck, and BOARD_LINUX_RESTORED markers are all present",
+      "board identity and CPU temperature are available",
+      "console contains no fatal, panic, unhandled synchronous exception, VM run error, or stale result-image marker"
+    ],
+    "campaign": [
+      "all three preregistered runs pass the strict analyzer",
+      "all three raw and console content hashes are independently retained",
+      "all result manifests verify",
+      "board Linux is restored to a read-write ext4 root after the final run"
+    ]
+  },
+  "statistics_policy": {
+    "fault_counts": "exact equality gates; no tolerance",
+    "latency_summary": ["median", "IQR", "single-run maximum", "worst-of-runs"],
+    "latency_claim": "descriptive reliability overhead only; this campaign is not an RT isolation comparison"
+  },
+  "evidence_policy": {
+    "root": "competition/results/orangepi-5-plus/starry-ivc-ack-loss-formal-20260803",
+    "stage_frozen_artifacts_before_capture": true,
+    "restore_linux_after_every_run": true,
+    "retain_failed_attempts": true,
+    "failed_batch_policy": "Do not rerun into the same batch directory; preserve it and use a numbered amendment result root.",
+    "never_relabel_debug_data_as_formal": true,
+    "never_modify_this_file_after_first_board_capture": true,
+    "post_freeze_corrections": "append a numbered amendment JSON without replacing this file"
+  }
+}

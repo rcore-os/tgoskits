@@ -1,0 +1,89 @@
+{
+  "board": {
+    "cpu_temp_milli_c": 42538,
+    "hostname": "orangepi5plus",
+    "id": "bf61f4d4a1d994ad",
+    "type": "OrangePi-5-Plus"
+  },
+  "inputs": {
+    "board_config": {
+      "path": "competition/ivc/config/board-orangepi-5-plus-ack-loss.toml",
+      "sha256": "75344985b3f4d27a7067c6ccfbae34dc18fbac48860286b4c0a7705724911d94",
+      "size_bytes": 621
+    },
+    "build_config": {
+      "path": "competition/ivc/config/axvisor-orangepi-5-plus-ack-loss.toml",
+      "sha256": "d8e631691b8b2be0c3584c56c53c09b9f909a4887c4b22f54bfd7216013d3271",
+      "size_bytes": 326
+    },
+    "rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-ack-loss.img",
+      "sha256": "8f66c25d34b0190007e4b684c334854a7fb7fb7f4b4b08ce1849eac961a19efe",
+      "size_bytes": 67108864
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "size_bytes": 1766
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "sha256": "95faa540a25f80ca3777541739c599d5ac1aee8fddd4944e1d17187a654697ee",
+      "size_bytes": 13639728
+    }
+  },
+  "model": {
+    "artifact": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff",
+      "size_bytes": 12259
+    },
+    "backend": "native",
+    "id": "thermal-4x6x1-v1",
+    "runtime_version": "native"
+  },
+  "outputs": {
+    "console_log": {
+      "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-ack-loss-formal-20260803/amendment-005/fault-ack-loss/run-002/console.log.gz",
+      "sha256": "db6ed411dfa23e0824ea7f3da653d63dcddc89c6889a5e4101281e3628f69e89",
+      "size_bytes": 15968
+    },
+    "raw_csv": {
+      "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-ack-loss-formal-20260803/amendment-005/fault-ack-loss/run-002/raw.csv.gz",
+      "sha256": "ac0338c8ab6058686f9d39632d9bf5d96512c6be865d2f15820af18fdd66f4c7",
+      "size_bytes": 3110
+    },
+    "summary": {
+      "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/competition/results/orangepi-5-plus/starry-ivc-ack-loss-formal-20260803/amendment-005/fault-ack-loss/run-002/summary.json",
+      "sha256": "f02819ae79a4f8af98b111c37a2fb07c841c3be90b6bc5eb4d8616e4f08ff313",
+      "size_bytes": 3475
+    }
+  },
+  "result": {
+    "controller_policy": "neural",
+    "deadline_misses": 20,
+    "dropped_samples": 0,
+    "sample_count": 100,
+    "successful_marker": true,
+    "validated": true
+  },
+  "run": {
+    "board_type": "OrangePi-5-Plus",
+    "execution_order": 2,
+    "exit_status": 0,
+    "finished_at": "2026-08-03T16:20:52Z",
+    "profile": "fault-ack-loss",
+    "repeat_count": 3,
+    "run_id": "run-002",
+    "run_number": 2,
+    "started_at": "2026-08-03T16:17:30Z"
+  },
+  "schema_version": 1,
+  "source": {
+    "branch": "experiment/m3-formal-20260803",
+    "commit": "bac4ad16b4adf673942e6c31897872c2c5c116dc",
+    "dirty": false,
+    "tracked_change_count": 0,
+    "untracked_file_count": 0
+  }
+}
