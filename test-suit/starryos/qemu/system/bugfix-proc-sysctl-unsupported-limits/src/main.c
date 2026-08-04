@@ -35,56 +35,58 @@ static ssize_t read_value(const char *path, char *value, size_t capacity)
     return count;
 }
 
-static void check_writable_limit(const char *path, const char *label)
+static void check_unsupported_limit_write(const char *path,
+                                          const char *read_label,
+                                          const char *write_label,
+                                          const char *unchanged_label)
 {
     char original[64] = {0};
     char current[64] = {0};
     ssize_t length = read_value(path, original, sizeof(original));
-    expect_true(length > 0, label);
+    expect_true(length > 0, read_label);
     if (length <= 0) {
         return;
     }
 
     errno = 0;
     int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_CLOEXEC, 0);
-    expect_true(fd >= 0, "open sysctl O_WRONLY");
+    expect_true(fd >= 0, "open unsupported sysctl O_WRONLY");
     if (fd >= 0) {
         errno = 0;
-        expect_true(syscall(SYS_write, fd, original, (size_t)length) == length,
-                    "write same sysctl value through O_WRONLY");
-        syscall(SYS_close, fd);
-    }
-
-    errno = 0;
-    fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDWR | O_CLOEXEC, 0);
-    expect_true(fd >= 0, "open sysctl O_RDWR");
-    if (fd >= 0) {
-        errno = 0;
-        expect_true(syscall(SYS_lseek, fd, 0, SEEK_SET) == 0,
-                    "seek writable sysctl to start");
-        expect_true(syscall(SYS_write, fd, original, (size_t)length) == length,
-                    "write same sysctl value through O_RDWR");
+        expect_true(syscall(SYS_write, fd, "65530\n", 6) == -1 &&
+                        errno == EOPNOTSUPP,
+                    write_label);
         syscall(SYS_close, fd);
     }
 
     ssize_t current_length = read_value(path, current, sizeof(current));
     expect_true(current_length == length &&
                     memcmp(current, original, (size_t)length) == 0,
-                "sysctl write is visible on readback");
+                unchanged_label);
 }
 
 int main(void)
 {
-    printf("=== bugfix-proc-sysctl-writable-limits ===\n");
-    check_writable_limit("/proc/sys/kernel/pid_max", "read kernel.pid_max");
-    check_writable_limit("/proc/sys/vm/max_map_count", "read vm.max_map_count");
+    printf("=== bugfix-proc-sysctl-unsupported-limits ===\n");
+    check_unsupported_limit_write(
+        "/proc/sys/kernel/pid_max",
+        "read pid_max baseline",
+        "pid_max write returns EOPNOTSUPP",
+        "pid_max write leaves readback unchanged"
+    );
+    check_unsupported_limit_write(
+        "/proc/sys/vm/max_map_count",
+        "read max_map_count baseline",
+        "max_map_count write returns EOPNOTSUPP",
+        "max_map_count write leaves readback unchanged"
+    );
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);
     if (failed == 0) {
-        printf("STARRY_PROC_SYSCTL_WRITABLE_LIMITS_PASSED\n");
-        printf("STARRY_GROUPED_TEST_PASSED: bugfix-proc-sysctl-writable-limits\n");
+        printf("STARRY_PROC_SYSCTL_UNSUPPORTED_LIMITS_PASSED\n");
+        printf("STARRY_GROUPED_TEST_PASSED: bugfix-proc-sysctl-unsupported-limits\n");
         return EXIT_SUCCESS;
     }
-    printf("STARRY_GROUPED_TEST_FAILED: bugfix-proc-sysctl-writable-limits\n");
+    printf("STARRY_GROUPED_TEST_FAILED: bugfix-proc-sysctl-unsupported-limits\n");
     return EXIT_FAILURE;
 }
