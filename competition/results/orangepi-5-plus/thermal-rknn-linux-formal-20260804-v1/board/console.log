@@ -1,0 +1,15 @@
+IVC_RKNN_LINUX_BEGIN schema=1 vectors=10000 warmup=32 core_mask=0
+IVC_RKNN_RUNTIME api_version_hex=322e332e3220283432396639376165366240323032352d30342d30395430393a30393a323729 driver_version_hex=302e392e36
+IVC_RKNN_TENSOR input_name_hex=6e6f726d616c697a65645f6f62736572766174696f6e input_type=FP16 input_fmt=UNDEFINED input_elems=4 submitted_input_type=FP32 output_name_hex=636f6e74726f6c5f6672616374696f6e output_type=FP16 output_fmt=UNDEFINED output_elems=1 requested_output_type=FP32
+IVC_RKNN_PROGRESS completed=1000
+IVC_RKNN_PROGRESS completed=2000
+IVC_RKNN_PROGRESS completed=3000
+IVC_RKNN_PROGRESS completed=4000
+IVC_RKNN_PROGRESS completed=5000
+IVC_RKNN_PROGRESS completed=6000
+IVC_RKNN_PROGRESS completed=7000
+IVC_RKNN_PROGRESS completed=8000
+IVC_RKNN_PROGRESS completed=9000
+IVC_RKNN_PROGRESS completed=10000
+IVC_RKNN_LINUX_RESULT status=pass vectors=10000 warmup=32 core_mask=0 init_us=1285 exact_actuator_matches=9369 maximum_absolute_error=0.001798778772354126 maximum_absolute_actuator_delta=2 perf_query_errors=0 run_errors=0
+IVC_RKNN_LINUX_DONE

@@ -1,0 +1,35 @@
+
+Dynamic section at offset 0x6b70 contains 32 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [librknnrt.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-aarch64.so.1]
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/lib]
+ 0x000000000000000c (INIT)               0x1d08
+ 0x000000000000000d (FINI)               0x4f9c
+ 0x0000000000000019 (INIT_ARRAY)         0x16b58
+ 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x16b68
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x298
+ 0x0000000000000005 (STRTAB)             0xa80
+ 0x0000000000000006 (SYMTAB)             0x2e8
+ 0x000000000000000a (STRSZ)              2517 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x16db0
+ 0x0000000000000002 (PLTRELSZ)           1416 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x1780
+ 0x0000000000000007 (RELA)               0x15e8
+ 0x0000000000000008 (RELASZ)             408 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000000000001e (FLAGS)              BIND_NOW
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0x14f8
+ 0x000000006fffffff (VERNEEDNUM)         4
+ 0x000000006ffffff0 (VERSYM)             0x1456
+ 0x000000006ffffff9 (RELACOUNT)          5
+ 0x0000000000000000 (NULL)               0x0

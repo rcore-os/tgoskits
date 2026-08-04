@@ -1,0 +1,1 @@
+THERMAL_RKNN_LINUX_REFERENCE_PASS {"device_p99_us":397,"maximum_absolute_error":0.001798778772354126,"rknn_sha256":"2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8","vectors":10000,"wall_p99_ns":411538}

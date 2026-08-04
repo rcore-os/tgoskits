@@ -1,0 +1,4 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running `target/debug/tg-xtask board ls`
+BOARD TYPE       AVAILABLE  TOTAL  TAGS
+OrangePi-5-Plus          1      1  aarch64,local,rk3588,wsl2

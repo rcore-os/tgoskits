@@ -1,0 +1,145 @@
+{
+  "artifacts": {
+    "base_manifest_sha256": "0a24f6c07f5c4c6a08ef32be24a4db267fa197f813c6b12a2c165c684b5e6e7e",
+    "board_facts_sha256": "7250f0e2df7b8fc46f27495927e97ebe49850ff79c4f8076650178c32ac24f1b",
+    "console_sha256": "52d07bb02a5f19c02483c4907105775eea10956d8dc726611f84ce230f82a4e1",
+    "conversion_report_sha256": "3016c5dc8d5d6a5936b197b21f3f93f0fd55e99cb1c342e1f55314fb515a9b37",
+    "corpus_sha256": "907d3a9b93bcf8fc15ec11465025eb10a9219a0162d2cf060aadc4e9eab63310",
+    "deployed_runtime_sha256": "d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8",
+    "golden_vectors_sha256": "f7255de6c730924781bd3703ecac717bd222fa9ed8488e52dd87e20204278ef6",
+    "raw_sha256": "6732cb53325eae7fbf4aaa25c5d57f2ecdfa879468fe924716f8464abb04b6ce",
+    "rknn_sha256": "2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8",
+    "runner_binary_sha256": "f17b2737ac5b0c30675c09005d2111ba48fbea7bac74d2afe61a69320c921cbd",
+    "weights_sha256": "10e22ea81ee5dbfae0e1459646e55963f14d6f2149e2bab83e4fc75fbf586029"
+  },
+  "backend": {
+    "api_version": "2.3.2 (429f97ae6b@2025-04-09T09:09:27)",
+    "core_mask": "0",
+    "driver_version": "0.9.6",
+    "kind": "rknn-runtime-npu",
+    "physical_compiled_rknn_executed": true,
+    "positive_device_time_samples": 10000
+  },
+  "comparison_to_fp16_oracle": {
+    "exact_output_matches": 9806,
+    "maximum_absolute_error": 0.00048828125,
+    "maximum_absolute_error_gate": 0.0005
+  },
+  "comparison_to_native_f32": {
+    "actuator_command_delta_histogram": {
+      "-1": 322,
+      "-2": 23,
+      "0": 9369,
+      "1": 280,
+      "2": 6
+    },
+    "exact_actuator_matches": 9369,
+    "maximum_absolute_actuator_command_delta": 2,
+    "maximum_absolute_actuator_command_delta_gate": 2,
+    "maximum_absolute_error": 0.001798778772354126,
+    "maximum_absolute_error_gate": 0.002
+  },
+  "gates": {
+    "all_device_times_positive": true,
+    "all_outputs_finite": true,
+    "all_perf_queries_succeeded": true,
+    "compiled_rknn_executed_on_physical_npu": true,
+    "expected_output_count": true,
+    "fp16_oracle_error": true,
+    "native_f32_actuator_delta": true,
+    "native_f32_error": true,
+    "runtime_and_driver_versions": true
+  },
+  "latency": {
+    "device": {
+      "count": 10000,
+      "maximum": 798,
+      "mean": 149.9535,
+      "minimum": 115,
+      "p50": 130,
+      "p95": 359,
+      "p99": 397,
+      "unit": "us"
+    },
+    "initialization_us": 1285,
+    "wall": {
+      "count": 10000,
+      "maximum": 838242,
+      "mean": 157924.5516,
+      "minimum": 120749,
+      "p50": 136790,
+      "p95": 376247,
+      "p99": 411538,
+      "unit": "ns"
+    },
+    "warmup_vectors": 32
+  },
+  "model_id": "thermal-4x6x1-v1",
+  "physical_evidence": {
+    "board": {
+      "cpu_temp_milli_c": {
+        "finish": 37000,
+        "start": 37000
+      },
+      "hostname": "orangepi5plus",
+      "kernel_release": "6.1.43-rockchip-rk3588",
+      "machine": "aarch64",
+      "machine_id_sha256": "3cc576066a05f8fca915780c9c6f895ba7d557782fe7041ad4aea05e4b2104ed",
+      "rknpu_version": "0.9.6",
+      "root_filesystem": {
+        "options": "rw,noatime,errors=remount-ro,commit=600",
+        "source": "/dev/mmcblk1p2",
+        "type": "ext4"
+      },
+      "type": "OrangePi-5-Plus"
+    },
+    "deployment": {
+      "compiler": "g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0",
+      "corpus": {
+        "path": "board/corpus.csv",
+        "sha256": "907d3a9b93bcf8fc15ec11465025eb10a9219a0162d2cf060aadc4e9eab63310",
+        "size_bytes": 536734
+      },
+      "ldd": {
+        "path": "board/ldd.log",
+        "sha256": "a28c22b3543f91adc820aed3a323100aeb2f8b31d3af1e1ef303c8712de957c6",
+        "size_bytes": 654
+      },
+      "model": {
+        "path": "board/thermal-4x6x1-v1-rk3588-fp16.rknn",
+        "sha256": "2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8",
+        "size_bytes": 15873
+      },
+      "remote_dir": "/home/orangepi/ivc-rknn-reference-thermal-rknn-linux-formal-20260804-v1",
+      "resolved_runtime_path": "/home/orangepi/ivc-rknn-reference-thermal-rknn-linux-formal-20260804-v1/lib/librknnrt.so",
+      "runner": {
+        "path": "board/thermal_rknn_linux_reference",
+        "sha256": "f17b2737ac5b0c30675c09005d2111ba48fbea7bac74d2afe61a69320c921cbd",
+        "size_bytes": 41104
+      },
+      "runtime": {
+        "path": "apps/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/3rdparty/rknpu2/Linux/aarch64/librknnrt.so",
+        "sha256": "d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8",
+        "size_bytes": 7726232
+      },
+      "uses_frozen_runtime": true
+    },
+    "run": {
+      "finished_at": "2026-08-04T10:03:00Z",
+      "id": "thermal-rknn-linux-formal-20260804-v1",
+      "started_at": "2026-08-04T10:02:50Z"
+    },
+    "source": {
+      "branch": "DETACHED",
+      "clean_source_required": true,
+      "commit": "25d3f6d63bf09e62706563e3fa58502b3803db67",
+      "dirty": false,
+      "tracked_change_count": 0,
+      "untracked_file_count": 0
+    }
+  },
+  "platform": "OrangePi 5 Plus Linux",
+  "schema_version": 1,
+  "status": "pass",
+  "vectors": 10000
+}

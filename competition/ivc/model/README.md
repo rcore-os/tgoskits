@@ -146,6 +146,15 @@ most 2, and maximum FP16-oracle error at most `0.0005`. This Linux result is a
 hardware reference only; it does not satisfy the separate AxVisor handoff or
 StarryOS guest-ownership gates.
 
+The formal clean-source run
+`thermal-rknn-linux-formal-20260804-v1` used commit
+`25d3f6d63bf09e62706563e3fa58502b3803db67` and completed all 10,000 NPU
+inferences. Device p50/p95/p99/maximum was 130/359/397/798 us; wall-time
+p50/p95/p99/maximum was 136790/376247/411538/838242 ns. Its numerical errors
+and actuator-delta histogram exactly match the frozen host-simulator result.
+The evidence is under
+`competition/results/orangepi-5-plus/thermal-rknn-linux-formal-20260804-v1/`.
+
 ## Ownership boundary for the physical NPU
 
 The direct StarryOS RKNN example proves the existing user Runtime and
