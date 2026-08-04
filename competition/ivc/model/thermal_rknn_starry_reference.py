@@ -137,6 +137,15 @@ def modal_marker_fields(
     return max(grouped.values(), key=lambda item: item[1])
 
 
+def modal_text_value(values: list[str]) -> tuple[str, int]:
+    """Return the first most-frequent value from a nonempty sequence."""
+
+    grouped: dict[str, int] = {}
+    for value in values:
+        grouped[value] = grouped.get(value, 0) + 1
+    return max(grouped.items(), key=lambda item: item[1])
+
+
 def parse_raw_manifest(path: Path) -> str:
     text = path.read_text(encoding="utf-8").strip()
     match = re.fullmatch(r"([0-9a-f]{64})  /var/lib/rknn/raw\.csv", text)
@@ -302,32 +311,38 @@ def matching_runtime_marker(console: str) -> tuple[str, str, int, int]:
         api_version, driver_version = valid_versions[0]
         return api_version, driver_version, len(valid_versions), 0
 
-    api_fields, api_copies = modal_marker_fields(
-        console,
-        "IVC_RKNN_RUNTIME_API",
-        {},
-        ("version_hex",),
-    )
-    driver_fields, driver_copies = modal_marker_fields(
-        console,
-        "IVC_RKNN_RUNTIME_DRIVER",
-        {},
-        ("version_hex",),
-    )
-    api_version = reference.decode_hex_text(
-        api_fields["version_hex"], "API version"
-    )
-    driver_version = reference.decode_hex_text(
-        driver_fields["version_hex"], "driver version"
-    )
+    api_versions: list[str] = []
+    for fields in marker_candidates(console, "IVC_RKNN_RUNTIME_API"):
+        try:
+            api_version = reference.decode_hex_text(
+                fields["version_hex"], "API version"
+            )
+        except (KeyError, reference.ReferenceError):
+            continue
+        if api_version.startswith("2.3.2 "):
+            api_versions.append(api_version)
     reference.require(
-        api_version.startswith("2.3.2 "),
-        "unexpected runtime API version",
+        api_versions,
+        "no valid runtime API marker satisfies the frozen contract",
     )
+
+    driver_versions: list[str] = []
+    for fields in marker_candidates(console, "IVC_RKNN_RUNTIME_DRIVER"):
+        try:
+            driver_version = reference.decode_hex_text(
+                fields["version_hex"], "driver version"
+            )
+        except (KeyError, reference.ReferenceError):
+            continue
+        if driver_version == EXPECTED_STARRY_DRIVER_VERSION:
+            driver_versions.append(driver_version)
     reference.require(
-        driver_version == EXPECTED_STARRY_DRIVER_VERSION,
-        "unexpected StarryOS RKNPU driver version",
+        driver_versions,
+        "no valid runtime driver marker satisfies the frozen contract",
     )
+
+    api_version, api_copies = modal_text_value(api_versions)
+    driver_version, driver_copies = modal_text_value(driver_versions)
     compact_sets = min(api_copies, driver_copies)
     return api_version, driver_version, compact_sets, compact_sets
 

@@ -372,6 +372,41 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
                 2,
             )
 
+    def test_compact_runtime_ignores_more_frequent_malformed_copies(self) -> None:
+        api_version = "2.3.2 (unit-test)"
+        api_version_hex = api_version.encode().hex()
+        driver_version = "0.9.8"
+        driver_version_hex = driver_version.encode().hex()
+        damaged_api_version_hex = api_version_hex[:-8]
+        uart_prefix = "[guest-console:pl011-starry]"
+        damaged_api_marker = (
+            "IVC_RKNN_RUNTIME_API version_hex="
+            f"{damaged_api_version_hex}{uart_prefix}"
+        )
+        valid_api_marker = (
+            f"IVC_RKNN_RUNTIME_API version_hex={api_version_hex}"
+        )
+        driver_marker = (
+            f"IVC_RKNN_RUNTIME_DRIVER version_hex={driver_version_hex}"
+        )
+        console = "\n".join(
+            [
+                f"{uart_prefix} {damaged_api_marker} {damaged_api_marker} "
+                f"{valid_api_marker}",
+                f"{uart_prefix} {damaged_api_marker} {valid_api_marker}",
+                *([driver_marker] * 5),
+            ]
+        )
+
+        selected_api, selected_driver, legacy_copies, compact_sets = (
+            starry_reference.matching_runtime_marker(console)
+        )
+
+        self.assertEqual(selected_api, api_version)
+        self.assertEqual(selected_driver, driver_version)
+        self.assertEqual(legacy_copies, 2)
+        self.assertEqual(compact_sets, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
