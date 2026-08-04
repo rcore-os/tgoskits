@@ -19,7 +19,7 @@ SPEC.loader.exec_module(analyzer)
 
 
 VALID_LOG = """\
-[guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural count=1800 period_ms=100 vcpus=2
+[guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native count=1800 period_ms=100 vcpus=2
 [guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
 [guest-console:pl011-starry] IVC-CONTROLLER-OUTCOME policy=neural sent=1800 acknowledged=1800 errors=0 timeouts=0
 [guest-console:pl011-starry] IVC-CONTROLLER-RELIABILITY retransmissions=0 recoveries=0 success_percent=100.000
@@ -439,10 +439,17 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertEqual(result["raw_samples"]["deadline_misses"], 0)
         self.assertEqual(result["board"]["board_id"], "test-rk3588")
         self.assertEqual(result["board"]["cpu_temp_milli_c"], 42_500)
+        self.assertEqual(result["starry"]["backend"], "native")
         self.assertEqual(result["controller"]["full_loop_p99_us"], 180)
         self.assertAlmostEqual(
             result["controller"]["rmse_milli_c"], 1224.744871, places=6
         )
+
+    def test_missing_starry_backend_is_rejected(self) -> None:
+        log = self.raw_log().replace(" backend=native", "")
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "IVC-STARRY-BOOT"):
+            analyzer.analyze(self.write_log(log), 4, self.write_raw_csv())
 
     def test_snapshot_guest_manifest_recovers_a_truncated_uart_hash(self) -> None:
         raw_path = self.write_raw_csv()

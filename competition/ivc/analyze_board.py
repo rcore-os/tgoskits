@@ -916,9 +916,12 @@ def parse_starry_boot(
     run_profile: str,
 ) -> dict[str, object]:
     fields = find_record(
-        lines, STARRY_BOOT_PREFIX, ("mode", "count", "period_ms", "vcpus")
+        lines,
+        STARRY_BOOT_PREFIX,
+        ("mode", "backend", "count", "period_ms", "vcpus"),
     )
     mode = required(fields, "mode", STARRY_BOOT_PREFIX)
+    backend = required(fields, "backend", STARRY_BOOT_PREFIX)
     expected_mode = "manual" if controller_policy == "manual-fixed" else controller_policy
     if mode != expected_mode:
         raise AnalysisError("StarryOS boot mode does not match controller policy")
@@ -939,6 +942,7 @@ def parse_starry_boot(
         raise AnalysisError("StarryOS must boot at least two vCPUs")
     return {
         "mode": mode,
+        "backend": backend,
         "fault_profile": fault_profile,
         "count": count,
         "period_ms": period_ms,
