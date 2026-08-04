@@ -37,10 +37,8 @@ M: @Josen-B
 R: @Josen-B
 F: virtualization/x86_vcpu/
 F: virtualization/x86_vlapic/
-F: components/axfs-ng-vfs/
-F: components/rsext4/
+F: fs/
 F: components/axsched/
-F: os/arceos/modules/axfs-ng/
 K: `x86_vcpu`, x86_64 virtualization, VMX, SVM, VMCS, VMCB, Linux/UEFI guest boot, PIT handling, IVC/HVC, guest communication, FreeRTOS/Zephyr guest, host-fs, `axfs-ng-vfs`, `rsext4`, ext4, `axsched`, `BaseScheduler`, FIFO/RR/CFS, `sched-rr`, `sched-cfs`
 
 ## SD/MMC, Syscall, And RISC-V
