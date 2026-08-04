@@ -28,8 +28,6 @@ std::thread_local! {
     static SCHEDULE_CONTEXT_SAFE: Cell<bool> = const { Cell::new(true) };
     static SCHEDULER_FRAME_ENTER_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
     static SCHEDULER_IPI_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
-    static SCHEDULER_IPI_BUSY_REMAINING: Cell<usize> = const { Cell::new(0) };
-    static SCHEDULER_IPI_DOORBELL_PENDING: Cell<bool> = const { Cell::new(false) };
     static SCHEDULER_IPI_SEND_COUNT: Cell<usize> = const { Cell::new(0) };
     static SCHEDULER_IPI_IRQ_GUARDS: Cell<usize> = const { Cell::new(usize::MAX) };
     static IDLE_WAIT_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -335,30 +333,7 @@ impl TaskRuntime for UnitTestRuntime {
         SCHEDULER_IPI_SEND_COUNT.with(|count| count.set(count.get() + 1));
         let irq_guards = ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().len());
         SCHEDULER_IPI_IRQ_GUARDS.with(|observed| observed.set(irq_guards));
-        let busy = SCHEDULER_IPI_BUSY_REMAINING.with(|remaining| {
-            let current = remaining.get();
-            if current == 0 {
-                false
-            } else {
-                remaining.set(current - 1);
-                true
-            }
-        });
-        if busy {
-            SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.set(true));
-            return RuntimeStatus::Busy;
-        }
-        if SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.replace(true)) {
-            return RuntimeStatus::Busy;
-        }
         let status = SCHEDULER_IPI_STATUS.with(Cell::get);
-        match status {
-            RuntimeStatus::Success => {}
-            RuntimeStatus::Busy => {}
-            _ => {
-                SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.set(false));
-            }
-        }
         status
     }
     fn wait_for_interrupt() {
@@ -505,10 +480,8 @@ pub(crate) fn context_switch_tail_count() -> usize {
     CONTEXT_SWITCH_TAIL_COUNT.with(Cell::get)
 }
 
-pub(crate) fn configure_scheduler_ipi(status: RuntimeStatus, busy_before_status: usize) {
+pub(crate) fn configure_scheduler_ipi(status: RuntimeStatus) {
     SCHEDULER_IPI_STATUS.with(|current| current.set(status));
-    SCHEDULER_IPI_BUSY_REMAINING.with(|remaining| remaining.set(busy_before_status));
-    SCHEDULER_IPI_DOORBELL_PENDING.with(|pending| pending.set(false));
     SCHEDULER_IPI_SEND_COUNT.with(|count| count.set(0));
     SCHEDULER_IPI_IRQ_GUARDS.with(|observed| observed.set(usize::MAX));
 }

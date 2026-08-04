@@ -61,9 +61,11 @@ fn task_work_service_loop() -> Result<(), TaskError> {
     system.finish_task_work_worker_install();
 
     loop {
-        let _published = doorbell.take_pending();
+        if let Some(claim) = doorbell.claim_pending() {
+            debug_assert_ne!(claim.epoch(), 0);
+        }
         let batch = service_task_work_pass(system, &doorbell, BATCH_LIMIT)?;
-        let pending_after_pass = doorbell.take_pending();
+        let pending_after_pass = doorbell.claim_pending().is_some();
         match task_work_service_action(batch, pending_after_pass, BATCH_LIMIT) {
             TaskWorkServiceAction::Yield => {
                 let _decision = yield_current_cpu()?;

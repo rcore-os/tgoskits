@@ -64,7 +64,7 @@ mod scheduler_ipi_tests {
     fn polling_idle_owner_observes_work_without_a_physical_ipi() {
         let remote = CpuRemote::create(CpuId::new(1));
         assert!(remote.mark_online());
-        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+        crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
 
         assert!(
             remote.prepare_idle_wait(),

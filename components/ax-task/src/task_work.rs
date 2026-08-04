@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use core::sync::atomic::AtomicPtr;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use crate::{IrqWaitCell, TaskError};
 
@@ -14,7 +14,8 @@ const WORKER_INSTALLED: u8 = 2;
 #[derive(Debug)]
 pub(crate) struct TaskWorkDoorbell {
     event: IrqWaitCell,
-    pending: AtomicBool,
+    published_epoch: AtomicU64,
+    claimed_epoch: AtomicU64,
     consumer_active: AtomicBool,
     worker_state: AtomicU8,
     #[cfg(test)]
@@ -25,7 +26,8 @@ impl TaskWorkDoorbell {
     pub(crate) const fn new() -> Self {
         Self {
             event: IrqWaitCell::new(),
-            pending: AtomicBool::new(false),
+            published_epoch: AtomicU64::new(0),
+            claimed_epoch: AtomicU64::new(0),
             consumer_active: AtomicBool::new(false),
             worker_state: AtomicU8::new(WORKER_UNINSTALLED),
             #[cfg(test)]
@@ -35,13 +37,14 @@ impl TaskWorkDoorbell {
 
     /// Publishes work before waking the fixed service thread.
     pub(crate) fn publish(&self) {
+        let previous = self.advance_published_epoch();
         #[cfg(feature = "qperf-metrics")]
         {
-            let edge = !self.pending.swap(true, Ordering::AcqRel);
+            let edge = previous == self.claimed_epoch.load(Ordering::Acquire);
             crate::metrics::record_task_work_publish(edge);
         }
         #[cfg(not(feature = "qperf-metrics"))]
-        self.pending.store(true, Ordering::Release);
+        let _ = previous;
         #[cfg(test)]
         self.wait_at_test_publish_barrier();
         let _notified = self.event.notify();
@@ -63,23 +66,37 @@ impl TaskWorkDoorbell {
         }
     }
 
-    pub(crate) fn take_pending(&self) -> bool {
-        let pending = self.pending.swap(false, Ordering::AcqRel);
+    pub(crate) fn claim_pending(&self) -> Option<TaskWorkClaim> {
+        let claim = loop {
+            let claimed = self.claimed_epoch.load(Ordering::Acquire);
+            let published = self.published_epoch.load(Ordering::Acquire);
+            if claimed == published {
+                break None;
+            }
+            if self
+                .claimed_epoch
+                .compare_exchange(claimed, published, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break Some(TaskWorkClaim { epoch: published });
+            }
+        };
         #[cfg(feature = "qperf-metrics")]
-        if pending {
+        if claim.is_some() {
             crate::metrics::record_task_work_pending_consumed();
         }
-        pending
+        claim
     }
 
     pub(crate) fn reassert_pending(&self) {
-        self.pending.store(true, Ordering::Release);
+        self.advance_published_epoch();
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_task_work_reassertion();
     }
 
     pub(crate) fn is_pending(&self) -> bool {
-        self.pending.load(Ordering::Acquire) || self.event.is_pending()
+        self.published_epoch.load(Ordering::Acquire) != self.claimed_epoch.load(Ordering::Acquire)
+            || self.event.is_pending()
     }
 
     pub(crate) const fn event(&self) -> &IrqWaitCell {
@@ -120,6 +137,25 @@ impl TaskWorkDoorbell {
             previous, WORKER_STARTING,
             "task-work worker cancelled installation from an invalid state"
         );
+    }
+
+    fn advance_published_epoch(&self) -> u64 {
+        self.published_epoch
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .unwrap_or_else(|_| panic!("task-work publication epoch exhausted"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TaskWorkClaim {
+    epoch: u64,
+}
+
+impl TaskWorkClaim {
+    pub(crate) const fn epoch(self) -> u64 {
+        self.epoch
     }
 }
 
@@ -166,5 +202,30 @@ impl Drop for TaskWorkConsumerGuard<'_> {
             self.doorbell.consumer_active.swap(false, Ordering::Release),
             "task-work consumer released without ownership"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TaskWorkDoorbell;
+
+    #[test]
+    fn one_claim_covers_every_generation_published_before_it() {
+        let doorbell = TaskWorkDoorbell::new();
+        doorbell.publish();
+        doorbell.publish();
+
+        assert_eq!(doorbell.claim_pending().unwrap().epoch(), 2);
+        assert!(doorbell.claim_pending().is_none());
+    }
+
+    #[test]
+    fn publication_after_claim_owns_a_fresh_generation() {
+        let doorbell = TaskWorkDoorbell::new();
+        doorbell.publish();
+        assert_eq!(doorbell.claim_pending().unwrap().epoch(), 1);
+
+        doorbell.publish();
+        assert_eq!(doorbell.claim_pending().unwrap().epoch(), 2);
     }
 }

@@ -226,7 +226,7 @@ impl_trait! {
                     return RuntimeStatus::InvalidArgument;
                 };
                 if core::mem::replace(pending, true) {
-                    return RuntimeStatus::Busy;
+                    return RuntimeStatus::Success;
                 }
                 IPI_COUNTS.with(|counts| {
                 let mut counts = counts.borrow_mut();

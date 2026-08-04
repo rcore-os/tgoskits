@@ -160,7 +160,7 @@ impl CpuRemote {
 
     fn ring_scheduler_doorbell(&self) -> bool {
         match task_runtime::send_scheduler_ipi(RuntimeCpuId::new(self.owner.as_u32())) {
-            RuntimeStatus::Success | RuntimeStatus::Busy => true,
+            RuntimeStatus::Success => true,
             status => task_runtime::fatal_invariant(
                 0x4950_4900 | status as u32,
                 self.owner.as_u32() as usize,

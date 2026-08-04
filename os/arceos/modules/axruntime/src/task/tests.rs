@@ -121,13 +121,19 @@ fn scheduler_ipi_doorbell_coalesces_and_consumes_publication() {
     let doorbell = SchedulerIpiDoorbell::new();
 
     assert!(!doorbell.is_pending());
-    assert!(!doorbell.consume());
-    assert!(doorbell.publish());
+    assert!(doorbell.claim().is_none());
+    assert_eq!(
+        doorbell.publish(),
+        SchedulerIpiPublication::Notify { epoch: 1 }
+    );
     assert!(doorbell.is_pending());
-    assert!(!doorbell.publish());
-    assert!(doorbell.consume());
+    assert_eq!(
+        doorbell.publish(),
+        SchedulerIpiPublication::Coalesced { epoch: 2 }
+    );
+    assert_eq!(doorbell.claim().unwrap().epoch(), 2);
     assert!(!doorbell.is_pending());
-    assert!(!doorbell.consume());
+    assert!(doorbell.claim().is_none());
 }
 
 #[test]
@@ -138,7 +144,7 @@ fn scheduler_ipi_notification_follows_successful_publication() {
         publish_then_notify_scheduler_ipi(
             || {
                 events.borrow_mut().push("publish");
-                RuntimeStatus::Success
+                Ok(SchedulerIpiPublication::Notify { epoch: 1 })
             },
             || events.borrow_mut().push("notify"),
         ),
@@ -153,7 +159,7 @@ fn failed_scheduler_ipi_publication_suppresses_notification() {
 
     assert_eq!(
         publish_then_notify_scheduler_ipi(
-            || RuntimeStatus::NotInitialized,
+            || Err(RuntimeStatus::NotInitialized),
             || notified.store(true, Ordering::Release),
         ),
         RuntimeStatus::NotInitialized
@@ -166,13 +172,7 @@ fn failed_scheduler_ipi_publication_suppresses_notification() {
 fn coalesced_scheduler_ipi_publication_suppresses_a_duplicate_notification() {
     let doorbell = SchedulerIpiDoorbell::new();
     let notifications = AtomicUsize::new(0);
-    let publish = || {
-        if doorbell.publish() {
-            RuntimeStatus::Success
-        } else {
-            RuntimeStatus::Busy
-        }
-    };
+    let publish = || Ok(doorbell.publish());
 
     assert_eq!(
         publish_then_notify_scheduler_ipi(publish, || {
@@ -184,10 +184,11 @@ fn coalesced_scheduler_ipi_publication_suppresses_a_duplicate_notification() {
         publish_then_notify_scheduler_ipi(publish, || {
             notifications.fetch_add(1, Ordering::Relaxed);
         }),
-        RuntimeStatus::Busy
+        RuntimeStatus::Success,
+        "coalescing is a successful delivery guarantee, not transport backpressure"
     );
     assert_eq!(notifications.load(Ordering::Relaxed), 1);
-    assert!(doorbell.consume());
+    assert_eq!(doorbell.claim().unwrap().epoch(), 2);
 }
 
 #[test]

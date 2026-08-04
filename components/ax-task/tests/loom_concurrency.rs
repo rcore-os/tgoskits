@@ -400,29 +400,32 @@ fn failed_try_lock_rolls_back_context_depth() {
 fn scheduler_claim_either_consumes_or_preserves_published_owner_work() {
     loom::model(|| {
         let inbox_pending = Arc::new(AtomicUsize::new(0));
-        let scheduler_doorbell = Arc::new(AtomicBool::new(false));
+        let published_epoch = Arc::new(AtomicUsize::new(0));
+        let claimed_epoch = Arc::new(AtomicUsize::new(0));
+        let edge_armed = Arc::new(AtomicBool::new(false));
         let consumed = Arc::new(AtomicUsize::new(0));
 
         let producer = {
             let inbox_pending = Arc::clone(&inbox_pending);
-            let scheduler_doorbell = Arc::clone(&scheduler_doorbell);
+            let published_epoch = Arc::clone(&published_epoch);
+            let edge_armed = Arc::clone(&edge_armed);
             thread::spawn(move || {
-                // Intrusive publication owns correctness; the doorbell only
-                // prompts the owner to observe it sooner.
                 inbox_pending.fetch_add(1, Ordering::Release);
-                scheduler_doorbell.store(true, Ordering::Release);
+                published_epoch.fetch_add(1, Ordering::AcqRel);
+                edge_armed.store(true, Ordering::Release);
             })
         };
         let owner = {
             let inbox_pending = Arc::clone(&inbox_pending);
-            let scheduler_doorbell = Arc::clone(&scheduler_doorbell);
+            let published_epoch = Arc::clone(&published_epoch);
+            let claimed_epoch = Arc::clone(&claimed_epoch);
+            let edge_armed = Arc::clone(&edge_armed);
             let consumed = Arc::clone(&consumed);
             thread::spawn(move || {
-                scheduler_doorbell.swap(false, Ordering::AcqRel);
-                consumed.fetch_add(inbox_pending.swap(0, Ordering::AcqRel), Ordering::Release);
-                if inbox_pending.load(Ordering::Acquire) != 0 {
-                    scheduler_doorbell.store(true, Ordering::Release);
+                if edge_armed.swap(false, Ordering::AcqRel) {
+                    claimed_epoch.store(published_epoch.load(Ordering::Acquire), Ordering::Release);
                 }
+                consumed.fetch_add(inbox_pending.swap(0, Ordering::AcqRel), Ordering::Release);
             })
         };
 
@@ -436,7 +439,10 @@ fn scheduler_claim_either_consumes_or_preserves_published_owner_work() {
             "published owner work must not be lost"
         );
         assert!(
-            consumed != 0 || pending != 0 || scheduler_doorbell.load(Ordering::Acquire),
+            consumed != 0
+                || pending != 0
+                || published_epoch.load(Ordering::Acquire) != claimed_epoch.load(Ordering::Acquire)
+                || edge_armed.load(Ordering::Acquire),
             "unconsumed owner work must remain discoverable"
         );
     });
@@ -543,27 +549,37 @@ fn coalesced_scheduler_tick_publishes_its_timestamp_before_claim() {
 #[test]
 fn runtime_doorbell_consumption_allows_a_fresh_physical_edge() {
     loom::model(|| {
-        let doorbell_pending = Arc::new(AtomicBool::new(true));
+        let published_epoch = Arc::new(AtomicUsize::new(1));
+        let claimed_epoch = Arc::new(AtomicUsize::new(0));
+        let edge_armed = Arc::new(AtomicBool::new(true));
         let delivery_consumed = Arc::new(AtomicBool::new(false));
         let fresh_notification = Arc::new(AtomicBool::new(false));
 
         let handler = {
-            let doorbell_pending = Arc::clone(&doorbell_pending);
+            let published_epoch = Arc::clone(&published_epoch);
+            let claimed_epoch = Arc::clone(&claimed_epoch);
+            let edge_armed = Arc::clone(&edge_armed);
             let delivery_consumed = Arc::clone(&delivery_consumed);
             thread::spawn(move || {
-                assert!(doorbell_pending.swap(false, Ordering::AcqRel));
+                assert!(edge_armed.swap(false, Ordering::AcqRel));
+                claimed_epoch.store(published_epoch.load(Ordering::Acquire), Ordering::Release);
                 delivery_consumed.store(true, Ordering::Release);
             })
         };
         let producer = {
-            let doorbell_pending = Arc::clone(&doorbell_pending);
+            let published_epoch = Arc::clone(&published_epoch);
+            let edge_armed = Arc::clone(&edge_armed);
             let delivery_consumed = Arc::clone(&delivery_consumed);
             let fresh_notification = Arc::clone(&fresh_notification);
             thread::spawn(move || {
                 while !delivery_consumed.load(Ordering::Acquire) {
                     thread::yield_now();
                 }
-                if !doorbell_pending.swap(true, Ordering::AcqRel) {
+                published_epoch.fetch_add(1, Ordering::AcqRel);
+                if edge_armed
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
                     fresh_notification.store(true, Ordering::Release);
                 }
             })
@@ -571,7 +587,9 @@ fn runtime_doorbell_consumption_allows_a_fresh_physical_edge() {
 
         handler.join().unwrap();
         producer.join().unwrap();
-        assert!(doorbell_pending.load(Ordering::Acquire));
+        assert!(edge_armed.load(Ordering::Acquire));
+        assert_eq!(published_epoch.load(Ordering::Acquire), 2);
+        assert_eq!(claimed_epoch.load(Ordering::Acquire), 1);
         assert!(
             fresh_notification.load(Ordering::Acquire),
             "publication after handler consumption must own a fresh edge"

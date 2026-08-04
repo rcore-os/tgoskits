@@ -122,7 +122,7 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
     remote.mark_scheduler_ready();
     assert!(remote.mark_online());
     crate::test_runtime::reset_irq_state();
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
 
     publish_test_scheduler_work(remote, test_inbox_node(&node), 1);
 
@@ -146,7 +146,7 @@ fn same_cpu_hard_irq_publication_uses_irq_return_instead_of_a_self_ipi() {
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
     let remote = &system.cpu_remotes[0];
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     crate::test_runtime::reset_local_scheduler_work_publications();
 
     crate::test_runtime::set_hard_irq(true);
@@ -195,7 +195,7 @@ fn same_cpu_hard_irq_wake_is_runnable_at_the_irq_return_safe_point() {
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     crate::test_runtime::reset_local_scheduler_work_publications();
     let cell = crate::IrqWaitCell::new();
     let registration = crate::IrqWaitRegistration::new(service.wake_handle());
@@ -294,7 +294,7 @@ fn fair_service_thread_woken_from_irq_preempts_without_waiting_for_timer() {
     cpu.lock_run_queue()
         .update_fair_virtual_time(Some(current_entity));
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     let cell = crate::IrqWaitCell::new();
     let registration = crate::IrqWaitRegistration::new(service.wake_handle());
     let token = match cell.register(&registration) {
@@ -373,7 +373,7 @@ fn same_cpu_task_publication_uses_guard_exit_instead_of_a_self_ipi() {
     system.bring_cpu_online(cpu.as_mut()).unwrap();
     let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
     let remote = &system.cpu_remotes[0];
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     crate::test_runtime::reset_scheduler_frame_state();
     crate::test_runtime::configure_irq_exit_schedule_reentry(1);
     assert_eq!(crate::test_runtime::active_irq_guards(), 0);
@@ -420,7 +420,7 @@ fn same_cpu_task_wake_activates_the_owner_runqueue_directly() {
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     assert_eq!(
         sleeper.wake_handle().wake_from_task(),
         crate::WakeResult::Notified
@@ -468,7 +468,7 @@ fn same_cpu_task_irq_cell_notification_activates_the_owner_runqueue_directly() {
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     let _runtime_handles = InstalledTaskHandles::new_task_context(system.as_ref(), cpu.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     let cell = crate::IrqWaitCell::new();
     let registration = crate::IrqWaitRegistration::new(sleeper.wake_handle());
     let token = match cell.register(&registration) {
@@ -510,7 +510,7 @@ fn guarded_same_cpu_task_wake_uses_the_irq_safe_runqueue() {
     system.complete_context_switch(cpu.as_mut()).unwrap();
 
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     assert_eq!(
         sleeper.wake_handle().wake_from_task(),
         crate::WakeResult::Notified
@@ -549,7 +549,7 @@ fn direct_wake_activates_the_target_runqueue_before_its_owner_safe_point() {
     system.complete_context_switch(cpu1.as_mut()).unwrap();
 
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
 
     assert_eq!(
@@ -619,7 +619,7 @@ fn lower_priority_remote_wake_does_not_send_a_reschedule_ipi() {
     crate::test_runtime::reset_irq_state();
     let (system, mut cpu0, cpu1, sleeper) = remote_fifo_wake_fixture(10, 1);
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     let runnable_before = cpu1.lock_run_queue().len();
 
     assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
@@ -641,7 +641,7 @@ fn higher_priority_remote_wake_sends_one_reschedule_ipi() {
     crate::test_runtime::reset_irq_state();
     let (system, mut cpu0, cpu1, sleeper) = remote_fifo_wake_fixture(1, 10);
     let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu0.as_mut());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     let runnable_before = cpu1.lock_run_queue().len();
 
     assert_eq!(sleeper.wake_handle().wake(), crate::WakeResult::Notified);
@@ -740,7 +740,7 @@ fn policy_update_doorbell_runs_outside_cold_irq_lock_domains() {
         .unwrap();
     system.make_ready(thread.id()).unwrap();
     system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
     let owner_scope_guards = crate::test_runtime::active_irq_guards();
 
     system
@@ -765,7 +765,7 @@ fn permanent_scheduler_ipi_failure_fails_at_the_publication_boundary() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let remote = &system.cpu_remotes[1];
     assert!(remote.mark_online());
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::InvalidArgument, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::InvalidArgument);
 
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         publish_test_scheduler_work(remote, test_inbox_node(&node), 2);
@@ -886,7 +886,7 @@ fn pending_remote_publication_prevents_cpu_offline() {
         .unwrap();
     system.bring_cpu_online(cpu0.as_mut()).unwrap();
     system.bring_cpu_online(cpu1.as_mut()).unwrap();
-    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
 
     let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::OwnerControl));
     publish_test_scheduler_work(&system.cpu_remotes[1], test_inbox_node(&node), 7);
@@ -1564,13 +1564,13 @@ fn busy_address_space_does_not_retain_completed_thread_resources() {
 
     let doorbell = system.task_work_doorbell();
     assert!(
-        !doorbell.take_pending(),
+        doorbell.claim_pending().is_none(),
         "a busy active-mm token must wait without an initial worker retry"
     );
 
     crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Released);
     system.publish_resource_release_ready();
-    assert!(doorbell.take_pending());
+    assert!(doorbell.claim_pending().is_some());
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
     assert_eq!(
         crate::test_runtime::resource_release_events(),
@@ -1661,13 +1661,13 @@ fn busy_address_space_reclaim_waits_for_the_runtime_readiness_edge() {
     system.release_unpublished_resources(resources);
     let doorbell = system.task_work_doorbell();
     assert!(
-        !doorbell.take_pending(),
+        doorbell.claim_pending().is_none(),
         "a busy active-mm token must wait for a readiness edge without polling"
     );
 
     crate::test_runtime::configure_address_space_destroy(AddressSpaceDestroyOutcome::Released);
     system.publish_resource_release_ready();
-    assert!(doorbell.take_pending());
+    assert!(doorbell.claim_pending().is_some());
     assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
 
     crate::test_runtime::configure_address_space_reclaim_arm(AddressSpaceReclaimArmOutcome::Ready);
@@ -1694,7 +1694,7 @@ fn stale_address_space_readiness_edge_does_not_spin_the_task_worker() {
 
     system.release_unpublished_resources(resources);
     system.publish_resource_release_ready();
-    assert!(system.task_work_doorbell().take_pending());
+    assert!(system.task_work_doorbell().claim_pending().is_some());
 
     let batch = system.service_deferred_task_work(64).unwrap();
     assert_eq!(
@@ -2038,7 +2038,7 @@ fn last_handle_drop_publishes_after_its_strong_reference_is_released() {
     let thread_id = thread.id();
     system.mark_exited(thread_id).unwrap();
 
-    assert!(system.task_work.take_pending());
+    assert!(system.task_work.claim_pending().is_some());
     let first_pass = system.service_deferred_task_work(64).unwrap();
     assert_eq!(first_pass.reaped_threads, 0);
 
@@ -2048,7 +2048,7 @@ fn last_handle_drop_publishes_after_its_strong_reference_is_released() {
     let dropper = std::thread::spawn(move || drop(thread));
     barrier.wait_until_entered();
 
-    assert!(system.task_work.take_pending());
+    assert!(system.task_work.claim_pending().is_some());
     let racing_pass = system.service_deferred_task_work(64).unwrap();
     barrier.release();
     dropper.join().unwrap();
@@ -2108,7 +2108,7 @@ fn switch_handoff_core_reference_does_not_block_detached_reaping() {
     let service_system = Arc::clone(&system);
     let service = std::thread::spawn(move || {
         barrier.wait_until_entered();
-        assert!(service_system.task_work.take_pending());
+        assert!(service_system.task_work.claim_pending().is_some());
         let batch = service_system.service_deferred_task_work(64).unwrap();
         barrier.release();
         batch

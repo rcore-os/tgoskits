@@ -152,6 +152,11 @@ pub(crate) fn publish_local_scheduler_work() -> bool {
         || read_state().local_scheduler_work_is_self_serviced(current_preempt_depth())
 }
 
+#[cfg(all(feature = "multitask", test))]
+pub(crate) const fn publish_local_scheduler_work() -> bool {
+    false
+}
+
 #[cfg(feature = "multitask")]
 pub(crate) fn finish_initial_context_switch() {
     let _task_context_safe = exit_scheduler_frame_guard_inner(

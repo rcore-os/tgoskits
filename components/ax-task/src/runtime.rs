@@ -747,13 +747,11 @@ pub trait TaskRuntime {
 
     /// Sends a coalescible scheduler IPI directly to `cpu`.
     ///
-    /// [`RuntimeStatus::Success`] means this call published a new physical
-    /// delivery. [`RuntimeStatus::Busy`] is a specialized success result: an
-    /// older delivery for `cpu` is still in flight and is guaranteed to cover
-    /// all scheduler work published before this call. The runtime must not
-    /// return `Busy` merely because the transport could not accept a request;
-    /// doing so would leave an idle target with no interrupt edge. Every other
-    /// status is an unrecoverable violation of the scheduler delivery contract.
+    /// [`RuntimeStatus::Success`] means the published scheduler generation is
+    /// covered by either a fresh physical edge or an older edge still in
+    /// flight. Coalescing is therefore never reported as transport
+    /// backpressure. Every other status is an unrecoverable violation of the
+    /// scheduler delivery contract.
     fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus;
 
     /// Commits one local interrupt wait after the scheduler clears polling.

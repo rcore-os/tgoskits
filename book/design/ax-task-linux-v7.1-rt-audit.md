@@ -138,8 +138,10 @@ Unpublished -> Published -> Draining -> Dead
 
 ### 当前审计结论
 
-- scheduler IPI 已使用 payload-before-sticky、消费旧门铃后允许新投递的模型；
-- deferred task-work 使用 intrusive 节点和固定服务线程，hard IRQ 不执行 callback；
+- scheduler IPI 使用 `published_epoch/claimed_epoch/edge_armed`，handler 入口先 claim
+  已发布 generation，再允许并发 producer 建立新物理边；
+- deferred task-work 使用 intrusive 节点、generation claim 和固定服务线程，hard IRQ
+  不执行 callback；
 - UART 已拆成 control、IRQ、emergency-TX 三端点；
 - Starry perf overflow 使用 owner-CPU registry、generation 和本地 IRQ grace，不获取上层睡眠锁；
 - timer IRQ 仍直接调用 ax-task 的 owner-CPU deadline 服务，但该接口被限制为有界、无分配、无任意 callback；
@@ -153,7 +155,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | --- | --- | --- | --- |
 | placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 已删除 `target_cpu` CPU 身份双真相，改为非权威 `wake_cpu_hint` + placement-derived `assigned_cpu`；task 仍保存 `SwitchingOut/ExitedAwaitingTail`，下一阶段删除 task 级切换暂态 |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
-| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
+| 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()`、`irq_work_claim()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI；IPI claim 必须先于 callback/drain | 已删除 remote-wake inbox；runtime 门铃改为 generation + physical edge ownership，coalescing 只返回成功，不再把 `Busy` 暴露为模糊的 transport 状态 |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
@@ -277,10 +279,15 @@ deadline、owner control 与 deferred task-work 仍使用逻辑 sticky work。ax
 `SchedulerIpiDoorbell` 是这些 owner-only 工作的唯一物理 coalescer：
 
 1. producer 发布 inbox/payload；
-2. 设置 sticky/epoch；
-3. 必要时发送 IPI；
-4. handler 入口先消费旧 doorbell；
-5. drain 后若发现更新的 epoch 或 remainder，再发新门铃。
+2. `published_epoch` 单调递增；
+3. 仅 `edge_armed: false -> true` 的 producer 发送 IPI；
+4. handler 入口先清 edge，再把当前 `published_epoch` 记为 `claimed_epoch`；
+5. handler drain 期间的新 generation 因 edge 已清而拥有新的物理 IPI。
+
+`RuntimeStatus::Busy` 不再表示 coalescing：成功意味着当前 generation 已由新边或在途边
+覆盖，错误只表示运行时无法兑现投递。全局 deferred task-work 同样以
+`published_epoch/claimed_epoch` claim 批次，不再用一个 bool 同时表达“有 work”和“已被
+consumer 观察”。
 
 idle polling 与 work pending 共用原子状态，确保“观察到 polling 就省略 IPI”和“退出 polling 后新工作一定有物理边”之间没有丢唤醒窗口。
 

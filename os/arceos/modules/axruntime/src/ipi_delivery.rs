@@ -14,13 +14,22 @@ pub(crate) unsafe fn run_on_cpu_sync(
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
 fn dispatch_shared_ipi(
     drain_callbacks: impl FnOnce(),
-    consume_scheduler_delivery: impl FnOnce() -> bool,
+    claim_scheduler_delivery: impl FnOnce() -> bool,
     publish_scheduler_work: impl FnOnce(),
 ) {
-    if consume_scheduler_delivery() {
+    if claim_scheduler_delivery() {
         publish_scheduler_work();
     }
     drain_callbacks();
+}
+
+#[cfg(all(feature = "multitask", any(feature = "ipi", feature = "wake-ipi")))]
+fn claim_local_scheduler_delivery() -> bool {
+    let Some(claim) = crate::task::claim_scheduler_ipi_doorbell() else {
+        return false;
+    };
+    debug_assert_ne!(claim.epoch(), 0);
+    true
 }
 
 #[cfg(all(feature = "irq", feature = "ipi"))]
@@ -30,7 +39,7 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
         || {
             #[cfg(feature = "multitask")]
             {
-                crate::task::consume_scheduler_ipi_doorbell()
+                claim_local_scheduler_delivery()
             }
             #[cfg(not(feature = "multitask"))]
             {
@@ -54,7 +63,7 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
         || {
             #[cfg(feature = "multitask")]
             {
-                crate::task::consume_scheduler_ipi_doorbell()
+                claim_local_scheduler_delivery()
             }
             #[cfg(not(feature = "multitask"))]
             {
