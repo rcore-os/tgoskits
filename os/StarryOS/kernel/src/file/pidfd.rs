@@ -64,10 +64,6 @@ impl PidFd {
         self.identity.pid()
     }
 
-    pub(crate) fn target_pid(&self) -> Pid {
-        self.tid.unwrap_or_else(|| self.identity.pid())
-    }
-
     pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
         self.identity.clone()
     }

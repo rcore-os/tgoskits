@@ -18,6 +18,45 @@ use super::{
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 
+fn handle_user_page_fault(
+    thread: &Thread,
+    address: VirtAddr,
+    flags: MappingFlags,
+    context: &UserContext,
+) {
+    // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
+    // semantics: all faults, before resolution). Kernel-mode faults on user
+    // addresses are counted separately in the mm page-fault handler.
+    crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // Classify si_code while holding the aspace lock: an existing mapping
+    // that rejected the access is a permission violation (SEGV_ACCERR),
+    // otherwise the address is unmapped (SEGV_MAPERR), matching Linux's
+    // do_user_addr_fault().
+    let si_code = {
+        let aspace = thread.proc_data.aspace();
+        let mut aspace = aspace.lock();
+        if aspace.handle_page_fault(address, flags) {
+            None
+        } else if aspace.find_area(address).is_some() {
+            Some(SEGV_ACCERR)
+        } else {
+            Some(SEGV_MAPERR)
+        }
+    };
+    if let Some(si_code) = si_code {
+        warn!(
+            "{:?}: segmentation fault at {:#x} {:?}",
+            thread.proc_data.proc, address, flags
+        );
+        raise_signal_fatal(
+            SignalInfo::new_fault(Signo::SIGSEGV, si_code, address.as_usize()),
+            context,
+        )
+        .expect("Failed to send SIGSEGV");
+    }
+}
+
 /// Create a new user task.
 pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
     TaskInner::new(
@@ -364,43 +403,4 @@ fn enqueue_ptrace_syscall_resume_signal(thr: &super::Thread, resume_signo: Optio
     // exit stop. Do not arm the ptrace bypass: the tracer must observe its
     // subsequent signal-delivery stop.
     let _ = thr.signal.send_signal(SignalInfo::new_kernel(signo));
-}
-
-fn handle_user_page_fault(
-    thread: &Thread,
-    address: VirtAddr,
-    flags: MappingFlags,
-    context: &UserContext,
-) {
-    // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
-    // semantics: all faults, before resolution). Kernel-mode faults on user
-    // addresses are counted separately in the mm page-fault handler.
-    crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-    // Classify si_code while holding the aspace lock: an existing mapping
-    // that rejected the access is a permission violation (SEGV_ACCERR),
-    // otherwise the address is unmapped (SEGV_MAPERR), matching Linux's
-    // do_user_addr_fault().
-    let si_code = {
-        let aspace = thread.proc_data.aspace();
-        let mut aspace = aspace.lock();
-        if aspace.handle_page_fault(address, flags) {
-            None
-        } else if aspace.find_area(address).is_some() {
-            Some(SEGV_ACCERR)
-        } else {
-            Some(SEGV_MAPERR)
-        }
-    };
-    if let Some(si_code) = si_code {
-        warn!(
-            "{:?}: segmentation fault at {:#x} {:?}",
-            thread.proc_data.proc, address, flags
-        );
-        raise_signal_fatal(
-            SignalInfo::new_fault(Signo::SIGSEGV, si_code, address.as_usize()),
-            context,
-        )
-        .expect("Failed to send SIGSEGV");
-    }
 }
