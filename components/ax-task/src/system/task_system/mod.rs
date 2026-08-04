@@ -40,7 +40,7 @@ pub use outcome::{
     ScheduleDecision, SchedulerOutcome, SwitchInCompletion,
 };
 pub(crate) use park_exit::CurrentExitPermit;
-pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};
+pub use pi::{PiMutexClaim, PiMutexRelease, PiWaitStart};
 use registry::{
     CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, PiRecomputeProof,
     PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
@@ -200,6 +200,7 @@ fn validate_config(config: TaskSystemConfig) -> Result<(), TaskError> {
         || config.timer_capacity() == 0
         || config.batch_limit() == 0
         || config.batch_limit() > crate::DEFAULT_BATCH_LIMIT
+        || config.pi_chain_limit() == 0
     {
         return Err(TaskError::InvalidConfiguration);
     }

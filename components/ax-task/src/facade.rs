@@ -6,7 +6,7 @@ use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 use crate::{
     CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CurrentExitPermit, IrqRegisterResult,
     IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit, ParkPrepare, PiLockId,
-    PiMutexClaim, PiMutexHandoff, PiMutexRelease, PiWaitToken, RtPriority, ScheduleDecision,
+    PiMutexClaim, PiMutexRelease, PiWaitStart, PiWaitToken, RtPriority, ScheduleDecision,
     SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadCore,
     ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
     ThreadWakeHandle, WaitQueue, WakeResult,
@@ -35,8 +35,8 @@ pub(crate) use deadline::{
     commit_current_park, prepare_current_park,
 };
 pub use pi::{
-    pi_block_current, pi_wait_cancel, pi_wait_start, pi_wait_start_pending, pi_wake,
-    prepare_pi_mutex_claim, prepare_pi_mutex_handoff, prepare_pi_mutex_release,
+    pi_block_current, pi_wait_cancel, pi_wake, prepare_pi_mutex_claim, prepare_pi_mutex_release,
+    prepare_pi_wait_start, prepare_pi_wait_start_pending,
 };
 use runtime_cpu::{
     RuntimeCpuPin, RuntimeSchedulerFrameGuard, runtime_current_cpu, validate_schedule_context,

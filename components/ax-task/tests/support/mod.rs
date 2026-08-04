@@ -6,9 +6,22 @@ use core::{
 };
 
 use ax_task::{
-    CpuId, CpuLocal, CpuRemote, TaskSystem, impl_trait,
+    CpuId, CpuLocal, CpuRemote, PiLockId, PiWaitToken, TaskError, TaskSystem, ThreadId, impl_trait,
     runtime::{TaskRuntime, *},
 };
+
+/// Commits a scheduler-only PI wait used by model tests.
+pub fn commit_pi_wait(
+    system: &TaskSystem,
+    lock: PiLockId,
+    waiter: ThreadId,
+    owner: ThreadId,
+) -> Result<PiWaitToken, TaskError> {
+    let registration = system.prepare_pi_wait_start(lock, waiter, owner)?;
+    // SAFETY: scheduler model tests have no separate mutex metadata object;
+    // the fixture models its local pinned waiter as published at this point.
+    Ok(unsafe { registration.commit_after_local_registration() })
+}
 
 mod virtual_runtime;
 use virtual_runtime::{VirtualIdleState, VirtualRuntimeState};
@@ -620,6 +633,8 @@ pub fn reset_resource_release_counts() {
 }
 
 pub fn clear_handles() {
+    let _pi_helper = commit_pi_wait
+        as fn(&TaskSystem, PiLockId, ThreadId, ThreadId) -> Result<PiWaitToken, TaskError>;
     TASK_SYSTEM.with(|handle| handle.set(0));
     for cpu in 0..MAX_TEST_CPUS as u32 {
         install_cpu_raw(cpu, 0);

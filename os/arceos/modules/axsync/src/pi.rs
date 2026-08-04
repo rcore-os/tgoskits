@@ -294,11 +294,23 @@ unsafe impl Sync for WaiterNode {}
 #[cfg(test)]
 mod tests {
     use ax_task::{
-        CpuId, FairMode, Nice, PiLockIdentity, RtPriority, SchedulePolicy, SchedulingUrgency,
-        TaskError, TaskSystem, TaskSystemConfig, ThreadHandle, ThreadId, ThreadSpec,
+        CpuId, FairMode, Nice, PiLockId, PiLockIdentity, PiWaitToken, RtPriority, SchedulePolicy,
+        SchedulingUrgency, TaskError, TaskSystem, TaskSystemConfig, ThreadHandle, ThreadId,
+        ThreadSpec,
     };
 
     use super::*;
+
+    fn commit_pi_wait(
+        system: &TaskSystem,
+        lock: PiLockId,
+        waiter: ThreadId,
+        owner: ThreadId,
+    ) -> Result<PiWaitToken, TaskError> {
+        let registration = system.prepare_pi_wait_start(lock, waiter, owner)?;
+        // SAFETY: scheduler-only tests model the local pinned waiter publication.
+        Ok(unsafe { registration.commit_after_local_registration() })
+    }
 
     #[test]
     fn pops_waiters_in_effective_urgency_order() {
@@ -358,20 +370,16 @@ mod tests {
         let low_lock = PiLockIdentity::new().id().unwrap();
         let high_lock = PiLockIdentity::new().id().unwrap();
 
-        let low_wait = system
-            .pi_wait_start(low_lock, low_donor.id(), owner.id())
-            .unwrap();
+        let low_wait = commit_pi_wait(&system, low_lock, low_donor.id(), owner.id()).unwrap();
         assert_effective(&owner, fifo_policy(20));
-        let high_wait = system
-            .pi_wait_start(high_lock, high_donor.id(), owner.id())
-            .unwrap();
+        let high_wait = commit_pi_wait(&system, high_lock, high_donor.id(), owner.id()).unwrap();
         assert_effective(&owner, fifo_policy(80));
 
-        commit_test_handoff(&system, high_lock, owner.id(), high_donor.id());
+        commit_test_transfer(&system, high_lock, owner.id(), high_donor.id());
         assert!(high_wait.is_granted());
         assert_effective(&owner, fifo_policy(20));
 
-        commit_test_handoff(&system, low_lock, owner.id(), low_donor.id());
+        commit_test_transfer(&system, low_lock, owner.id(), low_donor.id());
         assert!(low_wait.is_granted());
         assert_effective(&owner, fair_policy());
     }
@@ -385,13 +393,11 @@ mod tests {
         let first_lock = PiLockIdentity::new().id().unwrap();
         let second_lock = PiLockIdentity::new().id().unwrap();
 
-        let middle_wait = system
-            .pi_wait_start(first_lock, second_owner.id(), first_owner.id())
-            .unwrap();
+        let middle_wait =
+            commit_pi_wait(&system, first_lock, second_owner.id(), first_owner.id()).unwrap();
         assert_effective(&first_owner, fifo_policy(30));
-        let final_wait = system
-            .pi_wait_start(second_lock, final_donor.id(), second_owner.id())
-            .unwrap();
+        let final_wait =
+            commit_pi_wait(&system, second_lock, final_donor.id(), second_owner.id()).unwrap();
         assert_effective(&second_owner, fifo_policy(90));
         assert_effective(&first_owner, fifo_policy(90));
 
@@ -414,7 +420,7 @@ mod tests {
         let lock = PiLockIdentity::new().id().unwrap();
         crate::test_runtime::reset_scheduler_ipis();
 
-        let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
+        let _wait = commit_pi_wait(&system, lock, donor.id(), owner.id()).unwrap();
 
         assert_effective(&owner, fifo_policy(70));
         assert_eq!(crate::test_runtime::scheduler_ipi_count(), 1);
@@ -431,12 +437,10 @@ mod tests {
         let second = create_thread(&system, fair_policy());
         let first_lock = PiLockIdentity::new().id().unwrap();
         let second_lock = PiLockIdentity::new().id().unwrap();
-        let first_wait = system
-            .pi_wait_start(first_lock, second.id(), first.id())
-            .unwrap();
+        let first_wait = commit_pi_wait(&system, first_lock, second.id(), first.id()).unwrap();
 
         assert!(matches!(
-            system.pi_wait_start(second_lock, first.id(), second.id()),
+            commit_pi_wait(&system, second_lock, first.id(), second.id()),
             Err(TaskError::PiCycle)
         ));
         system.pi_wait_cancel(first_wait).unwrap();
@@ -454,18 +458,22 @@ mod tests {
         TaskSystem::new(TaskSystemConfig::new(cpu_count)).unwrap()
     }
 
-    fn commit_test_handoff(
+    fn commit_test_transfer(
         system: &TaskSystem,
         lock: ax_task::PiLockId,
         old_owner: ThreadId,
         next_owner: ThreadId,
     ) {
-        let handoff = system
-            .prepare_pi_mutex_handoff(lock, old_owner, Some(next_owner))
+        let release = system
+            .prepare_pi_mutex_release(lock, old_owner, next_owner)
             .unwrap();
-        // SAFETY: these scheduler-only tests model local mutex publication as
-        // complete immediately before committing the scheduler transaction.
-        unsafe { handoff.commit_after_local_handoff() };
+        // SAFETY: these scheduler-only tests model ownerless publication.
+        unsafe { release.commit_after_local_release() };
+        let claim = system
+            .prepare_pi_mutex_claim(lock, next_owner, next_owner)
+            .unwrap();
+        // SAFETY: these scheduler-only tests model claimant publication.
+        unsafe { claim.commit_after_local_claim() };
     }
 
     fn create_thread(system: &TaskSystem, policy: SchedulePolicy) -> ThreadHandle {

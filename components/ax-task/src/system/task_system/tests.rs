@@ -4,6 +4,17 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use super::*;
 use crate::{FairEntity, PiLockIdentity};
 
+fn commit_pi_wait(
+    system: &TaskSystem,
+    lock: PiLockId,
+    waiter: ThreadId,
+    owner: ThreadId,
+) -> Result<PiWaitToken, TaskError> {
+    let registration = system.prepare_pi_wait_start(lock, waiter, owner)?;
+    // SAFETY: scheduler unit tests model the local pinned waiter publication.
+    Ok(unsafe { registration.commit_after_local_registration() })
+}
+
 fn publish_test_scheduler_work(
     remote: &CpuRemote,
     node: Pin<&'static crate::inbox::InboxNode>,
@@ -3689,7 +3700,7 @@ fn queued_pi_owner_is_requeued_only_by_its_owner_cpu() {
     }
     let lock = PiLockIdentity::new().id().unwrap();
 
-    let _wait = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
+    let _wait = commit_pi_wait(&system, lock, waiter.id(), owner.id()).unwrap();
 
     assert!(matches!(
         owner.effective_policy(),
@@ -3731,9 +3742,13 @@ fn deadline_pi_boost_overrides_constrained_wake_throttling() {
     system.make_ready(donor.id()).unwrap();
     system.enqueue(cpu.as_mut(), donor.id(), 0).unwrap();
     system.dequeue(cpu.as_mut(), donor.id()).unwrap();
-    let _wait = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
-        .unwrap();
+    let _wait = commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        donor.id(),
+        owner.id(),
+    )
+    .unwrap();
 
     assert_eq!(owner.wake_handle().wake(), crate::WakeResult::Notified);
 
@@ -3759,9 +3774,13 @@ fn effective_rt_entity_never_replaces_the_base_rr_accounting() {
         .unwrap();
     system.make_ready(owner.id()).unwrap();
     system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
-    let _wait = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
-        .unwrap();
+    let _wait = commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        donor.id(),
+        owner.id(),
+    )
+    .unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
 
     let state = system.state.lock();
@@ -3805,12 +3824,8 @@ fn chained_and_multi_lock_donations_are_withdrawn_independently() {
         .unwrap();
     let first_lock = PiLockIdentity::new().id().unwrap();
     let second_lock = PiLockIdentity::new().id().unwrap();
-    let chained = system
-        .pi_wait_start(first_lock, second_owner.id(), first_owner.id())
-        .unwrap();
-    let urgent_wait = system
-        .pi_wait_start(second_lock, urgent.id(), second_owner.id())
-        .unwrap();
+    let chained = commit_pi_wait(&system, first_lock, second_owner.id(), first_owner.id()).unwrap();
+    let urgent_wait = commit_pi_wait(&system, second_lock, urgent.id(), second_owner.id()).unwrap();
     assert!(matches!(
         first_owner.effective_policy(),
         SchedulePolicy::Fifo { priority } if priority.get() == 99
@@ -3844,9 +3859,13 @@ fn pi_registration_does_not_scan_unrelated_registry_slots() {
         .unwrap();
     registry::reset_pi_donor_record_visits();
 
-    let _token = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), waiter.id(), owner.id())
-        .unwrap();
+    let _token = commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        waiter.id(),
+        owner.id(),
+    )
+    .unwrap();
 
     assert_eq!(
         registry::pi_donor_record_visits(),
@@ -3869,10 +3888,10 @@ fn equal_urgency_pi_registration_does_not_rescan_owner_donors() {
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     let lock = PiLockIdentity::new().id().unwrap();
-    let first_wait = system.pi_wait_start(lock, first.id(), owner.id()).unwrap();
+    let first_wait = commit_pi_wait(&system, lock, first.id(), owner.id()).unwrap();
     registry::reset_pi_donor_record_visits();
 
-    let second_wait = system.pi_wait_start(lock, second.id(), owner.id()).unwrap();
+    let second_wait = commit_pi_wait(&system, lock, second.id(), owner.id()).unwrap();
 
     assert_eq!(
         registry::pi_donor_record_visits(),
@@ -3906,7 +3925,12 @@ fn failed_pi_registration_does_not_publish_a_partial_edge() {
             .dispatch_generation = u64::MAX;
     }
 
-    let result = system.pi_wait_start(PiLockIdentity::new().id().unwrap(), waiter.id(), owner.id());
+    let result = commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        waiter.id(),
+        owner.id(),
+    );
 
     assert_eq!(result.unwrap_err(), TaskError::InvalidConfiguration);
     let state = system.state.lock();
@@ -3924,7 +3948,7 @@ fn failed_pi_registration_does_not_publish_a_partial_edge() {
 }
 
 #[test]
-fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
+fn failed_pi_release_preserves_the_unselected_wait_transaction() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let owner = system
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
@@ -3935,7 +3959,7 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
         )))
         .unwrap();
     let lock = PiLockIdentity::new().id().unwrap();
-    let token = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
+    let token = commit_pi_wait(&system, lock, waiter.id(), owner.id()).unwrap();
     {
         let state = system.state.lock();
         state
@@ -3949,7 +3973,7 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
 
     assert_eq!(
         system
-            .prepare_pi_mutex_handoff(lock, owner.id(), Some(waiter.id()))
+            .prepare_pi_mutex_release(lock, owner.id(), waiter.id())
             .unwrap_err(),
         TaskError::InvalidConfiguration
     );
@@ -3978,7 +4002,7 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
 }
 
 #[test]
-fn dropped_pi_handoff_preparation_leaves_the_wait_transaction_intact() {
+fn dropped_pi_release_preparation_leaves_the_wait_transaction_intact() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let owner = system
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
@@ -3989,12 +4013,12 @@ fn dropped_pi_handoff_preparation_leaves_the_wait_transaction_intact() {
         )))
         .unwrap();
     let lock = PiLockIdentity::new().id().unwrap();
-    let token = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
+    let token = commit_pi_wait(&system, lock, waiter.id(), owner.id()).unwrap();
 
-    let handoff = system
-        .prepare_pi_mutex_handoff(lock, owner.id(), Some(waiter.id()))
+    let release = system
+        .prepare_pi_mutex_release(lock, owner.id(), waiter.id())
         .unwrap();
-    drop(handoff);
+    drop(release);
 
     assert!(!token.is_granted());
     let state = system.state.lock();
@@ -4042,7 +4066,7 @@ fn deadline_donor_budget_is_debited_and_overrun_callback_is_deferred() {
         system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
     }
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), donor.id());
-    let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
+    let _wait = commit_pi_wait(&system, lock, donor.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
     assert_eq!(
         system.block_current(cpu.as_mut(), 0).unwrap().next(),
@@ -4103,9 +4127,13 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
         owner.id()
     );
 
-    let _wait = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
-        .unwrap();
+    let _wait = commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        donor.id(),
+        owner.id(),
+    )
+    .unwrap();
     assert_ne!(
         system.block_current(cpu0.as_mut(), 0).unwrap().next(),
         donor.id()

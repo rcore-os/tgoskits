@@ -769,7 +769,7 @@ impl TaskSystem {
         thread: ThreadId,
     ) -> Result<(), TaskError> {
         let mut state = self.state.lock();
-        let recompute = state.prepare_pi_recompute_chain(thread)?;
+        let recompute = state.prepare_pi_recompute_chain(thread, self.config.pi_chain_limit())?;
         state.apply_pi_recompute_chain(recompute, self.config.fair_slice_ns());
         Ok(())
     }

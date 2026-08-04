@@ -162,7 +162,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | Deadline 已改为 class-owned 有序 AVL rq，并在节点内增广最早 CBS 事件；pick/dequeue/rekey 为 O(log n)；CBS 记账与物理入队同属目标 rq 事务；CBS 生命周期改为互斥状态，删除 `base_deadline` 镜像 |
 | clockevent/nohz | `clockevents_program_event()`、`clockevents_shutdown()`、`hrtimer_interrupt()`、`tick_nohz_idle_enter()`、`tick_nohz_stop_tick()`、`tick_nohz_idle_exit()` | 每 CPU 单一物理 owner；CPU 生命周期与 firing 带 epoch；早到/陈旧边不得进入 scheduler；idle 无调度事件时停止 tick；无期限用 `Option` | scheduler tick 建模为 `Running/Stopped`；online/offline 推进 CPU epoch；IRQ 只有在当前 arm 已到期时才能取得 move-only firing token，旧 pending edge 只重编程当前 arm；idle IRQ-off 提交时撤销 tick，只保留 task deadline |
 | switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | `on_switch_in` 已移到 current publication、runtime tail、handoff consumption 之后的 move-only completion，并在释放 `CpuLocal` borrow 后执行；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
-| PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；局部 wait metadata 与全局 donation graph 分层；deboost/grant 后锁外 wake | mutex-local metadata 已改为任务态短 `SpinNoPreempt` 门；PI graph 在局部门外准备，局部 sequence 校验后发布，再提交 deboost/grant 并锁外 wake；`PreemptTicketLock` 的其余跨 CPU使用仍需按 owner 审计 |
+| PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；局部 wait metadata 与全局 donation graph 分层；deboost/grant 后锁外 wake | mutex-local metadata 已改为任务态短 `SpinNoPreempt` 门；wait registration 与 release/claim 都先准备 graph transaction，局部 sequence 校验和 publication 成功后才提交 graph；旧的直接 handoff API 已删除；chain walk 有固定深度上限，per-lock waiter 仍需改为有序 top-waiter 所有权，消除全表扫描 |
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
@@ -527,7 +527,7 @@ Linux 在 `dequeue_task_dl()`、`inactive_task_timer()` 与 switch-tail 的
 
 ### PI mutex
 
-ax-sync 与 ax-task 的 PI handoff 遵循 Linux rtmutex 的事务边界：
+ax-sync 与 ax-task 的 PI registration、release 和 claim 遵循 Linux rtmutex 的事务边界：
 
 1. mutex-local metadata 只在任务上下文由短暂的 `SpinNoPreempt` 门保护；硬中断不访问
    该状态，也不为这个局部临界区关闭中断；
@@ -536,8 +536,10 @@ ax-sync 与 ax-task 的 PI handoff 遵循 Linux rtmutex 的事务边界：
    transaction；禁止以 `metadata -> scheduler` 锁序调用 PI 图操作；
 4. 保持 scheduler transaction 排他权，重新进入局部门并校验 sequence。若快照过期，
    不发布任何局部状态，丢弃 transaction 后重试；
-5. 在局部门内发布 ownerless handoff 或新 owner/grant，然后立即释放局部门；
-6. 提交 donation graph 的 deboost、pending-chain 或 grant，最后通过定向 wake 唤醒被选中的
+5. 新 waiter 先把 pinned local node 插入有序队列；release/claim 则发布 ownerless 状态或
+   新 owner/grant，然后立即释放局部门。局部 publication 失败时直接丢弃 prepared
+   transaction，donation graph 中从未出现需要补偿撤销的临时边；
+6. 提交 donation graph 的 registration、deboost、pending-chain 或 grant，最后通过定向 wake 唤醒被选中的
    waiter。wake 不得发生在局部门或 scheduler graph lock 内。
 
 这个顺序对应 Linux `rt_mutex` 的 `wait_lock`/`pi_lock` 分层和 `wake_q` 锁外唤醒语义。
@@ -546,7 +548,19 @@ ax-sync 与 ax-task 的 PI handoff 遵循 Linux rtmutex 的事务边界：
 遍历 donation chain 的 ax-task PI 调用放在 `SpinNoIrq` metadata 门内，会形成广域
 IRQ-off 临界区和反向锁序，现已删除，不保留兼容路径。
 
-`PiLockId` 与 waiter registration 均带 generation，锁销毁前必须 quiesce，防止地址复用 ABA。任务等待通过 park/completion 睡眠，不在禁抢占区做无界 spin。
+Linux v7.1 的 `rt_mutex_adjust_prio_chain()` 默认允许较深的链并在遍历中提供可抢占点；当前
+ax-task 的 donation graph 仍由一个不可抢占事务保护，因此不能照搬 Linux 的 1024 层默认
+值。`TaskSystemConfig::pi_chain_limit` 默认限制为 64，所有 fallible chain validation 都在
+任何 mutation 前完成；超限返回 `PiChainLimit`，旧 donation 保持不变。这个上限约束的是
+锁嵌套深度，不是同一锁的 waiter 数量，不能用拒绝第 65 个 waiter 来掩盖 per-lock 扫描。
+下一阶段必须像 Linux 的 waiter tree/top-waiter donation 那样，让 owner 只跟踪每把锁的
+最高优先级 waiter，并在 urgency 变化时重排，删除 registry 中按 owner 扫描全部 waiter
+的实现。
+
+`PiLockId` 与 waiter registration 均带 generation，锁销毁前必须 quiesce，防止地址复用
+ABA。任务等待通过 park/completion 睡眠，不在禁抢占区做无界 spin。ax-sync host runtime
+的 CPU、guard、TaskSystem 指针和 IPI 观测也必须是测试线程局部状态；进程全局 fake 会让
+并行测试彼此清空 guard depth 或借用过期指针，既制造假失败，也会掩盖真实事务顺序。
 
 ### 锁选择
 

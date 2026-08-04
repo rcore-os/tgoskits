@@ -1,11 +1,8 @@
 //! Per-unit-test-binary task and lock runtime symbols.
 
+use core::cell::Cell;
 #[cfg(feature = "lockdep")]
 use core::cell::RefCell;
-use core::{
-    cell::Cell,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
 
 use ax_task::{
     CpuId, CpuRemote, TaskSystem, impl_trait as impl_task_runtime,
@@ -23,16 +20,14 @@ use ax_task::{
 struct UnitTestKernelGuard;
 struct UnitTestTaskRuntime;
 
-static TASK_SYSTEM: AtomicUsize = AtomicUsize::new(0);
-static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
-static CPU_REMOTE: AtomicUsize = AtomicUsize::new(0);
-static SCHEDULER_IPIS: AtomicUsize = AtomicUsize::new(0);
-static LAST_SCHEDULER_IPI_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
-static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
-static SCHEDULE_CONTEXT_SAFE: AtomicBool = AtomicBool::new(true);
-static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 std::thread_local! {
+    static TASK_SYSTEM: Cell<usize> = const { Cell::new(0) };
+    static CPU_LOCAL: Cell<usize> = const { Cell::new(0) };
+    static CPU_REMOTE: Cell<usize> = const { Cell::new(0) };
+    static SCHEDULER_IPIS: Cell<usize> = const { Cell::new(0) };
+    static LAST_SCHEDULER_IPI_CPU: Cell<usize> = const { Cell::new(usize::MAX) };
+    static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static SCHEDULE_CONTEXT_SAFE: Cell<bool> = const { Cell::new(true) };
     static IRQ_GUARD_ENTRIES: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -45,11 +40,25 @@ std::thread_local! {
 #[ax_crate_interface::impl_interface]
 impl ax_kernel_guard::KernelGuardIf for UnitTestKernelGuard {
     fn disable_preempt() {
-        PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
+        PREEMPT_DEPTH.with(|depth| {
+            depth.set(
+                depth
+                    .get()
+                    .checked_add(1)
+                    .expect("test preempt depth overflow"),
+            );
+        });
     }
 
     fn enable_preempt() {
-        assert!(PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) > 0);
+        PREEMPT_DEPTH.with(|depth| {
+            depth.set(
+                depth
+                    .get()
+                    .checked_sub(1)
+                    .expect("test preempt enable without disable"),
+            );
+        });
     }
 }
 
@@ -57,19 +66,19 @@ impl_task_runtime! {
     impl TaskRuntime for UnitTestTaskRuntime {
         unsafe fn task_system_handle() -> TaskSystemHandle {
             // SAFETY: install/clear bracket the pinned fixture TaskSystem.
-            unsafe { TaskSystemHandle::from_raw(TASK_SYSTEM.load(Ordering::Acquire)) }
+            unsafe { TaskSystemHandle::from_raw(TASK_SYSTEM.with(Cell::get)) }
         }
         unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
             // SAFETY: install/clear bracket the pinned owner CpuLocal fixture.
-            unsafe { CurrentCpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire)) }
+            unsafe { CurrentCpuLocalHandle::from_raw(CPU_LOCAL.with(Cell::get)) }
         }
         unsafe fn current_cpu_remote_handle() -> CpuRemoteHandle {
             // SAFETY: install/clear bracket the fixture TaskSystem that owns
             // this cached current-CPU endpoint.
-            unsafe { CpuRemoteHandle::from_raw(CPU_REMOTE.load(Ordering::Acquire)) }
+            unsafe { CpuRemoteHandle::from_raw(CPU_REMOTE.with(Cell::get)) }
         }
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
-            let raw = TASK_SYSTEM.load(Ordering::Acquire);
+            let raw = TASK_SYSTEM.with(Cell::get);
             if raw == 0 {
                 return CpuRemoteHandle::NONE;
             }
@@ -99,14 +108,23 @@ impl_task_runtime! {
         unsafe fn irq_guard_exit(_token: IrqGuardToken) {}
 
         fn preempt_guard_enter() -> PreemptGuardToken {
-            PREEMPT_DEPTH.fetch_add(1, Ordering::AcqRel);
+            PREEMPT_DEPTH.with(|depth| {
+                depth.set(depth.get().checked_add(1).expect("test preempt depth overflow"));
+            });
             // SAFETY: the test runtime models a balanced scalar preemption
             // token with PREEMPT_DEPTH.
             unsafe { PreemptGuardToken::from_raw(1) }
         }
 
         unsafe fn preempt_guard_exit(_token: PreemptGuardToken) {
-            assert!(PREEMPT_DEPTH.fetch_sub(1, Ordering::AcqRel) > 0);
+            PREEMPT_DEPTH.with(|depth| {
+                depth.set(
+                    depth
+                        .get()
+                        .checked_sub(1)
+                        .expect("test preempt exit without enter"),
+                );
+            });
         }
 
         fn publish_local_scheduler_work() -> bool {
@@ -121,7 +139,7 @@ impl_task_runtime! {
         fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool { true }
         fn in_hard_irq() -> bool { false }
         fn validate_schedule_context(_origin: ax_task::runtime::RuntimeScheduleOrigin) -> RuntimeStatus {
-            if SCHEDULE_CONTEXT_SAFE.load(Ordering::Acquire) {
+            if SCHEDULE_CONTEXT_SAFE.with(Cell::get) {
                 RuntimeStatus::Success
             } else {
                 RuntimeStatus::UnsafeContext
@@ -132,8 +150,10 @@ impl_task_runtime! {
         fn timer_resolution_ns() -> u64 { 1 }
         fn publish_task_deadline(_update: TaskDeadlineUpdate) {}
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
-            LAST_SCHEDULER_IPI_CPU.store(cpu.as_u32() as usize, Ordering::Release);
-            SCHEDULER_IPIS.fetch_add(1, Ordering::AcqRel);
+            LAST_SCHEDULER_IPI_CPU.with(|last| last.set(cpu.as_u32() as usize));
+            SCHEDULER_IPIS.with(|count| {
+                count.set(count.get().checked_add(1).expect("test IPI count overflow"));
+            });
             RuntimeStatus::Success
         }
         fn wait_for_interrupt() {}
@@ -218,12 +238,17 @@ impl ax_lockdep::KspinLockdepIf for UnitTestKspinLockdep {
     }
 }
 
-pub(crate) fn install(task_system: usize, cpu_local: usize) -> std::sync::MutexGuard<'static, ()> {
-    let guard = RUNTIME_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    TASK_SYSTEM.store(task_system, Ordering::Release);
-    CPU_LOCAL.store(cpu_local, Ordering::Release);
+pub(crate) struct InstalledRuntime;
+
+impl Drop for InstalledRuntime {
+    fn drop(&mut self) {
+        clear();
+    }
+}
+
+pub(crate) fn install(task_system: usize, cpu_local: usize) -> InstalledRuntime {
+    TASK_SYSTEM.with(|handle| handle.set(task_system));
+    CPU_LOCAL.with(|handle| handle.set(cpu_local));
     let remote = if task_system == 0 {
         0
     } else {
@@ -231,41 +256,42 @@ pub(crate) fn install(task_system: usize, cpu_local: usize) -> std::sync::MutexG
         let system = unsafe { &*core::ptr::with_exposed_provenance::<TaskSystem>(task_system) };
         system.runtime_cpu_remote_handle(CpuId::new(0)).into_raw()
     };
-    CPU_REMOTE.store(remote, Ordering::Release);
-    SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
+    CPU_REMOTE.with(|handle| handle.set(remote));
+    SCHEDULE_CONTEXT_SAFE.with(|safe| safe.set(true));
+    PREEMPT_DEPTH.with(|depth| depth.set(0));
     IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
-    guard
+    InstalledRuntime
 }
 
 pub(crate) fn clear() {
-    CPU_REMOTE.store(0, Ordering::Release);
-    CPU_LOCAL.store(0, Ordering::Release);
-    TASK_SYSTEM.store(0, Ordering::Release);
-    PREEMPT_DEPTH.store(0, Ordering::Release);
+    CPU_REMOTE.with(|handle| handle.set(0));
+    CPU_LOCAL.with(|handle| handle.set(0));
+    TASK_SYSTEM.with(|handle| handle.set(0));
+    PREEMPT_DEPTH.with(|depth| depth.set(0));
     IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
-    SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
+    SCHEDULE_CONTEXT_SAFE.with(|safe| safe.set(true));
 }
 
 pub(crate) fn set_schedule_context_safe(safe: bool) {
-    SCHEDULE_CONTEXT_SAFE.store(safe, Ordering::Release);
+    SCHEDULE_CONTEXT_SAFE.with(|state| state.set(safe));
 }
 
 pub(crate) fn reset_scheduler_ipis() {
-    SCHEDULER_IPIS.store(0, Ordering::Release);
-    LAST_SCHEDULER_IPI_CPU.store(usize::MAX, Ordering::Release);
+    SCHEDULER_IPIS.with(|count| count.set(0));
+    LAST_SCHEDULER_IPI_CPU.with(|cpu| cpu.set(usize::MAX));
 }
 
 pub(crate) fn scheduler_ipi_count() -> usize {
-    SCHEDULER_IPIS.load(Ordering::Acquire)
+    SCHEDULER_IPIS.with(Cell::get)
 }
 
 pub(crate) fn last_scheduler_ipi_cpu() -> Option<usize> {
-    let cpu = LAST_SCHEDULER_IPI_CPU.load(Ordering::Acquire);
+    let cpu = LAST_SCHEDULER_IPI_CPU.with(Cell::get);
     (cpu != usize::MAX).then_some(cpu)
 }
 
 pub(crate) fn preempt_depth() -> usize {
-    PREEMPT_DEPTH.load(Ordering::Acquire)
+    PREEMPT_DEPTH.with(Cell::get)
 }
 
 pub(crate) fn irq_guard_entries() -> usize {

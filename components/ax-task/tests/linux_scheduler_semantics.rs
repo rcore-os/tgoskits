@@ -87,7 +87,7 @@ fn pi_boosted_rt_owner_runs_past_quota_to_release_the_lock() {
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
 
     let lock = PiLockIdentity::new().id().unwrap();
-    let _wait = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
+    let _wait = support::commit_pi_wait(&system, lock, waiter.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
     system.enqueue(cpu.as_mut(), competitor.id(), 0).unwrap();
     system

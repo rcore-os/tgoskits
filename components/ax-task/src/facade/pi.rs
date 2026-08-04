@@ -1,18 +1,21 @@
 use super::*;
 
-/// Creates a PI donation edge for the calling waiter.
-pub fn pi_wait_start(lock: PiLockId, owner: ThreadId) -> Result<PiWaitToken, TaskError> {
+/// Prepares a PI donation edge for publication after local waiter insertion.
+pub fn prepare_pi_wait_start(
+    lock: PiLockId,
+    owner: ThreadId,
+) -> Result<PiWaitStart<'static>, TaskError> {
     let waiter = current_thread_id()?;
-    runtime_task_system()?.pi_wait_start(lock, waiter, owner)
+    runtime_task_system()?.prepare_pi_wait_start(lock, waiter, owner)
 }
 
-/// Creates a PI wait registration in an ownerless mutex claim window.
-pub fn pi_wait_start_pending(
+/// Prepares a waiter in an ownerless mutex claim window.
+pub fn prepare_pi_wait_start_pending(
     lock: PiLockId,
     pending_head: ThreadId,
-) -> Result<PiWaitToken, TaskError> {
+) -> Result<PiWaitStart<'static>, TaskError> {
     let waiter = current_thread_id()?;
-    runtime_task_system()?.pi_wait_start_pending(lock, waiter, pending_head)
+    runtime_task_system()?.prepare_pi_wait_start_pending(lock, waiter, pending_head)
 }
 
 /// Blocks the calling waiter until it is selected to claim or granted.
@@ -55,15 +58,6 @@ pub fn pi_block_current(token: &PiWaitToken) -> Result<(), TaskError> {
 /// Cancels a PI wait token after a handoff-before-block race.
 pub fn pi_wait_cancel(token: PiWaitToken) -> Result<(), TaskError> {
     runtime_task_system()?.pi_wait_cancel(token)
-}
-
-/// Prepares the scheduler half of a kernel PI mutex ownership transfer.
-pub fn prepare_pi_mutex_handoff(
-    lock: PiLockId,
-    old_owner: ThreadId,
-    next_owner: Option<ThreadId>,
-) -> Result<PiMutexHandoff<'static>, TaskError> {
-    runtime_task_system()?.prepare_pi_mutex_handoff(lock, old_owner, next_owner)
 }
 
 /// Prepares the scheduler half of a contended PI mutex release.

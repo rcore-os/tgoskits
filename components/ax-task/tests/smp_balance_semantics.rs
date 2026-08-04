@@ -147,7 +147,7 @@ fn load_summary_publishes_effective_current_and_top_pushable_keys() {
     );
     let before = cpu0.try_load_summary().unwrap().epoch();
     let lock = PiLockIdentity::new().id().unwrap();
-    let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
+    let _wait = support::commit_pi_wait(&system, lock, donor.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
     system.enqueue(cpu0.as_mut(), pushable.id(), 1).unwrap();
 

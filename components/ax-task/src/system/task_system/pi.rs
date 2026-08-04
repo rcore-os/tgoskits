@@ -142,119 +142,103 @@ impl TaskSystemState {
     }
 }
 
-/// Prepared scheduler half of one PI mutex ownership transfer.
+#[derive(Debug)]
+enum PiWaitDestination {
+    Owned {
+        owner: ThreadId,
+        next_waiter_count: usize,
+        recompute: Option<PiRecomputeProof>,
+    },
+    Pending {
+        tail: ThreadId,
+    },
+}
+
+/// Prepared scheduler half of one PI waiter registration.
 ///
-/// Preparation retains the task-system registry lock after validating every
-/// fallible scheduler transition. The mutex implementation can then publish
-/// its local owner and waiter grant before committing this transaction without
-/// exposing a fallible operation between local publication and scheduler
-/// publication.
-#[must_use = "a prepared PI handoff must be committed after local publication or dropped"]
-pub struct PiMutexHandoff<'system> {
+/// Preparation performs every fallible graph validation while retaining the
+/// scheduler graph transaction. The mutex then publishes its pinned local
+/// waiter under the metadata gate. Only that successful local publication may
+/// commit the donation edge, so unlock can never observe a scheduler-only
+/// waiter that has no matching local lifetime owner.
+#[must_use = "a prepared PI waiter must be committed after local publication or dropped"]
+pub struct PiWaitStart<'system> {
     state: PreemptTicketGuard<'system, TaskSystemState>,
     fair_slice_ns: u64,
     lock: PiLockId,
-    old_owner: ThreadId,
-    next_owner: Option<ThreadId>,
-    active_waiters: usize,
-    next_waiter_count: Option<usize>,
-    old_recompute: PiRecomputeProof,
-    next_recompute: Option<PiRecomputeProof>,
+    waiter: ThreadId,
+    waiter_core: Arc<ThreadCore>,
+    initial_owner: Option<Arc<ThreadCore>>,
+    generation: u64,
+    destination: PiWaitDestination,
 }
 
-impl fmt::Debug for PiMutexHandoff<'_> {
+impl fmt::Debug for PiWaitStart<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("PiMutexHandoff")
+            .debug_struct("PiWaitStart")
             .field("lock", &self.lock)
-            .field("old_owner", &self.old_owner)
-            .field("next_owner", &self.next_owner)
-            .field("active_waiters", &self.active_waiters)
+            .field("waiter", &self.waiter)
+            .field("generation", &self.generation)
+            .field("destination", &self.destination)
             .finish_non_exhaustive()
     }
 }
 
-impl PiMutexHandoff<'_> {
-    /// Commits the prevalidated scheduler transition.
+impl PiWaitStart<'_> {
+    /// Publishes the prevalidated scheduler registration.
     ///
     /// # Safety
     ///
-    /// Before calling this method, the owning PI mutex must publish
-    /// `next_owner` as its local owner and publish the matching local waiter
-    /// grant. It must keep its metadata lock held until this method returns.
-    /// When `next_owner` is `None`, it must publish an unlocked local state.
-    pub unsafe fn commit_after_local_handoff(self) {
+    /// The owning mutex must have inserted the matching pinned waiter into its
+    /// local metadata queue and published a sequence change. The local waiter
+    /// must remain present until the returned token is cancelled or granted.
+    pub unsafe fn commit_after_local_registration(self) -> PiWaitToken {
         let Self {
             mut state,
             fair_slice_ns,
             lock,
-            old_owner,
-            next_owner,
-            active_waiters,
-            next_waiter_count,
-            old_recompute,
-            next_recompute,
+            waiter,
+            waiter_core,
+            initial_owner,
+            generation,
+            destination,
         } = self;
-
-        {
-            let record = state
-                .thread_record(old_owner)
-                .expect("prepared PI owner must retain its thread record");
-            let mut sched = record.sched.lock();
-            debug_assert!(sched.pi.blocked_waiters >= active_waiters);
-            sched.pi.blocked_waiters -= active_waiters;
-        }
-
-        if let Some(next) = next_owner {
-            let mut cursor = state
-                .thread_record(old_owner)
-                .expect("prepared PI owner must retain its thread record")
-                .pi_waiter_head;
-            let mut remaining = state.slots.len();
-            let mut selected_granted = false;
-            while let Some(waiter) = cursor {
-                assert!(remaining != 0, "prepared PI waiter list must be acyclic");
-                let registration = state
-                    .thread_record(waiter)
-                    .expect("prepared PI waiter must retain its thread record")
-                    .blocked_on
-                    .expect("prepared PI waiter must retain its registration");
-                cursor = registration.owner_next;
-                remaining -= 1;
-                if registration.lock != lock {
-                    continue;
-                }
-
-                let mut registration = state.detach_pi_waiter(waiter);
-                if waiter == next {
-                    let generation = registration.generation;
-                    state
-                        .thread_record(waiter)
-                        .expect("prepared PI waiter must retain its thread record")
-                        .core
-                        .pi_wait_state()
-                        .grant(generation)
-                        .expect("prepared PI waiter generation must remain current");
-                    selected_granted = true;
-                } else {
-                    registration.owner = Some(next);
-                    state.attach_pi_waiter(waiter, registration);
+        let registration = PiWaitRegistration {
+            lock,
+            owner: None,
+            generation,
+            owner_prev: None,
+            owner_next: None,
+        };
+        match destination {
+            PiWaitDestination::Owned {
+                owner,
+                next_waiter_count,
+                recompute,
+            } => {
+                let mut registration = registration;
+                registration.owner = Some(owner);
+                state.attach_pi_waiter(waiter, registration);
+                state
+                    .thread_record(owner)
+                    .expect("prepared PI owner must retain its thread record")
+                    .sched
+                    .lock()
+                    .pi
+                    .blocked_waiters = next_waiter_count;
+                if let Some(recompute) = recompute {
+                    state.apply_pi_recompute_chain(recompute, fair_slice_ns);
                 }
             }
-            debug_assert!(selected_granted);
-            state
-                .thread_record(next)
-                .expect("prepared PI next owner must retain its thread record")
-                .sched
-                .lock()
-                .pi
-                .blocked_waiters =
-                next_waiter_count.expect("prepared PI next-owner count must exist");
+            PiWaitDestination::Pending { tail } => {
+                state.append_pending_pi_waiter(tail, waiter, registration);
+            }
         }
-
-        state.apply_pi_recompute_chain(old_recompute, fair_slice_ns);
-        if let Some(proof) = next_recompute {
-            state.apply_pi_recompute_chain(proof, fair_slice_ns);
+        PiWaitToken {
+            core: waiter_core,
+            initial_owner,
+            generation,
         }
     }
 }
@@ -465,14 +449,14 @@ impl PiMutexClaim<'_> {
 }
 
 impl TaskSystem {
-    /// Creates a donation edge and a wake-before-block handshake token.
-    pub fn pi_wait_start(
+    /// Prepares one owned-lock waiter registration without publishing an edge.
+    pub fn prepare_pi_wait_start(
         &self,
         lock: PiLockId,
         waiter: ThreadId,
         owner: ThreadId,
-    ) -> Result<PiWaitToken, TaskError> {
-        let mut state = self.state.lock();
+    ) -> Result<PiWaitStart<'_>, TaskError> {
+        let state = self.state.lock();
         if waiter == owner {
             return Err(TaskError::InvalidPiState);
         }
@@ -485,7 +469,7 @@ impl TaskSystem {
         // deadlock detection to its caller before publishing a waiter edge.
         // A normal kernel mutex may still treat this as a fatal programming
         // error, but that policy does not belong in the reusable PI graph.
-        state.ensure_pi_acyclic(waiter, owner)?;
+        state.ensure_pi_acyclic(waiter, owner, self.config.pi_chain_limit())?;
         let owner_core = Arc::clone(&state.thread_record(owner)?.core);
         let waiter_core = Arc::clone(&state.thread_record(waiter)?.core);
         if state.thread_record(waiter)?.blocked_on.is_some() {
@@ -526,29 +510,23 @@ impl TaskSystem {
         // Equal or less urgent registrations must therefore stay local to the
         // graph update rather than rescanning the complete donation chain.
         let recompute = (waiter_urgency < owner_urgency || rescue_changes)
-            .then(|| state.prepare_pi_recompute_chain(owner))
+            .then(|| state.prepare_pi_recompute_chain(owner, self.config.pi_chain_limit()))
             .transpose()?;
         let generation = waiter_core.pi_wait_state().begin()?;
 
-        state.attach_pi_waiter(
+        Ok(PiWaitStart {
+            state,
+            fair_slice_ns: self.config.fair_slice_ns(),
+            lock,
             waiter,
-            PiWaitRegistration {
-                lock,
-                owner: Some(owner),
-                generation,
-                owner_prev: None,
-                owner_next: None,
-            },
-        );
-        state.thread_record(owner)?.sched.lock().pi.blocked_waiters = next_waiter_count;
-        if let Some(recompute) = recompute {
-            state.apply_pi_recompute_chain(recompute, self.config.fair_slice_ns());
-        }
-
-        Ok(PiWaitToken {
-            core: waiter_core,
+            waiter_core,
             initial_owner: Some(owner_core),
             generation,
+            destination: PiWaitDestination::Owned {
+                owner,
+                next_waiter_count,
+                recompute,
+            },
         })
     }
 
@@ -557,13 +535,13 @@ impl TaskSystem {
     /// Pending waiters do not donate until one claimant publishes ownership.
     /// `pending_head` is the mutex-local selected waiter anchoring the
     /// generation-checked pending chain.
-    pub fn pi_wait_start_pending(
+    pub fn prepare_pi_wait_start_pending(
         &self,
         lock: PiLockId,
         waiter: ThreadId,
         pending_head: ThreadId,
-    ) -> Result<PiWaitToken, TaskError> {
-        let mut state = self.state.lock();
+    ) -> Result<PiWaitStart<'_>, TaskError> {
+        let state = self.state.lock();
         if waiter == pending_head
             || state.thread_record(waiter)?.sched.lock().lifecycle.state() == ThreadState::Exited
         {
@@ -596,21 +574,15 @@ impl TaskSystem {
         }
 
         let generation = waiter_core.pi_wait_state().begin()?;
-        state.append_pending_pi_waiter(
-            tail,
+        Ok(PiWaitStart {
+            state,
+            fair_slice_ns: self.config.fair_slice_ns(),
+            lock,
             waiter,
-            PiWaitRegistration {
-                lock,
-                owner: None,
-                generation,
-                owner_prev: None,
-                owner_next: None,
-            },
-        );
-        Ok(PiWaitToken {
-            core: waiter_core,
+            waiter_core,
             initial_owner: None,
             generation,
+            destination: PiWaitDestination::Pending { tail },
         })
     }
 
@@ -634,7 +606,7 @@ impl TaskSystem {
             token.core.pi_wait_state().clear_selection(token.generation);
             return Ok(());
         };
-        let recompute = state.prepare_pi_recompute_chain(owner)?;
+        let recompute = state.prepare_pi_recompute_chain(owner, self.config.pi_chain_limit())?;
         let next_waiter_count = state
             .thread_record(owner)?
             .sched
@@ -663,7 +635,8 @@ impl TaskSystem {
         selected: ThreadId,
     ) -> Result<PiMutexRelease<'_>, TaskError> {
         let state = self.state.lock();
-        let old_recompute = state.prepare_pi_recompute_chain(old_owner)?;
+        let old_recompute =
+            state.prepare_pi_recompute_chain(old_owner, self.config.pi_chain_limit())?;
         let mut active_waiters = 0usize;
         let mut selected_registration = None;
         let mut cursor = state.pi_waiter_cursor(old_owner)?;
@@ -718,7 +691,8 @@ impl TaskSystem {
         claimant: ThreadId,
     ) -> Result<PiMutexClaim<'_>, TaskError> {
         let state = self.state.lock();
-        let next_recompute = state.prepare_pi_recompute_chain(claimant)?;
+        let next_recompute =
+            state.prepare_pi_recompute_chain(claimant, self.config.pi_chain_limit())?;
         let mut cursor = Some(pending_head);
         let mut previous = None;
         let mut active_waiters = 0usize;
@@ -766,95 +740,6 @@ impl TaskSystem {
             claimant,
             active_waiters,
             next_waiter_count,
-            next_recompute,
-        })
-    }
-
-    /// Validates and locks the scheduler half of one PI mutex handoff.
-    ///
-    /// The returned transaction owns the task-system registry lock. The caller
-    /// must continue to hold the mutex metadata lock acquired before this call,
-    /// publish its local transition, and then commit the transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TaskError::InvalidPiState`] for a stale owner, selected waiter,
-    /// grant generation, or waiter count. Other registry validation errors are
-    /// returned before either scheduler or local state is changed.
-    pub fn prepare_pi_mutex_handoff(
-        &self,
-        lock: PiLockId,
-        old_owner: ThreadId,
-        next_owner: Option<ThreadId>,
-    ) -> Result<PiMutexHandoff<'_>, TaskError> {
-        let state = self.state.lock();
-        let old_recompute = state.prepare_pi_recompute_chain(old_owner)?;
-        let mut active_waiters = 0usize;
-        let mut selected_waiter = false;
-        let mut cursor = state.pi_waiter_cursor(old_owner)?;
-        while let Some((waiter, registration)) = state.next_pi_waiter(&mut cursor)? {
-            if registration.lock != lock {
-                continue;
-            }
-            active_waiters += 1;
-            selected_waiter |= next_owner == Some(waiter);
-        }
-        if (active_waiters == 0 && next_owner.is_some())
-            || (active_waiters != 0 && !selected_waiter)
-        {
-            return Err(TaskError::InvalidPiState);
-        }
-
-        let next_recompute = next_owner
-            .map(|next| state.prepare_pi_recompute_chain(next))
-            .transpose()?;
-        if let Some(next) = next_owner {
-            let record = state.thread_record(next)?;
-            let registration = record.blocked_on.ok_or(TaskError::InvalidPiState)?;
-            if registration.lock != lock
-                || registration.owner != Some(old_owner)
-                || !record
-                    .core
-                    .pi_wait_state()
-                    .can_grant(registration.generation)
-            {
-                return Err(TaskError::InvalidPiState);
-            }
-        }
-
-        let redirected_waiters = active_waiters.saturating_sub(usize::from(selected_waiter));
-        let next_waiter_count = next_owner
-            .map(|next| {
-                state
-                    .thread_record(next)?
-                    .sched
-                    .lock()
-                    .pi
-                    .blocked_waiters
-                    .checked_add(redirected_waiters)
-                    .ok_or(TaskError::InvalidPiState)
-            })
-            .transpose()?;
-        if state
-            .thread_record(old_owner)?
-            .sched
-            .lock()
-            .pi
-            .blocked_waiters
-            < active_waiters
-        {
-            return Err(TaskError::InvalidPiState);
-        }
-
-        Ok(PiMutexHandoff {
-            state,
-            fair_slice_ns: self.config.fair_slice_ns(),
-            lock,
-            old_owner,
-            next_owner,
-            active_waiters,
-            next_waiter_count,
-            old_recompute,
             next_recompute,
         })
     }

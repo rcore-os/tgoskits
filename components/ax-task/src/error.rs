@@ -118,6 +118,12 @@ pub enum TaskError {
     /// A transitive priority donation would form a lock dependency cycle.
     #[error("priority-inheritance dependency cycle")]
     PiCycle,
+    /// A PI operation exceeded the bounded owner-chain walk.
+    #[error("priority-inheritance chain exceeds the configured depth {limit}")]
+    PiChainLimit {
+        /// Maximum owner depth admitted by one graph transaction.
+        limit: usize,
+    },
     /// Thread wake/handle references still retain runtime-owned resources.
     #[error("thread resources are still referenced")]
     ThreadBusy,

@@ -15,6 +15,7 @@ const HAS_WAITERS: usize = 1;
 #[derive(Debug)]
 struct LocalState {
     owner: usize,
+    sequence: usize,
     queued: bool,
     granted: bool,
     acquired_directly: bool,
@@ -24,7 +25,7 @@ struct LocalState {
 struct SchedulerState {
     donation_owner: usize,
     token_granted: bool,
-    reject_handoff: bool,
+    reject_release: bool,
 }
 
 #[test]
@@ -33,6 +34,7 @@ fn owner_waiters_bit_closes_fast_unlock_registration_race() {
         let owner = Arc::new(AtomicUsize::new(OWNER_ONE));
         let local = Arc::new(Mutex::new(LocalState {
             owner: 1,
+            sequence: 0,
             queued: false,
             granted: false,
             acquired_directly: false,
@@ -90,6 +92,7 @@ fn registration_and_unlock_share_the_local_metadata_transaction() {
     loom::model(|| {
         let local = Arc::new(Mutex::new(LocalState {
             owner: 1,
+            sequence: 0,
             queued: false,
             granted: false,
             acquired_directly: false,
@@ -97,42 +100,71 @@ fn registration_and_unlock_share_the_local_metadata_transaction() {
         let scheduler = Arc::new(Mutex::new(SchedulerState {
             donation_owner: 0,
             token_granted: false,
-            reject_handoff: false,
+            reject_release: false,
         }));
 
         let waiter = {
             let local = Arc::clone(&local);
             let scheduler = Arc::clone(&scheduler);
             thread::spawn(move || {
-                let mut local = local.lock().unwrap();
-                if local.owner == 0 {
-                    local.owner = 2;
-                    local.acquired_directly = true;
-                    return;
-                }
+                let snapshot = {
+                    let mut local = local.lock().unwrap();
+                    if local.owner == 0 {
+                        local.owner = 2;
+                        local.acquired_directly = true;
+                        return;
+                    }
+                    assert_eq!(local.owner, 1);
+                    (local.owner, local.sequence)
+                };
 
-                assert_eq!(local.owner, 1);
+                // Preparation owns the scheduler transaction but has not yet
+                // published a donation edge.
                 let mut scheduler = scheduler.lock().unwrap();
-                scheduler.donation_owner = 1;
-                local.queued = true;
+                assert_eq!(scheduler.donation_owner, 0);
+                {
+                    let mut local_state = local.lock().unwrap();
+                    if (local_state.owner, local_state.sequence) != snapshot {
+                        drop(local_state);
+                        drop(scheduler);
+                        let mut local_state = local.lock().unwrap();
+                        if local_state.owner == 0 {
+                            local_state.owner = 2;
+                            local_state.acquired_directly = true;
+                            local_state.sequence += 1;
+                        }
+                        return;
+                    }
+                    local_state.queued = true;
+                    local_state.sequence += 1;
+                }
+                scheduler.donation_owner = snapshot.0;
             })
         };
         let unlock = {
             let local = Arc::clone(&local);
             let scheduler = Arc::clone(&scheduler);
             thread::spawn(move || {
+                let snapshot = {
+                    let mut local = local.lock().unwrap();
+                    assert_eq!(local.owner, 1);
+                    if !local.queued {
+                        local.owner = 0;
+                        local.sequence += 1;
+                        return;
+                    }
+                    local.sequence
+                };
+                let mut scheduler = scheduler.lock().unwrap();
                 let mut local = local.lock().unwrap();
-                assert_eq!(local.owner, 1);
-                if !local.queued {
-                    local.owner = 0;
+                if local.owner != 1 || !local.queued || local.sequence != snapshot {
                     return;
                 }
-
-                let mut scheduler = scheduler.lock().unwrap();
                 assert_eq!(scheduler.donation_owner, 1);
                 local.owner = 2;
                 local.queued = false;
                 local.granted = true;
+                local.sequence += 1;
                 scheduler.donation_owner = 0;
                 scheduler.token_granted = true;
             })
@@ -152,10 +184,11 @@ fn registration_and_unlock_share_the_local_metadata_transaction() {
 }
 
 #[test]
-fn failed_preflight_cannot_publish_only_the_local_handoff() {
+fn failed_release_preflight_cannot_publish_only_the_local_grant() {
     loom::model(|| {
         let local = Arc::new(Mutex::new(LocalState {
             owner: 1,
+            sequence: 0,
             queued: true,
             granted: false,
             acquired_directly: false,
@@ -163,13 +196,13 @@ fn failed_preflight_cannot_publish_only_the_local_handoff() {
         let scheduler = Arc::new(Mutex::new(SchedulerState {
             donation_owner: 1,
             token_granted: false,
-            reject_handoff: false,
+            reject_release: false,
         }));
         let wake = Arc::new(AtomicBool::new(false));
 
         let injector = {
             let scheduler = Arc::clone(&scheduler);
-            thread::spawn(move || scheduler.lock().unwrap().reject_handoff = true)
+            thread::spawn(move || scheduler.lock().unwrap().reject_release = true)
         };
         let unlock = {
             let local = Arc::clone(&local);
@@ -178,7 +211,7 @@ fn failed_preflight_cannot_publish_only_the_local_handoff() {
             thread::spawn(move || {
                 let mut local = local.lock().unwrap();
                 let mut scheduler = scheduler.lock().unwrap();
-                if scheduler.reject_handoff {
+                if scheduler.reject_release {
                     return;
                 }
 

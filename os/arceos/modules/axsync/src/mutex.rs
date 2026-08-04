@@ -11,8 +11,8 @@ use ax_kspin::SpinNoPreempt;
 use ax_task::{
     PiLockId, PiLockIdentity, PiWaitToken, TaskError, ThreadHandle, ThreadId,
     current_needs_reschedule_pinned, current_thread_handle, current_thread_id_pinned,
-    pi_block_current, pi_wait_cancel, pi_wait_start, pi_wait_start_pending, pi_wake,
-    prepare_pi_mutex_claim, prepare_pi_mutex_release, validate_blocking_context,
+    pi_block_current, pi_wake, prepare_pi_mutex_claim, prepare_pi_mutex_release,
+    prepare_pi_wait_start, prepare_pi_wait_start_pending, validate_blocking_context,
 };
 
 use crate::pi::{WaiterNode, WaiterPointer, WaiterQueue};
@@ -253,13 +253,14 @@ impl RawMutex {
 
             #[cfg(test)]
             assert_scheduler_transaction_outside_metadata();
-            let token = match snapshot.owner {
-                ContendedOwner::Owned(owner) => {
-                    task_result(pi_wait_start(self.lock_id(), owner), "start PI mutex wait")
-                }
+            let registration = match snapshot.owner {
+                ContendedOwner::Owned(owner) => task_result(
+                    prepare_pi_wait_start(self.lock_id(), owner),
+                    "prepare PI mutex wait",
+                ),
                 ContendedOwner::Pending(pending_head) => task_result(
-                    pi_wait_start_pending(self.lock_id(), pending_head),
-                    "join ownerless PI mutex claim",
+                    prepare_pi_wait_start_pending(self.lock_id(), pending_head),
+                    "prepare ownerless PI mutex wait",
                 ),
                 ContendedOwner::Unlocked => unreachable!("unlocked registration returns above"),
             };
@@ -277,15 +278,15 @@ impl RawMutex {
                 }
             };
             if !registered {
-                task_result(
-                    pi_wait_cancel(token),
-                    "cancel stale PI mutex waiter registration",
-                );
+                drop(registration);
                 match self.try_or_observe_owner_word(current) {
                     LockAttempt::Acquired => return,
                     LockAttempt::Contended => continue,
                 }
             }
+            // SAFETY: the matching pinned waiter is now owned by local mutex
+            // metadata and remains there until cancellation or grant.
+            let token = unsafe { registration.commit_after_local_registration() };
             if self.try_claim_waiter(&waiter, &token) {
                 return;
             }
@@ -778,9 +779,20 @@ mod tests {
     use alloc::boxed::Box;
     use core::{mem::MaybeUninit, pin::Pin};
 
-    use ax_task::{CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
+    use ax_task::{CpuId, PiWaitToken, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
 
     use super::*;
+
+    fn commit_pi_wait(
+        system: &TaskSystem,
+        lock: PiLockId,
+        waiter: ThreadId,
+        owner: ThreadId,
+    ) -> Result<PiWaitToken, TaskError> {
+        let registration = system.prepare_pi_wait_start(lock, waiter, owner)?;
+        // SAFETY: scheduler-only tests model the local pinned waiter publication.
+        Ok(unsafe { registration.commit_after_local_registration() })
+    }
 
     #[test]
     fn raw_mutex_guard_is_not_send() {
@@ -878,9 +890,7 @@ mod tests {
             .unwrap();
         system.make_ready(waiter_thread.id()).unwrap();
         system.enqueue(cpu.as_mut(), waiter_thread.id(), 0).unwrap();
-        let token = system
-            .pi_wait_start(raw.lock_id(), waiter_thread.id(), owner.id())
-            .unwrap();
+        let token = commit_pi_wait(&system, raw.lock_id(), waiter_thread.id(), owner.id()).unwrap();
         let waiter = pin!(WaiterNode::new(
             waiter_thread.id(),
             waiter_thread.effective_scheduling_urgency(),
@@ -895,25 +905,39 @@ mod tests {
             unsafe { metadata.waiters.insert(waiter.as_ref()) };
         }
 
-        let preempt_guard = PreemptGuard::new();
-        let mut metadata = raw.metadata.lock();
-        let selected = select_most_urgent_waiter(metadata.waiters.head()).unwrap();
-        let handoff = system
-            .prepare_pi_mutex_handoff(raw.lock_id(), owner.id(), Some(waiter_thread.id()))
+        let release = system
+            .prepare_pi_mutex_release(raw.lock_id(), owner.id(), waiter_thread.id())
             .unwrap();
-        let selected = metadata.waiters.remove(&selected).unwrap();
-        raw.publish_owner(waiter_thread.id(), false);
-        // SAFETY: this pinned test waiter remains live through the complete
-        // scheduler transaction.
-        unsafe { selected.grant() };
+        {
+            let mut metadata = raw.metadata.lock();
+            metadata.pending_head = Some(waiter_thread.id());
+            raw.owner.store(OWNER_HAS_WAITERS, Ordering::Release);
+            metadata.advance_sequence();
+        }
+        // SAFETY: the test published the ownerless local state above.
+        unsafe { release.commit_after_local_release() };
+        assert!(token.is_selected());
+
+        let claim = system
+            .prepare_pi_mutex_claim(raw.lock_id(), waiter_thread.id(), waiter_thread.id())
+            .unwrap();
+        {
+            let mut metadata = raw.metadata.lock();
+            let selected = metadata.waiters.head().unwrap();
+            let selected = metadata.waiters.remove(&selected).unwrap();
+            metadata.pending_head = None;
+            raw.publish_owner(waiter_thread.id(), false);
+            metadata.advance_sequence();
+            // SAFETY: this pinned test waiter remains live through the complete
+            // scheduler transaction.
+            unsafe { selected.grant() };
+        }
         assert!(waiter.is_granted());
         assert!(!token.is_granted());
         assert!(crate::test_runtime::preempt_depth() > 0);
-        // SAFETY: local owner and waiter grant were published above while both
-        // the mutex metadata and scheduler transaction remain locked.
-        unsafe { handoff.commit_after_local_handoff() };
-        drop(metadata);
-        drop(preempt_guard);
+        // SAFETY: local owner and waiter grant were published before the
+        // prevalidated scheduler transaction is committed.
+        unsafe { claim.commit_after_local_claim() };
 
         assert!(token.is_granted());
         assert!(waiter.is_granted());
@@ -939,9 +963,7 @@ mod tests {
             .unwrap();
         system.make_ready(waiter_thread.id()).unwrap();
         system.enqueue(cpu.as_mut(), waiter_thread.id(), 0).unwrap();
-        let token = system
-            .pi_wait_start(raw.lock_id(), waiter_thread.id(), owner.id())
-            .unwrap();
+        let token = commit_pi_wait(&system, raw.lock_id(), waiter_thread.id(), owner.id()).unwrap();
         let waiter = pin!(WaiterNode::new(
             waiter_thread.id(),
             waiter_thread.effective_scheduling_urgency(),
@@ -994,9 +1016,7 @@ mod tests {
             .unwrap();
         system.make_ready(waiter_thread.id()).unwrap();
         system.enqueue(cpu.as_mut(), waiter_thread.id(), 0).unwrap();
-        let token = system
-            .pi_wait_start(raw.lock_id(), waiter_thread.id(), owner.id())
-            .unwrap();
+        let token = commit_pi_wait(&system, raw.lock_id(), waiter_thread.id(), owner.id()).unwrap();
         let waiter = pin!(WaiterNode::new(
             waiter_thread.id(),
             waiter_thread.effective_scheduling_urgency(),
@@ -1045,12 +1065,10 @@ mod tests {
             system.make_ready(thread.id()).unwrap();
             system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
         }
-        let first_token = system
-            .pi_wait_start(raw.lock_id(), first_thread.id(), owner.id())
-            .unwrap();
-        let second_token = system
-            .pi_wait_start(raw.lock_id(), second_thread.id(), owner.id())
-            .unwrap();
+        let first_token =
+            commit_pi_wait(&system, raw.lock_id(), first_thread.id(), owner.id()).unwrap();
+        let second_token =
+            commit_pi_wait(&system, raw.lock_id(), second_thread.id(), owner.id()).unwrap();
         let first = pin!(WaiterNode::new(
             first_thread.id(),
             first_thread.effective_scheduling_urgency(),

@@ -72,11 +72,16 @@ pub(super) enum DeadlineCallbackClaim {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PiRecomputeProof {
     start: ThreadId,
+    depth: usize,
 }
 
 impl PiRecomputeProof {
     pub(super) const fn start(self) -> ThreadId {
         self.start
+    }
+
+    pub(super) const fn depth(self) -> usize {
+        self.depth
     }
 }
 
@@ -482,8 +487,9 @@ impl TaskSystemState {
         &self,
         waiter: ThreadId,
         mut owner: ThreadId,
+        chain_limit: usize,
     ) -> Result<(), TaskError> {
-        for _ in 0..self.slots.len().saturating_add(1) {
+        for depth in 1..=chain_limit {
             if owner == waiter {
                 return Err(TaskError::PiCycle);
             }
@@ -493,9 +499,12 @@ impl TaskSystemState {
             let Some(next_owner) = registration.owner else {
                 return Ok(());
             };
+            if depth == chain_limit {
+                return Err(TaskError::PiChainLimit { limit: chain_limit });
+            }
             owner = next_owner;
         }
-        Err(TaskError::PiCycle)
+        Err(TaskError::PiChainLimit { limit: chain_limit })
     }
 
     pub(super) fn select_allowed_cpu(&self, affinity: &CpuSet) -> Option<CpuId> {
@@ -647,9 +656,10 @@ impl TaskSystemState {
     pub(super) fn prepare_pi_recompute_chain(
         &self,
         start: ThreadId,
+        chain_limit: usize,
     ) -> Result<PiRecomputeProof, TaskError> {
         let mut current = start;
-        for _ in 0..=self.slots.len() {
+        for depth in 1..=chain_limit {
             let record = self.thread_record(current)?;
             let (blocked_on, dispatch_generation) = {
                 let sched = record.sched.lock();
@@ -668,19 +678,22 @@ impl TaskSystemState {
                 return Err(TaskError::InvalidPiState);
             }
             let Some(registration) = blocked_on else {
-                return Ok(PiRecomputeProof { start });
+                return Ok(PiRecomputeProof { start, depth });
             };
             let Some(owner) = registration.owner else {
-                return Ok(PiRecomputeProof { start });
+                return Ok(PiRecomputeProof { start, depth });
             };
+            if depth == chain_limit {
+                return Err(TaskError::PiChainLimit { limit: chain_limit });
+            }
             current = owner;
         }
-        Err(TaskError::PiCycle)
+        Err(TaskError::PiChainLimit { limit: chain_limit })
     }
 
     pub(super) fn apply_pi_recompute_chain(&mut self, proof: PiRecomputeProof, fair_slice_ns: u64) {
         let mut current = proof.start();
-        for _ in 0..=self.slots.len() {
+        for depth in 1..=proof.depth() {
             let (
                 current_core,
                 base,
@@ -830,9 +843,13 @@ impl TaskSystemState {
             let Some(owner) = registration.owner else {
                 return;
             };
+            assert!(
+                depth < proof.depth(),
+                "prepared PI chain depth must cover its terminal owner"
+            );
             current = owner;
         }
-        unreachable!("prepared PI chain must be acyclic");
+        unreachable!("prepared PI chain must terminate at its proven depth");
     }
 
     pub(super) fn cpu_remote(&self, cpu: CpuId) -> Option<&CpuRemote> {

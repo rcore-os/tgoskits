@@ -29,19 +29,24 @@ fn pi_orders_equal_relative_deadlines_by_the_active_absolute_job_deadline() {
     system.block_current(cpu.as_mut(), 100).unwrap();
 
     assert!(early.effective_scheduling_key() < late.effective_scheduling_key());
-    let late_wait = system.pi_wait_start(lock, late.id(), owner.id()).unwrap();
-    let early_wait = system.pi_wait_start(lock, early.id(), owner.id()).unwrap();
+    let late_wait = support::commit_pi_wait(&system, lock, late.id(), owner.id()).unwrap();
+    let early_wait = support::commit_pi_wait(&system, lock, early.id(), owner.id()).unwrap();
     assert_eq!(
         system.deadline_runtime(owner.id()).unwrap().donor(),
         Some(early.id())
     );
 
-    let handoff = system
-        .prepare_pi_mutex_handoff(lock, owner.id(), Some(early.id()))
+    let release = system
+        .prepare_pi_mutex_release(lock, owner.id(), early.id())
         .unwrap();
-    // SAFETY: this scheduler-level test models the local mutex ownership
-    // publication as complete immediately before scheduler commit.
-    unsafe { handoff.commit_after_local_handoff() };
+    // SAFETY: this scheduler-level test models the mutex ownerless publication.
+    unsafe { release.commit_after_local_release() };
+    assert!(early_wait.is_selected());
+    let claim = system
+        .prepare_pi_mutex_claim(lock, early.id(), early.id())
+        .unwrap();
+    // SAFETY: this scheduler-level test models the claimant owner publication.
+    unsafe { claim.commit_after_local_claim() };
     assert!(early_wait.is_granted());
     assert!(!late_wait.is_granted());
     assert_eq!(system.deadline_runtime(early.id()).unwrap().donor(), None);
@@ -104,12 +109,10 @@ fn exhausted_deadline_donation_rescues_every_contended_owner_in_the_chain() {
         0
     );
 
-    let _second_wait = system
-        .pi_wait_start(first_lock, second_owner.id(), first_owner.id())
-        .unwrap();
-    let _donor_wait = system
-        .pi_wait_start(second_lock, donor.id(), second_owner.id())
-        .unwrap();
+    let _second_wait =
+        support::commit_pi_wait(&system, first_lock, second_owner.id(), first_owner.id()).unwrap();
+    let _donor_wait =
+        support::commit_pi_wait(&system, second_lock, donor.id(), second_owner.id()).unwrap();
 
     let second = system.deadline_runtime(second_owner.id()).unwrap();
     assert_eq!(second.donor(), Some(donor.id()));
@@ -137,7 +140,7 @@ fn queued_owner_receives_an_exhausted_donor_as_runnable_rescue_work() {
     system.schedule(cpu.as_mut(), 1).unwrap();
 
     system.enqueue(cpu.as_mut(), owner.id(), 1).unwrap();
-    let _wait = system.pi_wait_start(lock, donor.id(), owner.id()).unwrap();
+    let _wait = support::commit_pi_wait(&system, lock, donor.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu.as_mut(), 1).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 1).unwrap().next(), owner.id());
     assert!(
@@ -181,9 +184,13 @@ fn withdrawing_an_rt_boost_preserves_the_owners_base_rr_quantum() {
         )))
         .unwrap();
     system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
-    let wait = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
-        .unwrap();
+    let wait = support::commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        donor.id(),
+        owner.id(),
+    )
+    .unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
 
@@ -221,9 +228,13 @@ fn owner_and_waiter_policy_updates_recompute_the_pi_chain() {
             RtPriority::new(50).unwrap(),
         )))
         .unwrap();
-    let wait = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), waiter.id(), owner.id())
-        .unwrap();
+    let wait = support::commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        waiter.id(),
+        owner.id(),
+    )
+    .unwrap();
 
     let owner_base = SchedulePolicy::default();
     system.set_thread_policy(owner.id(), owner_base).unwrap();
@@ -246,15 +257,92 @@ fn a_pi_wait_cycle_returns_a_typed_error_without_mutating_the_graph() {
         .unwrap();
     let first_lock = PiLockIdentity::new().id().unwrap();
     let second_lock = PiLockIdentity::new().id().unwrap();
-    let edge = system
-        .pi_wait_start(first_lock, second.id(), first.id())
-        .unwrap();
+    let edge = support::commit_pi_wait(&system, first_lock, second.id(), first.id()).unwrap();
 
     assert!(matches!(
-        system.pi_wait_start(second_lock, first.id(), second.id()),
+        support::commit_pi_wait(&system, second_lock, first.id(), second.id()),
         Err(TaskError::PiCycle)
     ));
     system.pi_wait_cancel(edge).unwrap();
+}
+
+#[test]
+fn pi_chain_limit_rejects_the_new_edge_without_mutating_existing_donations() {
+    support::clear_handles();
+    let system = TaskSystem::new(TaskSystemConfig::new(1).with_pi_chain_limit(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let first_owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fair(
+            Nice::new(19).unwrap(),
+            FairMode::Normal,
+        )))
+        .unwrap();
+    let second_owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fair(
+            Nice::new(10).unwrap(),
+            FairMode::Normal,
+        )))
+        .unwrap();
+    let donor = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(99).unwrap(),
+        )))
+        .unwrap();
+    let first_lock = PiLockIdentity::new().id().unwrap();
+    let second_lock = PiLockIdentity::new().id().unwrap();
+    let existing =
+        support::commit_pi_wait(&system, first_lock, second_owner.id(), first_owner.id()).unwrap();
+    let first_policy = first_owner.effective_policy();
+    let second_policy = second_owner.effective_policy();
+
+    assert!(matches!(
+        support::commit_pi_wait(&system, second_lock, donor.id(), second_owner.id()),
+        Err(TaskError::PiChainLimit { limit: 1 })
+    ));
+    assert_eq!(first_owner.effective_policy(), first_policy);
+    assert_eq!(second_owner.effective_policy(), second_policy);
+
+    system.pi_wait_cancel(existing).unwrap();
+}
+
+#[test]
+fn dropped_pi_wait_preparation_does_not_publish_a_donation_edge() {
+    let (system, _cpu) = online_system();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fair(
+            Nice::new(19).unwrap(),
+            FairMode::Normal,
+        )))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(99).unwrap(),
+        )))
+        .unwrap();
+    let lock = PiLockIdentity::new().id().unwrap();
+    let base_policy = owner.effective_policy();
+
+    let prepared = system
+        .prepare_pi_wait_start(lock, waiter.id(), owner.id())
+        .unwrap();
+    assert_eq!(owner.effective_policy(), base_policy);
+    drop(prepared);
+    assert_eq!(owner.effective_policy(), base_policy);
+
+    let committed = support::commit_pi_wait(&system, lock, waiter.id(), owner.id()).unwrap();
+    assert_eq!(
+        owner.effective_policy(),
+        SchedulePolicy::fifo(RtPriority::new(99).unwrap())
+    );
+    system.pi_wait_cancel(committed).unwrap();
+    assert_eq!(owner.effective_policy(), base_policy);
 }
 
 #[test]
@@ -266,7 +354,8 @@ fn stale_pi_owner_returns_a_typed_error_instead_of_reporting_a_cycle() {
     let stale_owner = ThreadId::from_parts(u32::MAX, 1);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        system.pi_wait_start(
+        support::commit_pi_wait(
+            &system,
             PiLockIdentity::new().id().unwrap(),
             waiter.id(),
             stale_owner,
@@ -285,9 +374,13 @@ fn threads_with_live_pi_edges_cannot_exit_and_leave_dangling_donations() {
     let waiter = system
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
-    let wait = system
-        .pi_wait_start(PiLockIdentity::new().id().unwrap(), waiter.id(), owner.id())
-        .unwrap();
+    let wait = support::commit_pi_wait(
+        &system,
+        PiLockIdentity::new().id().unwrap(),
+        waiter.id(),
+        owner.id(),
+    )
+    .unwrap();
 
     assert_eq!(
         system.mark_exited(owner.id()),
@@ -306,7 +399,8 @@ fn threads_with_live_pi_edges_cannot_exit_and_leave_dangling_donations() {
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     assert!(matches!(
-        system.pi_wait_start(
+        support::commit_pi_wait(
+            &system,
             PiLockIdentity::new().id().unwrap(),
             live_waiter.id(),
             owner.id(),

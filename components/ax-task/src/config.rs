@@ -18,6 +18,13 @@ pub const DEFAULT_DEADLINE_CAP_PERCENT: u8 = 95;
 pub const DEFAULT_TIMER_CAPACITY: usize = 4096;
 /// Default bounded work budget for scheduler inboxes and timers.
 pub const DEFAULT_BATCH_LIMIT: usize = 64;
+/// Maximum PI owner-chain depth walked in one non-preemptible transaction.
+///
+/// Linux can use a larger default because `rt_mutex_adjust_prio_chain()` drops
+/// its local locks between steps. ax-task currently owns one scheduler graph
+/// transaction for the complete walk, so the bound must also cap worst-case
+/// non-preemptible latency.
+pub const DEFAULT_PI_CHAIN_LIMIT: usize = 64;
 
 /// A logical processor identifier in the configured topology.
 #[repr(transparent)]
@@ -54,6 +61,7 @@ pub struct TaskSystemConfig {
     deadline_cap_percent: u8,
     timer_capacity: usize,
     batch_limit: usize,
+    pi_chain_limit: usize,
 }
 
 impl TaskSystemConfig {
@@ -70,6 +78,7 @@ impl TaskSystemConfig {
             deadline_cap_percent: DEFAULT_DEADLINE_CAP_PERCENT,
             timer_capacity: DEFAULT_TIMER_CAPACITY,
             batch_limit: DEFAULT_BATCH_LIMIT,
+            pi_chain_limit: DEFAULT_PI_CHAIN_LIMIT,
         }
     }
 
@@ -123,6 +132,11 @@ impl TaskSystemConfig {
         self.batch_limit
     }
 
+    /// Returns the maximum owner-chain depth of one PI graph transaction.
+    pub const fn pi_chain_limit(self) -> usize {
+        self.pi_chain_limit
+    }
+
     /// Overrides the Deadline admission cap.
     pub const fn with_deadline_cap_percent(mut self, percent: u8) -> Self {
         self.deadline_cap_percent = percent;
@@ -144,6 +158,12 @@ impl TaskSystemConfig {
     /// Overrides the bounded scheduler work batch.
     pub const fn with_batch_limit(mut self, limit: usize) -> Self {
         self.batch_limit = limit;
+        self
+    }
+
+    /// Overrides the maximum owner-chain depth of one PI graph transaction.
+    pub const fn with_pi_chain_limit(mut self, limit: usize) -> Self {
+        self.pi_chain_limit = limit;
         self
     }
 }

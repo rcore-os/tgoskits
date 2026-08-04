@@ -31,7 +31,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL_ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
-fn pi_registration_handoff_and_cancel_do_not_allocate() {
+fn pi_registration_release_claim_and_cancel_do_not_allocate() {
     retain_fake_runtime_helpers();
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let owner = system
@@ -46,25 +46,25 @@ fn pi_registration_handoff_and_cancel_do_not_allocate() {
     let lock = PiLockIdentity::new().id().unwrap();
 
     let selected_wait = assert_no_alloc("register selected waiter", || {
-        system
-            .pi_wait_start(lock, selected.id(), owner.id())
-            .unwrap()
+        support::commit_pi_wait(&system, lock, selected.id(), owner.id()).unwrap()
     });
     let cancelled_wait = assert_no_alloc("register cancelled waiter", || {
-        system
-            .pi_wait_start(lock, cancelled.id(), owner.id())
-            .unwrap()
+        support::commit_pi_wait(&system, lock, cancelled.id(), owner.id()).unwrap()
     });
     assert_no_alloc("cancel waiter", || {
         system.pi_wait_cancel(cancelled_wait).unwrap()
     });
-    assert_no_alloc("commit handoff", || {
-        let handoff = system
-            .prepare_pi_mutex_handoff(lock, owner.id(), Some(selected.id()))
+    assert_no_alloc("commit release and claim", || {
+        let release = system
+            .prepare_pi_mutex_release(lock, owner.id(), selected.id())
             .unwrap();
-        // SAFETY: this scheduler-level test models the local mutex ownership
-        // publication as complete immediately before scheduler commit.
-        unsafe { handoff.commit_after_local_handoff() };
+        // SAFETY: this scheduler-level test models the ownerless publication.
+        unsafe { release.commit_after_local_release() };
+        let claim = system
+            .prepare_pi_mutex_claim(lock, selected.id(), selected.id())
+            .unwrap();
+        // SAFETY: this scheduler-level test models claimant publication.
+        unsafe { claim.commit_after_local_claim() };
     });
     assert!(selected_wait.is_granted());
 }
