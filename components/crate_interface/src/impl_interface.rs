@@ -15,7 +15,7 @@ pub fn impl_interface(
     mut ast: ItemImpl,
     macro_arg: ImplInterfaceArgs,
 ) -> Result<TokenStream, Error> {
-    let trait_name = if let Some((_, path, _)) = &ast.trait_ {
+    let trait_name = if let Some((path, _)) = &ast.trait_ {
         &path.segments.last().unwrap().ident
     } else {
         return Err(Error::new_spanned(ast, "expect a trait implementation"));

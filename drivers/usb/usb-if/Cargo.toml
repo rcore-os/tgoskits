@@ -8,7 +8,7 @@ repository.workspace = true
 version = "0.7.4"
 
 [dependencies]
-anyhow = { version = "1", default-features = false}
+anyhow = { workspace = true }
 futures = {workspace = true, features = ["alloc"]}
 log = {workspace = true}
 num_enum = {version = "0.7", default-features = false}

@@ -767,7 +767,7 @@ version = "0.5.7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -783,7 +783,7 @@ version = "0.4.8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -1135,7 +1135,7 @@ version = "0.4.11"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -1162,7 +1162,7 @@ version = "0.3.9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -1379,7 +1379,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "syn 2.0.119",
+ "syn 3.0.3",
  "tar",
  "tempfile",
  "tokio",
@@ -1545,7 +1545,7 @@ version = "0.5.13"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -1619,13 +1619,13 @@ dependencies = [
  "axvmconfig",
  "clap",
  "log",
- "prettyplease",
+ "prettyplease 0.3.0",
  "proc-macro2",
  "quote",
  "spin",
- "syn 2.0.119",
+ "syn 3.0.3",
  "tokio",
- "toml 0.9.12+spec-1.1.0",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
@@ -1775,7 +1775,7 @@ dependencies = [
  "clang-sys",
  "itertools 0.13.0",
  "log",
- "prettyplease",
+ "prettyplease 0.2.37",
  "proc-macro2",
  "quote",
  "regex",
@@ -3434,9 +3434,9 @@ dependencies = [
 
 [[package]]
 name = "extern-trait"
-version = "0.4.3"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a141ec56226dca390c7900f04f914a9783177e18ed8ac92e8a94014a84b8078b"
+checksum = "3f0ab10cbaef27c3483262069b23386596bb8e7dffaa1dfa8a30bb280ec8c4fb"
 dependencies = [
  "extern-trait-impl",
  "typeid",
@@ -3444,9 +3444,9 @@ dependencies = [
 
 [[package]]
 name = "extern-trait-impl"
-version = "0.4.3"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e685faea53fd0bce4d327a36d0e7a2489edc9205576185116ab159c5028c666e"
+checksum = "5f092b2f4f5a147bffe065e36530e12deb1ac666d215be0e68a970a95396ada1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4725,7 +4725,7 @@ dependencies = [
  "darling 0.23.0",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -6076,6 +6076,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
+dependencies = [
+ "proc-macro2",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "printf-compat"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6783,7 +6793,7 @@ version = "0.4.2"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -7914,7 +7924,7 @@ dependencies = [
  "num-align",
  "numeric-enum-macro",
  "page-table-generic",
- "prettyplease",
+ "prettyplease 0.3.0",
  "quote",
  "ranges-ext",
  "rgb",
@@ -7923,7 +7933,7 @@ dependencies = [
  "some-serial",
  "somehal-macros",
  "spin",
- "syn 2.0.119",
+ "syn 3.0.3",
  "thiserror 2.0.19",
  "tock-registers 0.10.1",
  "uefi",
@@ -7969,7 +7979,7 @@ dependencies = [
  "darling 0.23.0",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -9344,7 +9354,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tokio",
- "toml 0.9.12+spec-1.1.0",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]

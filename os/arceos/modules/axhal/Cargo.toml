@@ -59,4 +59,4 @@ rdrive.workspace = true
 spin.workspace = true
 
 [build-dependencies]
-quote = "1.0"
+quote = { workspace = true }

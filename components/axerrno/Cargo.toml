@@ -18,7 +18,7 @@ strum = { version = "0.27.2", default-features = false, features = ["derive"] }
 axtest = ["dep:axtest"]
 
 [build-dependencies]
-quote = "1.0"
+quote = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

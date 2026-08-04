@@ -190,14 +190,11 @@ pub fn call_interface(item: TokenStream) -> TokenStream {
     }
     let fn_name = path.pop().unwrap();
     let trait_name = path.pop().unwrap();
-    let extern_fn_name = extern_fn_name(
-        call.namespace.as_deref(),
-        &trait_name.value().ident,
-        &fn_name.value().ident,
-    );
+    let extern_fn_name =
+        extern_fn_name(call.namespace.as_deref(), &trait_name.ident, &fn_name.ident);
 
     path.push_value(PathSegment {
-        ident: extern_fn_mod_name(&trait_name.value().ident),
+        ident: extern_fn_mod_name(&trait_name.ident),
         arguments: PathArguments::None,
     });
     quote! { unsafe { #path :: #extern_fn_name( #args ) } }.into()

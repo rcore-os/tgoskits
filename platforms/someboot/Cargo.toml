@@ -68,9 +68,9 @@ x86 = "0.52"
 sbi-rt = { workspace = true, features = ["legacy"] }
 
 [build-dependencies]
-prettyplease = "0.2"
-quote = "1.0"
-syn = "2.0"
+prettyplease = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
 
 [dev-dependencies]
 libc.workspace = true

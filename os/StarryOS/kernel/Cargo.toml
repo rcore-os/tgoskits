@@ -167,7 +167,7 @@ chrono = { version = "0.4", default-features = false }
 downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
-extern-trait = "0.4"
+extern-trait = { workspace = true }
 flatten_objects = "0.2.4"
 hashbrown = "0.16"
 indoc = "2"

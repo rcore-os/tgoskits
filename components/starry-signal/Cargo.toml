@@ -26,4 +26,4 @@ strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 ax-kspin = { workspace = true, features = ["host-test"] }
-extern-trait = "0.4"
+extern-trait = { workspace = true }

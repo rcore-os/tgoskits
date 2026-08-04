@@ -295,7 +295,7 @@ kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.8.2", path = "platforms/somehal" }
 
 # External crates
-anyhow = { version = "1.0", default-features = false }
+anyhow = { version = "1.0.104", default-features = false }
 bincode = "2.0.1"
 bitflags = "2.11"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
@@ -307,10 +307,15 @@ chrono = { version = "0.4", default-features = false }
 enum_dispatch = "0.3"
 env_logger = "0.11"
 event-listener = { version = "5.4.0", default-features = false }
+extern-trait = "0.5.0"
 futures = { version = "0.3", default-features = false }
 heapless = "0.9"
 schemars = "1.2.1"
-toml = { version = "1.1.2", default-features = false }
+prettyplease = "0.3.0"
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+syn = "3.0.3"
+toml = { version = "1", default-features = false }
 dma-api = { version = "0.9.4", path = "memory/dma-api" }
 mmio-api = { version = "0.2.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1.0", path = "drivers/interface/cvi-vdec-uapi" }
