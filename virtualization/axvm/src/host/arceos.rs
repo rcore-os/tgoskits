@@ -100,6 +100,18 @@ pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
 }
 
+pub(crate) fn set_console_input_irq_enabled(enabled: bool) {
+    modules::ax_hal::console::set_input_irq_enabled(enabled);
+}
+
+pub(crate) fn read_console_bytes(bytes: &mut [u8]) -> usize {
+    modules::ax_hal::console::read_bytes(bytes)
+}
+
+pub(crate) fn write_console_bytes(bytes: &[u8]) {
+    modules::ax_hal::console::write_bytes(bytes);
+}
+
 impl HostCpu for ArceOsHost {
     type CpuMask = api::task::AxCpuMask;
 
@@ -189,6 +201,121 @@ pub fn shutdown_host_filesystems() -> AxVmResult {
         info!("Released {released} host filesystem block IRQ registration(s) before passthrough");
     }
     Ok(())
+}
+
+#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
+pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmResult {
+    let (_, _, _, guest_gsi) = crate::boot::x86_qemu_passthrough_block_intx();
+    let info = qemu_block_passthrough_pci_info();
+
+    let route = match ax_driver::pci::resolve_intx_binding(info) {
+        Ok(Some(binding)) => {
+            let trigger = intx_forwarding_trigger(&binding);
+            resolve_binding_irq(binding).map(|host_irq| (host_irq, trigger))
+        }
+        Ok(None) => {
+            warn!("x86 QEMU block passthrough PCI INTx route was not found for {info:?}");
+            return Ok(());
+        }
+        Err(error) => {
+            warn!("failed to resolve x86 QEMU block passthrough PCI INTx route: {error:?}");
+            return Ok(());
+        }
+    };
+
+    match route {
+        Ok((host_irq, trigger)) => {
+            crate::register_x86_ioapic_irq_forwarding_route_with_trigger(
+                vm, guest_gsi, host_irq, trigger,
+            )?;
+            crate::register_x86_ioapic_irq_forwarding_activator(
+                vm,
+                guest_gsi,
+                unmask_qemu_block_passthrough_intx,
+            )?;
+            info!(
+                "Registered x86 QEMU block passthrough PCI INTx forwarding route: guest GSI \
+                 {guest_gsi} <- host IRQ {host_irq:?}, trigger {trigger:?}"
+            );
+        }
+        Err(error) => {
+            warn!(
+                "failed to resolve x86 QEMU block passthrough IRQ source into host IRQ: {error:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
+pub(crate) fn prepare_qemu_block_passthrough_device() {
+    let info = qemu_block_passthrough_pci_info();
+    match ax_driver::pci::prepare_intx_passthrough(info) {
+        Ok(()) => info!("Prepared x86 QEMU block PCI INTx passthrough device {info:?}"),
+        Err(error) => {
+            warn!("failed to prepare x86 QEMU block PCI INTx passthrough device: {error:?}");
+        }
+    }
+}
+
+#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
+fn unmask_qemu_block_passthrough_intx() {
+    let info = qemu_block_passthrough_pci_info();
+    match ax_driver::pci::unmask_intx_passthrough(info) {
+        Ok(()) => info!("Unmasked x86 QEMU block PCI INTx passthrough device {info:?}"),
+        Err(error) => {
+            warn!("failed to unmask x86 QEMU block PCI INTx passthrough device: {error:?}");
+        }
+    }
+}
+
+#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
+fn qemu_block_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
+    use ax_driver::probe::pci::{PciAddress, PciInfo, PciIntxRoute};
+
+    let (device, function, pin, _) = crate::boot::x86_qemu_passthrough_block_intx();
+    PciInfo {
+        address: PciAddress::new(0, 0, device, function),
+        interrupt_pin: pin,
+        interrupt_line: 0,
+        intx_route: Some(PciIntxRoute {
+            root_device: device,
+            root_function: function,
+            root_pin: pin,
+        }),
+    }
+}
+
+#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
+fn resolve_binding_irq(
+    binding: ax_driver::BindingIrq,
+) -> Result<modules::ax_hal::irq::IrqId, modules::ax_hal::irq::IrqError> {
+    use modules::ax_hal::irq;
+
+    if let Some(irq) = binding.irq_id() {
+        return Ok(irq);
+    }
+    let Some(source) = binding.as_irq_source() else {
+        return Err(irq::IrqError::Unsupported);
+    };
+    irq::resolve_irq_source(source)
+}
+
+#[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
+fn intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> crate::InterruptTriggerMode {
+    match binding {
+        ax_driver::BindingIrq::Source(ax_driver::BindingIrqSource::AcpiGsiRoute(route)) => {
+            match route.trigger {
+                modules::ax_hal::irq::AcpiIrqTrigger::Edge => {
+                    crate::InterruptTriggerMode::EdgeTriggered
+                }
+                modules::ax_hal::irq::AcpiIrqTrigger::Level => {
+                    crate::InterruptTriggerMode::LevelTriggered
+                }
+            }
+        }
+        _ => crate::InterruptTriggerMode::LevelTriggered,
+    }
 }
 
 impl HostPlatform for ArceOsHost {

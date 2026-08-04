@@ -18,7 +18,7 @@
  *     那张 256KB 表被保留 (bug 才会累积)。只 open+close 不留引用则文件会在下次
  *     注册时被 evict，累积不出来 —— 所以每个文件都用一个存活的 mmap 钉住。
  *
- * 修复 (kernel os/arceos/modules/axfs-ng/src/file/cache.rs):
+ * 修复 (kernel fs/ax-fs-ng/src/file/cache.rs):
  *   DISK_PAGE_CACHE_CAP 由 8192 降到 512 → 每文件预分配约 16KB (512 entry 放大到
  *   1024 槽 × 16B)。实际页帧仍按需分配、不受 cap 影响，此改动只砍空表开销。
  *

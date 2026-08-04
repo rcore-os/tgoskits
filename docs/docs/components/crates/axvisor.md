@@ -139,20 +139,16 @@ graph LR
 `axvisor` 不是普通库，一般不通过 `[dependencies]` 接入，而是通过它自己的构建工具链使用：
 
 ```bash
-cd os/axvisor
-cargo xtask defconfig qemu-aarch64
-cargo xtask build
+cargo xtask axvisor defconfig qemu-aarch64
+cargo xtask axvisor build
 ```
 
 ### 4.2 典型运行流程
 ```bash
-cd os/axvisor
-./scripts/setup_qemu.sh arceos
-
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo xtask axvisor test qemu \
+  --arch aarch64 \
+  --test-group normal \
+  --test-case smoke
 ```
 
 ### 4.3 开发重点建议
@@ -178,7 +174,7 @@ Axvisor 的核心质量指标来自完整运行路径：
 - VM 创建、启动、停止和异常退出。
 - 不同 board/vm config 组合。
 
-仓库内已有 `.github/workflows/test-qemu.yml` 等 CI，可作为实际验证基线。
+仓库内的 `test-suit/axvisor/` 用例及顶层 CI 可作为实际验证基线。
 
 ### 5.3 覆盖率要求
 - 配置解析、镜像路径、VM 状态切换应保持高覆盖。

@@ -1,8 +1,8 @@
 # `ax-alloc`
 
-> 路径：`os/arceos/modules/axalloc`
+> 路径：`memory/ax-alloc`
 > 类型：库 crate
-> 分层：ArceOS 层 / 内存分配运行时基础件
+> 分层：内存层 / 全局内存分配运行时基础件
 > 版本：`0.3.0-preview.3`
 > 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/default_impl.rs`、`src/axvisor_impl.rs`、`src/page.rs`、`src/tracking.rs`
 

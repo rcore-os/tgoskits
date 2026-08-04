@@ -93,7 +93,7 @@ fn stopped_or_removed_guest_invalidates_its_serial_backend_generation() {
     let removed_backend = mux.core.create_serial_backend(3);
     mux.remove(3);
     removed_backend.write(b"late output");
-    assert!(!mux.core.state.lock().guests.contains_key(&3));
+    assert!(!mux.core.lock_state().guests.contains_key(&3));
 }
 
 #[test]

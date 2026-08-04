@@ -32,7 +32,7 @@ flowchart LR
     virtComponents["VirtComponents: axvm axvm-types *_vcpu axdevice axaddrspace"]
     apiBridge["ApiBridge: axvisor_api + hal impl"]
     axvisorRuntime["AxvisorRuntime: main hal vmm task shell driver"]
-    guestSystems["GuestSystems: ArceOS Linux NimbOS RT-Thread FreeRTOS Zephyr"]
+    guestSystems["GuestSystems: ArceOS Linux RT-Thread FreeRTOS Zephyr"]
     boardConfig["BoardConfig: configs/board/*.toml"]
     vmConfig["VmConfig: configs/vms/**/*.toml 或 /guest/vm_default/*.toml"]
 
@@ -162,7 +162,7 @@ AxVisor 的配置体系分为两层：板级配置控制 Hypervisor 本身的构
 
 VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量、内存区域、内核镜像路径和设备直通规则。配置按平台优先组织：QEMU 配置放在 `configs/vms/qemu/<arch>/`，实体板卡配置放在 `configs/vms/<board>/`，文件名保留 Guest 和变体。
 
-`configs/vms/` 中包含 50 余份 Guest VM 配置，覆盖 ArceOS、Linux、NimbOS、RT-Thread、FreeRTOS、Zephyr 等 Guest。
+`configs/vms/` 中包含多份 Guest VM 配置，覆盖 ArceOS、Linux、RT-Thread、FreeRTOS、Zephyr 等 Guest。
 
 单个 VM 配置通常包含三段：
 
@@ -187,20 +187,20 @@ flowchart TD
     selectBoard["SelectBoard: cargo xtask defconfig qemu-aarch64"]
     buildToml["BuildToml: 生成 .build.toml"]
     buildKernel["BuildKernel: cargo xtask build"]
-    setupGuest["SetupGuest: ./scripts/setup_qemu.sh arceos"]
-    downloadImage["DownloadImage: 下载并解压 guest 镜像"]
+    selectCase["SelectCase: cargo xtask axvisor test qemu"]
+    downloadImage["DownloadImage: 按测试配置准备 guest 镜像"]
     genVmconfig["GenVmconfig: 生成 tmp/vmconfigs/*.generated.toml"]
-    copyRootfs["CopyRootfs: 复制 rootfs.img"]
-    runQemu["RunQemu: cargo xtask qemu --build-config --qemu-config --vmconfigs"]
+    prepareRootfs["PrepareRootfs: 按测试配置准备 rootfs"]
+    runQemu["RunQemu: 使用用例中的 build/qemu/vm 配置"]
     bootGuest["BootGuest: Guest 输出启动信息"]
 
     selectBoard --> buildToml
     buildToml --> buildKernel
-    buildKernel --> setupGuest
-    setupGuest --> downloadImage
+    buildKernel --> selectCase
+    selectCase --> downloadImage
     downloadImage --> genVmconfig
-    genVmconfig --> copyRootfs
-    copyRootfs --> runQemu
+    genVmconfig --> prepareRootfs
+    prepareRootfs --> runQemu
     runQemu --> bootGuest
 ```
 

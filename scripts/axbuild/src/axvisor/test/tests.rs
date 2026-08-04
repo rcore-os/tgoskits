@@ -228,16 +228,6 @@ fn rk3568_linux_guest_uses_the_virtual_16550_console() {
 }
 
 #[test]
-fn nimbos_uefi_case_uses_uefi_host_boot() {
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = workspace_root.join("test-suit/axvisor/uefi/qemu-nimbos/qemu-x86_64.toml");
-    let config: QemuConfig = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-
-    assert!(config.uefi);
-    assert!(config.to_bin);
-}
-
-#[test]
 fn x86_hypervisor_backend_cases_request_raw_bin_artifacts() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
@@ -574,7 +564,7 @@ fn discovers_qemu_cases_from_selected_group() {
 }
 
 #[test]
-fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
     let root = tempdir().unwrap();
     write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
     write_qemu_config_in_group(
@@ -586,11 +576,11 @@ fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
         "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
          = []\n",
     );
-    write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
     write_qemu_config_in_group(
         root.path(),
-        "uefi",
-        "qemu-nimbos",
+        "custom",
+        "firmware",
         "smoke",
         "x86_64",
         "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
@@ -602,11 +592,11 @@ fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
     assert_eq!(normal_cases.len(), 1);
     assert_eq!(normal_cases[0].case.name, "baseline");
 
-    let uefi_cases =
-        discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None).unwrap();
-    assert_eq!(uefi_cases.len(), 1);
-    assert_eq!(uefi_cases[0].case.name, "smoke");
-    assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
+    let custom_cases =
+        discover_qemu_cases(root.path(), "custom", "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(custom_cases.len(), 1);
+    assert_eq!(custom_cases[0].case.name, "smoke");
+    assert_eq!(custom_cases[0].build_group, "firmware");
 }
 
 #[test]

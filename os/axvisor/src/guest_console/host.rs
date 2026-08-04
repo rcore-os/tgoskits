@@ -38,10 +38,10 @@ fn console_reader_isolation_cpu(
 /// stay disabled until the host UART IRQ contract can transfer received bytes
 /// to that owner without introducing a second reader.
 pub(crate) fn configure_host_console_reader(vms: &[AxVMRef]) -> Result<()> {
-    ax_hal::console::set_input_irq_enabled(false);
+    axvm::host::console::set_input_irq_enabled(false);
 
     let isolation_cpu = console_reader_isolation_cpu(
-        ax_hal::cpu_num(),
+        axvm::host::cpu::count(),
         vms.iter()
             .flat_map(|vm| vm.vcpu_snapshots())
             .map(|vcpu| vcpu.phys_cpu_set),
@@ -67,7 +67,7 @@ pub(crate) fn configure_host_console_reader(vms: &[AxVMRef]) -> Result<()> {
     if !ax_task::set_current_affinity(owner_affinity) {
         bail!("failed to pin the host console reader to CPU {owner_cpu}");
     }
-    let actual_owner_cpu = ax_hal::percpu::this_cpu_id();
+    let actual_owner_cpu = axvm::host::cpu::current_id();
     if actual_owner_cpu != owner_cpu {
         bail!(
             "host console reader affinity selected CPU {owner_cpu}, but migration ended on CPU \
@@ -83,7 +83,7 @@ pub(crate) fn configure_host_console_reader(vms: &[AxVMRef]) -> Result<()> {
 /// No other Axvisor component may call the platform console input API.
 pub(crate) fn read_host_byte() -> Option<u8> {
     let mut byte = [0u8; 1];
-    (ax_hal::console::read_bytes(&mut byte) == 1).then_some(byte[0])
+    (axvm::host::console::read_bytes(&mut byte) == 1).then_some(byte[0])
 }
 
 /// Yields between polling attempts so other runnable host tasks can progress.
@@ -92,7 +92,7 @@ pub(crate) fn wait_for_host_input() {
 }
 
 pub(super) fn write_host_bytes(bytes: &[u8]) {
-    ax_hal::console::write_bytes(bytes);
+    axvm::host::console::write_bytes(bytes);
 }
 
 #[cfg(test)]

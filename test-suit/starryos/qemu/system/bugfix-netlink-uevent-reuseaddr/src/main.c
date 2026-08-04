@@ -39,10 +39,34 @@ static void expect_zero(int result, const char *name)
     failed++;
 }
 
+static void expect_reuseaddr_enabled(int fd, const char *name)
+{
+    int enabled = 0;
+    socklen_t enabled_len = sizeof(enabled);
+
+    errno = 0;
+    int result = getsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, &enabled_len);
+    if (result == 0 && enabled_len == sizeof(enabled) && enabled == 1) {
+        printf("PASS: %s\n", name);
+        passed++;
+        return;
+    }
+
+    printf("FAIL: %s: result=%d value=%d len=%u errno=%d (%s)\n",
+           name,
+           result,
+           enabled,
+           (unsigned int)enabled_len,
+           errno,
+           strerror(errno));
+    failed++;
+}
+
 static void check_netlink_listener(int protocol,
                                    unsigned int groups,
                                    const char *socket_name,
                                    const char *reuseaddr_name,
+                                   const char *reuseaddr_get_name,
                                    const char *bind_name)
 {
     errno = 0;
@@ -59,6 +83,7 @@ static void check_netlink_listener(int protocol,
     errno = 0;
     expect_zero(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)),
                 reuseaddr_name);
+    expect_reuseaddr_enabled(fd, reuseaddr_get_name);
 
     struct sockaddr_nl address = {
         .nl_family = AF_NETLINK,
@@ -77,11 +102,13 @@ int main(void)
                            0,
                            "create route netlink control socket",
                            "set SO_REUSEADDR on route netlink socket",
+                           "get SO_REUSEADDR from route netlink socket",
                            "bind route netlink socket");
     check_netlink_listener(NETLINK_KOBJECT_UEVENT,
                            1,
                            "create systemd-style uevent socket",
                            "set SO_REUSEADDR on uevent socket",
+                           "get SO_REUSEADDR from uevent socket",
                            "bind uevent multicast group 1");
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);

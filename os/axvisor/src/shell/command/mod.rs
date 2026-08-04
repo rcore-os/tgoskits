@@ -27,9 +27,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     string::ToString,
 };
-use std::{print, println};
-
-use spin::LazyLock;
+use std::{print, println, sync::LazyLock};
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);

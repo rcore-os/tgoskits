@@ -120,12 +120,17 @@ static int terminate_child(pid_t child)
 static int verify_nanosleep_wakes_while_child_spins(uint64_t spin_cycles)
 {
     int ready_pipe[2] = {-1, -1};
+    int start_pipe[2] = {-1, -1};
     pid_t child = -1;
     int result = -1;
 
     if (pipe(ready_pipe) != 0) {
         perror("pipe");
         return -1;
+    }
+    if (pipe(start_pipe) != 0) {
+        perror("pipe");
+        goto out;
     }
 
     child = fork();
@@ -135,16 +140,23 @@ static int verify_nanosleep_wakes_while_child_spins(uint64_t spin_cycles)
     }
     if (child == 0) {
         close(ready_pipe[0]);
+        close(start_pipe[1]);
         if (write(ready_pipe[1], "R", 1) != 1) {
             _exit(1);
         }
         close(ready_pipe[1]);
+        if (read_child_ready(start_pipe[0]) != 0) {
+            _exit(1);
+        }
+        close(start_pipe[0]);
         spin_in_user_mode(spin_cycles);
         _exit(0);
     }
 
     close(ready_pipe[1]);
     ready_pipe[1] = -1;
+    close(start_pipe[0]);
+    start_pipe[0] = -1;
     if (read_child_ready(ready_pipe[0]) != 0) {
         fprintf(stderr, "FAIL: child did not enter its CPU-bound user loop\n");
         goto out;
@@ -153,10 +165,13 @@ static int verify_nanosleep_wakes_while_child_spins(uint64_t spin_cycles)
     ready_pipe[0] = -1;
 
     const uint64_t started = monotonic_time_ns();
-    if (started == 0 || sleep_ns(PARENT_SLEEP_NS) != 0) {
+    if (started == 0 || write(start_pipe[1], "R", 1) != 1 ||
+        sleep_ns(PARENT_SLEEP_NS) != 0) {
         perror("nanosleep");
         goto out;
     }
+    close(start_pipe[1]);
+    start_pipe[1] = -1;
     const uint64_t finished = monotonic_time_ns();
     if (finished == 0 || finished < started) {
         fprintf(stderr, "FAIL: CLOCK_MONOTONIC did not provide a valid sleep duration\n");
@@ -171,6 +186,12 @@ static int verify_nanosleep_wakes_while_child_spins(uint64_t spin_cycles)
                 elapsed_ns, PARENT_WAKE_LIMIT_NS);
         goto out;
     }
+    if (waitpid(child, NULL, WNOHANG) != 0) {
+        fprintf(stderr,
+                "FAIL: child stopped spinning before the parent woke; "
+                "timer preemption was not exercised\n");
+        goto out;
+    }
 
     printf("PASS: nanosleep parent woke after %" PRIu64
            " ns while the same-CPU child was CPU-bound\n",
@@ -183,6 +204,12 @@ out:
     }
     if (ready_pipe[1] >= 0) {
         close(ready_pipe[1]);
+    }
+    if (start_pipe[0] >= 0) {
+        close(start_pipe[0]);
+    }
+    if (start_pipe[1] >= 0) {
+        close(start_pipe[1]);
     }
     if (child > 0 && terminate_child(child) != 0) {
         perror("terminate child");

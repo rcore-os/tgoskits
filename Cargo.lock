@@ -1605,15 +1605,10 @@ name = "axvisor"
 version = "0.5.23"
 dependencies = [
  "anyhow",
- "ax-crate-interface",
  "ax-driver",
- "ax-hal",
- "ax-kspin",
  "ax-std",
- "ax-sync",
  "axbacktrace",
  "axbuild",
- "axplat-dyn",
  "axtest",
  "axvm",
  "axvmconfig",
@@ -1622,7 +1617,6 @@ dependencies = [
  "prettyplease 0.3.0",
  "proc-macro2",
  "quote",
- "spin",
  "syn 3.0.3",
  "tokio",
  "toml 1.1.4+spec-1.1.0",

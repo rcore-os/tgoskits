@@ -264,7 +264,7 @@ Axvisor Runtime 通过虚拟化组件管理 Guest 生命周期，并通过平台
 |--------|---------|
 | 虚拟化抽象 | `axvm`（VM 与 vCPU wrapper/run loop）、`axvm-types`（共享 vCPU/exit 协议）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
-| Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
+| Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread |
 | 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |
 
 ## 4. 构建与配置
