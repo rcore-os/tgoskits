@@ -11,6 +11,7 @@ pub mod control;
 pub mod controller_csv;
 pub mod endpoint;
 pub mod neural;
+mod neural_model_generated;
 pub mod reliability;
 pub mod wire;
 

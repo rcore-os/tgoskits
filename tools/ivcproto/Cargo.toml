@@ -14,8 +14,10 @@ std = []
 [dependencies]
 thiserror.workspace = true
 
+[dev-dependencies]
+anyhow = { workspace = true, features = ["std"] }
+
 [[bin]]
 name = "ivcproto"
 path = "src/bin/ivcproto.rs"
 required-features = ["std"]
-

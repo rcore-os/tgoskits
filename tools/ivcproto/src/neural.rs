@@ -5,28 +5,20 @@
 
 use thiserror::Error;
 
-use crate::control::{
-    ControlCommand, ControlMode, ControlOperation, MAX_ACTUATOR_PERMILLE, MAX_TEMPERATURE_MILLI_C,
-    MIN_TEMPERATURE_MILLI_C,
+#[cfg(test)]
+use crate::neural_model_generated::GOLDEN_CASES;
+pub use crate::neural_model_generated::{MODEL_ID, MODEL_SOURCE_SHA256};
+use crate::{
+    control::{
+        ControlCommand, ControlMode, ControlOperation, MAX_ACTUATOR_PERMILLE,
+        MAX_TEMPERATURE_MILLI_C, MIN_TEMPERATURE_MILLI_C,
+    },
+    neural_model_generated::{
+        ACTUATOR_INPUT_SCALE, ACTUATOR_OUTPUT_SCALE, ACTUATOR_ROUNDING_HALF, ERROR_SCALE, HIDDEN,
+        HIDDEN_BIASES, HIDDEN_WEIGHTS, INPUTS, OUTPUT_BIAS, OUTPUT_MAX, OUTPUT_MIN, OUTPUT_WEIGHTS,
+        RATE_SCALE, SETPOINT_OFFSET_MILLI_C, SETPOINT_SCALE,
+    },
 };
-
-pub const MODEL_ID: &str = "thermal-4x6x1-v1";
-const INPUTS: usize = 4;
-const HIDDEN: usize = 6;
-
-// These fixed weights implement a gain-scheduled thermal controller. They are
-// checked into source so experiments never depend on host RNG or model files.
-const HIDDEN_WEIGHTS: [[f32; INPUTS]; HIDDEN] = [
-    [1.0, 0.0, 0.0, 0.0],
-    [-1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, -1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
-const HIDDEN_BIASES: [f32; HIDDEN] = [0.0; HIDDEN];
-const OUTPUT_WEIGHTS: [f32; HIDDEN] = [1.3, -0.5, 0.9, -0.18, 0.18, 0.1];
-const OUTPUT_BIAS: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ThermalObservation {
@@ -56,10 +48,10 @@ impl ThermalObservation {
             ));
         }
         Ok([
-            (self.setpoint_milli_c - self.temperature_milli_c) as f32 / 50_000.0,
-            (self.setpoint_milli_c - 20_000) as f32 / 80_000.0,
-            self.temperature_rate_milli_c_per_s as f32 / 10_000.0,
-            f32::from(self.previous_actuator_permille) / 1_000.0,
+            (self.setpoint_milli_c - self.temperature_milli_c) as f32 / ERROR_SCALE,
+            (self.setpoint_milli_c - SETPOINT_OFFSET_MILLI_C) as f32 / SETPOINT_SCALE,
+            self.temperature_rate_milli_c_per_s as f32 / RATE_SCALE,
+            f32::from(self.previous_actuator_permille) / ACTUATOR_INPUT_SCALE,
         ])
     }
 }
@@ -76,7 +68,7 @@ impl NeuralController {
         let output = self.infer_normalized(observation.normalized()?)?;
         // The clamped output is nonnegative, so adding one half implements
         // round-to-nearest without requiring a platform math library.
-        let actuator_permille = (output * 1_000.0 + 0.5) as u16;
+        let actuator_permille = (output * ACTUATOR_OUTPUT_SCALE + ACTUATOR_ROUNDING_HALF) as u16;
         Ok(ControlCommand {
             operation: ControlOperation::SetActuator,
             mode: ControlMode::Neural,
@@ -109,7 +101,7 @@ impl NeuralController {
         if !output.is_finite() {
             return Err(NeuralError::NonFiniteOutput);
         }
-        Ok(output.clamp(0.0, 1.0))
+        Ok(output.clamp(OUTPUT_MIN, OUTPUT_MAX))
     }
 }
 
@@ -350,6 +342,20 @@ mod tests {
             NeuralController.infer_normalized([f32::NAN, 0.0, 0.0, 0.0]),
             Err(NeuralError::NonFiniteInput)
         );
+    }
+
+    #[test]
+    fn generated_native_constants_match_frozen_golden_prefix() {
+        for (input_bits, expected_output_bits, expected_actuator) in GOLDEN_CASES {
+            let output = NeuralController
+                .infer_normalized(input_bits.map(f32::from_bits))
+                .unwrap();
+            assert_eq!(output.to_bits(), expected_output_bits);
+            assert_eq!(
+                (output * ACTUATOR_OUTPUT_SCALE + ACTUATOR_ROUNDING_HALF) as u16,
+                expected_actuator
+            );
+        }
     }
 
     #[test]

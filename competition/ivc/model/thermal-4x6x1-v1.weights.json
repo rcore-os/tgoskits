@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "model_id": "thermal-4x6x1-v1",
+  "float_format": "IEEE-754 binary32; JSON decimals are rounded to nearest, ties to even",
+  "graph": {
+    "input_name": "normalized_observation",
+    "input_shape": [
+      1,
+      4
+    ],
+    "hidden_activation": "Relu",
+    "output_activation": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "operator": "Clip"
+    },
+    "output_name": "control_fraction",
+    "output_shape": [
+      1,
+      1
+    ]
+  },
+  "layers": [
+    {
+      "bias": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "input_features": 4,
+      "name": "hidden",
+      "output_features": 6,
+      "weight_layout": "output_features_by_input_features",
+      "weights": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          -1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "bias": [
+        0.02
+      ],
+      "input_features": 6,
+      "name": "output",
+      "output_features": 1,
+      "weight_layout": "output_features_by_input_features",
+      "weights": [
+        [
+          1.3,
+          -0.5,
+          0.9,
+          -0.18,
+          0.18,
+          0.1
+        ]
+      ]
+    }
+  ],
+  "normalization": {
+    "features": [
+      {
+        "denominator": 50000.0,
+        "expression": "(setpoint_milli_c - temperature_milli_c) / denominator",
+        "name": "temperature_error"
+      },
+      {
+        "denominator": 80000.0,
+        "expression": "(setpoint_milli_c - offset_milli_c) / denominator",
+        "name": "setpoint",
+        "offset_milli_c": 20000
+      },
+      {
+        "denominator": 10000.0,
+        "expression": "temperature_rate_milli_c_per_s / denominator",
+        "name": "temperature_rate"
+      },
+      {
+        "denominator": 1000.0,
+        "expression": "previous_actuator_permille / denominator",
+        "name": "previous_actuator"
+      }
+    ],
+    "raw_ranges": {
+      "previous_actuator_permille": [
+        0,
+        1000
+      ],
+      "setpoint_milli_c": [
+        -40000,
+        150000
+      ],
+      "temperature_milli_c": [
+        -40000,
+        150000
+      ],
+      "temperature_rate_milli_c_per_s": [
+        -100000,
+        100000
+      ]
+    }
+  },
+  "actuator": {
+    "maximum_permille": 1000,
+    "rounding": "truncate(control_fraction * scale + half)",
+    "rounding_half": 0.5,
+    "scale": 1000.0
+  }
+}

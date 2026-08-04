@@ -1,0 +1,5 @@
+# M4-0/M4-1 deterministic ONNX export environment.
+# RKNN Toolkit2 is intentionally locked separately after its license and ABI gate.
+numpy==1.26.4
+onnx==1.16.1
+protobuf==4.25.4

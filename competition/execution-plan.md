@@ -32,22 +32,24 @@
 | ACK loss | 正式 3/3 已完成 | 汇入最终报告 |
 | ERROR | 正式 3/3 已完成 | 汇入最终报告 |
 | restart recovery | `6adf49e09` 实体正式 3/3 已完成，campaign formal gate 为 true | 汇入最终报告并保留 pre-reset deadline miss 不利指标 |
-| StarryOS manual/neural full | 调试配对已完成，正式矩阵未完成 | clean commit 上完成 5 对正式运行 |
-| ONNX/RKNN/ORT | 方案已确定，尚未完成正式实现 | 先通过 RKNN NPU 可行性门，再完成实体闭环 |
+| StarryOS manual/neural full | `f4ced3758` 上正式 5 对、10/10 half 已完成 | 汇入最终报告，同时披露 neural 最大超调退化和无稳定延迟优势 |
+| 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 提交并冻结生成流水线与哈希 |
+| RK3588 NPU | 平台/所有权审计已完成；当前 AxVisor guest 尚未获得 NPU 资源 | 完成 RKNN 2.3.2 FP16 转换、Linux reference，再实现安全 guest handoff |
+| ONNX Runtime CPU | host CPU EP 10,000 组差分已通过；StarryOS `.ort`/minimal runtime 尚未实现 | 冻结 AArch64 musl 版本与 operator config，通过 M4-plus 门后进入实体矩阵 |
 | 报告与视频 | 待最终数据冻结 | 所有正式结果通过聚合门后更新 |
 
 当前执行顺序固定为：
 
 ```text
-E0 工作区与证据冻结
-  -> E1 restart 证据加固与正式 3/3
-  -> E2 StarryOS manual/neural 正式 5 对
-  -> E3 同源 ONNX 与 RKNN NPU 主路线
+E0 工作区与证据冻结（完成）
+  -> E1 restart 证据加固与正式 3/3（完成）
+  -> E2 StarryOS manual/neural 正式 5 对（完成）
+  -> E3 同源 ONNX 与 RKNN NPU 主路线（执行中）
   -> E4 ONNX Runtime CPU 对照路线
   -> E5 总体验收、报告和视频
 ```
 
-E3 的无板转换工作可以与等待板卡并行，但不得改变 E1/E2 的正式配置、抢占板卡或延迟 P0/P1 证据闭环。
+E0-E2 的正式证据已冻结，不因 M4 结果调整阈值或重跑成功 half。E3/E4 可以共享同一 ONNX 与 golden corpus，但 RKNN 工具链、ORT 工具链和板端 Runtime 必须分别锁定，不能用 host 成功替代实体 StarryOS 结果。
 
 ## 3. 全程执行约束
 
@@ -243,11 +245,13 @@ bash competition/ivc/run-orangepi-5-plus.sh fault-restart \
 
 ### 6.2 验收原则
 
-- [ ] manual 5 次、neural native 5 次全部完成并通过 raw/hash/fsck 门。
-- [ ] 每一对配置除策略外完全相同。
-- [ ] 报告逐对改善、median、IQR 和 worst-of-runs。
-- [ ] 已知 RMSE/IAE 改善与最大超调退化同时进入结论。
-- [ ] 不把 Linux/QEMU manual 结果作为 StarryOS 实体基线。
+- [x] manual 5 次、neural native 5 次全部完成并通过 raw/hash/fsck 门。
+- [x] 每一对配置除策略外完全相同。
+- [x] 报告逐对改善、median、IQR 和 worst-of-runs。
+- [x] 已知 RMSE/IAE 改善与最大超调退化同时进入结论。
+- [x] 不把 Linux/QEMU manual 结果作为 StarryOS 实体基线。
+
+冻结记录（2026-08-04）：正式活动 `starry-ivc-control-formal-20260804-v5` 来自 clean commit `f4ced37584964aba56e07ff060ae58374608bc26`，按 AB/BA/AB/BA/AB 完成 5 对、10 个有效 half。neural 的 RMSE/IAE 分别改善约 35.93%/51.94%，但最大超调退化约 96.32%；full-loop p99 只有 2/5 配对有利，因此只声明控制误差改善，不声明实时延迟优势。该证据已由提交 `d43dfbbffa9139e53c5e96f502badf00be953cf0` 汇入文档。
 
 ## 7. E3：同源 ONNX 与 RK3588 NPU 主路线
 
@@ -269,7 +273,25 @@ canonical weights JSON
 - 生成 manifest，记录工具版本、转换参数、算子列表、许可证和所有产物 SHA-256。
 - 建立 golden vectors 和 10,000 组确定性差分输入。
 
-### 7.2 RKNN NPU 可行性门
+M4-0/M4-1 已完成并通过以下门：
+
+- canonical weights JSON 是唯一可编辑数学来源；Rust `f32` 常量由其按精确 bit pattern 生成；
+- Python 3.10.12、NumPy 1.26.4、ONNX 1.16.1、protobuf 4.25.4 已锁定；
+- 两个全新临时目录重建得到字节一致的 Rust、ONNX、golden vectors 和 manifest；
+- Rust native oracle 对 10,000/10,000 个输入逐 bit 一致；
+- host ONNX Runtime CPU EP 最大绝对误差为 `2.980232238769531e-07`，9999/10000 个执行器命令逐值一致，另 1 个是同一 `0.4745` 半千分位边界两侧的相邻命令，物质性不一致为 0。
+
+### 7.2 RK3588 NPU 平台与所有权审计
+
+审计结论记录在 [`model/rk3588-npu-passthrough-audit.md`](ivc/model/rk3588-npu-passthrough-audit.md)：
+
+- 仓库已有裸机 StarryOS `librknnrt.so -> /dev/dri/card1 -> RKNPU` 路线，但当前比赛 AxVisor guest 配置没有 NPU passthrough，合成 guest DTB 也没有 NPU 节点；两者不能混为同一证据。
+- 实体 Linux DTB 已冻结 NPU core MMIO `0xfdab0000`/`0xfdac0000`/`0xfdad0000`（各 `0x10000`）、GIC SPI 110-112、四段 IOMMU MMIO，以及 PMU/CRU 依赖。
+- PMU 与 CRU 是全 SoC 共享资源，不整段直通。首个可验证方案由 AxVisor host board glue 完成 power/clock/reset 初始化并冻结时钟，随后把 NPU core MMIO 独占交给 StarryOS guest。
+- 初始 spike 使用 polling，不向 guest 暴露 IRQ、IOMMU、OPP 或 regulator；稳定后再分别评审中断和 IOMMU 所有权，禁止 host/guest 同时操作同一 NPU 或共享控制寄存器。
+- 在 guest 资源 handoff、真实 submit/device-time 和零 CPU fallback 均有证据前，不得宣称 AxVisor + StarryOS 已完成 NPU 推理。
+
+### 7.3 RKNN NPU 可行性门
 
 RK3588 NPU 不通过 ONNX Runtime CPU EP 使用。本项目的 NPU 主路径固定为：
 
@@ -282,13 +304,13 @@ ONNX -> RKNN Toolkit2 -> .rknn
 
 按以下顺序执行：
 
-1. 在固定 WSL2 环境中导出 ONNX，并验证二次生成一致性。
-2. 用固定 RKNN Toolkit2 版本生成 RK3588 FP16 `.rknn`，检查关键算子全部进入 NPU 图。
-3. 在板卡 Linux 中完成同模型 reference inference，冻结 Runtime/driver 版本和输出。
-4. 审计 StarryOS 的 RKNPU 设备节点、ioctl ABI、mmap、DMA/IOMMU、cache、一致性和中断路径。
-5. 审计 `librknnrt.so` 的 AArch64 动态依赖以及 StarryOS 所需 syscall；只补齐语义明确、可回归的最小缺口。
-6. 在 StarryOS 完成离线单次、循环 10,000 次和多次加载/卸载测试。
-7. 接入现有 IVC 控制器，完成 StarryOS -> Zephyr 闭环 full profile。
+1. [x] 在固定 WSL2 环境中导出 ONNX，并验证二次生成一致性。
+2. [ ] 用固定 RKNN Toolkit2 2.3.2 生成 RK3588 FP16 `.rknn`，检查关键算子全部进入 NPU 图并记录 wheel 来源、SHA-256 和许可证边界。
+3. [ ] 在板卡 Linux 中完成同模型 reference inference，冻结 Runtime 2.3.2、板端 driver 版本和输出。
+4. [x] 审计 StarryOS RKNPU 设备节点、ioctl ABI、mmap、DMA/IOMMU、cache、中断路径和 AxVisor guest 资源缺口。
+5. [ ] 实现 host 初始化/guest 独占 handoff，并审计 `librknnrt.so` 的 AArch64 动态依赖以及 StarryOS 所需 syscall；只补齐语义明确、可回归的最小缺口。
+6. [ ] 在 StarryOS 完成离线单次、循环 10,000 次和多次加载/卸载测试。
+7. [ ] 接入现有 IVC 控制器，完成 StarryOS -> Zephyr 闭环 full profile。
 
 每次 NPU 结果必须记录：
 
@@ -300,7 +322,7 @@ ONNX -> RKNN Toolkit2 -> .rknn
 - 初始化、推理、端到端延迟和 deadline miss；
 - 明确的零 CPU fallback 证据。
 
-### 7.3 RKNN go/no-go
+### 7.4 RKNN go/no-go
 
 只有以下条件全部满足才进入正式 NPU 5 次 full：
 
@@ -310,6 +332,8 @@ ONNX -> RKNN Toolkit2 -> .rknn
 - [ ] 能证明实际 NPU submit/device execution，而非仅初始化 Runtime。
 - [ ] 控制周期、rootfs 空间、内存高水位和重复性满足预算。
 
+数值验收不把浮点舍入边界误写成“100% 命令逐值一致”：native/ORT 的浮点误差必须 `<= 1e-6`，RKNN FP16 初始门为 `<= 1e-3`；同时报告执行器 exact-match 数量。非 exact 只允许相差 1 个千分位，且两个输出都位于同一个半千分位取整边界的对应误差窗内；任何更大差值、不同边界、NaN/Inf 或 shape mismatch 都是物质性失败。RKNN 的最终误差窗必须在固定 corpus 上预注册，正式数据开始后不得放宽。
+
 若只能依赖不可再分发组件、ABI 无法兼容、只能在 Linux 工作、实际落入 CPU 或持续错过 deadline，则记录 M4-core no-go 证据。不得把 Runtime 初始化成功称为 NPU 推理成功。
 
 对于 4×6×1 小模型，NPU 提交开销可能大于 native CPU 计算。验收目标是证明硬件卸载和可扩展性，不预设“必然加速”；只有 wall-clock 数据确实改善时才使用“加速”表述。
@@ -318,11 +342,13 @@ ONNX -> RKNN Toolkit2 -> .rknn
 
 ONNX Runtime 路线定位为 CPU 对照和标准 Runtime 兼容性增强项，不承担 RK3588 NPU 加速：
 
-1. 固定 ONNX Runtime release/commit 和 AArch64 musl minimal build 配置。
-2. 从同一 ONNX 生成 `.ort` 与 reduced operator/type config。
-3. 先在 host/QEMU 完成加载、golden vectors 和 10,000 组差分。
-4. 审计 StarryOS 的线程、futex、mmap、时间、文件和动态链接需求。
-5. 通过可行性门后再执行 StarryOS 离线测试和 5 次 full 闭环。
+1. [ ] 固定 ONNX Runtime release/commit 和 AArch64 musl minimal build 配置。
+2. [ ] 从同一 ONNX 生成 `.ort` 与 reduced operator/type config。
+3. [x] 在 host CPU EP 完成加载、golden vectors 和 10,000 组差分；最大绝对误差 `2.980232238769531e-07`，物质性命令不一致为 0。
+4. [ ] 审计 StarryOS 的线程、futex、mmap、时间、文件和动态链接需求。
+5. [ ] 通过可行性门后执行 StarryOS 离线测试和 5 次 full 闭环。
+
+环境拆分为两条可复现路径：核心 ONNX/RKNN 转换继续使用锁定的 Python 3.10.12；ORT host/构建 spike 使用独立 Python 3.12 环境，因为当前 ORT 1.24/1.25 wheel 不再提供 CPython 3.10 构建。最终 ORT 版本、lock 和 AArch64 musl 配置必须在实体可行性门确认后一起冻结，不能把探索环境写成正式工具链。
 
 退出条件：
 
@@ -339,9 +365,6 @@ ONNX Runtime 路线定位为 CPU 对照和标准 Runtime 兼容性增强项，�
 
 | 类别 | 配置 | 次数 |
 | --- | --- | ---: |
-| 故障 | restart recovery | 3 |
-| 控制 | StarryOS manual full | 5 |
-| 控制 | StarryOS neural native full | 5 |
 | 控制 | StarryOS neural RKNN NPU full | 5（通过 RKNN 门后） |
 | 控制 | StarryOS neural ONNX Runtime CPU full | 5（通过 ORT 门后） |
 | 健康检查 | 每个最终 smoke 镜像 | 3 |
@@ -358,9 +381,9 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ### 9.3 最终完成定义
 
-- [ ] 任务一、二、三均有 StarryOS 实体板正式结果。
-- [ ] 受控干扰场景中的 p99 与 worst-case 改善由多次配对 raw data 支撑，并明确不外推到未通过场景。
-- [ ] manual/neural 为同板同配置 5 对正式实验。
+- [x] 任务一、二、三均有 StarryOS 实体板正式结果。
+- [x] 受控干扰场景中的 p99 与 worst-case 改善由多次配对 raw data 支撑，并明确不外推到未通过场景。
+- [x] manual/neural 为同板同配置 5 对正式实验。
 - [x] ACK loss、ERROR、restart recovery 均为实体跨客户机 3/3。
 - [ ] ONNX 是唯一跨后端模型来源，所有模型和工具链版本可追溯。
 - [ ] RKNN 后端有真实 RK3588 NPU 执行证据；若 no-go，则限制原因和原始证据完整。
@@ -385,6 +408,6 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ## 11. 最近三项动作
 
-1. 冻结 StarryOS manual/neural 正式 5 对 AB/BA 顺序、唯一变量、clean source、镜像哈希与 paired 验收门。
-2. 先运行不计入正式数据的同配置 clean smoke；通过后执行 5 对 full 实体矩阵，失败批次完整留档且不拼接替换。
-3. 聚合逐对 RMSE/IAE、最大超调、稳定时间、p99 与 worst-of-runs；E2 formal gate 通过后再进入同源 ONNX/RKNN NPU 实现。
+1. 提交并冻结 M4-0/M4-1：canonical weights、generated Rust、ONNX、10,000 golden vectors、manifest、锁文件和确定性二次重建门。
+2. 完成 M4-2：固定 RKNN Toolkit2 2.3.2 获取/校验流程，转换 RK3588 FP16 `.rknn`，保存完整日志并确认关键算子无 CPU fallback。
+3. 使用同一 `.rknn` 先跑 OrangePi Linux 10,000 次 reference；通过数值、device-time 和版本门后，再实现 AxVisor host 初始化与 StarryOS guest 独占 NPU handoff。

@@ -1,0 +1,97 @@
+{
+  "artifacts": {
+    "golden_vectors": {
+      "path": "competition/ivc/model/golden-vectors.json",
+      "sha256": "f7255de6c730924781bd3703ecac717bd222fa9ed8488e52dd87e20204278ef6",
+      "size_bytes": 6034757
+    },
+    "native_rust": {
+      "path": "tools/ivcproto/src/neural_model_generated.rs",
+      "sha256": "ab6fa230cca473dbfc97cf2216983093da47d6362da810aa699be43259366e4e",
+      "size_bytes": 4657
+    },
+    "onnx": {
+      "dtype": "float32",
+      "ir_version": 8,
+      "opset": 13,
+      "path": "competition/ivc/model/thermal-4x6x1-v1.onnx",
+      "sha256": "b21b3441908040c796a7528e6d941ae1f15d0b6fad8362a9d6492cf5b479b5b6",
+      "size_bytes": 1016
+    },
+    "ort": {
+      "status": "pending-m4-plus"
+    },
+    "rknn": {
+      "status": "pending-m4-2"
+    }
+  },
+  "graph": {
+    "input": {
+      "dtype": "float32",
+      "name": "normalized_observation",
+      "shape": [
+        1,
+        4
+      ]
+    },
+    "nodes": [
+      "Gemm",
+      "Relu",
+      "Gemm",
+      "Clip"
+    ],
+    "output": {
+      "dtype": "float32",
+      "name": "control_fraction",
+      "shape": [
+        1,
+        1
+      ]
+    }
+  },
+  "model_id": "thermal-4x6x1-v1",
+  "policy": {
+    "quantization": "disabled",
+    "training": "none",
+    "weight_tuning_after_freeze": "forbidden"
+  },
+  "runtime_compatibility_target": {
+    "librknnrt": {
+      "build_id": "4f5001b81d147d0db1f48e68fe87a6029caa2ccb",
+      "reported_version": "2.3.2 (429f97ae6b@2025-04-09T09:09:27)",
+      "sha256": "d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8"
+    },
+    "rknpu_driver_abi": "0.9.8",
+    "target_platform": "rk3588"
+  },
+  "schema_version": 1,
+  "sources": {
+    "exporter": {
+      "path": "competition/ivc/model/export_thermal_onnx.py",
+      "sha256": "3c32864a3d87939bfaa0a371299187ebf8be79cf7b9cde364dd1a64e6ad7bdb8",
+      "size_bytes": 24897
+    },
+    "requirements_lock": {
+      "path": "competition/ivc/model/requirements-lock.txt",
+      "sha256": "48b7c598d7006d34fd85346455d82c86cad8aa0bc85bd738edcf554f1afb1a2c",
+      "size_bytes": 6730
+    },
+    "weights": {
+      "path": "competition/ivc/model/thermal-4x6x1-v1.weights.json",
+      "sha256": "10e22ea81ee5dbfae0e1459646e55963f14d6f2149e2bab83e4fc75fbf586029",
+      "size_bytes": 2767
+    }
+  },
+  "toolchain": {
+    "build_host": "WSL2 Ubuntu 22.04 x86_64",
+    "numpy": "1.26.4",
+    "onnx": "1.16.1",
+    "protobuf": "4.25.4",
+    "python": "3.10.12",
+    "rknn_toolkit2": {
+      "candidate_version": "2.3.2",
+      "source": "https://github.com/airockchip/rknn-toolkit2/releases/tag/v2.3.2",
+      "status": "not-frozen-before-m4-2-abi-gate"
+    }
+  }
+}

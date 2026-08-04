@@ -1,6 +1,6 @@
 # Competition Improvement Plan
 
-> 状态：执行中（M0 已闭环；M1 的 StarryOS 同板 manual/neural 5 对正式矩阵已完成，10/10 个 half 和最终 Linux 根文件系统门均通过；M2 的 controlled-interference 5 对正式矩阵、shared/partitioned 双 soak 和 guest CPU1 stress 5 对正式矩阵均已完成；M3 的 ACK loss、ERROR、restart recovery 三种实体 profile 均已完成 3/3 次并通过正式 campaign 门。M0-M3 证据冻结，当前进入 M4；M5 待执行）
+> 状态：执行中（M0-M3 已闭环并冻结；M4-0/M4-1 的 canonical weights、Rust oracle、10,000 golden vectors、确定性 ONNX 和 manifest 已完成，RK3588 NPU 平台/所有权审计已完成；当前执行 M4-2 RKNN FP16 转换，M4-3/M4-4 实体 NPU、M4-plus ORT 实体路线和 M5 待执行）
 >
 > 更新日期：2026-08-04
 >
@@ -17,7 +17,7 @@
 | P0（已关闭） | 实体板原先没有 StarryOS 手动控制基线 | 同一实体板、同一工作负载的 StarryOS manual/neural 5 对正式矩阵已完成 |
 | P1（已关闭） | ERROR、ACK 丢失和重启恢复原先缺少完整实体证据 | 三种 fault profile 均已完成 3/3 次、自动结束并通过实体 campaign 门 |
 | P1（部分关闭） | 实体板 full/smoke 原先只有一次运行 | native manual/neural full 已各 5 次，三种故障已各 3 次；M4 新增后端仍需各自完成规定次数 |
-| P2 | 4×6×1 网络缺少标准模型来源和硬件推理证据 | 不训练；把固定权重确定性导出为 ONNX，同源生成 `.rknn` 与 `.ort`，优先在 StarryOS 实体板完成 RK3588 NPU 推理，并保留 ONNX Runtime CPU 对照 |
+| P2（部分关闭） | 4×6×1 网络原先缺少标准模型来源和硬件推理证据 | 固定权重与确定性 ONNX 来源已完成；继续同源生成 `.rknn` 与 `.ort`，优先在 StarryOS 实体板完成 RK3588 NPU 推理，并保留 ONNX Runtime CPU 对照 |
 
 完成顺序为：
 
@@ -110,7 +110,7 @@ M3 restart recovery 正式证据位于
 4. 正式 5 组 AB/BA controlled-interference、shared/partitioned 双 soak 和 guest CPU1 stress 5-pair 矩阵均已完成并通过各自机器门；冻结这三组 M2 正式证据，不再依据结果调整阈值或重跑成功 half。
 5. 冻结 ACK loss、ERROR 和 restart recovery 各 3/3 次的 M3 正式证据，不再依据结果修改故障契约或删除失败批次。
 6. 冻结 M1 v5 的 5 对 manual/native 正式证据；v4 仅作为分析器缺陷和 fail-closed 行为的无效档案，不得拼接或重标为成功批次。
-7. 进入 M4：先冻结 canonical weights、golden corpus 和确定性 ONNX 导出，再完成 RKNN 转换/Linux reference/StarryOS NPU 验证；ORT CPU 同时做可行性门，但不得阻塞 RKNN 主路线。
+7. M4-0/M4-1 与 NPU 平台审计已完成；当前冻结并审计 RKNN Toolkit2 2.3.2，生成 FP16 `.rknn`，随后按 Linux reference、AxVisor host 初始化/guest 独占 handoff、StarryOS NPU 离线与闭环顺序推进。ORT CPU 同时做独立可行性门，但不得阻塞 RKNN 主路线。
 8. M4 通过后执行 M5 的报告一致性复核、复现材料和视频录制。
 
 ## 2. 执行约束
@@ -744,23 +744,37 @@ fixed weights
 
 ### 7.2 模型和工具链产物
 
-计划新增：
+M4-0/M4-1 当前已生成并验证：
 
 ```text
 competition/ivc/model/
 ├── README.md
 ├── export_thermal_onnx.py
-├── convert_thermal_ort.py
-├── convert_thermal_rknn.py
 ├── verify_thermal_models.py
+├── rebuild-check.sh
+├── requirements.in
 ├── requirements-lock.txt
 ├── thermal-4x6x1-v1.weights.json
 ├── thermal-4x6x1-v1.onnx
-├── thermal-4x6x1-v1.ort
-├── thermal-4x6x1-v1-rk3588-fp16.rknn
-├── required_operators_and_types.config
 ├── golden-vectors.json
-└── model-manifest.json
+├── model-manifest.json
+└── rk3588-npu-passthrough-audit.md
+
+tools/ivcproto/
+├── examples/thermal_oracle.rs
+└── src/neural_model_generated.rs
+```
+
+M4-2/M4-plus 待生成：
+
+```text
+competition/ivc/model/
+├── convert_thermal_rknn.py
+├── thermal-4x6x1-v1-rk3588-fp16.rknn
+├── rknn-conversion.log
+├── convert_thermal_ort.py
+├── thermal-4x6x1-v1.ort
+└── required_operators_and_types.config
 ```
 
 标准模型图保持为：
@@ -782,7 +796,12 @@ competition/ivc/model/
 
 ### 7.3 WSL2 确定性转换环境
 
-WSL2 Ubuntu 22.04 继续作为唯一模型构建主机。仓库脚本必须能从干净 WSL2 环境完成以下流程：
+WSL2 Ubuntu 22.04 继续作为唯一模型构建主机。工具环境分开冻结：
+
+- ONNX canonical/RKNN 路线使用 Python 3.10.12，并锁定 NumPy 1.26.4、ONNX 1.16.1、protobuf 4.25.4；这条环境同时满足 RKNN Toolkit2 2.3.2 的 CPython 版本要求。
+- ORT host/AArch64 musl spike 使用独立 Python 3.12 环境。当前 ORT 1.24/1.25 不提供 CPython 3.10 wheel，不能为了共用一个环境而降低或混装核心/RKNN 锁；最终 ORT 版本、依赖 lock、`.ort` 和 Runtime build 必须作为一个整体冻结。
+
+仓库脚本必须能从干净 WSL2 环境完成以下流程：
 
 1. 创建隔离 Python 环境并按 hash 安装锁定依赖；
 2. 从 canonical weights 生成或校验 Rust 常量并导出 `.onnx`，运行 ONNX checker；
@@ -791,6 +810,8 @@ WSL2 Ubuntu 22.04 继续作为唯一模型构建主机。仓库脚本必须能�
 5. 使用固定 ONNX Runtime 版本生成 `.ort` 和 reduced operator/type 配置；
 6. 生成 golden vectors、manifest 和全部哈希；
 7. 第二次在全新临时目录重建，并比较语义和产物记录。
+
+M4-0/M4-1 已达到以下确定性基线：两个独立临时目录重建的 Rust 常量、ONNX、10,000 vectors 和 manifest 均字节一致；Rust oracle 为 10,000/10,000 逐 bit 一致；host ORT CPU EP 的最大绝对误差为 `2.980232238769531e-07`，物质性执行器命令不一致为 0。
 
 RKNN Toolkit2 2.3.2 是首个候选版本，但只有在它与仓库内 `librknnrt.so`、StarryOS RKNPU ioctl ABI 和实体板驱动共同通过兼容性 spike 后才冻结。不得只升级转换器而不记录或验证 Runtime/driver 组合。厂商 wheel 或二进制库若不允许直接纳入仓库，则保存官方来源、版本、SHA-256 和自动下载/校验步骤，不复制未授权文件。
 
@@ -815,6 +836,15 @@ InferenceBackend
 - NPU core mask 在正式实验前通过单核/多核 spike 冻结；之后不得按单次结果调整。
 - 当前 `rockchip-npu` 直接 operation API 主要覆盖 INT8 MatMul，不用它手写完整模型图，也不绕过 RKNN 编译器拼寄存器命令。
 
+AxVisor guest 的硬件所有权另设明确边界：
+
+- 当前比赛 guest 配置没有 NPU passthrough，合成 DTB 也没有 NPU 节点；裸机 StarryOS 的既有 RKNPU 成功不能代替 guest 直通证据。
+- PMU 和 CRU 是 SoC 共享控制块，由 AxVisor host board glue 独占完成 NPU power/clock/reset 初始化并冻结工作频率，不整段暴露给 guest。
+- 初始化完成后，NPU core MMIO 只交给一个 StarryOS guest；host 不再提交 NPU 工作。首个 spike 使用 polling，暂不暴露 IRQ、IOMMU、OPP 或 regulator。
+- 既有 StarryOS RKNPU 连续 DMA/IOMMU-bypass 假设和 4 GiB 以下地址限制必须在 guest 内存布局中显式验证；中断与 IOMMU 支持在 polling 路线稳定后分别评审。
+
+详细寄存器、IRQ、Linux DTB 哈希、Runtime/driver ABI 和 go/no-go 条件见 [`rk3588-npu-passthrough-audit.md`](ivc/model/rk3588-npu-passthrough-audit.md)。
+
 禁止静默回退。加载、初始化或推理失败时本次运行直接失败；只有用户显式选择 `backend=native` 才运行 native。每次结果必须记录：
 
 - backend、模型 ID、ONNX 来源 SHA 和部署模型 SHA；
@@ -826,11 +856,13 @@ InferenceBackend
 
 #### 7.5.1 Stage A：无板模型验证
 
-1. 导出器单元测试、ONNX checker 和 initializer 对照。
-2. host ONNX Runtime 运行 golden vectors。
-3. native/ORT 对随机、边界和执行器取整阈值附近输入做 10,000 组差分。
-4. RKNN Toolkit2 编译 `.onnx`；保存完整转换日志和算子映射，确认 `Gemm`、`Relu`、`Clip` 没有落入 custom CPU op。
-5. 使用 RKNN 模拟器或官方精度分析能力对固定 corpus 做首次差分；模拟器结果不能替代实体 NPU。
+1. [x] 导出器校验、ONNX checker、initializer 对照和双临时目录字节级重建。
+2. [x] host ONNX Runtime CPU EP 运行 golden vectors。
+3. [x] native/ORT 对随机、边界和执行器取整阈值附近输入做 10,000 组差分。
+4. [ ] RKNN Toolkit2 编译 `.onnx`；保存完整转换日志和算子映射，确认 `Gemm`、`Relu`、`Clip` 没有落入 custom CPU op。
+5. [ ] 使用 RKNN 模拟器或官方精度分析能力对固定 corpus 做首次差分；模拟器结果不能替代实体 NPU。
+
+host ORT 观测为：浮点最大绝对误差 `2.980232238769531e-07`；9999/10000 个执行器命令逐值一致，vector 5743 的 native/ORT 输出分别为 `0.47449997067451477` 和 `0.47450003027915955`，只在同一个 `0.4745` 半千分位边界两侧产生 474/475，相差 1 个千分位；物质性命令不一致为 0。该边界案例保留在正式 verifier 中，不得删除样本来制造 100% 逐值一致。
 
 若 RKNN 编译器因 shape/alignment 拒绝原图，只允许在不改变权重和数学语义的前提下把 `Gemm` 展开为 `MatMul + Add`，或添加可证明等价的 padding/slice。任何图改写都必须回到 native/ONNX golden vectors 重新验证并写入 manifest。
 
@@ -865,10 +897,10 @@ Linux 参考只用于区分模型/Runtime 问题与 StarryOS ABI/driver 问题�
 
 | 对照 | 最大绝对误差 | 最终执行器命令 |
 | --- | ---: | --- |
-| native vs ONNX Runtime CPU | `<= 1e-6` | 100% 一致 |
-| native vs RKNN FP16 | 初始门 `<= 1e-3` | 100% 一致 |
+| native vs ONNX Runtime CPU | `<= 1e-6` | 报告 exact-match；只接受同一半千分位边界误差窗内的相邻命令，物质性不一致必须为 0 |
+| native vs RKNN FP16 | 初始门 `<= 1e-3` | 报告 exact-match；只接受预注册 FP16 误差窗内、同一边界的相邻命令，物质性不一致必须为 0 |
 
-RKNN FP16 阈值必须在正式实验前由固定 10,000 组 corpus 冻结。若失败，不得根据正式结果放宽；应定位图转换、dtype、输入布局、Runtime 版本或执行器边界问题。任何 backend error、NaN、Inf、shape mismatch 或命令不一致都使该次运行失败。
+边界等价必须同时满足：命令差的绝对值为 1，两个浮点输出都落在同一个 `(k + 0.5) / 1000` 取整边界的对应后端误差窗内。RKNN FP16 阈值和边界窗必须在正式实验前由固定 10,000 组 corpus 冻结。若失败，不得根据正式结果放宽；应定位图转换、dtype、输入布局、Runtime 版本或执行器边界问题。任何 backend error、NaN、Inf、shape mismatch、更大命令差或不同边界均使该次运行失败。
 
 延迟分别报告：
 
@@ -916,19 +948,21 @@ RKNN FP16 阈值必须在正式实验前由固定 10,000 组 corpus 冻结。若
 
 ### 7.8 M4 执行顺序
 
-1. M4-0：冻结 canonical weights、native 生成/校验规则、输入归一化、执行器规则和 golden corpus。
-2. M4-1：实现确定性 ONNX 导出、manifest 和二次重建验证。
-3. M4-2：完成 RKNN FP16 转换及算子/许可证审计。
-4. M4-3：完成 Linux RKNN reference 和 StarryOS 离线 NPU 10,000 次验证。
-5. M4-4：完成 StarryOS + Zephyr `rknn-npu` smoke/full 闭环。
-6. M4-5：并行完成 ORT CPU 构建 spike；通过门后加入 StarryOS 离线及闭环验证。
-7. M4-6：冻结所有版本/哈希，在 clean commit 上执行正式轮换矩阵并更新报告。
+1. [x] M4-0：冻结 canonical weights、native 生成/校验规则、输入归一化、执行器规则和 golden corpus。
+2. [x] M4-1：实现确定性 ONNX 导出、manifest 和二次重建验证。
+3. [x] M4-1a：审计 RK3588 Linux DT、StarryOS RKNPU ABI 和 AxVisor guest 资源/所有权缺口。
+4. [ ] M4-2：完成 RKNN FP16 转换及算子/许可证审计。
+5. [ ] M4-3：完成 Linux RKNN reference、host 初始化/guest 独占 handoff 和 StarryOS 离线 NPU 10,000 次验证。
+6. [ ] M4-4：完成 StarryOS + Zephyr `rknn-npu` smoke/full 闭环。
+7. [ ] M4-5：并行完成 ORT CPU 构建 spike；通过门后加入 StarryOS 离线及闭环验证。
+8. [ ] M4-6：冻结所有版本/哈希，在 clean commit 上执行正式轮换矩阵并更新报告。
 
 ### 7.9 M4 退出条件
 
 M4-core 必须完成：
 
-- [ ] canonical weights、`.onnx`、`.rknn`、golden vectors 和 manifest 可由固定 WSL2 工具链重建。
+- [x] canonical weights、generated Rust、`.onnx`、golden vectors 和 manifest 可由固定 WSL2 工具链重建。
+- [ ] `.rknn`、转换日志和 RKNN manifest 字段可由固定 WSL2 工具链重建。
 - [ ] RKNN 转换日志证明关键算子进入 NPU 图，无 custom CPU fallback。
 - [ ] native/RKNN 10,000 组差分满足 FP16 和执行器一致性门。
 - [ ] Linux reference 与 StarryOS 离线 NPU 验证均通过。
@@ -939,7 +973,7 @@ M4-core 必须完成：
 M4-plus 增强项：
 
 - [ ] `.ort`、operator config 和 ORT 构建可由固定工具链重建。
-- [ ] native/ORT 10,000 组差分满足 `f32` 和执行器一致性门。
+- [x] host native/ORT 10,000 组差分满足 `f32`、边界等价和零物质性命令不一致门。
 - [ ] StarryOS 实体板完成 `backend=onnxruntime-cpu` full 闭环 5 次；否则保存明确的 no-go 证据。
 - [ ] 所有后端均无静默回退，raw data 与 metadata 记录的实际 backend 一致。
 
