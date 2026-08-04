@@ -375,7 +375,7 @@ impl TaskSystem {
                 // gate permanently closed so reaping may treat a zero delivery
                 // count as stable after observing Exited.
                 permit.seal();
-                sched.placement.mark_exited_awaiting_tail(cpu.owner())?;
+                sched.placement.detach_exiting(cpu.owner())?;
                 let record = state.thread_record_mut(previous)?;
                 record.callbacks.prepare_exit(record.extension.is_some())?;
             }

@@ -359,7 +359,8 @@ impl TaskSystem {
         sched.placement.affinity = affinity;
         // The affinity mask is task metadata, but physical placement belongs
         // to one runqueue owner. A remote writer only publishes a reconciliation
-        // request; it never rewrites Queued/Running/SwitchingOut in place.
+        // request; it never rewrites Queued/Running or the independent
+        // switch-tail `on_cpu` publication in place.
         let owner = sched
             .placement
             .running_cpu()

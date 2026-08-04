@@ -2469,7 +2469,11 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
     system.exit_current(cpu.as_mut(), 0).unwrap();
     crate::test_runtime::reset_context_switch_tail_count();
 
-    exiting_core.sched().lock().placement.inject_detached();
+    exiting_core
+        .sched()
+        .lock()
+        .placement
+        .inject_missing_on_cpu();
     assert!(matches!(
         system.complete_context_switch(cpu.as_mut()),
         Err(TaskError::InvalidConfiguration)
@@ -2488,7 +2492,7 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
         .sched()
         .lock()
         .placement
-        .inject_exited_awaiting_tail(cpu.owner());
+        .inject_exiting_on_cpu(cpu.owner());
     system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(crate::test_runtime::context_switch_tail_count(), 1);
     drop(exiting_core);

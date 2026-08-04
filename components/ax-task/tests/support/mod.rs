@@ -10,6 +10,10 @@ use ax_task::{
     runtime::{TaskRuntime, *},
 };
 
+mod virtual_runtime;
+use virtual_runtime::{VirtualIdleState, VirtualRuntimeState};
+pub use virtual_runtime::{VirtualRuntimeEvent, VirtualRuntimeEventKind};
+
 const MAX_TEST_CPUS: usize = 8;
 const MAX_ACTIVE_GUARDS: usize = 64;
 
@@ -57,8 +61,7 @@ std::thread_local! {
     static TASK_SYSTEM: Cell<usize> = const { Cell::new(0) };
     static CPU_LOCALS: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
     static CPU_REMOTES: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
-    static IPI_COUNTS: RefCell<[usize; MAX_TEST_CPUS]> = const { RefCell::new([0; MAX_TEST_CPUS]) };
-    static IPI_PENDING: RefCell<[bool; MAX_TEST_CPUS]> = const { RefCell::new([false; MAX_TEST_CPUS]) };
+    static VIRTUAL_RUNTIME: RefCell<VirtualRuntimeState> = const { RefCell::new(VirtualRuntimeState::new()) };
     static ONLINE_CPU_COUNT: Cell<usize> = const { Cell::new(1) };
     static DESTROYED_CONTEXTS: Cell<usize> = const { Cell::new(0) };
     static DESTROYED_ADDRESS_SPACES: Cell<usize> = const { Cell::new(0) };
@@ -68,7 +71,6 @@ std::thread_local! {
     static ACTIVE_PREEMPT_TOKENS: RefCell<ActiveGuardTokens> = const { RefCell::new(ActiveGuardTokens::new()) };
     static CURRENT_CPU: Cell<u32> = const { Cell::new(0) };
     static IN_HARD_IRQ: Cell<bool> = const { Cell::new(false) };
-    static LOCAL_SCHEDULER_WORK_PENDING: Cell<bool> = const { Cell::new(false) };
     static LAST_ONESHOT_NS: Cell<u64> = const { Cell::new(0) };
     static LAST_DEADLINE_GENERATION: Cell<u64> = const { Cell::new(0) };
     static LAST_DEFERRED_WORK: Cell<bool> = const { Cell::new(false) };
@@ -133,11 +135,32 @@ impl_trait! {
         }
 
         fn prepare_cpu_online(_cpu: RuntimeCpuId) -> RuntimeStatus {
-            RuntimeStatus::Success
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let Some(cpu) = runtime.cpu_mut(_cpu.as_u32()) else {
+                    return RuntimeStatus::InvalidArgument;
+                };
+                cpu.online = true;
+                RuntimeStatus::Success
+            })
         }
 
         fn prepare_cpu_offline(_cpu: RuntimeCpuId) -> RuntimeStatus {
-            RuntimeStatus::Success
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let Some(cpu) = runtime.cpu_mut(_cpu.as_u32()) else {
+                    return RuntimeStatus::InvalidArgument;
+                };
+                if cpu.ipi_edge_pending
+                    || cpu.scheduler_work_pending
+                    || cpu.switch_tail_pending
+                    || cpu.scheduler_frame_depth != 0
+                {
+                    return RuntimeStatus::Busy;
+                }
+                cpu.online = false;
+                RuntimeStatus::Success
+            })
         }
 
         fn irq_guard_enter() -> IrqGuardToken {
@@ -177,11 +200,46 @@ impl_trait! {
         }
 
         fn publish_local_scheduler_work() -> bool {
-            LOCAL_SCHEDULER_WORK_PENDING.with(|pending| pending.set(true));
+            let cpu = CURRENT_CPU.with(Cell::get);
+            VIRTUAL_RUNTIME.with(|runtime| {
+                runtime
+                    .borrow_mut()
+                    .publish_scheduler_work(cpu)
+                    .expect("current virtual CPU must exist");
+            });
             IN_HARD_IRQ.with(Cell::get)
         }
 
-        fn finish_context_switch_tail() {}
+        fn finish_context_switch_tail() {
+            let cpu = CURRENT_CPU.with(Cell::get);
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let outgoing = {
+                    let state = runtime
+                        .cpu_mut(cpu)
+                        .expect("current virtual CPU must exist");
+                    if state.switch_tail_pending {
+                        state.switch_tail_pending = false;
+                        core::mem::take(&mut state.outgoing_context)
+                    } else {
+                        // Core-only scheduler tests invoke the completion API
+                        // after directly applying a ScheduleDecision, without
+                        // crossing the facade's architecture switch boundary.
+                        // Keep that transition explicit in the trace while the
+                        // end-to-end virtual-runtime tests require a non-zero
+                        // outgoing context.
+                        0
+                    }
+                };
+                runtime.record(
+                    cpu,
+                    VirtualRuntimeEventKind::SwitchTailCompleted,
+                    0,
+                    outgoing,
+                    0,
+                );
+            });
+        }
 
         fn finish_initial_context_switch() {
             // Integration tests do not execute real architecture context
@@ -192,10 +250,53 @@ impl_trait! {
             _origin: RuntimeScheduleOrigin,
             _entry: RuntimeSchedulerEntry,
         ) -> RuntimeStatus {
+            let cpu = CURRENT_CPU.with(Cell::get);
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let depth = {
+                    let state = runtime
+                        .cpu_mut(cpu)
+                        .expect("current virtual CPU must exist");
+                    state.scheduler_work_pending = false;
+                    state.scheduler_frame_depth = state
+                        .scheduler_frame_depth
+                        .checked_add(1)
+                        .expect("virtual scheduler frame depth exhausted");
+                    state.scheduler_frame_depth as u64
+                };
+                runtime.record(
+                    cpu,
+                    VirtualRuntimeEventKind::SchedulerFrameEntered,
+                    depth,
+                    0,
+                    0,
+                );
+            });
             RuntimeStatus::Success
         }
 
         fn scheduler_frame_guard_exit(_return_to: RuntimeSchedulerReturn) -> bool {
+            let cpu = CURRENT_CPU.with(Cell::get);
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let depth = {
+                    let state = runtime
+                        .cpu_mut(cpu)
+                        .expect("current virtual CPU must exist");
+                    state.scheduler_frame_depth = state
+                        .scheduler_frame_depth
+                        .checked_sub(1)
+                        .expect("virtual scheduler frame exit without entry");
+                    state.scheduler_frame_depth as u64
+                };
+                runtime.record(
+                    cpu,
+                    VirtualRuntimeEventKind::SchedulerFrameExited,
+                    depth,
+                    0,
+                    0,
+                );
+            });
             ACTIVE_IRQ_TOKENS.with(|tokens| tokens.borrow().is_empty())
         }
 
@@ -220,25 +321,49 @@ impl_trait! {
             LAST_DEFERRED_WORK.with(|pending| pending.set(update.deferred_work()));
         }
         fn send_scheduler_ipi(cpu: RuntimeCpuId) -> RuntimeStatus {
-            IPI_PENDING.with(|pending| {
-                let mut pending = pending.borrow_mut();
-                let Some(pending) = pending.get_mut(cpu.as_u32() as usize) else {
-                    return RuntimeStatus::InvalidArgument;
-                };
-                if core::mem::replace(pending, true) {
-                    return RuntimeStatus::Success;
-                }
-                IPI_COUNTS.with(|counts| {
-                let mut counts = counts.borrow_mut();
-                let Some(count) = counts.get_mut(cpu.as_u32() as usize) else {
-                    return RuntimeStatus::InvalidArgument;
-                };
-                *count = count.checked_add(1).expect("integration IPI count overflow");
-                RuntimeStatus::Success
-                })
-            })
+            VIRTUAL_RUNTIME.with(|runtime| runtime.borrow_mut().publish_ipi(cpu.as_u32()))
         }
-        fn wait_for_interrupt() {}
+        fn wait_for_interrupt() {
+            let cpu = CURRENT_CPU.with(Cell::get);
+            let remote_has_work = CPU_REMOTES.with(|handles| {
+                let raw = handles.borrow()[cpu as usize];
+                if raw == 0 {
+                    return false;
+                }
+                // SAFETY: the fixture keeps every installed Arc-backed remote
+                // endpoint alive until clear_handles.
+                let remote = unsafe {
+                    &*core::ptr::with_exposed_provenance::<CpuRemote>(raw)
+                };
+                remote.needs_reschedule()
+            });
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let (kind, generation) = {
+                    let state = runtime
+                        .cpu_mut(cpu)
+                        .expect("current virtual CPU must exist");
+                    if remote_has_work
+                        || state.scheduler_work_pending
+                        || state.ipi_edge_pending
+                        || state.ipi_published_epoch != state.ipi_claimed_epoch
+                    {
+                        (VirtualRuntimeEventKind::IdleCommitAborted, state.ipi_published_epoch)
+                    } else {
+                        state.idle_state = VirtualIdleState::Sleeping;
+                        (VirtualRuntimeEventKind::IdleCommitted, state.ipi_published_epoch)
+                    }
+                };
+                runtime.record(cpu, kind, generation, 0, 0);
+                // The deterministic hook returns only after a virtual wake.
+                // Keeping Sleeping observable solely in the ordered event log
+                // prevents a host test thread from impersonating two CPUs at once.
+                runtime
+                    .cpu_mut(cpu)
+                    .expect("current virtual CPU must exist")
+                    .idle_state = VirtualIdleState::Running;
+            });
+        }
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
             RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
         }
@@ -275,13 +400,43 @@ impl_trait! {
             AddressSpaceReclaimArmOutcome::Ready
         }
         unsafe fn switch_context(
-            _previous: ExecutionContextHandle,
-            _next: ExecutionContextHandle,
+            previous: ExecutionContextHandle,
+            next: ExecutionContextHandle,
         ) {
-            panic!("integration runtime has no execution contexts")
+            let cpu = CURRENT_CPU.with(Cell::get);
+            VIRTUAL_RUNTIME.with(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                let (previous_raw, next_raw) = (previous.into_raw(), next.into_raw());
+                {
+                    let state = runtime
+                        .cpu_mut(cpu)
+                        .expect("current virtual CPU must exist");
+                    assert_ne!(state.scheduler_frame_depth, 0, "context switch requires scheduler baton");
+                    assert!(!state.switch_tail_pending, "previous switch tail must complete before another switch");
+                    assert_ne!(previous_raw, 0, "previous context must be live");
+                    assert_ne!(next_raw, 0, "next context must be live");
+                    if state.current_context == 0 {
+                        state.current_context = previous_raw;
+                    }
+                    assert_eq!(
+                        state.current_context, previous_raw,
+                        "context switch must depart from the CPU's published runtime context"
+                    );
+                    state.outgoing_context = previous_raw;
+                    state.current_context = next_raw;
+                    state.switch_tail_pending = true;
+                }
+                runtime.record(
+                    cpu,
+                    VirtualRuntimeEventKind::ContextSwitched,
+                    0,
+                    previous_raw,
+                    next_raw,
+                );
+            });
         }
         fn activate_address_space(_activation: AddressSpaceActivation) -> RuntimeStatus {
-            RuntimeStatus::Unsupported
+            RuntimeStatus::Success
         }
         fn flush_tlb_local(_start: usize, _size: usize) {}
         fn trace_sched_switch(_record: SchedSwitchRecord) {}
@@ -303,6 +458,13 @@ pub fn install_cpu(cpu: u32, cpu_local: Pin<&mut CpuLocal>) {
     install_cpu_raw(cpu, owner_cpu_handle(cpu_local));
     let task_system = TASK_SYSTEM.with(Cell::get);
     install_cpu_remote_raw(cpu, task_system);
+    VIRTUAL_RUNTIME.with(|runtime| {
+        runtime
+            .borrow_mut()
+            .cpu_mut(cpu)
+            .expect("installed virtual CPU must fit the test topology")
+            .online = true;
+    });
 }
 
 // Every integration-test crate compiles this shared runtime provider as its
@@ -311,6 +473,14 @@ pub fn install_cpu(cpu: u32, cpu_local: Pin<&mut CpuLocal>) {
 const _: fn(usize, Pin<&mut CpuLocal>) = install_handles;
 const _: fn(u32, Pin<&mut CpuLocal>) = install_cpu;
 const _: fn() -> (u64, u64, bool) = last_task_deadline_update;
+const _: fn(u32) -> usize = ipi_count;
+const _: fn(u32) -> bool = consume_ipi;
+const _: fn(u32) -> bool = dispatch_scheduler_ipi;
+const _: fn(u32) -> bool = local_scheduler_work_pending;
+const _: fn() -> bool = consume_local_scheduler_work;
+const _: fn(u32) = set_current_cpu;
+const _: fn() -> Vec<VirtualRuntimeEvent> = virtual_runtime_events;
+const _: fn() = clear_virtual_runtime_events;
 
 /// Exposes the mutable provenance of a pinned owner-CPU scheduler object.
 fn owner_cpu_handle(cpu: Pin<&mut CpuLocal>) -> usize {
@@ -336,6 +506,12 @@ fn install_cpu_remote_raw(cpu: u32, task_system: usize) {
 
 pub fn set_online_cpu_count(count: usize) {
     ONLINE_CPU_COUNT.with(|online| online.set(count));
+    VIRTUAL_RUNTIME.with(|runtime| {
+        let mut runtime = runtime.borrow_mut();
+        for (index, cpu) in runtime.cpus.iter_mut().enumerate() {
+            cpu.online = index < count;
+        }
+    });
 }
 
 pub fn set_hard_irq(in_hard_irq: bool) {
@@ -343,18 +519,68 @@ pub fn set_hard_irq(in_hard_irq: bool) {
 }
 
 pub fn ipi_count(cpu: u32) -> usize {
-    IPI_COUNTS.with(|counts| counts.borrow()[cpu as usize])
+    VIRTUAL_RUNTIME.with(|runtime| {
+        runtime
+            .borrow()
+            .cpu(cpu)
+            .expect("queried virtual CPU must fit the test topology")
+            .ipi_send_count
+    })
 }
 
 pub fn consume_ipi(cpu: u32) -> bool {
-    IPI_PENDING.with(|pending| {
-        let mut pending = pending.borrow_mut();
-        core::mem::replace(&mut pending[cpu as usize], false)
+    VIRTUAL_RUNTIME.with(|runtime| {
+        let mut runtime = runtime.borrow_mut();
+        if runtime.claim_ipi(cpu).is_none() {
+            return false;
+        }
+        runtime
+            .publish_scheduler_work(cpu)
+            .expect("claimed virtual IPI must target a valid CPU");
+        true
+    })
+}
+
+/// Dispatches one physical scheduler IPI edge on its target CPU.
+pub fn dispatch_scheduler_ipi(cpu: u32) -> bool {
+    consume_ipi(cpu)
+}
+
+/// Reports scheduler work published locally by one virtual CPU.
+pub fn local_scheduler_work_pending(cpu: u32) -> bool {
+    VIRTUAL_RUNTIME.with(|runtime| {
+        runtime
+            .borrow()
+            .cpu(cpu)
+            .is_some_and(|state| state.scheduler_work_pending)
     })
 }
 
 pub fn consume_local_scheduler_work() -> bool {
-    LOCAL_SCHEDULER_WORK_PENDING.with(|pending| pending.replace(false))
+    let cpu = CURRENT_CPU.with(Cell::get);
+    VIRTUAL_RUNTIME.with(|runtime| {
+        let mut runtime = runtime.borrow_mut();
+        let Some(state) = runtime.cpu_mut(cpu) else {
+            return false;
+        };
+        core::mem::replace(&mut state.scheduler_work_pending, false)
+    })
+}
+
+pub fn set_current_cpu(cpu: u32) {
+    assert!(
+        (cpu as usize) < MAX_TEST_CPUS,
+        "virtual CPU is out of range"
+    );
+    CURRENT_CPU.with(|current| current.set(cpu));
+}
+
+pub fn virtual_runtime_events() -> Vec<VirtualRuntimeEvent> {
+    VIRTUAL_RUNTIME.with(|runtime| runtime.borrow().events())
+}
+
+pub fn clear_virtual_runtime_events() {
+    VIRTUAL_RUNTIME.with(|runtime| runtime.borrow_mut().clear_events());
 }
 
 pub fn resource_release_counts() -> (usize, usize, usize, usize) {
@@ -398,13 +624,10 @@ pub fn clear_handles() {
     for cpu in 0..MAX_TEST_CPUS as u32 {
         install_cpu_raw(cpu, 0);
         install_cpu_remote_raw(cpu, 0);
-        IPI_COUNTS.with(|counts| counts.borrow_mut()[cpu as usize] = 0);
-        let _cleared_delivery = consume_ipi(cpu);
-        let _cleared = ipi_count(cpu);
     }
+    VIRTUAL_RUNTIME.with(|runtime| *runtime.borrow_mut() = VirtualRuntimeState::new());
     CURRENT_CPU.with(|cpu| cpu.set(0));
     set_hard_irq(false);
-    let _cleared_local_scheduler_work = consume_local_scheduler_work();
     set_online_cpu_count(1);
     reset_resource_release_counts();
     LAST_ONESHOT_NS.with(|deadline| deadline.set(0));

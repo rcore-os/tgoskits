@@ -153,7 +153,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 
 | 领域 | Linux 对照 | 核心不变量 | 当前结论 |
 | --- | --- | --- | --- |
-| placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 已删除 `target_cpu` CPU 身份双真相，改为非权威 `wake_cpu_hint` + placement-derived `assigned_cpu`；task 仍保存 `SwitchingOut/ExitedAwaitingTail`，下一阶段删除 task 级切换暂态 |
+| placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 已删除 `target_cpu` CPU 身份双真相和 task 级 `SwitchingOut/ExitedAwaitingTail`；线程只保存最终 rq/migration placement 与独立 `on_cpu` 发布位，outgoing stack 生命周期唯一归 per-CPU `SwitchHandoff` |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()`、`irq_work_claim()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI；IPI claim 必须先于 callback/drain | 已删除 remote-wake inbox；runtime 门铃改为 generation + physical edge ownership，coalescing 只返回成功，不再把 `Busy` 暴露为模糊的 transport 状态 |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
@@ -642,6 +642,8 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | alarm worker | `event-listener` 的 no-std 内部自旋锁持有者被抢占后，唯一 alarm worker 永久自旋，进程退出与父进程 wait 停止推进 | 类型化 alarm heap 与 `epoch + WaitQueue` 分离；生产者先发布 generation，释放 alarm 锁后再唤醒固定 worker |
 | Deadline scan | 每次 schedule 扫描无关 reservation | typed timer node 和 owner heap |
 | same-CPU hard IRQ wake | 测试 runtime 恒返回“不支持本地调度发布”，错误强制 self-IPI | sticky local scheduler publication 先于 self-IPI 抑制，由 IRQ return consume |
+| 虚拟多 CPU runtime | integration fake 只清 IPI 布尔值，claim 后目标 CPU 没有 scheduler work，idle/WFI 与 switch tail 是 no-op | 固定容量、零分配状态机执行 publish → physical edge → claim → local work、idle final recheck、context switch 与 tail；CPU offline 必须等待物理 edge 和本地 work quiesce |
+| task switch 暂态 | thread placement 同时保存 `SwitchingOut/ExitedAwaitingTail`，与 per-CPU `SwitchHandoff` 双写 outgoing stack 生命周期 | thread 立即提交最终 `Queued/Migrating/Detached`，独立 `on_cpu` 只由 CPU handoff tail 清除；退出暂态不再写入 task placement |
 | Fair sleep wake | wake 清空正 `vlag`，维护线程 Ready 后仍等到偶然 timer | dequeue 保存有界 `vlag`，ineligible current 在 IRQ-return safe point 立即让出 |
 | Fair virtual-time wrap | `saturating_add` 与普通 `<` 在 wrap 后颠倒 deadline | 所有虚拟 deadline 使用 modular `virtual_before` |
 | Fair current 过度抢占 | 删除旧 wakeup granularity 后，任意更早 deadline 都打断 eligible current | 最新 EEVDF 请求保护保留到 request boundary；ineligible current 不受保护 |

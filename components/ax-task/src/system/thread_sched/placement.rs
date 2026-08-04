@@ -8,6 +8,7 @@ pub(in crate::system) struct ThreadPlacementState {
     pub(in crate::system) affinity: CpuSet,
     pub(in crate::system) affinity_generation: u64,
     physical: SchedulerPlacement,
+    on_cpu: Option<CpuId>,
 }
 
 impl ThreadPlacementState {
@@ -16,6 +17,7 @@ impl ThreadPlacementState {
             affinity,
             affinity_generation: 1,
             physical: SchedulerPlacement::detached(),
+            on_cpu: None,
         }
     }
 
@@ -28,7 +30,7 @@ impl ThreadPlacementState {
     }
 
     pub(in crate::system) const fn on_cpu(&self) -> Option<CpuId> {
-        self.physical.on_cpu()
+        self.on_cpu
     }
 
     pub(in crate::system) const fn migration_target(&self) -> Option<CpuId> {
@@ -36,7 +38,11 @@ impl ThreadPlacementState {
     }
 
     pub(in crate::system) fn assigned_cpu(&self) -> Option<CpuId> {
-        self.physical.assigned_cpu()
+        self.physical
+            .running_cpu()
+            .or_else(|| self.physical.queued_cpu())
+            .or(self.on_cpu)
+            .or_else(|| self.physical.migration_target())
     }
 
     pub(in crate::system) fn set_queued_cpu(
@@ -54,7 +60,18 @@ impl ThreadPlacementState {
     }
 
     pub(in crate::system) fn set_on_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
-        self.physical.set_on_cpu(cpu)
+        match (self.on_cpu, cpu) {
+            (None, Some(cpu)) if self.physical.running_cpu() == Some(cpu) => {
+                self.on_cpu = Some(cpu);
+                Ok(())
+            }
+            (Some(current), Some(cpu)) if current == cpu => Ok(()),
+            (Some(_), None) if self.physical.running_cpu().is_none() => {
+                self.on_cpu = None;
+                Ok(())
+            }
+            _ => Err(TaskError::InvalidConfiguration),
+        }
     }
 
     pub(in crate::system) fn set_migration_target(
@@ -80,52 +97,35 @@ impl ThreadPlacementState {
         self.physical.rollback_queued_migration(source, target)
     }
 
-    pub(in crate::system) fn mark_exited_awaiting_tail(
-        &mut self,
-        cpu: CpuId,
-    ) -> Result<(), TaskError> {
-        self.physical.mark_exited_awaiting_tail(cpu)
-    }
-
-    #[cfg(test)]
-    pub(in crate::system) fn inject_detached(&mut self) {
-        self.physical.inject_detached();
-    }
-
-    #[cfg(test)]
-    pub(in crate::system) fn inject_exited_awaiting_tail(&mut self, cpu: CpuId) {
-        self.physical.inject_exited_awaiting_tail(cpu);
-    }
-}
-
-/// Destination committed while the outgoing stack is still physically active.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SwitchDestination {
-    Detached,
-    Queued(CpuId),
-    Migrating(CpuId),
-}
-
-impl SwitchDestination {
-    const fn into_placement(self) -> SchedulerPlacement {
-        match self {
-            Self::Detached => SchedulerPlacement::Detached,
-            Self::Queued(cpu) => SchedulerPlacement::Queued {
-                cpu,
-                migration_target: None,
-            },
-            Self::Migrating(target) => SchedulerPlacement::Migrating { target },
+    pub(in crate::system) fn detach_exiting(&mut self, cpu: CpuId) -> Result<(), TaskError> {
+        if self.on_cpu != Some(cpu) || self.physical.running_cpu() != Some(cpu) {
+            return Err(TaskError::InvalidConfiguration);
         }
+        self.physical = SchedulerPlacement::Detached;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::system) fn inject_missing_on_cpu(&mut self) {
+        self.on_cpu = None;
+    }
+
+    #[cfg(test)]
+    pub(in crate::system) fn inject_exiting_on_cpu(&mut self, cpu: CpuId) {
+        self.physical = SchedulerPlacement::Detached;
+        self.on_cpu = Some(cpu);
     }
 }
 
 /// One thread's complete physical runqueue/CPU ownership.
 ///
-/// The former independent `queued_cpu`, `running_cpu`, `on_cpu`, and
-/// `migration_target` fields admitted contradictory combinations. This enum
-/// makes the Linux `finish_task_switch()` boundary explicit: a thread may have
-/// a committed post-switch destination while its outgoing stack remains active,
-/// but it cannot be independently queued and running on unrelated CPUs.
+/// The runqueue-side destination of one thread.
+///
+/// Linux keeps `on_rq`/task CPU placement separate from the `on_cpu` release
+/// completed by `finish_task_switch()`. This enum likewise records only the
+/// final runqueue or migration owner. [`ThreadPlacementState::on_cpu`] retains
+/// the outgoing physical CPU until the CPU-owned switch handoff is consumed;
+/// no `SwitchingOut` mirror is stored on the thread.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SchedulerPlacement {
     /// Not queued, executing, or in flight between owners.
@@ -140,15 +140,8 @@ enum SchedulerPlacement {
         cpu: CpuId,
         migration_target: Option<CpuId>,
     },
-    /// Scheduling state is committed, but the outgoing stack is still active.
-    SwitchingOut {
-        cpu: CpuId,
-        destination: SwitchDestination,
-    },
     /// Detached from the source and owned by a generation-checked inbox transfer.
     Migrating { target: CpuId },
-    /// Exit is published, but switch tail has not cleared physical CPU ownership.
-    ExitedAwaitingTail { cpu: CpuId },
 }
 
 impl SchedulerPlacement {
@@ -158,35 +151,14 @@ impl SchedulerPlacement {
 
     const fn queued_cpu(self) -> Option<CpuId> {
         match self {
-            Self::Queued { cpu, .. }
-            | Self::SwitchingOut {
-                destination: SwitchDestination::Queued(cpu),
-                ..
-            } => Some(cpu),
-            Self::Detached
-            | Self::Running { .. }
-            | Self::SwitchingOut { .. }
-            | Self::Migrating { .. }
-            | Self::ExitedAwaitingTail { .. } => None,
+            Self::Queued { cpu, .. } => Some(cpu),
+            Self::Detached | Self::Running { .. } | Self::Migrating { .. } => None,
         }
     }
 
     const fn running_cpu(self) -> Option<CpuId> {
         match self {
             Self::Running { cpu, .. } => Some(cpu),
-            Self::Detached
-            | Self::Queued { .. }
-            | Self::SwitchingOut { .. }
-            | Self::Migrating { .. }
-            | Self::ExitedAwaitingTail { .. } => None,
-        }
-    }
-
-    const fn on_cpu(self) -> Option<CpuId> {
-        match self {
-            Self::Running { cpu, .. }
-            | Self::SwitchingOut { cpu, .. }
-            | Self::ExitedAwaitingTail { cpu } => Some(cpu),
             Self::Detached | Self::Queued { .. } | Self::Migrating { .. } => None,
         }
     }
@@ -199,26 +171,8 @@ impl SchedulerPlacement {
             | Self::Running {
                 migration_target, ..
             } => migration_target,
-            Self::SwitchingOut {
-                destination: SwitchDestination::Migrating(target),
-                ..
-            }
-            | Self::Migrating { target } => Some(target),
-            Self::Detached | Self::SwitchingOut { .. } | Self::ExitedAwaitingTail { .. } => None,
-        }
-    }
-
-    /// Mirrors Linux `task_cpu()` ownership without confusing a future wake
-    /// destination with a context that is still physically on its source CPU.
-    fn assigned_cpu(self) -> Option<CpuId> {
-        if let Some(cpu) = self.running_cpu() {
-            Some(cpu)
-        } else if let Some(cpu) = self.queued_cpu() {
-            Some(cpu)
-        } else if let Some(cpu) = self.on_cpu() {
-            Some(cpu)
-        } else {
-            self.migration_target()
+            Self::Migrating { target } => Some(target),
+            Self::Detached => None,
         }
     }
 
@@ -234,31 +188,11 @@ impl SchedulerPlacement {
                 migration_target: None,
             },
             (
-                Self::SwitchingOut {
-                    cpu: executing_cpu,
-                    destination: SwitchDestination::Detached,
-                },
-                Some(cpu),
-            ) if executing_cpu == cpu => Self::SwitchingOut {
-                cpu,
-                destination: SwitchDestination::Queued(cpu),
-            },
-            (
                 Self::Queued {
                     migration_target, ..
                 },
                 None,
             ) => migration_target.map_or(Self::Detached, |target| Self::Migrating { target }),
-            (
-                Self::SwitchingOut {
-                    cpu,
-                    destination: SwitchDestination::Queued(_),
-                },
-                None,
-            ) => Self::SwitchingOut {
-                cpu,
-                destination: SwitchDestination::Detached,
-            },
             _ => return Err(TaskError::InvalidConfiguration),
         };
         Ok(())
@@ -281,18 +215,9 @@ impl SchedulerPlacement {
                 cpu,
                 migration_target,
             },
-            (
-                Self::SwitchingOut {
-                    cpu: executing_cpu,
-                    destination,
-                },
-                Some(cpu),
-            ) if executing_cpu == cpu => Self::Running {
+            (Self::Migrating { target }, Some(cpu)) if target == cpu => Self::Running {
                 cpu,
-                migration_target: match destination {
-                    SwitchDestination::Migrating(target) => Some(target),
-                    SwitchDestination::Detached | SwitchDestination::Queued(_) => None,
-                },
+                migration_target: None,
             },
             (
                 Self::Running {
@@ -302,32 +227,10 @@ impl SchedulerPlacement {
             ) if running_cpu == cpu => current,
             (
                 Self::Running {
-                    cpu,
-                    migration_target,
+                    migration_target, ..
                 },
                 None,
-            ) => Self::SwitchingOut {
-                cpu,
-                destination: migration_target
-                    .map_or(SwitchDestination::Detached, SwitchDestination::Migrating),
-            },
-            (Self::SwitchingOut { .. }, None) => current,
-            _ => return Err(TaskError::InvalidConfiguration),
-        };
-        Ok(())
-    }
-
-    fn set_on_cpu(&mut self, cpu: Option<CpuId>) -> Result<(), TaskError> {
-        let current = *self;
-        *self = match (current, cpu) {
-            (
-                Self::Running {
-                    cpu: running_cpu, ..
-                },
-                Some(cpu),
-            ) if running_cpu == cpu => current,
-            (Self::SwitchingOut { destination, .. }, None) => destination.into_placement(),
-            (Self::ExitedAwaitingTail { .. }, None) => Self::Detached,
+            ) => migration_target.map_or(Self::Detached, |target| Self::Migrating { target }),
             _ => return Err(TaskError::InvalidConfiguration),
         };
         Ok(())
@@ -359,31 +262,7 @@ impl SchedulerPlacement {
             },
             (Self::Migrating { .. }, Some(target)) => Self::Migrating { target },
             (Self::Migrating { .. }, None) => Self::Detached,
-            (Self::SwitchingOut { cpu, .. }, Some(target)) => Self::SwitchingOut {
-                cpu,
-                destination: SwitchDestination::Migrating(target),
-            },
-            (
-                Self::SwitchingOut {
-                    cpu,
-                    destination: SwitchDestination::Migrating(_),
-                },
-                None,
-            ) => Self::SwitchingOut {
-                cpu,
-                destination: SwitchDestination::Detached,
-            },
-            (Self::Detached, None)
-            | (
-                Self::SwitchingOut {
-                    destination: SwitchDestination::Detached | SwitchDestination::Queued(_),
-                    ..
-                },
-                None,
-            ) => current,
-            (Self::ExitedAwaitingTail { .. }, _) => {
-                return Err(TaskError::InvalidConfiguration);
-            }
+            (Self::Detached, None) => current,
         };
         Ok(())
     }
@@ -422,31 +301,6 @@ impl SchedulerPlacement {
             _ => Err(TaskError::InvalidConfiguration),
         }
     }
-
-    fn mark_exited_awaiting_tail(&mut self, cpu: CpuId) -> Result<(), TaskError> {
-        match self {
-            Self::Running {
-                cpu: running_cpu, ..
-            }
-            | Self::SwitchingOut {
-                cpu: running_cpu, ..
-            } if *running_cpu == cpu => {
-                *self = Self::ExitedAwaitingTail { cpu };
-                Ok(())
-            }
-            _ => Err(TaskError::InvalidConfiguration),
-        }
-    }
-
-    #[cfg(test)]
-    fn inject_detached(&mut self) {
-        *self = Self::Detached;
-    }
-
-    #[cfg(test)]
-    fn inject_exited_awaiting_tail(&mut self, cpu: CpuId) {
-        *self = Self::ExitedAwaitingTail { cpu };
-    }
 }
 
 #[cfg(test)]
@@ -458,8 +312,9 @@ mod tests {
 
     #[test]
     fn switching_out_keeps_physical_cpu_until_tail() {
-        let mut placement = SchedulerPlacement::detached();
+        let mut placement = ThreadPlacementState::new(CpuSet::all(2));
         placement.set_running_cpu(Some(CPU0)).unwrap();
+        placement.set_on_cpu(Some(CPU0)).unwrap();
         placement.set_running_cpu(None).unwrap();
         placement.set_queued_cpu(Some(CPU0)).unwrap();
 
@@ -474,8 +329,9 @@ mod tests {
 
     #[test]
     fn migration_becomes_transfer_owned_only_after_tail() {
-        let mut placement = SchedulerPlacement::detached();
+        let mut placement = ThreadPlacementState::new(CpuSet::all(2));
         placement.set_running_cpu(Some(CPU0)).unwrap();
+        placement.set_on_cpu(Some(CPU0)).unwrap();
         placement.set_migration_target(Some(CPU1)).unwrap();
         placement.set_running_cpu(None).unwrap();
 
@@ -489,8 +345,9 @@ mod tests {
 
     #[test]
     fn outgoing_reselection_cancels_switch_tail_ownership() {
-        let mut placement = SchedulerPlacement::detached();
+        let mut placement = ThreadPlacementState::new(CpuSet::all(2));
         placement.set_running_cpu(Some(CPU0)).unwrap();
+        placement.set_on_cpu(Some(CPU0)).unwrap();
         placement.set_running_cpu(None).unwrap();
         placement.set_queued_cpu(Some(CPU0)).unwrap();
         placement.set_queued_cpu(None).unwrap();
@@ -511,5 +368,24 @@ mod tests {
         );
         assert_eq!(placement.queued_cpu(), Some(CPU0));
         assert_eq!(placement.running_cpu(), None);
+    }
+
+    #[test]
+    fn switch_destination_is_not_mirrored_in_thread_placement() {
+        let mut placement = ThreadPlacementState::new(CpuSet::all(2));
+        placement.set_running_cpu(Some(CPU0)).unwrap();
+        placement.set_on_cpu(Some(CPU0)).unwrap();
+        placement.set_running_cpu(None).unwrap();
+        placement.set_queued_cpu(Some(CPU0)).unwrap();
+
+        assert_eq!(
+            placement.physical,
+            SchedulerPlacement::Queued {
+                cpu: CPU0,
+                migration_target: None,
+            },
+            "the CPU switch handoff, not the thread placement, must own the outgoing-stack phase"
+        );
+        assert_eq!(placement.on_cpu(), Some(CPU0));
     }
 }
