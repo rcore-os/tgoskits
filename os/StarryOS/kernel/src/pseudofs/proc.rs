@@ -1294,7 +1294,8 @@ impl SimpleDirOps for ThreadDir {
                         if !data.is_empty() {
                             let value = str::from_utf8(data)
                                 .ok()
-                                .and_then(|it| it.parse::<i32>().ok())
+                                .and_then(|it| it.trim_ascii_end().parse::<i32>().ok())
+                                .filter(|value| (-1000..=1000).contains(value))
                                 .ok_or(VfsError::InvalidInput)?;
                             task.as_thread().set_oom_score_adj(value);
                         }
