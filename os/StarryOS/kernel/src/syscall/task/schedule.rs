@@ -23,7 +23,7 @@ use crate::{
     syscall::time::write_timespec,
     task::{
         Cred, ProcessData, UserTaskRef, current_user_task,
-        future::{block_on_user, sleep},
+        future::{UserWaitOutcome, block_on_user_until},
         get_process_data, get_process_group, get_task, get_zombie_nice, processes,
     },
     time::TimeValueLike,
@@ -73,9 +73,12 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (AxResult<()>, T
 
     // TODO: currently ignoring concrete clock type
     let task = current_user_task();
-    let result = block_on_user(&task, sleep(dur))
-        .into_result()
-        .map_err(AxError::from);
+    let deadline = hal::time::monotonic_time().saturating_add(dur);
+    let result = match block_on_user_until(&task, Some(deadline), core::future::pending::<()>()) {
+        UserWaitOutcome::TimedOut => Ok(()),
+        UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
+        UserWaitOutcome::Ready(()) => unreachable!("a pending sleep future cannot complete"),
+    };
 
     (result, clock() - start)
 }

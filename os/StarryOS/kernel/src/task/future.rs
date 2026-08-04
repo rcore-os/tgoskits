@@ -41,7 +41,7 @@ static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(1);
 /// a signal arrives use [`block_on_user`].
 #[track_caller]
 pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
-    block_on_with_abort(future, None, || false)
+    block_on_with_abort(future, None, None, || false)
 }
 
 /// Polls a future for a proven Starry user task until completion.
@@ -75,6 +75,7 @@ pub fn block_on_user_until<F: IntoFuture>(
     block_on_with_abort(
         user_wait_future(task, deadline, future),
         Some(task.id()),
+        deadline,
         || task.interrupted(),
     )
 }
@@ -95,15 +96,12 @@ async fn user_wait_future<F: IntoFuture>(
     future: F,
 ) -> UserWaitOutcome<F::Output> {
     let mut future = pin!(future.into_future());
-    let mut timer = deadline.map(TimerFuture::new);
     poll_fn(|context| {
         let future = future.as_mut().poll(context);
         let interrupted = future.is_pending() && task.poll_interrupt(context).is_ready();
         let timed_out = future.is_pending()
             && !interrupted
-            && timer
-                .as_mut()
-                .is_some_and(|timer| Pin::new(timer).poll(context).is_ready());
+            && deadline.is_some_and(|deadline| monotonic_time() >= deadline);
         resolve_user_wait(future, interrupted, timed_out)
     })
     .await
@@ -112,6 +110,7 @@ async fn user_wait_future<F: IntoFuture>(
 fn block_on_with_abort<F, A>(
     future: F,
     expected_owner: Option<scheduler::ThreadId>,
+    deadline: Option<TimeValue>,
     should_abort: A,
 ) -> F::Output
 where
@@ -131,7 +130,12 @@ where
     let executor = LocalExecutor::new(scheduler_thread.wake_handle())
         .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
     let output = executor.run(future.into_future(), |condition| {
-        wait.wait_until(|| condition.should_abort() || should_abort());
+        let ready = || condition.should_abort() || should_abort();
+        if let Some(deadline) = deadline {
+            let _timed_out = wait.wait_until_deadline(deadline, ready);
+        } else {
+            wait.wait_until(ready);
+        }
     });
     drop(executor);
     output

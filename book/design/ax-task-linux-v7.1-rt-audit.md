@@ -613,23 +613,53 @@ owner inbox，再由 scheduler IPI/safe point 激活，语义上没有永久丢�
 正确性修复，但不是 ext4 回退的主因；后续不再通过缩短 slice 继续试参，而是直接
 验证远程 wake 激活、IPI 数量和 owner safe-point 放大。
 
-### Linux v7.1 PREEMPT_RT 同源 futex 对照
+### Linux v7.1 PREEMPT_RT 同源唤醒分布对照
 
-`apps/starry/futex-ping-pong-bench` 同时作为 Starry 应用和 Linux initramfs
-`/init` 的唯一源码。两边固定使用 `q35,accel=tcg`、`-cpu max`、2 个 vCPU、
-512 MiB 内存，主线程和工作线程分别固定到 CPU 0、CPU 1。每轮执行 2000 次
-往返，报告 7 轮单向 handoff 中位数。
+旧的 `futex-ping-pong-bench` 只用七轮完整往返推算单向 handoff，无法区分真正进入
+内核 park 的样本、同 CPU 与跨 CPU 调度、进程边界和 timer deadline。它已被
+`apps/starry/wakeup-latency-bench` 破坏性替换，不保留旧应用或输出兼容。新基准在
+同一份 C 源码中逐样本记录从 producer 发布 wake 到 waiter 恢复运行的延迟，并报告
+`min / mean / stddev / p50 / p95 / p99 / p99.9 / max` 与固定直方图；`FUTEX_WAIT`
+返回 `EAGAIN` 的未 park 样本只进入 `not_parked`，不能伪装成低延迟。
 
-| 内核 | 中位 handoff | 最小 | 最大 |
+三方固定使用同一宿主、`q35,accel=tcg`、`-cpu max`、2 个 vCPU 和 512 MiB。Linux
+内核为 v7.1 提交 `8cd9520d35a6`，配置确认 `CONFIG_PREEMPT_RT=y`。下表是改造
+task sleep 前同一次 A/B 的 p50；单位均为 ns：
+
+| 策略与场景 | Linux RT | `origin/dev` | 本分支 |
 | --- | ---: | ---: | ---: |
-| Linux v7.1 `CONFIG_PREEMPT_RT=y` | 13,908 ns | 9,370 ns | 24,810 ns |
-| StarryOS 临时 executor 路径 | 221,878 ns | 136,991 ns | 250,738 ns |
-| StarryOS 调度器直接 park 路径 | 138,786 ns | 103,820 ns | 170,209 ns |
-| StarryOS 线程内嵌 wait generation | 111,948 ns | 81,575 ns | 153,262 ns |
+| OTHER，同 CPU 线程 | 23,701 | 80,863 | 176,987 |
+| OTHER，跨 CPU 线程 | 26,541 | 158,639 | 149,722 |
+| OTHER，跨 CPU 进程 | 27,281 | 163,235 | 152,809 |
+| OTHER，绝对 timer | 47,116 | 150,569 | 270,064 |
+| FIFO:80，同 CPU 线程 | 15,362 | 75,816 | 178,147 |
+| FIFO:80，跨 CPU 线程 | 19,854 | 154,787 | 148,359 |
+| FIFO:80，跨 CPU 进程 | 22,565 | 172,705 | 154,635 |
+| FIFO:80，绝对 timer | 30,651 | 153,210 | 280,559 |
 
-调度器直接 park 相比临时 executor 路径缩短约 37.4%，但当前 StarryOS 仍是
-Linux RT 的约 9.98 倍，尚未达到接受目标。这个结果只比较同一宿主机上的完整
-guest 调用路径，不把 TCG 时间解释成硬件周期或实时延迟上界。
+这个分解排除了“通用 lost wake”：本分支的跨 CPU 线程和进程 wake 比 dev 快约
+4%--18%，回退集中在同 CPU park/switch 和 task timer。调用链审计随后确认 Starry
+把 `clock_nanosleep` 和 poll 类用户等待的期限放入通用 `TimerFuture`，物理 timer
+先唤醒普通 `starry-timer` worker，再由 worker 唤醒用户任务；这比 Linux
+`hrtimer_nanosleep -> hrtimer_wakeup -> try_to_wake_up` 多一个 runnable 周期和一次
+上下文切换。
+
+修复后，用户任务等待把 absolute deadline 直接传给 ax-task 的 move-only park
+transaction；timerfd、设备和任意 future timer 仍由任务态 worker 隔离，hard IRQ
+不执行 OS callback。相同基准中 OTHER timer p50 从 270,064 降到 185,580，FIFO
+timer 从 280,559 降到 168,875；OTHER 同 CPU handoff 从 176,987 降到 133,955。
+这证明移除 worker hop 有效，但仍未达到 Linux RT，剩余固定成本继续从本地 rq
+事务、switch tail 和 clockevent IRQ 返回路径审计，不能恢复旧的 wake 后强制 yield。
+
+新时序同时稳定暴露 shell 父子并发 `setpgid()` 的进程组 identity 竞态：两个调用都
+通过旧的 check-then-create，并在同一 Session 发布相同 PGID 时 panic。确定性底层
+测试先复现第二个 live group 触发 panic；修复后 Session registry 与 Linux 的
+`tasklist_lock` 一样成为唯一 identity authority，竞争创建返回同一个
+`Arc<ProcessGroup>`，不再发布第二套生命周期。
+
+以上结果只比较相同 TCG 拓扑中的完整 guest 调用路径，不解释为真实硬件的实时上界。
+基准协议和每次运行的完整分布是当前验收依据；旧七轮 aggregate 数据只保留为历史
+优化记录，不再用于当前性能结论。
 
 首个确定性红测证明，旧实现即使发现 futex 值已经不匹配，仍会分配
 `WaiterState`。当前实现已经让调度线程通过 move-only park transaction 直接
