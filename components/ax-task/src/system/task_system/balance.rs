@@ -565,6 +565,7 @@ mod tests {
         let sched = first.core.sched().lock();
         assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
         assert_eq!(sched.placement.migration_target(), None);
+        drop(sched);
         assert_eq!(first.assigned_cpu(), Some(CpuId::new(0)));
     }
 }

@@ -635,7 +635,8 @@ impl TaskSystemState {
                 .sched
                 .lock()
                 .policy
-                .base_deadline
+                .base_entity
+                .deadline()
                 .is_none()
         {
             return Err(TaskError::InvalidPiState);
@@ -697,12 +698,12 @@ impl TaskSystemState {
                     .thread_record(current)
                     .expect("prepared PI chain must retain every thread record");
                 let sched = record.sched.lock();
-                let base_entity = sched
-                    .policy
-                    .base_deadline
-                    .filter(|_| matches!(sched.policy.applied, SchedulePolicy::Deadline(_)))
-                    .map(SchedulingEntity::Deadline)
-                    .unwrap_or(sched.policy.base_entity);
+                let base_entity = sched.policy.base_entity;
+                debug_assert_eq!(
+                    base_entity.deadline().is_some(),
+                    matches!(sched.policy.applied, SchedulePolicy::Deadline(_)),
+                    "the applied policy and its owner CBS entity must change together"
+                );
                 (
                     Arc::clone(&record.core),
                     sched.policy.applied,
@@ -742,7 +743,8 @@ impl TaskSystemState {
                         .sched
                         .lock()
                         .policy
-                        .base_deadline
+                        .base_entity
+                        .deadline()
                         .map(SchedulingEntity::Deadline)
                         .expect("prepared Deadline PI donor must retain its entity")
                 } else if previous_pi_donor == Some(donor)
@@ -807,10 +809,6 @@ impl TaskSystemState {
                     }
                     if !sched.is_pi_boosted() {
                         sched.policy.base_entity = sched.policy.effective_entity;
-                        if let SchedulingEntity::Deadline(deadline) = sched.policy.effective_entity
-                        {
-                            sched.policy.base_deadline = Some(deadline);
-                        }
                     }
                 }
                 if let Some(generation) = next_dispatch_generation {

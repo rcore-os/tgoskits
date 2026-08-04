@@ -11,9 +11,10 @@ mod wake_batch;
 pub use wake_batch::ThreadWakeBatch;
 
 use crate::{
-    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
-    SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey, SchedulingUrgency, TaskError,
-    ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadSchedCell, ThreadState,
+    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority,
+    RunQueueNodeStorage, SchedulePolicy, SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey,
+    SchedulingUrgency, TaskError, ThreadAffinityCompletion, ThreadExtensionView, ThreadId,
+    ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxNode},
     runtime::{PreemptGuardToken, task_runtime},
     task_work::TaskWorkDoorbell,
@@ -392,6 +393,7 @@ impl ThreadReapSignal {
 pub(crate) struct ThreadCore {
     id: ThreadId,
     sched: Arc<ThreadSchedCell>,
+    runqueue_nodes: RunQueueNodeStorage,
     // Immutable after publication. Every handle retaining this copy also pins
     // the registry-owned extension destructor through the reaper Arc contract.
     extension: Option<ThreadExtensionView>,
@@ -445,6 +447,7 @@ impl ThreadCore {
         Self {
             id,
             sched,
+            runqueue_nodes: RunQueueNodeStorage::new(),
             extension,
             scheduler_tick_work,
             scheduler_tick_work_generation: AtomicU64::new(0),
@@ -481,6 +484,10 @@ impl ThreadCore {
             runtime_running: AtomicBool::new(false),
             pi_wait_state: PiWaitState::new(),
         }
+    }
+
+    pub(crate) const fn runqueue_nodes(&self) -> &RunQueueNodeStorage {
+        &self.runqueue_nodes
     }
 
     pub(crate) fn begin_runtime_accounting(&self, now_ns: u64) {

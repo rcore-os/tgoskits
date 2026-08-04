@@ -198,7 +198,11 @@ impl TaskSystem {
         };
         {
             let mut sched = core.sched().lock();
-            let mut deadline = sched.policy.base_deadline.ok_or(TaskError::NotReady)?;
+            let mut deadline = sched
+                .policy
+                .base_entity
+                .deadline()
+                .ok_or(TaskError::NotReady)?;
             deadline.replenish(now_ns);
             if deadline.is_throttled() {
                 return Err(TaskError::NotReady);
@@ -212,7 +216,6 @@ impl TaskSystem {
                 ThreadState::Ready => {}
                 _ => return Err(TaskError::NotReady),
             }
-            sched.policy.base_deadline = Some(deadline);
             sched.policy.base_entity = SchedulingEntity::Deadline(deadline);
             if !sched.is_pi_boosted() {
                 sched.policy.effective_entity = sched.policy.base_entity;
@@ -489,9 +492,8 @@ impl TaskSystem {
                     if !sched.policy.effective_entity.yield_deadline_job() {
                         return Err(TaskError::InvalidConfiguration);
                     }
-                    if let SchedulingEntity::Deadline(deadline) = sched.policy.effective_entity {
+                    if let SchedulingEntity::Deadline(_) = sched.policy.effective_entity {
                         sched.policy.base_entity = sched.policy.effective_entity;
-                        sched.policy.base_deadline = Some(deadline);
                     }
                     sched.placement.set_running_cpu(None)?;
                     sched.deadline.replenish_pending = true;

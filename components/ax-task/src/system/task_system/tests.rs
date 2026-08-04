@@ -4086,7 +4086,8 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
             sched.pi.deadline_cbs_generation,
             sched
                 .policy
-                .base_deadline
+                .base_entity
+                .deadline()
                 .expect("Deadline donor must retain CBS state"),
         )
     };
@@ -4096,7 +4097,10 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
         let sched = state.thread_record(donor.id()).unwrap().sched.lock();
         assert_eq!(sched.pi.deadline_cbs_borrower, Some(owner.id()));
         assert_eq!(sched.pi.deadline_cbs_generation, borrowed_generation);
-        assert_eq!(sched.policy.base_deadline, Some(budget_before_timer));
+        assert_eq!(
+            sched.policy.base_entity.deadline(),
+            Some(budget_before_timer)
+        );
         assert!(
             sched.deadline.cbs_timer.is_none(),
             "the expired donor CBS event must stay detached while the borrower owns the baton"
@@ -4127,7 +4131,8 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
         assert_eq!(
             sched
                 .policy
-                .base_deadline
+                .base_entity
+                .deadline()
                 .expect("committed donor budget must remain Deadline")
                 .remaining_runtime_ns(),
             5

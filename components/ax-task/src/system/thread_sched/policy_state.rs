@@ -15,7 +15,6 @@ pub(in crate::system) struct ThreadPolicyState {
     pub(in crate::system) dispatch_generation: u64,
     pub(in crate::system) effective_entity: SchedulingEntity,
     pub(in crate::system) base_entity: SchedulingEntity,
-    pub(in crate::system) base_deadline: Option<DeadlineEntity>,
 }
 
 impl ThreadPolicyState {
@@ -29,7 +28,6 @@ impl ThreadPolicyState {
             dispatch_generation: 1,
             effective_entity: entity,
             base_entity: entity,
-            base_deadline: entity.deadline(),
         }
     }
 }

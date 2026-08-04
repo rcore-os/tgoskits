@@ -84,7 +84,7 @@ impl TaskSystem {
         let cbs_deadline_ns = owns_bandwidth
             .then_some(())
             .filter(|_| sched.pi.deadline_cbs_borrower.is_none())
-            .and(sched.policy.base_deadline)
+            .and(sched.policy.base_entity.deadline())
             .map(DeadlineEntity::next_scheduler_event_ns);
         Self::replace_owner_deadline_timer(
             cpu.as_mut(),
@@ -159,7 +159,8 @@ impl TaskSystem {
         let sched = record.sched.lock();
         let deadline = sched
             .policy
-            .base_deadline
+            .base_entity
+            .deadline()
             .or(match sched.policy.effective_entity {
                 SchedulingEntity::Deadline(deadline) => Some(deadline),
                 _ => None,
@@ -369,7 +370,7 @@ impl TaskSystem {
                 // the CPU reservation set.
                 return Ok(());
             }
-            let Some(mut deadline) = sched.policy.base_deadline else {
+            let Some(mut deadline) = sched.policy.base_entity.deadline() else {
                 return Ok(());
             };
             let missed = deadline.observe_time(now_ns);
@@ -377,7 +378,6 @@ impl TaskSystem {
                 deadline.is_throttled() && now_ns >= deadline.next_scheduler_event_ns();
             if replenish_due {
                 deadline.replenish(now_ns);
-                sched.policy.base_deadline = Some(deadline);
                 sched.policy.base_entity = SchedulingEntity::Deadline(deadline);
                 if !sched.is_pi_boosted() {
                     sched.policy.effective_entity = sched.policy.base_entity;
@@ -405,7 +405,6 @@ impl TaskSystem {
                     }
                 }
             } else if missed {
-                sched.policy.base_deadline = Some(deadline);
                 sched.policy.base_entity = SchedulingEntity::Deadline(deadline);
                 if !sched.is_pi_boosted() {
                     sched.policy.effective_entity = sched.policy.base_entity;
@@ -434,7 +433,7 @@ impl TaskSystem {
     }
 
     fn service_expired_deadline_zero_lag(
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
         core: Arc<ThreadCore>,
         event: ExpiredTaskDeadline,
     ) -> Result<(), TaskError> {
@@ -452,7 +451,7 @@ impl TaskSystem {
         if sched.deadline.activity == DeadlineActivity::ActiveNonContending
             && event.deadline_ns() >= sched.deadline.zero_lag_ns
         {
-            cpu.as_mut()
+            cpu.lock_run_queue()
                 .deactivate_deadline_bandwidth(sched.deadline.bandwidth_scaled)?;
             sched.deadline.activity = DeadlineActivity::Inactive;
             sched.deadline.zero_lag_ns = 0;

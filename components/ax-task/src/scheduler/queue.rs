@@ -1,6 +1,13 @@
 //! Per-CPU runqueue protected by the target CPU's IRQ-safe scheduler lock.
 
-use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::{cell::UnsafeCell, fmt};
+
+mod deadline;
+mod realtime;
+
+use deadline::{DeadlineQueueKey, DeadlineRunQueue};
+use realtime::RealtimeRunQueue;
 
 use super::fair_queue::FairRunQueue;
 use crate::{
@@ -8,12 +15,89 @@ use crate::{
     ThreadId,
 };
 
+/// Scheduling-class linkage prepared with each thread, like Linux embedding
+/// `sched_entity`, `sched_rt_entity`, and `sched_dl_entity` in `task_struct`.
+///
+/// A slot contains its node exactly while the thread is not linked in that
+/// class runqueue. Placement plus the owner rq lock serialize every transfer;
+/// no allocator is entered from enqueue, dequeue, pick, or migration.
+pub(crate) struct RunQueueNodeStorage {
+    deadline: UnsafeCell<Option<Box<deadline::DeadlineNode>>>,
+    fair: UnsafeCell<Option<Box<super::fair_queue::FairNode>>>,
+    realtime: UnsafeCell<Option<Box<realtime::RealtimeNode>>>,
+}
+
+impl RunQueueNodeStorage {
+    pub(crate) fn new() -> Self {
+        Self {
+            deadline: UnsafeCell::new(Some(deadline::DeadlineNode::empty())),
+            fair: UnsafeCell::new(Some(super::fair_queue::FairNode::empty())),
+            realtime: UnsafeCell::new(Some(realtime::RealtimeNode::empty())),
+        }
+    }
+
+    pub(crate) unsafe fn take_deadline(&self) -> Box<deadline::DeadlineNode> {
+        unsafe { &mut *self.deadline.get() }
+            .take()
+            .expect("one thread cannot own two Deadline runqueue links")
+    }
+
+    pub(crate) unsafe fn return_deadline(&self, node: Box<deadline::DeadlineNode>) {
+        assert!(
+            unsafe { &mut *self.deadline.get() }.replace(node).is_none(),
+            "unlinked Deadline node must have one storage owner"
+        );
+    }
+
+    pub(crate) unsafe fn take_fair(&self) -> Box<super::fair_queue::FairNode> {
+        unsafe { &mut *self.fair.get() }
+            .take()
+            .expect("one thread cannot own two fair runqueue links")
+    }
+
+    pub(crate) unsafe fn return_fair(&self, node: Box<super::fair_queue::FairNode>) {
+        assert!(
+            unsafe { &mut *self.fair.get() }.replace(node).is_none(),
+            "unlinked fair node must have one storage owner"
+        );
+    }
+
+    pub(crate) unsafe fn take_realtime(&self) -> Box<realtime::RealtimeNode> {
+        unsafe { &mut *self.realtime.get() }
+            .take()
+            .expect("one thread cannot own two RT runqueue links")
+    }
+
+    pub(crate) unsafe fn return_realtime(&self, node: Box<realtime::RealtimeNode>) {
+        assert!(
+            unsafe { &mut *self.realtime.get() }.replace(node).is_none(),
+            "unlinked RT node must have one storage owner"
+        );
+    }
+}
+
+// SAFETY: individual node transfers are serialized by ThreadSchedState
+// placement and the owning CpuRunQueueState IRQ lock. The UnsafeCell fields are
+// never accessed from a handle or an unrelated thread-control path.
+unsafe impl Sync for RunQueueNodeStorage {}
+
+impl fmt::Debug for RunQueueNodeStorage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RunQueueNodeStorage")
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 std::thread_local! {
     static FAIR_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
     static RUNQUEUE_MEMBERSHIP_LOOKUPS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+    static DEADLINE_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
 }
@@ -43,6 +127,21 @@ fn runqueue_membership_lookups() -> usize {
     RUNQUEUE_MEMBERSHIP_LOOKUPS.get()
 }
 
+#[cfg(test)]
+fn reset_deadline_runqueue_visits() {
+    DEADLINE_RUNQUEUE_VISITS.set(0);
+}
+
+#[cfg(test)]
+fn deadline_runqueue_visits() -> usize {
+    DEADLINE_RUNQUEUE_VISITS.get()
+}
+
+#[cfg(test)]
+fn record_deadline_runqueue_visit() {
+    DEADLINE_RUNQUEUE_VISITS.set(DEADLINE_RUNQUEUE_VISITS.get().saturating_add(1));
+}
+
 /// Why a runnable thread is being inserted into its owner run queue.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnqueueReason {
@@ -58,6 +157,15 @@ pub enum EnqueueReason {
     Migrated,
     /// The owner CPU applied a newer scheduling-policy generation.
     PolicyChanged,
+}
+
+/// Which fixed-priority RT entities are eligible in this owner selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RtEligibility {
+    /// The runqueue still owns ordinary RT bandwidth.
+    Ordinary,
+    /// The RT runqueue is throttled; only a contended PI owner may run.
+    PiOwnerOnly,
 }
 
 #[derive(Clone, Debug)]
@@ -112,7 +220,7 @@ struct PushableSummary {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueueMembershipClass {
-    Deadline,
+    Deadline(DeadlineQueueKey),
     Realtime(u8),
     Fair,
     IdleFair,
@@ -126,7 +234,7 @@ struct QueueMembership {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QueueRestorePoint {
-    Deadline(usize),
+    Deadline(DeadlineQueueKey),
     Realtime { priority: u8, position: usize },
     Fair,
     IdleFair,
@@ -145,13 +253,11 @@ pub(crate) struct DetachedQueueEntry {
 
 #[derive(Debug)]
 pub(crate) struct RunQueue {
-    deadline: Vec<QueuedThread>,
-    rt: [VecDeque<QueuedThread>; 99],
-    rt_bitmap: u128,
+    deadline: DeadlineRunQueue,
+    rt: RealtimeRunQueue,
     fair: FairRunQueue,
     idle_fair: FairRunQueue,
     membership: Vec<Option<QueueMembership>>,
-    earliest_deadline_event_ns: Option<u64>,
     pushable_summary: Option<PushableSummary>,
     balance_scan_epoch: u64,
     next_sequence: u64,
@@ -161,18 +267,28 @@ pub(crate) struct RunQueue {
 impl RunQueue {
     pub(crate) fn new() -> Self {
         Self {
-            deadline: Vec::new(),
-            rt: core::array::from_fn(|_| VecDeque::new()),
-            rt_bitmap: 0,
+            deadline: DeadlineRunQueue::new(),
+            rt: RealtimeRunQueue::new(),
             fair: FairRunQueue::new(),
             idle_fair: FairRunQueue::new(),
             membership: Vec::new(),
-            earliest_deadline_event_ns: None,
             pushable_summary: None,
             balance_scan_epoch: 0,
             next_sequence: 0,
             len: 0,
         }
+    }
+
+    /// Reserves every class index before a thread becomes externally visible.
+    /// Scheduler fast paths treat missing capacity as an invariant violation
+    /// instead of allocating under the irqsave rq lock.
+    pub(crate) fn prepare_thread_slot(&mut self, slot: usize) {
+        if self.membership.len() <= slot {
+            self.membership.resize(slot.saturating_add(1), None);
+        }
+        self.deadline.prepare_thread_slot(slot);
+        self.fair.prepare_thread_slot(slot);
+        self.idle_fair.prepare_thread_slot(slot);
     }
 
     pub(crate) const fn len(&self) -> usize {
@@ -211,18 +327,15 @@ impl RunQueue {
     }
 
     pub(crate) fn has_rt(&self) -> bool {
-        self.rt_bitmap != 0
+        self.rt.has_any()
     }
 
     pub(crate) fn highest_rt_priority(&self) -> Option<u8> {
-        (self.rt_bitmap != 0).then(|| (u128::BITS - self.rt_bitmap.leading_zeros()) as u8)
+        self.rt.highest_priority()
     }
 
     pub(crate) fn rt_count_at_priority(&self, priority: u8) -> usize {
-        priority
-            .checked_sub(1)
-            .and_then(|index| self.rt.get(index as usize))
-            .map_or(0, VecDeque::len)
+        self.rt.count_at_priority(priority)
     }
 
     pub(crate) fn has_fair(&self) -> bool {
@@ -247,8 +360,8 @@ impl RunQueue {
         queue.earliest_eligible(virtual_time) == Some(wakee)
     }
 
-    pub(crate) const fn earliest_deadline_event_ns(&self) -> Option<u64> {
-        self.earliest_deadline_event_ns
+    pub(crate) fn earliest_deadline_event_ns(&self) -> Option<u64> {
+        self.deadline.earliest_event_ns()
     }
 
     pub(crate) const fn pushable_key(&self) -> Option<SchedulingKey> {
@@ -263,11 +376,13 @@ impl RunQueue {
         id: ThreadId,
         entity: SchedulingEntity,
     ) -> bool {
-        let Some(thread) = self.deadline.iter_mut().find(|thread| thread.id == id) else {
+        let Some(QueueMembershipClass::Deadline(key)) = self.membership_class(id) else {
             return false;
         };
-        thread.entity = entity;
-        self.recompute_earliest_deadline_event();
+        let Some(new_key) = self.deadline.update_entity(key, entity) else {
+            return false;
+        };
+        self.replace_membership_class(id, QueueMembershipClass::Deadline(new_key));
         self.recompute_pushable_summary();
         true
     }
@@ -287,24 +402,12 @@ impl RunQueue {
     ) -> Option<QueuedThread> {
         let candidate = self
             .deadline
-            .iter()
-            .filter(|thread| thread.balance_scan_epoch != scan_epoch && may_migrate(thread))
-            .min_by_key(|thread| {
-                let absolute = thread
-                    .entity
-                    .deadline()
-                    .map_or(u64::MAX, |deadline| deadline.absolute_deadline_ns());
-                (absolute, thread.sequence)
+            .find_first_matching(&mut |thread| {
+                thread.balance_scan_epoch != scan_epoch && may_migrate(thread)
             })
-            .cloned()
             .or_else(|| {
-                self.rt.iter().rev().find_map(|queue| {
-                    queue
-                        .iter()
-                        .find(|thread| {
-                            thread.balance_scan_epoch != scan_epoch && may_migrate(thread)
-                        })
-                        .cloned()
+                self.rt.find_first_matching(&mut |thread| {
+                    thread.balance_scan_epoch != scan_epoch && may_migrate(thread)
                 })
             })
             .or_else(|| {
@@ -318,13 +421,8 @@ impl RunQueue {
 
     pub(crate) fn queued_thread(&self, id: ThreadId) -> Option<QueuedThread> {
         match self.membership_class(id)? {
-            QueueMembershipClass::Deadline => {
-                self.deadline.iter().find(|thread| thread.id == id).cloned()
-            }
-            QueueMembershipClass::Realtime(priority) => self.rt[(priority - 1) as usize]
-                .iter()
-                .find(|thread| thread.id == id)
-                .cloned(),
+            QueueMembershipClass::Deadline(key) => self.deadline.get(key).cloned(),
+            QueueMembershipClass::Realtime(priority) => self.rt.get(priority, id).cloned(),
             QueueMembershipClass::Fair => {
                 self.fair.find_first_matching(&mut |thread| thread.id == id)
             }
@@ -404,19 +502,13 @@ impl RunQueue {
                     return Err(TaskError::NotReady);
                 }
                 let summary = Self::pushable_summary_for(&entry);
-                self.deadline.push(entry);
-                self.recompute_earliest_deadline_event();
-                (summary, QueueMembershipClass::Deadline)
+                let key = self.deadline.insert(entry);
+                (summary, QueueMembershipClass::Deadline(key))
             }
             SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
                 let summary = Self::pushable_summary_for(&entry);
-                let queue = &mut self.rt[(priority.get() - 1) as usize];
-                if reason == EnqueueReason::Preempted {
-                    queue.push_front(entry);
-                } else {
-                    queue.push_back(entry);
-                }
-                self.rt_bitmap |= 1_u128 << (priority.get() - 1);
+                let queued_priority = self.rt.enqueue(entry, reason);
+                debug_assert_eq!(queued_priority, priority.get());
                 (summary, QueueMembershipClass::Realtime(priority.get()))
             }
             SchedulePolicy::Fair {
@@ -467,17 +559,15 @@ impl RunQueue {
             .membership_class(id)
             .expect("a selected balance candidate must remain queued")
         {
-            QueueMembershipClass::Deadline => {
+            QueueMembershipClass::Deadline(key) => {
                 self.deadline
-                    .iter_mut()
-                    .find(|thread| thread.id == id)
+                    .get_mut(key)
                     .expect("deadline balance candidate must remain linked")
                     .balance_scan_epoch = scan_epoch;
             }
             QueueMembershipClass::Realtime(priority) => {
-                self.rt[(priority - 1) as usize]
-                    .iter_mut()
-                    .find(|thread| thread.id == id)
+                self.rt
+                    .get_mut(priority, id)
                     .expect("RT balance candidate must remain linked")
                     .balance_scan_epoch = scan_epoch;
             }
@@ -509,6 +599,7 @@ impl RunQueue {
         _now_ns: u64,
         reason: EnqueueReason,
     ) -> Result<SchedulingEntity, TaskError> {
+        self.prepare_thread_slot(id.slot() as usize);
         let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
         let core = Arc::new(ThreadCore::new(id, policy, sched, None, None, None));
         self.enqueue(
@@ -518,27 +609,40 @@ impl RunQueue {
         )
     }
 
+    #[cfg(test)]
+    fn enqueue_rt_test(
+        &mut self,
+        id: ThreadId,
+        policy: SchedulePolicy,
+        quota_exempt: bool,
+    ) -> Result<SchedulingEntity, TaskError> {
+        self.prepare_thread_slot(id.slot() as usize);
+        let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
+        let core = Arc::new(ThreadCore::new(id, policy, sched, None, None, None));
+        self.enqueue(
+            QueuedThread::new(
+                id,
+                policy,
+                SchedulingEntity::new(policy, 1, 0),
+                core,
+                quota_exempt,
+            ),
+            EnqueueReason::Wake,
+            None,
+        )
+    }
+
     pub(crate) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
         let class = self.membership_class(id)?;
         let removed = match class {
-            QueueMembershipClass::Deadline => remove_from_vec(&mut self.deadline, id),
-            QueueMembershipClass::Realtime(priority) => {
-                let index = (priority - 1) as usize;
-                let removed = remove_from_rt_queue(&mut self.rt[index], id);
-                if self.rt[index].is_empty() {
-                    self.rt_bitmap &= !(1_u128 << index);
-                }
-                removed
-            }
+            QueueMembershipClass::Deadline(key) => self.deadline.remove(key),
+            QueueMembershipClass::Realtime(priority) => self.rt.remove(priority, id),
             QueueMembershipClass::Fair => self.fair.remove(id),
             QueueMembershipClass::IdleFair => self.idle_fair.remove(id),
         }
         .expect("runqueue membership must identify a linked scheduling entity");
         self.len -= 1;
         self.unregister_membership(removed.id);
-        if matches!(removed.policy, SchedulePolicy::Deadline(_)) {
-            self.recompute_earliest_deadline_event();
-        }
         if self
             .pushable_summary
             .is_some_and(|summary| summary.thread == removed.id)
@@ -557,22 +661,11 @@ impl RunQueue {
         self.update_fair_virtual_time(current_fair);
         let class = self.membership_class(id)?;
         let (mut thread, restore_point) = match class {
-            QueueMembershipClass::Deadline => {
-                let position = self.deadline.iter().position(|thread| thread.id == id)?;
-                (
-                    self.deadline.remove(position),
-                    QueueRestorePoint::Deadline(position),
-                )
+            QueueMembershipClass::Deadline(key) => {
+                (self.deadline.remove(key)?, QueueRestorePoint::Deadline(key))
             }
             QueueMembershipClass::Realtime(priority) => {
-                let index = (priority - 1) as usize;
-                let position = self.rt[index].iter().position(|thread| thread.id == id)?;
-                let thread = self.rt[index]
-                    .remove(position)
-                    .expect("indexed RT transfer entry must remain linked");
-                if self.rt[index].is_empty() {
-                    self.rt_bitmap &= !(1_u128 << index);
-                }
+                let (thread, position) = self.rt.detach(priority, id)?;
                 (thread, QueueRestorePoint::Realtime { priority, position })
             }
             QueueMembershipClass::Fair => (self.fair.remove(id)?, QueueRestorePoint::Fair),
@@ -588,9 +681,6 @@ impl RunQueue {
         }
         self.len -= 1;
         self.unregister_membership(thread.id);
-        if matches!(class, QueueMembershipClass::Deadline) {
-            self.recompute_earliest_deadline_event();
-        }
         if self
             .pushable_summary
             .is_some_and(|summary| summary.thread == thread.id)
@@ -616,15 +706,13 @@ impl RunQueue {
             "a detached transfer entry must not already be queued"
         );
         let membership_class = match restore_point {
-            QueueRestorePoint::Deadline(position) => {
-                self.deadline
-                    .insert(position.min(self.deadline.len()), thread);
-                QueueMembershipClass::Deadline
+            QueueRestorePoint::Deadline(key) => {
+                let restored_key = self.deadline.insert(thread);
+                assert_eq!(restored_key, key, "failed transfer must restore EDF order");
+                QueueMembershipClass::Deadline(restored_key)
             }
             QueueRestorePoint::Realtime { priority, position } => {
-                let index = (priority - 1) as usize;
-                self.rt[index].insert(position.min(self.rt[index].len()), thread);
-                self.rt_bitmap |= 1_u128 << index;
+                self.rt.restore(priority, position, thread);
                 QueueMembershipClass::Realtime(priority)
             }
             QueueRestorePoint::Fair => {
@@ -638,16 +726,13 @@ impl RunQueue {
         };
         self.len += 1;
         self.register_membership(id, membership_class);
-        if matches!(membership_class, QueueMembershipClass::Deadline) {
-            self.recompute_earliest_deadline_event();
-        }
         self.recompute_pushable_summary();
     }
 
-    pub(crate) fn pick_next_with_rt(&mut self, ordinary_rt_may_run: bool) -> Option<QueuedThread> {
+    pub(crate) fn pick_next(&mut self, rt_eligibility: RtEligibility) -> Option<QueuedThread> {
         let picked = self
             .pick_deadline()
-            .or_else(|| self.pick_rt(ordinary_rt_may_run))
+            .or_else(|| self.pick_rt(rt_eligibility))
             .or_else(|| self.pick_fair(false))
             .or_else(|| self.pick_fair(true));
         if let Some(picked_entry) = &picked {
@@ -664,47 +749,11 @@ impl RunQueue {
     }
 
     fn pick_deadline(&mut self) -> Option<QueuedThread> {
-        let index = self
-            .deadline
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, entry)| {
-                let absolute = match entry.entity {
-                    SchedulingEntity::Deadline(entity) => entity.absolute_deadline_ns(),
-                    _ => u64::MAX,
-                };
-                (absolute, entry.sequence)
-            })
-            .map(|(index, _)| index)?;
-        let picked = self.deadline.swap_remove(index);
-        self.recompute_earliest_deadline_event();
-        Some(picked)
+        self.deadline.pick_first()
     }
 
-    fn pick_rt(&mut self, ordinary_rt_may_run: bool) -> Option<QueuedThread> {
-        if ordinary_rt_may_run {
-            let priority = self.highest_rt_priority()?;
-            let index = (priority - 1) as usize;
-            let thread = self.rt[index]
-                .pop_front()
-                .expect("RT bitmap must identify a non-empty priority queue");
-            if self.rt[index].is_empty() {
-                self.rt_bitmap &= !(1_u128 << index);
-            }
-            return Some(thread);
-        }
-        for (index, queue) in self.rt.iter_mut().enumerate().rev() {
-            if let Some(position) = queue.iter().position(|thread| thread.rt_quota_exempt) {
-                let thread = queue.remove(position);
-                if queue.is_empty() {
-                    self.rt_bitmap &= !(1_u128 << index);
-                }
-                if thread.is_some() {
-                    return thread;
-                }
-            }
-        }
-        None
+    fn pick_rt(&mut self, eligibility: RtEligibility) -> Option<QueuedThread> {
+        self.rt.pick(matches!(eligibility, RtEligibility::Ordinary))
     }
 
     fn pick_fair(&mut self, idle: bool) -> Option<QueuedThread> {
@@ -719,16 +768,6 @@ impl RunQueue {
             return None;
         }
         queue.pick_eligible(virtual_time)
-    }
-
-    fn recompute_earliest_deadline_event(&mut self) {
-        self.earliest_deadline_event_ns = self
-            .deadline
-            .iter()
-            .filter_map(|thread| thread.entity.deadline())
-            .map(|deadline| deadline.next_scheduler_event_ns())
-            .filter(|deadline| *deadline != 0)
-            .min();
     }
 
     fn pushable_summary_for(thread: &QueuedThread) -> Option<PushableSummary> {
@@ -756,16 +795,8 @@ impl RunQueue {
     }
 
     fn recompute_pushable_summary(&mut self) {
-        self.pushable_summary = self
-            .deadline
-            .iter()
-            .filter_map(Self::pushable_summary_for)
-            .min_by_key(|summary| summary.key);
-        let rt = self.highest_rt_priority().and_then(|priority| {
-            self.rt[(priority - 1) as usize]
-                .front()
-                .and_then(Self::pushable_summary_for)
-        });
+        self.pushable_summary = self.deadline.first().and_then(Self::pushable_summary_for);
+        let rt = self.rt.first().and_then(Self::pushable_summary_for);
         self.consider_pushable_summary(rt);
         let fair = self.fair.first().and_then(Self::pushable_summary_for);
         self.consider_pushable_summary(fair);
@@ -787,9 +818,10 @@ impl RunQueue {
 
     fn register_membership(&mut self, id: ThreadId, class: QueueMembershipClass) {
         let slot = id.slot() as usize;
-        if self.membership.len() <= slot {
-            self.membership.resize(slot.saturating_add(1), None);
-        }
+        assert!(
+            self.membership.len() > slot,
+            "thread construction must prepare owner rq membership"
+        );
         assert!(
             self.membership[slot]
                 .replace(QueueMembership {
@@ -810,21 +842,21 @@ impl RunQueue {
         assert_eq!(membership.generation, id.generation());
     }
 
+    fn replace_membership_class(&mut self, id: ThreadId, class: QueueMembershipClass) {
+        let membership = self
+            .membership
+            .get_mut(id.slot() as usize)
+            .and_then(Option::as_mut)
+            .expect("queued thread must retain owner membership during rekey");
+        assert_eq!(membership.generation, id.generation());
+        membership.class = class;
+    }
+
     fn allocate_sequence(&mut self) -> u64 {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
         sequence
     }
-}
-
-fn remove_from_vec(queue: &mut Vec<QueuedThread>, id: ThreadId) -> Option<QueuedThread> {
-    let index = queue.iter().position(|entry| entry.id == id)?;
-    Some(queue.swap_remove(index))
-}
-
-fn remove_from_rt_queue(queue: &mut VecDeque<QueuedThread>, id: ThreadId) -> Option<QueuedThread> {
-    let index = queue.iter().position(|entry| entry.id == id)?;
-    queue.remove(index)
 }
 
 #[cfg(test)]
@@ -919,7 +951,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            queue.pick_next_with_rt(true).unwrap().id,
+            queue.pick_next(RtEligibility::Ordinary).unwrap().id,
             ThreadId::from_parts(2, 1)
         );
     }
@@ -949,7 +981,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            queue.pick_next_with_rt(true).unwrap().id,
+            queue.pick_next(RtEligibility::Ordinary).unwrap().id,
             ThreadId::from_parts(0, 1)
         );
     }
@@ -1147,7 +1179,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            queue.pick_next_with_rt(true).unwrap().id,
+            queue.pick_next(RtEligibility::Ordinary).unwrap().id,
             waiting,
             "yield must forfeit the active request so positive-lag peers become eligible",
         );
@@ -1178,7 +1210,7 @@ mod tests {
         }
 
         assert_eq!(
-            queue.pick_next_with_rt(true).unwrap().id,
+            queue.pick_next(RtEligibility::Ordinary).unwrap().id,
             ThreadId::from_parts(1, 1),
             "weighted V must make both vruntime 0 and 4 eligible, then choose vd=8",
         );
@@ -1213,7 +1245,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            queue.pick_next_with_rt(true).unwrap().id,
+            queue.pick_next(RtEligibility::Ordinary).unwrap().id,
             earlier,
             "EEVDF must order wrapped virtual deadlines by signed distance",
         );
@@ -1337,7 +1369,7 @@ mod tests {
 
         queue.dequeue(deadline_id).unwrap();
         assert_eq!(queue.pushable_key().unwrap().class_rank(), 1);
-        assert_eq!(queue.pick_next_with_rt(true).unwrap().id, rt_id);
+        assert_eq!(queue.pick_next(RtEligibility::Ordinary).unwrap().id, rt_id);
         assert_eq!(queue.pushable_key().unwrap().class_rank(), 2);
         queue.dequeue(fair_id).unwrap();
         assert_eq!(queue.pushable_key(), None);
@@ -1371,7 +1403,7 @@ mod tests {
         queue.fair.assert_invariants();
         while queue.has_fair() {
             reset_fair_runqueue_visits();
-            queue.pick_next_with_rt(true).unwrap();
+            queue.pick_next(RtEligibility::Ordinary).unwrap();
             assert!(
                 fair_runqueue_visits() <= 32,
                 "EEVDF selection must remain logarithmic, observed {} visits",
@@ -1486,7 +1518,75 @@ mod tests {
         assert_eq!(queue.highest_rt_priority(), Some(99));
         assert_eq!(queue.dequeue(high_id).unwrap().id, high_id);
         assert_eq!(queue.highest_rt_priority(), Some(1));
-        assert_eq!(queue.pick_next_with_rt(true).unwrap().id, low_id);
+        assert_eq!(queue.pick_next(RtEligibility::Ordinary).unwrap().id, low_id);
         assert!(!queue.has_rt());
+    }
+
+    #[test]
+    fn throttled_rt_rq_selects_only_the_highest_pi_owner() {
+        let mut queue = RunQueue::new();
+        let ordinary = ThreadId::from_parts(0, 1);
+        let lower_pi_owner = ThreadId::from_parts(1, 1);
+        let higher_pi_owner = ThreadId::from_parts(2, 1);
+        queue
+            .enqueue_rt_test(
+                ordinary,
+                SchedulePolicy::fifo(RtPriority::new(99).unwrap()),
+                false,
+            )
+            .unwrap();
+        queue
+            .enqueue_rt_test(
+                lower_pi_owner,
+                SchedulePolicy::fifo(RtPriority::new(10).unwrap()),
+                true,
+            )
+            .unwrap();
+        queue
+            .enqueue_rt_test(
+                higher_pi_owner,
+                SchedulePolicy::fifo(RtPriority::new(20).unwrap()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            queue.pick_next(RtEligibility::PiOwnerOnly).unwrap().id,
+            higher_pi_owner
+        );
+        assert_eq!(
+            queue.pick_next(RtEligibility::Ordinary).unwrap().id,
+            ordinary,
+            "restoring RT bandwidth must reveal the highest ordinary priority"
+        );
+    }
+
+    #[test]
+    fn deadline_pick_does_not_scan_the_runnable_set() {
+        let mut queue = RunQueue::new();
+        let policy =
+            SchedulePolicy::deadline(DeadlinePolicy::new(10, 20, 30, DeadlineFlags::NONE).unwrap());
+        for slot in 0..128 {
+            let mut entity = SchedulingEntity::new(policy, 1, 0);
+            entity.activate_deadline(slot as u64);
+            queue
+                .enqueue_test(
+                    ThreadId::from_parts(slot, 1),
+                    policy,
+                    entity,
+                    slot as u64,
+                    EnqueueReason::Wake,
+                )
+                .unwrap();
+        }
+
+        reset_deadline_runqueue_visits();
+        queue.pick_next(RtEligibility::Ordinary).unwrap();
+        queue.deadline.assert_invariants();
+        assert!(
+            deadline_runqueue_visits() <= 32,
+            "EDF selection must remain logarithmic, observed {} visits",
+            deadline_runqueue_visits(),
+        );
     }
 }

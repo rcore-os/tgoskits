@@ -159,7 +159,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
 | active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
-| task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | park 已类型化；Deadline rq 仍为 O(n) `Vec`，CBS registration/cache/flag 重复，待整体替换 |
+| task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | Deadline 已改为 class-owned 有序 AVL rq，并在节点内增广最早 CBS 事件；pick/dequeue/rekey 为 O(log n)；CBS 记账与物理入队同属目标 rq 事务；CBS 生命周期改为互斥状态，删除 `base_deadline` 镜像 |
 | clockevent/nohz | `clockevents_program_event()`、`tick_nohz_idle_enter()`、`tick_nohz_stop_tick()`、`tick_nohz_idle_exit()` | 每 CPU 单一物理 owner；idle 无调度事件时停止 tick；无期限用 `Option` | 已将 scheduler tick 建模为 `Running/Stopped`，idle IRQ-off 提交时从物理选择器撤销 tick，只保留 task deadline；非调度 IRQ 后保持 NOHZ，出现 runnable work 时按原相位追赶并重启 tick |
 | switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | `on_switch_in` 已移到 current publication、runtime tail、handoff consumption 之后的 move-only completion，并在释放 `CpuLocal` borrow 后执行；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
 | PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；deboost/grant 后锁外 wake | handoff generation 与锁外 wake 已有；`PreemptTicketLock` 仍可能跨 CPU 无界禁抢占自旋，待按 owner 分拆 |
@@ -222,6 +222,43 @@ v7.1 PREEMPT_RT。此次不再把“已有枚举/guard/缓存”当作完成标�
 - Starry `clone(CLONE_VM | SIGCHLD)` + `FUTEX_PRIVATE`：父进程 wake 找不到同 mm 子进程
   waiter；修复必须来自 mm-owned futex domain，而不是跨 `ProcessData` 搜索或 fallback。
 
+### 调度类 runqueue 落地状态
+
+顶层 `RunQueue` 现在只负责线程 membership、class 顺序和公共 placement 事务，不再直接
+实现各类选择算法：
+
+- Deadline class 使用按 `(absolute deadline, enqueue sequence, ThreadId)` 排序的 owner-local
+  AVL；节点同时增广子树最早 scheduler event，等价于 Linux `dl_rq.root` 的 cached
+  leftmost 与 class deadline cache。Fair、RT、Deadline 三类链接都在 `ThreadCore` 构造时
+  预备，节点随线程而不是随 CPU 生存；首次 wake、迁移和 policy change 不在 rq irqsave
+  临界区分配或释放。generation-bearing membership 保存精确树 key，更新和迁移不再扫描
+  Deadline runnable set。
+- RT class 独占 99 级 FIFO/RR priority array、active bitmap 和 PI-owner bitmap。顶层通过
+  `RtEligibility::{Ordinary, PiOwnerOnly}` 指明 bandwidth 状态，不再使用含义不明的 bool；
+  quota 耗尽后只从 PI-owner bitmap 选择最高优先级解锁者；各优先级队列使用预备的侵入式
+  FIFO 节点，不再依赖会在首次入队扩容的 `VecDeque`。
+- Fair/Idle class 继续由各自增广 EEVDF AVL 拥有，顶层固定按
+  `Deadline > RT > Fair > Idle` 调用 class pick。
+
+RT bandwidth 仍按 Linux `struct rt_rq` 保持 per-CPU 事实源；Linux 的共享
+`rt_bandwidth` 负责 period timer 和 runtime balancing，并不意味着所有 CPU 共用一份
+`rt_time`。因此本轮没有把 per-CPU consumed runtime 错误合并成全局计数。后续若实现
+runtime borrowing，应增加独立 root-domain bandwidth owner，而不是让迁移线程携带源 CPU
+的 `rt_time`。
+
+旧实现对 128 个 Deadline runnable thread 的一次 EDF pick 稳定访问 128 个实体；确定性
+红测要求访问数不随 runnable 数线性增长，新实现只访问有序树头。另一个既有迁移回滚测试
+在持有 `ThreadSchedState` guard 时调用公开 `assigned_cpu()`，会再次获取同一 ticket lock
+并永久自锁；测试现已在公开查询前释放内部 guard。完整串行 276 项单元测试由此能够终止，
+不再用“输出完测试名字”替代 runner 退出状态。
+
+首次 class enqueue 的分配审计在旧实现稳定观察到 3 次分配；新实现分别对 Fair、RT、
+Deadline 的首次物理入队断言 allocation/deallocation 均为 0。Deadline 阻塞任务在 zero-lag
+前被远程唤醒时，旧实现要等 owner inbox drain 才把 `ActiveNonContending` 改为
+`ActiveContending`；现在目标 rq 锁同时提交 member、GRUB/CBS bandwidth、activity 和实体
+membership，wake 返回时即满足该不变量。owner-only task deadline heap 只负责随后发布 CBS
+clockevent，不再承担已经可运行实体的带宽真值。
+
 ## 调度与远程投递
 
 ### placement
@@ -250,11 +287,11 @@ migration、switch-tail 和回收只能通过 rq 事务与 handoff 方法。bloc
 `OwnerDispatchState` 拆到 `CpuRemote` 的 IRQ-safe raw rq lock 下，使远程 waker
 可以采用 Linux v7.1 PREEMPT_RT 的 active wake 模型：
 
-- remotely lockable `RunQueue`：Fair/RT 队列、runnable load、调度策略时钟和 admission
-  记账；使用 IRQ-safe raw rq lock，四架构共享同一事务模型；
+- remotely lockable `RunQueue`：Fair/RT/Deadline 队列、runnable load、调度策略时钟、
+  Deadline member 与 GRUB/CBS bandwidth 记账；使用 IRQ-safe raw rq lock，四架构共享同一
+  事务模型；
 - owner-only `OwnerDispatchState`：current/idle、current dispatch、switch handoff；
-- `DeadlineClassState`：Deadline admission、GRUB/CBS；
-- `LocalTaskDeadlineState`：deadline heap、expired buffer、物理 deadline 发布；
+- owner-only `LocalTaskDeadlineState`：deadline heap、expired buffer、物理 deadline 发布；
 - `OwnerDrainScratch`：只保留 migration/control 等必须由 switch-tail owner 完成的控制消息。
 
 公开 owner-only 操作必须证明持有 runtime IRQ pin 或 scheduler baton。runqueue

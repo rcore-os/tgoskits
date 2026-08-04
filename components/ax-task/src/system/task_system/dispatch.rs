@@ -102,14 +102,40 @@ impl TaskSystem {
         if deadline_wake {
             queued_entity.activate_deadline(now_ns);
             sched.policy.effective_entity = queued_entity;
-            if let SchedulingEntity::Deadline(deadline) = queued_entity {
+            if let SchedulingEntity::Deadline(_) = queued_entity {
                 sched.policy.base_entity = queued_entity;
-                sched.policy.base_deadline = Some(deadline);
             }
         }
         let remote = &self.cpu_remotes[target.as_usize()];
         remote.cancel_idle_pull_if_uncommitted();
         let mut run_queue = remote.lock_run_queue();
+        if Self::activate_deadline_bandwidth_locked(&core, &mut sched, &mut run_queue, target)
+            .is_err()
+        {
+            task_runtime::fatal_invariant(0x574b_0101, core.id().as_u64() as usize);
+        }
+        if deadline_wake
+            && queued_entity
+                .deadline()
+                .is_some_and(DeadlineEntity::is_throttled)
+        {
+            sched.deadline.replenish_pending = true;
+            if sched.throttle_ready_deadline(&core).is_err() {
+                task_runtime::fatal_invariant(0x574b_0102, core.id().as_u64() as usize);
+            }
+            core.publish_effective_schedule(policy, queued_entity);
+            core.set_wake_cpu_hint(target);
+            let deadline_generation = sched.pi.deadline_cbs_generation;
+            drop(run_queue);
+            drop(sched);
+            self.publish_owner_deadline_refresh_reserved(
+                &core,
+                target,
+                deadline_generation,
+                publication,
+            );
+            return WakeResult::Notified;
+        }
         let current_fair = run_queue.current().and_then(CurrentSchedule::fair_entity);
         run_queue.update_fair_virtual_time(current_fair);
         let queued_entity = match run_queue.enqueue(
@@ -233,16 +259,17 @@ impl TaskSystem {
             if let SchedulingEntity::Deadline(deadline) = queued_entity {
                 deadline_wake_throttled = deadline.is_throttled();
                 sched.policy.base_entity = queued_entity;
-                sched.policy.base_deadline = Some(deadline);
             }
         }
-        Self::activate_owner_deadline_bandwidth(core, sched, cpu.as_mut(), owner)?;
-        Self::refresh_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
+        let mut run_queue = cpu.lock_run_queue();
+        Self::activate_deadline_bandwidth_locked(core, sched, &mut run_queue, owner)?;
         if deadline_wake_throttled {
             sched.deadline.replenish_pending = true;
             sched.throttle_ready_deadline(core)?;
             core.publish_effective_schedule(policy, queued_entity);
             core.set_wake_cpu_hint(owner);
+            drop(run_queue);
+            Self::refresh_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
             return Ok(false);
         }
         let current_fair = cpu
@@ -250,7 +277,6 @@ impl TaskSystem {
             .current_dispatch
             .as_ref()
             .and_then(|dispatch| dispatch.entity.fair());
-        let mut run_queue = cpu.lock_run_queue();
         run_queue.update_fair_virtual_time(current_fair);
         let queued_entity = run_queue.enqueue(
             QueuedThread::new(
@@ -277,6 +303,8 @@ impl TaskSystem {
         core.publish_effective_schedule(policy, queued_entity);
         sched.placement.set_queued_cpu(Some(owner))?;
         core.set_wake_cpu_hint(owner);
+        drop(run_queue);
+        Self::refresh_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
         Ok(preempts_current)
     }
 
@@ -299,29 +327,37 @@ impl TaskSystem {
     pub(super) fn activate_owner_deadline_bandwidth(
         core: &Arc<ThreadCore>,
         sched: &mut ThreadSchedState,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
+        owner: CpuId,
+    ) -> Result<(), TaskError> {
+        let mut run_queue = cpu.lock_run_queue();
+        Self::activate_deadline_bandwidth_locked(core, sched, &mut run_queue, owner)
+    }
+
+    fn activate_deadline_bandwidth_locked(
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        run_queue: &mut CpuRunQueueState,
         owner: CpuId,
     ) -> Result<(), TaskError> {
         if !matches!(sched.policy.applied, SchedulePolicy::Deadline(_)) {
             return Ok(());
         }
-        let member_registered = cpu.as_mut().register_deadline_member(core)?;
+        let member_registered = run_queue.register_deadline_member(core)?;
         let bandwidth_result = match sched.deadline.bandwidth_cpu {
-            None => cpu
-                .as_mut()
-                .add_deadline_bandwidth(sched.deadline.bandwidth_scaled, true),
+            None => run_queue.add_deadline_bandwidth(sched.deadline.bandwidth_scaled, true),
             Some(assigned) if assigned != owner => Err(TaskError::CpuOwnerMismatch {
                 expected: assigned.as_u32(),
                 actual: owner.as_u32(),
             }),
-            Some(_) if sched.deadline.activity == DeadlineActivity::Inactive => cpu
-                .as_mut()
-                .activate_deadline_bandwidth(sched.deadline.bandwidth_scaled),
+            Some(_) if sched.deadline.activity == DeadlineActivity::Inactive => {
+                run_queue.activate_deadline_bandwidth(sched.deadline.bandwidth_scaled)
+            }
             Some(_) => Ok(()),
         };
         if let Err(error) = bandwidth_result {
             if member_registered {
-                cpu.as_mut().unregister_deadline_member(core);
+                run_queue.unregister_deadline_member(core);
             }
             return Err(error);
         }
@@ -355,29 +391,29 @@ impl TaskSystem {
             });
         }
         Self::cancel_owner_deadline_timers_locked(core, sched, cpu.as_mut())?;
-        cpu.as_mut().remove_deadline_bandwidth(
+        let mut run_queue = cpu.lock_run_queue();
+        run_queue.remove_deadline_bandwidth(
             sched.deadline.bandwidth_scaled,
             sched.deadline.activity != DeadlineActivity::Inactive,
         )?;
         sched.deadline.bandwidth_cpu = None;
-        cpu.as_mut().unregister_deadline_member(core);
+        run_queue.unregister_deadline_member(core);
         Ok(())
     }
 
     pub(super) fn assign_owner_inactive_deadline_bandwidth(
         core: &Arc<ThreadCore>,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
     ) -> Result<(), TaskError> {
         let owner = cpu.owner();
         let mut sched = core.sched().lock();
         if !matches!(sched.policy.applied, SchedulePolicy::Deadline(_)) {
             return Ok(());
         }
-        let member_registered = cpu.as_mut().register_deadline_member(core)?;
+        let mut run_queue = cpu.lock_run_queue();
+        let member_registered = run_queue.register_deadline_member(core)?;
         let bandwidth_result = match sched.deadline.bandwidth_cpu {
-            None => cpu
-                .as_mut()
-                .add_deadline_bandwidth(sched.deadline.bandwidth_scaled, false),
+            None => run_queue.add_deadline_bandwidth(sched.deadline.bandwidth_scaled, false),
             Some(assigned) if assigned != owner => Err(TaskError::CpuOwnerMismatch {
                 expected: assigned.as_u32(),
                 actual: owner.as_u32(),
@@ -386,7 +422,7 @@ impl TaskSystem {
         };
         if let Err(error) = bandwidth_result {
             if member_registered {
-                cpu.as_mut().unregister_deadline_member(core);
+                run_queue.unregister_deadline_member(core);
             }
             return Err(error);
         }
@@ -396,19 +432,21 @@ impl TaskSystem {
         sched.deadline.activity = DeadlineActivity::Inactive;
         sched.deadline.bandwidth_cpu = Some(owner);
         sched.deadline.zero_lag_ns = 0;
+        drop(run_queue);
         Self::refresh_owner_deadline_timers_locked(core, &mut sched, cpu)
     }
 
     pub(super) fn mark_owner_deadline_non_contending(
         core: &Arc<ThreadCore>,
-        mut cpu: Pin<&mut CpuLocal>,
+        cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
         let owner = cpu.owner();
         let mut sched = core.sched().lock();
-        let (Some(assigned_cpu), Some(deadline)) =
-            (sched.deadline.bandwidth_cpu, sched.policy.base_deadline)
-        else {
+        let (Some(assigned_cpu), Some(deadline)) = (
+            sched.deadline.bandwidth_cpu,
+            sched.policy.base_entity.deadline(),
+        ) else {
             return Ok(());
         };
         if assigned_cpu != owner || sched.deadline.activity != DeadlineActivity::ActiveContending {
@@ -416,7 +454,7 @@ impl TaskSystem {
         }
         let zero_lag_ns = deadline_zero_lag_ns(deadline);
         if zero_lag_ns <= now_ns {
-            cpu.as_mut()
+            cpu.lock_run_queue()
                 .deactivate_deadline_bandwidth(sched.deadline.bandwidth_scaled)?;
             sched.deadline.activity = DeadlineActivity::Inactive;
             sched.deadline.zero_lag_ns = 0;
@@ -473,7 +511,8 @@ impl TaskSystem {
                 };
                 let deadline = donor_sched
                     .policy
-                    .base_deadline
+                    .base_entity
+                    .deadline()
                     .ok_or(TaskError::InvalidPiState)?;
                 dispatch_policy = policy;
                 dispatch_entity = SchedulingEntity::Deadline(deadline);
@@ -579,7 +618,6 @@ impl TaskSystem {
             } else {
                 donor.deadline.overrun_events
             };
-            donor.policy.base_deadline = Some(deadline);
             donor.policy.base_entity = SchedulingEntity::Deadline(deadline);
             if donor.deadline.activity == DeadlineActivity::ActiveNonContending {
                 donor.deadline.zero_lag_ns = deadline_zero_lag_ns(deadline);
@@ -628,9 +666,6 @@ impl TaskSystem {
         sched.pi.critical_rescue = dispatch.pi_critical_rescue;
         if !sched.is_pi_boosted() {
             sched.policy.base_entity = dispatch.entity;
-            if let SchedulingEntity::Deadline(deadline) = dispatch.entity {
-                sched.policy.base_deadline = Some(deadline);
-            }
             if dispatch.deadline_overrun {
                 sched.deadline.overrun_events = sched
                     .deadline
@@ -696,7 +731,6 @@ impl TaskSystem {
             .max(sched.deadline.desired_reservation);
         sched.policy.applied = base_policy;
         sched.policy.base_entity = base_entity;
-        sched.policy.base_deadline = base_entity.deadline();
         if !sched.is_pi_boosted() {
             sched.policy.effective = base_policy;
             sched.policy.effective_entity = base_entity;

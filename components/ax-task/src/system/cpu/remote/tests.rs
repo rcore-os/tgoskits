@@ -33,7 +33,7 @@ mod scheduler_ipi_tests {
 
     #[test]
     fn load_summary_reader_does_not_wait_for_stalled_writer() {
-        let remote = CpuRemote::create(CpuId::new(0));
+        let remote = CpuRemote::create(CpuId::new(0), TaskSystemConfig::new(1));
         remote.set_load_summary_sequence_for_test(1);
 
         let reader_remote = Arc::clone(&remote);
@@ -62,7 +62,7 @@ mod scheduler_ipi_tests {
 
     #[test]
     fn polling_idle_owner_observes_work_without_a_physical_ipi() {
-        let remote = CpuRemote::create(CpuId::new(1));
+        let remote = CpuRemote::create(CpuId::new(1), TaskSystemConfig::new(2));
         assert!(remote.mark_online());
         crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success);
 
@@ -83,7 +83,7 @@ mod scheduler_ipi_tests {
 
     #[test]
     fn inactive_cpu_accepts_owner_delivery_but_rejects_new_placement() {
-        let remote = CpuRemote::create(CpuId::new(1));
+        let remote = CpuRemote::create(CpuId::new(1), TaskSystemConfig::new(2));
         assert!(remote.mark_online());
         assert!(remote.try_deactivate());
         assert_eq!(remote.lifecycle_state(), CpuLifecycleState::Inactive);

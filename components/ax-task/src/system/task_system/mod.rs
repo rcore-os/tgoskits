@@ -67,7 +67,10 @@ use crate::{
         AddressSpaceDestroyOutcome, AddressSpaceReclaimArmOutcome, ContextThreadBinding,
         CpuRemoteHandle, RuntimeCpuId, RuntimeStatus, ThreadIdentityV1, task_runtime,
     },
-    system::cpu::{CurrentDispatch, CurrentDispatchState, CurrentSchedule, IdlePullReservation},
+    system::cpu::{
+        CpuRunQueueState, CurrentDispatch, CurrentDispatchState, CurrentSchedule,
+        IdlePullReservation,
+    },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{
         ExpiredTaskDeadline, TaskDeadlineError, TaskDeadlineKind, TaskDeadlineNode,
@@ -151,7 +154,7 @@ impl TaskSystem {
         validate_config(config)?;
         let task_work = Arc::new(TaskWorkDoorbell::new());
         let cpu_remotes = (0..config.cpu_count())
-            .map(|index| CpuRemote::create(CpuId::new(index as u32)))
+            .map(|index| CpuRemote::create(CpuId::new(index as u32), config))
             .collect::<Vec<_>>();
         let cpu_registrations = cpu_remotes
             .iter()

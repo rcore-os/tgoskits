@@ -9,8 +9,8 @@ mod runtime_state;
 use alloc::sync::Weak;
 
 use crate::{
-    CpuId, CpuSet, DeadlineEntity, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore,
-    ThreadId, ThreadLifecycle, ThreadState,
+    CpuId, CpuSet, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore, ThreadId,
+    ThreadLifecycle, ThreadState,
     lock::{IrqTicketGuard, IrqTicketLock},
     runtime::{AddressSpaceHandle, ExecutionContextHandle},
     timer::TaskDeadlineRegistration,

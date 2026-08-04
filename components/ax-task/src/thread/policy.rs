@@ -254,6 +254,14 @@ impl SchedulePolicy {
         }
     }
 
+    /// Returns the fixed real-time priority for FIFO/RR policies.
+    pub(crate) const fn rt_priority(self) -> Option<RtPriority> {
+        match self {
+            Self::Fifo { priority } | Self::RoundRobin { priority, .. } => Some(priority),
+            Self::Fair { .. } | Self::Deadline(_) => None,
+        }
+    }
+
     /// Creates an urgency key suitable for PI waiter ordering.
     pub const fn scheduling_key(self, sequence: u64) -> SchedulingKey {
         let urgency = self.scheduling_urgency();
@@ -286,11 +294,25 @@ pub struct DeadlineEntity {
     absolute_deadline_ns: u64,
     next_period_ns: u64,
     remaining_runtime_ns: i128,
-    throttled: bool,
-    yielded: bool,
+    state: DeadlineJobState,
     miss_recorded: bool,
     misses: u64,
     overruns: u64,
+}
+
+/// Mutually exclusive CBS lifecycle owned by the Deadline class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeadlineJobState {
+    Inactive,
+    Runnable,
+    Throttled(DeadlineThrottleReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeadlineThrottleReason {
+    RuntimeExhausted,
+    Yielded,
+    ConstrainedWake,
 }
 
 impl DeadlineEntity {
@@ -301,8 +323,7 @@ impl DeadlineEntity {
             absolute_deadline_ns: 0,
             next_period_ns: 0,
             remaining_runtime_ns: 0,
-            throttled: false,
-            yielded: false,
+            state: DeadlineJobState::Inactive,
             miss_recorded: false,
             misses: 0,
             overruns: 0,
@@ -311,23 +332,22 @@ impl DeadlineEntity {
 
     /// Applies the CBS wake-up rule and activates a fresh job when required.
     pub fn activate(&mut self, now_ns: u64) {
-        if self.absolute_deadline_ns == 0 || now_ns >= self.next_period_ns {
+        if matches!(self.state, DeadlineJobState::Inactive) || now_ns >= self.next_period_ns {
             self.start_fresh_job(now_ns);
             return;
         }
-        if self.throttled {
+        if self.is_throttled() {
             return;
         }
 
         let constrained = self.policy.deadline_ns() < self.policy.period_ns();
         if constrained && now_ns >= self.absolute_deadline_ns {
             self.remaining_runtime_ns = 0;
-            self.throttled = true;
-            self.yielded = false;
+            self.state = DeadlineJobState::Throttled(DeadlineThrottleReason::ConstrainedWake);
             return;
         }
         if self.remaining_runtime_ns <= 0 {
-            self.throttled = true;
+            self.state = DeadlineJobState::Throttled(DeadlineThrottleReason::RuntimeExhausted);
             return;
         }
         let time_to_deadline_ns = self.absolute_deadline_ns - now_ns;
@@ -341,7 +361,9 @@ impl DeadlineEntity {
 
         if constrained {
             self.remaining_runtime_ns = revised_wakeup_runtime(time_to_deadline_ns, self.policy);
-            self.throttled = self.remaining_runtime_ns == 0;
+            if self.remaining_runtime_ns == 0 {
+                self.state = DeadlineJobState::Throttled(DeadlineThrottleReason::ConstrainedWake);
+            }
         } else {
             self.start_fresh_job(now_ns);
         }
@@ -356,15 +378,15 @@ impl DeadlineEntity {
         };
         let charge = runtime_ns.saturating_sub(permitted_reclaim);
         if charge == 0 {
-            return self.throttled;
+            return self.is_throttled();
         }
         let had_budget = self.remaining_runtime_ns > 0;
         self.remaining_runtime_ns = self.remaining_runtime_ns.saturating_sub(charge as i128);
         if had_budget && self.remaining_runtime_ns <= 0 {
-            self.throttled = true;
+            self.state = DeadlineJobState::Throttled(DeadlineThrottleReason::RuntimeExhausted);
             self.overruns = self.overruns.saturating_add(1);
         }
-        self.throttled
+        self.is_throttled()
     }
 
     /// Replenishes a throttled CBS entity at its scheduling event.
@@ -373,10 +395,10 @@ impl DeadlineEntity {
     /// deadline by whole periods. Explicit yield is distinct and waits for the
     /// next job release boundary.
     pub fn replenish(&mut self, now_ns: u64) {
-        if !self.throttled {
+        let DeadlineJobState::Throttled(reason) = self.state else {
             return;
-        }
-        if self.yielded {
+        };
+        if reason == DeadlineThrottleReason::Yielded {
             if now_ns < self.next_period_ns {
                 return;
             }
@@ -396,23 +418,21 @@ impl DeadlineEntity {
                 return;
             }
         }
-        self.throttled = false;
-        self.yielded = false;
+        self.state = DeadlineJobState::Runnable;
         self.miss_recorded = false;
     }
 
     /// Ends the current job and throttles it until replenishment.
     pub fn yield_job(&mut self) {
         self.remaining_runtime_ns = 0;
-        self.throttled = true;
-        self.yielded = true;
+        self.state = DeadlineJobState::Throttled(DeadlineThrottleReason::Yielded);
         self.miss_recorded = true;
     }
 
     /// Records and reports whether the active job missed its deadline.
     pub fn observe_time(&mut self, now_ns: u64) -> bool {
         if self.absolute_deadline_ns != 0
-            && !self.throttled
+            && matches!(self.state, DeadlineJobState::Runnable)
             && !self.miss_recorded
             && now_ns >= self.absolute_deadline_ns
         {
@@ -451,7 +471,7 @@ impl DeadlineEntity {
     }
 
     pub(crate) const fn next_scheduler_event_ns(self) -> u64 {
-        if self.throttled {
+        if self.is_throttled() {
             self.next_period_ns
         } else if self.miss_recorded {
             0
@@ -462,7 +482,7 @@ impl DeadlineEntity {
 
     /// Returns whether the entity is throttled.
     pub const fn is_throttled(self) -> bool {
-        self.throttled
+        matches!(self.state, DeadlineJobState::Throttled(_))
     }
 
     /// Returns observed deadline misses.
@@ -480,12 +500,13 @@ impl DeadlineEntity {
     /// Runtime remains exhausted and is not replenished. The scheduler bypasses
     /// further CBS charging only until the lock ownership chain is released.
     pub(crate) fn enter_pi_critical_rescue(&mut self) {
-        self.throttled = false;
-        self.yielded = false;
+        self.state = DeadlineJobState::Runnable;
     }
 
     pub(crate) fn leave_pi_critical_rescue(&mut self) {
-        self.throttled = self.remaining_runtime_ns <= 0;
+        if self.remaining_runtime_ns <= 0 {
+            self.state = DeadlineJobState::Throttled(DeadlineThrottleReason::RuntimeExhausted);
+        }
     }
 
     /// Builds an urgency key from the active absolute scheduling deadline.
@@ -508,8 +529,7 @@ impl DeadlineEntity {
         self.absolute_deadline_ns = now_ns.saturating_add(self.policy.deadline_ns());
         self.next_period_ns = now_ns.saturating_add(self.policy.period_ns());
         self.remaining_runtime_ns = self.policy.runtime_ns() as i128;
-        self.throttled = false;
-        self.yielded = false;
+        self.state = DeadlineJobState::Runnable;
         self.miss_recorded = false;
     }
 

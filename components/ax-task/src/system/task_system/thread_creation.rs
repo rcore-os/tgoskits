@@ -32,6 +32,14 @@ impl TaskSystem {
         };
         let id = ThreadId::from_parts(slot, generation);
 
+        // Linux embeds class nodes in task_struct before publication. Prepare
+        // the Rust class-node indexes at the same cold construction boundary,
+        // so a first wake or cross-CPU migration cannot allocate under rq
+        // irqsave locks.
+        for remote in &self.cpu_remotes {
+            remote.lock_run_queue().prepare_thread_slot(slot as usize);
+        }
+
         // Runtime construction may allocate, fault, or call into platform
         // code. Keep it outside the IRQ-disabled registry domain. The removed
         // slot is a private reservation until the short commit below.

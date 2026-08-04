@@ -117,6 +117,14 @@ fn wake_before_zero_lag_cancels_the_pending_inactive_transition() {
 
     install_runtime_handles(&system, cpu.as_mut());
     assert_eq!(thread.wake_handle().wake(), WakeResult::Notified);
+    let activity = system.deadline_activity(thread.id()).unwrap();
+    assert_eq!(
+        activity.activity(),
+        DeadlineActivity::ActiveContending,
+        "remote wake must account CBS activity in the same target-rq transaction"
+    );
+    assert_eq!(activity.zero_lag_ns(), 0);
+    assert_eq!(cpu.deadline_bandwidth().inactive_bw_scaled(), 0);
     system.drain_policy_updates(cpu.as_mut(), 3).unwrap();
     let activity = system.deadline_activity(thread.id()).unwrap();
     assert_eq!(activity.activity(), DeadlineActivity::ActiveContending);

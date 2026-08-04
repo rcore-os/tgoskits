@@ -1,6 +1,7 @@
 //! Owner selection, schedule-out, and switch-handoff construction.
 
 use super::*;
+use crate::scheduler::RtEligibility;
 
 impl TaskSystem {
     pub(super) fn capture_owner_fair_migration(
@@ -102,11 +103,10 @@ impl TaskSystem {
         }
 
         if sched.policy.effective_entity.is_deadline_throttled() && !sched.pi.critical_rescue {
-            if let SchedulingEntity::Deadline(deadline) = sched.policy.effective_entity {
+            if let SchedulingEntity::Deadline(_) = sched.policy.effective_entity {
                 if !sched.is_pi_boosted() {
                     sched.policy.base_entity = sched.policy.effective_entity;
                 }
-                sched.policy.base_deadline = Some(deadline);
                 sched.deadline.replenish_pending = true;
                 Self::refresh_owner_deadline_timers_locked(&core, &mut sched, cpu.as_mut())?;
             }
@@ -203,8 +203,12 @@ impl TaskSystem {
         let core = loop {
             let queued = {
                 let dispatch = cpu.as_mut().dispatch_state_mut();
-                let ordinary_rt_may_run = dispatch.rt_bandwidth.may_run(now_ns, false);
-                cpu.lock_run_queue().pick_next_with_rt(ordinary_rt_may_run)
+                let rt_eligibility = if dispatch.rt_bandwidth.may_run(now_ns, false) {
+                    RtEligibility::Ordinary
+                } else {
+                    RtEligibility::PiOwnerOnly
+                };
+                cpu.lock_run_queue().pick_next(rt_eligibility)
             };
             let Some(queued) = queued else {
                 break cpu

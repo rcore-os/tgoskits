@@ -5,7 +5,10 @@ use std::{
     cell::Cell,
 };
 
-use ax_task::{CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
+use ax_task::{
+    CpuId, DeadlineFlags, DeadlinePolicy, RtPriority, SchedulePolicy, TaskSystem, TaskSystemConfig,
+    ThreadSpec,
+};
 
 mod support;
 
@@ -38,6 +41,29 @@ unsafe impl GlobalAlloc for AuditAllocator {
 static GLOBAL_ALLOCATOR: AuditAllocator = AuditAllocator;
 
 #[test]
+fn first_class_enqueue_uses_thread_prepared_storage() {
+    retain_fake_runtime_helpers();
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let policies = [
+        SchedulePolicy::default(),
+        SchedulePolicy::fifo(RtPriority::new(42).unwrap()),
+        SchedulePolicy::deadline(DeadlinePolicy::new(10, 20, 30, DeadlineFlags::NONE).unwrap()),
+    ];
+    let mut threads = Vec::new();
+    for policy in policies {
+        let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+        system.make_ready(thread.id()).unwrap();
+        assert_no_alloc_or_free(|| {
+            system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+        });
+        threads.push(thread);
+    }
+    assert_eq!(threads.len(), policies.len());
+}
+
+#[test]
 fn fair_schedule_rotation_reuses_owner_runqueue_storage() {
     retain_fake_runtime_helpers();
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
@@ -58,6 +84,30 @@ fn fair_schedule_rotation_reuses_owner_runqueue_storage() {
 
     assert_no_alloc_or_free(|| {
         system.yield_current(cpu.as_mut(), 2).unwrap();
+    });
+    assert_eq!(threads.len(), 2);
+}
+
+#[test]
+fn deadline_selection_reuses_owner_runqueue_storage() {
+    retain_fake_runtime_helpers();
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let policy =
+        SchedulePolicy::deadline(DeadlinePolicy::new(10, 20, 30, DeadlineFlags::NONE).unwrap());
+    let threads = (0..2)
+        .map(|_| {
+            let thread = system.create_thread(ThreadSpec::new(policy)).unwrap();
+            system.make_ready(thread.id()).unwrap();
+            system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
+            thread
+        })
+        .collect::<Vec<_>>();
+    system.schedule(cpu.as_mut(), 0).unwrap();
+
+    assert_no_alloc_or_free(|| {
+        system.yield_current(cpu.as_mut(), 1).unwrap();
     });
     assert_eq!(threads.len(), 2);
 }
@@ -92,7 +142,7 @@ fn assert_no_alloc_or_free<T>(operation: impl FnOnce() -> T) -> T {
         assert_eq!(
             observed,
             (0, 0),
-            "owner fair scheduling must not allocate or free runqueue storage"
+            "owner scheduling must not allocate or free runqueue storage"
         );
         value
     })

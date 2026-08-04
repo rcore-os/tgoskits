@@ -1,6 +1,6 @@
 //! Owner-local EEVDF runqueue with incremental lag accounting.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cmp::Ordering;
 
 #[cfg(test)]
@@ -49,7 +49,7 @@ impl PartialOrd for FairQueueKey {
 type FairLink = Option<Box<FairNode>>;
 
 #[derive(Debug)]
-struct FairNode {
+pub(crate) struct FairNode {
     key: FairQueueKey,
     thread: Option<QueuedThread>,
     left: FairLink,
@@ -59,16 +59,18 @@ struct FairNode {
 }
 
 impl FairNode {
-    fn new(thread: QueuedThread) -> Box<Self> {
-        let key = FairQueueKey::for_thread(&thread);
-        let min_vruntime = fair_entity(&thread).vruntime();
+    pub(crate) fn empty() -> Box<Self> {
         Box::new(Self {
-            key,
-            thread: Some(thread),
+            key: FairQueueKey {
+                virtual_deadline: 0,
+                sequence: 0,
+                thread: ThreadId::from_parts(0, 0),
+            },
+            thread: None,
             left: None,
             right: None,
             height: 1,
-            min_vruntime,
+            min_vruntime: 0,
         })
     }
 
@@ -107,7 +109,6 @@ impl FairNode {
 #[derive(Debug)]
 pub(super) struct FairRunQueue {
     root: FairLink,
-    spare: FairLink,
     keys: Vec<Option<(u32, FairQueueKey)>>,
     zero_vruntime: u64,
     sum_weighted_delta: i128,
@@ -119,12 +120,17 @@ impl FairRunQueue {
     pub(super) fn new() -> Self {
         Self {
             root: None,
-            spare: None,
             keys: Vec::new(),
             zero_vruntime: 0,
             sum_weighted_delta: 0,
             total_weight: 0,
             len: 0,
+        }
+    }
+
+    pub(super) fn prepare_thread_slot(&mut self, slot: usize) {
+        if self.keys.len() <= slot {
+            self.keys.resize(slot.saturating_add(1), None);
         }
     }
 
@@ -149,9 +155,10 @@ impl FairRunQueue {
     pub(super) fn insert(&mut self, thread: QueuedThread) {
         let key = FairQueueKey::for_thread(&thread);
         let slot = thread.id.slot() as usize;
-        if self.keys.len() <= slot {
-            self.keys.resize(slot.saturating_add(1), None);
-        }
+        assert!(
+            self.keys.len() > slot,
+            "thread construction must prepare fair rq membership"
+        );
         assert!(
             self.keys[slot]
                 .replace((thread.id.generation(), key))
@@ -159,13 +166,13 @@ impl FairRunQueue {
             "fair runqueue cannot contain one thread twice"
         );
         self.add_weighted_entity(fair_entity(&thread));
-        let inserted = if let Some(mut spare) = self.spare.take() {
-            self.spare = spare.right.take();
-            spare.reset(thread);
-            spare
-        } else {
-            FairNode::new(thread)
+        let core = Arc::clone(&thread.core);
+        let mut inserted = unsafe {
+            // SAFETY: target-rq placement serializes the single fair linkage
+            // embedded in this thread's scheduler storage.
+            core.runqueue_nodes().take_fair()
         };
+        inserted.reset(thread);
         self.root = insert_node(self.root.take(), inserted);
         self.len = self.len.saturating_add(1);
     }
@@ -180,7 +187,7 @@ impl FairRunQueue {
         let (root, removed) = remove_node(self.root.take(), key);
         self.root = root;
         let removed = removed.expect("fair runqueue identity index must match its tree");
-        let removed = self.recycle_removed(removed);
+        let removed = Self::return_removed(removed);
         self.remove_weighted_entity(fair_entity(&removed));
         self.len -= 1;
         Some(removed)
@@ -195,7 +202,7 @@ impl FairRunQueue {
         let (root, removed) = remove_node(self.root.take(), key);
         self.root = root;
         let removed = removed.expect("eligible fair key must remain present until owner removal");
-        let removed = self.recycle_removed(removed);
+        let removed = Self::return_removed(removed);
         self.remove_weighted_entity(fair_entity(&removed));
         self.len -= 1;
         Some(removed)
@@ -268,16 +275,20 @@ impl FairRunQueue {
         self.zero_vruntime = self.zero_vruntime.wrapping_add(delta as u64);
     }
 
-    fn recycle_removed(&mut self, mut removed: Box<FairNode>) -> QueuedThread {
+    fn return_removed(mut removed: Box<FairNode>) -> QueuedThread {
         let thread = removed
             .thread
             .take()
             .expect("removed fair node must still own its scheduling entity");
         removed.left = None;
-        removed.right = self.spare.take();
+        removed.right = None;
         removed.height = 1;
         removed.min_vruntime = 0;
-        self.spare = Some(removed);
+        unsafe {
+            // SAFETY: the node is physically unlinked before the placement
+            // transaction can publish this thread to another runqueue.
+            thread.core.runqueue_nodes().return_fair(removed);
+        }
         thread
     }
 
@@ -292,16 +303,6 @@ impl FairRunQueue {
         );
         assert_eq!(summary.sum_weighted_delta, self.sum_weighted_delta);
         assert_eq!(summary.total_weight, self.total_weight);
-    }
-}
-
-impl Drop for FairRunQueue {
-    fn drop(&mut self) {
-        // Recycled nodes form a right-linked free list. Drain it iteratively so
-        // dropping a runqueue cannot recurse once per historical high-water node.
-        while let Some(mut node) = self.spare.take() {
-            self.spare = node.right.take();
-        }
     }
 }
 

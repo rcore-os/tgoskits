@@ -15,7 +15,6 @@ pub struct CpuLocal {
     owner: CpuId,
     remote: Arc<CpuRemote>,
     dispatch: dispatch_state::OwnerDispatchState,
-    deadline_class: deadline_state::DeadlineClassState,
     task_deadlines: deadline_state::LocalTaskDeadlineState,
     drain: drain_state::OwnerDrainScratch,
     _pinned: PhantomPinned,
@@ -32,7 +31,6 @@ impl CpuLocal {
             owner,
             remote,
             dispatch: dispatch_state::OwnerDispatchState::new(config),
-            deadline_class: deadline_state::DeadlineClassState::new(config),
             task_deadlines: deadline_state::LocalTaskDeadlineState::new(config),
             drain: drain_state::OwnerDrainScratch::new(config),
             _pinned: PhantomPinned,
@@ -86,9 +84,10 @@ impl CpuLocal {
     }
 
     pub(crate) fn is_quiescent_for_offline(&self) -> bool {
+        let run_queue = self.remote.lock_run_queue();
         (self.dispatch.current.is_none() || self.dispatch.current == self.dispatch.idle)
-            && self.remote.lock_run_queue().len() == 0
-            && self.deadline_class.members.is_empty()
+            && run_queue.len() == 0
+            && run_queue.deadline_members_are_empty()
             && self.task_deadlines.queue.is_empty()
             && self.task_deadlines.expired_count == 0
             && self.dispatch.switch_handoff.is_none()
@@ -183,9 +182,11 @@ impl CpuLocal {
         // runtime-accounting update.
         let this = unsafe { self.get_unchecked_mut() };
         let remote = &this.remote;
-        let admitted_bw_scaled = this.deadline_class.admitted_bw_scaled;
-        let running_bw_scaled = this.deadline_class.running_bw_scaled;
-        let max_bw_scaled = this.deadline_class.max_bw_scaled;
+        let mut run_queue = remote.lock_run_queue();
+        let bandwidth = run_queue.deadline_bandwidth();
+        let admitted_bw_scaled = bandwidth.this_bw_scaled();
+        let running_bw_scaled = bandwidth.running_bw_scaled();
+        let max_bw_scaled = bandwidth.max_bw_scaled();
         let dispatch_state = &mut this.dispatch;
         let current_is_non_idle =
             dispatch_state.current.is_some() && dispatch_state.current != dispatch_state.idle;
@@ -214,7 +215,6 @@ impl CpuLocal {
         let current_policy = dispatch.policy;
         let current_fair = dispatch.entity.fair();
         let rt_quota_exempt = dispatch.rt_quota_exempt;
-        let mut run_queue = remote.lock_run_queue();
         run_queue.update_fair_virtual_time(current_fair);
         run_queue.set_current(Some(dispatch.schedule_snapshot()));
         let rt_quota_exhausted = if matches!(
@@ -306,36 +306,6 @@ impl CpuLocal {
         self.dispatch.switch_handoff.as_ref()
     }
 
-    pub(crate) fn register_deadline_member(
-        self: Pin<&mut Self>,
-        core: &Arc<ThreadCore>,
-    ) -> Result<bool, TaskError> {
-        let state = self.deadline_class_state_mut();
-        if state
-            .members
-            .iter()
-            .all(|member| !Arc::ptr_eq(member, core))
-        {
-            if state.members.len() == state.members.capacity() {
-                return Err(TaskError::TimerCapacity);
-            }
-            state.members.push(Arc::clone(core));
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    pub(crate) fn unregister_deadline_member(self: Pin<&mut Self>, core: &Arc<ThreadCore>) {
-        let state = self.deadline_class_state_mut();
-        if let Some(index) = state
-            .members
-            .iter()
-            .position(|member| Arc::ptr_eq(member, core))
-        {
-            state.members.swap_remove(index);
-        }
-    }
-
     pub(crate) fn scheduler_enter(self: Pin<&mut Self>) -> bool {
         // `need_resched` is cleared only after entering the scheduler, never by
         // wake, timer, IPI, or preemption-disable paths. The AcqRel claim pairs
@@ -369,12 +339,6 @@ impl CpuLocal {
         self.remote.lock_run_queue()
     }
 
-    fn deadline_class_state_mut(self: Pin<&mut Self>) -> &mut deadline_state::DeadlineClassState {
-        // SAFETY: the owner borrow is pinned, and deadline admission state does
-        // not contain a self-reference into CpuLocal.
-        &mut unsafe { self.get_unchecked_mut() }.deadline_class
-    }
-
     fn task_deadline_state_mut(
         self: Pin<&mut Self>,
     ) -> &mut deadline_state::LocalTaskDeadlineState {
@@ -394,94 +358,27 @@ impl CpuLocal {
 
     #[cfg(test)]
     pub(crate) fn deadline_members_are_empty_for_test(&self) -> bool {
-        self.deadline_class.members.is_empty()
+        self.remote.lock_run_queue().deadline_members_are_empty()
     }
 
     pub(crate) fn balance_request_node(&self) -> Pin<&'static InboxNode> {
         self.remote.balance_request_node()
     }
 
+    #[cfg(test)]
     pub(crate) fn add_deadline_bandwidth(
         self: Pin<&mut Self>,
         utilization_scaled: u64,
         active: bool,
     ) -> Result<(), TaskError> {
-        let state = self.deadline_class_state_mut();
-        let next_this_bw_scaled = state
-            .admitted_bw_scaled
-            .checked_add(utilization_scaled)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        let next_running_bw_scaled = if active {
-            state
-                .running_bw_scaled
-                .checked_add(utilization_scaled)
-                .ok_or(TaskError::InvalidConfiguration)?
-        } else {
-            state.running_bw_scaled
-        };
-        state.admitted_bw_scaled = next_this_bw_scaled;
-        state.running_bw_scaled = next_running_bw_scaled;
-        Ok(())
-    }
-
-    pub(crate) fn remove_deadline_bandwidth(
-        self: Pin<&mut Self>,
-        utilization_scaled: u64,
-        active: bool,
-    ) -> Result<(), TaskError> {
-        let state = self.deadline_class_state_mut();
-        let next_this_bw_scaled = state
-            .admitted_bw_scaled
-            .checked_sub(utilization_scaled)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        let next_running_bw_scaled = if active {
-            state
-                .running_bw_scaled
-                .checked_sub(utilization_scaled)
-                .ok_or(TaskError::InvalidConfiguration)?
-        } else {
-            state.running_bw_scaled
-        };
-        state.admitted_bw_scaled = next_this_bw_scaled;
-        state.running_bw_scaled = next_running_bw_scaled;
-        Ok(())
-    }
-
-    pub(crate) fn activate_deadline_bandwidth(
-        self: Pin<&mut Self>,
-        utilization_scaled: u64,
-    ) -> Result<(), TaskError> {
-        let state = self.deadline_class_state_mut();
-        let next_running_bw_scaled = state
-            .running_bw_scaled
-            .checked_add(utilization_scaled)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        if next_running_bw_scaled > state.admitted_bw_scaled {
-            return Err(TaskError::InvalidConfiguration);
-        }
-        state.running_bw_scaled = next_running_bw_scaled;
-        Ok(())
-    }
-
-    pub(crate) fn deactivate_deadline_bandwidth(
-        self: Pin<&mut Self>,
-        utilization_scaled: u64,
-    ) -> Result<(), TaskError> {
-        let state = self.deadline_class_state_mut();
-        state.running_bw_scaled = state
-            .running_bw_scaled
-            .checked_sub(utilization_scaled)
-            .ok_or(TaskError::InvalidConfiguration)?;
-        Ok(())
+        self.remote
+            .lock_run_queue()
+            .add_deadline_bandwidth(utilization_scaled, active)
     }
 
     /// Returns the owner runqueue's GRUB bandwidth accounting.
-    pub const fn deadline_bandwidth(&self) -> DeadlineBandwidthSnapshot {
-        DeadlineBandwidthSnapshot {
-            this_bw_scaled: self.deadline_class.admitted_bw_scaled,
-            running_bw_scaled: self.deadline_class.running_bw_scaled,
-            max_bw_scaled: self.deadline_class.max_bw_scaled,
-        }
+    pub fn deadline_bandwidth(&self) -> DeadlineBandwidthSnapshot {
+        self.remote.lock_run_queue().deadline_bandwidth()
     }
 
     pub(crate) fn scheduler_deadline_due(self: Pin<&mut Self>, now_ns: u64) -> bool {
