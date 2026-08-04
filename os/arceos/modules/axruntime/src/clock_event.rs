@@ -33,6 +33,12 @@ pub(crate) enum ClockEventAction {
     Program(ClockDeadline),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchedulerTickState {
+    Running { next: Option<ClockDeadline> },
+    Stopped { resume_from: Option<ClockDeadline> },
+}
+
 /// Single owner for every source merged into one physical per-CPU clockevent.
 #[derive(Debug)]
 pub(crate) struct LocalClockEvent {
@@ -41,7 +47,7 @@ pub(crate) struct LocalClockEvent {
     task_generation: u64,
     #[cfg(feature = "multitask")]
     task_deadline: Option<ClockDeadline>,
-    periodic_deadline: Option<ClockDeadline>,
+    scheduler_tick: SchedulerTickState,
     armed_deadline: Option<ClockDeadline>,
     #[cfg(feature = "multitask")]
     deferred_work: bool,
@@ -55,7 +61,7 @@ impl LocalClockEvent {
             task_generation: 0,
             #[cfg(feature = "multitask")]
             task_deadline: None,
-            periodic_deadline: None,
+            scheduler_tick: SchedulerTickState::Stopped { resume_from: None },
             armed_deadline: None,
             #[cfg(feature = "multitask")]
             deferred_work: false,
@@ -68,8 +74,54 @@ impl LocalClockEvent {
             ClockEventPhase::Offline,
             "clockevent online transition requires the offline phase"
         );
-        self.periodic_deadline = periodic;
+        self.scheduler_tick = SchedulerTickState::Running { next: periodic };
         self.phase = ClockEventPhase::Idle;
+        self.reconcile_arm()
+    }
+
+    /// Stops the periodic scheduler tick before the owner CPU commits idle.
+    #[cfg(feature = "multitask")]
+    pub(crate) fn stop_scheduler_tick_for_idle(&mut self) -> ClockEventAction {
+        assert!(!matches!(
+            self.phase,
+            ClockEventPhase::Offline | ClockEventPhase::Firing
+        ));
+        let SchedulerTickState::Running { next } = self.scheduler_tick else {
+            return ClockEventAction::None;
+        };
+        self.scheduler_tick = SchedulerTickState::Stopped { resume_from: next };
+        // Unlike ordinary lazy hrtimer updates, NOHZ entry must withdraw the
+        // physical tick immediately. Keeping an earlier arm would wake an idle
+        // CPU at every discarded scheduler period.
+        self.reconcile_arm_exact()
+    }
+
+    /// Restarts the scheduler tick after idle work becomes runnable.
+    #[cfg(feature = "multitask")]
+    pub(crate) fn restart_scheduler_tick_after_idle(
+        &mut self,
+        now_ns: u64,
+        interval_ns: u64,
+    ) -> ClockEventAction {
+        assert!(!matches!(
+            self.phase,
+            ClockEventPhase::Offline | ClockEventPhase::Firing
+        ));
+        let SchedulerTickState::Stopped { resume_from } = self.scheduler_tick else {
+            return ClockEventAction::None;
+        };
+        let next = match resume_from {
+            Some(previous) => crate::clock_event_runtime::next_periodic_deadline(
+                previous.as_nanos(),
+                now_ns,
+                interval_ns,
+            )
+            .and_then(ClockDeadline::from_nanos),
+            None => now_ns
+                .checked_add(interval_ns.max(1))
+                .and_then(ClockDeadline::from_nanos),
+        };
+        self.scheduler_tick = SchedulerTickState::Running { next };
         self.reconcile_arm()
     }
 
@@ -84,7 +136,7 @@ impl LocalClockEvent {
             self.task_deadline = None;
             self.deferred_work = false;
         }
-        self.periodic_deadline = None;
+        self.scheduler_tick = SchedulerTickState::Stopped { resume_from: None };
         self.armed_deadline = None;
         if must_stop {
             ClockEventAction::Stop
@@ -144,13 +196,16 @@ impl LocalClockEvent {
     /// A periodic clockevent is only one physical wakeup source. Whether the
     /// current thread must be preempted remains an ax-task policy decision.
     pub(crate) fn advance_periodic(&mut self, now_ns: u64, interval_ns: u64) -> bool {
-        let Some(current) = self.periodic_deadline else {
+        let SchedulerTickState::Running { next } = &mut self.scheduler_tick else {
+            return false;
+        };
+        let Some(current) = *next else {
             return false;
         };
         if now_ns < current.as_nanos() {
             return false;
         }
-        self.periodic_deadline = crate::clock_event_runtime::next_periodic_deadline(
+        *next = crate::clock_event_runtime::next_periodic_deadline(
             current.as_nanos(),
             now_ns,
             interval_ns,
@@ -216,7 +271,11 @@ impl LocalClockEvent {
     fn selected_deadline(&self) -> Option<ClockDeadline> {
         #[cfg(feature = "multitask")]
         {
-            match (self.periodic_deadline, self.task_deadline) {
+            let scheduler_tick = match self.scheduler_tick {
+                SchedulerTickState::Running { next } => next,
+                SchedulerTickState::Stopped { .. } => None,
+            };
+            match (scheduler_tick, self.task_deadline) {
                 (Some(periodic), Some(task)) => Some(periodic.min(task)),
                 (Some(periodic), None) => Some(periodic),
                 (None, Some(task)) => Some(task),
@@ -225,7 +284,10 @@ impl LocalClockEvent {
         }
         #[cfg(not(feature = "multitask"))]
         {
-            self.periodic_deadline
+            match self.scheduler_tick {
+                SchedulerTickState::Running { next } => next,
+                SchedulerTickState::Stopped { .. } => None,
+            }
         }
     }
 
@@ -267,6 +329,31 @@ impl LocalClockEvent {
             }
         }
     }
+
+    #[cfg(feature = "multitask")]
+    fn reconcile_arm_exact(&mut self) -> ClockEventAction {
+        if matches!(
+            self.phase,
+            ClockEventPhase::Offline | ClockEventPhase::Firing
+        ) {
+            return ClockEventAction::None;
+        }
+        let selected = self.selected_deadline();
+        if selected == self.armed_deadline {
+            return ClockEventAction::None;
+        }
+        self.armed_deadline = selected;
+        match selected {
+            Some(deadline) => {
+                self.phase = ClockEventPhase::Armed;
+                ClockEventAction::Program(deadline)
+            }
+            None => {
+                self.phase = ClockEventPhase::Idle;
+                ClockEventAction::Stop
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "multitask"))]
@@ -302,6 +389,48 @@ mod tests {
     fn online_without_a_finite_periodic_deadline_stays_idle() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(event.online(None), ClockEventAction::None);
+        assert_eq!(event.phase(), ClockEventPhase::Idle);
+        assert_eq!(event.armed_deadline(), None);
+    }
+
+    #[test]
+    fn idle_entry_removes_the_scheduler_tick_from_physical_selection() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(Some(deadline(100))),
+            ClockEventAction::Program(deadline(100))
+        );
+        assert_eq!(
+            event.publish_task(1, Some(1_000), false),
+            ClockEventAction::None
+        );
+
+        assert_eq!(
+            event.stop_scheduler_tick_for_idle(),
+            ClockEventAction::Program(deadline(1_000))
+        );
+        assert_eq!(event.armed_deadline(), Some(deadline(1_000)));
+    }
+
+    #[test]
+    fn idle_exit_restarts_the_tick_on_its_original_phase() {
+        let mut event = LocalClockEvent::offline();
+        event.online(Some(deadline(100)));
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
+
+        assert_eq!(
+            event.restart_scheduler_tick_after_idle(149, 25),
+            ClockEventAction::Program(deadline(150))
+        );
+        assert_eq!(event.armed_deadline(), Some(deadline(150)));
+    }
+
+    #[test]
+    fn repeated_idle_iteration_keeps_the_scheduler_tick_stopped() {
+        let mut event = LocalClockEvent::offline();
+        event.online(Some(deadline(100)));
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
     }

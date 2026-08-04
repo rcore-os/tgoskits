@@ -195,6 +195,21 @@ pub(crate) fn local_clock_event_has_immediate_work(now_ns: u64) -> bool {
 }
 
 #[cfg(all(feature = "irq", feature = "multitask"))]
+pub(crate) fn stop_current_scheduler_tick_for_idle() {
+    commit_local_clock_event(|clockevent| ((), clockevent.stop_scheduler_tick_for_idle()));
+}
+
+#[cfg(all(feature = "irq", feature = "multitask"))]
+pub(crate) fn restart_current_scheduler_tick_after_idle(now_ns: u64) {
+    commit_local_clock_event(|clockevent| {
+        (
+            (),
+            clockevent.restart_scheduler_tick_after_idle(now_ns, periodic_interval_nanos()),
+        )
+    });
+}
+
+#[cfg(all(feature = "irq", feature = "multitask"))]
 pub(crate) fn recover_overdue_local_clock_event(now_ns: u64) -> bool {
     let Some(firing) = ClockEventFiringGuard::begin_if_due(now_ns) else {
         return false;

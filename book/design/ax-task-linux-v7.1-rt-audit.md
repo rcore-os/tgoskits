@@ -158,7 +158,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
 | task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | park 已类型化；Deadline rq 仍为 O(n) `Vec`，CBS registration/cache/flag 重复，待整体替换 |
-| clockevent/nohz | `clockevents_program_event()`、`tick_nohz_idle_enter()` | 每 CPU 单一物理 owner；idle 无调度事件时停止 tick；无期限用 `Option` | clockevent 状态机已实现；idle 仍永久保持 periodic tick，待引入 idle token 并删除 periodic 常驻源 |
+| clockevent/nohz | `clockevents_program_event()`、`tick_nohz_idle_enter()`、`tick_nohz_stop_tick()`、`tick_nohz_idle_exit()` | 每 CPU 单一物理 owner；idle 无调度事件时停止 tick；无期限用 `Option` | 已将 scheduler tick 建模为 `Running/Stopped`，idle IRQ-off 提交时从物理选择器撤销 tick，只保留 task deadline；非调度 IRQ 后保持 NOHZ，出现 runnable work 时按原相位追赶并重启 tick |
 | switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | `on_switch_in` 已移到 current publication、runtime tail、handoff consumption 之后的 move-only completion，并在释放 `CpuLocal` borrow 后执行；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
 | PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；deboost/grant 后锁外 wake | handoff generation 与锁外 wake 已有；`PreemptTicketLock` 仍可能跨 CPU 无界禁抢占自旋，待按 owner 分拆 |
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
@@ -169,7 +169,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | tracepoint | RCU/SRCU probe arrays | 完整 generation 先发布；读侧 grace 后释放 | 快照与 epoch reclaimer 已实现 |
 | 通用 timer | threaded hrtimer/task work | 任意 callback 不进 hard IRQ | Starry/AxVM worker 独立于 ax-task |
 | serial | serial core/PREEMPT_RT handler | IRQ 只 ACK/drain/publish | 三 endpoint 已实现 |
-| architecture idle | `do_idle()`、各架构 idle entry | IRQ-off final recheck、nohz enter/exit 与原子等待是一个 CPU-local 事务 | 已有 polling/recheck；缺少拥有 nohz 状态的 idle token |
+| architecture idle | `do_idle()`、各架构 idle entry | IRQ-off final recheck、nohz enter/exit 与原子等待是一个 CPU-local 事务 | polling 撤销后由 runtime 在同一 IRQ-off 窗口处理 overdue、停 tick、复查 pending 并进入四架构原子 wait；无 resched 的 IRQ 返回后保持 tick stopped |
 
 ## 二次全量审计后的目标架构
 
@@ -203,9 +203,10 @@ v7.1 PREEMPT_RT。此次不再把“已有枚举/guard/缓存”当作完成标�
    `PreemptTicketLock` 无界等待；PI metadata 中完成 owner generation、deboost、grant
    和 wake-batch 选择，锁外 wake。
 7. **clockevent 与 nohz 是同一个 CPU-local 状态机**。physical clockevent 只合并 typed
-   task deadline 与处于非 idle 状态时的 scheduler tick。idle enter token 在 IRQ-off
-   final recheck 后停 tick，idle exit/过期恢复一次性重算；无 work 时不得保留永久
-   periodic source。
+   task deadline 与处于非 idle 状态时的 scheduler tick。`SchedulerTickState` 在 IRQ-off
+   final recheck 中从 `Running` 转成 `Stopped` 并保存恢复相位；普通 IRQ 不产生 runnable
+   work 时保持 stopped，idle exit/过期恢复只重算一次。无 work 时不得保留永久 periodic
+   source，也不得用调用栈外的第二份布尔状态镜像 NOHZ 生命周期。
 8. **scheduler entry、active-mm 与 switch plan 一次提交**。typed entry token 独占
    scheduler baton；next active-mm lease/root/current publication 在 raw switch 前准备，
    previous lease 与资源仅在 switch tail 释放。四架构只允许汇编 idle/switch 细节不同，

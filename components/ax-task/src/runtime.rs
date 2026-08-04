@@ -759,10 +759,13 @@ pub trait TaskRuntime {
     /// Commits one local interrupt wait after the scheduler clears polling.
     ///
     /// The implementation must disable local interrupts, recheck sticky task
-    /// work and physical clockevent state, and use the architecture's atomic
-    /// IRQ-enable-and-wait primitive only when both remain idle. Work published
-    /// before polling was cleared is observed by this final recheck; work
-    /// published afterwards owns a physical interrupt edge.
+    /// work and physical clockevent state, stop the periodic scheduler tick,
+    /// and use the architecture's atomic IRQ-enable-and-wait primitive only
+    /// when all sources remain idle. Task deadlines stay armed while the
+    /// scheduler tick is stopped. Work published before polling was cleared is
+    /// observed by this final recheck; work published afterwards owns a
+    /// physical interrupt edge. The tick must restart before runnable work can
+    /// leave the idle loop, but may remain stopped across non-scheduling IRQs.
     fn wait_for_interrupt();
 
     /// Allocates a guarded stack satisfying `request`.

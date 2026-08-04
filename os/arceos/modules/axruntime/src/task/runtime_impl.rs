@@ -259,19 +259,50 @@ impl_task_runtime! {
 
         fn wait_for_interrupt() {
             ax_hal::asm::disable_irqs();
-            let now_ns = ax_hal::time::monotonic_time_nanos();
-            let recovered_clockevent =
-                crate::clock_event_runtime::recover_overdue_local_clock_event(now_ns);
-            let needs_reschedule = ax_task::current_cpu_needs_resched()
+            let mut now_ns = ax_hal::time::monotonic_time_nanos();
+            let _ = crate::clock_event_runtime::recover_overdue_local_clock_event(now_ns);
+            let mut needs_reschedule = ax_task::current_cpu_needs_resched()
                 .expect("idle handoff requires an initialized current CPU");
-            if recovered_clockevent
-                || needs_reschedule
+            if needs_reschedule
                 || crate::clock_event_runtime::local_clock_event_has_immediate_work(now_ns)
             {
+                crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(now_ns);
                 ax_hal::asm::enable_irqs();
-            } else {
-                ax_hal::asm::wait_for_irqs_disabled();
+                return;
             }
+
+            // Linux NOHZ removes the periodic scheduler tick only after idle
+            // polling is withdrawn. Task deadlines remain selected by the
+            // same physical clockevent and are reprogrammed in this IRQ-off
+            // transaction.
+            crate::clock_event_runtime::stop_current_scheduler_tick_for_idle();
+            now_ns = ax_hal::time::monotonic_time_nanos();
+            needs_reschedule = ax_task::current_cpu_needs_resched()
+                .expect("idle handoff requires an initialized current CPU");
+            if needs_reschedule
+                || crate::clock_event_runtime::local_clock_event_has_immediate_work(now_ns)
+            {
+                crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(now_ns);
+                ax_hal::asm::enable_irqs();
+                return;
+            }
+
+            ax_hal::asm::wait_for_irqs_disabled();
+
+            // A non-scheduling interrupt may leave the CPU in the idle loop,
+            // in which case the tick stays stopped just as in Linux do_idle().
+            // Work that makes the idle thread yield restarts the tick before
+            // the scheduler can select a non-idle thread.
+            let irq_guard = ax_kernel_guard::IrqSave::new();
+            now_ns = ax_hal::time::monotonic_time_nanos();
+            needs_reschedule = ax_task::current_cpu_needs_resched()
+                .expect("idle wake requires an initialized current CPU");
+            if needs_reschedule
+                || crate::clock_event_runtime::local_clock_event_has_immediate_work(now_ns)
+            {
+                crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(now_ns);
+            }
+            drop(irq_guard);
         }
 
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {
