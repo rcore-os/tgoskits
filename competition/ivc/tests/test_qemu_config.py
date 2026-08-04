@@ -362,6 +362,12 @@ class QemuConfigContractTests(unittest.TestCase):
 
         self.assertIn("python.exe", restore)
         self.assertIn("wslpath -w", restore)
+        self.assertIn(
+            'power_config=${TGOS_BOARD_POWER_CONFIG:-$workspace/.board-power.toml}',
+            restore,
+        )
+        self.assertIn('config_path=$(wslpath -w "$power_config")', restore)
+        self.assertIn('"$tool_path" --config "$config_path" "$@"', restore)
         self.assertIn("run_power_tool status", restore)
         self.assertIn("run_power_tool cycle --yes", restore)
         self.assertIn("sync && echo BOARD_PRE_CYCLE_SYNC_DONE", restore)
@@ -372,7 +378,8 @@ class QemuConfigContractTests(unittest.TestCase):
     def test_axvisor_repeats_the_host_sync_marker_for_the_shared_uart(self) -> None:
         source = AXVISOR_SHELL_HOST.read_text(encoding="utf-8")
 
-        self.assertIn("HOST_FILESYSTEM_SYNCED_MARKER_COPIES: usize = 3", source)
+        self.assertIn("HOST_FILESYSTEM_SYNCED_MARKER_COPIES: usize = 5", source)
+        self.assertIn("HOST_FILESYSTEM_SYNCED_MARKER_INTERVAL_MS: u64 = 100", source)
         self.assertIn("write_host_filesystem_synced_markers", source)
         self.assertRegex(
             source,

@@ -50,6 +50,8 @@ fn main() {
     banner::print_logo();
 
     info!("Starting virtualization...");
+    #[cfg(feature = "rk3588-npu-handoff")]
+    ax_driver::soc::require_rk3588_npu_handoff();
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 

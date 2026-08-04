@@ -27,14 +27,14 @@
 
 | 工作包 | 当前状态 | 下一验收点 |
 | --- | --- | --- |
-| WSL2 板卡自动化 | 已打通 | 保持单命令运行、失败留档和 Linux 自动恢复 |
+| WSL2 板卡自动化 | 已打通；RKNN 路线已接入嵌入产物提取、独立 raw 分析、来源门和递归 checksum | 从 clean commit 重跑集成后的冷启动 smoke，确认新分析阶段也能端到端自动结束 |
 | StarryOS 实体任务一/M2 | 正式受控干扰 5 对、双 soak、CPU1 stress 5 对已完成 | 在最终报告中严格限定改善结论的适用场景 |
 | ACK loss | 正式 3/3 已完成 | 汇入最终报告 |
 | ERROR | 正式 3/3 已完成 | 汇入最终报告 |
 | restart recovery | `6adf49e09` 实体正式 3/3 已完成，campaign formal gate 为 true | 汇入最终报告并保留 pre-reset deadline miss 不利指标 |
 | StarryOS manual/neural full | `f4ced3758` 上正式 5 对、10/10 half 已完成 | 汇入最终报告，同时披露 neural 最大超调退化和无稳定延迟优势 |
 | 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 保持冻结，不按后续实体结果修改模型 |
-| RK3588 NPU | M4-2 已完成：Toolkit2 2.3.2、确定性 RK3588 FP16 `.rknn`、算子映射和 host simulator 差分均通过；当前 AxVisor guest 尚未获得 NPU 资源 | 在 Linux 实体执行同一 `.rknn` reference，再实现安全 guest handoff |
+| RK3588 NPU | Linux clean reference 已冻结；AxVisor host 初始化、guest 独占 handoff 和 StarryOS 离线 10,000 次实体 NPU spike 已通过；v8 又完成单命令采集、Linux 恢复、独立分析和递归 checksum 的集成 PASS，但仍来自 dirty worktree | 冻结 clean commit，完成 3 次冷启动 smoke、资源/重复加载门，再进入 5 次 Zephyr full 闭环 |
 | ONNX Runtime CPU | host CPU EP 10,000 组差分已通过；StarryOS `.ort`/minimal runtime 尚未实现 | 冻结 AArch64 musl 版本与 operator config，通过 M4-plus 门后进入实体矩阵 |
 | 报告与视频 | 待最终数据冻结 | 所有正式结果通过聚合门后更新 |
 
@@ -314,11 +314,12 @@ ONNX -> RKNN Toolkit2 -> .rknn
 
 1. [x] 在固定 WSL2 环境中导出 ONNX，并验证二次生成一致性。
 2. [x] 用固定 RKNN Toolkit2 2.3.2 生成确定性 RK3588 FP16 `.rknn`，检查两个模型计算节点进入 NPU 图，完成 10,000-vector host simulator 差分并记录 wheel 来源、SHA-256 和许可证边界。
-3. [ ] 在板卡 Linux 中完成同模型 reference inference，冻结 Runtime 2.3.2、板端 driver 版本和输出。
+3. [x] 在板卡 Linux 中完成同模型 reference inference，冻结 Runtime 2.3.2、板端 driver 版本和输出。
 4. [x] 审计 StarryOS RKNPU 设备节点、ioctl ABI、mmap、DMA/IOMMU、cache、中断路径和 AxVisor guest 资源缺口。
-5. [ ] 实现 host 初始化/guest 独占 handoff，并审计 `librknnrt.so` 的 AArch64 动态依赖以及 StarryOS 所需 syscall；只补齐语义明确、可回归的最小缺口。
-6. [ ] 在 StarryOS 完成离线单次、循环 10,000 次和多次加载/卸载测试。
-7. [ ] 接入现有 IVC 控制器，完成 StarryOS -> Zephyr 闭环 full profile。
+5. [x] 实现 host 初始化/guest 独占 handoff，并审计 `librknnrt.so` 的 AArch64 动态依赖；host 只负责 power/clock/reset，交接后 `host_submit=false`。
+6. [x] 在 StarryOS 完成一次冷启动下的离线 10,000 次实体 NPU spike，并由 raw data、正 device-time、Runtime/driver 和快照内产物哈希交叉验证。
+7. [ ] 从 clean commit 完成至少 3 次冷启动 smoke、多次加载/卸载、内存高水位和 rootfs 空间验证。
+8. [ ] 接入现有 IVC 控制器，完成 StarryOS -> Zephyr 闭环 full profile。
 
 每次 NPU 结果必须记录：
 
@@ -330,14 +331,27 @@ ONNX -> RKNN Toolkit2 -> .rknn
 - 初始化、推理、端到端延迟和 deadline miss；
 - 明确的零 CPU fallback 证据。
 
+M4-3 物理 spike 记录（2026-08-04）：
+
+- AxVisor 只初始化 RK3588 NPU 的 3 个 core、3 个 power domain、8 个 clock 和 6 个 reset，随后把三个 NPU core MMIO 与 `[0x80000000,0x90000000)` identity DMA 区间交给 StarryOS；guest 使用 polling，不暴露 IRQ、IOMMU 或共享 PMU/CRU，串口明确记录 `host_submit=false`。
+- `rknpu-spike-20260804-v3` 在一次冷启动中完成 32 次 warm-up 和 10,000/10,000 次推理，Runtime API 为 `2.3.2`、StarryOS driver 为 `0.9.8`、core mask 为 0，10,000 个 device-time 全部为正，零 run/perf-query error；Linux 随后自动恢复为 `/dev/mmcblk1p2 ext4 rw`。
+- `rknpu-spike-20260804-v8-split-evidence` 首次由集成 runner 在一次命令中直接返回 PASS：pre-run source capture、实体推理、96 MiB 快照、Linux 恢复、独立数值分析和递归 checksum 全部闭环。该轮 raw SHA-256 为 `bb6bd18aa60fed170f328ec2701aa3b198d02d0f907bc50a1aba4a1f10f79853`，runner SHA-256 为 `b81fede54c63f6792905603ba7b515e36a151f71e2263a6291af00f5cc968703`，快照 SHA-256 为 `11fe30eab32d997123ec0098ca8488b27063bfef5266c75dee4907197c4cb83a`；模型、corpus 和 Runtime 仍匹配冻结哈希。
+- v8 的 device p50/p95/p99/max 为 `1565/1646/1680/2227 us`，wall p50/p95/p99/max 为 `1645875/1729000/1763125/2308833 ns`，初始化为 `78742 us`。4 组完整 compact runtime/result、5 条 PASS、4 条 raw 绑定、5 条 snapshot sync 和 4 条 host sync 被分析器接受；1 个非 UTF-8 串口字节仅记录为 replacement，不影响原始 console 哈希或 ASCII 凭据匹配。
+- 相对 native f32 的最大绝对误差为 `0.001798778772354126`，执行器命令差为 `-2:23, -1:322, 0:9369, +1:280, +2:6`；相对 FP16 oracle 的最大误差为 `0.00048828125`、逐值一致 9806/10000，均与冻结的 simulator/Linux reference 一致。
+- StarryOS device p50/p95/p99/max 为 `1565/1646/1676/2205 us`，wall p50/p95/p99/max 为 `1646458/1729291/1759333/2287250 ns`，初始化为 `78179 us`。该小模型在 StarryOS 虚拟化路径上明显慢于 Linux reference，因此只声明真实硬件卸载与控制周期预算通过，不声明 NPU 加速。
+- 分析器从 96 MiB 快照提取并逐哈希核对 runner、`.rknn`、corpus 和 `librknnrt.so`；完整哈希分别为 `f74891c7eb599c2a5c6f3bc758f9f3fe0efe3f96734ab5bd3f66510588ce7e6d`、`2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`、`907d3a9b93bcf8fc15ec11465025eb10a9219a0162d2cf060aadc4e9eab63310` 和 `d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8`。raw SHA-256 为 `1b6502ab4cf8230057c0ab216f4bd980186ff45511069238a5d71b702e7b47f3`，快照 SHA-256 为 `ddedb12c02d1d8a893ed8e1fc6ab001a4109a918b8a0c1fc5a68d1764c826198`。
+- 原始 v3 证据保持在 `tmp/competition/ivc/rknpu-spike-20260804-v3/` 且原 checksum 已复核；事后独立分析位于并列的 `rknpu-spike-20260804-v3-analysis/`，不会改写原目录。报告明确标记 `source.provenance=reconstructed-post-run`、`source.dirty=true`，因此不得计入 formal 运行。
+- v4-v7 失败目录均原样保留并通过各自 checksum：v4 暴露单份 runtime/result 长行截断，v5 暴露 boot log 非 UTF-8 字节，v6 暴露三份超长 PASS 均损坏，v7 暴露三份超长 result 均损坏。修复依次采用失败证据封存、二进制串口 replacement 解码、PASS/raw 分离及 runtime/result 分段短凭据；不得把任何失败目录补写或重标为成功。
+- v1/v2 失败目录继续保留：v1 暴露 CH340 host sync 标记损坏，v2 暴露 ostool 2048-byte 流匹配窗口无法跨越整段日志；修复采用 5 份 100 ms 间隔的最终同步标记和只匹配终态行的有界正则。集成后的 runner 会在运行前记录来源、提取快照内四个部署产物、运行独立分析器并递归生成 checksum；formal 模式同时要求 clean tree 和 pre-run source capture。
+
 ### 7.4 RKNN go/no-go
 
 只有以下条件全部满足才进入正式 NPU 5 次 full：
 
 - [x] ONNX 可被固定 RKNN 工具链接受，两个模型计算节点无 custom CPU fallback。
-- [ ] Linux reference 与 StarryOS NPU 数值满足预注册误差门。
-- [ ] StarryOS 能稳定加载同一 `.rknn`，10,000 次离线运行无错误和资源泄漏。
-- [ ] 能证明实际 NPU submit/device execution，而非仅初始化 Runtime。
+- [x] Linux reference 与 StarryOS NPU 的单次物理 spike 数值满足预注册误差门。
+- [x] StarryOS 已有单命令闭环的 10,000 次离线无 Runtime/run/perf-query error 结果；仍需 clean 冷启动重复、加载/卸载和增长型资源泄漏证据后才能称为稳定。
+- [x] 10,000 个正 `RKNN_QUERY_PERF_RUN` device-time、guest RKNPU 注册和 `host_submit=false` 共同证明实际 NPU execution，而非仅初始化 Runtime。
 - [ ] 控制周期、rootfs 空间、内存高水位和重复性满足预算。
 
 数值验收不把浮点舍入边界误写成“100% 命令逐值一致”。native/ORT 的浮点误差必须 `<= 1e-6`，仅接受同一半千分位边界 `1e-6` 窗内相差 1 的命令。RKNN FP16 使用在固定 corpus 上、实体实验前冻结的独立门：相对 native f32 最大绝对误差 `<= 0.002`，执行器命令差绝对值 `<= 2` 并报告完整直方图；相对确定性 FP16 oracle 最大绝对误差 `<= 0.0005`。任何更大差值、NaN/Inf、backend error 或 shape mismatch 都是物质性失败，Linux/StarryOS 实体结果不得触发门限放宽。
@@ -394,7 +408,7 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 - [x] manual/neural 为同板同配置 5 对正式实验。
 - [x] ACK loss、ERROR、restart recovery 均为实体跨客户机 3/3。
 - [x] ONNX 是唯一跨后端模型来源；native、ONNX 和 RKNN 转换 artifact/工具链均可追溯，ORT 实体 Runtime 仍在 E4 单独冻结。
-- [ ] RKNN 后端有真实 RK3588 NPU 执行证据；若 no-go，则限制原因和原始证据完整。
+- [x] RKNN 后端已有一次 StarryOS guest 真实 RK3588 NPU 10,000-vector spike；因来源为 dirty worktree，它只关闭硬件可行性，不替代 formal full。
 - [ ] ORT CPU 后端通过实体门或留下明确 no-go，不冒充 NPU 路线。
 - [ ] 每个正式结论均能追溯到 clean commit、配置、镜像哈希、raw、summary 和 checksum。
 - [x] WSL2 能自动完成板卡部署、冷启动、采集、恢复 Linux、fsck 和结果同步。
@@ -416,6 +430,6 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ## 11. 最近三项动作
 
-1. 冻结已提交的 M4-0/M4-1 canonical weights、generated Rust、ONNX、10,000 golden vectors、manifest、锁文件和确定性二次重建门。
-2. 提交并冻结已通过的 M4-2 Toolkit2 2.3.2 获取/校验流程、确定性 RK3588 FP16 `.rknn`、转换/模拟器报告及预注册 FP16 门。
-3. 使用同一 `.rknn` 在 OrangePi Linux 跑 10,000 次 reference；通过数值、device-time 和版本门后，再实现 AxVisor host 初始化与 StarryOS guest 独占 NPU handoff。
+1. 冻结并提交当前 AxVisor host 初始化、guest 独占 handoff、StarryOS RKNN rootfs 和证据分析器，建立 clean physical-run worktree。
+2. 用集成后的单命令 runner 完成 3 次冷启动 smoke，验证 pre-run 来源、四个嵌入产物、10,000-vector raw、自动 Linux 恢复和递归 checksum。
+3. 补齐加载/卸载、内存高水位与 rootfs 空间门；通过后预注册 StarryOS + Zephyr `rknn-npu` 5 次 full 轮换矩阵。

@@ -56,6 +56,7 @@ sdmmc = [
     "ax-driver/phytium-mci",
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
+rk3588-npu-handoff = ["ax-driver/rk3588-npu-handoff"]
 stack-protector = ["ax-std/stack-protector"]
 
 [dependencies]

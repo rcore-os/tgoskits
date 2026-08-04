@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -38,6 +39,8 @@ struct Options {
     std::size_t warmup = kDefaultWarmup;
     rknn_core_mask core_mask = RKNN_NPU_CORE_0;
     std::string core_mask_name = "0";
+    std::size_t evidence_marker_copies = 1;
+    std::uint64_t evidence_marker_interval_ms = 0;
 };
 
 struct CorpusRecord {
@@ -89,6 +92,18 @@ std::string hex_encode(std::string_view value) {
         encoded.push_back(kDigits[byte & 0x0fU]);
     }
     return encoded;
+}
+
+template <typename Writer>
+void write_redundant_marker(const Options &options, Writer write_marker) {
+    for (std::size_t copy = 0; copy < options.evidence_marker_copies; ++copy) {
+        write_marker();
+        std::cout << std::endl;
+        if (copy + 1 < options.evidence_marker_copies) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(options.evidence_marker_interval_ms));
+        }
+    }
 }
 
 std::string bounded_string(const char *value, std::size_t capacity) {
@@ -225,7 +240,9 @@ Options parse_options(int argc, char **argv) {
         if (argument == "--help") {
             std::cout << "Usage: " << argv[0]
                       << " --model PATH --corpus PATH --output PATH"
-                         " [--warmup N] [--core-mask 0|1|2|auto|all]\n";
+                         " [--warmup N] [--core-mask 0|1|2|auto|all]"
+                         " [--evidence-marker-copies N]"
+                         " [--evidence-marker-interval-ms N]\n";
             std::exit(0);
         }
         if (index + 1 >= argc) {
@@ -242,6 +259,18 @@ Options parse_options(int argc, char **argv) {
             options.warmup = parse_integer<std::size_t>(value, 10, "warmup");
             if (options.warmup > 10'000) {
                 fail("warmup exceeds 10000");
+            }
+        } else if (argument == "--evidence-marker-copies") {
+            options.evidence_marker_copies =
+                parse_integer<std::size_t>(value, 10, "evidence marker copies");
+            if (options.evidence_marker_copies == 0 || options.evidence_marker_copies > 5) {
+                fail("evidence marker copies must be in [1,5]");
+            }
+        } else if (argument == "--evidence-marker-interval-ms") {
+            options.evidence_marker_interval_ms =
+                parse_integer<std::uint64_t>(value, 10, "evidence marker interval");
+            if (options.evidence_marker_interval_ms > 1000) {
+                fail("evidence marker interval exceeds 1000 ms");
             }
         } else if (argument == "--core-mask") {
             options.core_mask_name = value;
@@ -368,8 +397,19 @@ int run(const Options &options) {
                    "query SDK version");
     const std::string api_version = bounded_string(versions.api_version, sizeof(versions.api_version));
     const std::string driver_version = bounded_string(versions.drv_version, sizeof(versions.drv_version));
-    std::cout << "IVC_RKNN_RUNTIME api_version_hex=" << hex_encode(api_version)
-              << " driver_version_hex=" << hex_encode(driver_version) << '\n';
+    if (options.evidence_marker_copies == 1) {
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RUNTIME api_version_hex=" << hex_encode(api_version)
+                      << " driver_version_hex=" << hex_encode(driver_version);
+        });
+    } else {
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RUNTIME_API version_hex=" << hex_encode(api_version);
+        });
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RUNTIME_DRIVER version_hex=" << hex_encode(driver_version);
+        });
+    }
 
     rknn_tensor_attr input_attr{};
     rknn_tensor_attr output_attr{};
@@ -434,14 +474,35 @@ int run(const Options &options) {
 
     const auto init_us =
         std::chrono::duration_cast<std::chrono::microseconds>(init_finished - init_started).count();
-    std::cout << std::setprecision(17)
-              << "IVC_RKNN_LINUX_RESULT status=pass vectors=" << corpus.size()
-              << " warmup=" << options.warmup << " core_mask=" << options.core_mask_name
-              << " init_us=" << init_us << " exact_actuator_matches=" << exact_commands
-              << " maximum_absolute_error=" << maximum_error
-              << " maximum_absolute_actuator_delta=" << maximum_command_delta
-              << " perf_query_errors=0 run_errors=0\n"
-              << "IVC_RKNN_LINUX_DONE\n";
+    std::cout << std::setprecision(17);
+    if (options.evidence_marker_copies == 1) {
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_LINUX_RESULT status=pass vectors=" << corpus.size()
+                      << " warmup=" << options.warmup
+                      << " core_mask=" << options.core_mask_name << " init_us=" << init_us
+                      << " exact_actuator_matches=" << exact_commands
+                      << " maximum_absolute_error=" << maximum_error
+                      << " maximum_absolute_actuator_delta=" << maximum_command_delta
+                      << " perf_query_errors=0 run_errors=0";
+        });
+    } else {
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RESULT_META status=pass vectors=" << corpus.size()
+                      << " warmup=" << options.warmup
+                      << " core_mask=" << options.core_mask_name << " init_us=" << init_us;
+        });
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RESULT_ACCURACY exact_actuator_matches=" << exact_commands
+                      << " maximum_absolute_actuator_delta=" << maximum_command_delta;
+        });
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RESULT_ERROR maximum_absolute_error=" << maximum_error;
+        });
+        write_redundant_marker(options, [&] {
+            std::cout << "IVC_RKNN_RESULT_HEALTH perf_query_errors=0 run_errors=0";
+        });
+    }
+    std::cout << "IVC_RKNN_LINUX_DONE\n";
     return 0;
 }
 

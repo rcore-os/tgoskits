@@ -25,6 +25,8 @@ use std::{
     path::Path,
     println,
     string::String,
+    thread,
+    time::Duration,
 };
 
 use crate::shell::command::{CommandNode, ParsedCommand};
@@ -32,7 +34,9 @@ use crate::shell::command::{CommandNode, ParsedCommand};
 #[cfg(feature = "fs")]
 const HOST_FILESYSTEM_SYNCED_MARKER: &str = "AXVISOR_HOST_FILESYSTEM_SYNCED";
 #[cfg(feature = "fs")]
-const HOST_FILESYSTEM_SYNCED_MARKER_COPIES: usize = 3;
+const HOST_FILESYSTEM_SYNCED_MARKER_COPIES: usize = 5;
+#[cfg(feature = "fs")]
+const HOST_FILESYSTEM_SYNCED_MARKER_INTERVAL_MS: u64 = 100;
 #[cfg(feature = "fs")]
 const SNAPSHOT_SYNCED_MARKER: &str = "AXVISOR_SNAPSHOT_SYNC_OK";
 #[cfg(feature = "fs")]
@@ -313,9 +317,24 @@ fn print_snapshot_synced_markers() {
 
 #[cfg(feature = "fs")]
 fn write_host_filesystem_synced_markers(output: &mut impl Write) -> io::Result<()> {
-    for _ in 0..HOST_FILESYSTEM_SYNCED_MARKER_COPIES {
+    write_host_filesystem_synced_markers_with_pause(output, || {
+        thread::sleep(Duration::from_millis(
+            HOST_FILESYSTEM_SYNCED_MARKER_INTERVAL_MS,
+        ));
+    })
+}
+
+#[cfg(feature = "fs")]
+fn write_host_filesystem_synced_markers_with_pause(
+    output: &mut impl Write,
+    mut pause: impl FnMut(),
+) -> io::Result<()> {
+    for copy_index in 0..HOST_FILESYSTEM_SYNCED_MARKER_COPIES {
         writeln!(output, "{HOST_FILESYSTEM_SYNCED_MARKER}")?;
         output.flush()?;
+        if copy_index + 1 < HOST_FILESYSTEM_SYNCED_MARKER_COPIES {
+            pause();
+        }
     }
     Ok(())
 }
@@ -391,14 +410,16 @@ mod tests {
 
     #[test]
     #[cfg(feature = "fs")]
-    fn host_filesystem_sync_marker_is_repeated_for_a_lossy_uart() {
+    fn host_filesystem_sync_marker_is_repeated_and_paced_for_a_lossy_uart() {
         let mut output = Vec::new();
+        let mut pauses = 0;
 
-        write_host_filesystem_synced_markers(&mut output)
+        write_host_filesystem_synced_markers_with_pause(&mut output, || pauses += 1)
             .expect("sync markers should be writable to an in-memory buffer");
 
         let text = String::from_utf8(output).expect("sync markers must remain UTF-8");
-        assert!(HOST_FILESYSTEM_SYNCED_MARKER_COPIES >= 2);
+        assert!(HOST_FILESYSTEM_SYNCED_MARKER_COPIES >= 5);
+        assert_eq!(pauses, HOST_FILESYSTEM_SYNCED_MARKER_COPIES - 1);
         assert_eq!(
             text.lines().collect::<Vec<_>>(),
             vec![HOST_FILESYSTEM_SYNCED_MARKER; HOST_FILESYSTEM_SYNCED_MARKER_COPIES]

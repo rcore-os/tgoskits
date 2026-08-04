@@ -16,11 +16,13 @@
 mod fixed_regulator;
 #[cfg(feature = "rockchip-soc")]
 mod rockchip;
-#[cfg(feature = "rockchip-dwmmc")]
+#[cfg(any(feature = "rockchip-dwmmc", feature = "rk3588-npu-handoff"))]
 pub mod scmi;
 #[cfg(feature = "starfive-soc")]
 mod starfive;
 
+#[cfg(feature = "rk3588-npu-handoff")]
+pub use rockchip::require_rk3588_npu_handoff;
 #[cfg(feature = "rockchip-soc")]
 pub use rockchip::{RockchipFdtPinctrlParser, RockchipPinCtrl};
 

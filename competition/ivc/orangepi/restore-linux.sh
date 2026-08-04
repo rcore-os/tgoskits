@@ -6,6 +6,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd -- "$script_dir/../../.." && pwd)
 serial_command=$script_dir/serial-command.sh
 power_tool=$workspace/.claude/skills/board-power-control/scripts/board_power.py
+power_config=${TGOS_BOARD_POWER_CONFIG:-$workspace/.board-power.toml}
 serial_path=${ORANGEPI_SERIAL:-/dev/serial/by-path/platform-vhci_hcd.0-usb-0:1:1.0-port0}
 ssh_target=${ORANGEPI_SSH_TARGET:-orangepi@192.168.31.33}
 ssh_identity=${ORANGEPI_SSH_IDENTITY:-${HOME}/.ssh/orangepi_automation}
@@ -29,11 +30,13 @@ linux_probe() {
 
 run_power_tool() {
     local tool_path=$power_tool
+    local config_path=$power_config
 
     if [[ "$power_python" == *.exe ]]; then
         tool_path=$(wslpath -w "$power_tool")
+        config_path=$(wslpath -w "$power_config")
     fi
-    "$power_python" "$tool_path" "$@"
+    "$power_python" "$tool_path" --config "$config_path" "$@"
 }
 
 has_exact_line() {
@@ -77,7 +80,7 @@ if ((linux_boot_wait_seconds == 0)); then
     echo "ORANGEPI_LINUX_BOOT_WAIT_SECONDS must be a positive integer" >&2
     exit 2
 fi
-for input_path in "$serial_command" "$power_tool" "$ssh_identity"; do
+for input_path in "$serial_command" "$power_tool" "$power_config" "$ssh_identity"; do
     if [[ ! -r "$input_path" ]]; then
         echo "Required Linux restore input is not readable: $input_path" >&2
         exit 1

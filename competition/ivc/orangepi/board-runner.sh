@@ -273,7 +273,12 @@ cd "$workspace"
 configure_system_libclang
 prepare_linux_state
 
-bash "$prepare_service_dtb" "$axvisor_dtb" "$service_dtb" "$host_root_selector"
+service_dtb_options=()
+if grep -Eq '"rk3588-npu-handoff"' "$resolved_build_config"; then
+    service_dtb_options+=(--rknpu-dma-carveout)
+fi
+bash "$prepare_service_dtb" \
+    "$axvisor_dtb" "$service_dtb" "$host_root_selector" "${service_dtb_options[@]}"
 
 runner_pid=
 rebooter_pid=

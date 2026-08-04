@@ -77,7 +77,9 @@ pub mod pci;
 pub mod pwm;
 #[cfg(feature = "rga")]
 pub mod rga;
-#[cfg(feature = "rknpu")]
+// A host handoff build must never register the host-side submit interface. If
+// Cargo feature unification enables both paths, handoff ownership wins.
+#[cfg(all(feature = "rknpu", not(feature = "rk3588-npu-handoff")))]
 pub mod rknpu;
 #[cfg(feature = "serial")]
 pub mod serial;
