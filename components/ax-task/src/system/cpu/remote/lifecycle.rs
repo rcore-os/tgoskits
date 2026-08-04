@@ -194,7 +194,7 @@ impl CpuRemote {
         }
     }
 
-    pub(super) fn begin_owner_delivery(&self) -> Option<CpuRemotePublication<'_>> {
+    pub(crate) fn begin_owner_delivery(&self) -> Option<CpuRemotePublication<'_>> {
         let mut current = self.publication.state.load(Ordering::Acquire);
         loop {
             if current & CPU_LIFECYCLE_OFFLINE != 0 {

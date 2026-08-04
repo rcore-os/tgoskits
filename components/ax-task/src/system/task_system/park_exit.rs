@@ -478,7 +478,7 @@ impl TaskSystem {
         };
         if let Some(target) = migration_target
             && self
-                .publish_owner_migration(&handoff.previous, target, owner, target)
+                .deliver_owner_migration(&handoff.previous, owner, target)
                 .is_err()
         {
             // Target loss is normally recovered through the still-running

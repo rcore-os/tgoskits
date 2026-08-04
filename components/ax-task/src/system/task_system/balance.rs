@@ -220,6 +220,23 @@ impl TaskSystem {
         {
             return Ok(BalanceTransferOutcome::Retry);
         }
+        #[cfg(test)]
+        let publication_exit = FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION
+            .replace(false)
+            .then(|| {
+                core.close_owned_scheduler_activity()
+                    .expect("failure injection requires a quiescent scheduler activity gate")
+            });
+        let carrier = match self.prepare_owner_migration(&core, source, target) {
+            Ok(carrier) => carrier,
+            Err(_) => {
+                #[cfg(test)]
+                drop(publication_exit);
+                return Ok(BalanceTransferOutcome::Retry);
+            }
+        };
+        #[cfg(test)]
+        drop(publication_exit);
         let detached = {
             let current_fair = cpu
                 .dispatch_state()
@@ -257,20 +274,7 @@ impl TaskSystem {
             return Ok(BalanceTransferOutcome::Retry);
         }
         let migrated_fair = matches!(candidate.policy, SchedulePolicy::Fair { .. });
-        #[cfg(test)]
-        let publication_exit = FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION
-            .replace(false)
-            .then(|| {
-                core.close_owned_scheduler_activity()
-                    .expect("failure injection requires a quiescent scheduler activity gate")
-            });
-        let publication_result = self.publish_owner_migration(&core, target, source, target);
-        #[cfg(test)]
-        drop(publication_exit);
-        if publication_result.is_err() {
-            self.rollback_owner_queued_migration(cpu.as_mut(), &core, detached, source, target)?;
-            return Ok(BalanceTransferOutcome::Retry);
-        }
+        carrier.commit();
         self.publish_owner_cpu_load_summary(cpu.as_mut());
         if migrated_fair && reason != BalanceReason::FairPeriodic {
             let completion_now_ns = Self::scheduler_completion_now_ns(now_ns);

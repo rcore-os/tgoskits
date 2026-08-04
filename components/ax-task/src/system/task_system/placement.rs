@@ -2,6 +2,99 @@
 
 use super::*;
 
+#[cfg(test)]
+std::thread_local! {
+    static DRAIN_MIGRATION_CPUS_BEFORE_PUBLICATION: core::cell::Cell<bool> = const {
+        core::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
+pub(super) fn drain_next_migration_cpus_before_publication() {
+    DRAIN_MIGRATION_CPUS_BEFORE_PUBLICATION.set(true);
+}
+
+#[cfg(test)]
+pub(super) fn inject_migration_publication_race(system: &TaskSystem, source: CpuId, target: CpuId) {
+    if !DRAIN_MIGRATION_CPUS_BEFORE_PUBLICATION.replace(false) {
+        return;
+    }
+    for cpu in [target, source] {
+        let remote = &system.cpu_remotes[cpu.as_usize()];
+        if remote.try_deactivate() {
+            assert!(remote.try_begin_draining());
+        }
+    }
+}
+
+/// Move-only owner-control carrier reserved before physical placement changes.
+///
+/// Holding the CPU publication lease prevents hotplug from crossing the
+/// `Queued/Detached -> Migrating` transaction. Holding the thread delivery
+/// lease gives `Migrating` a concrete lifetime owner before the source
+/// runqueue entry is detached, matching Linux's `TASK_ON_RQ_MIGRATING`
+/// invariant.
+pub(super) struct PreparedOwnerMigration<'remote> {
+    publication: Option<CpuRemotePublication<'remote>>,
+    core: Option<Arc<ThreadCore>>,
+    source: CpuId,
+    inbox_cpu: CpuId,
+}
+
+impl PreparedOwnerMigration<'_> {
+    pub(super) fn commit(mut self) {
+        let publication = self
+            .publication
+            .take()
+            .expect("prepared migration must retain its CPU publication lease");
+        let core = self
+            .core
+            .take()
+            .expect("prepared migration must retain its thread delivery lease");
+        let thread = core.id();
+        let pointer = Arc::into_raw(core);
+        let node = unsafe {
+            // SAFETY: the transferred Arc count keeps the embedded node pinned
+            // until one owner drain reconstructs and releases the reference.
+            Pin::new_unchecked((*pointer).migration_node())
+        };
+        let message = InboxMessage::migration_with_payload(
+            thread,
+            self.source,
+            self.inbox_cpu,
+            thread.generation() as u64,
+            pointer.expose_provenance(),
+        );
+        match publication.publish_owner_control(node, message) {
+            PublishResult::Published => {}
+            PublishResult::AlreadyPending => unsafe {
+                // SAFETY: a coalesced publication did not consume this Arc.
+                // The older carrier remains responsible for observing the
+                // latest generation-bearing placement state.
+                let retained = Arc::from_raw(pointer);
+                retained.cancel_scheduler_inbox_delivery();
+                drop(retained);
+            },
+            PublishResult::WrongKind => unsafe {
+                // SAFETY: the typed carrier and embedded migration node have
+                // matching kinds, so rejection is an internal invariant.
+                let retained = Arc::from_raw(pointer);
+                retained.cancel_scheduler_inbox_delivery();
+                drop(retained);
+                task_runtime::fatal_invariant(0x4d49_4701, thread.as_u64() as usize);
+            },
+        }
+    }
+}
+
+impl Drop for PreparedOwnerMigration<'_> {
+    fn drop(&mut self) {
+        if let Some(core) = self.core.take() {
+            core.cancel_scheduler_inbox_delivery();
+        }
+    }
+}
+
 impl TaskSystem {
     pub(super) fn complete_affinity_if_satisfied_locked(
         core: &Arc<ThreadCore>,
@@ -24,67 +117,50 @@ impl TaskSystem {
             && core.publish_affinity_completion(sched.placement.affinity_generation)
     }
 
-    pub(super) fn publish_owner_migration(
+    pub(super) fn prepare_owner_migration(
         &self,
         core: &Arc<ThreadCore>,
-        inbox_cpu: CpuId,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<PreparedOwnerMigration<'_>, TaskError> {
+        let target_remote = self
+            .cpu_remotes
+            .get(target.as_usize())
+            .ok_or(TaskError::InvalidCpu(target.as_u32()))?;
+        let source_remote = self
+            .cpu_remotes
+            .get(source.as_usize())
+            .ok_or(TaskError::InvalidCpu(source.as_u32()))?;
+        let (inbox_cpu, publication) = target_remote
+            .begin_publication()
+            .map_or_else(
+                || {
+                    source_remote
+                        .begin_owner_delivery()
+                        .map(|publication| (source, publication))
+                },
+                |publication| Some((target, publication)),
+            )
+            .ok_or(TaskError::CpuOffline(source.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Err(TaskError::NotReady);
+        }
+        Ok(PreparedOwnerMigration {
+            publication: Some(publication),
+            core: Some(Arc::clone(core)),
+            source,
+            inbox_cpu,
+        })
+    }
+
+    pub(super) fn deliver_owner_migration(
+        &self,
+        core: &Arc<ThreadCore>,
         source: CpuId,
         target: CpuId,
     ) -> Result<(), TaskError> {
-        if self.try_publish_owner_migration(core, inbox_cpu, source, target)? {
-            return Ok(());
-        }
-
-        // The destination may enter CPU-hotplug draining after placement was
-        // selected but before its publication guard is acquired. The source
-        // owner is still executing this transition, so use its inbox as the
-        // stable recovery carrier. The owner drain revalidates affinity and
-        // either enqueues locally or forwards to another online destination.
-        if inbox_cpu != source && self.try_publish_owner_migration(core, source, source, source)? {
-            return Ok(());
-        }
-        Err(TaskError::CpuOffline(inbox_cpu.as_u32()))
-    }
-
-    fn try_publish_owner_migration(
-        &self,
-        core: &Arc<ThreadCore>,
-        inbox_cpu: CpuId,
-        source: CpuId,
-        target: CpuId,
-    ) -> Result<bool, TaskError> {
-        let remote = self
-            .cpu_remotes
-            .get(inbox_cpu.as_usize())
-            .ok_or(TaskError::InvalidCpu(inbox_cpu.as_u32()))?;
-        if !core.reserve_scheduler_inbox_delivery() {
-            return Ok(false);
-        }
-        let pointer = Arc::as_ptr(core);
-        unsafe {
-            // The retained count is transferred to the intrusive inbox.
-            Arc::increment_strong_count(pointer);
-        }
-        let node = unsafe {
-            // The transferred Arc count keeps the embedded node pinned.
-            Pin::new_unchecked((*pointer).migration_node())
-        };
-        let message = InboxMessage::migration_with_payload(
-            core.id(),
-            source,
-            target,
-            core.id().generation() as u64,
-            pointer.expose_provenance(),
-        );
-        let result = remote.publish_owner_control(node, message);
-        if result != PublishResult::Published {
-            unsafe {
-                // A rejected/coalesced publication did not consume this count.
-                Arc::decrement_strong_count(pointer);
-            }
-            core.cancel_scheduler_inbox_delivery();
-        }
-        Ok(result != PublishResult::WrongKind)
+        self.prepare_owner_migration(core, source, target)?.commit();
+        Ok(())
     }
 
     pub(super) fn publish_owner_policy_retry(

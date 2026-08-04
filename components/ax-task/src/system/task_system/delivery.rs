@@ -77,14 +77,20 @@ impl TaskSystem {
                 self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)?;
                 None
             } else {
+                let carrier = self.prepare_owner_migration(&core, owner, target)?;
                 sched.placement.set_migration_target(Some(target))?;
                 record.core.set_wake_cpu_hint(target);
                 drop(sched);
-                Some((core, target))
+                Some((carrier, target))
             }
         };
-        if let Some((core, target)) = migration {
-            return self.publish_owner_migration(&core, target, owner, target);
+        if let Some((carrier, target)) = migration {
+            #[cfg(not(test))]
+            let _ = target;
+            #[cfg(test)]
+            placement::inject_migration_publication_race(self, owner, target);
+            carrier.commit();
+            return Ok(());
         }
         Self::program_local_timer(cpu.as_mut(), now_ns)
     }
@@ -171,6 +177,7 @@ impl TaskSystem {
                 }
                 return Ok(());
             }
+            let carrier = self.prepare_owner_migration(core, owner, target)?;
             let detached = {
                 let current_fair = cpu
                     .dispatch_state()
@@ -202,10 +209,7 @@ impl TaskSystem {
                 self.rollback_owner_queued_migration(cpu.as_mut(), core, detached, owner, target)?;
                 return Err(error);
             }
-            if let Err(error) = self.publish_owner_migration(core, target, owner, target) {
-                self.rollback_owner_queued_migration(cpu.as_mut(), core, detached, owner, target)?;
-                return Err(error);
-            }
+            carrier.commit();
             self.publish_owner_cpu_load_summary(cpu.as_mut());
             return Ok(());
         }
@@ -233,7 +237,7 @@ impl TaskSystem {
             if target != owner {
                 sched.placement.set_migration_target(Some(target))?;
                 drop(sched);
-                return self.publish_owner_migration(core, target, owner, target);
+                return self.deliver_owner_migration(core, owner, target);
             }
             return Ok(());
         }
@@ -459,7 +463,7 @@ impl TaskSystem {
                     }
                 };
                 if let Some(forward_target) = forward_target {
-                    self.publish_owner_migration(&core, forward_target, owner, forward_target)?;
+                    self.deliver_owner_migration(&core, owner, forward_target)?;
                 } else {
                     self.enqueue_owner_thread(
                         cpu.as_mut(),

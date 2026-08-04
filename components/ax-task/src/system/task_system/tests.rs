@@ -960,7 +960,7 @@ fn migration_publication_recovers_through_source_when_target_starts_draining() {
     }
 
     system
-        .publish_owner_migration(&thread.core, CpuId::new(1), CpuId::new(0), CpuId::new(1))
+        .deliver_owner_migration(&thread.core, CpuId::new(0), CpuId::new(1))
         .unwrap();
     system.drain_policy_updates(cpu0.as_mut(), 0).unwrap();
 
@@ -971,6 +971,37 @@ fn migration_publication_recovers_through_source_when_target_starts_draining() {
         Some(CpuId::new(0)),
         "the still-online source must recover a migration rejected by a draining target"
     );
+    assert_eq!(sched.placement.migration_target(), None);
+}
+
+#[test]
+fn migration_carrier_closes_hotplug_before_detached_placement_commits() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let mut affinity = CpuSet::empty(2);
+    assert!(affinity.insert(CpuId::new(1)));
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(affinity))
+        .unwrap();
+    system.make_ready(thread.id()).unwrap();
+    placement::drain_next_migration_cpus_before_publication();
+
+    system.place_ready(cpu0.as_mut(), thread.id(), 0).unwrap();
+    system.drain_policy_updates(cpu1.as_mut(), 0).unwrap();
+
+    let sched = thread.core.sched().lock();
+    assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(1)));
     assert_eq!(sched.placement.migration_target(), None);
 }
 

@@ -268,7 +268,7 @@ impl TaskSystem {
                 if outgoing_candidate {
                     outgoing_migration_target = Some(target);
                 } else {
-                    self.publish_owner_migration(&core, target, owner, target)?;
+                    self.deliver_owner_migration(&core, owner, target)?;
                 }
                 reconciled += 1;
                 if reconciled == cpu.batch_limit() {
