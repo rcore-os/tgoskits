@@ -166,7 +166,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
-| process | `exit_notify()`、`do_wait()` | 单一 PID generation 与关系锁序 | 采用 dev `ProcessIdentity` |
+| process | `exit_notify()`、`__do_wait()`、`do_wait_thread()`、`ptrace_do_wait()` | 单一 PID generation 与关系锁序；每次 wake 后重扫 children/ptrace/zombie 权威关系，禁止跨阻塞保存候选快照 | 采用 dev `ProcessIdentity`；waitpid/waitid 共用 refreshable scan，初次无候选返回 `ECHILD`，阻塞后的每次 poll 重新采集 |
 | perf | `perf_install_in_context()` | task 与 CPU target 分离；owner CPU teardown | 已类型化并有 IRQ grace |
 | tracepoint | RCU/SRCU probe arrays | 完整 generation 先发布；读侧 grace 后释放 | 快照与 epoch reclaimer 已实现 |
 | 通用 timer | threaded hrtimer/task work | 任意 callback 不进 hard IRQ | Starry/AxVM worker 独立于 ax-task |
@@ -563,6 +563,13 @@ IRQ-off 临界区和反向锁序，现已删除，不保留兼容路径。
 ### PID/zombie
 
 `ProcessIdentity` 是 PID 可见性与 reap 的唯一状态机。parent/children/process-group 更新通过稳定 PID/PGID 排序的关系事务完成，避免 reparent 与 retire 锁序反转。
+
+`waitpid` 与 `waitid` 对应 Linux `__do_wait()` 的循环语义：仅 syscall 入口的第一次扫描可
+决定“当前没有符合条件的 child”并返回 `ECHILD`；一旦进入阻塞，每次 event wake 和
+check-versus-register 二次检查都必须从 parent children、live ptrace registry 与 traced
+zombie registry 重新生成候选。不得让 `Vec<Arc<Process>>` 跨 park 保存，因为等待期间
+可能出现新 child、reparent、ptrace attach/detach 或新的 zombie publication。P_PIDFD
+继续用 `ProcessIdentity` 的 generation 精确匹配，不能退化成裸 PID。
 
 ### 用户等待与信号
 
