@@ -74,7 +74,8 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
-    guest_console::configure_host_console()
+    let default_vms = manager::AxvmManager::vm_list();
+    guest_console::configure_host_console_reader(&default_vms)
         .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
     let started_vms = manager.launch_default_vms();
     guest_console::attach_default(started_vms);

@@ -1,163 +1,112 @@
-//! Physical host-console ownership and transport selection.
-
-use alloc::boxed::Box;
+//! Physical host-console ownership.
 
 use anyhow::{Result, bail};
-use ax_runtime::{
-    hal::console::ConsoleDeviceIdError,
-    serial::{Config, RxItem, SerialRuntimeHandle, SerialRxSubscription, SerialTxSender},
-};
-use spin::Once;
+use ax_std::os::arceos::modules::ax_task;
+use axvm::AxVMRef;
 
-const DEFAULT_SERIAL_BAUDRATE: u32 = 115_200;
+fn console_reader_isolation_cpu(
+    host_cpu_count: usize,
+    vcpu_masks: impl IntoIterator<Item = Option<usize>>,
+) -> Option<usize> {
+    let tracked_cpu_count = host_cpu_count.min(usize::BITS as usize);
+    if tracked_cpu_count == 0 {
+        return None;
+    }
 
-static HOST_CONSOLE: Once<Box<dyn HostConsoleTransport>> = Once::new();
-
-trait HostConsoleTransport: Send + Sync {
-    fn write_bytes(&self, bytes: &[u8]);
-    fn read_byte(&self) -> Option<u8>;
-    fn wait_for_input(&self);
+    let online_bits = if tracked_cpu_count == usize::BITS as usize {
+        usize::MAX
+    } else {
+        (1usize << tracked_cpu_count) - 1
+    };
+    let guest_bits = vcpu_masks.into_iter().fold(0usize, |used, mask| {
+        let requested = mask.unwrap_or(online_bits) & online_bits;
+        // A missing, empty, or offline-only mask lets the runtime choose a
+        // fallback CPU, so no CPU can be proven host-only in that case.
+        used | if requested == 0 {
+            online_bits
+        } else {
+            requested
+        }
+    });
+    let host_only_bits = online_bits & !guest_bits;
+    (host_only_bits != 0).then(|| host_only_bits.trailing_zeros() as usize)
 }
 
-struct RuntimeHostConsole {
-    rx: SerialRxSubscription,
-    tx: SerialTxSender,
-}
-
-struct PlatformPollingHostConsole;
-
-/// Transfers a hardware console to the generic serial runtime when possible.
+/// Configures the polling owner for physical host-console input.
 ///
-/// Firmware-less consoles such as SBI remain on the platform polling path. A
-/// firmware-selected hardware UART must have one exact runtime owner; an absent
-/// match is an initialization error rather than a guessed fallback.
-pub(crate) fn configure_host_console() -> Result<()> {
-    HOST_CONSOLE.try_call_once(select_host_console).map(|_| ())
+/// The console multiplexer remains the only physical UART reader. Input IRQs
+/// stay disabled until the host UART IRQ contract can transfer received bytes
+/// to that owner without introducing a second reader.
+pub(crate) fn configure_host_console_reader(vms: &[AxVMRef]) -> Result<()> {
+    ax_hal::console::set_input_irq_enabled(false);
+
+    let isolation_cpu = console_reader_isolation_cpu(
+        ax_hal::cpu_num(),
+        vms.iter()
+            .flat_map(|vm| vm.vcpu_snapshots())
+            .map(|vcpu| vcpu.phys_cpu_set),
+    );
+
+    // Temporary polling and scheduler-isolation workaround.
+    //
+    // A pinned, continuously runnable vCPU can starve the polling console
+    // reader on the cooperative FIFO scheduler. The raw UART IRQ contract does
+    // not drain RX into a mux-owned queue or wake this task, so enabling it can
+    // leave a level source asserted without making the sole reader runnable.
+    // When the validated VM topology leaves a CPU outside every explicit vCPU
+    // mask, place the reader there before any vCPU task starts.
+    //
+    // This never rewrites a vCPU mask or guesses when a mask is absent. Remove
+    // the placement after same-CPU FIFO fairness guarantees host-service
+    // progress; re-enable RX IRQs only after the top half drains into a bounded
+    // mux-owned queue and performs an IRQ-safe task wake.
+    let Some(owner_cpu) = isolation_cpu else {
+        return Ok(());
+    };
+    let owner_affinity = ax_task::AxCpuMask::one_shot(owner_cpu);
+    if !ax_task::set_current_affinity(owner_affinity) {
+        bail!("failed to pin the host console reader to CPU {owner_cpu}");
+    }
+    let actual_owner_cpu = ax_hal::percpu::this_cpu_id();
+    if actual_owner_cpu != owner_cpu {
+        bail!(
+            "host console reader affinity selected CPU {owner_cpu}, but migration ended on CPU \
+             {actual_owner_cpu}"
+        );
+    }
+
+    Ok(())
 }
 
 /// Reads at most one byte from the physical host console.
 ///
 /// No other Axvisor component may call the platform console input API.
 pub(crate) fn read_host_byte() -> Option<u8> {
-    HOST_CONSOLE.get()?.read_byte()
+    let mut byte = [0u8; 1];
+    (ax_hal::console::read_bytes(&mut byte) == 1).then_some(byte[0])
 }
 
-/// Waits for input without making a continuously runnable polling task.
+/// Yields between polling attempts so other runnable host tasks can progress.
 pub(crate) fn wait_for_host_input() {
-    if let Some(console) = HOST_CONSOLE.get() {
-        console.wait_for_input();
-    } else {
-        std::thread::yield_now();
-    }
+    std::thread::yield_now();
 }
 
 pub(super) fn write_host_bytes(bytes: &[u8]) {
-    if let Some(console) = HOST_CONSOLE.get() {
-        console.write_bytes(bytes);
-    } else {
-        ax_hal::console::write_bytes(bytes);
-    }
+    ax_hal::console::write_bytes(bytes);
 }
 
-fn select_host_console() -> Result<Box<dyn HostConsoleTransport>> {
-    match ax_hal::console::device_id() {
-        Ok(device_id) => {
-            let runtime = ax_runtime::serial::runtimes()
-                .iter()
-                .find(|runtime| runtime.info().device_id == device_id)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "firmware-selected host console {device_id:?} has no serial runtime"
-                    )
-                })?;
-            RuntimeHostConsole::claim(runtime)
-                .map(|console| Box::new(console) as Box<dyn HostConsoleTransport>)
-        }
-        Err(ConsoleDeviceIdError::NotSpecified | ConsoleDeviceIdError::NoHardwareDevice) => {
-            info!("host console uses the platform polling transport");
-            Ok(Box::new(PlatformPollingHostConsole))
-        }
-        Err(ConsoleDeviceIdError::DeviceNotFound) => {
-            bail!("firmware-selected host console device was not probed")
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::console_reader_isolation_cpu;
 
-impl RuntimeHostConsole {
-    fn claim(runtime: SerialRuntimeHandle) -> Result<Self> {
-        let rx = runtime.take_rx_subscription().ok_or_else(|| {
-            anyhow::anyhow!(
-                "host console runtime {} already has an RX owner",
-                runtime.info().name
-            )
-        })?;
-        let baudrate = match runtime.info().initial_baudrate {
-            0 => DEFAULT_SERIAL_BAUDRATE,
-            baudrate => baudrate,
-        };
-        runtime
-            .start(Config::new().baudrate(baudrate))
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to start host console runtime {}: {error:?}",
-                    runtime.info().name
-                )
-            })?;
-        if let Err(error) = runtime.claim_console_output() {
-            let rollback = runtime.shutdown();
-            bail!(
-                "failed to claim host console runtime {}: {error:?}; shutdown rollback: \
-                 {rollback:?}",
-                runtime.info().name
-            );
-        }
-
-        let tx = runtime.tx_sender();
-        info!(
-            "host console runtime owns {} at {}",
-            runtime.info().name,
-            runtime.info().firmware_path
+    #[test]
+    fn isolation_requires_a_cpu_excluded_by_every_vcpu() {
+        assert_eq!(
+            console_reader_isolation_cpu(4, [Some(0b0010), Some(0b1000)]),
+            Some(0)
         );
-        Ok(Self { rx, tx })
-    }
-}
-
-impl HostConsoleTransport for RuntimeHostConsole {
-    fn write_bytes(&self, bytes: &[u8]) {
-        let _ = self.tx.write_all(bytes);
-    }
-
-    fn read_byte(&self) -> Option<u8> {
-        loop {
-            let mut item = [RxItem::default()];
-            if self.rx.drain(&mut item) == 0 {
-                return None;
-            }
-            if let RxItem::Byte { byte, .. } = item[0] {
-                return Some(byte);
-            }
-        }
-    }
-
-    fn wait_for_input(&self) {
-        let _ = self.rx.wait_readable();
-    }
-}
-
-impl HostConsoleTransport for PlatformPollingHostConsole {
-    fn write_bytes(&self, bytes: &[u8]) {
-        ax_hal::console::write_bytes(bytes);
-    }
-
-    fn read_byte(&self) -> Option<u8> {
-        let mut byte = [0u8; 1];
-        (ax_hal::console::read_bytes(&mut byte) == 1).then_some(byte[0])
-    }
-
-    fn wait_for_input(&self) {
-        // Static SBI consoles have no serial IRQ runtime. Yielding is the
-        // narrow fallback until the platform exposes a blocking input event.
-        std::thread::yield_now();
+        assert_eq!(console_reader_isolation_cpu(4, [None]), None);
+        assert_eq!(console_reader_isolation_cpu(4, [Some(0)]), None);
+        assert_eq!(console_reader_isolation_cpu(4, [Some(usize::MAX)]), None);
     }
 }

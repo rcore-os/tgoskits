@@ -1600,7 +1600,6 @@ dependencies = [
  "ax-driver",
  "ax-hal",
  "ax-kspin",
- "ax-runtime",
  "ax-std",
  "ax-sync",
  "axbacktrace",
