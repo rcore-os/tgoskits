@@ -1,0 +1,12 @@
+-r requirements.in
+
+fast-histogram==0.14
+onnxruntime==1.23.2
+opencv-python==4.10.0.84
+psutil==7.2.2
+rknn-toolkit2 @ https://raw.githubusercontent.com/airockchip/rknn-toolkit2/42aa1d426c0a9e0869b6374edba009f7208a1926/rknn-toolkit2/packages/x86_64/rknn_toolkit2-2.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ruamel.yaml==0.19.1
+scipy==1.15.3
+setuptools==75.8.2
+torch==2.4.0
+tqdm==4.70.0

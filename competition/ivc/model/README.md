@@ -52,10 +52,64 @@ then compares the generated Rust source, ONNX bytes, golden JSON, and manifest:
 bash competition/ivc/model/rebuild-check.sh
 ```
 
+## Rebuild and verify M4-2 RKNN FP16 artifacts
+
+M4-2 uses the exact `/usr/bin/python3.10` from Ubuntu 22.04 (3.10.12). The
+separate lock includes the commit-pinned official Toolkit2 wheel and hashes for
+every package. `--torch-backend cpu` is required because the frozen Torch build
+is `2.4.0+cpu`.
+
+```bash
+uv venv --python /usr/bin/python3.10 \
+  /home/seven_wsl/.cache/tgoskits/ivc-rknn-py310-formal
+uv pip sync \
+  --python /home/seven_wsl/.cache/tgoskits/ivc-rknn-py310-formal/bin/python \
+  --require-hashes --torch-backend cpu \
+  competition/ivc/model/requirements-rknn-lock.txt
+
+RKNN_PY=/home/seven_wsl/.cache/tgoskits/ivc-rknn-py310-formal/bin/python
+"$RKNN_PY" competition/ivc/model/convert_thermal_rknn.py
+"$RKNN_PY" competition/ivc/model/convert_thermal_rknn.py --check
+"$RKNN_PY" competition/ivc/model/verify_thermal_rknn.py
+"$RKNN_PY" competition/ivc/model/verify_thermal_rknn.py --check
+IVC_RKNN_PYTHON="$RKNN_PY" \
+  bash competition/ivc/model/rebuild-rknn-check.sh
+```
+
+The frozen RKNN model is 15,873 bytes with SHA-256
+`2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`.
+Toolkit2 maps the two mathematical compute nodes to RK3588 NPU `ConvRelu` and
+`ConvClip` nodes; input/output wrappers remain on the CPU and there are no
+custom CPU operators. The normalized evidence is in `rknn-conversion.log` and
+`rknn-conversion-report.json`.
+
+Toolkit2 otherwise writes process-memory-dependent bytes into a fixed internal
+region of this small model. The converter starts a fresh child with
+`MALLOC_PERTURB_=255` and `PYTHONHASHSEED=0`; two independent rebuild checks are
+byte-identical. It never patches the exported binary. Unnormalized vendor logs
+contain timestamps and are intentionally written only when `--raw-log` names an
+external evidence path. A pre-freeze audit using the same formal configuration
+without allocator perturbation produced two different hashes and 845 differing
+bytes within offsets 12128 through 14200; those potentially process-dependent
+artifacts are not committed, while their hashes are retained in the report.
+
+The 10,000-vector Toolkit2 host-simulator result is frozen in
+`rknn-simulator-report.json`: maximum error against native f32 is
+`0.001798778772354126`, the command-delta histogram is
+`{-2: 23, -1: 322, 0: 9369, 1: 280, 2: 6}`, and maximum error against the
+deterministic FP16 oracle is `0.00048828125`. These are FP16 gates, separate
+from the stricter ORT-f32 gate above.
+
+Toolkit2 2.3.2 does not execute an artifact loaded with `load_rknn()` in its
+host simulator. The simulator therefore rebuilds the same frozen ONNX with the
+same RK3588 FP16 configuration; it is not evidence that the committed `.rknn`
+ran on hardware. The exact compiled artifact must next pass Linux and StarryOS
+physical-RK3588 tests.
+
 RKNN Toolkit2 is vendor software and is not redistributed by this directory.
-The M4-2 conversion step must record the exact official source URL, version,
-wheel SHA-256, license, conversion log, and compatibility with the committed
-`librknnrt.so` before its version is frozen.
+`rknn-toolkit2-2.3.2-source.json` records the official commit, URL, wheel
+SHA-256, upstream files, and license assessment. The repository contains the
+generated project model but not the vendor wheel.
 
 ## Ownership boundary for the physical NPU
 

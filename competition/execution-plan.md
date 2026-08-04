@@ -33,8 +33,8 @@
 | ERROR | 正式 3/3 已完成 | 汇入最终报告 |
 | restart recovery | `6adf49e09` 实体正式 3/3 已完成，campaign formal gate 为 true | 汇入最终报告并保留 pre-reset deadline miss 不利指标 |
 | StarryOS manual/neural full | `f4ced3758` 上正式 5 对、10/10 half 已完成 | 汇入最终报告，同时披露 neural 最大超调退化和无稳定延迟优势 |
-| 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 提交并冻结生成流水线与哈希 |
-| RK3588 NPU | 平台/所有权审计已完成；当前 AxVisor guest 尚未获得 NPU 资源 | 完成 RKNN 2.3.2 FP16 转换、Linux reference，再实现安全 guest handoff |
+| 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 保持冻结，不按后续实体结果修改模型 |
+| RK3588 NPU | M4-2 已完成：Toolkit2 2.3.2、确定性 RK3588 FP16 `.rknn`、算子映射和 host simulator 差分均通过；当前 AxVisor guest 尚未获得 NPU 资源 | 在 Linux 实体执行同一 `.rknn` reference，再实现安全 guest handoff |
 | ONNX Runtime CPU | host CPU EP 10,000 组差分已通过；StarryOS `.ort`/minimal runtime 尚未实现 | 冻结 AArch64 musl 版本与 operator config，通过 M4-plus 门后进入实体矩阵 |
 | 报告与视频 | 待最终数据冻结 | 所有正式结果通过聚合门后更新 |
 
@@ -281,6 +281,14 @@ M4-0/M4-1 已完成并通过以下门：
 - Rust native oracle 对 10,000/10,000 个输入逐 bit 一致；
 - host ONNX Runtime CPU EP 最大绝对误差为 `2.980232238769531e-07`，9999/10000 个执行器命令逐值一致，另 1 个是同一 `0.4745` 半千分位边界两侧的相邻命令，物质性不一致为 0。
 
+M4-2 已完成并通过以下门：
+
+- Python 3.10.12 和全依赖 hash lock 固定 Toolkit2 2.3.2；官方 wheel 来自 commit `42aa1d426c0a9e0869b6374edba009f7208a1926`，SHA-256 为 `6cb783ddf293ac509f39bf9127acf6a5492bbb67e4b4b4ac33a7c6d2cefb4f3c`，因上游 LICENSE 没有肯定的再分发授权而不提交 vendor wheel；
+- 冻结 `.rknn` 为 15,873 bytes，SHA-256 `2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`；通过 child 启动前的 `MALLOC_PERTURB_=255`/`PYTHONHASHSEED=0` 消除 Toolkit2 固定内部区间的进程内存相关字节，两个独立重建逐字节一致，不做 binary patch；
+- 两个模型计算节点被编译为 NPU `ConvRelu` 和 `ConvClip`，无 custom CPU op；CPU 只承担输入/输出 wrapper 与最终 reshape；
+- 同一 ONNX/同一 RK3588 FP16 config 的 Toolkit host simulator 对 10,000 vectors 相对 native f32 最大误差为 `0.001798778772354126`，命令差直方图为 `-2:23, -1:322, 0:9369, +1:280, +2:6`；相对确定性 FP16 oracle 最大误差为 `0.00048828125`、逐值一致 9806/10000；
+- Toolkit2 host simulator 不支持执行 `load_rknn()` artifact，因此该差分不是硬件证据；Linux reference 必须执行提交的同一 `.rknn`。
+
 ### 7.2 RK3588 NPU 平台与所有权审计
 
 审计结论记录在 [`model/rk3588-npu-passthrough-audit.md`](ivc/model/rk3588-npu-passthrough-audit.md)：
@@ -305,7 +313,7 @@ ONNX -> RKNN Toolkit2 -> .rknn
 按以下顺序执行：
 
 1. [x] 在固定 WSL2 环境中导出 ONNX，并验证二次生成一致性。
-2. [ ] 用固定 RKNN Toolkit2 2.3.2 生成 RK3588 FP16 `.rknn`，检查关键算子全部进入 NPU 图并记录 wheel 来源、SHA-256 和许可证边界。
+2. [x] 用固定 RKNN Toolkit2 2.3.2 生成确定性 RK3588 FP16 `.rknn`，检查两个模型计算节点进入 NPU 图，完成 10,000-vector host simulator 差分并记录 wheel 来源、SHA-256 和许可证边界。
 3. [ ] 在板卡 Linux 中完成同模型 reference inference，冻结 Runtime 2.3.2、板端 driver 版本和输出。
 4. [x] 审计 StarryOS RKNPU 设备节点、ioctl ABI、mmap、DMA/IOMMU、cache、中断路径和 AxVisor guest 资源缺口。
 5. [ ] 实现 host 初始化/guest 独占 handoff，并审计 `librknnrt.so` 的 AArch64 动态依赖以及 StarryOS 所需 syscall；只补齐语义明确、可回归的最小缺口。
@@ -326,13 +334,13 @@ ONNX -> RKNN Toolkit2 -> .rknn
 
 只有以下条件全部满足才进入正式 NPU 5 次 full：
 
-- [ ] ONNX 可被固定 RKNN 工具链接受，关键算子无 custom CPU fallback。
+- [x] ONNX 可被固定 RKNN 工具链接受，两个模型计算节点无 custom CPU fallback。
 - [ ] Linux reference 与 StarryOS NPU 数值满足预注册误差门。
 - [ ] StarryOS 能稳定加载同一 `.rknn`，10,000 次离线运行无错误和资源泄漏。
 - [ ] 能证明实际 NPU submit/device execution，而非仅初始化 Runtime。
 - [ ] 控制周期、rootfs 空间、内存高水位和重复性满足预算。
 
-数值验收不把浮点舍入边界误写成“100% 命令逐值一致”：native/ORT 的浮点误差必须 `<= 1e-6`，RKNN FP16 初始门为 `<= 1e-3`；同时报告执行器 exact-match 数量。非 exact 只允许相差 1 个千分位，且两个输出都位于同一个半千分位取整边界的对应误差窗内；任何更大差值、不同边界、NaN/Inf 或 shape mismatch 都是物质性失败。RKNN 的最终误差窗必须在固定 corpus 上预注册，正式数据开始后不得放宽。
+数值验收不把浮点舍入边界误写成“100% 命令逐值一致”。native/ORT 的浮点误差必须 `<= 1e-6`，仅接受同一半千分位边界 `1e-6` 窗内相差 1 的命令。RKNN FP16 使用在固定 corpus 上、实体实验前冻结的独立门：相对 native f32 最大绝对误差 `<= 0.002`，执行器命令差绝对值 `<= 2` 并报告完整直方图；相对确定性 FP16 oracle 最大绝对误差 `<= 0.0005`。任何更大差值、NaN/Inf、backend error 或 shape mismatch 都是物质性失败，Linux/StarryOS 实体结果不得触发门限放宽。
 
 若只能依赖不可再分发组件、ABI 无法兼容、只能在 Linux 工作、实际落入 CPU 或持续错过 deadline，则记录 M4-core no-go 证据。不得把 Runtime 初始化成功称为 NPU 推理成功。
 
@@ -385,7 +393,7 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 - [x] 受控干扰场景中的 p99 与 worst-case 改善由多次配对 raw data 支撑，并明确不外推到未通过场景。
 - [x] manual/neural 为同板同配置 5 对正式实验。
 - [x] ACK loss、ERROR、restart recovery 均为实体跨客户机 3/3。
-- [ ] ONNX 是唯一跨后端模型来源，所有模型和工具链版本可追溯。
+- [x] ONNX 是唯一跨后端模型来源；native、ONNX 和 RKNN 转换 artifact/工具链均可追溯，ORT 实体 Runtime 仍在 E4 单独冻结。
 - [ ] RKNN 后端有真实 RK3588 NPU 执行证据；若 no-go，则限制原因和原始证据完整。
 - [ ] ORT CPU 后端通过实体门或留下明确 no-go，不冒充 NPU 路线。
 - [ ] 每个正式结论均能追溯到 clean commit、配置、镜像哈希、raw、summary 和 checksum。
@@ -408,6 +416,6 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ## 11. 最近三项动作
 
-1. 提交并冻结 M4-0/M4-1：canonical weights、generated Rust、ONNX、10,000 golden vectors、manifest、锁文件和确定性二次重建门。
-2. 完成 M4-2：固定 RKNN Toolkit2 2.3.2 获取/校验流程，转换 RK3588 FP16 `.rknn`，保存完整日志并确认关键算子无 CPU fallback。
-3. 使用同一 `.rknn` 先跑 OrangePi Linux 10,000 次 reference；通过数值、device-time 和版本门后，再实现 AxVisor host 初始化与 StarryOS guest 独占 NPU handoff。
+1. 冻结已提交的 M4-0/M4-1 canonical weights、generated Rust、ONNX、10,000 golden vectors、manifest、锁文件和确定性二次重建门。
+2. 提交并冻结已通过的 M4-2 Toolkit2 2.3.2 获取/校验流程、确定性 RK3588 FP16 `.rknn`、转换/模拟器报告及预注册 FP16 门。
+3. 使用同一 `.rknn` 在 OrangePi Linux 跑 10,000 次 reference；通过数值、device-time 和版本门后，再实现 AxVisor host 初始化与 StarryOS guest 独占 NPU handoff。

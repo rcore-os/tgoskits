@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "tool": "rknn-toolkit2",
+  "version": "2.3.2",
+  "release": {
+    "commit": "42aa1d426c0a9e0869b6374edba009f7208a1926",
+    "official_repository": "https://github.com/airockchip/rknn-toolkit2",
+    "tag": "v2.3.2",
+    "tag_url": "https://github.com/airockchip/rknn-toolkit2/releases/tag/v2.3.2"
+  },
+  "x86_64_cp310_wheel": {
+    "official_url": "https://raw.githubusercontent.com/airockchip/rknn-toolkit2/42aa1d426c0a9e0869b6374edba009f7208a1926/rknn-toolkit2/packages/x86_64/rknn_toolkit2-2.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "6cb783ddf293ac509f39bf9127acf6a5492bbb67e4b4b4ac33a7c6d2cefb4f3c",
+    "size_bytes": 39604380
+  },
+  "official_requirements": {
+    "path_in_release": "rknn-toolkit2/packages/x86_64/requirements_cp310-2.3.2.txt",
+    "sha256": "a2af5ec1048d6d6a754b0ac4f559971dbb960714bd4cdd839e54506780497bab",
+    "size_bytes": 359
+  },
+  "operator_support": {
+    "path_in_release": "doc/RKNNToolKit2_OP_Support-2.3.2.md",
+    "sha256": "7d23d45271de939e24aca966c5fd0445268e279019c54c8073a6663c589a743a",
+    "size_bytes": 41421,
+    "required_onnx_operators": [
+      "Clip",
+      "Gemm",
+      "Relu"
+    ]
+  },
+  "repository_license": {
+    "path_in_release": "LICENSE",
+    "sha256": "d846f57d942c7dfdca7b8b54f9e8bb39e1e226790dc4f5ee205d6fd678961720",
+    "size_bytes": 1301,
+    "redistribution_assessment": "The published file contains an as-is warranty and liability statement but no affirmative redistribution grant. Do not commit or redistribute the vendor wheel; install it only from the recorded official URL with SHA-256 verification. Generated RKNN deployment artifacts contain only the project model and are reviewed separately."
+  },
+  "repository_policy": {
+    "vendor_wheel_committed": false,
+    "installation": "requirements-rknn-lock.txt fetches the official commit-pinned wheel and verifies its SHA-256"
+  }
+}

@@ -1,0 +1,16 @@
+RKNN_CONVERSION_EVIDENCE schema=1 status=pass
+model_id=thermal-4x6x1-v1
+model_sha256=2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8
+onnx_sha256=b21b3441908040c796a7528e6d941ae1f15d0b6fad8362a9d6492cf5b479b5b6
+toolkit=2.3.2
+compiler=2.3.2 (e045de294f@2025-04-07T19:48:25)
+target=rk3588 precision=FP16 quantization=disabled
+MALLOC_PERTURB_=255 PYTHONHASHSEED=0 binary_postprocessed=false
+node id=0 op=InputOperator dtype=FLOAT16 target=CPU name=InputOperator:normalized_observation
+node id=1 op=Reshape dtype=FLOAT16 target=NPU name=Reshape:normalized_observation_tp_rs
+node id=2 op=ConvRelu dtype=FLOAT16 target=NPU name=Conv:hidden_gemm#2
+node id=3 op=ConvClip dtype=FLOAT16 target=NPU name=Conv:output_gemm#2
+node id=4 op=Reshape dtype=FLOAT16 target=CPU name=Reshape:control_fraction-rs
+node id=5 op=OutputOperator dtype=FLOAT16 target=CPU name=OutputOperator:control_fraction
+vendor_diagnostic=Unkown op target: 0 classification=vendor diagnostic retained; build/export returned zero and the complete layer table is authoritative
+RKNN_CONVERSION_GATE all_compute_nodes_on_npu=true custom_cpu_ops=0

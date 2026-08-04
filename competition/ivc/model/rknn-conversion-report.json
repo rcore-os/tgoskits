@@ -1,0 +1,151 @@
+{
+  "artifact": {
+    "path": "competition/ivc/model/thermal-4x6x1-v1-rk3588-fp16.rknn",
+    "precision": "FP16",
+    "quantization": "disabled",
+    "sha256": "2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8",
+    "size_bytes": 15873,
+    "target_platform": "rk3588"
+  },
+  "conversion": {
+    "binary_postprocessed": false,
+    "build": {
+      "do_quantization": false
+    },
+    "config": {
+      "compress_weight": false,
+      "float_dtype": "float16",
+      "mean_values": [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "model_pruning": false,
+      "optimization_level": 3,
+      "quantize_weight": false,
+      "single_core_mode": false,
+      "std_values": [
+        [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "target_platform": "rk3588"
+    }
+  },
+  "model_id": "thermal-4x6x1-v1",
+  "operator_evidence": {
+    "all_model_compute_nodes_on_npu": true,
+    "compute_node_names": [
+      "Conv:hidden_gemm#2",
+      "Conv:output_gemm#2"
+    ],
+    "custom_cpu_ops": [],
+    "nodes": [
+      {
+        "dtype": "FLOAT16",
+        "full_name": "InputOperator:normalized_observation",
+        "id": 0,
+        "op_type": "InputOperator",
+        "target": "CPU"
+      },
+      {
+        "dtype": "FLOAT16",
+        "full_name": "Reshape:normalized_observation_tp_rs",
+        "id": 1,
+        "op_type": "Reshape",
+        "target": "NPU"
+      },
+      {
+        "dtype": "FLOAT16",
+        "full_name": "Conv:hidden_gemm#2",
+        "id": 2,
+        "op_type": "ConvRelu",
+        "target": "NPU"
+      },
+      {
+        "dtype": "FLOAT16",
+        "full_name": "Conv:output_gemm#2",
+        "id": 3,
+        "op_type": "ConvClip",
+        "target": "NPU"
+      },
+      {
+        "dtype": "FLOAT16",
+        "full_name": "Reshape:control_fraction-rs",
+        "id": 4,
+        "op_type": "Reshape",
+        "target": "CPU"
+      },
+      {
+        "dtype": "FLOAT16",
+        "full_name": "OutputOperator:control_fraction",
+        "id": 5,
+        "op_type": "OutputOperator",
+        "target": "CPU"
+      }
+    ]
+  },
+  "redistribution": {
+    "assessment": "The published file contains an as-is warranty and liability statement but no affirmative redistribution grant. Do not commit or redistribute the vendor wheel; install it only from the recorded official URL with SHA-256 verification. Generated RKNN deployment artifacts contain only the project model and are reviewed separately.",
+    "vendor_wheel_committed": false
+  },
+  "reproducibility": {
+    "binary_postprocessing": false,
+    "child_environment": {
+      "MALLOC_PERTURB_": "255",
+      "PYTHONHASHSEED": "0"
+    },
+    "exploratory_default_environment_difference_region_zero_based_inclusive": [
+      12128,
+      14205
+    ],
+    "formal_default_allocator_audit": {
+      "artifact_a_sha256": "a9698a5dfaa9661cefa8db051338cfe19167dc4ff0aab4e7d7fe68769448cce7",
+      "artifact_b_sha256": "a9f663e9ef739ad583469638fc083471da0318d1f8218651393539e2dae18335",
+      "artifacts_committed": false,
+      "difference_region_zero_based_inclusive": [
+        12128,
+        14200
+      ],
+      "different_bytes": 845,
+      "independent_processes": 2,
+      "same_formal_onnx_config_and_toolchain": true
+    },
+    "reason": "Toolkit2 otherwise emits process-memory-dependent bytes in a fixed internal region for this model; glibc allocation perturbation makes independent compiler processes byte-identical without editing the exported model."
+  },
+  "schema_version": 1,
+  "sources": {
+    "base_manifest_sha256": "0a24f6c07f5c4c6a08ef32be24a4db267fa197f813c6b12a2c165c684b5e6e7e",
+    "converter_sha256": "b9d0115480f8a53c4fb30ebdf12b58031626faa947e7febf43bf4a2d14363e68",
+    "onnx_sha256": "b21b3441908040c796a7528e6d941ae1f15d0b6fad8362a9d6492cf5b479b5b6",
+    "requirements_rknn_lock_sha256": "046e29edfcf8820d66ea4faeba5fa865b9a265dd711d7d537083222ef91d4684",
+    "rknn_source_metadata_sha256": "94ec94f3abcbf2f9440c078c78c33c06e17fdc6f1952191cd55f073fb162a7ba"
+  },
+  "status": "pass",
+  "toolchain": {
+    "compiler": "2.3.2 (e045de294f@2025-04-07T19:48:25)",
+    "numpy": "1.26.4",
+    "onnx": "1.16.1",
+    "onnxruntime": "1.23.2",
+    "opencv-python": "4.10.0.84",
+    "protobuf": "4.25.4",
+    "python": "3.10.12",
+    "release_commit": "42aa1d426c0a9e0869b6374edba009f7208a1926",
+    "rknn-toolkit2": "2.3.2",
+    "setuptools": "75.8.2",
+    "torch": "2.4.0+cpu",
+    "wheel_sha256": "6cb783ddf293ac509f39bf9127acf6a5492bbb67e4b4b4ac33a7c6d2cefb4f3c"
+  },
+  "vendor_diagnostics": [
+    {
+      "classification": "vendor diagnostic retained; build/export returned zero and the complete layer table is authoritative",
+      "message": "Unkown op target: 0"
+    }
+  ]
+}
