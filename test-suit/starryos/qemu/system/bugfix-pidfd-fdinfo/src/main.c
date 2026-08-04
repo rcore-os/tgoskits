@@ -8,6 +8,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -27,6 +28,10 @@
 
 #ifndef CLONE_NEWPID
 #define CLONE_NEWPID 0x20000000ULL
+#endif
+
+#ifndef PIDFD_THREAD
+#define PIDFD_THREAD O_EXCL
 #endif
 
 struct clone_args {
@@ -130,10 +135,14 @@ static int pidfd_is_hidden_in_fdinfo(int pidfd)
     return pid_is_zero && nspid_is_zero ? 0 : -1;
 }
 
-static int send_fd(int socket, int fd)
+struct received_pidfd {
+    int fd;
+    pid_t tid;
+};
+
+static int send_pidfd(int socket, int fd, pid_t tid)
 {
-    char payload = 'p';
-    struct iovec iov = { .iov_base = &payload, .iov_len = sizeof(payload) };
+    struct iovec iov = { .iov_base = &tid, .iov_len = sizeof(tid) };
     char control[CMSG_SPACE(sizeof(fd))] = {0};
     struct msghdr message = {
         .msg_iov = &iov,
@@ -146,13 +155,13 @@ static int send_fd(int socket, int fd)
     cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(fd));
     memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
-    return sendmsg(socket, &message, 0) == (ssize_t)sizeof(payload) ? 0 : -1;
+    return sendmsg(socket, &message, 0) == (ssize_t)sizeof(tid) ? 0 : -1;
 }
 
-static int recv_fd(int socket)
+static struct received_pidfd recv_pidfd(int socket)
 {
-    char payload;
-    struct iovec iov = { .iov_base = &payload, .iov_len = sizeof(payload) };
+    pid_t tid = -1;
+    struct iovec iov = { .iov_base = &tid, .iov_len = sizeof(tid) };
     char control[CMSG_SPACE(sizeof(int))] = {0};
     struct msghdr message = {
         .msg_iov = &iov,
@@ -160,18 +169,68 @@ static int recv_fd(int socket)
         .msg_control = control,
         .msg_controllen = sizeof(control),
     };
-    if (recvmsg(socket, &message, 0) != (ssize_t)sizeof(payload) ||
+    if (recvmsg(socket, &message, 0) != (ssize_t)sizeof(tid) ||
         (message.msg_flags & MSG_CTRUNC) != 0)
-        return -1;
+        return (struct received_pidfd){ .fd = -1, .tid = -1 };
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
     if (cmsg == NULL || cmsg->cmsg_level != SOL_SOCKET ||
         cmsg->cmsg_type != SCM_RIGHTS || cmsg->cmsg_len != CMSG_LEN(sizeof(int)))
-        return -1;
+        return (struct received_pidfd){ .fd = -1, .tid = -1 };
 
     int fd = -1;
     memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
-    return fd;
+    return (struct received_pidfd){ .fd = fd, .tid = tid };
+}
+
+static void *publish_thread_pidfd(void *arg)
+{
+    int socket = *(int *)arg;
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    int pidfd = (int)syscall(SYS_pidfd_open, tid, PIDFD_THREAD);
+    if (pidfd < 0 || send_pidfd(socket, pidfd, tid) != 0) {
+        fprintf(stderr,
+                "FAIL: publish PIDFD_THREAD tid=%d pidfd=%d errno=%d (%s)\n",
+                tid, pidfd, errno, strerror(errno));
+        if (pidfd >= 0)
+            close(pidfd);
+        return (void *)1;
+    }
+
+    close(pidfd);
+    for (;;)
+        pause();
+}
+
+static int check_thread_pidfd_fdinfo(struct received_pidfd thread_pidfd)
+{
+    if (thread_pidfd.fd < 0 || thread_pidfd.tid <= 0)
+        return -1;
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", thread_pidfd.fd);
+    FILE *stream = fopen(path, "re");
+    if (stream == NULL)
+        return -1;
+
+    pid_t reported_pid = -1;
+    pid_t reported_nspid_outer = -1;
+    pid_t reported_nspid_inner = -1;
+    int pid_result = read_pid_field(stream, "Pid", &reported_pid);
+    int nspid_result = read_nspid(stream, &reported_nspid_outer,
+                                  &reported_nspid_inner);
+    fclose(stream);
+
+    if (pid_result != 0 || reported_pid != thread_pidfd.tid ||
+        nspid_result != 0 || reported_nspid_outer != thread_pidfd.tid ||
+        reported_nspid_inner != 2) {
+        fprintf(stderr,
+                "FAIL: PIDFD_THREAD fdinfo Pid=%d NSpid=%d %d expected=%d %d 2\n",
+                reported_pid, reported_nspid_outer, reported_nspid_inner,
+                thread_pidfd.tid, thread_pidfd.tid);
+        return -1;
+    }
+    return 0;
 }
 
 static int check_transferred_pidfd_in_child_pid_namespace(int socket)
@@ -189,10 +248,10 @@ static int check_transferred_pidfd_in_child_pid_namespace(int socket)
         return 1;
     }
     if (namespace_init == 0) {
-        int pidfd = recv_fd(socket);
-        int result = pidfd >= 0 ? pidfd_is_hidden_in_fdinfo(pidfd) : -1;
-        if (pidfd >= 0)
-            close(pidfd);
+        struct received_pidfd received = recv_pidfd(socket);
+        int result = received.fd >= 0 ? pidfd_is_hidden_in_fdinfo(received.fd) : -1;
+        if (received.fd >= 0)
+            close(received.fd);
         close(socket);
         if (result != 0)
             fprintf(stderr, "FAIL: transferred pidfd is visible in child PID namespace\n");
@@ -228,7 +287,7 @@ static int check_pidfd_transfer_to_child_pid_namespace(int pidfd)
     }
 
     close(sockets[1]);
-    int sent = send_fd(sockets[0], pidfd);
+    int sent = send_pidfd(sockets[0], pidfd, 0);
     close(sockets[0]);
     int status = 0;
     if (waitpid(receiver, &status, 0) != receiver)
@@ -238,6 +297,13 @@ static int check_pidfd_transfer_to_child_pid_namespace(int pidfd)
 
 int main(void)
 {
+    int thread_sockets[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, thread_sockets) != 0) {
+        fprintf(stderr, "FAIL: thread socketpair: errno=%d (%s)\n", errno,
+                strerror(errno));
+        return 1;
+    }
+
     int pidfd = -1;
     struct clone_args args = {
         .flags = CLONE_PIDFD | CLONE_NEWPID,
@@ -247,15 +313,29 @@ int main(void)
 
     pid_t child = (pid_t)syscall(SYS_clone3, &args, sizeof(args));
     if (child == 0) {
+        close(thread_sockets[0]);
+        pthread_t thread;
+        int err = pthread_create(&thread, NULL, publish_thread_pidfd,
+                                 &thread_sockets[1]);
+        if (err != 0) {
+            fprintf(stderr, "FAIL: pthread_create: errno=%d (%s)\n", err,
+                    strerror(err));
+            return 1;
+        }
         for (;;)
             pause();
     }
+    close(thread_sockets[1]);
     if (child < 0 || pidfd < 0) {
         fprintf(stderr,
                 "FAIL: clone3(CLONE_PIDFD | CLONE_NEWPID): errno=%d (%s) pidfd=%d\n",
                 errno, strerror(errno), pidfd);
         return 1;
     }
+
+    struct received_pidfd thread_pidfd = recv_pidfd(thread_sockets[0]);
+    close(thread_sockets[0]);
+    int thread_fdinfo_result = check_thread_pidfd_fdinfo(thread_pidfd);
 
     char path[64];
     snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", pidfd);
@@ -287,8 +367,12 @@ int main(void)
                                    : pidfd_fdinfo_reports_reaped_process(exited_stream);
     if (exited_stream != NULL)
         fclose(exited_stream);
+    if (thread_pidfd.fd >= 0)
+        close(thread_pidfd.fd);
     close(pidfd);
 
+    if (thread_fdinfo_result != 0)
+        return 1;
     if (pid_result != 0 || reported_pid != child) {
         fprintf(stderr, "FAIL: pidfd fdinfo Pid=%d expected=%d\n",
                 reported_pid, child);

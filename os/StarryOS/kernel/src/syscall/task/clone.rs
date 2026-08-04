@@ -338,6 +338,11 @@ impl CloneArgs {
             proc_data
         };
 
+        if flags.contains(CloneFlags::THREAD) {
+            let pid_ns = new_proc_data.nsproxy.lock().pid_ns.clone();
+            axnsproxy::PidNamespace::alloc_pid_chain(&pid_ns, tid as u64);
+        }
+
         let mut scope = Scope::new();
         let current_fd_table = crate::file::current_fd_table();
         if flags.contains(CloneFlags::FILES) {

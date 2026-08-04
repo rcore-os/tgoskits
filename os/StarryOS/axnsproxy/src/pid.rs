@@ -68,7 +68,10 @@ impl PidNamespace {
         local
     }
 
-    /// Allocate a process ID in this namespace and every non-root ancestor.
+    /// Allocate a task ID in this namespace and every non-root ancestor.
+    ///
+    /// PID namespaces assign local IDs to both thread-group leaders and
+    /// non-leader threads.
     pub fn alloc_pid_chain(namespace: &Arc<SpinNoIrq<Self>>, global_tid: u64) {
         let mut current = namespace.clone();
         loop {
