@@ -518,6 +518,34 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
             result["rknn_samples"]["model_sha256"], RKNN_MODEL_SHA256
         )
 
+    def test_rknn_uart_quorum_ignores_larger_invalid_hash_vote(self) -> None:
+        digest = hashlib.sha256(RKNN_CSV.encode()).hexdigest()
+        complete_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-RAW "
+            f"samples=4 sha256={digest}\n"
+        )
+        truncated_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-RAW "
+            f"samples=4 sha256={digest[:-12]}\n"
+        )
+        done_record = "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n"
+        log = (
+            self.rknn_log()
+            .replace(complete_record, truncated_record, 1)
+            .replace(done_record, truncated_record * 2 + done_record)
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            rknn_path=self.write_raw_csv(RKNN_CSV),
+            expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+            expected_rknn_runtime_api="2.3.2",
+        )
+
+        self.assertEqual(result["rknn_samples"]["sha256"], digest)
+
     def test_rknn_boot_quorum_ignores_one_complete_collision_record(self) -> None:
         corrupt_boot_record = (
             "[guest-console:pl011-starry] IVC-STARRY-BOOT "

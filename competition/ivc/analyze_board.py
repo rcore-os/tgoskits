@@ -1109,6 +1109,7 @@ def parse_rknn_samples(
         lines,
         STARRY_RKNN_RAW_PREFIX,
         ("samples", "sha256"),
+        sha256_fields=("sha256",),
     )
     guest_manifest_record = find_record(
         lines,
@@ -1179,7 +1180,10 @@ def parse_rknn_samples(
             raise AnalysisError(f"console RKNN {field} does not match the evidence CSV")
 
     model_record = find_quorum_record(
-        lines, STARRY_RKNN_MODEL_PREFIX, ("sha256",)
+        lines,
+        STARRY_RKNN_MODEL_PREFIX,
+        ("sha256",),
+        sha256_fields=("sha256",),
     )
     model_sha256 = complete_sha256(model_record, STARRY_RKNN_MODEL_PREFIX)
     if model_sha256 != expected_model_sha256:
@@ -1968,6 +1972,7 @@ def find_quorum_record(
     required_fields: tuple[str, ...],
     minimum_votes: int = 2,
     optional_defaults: tuple[tuple[str, str], ...] = (),
+    sha256_fields: tuple[str, ...] = (),
 ) -> dict[str, str]:
     default_values = dict(optional_defaults)
     identity_fields = required_fields + tuple(
@@ -1981,7 +1986,10 @@ def find_quorum_record(
             fields = parse_fields(line, prefix)
         except AnalysisError:
             continue
-        if all(field in fields for field in required_fields):
+        if all(field in fields for field in required_fields) and all(
+            re.fullmatch(r"[0-9a-f]{64}", fields.get(field, "")) is not None
+            for field in sha256_fields
+        ):
             complete_records.append(
                 tuple(
                     fields.get(field, default_values[field])
