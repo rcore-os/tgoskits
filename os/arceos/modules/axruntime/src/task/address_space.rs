@@ -277,6 +277,40 @@ fn enter_lazy_kernel_address_space() {
     install_hardware_root(0);
 }
 
+#[cfg(feature = "uspace")]
+fn commit_user_address_space_activation(
+    cpu_id: usize,
+    previous_raw: usize,
+    previous: Option<&RuntimeAddressSpace>,
+    next_raw: usize,
+    next: &RuntimeAddressSpace,
+    install_root: impl FnOnce(usize),
+    publish_active: impl FnOnce(usize),
+) {
+    let same_address_space = next_raw == previous_raw
+        || previous.is_some_and(|previous| Arc::ptr_eq(&previous.cpu_tracker, &next.cpu_tracker));
+    if same_address_space {
+        debug_assert_eq!(
+            previous.map(|previous| previous.root),
+            Some(next.root),
+            "one address-space CPU tracker cannot describe different roots"
+        );
+        // Match Linux `switch_mm_irqs_off(prev == next)`: retain the CPU's
+        // existing active-mm lease. A shared immutable tracker proves that the
+        // hardware root and TLB footprint are already correct, even when two
+        // scheduler threads own distinct lifetime tokens for that same mm.
+        return;
+    }
+    next.active_cpus.fetch_add(1, Ordering::AcqRel);
+    next.cpu_tracker.activate(cpu_id);
+    install_root(next.root);
+    publish_active(next_raw);
+    if let Some(previous) = previous {
+        previous.cpu_tracker.deactivate(cpu_id);
+        release_active_cpu(previous);
+    }
+}
+
 pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation) -> RuntimeStatus {
     #[cfg(feature = "uspace")]
     {
@@ -299,11 +333,6 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                     Err(status) => return status,
                 };
                 let next_raw = address_space.into_raw();
-                if next_raw == previous_raw {
-                    install_hardware_root(next.root);
-                    return RuntimeStatus::Success;
-                }
-
                 let cpu_id = pin.area().cpu_index().as_usize();
                 let previous = if previous_raw == 0 {
                     None
@@ -314,27 +343,15 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                             .unwrap_or_else(|_| panic!("active address-space handle became stale")),
                     )
                 };
-                let same_address_space = previous
-                    .is_some_and(|previous| Arc::ptr_eq(&previous.cpu_tracker, &next.cpu_tracker));
-                if same_address_space {
-                    debug_assert_eq!(
-                        previous.map(|previous| previous.root),
-                        Some(next.root),
-                        "one address-space CPU tracker cannot describe different roots"
-                    );
-                }
-                next.active_cpus.fetch_add(1, Ordering::AcqRel);
-                if !same_address_space {
-                    next.cpu_tracker.activate(cpu_id);
-                }
-                install_hardware_root(next.root);
-                ACTIVE_ADDRESS_SPACE.write_current(pin, next_raw);
-                if let Some(previous) = previous {
-                    if !same_address_space {
-                        previous.cpu_tracker.deactivate(cpu_id);
-                    }
-                    release_active_cpu(previous);
-                }
+                commit_user_address_space_activation(
+                    cpu_id,
+                    previous_raw,
+                    previous,
+                    next_raw,
+                    next,
+                    install_hardware_root,
+                    |active| ACTIVE_ADDRESS_SPACE.write_current(pin, active),
+                );
                 RuntimeStatus::Success
             })
         }
@@ -591,5 +608,56 @@ mod tests {
             TaskAddressSpace::new_with_task_detach(PhysAddr::from(0x8000), tracker, (), |_| {});
 
         assert!(matches!(token, Err(TaskError::InvalidRuntimeHandle)));
+    }
+
+    #[cfg(feature = "uspace")]
+    #[test]
+    fn same_mm_activation_retains_the_existing_cpu_lease_without_hardware_work() {
+        let tracker = Arc::new(AddressSpaceCpuTracker::new(PhysAddr::from(0x4000)));
+        let previous = TaskAddressSpace::new_with_task_detach(
+            PhysAddr::from(0x4000),
+            Arc::clone(&tracker),
+            (),
+            |_| {},
+        )
+        .unwrap();
+        let next = TaskAddressSpace::new_with_task_detach(
+            PhysAddr::from(0x4000),
+            Arc::clone(&tracker),
+            (),
+            |_| {},
+        )
+        .unwrap();
+        let previous_runtime = runtime_address_space(previous.handle()).unwrap();
+        let next_runtime = runtime_address_space(next.handle()).unwrap();
+        previous_runtime.active_cpus.store(1, Ordering::Release);
+        tracker.activate(0);
+        let hardware_installs = AtomicUsize::new(0);
+        let active_publications = AtomicUsize::new(0);
+
+        commit_user_address_space_activation(
+            0,
+            previous.handle().into_raw(),
+            Some(previous_runtime),
+            next.handle().into_raw(),
+            next_runtime,
+            |_| {
+                hardware_installs.fetch_add(1, Ordering::Relaxed);
+            },
+            |_| {
+                active_publications.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+
+        let previous_leases = previous_runtime.active_cpus.load(Ordering::Acquire);
+        let next_leases = next_runtime.active_cpus.load(Ordering::Acquire);
+        previous_runtime.active_cpus.store(0, Ordering::Release);
+        next_runtime.active_cpus.store(0, Ordering::Release);
+        tracker.deactivate(0);
+
+        assert_eq!(previous_leases, 1);
+        assert_eq!(next_leases, 0);
+        assert_eq!(hardware_installs.load(Ordering::Relaxed), 0);
+        assert_eq!(active_publications.load(Ordering::Relaxed), 0);
     }
 }
