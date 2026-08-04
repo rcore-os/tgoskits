@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -75,6 +76,80 @@ static int wait_for_epoll_waiter(void)
     return nanosleep(&settle, NULL);
 }
 
+static int check_inherited_signalfd_epoll(int epoll_fd, int signal_fd)
+{
+    struct epoll_event event;
+    struct signalfd_siginfo signal_info;
+
+    errno = 0;
+    int wait_result = epoll_wait(epoll_fd, &event, 1, 500);
+    if (wait_result != 0) {
+        printf("FAIL: inherited epoll reported signalfd in child: result=%d errno=%d (%s)\n",
+               wait_result, errno, strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    errno = 0;
+    ssize_t read_length = read(signal_fd, &signal_info, sizeof(signal_info));
+    if (read_length != (ssize_t)sizeof(signal_info)) {
+        printf("FAIL: inherited signalfd did not read child SIGUSR1: result=%zd errno=%d (%s)\n",
+               read_length, errno, strerror(errno));
+        return EXIT_FAILURE;
+    }
+    if (signal_info.ssi_signo != SIGUSR1) {
+        printf("FAIL: inherited signalfd reported signal %u instead of SIGUSR1\n",
+               signal_info.ssi_signo);
+        return EXIT_FAILURE;
+    }
+
+    printf("PASS: inherited signalfd reads child SIGUSR1 without epoll readiness\n");
+    return EXIT_SUCCESS;
+}
+
+static void test_forked_child_signalfd_epoll_isolation(int epoll_fd, int signal_fd)
+{
+    const struct timespec settle = {
+        .tv_sec = 0,
+        .tv_nsec = 100 * 1000 * 1000,
+    };
+    int ready_pipe[2] = {-1, -1};
+
+    expect_true(pipe(ready_pipe) == 0, "create fork readiness pipe");
+    if (ready_pipe[0] < 0 || ready_pipe[1] < 0) {
+        return;
+    }
+
+    fflush(stdout);
+    pid_t child = fork();
+    expect_true(child >= 0, "fork inherited signalfd and epoll");
+    if (child == 0) {
+        const char ready = 'R';
+
+        close(ready_pipe[0]);
+        if (write(ready_pipe[1], &ready, sizeof(ready)) != (ssize_t)sizeof(ready)) {
+            _exit(EXIT_FAILURE);
+        }
+        close(ready_pipe[1]);
+        _exit(check_inherited_signalfd_epoll(epoll_fd, signal_fd));
+    }
+
+    close(ready_pipe[1]);
+    if (child > 0) {
+        char ready = '\0';
+        expect_true(read(ready_pipe[0], &ready, sizeof(ready)) == (ssize_t)sizeof(ready) &&
+                        ready == 'R',
+                    "wait for child epoll_wait setup");
+        expect_true(nanosleep(&settle, NULL) == 0, "let child enter epoll_wait");
+        expect_true(kill(child, SIGUSR1) == 0, "send SIGUSR1 to child process");
+
+        int status = 0;
+        expect_true(waitpid(child, &status, 0) == child, "wait for child process");
+        expect_true(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS,
+                    "inherited epoll ignores child signalfd readiness");
+    }
+    close(ready_pipe[0]);
+}
+
 int main(void)
 {
     printf("=== bugfix-signalfd-epoll-wakeup ===\n");
@@ -125,6 +200,8 @@ int main(void)
         expect_true(context.read_length == (ssize_t)sizeof(context.signal_info) &&
                         context.signal_info.ssi_signo == SIGUSR1,
                     "signalfd reports target thread SIGUSR1");
+
+        test_forked_child_signalfd_epoll_isolation(epoll_fd, signal_fd);
     }
 
     if (epoll_fd >= 0) {
