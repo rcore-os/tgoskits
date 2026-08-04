@@ -111,6 +111,41 @@ RKNN Toolkit2 is vendor software and is not redistributed by this directory.
 SHA-256, upstream files, and license assessment. The repository contains the
 generated project model but not the vendor wheel.
 
+## Run the M4-3 physical Linux RKNN reference
+
+The Linux reference compiles a small C++ runner on the Orange Pi, loads the
+frozen `.rknn`, pins execution to NPU core 0, and records both wall time and
+`RKNN_QUERY_PERF_RUN` device time for every one of the 10,000 vectors. It
+explicitly deploys the repository's Runtime 2.3.2 and rejects an `ldd` result
+that resolves the board's older system Runtime 1.4.0.
+
+Keep the board lease for the complete SSH/rsync/build/run/harvest sequence:
+
+```bash
+export IVC_RKNN_PYTHON=/home/seven_wsl/.cache/tgoskits/ivc-rknn-py310-formal/bin/python
+export ORANGEPI_SSH_TARGET=orangepi@192.168.31.33
+export ORANGEPI_SSH_IDENTITY=/home/seven_wsl/.ssh/orangepi_automation
+
+bash competition/ivc/model/run-thermal-rknn-linux-reference.sh \
+  --result-dir competition/results/orangepi-5-plus/<run-id> \
+  --run-id <run-id> \
+  --require-clean
+```
+
+`--require-clean` checks source provenance before creating the result
+directory or taking the board lease. A remote directory is never reused or
+deleted; choose a new run ID after any failure. The script calls `sync` before
+releasing the lease, preserves partial failures, runs the independent Python
+analyzer, and writes a recursive `checksums.sha256` manifest.
+
+The analyzer requires Runtime API 2.3.2, driver/module 0.9.6, Linux
+`6.1.43-rockchip-rk3588`, writable ext4 rootfs, FP16 compiled tensor
+interfaces with FP32 submission/retrieval, 10,000 positive device-time
+samples, maximum native-f32 error at most `0.002`, maximum actuator delta at
+most 2, and maximum FP16-oracle error at most `0.0005`. This Linux result is a
+hardware reference only; it does not satisfy the separate AxVisor handoff or
+StarryOS guest-ownership gates.
+
 ## Ownership boundary for the physical NPU
 
 The direct StarryOS RKNN example proves the existing user Runtime and
