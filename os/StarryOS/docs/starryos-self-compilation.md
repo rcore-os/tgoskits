@@ -66,7 +66,7 @@ bitmap capacity exceeded: need 3145728 pages but CAP is 1048576
 
 **根因**: 默认 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。8GB 需要 2M pages > 1M CAP。
 
-**修复** (`os/arceos/modules/axalloc/Cargo.toml`):
+**修复** (`memory/ax-alloc/Cargo.toml`):
 ```toml
 # Before
 default = ["tlsf", "ax-allocator/page-alloc-4g"]

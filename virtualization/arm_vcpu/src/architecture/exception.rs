@@ -175,7 +175,7 @@ fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     // Is this a psci call?
     //
     // By convention, a psci call can use either the `hvc` or the `smc` instruction.
-    // NimbOS uses `hvc`, `ArceOS` use `hvc` too when running on QEMU.
+    // ArceOS and other QEMU guests use `hvc` for hypercalls.
     if let Some(result) = handle_psci_call(ctx) {
         return result;
     }

@@ -57,8 +57,8 @@ xtask 在需要 rootfs 时会自动检查并按需下载：
 cargo xtask starry qemu --arch riscv64
 cargo xtask starry qemu --arch aarch64
 
-# Axvisor — 需要先准备 Guest 镜像
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
+# Axvisor — 测试入口会按用例配置准备镜像
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke
 ```
 
 ### 4.2 手动下载 rootfs
@@ -93,7 +93,7 @@ Axvisor 的 rootfs 与 StarryOS 使用相同的统一命令：
 cargo xtask axvisor qemu --arch aarch64
 ```
 
-xtask 会在启动时自动检查并按需下载所需的 rootfs 镜像，无需手动运行 `setup_qemu.sh` 或单独下载。
+xtask 会在启动时自动检查并按需下载所需的 rootfs 镜像，无需额外运行准备脚本或单独下载。
 
 ## 5. 镜像管理机制
 

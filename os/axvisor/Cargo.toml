@@ -13,12 +13,9 @@ categories = ["os", "no-std", "embedded"]
 license = "Apache-2.0"
 include = [
     ".cargo/config.toml",
-    ".github/*/**",
-    "doc/**",
     "src/**",
     "build.rs",
     "configs/**",
-    "scripts/**",
     "xtask/src/**",
     "README.md",
     "LICENSE*",

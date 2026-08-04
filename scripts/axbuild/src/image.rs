@@ -307,7 +307,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "image",
             "pull",
-            "qemu_x86_64_nimbos",
+            "demo-x86_64",
             "--output-dir",
             "tmp/images",
             "--no-extract",
@@ -316,7 +316,7 @@ mod tests {
 
         match cli.command {
             Command::Pull(args) => {
-                assert_eq!(args.image.as_deref(), Some("qemu_x86_64_nimbos"));
+                assert_eq!(args.image.as_deref(), Some("demo-x86_64"));
                 assert_eq!(args.output_dir, Some(PathBuf::from("tmp/images")));
                 assert!(args.no_extract);
             }

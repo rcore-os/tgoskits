@@ -102,7 +102,7 @@ block-beta
 | --- | --- | --- | --- | --- | --- |
 | AArch64 | `aarch64-unknown-none-softfloat` | `virt` | Rust/C/axtest | system/TTY | Guest smoke |
 | RISC-V 64 | `riscv64gc-unknown-none-elf` | `virt` | Rust/C/axtest | system/TTY | Guest smoke，启用 `sstc` |
-| x86_64 | `x86_64-unknown-none` | `q35`、ACPI | Rust/C/axtest | system/TTY | VMX/SVM smoke、NimbOS UEFI 用例 |
+| x86_64 | `x86_64-unknown-none` | `q35`、ACPI | Rust/C/axtest | system/TTY | VMX/SVM smoke |
 | LoongArch64 | `loongarch64-unknown-none-softfloat` | `virt` | Rust/C/axtest | system/TTY | 动态 UEFI smoke，使用 LVZ 容器 |
 
 ### 2.2 快速验证

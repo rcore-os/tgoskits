@@ -122,7 +122,7 @@ flowchart TD
 | `components/axerrno`、`components/kspin`、`components/ax-lazyinit` 这类基础 crate | `cargo test -p <crate>` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` |
 | `os/arceos/modules/*` | `cargo xtask arceos run --package arceos-helloworld --arch riscv64` | 需要功能时换成 `arceos-httpserver --net` 或 `arceos-shell --blk` |
 | `components/starry-*`、`os/StarryOS/kernel/*` | `cargo xtask starry run --arch riscv64 --package starryos` | `cargo starry test qemu --target riscv64` |
-| `virtualization/axvm`、`virtualization/axvm-types`、`virtualization/*_vcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cd os/axvisor && cargo xtask build` | 准备好 Guest 后运行 `./scripts/setup_qemu.sh arceos`，再执行 `cargo xtask qemu --build-config ... --qemu-config ... --vmconfigs ...` |
+| `virtualization/axvm`、`virtualization/axvm-types`、`virtualization/*_vcpu`、`virtualization/axdevice`、`os/axvisor/src/*` | `cargo xtask axvisor build --config os/axvisor/configs/board/qemu-aarch64.toml` | `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` |
 
 ### 4.3 补充统一测试
 
@@ -329,19 +329,16 @@ Axvisor 的组件化架构通常分为三层：复用 crate（如 `axvm`、`axvm
 最小验证路径通常为：
 
 ```bash
-cd os/axvisor
-cargo xtask build
+cargo xtask axvisor build --config os/axvisor/configs/board/qemu-aarch64.toml
 ```
 
-仅在 Guest 镜像、`tmp/rootfs.img` 和 `vmconfigs` 均已就绪后，再继续执行：
+端到端验证使用测试套件维护的镜像、VM 配置和 QEMU 配置：
 
 ```bash
-cd os/axvisor
-./scripts/setup_qemu.sh arceos
-cargo xtask qemu \
-  --build-config configs/board/qemu-aarch64.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo xtask axvisor test qemu \
+  --arch aarch64 \
+  --test-group normal \
+  --test-case smoke
 ```
 
 若修改涉及板级能力，还需同时关注：
