@@ -1,5 +1,6 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::{
+    cell::Cell,
     future::poll_fn,
     sync::atomic::{AtomicU64, Ordering},
     task::{Context, Poll},
@@ -7,7 +8,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::{SpinNoIrq as Mutex, SpinRwLock as RwLock};
-use ax_runtime::hal::irq::IrqId;
 use ax_sync::PiMutex;
 use crab_usb::{
     Device, DeviceInfo, Endpoint, ProbedDevice,
@@ -46,7 +46,6 @@ const USBFS_REFRESH_BATCH_LIMIT: usize = 64;
 pub(super) struct UsbHostState {
     pub(super) device_id: RDriveDeviceId,
     pub(super) bus_num: u8,
-    pub(super) irq: IrqId,
     pub(super) root_hub_speed: Speed,
     pub(super) refresh: HostRefreshState,
     pub(super) next_device_num: u8,
@@ -1385,20 +1384,69 @@ pub(super) fn usbfs_refresh_task(manager: Arc<UsbFsManager>) {
     }
 }
 
-pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
+fn run_host_initialization<C, D>(
+    context: &mut C,
+    enable_framework_action: impl FnOnce(&mut C) -> bool,
+    initialize_controller: impl FnOnce(&mut C) -> bool,
+    bootstrap_events: impl FnOnce(&mut C),
+    probe_devices: impl FnOnce(&mut C) -> Option<D>,
+    rollback_controller: impl Fn(&mut C),
+    rollback_framework_action: impl Fn(&mut C),
+) -> Option<D> {
+    if !enable_framework_action(context) {
+        return None;
+    }
+    if !initialize_controller(context) {
+        rollback_framework_action(context);
+        return None;
+    }
+
+    bootstrap_events(context);
+    let devices = probe_devices(context);
+    if devices.is_none() {
+        rollback_controller(context);
+        rollback_framework_action(context);
+    }
+    devices
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UsbHostInitFailureStage {
+    Reacquire,
+    Lock,
+    FrameworkAction,
+    ControllerInit,
+    InitialProbe,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UsbHostInitFailure {
+    pub(super) device_id: RDriveDeviceId,
+    pub(super) bus_num: u8,
+    pub(super) stage: UsbHostInitFailureStage,
+}
+
+#[derive(Debug)]
+pub(super) struct UsbHostInitReport {
+    pub(super) initialized: usize,
+    pub(super) failures: Vec<UsbHostInitFailure>,
+}
+
+pub(super) fn initialize_hosts(manager: &UsbFsManager) -> UsbHostInitReport {
     let hosts = {
         let state = manager.state.lock();
         state
             .hosts
             .iter()
-            .map(|host| (host.device_id, host.bus_num, host.irq))
+            .map(|host| (host.device_id, host.bus_num))
             .collect::<Vec<_>>()
     };
 
     let mut initialized = 0usize;
     let mut failed_device_ids = Vec::new();
+    let mut failures = Vec::new();
 
-    for (device_id, bus_num, host_irq) in hosts {
+    for (device_id, bus_num) in hosts {
         let host = match rdrive::get::<ax_driver::usb::PlatformUsbHost>(device_id) {
             Ok(host) => host,
             Err(err) => {
@@ -1406,7 +1454,12 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
                     "usbfs: failed to reacquire USB host {:?} for init: {err:?}",
                     device_id
                 );
-                failed_device_ids.push((device_id, host_irq));
+                failed_device_ids.push(device_id);
+                failures.push(UsbHostInitFailure {
+                    device_id,
+                    bus_num,
+                    stage: UsbHostInitFailureStage::Reacquire,
+                });
                 continue;
             }
         };
@@ -1418,50 +1471,65 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
                     "usbfs: failed to lock USB host {:?} for init: {err:?}",
                     device_id
                 );
-                failed_device_ids.push((device_id, host_irq));
+                failed_device_ids.push(device_id);
+                failures.push(UsbHostInitFailure {
+                    device_id,
+                    bus_num,
+                    stage: UsbHostInitFailureStage::Lock,
+                });
                 continue;
             }
         };
 
         info!("usbfs: initializing host on bus {}", bus_num);
-        if let Err(err) = crate::task::future::block_on(guard.host_mut().init()) {
-            warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
-            failed_device_ids.push((device_id, host_irq));
-            continue;
-        }
-
-        // USB transfers complete through the controller interrupt endpoint.
-        // Enable both the device source and framework callback before probing,
-        // because enumeration itself waits for IRQ-driven control transfers.
-        if let Err(err) = guard.enable_irq() {
-            warn!("usbfs: failed to enable host IRQ on bus {bus_num}: {err:?}");
-            failed_device_ids.push((device_id, host_irq));
-            continue;
-        }
-        if !irq::enable_device_irq(device_id) {
-            warn!("usbfs: failed to enable framework IRQ for bus {bus_num}");
-            if let Err(err) = guard.disable_irq() {
-                warn!("usbfs: failed to roll back host IRQ on bus {bus_num}: {err:?}");
-            }
-            failed_device_ids.push((device_id, host_irq));
-            continue;
-        }
-        irq::bootstrap_device(device_id);
-
-        manager.begin_initial_probe(device_id);
-        let devices = match crate::task::future::block_on(guard.host_mut().probe_devices()) {
-            Ok(devices) => devices,
-            Err(err) => {
-                warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
-                if let Err(disable_err) = guard.disable_irq() {
-                    warn!(
-                        "usbfs: failed to disable host IRQ after probe failure on bus {bus_num}: \
-                         {disable_err:?}"
-                    );
+        let failure_stage = Cell::new(None);
+        let devices = run_host_initialization(
+            &mut guard,
+            |_| {
+                let enabled = irq::enable_device_irq(device_id);
+                if !enabled {
+                    warn!("usbfs: failed to enable framework IRQ for bus {bus_num}");
+                    failure_stage.set(Some(UsbHostInitFailureStage::FrameworkAction));
                 }
-                failed_device_ids.push((device_id, host_irq));
-                continue;
-            }
+                enabled
+            },
+            |guard| match crate::task::future::block_on(guard.host_mut().init()) {
+                Ok(()) => true,
+                Err(err) => {
+                    warn!("usbfs: failed to initialize USB host on bus {bus_num}: {err:?}");
+                    failure_stage.set(Some(UsbHostInitFailureStage::ControllerInit));
+                    false
+                }
+            },
+            |_| {
+                irq::bootstrap_device(device_id);
+                manager.begin_initial_probe(device_id);
+            },
+            |guard| match crate::task::future::block_on(guard.host_mut().probe_devices()) {
+                Ok(devices) => Some(devices),
+                Err(err) => {
+                    warn!("usbfs: initial probe failed on bus {bus_num}: {err:?}");
+                    failure_stage.set(Some(UsbHostInitFailureStage::InitialProbe));
+                    None
+                }
+            },
+            |guard| {
+                if let Err(err) = guard.disable_irq() {
+                    warn!("usbfs: failed to roll back host IRQ on bus {bus_num}: {err:?}");
+                }
+            },
+            |_| irq::disable_device(device_id),
+        );
+        let Some(devices) = devices else {
+            failed_device_ids.push(device_id);
+            failures.push(UsbHostInitFailure {
+                device_id,
+                bus_num,
+                stage: failure_stage
+                    .get()
+                    .expect("failed host initialization must publish its stage"),
+            });
+            continue;
         };
         info!("usbfs: host on bus {} initialized", bus_num);
         initialized += 1;
@@ -1471,20 +1539,20 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
 
     if !failed_device_ids.is_empty() {
         let mut state = manager.state.lock();
-        state.hosts.retain(|host| {
-            !failed_device_ids
-                .iter()
-                .any(|(failed_device_id, _)| *failed_device_id == host.device_id)
-        });
+        state
+            .hosts
+            .retain(|host| !failed_device_ids.contains(&host.device_id));
     }
 
-    for (device_id, _) in failed_device_ids {
-        irq::disable_device(device_id);
+    for device_id in failed_device_ids {
         irq::free_device_irq(device_id);
     }
 
     info!("usbfs: {} host(s) ready", initialized);
-    initialized
+    UsbHostInitReport {
+        initialized,
+        failures,
+    }
 }
 
 fn map_transfer_error(err: TransferError) -> AxError {
@@ -1617,7 +1685,6 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
         initialized_hosts.push(UsbHostState {
             device_id,
             bus_num,
-            irq: host_irq,
             root_hub_speed,
             refresh: HostRefreshState::Queued,
             next_device_num: 1,
@@ -1631,9 +1698,59 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
 
 #[cfg(test)]
 mod tests {
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn framework_action_is_ready_before_controller_initialization() {
+        let calls = RefCell::new(Vec::new());
+        let mut context = ();
+
+        let result = run_host_initialization(
+            &mut context,
+            |_| {
+                calls.borrow_mut().push("framework-enable");
+                true
+            },
+            |_| {
+                calls.borrow_mut().push("host-init");
+                true
+            },
+            |_| calls.borrow_mut().push("bootstrap"),
+            |_| {
+                calls.borrow_mut().push("probe");
+                Some(())
+            },
+            |_| calls.borrow_mut().push("controller-disable"),
+            |_| calls.borrow_mut().push("framework-disable"),
+        );
+
+        assert_eq!(result, Some(()));
+        assert_eq!(
+            *calls.borrow(),
+            ["framework-enable", "host-init", "bootstrap", "probe"]
+        );
+    }
+
+    #[test]
+    fn probe_failure_rolls_back_controller_before_framework_action() {
+        let calls = RefCell::new(Vec::new());
+        let mut context = ();
+
+        let result = run_host_initialization(
+            &mut context,
+            |_| true,
+            |_| true,
+            |_| {},
+            |_| None::<()>,
+            |_| calls.borrow_mut().push("controller-disable"),
+            |_| calls.borrow_mut().push("framework-disable"),
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(*calls.borrow(), ["controller-disable", "framework-disable"]);
+    }
 
     #[test]
     fn clear_halt_uses_standard_endpoint_clear_feature_request() {

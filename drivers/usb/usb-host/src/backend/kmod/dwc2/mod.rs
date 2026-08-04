@@ -85,6 +85,11 @@ const GINTSTS_HCHINT: u32 = 1 << 25;
 const GINTSTS_DISCONNINT: u32 = 1 << 29;
 const DWC2_RUNTIME_GINTMSK: u32 = GINTSTS_HCHINT;
 
+fn finish_controller_prepare(regs: Dwc2Registers) {
+    regs.write32(GINTMSK, 0);
+    regs.write32(GINTSTS, u32::MAX);
+}
+
 const GOTGCTL_VBVALOEN: u32 = 1 << 2;
 const GOTGCTL_VBVALOVAL: u32 = 1 << 3;
 const GOTGCTL_AVALOEN: u32 = 1 << 4;
@@ -660,8 +665,7 @@ impl Dwc2 {
             (1u32 << self.channel_count) - 1
         };
         self.regs.write32(HAINTMSK, channel_mask);
-        self.enable_irq()?;
-        self.regs.write32(GINTSTS, u32::MAX);
+        finish_controller_prepare(self.regs);
         self.port_power_on();
         self.kernel.delay(Duration::from_millis(20));
         Ok(())
@@ -770,7 +774,7 @@ impl Dwc2 {
 }
 
 impl CoreOp for Dwc2 {
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, Result<()>> {
         self.init_controller().boxed()
     }
 
@@ -2422,8 +2426,8 @@ mod tests {
         HCINT_NAK, HCINT_STALL, HCINT_XACTERR, HCINT_XFERCOMPL, HCINTMSK, HPRT_CONN_DET,
         HPRT_CONN_STS, HPRT_ENA, HPRT_ENA_CHG, HPRT_OVRCUR_CHG, build_channel_gates,
         build_control_plan, build_gahbcfg_internal_dma, data_stage_retry_policy,
-        fifo_register_plan, hcchar, hcint_fault, hctsiz, packet_count, split_dma_lengths,
-        stage_actual_length, successful_packet_count,
+        fifo_register_plan, finish_controller_prepare, hcchar, hcint_fault, hctsiz, packet_count,
+        split_dma_lengths, stage_actual_length, successful_packet_count,
     };
     use crate::backend::{
         kmod::osal::Kernel,
@@ -2551,6 +2555,16 @@ mod tests {
         crate::backend::kmod::kcore::CoreOp::enable_irq(&mut host).unwrap();
 
         assert_eq!(regs.read32(GINTMSK), GINTSTS_HCHINT);
+    }
+
+    #[test]
+    fn controller_prepare_finishes_with_runtime_irq_masked() {
+        let (_backing, regs) = test_regs();
+        regs.write32(GINTMSK, GINTSTS_HCHINT);
+
+        finish_controller_prepare(regs);
+
+        assert_eq!(regs.read32(GINTMSK), 0);
     }
 
     #[test]

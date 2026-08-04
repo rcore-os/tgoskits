@@ -58,11 +58,33 @@ pub(crate) fn new_usbfs() -> LinuxResult<Option<Filesystem>> {
 
     let manager = Arc::new(UsbFsManager::new(hosts));
     irq::init_globals(manager.clone(), irq_slots);
-    // Polling USB hosts need their event handler active while the initial
-    // probe waits for xHCI command and transfer events.
+    // The fixed event worker must exist before any framework action is armed.
+    // Controller initialization may await command completions delivered by it.
     irq::start_event_pump();
 
-    let initialized_hosts = manager::initialize_hosts(&manager) > 0;
+    let init_result = Arc::new(Mutex::new(None));
+    let worker_result = init_result.clone();
+    let worker_manager = manager.clone();
+    let init_worker = crate::task::spawn_kernel_thread(
+        move || {
+            let report = manager::initialize_hosts(&worker_manager);
+            *worker_result.lock() = Some(report);
+        },
+        "usbfs-init".to_owned(),
+    );
+    let _exit_code = crate::task::join_kernel_thread(init_worker);
+    let report = init_result
+        .lock()
+        .take()
+        .expect("joined USB initialization worker must publish a report");
+    for failure in &report.failures {
+        warn!(
+            "usbfs: host {:?} on bus {} failed during {:?}",
+            failure.device_id, failure.bus_num, failure.stage
+        );
+    }
+
+    let initialized_hosts = report.initialized > 0;
     if !initialized_hosts {
         info!("usbfs: no USB host initialized, skip mounting usbfs");
         return Ok(None);

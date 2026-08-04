@@ -245,12 +245,12 @@ fn hard_irq_event_drain_is_allocation_free_and_bounded() {
 #[test]
 fn exhausted_irq_batch_is_deferred_to_the_service_thread() {
     assert!(
-        IRQ.contains("deferred: AtomicBool"),
-        "each USB IRQ slot needs a preallocated deferred bit"
+        IRQ.contains("const USB_EVENT_DEFERRED: u8"),
+        "each USB IRQ slot needs a preallocated deferred state bit"
     );
     assert!(
-        IRQ.contains("handler_busy: AtomicBool"),
-        "IRQ and deferred task drains must have one atomic owner"
+        IRQ.contains("const USB_EVENT_BUSY: u8"),
+        "IRQ and deferred task drains must have one atomic owner bit"
     );
     assert!(
         IRQ.contains("deferred_notify: IrqNotify"),
@@ -269,11 +269,11 @@ fn exhausted_irq_batch_is_deferred_to_the_service_thread() {
         "hard IRQ exhaustion must directly wake the fixed event worker"
     );
     assert!(
-        IRQ.contains("deferred.store(true, Ordering::Release)"),
+        IRQ.contains("state | USB_EVENT_DEFERRED"),
         "an exhausted or contended handler must publish deferred work"
     );
     assert!(
-        IRQ.contains("deferred.swap(false, Ordering::AcqRel)"),
+        IRQ.contains("fetch_and(!USB_EVENT_DEFERRED, Ordering::AcqRel)"),
         "task context must atomically claim deferred work"
     );
 }
@@ -305,22 +305,19 @@ fn deferred_event_service_has_one_global_budget_and_rotates_hosts() {
 fn failed_initialization_disables_irq_and_polling_slots() {
     let initialize_hosts = function_source(
         MANAGER,
+        "fn run_host_initialization",
         "pub(super) fn initialize_hosts",
-        "fn map_transfer_error",
     );
-    let cleanup = initialize_hosts
-        .split_once("for (device_id, _) in failed_device_ids")
-        .expect("failed hosts must have one explicit endpoint cleanup pass")
-        .1;
 
     assert!(
-        cleanup.contains("irq::disable_device(device_id)")
-            && cleanup.contains("irq::free_device_irq(device_id)"),
-        "failed hosts must disable both IRQ-backed and polling event slots"
+        initialize_hosts.contains("rollback_controller(context);")
+            && initialize_hosts.contains("rollback_framework_action(context);"),
+        "failed hosts must roll back the controller before the framework action"
     );
     assert!(
-        !cleanup.contains("if host_irq.is_some()"),
-        "polling hosts need the same endpoint teardown as IRQ-backed hosts"
+        MANAGER.contains("for device_id in failed_device_ids")
+            && MANAGER.contains("irq::free_device_irq(device_id)"),
+        "quiesced failed hosts must free their registered endpoint"
     );
 }
 

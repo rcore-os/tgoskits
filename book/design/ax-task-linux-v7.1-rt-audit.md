@@ -484,6 +484,10 @@ IRQ 只做 status、ACK/mask、有界 FIFO drain、值入队和 signal。普通 
 
 USB hard IRQ 按 acknowledge/mask、task drain、rearm 三阶段处理。xHCI 的 IMAN/ERDP gate 仍是硬件协议的一部分，不能机械替换成睡眠 mutex。
 
+#1852 的控制器/action 启用次序、xHCI Linux 对照、失败回滚与新调度器 Waker
+适配见 [USB IRQ lifecycle for the task-based scheduler](usb-irq-lifecycle.md)。该问题的
+所有权在 USB controller 与 framework action 生命周期，不修改 `ax-task` 正确性边界。
+
 xHCI host 初始化必须取得真实 IRQ binding；缺少 IRQ 时 probe 直接失败。旧的可选 IRQ、
 永久 1 ms USBFS event ticker 和 PCI interrupt-disable fallback 已删除，不保留 feature
 开关或兼容入口。
@@ -838,7 +842,6 @@ shootdown”的性能边界。
 - #1772：Starry ktest 错误启用 `log/std` 的 feature graph；
 - #1773：Starry target-aware clippy 永久 CI 能力；
 - #1838：Starry USBFS no-std `event-listener` wake transport 可能在长序列 USB audio 中永久自旋；
-- #1852：AArch64 Starry 启动在同步 xHCI host 初始化中持续处理 hwirq 37 但不完成；
 - USB 控制器、USBFS、第三方 connection manager 的外围协议缺陷，除非它们破坏调度交接契约。
 
 ## 验证策略

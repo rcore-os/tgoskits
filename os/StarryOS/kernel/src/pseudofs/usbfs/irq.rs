@@ -52,8 +52,13 @@ struct UsbEventPermit<'a> {
 impl UsbEventGate {
     const fn new() -> Self {
         Self {
-            state: AtomicU8::new(USB_EVENT_ACTIVE),
+            state: AtomicU8::new(0),
         }
+    }
+
+    fn activate(&self) {
+        debug_assert!(self.is_quiescent());
+        self.state.store(USB_EVENT_ACTIVE, Ordering::Release);
     }
 
     fn try_enter(&self) -> UsbEventEntry<'_> {
@@ -190,7 +195,7 @@ pub(super) fn start_event_pump() {
     let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
         return;
     };
-    if !registry.iter_slots().any(|(_, slot)| slot.active()) {
+    if registry.slots.is_empty() {
         return;
     }
     if USBFS_EVENT_WORKER_STARTED
@@ -210,41 +215,80 @@ pub(super) fn free_device_irq(device_id: RDriveDeviceId) {
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
     {
-        slot.event_gate.deactivate();
-        slot.dirty.store(false, Ordering::Release);
         if let Some(handle) = slot.handle.lock().take()
             && let Err(err) = ax_runtime::hal::irq::free_irq(handle)
         {
             warn!("usbfs: failed to free IRQ callback for host {device_id:?}: {err:?}");
         }
-        wait_for_event_handler(slot);
     }
+}
+
+fn enable_actions_transactionally<T: Copy>(
+    handles: impl IntoIterator<Item = Option<T>>,
+    mut enable: impl FnMut(T) -> bool,
+    mut disable: impl FnMut(T),
+) -> bool {
+    let mut enabled = Vec::new();
+    for handle in handles {
+        let Some(handle) = handle else {
+            for handle in enabled.into_iter().rev() {
+                disable(handle);
+            }
+            return false;
+        };
+        if !enable(handle) {
+            for handle in enabled.into_iter().rev() {
+                disable(handle);
+            }
+            return false;
+        }
+        enabled.push(handle);
+    }
+    !enabled.is_empty()
 }
 
 pub(super) fn enable_device_irq(device_id: RDriveDeviceId) -> bool {
     let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
         return false;
     };
-    let mut found = false;
-    let mut all_enabled = true;
-    for (_, slot) in registry
+    let slots = registry
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
-    {
-        found = true;
-        let Some(handle) = *slot.handle.lock() else {
-            all_enabled = false;
-            continue;
-        };
-        if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
-            warn!(
-                "usbfs: failed to enable IRQ callback for host {:?}: {err:?}",
-                device_id
-            );
-            all_enabled = false;
+        .map(|(_, slot)| slot)
+        .collect::<Vec<_>>();
+    for slot in &slots {
+        slot.event_gate.activate();
+    }
+
+    let enabled = enable_actions_transactionally(
+        slots.iter().map(|slot| *slot.handle.lock()),
+        |handle| match ax_runtime::hal::irq::enable_irq(handle) {
+            Ok(()) => true,
+            Err(err) => {
+                warn!(
+                    "usbfs: failed to enable IRQ callback for host {:?}: {err:?}",
+                    device_id
+                );
+                false
+            }
+        },
+        |handle| {
+            if let Err(err) = ax_runtime::hal::irq::disable_irq(handle) {
+                warn!(
+                    "usbfs: failed to roll back IRQ callback for host {:?}: {err:?}",
+                    device_id
+                );
+            }
+        },
+    );
+    if !enabled {
+        for slot in slots {
+            slot.event_gate.deactivate();
+            slot.dirty.store(false, Ordering::Release);
+            wait_for_event_handler(slot);
         }
     }
-    found && all_enabled
+    enabled
 }
 
 pub(super) fn take_dirty_for_device(device_id: RDriveDeviceId) -> bool {
@@ -269,6 +313,11 @@ pub(super) fn disable_device(device_id: RDriveDeviceId) {
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
     {
+        if let Some(handle) = *slot.handle.lock()
+            && let Err(err) = ax_runtime::hal::irq::disable_irq(handle)
+        {
+            warn!("usbfs: failed to disable IRQ callback for host {device_id:?}: {err:?}");
+        }
         slot.event_gate.deactivate();
         slot.dirty.store(false, Ordering::Release);
         wait_for_event_handler(slot);
@@ -474,6 +523,7 @@ mod tests {
     #[test]
     fn shutdown_rejects_new_event_work_and_waits_for_the_active_permit() {
         let gate = UsbEventGate::new();
+        gate.activate();
         let permit = match gate.try_enter() {
             UsbEventEntry::Acquired(permit) => permit,
             _ => panic!("an active USB event gate must issue its first permit"),
@@ -515,6 +565,7 @@ mod tests {
     #[test]
     fn event_permit_is_released_before_device_rearm() {
         let gate = UsbEventGate::new();
+        gate.activate();
         let permit = match gate.try_enter() {
             UsbEventEntry::Acquired(permit) => permit,
             _ => panic!("an active USB event gate must issue its first permit"),
@@ -536,5 +587,19 @@ mod tests {
         );
 
         assert!(rearmed);
+    }
+
+    #[test]
+    fn partial_action_enable_rolls_back_previously_enabled_actions() {
+        let mut disabled = Vec::new();
+
+        let enabled = enable_actions_transactionally(
+            [Some(1usize), Some(2), Some(3)],
+            |handle| handle != 2,
+            |handle| disabled.push(handle),
+        );
+
+        assert!(!enabled);
+        assert_eq!(disabled, [1]);
     }
 }
