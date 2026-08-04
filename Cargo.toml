@@ -95,7 +95,6 @@ members = [
     "os/StarryOS/kernel",
     "os/StarryOS/starryos",
     "os/arceos/api/*",
-    "os/arceos/modules/axalloc",
     "os/arceos/modules/axdisplay",
     "os/arceos/modules/axfs-ng",
     "os/arceos/modules/axhal",
@@ -136,7 +135,7 @@ arm-scmi-rs = { version = "0.1.8", path = "drivers/firmware/arm-scmi-rs" }
 arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5.18", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.5.5", path = "virtualization/arm_vgic" }
-ax-alloc = { version = "0.8.14", path = "os/arceos/modules/axalloc", default-features = false }
+ax-alloc = { version = "0.8.14", path = "memory/ax-alloc", default-features = false }
 ax-allocator = { version = "0.5.6", path = "memory/axallocator" }
 ax-api = { version = "0.7.6", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }

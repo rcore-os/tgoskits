@@ -161,8 +161,8 @@ echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JO
 
 # Patch axalloc to 64G capacity
 echo "[self-compile] Patching page allocator to 64G..."
-if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc/Cargo.toml ]; then
-    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' os/arceos/modules/axalloc/Cargo.toml
+if [ -f memory/ax-alloc/Cargo.toml ] && [ -s memory/ax-alloc/Cargo.toml ]; then
+    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' memory/ax-alloc/Cargo.toml
 fi
 
 export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Cincremental=false -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
@@ -219,9 +219,9 @@ if [ -n "$LINKER_X" ] && [ -f "$LINKER_X" ]; then
 fi
 
 # Inject axalloc Cargo.toml (may have been removed by e2fsck on prior runs)
-HOST_AXALLOC_CARGO="$REPO_ROOT/os/arceos/modules/axalloc/Cargo.toml"
+HOST_AXALLOC_CARGO="$REPO_ROOT/memory/ax-alloc/Cargo.toml"
 if [ -f "$HOST_AXALLOC_CARGO" ]; then
-    sudo cp "$HOST_AXALLOC_CARGO" "$MNT_DIR/opt/starryos/os/arceos/modules/axalloc/Cargo.toml"
+    sudo cp "$HOST_AXALLOC_CARGO" "$MNT_DIR/opt/starryos/memory/ax-alloc/Cargo.toml"
     info "axalloc Cargo.toml injected"
 fi
 

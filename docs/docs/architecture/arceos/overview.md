@@ -106,7 +106,7 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | --- | --- | --- | --- |
 | `ax-runtime` | `modules/axruntime` | 系统主入口、初始化顺序、主核/从核协同 | `ax-hal`、`ax-log`、`ax-alloc`、`ax-mm`、`ax-task`、`ax-driver` |
 | `ax-hal` | `modules/axhal` | CPU、内存、时间、中断、页表、TLS、DTB 等硬件抽象 | 平台 crate、`ax-runtime` |
-| `ax-alloc` | `modules/axalloc` | 全局堆分配、DMA 相关地址转换 | `ax-runtime`、`ax-mm` |
+| `ax-alloc` | `memory/ax-alloc` | 全局堆分配、DMA 相关地址转换 | `ax-runtime`、`ax-mm` |
 | `ax-mm` | `modules/axmm` | 地址空间、页表、映射后端 | `ax-runtime`、上层内存管理逻辑 |
 | `ax-task` | `modules/axtask` | 调度器、任务创建、等待队列、定时器驱动的 sleep | `ax-runtime`、`ax-sync` |
 | `ax-sync` | `modules/axsync` | mutex 等同步原语 | `ax-task`、任意并发模块 |

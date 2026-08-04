@@ -105,7 +105,7 @@ flowchart TB
 | `arceos-yield` | 测试层 | `test-suit/arceos/rust/task/yield` | 1 | 0 | [查看](crates/arceos-yield) |
 | `arm_vcpu` | 组件层 | `virtualization/arm_vcpu` | 6 | 1 | [查看](crates/arm-vcpu) |
 | `arm_vgic` | 组件层 | `virtualization/arm_vgic` | 6 | 2 | [查看](crates/arm-vgic) |
-| `ax-alloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](crates/ax-alloc) |
+| `ax-alloc` | 内存层 | `memory/ax-alloc` | 6 | 11 | [查看](crates/ax-alloc) |
 | `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
