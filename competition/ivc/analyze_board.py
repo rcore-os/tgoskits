@@ -970,10 +970,12 @@ def parse_starry_boot(
     controller_policy: str,
     run_profile: str,
 ) -> dict[str, object]:
-    fields = find_record(
+    fields = find_quorum_record(
         lines,
         STARRY_BOOT_PREFIX,
         ("mode", "backend", "count", "period_ms", "vcpus"),
+        minimum_votes=1,
+        optional_defaults=(("fault_profile", "none"),),
     )
     mode = required(fields, "mode", STARRY_BOOT_PREFIX)
     backend = required(fields, "backend", STARRY_BOOT_PREFIX)
@@ -1965,7 +1967,12 @@ def find_quorum_record(
     prefix: str,
     required_fields: tuple[str, ...],
     minimum_votes: int = 2,
+    optional_defaults: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, str]:
+    default_values = dict(optional_defaults)
+    identity_fields = required_fields + tuple(
+        field for field, _ in optional_defaults
+    )
     complete_records: list[tuple[str, ...]] = []
     for line in lines:
         if not line.startswith(prefix):
@@ -1976,7 +1983,12 @@ def find_quorum_record(
             continue
         if all(field in fields for field in required_fields):
             complete_records.append(
-                tuple(fields[field] for field in required_fields)
+                tuple(
+                    fields.get(field, default_values[field])
+                    if field in default_values
+                    else fields[field]
+                    for field in identity_fields
+                )
             )
 
     if not complete_records:
@@ -1994,7 +2006,7 @@ def find_quorum_record(
         raise ConflictingRecordsError(
             f"conflicting complete {prefix.strip()} record quorums"
         )
-    return dict(zip(required_fields, quorum_records[0], strict=True))
+    return dict(zip(identity_fields, quorum_records[0], strict=True))
 
 
 def find_hash_fragment_record(lines: list[str], prefix: str) -> dict[str, str]:

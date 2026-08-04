@@ -126,6 +126,10 @@ class BoardAnalysisTests(unittest.TestCase):
 
     def rknn_log(self, rknn_csv: str = RKNN_CSV) -> str:
         digest = hashlib.sha256(rknn_csv.encode()).hexdigest()
+        rknn_boot_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-BOOT "
+            "mode=neural backend=rknn-npu count=4 period_ms=100 vcpus=2\n"
+        )
         rknn_record_set = (
             "[guest-console:pl011-starry] IVC-STARRY-RKNN-DEVICE "
             "path=/dev/dri/card1 registered=true core_mask=0\n"
@@ -148,6 +152,7 @@ class BoardAnalysisTests(unittest.TestCase):
         return (
             self.raw_log()
             .replace("backend=native", "backend=rknn-npu")
+            .replace(rknn_boot_record, rknn_boot_record * 3)
             .replace(
                 "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
                 rknn_records
@@ -512,6 +517,28 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertEqual(
             result["rknn_samples"]["model_sha256"], RKNN_MODEL_SHA256
         )
+
+    def test_rknn_boot_quorum_ignores_one_complete_collision_record(self) -> None:
+        corrupt_boot_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-BOOT "
+            "mode=manual backend=rknn-npu count=4 period_ms=100 vcpus=2\n"
+        )
+        log = self.rknn_log().replace(
+            "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+            corrupt_boot_record
+            + "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            rknn_path=self.write_raw_csv(RKNN_CSV),
+            expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+            expected_rknn_runtime_api="2.3.2",
+        )
+
+        self.assertEqual(result["starry"]["mode"], "neural")
 
     def test_rknn_uart_quorum_rejects_a_split_tie(self) -> None:
         corrupt_model_records = (

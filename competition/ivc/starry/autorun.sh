@@ -111,7 +111,17 @@ validate_rknn_evidence() {
 cpu_count=$($BB grep -c '^processor' /proc/cpuinfo 2>/dev/null || true)
 [ "$cpu_count" -ge 2 ] || fatal insufficient-vcpus
 
-echo "IVC-STARRY-BOOT mode=$ivc_mode backend=$ivc_backend fault_profile=${ivc_fault_profile:-none} count=$ivc_count period_ms=$ivc_period_ms vcpus=$cpu_count"
+boot_identity="IVC-STARRY-BOOT mode=$ivc_mode backend=$ivc_backend fault_profile=${ivc_fault_profile:-none} count=$ivc_count period_ms=$ivc_period_ms vcpus=$cpu_count"
+if [ "$ivc_backend" = rknn-npu ]; then
+    boot_identity_copy=0
+    while [ "$boot_identity_copy" -lt 5 ]; do
+        echo "$boot_identity"
+        boot_identity_copy=$((boot_identity_copy + 1))
+        "$BB" sleep 0.025
+    done
+else
+    echo "$boot_identity"
+fi
 
 if [ "$ivc_backend" = rknn-npu ]; then
     [ -c /dev/dri/card1 ] || fatal rknpu-device-not-found

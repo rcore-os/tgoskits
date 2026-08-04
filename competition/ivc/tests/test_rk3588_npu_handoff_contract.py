@@ -451,6 +451,7 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
             "IVC-STARRY-RKNN-DEVICE",
             "IVC-STARRY-RKNN-MODEL",
             "IVC-STARRY-RKNN-RAW",
+            "boot_identity_copy",
             "--rknn-model",
             "--rknn-evidence",
         ):
