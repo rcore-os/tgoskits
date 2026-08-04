@@ -335,6 +335,15 @@ pub fn sys_getsockopt(
         val.cast().get_as_mut()
     }
 
+    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
+        use linux_raw_sys::net::{SO_REUSEADDR, SOL_SOCKET};
+
+        if (level, optname) == (SOL_SOCKET, SO_REUSEADDR) {
+            *get::<i32>(optval, optlen)? = i32::from(socket.reuse_address());
+            return Ok(0);
+        }
+    }
+
     let socket = Socket::from_fd(fd)?;
 
     // SO_TYPE is handled at the kernel level because the socket type is
@@ -486,7 +495,7 @@ pub fn sys_setsockopt(
                 // Linux accepts this generic socket option before netlink
                 // bind. Netlink port and multicast-group binding in Starry
                 // does not use local-address reuse to resolve conflicts.
-                let _ = read_int_sockopt(optval, optlen)?;
+                socket.set_reuse_address(read_int_sockopt(optval, optlen)? != 0);
                 return Ok(0);
             }
             _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),
