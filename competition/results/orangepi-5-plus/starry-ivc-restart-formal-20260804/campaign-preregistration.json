@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-restart-formal-20260804",
+  "status": "frozen-before-first-board-capture",
+  "contract_frozen_at_utc": "2026-08-04T00:09:22Z",
+  "machine_readable_materialized_at_utc": "2026-08-04T00:28:56Z",
+  "materialization_note": "This file is an exact machine-readable transcription of the restart contract frozen in execution-plan-pre-capture.md before the first formal capture. It was materialized after capture for deterministic aggregation; no observed run value was used to change the contract.",
+  "purpose": "Provide repeatable physical cross-guest evidence that an actual AxVisor VM reset causes StarryOS and Zephyr to reject the retired session, enter safe fallback, recover on a new session, and complete control.",
+  "pre_capture_plan": {
+    "path": "execution-plan-pre-capture.md",
+    "sha256": "bffedc3c6a9d478eeb25f43a8b0dac84e7505ebd7017411afaf646049c6972d1",
+    "size_bytes": 20745,
+    "frozen_mtime_utc": "2026-08-04T00:09:22Z"
+  },
+  "platform": {
+    "board_type": "OrangePi-5-Plus",
+    "soc": "RK3588",
+    "dram_bytes": 17179869184,
+    "automation_host": "WSL2 Ubuntu",
+    "serial_device": "/dev/ttyUSB0",
+    "linux_root": "PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6"
+  },
+  "source": {
+    "repository": "tgoskits-rt-ivc",
+    "commit": "6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c",
+    "tree": "5f2ca7a50545cbe8b9232a52949bd7062ef74ac0",
+    "worktree_clean": true,
+    "rust_toolchain": "nightly-2026-07-15",
+    "rustc": "rustc 1.99.0-nightly (da80ed070 2026-07-14)",
+    "cargo": "cargo 1.99.0-nightly (59800466c 2026-07-07)",
+    "zephyr": "v4.3.0",
+    "west": "v1.5.0",
+    "zephyr_gcc": "aarch64-linux-gnu-gcc 11.4.0",
+    "cmake": "4.1.0",
+    "python": "3.13.7",
+    "e2fsck": "1.46.5"
+  },
+  "capture_contract": {
+    "runner_profile": "fault-restart",
+    "analyzer_profile": "restart",
+    "repeat_count": 3,
+    "execution_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "controller_policy": "neural",
+    "inference_backend": "native",
+    "controller_fault_profile": "restart",
+    "command_count": 100,
+    "pre_reset_command_count": 20,
+    "period_ms": 100,
+    "expected_retransmissions": 0,
+    "expected_recoveries": 0,
+    "expected_fresh_applications": 120,
+    "expected_duplicate_receives": 1,
+    "expected_duplicate_sequences": [
+      1
+    ],
+    "expected_status_frames": 122,
+    "expected_ack_frames": 122,
+    "expected_error_frames": 1,
+    "expected_protocol_errors": 1,
+    "expected_session_resets": 1,
+    "expected_session_rejections": 1,
+    "expected_safe_fallbacks": 1,
+    "expected_endpoint_recoveries": 1,
+    "expected_stale_status_frames": 1,
+    "expected_stale_ack_frames": 1,
+    "expected_retired_control_rejections": 1,
+    "restart_vm_id": 1,
+    "restart_host_cpu": 3,
+    "restart_delay_ms": 20000,
+    "restart_ready_timeout_ms": 30000,
+    "previous_session": 286331153,
+    "current_session": 572662306,
+    "actual_vm_reset_required": true,
+    "result_snapshot_path": "/home/orangepi/ivc-r",
+    "vcpu_placement": {
+      "starry_vcpu_masks": [
+        "0x2",
+        "0x4"
+      ],
+      "zephyr_vcpu_masks": [
+        "0x1"
+      ],
+      "restart_host_cpu": 3,
+      "dedicated_cpus": true
+    }
+  },
+  "artifacts": {
+    "starryos_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "bytes": 13639728,
+      "sha256": "590a901a2ed51d9a2d5849ec152576fe822b81f7ab27cfbb2a76a343905ab2fe"
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "bytes": 1766,
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd"
+    },
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-restart.img",
+      "bytes": 67108864,
+      "sha256": "9e092ad3e0ec4c9842732f8ff0b9475005f1fe2c80cf35d329d9e77b6e7e9ca4",
+      "filesystem_state": "clean",
+      "embedded_profile": "neural/native/restart, post-reset count=100, period_ms=100"
+    },
+    "controller": {
+      "path": "tmp/competition/ivc/starry/target/aarch64-unknown-linux-musl/release/ivcproto",
+      "bytes": 805816,
+      "sha256": "fbb1c214b6c771ef415c5768b2e0675ab8e53339f126eef0aa9808fd41987501",
+      "embedded_copy_sha256": "fbb1c214b6c771ef415c5768b2e0675ab8e53339f126eef0aa9808fd41987501"
+    },
+    "zephyr_bin": {
+      "path": "competition/ivc/zephyr/build-board-restart/zephyr/zephyr.bin",
+      "bytes": 121568,
+      "sha256": "400421a6c80862cbd64d9bc6472c77b622dcd5d3f48d51f6262ba1a4d5e13abb"
+    },
+    "zephyr_elf": {
+      "path": "competition/ivc/zephyr/build-board-restart/zephyr/zephyr.elf",
+      "bytes": 2191000,
+      "sha256": "478b778d55c0aad0982d26b9ec47a219930653b2d958b9e2aea5c2f410350caa"
+    },
+    "model_source": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "bytes": 12259,
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff"
+    }
+  },
+  "frozen_file_hashes": {
+    "competition/ivc/run-orangepi-5-plus.sh": "1bc4513b0b4ebbd90c48f1a030361c2a5deb1332742f03c7eb03201700f4ab23",
+    "competition/ivc/analyze_board.py": "241f3878a3e2316143392c0bb07c87ea893d01c7155396f14c753944771d7ec1",
+    "competition/ivc/write_board_metadata.py": "c3c63a3c3e1a1bba29792a60315530f69a1544f11f2815b6959fcf04c59092fd",
+    "competition/ivc/orangepi/board-runner.sh": "fb3bc1ad4d0c1d7d05d8d6a433beffd2626fc32463175d66f86b617802ace210",
+    "competition/ivc/orangepi/restore-linux.sh": "8a37dbde09b0131a8b913b6cb9c10460cdfb1a25ccc6c71c3510222866253fc1",
+    "competition/ivc/stage-orangepi-5-plus.sh": "5fbda2e187e5d7736875f529e4b7e785d9dec8bc3d0decf08b3a75d6990bad2b",
+    "competition/ivc/starry/build.sh": "6f51b115a51a8a3824b11c42320b38cf7a8fce2fc2a4199026110fa891ee883a",
+    "competition/ivc/starry/build-rootfs.sh": "690ff338b5941e2c5320d7418cc23c78b5a6769876be34925f497360d29ff286",
+    "competition/ivc/starry/autorun.sh": "1b873bf0bef96cdea104e908eb4242ae00996825fed3c8df4cd10fab66f99f91",
+    "competition/ivc/config/axvisor-orangepi-5-plus-restart.toml": "fbb732ea5d88ffef87bb12ac47c25fcc245da48a48bcc0ae7095271ee7d6a4b8",
+    "competition/ivc/config/board-orangepi-5-plus-restart.toml": "570665c10b337cb27d825aadb071c6798733d3ed0b1317b16cd1ad59475d2d58",
+    "competition/ivc/config/orangepi-5-plus-starry-smp2-restart.toml": "69826a632ec9d807ce5c51996c3026f3aa5e13cc2dba3415906b30616291d504",
+    "competition/ivc/config/orangepi-5-plus-zephyr-restart.toml": "8b69d9ebaa1daed625f34dbde9e58768230a1c38dd347eda449691df6c8c54c2",
+    "competition/ivc/zephyr/board-restart.conf": "4d6edd9934d507e2c5677993e20130630a1b48fa2e10bfad5d20871a312ddb32",
+    "competition/ivc/zephyr/src/main.c": "4945fb598ba6a3ef5f20a88013f30e1ab578acdfeed152a6c6111a9f468fbde7",
+    "competition/ivc/zephyr/src/protocol.c": "ccad7ff502fc3b4cbcf1985aae244d63736eeb215602812736799a4df067bf0e",
+    "competition/ivc/zephyr/src/protocol.h": "0ff297e9299503e466443b6ec8178d4a4289e49737657f520fd1dcd7d28c1563",
+    "tools/ivcproto/src/bin/ivcproto.rs": "8cf06838a83a548c1b0e4f29da7b18650afcc3b0fd677222de6c71c80ec0f3b2",
+    "tools/ivcproto/src/neural.rs": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff"
+  },
+  "validity_gates": {
+    "each_run": [
+      "metadata records the frozen clean source commit and exact input hashes",
+      "AxVisor reports an actual VM 1 reset on host CPU 3 with reset_count=1",
+      "StarryOS produces 20 pre-reset and 100 post-reset contiguous raw samples",
+      "Zephyr reports exactly 120 fresh applications, duplicate sequence 1 once, 122 STATUS, 122 ACK, and one protocol ERROR",
+      "session reset, retired-session rejection, safe fallback, endpoint recovery, stale STATUS, stale ACK, and retired CONTROL rejection each occur exactly once",
+      "UART SHA fragments are accepted only when they are compatible prefixes of the independently harvested complete digest",
+      "StarryOS completion, Zephyr poweroff, AxVisor snapshot sync, clean snapshot fsck, and BOARD_LINUX_RESTORED markers are present",
+      "console contains no fatal, panic, unhandled synchronous exception, VM run error, or stale result-image marker"
+    ],
+    "campaign": [
+      "all three preregistered runs pass the strict analyzer and aggregation gates",
+      "all result manifests verify and gzip/plain twins reproduce byte-for-byte",
+      "every run uses the same frozen source, board identity, and rootfs hash",
+      "the final board Linux root is verified ext4 read-write under a board lease"
+    ]
+  },
+  "statistics_policy": {
+    "protocol_counts": "exact equality gates; no tolerance",
+    "latency_summary": [
+      "median",
+      "IQR",
+      "single-run maximum",
+      "worst-of-runs"
+    ],
+    "latency_claim": "descriptive restart recovery overhead only; this campaign is not the preregistered RT isolation comparison",
+    "deadline_misses": "report both pre-reset and post-reset observations; not a substitute for the exact restart protocol gate"
+  },
+  "evidence_policy": {
+    "root": "competition/results/orangepi-5-plus/starry-ivc-restart-formal-20260804",
+    "result_root": "capture-001/fault-restart",
+    "stage_frozen_artifacts_before_capture": true,
+    "restore_linux_after_every_run": true,
+    "retain_failed_attempts": true,
+    "failed_attempts_are_diagnostic_only": true,
+    "never_relabel_debug_or_smoke_data_as_formal": true,
+    "never_modify_raw_or_per_run_summary_after_capture": true,
+    "post_capture_aggregation_changes": "append an amendment JSON and preserve the capture bytes"
+  }
+}

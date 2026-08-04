@@ -1,0 +1,89 @@
+{
+  "board": {
+    "cpu_temp_milli_c": 45307,
+    "hostname": "orangepi5plus",
+    "id": "bf61f4d4a1d994ad",
+    "type": "OrangePi-5-Plus"
+  },
+  "inputs": {
+    "board_config": {
+      "path": "competition/ivc/config/board-orangepi-5-plus-restart.toml",
+      "sha256": "570665c10b337cb27d825aadb071c6798733d3ed0b1317b16cd1ad59475d2d58",
+      "size_bytes": 621
+    },
+    "build_config": {
+      "path": "competition/ivc/config/axvisor-orangepi-5-plus-restart.toml",
+      "sha256": "fbb732ea5d88ffef87bb12ac47c25fcc245da48a48bcc0ae7095271ee7d6a4b8",
+      "size_bytes": 401
+    },
+    "rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-restart.img",
+      "sha256": "9e092ad3e0ec4c9842732f8ff0b9475005f1fe2c80cf35d329d9e77b6e7e9ca4",
+      "size_bytes": 67108864
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "size_bytes": 1766
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "sha256": "590a901a2ed51d9a2d5849ec152576fe822b81f7ab27cfbb2a76a343905ab2fe",
+      "size_bytes": 13639728
+    }
+  },
+  "model": {
+    "artifact": {
+      "path": "tools/ivcproto/src/neural.rs",
+      "sha256": "6e03857a24f81220ef81e8ceade6b457e77adaa4384ffe45ce0c1f9087ba4dff",
+      "size_bytes": 12259
+    },
+    "backend": "native",
+    "id": "thermal-4x6x1-v1",
+    "runtime_version": "native"
+  },
+  "outputs": {
+    "console_log": {
+      "path": "/tmp/starry-ivc-restart-formal-6adf49e-20260804/fault-restart/run-001/console.log.gz",
+      "sha256": "6147defc3b4ce4a282123a25001f5dd8870c83df16d287b37a91e531bf5f953a",
+      "size_bytes": 17098
+    },
+    "raw_csv": {
+      "path": "/tmp/starry-ivc-restart-formal-6adf49e-20260804/fault-restart/run-001/raw.csv.gz",
+      "sha256": "65c4c84f9c29e7aae493ed2847433f98c61c02f84c366e7b973b5f0bea90e394",
+      "size_bytes": 3176
+    },
+    "summary": {
+      "path": "/tmp/starry-ivc-restart-formal-6adf49e-20260804/fault-restart/run-001/summary.json",
+      "sha256": "49247aef6ba1baf382e442889d8b0cf2317fedfa71fb11a529fffe36aa96d05c",
+      "size_bytes": 4194
+    }
+  },
+  "result": {
+    "controller_policy": "neural",
+    "deadline_misses": 0,
+    "dropped_samples": 0,
+    "sample_count": 100,
+    "successful_marker": true,
+    "validated": true
+  },
+  "run": {
+    "board_type": "OrangePi-5-Plus",
+    "execution_order": 1,
+    "exit_status": 0,
+    "finished_at": "2026-08-04T00:14:20Z",
+    "profile": "fault-restart",
+    "repeat_count": 3,
+    "run_id": "run-001",
+    "run_number": 1,
+    "started_at": "2026-08-04T00:10:31Z"
+  },
+  "schema_version": 1,
+  "source": {
+    "branch": null,
+    "commit": "6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c",
+    "dirty": false,
+    "tracked_change_count": 0,
+    "untracked_file_count": 0
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "campaign_id": "starry-ivc-restart-formal-20260804",
+  "amendment": 1,
+  "status": "frozen-before-post-capture-aggregation",
+  "created_at_utc": "2026-08-04T00:30:51Z",
+  "preregistration_sha256": "6ea0dcb7774f30400ab606d309212f8e72a28ee89e544bcdb9b25a0e39df4530",
+  "reason": "The three-run capture completed without changing its frozen contract. Post-capture inspection found that CH340 preserved a 12-hex pre-reset UART SHA fragment in each run while the snapshot manifest, harvest record, and raw bytes independently agreed on the complete digest. The strict per-run analyzer accepted this bounded condition, but the campaign aggregator still required a complete UART digest. This amendment freezes the regression-tested aggregator correction before it is applied to the retained capture bytes.",
+  "scope": {
+    "stage": "post-capture validation and descriptive aggregation",
+    "capture_started_at_utc": "2026-08-04T00:10:31Z",
+    "capture_finished_at_utc": "2026-08-04T00:22:00Z",
+    "capture_data_modified": false,
+    "per_run_summaries_modified": false,
+    "formal_result_root": "capture-001/fault-restart",
+    "formal_run_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "capture_source_commit": "6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c"
+  },
+  "source": {
+    "commit": "6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c",
+    "tree": "5f2ca7a50545cbe8b9232a52949bd7062ef74ac0",
+    "worktree_clean": true
+  },
+  "artifacts": {
+    "starry_rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-restart.img",
+      "bytes": 67108864,
+      "sha256": "9e092ad3e0ec4c9842732f8ff0b9475005f1fe2c80cf35d329d9e77b6e7e9ca4"
+    }
+  },
+  "continued_capture_contract": {
+    "result_root": "capture-001",
+    "runner_profile": "fault-restart",
+    "analyzer_profile": "restart",
+    "repeat_count": 3,
+    "execution_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "post_capture_only": true,
+    "all_original_semantic_gates_apply": true,
+    "all_capture_bytes_remain_immutable": true
+  },
+  "aggregation_implementation": {
+    "commit": "7c1ba13af577d82fe89b912bde868604763618f0",
+    "tree": "4c35432b9cb6854b04d20143a8112865987d384f",
+    "worktree_clean_except_evidence_and_plan": true,
+    "changed_files": {
+      "competition/ivc/aggregate_board_campaign.py": "3852967f322ab33c6375f258be4a324a202c5c9edf039ed99c3f11a824bda1dc",
+      "competition/ivc/tests/test_aggregate_board_campaign.py": "dec2292f0d4d1d67f528e57398e1ebea8cdd4d60403be708ae73a55031bde038"
+    },
+    "integrity_rule": "uart_sha256 must be 1 to 64 lowercase hexadecimal characters, must prefix-match the independently calculated complete raw digest, and uart_sha256_complete must agree with its actual length",
+    "regression_first": "The compatible 12-hex-prefix campaign test failed on the old implementation with uart_sha256 must equal the full digest, then passed after the correction.",
+    "negative_gate": "A valid hexadecimal fragment whose first differing nibble conflicts with the raw digest is still rejected.",
+    "validation": {
+      "new_targeted_tests": "2 passed",
+      "aggregate_campaign_tests": "12 passed",
+      "complete_ivc_python_tests": "112 passed",
+      "diff_check": "passed"
+    }
+  },
+  "post_capture_observations": {
+    "pre_reset_deadline_misses_by_run": [
+      1,
+      1,
+      1
+    ],
+    "post_reset_deadline_misses_by_run": [
+      0,
+      0,
+      0
+    ],
+    "interpretation": "Reported as an unfavorable descriptive observation. Deadline counts were not substituted for, or used to relax, the exact restart recovery protocol contract."
+  }
+}

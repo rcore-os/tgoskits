@@ -1,0 +1,140 @@
+{
+  "board": {
+    "board_id": "bf61f4d4a1d994ad",
+    "cpu_temp_milli_c": 45307,
+    "hostname": "orangepi5plus"
+  },
+  "controller": {
+    "acknowledged": 100,
+    "deadline_misses": 0,
+    "errors": 0,
+    "full_loop_max_us": 25014,
+    "full_loop_p50_us": 5065,
+    "full_loop_p95_us": 7122,
+    "full_loop_p99_us": 8885,
+    "iae_milli_c_s": 185638.1,
+    "max_overshoot_milli_c": 0,
+    "policy": "neural",
+    "pre_send_max_us": 348,
+    "pre_send_p50_us": 17,
+    "pre_send_p95_us": 17,
+    "pre_send_p99_us": 36,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 20435.735065565907,
+    "sent": 100,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.994982316958053,
+    "timeouts": 0,
+    "transport_max_us": 24666,
+    "transport_p50_us": 5048,
+    "transport_p95_us": 7105,
+    "transport_p99_us": 8869
+  },
+  "guest": "starryos",
+  "lifecycle": {
+    "block_snapshot": {
+      "backing_index": 0,
+      "filesystem_check": "clean",
+      "image_bytes": 67108864,
+      "image_path": "/home/orangepi/ivc-r",
+      "image_sha256": "c344e0a2a25cd99db4b8a82206fd867932b1083f92b0232ce8442a1f8654542b",
+      "vm_id": 1
+    },
+    "board_linux_restored": true,
+    "host_filesystem_synced": true,
+    "rtos_powered_off": true,
+    "starry_done": true,
+    "volatile_block_snapshotted": true
+  },
+  "network": {
+    "iface": "eth0",
+    "ip": "10.0.0.1/24",
+    "mac": "unknown",
+    "peer": "10.0.0.2",
+    "segment": 1,
+    "udp_port": 5500
+  },
+  "platform": "orangepi-5-plus",
+  "pre_reset_raw_samples": {
+    "artifact_sha256": "774a593c68df3231d8c8d89a674529bb6e9020597ea85004914ac5454354dbcd",
+    "deadline_misses": 1,
+    "dropped_samples": 0,
+    "full_loop_max_us": 126624,
+    "full_loop_p99_us": 5455,
+    "guest_manifest_sha256": "2a6f49fb0c2ffc80f3cefd4a153d83430d098caa02836263e2c715264b58fe5c",
+    "path": "/tmp/starry-ivc-restart-formal-6adf49e-20260804/fault-restart/run-001/raw-before-reset.csv.gz",
+    "sample_count": 20,
+    "sha256": "2a6f49fb0c2ffc80f3cefd4a153d83430d098caa02836263e2c715264b58fe5c",
+    "uart_sha256": "2a6f49fb0c2f",
+    "uart_sha256_complete": false
+  },
+  "profile": "restart",
+  "raw_samples": {
+    "artifact_sha256": "65c4c84f9c29e7aae493ed2847433f98c61c02f84c366e7b973b5f0bea90e394",
+    "deadline_misses": 0,
+    "dropped_samples": 0,
+    "guest_manifest_sha256": "da0d3b738b8d0a3fd691c14e4b5e99c7a8966c116e70d39794e673f2176fee8c",
+    "path": "/tmp/starry-ivc-restart-formal-6adf49e-20260804/fault-restart/run-001/raw.csv.gz",
+    "sample_count": 100,
+    "sha256": "da0d3b738b8d0a3fd691c14e4b5e99c7a8966c116e70d39794e673f2176fee8c",
+    "uart_sha256": "da0d3b738b8d0a3fd691c14e4b5e99c7a8966c116e70d39794e673f2176fee8c",
+    "uart_sha256_complete": true
+  },
+  "restart_recovery": {
+    "actual_vm_reset": true,
+    "host_cpu": 3,
+    "new_session": 572662306,
+    "observed_delay_ms": 20000,
+    "old_session": 286331153,
+    "post_reset_samples": 100,
+    "pre_reset_samples": 20,
+    "ready_wait_ms": 10,
+    "recovered": true,
+    "requested_delay_ms": 20000,
+    "reset_count": 1,
+    "retired_control_rejected": 1,
+    "safe_fallback_observed": true,
+    "stale_ack_ignored": 1,
+    "stale_status_ignored": 1,
+    "vm_id": 1
+  },
+  "rtos": {
+    "accepted": 120,
+    "acks_dropped": 0,
+    "acks_sent": 122,
+    "applied": 120,
+    "duplicate_probe": {
+      "ack_received": true,
+      "sequence": 1,
+      "status_received": true
+    },
+    "duplicate_sequences": [
+      1
+    ],
+    "duplicates": 1,
+    "errors_sent": 1,
+    "profile": "restart",
+    "protocol_errors": 1,
+    "recoveries": 1,
+    "safe_fallbacks": 1,
+    "session_rejections": 1,
+    "session_resets": 1,
+    "stale_acks_sent": 1,
+    "stale_status_sent": 1,
+    "status_sent": 122
+  },
+  "schema_version": 2,
+  "source_log": {
+    "content_sha256": "7c6f96cf1a17fba3aa993f74e2d05a2d2ebad0de3e67dc52dcfac5b138b539a1",
+    "path": "/tmp/starry-ivc-restart-formal-6adf49e-20260804/fault-restart/run-001/console.log.gz",
+    "sha256": "6147defc3b4ce4a282123a25001f5dd8870c83df16d287b37a91e531bf5f953a"
+  },
+  "starry": {
+    "count": 100,
+    "fault_profile": "restart",
+    "mode": "neural",
+    "period_ms": 100,
+    "vcpus": 2
+  }
+}

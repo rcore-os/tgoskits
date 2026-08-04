@@ -1,0 +1,594 @@
+{
+  "assessment": {
+    "all_lifecycle_gates_met": true,
+    "all_manifests_verified": true,
+    "all_raw_and_gzip_twins_verified": true,
+    "all_runs_validated": true,
+    "campaign_gate_met": true,
+    "exact_fault_contract_met": true,
+    "final_board_linux_root_rw": true,
+    "reason": "all three preregistered physical guest-restart runs and the final Linux restoration gate passed",
+    "registered_run_count_met": true,
+    "rt_isolation_claim": false
+  },
+  "board_temperature_milli_c": {
+    "iqr": 0,
+    "median": 45307,
+    "q1": 45307,
+    "q3": 45307,
+    "single_run_maximum": 45307,
+    "single_run_minimum": 45307,
+    "values_by_run": [
+      45307,
+      45307,
+      45307
+    ],
+    "worst_direction": "maximum",
+    "worst_of_runs": 45307
+  },
+  "campaign": {
+    "board_id": "bf61f4d4a1d994ad",
+    "board_type": "OrangePi-5-Plus",
+    "campaign_id": "starry-ivc-restart-formal-20260804",
+    "profile": "fault-restart",
+    "repeat_count": 3,
+    "result_root": "capture-001/fault-restart",
+    "rootfs_sha256": "9e092ad3e0ec4c9842732f8ff0b9475005f1fe2c80cf35d329d9e77b6e7e9ca4",
+    "run_order": [
+      "run-001",
+      "run-002",
+      "run-003"
+    ],
+    "source_commit": "6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c"
+  },
+  "descriptive_metrics": {
+    "deadline_misses": {
+      "iqr": 0,
+      "median": 0,
+      "q1": 0,
+      "q3": 0,
+      "single_run_maximum": 0,
+      "single_run_minimum": 0,
+      "values_by_run": [
+        0,
+        0,
+        0
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 0
+    },
+    "iae_milli_c_s": {
+      "iqr": 0,
+      "median": 185638.1,
+      "q1": 185638.1,
+      "q3": 185638.1,
+      "single_run_maximum": 185638.1,
+      "single_run_minimum": 185638.1,
+      "values_by_run": [
+        185638.1,
+        185638.1,
+        185638.1
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 185638.1
+    },
+    "max_overshoot_milli_c": {
+      "iqr": 0,
+      "median": 0,
+      "q1": 0,
+      "q3": 0,
+      "single_run_maximum": 0,
+      "single_run_minimum": 0,
+      "values_by_run": [
+        0,
+        0,
+        0
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 0
+    },
+    "rmse_milli_c": {
+      "iqr": 0,
+      "median": 20435.735066,
+      "q1": 20435.735066,
+      "q3": 20435.735066,
+      "single_run_maximum": 20435.735065565907,
+      "single_run_minimum": 20435.735065565907,
+      "values_by_run": [
+        20435.735065565907,
+        20435.735065565907,
+        20435.735065565907
+      ],
+      "worst_direction": "maximum",
+      "worst_of_runs": 20435.735065565907
+    },
+    "throughput_msg_s": {
+      "iqr": 5e-05,
+      "median": 9.994909,
+      "q1": 9.994895,
+      "q3": 9.994945,
+      "single_run_maximum": 9.994982316958053,
+      "single_run_minimum": 9.994881409217705,
+      "values_by_run": [
+        9.994982316958053,
+        9.994908654106801,
+        9.994881409217705
+      ],
+      "worst_direction": "minimum",
+      "worst_of_runs": 9.994881409217705
+    }
+  },
+  "evidence": {
+    "amendment_chain": [
+      {
+        "amendment_id": "campaign-amendment-001",
+        "path": "campaign-amendment-001-post-capture-aggregation.json",
+        "sha256": "8336e788261c66116f38556a2720bff544fa6cbbb0c8fab530a4185c2cf46701",
+        "size_bytes": 3658
+      }
+    ],
+    "final_board_linux_root_check": {
+      "path": "final-board-linux-root-check.json",
+      "sha256": "fbecc79e63a25e1791e8fe71ae0295fd890f3fd4665599b8cfa9e09a703fc584",
+      "size_bytes": 1002
+    },
+    "preregistration": {
+      "path": "campaign-preregistration.json",
+      "sha256": "6ea0dcb7774f30400ab606d309212f8e72a28ee89e544bcdb9b25a0e39df4530",
+      "size_bytes": 9541
+    },
+    "runs": [
+      {
+        "console": {
+          "content_sha256": "7c6f96cf1a17fba3aa993f74e2d05a2d2ebad0de3e67dc52dcfac5b138b539a1",
+          "gzip_sha256": "6147defc3b4ce4a282123a25001f5dd8870c83df16d287b37a91e531bf5f953a"
+        },
+        "controller": {
+          "deadline_misses": 0,
+          "full_loop_max_us": 25014,
+          "full_loop_p50_us": 5065,
+          "full_loop_p95_us": 7122,
+          "full_loop_p99_us": 8885,
+          "iae_milli_c_s": 185638.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 348,
+          "pre_send_p50_us": 17,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 36,
+          "rmse_milli_c": 20435.735065565907,
+          "throughput_msg_s": 9.994982316958053,
+          "transport_max_us": 24666,
+          "transport_p50_us": 5048,
+          "transport_p95_us": 7105,
+          "transport_p99_us": 8869
+        },
+        "cpu_temp_milli_c": 45307,
+        "execution_order": 1,
+        "fault_counts": {
+          "duplicate_receives": 1,
+          "error_frames": 1,
+          "protocol_errors": 1,
+          "recoveries": 0,
+          "retransmissions": 0
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "53d2bdfdb7b82afc3694f803455c2a3e56505191ea633685b96d59b5fa99aa7e",
+          "size_bytes": 646
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "85192283b3382544c37bf3e72fcbb01eeb2268d7dd5cb8efee3c0c9f6cd965b2",
+          "size_bytes": 2886
+        },
+        "pre_reset_raw": {
+          "content_sha256": "2a6f49fb0c2ffc80f3cefd4a153d83430d098caa02836263e2c715264b58fe5c",
+          "gzip_sha256": "774a593c68df3231d8c8d89a674529bb6e9020597ea85004914ac5454354dbcd",
+          "sample_count": 20
+        },
+        "raw": {
+          "content_sha256": "da0d3b738b8d0a3fd691c14e4b5e99c7a8966c116e70d39794e673f2176fee8c",
+          "gzip_sha256": "65c4c84f9c29e7aae493ed2847433f98c61c02f84c366e7b973b5f0bea90e394",
+          "sample_count": 100
+        },
+        "restart_recovery": {
+          "actual_vm_reset": true,
+          "host_cpu": 3,
+          "new_session": 572662306,
+          "observed_delay_ms": 20000,
+          "old_session": 286331153,
+          "post_reset_samples": 100,
+          "pre_reset_samples": 20,
+          "ready_wait_ms": 10,
+          "recovered": true,
+          "requested_delay_ms": 20000,
+          "reset_count": 1,
+          "retired_control_rejected": 1,
+          "safe_fallback_observed": true,
+          "stale_ack_ignored": 1,
+          "stale_status_ignored": 1,
+          "vm_id": 1
+        },
+        "run_id": "run-001",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "49247aef6ba1baf382e442889d8b0cf2317fedfa71fb11a529fffe36aa96d05c",
+          "size_bytes": 4194
+        },
+        "validated": true
+      },
+      {
+        "console": {
+          "content_sha256": "b31fb63805104e48f03dc1f8c3fb20688f5136e285ea253067e37ae372617d51",
+          "gzip_sha256": "2f7c99df2b55ef7235167003151dfb00f618aa54abd972f79256f043b230af50"
+        },
+        "controller": {
+          "deadline_misses": 0,
+          "full_loop_max_us": 22390,
+          "full_loop_p50_us": 4664,
+          "full_loop_p95_us": 6725,
+          "full_loop_p99_us": 8402,
+          "iae_milli_c_s": 185638.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 347,
+          "pre_send_p50_us": 17,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 34,
+          "rmse_milli_c": 20435.735065565907,
+          "throughput_msg_s": 9.994908654106801,
+          "transport_max_us": 22043,
+          "transport_p50_us": 4647,
+          "transport_p95_us": 6709,
+          "transport_p99_us": 8385
+        },
+        "cpu_temp_milli_c": 45307,
+        "execution_order": 2,
+        "fault_counts": {
+          "duplicate_receives": 1,
+          "error_frames": 1,
+          "protocol_errors": 1,
+          "recoveries": 0,
+          "retransmissions": 0
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "d82a4dc8139a5016df8480e890de72ad0c8504c13049f51df1a09c3233008e94",
+          "size_bytes": 646
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "1f84f6e79af106da453a1e832d668816c0c59edc8db8fa203cb3f7ad816bea71",
+          "size_bytes": 2886
+        },
+        "pre_reset_raw": {
+          "content_sha256": "9093c09e9dac0352bf38ad0bb9bdd9602e184b894331b83c255725dee746e114",
+          "gzip_sha256": "f1b9d5f57e907de4df7a16d5a296e11db4afb9d2f3d65718e58f294a2e4acf0a",
+          "sample_count": 20
+        },
+        "raw": {
+          "content_sha256": "1e34b1a816f51acc9c5cb9b98fb11ad287b3c43458b4ccbb9cf8bedacfe9a283",
+          "gzip_sha256": "e0c0809736d88c028a6a9b0ebc4ae72b7dd2e20f778a145121edc2970a22e364",
+          "sample_count": 100
+        },
+        "restart_recovery": {
+          "actual_vm_reset": true,
+          "host_cpu": 3,
+          "new_session": 572662306,
+          "observed_delay_ms": 20000,
+          "old_session": 286331153,
+          "post_reset_samples": 100,
+          "pre_reset_samples": 20,
+          "ready_wait_ms": 10,
+          "recovered": true,
+          "requested_delay_ms": 20000,
+          "reset_count": 1,
+          "retired_control_rejected": 1,
+          "safe_fallback_observed": true,
+          "stale_ack_ignored": 1,
+          "stale_status_ignored": 1,
+          "vm_id": 1
+        },
+        "run_id": "run-002",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "4bb25255db0b5cfff53409edeb14778fce56c600275f10e519bde2d9fe2473db",
+          "size_bytes": 4171
+        },
+        "validated": true
+      },
+      {
+        "console": {
+          "content_sha256": "d7e9a97182c7f252108a38f7f669118c076e2965f887d6f5e3d163f922761b52",
+          "gzip_sha256": "1ccb1a31a4dd4350b4cc576c19defdeb112dba289d16efaea23a108e54ceda30"
+        },
+        "controller": {
+          "deadline_misses": 0,
+          "full_loop_max_us": 24609,
+          "full_loop_p50_us": 4636,
+          "full_loop_p95_us": 6711,
+          "full_loop_p99_us": 8366,
+          "iae_milli_c_s": 185638.1,
+          "max_overshoot_milli_c": 0,
+          "pre_send_max_us": 347,
+          "pre_send_p50_us": 17,
+          "pre_send_p95_us": 17,
+          "pre_send_p99_us": 35,
+          "rmse_milli_c": 20435.735065565907,
+          "throughput_msg_s": 9.994881409217705,
+          "transport_max_us": 24262,
+          "transport_p50_us": 4619,
+          "transport_p95_us": 6695,
+          "transport_p99_us": 8349
+        },
+        "cpu_temp_milli_c": 45307,
+        "execution_order": 3,
+        "fault_counts": {
+          "duplicate_receives": 1,
+          "error_frames": 1,
+          "protocol_errors": 1,
+          "recoveries": 0,
+          "retransmissions": 0
+        },
+        "lifecycle_gate_met": true,
+        "manifest": {
+          "path": "checksums.sha256",
+          "sha256": "ba31bc907ed09e296393b0b3c67f0ae96f73e53ade8203329e7ae114d200de22",
+          "size_bytes": 646
+        },
+        "metadata": {
+          "path": "metadata.json",
+          "sha256": "96bdb9bc66edb86d9a1b6969cafa9ae07a170cbab2e1c6ef3cfd133e55182e9b",
+          "size_bytes": 2886
+        },
+        "pre_reset_raw": {
+          "content_sha256": "9c1fdc9973b6250c9b9ef4cd30f91cc2d6483b555337071226bdcedca2af3988",
+          "gzip_sha256": "12cca55d4ae58dddd379b132671b8f133283649042732e346f053a4b9d00ca69",
+          "sample_count": 20
+        },
+        "raw": {
+          "content_sha256": "8e2a91817a3f2985c31e8e6611f2b6842dfc82dc014d26eb8c6212343b711c10",
+          "gzip_sha256": "be1d0dde3f4a06b4507752e01b85e566431bc1d833bd135b88b7f80c7bf09139",
+          "sample_count": 100
+        },
+        "restart_recovery": {
+          "actual_vm_reset": true,
+          "host_cpu": 3,
+          "new_session": 572662306,
+          "observed_delay_ms": 20000,
+          "old_session": 286331153,
+          "post_reset_samples": 100,
+          "pre_reset_samples": 20,
+          "ready_wait_ms": 10,
+          "recovered": true,
+          "requested_delay_ms": 20000,
+          "reset_count": 1,
+          "retired_control_rejected": 1,
+          "safe_fallback_observed": true,
+          "stale_ack_ignored": 1,
+          "stale_status_ignored": 1,
+          "vm_id": 1
+        },
+        "run_id": "run-003",
+        "summary": {
+          "path": "summary.json",
+          "sha256": "a4cb64bcbbb318b4ab8b288d6d1dd4411f9ad934b2bc5e4b1f2bbfd97abffd12",
+          "size_bytes": 4194
+        },
+        "validated": true
+      }
+    ]
+  },
+  "fault_contract": {
+    "actual_vm_reset_required": true,
+    "analyzer_profile": "restart",
+    "current_session": 572662306,
+    "exact_equality_gate_met": true,
+    "expected_duplicate_receives_per_run": 1,
+    "expected_endpoint_recoveries_per_run": 1,
+    "expected_recoveries_per_run": 0,
+    "expected_retired_control_rejections_per_run": 1,
+    "expected_retransmissions_per_run": 0,
+    "expected_safe_fallbacks_per_run": 1,
+    "expected_session_rejections_per_run": 1,
+    "expected_session_resets_per_run": 1,
+    "expected_stale_ack_frames_per_run": 1,
+    "expected_stale_status_frames_per_run": 1,
+    "post_reset_commands_per_run": 100,
+    "pre_reset_commands_per_run": 20,
+    "previous_session": 286331153,
+    "restart_delay_ms": 20000,
+    "restart_host_cpu": 3,
+    "restart_ready_timeout_ms": 30000,
+    "restart_vm_id": 1
+  },
+  "latency": {
+    "claim_scope": "descriptive restart recovery overhead only; this campaign is not the preregistered RT isolation comparison",
+    "metrics": {
+      "full_loop_max_us": {
+        "iqr": 1312,
+        "median": 24609,
+        "q1": 23499.5,
+        "q3": 24811.5,
+        "single_run_maximum": 25014,
+        "single_run_minimum": 22390,
+        "values_by_run": [
+          25014,
+          22390,
+          24609
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 25014
+      },
+      "full_loop_p50_us": {
+        "iqr": 214.5,
+        "median": 4664,
+        "q1": 4650,
+        "q3": 4864.5,
+        "single_run_maximum": 5065,
+        "single_run_minimum": 4636,
+        "values_by_run": [
+          5065,
+          4664,
+          4636
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 5065
+      },
+      "full_loop_p95_us": {
+        "iqr": 205.5,
+        "median": 6725,
+        "q1": 6718,
+        "q3": 6923.5,
+        "single_run_maximum": 7122,
+        "single_run_minimum": 6711,
+        "values_by_run": [
+          7122,
+          6725,
+          6711
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 7122
+      },
+      "full_loop_p99_us": {
+        "iqr": 259.5,
+        "median": 8402,
+        "q1": 8384,
+        "q3": 8643.5,
+        "single_run_maximum": 8885,
+        "single_run_minimum": 8366,
+        "values_by_run": [
+          8885,
+          8402,
+          8366
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 8885
+      },
+      "pre_send_max_us": {
+        "iqr": 0.5,
+        "median": 347,
+        "q1": 347,
+        "q3": 347.5,
+        "single_run_maximum": 348,
+        "single_run_minimum": 347,
+        "values_by_run": [
+          348,
+          347,
+          347
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 348
+      },
+      "pre_send_p50_us": {
+        "iqr": 0,
+        "median": 17,
+        "q1": 17,
+        "q3": 17,
+        "single_run_maximum": 17,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          17,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 17
+      },
+      "pre_send_p95_us": {
+        "iqr": 0,
+        "median": 17,
+        "q1": 17,
+        "q3": 17,
+        "single_run_maximum": 17,
+        "single_run_minimum": 17,
+        "values_by_run": [
+          17,
+          17,
+          17
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 17
+      },
+      "pre_send_p99_us": {
+        "iqr": 1,
+        "median": 35,
+        "q1": 34.5,
+        "q3": 35.5,
+        "single_run_maximum": 36,
+        "single_run_minimum": 34,
+        "values_by_run": [
+          36,
+          34,
+          35
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 36
+      },
+      "transport_max_us": {
+        "iqr": 1311.5,
+        "median": 24262,
+        "q1": 23152.5,
+        "q3": 24464,
+        "single_run_maximum": 24666,
+        "single_run_minimum": 22043,
+        "values_by_run": [
+          24666,
+          22043,
+          24262
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 24666
+      },
+      "transport_p50_us": {
+        "iqr": 214.5,
+        "median": 4647,
+        "q1": 4633,
+        "q3": 4847.5,
+        "single_run_maximum": 5048,
+        "single_run_minimum": 4619,
+        "values_by_run": [
+          5048,
+          4647,
+          4619
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 5048
+      },
+      "transport_p95_us": {
+        "iqr": 205,
+        "median": 6709,
+        "q1": 6702,
+        "q3": 6907,
+        "single_run_maximum": 7105,
+        "single_run_minimum": 6695,
+        "values_by_run": [
+          7105,
+          6709,
+          6695
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 7105
+      },
+      "transport_p99_us": {
+        "iqr": 260,
+        "median": 8385,
+        "q1": 8367,
+        "q3": 8627,
+        "single_run_maximum": 8869,
+        "single_run_minimum": 8349,
+        "values_by_run": [
+          8869,
+          8385,
+          8349
+        ],
+        "worst_direction": "maximum",
+        "worst_of_runs": 8869
+      }
+    },
+    "quartile_method": "inclusive quartiles",
+    "unit": "microseconds"
+  },
+  "schema_version": 1
+}
