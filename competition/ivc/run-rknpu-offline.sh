@@ -206,6 +206,7 @@ start_lease() {
     local lease_log=$1
     local lease_deadline
 
+    : >"$lease_log"
     cargo xtask board connect -b "$board_type" >"$lease_log" 2>&1 &
     lease_pid=$!
     lease_deadline=$((SECONDS + 60))

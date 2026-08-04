@@ -402,6 +402,21 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
         self.assertIn("board-orangepi-5-plus-rknpu-smoke.toml", runner)
         self.assertIn("axvisor-orangepi-5-plus-rknpu-smoke.toml", runner)
 
+    def test_board_lease_log_exists_before_the_background_reader_starts(self) -> None:
+        runner = RKNPU_RUNNER.read_text(encoding="utf-8")
+        start_lease = re.search(
+            r"start_lease\(\)\s*\{(?P<body>.*?)\n\}",
+            runner,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(start_lease)
+        body = start_lease.group("body")
+        create_log = ': >"$lease_log"'
+        launch_connector = 'cargo xtask board connect -b "$board_type"'
+        self.assertIn(create_log, body)
+        self.assertIn(launch_connector, body)
+        self.assertLess(body.index(create_log), body.index(launch_connector))
+
     def test_board_flow_extracts_and_audits_snapshot_inputs(self) -> None:
         runner = RKNPU_RUNNER.read_text(encoding="utf-8")
 
