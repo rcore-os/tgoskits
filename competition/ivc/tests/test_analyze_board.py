@@ -140,7 +140,7 @@ class BoardAnalysisTests(unittest.TestCase):
             "[guest-console:pl011-starry] IVC-STARRY-RKNN-MODEL "
             f"sha256={RKNN_MODEL_SHA256}\n"
             "[guest-console:pl011-starry] IVC-STARRY-RKNN-RAW "
-            f"samples=4 sha256={digest}\n"
+            f"sha256={digest}\n"
         )
         rknn_records = rknn_record_set * 3
         harvest_records = (
@@ -522,11 +522,11 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         digest = hashlib.sha256(RKNN_CSV.encode()).hexdigest()
         complete_record = (
             "[guest-console:pl011-starry] IVC-STARRY-RKNN-RAW "
-            f"samples=4 sha256={digest}\n"
+            f"sha256={digest}\n"
         )
         truncated_record = (
             "[guest-console:pl011-starry] IVC-STARRY-RKNN-RAW "
-            f"samples=4 sha256={digest[:-12]}\n"
+            f"sha256={digest[:-12]}\n"
         )
         done_record = "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n"
         log = (

@@ -440,7 +440,7 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
                 'IVC-STARRY-RKNN-DEVICE ' \
                 'IVC-RKNN-RUNTIME ' \
                 "IVC-RKNN-RESULT samples=$expected_count positive_device_times=$expected_count " \
-                "IVC-STARRY-RKNN-RAW samples=$expected_count "; do
+                'IVC-STARRY-RKNN-RAW sha256='; do
                 if ! grep -aFq "$marker" "$log_path"; then
                     echo "RKNN control console is missing required marker: $marker" >&2
                     analysis_status=1

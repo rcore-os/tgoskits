@@ -141,7 +141,7 @@ class StarryGuestContractTests(unittest.TestCase):
             '"$BB" sleep "$raw_identity_line_interval_seconds"',
             'echo "IVC-STARRY-RKNN-MODEL sha256=$actual_rknn_model_sha256"',
             '"$BB" sleep "$raw_identity_line_interval_seconds"',
-            'echo "IVC-STARRY-RKNN-RAW samples=$ivc_count sha256=$validated_rknn_sha256"',
+            'echo "IVC-STARRY-RKNN-RAW sha256=$validated_rknn_sha256"',
             '"$BB" sleep "$raw_identity_line_interval_seconds"',
             'raw_identity_copy=$((raw_identity_copy + 1))',
             '"$BB" sleep "$raw_identity_copy_interval_seconds"',
@@ -152,6 +152,23 @@ class StarryGuestContractTests(unittest.TestCase):
                 position = identity_loop.find(fragment, cursor)
                 self.assertGreaterEqual(position, 0)
                 cursor = position + len(fragment)
+
+    def test_rknn_uart_hash_fits_shared_console_line_budget(self) -> None:
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+        marker_match = re.search(
+            r'echo "(IVC-STARRY-RKNN-RAW [^"]+)"', autorun
+        )
+        self.assertIsNotNone(marker_match)
+        assert marker_match is not None
+        rendered_marker = (
+            marker_match.group(1)
+            .replace("$ivc_count", "1800")
+            .replace("$validated_rknn_sha256", "a" * 64)
+        )
+        routed_record = "[guest-console:pl011-starry] " + rendered_marker
+
+        # Keep margin below the shared console's observed 128-byte boundary.
+        self.assertLessEqual(len(routed_record.encode("ascii")), 120)
 
     def test_restart_profile_persists_phase_one_before_waiting_for_vm_reset(self) -> None:
         builder = STARRY_ROOTFS_BUILD.read_text(encoding="utf-8")

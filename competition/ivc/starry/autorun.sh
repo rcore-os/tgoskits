@@ -284,7 +284,9 @@ if [ "$result" -eq 0 ]; then
             "$BB" sleep "$raw_identity_line_interval_seconds"
             echo "IVC-STARRY-RKNN-MODEL sha256=$actual_rknn_model_sha256"
             "$BB" sleep "$raw_identity_line_interval_seconds"
-            echo "IVC-STARRY-RKNN-RAW samples=$ivc_count sha256=$validated_rknn_sha256"
+            # The guest-console routing prefix shares a fixed line budget with
+            # this marker, so keep the full digest record compact.
+            echo "IVC-STARRY-RKNN-RAW sha256=$validated_rknn_sha256"
             "$BB" sleep "$raw_identity_line_interval_seconds"
         fi
         raw_identity_copy=$((raw_identity_copy + 1))

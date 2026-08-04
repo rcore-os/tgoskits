@@ -1056,6 +1056,8 @@ def parse_raw_samples(
     ):
         raise AnalysisError("unexpected snapshot guest raw CSV path")
 
+    # The compact UART hash omits the count to fit the shared console line
+    # budget; the snapshot manifest, harvest record, and CSV validate it.
     for record, prefix in (
         (uart_record, STARRY_RAW_PREFIX),
         (guest_manifest_record, GUEST_RAW_MANIFEST_PREFIX),
@@ -1108,7 +1110,7 @@ def parse_rknn_samples(
     uart_record = find_quorum_record(
         lines,
         STARRY_RKNN_RAW_PREFIX,
-        ("samples", "sha256"),
+        ("sha256",),
         sha256_fields=("sha256",),
     )
     guest_manifest_record = find_record(
@@ -1128,7 +1130,6 @@ def parse_rknn_samples(
     ):
         raise AnalysisError("unexpected snapshot guest RKNN evidence path")
     for record, prefix in (
-        (uart_record, STARRY_RKNN_RAW_PREFIX),
         (guest_manifest_record, GUEST_RKNN_MANIFEST_PREFIX),
         (harvest_record, HARVEST_RKNN_PREFIX),
     ):
