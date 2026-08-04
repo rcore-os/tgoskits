@@ -31,7 +31,7 @@
 | StarryOS 实体任务一/M2 | 正式受控干扰 5 对、双 soak、CPU1 stress 5 对已完成 | 在最终报告中严格限定改善结论的适用场景 |
 | ACK loss | 正式 3/3 已完成 | 汇入最终报告 |
 | ERROR | 正式 3/3 已完成 | 汇入最终报告 |
-| restart recovery | 实体功能链已跑通；两次保留 smoke 分别暴露 UART 前缀碰撞和非确定性自然重传，修复已落到 clean commit | 用显式 `seq=1` 重复探测完成 clean smoke，再执行正式 3/3 |
+| restart recovery | `6adf49e09` 实体正式 3/3 已完成，campaign formal gate 为 true | 汇入最终报告并保留 pre-reset deadline miss 不利指标 |
 | StarryOS manual/neural full | 调试配对已完成，正式矩阵未完成 | clean commit 上完成 5 对正式运行 |
 | ONNX/RKNN/ORT | 方案已确定，尚未完成正式实现 | 先通过 RKNN NPU 可行性门，再完成实体闭环 |
 | 报告与视频 | 待最终数据冻结 | 所有正式结果通过聚合门后更新 |
@@ -62,6 +62,7 @@ E3 的无板转换工作可以与等待板卡并行，但不得改变 E1/E2 的�
 ### 3.2 板卡状态机
 
 - 所有实体运行经仓库内 board runner 和已有电源脚本执行；已授权按脚本自动重启或冷启动，无需逐次询问。
+- 启动带 `--restore-linux` 的运行前必须显式设置 `TGOS_BOARD_POWER_CONFIG` 与 `ORANGEPI_POWER_PYTHON`，并在预检中确认配置文件和解释器均可读/可执行。
 - 每次运行均须取得 board lease；结束时必须恢复 Linux。
 - 写入 StarryOS/结果分区前后执行同步与文件系统健康检查。
 - 运行成功至少要求：串口完整、raw 可解析、哈希一致、快照可读、fsck 通过、Linux 根分区恢复为可写状态。
@@ -79,12 +80,12 @@ E3 的无板转换工作可以与等待板卡并行，但不得改变 E1/E2 的�
 
 ### 4.1 待完成动作
 
-- [ ] 将本轮 restart UART 加固的精确文件从 Windows 同步到 WSL2 开发 worktree。
-- [ ] 保持 shell/Python 文件原有可执行位，统一 LF。
-- [ ] 运行 restart 专项测试、完整 IVC Python 测试、Zephyr 构建和相关 Rust 验证。
-- [ ] 把 UART 加固作为独立 commit 提交，不混入已有失败证据目录。
-- [ ] 从该 commit 建立新的 clean physical-run worktree。
-- [ ] 在 run worktree 中重新生成或复制经哈希核验的 Zephyr restart binary。
+- [x] 将本轮 restart UART 加固的精确文件从 Windows 同步到 WSL2 开发 worktree。
+- [x] 保持 shell/Python 文件原有可执行位，统一 LF。
+- [x] 运行 restart 专项测试、完整 IVC Python 测试、Zephyr 构建和相关 Rust 验证。
+- [x] 把 UART 加固作为独立 commit 提交，不混入已有失败证据目录。
+- [x] 从该 commit 建立新的 clean physical-run worktree。
+- [x] 在 run worktree 中重新生成或复制经哈希核验的 Zephyr restart binary。
 
 本轮加固应覆盖：
 
@@ -123,10 +124,17 @@ git diff --check
 
 ### 4.3 退出条件
 
-- [ ] 所有专项与完整测试通过。
-- [ ] restart Zephyr binary 已重建且 SHA-256 记录在案。
-- [ ] 提交后的 run worktree 为 clean，`git status --short` 为空。
-- [ ] 未覆盖或删除已有用户修改和失败结果。
+- [x] 所有专项与完整测试通过。
+- [x] restart Zephyr binary 已重建且 SHA-256 记录在案。
+- [x] 提交后的 run worktree 为 clean，`git status --short` 为空。
+- [x] 未覆盖或删除已有用户修改和失败结果。
+
+冻结记录（2026-08-04）：
+
+- UART 终端证据错峰输出与重放加固提交为 `c41e222252654392fed02b1b22f3d5811dd6962c`；UART SHA 片段一致性校验提交为 `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c`。
+- 完整 IVC Python 测试共 110 项通过；Zephyr host logic、`ivcproto` lib/bin 测试、目标 crate clippy、全仓 rustfmt 与 diff check 均通过。
+- 正式运行使用的 clean worktree 固定在 `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c`。
+- StarryOS kernel、DTB、controller、restart rootfs、Zephyr restart 镜像的 SHA-256 依次为 `590a901a2ed51d9a2d5849ec152576fe822b81f7ab27cfbb2a76a343905ab2fe`、`0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd`、`fbb1c214b6c771ef415c5768b2e0675ab8e53339f126eef0aa9808fd41987501`、`9e092ad3e0ec4c9842732f8ff0b9475005f1fe2c80cf35d329d9e77b6e7e9ca4`、`400421a6c80862cbd64d9bc6472c77b622dcd5d3f48d51f6262ba1a4d5e13abb`。
 
 ## 5. E1：客户机重启恢复正式闭环
 
@@ -154,6 +162,14 @@ smoke 必须验证：
 
 若仅因 UART 损坏失败，先修复记录冗余或采集时序；不得降低分析器的完整性门。
 
+clean smoke 执行记录（2026-08-04）：
+
+- [x] 从 `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c` clean worktree 完成 1/1 实体运行，restart analyzer、raw/snapshot/hash、Linux 恢复与结果镜像 fsck 全部通过。
+- [x] 计数严格满足预注册：120 fresh、1 duplicate、122 STATUS、122 ACK、1 ERROR；safe fallback、recovery、stale STATUS/ACK 与 retired CONTROL rejection 均恰好一次。
+- [x] 真实重建 VM 1，绑定 host CPU 3；请求与观测 restart delay 均为 20,000 ms。
+- 通过档案固定为 `competition/results/orangepi-5-plus/starry-ivc-restart-smoke-pass-20260804/`，仅用于 smoke 验证，不计入正式 3/3。
+- `starry-ivc-restart-smoke-restore-config-failure-20260804/` 等此前失败档案保持失败分类；离线 replay 只验证修复，不改变原运行结论。
+
 ### 5.2 冻结正式预注册
 
 正式 3 次运行使用以下不可变 capture contract：
@@ -180,6 +196,8 @@ smoke 必须验证：
 
 预注册修订（2026-08-04）：前两次诊断运行中的 `duplicate seq=1` 来自时序相关的自然重传，随后一次 clean-source smoke 在首包 ACK 及时到达时得到 `duplicates=0`，证明旧注入方式不具确定性。自提交 `8f03881d5233f7c95b135f6eba670073b54f55b1` 起，post-reset 控制器显式重发当前 session 的 `seq=1`，验证其 STATUS/ACK 后输出三份带 CRC 的 `IVC-RESTART-D` 记录；两阶段普通发送的 ACK 超时固定为 1000 ms，以避免 100 ms socket 轮询触发偶然重传。最终计数契约仍为恰好一个 duplicate 和 122/122 个 STATUS/ACK，没有放宽验收门。此前失败结果只保留为诊断证据，正式 3/3 只能从该提交或其后经验证的 clean commit 开始。
 
+证据完整性修订（2026-08-04）：CH340 串口可能把同一 SHA-256 截成不同长度片段。分析器只接受彼此呈前缀包含关系的片段，选取最长片段，并要求其与 snapshot/harvest 独立计算出的完整 SHA-256 一致；任意分叉或不兼容片段仍立即失败。该规则由提交 `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c` 的正反回归覆盖，不降低数据完整性门。
+
 ### 5.3 正式运行与聚合
 
 ```bash
@@ -194,14 +212,24 @@ bash competition/ivc/run-orangepi-5-plus.sh fault-restart \
 
 随后使用 `competition/ivc/aggregate_board_campaign.py` 汇总冻结的 preregistration、amendment、最终板卡健康检查和 3 个 run。
 
+正式执行记录（2026-08-04）：
+
+- [x] `capture-001/fault-restart/run-001..003` 均来自 `6adf49e09ce91b53d2573cb8d34c60dc6a9ec47c` clean worktree，采集时间为 00:10:31Z 至 00:22:00Z。
+- [x] 三轮均严格得到 120 fresh、1 duplicate、122 STATUS、122 ACK、1 ERROR，以及各一次 session reset/rejection、safe fallback、endpoint recovery、stale STATUS/ACK 和 retired CONTROL rejection。
+- [x] 三轮均为 VM 1 在 host CPU 3 上真实 reset；请求/观测 delay 均为 20,000 ms，ready wait 均为 10 ms。
+- [x] post-reset 三轮 deadline miss 均为 0，p99 为 8,885/8,402/8,366 µs，worst single-run max 为 25,014 µs。
+- [x] pre-reset 三轮各有 1 次 deadline miss，单次 max 为 126,624/119,855/124,313 µs；该不利指标保留在 amendment 与 README 中，不用于放宽 restart 门或声称 RT 改善。
+- [x] post-capture 聚合器提交 `7c1ba13af577d82fe89b912bde868604763618f0` 采用 regression-first 支持经独立完整 digest 验证的 UART SHA 前缀，完整 IVC Python 测试 112/112 通过。
+- [x] 正式档案为 `competition/results/orangepi-5-plus/starry-ivc-restart-formal-20260804/`；`campaign-summary.json` SHA-256 为 `935db25de96c83267b8d11ea8e55a2909a42a07ca8f2614cef687dce153e2302`。
+
 ### 5.4 E1 退出条件
 
-- [ ] 3/3 次都通过 restart analyzer。
-- [ ] 每次均为真实 VM reset，而不是只重启用户态控制器。
-- [ ] 三次的 fresh/duplicate/stale/ERROR/ACK/STATUS 计数与预注册逐项一致。
-- [ ] 所有 raw、metadata、summary、console 和 checksum 完整。
-- [ ] campaign summary 明确给出 restart formal gate 为 true。
-- [ ] 每次结束都恢复 Linux，最终板卡健康检查通过。
+- [x] 3/3 次都通过 restart analyzer。
+- [x] 每次均为真实 VM reset，而不是只重启用户态控制器。
+- [x] 三次的 fresh/duplicate/stale/ERROR/ACK/STATUS 计数与预注册逐项一致。
+- [x] 所有 raw、metadata、summary、console 和 checksum 完整。
+- [x] campaign summary 明确给出 restart formal gate 为 true。
+- [x] 每次结束都恢复 Linux，最终板卡健康检查通过。
 
 ## 6. E2：StarryOS manual/neural 正式实体配对
 
@@ -318,7 +346,7 @@ ONNX Runtime 路线定位为 CPU 对照和标准 Runtime 兼容性增强项，�
 | 控制 | StarryOS neural ONNX Runtime CPU full | 5（通过 ORT 门后） |
 | 健康检查 | 每个最终 smoke 镜像 | 3 |
 
-M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERROR 的 3/3 结果不重复采集；除非最终代码或镜像变化会影响其结论，届时必须建立新的预注册 campaign，而不是覆盖旧证据。
+M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERROR、restart recovery 的 3/3 结果不重复采集；除非最终代码或镜像变化会影响其结论，届时必须建立新的预注册 campaign，而不是覆盖旧证据。
 
 ### 9.2 文档更新
 
@@ -333,19 +361,19 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 - [ ] 任务一、二、三均有 StarryOS 实体板正式结果。
 - [ ] 受控干扰场景中的 p99 与 worst-case 改善由多次配对 raw data 支撑，并明确不外推到未通过场景。
 - [ ] manual/neural 为同板同配置 5 对正式实验。
-- [ ] ACK loss、ERROR、restart recovery 均为实体跨客户机 3/3。
+- [x] ACK loss、ERROR、restart recovery 均为实体跨客户机 3/3。
 - [ ] ONNX 是唯一跨后端模型来源，所有模型和工具链版本可追溯。
 - [ ] RKNN 后端有真实 RK3588 NPU 执行证据；若 no-go，则限制原因和原始证据完整。
 - [ ] ORT CPU 后端通过实体门或留下明确 no-go，不冒充 NPU 路线。
 - [ ] 每个正式结论均能追溯到 clean commit、配置、镜像哈希、raw、summary 和 checksum。
-- [ ] WSL2 能自动完成板卡部署、冷启动、采集、恢复 Linux、fsck 和结果同步。
+- [x] WSL2 能自动完成板卡部署、冷启动、采集、恢复 Linux、fsck 和结果同步。
 - [ ] 设计、测试、复现和视频内容与冻结的最终数据一致。
 
 ## 10. 风险与处理策略
 
 | 风险 | 处理策略 |
 | --- | --- |
-| CH340 UART 粘连或截断关键记录 | 关键 guest/host 记录错峰重复；分析器仅恢复完整副本，不降低字段完整性要求 |
+| CH340 UART 粘连或截断关键记录 | 关键 guest/host 记录错峰重复；SHA 片段仅在互为前缀且匹配独立完整 digest 时归并，任何冲突仍失败 |
 | clean worktree 缺少 ignored Zephyr binary | 每个 run worktree 显式重建或复制并记录 SHA-256、来源 commit |
 | 板卡写测试造成 ext4 不一致 | 所有写测试以 Linux sync/fsck/boot 检查包围，失败后保留镜像和日志 |
 | restart 结果功能成功但证据不完整 | 记为失败运行；修复采集后新建 result set，禁止人工补写 raw marker |
@@ -357,6 +385,6 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ## 11. 最近三项动作
 
-1. 完成 restart UART 证据重放加固的同步、测试、Zephyr 重建和独立提交。
-2. 从新 clean commit 运行一次 `fault-restart` smoke；通过后冻结并执行正式 3/3 campaign。
-3. restart campaign 通过后，冻结 StarryOS manual/neural 的 5 对 AB/BA 顺序并启动正式 full 矩阵。
+1. 冻结 StarryOS manual/neural 正式 5 对 AB/BA 顺序、唯一变量、clean source、镜像哈希与 paired 验收门。
+2. 先运行不计入正式数据的同配置 clean smoke；通过后执行 5 对 full 实体矩阵，失败批次完整留档且不拼接替换。
+3. 聚合逐对 RMSE/IAE、最大超调、稳定时间、p99 与 worst-of-runs；E2 formal gate 通过后再进入同源 ONNX/RKNN NPU 实现。
