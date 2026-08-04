@@ -195,10 +195,8 @@ impl SessionGroups {
         self.entries.insert_reserved(pid, Arc::downgrade(group))
     }
 
-    fn contains_live(&self, pid: Pid) -> bool {
-        self.entries
-            .get(pid)
-            .is_some_and(|registered| registered.strong_count() != 0)
+    fn get_live(&self, pid: Pid) -> Option<Arc<ProcessGroup>> {
+        self.entries.get(pid).and_then(Weak::upgrade)
     }
 
     pub(crate) fn snapshot(&self, output: &mut Vec<Arc<ProcessGroup>>) {
@@ -303,7 +301,7 @@ pub(crate) enum GroupMoveScope {
 pub(crate) struct ProcessRelationTxn;
 
 impl ProcessRelationTxn {
-    pub(crate) fn attach_session_group(group: &Arc<ProcessGroup>) {
+    pub(crate) fn attach_session_group(group: &Arc<ProcessGroup>) -> Arc<ProcessGroup> {
         loop {
             ensure_session_capacity(&group.session.process_groups, 1);
             let mut groups = group.session.process_groups.lock();
@@ -311,14 +309,13 @@ impl ProcessRelationTxn {
                 drop(groups);
                 continue;
             }
-            assert!(
-                !groups.contains_live(group.pgid()),
-                "session already contains a live process group with this PGID"
-            );
+            if let Some(existing) = groups.get_live(group.pgid()) {
+                return existing;
+            }
             let replaced = groups.insert_reserved(group.pgid(), group);
             drop(groups);
             drop(replaced);
-            return;
+            return Arc::clone(group);
         }
     }
 

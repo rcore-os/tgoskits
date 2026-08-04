@@ -264,7 +264,7 @@ impl Process {
         }
 
         let new_session = Session::new(self.pid);
-        let new_group = ProcessGroup::new(self.pid, &new_session);
+        let new_group = ProcessGroup::get_or_create(self.pid, &new_session);
         self.set_group(&new_group);
 
         Some((new_session, new_group))
@@ -288,7 +288,7 @@ impl Process {
             group.session.clone()
         };
 
-        let new_group = ProcessGroup::new(self.pid, &session);
+        let new_group = ProcessGroup::get_or_create(self.pid, &session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -510,7 +510,7 @@ impl Process {
         let group = parent.as_ref().map_or_else(
             || {
                 let session = Session::new(pid);
-                ProcessGroup::new(pid, &session)
+                ProcessGroup::get_or_create(pid, &session)
             },
             |p| p.group(),
         );
@@ -732,7 +732,7 @@ mod tests {
         let init = test_init();
         let process = init.fork(91);
         let source = process.group();
-        let target = ProcessGroup::new(92, &source.session());
+        let target = ProcessGroup::get_or_create(92, &source.session());
         let target_members = target.processes.lock();
         let start = StdArc::new(Barrier::new(2));
         let move_start = start.clone();
