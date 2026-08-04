@@ -6,39 +6,17 @@ use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
 };
 use axvm_types::GuestPhysAddr;
-#[cfg(target_arch = "riscv64")]
-use axvm_types::HostPhysAddr;
 use bitmaps::Bitmap;
 
-#[cfg(target_arch = "riscv64")]
-use crate::utils::perform_mmio_write;
-use crate::{VplicError, VplicResult, consts::*, vplic::VPlicGlobal};
+use crate::{
+    VplicError, VplicResult,
+    consts::*,
+    vplic::{VPlicGlobal, VplicCompletion},
+};
 
-#[cfg(target_arch = "riscv64")]
-const VCAUSE_INTERRUPT_BIT: usize = 1usize << (usize::BITS - 1);
-#[cfg(target_arch = "riscv64")]
-const VCAUSE_VS_TIMER: usize = VCAUSE_INTERRUPT_BIT | 5;
 const PLIC_PENDING_WORDS: usize = PLIC_NUM_SOURCES / 32;
 
 impl VPlicGlobal {
-    /// Mirrors only host-route configuration that is required for a physical
-    /// source to reach the hypervisor. Guest-visible state remains private.
-    #[cfg(target_arch = "riscv64")]
-    fn mirror_host_route_write(&self, reg: usize, width: AccessWidth, value: usize) -> VplicResult {
-        let host_addr = HostPhysAddr::from_usize(self.host_plic_addr.as_usize() + reg);
-        perform_mmio_write(host_addr, width, value)
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    fn mirror_host_route_write(
-        &self,
-        _reg: usize,
-        _width: AccessWidth,
-        _value: usize,
-    ) -> VplicResult {
-        Ok(())
-    }
-
     fn validate_irq_id(irq_id: usize) -> VplicResult {
         if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
             return Err(VplicError::InvalidSource {
@@ -71,14 +49,29 @@ impl VPlicGlobal {
     /// empty assignment bitmap preserves the existing unrestricted behavior;
     /// once assignments are populated, only assigned sources are accepted.
     pub fn set_pending(&self, irq_id: usize) -> VplicResult {
-        self.update_pending_irq(irq_id, true)?;
-        self.sync_all_guest_contexts_vseip()
+        self.update_pending_irq(irq_id, true)
     }
 
     /// Clears the pending state of one interrupt source.
     pub fn clear_pending(&self, irq_id: usize) -> VplicResult {
-        self.update_pending_irq(irq_id, false)?;
-        self.sync_all_guest_contexts_vseip()
+        self.update_pending_irq(irq_id, false)
+    }
+
+    /// Updates one level-triggered device input.
+    ///
+    /// Returns `true` when a low-to-high transition needs initial delivery.
+    /// The asserted state remains controller-owned so completion can repend
+    /// the source until the device lowers the line.
+    pub fn set_irq_line_level(&self, irq_id: usize, asserted: bool) -> VplicResult<bool> {
+        self.validate_assigned_irq(irq_id)?;
+        let newly_asserted = {
+            let mut asserted_irqs = self.line_asserted_irqs.lock();
+            let was_asserted = asserted_irqs.get(irq_id);
+            asserted_irqs.set(irq_id, asserted);
+            asserted && !was_asserted
+        };
+        self.pending_irqs.lock().set(irq_id, asserted);
+        Ok(newly_asserted)
     }
 
     /// Returns whether one interrupt source is pending.
@@ -93,7 +86,6 @@ impl VPlicGlobal {
     }
 
     /// Reads the priority threshold configured for a PLIC context.
-    #[cfg(target_arch = "riscv64")]
     fn context_threshold(&self, context_id: usize) -> VplicResult<u32> {
         Ok(self.registers.lock().thresholds[context_id])
     }
@@ -150,7 +142,6 @@ impl VPlicGlobal {
     }
 
     /// Returns the next IRQ that should assert VSEIP for this context.
-    #[cfg(target_arch = "riscv64")]
     fn next_deliverable_irq(&self, context_id: usize) -> VplicResult<Option<usize>> {
         let threshold = self.context_threshold(context_id)?;
         let candidate_irqs = self.pending_inactive_irqs();
@@ -161,6 +152,22 @@ impl VPlicGlobal {
             return Ok(Some(irq_id));
         }
         Ok(None)
+    }
+
+    /// Returns whether one guest context currently has a deliverable source.
+    ///
+    /// The vPLIC owns pending, active, enable, priority, threshold, and level
+    /// state. Architecture glue consumes this derived value when binding a
+    /// vCPU and programs VSEIP there; the controller never writes a physical
+    /// CPU's CSR on behalf of a different guest context.
+    pub fn context_has_deliverable_irq(&self, context_id: usize) -> VplicResult<bool> {
+        if context_id >= self.contexts_num {
+            return Err(VplicError::InvalidContext {
+                context: context_id,
+                contexts: self.contexts_num,
+            });
+        }
+        Ok(self.next_deliverable_irq(context_id)?.is_some())
     }
 
     /// Claims the next enabled pending IRQ and moves it to the active set.
@@ -185,43 +192,6 @@ impl VPlicGlobal {
             active_irqs.set(irq_id, true);
             return Ok(Some(irq_id));
         }
-    }
-
-    /// Recomputes whether VSEIP should remain asserted for one context.
-    #[cfg(target_arch = "riscv64")]
-    fn sync_vseip(&self, context_id: usize) -> VplicResult<()> {
-        // VSEIP should track whether this context still has a deliverable
-        // external interrupt, not merely whether some pending bit is set.
-        if self.next_deliverable_irq(context_id)?.is_some() {
-            unsafe {
-                // If the guest is already executing a VS timer interrupt handler,
-                // the corresponding tick is "in service" from the guest's point of
-                // view. Clearing VSTIP here avoids needlessly keeping a timer
-                // interrupt pending while we queue the external interrupt.
-                if riscv_h::register::vscause::read().bits() == VCAUSE_VS_TIMER {
-                    riscv_h::register::hvip::clear_vstip();
-                }
-                riscv_h::register::hvip::set_vseip();
-            }
-        } else {
-            unsafe {
-                riscv_h::register::hvip::clear_vseip();
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    fn sync_vseip(&self, _context_id: usize) -> VplicResult<()> {
-        Ok(())
-    }
-
-    /// Recomputes VSEIP for all guest supervisor contexts.
-    fn sync_all_guest_contexts_vseip(&self) -> VplicResult<()> {
-        for context_id in (1..self.contexts_num).step_by(2) {
-            self.sync_vseip(context_id)?;
-        }
-        Ok(())
     }
 }
 
@@ -322,10 +292,8 @@ impl VPlicGlobal {
                         });
                     }
                     let Some(irq_id) = self.claim_next_irq(context_id)? else {
-                        self.sync_vseip(context_id)?;
                         return Ok(0);
                     };
-                    self.sync_vseip(context_id)?;
                     Ok(irq_id)
                 }
                 _ => Err(VplicError::UnsupportedRegister {
@@ -349,12 +317,27 @@ impl VPlicGlobal {
         width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
+        self.write_register_with_completion(addr, width, val)
+            .map(|_| ())
+    }
+
+    /// Writes a virtual PLIC register and reports a completed active source.
+    ///
+    /// The controller performs the complete and level re-pend transition
+    /// before returning. Any physical-backing action therefore runs after all
+    /// vPLIC locks are released.
+    pub fn write_register_with_completion(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+    ) -> DeviceResult<Option<VplicCompletion>> {
         if !self.contains(addr) {
             return Err(DeviceError::OutOfRange {
                 addr: addr.as_usize() as u64,
             });
         }
-        let result = (|| -> VplicResult {
+        let result = (|| -> VplicResult<Option<VplicCompletion>> {
             if width != AccessWidth::Dword {
                 return Err(VplicError::InvalidAccessWidth {
                     expected: AccessWidth::Dword,
@@ -367,15 +350,14 @@ impl VPlicGlobal {
                 // priority
                 PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
                     self.registers.lock().priorities[reg / 4] = val as u32;
-                    self.mirror_host_route_write(reg, width, val)?;
-                    self.sync_all_guest_contexts_vseip()
+                    Ok(None)
                 }
                 // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
                 PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
                     // Note: here append, not overwrite.
                     let reg_index = (reg - PLIC_PENDING_OFFSET) / 4;
                     if reg_index >= PLIC_PENDING_WORDS {
-                        return Ok(());
+                        return Ok(None);
                     }
                     let val = val as u32;
                     let mut bit_mask: u32 = 1;
@@ -388,8 +370,7 @@ impl VPlicGlobal {
                         }
                         bit_mask <<= 1;
                     }
-
-                    self.sync_all_guest_contexts_vseip()
+                    Ok(None)
                 }
                 // enable
                 PLIC_ENABLE_OFFSET..PLIC_CONTEXT_CTRL_OFFSET => {
@@ -402,9 +383,7 @@ impl VPlicGlobal {
                         });
                     }
                     self.registers.lock().enable_masks[context_id][reg_index] = val as u32;
-                    self.mirror_host_route_write(reg, width, val)?;
-                    // A mask update can instantly expose or hide already-pending IRQs.
-                    self.sync_vseip(context_id)
+                    Ok(None)
                 }
                 // threshold
                 offset
@@ -420,9 +399,7 @@ impl VPlicGlobal {
                         });
                     }
                     self.registers.lock().thresholds[context_id] = val as u32;
-                    self.mirror_host_route_write(reg, width, val)?;
-                    // Threshold changes must be reflected on the hart line immediately.
-                    self.sync_vseip(context_id)
+                    Ok(None)
                 }
                 // claim/complete
                 offset
@@ -445,19 +422,26 @@ impl VPlicGlobal {
                     let irq_id = val;
 
                     if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
-                        return self.sync_vseip(context_id);
+                        return Ok(None);
                     }
+                    let asserted_irqs = self.line_asserted_irqs.lock();
                     let mut active_irqs = self.active_irqs.lock();
                     if !active_irqs.get(irq_id) {
                         drop(active_irqs);
-                        return self.sync_vseip(context_id);
+                        drop(asserted_irqs);
+                        return Ok(None);
                     }
 
-                    // Completion belongs to the virtual controller. Forwarding it
-                    // to the host PLIC would corrupt the host IRQ lifecycle.
+                    // Completion belongs to the virtual controller. An
+                    // optional host transaction is reported only after this
+                    // canonical transition and every controller lock release.
                     active_irqs.set(irq_id, false);
                     drop(active_irqs);
-                    self.sync_vseip(context_id)
+                    if asserted_irqs.get(irq_id) {
+                        self.pending_irqs.lock().set(irq_id, true);
+                    }
+                    drop(asserted_irqs);
+                    Ok(Some(VplicCompletion::new(irq_id)))
                 }
                 _ => Err(VplicError::UnsupportedRegister {
                     operation: "write",

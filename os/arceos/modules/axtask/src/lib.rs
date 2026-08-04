@@ -69,6 +69,7 @@ cfg_if::cfg_if! {
 
         #[macro_use]
         mod run_queue;
+        mod interrupt;
         mod task;
         mod api;
         #[cfg(feature = "lockdep")]

@@ -69,7 +69,6 @@ pub(crate) fn finish(
         DeferredRunWork::PreemptionTimer => {
             crate::timer::check_events();
             super::irq::inject_due_pit_irq0(vm, vcpu);
-            super::irq::inject_pending_serial_irq(vm, vcpu);
         }
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {

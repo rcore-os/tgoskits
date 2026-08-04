@@ -164,11 +164,11 @@ EOF
 }
 
 run_axvisor_qemu() {
-    run_cmd cargo xtask qemu "$@"
+    run_cmd cargo xtask axvisor qemu "$@"
 }
 
 run_axvisor_uboot() {
-    run_cmd cargo xtask uboot "$@"
+    run_cmd cargo xtask axvisor uboot "$@"
 }
 
 ensure_ostool() {
@@ -190,11 +190,11 @@ setup_qemu_aarch64() {
 
     run_cmd mkdir -p tmp/{configs,images}
 
-    info "Downloading ArceOS image..."
-    run_cmd cargo axvisor image pull qemu_aarch64_arceos --output-dir tmp/images
+    info "Downloading QEMU AArch64 guest bundle..."
+    run_cmd cargo xtask image pull qemu-aarch64 --output-dir tmp/images
 
-    info "Downloading Linux image..."
-    run_cmd cargo axvisor image pull qemu_aarch64_linux --output-dir tmp/images
+    info "Downloading AArch64 rootfs..."
+    run_cmd cargo xtask image pull rootfs-aarch64-alpine.img --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-aarch64.toml tmp/configs/
@@ -203,16 +203,16 @@ setup_qemu_aarch64() {
     run_cmd cp configs/vms/qemu/aarch64/arceos-smp1.toml tmp/configs/arceos-aarch64-qemu-smp1.toml
     run_cmd cp configs/vms/qemu/aarch64/linux-smp1.toml tmp/configs/linux-aarch64-qemu-smp1.toml
 
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_aarch64_arceos/qemu-aarch64"|g' tmp/configs/arceos-aarch64-qemu-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu-aarch64/arceos/arceos-qemu"|g' tmp/configs/arceos-aarch64-qemu-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-aarch64-qemu-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_aarch64_linux/qemu-aarch64"|g' tmp/configs/linux-aarch64-qemu-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu-aarch64/linux/linux-qemu"|g' tmp/configs/linux-aarch64-qemu-smp1.toml
     run_cmd sed -i 's/^id = 1$/id = 2/' tmp/configs/linux-aarch64-qemu-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/linux-aarch64-qemu-smp1.toml
 
     info "Preparing QEMU config file..."
     run_cmd cp .github/workflows/qemu-aarch64.toml tmp/configs/qemu-aarch64-runtime.toml
 
-    ROOTFS_PATH="$(pwd)/tmp/images/qemu_aarch64_linux/rootfs.img"
+    ROOTFS_PATH="$(pwd)/tmp/images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img"
     run_cmd sed -i 's|^  # "-drive",$|  "-drive",|g' tmp/configs/qemu-aarch64-runtime.toml
     run_cmd sed -i 's|^  # "id=disk0,if=none,format=raw,file=|  "id=disk0,if=none,format=raw,file=|g' tmp/configs/qemu-aarch64-runtime.toml
     run_cmd sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"$ROOTFS_PATH"'|g' tmp/configs/qemu-aarch64-runtime.toml
@@ -255,8 +255,11 @@ setup_qemu_riscv64() {
 
     run_cmd mkdir -p tmp/{configs,images}
 
-    info "Downloading ArceOS image..."
-    run_cmd cargo axvisor image pull qemu_riscv64_arceos --output-dir tmp/images
+    info "Downloading QEMU RISC-V64 guest bundle..."
+    run_cmd cargo xtask image pull qemu-riscv64 --output-dir tmp/images
+
+    info "Downloading RISC-V64 rootfs..."
+    run_cmd cargo xtask image pull rootfs-riscv64-alpine.img --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-riscv64.toml tmp/configs/
@@ -264,12 +267,12 @@ setup_qemu_riscv64() {
     info "Preparing guest config file..."
     run_cmd cp configs/vms/qemu/riscv64/arceos-smp1.toml tmp/configs/arceos-riscv64-qemu-smp1.toml
 
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_riscv64_arceos/qemu-riscv64"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu-riscv64/arceos/arceos-qemu"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
     run_cmd sed -i 's|^image_location = "fs"|image_location = "memory"|g' tmp/configs/arceos-riscv64-qemu-smp1.toml
 
     info "Preparing QEMU config file..."
     run_cmd cp .github/workflows/qemu-riscv64.toml tmp/configs/qemu-riscv64-runtime.toml
-    run_cmd cp tmp/images/qemu_riscv64_arceos/rootfs.img tmp/rootfs.img
+    run_cmd cp tmp/images/rootfs-riscv64-alpine.img/rootfs-riscv64-alpine.img tmp/rootfs.img
 
     info "=== QEMU RISC-V64 Preparation Complete ==="
 }
@@ -329,7 +332,7 @@ setup_qemu_x86_64() {
     run_cmd mkdir -p tmp/{configs,images}
 
     info "Downloading NimbOS image..."
-    run_cmd cargo axvisor image pull qemu_x86_64_nimbos --output-dir tmp/images
+    run_cmd cargo xtask image pull qemu-x86_64 --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-x86_64.toml tmp/configs/
@@ -340,7 +343,7 @@ setup_qemu_x86_64() {
     info "Preparing QEMU config file..."
     run_cmd cp .github/workflows/qemu-x86_64.toml tmp/configs/qemu-x86_64-runtime.toml
 
-    ROOTFS_PATH="$(pwd)/tmp/images/qemu_x86_64_nimbos/rootfs.img"
+    ROOTFS_PATH="$(pwd)/tmp/images/qemu-x86_64/rootfs.img"
     run_cmd sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"$ROOTFS_PATH"'|g' tmp/configs/qemu-x86_64-runtime.toml
 
     info "=== QEMU x86_64 Preparation Complete ==="
@@ -354,7 +357,7 @@ setup_qemu_x86_64_uefi() {
     local firmware_path="${AXVISOR_X86_64_UEFI_FIRMWARE:-}"
     if [ -z "$firmware_path" ]; then
         for candidate in \
-            "$(pwd)/tmp/images/qemu_x86_64_nimbos/OVMF_CODE.fd" \
+            "$(pwd)/tmp/images/qemu-x86_64/OVMF_CODE.fd" \
             "/usr/share/OVMF/OVMF_CODE.fd" \
             "/usr/share/ovmf/OVMF.fd" \
             "/usr/share/qemu/OVMF.fd"; do
@@ -373,14 +376,14 @@ setup_qemu_x86_64_uefi() {
 
     info "Preparing UEFI guest config file..."
     run_cmd cp configs/vms/qemu/x86_64/nimbos-uefi-smp1.toml tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_nimbos/qemu-x86_64"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu-x86_64/qemu-x86_64"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
     run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
 
     info "Preparing UEFI QEMU config file..."
     run_cmd cp .github/workflows/qemu-x86_64-uefi.toml tmp/configs/qemu-x86_64-uefi-runtime.toml
 
     local rootfs_path
-    rootfs_path="$(pwd)/tmp/images/qemu_x86_64_nimbos/rootfs.img"
+    rootfs_path="$(pwd)/tmp/images/qemu-x86_64/rootfs.img"
     run_cmd sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"$rootfs_path"'|g' tmp/configs/qemu-x86_64-uefi-runtime.toml
 
     info "=== QEMU x86_64 UEFI Preparation Complete ==="
@@ -391,21 +394,24 @@ setup_qemu_x86_64_linux() {
 
     run_cmd mkdir -p tmp/{configs,images}
 
-    info "Downloading Linux image..."
-    run_cmd cargo axvisor image pull qemu_x86_64_linux --output-dir tmp/images
+    info "Downloading QEMU x86_64 guest bundle..."
+    run_cmd cargo xtask image pull qemu-x86_64 --output-dir tmp/images
+
+    info "Downloading x86_64 rootfs..."
+    run_cmd cargo xtask image pull rootfs-x86_64-alpine.img --output-dir tmp/images
 
     info "Preparing dynamic board config file..."
     run_cmd cp configs/board/qemu-x86_64-linux.toml tmp/configs/
 
     info "Preparing Linux guest config file..."
     run_cmd cp configs/vms/qemu/x86_64/linux-smp1.toml tmp/configs/linux-x86_64-qemu-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_linux/linux-qemu"|g' tmp/configs/linux-x86_64-qemu-smp1.toml
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu-x86_64/linux/linux-qemu"|g' tmp/configs/linux-x86_64-qemu-smp1.toml
 
     info "Preparing QEMU config file..."
     run_cmd cp configs/qemu/qemu-x86_64-linux.toml tmp/configs/qemu-x86_64-linux-runtime.toml
 
     local rootfs_path
-    rootfs_path="$(pwd)/tmp/images/qemu_x86_64_linux/rootfs.img"
+    rootfs_path="$(pwd)/tmp/images/rootfs-x86_64-alpine.img/rootfs-x86_64-alpine.img"
     run_cmd sed -i 's|file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img|file='"$rootfs_path"'|g' tmp/configs/qemu-x86_64-linux-runtime.toml
 
     info "=== QEMU x86_64 Linux Preparation Complete ==="
@@ -535,10 +541,10 @@ setup_phytiumpi() {
     ensure_ostool
 
     info "Downloading ArceOS image..."
-    run_cmd cargo axvisor image pull phytiumpi_arceos --output-dir tmp/images
+    run_cmd cargo xtask image pull phytiumpi_arceos --output-dir tmp/images
 
     info "Downloading Linux image (including device tree)..."
-    run_cmd cargo axvisor image pull phytiumpi_linux --output-dir tmp/images
+    run_cmd cargo xtask image pull phytiumpi_linux --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/phytiumpi.toml tmp/configs/
@@ -649,10 +655,10 @@ setup_roc_rk3568_pc() {
     ensure_ostool
 
     info "Downloading ArceOS image..."
-    run_cmd cargo axvisor image pull roc-rk3568-pc_arceos --output-dir tmp/images
+    run_cmd cargo xtask image pull roc-rk3568-pc_arceos --output-dir tmp/images
 
     info "Downloading Linux image (including device tree)..."
-    run_cmd cargo axvisor image pull roc-rk3568-pc_linux --output-dir tmp/images
+    run_cmd cargo xtask image pull roc-rk3568-pc_linux --output-dir tmp/images
 
     info "Preparing board config file..."
     run_cmd cp configs/board/roc-rk3568-pc.toml tmp/configs/
@@ -780,14 +786,14 @@ setup_rdk_s100() {
         info "Using existing ArceOS image directory: tmp/images/${arceos_image}"
     else
         info "Downloading ArceOS image..."
-        run_cmd cargo axvisor image "${image_pull_args[@]}" pull "${arceos_image}" --output-dir tmp/images
+        run_cmd cargo xtask image pull "${image_pull_args[@]}" "${arceos_image}" --output-dir tmp/images
     fi
 
     if [ -d "tmp/images/${linux_image}" ]; then
         info "Using existing Linux image directory: tmp/images/${linux_image}"
     else
         info "Downloading Linux image (including device tree)..."
-        run_cmd cargo axvisor image "${image_pull_args[@]}" pull "${linux_image}" --output-dir tmp/images
+        run_cmd cargo xtask image pull "${image_pull_args[@]}" "${linux_image}" --output-dir tmp/images
     fi
 
     info "Preparing board config file..."
@@ -1413,9 +1419,12 @@ cmd_run_rdk_s100() {
 }
 
 # ============================================================================
-# Main Program
+# Main Program — only executes when run directly, not when sourced.
+# When sourced (e.g. by test scripts), only function/variable definitions
+# are loaded.
 # ============================================================================
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 check_root_dir
 
 if [ $# -eq 0 ]; then
@@ -1617,3 +1626,4 @@ case "$PLATFORM" in
         exit 1
         ;;
 esac
+fi  # end of source guard: [[ "${BASH_SOURCE[0]}" == "${0}" ]]

@@ -258,6 +258,7 @@ Important details:
 - Check `/opt/qemu-lvz/bin/qemu-system-loongarch64`, OVMF files under `/tmp/ostool/ovmf/loongarch64`, and the musl toolchain before assuming the kernel is at fault.
 - If output reaches `Exiting UEFI boot services...` and stops before the next someboot print, instrument immediately before and after `ExitBootServices`, memory map handoff, first post-exit console call, and MMU/trap setup.
 - Container success still needs host-independent documentation if the CI or developer flow depends on that image.
+- For guest-console failures, distinguish the host UART from the machine-owned guest UART. The host UART must never appear in a guest passthrough set. Check the fixed LoongArch guest resources (`ns16550a` at `0x1fe001e0`, PCH-PIC line 2), the generated FDT/SPCR/DSDT, the virtual PCH-PIC level state, and the Axvisor console mux before changing host IRQ routing.
 
 ## QEMU Debugging Patterns
 

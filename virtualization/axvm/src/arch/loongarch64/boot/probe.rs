@@ -1,7 +1,5 @@
 use alloc::vec::Vec;
 
-use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
-
 use super::{
     FirmwareDevices, FlashDevice, GedDevice, GuestPlatform, InterruptTopology, IrqMmioDevice,
     MemoryRegion, MmioRegion, PciHost, SerialDevice,
@@ -10,7 +8,7 @@ use super::{
 
 pub struct GuestPlatformBuilder {
     ram_regions: Vec<MemoryRegion>,
-    fw_cfg: MmioRegion,
+    fw_cfg: Option<MmioRegion>,
     serial: Option<SerialDevice>,
     pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
@@ -25,10 +23,10 @@ pub struct GuestIrqRoute {
 }
 
 impl GuestPlatformBuilder {
-    pub fn new(ram_regions: Vec<MemoryRegion>, config: &AxVMCrateConfig) -> Self {
+    pub fn new(ram_regions: Vec<MemoryRegion>, fw_cfg: Option<MmioRegion>) -> Self {
         Self {
             ram_regions,
-            fw_cfg: fw_cfg_region(config),
+            fw_cfg,
             serial: None,
             pci: None,
             interrupt: None,
@@ -58,7 +56,7 @@ impl GuestPlatformBuilder {
             serial,
             pci,
             interrupt,
-            fw_cfg: self.fw_cfg,
+            fw_cfg: self.fw_cfg.unwrap_or(defaults.fw_cfg),
             firmware_devices: self.firmware_devices.unwrap_or(defaults.firmware_devices),
             irq_routes: if self.irq_routes.is_empty() {
                 defaults.irq_routes
@@ -218,22 +216,6 @@ fn guest_irq_routes(
 
     let _ = interrupt;
     routes
-}
-
-fn fw_cfg_region(config: &AxVMCrateConfig) -> MmioRegion {
-    if let Some(fw_cfg) = config
-        .devices
-        .emu_devices
-        .iter()
-        .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
-    {
-        return MmioRegion {
-            base: fw_cfg.base_gpa as u64,
-            size: fw_cfg.length as u64,
-        };
-    }
-
-    QemuVirtDefaults::new().fw_cfg
 }
 
 struct QemuVirtDefaults {

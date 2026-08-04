@@ -158,6 +158,26 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
     })?
 }
 
+pub fn irq_set_trigger(irq: IrqId, trigger: Trigger) -> Result<(), crate::irq::IrqError> {
+    super::trigger::dispatch_trigger_configuration(
+        irq.hwirq.0,
+        Some(super::its::LPI_INTID_BASE as u32),
+        |raw| {
+            let intid = checked_private_intid(raw)?;
+            current_cpu_interface().set_cfg(intid, trigger);
+            Ok(())
+        },
+        |raw| {
+            super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+                let intid = checked_runtime_intid(raw, gic.max_intid())?;
+                gic.set_cfg(intid, trigger);
+                Ok(())
+            })?
+        },
+        || crate::irq::IrqError::Unsupported,
+    )
+}
+
 pub fn irq_set_affinity(
     irq: IrqId,
     affinity: crate::irq::IrqAffinity,
@@ -239,9 +259,10 @@ fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {
     cpu.init_current_cpu()?;
     #[cfg(feature = "hv")]
     {
-        // EL1 guests such as Zephyr may expect EOIR to both drop priority
-        // and deactivate the interrupt, as it does in the architectural reset state.
-        cpu.set_eoi_mode(false);
+        // Hypervisor-owned physical interrupts must remain active after EOIR
+        // until the guest completes the corresponding virtual interrupt. The
+        // normal host path still performs both operations in `ActiveIrq::drop`.
+        cpu.set_eoi_mode(true);
         info!("GICv3 CPU {cpu_idx} EOI mode: two_step={}", cpu.eoi_mode());
     }
 

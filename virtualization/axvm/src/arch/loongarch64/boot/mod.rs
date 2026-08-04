@@ -6,7 +6,8 @@ mod resources;
 use alloc::{boxed::Box, format, vec::Vec};
 
 use axdevice::{FwCfgPlatformConfig, FwCfgRamRegion};
-use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
+use axvmconfig::{GuestConfig, VMBootProtocol};
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
     prepare_uefi_runtime_config,
@@ -29,7 +30,7 @@ pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
 impl<'a> ImageLoader<'a> {
     pub fn new(
         main_memory: crate::VMMemoryRegion,
-        config: AxVMCrateConfig,
+        config: GuestConfig,
         vm: AxVMRef,
         provider: &'a dyn BootImageProvider,
     ) -> Self {
@@ -133,8 +134,18 @@ pub struct GedDevice {
 }
 
 impl GuestPlatform {
-    pub fn discover(vm: &AxVMRef, config: &AxVMCrateConfig) -> Self {
-        probe::GuestPlatformBuilder::new(ram_regions(vm), config)
+    pub fn discover(vm: &AxVMRef, _config: &GuestConfig) -> Self {
+        let fw_cfg = vm.with_config(|runtime| {
+            runtime
+                .emu_devices()
+                .iter()
+                .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
+                .map(|device| MmioRegion {
+                    base: device.base_gpa as u64,
+                    size: device.length as u64,
+                })
+        });
+        probe::GuestPlatformBuilder::new(ram_regions(vm), fw_cfg)
             .apply_host_acpi()
             .build()
     }
@@ -149,7 +160,7 @@ impl GuestPlatform {
     }
 }
 
-pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxVmResult {
+pub fn load_firmware_fdt(vm: &AxVMRef, config: &GuestConfig) -> AxVmResult {
     let platform = GuestPlatform::discover(vm, config);
     let fdt = fdt::guest_firmware_dtb::build(&platform)?;
     debug!(
@@ -169,11 +180,11 @@ pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxVmResult {
     vm.set_guest_device_tree(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE), fdt)
 }
 
-pub fn fw_cfg_platform_config(vm: &AxVMRef, config: &AxVMCrateConfig) -> FwCfgPlatformConfig {
+pub fn fw_cfg_platform_config(vm: &AxVMRef, config: &GuestConfig) -> FwCfgPlatformConfig {
     GuestPlatform::discover(vm, config).fw_cfg_platform_config(config.base.cpu_num as u16)
 }
 
-pub fn guest_irq_routes(vm: &AxVMRef, config: &AxVMCrateConfig) -> Vec<LoongArchGuestIrqRoute> {
+pub fn guest_irq_routes(vm: &AxVMRef, config: &GuestConfig) -> Vec<LoongArchGuestIrqRoute> {
     GuestPlatform::discover(vm, config)
         .irq_routes
         .into_iter()
@@ -184,13 +195,15 @@ pub fn guest_irq_routes(vm: &AxVMRef, config: &AxVMCrateConfig) -> Vec<LoongArch
         .collect()
 }
 
-pub fn emulated_fw_cfg(config: &AxVMCrateConfig) -> AxVmResult<&axvmconfig::EmulatedDeviceConfig> {
-    config
-        .devices
-        .emu_devices
-        .iter()
-        .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
-        .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI boot requires a fw_cfg device"))
+pub fn emulated_fw_cfg(vm: &AxVMRef) -> AxVmResult<EmulatedDeviceConfig> {
+    vm.with_config(|runtime| {
+        runtime
+            .emu_devices()
+            .iter()
+            .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
+            .cloned()
+    })
+    .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI boot requires a fw_cfg device"))
 }
 
 impl BootImagePlatform for super::LoongArch64Arch {
@@ -259,7 +272,7 @@ fn add_uefi_fw_cfg(
     kernel: &'static [u8],
     ramdisk: Option<&'static [u8]>,
 ) -> AxVmResult {
-    let fw_cfg = emulated_fw_cfg(&loader.config)?;
+    let fw_cfg = emulated_fw_cfg(&loader.vm)?;
     loader.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
         base: GuestPhysAddr::from(fw_cfg.base_gpa),
         size: fw_cfg.length,

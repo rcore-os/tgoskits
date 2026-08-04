@@ -190,6 +190,20 @@ impl ArmNestedPagingConfig {
     }
 }
 
+/// Common GICv3 CPU-interface register trapped by the vCPU core.
+///
+/// Keeping the architectural register identity typed prevents raw system
+/// register encodings from escaping into the embedding VMM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmGicCpuInterfaceRegister {
+    /// `ICC_CTLR_EL1`, the common CPU-interface control register.
+    Control,
+    /// `ICC_PMR_EL1`, the virtual priority-mask register.
+    PriorityMask,
+    /// `ICC_RPR_EL1`, the virtual running-priority register.
+    RunningPriority,
+}
+
 /// VM-exit reason returned by the AArch64 vCPU core.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -237,11 +251,30 @@ pub enum ArmVmExit {
         /// Value written by the guest.
         value: u64,
     },
+    /// The guest read a trapped GICv3 common CPU-interface register.
+    GicCpuInterfaceRead {
+        /// Register selected by the trapped MRS instruction.
+        register: ArmGicCpuInterfaceRegister,
+        /// Destination guest general-purpose register.
+        destination: usize,
+    },
+    /// The guest wrote a trapped GICv3 common CPU-interface register.
+    GicCpuInterfaceWrite {
+        /// Register selected by the trapped MSR instruction.
+        register: ArmGicCpuInterfaceRegister,
+        /// Value written by the guest.
+        value: u64,
+    },
     /// A physical host interrupt should be handled by the embedding VMM.
     ExternalInterrupt {
-        /// Host or placeholder vector reported by the host adapter.
-        vector: u64,
+        /// Opaque acknowledgement token, or `None` for a spurious interrupt.
+        ///
+        /// The token is returned unchanged so a split-EOI host controller can
+        /// retain source information until the guest deactivates the interrupt.
+        token: Option<usize>,
     },
+    /// A guest WFI or WFE instruction was trapped.
+    WaitForInterrupt,
     /// A guest PSCI CPU_OFF call was trapped.
     CpuDown {
         /// Guest-provided target state.
@@ -260,16 +293,13 @@ pub enum ArmVmExit {
     SystemDown,
     /// The guest wrote a GIC SGI system register.
     SendIPI {
-        /// Primary target selector.
-        target_cpu: u64,
-        /// Auxiliary target selector.
-        target_cpu_aux: u64,
-        /// Whether the SGI targets all other vCPUs.
-        send_to_all: bool,
-        /// Whether the SGI targets the current vCPU.
-        send_to_self: bool,
-        /// SGI interrupt ID.
-        vector: u64,
+        /// Complete `ICC_SGI1R_EL1` value, including affinity and range selector.
+        value: u64,
+    },
+    /// The guest wrote `ICC_DIR_EL1` while deactivation trapping was enabled.
+    DeactivateInterrupt {
+        /// Guest-visible INTID carried by `ICC_DIR_EL1`.
+        intid: u32,
     },
     /// The vCPU handled the event internally.
     Nothing,

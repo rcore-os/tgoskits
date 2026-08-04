@@ -206,7 +206,8 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 }
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
-    current().clear_interrupt();
+    let stale_interrupts = current().interrupt_snapshot();
+    current().acknowledge_interrupt(stale_interrupts);
     let wait_result = block_on(interruptible(poll_fn(|cx| {
         if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
             Poll::Ready(())

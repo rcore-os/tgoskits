@@ -165,7 +165,12 @@ fn file_type_to_char(ty: FileType) -> char {
   - 不带参数：启动所有虚拟机
   - 指定VM ID：启动特定虚拟机
   - 支持 `--detach` 后台模式运行
-  - 支持 `--console` 连接到控制台(计划实现)
+  - 支持 `--console` 启动并连接到指定虚拟机的虚拟串口
+- **vm console**: 连接到运行中虚拟机的虚拟串口
+  - `Ctrl+Alt+H` 返回 Axvisor shell
+  - `Ctrl+Alt+[` 切换到前一个运行中客户机
+  - `Ctrl+Alt+]` 切换到后一个运行中客户机
+  - 多客户机输出切换时会结束未换行片段并重新加前缀，不会让 shell prompt 长期占用输出
 - **vm stop**: 停止虚拟机
   - 必须指定VM ID
   - 支持 `--force` 强制停止
@@ -178,9 +183,7 @@ fn file_type_to_char(ty: FileType) -> char {
   - 必须指定VM ID
   - 唤醒所有VCpu任务，恢复执行
   - VM状态从Suspended转换回Running
-- **vm restart**: 重启虚拟机，必须指定VM ID (功能不完善)
-  - 支持 `--force` 强制重启
-  - 自动等待VM完全停止后再启动
+- **vm reset**: 重建虚拟机运行时状态并重新启动，必须指定 VM ID
 - **vm delete**: 删除虚拟机
   - 必须指定VM ID
   - 需要 `--force` 确认删除
@@ -230,10 +233,9 @@ let state = if vm.running() {
 - `--full` / `-f`: (vm show) 显示完整详细信息
 - `--config` / `-c`: (vm show) 显示配置信息
 - `--stats` / `-s`: (vm show) 显示统计信息
-- `--force` / `-f`: (vm stop/delete/restart) 强制操作(无需确认)
+- `--force` / `-f`: (vm stop/delete) 强制操作(无需确认)
 - `--graceful` / `-g`: (vm stop) 优雅关闭
-- `--console` / `-c`: (vm start) 连接到控制台(计划实现)
-- `--watch` / `-w`: (vm status) 实时监控(已移除,功能未实现)
+- `--console` / `-c`: (vm start) 启动并连接到指定虚拟机的虚拟串口
 - `--keep-data`: (vm delete) 保留VM数据(功能未实现)
 
 #### 输出格式示例
@@ -333,7 +335,7 @@ Most commonly used vm commands:
   stop      Stop a virtual machine
   suspend   Suspend (pause) a running virtual machine
   resume    Resume a suspended virtual machine
-  restart   Restart a virtual machine
+  reset     Reset and restart a virtual machine
   delete    Delete a virtual machine
 
 Information commands:
@@ -411,7 +413,7 @@ AxVisor 的 VM 状态遵循严格的状态机模型：
             │           ▼
             │      [Resources Freed]
             │           │
-            └───────────┘ restart
+            └───────────┘ reset
 ```
 
 ### VM 状态定义
@@ -659,7 +661,7 @@ AxVisor Shell模块**默认启用**，但不同功能对features有不同要求�
 - 光标移动和行编辑
 - 内置命令：`help`, `clear`, `exit`
 - 系统命令：`uname`, `log`
-- VM管理命令：`vm list`, `vm show`, `vm status`, `vm stop` 等
+- VM管理命令：`vm list`, `vm show`, `vm start`, `vm stop` 等
 
 #### 🟡 文件系统功能（需要 `fs` feature）
 - 文件操作命令：`ls`, `cat`, `mkdir`, `rm`, `cp`, `mv`, `touch`, `cd`, `pwd`, `echo`
@@ -679,12 +681,14 @@ AxVisor Shell模块**默认启用**，但不同功能对features有不同要求�
 
 ### 配置示例
 
+以下命令均从 workspace 根目录执行。
+
 #### 场景1：自动启动VM
 ```bash
 # VM会在启动时自动创建并运行
-./axvisor.sh run \
-  --arch aarch64 \
-  --vmconfigs configs/vms/qemu/aarch64/nimbos-smp1.toml
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml
 ```
 
 **启动后**：
@@ -703,7 +707,8 @@ ID    NAME           STATE         VCPU   MEMORY
 #### 场景2：不自动启动VM（空Shell）
 ```bash
 # 不指定 vmconfigs 参数
-./axvisor.sh run --arch aarch64 --features fs
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml
 ```
 
 **启动后**（需要手动创建VM）：
@@ -725,15 +730,20 @@ axvisor:/$ vm start 0
 
 #### 命令行指定
 ```bash
-./axvisor.sh run --vmconfigs configs/vms/qemu/aarch64/vm1.toml,configs/vms/qemu/aarch64/vm2.toml
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/arceos-smp1.toml
 ```
 
 #### 配置文件指定
-在 `.hvconfig.toml` 中：
+在 Axvisor Build Config 中：
 ```toml
-vmconfigs = [
-    "configs/vms/qemu/aarch64/nimbos-smp1.toml",
-    "configs/vms/qemu/aarch64/linux-smp1.toml"
+target = "aarch64-unknown-none-softfloat"
+features = ["fs"]
+vm_configs = [
+    "os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml",
+    "os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml",
 ]
 ```
 
@@ -754,15 +764,15 @@ vmconfigs = [
 
 ```bash
 # VM会自动启动
-./axvisor.sh run \
-  --arch aarch64 \
-  --vmconfigs configs/vms/qemu/aarch64/nimbos-smp1.toml
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml
 ```
 
 **启动后状态**：
 - ✅ VM已创建并运行
 - ✅ Shell可直接管理VM
-- ✅ 可执行 `vm list`, `vm status` 等命令
+- ✅ 可执行 `vm list`, `vm show` 等命令
 
 **可用功能**：
 - VM状态查询和管理
@@ -780,7 +790,8 @@ vmconfigs = [
 
 ```bash
 # 启动时不创建VM，需要启用fs以便手动创建
-./axvisor.sh run --arch aarch64 --features fs
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml
 ```
 
 **启动后状态**：
@@ -815,11 +826,10 @@ sudo umount mnt
 
 ```bash
 # 同时启用文件系统和自动启动VM
-./axvisor.sh run \
-  --arch aarch64 \
-  --vmconfigs configs/vms/qemu/aarch64/nimbos-smp1.toml \
-  --features fs \
-  --arceos-args "BUS=mmio,BLK=y,DISK_IMG=disk.img,MEM=8g,LOG=info"
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml \
+  --rootfs disk.img
 ```
 
 **启动后状态**：
@@ -842,13 +852,14 @@ ArceOS 默认使用 **FAT32** 文件系统。如需使用其他文件系统，�
 
 ```bash
 # 使用EXT4文件系统（需要创建ext4格式的磁盘镜像）
-./axvisor.sh run \
-  --arch aarch64 \
-  --vmconfigs configs/vms/qemu/aarch64/nimbos-smp1.toml \
-  --features fs \
-  --arceos-features ext4 \
-  --arceos-args "BUS=mmio,BLK=y,DISK_IMG=disk-ext4.img,MEM=8g"
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml \
+  --rootfs disk-ext4.img
 ```
+
+其中 Build Config 负责声明文件系统 feature；运行命令不接受旧的
+`--features`、`--arceos-features` 或 `--arceos-args` 参数。
 
 ## 实际使用示例
 
@@ -857,15 +868,12 @@ ArceOS 默认使用 **FAT32** 文件系统。如需使用其他文件系统，�
 使用 `--vmconfigs` 让 NimbOS 在启动时自动运行：
 
 ```bash
-# 1. 准备NimbOS镜像
-./scripts/nimbos.sh --arch aarch64
+# 1. 将 nimbos-aarch64.bin 放入 Axvisor host rootfs
 
 # 2. 启动AxVisor（VM会自动启动）
-./axvisor.sh run \
-  --arch aarch64 \
-  --features fs \
-  --vmconfigs configs/vms/qemu/aarch64/nimbos-smp1.toml \
-  --arceos-args "BUS=mmio,BLK=y,DISK_IMG=tmp/nimbos-aarch64.img,LOG=info"
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml
 
 # 3. 在Shell中操作（VM已运行）
 # 查看VM状态
@@ -874,7 +882,7 @@ ID    NAME           STATE         VCPU   MEMORY
 ----  -----------    -------       ----   ------
 0     nimbos-vm      🟢 running       1    512MB
 
-axvisor:/$ vm status 0        # 查看详细状态
+axvisor:/$ vm show -c -s 0    # 查看详细状态、配置和统计
 axvisor:/$ log debug          # 调整日志级别
 ```
 
@@ -883,14 +891,12 @@ axvisor:/$ log debug          # 调整日志级别
 不使用 `--vmconfigs`，在Shell中手动创建和管理VM：
 
 ```bash
-# 1. 准备镜像和配置文件
-./scripts/nimbos.sh --arch aarch64
+# 1. 将客户机镜像与配置文件放入 disk.img
 
 # 2. 启动AxVisor（不指定vmconfigs，不自动启动VM）
-./axvisor.sh run \
-  --arch aarch64 \
-  --features fs \
-  --arceos-args "BUS=mmio,BLK=y,DISK_IMG=tmp/nimbos-aarch64.img,LOG=info"
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --rootfs disk.img
 
 # 3. 在Shell中手动创建和启动VM
 axvisor:/$ vm list
@@ -923,11 +929,10 @@ ID    NAME           STATE         VCPU   MEMORY
 
 ```bash
 # 启动AxVisor，自动启动第一个VM
-./axvisor.sh run \
-  --arch aarch64 \
-  --features fs \
-  --vmconfigs configs/vms/qemu/aarch64/vm1.toml \
-  --arceos-args "BUS=mmio,BLK=y,DISK_IMG=disk.img,LOG=info"
+cargo xtask axvisor qemu \
+  --config test-suit/axvisor/normal/qemu/build-aarch64-unknown-none-softfloat.toml \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/nimbos-smp1.toml \
+  --rootfs disk.img
 
 # Shell中查看和创建更多VM
 axvisor:/$ vm list
@@ -1011,6 +1016,9 @@ axvisor:/$
 - **上/下箭头**: 浏览命令历史
 - **左/右箭头**: 移动光标
 - **退格键**: 删除字符
+- **Ctrl+Alt+H**: 返回 Axvisor shell
+- **Ctrl+Alt+[**: 切换到前一个运行中客户机
+- **Ctrl+Alt+]**: 切换到后一个运行中客户机
 
 ## 常用命令
 
@@ -1037,11 +1045,8 @@ vm start -d 1              # 后台启动VM
 vm stop -f 1               # 强制停止VM
 vm suspend 1               # 暂停VM（ID=1）
 vm resume 1                # 恢复暂停的VM
-vm restart 1               # 重启VM
-vm restart -f 1            # 强制重启VM
+vm reset 1                 # 强制停止、回收旧运行时、重建设备/vCPU并重新启动 VM
 vm delete -f 1             # 删除VM(需要确认)
-vm status                  # 显示所有VM状态概览（已移除）
-vm status 1                # 查看特定VM状态（已移除）
 vm show 1                  # 查看VM基本信息
 vm show -f 1               # 查看VM完整详细信息
 vm show -c 1               # 查看VM配置
@@ -1069,8 +1074,7 @@ vm create linux.toml
 # 3. 启动虚拟机
 vm start 1
 
-# 4. 监控状态
-vm status 1
+# 4. 查看状态
 vm show -c -s 1            # 查看详细配置和统计
 
 # 5. 停止虚拟机
@@ -1089,13 +1093,13 @@ vm list -a
 vm start
 
 # 4. 查看整体状态
-vm status                  # 显示所有VM的状态概览
+vm list                    # 显示所有VM的状态概览
 
 # 5. 停止特定虚拟机
 vm stop 2
 
 # 6. 重启虚拟机
-vm restart 1
+vm reset 1
 
 # 7. 删除虚拟机
 vm delete -f 3

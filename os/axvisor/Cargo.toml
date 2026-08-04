@@ -62,6 +62,7 @@ test-panic-no-backtrace = ["dep:axbacktrace"]
 
 [dependencies]
 spin = { workspace = true }
+ax-kspin = { workspace = true }
 ax-crate-interface = { workspace = true }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
@@ -83,6 +84,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "std-compat",
 ] }
 ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
+ax-sync = { workspace = true, features = ["multitask"] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }

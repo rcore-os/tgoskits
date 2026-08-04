@@ -2,7 +2,7 @@
 [base]
 id = 1
 name = "starry"
-vm_type = 1
+guest_type = "passthrough"
 cpu_num = 1
 phys_cpu_ids = [0x00]
 
@@ -21,24 +21,7 @@ memory_regions = [
     [0x2_4000_0000, 0x8000_0000, 0x7, 1],
 ]
 
+# Physical-device selection. Virtual platform devices are machine-owned.
 [devices]
-interrupt_mode = "passthrough"
-
-emu_devices = [
-    ["gppt-gicd", 0xfe60_0000, 0x1_0000, 0, 0x21, []],
-    ["gppt-gicr", 0xfe68_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
-]
-
-passthrough_devices = [
-    ["/"],
-]
-
-passthrough_addresses = []
-
-excluded_devices = [
-    ["/pcie@fe150000"],
-    ["/pcie@fe160000"],
-    ["/pcie@fe170000"],
-    ["/pcie@fe180000"],
-    ["/pcie@fe190000"],
-]
+passthrough = []
+disabled = [{ path = "/pcie@fe150000" }, { path = "/pcie@fe160000" }, { path = "/pcie@fe170000" }, { path = "/pcie@fe180000" }, { path = "/pcie@fe190000" }]

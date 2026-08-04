@@ -1,6 +1,7 @@
 mod assets;
 mod board;
 mod discovery;
+mod initramfs;
 mod qemu;
 mod types;
 

@@ -369,6 +369,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-loongarch-unaligned-fixup"
+version = "0.1.0"
+dependencies = [
+ "ax-cpu",
+ "ax-hal",
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-shell"
 version = "0.3.1"
 dependencies = [
@@ -438,6 +447,7 @@ name = "arm_vcpu"
 version = "0.5.18"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "aarch64_sysreg",
  "log",
  "numeric-enum-macro",
  "spin",
@@ -449,9 +459,7 @@ version = "0.5.5"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
- "ax-crate-interface",
  "ax-kspin",
- "ax-memory-addr",
  "axdevice_base",
  "axvm-types",
  "bitmaps",
@@ -1600,7 +1608,9 @@ dependencies = [
  "ax-crate-interface",
  "ax-driver",
  "ax-hal",
+ "ax-kspin",
  "ax-std",
+ "ax-sync",
  "axbacktrace",
  "axbuild",
  "axplat-dyn",
@@ -1643,6 +1653,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axhvc",
+ "axklib",
  "axvm-types",
  "axvmconfig",
  "bit_field",
@@ -1657,8 +1668,10 @@ dependencies = [
  "irq-framework",
  "log",
  "loongarch_vcpu",
+ "mmio-api",
  "numeric-enum-macro",
  "page-table-generic",
+ "rdif-clk",
  "rdif-intc",
  "rdrive",
  "riscv_vcpu",
@@ -7004,14 +7017,10 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.4.22"
 dependencies = [
- "ax-crate-interface",
  "ax-kspin",
- "ax-memory-addr",
  "axdevice_base",
  "axvm-types",
  "bitmaps",
- "log",
- "riscv-h",
  "thiserror 2.0.19",
 ]
 

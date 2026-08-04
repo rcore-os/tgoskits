@@ -1,6 +1,6 @@
 //! Typed guest boot preparation shared by monitor integrations.
 
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::GuestConfig;
 
 use super::{BootImageProvider, fdt::GuestDtbImage, images::ImageLoaderCore};
 use crate::{AxVMRef, AxVmResult, VMMemoryRegion, config::AxVMConfig};
@@ -8,13 +8,13 @@ use crate::{AxVMRef, AxVmResult, VMMemoryRegion, config::AxVMConfig};
 /// Architecture-prepared VM configuration and optional guest DTB.
 #[derive(Debug)]
 pub struct PreparedGuestBoot {
-    config: AxVMCrateConfig,
+    config: GuestConfig,
     guest_dtb: Option<GuestDtbImage>,
 }
 
 impl PreparedGuestBoot {
     /// Returns the architecture-enriched VM configuration.
-    pub const fn config(&self) -> &AxVMCrateConfig {
+    pub const fn config(&self) -> &GuestConfig {
         &self.config
     }
 
@@ -44,7 +44,7 @@ impl PreparedGuestBoot {
 /// metadata cannot be parsed and validated.
 pub fn prepare_guest_boot(
     vm_config: &mut AxVMConfig,
-    mut config: AxVMCrateConfig,
+    mut config: GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<PreparedGuestBoot> {
     let guest_dtb = crate::arch::prepare_guest_boot(vm_config, &mut config, provider)?;

@@ -4,6 +4,8 @@ use crate::{
     variants::MHZ,
 };
 
+mod assignment;
+
 const OSC_HZ: u64 = 24 * MHZ;
 
 const CLKSEL_CON_OFFSET: u32 = 0x0100;

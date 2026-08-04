@@ -91,15 +91,24 @@ pub mod traps {
     pub mod irq {
         /// `Interrupt` bit in `scause`
         pub const INTC_IRQ_BASE: usize = 1 << (usize::BITS - 1);
+        /// Supervisor external interrupt cause number without the `scause`
+        /// interrupt flag.
+        pub const S_EXT_CODE: usize = 9;
         /// Supervisor software interrupt in `scause`
         pub const S_SOFT: usize = INTC_IRQ_BASE + 1;
         /// Supervisor timer interrupt in `scause`
         pub const S_TIMER: usize = INTC_IRQ_BASE + 5;
         /// Supervisor external interrupt in `scause`
-        pub const S_EXT: usize = INTC_IRQ_BASE + 9;
+        pub const S_EXT: usize = INTC_IRQ_BASE + S_EXT_CODE;
         /// The maximum number of IRQs.
         pub const MAX_IRQ_COUNT: usize = 1024;
         /// The timer IRQ number (supervisor timer interrupt in `scause`).
         pub const TIMER_IRQ_NUM: usize = S_TIMER;
+
+        /// Returns whether a runtime interrupt ID or an `scause` value denotes
+        /// a supervisor external interrupt.
+        pub const fn is_supervisor_external(vector: usize) -> bool {
+            vector == S_EXT_CODE || vector == S_EXT
+        }
     }
 }

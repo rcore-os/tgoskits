@@ -18,6 +18,9 @@ mod trap;
 mod types;
 mod vcpu;
 
+#[cfg(test)]
+mod world_switch_tests;
+
 pub use self::{
     context_frame::LoongArchContextFrame,
     exception::{handle_exception_irq, handle_exception_sync},

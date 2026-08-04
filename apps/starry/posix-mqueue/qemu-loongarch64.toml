@@ -1,0 +1,19 @@
+# posix-mqueue loongarch64 - POSIX message queue (mq_*) carpet on StarryOS.
+# Platform: dynamic (axplat-dyn), same as aarch64/riscv64. -machine virt -cpu la464.
+# The dynamic-platform kernel is a PIC/PIE image, so on LoongArch it must be loaded
+# through the UEFI handoff (uefi=true) for relocation; a raw -kernel load leaves it
+# unrelocated and hangs before serial. All test binaries are static musl, injected
+# into the managed Alpine rootfs overlay by prebuild.sh.
+args = [
+    "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "1024M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-mq-tests.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$', '(?i)kernel panic']
+timeout = 2400

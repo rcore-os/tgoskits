@@ -172,6 +172,13 @@ impl IrqIf for DummyIrq {
         Ok(())
     }
 
+    fn set_trigger(
+        _irq: IrqId,
+        _trigger: ax_plat::irq::IrqTrigger,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
+    }
+
     fn set_affinity(
         _irq: IrqId,
         _affinity: ax_plat::irq::IrqAffinity,

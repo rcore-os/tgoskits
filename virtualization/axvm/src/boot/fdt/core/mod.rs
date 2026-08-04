@@ -2,7 +2,7 @@
 
 use alloc::{format, vec::Vec};
 
-use axvmconfig::{AxVMCrateConfig, VMBootProtocol};
+use axvmconfig::{GuestConfig, VMBootProtocol};
 
 use crate::{
     AxVmResult, ax_err, ax_err_type,
@@ -12,39 +12,106 @@ use crate::{
 
 pub(crate) mod create;
 mod device;
+pub(crate) mod interrupt;
 mod parser;
 mod policy;
 mod print;
+pub(crate) mod serial;
+pub(crate) mod timer;
 pub(crate) mod tree;
 
 #[cfg(test)]
 mod tree_tests;
 
-pub use create::{patch_guest_fdt_for_runtime, update_fdt};
+pub use create::update_fdt;
 pub use parser::*;
-pub use policy::GuestFdtPolicy;
+pub use policy::{DecodedInterrupt, GuestFdtPolicy};
 
 pub fn prepare_dtb_guest(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut AxVMCrateConfig,
+    vm_create_config: &mut GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<GuestDtbImage>> {
+    let host_fdt_bytes = try_get_host_fdt();
+    resolve_machine_resources_from_host(vm_config, host_fdt_bytes)?;
+
     if vm_create_config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
         skip_guest_dtb(vm_config, vm_create_config);
         return Ok(None);
     }
 
-    let host_fdt_bytes = try_get_host_fdt();
     let guest_dtb = build_guest_dtb(vm_config, vm_create_config, provider, host_fdt_bytes)?;
     enrich_guest_config(vm_config, vm_create_config, guest_dtb.as_ref())?;
     Ok(guest_dtb)
+}
+
+fn resolve_machine_resources_from_host(
+    vm_config: &mut AxVMConfig,
+    host_fdt_bytes: Option<&[u8]>,
+) -> AxVmResult {
+    let Some(host_fdt_bytes) = host_fdt_bytes else {
+        return Ok(());
+    };
+    let host_fdt = fdt_edit::Fdt::from_bytes(host_fdt_bytes).map_err(|err| {
+        ax_err_type!(
+            InvalidData,
+            format!("Failed to parse host FDT while resolving the virtual UART: {err:#?}")
+        )
+    })?;
+    let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
+    let current = vm_config.serial_profile();
+    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt {
+        if let Some(resolved) =
+            serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
+        {
+            if resolved.profile != current {
+                info!(
+                    "VM[{}] virtual UART follows the host-selected UART: {:?}",
+                    vm_config.id(),
+                    resolved.profile
+                );
+            }
+            vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
+        }
+    }
+
+    if let Some(gic) = interrupt::host_gic_profile(&host_fdt)? {
+        info!(
+            "VM[{}] virtual GIC follows host firmware resources: {:?}",
+            vm_config.id(),
+            gic
+        );
+        vm_config.replace_machine_gic(gic)?;
+    }
+    if machine.timer.is_some() {
+        let timer = timer::host_timer_profile(&host_fdt)?.ok_or_else(|| {
+            ax_err_type!(
+                InvalidData,
+                "host FDT does not provide a valid arm,armv8-timer node"
+            )
+        })?;
+        info!(
+            "VM[{}] architectural timer follows host firmware PPIs",
+            vm_config.id()
+        );
+        vm_config.replace_machine_timer(timer)?;
+    }
+    if let Some(plic) = interrupt::host_plic_profile(&host_fdt)? {
+        info!(
+            "VM[{}] virtual PLIC follows host firmware resources: {:?}",
+            vm_config.id(),
+            plic
+        );
+        vm_config.replace_machine_plic(plic)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn selected_guest_fdt_policy() -> GuestFdtPolicy {
     super::guest_fdt_policy()
 }
 
-fn skip_guest_dtb(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateConfig) {
+fn skip_guest_dtb(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {
     info!(
         "VM[{}] uses UEFI boot protocol, skipping guest DTB handling",
         vm_config.id()
@@ -55,7 +122,7 @@ fn skip_guest_dtb(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateCo
 
 fn build_guest_dtb(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut AxVMCrateConfig,
+    vm_create_config: &mut GuestConfig,
     provider: &dyn BootImageProvider,
     host_fdt_bytes: Option<&'static [u8]>,
 ) -> AxVmResult<Option<GuestDtbImage>> {
@@ -106,7 +173,7 @@ fn parse_host_fdt(host_fdt_bytes: &'static [u8]) -> AxVmResult<fdt_edit::Fdt> {
 
 fn enrich_guest_config(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut AxVMCrateConfig,
+    vm_create_config: &mut GuestConfig,
     guest_dtb: Option<&GuestDtbImage>,
 ) -> AxVmResult {
     let Some(dtb) = guest_dtb.map(GuestDtbImage::as_bytes) else {
@@ -115,11 +182,11 @@ fn enrich_guest_config(
     };
 
     parse_reserved_memory_regions(vm_create_config, dtb)?;
-    parse_passthrough_devices_address(vm_config, vm_create_config, dtb)?;
-    parse_vm_interrupt(vm_config, dtb)
+    parse_vm_interrupt(vm_config, dtb)?;
+    parse_passthrough_devices_address(vm_config, vm_create_config, dtb)
 }
 
-fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mut AxVMCrateConfig) {
+fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mut GuestConfig) {
     error!(
         "VM[{}] DTB not found in memory, skipping...",
         vm_config.id()
@@ -146,7 +213,7 @@ fn clear_unresolved_dtb_config(vm_config: &mut AxVMConfig, vm_create_config: &mu
 
 fn get_developer_provided_dtb(
     vm_config: &AxVMConfig,
-    crate_config: &AxVMCrateConfig,
+    crate_config: &GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<Vec<u8>>> {
     match crate_config.kernel.image_location.as_deref() {

@@ -30,6 +30,7 @@ pipe = ["fd"]
 select = ["fd"]
 poll = ["fd"]
 epoll = ["fd"]
+serial = ["ax-runtime/serial"]
 
 [dependencies]
 # ArceOS modules

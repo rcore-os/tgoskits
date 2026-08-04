@@ -212,6 +212,11 @@ pub struct ArgsTestBoard {
 pub enum ConfigCommand {
     /// List available board names
     Ls,
+    /// Edit one guest configuration with menuconfig
+    Vm {
+        /// Guest configuration file to edit
+        guest_config: PathBuf,
+    },
 }
 
 pub struct Axvisor {
@@ -244,7 +249,7 @@ impl Axvisor {
             Command::Uboot(args) => self.uboot(args).await,
             Command::Board(args) => self.board(args).await,
             Command::Defconfig(args) => self.defconfig(args),
-            Command::Config(args) => self.config(args),
+            Command::Config(args) => self.config(args).await,
             Command::Test(args) => self.test(args).await,
         }
     }
@@ -302,7 +307,7 @@ impl Axvisor {
         Ok(())
     }
 
-    fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
+    async fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
                 for board in config::available_board_names(
@@ -310,6 +315,9 @@ impl Axvisor {
                 )? {
                     println!("{board}");
                 }
+            }
+            ConfigCommand::Vm { guest_config } => {
+                let _ = jkconfig::run::<axvmconfig::GuestConfig>(guest_config, true, &[]).await?;
             }
         }
         Ok(())

@@ -52,7 +52,7 @@ ax-std = { workspace = true, default-features = false, features = [
     "task-ext",
     "smp",
     "hv",
-    "wake-ipi",
+    "ipi",
 ] }
 ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
@@ -72,6 +72,7 @@ x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-plat = { workspace = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
@@ -81,12 +82,16 @@ loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm_vcpu = { workspace = true }
-arm_vgic = { workspace = true, features = ["vgicv3"] }
+arm_vgic = { workspace = true }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
+axklib.workspace = true
+mmio-api.workspace = true
 rdif-intc.workspace = true
 rdrive.workspace = true
+rdif-clk.workspace = true
 
 [dev-dependencies]
 ax-hal = { workspace = true, features = ["host-test"] }
 ax-kernel-guard = { workspace = true, features = ["host-test"] }
 ax-kspin = { workspace = true, features = ["host-test"] }
+rdif-clk.workspace = true

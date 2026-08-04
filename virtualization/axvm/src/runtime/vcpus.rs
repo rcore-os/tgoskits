@@ -19,20 +19,10 @@ use crate::{
     arch::{ArchOps, CurrentArch, VcpuRunAction},
     ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
-    vm::VmRuntimeHandle,
+    vm::{PendingInterrupt, VmRuntimeHandle},
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
-
-/// Blocks the current thread until it is explicitly woken up, using the wait queue
-/// associated with the VCpus of the specified VM.
-///
-/// # Arguments
-///
-/// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
-fn wait(vm_vcpus: &VmRuntimeHandle) {
-    vm_vcpus.wait();
-}
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
 /// associated with the VCpus of the specified VM.
@@ -84,33 +74,13 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
-    let vm = crate::get_vm_by_id(vm_id)
-        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
-    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
-        return Err(ax_err_type!(
-            BadState,
-            format!("VM[{vm_id}] is not accepting interrupts")
-        ));
-    }
-
-    let cpu_id = vm.with_runtime(|runtime| runtime.queue_interrupt(vcpu_id, vector))?;
-    vm.with_runtime(|runtime| {
-        runtime.notify_all();
-        Ok(())
-    })?;
-    crate::host::task::send_ipi(cpu_id);
-    Ok(())
+    queue_pending_interrupt(vm_id, vcpu_id, PendingInterrupt::Normal(vector))
 }
 
-#[expect(
-    dead_code,
-    reason = "only the LoongArch IRQ backend queues physical interrupts"
-)]
-pub(crate) fn queue_external_interrupt(
+pub(crate) fn queue_pending_interrupt(
     vm_id: usize,
     vcpu_id: usize,
-    vector: usize,
-    physical_irq: usize,
+    interrupt: PendingInterrupt,
 ) -> AxVmResult {
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
@@ -121,12 +91,30 @@ pub(crate) fn queue_external_interrupt(
         ));
     }
 
-    let cpu_id =
-        vm.with_runtime(|runtime| runtime.queue_external_interrupt(vcpu_id, vector, physical_irq))?;
+    let cpu_id = vm.with_runtime(|runtime| runtime.queue_pending_interrupt(vcpu_id, interrupt))?;
     vm.with_runtime(|runtime| {
         runtime.notify_all();
         Ok(())
     })?;
+    crate::host::task::send_ipi(cpu_id);
+    Ok(())
+}
+
+/// Wake and kick a target vCPU after an architecture IRQ backend has
+/// published pending state outside the generic runtime queue.
+pub(crate) fn notify_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
+    let runtime = vm.with_runtime(|runtime| Ok(runtime.clone()))?;
+    let cpu_id = runtime.vcpu_cpu_id(vcpu_id)?;
+    runtime.notify_all();
     crate::host::task::send_ipi(cpu_id);
     Ok(())
 }
@@ -164,10 +152,7 @@ pub(crate) fn inject_pending_interrupts<A: ArchOps>(
 /// It will join all VCpu tasks to ensure they are fully cleaned up.
 pub(crate) fn cleanup_vm_vcpus(vm_id: usize) {
     if let Some(vm) = crate::get_vm_by_id(vm_id)
-        && let Err(err) = vm.with_runtime(|runtime| {
-            runtime.join_all_vcpu_tasks(vm_id);
-            Ok(())
-        })
+        && let Err(err) = vm.with_runtime(|runtime| runtime.join_all_vcpu_tasks(vm_id))
     {
         warn!("VM[{vm_id}] vCPU runtime cleanup skipped: {err:?}");
     }
@@ -490,7 +475,9 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
 
     loop {
-        CurrentArch::before_vcpu_run(&vm, &vcpu);
+        if vcpu_id == 0 {
+            poll_vm_devices(&vm);
+        }
 
         match CurrentArch::run_vcpu(&vm, &vcpu) {
             Ok(VcpuRunAction {
@@ -538,7 +525,7 @@ fn vcpu_run() {
             Ok(VcpuRunAction {
                 waits_for_event: true,
                 ..
-            }) => wait(&runtime),
+            }) => CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
             Ok(VcpuRunAction { .. }) => {}
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
@@ -572,12 +559,16 @@ fn vcpu_run() {
                 let reset_after_stop = runtime.take_deferred_reset_request();
                 info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
 
+                if let Err(err) = CurrentArch::on_last_vcpu_exit(&vm) {
+                    warn!("VM[{vm_id}] architecture device cleanup failed: {err:?}");
+                    runtime.record_lifecycle_error(err);
+                }
                 if let Err(err) = vm.finish_stop() {
                     warn!("VM[{vm_id}] finish stop failed: {err:?}");
+                    runtime.record_lifecycle_error(err);
+                } else {
+                    info!("VM[{}] state changed to Stopped", vm_id);
                 }
-                info!("VM[{}] state changed to Stopped", vm_id);
-
-                CurrentArch::on_last_vcpu_exit(&vm);
 
                 sub_running_vm_count(1);
                 if reset_after_stop {
@@ -589,14 +580,31 @@ fn vcpu_run() {
 
             break;
         }
+
+        // AxVM may run on ArceOS's cooperative FIFO scheduler. Yield after
+        // every completed VM exit so host services such as the management
+        // console and virtual serial input can make progress alongside a
+        // continuously runnable guest.
+        crate::host::task::yield_now();
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
 }
 
+pub(super) fn poll_vm_devices(vm: &VMRef) {
+    let Ok(devices) = vm.get_devices() else {
+        return;
+    };
+    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
+    for device in devices.iter_pollable_dev() {
+        if let Err(error) = device.poll(now_ns) {
+            warn!("VM[{}] failed to poll virtual device: {error}", vm.id());
+        }
+    }
+}
+
 #[cfg(test)]
 mod cpu_on_start_ack_tests {
-
     use super::*;
 
     #[test]

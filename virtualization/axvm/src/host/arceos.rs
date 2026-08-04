@@ -86,9 +86,14 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
-    fn set_oneshot_timer(&self, deadline_ns: u64) {
-        crate::arch::set_oneshot_timer(deadline_ns);
+    fn request_timer_deadline(&self, deadline_ns: u64) {
+        crate::arch::request_timer_deadline(deadline_ns);
     }
+}
+
+/// Returns the platform IRQ owned by the runtime-selected physical console.
+pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
+    modules::ax_hal::console::irq_num()
 }
 
 pub(crate) fn dispatch_host_irq(vector: usize) {

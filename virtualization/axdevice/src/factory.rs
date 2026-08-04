@@ -16,42 +16,52 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::{InterruptTriggerMode, IrqLine};
+use axdevice_base::{ControllerInputId, InterruptTriggerMode, IrqLine, VirtualInterruptController};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use crate::{
     DeviceBundle, DeviceManagerError, DeviceManagerResult, GuestRangeAllocatorKey,
-    range_alloc::IvcGuestRangeAllocator,
+    ServiceCardinality, ServiceKey, range_alloc::IvcGuestRangeAllocator,
 };
 
-/// Resolves a VM-local interrupt line for a device under construction.
-pub trait IrqResolver: Send + Sync {
-    /// Resolves `line` with the requested trigger mode.
-    fn resolve_irq(
-        &self,
-        line: usize,
-        trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine>;
+/// Typed service key for the VM's canonical virtual interrupt controller.
+pub struct VirtualInterruptControllerKey;
+
+impl ServiceKey for VirtualInterruptControllerKey {
+    type Service = dyn VirtualInterruptController;
+
+    const NAME: &'static str = "virtual-interrupt-controller";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
 /// VM-owned services available while a device factory is building a device.
 pub struct DeviceBuildContext<'a> {
-    irq_resolver: &'a dyn IrqResolver,
+    interrupt_controller: &'a dyn VirtualInterruptController,
 }
 
 impl<'a> DeviceBuildContext<'a> {
-    /// Creates a device build context backed by `irq_resolver`.
-    pub const fn new(irq_resolver: &'a dyn IrqResolver) -> Self {
-        Self { irq_resolver }
+    /// Creates a device build context backed by the VM's canonical controller.
+    pub const fn new(interrupt_controller: &'a dyn VirtualInterruptController) -> Self {
+        Self {
+            interrupt_controller,
+        }
     }
 
-    /// Resolves a VM-local interrupt line.
+    /// Returns the VM's canonical virtual interrupt controller.
+    pub const fn interrupt_controller(&self) -> &'a dyn VirtualInterruptController {
+        self.interrupt_controller
+    }
+
+    /// Claims a source connection on one VM-local controller input.
     pub fn resolve_irq(
         &self,
         line: usize,
         trigger: InterruptTriggerMode,
     ) -> DeviceManagerResult<IrqLine> {
-        self.irq_resolver.resolve_irq(line, trigger)
+        Ok(self
+            .interrupt_controller
+            .wired_input(ControllerInputId::new(line), trigger)?
+            .connect()?)
     }
 }
 
@@ -76,9 +86,9 @@ pub trait DeviceFactory: Send + Sync {
 /// A registry containing at most one factory for each emulated device type.
 ///
 /// Registered factories are authoritative for their device type: during
-/// [`AxVmDevices::build_with_factories`](crate::AxVmDevices::build_with_factories),
-/// they take precedence over legacy fallback construction. A factory error is
-/// propagated and never causes a fallback to create another device.
+/// [`DeviceRuntime::build_with_factories`](crate::DeviceRuntime::build_with_factories),
+/// each configured device has exactly one construction path. A factory error
+/// is propagated and never causes a fallback to create another device.
 ///
 /// Architectures that pre-create an interrupt controller must first reject
 /// duplicate controller configurations, then register exactly one factory that

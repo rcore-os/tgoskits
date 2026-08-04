@@ -24,6 +24,7 @@ multitask = ["ax-task/multitask", "ax-sync/multitask"]
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
 display = ["dep:ax-display"]
+serial = ["ax-runtime/serial"]
 
 
 # Use stub functions if the feature is not enabled.

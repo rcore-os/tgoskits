@@ -19,15 +19,16 @@ AxVM/ArceOS 接入层位于 `virtualization/axvm/src/arch/aarch64`：该 adapter
 
 ### 模块结构
 
-- `src/lib.rs`：crate 入口与对外导出，导出 `ArmVcpu`、`ArmPerCpu`、`ArmHostOps`、`ArmVmExit`、`ArmNestedPagingConfig`、`ArmVcpuError` 和兼容别名。
+- `src/lib.rs`：crate 入口与对外导出；可移植 timer/types 始终可用，AArch64 硬件实现只从一个条件模块导出。
+- `src/architecture/mod.rs`：AArch64 条件编译边界，集中声明并导出硬件相关模块。
 - `src/types.rs`：OS-neutral 地址、访问宽度、nested paging config、VM exit 和错误类型。
-- `src/host.rs`：`ArmHostOps` trait，以及 current-EL IRQ handler 的泛型到汇编入口桥接。
-- `src/vcpu.rs`：vCPU 主体、EL2 guest entry/exit 协议、guest 系统寄存器恢复、VM exit 分类。
-- `src/pcpu.rs`：per-CPU EL2 本地状态，负责异常向量安装和硬件虚拟化开关。
-- `src/exception.rs` / `src/exception.S`：EL2 异常入口、VM exit trampoline、同步异常和系统寄存器 trap 处理。
-- `src/context_frame.rs`：guest `TrapFrame` 和 `GuestSystemRegisters` 保存恢复。
-- `src/exception_utils.rs`：ESR/FAR/HPFAR 解析与辅助汇编宏。
-- `src/smc.rs`：SMC 调用封装。
+- `src/architecture/host.rs`：`ArmHostOps` trait，以及 current-EL IRQ handler 的泛型到汇编入口桥接。
+- `src/architecture/vcpu.rs`：vCPU 主体、EL2 guest entry/exit 协议、guest 系统寄存器恢复、VM exit 分类。
+- `src/architecture/pcpu.rs`：per-CPU EL2 本地状态，负责异常向量安装和硬件虚拟化开关。
+- `src/architecture/exception.rs` / `src/architecture/exception.S`：EL2 异常入口、VM exit trampoline、同步异常和系统寄存器 trap 处理。
+- `src/architecture/context_frame.rs`：guest `TrapFrame` 和 `GuestSystemRegisters` 保存恢复。
+- `src/architecture/exception_utils.rs`：ESR/FAR/HPFAR 解析与辅助汇编宏。
+- `src/architecture/smc.rs`：SMC 调用封装。
 
 ### 关键数据结构
 
@@ -40,14 +41,7 @@ AxVM/ArceOS 接入层位于 `virtualization/axvm/src/arch/aarch64`：该 adapter
 - `ArmVmExit`：vCPU core 输出的 OS-neutral VM exit。
 - `ArmNestedPagingConfig`：由外层 VMM 选择的 Stage-2 配置，使用纯整数表达。
 
-兼容别名仍保留：
-
-```rust
-pub type Aarch64VCpu<H> = ArmVcpu<H>;
-pub type Aarch64PerCpu = ArmPerCpu;
-pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
-pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
-```
+对外类型只使用 `Arm*` 正式名称，不保留 `Aarch64VCpu*` 兼容别名；调用方必须在接口改名时同步更新。
 
 ### Entry/Exit 主线
 

@@ -85,15 +85,15 @@ On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps th
 
 AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart) chapter in the configuration documentation.
 
-1. **List Available Boards**: Use `cargo xtask config ls` to view the available board names under `configs/board/`.
+1. **List Available Boards**: Use `cargo xtask axvisor config ls` to view the available board names under `configs/board/`.
 
-2. **Generate Configuration**: Use `cargo xtask defconfig <board_name>` to copy the selected board-level configuration to `.build.toml`.
+2. **Generate Configuration**: Use `cargo xtask axvisor defconfig <board_name>` to copy the selected board-level configuration to `.build.toml`.
 
-3. **Execute Build**: Use `cargo xtask build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask build --config configs/board/<board_name>.toml`.
+3. **Execute Build**: Use `cargo xtask axvisor build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask axvisor build --config configs/board/<board_name>.toml`.
 
 4. **Run on QEMU or Board**:
-   - QEMU: `cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
-   - U-Boot board flow: `cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/roc-rk3568-pc/arceos-smp1.toml`
+   - QEMU: `cargo xtask axvisor qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
+   - U-Boot board flow: `cargo xtask axvisor uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/roc-rk3568-pc/arceos-smp1.toml`
 
 For local bring-up, you can also use `./scripts/quick-start.sh` for the supported QEMU and board platforms. See the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for examples.
 

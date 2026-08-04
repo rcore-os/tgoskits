@@ -12,23 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Weak},
+};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime,
 };
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
-    InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink, Resource,
+    AccessWidth, BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess,
+    DeviceError, InterruptControllerId, InterruptEndpoint, InterruptTriggerMode, IrqError, IrqLine,
+    IrqResult, Resource, VirtualInterruptController, WiredIrqInput, WiredIrqSink,
 };
-use axvm::{AxVmError, InterruptFabric};
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, VMInterruptMode};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IrqEvent {
-    SetLevel(IrqLineId, bool),
-    Pulse(IrqLineId),
+    SetLevel(ControllerInputId, bool),
+    Pulse(ControllerInputId),
 }
 
 #[derive(Default)]
@@ -42,18 +45,89 @@ impl RecordingIrqSink {
     }
 }
 
-impl IrqSink for RecordingIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
+impl WiredIrqSink for RecordingIrqSink {
+    fn set_level(&self, input: ControllerInputId, asserted: bool) -> IrqResult {
         self.events
             .lock()
             .unwrap()
-            .push(IrqEvent::SetLevel(line, asserted));
+            .push(IrqEvent::SetLevel(input, asserted));
         Ok(())
     }
 
-    fn pulse(&self, line: IrqLineId) -> IrqResult {
-        self.events.lock().unwrap().push(IrqEvent::Pulse(line));
+    fn pulse(&self, input: ControllerInputId) -> IrqResult {
+        self.events.lock().unwrap().push(IrqEvent::Pulse(input));
         Ok(())
+    }
+}
+
+struct RecordingInterruptController {
+    sink: Arc<RecordingIrqSink>,
+    inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+}
+
+impl RecordingInterruptController {
+    fn new(sink: Arc<RecordingIrqSink>) -> Self {
+        Self {
+            sink,
+            inputs: Mutex::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl VirtualInterruptController for RecordingInterruptController {
+    fn id(&self) -> InterruptControllerId {
+        InterruptControllerId::new(0)
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        let mut inputs = self.inputs.lock().unwrap();
+        if let Some((registered_trigger, registered)) = inputs.get(&input.value()) {
+            if *registered_trigger != trigger {
+                return Err(IrqError::InvalidInput {
+                    endpoint: InterruptEndpoint::Wired {
+                        controller: self.id(),
+                        input,
+                    },
+                    operation: "open test interrupt input",
+                    detail: format!(
+                        "input {} is already registered as {registered_trigger:?}",
+                        input.value()
+                    ),
+                });
+            }
+            return Ok(registered.clone());
+        }
+        let sink: Arc<dyn WiredIrqSink> = self.sink.clone();
+        let registered = WiredIrqInput::new(self.id(), input, trigger, sink);
+        inputs.insert(input.value(), (trigger, registered.clone()));
+        Ok(registered)
+    }
+}
+
+struct RejectingInterruptController;
+
+impl VirtualInterruptController for RejectingInterruptController {
+    fn id(&self) -> InterruptControllerId {
+        InterruptControllerId::new(0)
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        _trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        Err(IrqError::Unsupported {
+            endpoint: InterruptEndpoint::Wired {
+                controller: self.id(),
+                input,
+            },
+            operation: "open test interrupt input",
+            detail: "test controller exposes no wired inputs".into(),
+        })
     }
 }
 
@@ -138,22 +212,16 @@ fn irq_factory_registry() -> DeviceFactoryRegistry {
     factories
 }
 
-fn recording_fabric(mode: VMInterruptMode) -> (InterruptFabric, Weak<RecordingIrqSink>) {
+fn recording_controller() -> (Arc<RecordingInterruptController>, Weak<RecordingIrqSink>) {
     let sink = Arc::new(RecordingIrqSink::default());
     let weak = Arc::downgrade(&sink);
-    (InterruptFabric::with_sink(mode, sink).unwrap(), weak)
+    (Arc::new(RecordingInterruptController::new(sink)), weak)
 }
 
 #[test]
-fn test_no_irq_fabric_rejects_backend_and_line_resolution() {
-    let sink = Arc::new(RecordingIrqSink::default());
-    assert!(matches!(
-        InterruptFabric::with_sink(VMInterruptMode::NoIrq, sink),
-        Err(AxVmError::InvalidInput { .. })
-    ));
-
-    let fabric = InterruptFabric::new(VMInterruptMode::NoIrq);
-    let context = DeviceBuildContext::new(&fabric);
+fn test_controller_rejection_propagates_through_factory_build() {
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     assert!(matches!(
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x6_0000, 12)],
@@ -161,19 +229,29 @@ fn test_no_irq_fabric_rejects_backend_and_line_resolution() {
             &context,
         )
         .err(),
-        Some(DeviceManagerError::Irq(IrqError::InvalidLine { .. }))
+        Some(DeviceManagerError::Irq(IrqError::Unsupported { .. }))
     ));
 }
 
 #[test]
-fn test_interrupt_fabric_preserves_event_order() {
+fn test_controller_owned_wired_inputs_preserve_event_order() {
     let sink = Arc::new(RecordingIrqSink::default());
-    let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
-    let level = fabric
-        .resolve_irq(13, InterruptTriggerMode::LevelTriggered)
+    let controller = RecordingInterruptController::new(sink.clone());
+    let level = controller
+        .wired_input(
+            ControllerInputId::new(13),
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap()
+        .connect()
         .unwrap();
-    let edge = fabric
-        .resolve_irq(14, InterruptTriggerMode::EdgeTriggered)
+    let edge = controller
+        .wired_input(
+            ControllerInputId::new(14),
+            InterruptTriggerMode::EdgeTriggered,
+        )
+        .unwrap()
+        .connect()
         .unwrap();
 
     assert!(matches!(
@@ -181,47 +259,63 @@ fn test_interrupt_fabric_preserves_event_order() {
         Err(IrqError::InvalidTriggerMode { .. })
     ));
     assert!(matches!(
-        edge.raise(),
+        edge.assert(),
         Err(IrqError::InvalidTriggerMode { .. })
     ));
-    level.raise().unwrap();
-    level.lower().unwrap();
+    level.assert().unwrap();
+    level.deassert().unwrap();
     edge.pulse().unwrap();
 
     assert_eq!(
         sink.events(),
         vec![
-            IrqEvent::SetLevel(IrqLineId(13), true),
-            IrqEvent::SetLevel(IrqLineId(13), false),
-            IrqEvent::Pulse(IrqLineId(14)),
+            IrqEvent::SetLevel(ControllerInputId::new(13), true),
+            IrqEvent::SetLevel(ControllerInputId::new(13), false),
+            IrqEvent::Pulse(ControllerInputId::new(14)),
         ]
     );
 }
 
 #[test]
-fn test_interrupt_fabric_can_signal_backend_directly() {
+fn test_controller_inputs_signal_backend_without_a_parallel_fabric() {
     let sink = Arc::new(RecordingIrqSink::default());
-    let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
+    let controller = RecordingInterruptController::new(sink.clone());
+    let level = controller
+        .wired_input(
+            ControllerInputId::new(21),
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
+    let edge = controller
+        .wired_input(
+            ControllerInputId::new(22),
+            InterruptTriggerMode::EdgeTriggered,
+        )
+        .unwrap()
+        .connect()
+        .unwrap();
 
-    fabric.set_level(21, true).unwrap();
-    fabric.set_level(21, false).unwrap();
-    fabric.pulse(22).unwrap();
+    level.assert().unwrap();
+    level.deassert().unwrap();
+    edge.pulse().unwrap();
 
     assert_eq!(
         sink.events(),
         vec![
-            IrqEvent::SetLevel(IrqLineId(21), true),
-            IrqEvent::SetLevel(IrqLineId(21), false),
-            IrqEvent::Pulse(IrqLineId(22)),
+            IrqEvent::SetLevel(ControllerInputId::new(21), true),
+            IrqEvent::SetLevel(ControllerInputId::new(21), false),
+            IrqEvent::Pulse(ControllerInputId::new(22)),
         ]
     );
 }
 
 #[test]
-fn test_factory_device_emits_irq_through_interrupt_fabric() {
-    let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
+fn test_factory_device_emits_irq_through_canonical_controller() {
+    let (controller, sink) = recording_controller();
     let devices = {
-        let context = DeviceBuildContext::new(&fabric);
+        let context = DeviceBuildContext::new(controller.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x7_0000, 15)],
             &irq_factory_registry(),
@@ -236,15 +330,15 @@ fn test_factory_device_emits_irq_through_interrupt_fabric() {
 
     assert_eq!(
         sink.upgrade().unwrap().events(),
-        vec![IrqEvent::Pulse(IrqLineId(15))]
+        vec![IrqEvent::Pulse(ControllerInputId::new(15))]
     );
 }
 
 #[test]
-fn test_dropping_devices_and_fabric_releases_irq_backend() {
-    let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
+fn test_dropping_devices_and_controller_releases_irq_backend() {
+    let (controller, sink) = recording_controller();
     let devices = {
-        let context = DeviceBuildContext::new(&fabric);
+        let context = DeviceBuildContext::new(controller.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x8_0000, 16)],
             &irq_factory_registry(),
@@ -253,18 +347,18 @@ fn test_dropping_devices_and_fabric_releases_irq_backend() {
         .unwrap()
     };
 
-    drop(fabric);
+    drop(controller);
     assert!(sink.upgrade().is_some());
     drop(devices);
     assert!(sink.upgrade().is_none());
 }
 
 #[test]
-fn test_equal_irq_numbers_are_isolated_between_fabrics() {
-    let (fabric_a, sink_a) = recording_fabric(VMInterruptMode::Emulated);
-    let (fabric_b, sink_b) = recording_fabric(VMInterruptMode::Emulated);
+fn test_equal_irq_numbers_are_isolated_between_controllers() {
+    let (controller_a, sink_a) = recording_controller();
+    let (controller_b, sink_b) = recording_controller();
     let devices_a = {
-        let context = DeviceBuildContext::new(&fabric_a);
+        let context = DeviceBuildContext::new(controller_a.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x9_0000, 17)],
             &irq_factory_registry(),
@@ -273,7 +367,7 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
         .unwrap()
     };
     let devices_b = {
-        let context = DeviceBuildContext::new(&fabric_b);
+        let context = DeviceBuildContext::new(controller_b.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0xa_0000, 17)],
             &irq_factory_registry(),
@@ -288,7 +382,7 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
 
     assert_eq!(
         sink_a.upgrade().unwrap().events(),
-        vec![IrqEvent::Pulse(IrqLineId(17))]
+        vec![IrqEvent::Pulse(ControllerInputId::new(17))]
     );
     assert!(sink_b.upgrade().unwrap().events().is_empty());
     assert_eq!(devices_b.devices().count(), 1);

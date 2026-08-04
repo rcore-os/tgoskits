@@ -23,4 +23,5 @@ log = "0.4"
 spin = { workspace = true }
 
 aarch64-cpu = "11.0"
+aarch64_sysreg = { workspace = true }
 numeric-enum-macro = "0.2"

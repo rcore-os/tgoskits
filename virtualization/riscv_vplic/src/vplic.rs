@@ -8,11 +8,30 @@ use core::option::Option;
 use ax_kspin::SpinNoIrq as Mutex;
 use axdevice_base::Resource;
 use axvm_types::GuestPhysAddr;
-#[cfg(target_arch = "riscv64")]
-use axvm_types::HostPhysAddr;
 use bitmaps::Bitmap;
 
 use crate::{VplicError, VplicResult, consts::*};
+
+/// One guest-visible PLIC completion observed after controller state changed.
+///
+/// The event contains no host-controller state. Hypervisor adapters may use it
+/// after all vPLIC locks are released to finish an optional physical backing
+/// transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VplicCompletion {
+    source: usize,
+}
+
+impl VplicCompletion {
+    pub(crate) const fn new(source: usize) -> Self {
+        Self { source }
+    }
+
+    /// Returns the completed guest PLIC source.
+    pub const fn source(self) -> usize {
+        self.source
+    }
+}
 
 /// Virtual PLIC global controller.
 ///
@@ -33,18 +52,16 @@ pub struct VPlicGlobal {
     pub pending_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Active IRQs for this VPlicGlobal.
     pub active_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
+    /// Level-triggered inputs that remain electrically asserted.
+    ///
+    /// This is controller-owned state: completing a claimed source re-pends
+    /// it until the device lowers the line.
+    pub(crate) line_asserted_irqs: Mutex<Bitmap<{ PLIC_NUM_SOURCES }>>,
     /// Guest-programmable PLIC registers owned by this virtual controller.
     ///
     /// They must not alias host PLIC registers: guest configuration and
     /// claim/complete accesses belong to the VM, not the host interrupt domain.
     pub(crate) registers: Mutex<VPlicRegisters>,
-    /// Host PLIC base used only to mirror route-enabling configuration.
-    ///
-    /// Guest reads and claim/complete remain entirely virtual; mirroring
-    /// priority/enable/threshold keeps host physical sources deliverable to
-    /// the hypervisor while the guest owns an independent controller state.
-    #[cfg(target_arch = "riscv64")]
-    pub(crate) host_plic_addr: HostPhysAddr,
 }
 
 /// Guest-visible PLIC priority, enable, and threshold registers.
@@ -93,14 +110,13 @@ impl VPlicGlobal {
             assigned_irqs: Mutex::new(Bitmap::new()),
             pending_irqs: Mutex::new(Bitmap::new()),
             active_irqs: Mutex::new(Bitmap::new()),
+            line_asserted_irqs: Mutex::new(Bitmap::new()),
             contexts_num,
             registers: Mutex::new(VPlicRegisters {
                 priorities: [0; PLIC_NUM_SOURCES],
                 enable_masks: alloc::vec![[0; PLIC_NUM_SOURCES / 32]; contexts_num],
                 thresholds: alloc::vec![0; contexts_num],
             }),
-            #[cfg(target_arch = "riscv64")]
-            host_plic_addr: HostPhysAddr::from_usize(addr.as_usize()),
         })
     }
 

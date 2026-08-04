@@ -158,35 +158,37 @@ main()
 
 ### 4.1 设备模型
 
-Axvisor 的虚拟设备框架（`virtualization/axdevice/`）支持三种设备模式：
+Axvisor 把用户物理设备策略与 machine 固有虚拟设备分开：
 
-| 模式 | 配置字段 | 说明 |
-|------|---------|------|
-| **Passthrough** | `passthrough_devices` | Guest 直接访问物理硬件 |
-| **Emulated** | `emu_devices` | Hypervisor 软件模拟设备 |
-| **Excluded** | `excluded_devices` | 从 passthrough 中排除的设备 |
+| 层次 | 配置/实现 | 说明 |
+|------|-----------|------|
+| **物理设备选择** | `devices.passthrough` | `virtualized` 客户机只直通显式选择的设备 |
+| **默认直通排除** | `devices.disabled` | 从 `passthrough` 客户机的默认可分配设备集中移除 |
+| **虚拟平台设备** | `axvm::machine` | 固定创建串口、中断控制器、定时器和固件接口，不进入用户配置 |
 
 ### 4.2 设备配置
 
 在 VM 配置文件中的设备配置示例：
 
 ```toml
+[base]
+guest_type = "passthrough"
+
 [devices]
-interrupt_mode = "passthrough"
-passthrough_devices = [["/"]]           # 直通所有设备
-# 或精细控制：
-# passthrough_devices = [["/dev/uart@fe201000"]]
-# excluded_devices = [["/dev/gpio"]]
+passthrough = [{ path = "/soc/ethernet@1000" }]
+disabled = [{ path = "/soc/gpio@2000" }]
 ```
+
+`guest_type = "passthrough"` 已表示默认选择全部 guest-assignable 物理设备，不需要也不允许 `"/"` 通配选择器。宿主物理 UART 始终不可分配；客户机串口始终是 machine 创建的虚拟设备。
 
 ### 4.3 添加模拟设备
 
 要添加一个新的虚拟设备（如虚拟串口、虚拟块设备），需要：
 
 1. 在 `virtualization/axdevice/` 中实现设备模拟逻辑
-2. 在 VM 配置的 `emu_devices` 中注册
-3. 在 `vmm` 中处理对应的 VM Exit 事件
-4. 通过 Guest 驱动验证
+2. 在 `virtualization/axvm/src/machine.rs` 的对应架构 profile 中注册固定资源
+3. 通过 `IrqLine` 接入对应虚拟中断控制器，并在 VM Exit 路径分发设备访问
+4. 同步生成 FDT/ACPI/MP table 描述并通过 Guest 驱动验证
 
 ---
 
@@ -243,7 +245,7 @@ VM 配置文件位于 `os/axvisor/configs/vms/`，TOML 格式：
 [base]
 id = 1                    # VM ID
 name = "linux-qemu"       # VM 名称
-vm_type = 1               # VM 类型
+guest_type = "virtualized" # "virtualized" 或 "passthrough"
 cpu_num = 1               # vCPU 数量
 phys_cpu_ids = [0]        # 绑定的物理 CPU
 
@@ -260,8 +262,8 @@ memory_regions = [
 ]
 
 [devices]
-interrupt_mode = "passthrough"
-passthrough_devices = [["/"]]
+passthrough = [{ path = "/soc/ethernet@1000" }]
+disabled = [{ path = "/soc/gpio@2000" }]
 ```
 
 ### 6.2 关键字段说明
@@ -269,12 +271,15 @@ passthrough_devices = [["/"]]
 | 字段 | 说明 | 常见值 |
 |------|------|--------|
 | `id` | VM 唯一标识 | 正整数 |
+| `guest_type` | 物理设备赋予策略 | `"virtualized"` 或 `"passthrough"` |
 | `cpu_num` | 分配的 vCPU 数 | 1-16 |
 | `phys_cpu_ids` | 绑定的物理 CPU 列表 | `[0]`, `[0, 1, 2, 3]` |
 | `entry_point` | Guest 入口地址 | 架构相关 |
 | `image_location` | 镜像加载方式 | `"fs"` 或 `"memory"` |
 | `kernel_path` | 内核文件路径 | Guest 类型相关 |
 | `memory_regions` | 内存区域 | `[[base, size, flags, map_type]]` |
+
+配置使用 `deny_unknown_fields`；旧 `vm_type`、`emu_devices`、`interrupt_mode`、裸地址/IRQ 和任何 `serial` 字段都会解析失败。完整语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
 
 ### 6.3 支持的 Guest 类型
 

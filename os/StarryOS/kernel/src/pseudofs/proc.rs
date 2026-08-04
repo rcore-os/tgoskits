@@ -32,7 +32,7 @@ use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
 use crate::{
-    file::{FD_TABLE, PidFd},
+    file::FD_TABLE,
     mm::{BackendFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
@@ -47,8 +47,6 @@ use crate::{
 /// Global IRQ counter incremented on every timer tick.
 /// Module-level so both `/proc/interrupts` and `/proc/stat` can read it.
 static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
-static PID_MAX: AtomicUsize = AtomicUsize::new(32768);
-static VM_MAX_MAP_COUNT: AtomicUsize = AtomicUsize::new(65530);
 const PROCFS_INIT_PID: Pid = 1;
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
@@ -928,52 +926,6 @@ impl SimpleDirOps for ThreadFdDir {
     }
 }
 
-/// The /proc/[pid]/fdinfo directory.
-struct ThreadFdInfoDir {
-    fs: Arc<SimpleFs>,
-    task: WeakAxTaskRef,
-}
-
-impl SimpleDirOps for ThreadFdInfoDir {
-    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
-        let Some(task) = self.task.upgrade() else {
-            return Box::new(iter::empty());
-        };
-        let ids = FD_TABLE
-            .scope(&task.as_thread().scope.read())
-            .read()
-            .ids()
-            .map(|id| Cow::Owned(id.to_string()))
-            .collect::<Vec<_>>();
-        Box::new(ids.into_iter())
-    }
-
-    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
-        let fs = self.fs.clone();
-        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
-        let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let pid = FD_TABLE
-            .scope(&task.as_thread().scope.read())
-            .read()
-            .get(fd as _)
-            .ok_or(VfsError::NotFound)?
-            .inner
-            .downcast_ref::<PidFd>()
-            .map(PidFd::target_pid);
-
-        // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
-        // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
-        // fallback. Other descriptor kinds still have an fdinfo entry, even
-        // though StarryOS does not yet expose their type-specific fields.
-        let content = pid.map_or_else(String::new, |pid| format!("Pid:\t{pid}\nNSpid:\t{pid}\n"));
-        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone().into_bytes())).into())
-    }
-
-    fn is_cacheable(&self) -> bool {
-        false
-    }
-}
-
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
 /// Each entry is a regular file displaying the namespace identifier.
@@ -1288,7 +1240,6 @@ impl SimpleDirOps for ThreadDir {
                 "root",
                 "cwd",
                 "fd",
-                "fdinfo",
                 "uid_map",
                 "gid_map",
                 "setgroups",
@@ -1473,14 +1424,6 @@ impl SimpleDirOps for ThreadDir {
             "fd" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(ThreadFdDir {
-                    fs,
-                    task: Arc::downgrade(&task),
-                }),
-            )
-            .into(),
-            "fdinfo" => SimpleDir::new_maker(
-                fs.clone(),
-                Arc::new(ThreadFdInfoDir {
                     fs,
                     task: Arc::downgrade(&task),
                 }),
@@ -1757,37 +1700,17 @@ fn mq_sysctl_file(
     )
 }
 
-/// Builds a root-configurable integer proc sysctl.
+/// Builds an integer sysctl whose owning resource limit is not implemented.
 ///
-/// Linux's `proc_dointvec_minmax` accepts a decimal value with optional
-/// surrounding whitespace, rejects values outside the registered range, and
-/// exposes the updated value to subsequent reads. The owning subsystem can
-/// consume the same atomic as its enforcement boundary is implemented.
-fn usize_sysctl_file(
-    fs: &Arc<SimpleFs>,
-    cell: &'static AtomicUsize,
-    min: usize,
-    max: usize,
-) -> Arc<SimpleFile> {
+/// Do not acknowledge writes until PID allocation and VMA admission consume
+/// these settings. Returning `EOPNOTSUPP` keeps procfs from reporting a limit
+/// that the kernel does not enforce.
+fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc<SimpleFile> {
     SimpleFile::new_regular(
         fs.clone(),
         RwFile::new(move |operation| match operation {
-            SimpleFileOperation::Read => Ok(Some(
-                format!("{}\n", cell.load(Ordering::Relaxed)).into_bytes(),
-            )),
-            SimpleFileOperation::Write(data) => {
-                let text = core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    return Ok(None);
-                }
-                let value: usize = trimmed.parse().map_err(|_| VfsError::InvalidInput)?;
-                if value < min || value > max {
-                    return Err(VfsError::InvalidInput);
-                }
-                cell.store(value, Ordering::Relaxed);
-                Ok(None)
-            }
+            SimpleFileOperation::Read => Ok(Some(value)),
+            SimpleFileOperation::Write(_) => Err(VfsError::OperationNotSupported),
         }),
     )
 }
@@ -1911,7 +1834,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add("pid_max", usize_sysctl_file(&fs, &PID_MAX, 301, 4_194_304));
+            kernel.add("pid_max", unsupported_limit_sysctl_file(&fs, "32768\n"));
             kernel.add(
                 "osrelease",
                 SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
@@ -1919,27 +1842,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
-            );
-            kernel.add(
-                "hostname",
-                SimpleFile::new_regular(fs.clone(), || {
-                    let nodename = {
-                        let task = current();
-                        let nsproxy = task.as_thread().proc_data.nsproxy.lock();
-                        let uts_namespace = nsproxy.uts_ns.lock();
-                        uts_namespace.nodename
-                    };
-                    let name_len = nodename
-                        .iter()
-                        .position(|&byte| byte == 0)
-                        .unwrap_or(nodename.len());
-                    let mut output = Vec::with_capacity(name_len + 1);
-                    for byte in &nodename[..name_len] {
-                        output.push(byte.to_ne_bytes()[0]);
-                    }
-                    output.push(b'\n');
-                    Ok(output)
-                }),
             );
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
@@ -1975,7 +1877,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             vm.add(
                 "max_map_count",
-                usize_sysctl_file(&fs, &VM_MAX_MAP_COUNT, 1, i32::MAX as usize),
+                unsupported_limit_sysctl_file(&fs, "65530\n"),
             );
             SimpleDir::new_maker(fs.clone(), Arc::new(vm))
         });

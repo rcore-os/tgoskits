@@ -1,0 +1,7 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["test-suit/axvisor/normal/qemu-timer-stress/aarch64-linux-timer-stress.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-timer-stress/initramfs-aarch64.cpio.gz"

@@ -26,8 +26,8 @@
 //! - [`DeviceAccess`]: The access-scoped capability context passed to devices.
 //! - [`Resource`]: Static device resource declarations used for registration
 //!   validation and bus dispatch.
-//! - [`IrqSink`] and [`IrqLine`]: Architecture-neutral interrupt delivery
-//!   contracts used by device factories.
+//! - [`VirtualInterruptController`], [`WiredIrqInput`], and [`IrqLine`]:
+//!   architecture-neutral interrupt connections used by device factories.
 //!
 //! # Usage
 //!
@@ -458,6 +458,6 @@ pub trait BusRouter {
 // Sub-modules
 // ---------------------------------------------------------------------------
 
-mod irq;
+mod interrupt;
 
-pub use irq::{IrqError, IrqLine, IrqResult, IrqSink};
+pub use interrupt::*;

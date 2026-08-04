@@ -21,11 +21,11 @@ use super::{
     vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
 use crate::{
-    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps,
-    X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port,
-    X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
-    msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
-    xstate::XState,
+    X86_LOCAL_APIC_GPA, X86_LOCAL_APIC_SIZE, X86AccessFlags, X86AccessWidth, X86GuestPhysAddr,
+    X86GuestVirtAddr, X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo,
+    X86NestedPagingConfig, X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult,
+    X86VcpuSetupConfig, X86VmExit, host, msr::Msr, regs::GeneralRegisters,
+    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
 const QEMU_EXIT_PORT: u16 = 0x604;
@@ -36,8 +36,6 @@ const X86_COM1_PORT_BASE: u16 = 0x3f8;
 const X86_COM1_PORT_COUNT: u32 = 8;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
-const X86_LOCAL_APIC_BASE: usize = 0xfee0_0000;
-const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 
 const APIC_BASE_MSR: u32 = 0x1b;
@@ -1120,7 +1118,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
     ) -> X86VcpuResult<Option<(X86VmExit, u8)>> {
         let addr_usize = addr.as_usize();
         let local_apic =
-            (X86_LOCAL_APIC_BASE..X86_LOCAL_APIC_BASE + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
+            (X86_LOCAL_APIC_GPA..X86_LOCAL_APIC_GPA + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
         let ioapic = (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr_usize);
         if !local_apic && !ioapic {
             return Ok(None);
@@ -1209,7 +1207,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             });
         }
 
-        let offset = addr.as_usize() - X86_LOCAL_APIC_BASE;
+        let offset = addr.as_usize() - X86_LOCAL_APIC_GPA;
         if offset == X86_LOCAL_APIC_EOI_OFFSET {
             return Ok(X86VmExit::InterruptEnd {
                 vector: self.handle_local_apic_eoi(),

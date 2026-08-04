@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use ax_kspin::SpinRaw as Mutex;
-use axdevice::{X86InterruptDomainKey, X86PitServiceKey, X86SerialServiceKey};
+use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PitServiceKey};
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     runtime::{VCpuRef, VMRef},
 };
 
-const IOAPIC_GSI_COUNT: usize = 24;
+pub(super) const IOAPIC_GSI_COUNT: usize = 24;
 
 const PIT_TIMER_GSI: usize = 0;
 const COM1_GSI: usize = 4;
@@ -25,6 +25,7 @@ enum ForwardingRouteError {
     UnsupportedGsi,
     AlreadyActive,
     HostIrqConflict,
+    HostOwnedConsole,
     ResolveHostIrq(irq::IrqError),
 }
 
@@ -87,7 +88,14 @@ struct HostIrqLease {
 static HOST_IRQ_FORWARDING_LEASES: Mutex<Vec<HostIrqLease>> = Mutex::new(Vec::new());
 
 fn should_register_ioapic_gsi_hook(gsi: usize) -> bool {
-    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI
+    gsi < IOAPIC_GSI_COUNT && gsi != PIT_TIMER_GSI && gsi != COM1_GSI
+}
+
+fn host_irq_is_guest_assignable(
+    host_irq: irq::IrqId,
+    host_console_irq: Option<irq::IrqId>,
+) -> bool {
+    host_console_irq != Some(host_irq)
 }
 
 fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
@@ -129,6 +137,9 @@ fn forwarding_route_error(
         ForwardingRouteError::HostIrqConflict => alloc::format!(
             "host IRQ {host_irq:?} is already mapped to a different guest GSI in VM[{vm_id}]"
         ),
+        ForwardingRouteError::HostOwnedConsole => {
+            alloc::format!("host IRQ {host_irq:?} belongs to the runtime-selected physical console")
+        }
         ForwardingRouteError::ResolveHostIrq(error) => {
             alloc::format!("failed to resolve host IRQ for guest GSI {guest_gsi}: {error:?}")
         }
@@ -166,7 +177,11 @@ impl X86InterruptDomain {
         host_irq: irq::IrqId,
         trigger: InterruptTriggerMode,
         explicit: bool,
+        host_console_irq: Option<irq::IrqId>,
     ) -> Result<(), ForwardingRouteError> {
+        if !host_irq_is_guest_assignable(host_irq, host_console_irq) {
+            return Err(ForwardingRouteError::HostOwnedConsole);
+        }
         let mut state = self.forwarding.lock();
         if guest_gsi >= state.routes.len() {
             return Err(ForwardingRouteError::UnsupportedGsi);
@@ -208,6 +223,7 @@ impl X86InterruptDomain {
     fn forwarded_host_irq_for_guest_gsi(
         &self,
         guest_gsi: usize,
+        host_console_irq: Option<irq::IrqId>,
     ) -> Result<irq::IrqId, ForwardingRouteError> {
         if let Some(host_irq) = self
             .forwarding
@@ -216,6 +232,9 @@ impl X86InterruptDomain {
             .get(guest_gsi)
             .and_then(|route| route.host_irq)
         {
+            if !host_irq_is_guest_assignable(host_irq, host_console_irq) {
+                return Err(ForwardingRouteError::HostOwnedConsole);
+            }
             return Ok(host_irq);
         }
 
@@ -227,6 +246,7 @@ impl X86InterruptDomain {
             host_irq,
             InterruptTriggerMode::EdgeTriggered,
             false,
+            host_console_irq,
         )?;
         Ok(host_irq)
     }
@@ -294,6 +314,8 @@ impl X86InterruptDomain {
             state.pending_level |= bit;
         }
         state.pending |= bit;
+        drop(state);
+        let _ = self.wired.kick.publish_from_irq(0);
     }
 
     fn set_forwarded_gsi_masked(&self, gsi: usize) -> bool {
@@ -369,7 +391,10 @@ impl X86InterruptDomain {
         let activator = {
             let mut state = self.forwarding.lock();
             let activator = state.routes[guest_gsi].activator;
-            if activator.is_none() || state.activated & gsi_bit(guest_gsi) != 0 {
+            if state.routes[guest_gsi].host_irq.is_none()
+                || activator.is_none()
+                || state.activated & gsi_bit(guest_gsi) != 0
+            {
                 return;
             }
             state.activated |= gsi_bit(guest_gsi);
@@ -417,6 +442,68 @@ impl X86InterruptDomain {
     }
 }
 
+pub fn start_deferred_irq_delivery(vm: &VMRef) {
+    if let Some(domain) = interrupt_domain_for_vm(vm) {
+        domain.start_kick_worker();
+    }
+}
+
+pub fn stop_deferred_irq_delivery(vm: &VMRef) {
+    if let Some(domain) = interrupt_domain_for_vm(vm) {
+        domain.stop_kick_worker();
+    }
+}
+
+pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
+    if vcpu.id() != 0 {
+        return;
+    }
+    let Some(domain) = interrupt_domain_for_vm(vm) else {
+        return;
+    };
+    let (pending, pending_level) = domain.take_pending_wired_gsis();
+    if pending == 0 {
+        return;
+    }
+
+    let mut retry = 0;
+    let mut retry_level = 0;
+    for gsi in 0..IOAPIC_GSI_COUNT {
+        let bit = gsi_bit(gsi);
+        if pending & bit == 0 {
+            continue;
+        }
+        let Some(vector) = domain.vector_for_gsi(gsi) else {
+            retry |= bit;
+            retry_level |= pending_level & bit;
+            continue;
+        };
+        let trigger = if pending_level & bit != 0 {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        };
+        if let Err(error) = vcpu
+            .get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector as usize, trigger)
+        {
+            warn!("failed to inject x86 controller-owned GSI {gsi} vector {vector:#x}: {error:?}");
+            retry |= bit;
+            retry_level |= pending_level & bit;
+        }
+    }
+    if retry != 0 {
+        domain
+            .wired
+            .pending
+            .fetch_or(retry, core::sync::atomic::Ordering::Release);
+        domain
+            .wired
+            .pending_level
+            .fetch_or(retry_level, core::sync::atomic::Ordering::Release);
+    }
+}
+
 pub fn register_ioapic_irq_forwarding_route(
     vm: &crate::AxVMRef,
     guest_gsi: usize,
@@ -444,8 +531,9 @@ pub fn register_ioapic_irq_forwarding_route_with_trigger(
     }
 
     let domain = require_interrupt_domain(vm, "register x86 IOAPIC forwarding route")?;
+    let host_console_irq = crate::host::arceos::host_console_irq();
     domain
-        .register_forwarding_route(guest_gsi, host_irq, trigger, true)
+        .register_forwarding_route(guest_gsi, host_irq, trigger, true, host_console_irq)
         .map_err(|error| forwarding_route_error(vm.id(), guest_gsi, host_irq, error))?;
     info!(
         "Registered x86 IOAPIC forwarding route: guest GSI {guest_gsi} <- host IRQ {host_irq:?}, \
@@ -499,45 +587,6 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         return;
     };
 
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
-}
-
-pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
-    }
-
-    let Ok(devices) = vm.get_devices() else {
-        return;
-    };
-    if !devices
-        .services()
-        .require::<X86SerialServiceKey>()
-        .is_ok_and(|serial| serial.poll_irq())
-    {
-        return;
-    }
-
-    let Some(irq) = devices
-        .services()
-        .require::<X86InterruptDomainKey>()
-        .ok()
-        .and_then(|ioapic| ioapic.assert_gsi(COM1_GSI))
-    else {
-        trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
-        return;
-    };
-
-    trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
     vcpu.get_arch_vcpu()
         .inject_interrupt_with_trigger(
             irq.vector as _,
@@ -646,8 +695,9 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     }
 
     let mut registered = 0;
+    let host_console_irq = crate::host::arceos::host_console_irq();
     for gsi in ioapic_irq_hook_gsis() {
-        match domain.forwarded_host_irq_for_guest_gsi(gsi) {
+        match domain.forwarded_host_irq_for_guest_gsi(gsi, host_console_irq) {
             Ok(host_irq) => {
                 if !acquire_host_irq_forwarding_lease(host_irq, vm.id()) {
                     warn!(
@@ -684,10 +734,9 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
         domain.mark_forwarding_hooks_registered();
     }
     info!(
-        "Enabled x86 IOAPIC IRQ forwarding for host GSIs 0..{} excluding PIT GSI {} ({} newly \
-         registered)",
+        "Enabled x86 IOAPIC IRQ forwarding for guest-assignable host GSIs 0..{} excluding \
+         machine-owned resources ({} newly registered)",
         IOAPIC_GSI_COUNT - 1,
-        PIT_TIMER_GSI,
         registered
     );
     activate_ready_ioapic_forwarding_routes(vm);
@@ -919,9 +968,10 @@ mod tests {
 
     use super::{
         COM1_GSI, IOAPIC_GSI_COUNT, PIT_TIMER_GSI, acquire_host_irq_forwarding_lease, gsi_bit,
-        host_irq_forwarding_lease_count, host_irq_to_raw, ioapic_irq_hook_gsis, raw_to_host_irq,
-        release_host_irq_forwarding_leases_for_vm, reset_host_irq_forwarding_leases,
-        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
+        host_irq_forwarding_lease_count, host_irq_is_guest_assignable, host_irq_to_raw,
+        ioapic_irq_hook_gsis, raw_to_host_irq, release_host_irq_forwarding_leases_for_vm,
+        reset_host_irq_forwarding_leases, should_rearm_forwarded_host_gsi_after_eoi,
+        should_register_ioapic_gsi_hook,
     };
     use crate::{InterruptTriggerMode, arch::x86_64::X86InterruptDomain};
 
@@ -939,13 +989,21 @@ mod tests {
             None
         }
 
+        fn set_gsi_level(
+            &self,
+            _gsi: usize,
+            _asserted: bool,
+        ) -> Option<x86_vlapic::IoApicInterrupt> {
+            None
+        }
+
         fn end_of_interrupt(&self, _vector: u8) -> Option<x86_vlapic::IoApicEoi> {
             None
         }
     }
 
     fn new_domain() -> X86InterruptDomain {
-        X86InterruptDomain::new(Arc::new(FakeIoApic))
+        X86InterruptDomain::new(1, Arc::new(FakeIoApic))
     }
 
     fn reset_forwarding_routes() {
@@ -965,8 +1023,41 @@ mod tests {
     }
 
     #[test]
+    fn machine_owned_uart_gsi_never_registers_a_host_irq_hook() {
+        assert!(!should_register_ioapic_gsi_hook(COM1_GSI));
+    }
+
+    #[test]
+    fn runtime_selected_host_console_irq_is_not_guest_assignable() {
+        let console_irq = crate::arch::x86_64::host_irq::make_irq_id(7, 19);
+        let unrelated_irq = crate::arch::x86_64::host_irq::make_irq_id(7, 20);
+
+        assert!(!host_irq_is_guest_assignable(
+            console_irq,
+            Some(console_irq)
+        ));
+        assert!(host_irq_is_guest_assignable(
+            unrelated_irq,
+            Some(console_irq)
+        ));
+        assert!(host_irq_is_guest_assignable(unrelated_irq, None));
+
+        let domain = new_domain();
+        assert_eq!(
+            domain.register_forwarding_route(
+                19,
+                console_irq,
+                InterruptTriggerMode::LevelTriggered,
+                true,
+                Some(console_irq),
+            ),
+            Err(super::ForwardingRouteError::HostOwnedConsole)
+        );
+        assert_eq!(domain.guest_gsi_for_host_irq(console_irq), None);
+    }
+
+    #[test]
     fn passthrough_gsis_still_register_host_irq_hooks() {
-        assert!(should_register_ioapic_gsi_hook(COM1_GSI));
         assert!(should_register_ioapic_gsi_hook(18));
         assert!(should_register_ioapic_gsi_hook(IOAPIC_GSI_COUNT - 1));
         assert!(!should_register_ioapic_gsi_hook(IOAPIC_GSI_COUNT));
@@ -1007,6 +1098,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     false,
+                    None,
                 )
                 .unwrap();
 
@@ -1016,6 +1108,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     true,
+                    None,
                 ),
                 Err(super::ForwardingRouteError::HostIrqConflict)
             );
@@ -1040,6 +1133,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     true,
+                    None,
                 )
                 .unwrap();
 
@@ -1049,6 +1143,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     false,
+                    None,
                 ),
                 Err(super::ForwardingRouteError::HostIrqConflict)
             );
@@ -1070,6 +1165,7 @@ mod tests {
                     low_host_irq,
                     InterruptTriggerMode::LevelTriggered,
                     true,
+                    None,
                 )
                 .unwrap();
             domain
@@ -1078,6 +1174,7 @@ mod tests {
                     high_host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     true,
+                    None,
                 )
                 .unwrap();
 
@@ -1095,7 +1192,17 @@ mod tests {
         with_clean_forwarding_routes(|| {
             let domain = new_domain();
             let guest_gsi = 18;
+            let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 18);
             ACTIVATION_COUNT.store(0, Ordering::Release);
+            domain
+                .register_forwarding_route(
+                    guest_gsi,
+                    host_irq,
+                    InterruptTriggerMode::EdgeTriggered,
+                    true,
+                    None,
+                )
+                .unwrap();
             domain
                 .register_forwarding_activator(guest_gsi, count_activation)
                 .unwrap();
@@ -1112,6 +1219,22 @@ mod tests {
     }
 
     #[test]
+    fn forwarding_activator_does_not_start_without_an_owned_host_irq_route() {
+        with_clean_forwarding_routes(|| {
+            let domain = new_domain();
+            let guest_gsi = 18;
+            ACTIVATION_COUNT.store(0, Ordering::Release);
+            domain
+                .register_forwarding_activator(guest_gsi, count_activation)
+                .unwrap();
+
+            domain.activate_ready_forwarding_route_for_test(guest_gsi, true);
+
+            assert_eq!(ACTIVATION_COUNT.load(Ordering::Acquire), 0);
+        });
+    }
+
+    #[test]
     fn forwarding_activator_drops_pre_activation_pending_state() {
         with_clean_forwarding_routes(|| {
             let domain = new_domain();
@@ -1124,6 +1247,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     true,
+                    None,
                 )
                 .unwrap();
             domain
@@ -1186,6 +1310,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     true,
+                    None,
                 )
                 .unwrap();
             assert!(domain.set_forwarding_owner(1));
@@ -1216,6 +1341,7 @@ mod tests {
                     host_irq,
                     InterruptTriggerMode::EdgeTriggered,
                     true,
+                    None,
                 )
                 .unwrap();
             assert!(domain.set_forwarding_owner(0));

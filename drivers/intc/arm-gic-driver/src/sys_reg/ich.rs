@@ -152,6 +152,7 @@ tock_registers::register_bitfields! {
         GROUP OFFSET(60) NUMBITS(1) [],
         NMI OFFSET(59) NUMBITS(1) [],
         PRIORITY OFFSET(48) NUMBITS(8) [],
+        EOI OFFSET(41) NUMBITS(1) [],
         PINTID OFFSET(32) NUMBITS(16) [],
     ]
 }

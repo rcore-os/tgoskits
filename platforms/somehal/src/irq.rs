@@ -11,7 +11,7 @@ use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqDomainId, IrqError,
-    IrqId, IrqSource,
+    IrqId, IrqSource, IrqTrigger,
 };
 use rdrive::{Device, DeviceId};
 
@@ -266,6 +266,49 @@ pub struct ActiveIrq {
 impl ActiveIrq {
     pub fn id(&self) -> IrqId {
         resolve_irq_route(Plat::active_irq_id(&self.inner))
+    }
+
+    /// Detaches one RISC-V PLIC completion from this trap transaction.
+    ///
+    /// The returned claim captures the PLIC context that performed the claim;
+    /// callers must eventually pass its parts to
+    /// [`complete_deferred_riscv_plic_claim`].
+    #[cfg(target_arch = "riscv64")]
+    pub fn defer_riscv_plic_completion(&mut self) -> Option<RiscvPlicClaim> {
+        crate::arch::take_plic_claim(&mut self.inner)
+            .map(|(context, source)| RiscvPlicClaim { context, source })
+    }
+}
+
+/// A detached RISC-V PLIC claim whose completion may run on another CPU.
+#[cfg(target_arch = "riscv64")]
+#[derive(Debug, Eq, PartialEq)]
+pub struct RiscvPlicClaim {
+    context: usize,
+    source: core::num::NonZeroU32,
+}
+
+#[cfg(target_arch = "riscv64")]
+impl RiscvPlicClaim {
+    /// Returns the claimed physical PLIC source.
+    pub const fn source(&self) -> u32 {
+        self.source.get()
+    }
+
+    /// Consumes the claim into the captured PLIC context and source.
+    pub const fn into_parts(self) -> (usize, u32) {
+        (self.context, self.source.get())
+    }
+}
+
+/// Completes a detached RISC-V PLIC claim in its original context.
+#[cfg(target_arch = "riscv64")]
+pub fn complete_deferred_riscv_plic_claim(context: usize, source: u32) -> Result<(), IrqError> {
+    let source = core::num::NonZeroU32::new(source).ok_or(IrqError::InvalidIrq)?;
+    if crate::arch::complete_deferred_plic_claim(context, source) {
+        Ok(())
+    } else {
+        Err(IrqError::Controller)
     }
 }
 

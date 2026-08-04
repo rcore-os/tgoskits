@@ -125,18 +125,25 @@ impl FdtTree {
         Ok(())
     }
 
-    pub(crate) fn patch_chosen(&mut self, initrd_start_size: Option<(u64, u64)>) -> AxVmResult {
+    pub(crate) fn patch_chosen(
+        &mut self,
+        initrd_start_size: Option<(u64, u64)>,
+        explicit_cmdline: Option<&str>,
+    ) -> AxVmResult {
         let chosen_id = self.ensure_path("/chosen")?;
         let chosen = self
             .fdt
             .node_mut(chosen_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
 
-        if let Some(bootargs) = chosen
-            .get_property("bootargs")
-            .and_then(|prop| prop.as_str())
-            .map(sanitize_bootargs)
-        {
+        let bootargs = explicit_cmdline
+            .or_else(|| {
+                chosen
+                    .get_property("bootargs")
+                    .and_then(|prop| prop.as_str())
+            })
+            .map(sanitize_bootargs);
+        if let Some(bootargs) = bootargs {
             chosen.set_property(prop_string("bootargs", &bootargs));
         }
 

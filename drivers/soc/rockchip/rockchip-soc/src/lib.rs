@@ -22,7 +22,8 @@ pub(crate) mod variants;
 use core::ptr::NonNull;
 
 pub use clock::{
-    ClkId, ClockError, ClockOp, ClockResult, Cru, ResetOp,
+    ClkId, ClockAssignmentProtection, ClockError, ClockMmioWriteProtection, ClockOp, ClockResult,
+    Cru, ResetOp,
     pll::{PllClock, PllRateParams, PllRateTable, RockchipPllType},
 };
 pub use pinctrl::{
