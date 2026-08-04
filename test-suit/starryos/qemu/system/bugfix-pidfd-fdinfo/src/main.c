@@ -96,6 +96,21 @@ static int read_nspid(FILE *stream, pid_t *outer_pid, pid_t *inner_pid)
     return -1;
 }
 
+static int pidfd_fdinfo_reports_reaped_process(FILE *stream)
+{
+    char line[128];
+    bool pid_is_reaped = false;
+    bool nspid_is_reaped = false;
+
+    rewind(stream);
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        pid_is_reaped |= strcmp(line, "Pid:\t-1\n") == 0;
+        nspid_is_reaped |= strcmp(line, "NSpid:\t-1\n") == 0;
+    }
+
+    return pid_is_reaped && nspid_is_reaped ? 0 : -1;
+}
+
 static int pidfd_is_hidden_in_fdinfo(int pidfd)
 {
     char path[64];
@@ -266,6 +281,12 @@ int main(void)
     kill(child, SIGKILL);
     int status = 0;
     int waited = waitpid(child, &status, 0);
+    FILE *exited_stream = fopen(path, "re");
+    int exited_fdinfo_result = exited_stream == NULL
+                                   ? -1
+                                   : pidfd_fdinfo_reports_reaped_process(exited_stream);
+    if (exited_stream != NULL)
+        fclose(exited_stream);
     close(pidfd);
 
     if (pid_result != 0 || reported_pid != child) {
@@ -287,6 +308,10 @@ int main(void)
     if (waited != child || !WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) {
         fprintf(stderr, "FAIL: child cleanup status=%d waited=%d expected=%d\n",
                 status, waited, child);
+        return 1;
+    }
+    if (exited_fdinfo_result != 0) {
+        fputs("FAIL: exited pidfd fdinfo must report Pid/NSpid as -1\n", stderr);
         return 1;
     }
 

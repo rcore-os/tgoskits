@@ -951,43 +951,45 @@ impl SimpleDirOps for ThreadFdInfoDir {
         let fs = self.fs.clone();
         let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let content = FD_TABLE
+        let pidfd = FD_TABLE
             .scope(&task.as_thread().scope.read())
             .read()
             .get(fd as _)
             .ok_or(VfsError::NotFound)?
             .inner
             .downcast_ref::<PidFd>()
-            .map_or_else(String::new, |pidfd| {
-                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
-                let target_pid_ns = pidfd
-                    .process_data()
-                    .ok()
-                    .map(|process_data| process_data.nsproxy.lock().pid_ns.clone());
-                let pids = target_pid_ns
-                    .as_ref()
-                    .and_then(|target_pid_ns| {
-                        PidNamespace::visible_pid_chain(
-                            &observer_pid_ns,
-                            target_pid_ns,
-                            pidfd.target_pid() as u64,
-                        )
-                    })
-                    .unwrap_or_else(|| vec![0]);
-                let pid = pids[0];
-                let nspid = pids
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("Pid:\t{pid}\nNSpid:\t{nspid}\n")
-            });
+            .map(|pidfd| (pidfd.identity(), pidfd.target_pid()));
 
         // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
         // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
         // fallback. Other descriptor kinds still have an fdinfo entry, even
         // though StarryOS does not yet expose their type-specific fields.
-        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone().into_bytes())).into())
+        let Some((identity, target_pid)) = pidfd else {
+            return Ok(SimpleFile::new_regular(fs, || Ok(Vec::new())).into());
+        };
+
+        Ok(SimpleFile::new_regular(fs, move || {
+            let pids: Vec<i32> = if identity.is_exited() {
+                vec![-1]
+            } else {
+                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
+                PidNamespace::visible_pid_chain(
+                    &observer_pid_ns,
+                    &identity.pid_ns(),
+                    target_pid as u64,
+                )
+                .map(|pids| pids.into_iter().map(|pid| pid as i32).collect())
+                .unwrap_or_else(|| vec![0])
+            };
+            let pid = pids[0];
+            let nspid = pids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(format!("Pid:\t{pid}\nNSpid:\t{nspid}\n").into_bytes())
+        })
+        .into())
     }
 
     fn is_cacheable(&self) -> bool {
