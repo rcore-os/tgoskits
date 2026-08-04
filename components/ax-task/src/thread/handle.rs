@@ -127,6 +127,16 @@ impl ThreadHandle {
         self.core.sched().scheduler_fence_cpu()
     }
 
+    /// Returns the CPU currently owning the thread's scheduler placement.
+    ///
+    /// A switching-out thread remains assigned to its physical source until
+    /// switch tail releases `on_cpu`. A detached sleeper falls back to its
+    /// Linux-style wake CPU hint without presenting that hint as runqueue
+    /// ownership.
+    pub fn assigned_cpu(&self) -> Option<CpuId> {
+        self.core.assigned_cpu()
+    }
+
     pub(crate) fn sleep_timer(&self) -> &TaskDeadlineNode {
         &self.core.sleep_timer
     }
@@ -216,8 +226,8 @@ impl ThreadWakeHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn wake_from_target_snapshot_for_test(&self, target: CpuId) -> WakeResult {
-        self.core.wake_from_target_snapshot(target)
+    pub(crate) fn wake_from_cpu_hint_for_test(&self, target: CpuId) -> WakeResult {
+        crate::facade::wake_thread_direct(&self.core, Some(target))
     }
 
     /// Wakes from ordinary task context.
@@ -229,12 +239,6 @@ impl ThreadWakeHandle {
     pub fn thread_id(&self) -> ThreadId {
         self.core.id
     }
-
-    /// Returns the CPU most recently selected for direct wake placement.
-    pub fn target_cpu(&self) -> Option<CpuId> {
-        let cpu = self.core.target_cpu.load(Ordering::Acquire);
-        (cpu != u32::MAX).then(|| CpuId::new(cpu))
-    }
 }
 
 impl ThreadCore {
@@ -242,15 +246,7 @@ impl ThreadCore {
         if self.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
-        let cpu = self.target_cpu.load(Ordering::Acquire);
-        let Some(target) = (cpu != u32::MAX).then(|| CpuId::new(cpu)) else {
-            return WakeResult::Unavailable;
-        };
-        self.wake_from_target_snapshot(target)
-    }
-
-    fn wake_from_target_snapshot(self: &Arc<Self>, target: CpuId) -> WakeResult {
-        crate::facade::wake_thread_direct(self, target)
+        crate::facade::wake_thread_direct(self, None)
     }
 }
 
@@ -416,7 +412,7 @@ pub(crate) struct ThreadCore {
     pub(super) affinity_completion: ThreadAffinityCompletion,
     wake_state: AtomicU8,
     park_generation: AtomicU64,
-    target_cpu: AtomicU32,
+    wake_cpu_hint: AtomicU32,
     policy_update_node: InboxNode,
     affinity_update_node: InboxNode,
     deadline_refresh_node: InboxNode,
@@ -467,7 +463,7 @@ impl ThreadCore {
             affinity_completion: ThreadAffinityCompletion::new(1),
             wake_state: AtomicU8::new(0),
             park_generation: AtomicU64::new(0),
-            target_cpu: AtomicU32::new(u32::MAX),
+            wake_cpu_hint: AtomicU32::new(u32::MAX),
             policy_update_node: InboxNode::new(InboxKind::OwnerControl),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
             deadline_refresh_node: InboxNode::new(InboxKind::OwnerControl),
@@ -864,13 +860,21 @@ impl ThreadCore {
         SchedulingUrgency::new(key.class_rank(), key.primary())
     }
 
-    pub(crate) fn set_target_cpu(&self, cpu: CpuId) {
-        self.target_cpu.store(cpu.as_u32(), Ordering::Release);
+    pub(crate) fn set_wake_cpu_hint(&self, cpu: CpuId) {
+        self.wake_cpu_hint.store(cpu.as_u32(), Ordering::Release);
     }
 
-    pub(crate) fn target_cpu(&self) -> Option<CpuId> {
-        let cpu = self.target_cpu.load(Ordering::Acquire);
+    pub(crate) fn base_policy(&self) -> SchedulePolicy {
+        self.base_policy.load()
+    }
+
+    pub(crate) fn wake_cpu_hint(&self) -> Option<CpuId> {
+        let cpu = self.wake_cpu_hint.load(Ordering::Acquire);
         (cpu != u32::MAX).then(|| CpuId::new(cpu))
+    }
+
+    fn assigned_cpu(&self) -> Option<CpuId> {
+        self.sched.assigned_cpu().or_else(|| self.wake_cpu_hint())
     }
 
     pub(crate) const fn id(&self) -> ThreadId {

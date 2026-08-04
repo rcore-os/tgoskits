@@ -58,6 +58,10 @@ impl ThreadSchedCell {
         self.state.lock().placement.on_cpu()
     }
 
+    pub(crate) fn assigned_cpu(&self) -> Option<CpuId> {
+        self.state.lock().placement.assigned_cpu()
+    }
+
     #[cfg(test)]
     pub(crate) fn new_test(id: ThreadId, policy: SchedulePolicy) -> Self {
         let entity = SchedulingEntity::new(policy, 1, 0);

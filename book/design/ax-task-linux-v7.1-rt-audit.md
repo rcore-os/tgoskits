@@ -151,7 +151,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 
 | 领域 | Linux 对照 | 核心不变量 | 当前结论 |
 | --- | --- | --- | --- |
-| placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 二次审计发现 task 仍保存 `SwitchingOut/ExitedAwaitingTail`，与 `CpuLocal::SwitchHandoff` 重复；必须删除 task 级切换暂态 |
+| placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 已删除 `target_cpu` CPU 身份双真相，改为非权威 `wake_cpu_hint` + placement-derived `assigned_cpu`；task 仍保存 `SwitchingOut/ExitedAwaitingTail`，下一阶段删除 task 级切换暂态 |
 | Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI | 已删除 remote-wake inbox，改为 thread-state -> target-rq 的 IRQ-safe 事务；owner inbox 仅保留迁移、策略和 deferred owner work |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`sched_cpu_dying()` | 先关 placement，再 drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现 |
@@ -159,7 +159,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
 | task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | park 已类型化；Deadline rq 仍为 O(n) `Vec`，CBS registration/cache/flag 重复，待整体替换 |
 | clockevent/nohz | `clockevents_program_event()`、`tick_nohz_idle_enter()` | 每 CPU 单一物理 owner；idle 无调度事件时停止 tick；无期限用 `Option` | clockevent 状态机已实现；idle 仍永久保持 periodic tick，待引入 idle token 并删除 periodic 常驻源 |
-| switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | runtime baton 已一次性；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
+| switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | `on_switch_in` 已移到 current publication、runtime tail、handoff consumption 之后的 move-only completion，并在释放 `CpuLocal` borrow 后执行；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
 | PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；deboost/grant 后锁外 wake | handoff generation 与锁外 wake 已有；`PreemptTicketLock` 仍可能跨 CPU 无界禁抢占自旋，待按 owner 分拆 |
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
@@ -234,9 +234,12 @@ Migrating(target)
 
 其中 `Queued/Running` 是 rq 所有权的观测结果，不是可独立更新的第二组事实；
 `SwitchingOut/ExitedAwaitingTail` 由 per-CPU `SwitchHandoff` 表示。enqueue、dequeue、wake、
-migration、switch-tail 和回收只能通过 rq 事务与 handoff 方法。blocked
-thread 的 `target_cpu` 只是直接唤醒的首选目标，不是物理 owner；CPU offline 关闭新
-runqueue publication 后，将该提示重定向到仍 online 且满足 affinity 的 CPU。
+migration、switch-tail 和回收只能通过 rq 事务与 handoff 方法。blocked thread 的
+`wake_cpu_hint` 只承担 Linux `wake_cpu` 式的直接唤醒偏好，不再作为公共 CPU 身份。
+`ThreadHandle::assigned_cpu()` 优先从 placement 推导物理 owner，只有完全 detached 时
+才回退到 wake hint；CPU offline 关闭新 runqueue publication 后，将该提示重定向到
+仍 online 且满足 affinity 的 CPU。这样 affinity 的未来目标不会在 switch-tail 前
+冒充当前 CPU。
 
 ### owner-CPU 与 runqueue
 

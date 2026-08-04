@@ -14,6 +14,7 @@ mod tests {
     static PARKING_EXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
     static REENTRANT_EXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
     static REENTRANT_EXIT_CALLBACKS_IN_IRQ_EXIT: AtomicUsize = AtomicUsize::new(0);
+    static SWITCH_IN_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
     fn owner_snapshot(system: &TaskSystem, cpu: Pin<&CpuLocal>) -> crate::CpuSnapshot {
         let _irq = RuntimeIrqGuard::enter();
@@ -42,7 +43,7 @@ mod tests {
     }
 
     static ORDERING_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
-        on_switch_in: assert_address_space_installed,
+        on_switch_in: record_switch_in_after_address_space,
         on_switch_out: ignore_switch_out,
         on_exit: ignore_thread_event,
         on_deadline_overrun: ignore_thread_event,
@@ -74,22 +75,82 @@ mod tests {
     };
 
     #[test]
-fn kernel_thread_submits_explicit_lazy_address_space_before_switch_in() {
+    fn preparing_next_address_space_does_not_run_incoming_thread_callbacks() {
         test_runtime::reset_installed_address_space();
+        SWITCH_IN_CALLBACKS.store(0, Ordering::Release);
         let extension = unsafe {
             // SAFETY: the callback table interprets data only as the expected
             // address-space scalar and owns no external resource.
             ThreadExtension::new(0, &ORDERING_EXTENSION_OPS)
         };
 
-        prepare_next_context(
-            AddressSpaceHandle::NONE,
-            ThreadId::from_parts(1, 1),
-            SchedulePolicy::default(),
-            Some(extension.as_view()),
-        );
+        prepare_next_address_space(AddressSpaceHandle::NONE, ThreadId::from_parts(1, 1));
 
         assert_eq!(test_runtime::installed_address_space(), Some(0));
+        assert_eq!(
+            SWITCH_IN_CALLBACKS.load(Ordering::Acquire),
+            0,
+            "incoming callbacks must not run before current-thread publication"
+        );
+        let _extension = extension;
+    }
+
+    #[test]
+    fn incoming_callback_observes_the_published_current_thread() {
+        use crate::{
+            ThreadResources,
+            runtime::{ExecutionContextHandle, StackHandle, TlsHandle},
+        };
+
+        test_runtime::reset_installed_address_space();
+        test_runtime::reset_context_switch_tail_count();
+        SWITCH_IN_CALLBACKS.store(0, Ordering::Release);
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let previous = unsafe {
+            // SAFETY: the test runtime treats these distinct scalar handles as
+            // inert identities for the modeled switch lifetime.
+            ThreadResources::new(
+                ExecutionContextHandle::from_raw(11),
+                StackHandle::from_raw(12),
+                TlsHandle::from_raw(13),
+                AddressSpaceToken::NONE,
+            )
+        };
+        system
+            .install_bootstrap_thread(cpu.as_mut(), unsafe {
+                ThreadSpec::new(SchedulePolicy::default()).with_resources(previous)
+            })
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let extension = unsafe {
+            // SAFETY: the callback table stores no borrowed state and its data
+            // is the expected lazy-kernel address-space identity.
+            ThreadExtension::new(0, &ORDERING_EXTENSION_OPS)
+        };
+        let next = system
+            .create_thread(unsafe {
+                ThreadSpec::new(SchedulePolicy::fifo(RtPriority::new(1).unwrap()))
+                    .with_resources(ThreadResources::new(
+                        ExecutionContextHandle::from_raw(21),
+                        StackHandle::from_raw(22),
+                        TlsHandle::from_raw(23),
+                        AddressSpaceToken::NONE,
+                    ))
+                    .with_extension(extension)
+            })
+            .unwrap();
+        system.make_ready(next.id()).unwrap();
+        system.enqueue(cpu.as_mut(), next.id(), 0).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let _context_switch = test_runtime::allow_context_switch();
+
+        let outcome = schedule_current_cpu().unwrap();
+
+        assert_eq!(outcome.decision().unwrap().next(), next.id());
+        assert_eq!(current_thread_id().unwrap(), next.id());
+        assert_eq!(test_runtime::context_switch_tail_count(), 1);
+        assert_eq!(SWITCH_IN_CALLBACKS.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -952,12 +1013,14 @@ fn kernel_thread_submits_explicit_lazy_address_space_before_switch_in() {
         );
     }
 
-    unsafe extern "Rust" fn assert_address_space_installed(
+    unsafe extern "Rust" fn record_switch_in_after_address_space(
         data: usize,
-        _thread: ThreadId,
+        thread: ThreadId,
         _policy: SchedulePolicy,
     ) {
         assert_eq!(test_runtime::installed_address_space(), Some(data));
+        assert_eq!(current_thread_id().unwrap(), thread);
+        SWITCH_IN_CALLBACKS.fetch_add(1, Ordering::AcqRel);
     }
 
     unsafe extern "Rust" fn ignore_switch_out(

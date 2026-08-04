@@ -1,10 +1,13 @@
 use super::*;
 
-pub(crate) fn wake_thread_direct(core: &Arc<ThreadCore>, target: crate::CpuId) -> WakeResult {
+pub(crate) fn wake_thread_direct(
+    core: &Arc<ThreadCore>,
+    preferred: Option<crate::CpuId>,
+) -> WakeResult {
     let Ok(system) = runtime_task_system() else {
         return WakeResult::Unavailable;
     };
-    system.wake_thread_direct(Arc::clone(core), target, task_runtime::monotonic_ns())
+    system.wake_thread_direct(Arc::clone(core), preferred, task_runtime::monotonic_ns())
 }
 
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {

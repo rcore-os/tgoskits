@@ -277,13 +277,13 @@ impl TaskSystem {
                 || sched.placement.migration_target().is_some()
                 || sched.deadline.bandwidth_cpu.is_some()
                 || record.core.sleep_timer_cpu().is_some();
-            if record.core.target_cpu() == Some(cpu) && has_other_placement {
+            if record.core.wake_cpu_hint() == Some(cpu) && has_other_placement {
                 return false;
             }
         }
 
         for record in state.slots.iter().filter_map(|slot| slot.record.as_ref()) {
-            if record.core.target_cpu() != Some(cpu) {
+            if record.core.wake_cpu_hint() != Some(cpu) {
                 continue;
             }
             let sched = record.sched.lock();
@@ -293,7 +293,7 @@ impl TaskSystem {
             let Some(fallback) = fallback_for(&sched.placement.affinity) else {
                 return false;
             };
-            record.core.set_target_cpu(fallback);
+            record.core.set_wake_cpu_hint(fallback);
         }
         true
     }
@@ -333,7 +333,7 @@ impl TaskSystem {
                     || sched.placement.migration_target() == Some(cpu)
                     || sched.deadline.bandwidth_cpu == Some(cpu)
                     || record.core.sleep_timer_cpu() == Some(cpu)
-                    || record.core.target_cpu() == Some(cpu);
+                    || record.core.wake_cpu_hint() == Some(cpu);
                 has_remaining_destination && !owned_by_cpu
             })
     }
@@ -401,13 +401,12 @@ mod tests {
     #[test]
     fn blocked_thread_target_is_redirected_before_cpu_offline() {
         let (system, _cpu0, mut cpu1, sleeper) = blocked_thread_fixture();
-        let wake = sleeper.wake_handle();
-        assert_eq!(wake.target_cpu(), Some(CpuId::new(1)));
+        assert_eq!(sleeper.assigned_cpu(), Some(CpuId::new(1)));
 
         system.take_cpu_offline(cpu1.as_mut()).unwrap();
 
         assert_eq!(
-            wake.target_cpu(),
+            sleeper.assigned_cpu(),
             Some(CpuId::new(0)),
             "hotplug preparation must publish an online target before closing the old CPU"
         );
@@ -417,8 +416,8 @@ mod tests {
     fn wake_sampled_before_cpu_offline_revalidates_the_target_runqueue() {
         let (system, mut cpu0, mut cpu1, sleeper) = blocked_thread_fixture();
         let wake = sleeper.wake_handle();
-        let stale_target = wake
-            .target_cpu()
+        let stale_target = sleeper
+            .assigned_cpu()
             .expect("the blocked thread retains its previous direct-wake target");
         assert_eq!(stale_target, CpuId::new(1));
 
@@ -431,7 +430,7 @@ mod tests {
             (unsafe { Pin::get_unchecked_mut(cpu0.as_mut()) } as *mut CpuLocal).expose_provenance(),
         );
         assert_eq!(
-            wake.wake_from_target_snapshot_for_test(stale_target),
+            wake.wake_from_cpu_hint_for_test(stale_target),
             crate::WakeResult::Notified,
             "a wake that sampled the target before CPU-down must not lose that event"
         );

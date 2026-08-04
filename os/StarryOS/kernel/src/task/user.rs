@@ -180,41 +180,7 @@ pub fn new_user_task(
                     }
                 }
                 ReturnReason::PageFault(addr, flags) => {
-                    // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
-                    // semantics: all faults, before resolution). Kernel-mode faults on user
-                    // addresses are counted separately in the mm page-fault handler.
-                    crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    // Classify si_code while holding the aspace lock: an
-                    // existing mapping that rejected the access is a
-                    // permission violation (SEGV_ACCERR), otherwise the
-                    // address is unmapped (SEGV_MAPERR) — matching Linux's
-                    // do_user_addr_fault().
-                    let si_code = {
-                        let aspace = thr.proc_data.aspace();
-                        let mut aspace = aspace.lock();
-                        if aspace.handle_page_fault(addr, flags) {
-                            None
-                        } else if aspace.find_area(addr).is_some() {
-                            Some(SEGV_ACCERR)
-                        } else {
-                            Some(SEGV_MAPERR)
-                        }
-                    };
-                    if let Some(si_code) = si_code {
-                        warn!(
-                            "{:?}: segmentation fault at {:#x} {:?}",
-                            thr.proc_data.proc, addr, flags
-                        );
-                        // POSIX: a synchronous SIGSEGV must carry the
-                        // faulting address in si_addr so handlers can
-                        // classify and recover from guard-page / implicit-
-                        // null-check faults.
-                        raise_signal_fatal(
-                            SignalInfo::new_fault(Signo::SIGSEGV, si_code, addr.as_usize()),
-                            &uctx,
-                        )
-                        .expect("Failed to send SIGSEGV");
-                    }
+                    handle_user_page_fault(thr, addr, flags, &uctx);
                 }
                 ReturnReason::Interrupt => {}
                 #[allow(unused_labels)]

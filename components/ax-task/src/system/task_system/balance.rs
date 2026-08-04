@@ -248,7 +248,7 @@ impl TaskSystem {
             }
             self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
             sched.placement.begin_queued_migration(source, target)?;
-            core.set_target_cpu(target);
+            core.set_wake_cpu_hint(target);
             Ok(())
         })();
         drop(sched);
@@ -293,7 +293,7 @@ impl TaskSystem {
             match sched.placement.rollback_queued_migration(source, target) {
                 Err(error) => Err(error),
                 Ok(()) => {
-                    core.set_target_cpu(source);
+                    core.set_wake_cpu_hint(source);
                     sched.policy.effective_entity.cancel_fair_migration();
                     if !sched.is_pi_boosted() {
                         sched.policy.base_entity = sched.policy.effective_entity;
@@ -565,6 +565,6 @@ mod tests {
         let sched = first.core.sched().lock();
         assert_eq!(sched.placement.queued_cpu(), Some(CpuId::new(0)));
         assert_eq!(sched.placement.migration_target(), None);
-        assert_eq!(first.wake_handle().target_cpu(), Some(CpuId::new(0)));
+        assert_eq!(first.assigned_cpu(), Some(CpuId::new(0)));
     }
 }

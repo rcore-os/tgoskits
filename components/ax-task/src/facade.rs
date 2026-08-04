@@ -54,7 +54,8 @@ pub use scheduling::{
 use scheduling::{complete_current_context_switch_tail, execute_switch_plan};
 #[cfg(test)]
 use scheduling::{
-    drain_current_expired_timers, prepare_next_context, service_scheduler_safe_point_deadlines,
+    drain_current_expired_timers, prepare_next_address_space,
+    service_scheduler_safe_point_deadlines,
 };
 pub(crate) use task_work::publish_deferred_coroutine_reclaim;
 #[cfg(test)]

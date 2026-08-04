@@ -294,7 +294,7 @@ impl TaskSystem {
         let target = owner
             .filter(|owner| sched.placement.affinity.contains(*owner))
             .unwrap_or(target);
-        core.set_target_cpu(target);
+        core.set_wake_cpu_hint(target);
         let completed = Self::complete_affinity_if_satisfied_locked(&core, &sched);
         drop(sched);
         let publication = owner.map_or(Ok(()), |owner| {
@@ -364,7 +364,7 @@ impl TaskSystem {
             .set_migration_target(must_migrate.then_some(target))?;
         record
             .core
-            .set_target_cpu(if must_migrate { target } else { owner });
+            .set_wake_cpu_hint(if must_migrate { target } else { owner });
         let completed = Self::complete_affinity_if_satisfied_locked(&record.core, &sched);
         let core = Arc::clone(&record.core);
         drop(sched);

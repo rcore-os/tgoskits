@@ -674,7 +674,7 @@ fn unavailable_direct_wakers_do_not_coalesce_before_the_thread_lock() {
         let entries = Arc::clone(&entries);
         std::thread::spawn(move || {
             entries.fetch_add(1, Ordering::Release);
-            system.wake_thread_direct(core, CpuId::new(0), 0)
+            system.wake_thread_direct(core, Some(CpuId::new(0)), 0)
         })
     };
     let second = {
@@ -683,7 +683,7 @@ fn unavailable_direct_wakers_do_not_coalesce_before_the_thread_lock() {
         let entries = Arc::clone(&entries);
         std::thread::spawn(move || {
             entries.fetch_add(1, Ordering::Release);
-            system.wake_thread_direct(core, CpuId::new(0), 0)
+            system.wake_thread_direct(core, Some(CpuId::new(0)), 0)
         })
     };
     while entries.load(Ordering::Acquire) != 2 {
@@ -956,7 +956,7 @@ fn migration_publication_recovers_through_source_when_target_starts_draining() {
             .placement
             .set_migration_target(Some(CpuId::new(1)))
             .unwrap();
-        thread.core.set_target_cpu(CpuId::new(1));
+        thread.core.set_wake_cpu_hint(CpuId::new(1));
     }
 
     system
@@ -2439,10 +2439,10 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
     crate::test_runtime::reset_context_switch_tail_count();
 
     exiting_core.sched().lock().placement.inject_detached();
-    assert_eq!(
+    assert!(matches!(
         system.complete_context_switch(cpu.as_mut()),
         Err(TaskError::InvalidConfiguration)
-    );
+    ));
     assert_eq!(
         crate::test_runtime::context_switch_tail_count(),
         0,
@@ -2629,7 +2629,8 @@ fn inactive_policy_apply_does_not_invoke_an_execution_owner_hook() {
     system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
     let decision = system.schedule(cpu.as_mut(), 0).unwrap();
 
-    assert_eq!(decision.next_base_policy(), updated_policy);
+    assert_eq!(decision.next(), thread.id());
+    assert_eq!(thread.policy(), updated_policy);
 }
 
 #[test]
@@ -3205,7 +3206,7 @@ fn queued_affinity_migration_captures_lag_before_detaching_from_source() {
         sched.policy.base_entity = entity;
         sched.policy.effective_entity = entity;
         sched.placement.set_queued_cpu(Some(CpuId::new(0))).unwrap();
-        thread.core.set_target_cpu(CpuId::new(0));
+        thread.core.set_wake_cpu_hint(CpuId::new(0));
     }
 
     let mut cpu1_only = CpuSet::empty(2);
@@ -3305,9 +3306,9 @@ fn owner_current_affinity_change_does_not_publish_a_self_request() {
     );
     assert_eq!(system.thread_state(running.id()), Ok(ThreadState::Running));
     assert_eq!(
-        running.wake_handle().target_cpu(),
-        Some(CpuId::new(1)),
-        "direct wake placement may move ahead of physical switch-tail ownership"
+        running.assigned_cpu(),
+        Some(CpuId::new(0)),
+        "an affinity destination must not replace physical source ownership before switch tail"
     );
     assert_eq!(
         running.scheduler_fence_cpu(),
@@ -3350,7 +3351,7 @@ fn schedule_out_rechecks_affinity_under_the_thread_lock() {
         sched.placement.affinity = target_only;
         sched.placement.set_migration_target(None).unwrap();
     }
-    running.core.set_target_cpu(CpuId::new(1));
+    running.core.set_wake_cpu_hint(CpuId::new(1));
 
     let decision = system.schedule(cpu0.as_mut(), 1).unwrap();
     assert_eq!(decision.switch_reason(), SwitchReason::Migrated);
@@ -3624,7 +3625,7 @@ fn active_sleep_timer_pins_affinity_placement_to_its_owner_cpu() {
     let mut includes_owner = CpuSet::empty(2);
     includes_owner.insert(CpuId::new(1));
     system.set_affinity(thread.id(), includes_owner).unwrap();
-    assert_eq!(thread.wake_handle().target_cpu(), Some(CpuId::new(1)));
+    assert_eq!(thread.assigned_cpu(), Some(CpuId::new(1)));
     assert!(thread.core.complete_sleep_timer(7));
 }
 
@@ -4263,10 +4264,11 @@ fn wake_between_park_check_and_block_transition_cancels_schedule_out() {
         while !park_exit::park_commit_wake_race_entered() {
             core::hint::spin_loop();
         }
-        let result = wake_system
-            .as_ref()
-            .get_ref()
-            .wake_thread_direct(wake_core, CpuId::new(0), 0);
+        let result =
+            wake_system
+                .as_ref()
+                .get_ref()
+                .wake_thread_direct(wake_core, Some(CpuId::new(0)), 0);
         park_exit::complete_park_commit_wake_race();
         result
     });

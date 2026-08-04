@@ -191,8 +191,8 @@ impl UserTaskRef {
 
     /// Returns the last CPU selected for this task, if placement is known.
     pub fn cpu_id(&self) -> usize {
-        self.wake_handle()
-            .target_cpu()
+        self.scheduler
+            .assigned_cpu()
             .map_or(0, |cpu| cpu.as_u32() as usize)
     }
 

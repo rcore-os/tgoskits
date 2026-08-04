@@ -274,12 +274,7 @@ pub(super) fn execute_switch_plan(
             )
         };
     }
-    prepare_next_context(
-        next.address_space(),
-        next.thread(),
-        decision.next_base_policy(),
-        next.extension(),
-    );
+    prepare_next_address_space(next.address_space(), next.thread());
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_context_switch();
     // SAFETY: the scheduler committed both endpoint states before releasing its
@@ -301,24 +296,21 @@ fn activate_next_address_space(
     }
 }
 
-pub(super) fn prepare_next_context(
+pub(super) fn prepare_next_address_space(
     address_space: crate::runtime::AddressSpaceHandle,
     thread: ThreadId,
-    policy: crate::SchedulePolicy,
-    extension: Option<crate::ThreadExtensionView>,
 ) {
     activate_next_address_space(address_space, thread);
-    if let Some(extension) = extension {
-        // SAFETY: ThreadExtension construction guarantees callback validity;
-        // the address space is now active and no scheduler lock is held.
-        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy) };
-    }
 }
 
 pub(super) fn complete_current_context_switch_tail(
     pin: &mut impl RuntimeCpuPin,
 ) -> Result<(), TaskError> {
     let system = runtime_task_system()?;
-    let mut cpu = runtime_current_cpu_mut(pin)?;
-    system.complete_context_switch(cpu.as_mut())
+    let completion = {
+        let mut cpu = runtime_current_cpu_mut(pin)?;
+        system.complete_context_switch(cpu.as_mut())?
+    };
+    completion.finish();
+    Ok(())
 }

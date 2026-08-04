@@ -409,10 +409,14 @@ impl TaskSystem {
     /// This second phase clears `on_cpu` only after architecture execution has
     /// left the previous stack. Deferred migration publication and exit hooks
     /// therefore cannot make a context runnable or reapable too early.
-    pub fn complete_context_switch(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
+    #[doc(hidden)]
+    pub fn complete_context_switch(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+    ) -> Result<SwitchInCompletion, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         let Some(initial_handoff) = cpu.as_ref().get_ref().switch_handoff().cloned() else {
-            return Ok(());
+            return Ok(SwitchInCompletion::NONE);
         };
         let owner = cpu.owner();
         {
@@ -445,6 +449,13 @@ impl TaskSystem {
             .cloned()
             .ok_or(TaskError::InvalidConfiguration)?;
         let previous = handoff.previous.id();
+        let incoming = cpu
+            .current_core()
+            .cloned()
+            .ok_or(TaskError::NoRunnableThread)?;
+        if incoming.id() == previous {
+            return Err(TaskError::InvalidConfiguration);
+        }
         let (migration_target, previous_exited) = {
             let bandwidth = cpu.as_ref().get_ref().deadline_bandwidth();
             let mut sched = handoff.previous.sched().lock();
@@ -460,7 +471,7 @@ impl TaskSystem {
             }
             sched.placement.set_on_cpu(None)?;
             if let Some(target) = migration_target {
-                handoff.previous.set_target_cpu(target);
+                handoff.previous.set_wake_cpu_hint(target);
             }
             (migration_target, previous_exited)
         };
@@ -487,7 +498,7 @@ impl TaskSystem {
         if previous_exited {
             self.task_work.publish();
         }
-        Ok(())
+        Ok(SwitchInCompletion::for_core(&incoming))
     }
 
     fn validate_switch_handoff_state(

@@ -42,7 +42,7 @@ impl TaskSystem {
     pub(crate) fn wake_thread_direct(
         &self,
         core: Arc<ThreadCore>,
-        preferred: CpuId,
+        preferred: Option<CpuId>,
         now_ns: u64,
     ) -> WakeResult {
         #[cfg(feature = "qperf-metrics")]
@@ -64,13 +64,17 @@ impl TaskSystem {
         if core.publish_wake() {
             return WakeResult::AlreadyPending;
         }
-        let target = (sched.placement.affinity.contains(preferred)
-            && self
-                .cpu_remotes
-                .get(preferred.as_usize())
-                .is_some_and(|remote| remote.accepts_placement()))
-        .then_some(preferred)
-        .or_else(|| self.select_allowed_active_cpu(&sched.placement.affinity, None));
+        let preferred = preferred
+            .or_else(|| sched.placement.assigned_cpu())
+            .or_else(|| core.wake_cpu_hint());
+        let target = preferred
+            .filter(|preferred| sched.placement.affinity.contains(*preferred))
+            .filter(|preferred| {
+                self.cpu_remotes
+                    .get(preferred.as_usize())
+                    .is_some_and(|remote| remote.accepts_placement())
+            })
+            .or_else(|| self.select_allowed_active_cpu(&sched.placement.affinity, None));
         let Some(target) = target else {
             core.discard_failed_wake();
             return WakeResult::Unavailable;
@@ -137,7 +141,7 @@ impl TaskSystem {
         if sched.placement.set_queued_cpu(Some(target)).is_err() {
             task_runtime::fatal_invariant(0x574b_0200, core.id().as_u64() as usize);
         }
-        core.set_target_cpu(target);
+        core.set_wake_cpu_hint(target);
         remote.publish_run_queue_load_summary(&run_queue);
         let deadline_generation = sched.pi.deadline_cbs_generation;
         drop(run_queue);
@@ -238,7 +242,7 @@ impl TaskSystem {
             sched.deadline.replenish_pending = true;
             sched.throttle_ready_deadline(core)?;
             core.publish_effective_schedule(policy, queued_entity);
-            core.set_target_cpu(owner);
+            core.set_wake_cpu_hint(owner);
             return Ok(false);
         }
         let current_fair = cpu
@@ -272,7 +276,7 @@ impl TaskSystem {
         }
         core.publish_effective_schedule(policy, queued_entity);
         sched.placement.set_queued_cpu(Some(owner))?;
-        core.set_target_cpu(owner);
+        core.set_wake_cpu_hint(owner);
         Ok(preempts_current)
     }
 

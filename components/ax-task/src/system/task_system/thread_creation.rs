@@ -176,7 +176,7 @@ impl TaskSystem {
                 let dispatch = Self::owner_dispatch(&core, &sched, task_runtime::monotonic_ns())?;
                 sched.placement.set_running_cpu(Some(cpu.owner()))?;
                 sched.placement.set_on_cpu(Some(cpu.owner()))?;
-                core.set_target_cpu(cpu.owner());
+                core.set_wake_cpu_hint(cpu.owner());
                 dispatch
             };
             cpu.as_mut().set_current_core(Arc::clone(&core));

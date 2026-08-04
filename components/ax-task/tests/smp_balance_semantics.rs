@@ -499,10 +499,10 @@ fn direct_wake_is_migrated_after_a_new_affinity_generation() {
 
     let wake = blocked.wake_handle();
     assert_eq!(blocked.state(), ThreadState::Blocked);
-    assert_eq!(wake.target_cpu(), Some(CpuId::new(0)));
+    assert_eq!(blocked.assigned_cpu(), Some(CpuId::new(0)));
     assert_eq!(wake.wake(), WakeResult::Notified);
     assert_eq!(blocked.state(), ThreadState::Ready);
-    assert_eq!(wake.target_cpu(), Some(CpuId::new(0)));
+    assert_eq!(blocked.assigned_cpu(), Some(CpuId::new(0)));
     assert_eq!(
         cpu0.try_runnable_summary(),
         Some(1),

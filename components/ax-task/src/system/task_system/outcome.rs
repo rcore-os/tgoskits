@@ -13,8 +13,45 @@ pub struct ScheduleDecision {
     pub(super) next: ThreadId,
     pub(super) previous_endpoint: Option<SwitchEndpoint>,
     pub(super) next_endpoint: SwitchEndpoint,
-    pub(super) next_base_policy: SchedulePolicy,
     pub(super) switch_reason: SwitchReason,
+}
+
+/// Callback work that becomes valid only after the incoming thread is current.
+#[doc(hidden)]
+pub struct SwitchInCompletion {
+    thread: Option<ThreadId>,
+    policy: Option<SchedulePolicy>,
+    extension: Option<ThreadExtensionView>,
+}
+
+impl SwitchInCompletion {
+    pub(crate) const NONE: Self = Self {
+        thread: None,
+        policy: None,
+        extension: None,
+    };
+
+    pub(crate) fn for_core(core: &ThreadCore) -> Self {
+        Self {
+            thread: Some(core.id()),
+            policy: Some(core.base_policy()),
+            extension: core.extension_view(),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn finish(self) {
+        let (Some(thread), Some(policy), Some(extension)) =
+            (self.thread, self.policy, self.extension)
+        else {
+            return;
+        };
+        // SAFETY: TaskSystem creates this token only after architecture current
+        // publication, previous-binding withdrawal, and switch-handoff
+        // consumption. The facade drops its CpuLocal owner borrow before
+        // finishing the token while retaining the scheduler IRQ baton.
+        unsafe { (extension.ops().on_switch_in)(extension.data(), thread, policy) };
+    }
 }
 
 /// Result of one bounded scheduler safe point.
@@ -83,10 +120,6 @@ impl ScheduleDecision {
     pub(crate) const fn next_endpoint(self) -> SwitchEndpoint {
         self.next_endpoint
     }
-
-    pub(crate) const fn next_base_policy(self) -> SchedulePolicy {
-        self.next_base_policy
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,17 +131,14 @@ pub(crate) struct SwitchEndpoint {
 }
 
 impl SwitchEndpoint {
-    pub(super) fn from_core(core: &ThreadCore) -> (Self, SchedulePolicy) {
+    pub(super) fn from_core(core: &ThreadCore) -> Self {
         let sched = core.sched().lock();
-        (
-            Self {
-                thread: core.id(),
-                context: sched.runtime.context,
-                address_space: sched.runtime.address_space,
-                extension: core.extension_view(),
-            },
-            sched.policy.applied,
-        )
+        Self {
+            thread: core.id(),
+            context: sched.runtime.context,
+            address_space: sched.runtime.address_space,
+            extension: core.extension_view(),
+        }
     }
 
     pub(crate) const fn thread(self) -> ThreadId {

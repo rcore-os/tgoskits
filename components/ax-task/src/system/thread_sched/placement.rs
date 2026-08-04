@@ -35,6 +35,10 @@ impl ThreadPlacementState {
         self.physical.migration_target()
     }
 
+    pub(in crate::system) fn assigned_cpu(&self) -> Option<CpuId> {
+        self.physical.assigned_cpu()
+    }
+
     pub(in crate::system) fn set_queued_cpu(
         &mut self,
         cpu: Option<CpuId>,
@@ -201,6 +205,20 @@ impl SchedulerPlacement {
             }
             | Self::Migrating { target } => Some(target),
             Self::Detached | Self::SwitchingOut { .. } | Self::ExitedAwaitingTail { .. } => None,
+        }
+    }
+
+    /// Mirrors Linux `task_cpu()` ownership without confusing a future wake
+    /// destination with a context that is still physically on its source CPU.
+    fn assigned_cpu(self) -> Option<CpuId> {
+        if let Some(cpu) = self.running_cpu() {
+            Some(cpu)
+        } else if let Some(cpu) = self.queued_cpu() {
+            Some(cpu)
+        } else if let Some(cpu) = self.on_cpu() {
+            Some(cpu)
+        } else {
+            self.migration_target()
         }
     }
 

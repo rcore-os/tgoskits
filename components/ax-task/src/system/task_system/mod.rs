@@ -37,7 +37,7 @@ pub use model::{DeferredTaskWorkBatch, OwnedThreadReapError, TaskSystem};
 pub(crate) use outcome::SwitchEndpoint;
 pub use outcome::{
     ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, OwnerControlDrain,
-    ScheduleDecision, SchedulerOutcome,
+    ScheduleDecision, SchedulerOutcome, SwitchInCompletion,
 };
 pub(crate) use park_exit::CurrentExitPermit;
 pub use pi::{PiMutexClaim, PiMutexHandoff, PiMutexRelease};

@@ -78,7 +78,7 @@ impl TaskSystem {
                 None
             } else {
                 sched.placement.set_migration_target(Some(target))?;
-                record.core.set_target_cpu(target);
+                record.core.set_wake_cpu_hint(target);
                 drop(sched);
                 Some((core, target))
             }
@@ -141,7 +141,7 @@ impl TaskSystem {
             self.select_allowed_active_cpu(&sched.placement.affinity, Some(owner))
                 .ok_or(TaskError::InvalidConfiguration)?
         };
-        core.set_target_cpu(target);
+        core.set_wake_cpu_hint(target);
 
         if let Some(physical_owner) = physical_owner
             && physical_owner != owner
@@ -194,7 +194,7 @@ impl TaskSystem {
                 }
                 self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
                 sched.placement.begin_queued_migration(owner, target)?;
-                core.set_target_cpu(target);
+                core.set_wake_cpu_hint(target);
                 Ok(())
             })();
             drop(sched);
@@ -443,7 +443,7 @@ impl TaskSystem {
                     };
                     if latest_target != owner {
                         sched.placement.set_migration_target(Some(latest_target))?;
-                        core.set_target_cpu(latest_target);
+                        core.set_wake_cpu_hint(latest_target);
                         Some(latest_target)
                     } else {
                         if sched.lifecycle.state() != ThreadState::Ready
@@ -454,7 +454,7 @@ impl TaskSystem {
                             return Err(TaskError::InvalidConfiguration);
                         }
                         sched.placement.set_migration_target(None)?;
-                        core.set_target_cpu(owner);
+                        core.set_wake_cpu_hint(owner);
                         None
                     }
                 };

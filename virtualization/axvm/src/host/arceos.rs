@@ -179,9 +179,7 @@ pub(crate) fn task_cpu_set_one(cpu_id: usize) -> ArceOsTaskCpuSet {
 }
 
 pub(crate) fn task_cpu_id(task: &ArceOsTaskHandle) -> usize {
-    task.wake_handle()
-        .target_cpu()
-        .map_or(0, |cpu| cpu.as_usize())
+    task.assigned_cpu().map_or(0, |cpu| cpu.as_usize())
 }
 
 pub(crate) fn yield_now() {

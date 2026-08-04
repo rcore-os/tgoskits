@@ -96,7 +96,7 @@ impl TaskSystem {
             sched.transition(&core, ThreadState::Ready)?;
             sched.placement.set_running_cpu(None)?;
             self.capture_owner_fair_migration(cpu.as_ref().get_ref(), &mut sched);
-            core.set_target_cpu(target);
+            core.set_wake_cpu_hint(target);
             cpu.as_mut().clear_current();
             return Ok(Some(target));
         }
@@ -259,7 +259,7 @@ impl TaskSystem {
                 } else if !outgoing_candidate {
                     return Err(TaskError::InvalidConfiguration);
                 }
-                core.set_target_cpu(target);
+                core.set_wake_cpu_hint(target);
                 drop(sched);
                 if outgoing_candidate {
                     outgoing_migration_target = Some(target);
@@ -334,13 +334,11 @@ impl TaskSystem {
         next: &Arc<ThreadCore>,
         switch_reason: SwitchReason,
     ) -> ScheduleDecision {
-        let (next_endpoint, next_base_policy) = SwitchEndpoint::from_core(next);
         ScheduleDecision {
             previous: previous.map(|core| core.id()),
             next: next.id(),
-            previous_endpoint: previous.map(|core| SwitchEndpoint::from_core(core).0),
-            next_endpoint,
-            next_base_policy,
+            previous_endpoint: previous.map(|core| SwitchEndpoint::from_core(core)),
+            next_endpoint: SwitchEndpoint::from_core(next),
             switch_reason,
         }
     }
