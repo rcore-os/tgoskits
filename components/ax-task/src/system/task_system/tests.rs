@@ -3016,6 +3016,41 @@ fn forced_yield_clears_slice_expiration_accounted_by_that_schedule() {
 }
 
 #[test]
+fn single_runnable_fair_yield_preserves_the_active_request() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let current = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    let before = current
+        .core
+        .sched()
+        .lock()
+        .policy
+        .effective_entity
+        .fair()
+        .unwrap();
+    let decision = system.yield_current(cpu.as_mut(), 0).unwrap();
+    let after = current
+        .core
+        .sched()
+        .lock()
+        .policy
+        .effective_entity
+        .fair()
+        .unwrap();
+
+    assert_eq!(decision.previous(), Some(current.id()));
+    assert_eq!(decision.next(), current.id());
+    assert_eq!(
+        after, before,
+        "Linux fair yield is a no-op when no peer is runnable"
+    );
+}
+
+#[test]
 fn forced_yield_does_not_consume_deferred_owner_work() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();

@@ -183,6 +183,47 @@ fn round_robin_preserves_partial_quantum_then_resets_after_rotation() {
 }
 
 #[test]
+fn round_robin_preserves_partial_quantum_across_block_and_wake() {
+    support::clear_handles();
+    let (system, mut cpu) = online_system(1, CpuId::new(0));
+    let rr = SchedulePolicy::round_robin_with_quantum(RtPriority::new(10).unwrap(), 5).unwrap();
+    let first = ready_thread(&system, rr);
+    let second = ready_thread(&system, rr);
+    system.enqueue(cpu.as_mut(), first.id(), 0).unwrap();
+    system.enqueue(cpu.as_mut(), second.id(), 0).unwrap();
+    assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), first.id());
+
+    assert!(
+        !system
+            .charge_current(cpu.as_mut(), 2, 2, 0)
+            .unwrap()
+            .slice_expired()
+    );
+    assert_eq!(
+        system.block_current(cpu.as_mut(), 2).unwrap().next(),
+        second.id()
+    );
+    support::install_handles(
+        (&system as *const TaskSystem).expose_provenance(),
+        cpu.as_mut(),
+    );
+    assert_eq!(first.wake_handle().wake(), WakeResult::Notified);
+    assert_eq!(
+        system.yield_current(cpu.as_mut(), 2).unwrap().next(),
+        first.id()
+    );
+
+    assert!(
+        system
+            .charge_current(cpu.as_mut(), 5, 3, 0)
+            .unwrap()
+            .slice_expired(),
+        "Linux SCHED_RR preserves a partially consumed quantum across blocking"
+    );
+    support::clear_handles();
+}
+
+#[test]
 fn task_system_rejects_a_directly_constructed_zero_rr_quantum() {
     let (system, _cpu) = online_system(1, CpuId::new(0));
     let invalid = SchedulePolicy::RoundRobin {

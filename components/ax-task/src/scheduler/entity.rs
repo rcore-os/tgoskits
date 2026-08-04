@@ -33,19 +33,6 @@ impl SchedulingEntity {
         }
     }
 
-    /// Prepares class state after a block/wake cycle.
-    pub fn reset_after_wake(&mut self, policy: SchedulePolicy) {
-        if let (
-            Self::RoundRobin {
-                remaining_quantum_ns,
-            },
-            SchedulePolicy::RoundRobin { quantum_ns, .. },
-        ) = (self, policy)
-        {
-            *remaining_quantum_ns = quantum_ns;
-        }
-    }
-
     pub(crate) fn capture_fair_sleep_lag(&mut self, virtual_time: u64, timing_granularity_ns: u64) {
         if let Self::Fair(entity) = self {
             entity.capture_sleep_lag(virtual_time, timing_granularity_ns);

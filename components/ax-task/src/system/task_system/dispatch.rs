@@ -26,13 +26,6 @@ impl TaskSystem {
             ThreadState::Parking => Ok(false),
             ThreadState::Blocked => {
                 sched.transition(core, ThreadState::Waking)?;
-                let base_policy = sched.policy.applied;
-                sched.policy.base_entity.reset_after_wake(base_policy);
-                let effective_policy = sched.policy.effective;
-                sched
-                    .policy
-                    .effective_entity
-                    .reset_after_wake(effective_policy);
                 sched.transition(core, ThreadState::Ready)?;
                 Ok(true)
             }

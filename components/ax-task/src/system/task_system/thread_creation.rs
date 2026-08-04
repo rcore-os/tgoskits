@@ -138,15 +138,6 @@ impl TaskSystem {
         let state = self.state.lock();
         let record = state.thread_record(thread)?;
         let mut sched = record.sched.lock();
-        if sched.lifecycle.state() == ThreadState::Waking {
-            let base_policy = sched.policy.applied;
-            sched.policy.base_entity.reset_after_wake(base_policy);
-            let effective_policy = sched.policy.effective;
-            sched
-                .policy
-                .effective_entity
-                .reset_after_wake(effective_policy);
-        }
         sched.transition(&record.core, ThreadState::Ready)
     }
 
