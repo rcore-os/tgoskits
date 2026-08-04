@@ -121,7 +121,7 @@ StarryOS 当前的集成模式很典型：
 仓库内已知直接使用方包括：
 
 - `os/StarryOS/kernel`
-- `os/arceos/modules/axfs-ng`
+- `fs/ax-fs-ng`
 - `os/arceos/api/arceos_posix_api`（按 feature 启用）
 
 `os/axvisor` 当前没有直接依赖它。

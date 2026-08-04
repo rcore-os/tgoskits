@@ -40,7 +40,7 @@
 | `axalloc/src/lib.rs` | 注册 `page_cache_reclaim` 回调，分配失败时尝试回收 |
 | `axalloc/src/buddy_slab.rs` | 分配重试逻辑（最多 4 次），每次失败后触发回收 |
 | `axalloc/src/default_impl.rs` | 同上 |
-| `axfs-ng/src/highlevel/file.rs` | LRU 页面缓存驱逐：回收干净的文件支持页面 |
+| `fs/ax-fs-ng/src/highlevel/file.rs` | LRU 页面缓存驱逐：回收干净的文件支持页面 |
 | `axsync/src/mutex.rs` | 移除 `try_lock` 路径中的 `might_sleep()`（try_lock 是单次 CAS，永不应阻塞） |
 | `entry.rs` | 启动时注册回收回调 |
 
@@ -305,7 +305,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉
 
 基于 PR #804 的初始实现，对页面缓存回收机制进行了增强：
 
-**修改文件**: `os/arceos/modules/axfs-ng/src/highlevel/file.rs`
+**修改文件**: `fs/ax-fs-ng/src/highlevel/file.rs`
 
 **改进项**:
 
@@ -328,7 +328,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉
   └─ StarryOS 自编译使用只读 ext4 挂载，脏页极少见
 ```
 
-**代码位置**: `os/arceos/modules/axfs-ng/src/highlevel/file.rs:492-540`
+**代码位置**: `fs/ax-fs-ng/src/highlevel/file.rs:492-540`
 
 ## 已知限制
 
@@ -560,7 +560,7 @@ I/O future（如 block read）有自己的 waker 回调（由设备驱动挂载�
 ### Bug #7: SMP 并发导致 `SpinNoPreempt` mutex 死锁（阻塞写入）
 
 - **现象**: SMP=4 + KVM 时，内部脚本在 `cat > linker.ld`（ext4 写入）后冻结；SMP=1 时正常完成
-- **根因**: `axfs-ng/src/fs/ext4/rsext4/fs.rs:29` — `inner: Mutex<Ext4State>`，其中 `Mutex = SpinNoPreempt`（自旋锁）
+- **根因**: `fs/ax-fs-ng/src/fs/ext4/rsext4/fs.rs:29` — `inner: Mutex<Ext4State>`，其中 `Mutex = SpinNoPreempt`（自旋锁）
 - **机制**: 多 vCPU 并发访问文件系统时发生锁顺序死锁。线程 A 持有锁等待 I/O 完成，线程 B 自旋等待锁释放。若 I/O 完成路径需要获取同一把锁，则形成死锁
 - **证据**: 
   - SMP=1 简单 `cat >` 测试 → ✅ 通过

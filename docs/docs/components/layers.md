@@ -104,7 +104,7 @@ flowchart TB
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `axvisor_api_proc` | `0.5.0` | `virtualization/axvisor_api_proc` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `bitmap-allocator` | `0.4.1` | `memory/bitmap-allocator` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `riscv-h` | `0.4.0` | `virtualization/riscv-h` |
-| 0 | 基础层（无仓库内直接依赖） | 组件层 | `rsext4` | `0.3.0` | `components/rsext4` |
+| 0 | 基础层（无仓库内直接依赖） | 组件层 | `rsext4` | `0.3.0` | `fs/rsext4` |
 | 0 | 基础层（无仓库内直接依赖） | 组件层 | `smoltcp` | `0.14.0` | `components/starry-smoltcp` |
 | 1 | 堆叠层 | 组件层 | `ax-allocator` | `0.4.0` | `memory/axallocator` |
 | 1 | 堆叠层 | 组件层 | `ax-ctor-bare` | `0.4.1` | `components/ctor_bare/ctor_bare` |
@@ -115,7 +115,7 @@ flowchart TB
 | 1 | 堆叠层 | 组件层 | `ax-page-table-entry` | `0.8.1` | `memory/page_table_entry` |
 | 1 | 堆叠层 | 组件层 | `ax-plat-macros` | `0.3.8` | `platforms/ax-plat-macros` |
 | 1 | 堆叠层 | 组件层 | `ax-sched` | `0.5.1` | `components/axsched` |
-| 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `components/axfs-ng-vfs` |
+| 1 | 堆叠层 | 组件层 | `axfs-ng-vfs` | `0.3.1` | `fs/axfs-ng-vfs` |
 | 1 | 堆叠层 | 组件层 | `axhvc` | `0.4.0` | `virtualization/axhvc` |
 | 1 | 堆叠层 | 组件层 | `axklib` | `0.5.0` | `components/axklib` |
 | 1 | 堆叠层 | 组件层 | `axvmconfig` | `0.4.2` | `virtualization/axvmconfig` |
@@ -164,7 +164,7 @@ flowchart TB
 | 9 | 堆叠层 | ArceOS 层 | `ax-driver` | `0.5.0` | `drivers/ax-driver` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-display` | `0.5.0` | `os/arceos/modules/axdisplay` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-fs` | `0.5.0` | `os/arceos/modules/axfs` |
-| 10 | 堆叠层 | ArceOS 层 | `ax-fs-ng` | `0.5.0` | `os/arceos/modules/axfs-ng` |
+| 10 | 堆叠层 | ArceOS 层 | `ax-fs-ng` | `0.5.0` | `fs/ax-fs-ng` |
 | 10 | 堆叠层 | ArceOS 层 | `ax-input` | `0.5.0` | `os/arceos/modules/axinput` |
 | 11 | 堆叠层 | 组件层 | `ax-net` | `0.7.1` | `net/ax-net` |
 | 12 | 堆叠层 | ArceOS 层 | `ax-runtime` | `0.5.0` | `os/arceos/modules/axruntime` |

@@ -1,10 +1,10 @@
 # `axfs-ng-vfs`
 
-> 路径：`components/axfs-ng-vfs`
+> 路径：`fs/axfs-ng-vfs`
 > 类型：库 crate
 > 分层：组件层 / 可复用基础组件
 > 版本：`0.1.1`
-> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/fs.rs`、`src/mount.rs`、`src/node/mod.rs`、`src/node/dir.rs`、`src/node/file.rs`、`src/path.rs`、`src/types.rs`、`os/arceos/modules/axfs-ng/src/highlevel/file.rs`、`net/ax-net/src/unix/mod.rs`、`os/StarryOS/kernel/src/pseudofs/mod.rs`
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`src/fs.rs`、`src/mount.rs`、`src/node/mod.rs`、`src/node/dir.rs`、`src/node/file.rs`、`src/path.rs`、`src/types.rs`、`fs/ax-fs-ng/src/highlevel/file.rs`、`net/ax-net/src/unix/mod.rs`、`os/StarryOS/kernel/src/pseudofs/mod.rs`
 
 `axfs-ng-vfs` 是新文件系统栈真正的核心抽象层。它不是老 `axfs_vfs` 那种“只有一组 trait 的薄接口”，而是完整拥有 `Filesystem`、`Mountpoint`、`Location`、`DirEntry`、元数据模型、目录项缓存、挂载图与路径语义的对象模型库。
 

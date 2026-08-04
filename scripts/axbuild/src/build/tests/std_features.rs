@@ -43,7 +43,7 @@ fn arceos_io_test_x86_uses_uefi_handoff() {
 #[test]
 fn axfs_vfs_enables_sleepable_mutexes() {
     let workspace = crate::context::workspace_root_path().unwrap();
-    let manifest_path = workspace.join("os/arceos/modules/axfs-ng/Cargo.toml");
+    let manifest_path = workspace.join("fs/ax-fs-ng/Cargo.toml");
     let manifest: toml::Value =
         toml::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
     let vfs_features = manifest["features"]["vfs"]

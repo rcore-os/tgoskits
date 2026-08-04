@@ -114,7 +114,7 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-fs` | `modules/axfs` | 文件系统挂载、文件/目录 API | `ax-driver` |
 | `ax-net` | `net/ax-net` | 统一网络栈、socket 抽象 | `rd-net`、`rdif-vsock`、`smoltcp` |
 | `ax-log` | `modules/axlog` | 多级日志与格式化输出 | 所有模块 |
-| `ax-fs-ng` | `modules/axfs-ng` | 下一代文件系统 | `ax-driver` |
+| `ax-fs-ng` | `fs/ax-fs-ng` | 下一代文件系统 | `ax-driver` |
 | `ax-ipi` | `modules/axipi` | 处理器间中断管理 | `ax-hal` |
 | `ax-input` | `modules/axinput` | 输入设备管理与事件分发 | `ax-driver` |
 | `ax-display` | `modules/axdisplay` | 图形显示（帧缓冲） | `ax-driver` |

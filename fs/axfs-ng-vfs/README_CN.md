@@ -1,11 +1,11 @@
-<h1 align="center">rsext4</h1>
+<h1 align="center">axfs-ng-vfs</h1>
 
-<p align="center">A lightweight ext4 file system</p>
+<p align="center">Virtual filesystem layer for ArceOS</p>
 
 <div align="center">
 
-[![Crates.io](https://img.shields.io/crates/v/rsext4.svg)](https://crates.io/crates/rsext4)
-[![Docs.rs](https://docs.rs/rsext4/badge.svg)](https://docs.rs/rsext4)
+[![Crates.io](https://img.shields.io/crates/v/axfs-ng-vfs.svg)](https://crates.io/crates/axfs-ng-vfs)
+[![Docs.rs](https://docs.rs/axfs-ng-vfs/badge.svg)](https://docs.rs/axfs-ng-vfs)
 [![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
@@ -15,7 +15,7 @@
 
 # 介绍
 
-`rsext4` 提供了 A lightweight ext4 file system。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`axfs-ng-vfs` 提供了 Virtual filesystem layer for ArceOS。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
 
 ## 快速开始
 
@@ -25,14 +25,14 @@
 
 ```toml
 [dependencies]
-rsext4 = "0.3.0"
+axfs-ng-vfs = "0.3.1"
 ```
 
 ### 检查与测试
 
 ```bash
 # 进入 crate 目录
-cd components/rsext4
+cd fs/axfs-ng-vfs
 
 # 代码格式化
 cargo fmt --all
@@ -52,10 +52,10 @@ cargo doc --no-deps
 ### 示例
 
 ```rust
-use rsext4 as _;
+use axfs_ng_vfs as _;
 
 fn main() {
-    // 在这里将 `rsext4` 集成到你的项目中。
+    // 在这里将 `axfs-ng-vfs` 集成到你的项目中。
 }
 ```
 
@@ -67,7 +67,7 @@ fn main() {
 cargo doc --no-deps --open
 ```
 
-在线文档：[docs.rs/rsext4](https://docs.rs/rsext4)
+在线文档：[docs.rs/axfs-ng-vfs](https://docs.rs/axfs-ng-vfs)
 
 # 贡献
 

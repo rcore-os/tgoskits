@@ -26,7 +26,6 @@ members = [
     "components/axbacktrace",
     "components/axcpu",
     "components/axerrno",
-    "components/axfs-ng-vfs",
     "components/axio",
     "components/axklib",
     "components/axpanic",
@@ -41,7 +40,6 @@ members = [
     "components/kspin",
     "components/linked_list_r4l",
     "components/lockdep",
-    "components/rsext4",
     "components/scope-local",
     "components/sdhci-cv1800",
     "components/sdio-host",
@@ -59,6 +57,9 @@ members = [
     "components/crate_interface/test_crates/*",
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
+    "fs/ax-fs-ng",
+    "fs/axfs-ng-vfs",
+    "fs/rsext4",
     "memory/*",
     "virtualization/*",
     "virtualization/test_crates/virtualization-tests",
@@ -97,7 +98,6 @@ members = [
     "os/arceos/api/*",
     "os/arceos/modules/axalloc",
     "os/arceos/modules/axdisplay",
-    "os/arceos/modules/axfs-ng",
     "os/arceos/modules/axhal",
     "os/arceos/modules/axinput",
     "os/arceos/modules/axipi",
@@ -151,7 +151,7 @@ ax-display = { version = "0.6.7", path = "os/arceos/modules/axdisplay" }
 ax-driver = { version = "0.12.2", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.2", path = "components/axerrno" }
-ax-fs-ng = { version = "0.8.6", path = "os/arceos/modules/axfs-ng" }
+ax-fs-ng = { version = "0.8.6", path = "fs/ax-fs-ng" }
 ax-hal = { version = "0.5.30", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.3.1", path = "components/irq-framework" }
 ax-input = { version = "0.6.7", path = "os/arceos/modules/axinput" }
@@ -192,7 +192,7 @@ axbacktrace = { version = "0.4.7", path = "components/axbacktrace" }
 axbuild = { version = "0.4.22", path = "scripts/axbuild" }
 axdevice = { version = "0.5.6", path = "virtualization/axdevice" }
 axdevice_base = { version = "0.6.3", path = "virtualization/axdevice_base" }
-axfs-ng-vfs = { version = "0.5.7", path = "components/axfs-ng-vfs" }
+axfs-ng-vfs = { version = "0.5.7", path = "fs/axfs-ng-vfs" }
 axhvc = { version = "0.4.12", path = "virtualization/axhvc" }
 axklib = { version = "0.7.7", path = "components/axklib" }
 axplat-dyn = { version = "0.7.14", path = "platforms/axplat-dyn", default-features = false }
@@ -253,7 +253,7 @@ rockchip-soc = { version = "0.4.3", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.3.9", path = "drivers/tpu/sg2002-tpu" }
 rdrive = { version = "0.23.8", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
-rsext4 = { version = "0.7.7", path = "components/rsext4" }
+rsext4 = { version = "0.7.7", path = "fs/rsext4" }
 scope-local = { version = "0.4.4", path = "components/scope-local" }
 sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "components/sdio-host" }
 sdio-host2 = { version = "0.1.5", path = "components/sdio-host2" }

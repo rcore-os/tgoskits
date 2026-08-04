@@ -215,7 +215,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 - `os/arceos/modules/axalloc/src/buddy_slab.rs`
 - `os/arceos/modules/axalloc/src/tlsf_impl.rs`
-- `os/arceos/modules/axfs-ng/src/file/page.rs`
+- `fs/ax-fs-ng/src/file/page.rs`
 
 已确认方向：
 
