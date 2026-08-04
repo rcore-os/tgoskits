@@ -67,7 +67,6 @@ pub(crate) fn finish(
             X86_64Arch::after_external_interrupt(vm, vcpu, vector);
         }
         DeferredRunWork::PreemptionTimer => {
-            crate::timer::check_events();
             super::irq::inject_due_pit_irq0(vm, vcpu);
         }
         DeferredRunWork::InterruptEnd { vector } => {

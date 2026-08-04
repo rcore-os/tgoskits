@@ -130,9 +130,12 @@ impl Aarch64VgicRuntime {
             return Err(error);
         }
 
-        self.kick.start();
+        if let Err(error) = self.kick.start() {
+            *self.phase.lock() = RuntimePhase::Inactive;
+            return Err(error);
+        }
         if let Err(error) = self.core.bind_assigned_spis() {
-            self.kick.stop();
+            let _ = self.kick.stop();
             *self.phase.lock() = RuntimePhase::Inactive;
             return Err(AxVmError::interrupt("bind assigned physical SPIs", error));
         }
@@ -146,7 +149,7 @@ impl Aarch64VgicRuntime {
                          {rollback_error}"
                     );
                 }
-                self.kick.stop();
+                let _ = self.kick.stop();
                 *self.phase.lock() = RuntimePhase::Inactive;
                 return Err(AxVmError::interrupt(
                     "register assigned physical SPI routes",
@@ -191,9 +194,9 @@ impl Aarch64VgicRuntime {
         // Dropping the route handles removes the static hard-IRQ lookup before
         // the task-context kick worker is stopped.
         drop(routes);
-        self.kick.stop();
+        let stop_result = self.kick.stop();
         *self.phase.lock() = RuntimePhase::Inactive;
-        Ok(())
+        stop_result
     }
 }
 

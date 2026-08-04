@@ -76,8 +76,15 @@ impl ArchOps for X86_64Arch {
         x86_vcpu::initialize_hardware_support().is_ok()
     }
 
+    fn activate_devices(vm: &crate::AxVM) -> AxVmResult {
+        irq::start_deferred_irq_delivery(vm)
+    }
+
+    fn deactivate_devices(vm: &crate::AxVM) -> AxVmResult {
+        irq::stop_deferred_irq_delivery(vm)
+    }
+
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        irq::start_deferred_irq_delivery(vm);
         irq::enable_ioapic_irq_forwarding(vm, vcpu);
     }
 
@@ -94,13 +101,11 @@ impl ArchOps for X86_64Arch {
         vector: usize,
     ) {
         crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
     }
 
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
         irq::disable_ioapic_irq_forwarding_for_vm(vm);
-        irq::stop_deferred_irq_delivery(vm);
-        Ok(())
+        Self::deactivate_devices(vm)
     }
 
     fn handle_vcpu_exit_bound(
@@ -593,12 +598,12 @@ impl X86InterruptDomain {
         }
     }
 
-    fn start_kick_worker(&self) {
-        self.wired.kick.start();
+    fn start_kick_worker(&self) -> AxVmResult {
+        self.wired.kick.start()
     }
 
-    fn stop_kick_worker(&self) {
-        self.wired.kick.stop();
+    fn stop_kick_worker(&self) -> AxVmResult {
+        self.wired.kick.stop()
     }
 
     fn take_pending_wired_gsis(&self) -> (usize, usize) {

@@ -10,8 +10,8 @@ use core::ptr;
 
 use crate::{
     host::task::{
-        SchedulePolicy, SwitchReason, TaskHandle, ThreadExtension, ThreadExtensionOps, ThreadId,
-        task_extension,
+        SchedulePolicy, SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId,
+        thread_extension,
     },
     vm::{AxVCpuRef, AxVMRef},
 };
@@ -93,9 +93,9 @@ pub trait AsVCpuTask {
     fn as_vcpu_task(&self) -> &VCpuTask;
 }
 
-impl AsVCpuTask for TaskHandle {
+impl AsVCpuTask for ThreadHandle {
     fn try_as_vcpu_task(&self) -> Option<&VCpuTask> {
-        let extension = task_extension(self)
+        let extension = thread_extension(self)
             .unwrap_or_else(|error| panic!("failed to inspect AxVM task extension: {error}"))?;
         if !ptr::eq(extension.ops(), &VCPU_TASK_EXTENSION_OPS) {
             return None;

@@ -116,7 +116,6 @@ pub(crate) trait ArchOps {
         vector: usize,
     ) {
         crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
     }
 
     /// Releases architecture runtime state after the VM's last vCPU exits.
@@ -433,8 +432,7 @@ mod tests {
             trigger: InterruptTriggerMode::LevelTriggered,
         };
         let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
-        dispatcher.register_test_vcpu(0, 2);
-        dispatcher.enqueue(0, interrupt).unwrap();
+        dispatcher.enqueue(0, interrupt);
 
         inject_drained_interrupts::<RecordingArch>(&dispatcher, 1, 0, &vcpu);
 
@@ -452,7 +450,6 @@ mod tests {
         }));
         let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap());
         let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
-        dispatcher.register_test_vcpu(0, 2);
         for interrupt in [
             PendingVcpuInterrupt {
                 id: VirtualInterruptId(0x41),
@@ -467,7 +464,7 @@ mod tests {
                 trigger: InterruptTriggerMode::EdgeTriggered,
             },
         ] {
-            dispatcher.enqueue(0, interrupt).unwrap();
+            dispatcher.enqueue(0, interrupt);
         }
 
         inject_drained_interrupts::<RecordingArch>(&dispatcher, 1, 0, &vcpu);

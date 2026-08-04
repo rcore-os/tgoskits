@@ -66,7 +66,7 @@ pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
 pub(crate) use host::{
     paging::HostPagingHandler,
-    task::{TaskHandle, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
+    task::{ThreadHandle, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
@@ -80,11 +80,6 @@ pub use vm::{
 
 /// The architecture-independent per-CPU type.
 pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
-
-/// Check and dispatch pending AxVM timer events on the current CPU.
-pub fn check_timer_events() {
-    timer::check_events();
-}
 
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {

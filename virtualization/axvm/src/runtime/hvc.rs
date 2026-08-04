@@ -312,7 +312,7 @@ impl HyperCall {
             }
             HyperCallCode::PSCICpuOff => {
                 info!("VM[{}] PSCI_CPU_OFF", self.vm.id());
-                let current = crate::host::task::current_task();
+                let current = crate::host::task::current_thread();
                 let cpu_off_reserved = current
                     .try_as_vcpu_task()
                     .map(|task| task.vcpu.id())

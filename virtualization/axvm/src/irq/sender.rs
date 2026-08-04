@@ -121,31 +121,36 @@ mod tests {
         AxVmError, InterruptTriggerMode,
         irq::model::VirtualInterruptId,
         lifecycle::{Machine, StopReason},
-        vm::{VmRuntimeHandle, dispatch_vcpu_interrupt_with},
+        runtime::VcpuIrqDispatcher,
+        vm::dispatch_vcpu_interrupt_with,
     };
 
     struct TestVm {
-        machine: SpinNoIrq<Machine<(), Arc<VmRuntimeHandle>>>,
+        machine: SpinNoIrq<Machine<(), Arc<TestRuntime>>>,
+    }
+
+    struct TestRuntime {
+        dispatcher: VcpuIrqDispatcher,
+        cpu_id: Option<usize>,
     }
 
     impl TestVm {
-        fn new(machine: Machine<(), Arc<VmRuntimeHandle>>) -> Arc<Self> {
+        fn new(machine: Machine<(), Arc<TestRuntime>>) -> Arc<Self> {
             Arc::new(Self {
                 machine: SpinNoIrq::new(machine),
             })
         }
 
-        fn current_interrupt_runtime(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
+        fn current_interrupt_runtime(&self) -> AxVmResult<Arc<TestRuntime>> {
             Ok(self.machine.lock().interrupt_runtime()?.clone())
         }
     }
 
-    fn runtime(cpu_id: Option<usize>) -> Arc<VmRuntimeHandle> {
-        let runtime = Arc::new(VmRuntimeHandle::new());
-        if let Some(cpu_id) = cpu_id {
-            runtime.irq_dispatcher().register_test_vcpu(0, cpu_id);
-        }
-        runtime
+    fn runtime(cpu_id: Option<usize>) -> Arc<TestRuntime> {
+        Arc::new(TestRuntime {
+            dispatcher: VcpuIrqDispatcher::new(),
+            cpu_id,
+        })
     }
 
     fn interrupt(id: u32) -> PendingVcpuInterrupt {
@@ -168,7 +173,10 @@ mod tests {
             |runtime, vcpu_id, interrupt| {
                 dispatch_vcpu_interrupt_with(
                     || {
-                        let cpu_id = runtime.irq_dispatcher().enqueue(vcpu_id, interrupt)?;
+                        let cpu_id = runtime.cpu_id.ok_or_else(|| {
+                            ax_err_type!(NotFound, format_args!("vCPU {vcpu_id} task not found"))
+                        })?;
+                        runtime.dispatcher.enqueue(vcpu_id, interrupt);
                         events.borrow_mut().push("enqueue");
                         Ok(cpu_id)
                     },
@@ -196,7 +204,7 @@ mod tests {
             send(&sender, 0, interrupt(1), &events).unwrap();
 
             assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
-            assert_eq!(runtime.irq_dispatcher().drain(0), alloc::vec![interrupt(1)]);
+            assert_eq!(runtime.dispatcher.drain(0), alloc::vec![interrupt(1)]);
         }
     }
 
@@ -279,14 +287,8 @@ mod tests {
         }
         send(&sender, 0, interrupt(2), &events).unwrap();
 
-        assert_eq!(
-            old_runtime.irq_dispatcher().drain(0),
-            alloc::vec![interrupt(1)]
-        );
-        assert_eq!(
-            new_runtime.irq_dispatcher().drain(0),
-            alloc::vec![interrupt(2)]
-        );
+        assert_eq!(old_runtime.dispatcher.drain(0), alloc::vec![interrupt(1)]);
+        assert_eq!(new_runtime.dispatcher.drain(0), alloc::vec![interrupt(2)]);
         assert_eq!(
             *events.borrow(),
             ["enqueue", "notify", "ipi", "enqueue", "notify", "ipi"]

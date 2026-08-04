@@ -258,6 +258,7 @@ cfg_task! {
             | TaskError::NoRunnableThread
             | TaskError::InvalidPiState
             | TaskError::PiCycle
+            | TaskError::PiChainLimit { .. }
             | TaskError::RuntimeFailure(_) => crate::AxError::BadState,
         }
     }
@@ -300,6 +301,14 @@ cfg_task! {
             assert_eq!(
                 cpu_set_from_mask(AxCpuMask::one_shot(0), 0),
                 Err(crate::AxError::InvalidInput)
+            );
+        }
+
+        #[test]
+        fn pi_chain_limit_maps_to_bad_state() {
+            assert_eq!(
+                map_task_error(ax_runtime::task::TaskError::PiChainLimit { limit: 8 }),
+                crate::AxError::BadState
             );
         }
     }

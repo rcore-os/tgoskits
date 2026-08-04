@@ -1,7 +1,7 @@
 //! Physical host-console ownership.
 
 use anyhow::{Result, bail};
-use ax_std::os::arceos::modules::ax_task;
+use ax_std::os::arceos::task::{CpuId, CpuSet, set_current_thread_affinity};
 use axvm::AxVMRef;
 
 fn console_reader_isolation_cpu(
@@ -63,10 +63,15 @@ pub(crate) fn configure_host_console_reader(vms: &[AxVMRef]) -> Result<()> {
     let Some(owner_cpu) = isolation_cpu else {
         return Ok(());
     };
-    let owner_affinity = ax_task::AxCpuMask::one_shot(owner_cpu);
-    if !ax_task::set_current_affinity(owner_affinity) {
-        bail!("failed to pin the host console reader to CPU {owner_cpu}");
+    let owner_cpu_id = u32::try_from(owner_cpu)
+        .map(CpuId::new)
+        .map_err(|_| anyhow::anyhow!("host console CPU {owner_cpu} exceeds scheduler CPU IDs"))?;
+    let mut owner_affinity = CpuSet::empty(ax_hal::cpu_num());
+    if !owner_affinity.insert(owner_cpu_id) {
+        bail!("host console CPU {owner_cpu} is outside the scheduler topology");
     }
+    set_current_thread_affinity(owner_affinity)
+        .map_err(|error| anyhow::anyhow!("failed to pin host console reader: {error}"))?;
     let actual_owner_cpu = ax_hal::percpu::this_cpu_id();
     if actual_owner_cpu != owner_cpu {
         bail!(

@@ -303,7 +303,7 @@ fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
 fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
     use crate::AsVCpuTask;
 
-    let current = crate::host::task::current_task();
+    let current = crate::host::task::current_thread();
     if let Some(task) = current.try_as_vcpu_task()
         && task.vm().id() == vm_id
         && task.vcpu.id() == vcpu_id

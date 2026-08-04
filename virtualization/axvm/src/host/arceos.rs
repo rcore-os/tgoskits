@@ -13,6 +13,7 @@ use ax_std::{
     thread,
 };
 use axvm_types::{HostPhysAddr, HostVirtAddr};
+use spin::Once;
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 use crate::AxVmError;
@@ -86,10 +87,6 @@ impl HostTime for ArceOsHost {
     fn monotonic_time(&self) -> Duration {
         modules::ax_hal::time::monotonic_time()
     }
-
-    fn request_timer_deadline(&self, deadline_ns: u64) {
-        crate::arch::request_timer_deadline(deadline_ns);
-    }
 }
 
 /// Returns the platform IRQ owned by the runtime-selected physical console.
@@ -113,29 +110,103 @@ impl HostCpu for ArceOsHost {
     }
 }
 
-pub(crate) type ArceOsTaskHandle = runtime_task::ThreadHandle;
+pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
+#[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use runtime_task::{
-    CpuId as ArceOsTaskCpuId, CpuSet as ArceOsTaskCpuSet, SchedulePolicy as ArceOsSchedulePolicy,
+    CpuId as ArceOsCpuId, CpuSet as ArceOsCpuSet, SchedulePolicy as ArceOsSchedulePolicy,
     SwitchReason as ArceOsSwitchReason, TaskError as ArceOsTaskError,
     ThreadExtension as ArceOsThreadExtension, ThreadExtensionOps as ArceOsThreadExtensionOps,
     ThreadId as ArceOsThreadId,
 };
 
-pub(crate) fn current_task() -> ArceOsTaskHandle {
+/// Hard-IRQ-safe event consumed by one fixed ArceOS service thread.
+pub(crate) struct ArceOsIrqNotification {
+    event: runtime_task::IrqWaitCell,
+    waiter: Once<ArceOsIrqWaiter>,
+}
+
+struct ArceOsIrqWaiter {
+    owner: ArceOsThreadId,
+    registration: runtime_task::IrqWaitRegistration,
+    park: runtime_task::WaitQueue,
+}
+
+impl ArceOsIrqNotification {
+    pub(crate) const fn new() -> Self {
+        Self {
+            event: runtime_task::IrqWaitCell::new(),
+            waiter: Once::new(),
+        }
+    }
+
+    pub(crate) fn notify_from_irq(&self) {
+        let _result = self.event.notify();
+    }
+
+    pub(crate) fn notify_from_task(&self) {
+        let _result = self.event.notify_from_task();
+    }
+
+    pub(crate) fn wait(&self) {
+        let _timed_out = self.wait_until(None);
+    }
+
+    /// Waits for one event or an optional absolute monotonic deadline.
+    ///
+    /// Returns `true` only when the task deadline won the wake race.
+    pub(crate) fn wait_until(&self, deadline: Option<Duration>) -> bool {
+        let current = current_thread();
+        let waiter = self.waiter.call_once(|| ArceOsIrqWaiter {
+            owner: current.id(),
+            registration: runtime_task::IrqWaitRegistration::new(current.wake_handle()),
+            park: runtime_task::WaitQueue::new(),
+        });
+        assert_eq!(
+            waiter.owner,
+            current.id(),
+            "one AxVM IRQ notification must be consumed by one fixed service thread"
+        );
+
+        match self.event.register(&waiter.registration) {
+            runtime_task::IrqRegisterResult::ConsumedPending => false,
+            runtime_task::IrqRegisterResult::Registered(token)
+            | runtime_task::IrqRegisterResult::NotificationInFlight(token) => {
+                let timed_out = match deadline {
+                    Some(deadline) => waiter
+                        .park
+                        .wait_until_deadline(deadline, || !token.is_attached()),
+                    None => {
+                        waiter.park.wait_until(|| !token.is_attached());
+                        false
+                    }
+                };
+                runtime_task::quiesce_irq_wait(token).unwrap_or_else(|error| {
+                    panic!("AxVM IRQ notification could not quiesce: {error}")
+                });
+                timed_out
+            }
+            runtime_task::IrqRegisterResult::Occupied => {
+                panic!("AxVM IRQ notification waiter was registered concurrently")
+            }
+        }
+    }
+}
+
+pub(crate) fn current_thread() -> ArceOsThreadHandle {
     runtime_task::current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
 }
 
-pub(crate) unsafe fn spawn_task_with_extension_and_affinity<F>(
+pub(crate) unsafe fn spawn_thread_with_extension_and_affinity<F>(
     entry: F,
     name: alloc::string::String,
     stack_size: usize,
     extension: Option<ArceOsThreadExtension>,
-    affinity: Option<ArceOsTaskCpuSet>,
-) -> Result<ArceOsTaskHandle, ArceOsTaskError>
+    affinity: Option<ArceOsCpuSet>,
+) -> Result<ArceOsThreadHandle, ArceOsTaskError>
 where
     F: FnOnce() + Send + 'static,
 {
@@ -148,38 +219,38 @@ where
     }
 }
 
-pub(crate) fn join_task(task: ArceOsTaskHandle) -> Result<i32, ArceOsTaskError> {
-    runtime_task::join_thread(task)
+pub(crate) fn join_thread(thread: ArceOsThreadHandle) -> Result<i32, ArceOsTaskError> {
+    runtime_task::join_thread(thread)
 }
 
-pub(crate) fn task_extension(
-    task: &ArceOsTaskHandle,
+pub(crate) fn thread_extension(
+    thread: &ArceOsThreadHandle,
 ) -> Result<Option<runtime_task::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
-    runtime_task::thread_os_extension(task)
+    runtime_task::thread_os_extension(thread)
 }
 
-pub(crate) fn task_cpu_set_from_raw_bits(bits: usize) -> ArceOsTaskCpuSet {
+pub(crate) fn cpu_set_from_raw_bits(bits: usize) -> ArceOsCpuSet {
     let cpu_count = modules::ax_hal::cpu_num();
-    let mut affinity = ArceOsTaskCpuSet::empty(cpu_count);
+    let mut affinity = ArceOsCpuSet::empty(cpu_count);
     for cpu_id in 0..cpu_count.min(usize::BITS as usize) {
         if bits & (1usize << cpu_id) != 0 {
-            assert!(affinity.insert(ArceOsTaskCpuId::new(cpu_id as u32)));
+            assert!(affinity.insert(ArceOsCpuId::new(cpu_id as u32)));
         }
     }
     affinity
 }
 
-pub(crate) fn task_cpu_set_one(cpu_id: usize) -> ArceOsTaskCpuSet {
-    let mut affinity = ArceOsTaskCpuSet::empty(modules::ax_hal::cpu_num());
+pub(crate) fn cpu_set_one(cpu_id: usize) -> ArceOsCpuSet {
+    let mut affinity = ArceOsCpuSet::empty(modules::ax_hal::cpu_num());
     assert!(
-        affinity.insert(ArceOsTaskCpuId::new(cpu_id as u32)),
+        affinity.insert(ArceOsCpuId::new(cpu_id as u32)),
         "AxVM task CPU {cpu_id} is outside the runtime topology"
     );
     affinity
 }
 
-pub(crate) fn task_cpu_id(task: &ArceOsTaskHandle) -> usize {
-    task.assigned_cpu().map_or(0, |cpu| cpu.as_usize())
+pub(crate) fn thread_cpu_id(thread: &ArceOsThreadHandle) -> Option<usize> {
+    thread.assigned_cpu().map(|cpu| cpu.as_usize())
 }
 
 pub(crate) fn yield_now() {
@@ -207,6 +278,7 @@ pub(crate) fn send_ipi(cpu_id: usize) {
     );
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn run_on_cpu_sync(
     cpu_id: usize,
     f: unsafe fn(*mut ()),
@@ -245,7 +317,7 @@ impl HostPlatform for ArceOsHost {
     }
 
     fn enable_virtualization_on_current_cpu(&self) -> AxVmResult {
-        crate::timer::init_percpu();
+        crate::timer::init_percpu()?;
         crate::percpu::init_current_cpu()?;
         crate::percpu::enable_current_cpu()?;
         crate::percpu::mark_cpu_enabled(self.this_cpu_id());
@@ -270,11 +342,11 @@ impl HostPlatform for ArceOsHost {
             if cpu_id == current_cpu {
                 continue;
             }
-            let affinity = task_cpu_set_one(cpu_id);
+            let affinity = cpu_set_one(cpu_id);
             // SAFETY: no OS extension is transferred and the affinity is
             // validated against the current runtime topology above.
             let _task = unsafe {
-                spawn_task_with_extension_and_affinity(
+                spawn_thread_with_extension_and_affinity(
                     move || {
                         let host = arceos_host();
                         info!("Core {cpu_id} is initializing hardware virtualization support...");

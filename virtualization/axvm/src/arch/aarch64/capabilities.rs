@@ -5,11 +5,9 @@ use alloc::format;
 use super::Aarch64Arch;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform},
+    architecture::{BootImagePlatform, GuestBootPlatform, MachinePlatform},
     ax_err_type,
 };
-
-impl HostTimePlatform for Aarch64Arch {}
 
 impl MachinePlatform for Aarch64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =

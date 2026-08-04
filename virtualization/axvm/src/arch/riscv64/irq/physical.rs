@@ -8,12 +8,11 @@ use core::{
 };
 
 use ax_kspin::SpinNoIrq;
-use ax_std::os::arceos::modules::ax_task::IrqNotify;
 use axvm_types::InterruptTriggerMode;
 use riscv_vplic::{PLIC_NUM_SOURCES, VPlicGlobal};
 
 use super::DeferredVcpuKick;
-use crate::{AxTaskRef, AxVmError, AxVmResult, TaskInner, ax_err};
+use crate::{AxVmError, AxVmResult, ThreadHandle, ax_err, host::task::IrqNotification};
 
 const PHYSICAL_IRQ_WORKER_STACK_SIZE: usize = 0x20_000;
 const CLAIM_IDLE: u8 = 0;
@@ -35,7 +34,7 @@ pub(super) struct PhysicalIrqBridge {
     shared: Arc<PhysicalBridgeShared>,
     bindings: Box<[Arc<PhysicalSourceBinding>]>,
     registrations: SpinNoIrq<Vec<PhysicalRouteRegistration>>,
-    worker: SpinNoIrq<Option<AxTaskRef>>,
+    worker: SpinNoIrq<Option<ThreadHandle>>,
     running: AtomicBool,
 }
 
@@ -53,7 +52,7 @@ impl PhysicalIrqBridge {
             vplic,
             kick,
             vcpu_count,
-            notify: IrqNotify::new(),
+            notify: IrqNotification::new(),
             stopping: AtomicBool::new(false),
         });
         let mut bindings = Vec::with_capacity(routes.len());
@@ -99,10 +98,19 @@ impl PhysicalIrqBridge {
         if self.running.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        self.start_worker();
-        if let Err(error) = self.install_and_activate_routes() {
-            self.rollback_start();
+        if let Err(error) = self.start_worker() {
+            self.running.store(false, Ordering::Release);
             return Err(error);
+        }
+        if let Err(error) = self.install_and_activate_routes() {
+            return match self.rollback_start() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "start RISC-V physical IRQ bridge",
+                    error,
+                    rollback,
+                )),
+            };
         }
         Ok(())
     }
@@ -128,7 +136,11 @@ impl PhysicalIrqBridge {
             }
         }
         self.registrations.lock().clear();
-        self.stop_worker();
+        if let Err(error) = self.stop_worker()
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
         self.release_outstanding_claims();
 
         first_error.map_or(Ok(()), Err)
@@ -163,15 +175,23 @@ impl PhysicalIrqBridge {
         }
     }
 
-    fn start_worker(self: &Arc<Self>) {
+    fn start_worker(self: &Arc<Self>) -> AxVmResult {
         self.shared.stopping.store(false, Ordering::Release);
         let bridge = self.clone();
-        let task = TaskInner::new(
-            move || bridge.run_worker(),
-            alloc::format!("VM[{}]-plic-physical", self.shared.vm_id),
-            PHYSICAL_IRQ_WORKER_STACK_SIZE,
-        );
-        *self.worker.lock() = Some(crate::host::task::spawn_task(task));
+        let worker = unsafe {
+            // SAFETY: no OS extension or affinity capability is transferred;
+            // the worker closure and bridge reference move exactly once.
+            crate::host::task::spawn_thread_with_extension_and_affinity(
+                move || bridge.run_worker(),
+                alloc::format!("VM[{}]-plic-physical", self.shared.vm_id),
+                PHYSICAL_IRQ_WORKER_STACK_SIZE,
+                None,
+                None,
+            )
+        }
+        .map_err(|error| AxVmError::host("start RISC-V physical IRQ worker", error))?;
+        *self.worker.lock() = Some(worker);
+        Ok(())
     }
 
     fn install_and_activate_routes(&self) -> AxVmResult {
@@ -198,23 +218,26 @@ impl PhysicalIrqBridge {
         Ok(())
     }
 
-    fn rollback_start(&self) {
+    fn rollback_start(&self) -> AxVmResult {
         for binding in &self.bindings {
             binding.accepting.store(false, Ordering::Release);
             let _ = ax_plat::irq::riscv64_hv::deactivate_guest_plic_source(binding.source as u32);
         }
         self.registrations.lock().clear();
-        self.stop_worker();
+        let stop_result = self.stop_worker();
         self.release_outstanding_claims();
         self.running.store(false, Ordering::Release);
+        stop_result
     }
 
-    fn stop_worker(&self) {
+    fn stop_worker(&self) -> AxVmResult {
         self.shared.stopping.store(true, Ordering::Release);
-        self.shared.notify.notify();
-        if let Some(worker) = self.worker.lock().take() {
-            worker.join();
-        }
+        self.shared.notify.notify_from_task();
+        let worker = self.worker.lock().take();
+        worker
+            .map_or(Ok(0), crate::host::task::join_thread)
+            .map(|_exit_code| ())
+            .map_err(|error| AxVmError::host("join RISC-V physical IRQ worker", error))
     }
 
     fn run_worker(&self) {
@@ -269,7 +292,7 @@ struct PhysicalBridgeShared {
     vplic: Arc<VPlicGlobal>,
     kick: Arc<DeferredVcpuKick>,
     vcpu_count: usize,
-    notify: IrqNotify,
+    notify: IrqNotification,
     stopping: AtomicBool,
 }
 
@@ -297,7 +320,7 @@ impl PhysicalSourceBinding {
         {
             return false;
         }
-        self.shared.notify.notify_irq();
+        self.shared.notify.notify_from_irq();
         true
     }
 

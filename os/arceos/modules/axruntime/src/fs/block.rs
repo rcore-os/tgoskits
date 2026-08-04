@@ -234,6 +234,7 @@ fn map_task_error(error: TaskError) -> ax_errno::AxError {
         | TaskError::NoRunnableThread
         | TaskError::InvalidPiState
         | TaskError::PiCycle
+        | TaskError::PiChainLimit { .. }
         | TaskError::RuntimeFailure(_) => ax_errno::AxError::BadState,
     }
 }

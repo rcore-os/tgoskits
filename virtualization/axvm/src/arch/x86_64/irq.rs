@@ -5,7 +5,7 @@ use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PitServiceKey};
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
-    InterruptTriggerMode,
+    AxVmResult, InterruptTriggerMode,
     arch::x86_64::{
         X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
@@ -102,7 +102,7 @@ fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
     (0..IOAPIC_GSI_COUNT).filter(|gsi| should_register_ioapic_gsi_hook(*gsi))
 }
 
-fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<alloc::sync::Arc<X86InterruptDomain>> {
+fn interrupt_domain_for_vm(vm: &crate::AxVM) -> Option<alloc::sync::Arc<X86InterruptDomain>> {
     vm.get_devices()
         .ok()?
         .services()
@@ -442,16 +442,18 @@ impl X86InterruptDomain {
     }
 }
 
-pub fn start_deferred_irq_delivery(vm: &VMRef) {
+pub fn start_deferred_irq_delivery(vm: &crate::AxVM) -> AxVmResult {
     if let Some(domain) = interrupt_domain_for_vm(vm) {
-        domain.start_kick_worker();
+        domain.start_kick_worker()?;
     }
+    Ok(())
 }
 
-pub fn stop_deferred_irq_delivery(vm: &VMRef) {
+pub fn stop_deferred_irq_delivery(vm: &crate::AxVM) -> AxVmResult {
     if let Some(domain) = interrupt_domain_for_vm(vm) {
-        domain.stop_kick_worker();
+        domain.stop_kick_worker()?;
     }
+    Ok(())
 }
 
 pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
