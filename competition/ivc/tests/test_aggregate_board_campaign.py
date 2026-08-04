@@ -643,6 +643,52 @@ class BoardCampaignAggregationTests(unittest.TestCase):
             self.assertEqual(run["pre_reset_raw"]["sample_count"], 20)
             self.assertTrue(run["restart_recovery"]["actual_vm_reset"])
 
+    def test_accepts_restart_uart_hash_prefix_verified_by_full_raw_digest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_restart_campaign(root)
+            run_dir = result_root / "run-001"
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            pre_reset = summary["pre_reset_raw_samples"]
+            pre_reset["uart_sha256"] = pre_reset["sha256"][:12]
+            pre_reset["uart_sha256_complete"] = False
+            write_json(summary_path, summary)
+            refresh_run_identity(run_dir)
+
+            result = aggregate.aggregate_campaign(
+                root, result_root, amendment, final_check
+            )
+
+        self.assertTrue(result["assessment"]["campaign_gate_met"])
+
+    def test_rejects_restart_uart_hash_prefix_that_conflicts_with_raw_digest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_root, amendment, final_check = write_restart_campaign(root)
+            run_dir = result_root / "run-001"
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            pre_reset = summary["pre_reset_raw_samples"]
+            digest = pre_reset["sha256"]
+            first = "0" if digest[0] != "0" else "1"
+            pre_reset["uart_sha256"] = first + digest[1:12]
+            pre_reset["uart_sha256_complete"] = False
+            write_json(summary_path, summary)
+            refresh_run_identity(run_dir)
+
+            with self.assertRaisesRegex(
+                aggregate.AggregationError,
+                "UART SHA-256 fragment conflicts with raw CSV",
+            ):
+                aggregate.aggregate_campaign(
+                    root, result_root, amendment, final_check
+                )
+
     def test_rejects_rehashed_restart_summary_without_actual_vm_reset(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

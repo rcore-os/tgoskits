@@ -49,6 +49,7 @@ DESCRIPTIVE_METRICS = (
     "deadline_misses",
 )
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+SHA256_FRAGMENT_PATTERN = re.compile(r"[0-9a-f]{1,64}")
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 MANIFEST_PATTERN = re.compile(r"([0-9a-f]{64})  ([^/\\]+)")
 SUPPORTED_PROFILE_PAIRS = {
@@ -127,6 +128,24 @@ def require_equal(
         raise AggregationError(
             f"{label} {key} must be {expected!r}, got {parent.get(key)!r}"
         )
+
+
+def validate_sha256_fragment(
+    parent: dict[str, object], expected: str, label: str
+) -> None:
+    fragment = require_string(parent, "uart_sha256", label)
+    if SHA256_FRAGMENT_PATTERN.fullmatch(fragment) is None:
+        raise AggregationError(f"{label} uart_sha256 is not a SHA-256 fragment")
+    if not expected.startswith(fragment):
+        raise AggregationError(
+            f"{label} UART SHA-256 fragment conflicts with raw CSV"
+        )
+    require_equal(
+        parent,
+        "uart_sha256_complete",
+        len(fragment) == len(expected),
+        label,
+    )
 
 
 def resolve_inside(root: Path, path: Path, label: str) -> Path:
@@ -636,11 +655,8 @@ def validate_restart_summary(
         sha256_file(run_dir / "raw-before-reset.csv.gz"),
         f"{label} pre-reset raw",
     )
-    require_equal(
-        pre_reset, "uart_sha256", pre_reset_hash, f"{label} pre-reset raw"
-    )
-    require_equal(
-        pre_reset, "uart_sha256_complete", True, f"{label} pre-reset raw"
+    validate_sha256_fragment(
+        pre_reset, pre_reset_hash, f"{label} pre-reset raw"
     )
     require_equal(
         pre_reset, "sample_count", pre_reset_count, f"{label} pre-reset raw"
