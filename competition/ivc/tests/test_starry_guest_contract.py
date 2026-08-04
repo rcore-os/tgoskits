@@ -115,9 +115,11 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn('while [ "$raw_identity_copy" -lt 5 ]; do', autorun)
         self.assertIn('raw_identity_copy=$((raw_identity_copy + 1))', autorun)
         self.assertIn("raw_identity_quiet_seconds=4", autorun)
-        self.assertIn("raw_identity_interval_seconds=1", autorun)
+        self.assertIn("raw_identity_line_interval_seconds=0.25", autorun)
+        self.assertIn("raw_identity_copy_interval_seconds=1", autorun)
         self.assertIn('"$BB" sleep "$raw_identity_quiet_seconds"', autorun)
-        self.assertIn('"$BB" sleep "$raw_identity_interval_seconds"', autorun)
+        self.assertIn('"$BB" sleep "$raw_identity_line_interval_seconds"', autorun)
+        self.assertIn('"$BB" sleep "$raw_identity_copy_interval_seconds"', autorun)
         self.assertIn("raw_manifest=$raw_path.sha256", autorun)
         self.assertIn(
             "printf '%s  %s\\n' \"$validated_raw_sha256\" \"$raw_path\" >\"$raw_manifest\"",
@@ -128,6 +130,28 @@ class StarryGuestContractTests(unittest.TestCase):
             autorun.index('"$BB" sync || fatal final-sync-failed'),
             autorun.index('echo "IVC-STARRY-DONE exit=$result"'),
         )
+
+    def test_rknn_uart_identity_lines_are_spaced_individually(self) -> None:
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+        loop_start = autorun.index('while [ "$raw_identity_copy" -lt 5 ]; do')
+        loop_end = autorun.index("    done", loop_start)
+        identity_loop = autorun[loop_start:loop_end]
+        expected_sequence = (
+            'echo "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256"',
+            '"$BB" sleep "$raw_identity_line_interval_seconds"',
+            'echo "IVC-STARRY-RKNN-MODEL sha256=$actual_rknn_model_sha256"',
+            '"$BB" sleep "$raw_identity_line_interval_seconds"',
+            'echo "IVC-STARRY-RKNN-RAW samples=$ivc_count sha256=$validated_rknn_sha256"',
+            '"$BB" sleep "$raw_identity_line_interval_seconds"',
+            'raw_identity_copy=$((raw_identity_copy + 1))',
+            '"$BB" sleep "$raw_identity_copy_interval_seconds"',
+        )
+        cursor = 0
+        for fragment in expected_sequence:
+            with self.subTest(fragment=fragment):
+                position = identity_loop.find(fragment, cursor)
+                self.assertGreaterEqual(position, 0)
+                cursor = position + len(fragment)
 
     def test_restart_profile_persists_phase_one_before_waiting_for_vm_reset(self) -> None:
         builder = STARRY_ROOTFS_BUILD.read_text(encoding="utf-8")

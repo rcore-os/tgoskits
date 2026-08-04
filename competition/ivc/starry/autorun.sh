@@ -274,17 +274,21 @@ if [ "$result" -eq 0 ]; then
     # Let the peer VM shutdown messages drain before publishing redundant
     # identities on the shared UART.
     raw_identity_quiet_seconds=4
-    raw_identity_interval_seconds=1
+    raw_identity_line_interval_seconds=0.25
+    raw_identity_copy_interval_seconds=1
     "$BB" sleep "$raw_identity_quiet_seconds"
     raw_identity_copy=0
     while [ "$raw_identity_copy" -lt 5 ]; do
         echo "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256"
         if [ "$ivc_backend" = rknn-npu ]; then
+            "$BB" sleep "$raw_identity_line_interval_seconds"
             echo "IVC-STARRY-RKNN-MODEL sha256=$actual_rknn_model_sha256"
+            "$BB" sleep "$raw_identity_line_interval_seconds"
             echo "IVC-STARRY-RKNN-RAW samples=$ivc_count sha256=$validated_rknn_sha256"
+            "$BB" sleep "$raw_identity_line_interval_seconds"
         fi
         raw_identity_copy=$((raw_identity_copy + 1))
-        "$BB" sleep "$raw_identity_interval_seconds"
+        "$BB" sleep "$raw_identity_copy_interval_seconds"
     done
     result=0
 fi
