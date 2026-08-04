@@ -1,4 +1,4 @@
-//! x86_64 Linux, BIOS, UEFI, and MP-table image planning.
+//! x86_64 Linux direct boot, BIOS/UEFI firmware, and MP-table image planning.
 
 use alloc::format;
 

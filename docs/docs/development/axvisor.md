@@ -12,7 +12,7 @@ Axvisor 是运行在 ArceOS 基础能力之上的 Type-1 Hypervisor。与 ArceOS
 
 ### 1.1 工具链
 
-Axvisor 共享 TGOSKits 工作区统一工具链（`nightly-2026-07-15`）。Axvisor 的交叉编译配置位于 `os/axvisor/.cargo/config.toml`，包含各架构的链接器标志和 runner 配置。
+Axvisor 共享 TGOSKits 工作区统一工具链（`nightly-2026-07-15`）。维护中的构建路径由工作区级 Cargo 配置和 `cargo xtask axvisor` 统一管理；`os/axvisor/.cargo/config.toml` 保留从 Axvisor 目录直接执行 Cargo 时所需的 release、链接和 runner 配置。
 
 ### 1.2 QEMU
 
@@ -29,21 +29,14 @@ Axvisor 开发依赖 QEMU 的硬件虚拟化支持：
 
 ### 1.3 Guest 镜像准备
 
-Axvisor 支持加载多种 Guest OS 镜像。首次运行前需要通过 `setup_qemu.sh` 准备：
+Axvisor 的维护用例由 `cargo xtask axvisor test` 根据 `test-suit/axvisor/` 中的配置准备 Guest 镜像、rootfs、VM 配置和运行参数。可先列出或直接运行 smoke 用例：
 
 ```bash
-cargo xtask axvisor defconfig qemu-aarch64
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
+cargo xtask axvisor test qemu --list --arch aarch64
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke
 ```
 
-该脚本完成以下操作：
-
-1. 从 `axvisor-guest` GitHub 仓库下载 Guest 镜像到 `/tmp/.axvisor-images/qemu_aarch64_arceos`
-2. 从 `configs/vms/qemu/aarch64/arceos-smp1.toml` 生成 `os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
-3. 自动修正 VM 配置中的 `kernel_path`
-4. 复制 `rootfs.img` 到 `os/axvisor/tmp/rootfs.img`
-
-支持的 Guest 镜像类型：`arceos`, `arceos-riscv64`, `linux`, `nimbos`。
+维护中的 Guest 类型包括 ArceOS 和 Linux；具体组合以测试套件中的用例为准。
 
 ---
 
@@ -88,11 +81,8 @@ os/axvisor/
 │       ├── linux-*-*.toml
 │       ├── arceos-*-*.toml
 │       ├── freertos-*-*.toml
-│       ├── nimbos-*-*.toml
 │       ├── rt-thread-*-*.toml
 │       └── zephyr-*-*.toml
-└── scripts/
-    └── setup_qemu.sh       # QEMU Guest 镜像准备脚本
 ```
 
 核心组件（位于 `components/`）：
@@ -288,7 +278,6 @@ disabled = [{ path = "/soc/gpio@2000" }]
 | **Linux** | `linux-` | aarch64 (qemu, e2000, orangepi5p, rk3568, rk3588, s100, tac_e400), riscv64-qemu |
 | **ArceOS** | `arceos-` | aarch64 (qemu, e2000, orangepi5p, rk3568, s100, tac_e400), riscv64-qemu |
 | **FreeRTOS** | `freertos-` | aarch64 (e2000, orangepi5p, qemu, tac_e400) |
-| **NimbOS** | `nimbos-` | aarch64-qemu, riscv64-qemu, x86_64-qemu |
 | **RT-Thread** | `rtthread-` | aarch64-e2000 |
 | **Zephyr** | `zephyr-` | aarch64 (e2000, orangepi5p, qemu, tac_e400) |
 
@@ -305,7 +294,7 @@ disabled = [{ path = "/soc/gpio@2000" }]
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ax-std/bus-mmio", "fs"]
 log = "Info"
-vm_configs = []   # 注意：默认为空，需手动指定或通过 setup_qemu.sh 生成
+vm_configs = []   # 注意：默认为空，需由测试用例或命令行显式指定
 ```
 
 ### 7.2 已支持的板级配置
@@ -347,31 +336,24 @@ cargo xtask axvisor build --config os/axvisor/.build.toml
 
 第一次上手强烈建议从 `qemu-aarch64` 开始。
 
-### 8.1 使用 `setup_qemu.sh`
+### 8.1 使用维护中的测试入口
 
-**不要**直接从 `defconfig → build → qemu` 开始——默认配置中的 `vm_configs` 为空，且 `rootfs.img` 不会自动生成。
+测试入口会根据用例声明准备构建配置、Guest 镜像、rootfs、VM 配置和 QEMU 参数：
 
 ```bash
-# 步骤 1：生成板级配置
-cargo xtask axvisor defconfig qemu-aarch64
-
-# 步骤 2：准备 Guest 镜像和 rootfs
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-
-# 步骤 3：启动
-cargo xtask axvisor qemu \
-  --config os/axvisor/.build.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo xtask axvisor test qemu \
+  --arch aarch64 \
+  --test-group normal \
+  --test-case smoke
 ```
 
-### 8.2 为什么直接跑会失败
+### 8.2 为什么手工拼接参数容易失败
 
 | 问题 | 原因 |
 |------|------|
-| `vm_configs` 为空 | 板级配置默认不包含 VM 配置，需通过 `setup_qemu.sh` 或手动指定 |
-| `rootfs.img` 不存在 | 需手动准备或通过脚本下载 |
-| `kernel_path` 错误 | 默认路径指向不存在的位置，`setup_qemu.sh` 会自动修正 |
+| `vm_configs` 为空 | 板级配置默认不包含 VM 配置，应由测试用例或显式参数指定 |
+| `rootfs.img` 不存在 | 需通过镜像管理命令或测试入口准备 |
+| `kernel_path` 错误 | VM 配置中的镜像路径必须与本地镜像存储一致 |
 
 ---
 
@@ -454,14 +436,9 @@ cargo xtask axvisor config ls
 # 只做构建，排除编译问题
 cargo xtask axvisor build --config os/axvisor/.build.toml
 
-# 使用脚本准备镜像和 rootfs
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-
-# 明确指定 VM 配置运行
-cargo xtask axvisor qemu \
-  --config os/axvisor/.build.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+# 列出并运行维护中的 QEMU 用例
+cargo xtask axvisor test qemu --list --arch aarch64
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke
 ```
 
 ### 10.3 GDB 调试 Hypervisor
