@@ -1,16 +1,61 @@
-use ax_runtime::hal::cpu::uspace::{ExceptionKind, ReturnReason, UserContext};
+use ax_memory_addr::VirtAddr;
+use ax_runtime::hal::{
+    cpu::uspace::{ExceptionKind, ReturnReason, UserContext},
+    paging::MappingFlags,
+};
 use ax_task::TaskInner;
 use starry_process::Pid;
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
 
+#[cfg(target_arch = "loongarch64")]
+use super::unaligned::{UnalignedEmulationResult, emulate_user_unaligned};
 use super::{
-    AsThread, SyscallRestartInfo, SyscallTraceState, TimerState, check_signals, poll_process_timer,
-    ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal, set_timer_state,
-    unblock_next_signal, wait_existing_ptrace_stop_current,
+    AsThread, SyscallRestartInfo, SyscallTraceState, Thread, TimerState, check_signals,
+    poll_process_timer, ptrace_stop_current, ptrace_syscall_stop_current, raise_signal_fatal,
+    set_timer_state, unblock_next_signal, wait_existing_ptrace_stop_current,
 };
 use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
+
+fn handle_user_page_fault(
+    thread: &Thread,
+    address: VirtAddr,
+    flags: MappingFlags,
+    context: &UserContext,
+) {
+    // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
+    // semantics: all faults, before resolution). Kernel-mode faults on user
+    // addresses are counted separately in the mm page-fault handler.
+    crate::mm::PAGE_FAULT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // Classify si_code while holding the aspace lock: an existing mapping
+    // that rejected the access is a permission violation (SEGV_ACCERR),
+    // otherwise the address is unmapped (SEGV_MAPERR), matching Linux's
+    // do_user_addr_fault().
+    let si_code = {
+        let aspace = thread.proc_data.aspace();
+        let mut aspace = aspace.lock();
+        if aspace.handle_page_fault(address, flags) {
+            None
+        } else if aspace.find_area(address).is_some() {
+            Some(SEGV_ACCERR)
+        } else {
+            Some(SEGV_MAPERR)
+        }
+    };
+    if let Some(si_code) = si_code {
+        warn!(
+            "{:?}: segmentation fault at {:#x} {:?}",
+            thread.proc_data.proc, address, flags
+        );
+        raise_signal_fatal(
+            SignalInfo::new_fault(Signo::SIGSEGV, si_code, address.as_usize()),
+            context,
+        )
+        .expect("Failed to send SIGSEGV");
+    }
+}
 
 /// Create a new user task.
 pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) -> TaskInner {
@@ -131,42 +176,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {
-                        // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c
-                        // semantics: all faults, before resolution). Kernel-mode faults on user
-                        // addresses are counted separately in the mm page-fault handler.
-                        crate::mm::PAGE_FAULT_COUNT
-                            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                        // Classify si_code while holding the aspace lock: an
-                        // existing mapping that rejected the access is a
-                        // permission violation (SEGV_ACCERR), otherwise the
-                        // address is unmapped (SEGV_MAPERR) — matching Linux's
-                        // do_user_addr_fault().
-                        let si_code = {
-                            let aspace = thr.proc_data.aspace();
-                            let mut aspace = aspace.lock();
-                            if aspace.handle_page_fault(addr, flags) {
-                                None
-                            } else if aspace.find_area(addr).is_some() {
-                                Some(SEGV_ACCERR)
-                            } else {
-                                Some(SEGV_MAPERR)
-                            }
-                        };
-                        if let Some(si_code) = si_code {
-                            warn!(
-                                "{:?}: segmentation fault at {:#x} {:?}",
-                                thr.proc_data.proc, addr, flags
-                            );
-                            // POSIX: a synchronous SIGSEGV must carry the
-                            // faulting address in si_addr so handlers can
-                            // classify and recover from guard-page / implicit-
-                            // null-check faults.
-                            raise_signal_fatal(
-                                SignalInfo::new_fault(Signo::SIGSEGV, si_code, addr.as_usize()),
-                                &uctx,
-                            )
-                            .expect("Failed to send SIGSEGV");
-                        }
+                        handle_user_page_fault(thr, addr, flags, &uctx);
                     }
                     ReturnReason::Interrupt => {}
                     #[allow(unused_labels)]
@@ -244,8 +254,15 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         }
                         if matches!(kind, ExceptionKind::Misaligned) {
                             #[cfg(target_arch = "loongarch64")]
-                            match unsafe { uctx.emulate_unaligned_at(exc_info.badv as u64) } {
-                                Ok(()) => break 'exc,
+                            match emulate_user_unaligned(thr, &mut uctx, exc_info.badv) {
+                                Ok(UnalignedEmulationResult::Complete) => break 'exc,
+                                Ok(UnalignedEmulationResult::PageFault { address, flags }) => {
+                                    handle_user_page_fault(thr, address, flags, &uctx);
+                                    // A resolved fault leaves ERA unchanged; exiting this
+                                    // exception block returns to the outer user loop and retries
+                                    // the same instruction. A fatal fault is delivered below.
+                                    break 'exc;
+                                }
                                 Err(err) => {
                                     let exe_path = thr.proc_data.exe_path.read().clone();
                                     warn!(

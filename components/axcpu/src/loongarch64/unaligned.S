@@ -1,12 +1,14 @@
 .section .text
 
 /*
- * unsigned long unaligned_read(void *addr, void *value, unsigned long n, bool sign)
+ * unsigned long unaligned_read(void *addr, void *value, unsigned long n, bool sign,
+ *                              void *fault_addr)
  *
  * a0: addr
  * a1: value
  * a2: n
  * a3: sign
+ * a4: fault_addr
  */
 .global _unaligned_read
 _unaligned_read:
@@ -33,19 +35,22 @@ _unaligned_read:
 	move	$a0, $a2
 	jr	$ra
 
-5:	li.w    $a0, -1
+
+5:	st.d	$a0, $a4, 0
+	li.w    $a0, -1
 	jr	$ra
 
 	_asm_extable 1b, 5b
 	_asm_extable 2b, 5b
-	_asm_extable 4b, 5b
 
 /*
- * unsigned long unaligned_write(void *addr, unsigned long value, unsigned long n)
+ * unsigned long unaligned_write(void *addr, unsigned long value, unsigned long n,
+ *                               void *fault_addr)
  *
  * a0: addr
  * a1: value
  * a2: n
+ * a3: fault_addr
  */
 .global _unaligned_write
 _unaligned_write:
@@ -62,7 +67,8 @@ _unaligned_write:
 	move	$a0, $a2
 	jr	$ra
 
-3:	li.w    $a0, -1
+3:	st.d	$a0, $a3, 0
+	li.w    $a0, -1
 	jr	$ra
 
 	_asm_extable 2b, 3b

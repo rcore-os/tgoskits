@@ -11,6 +11,8 @@ mod signal;
 mod signal_publication;
 mod stat;
 mod timer;
+#[cfg(target_arch = "loongarch64")]
+mod unaligned;
 mod user;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
