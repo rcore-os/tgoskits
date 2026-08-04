@@ -459,6 +459,19 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertEqual(result["raw_samples"]["guest_manifest_sha256"], digest)
         self.assertFalse(result["raw_samples"]["uart_sha256_complete"])
 
+    def test_raw_record_survives_a_missing_console_tag_open_bracket(self) -> None:
+        raw_path = self.write_raw_csv()
+        log = self.raw_log().replace(
+            "[guest-console:pl011-starry] IVC-STARRY-RAW ",
+            "[263.257538 0:15 axvm::vm:902] "
+            "guest-console:pl011-starry] IVC-STARRY-RAW ",
+        )
+
+        result = analyzer.analyze(self.write_log(log), 4, raw_path)
+
+        self.assertEqual(result["raw_samples"]["sample_count"], 4)
+        self.assertTrue(result["raw_samples"]["uart_sha256_complete"])
+
     def test_snapshot_guest_manifest_mismatch_is_rejected(self) -> None:
         digest = hashlib.sha256(RAW_CSV.encode()).hexdigest()
         log = self.raw_log().replace(

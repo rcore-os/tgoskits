@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-GUEST_CONSOLE_PREFIX = re.compile(r"\[guest-console:[^\]\r\n]+\][ \t]*")
+GUEST_CONSOLE_PREFIX = re.compile(r"\[?guest-console:[^\]\r\n]+\][ \t]*")
 OUTCOME_PREFIX = "IVC-CONTROLLER-OUTCOME "
 RELIABILITY_PREFIX = "IVC-CONTROLLER-RELIABILITY "
 FULL_LOOP_PREFIX = "IVC-CONTROLLER-FULL-LOOP "
