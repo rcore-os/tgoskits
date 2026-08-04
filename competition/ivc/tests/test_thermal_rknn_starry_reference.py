@@ -313,6 +313,44 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
                 0,
             )
 
+    def test_compact_handoff_markers_ignore_axvisor_ansi_coloring(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence, report_path = self.prepare_evidence(Path(directory))
+            console = evidence.console_path.read_text(encoding="utf-8")
+            legacy_handoff = (
+                "AXVISOR_RK3588_NPU_HANDOFF_READY cores=3 power_domains=3 "
+                "clocks=8 resets=6 scmi_clock_id=6 scmi_rate_hz=200000000 "
+                "host_submit=false"
+            )
+            compact_handoff = [
+                "AXVISOR_RK3588_NPU_HANDOFF_READY",
+                "AXVISOR_RK3588_NPU_RESOURCES cores=3 power_domains=3 "
+                "clocks=8 resets=6",
+                "AXVISOR_RK3588_NPU_SCMI clock_id=6 rate_hz=200000000",
+                "AXVISOR_RK3588_NPU_OWNERSHIP host_submit=false",
+            ]
+            ansi_handoff = [
+                f"\x1b[32m{marker}\x1b[m"
+                for marker in compact_handoff * 2
+            ]
+            self.assertIn(legacy_handoff, console)
+            evidence.console_path.write_text(
+                console.replace(legacy_handoff, "\n".join(ansi_handoff)),
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            report = starry_reference.analyze(evidence, report_path)
+
+            self.assertEqual(
+                report["console_evidence"]["compact_handoff_marker_sets"],
+                2,
+            )
+            self.assertEqual(
+                report["console_evidence"]["legacy_handoff_marker_copies"],
+                0,
+            )
+
     def test_compact_pass_and_raw_markers_survive_long_line_loss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             evidence, report_path = self.prepare_evidence(Path(directory))

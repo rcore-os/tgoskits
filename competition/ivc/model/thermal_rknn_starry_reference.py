@@ -24,6 +24,7 @@ import thermal_rknn_linux_reference as reference
 
 EXPECTED_SNAPSHOT_BYTES = 96 * 1024 * 1024
 EXPECTED_STARRY_DRIVER_VERSION = "0.9.8"
+ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOURCE_COMMIT = re.compile(r"[0-9a-f]{40}")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 SOURCE_PROVENANCE_VALUES = frozenset(
@@ -66,6 +67,7 @@ def marker_candidates(console: str, marker: str) -> list[dict[str, str]]:
 
     candidates: list[dict[str, str]] = []
     for line in console.splitlines():
+        line = ANSI_CSI.sub("", line)
         marker_offsets: list[int] = []
         search_offset = 0
         while (marker_offset := line.find(marker, search_offset)) >= 0:
