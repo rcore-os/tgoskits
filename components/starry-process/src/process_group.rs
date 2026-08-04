@@ -14,8 +14,13 @@ pub struct ProcessGroup {
 }
 
 impl ProcessGroup {
-    /// Create a new [`ProcessGroup`] within a [`Session`].
-    pub(crate) fn new(pgid: Pid, session: &Arc<Session>) -> Arc<Self> {
+    /// Returns the canonical live process group for `pgid` in `session`.
+    ///
+    /// Linux serializes process-group creation with the task-list lock. The
+    /// session registry is the corresponding identity authority here: racing
+    /// parent/child `setpgid()` calls must converge on one group rather than
+    /// creating two objects with the same PGID.
+    pub(crate) fn get_or_create(pgid: Pid, session: &Arc<Session>) -> Arc<Self> {
         let group = Arc::new(Self {
             pgid,
             session: session.clone(),
@@ -23,8 +28,7 @@ impl ProcessGroup {
             // membership transaction is held.
             processes: RelationLock::new(GroupMembers::with_capacity(1)),
         });
-        ProcessRelationTxn::attach_session_group(&group);
-        group
+        ProcessRelationTxn::attach_session_group(&group)
     }
 }
 
@@ -63,5 +67,20 @@ impl fmt::Debug for ProcessGroup {
             self.pgid,
             self.session.sid()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_live_group_identity_reuses_the_session_group() {
+        let session = Session::new(7);
+        let first = ProcessGroup::get_or_create(11, &session);
+        let second = ProcessGroup::get_or_create(11, &session);
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(session.process_groups().len(), 1);
     }
 }
