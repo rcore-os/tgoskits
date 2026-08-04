@@ -3048,6 +3048,13 @@ fn single_runnable_fair_yield_preserves_the_active_request() {
         after, before,
         "Linux fair yield is a no-op when no peer is runnable"
     );
+    assert!(
+        !system
+            .charge_current_until(cpu.as_mut(), 1, 0)
+            .unwrap()
+            .slice_expired(),
+        "a no-switch yield must preserve the active runtime dispatch"
+    );
 }
 
 #[test]

@@ -460,17 +460,21 @@ impl TaskSystem {
         let previous = cpu.current();
         let previous_core = cpu.current_core().cloned();
         if let Some(core) = previous_core.as_ref() {
-            let fair_without_peer = {
+            let continuing_dispatch = {
                 let sched = core.sched().lock();
-                matches!(sched.policy.effective_entity, SchedulingEntity::Fair(_))
-                    && cpu.lock_run_queue().len() == 0
+                (matches!(sched.policy.effective_entity, SchedulingEntity::Fair(_))
+                    && cpu.lock_run_queue().len() == 0)
+                    .then(|| Self::owner_dispatch(core, &sched, now_ns))
+                    .transpose()?
             };
-            if fair_without_peer {
+            if let Some(dispatch) = continuing_dispatch {
                 // Linux `yield_task_fair()` returns before changing the active
                 // EEVDF request when this is the only runnable entity. Moving
                 // the owner through Ready and the runqueue here would
                 // forfeit its request even though no peer could consume the
                 // yielded service.
+                cpu.as_mut().install_dispatch(dispatch);
+                self.publish_owner_cpu_load_summary(cpu.as_mut());
                 let decision = Self::owner_switch_plan(Some(core), core, SwitchReason::Yield);
                 return Ok(self.finish_owner_selection(cpu, decision, now_ns));
             }
