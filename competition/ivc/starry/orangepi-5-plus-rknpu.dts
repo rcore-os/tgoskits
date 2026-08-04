@@ -84,6 +84,13 @@
 		dma-coherent;
 	};
 
+	virtio_mmio@a001000 {
+		compatible = "virtio,mmio";
+		reg = <0 0x0a001000 0 0x1000>;
+		interrupts = <0 24 1>;
+		dma-coherent;
+	};
+
 	/*
 	 * The host owns PMU/CRU programming. The polling guest receives only the
 	 * three NPU register files, so no host-only resource phandles appear here.

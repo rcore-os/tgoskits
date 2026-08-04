@@ -10,7 +10,7 @@ metadata_writer=$script_dir/write_board_metadata.py
 
 usage() {
     cat <<EOF
-Usage: $0 [smoke|full|manual-smoke|manual-full|fault-ack-loss|fault-error|fault-restart] [options]
+Usage: $0 [smoke|full|manual-smoke|manual-full|rknpu-smoke|rknpu-full|fault-ack-loss|fault-error|fault-restart] [options]
 
 Options:
   --profile <name>        Select a normal/manual run or deterministic fault campaign.
@@ -97,6 +97,11 @@ done
 analyzer_profile=normal
 drop_ack_every=0
 expected_pre_reset_count=0
+model_artifact=$workspace/tools/ivcproto/src/neural.rs
+runtime_version=native
+starry_kernel_name=starryos.bin
+starry_dtb_name=starry-orangepi-5-plus.dtb
+profile_stager=
 case "$profile" in
     smoke)
         build_config=competition/ivc/config/axvisor-orangepi-5-plus-smoke.toml
@@ -173,6 +178,36 @@ case "$profile" in
         result_image_name=ivc-r
         analyzer_profile=restart
         ;;
+    rknpu-smoke)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-rknpu-control-smoke.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-rknpu-control-smoke.toml
+        expected_count=20
+        model_id=thermal-4x6x1-v1
+        inference_backend=rknn-npu
+        guest_image_name=starry-ivc-rootfs-rknpu-smoke.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-smoke/zephyr/zephyr.bin
+        result_image_name=ivc-rs
+        model_artifact=$workspace/competition/ivc/model/thermal-4x6x1-v1-rk3588-fp16.rknn
+        runtime_version=2.3.2
+        starry_kernel_name=starryos-rknpu.bin
+        starry_dtb_name=starry-orangepi-5-plus-rknpu.dtb
+        profile_stager=$script_dir/stage-rknpu-control.sh
+        ;;
+    rknpu-full)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-rknpu-control.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-rknpu-control.toml
+        expected_count=1800
+        model_id=thermal-4x6x1-v1
+        inference_backend=rknn-npu
+        guest_image_name=starry-ivc-rootfs-rknpu.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board/zephyr/zephyr.bin
+        result_image_name=ivc-rn
+        model_artifact=$workspace/competition/ivc/model/thermal-4x6x1-v1-rk3588-fp16.rknn
+        runtime_version=2.3.2
+        starry_kernel_name=starryos-rknpu.bin
+        starry_dtb_name=starry-orangepi-5-plus-rknpu.dtb
+        profile_stager=$script_dir/stage-rknpu-control.sh
+        ;;
     *)
         echo "Unsupported Orange Pi profile: $profile" >&2
         usage >&2
@@ -188,10 +223,9 @@ result_dir=${ORANGEPI_IVC_RESULT_DIR:-/home/orangepi}
 guest_image=$guest_dir/$guest_image_name
 result_image=$result_dir/$result_image_name
 artifact_dir=$workspace/tmp/competition/ivc/starry
-starry_kernel=${IVC_STARRY_KERNEL:-$artifact_dir/starryos.bin}
-starry_dtb=${IVC_STARRY_DTB:-$artifact_dir/starry-orangepi-5-plus.dtb}
+starry_kernel=${IVC_STARRY_KERNEL:-$artifact_dir/$starry_kernel_name}
+starry_dtb=${IVC_STARRY_DTB:-$artifact_dir/$starry_dtb_name}
 local_rootfs=$artifact_dir/$guest_image_name
-model_artifact=$workspace/tools/ivcproto/src/neural.rs
 
 if [[ -n "${ORANGEPI_AXVISOR_RUNNER:-}" ]]; then
     runner_command=("$ORANGEPI_AXVISOR_RUNNER")
@@ -206,18 +240,27 @@ else
         exit 1
     fi
 fi
-for command_name in date gzip mv python3 sha256sum tee; do
+for command_name in date grep gzip mv python3 sha256sum tee; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         echo "Required Orange Pi result tool not found: $command_name" >&2
         exit 1
     fi
 done
-for input_path in "$analyzer" "$metadata_writer"; do
+for input_path in "$analyzer" "$metadata_writer" "$model_artifact"; do
     if [[ ! -r "$input_path" ]]; then
         echo "Orange Pi result tool not found: $input_path" >&2
         exit 1
     fi
 done
+if [[ -n "$profile_stager" && ! -r "$profile_stager" ]]; then
+    echo "Orange Pi profile stager not found: $profile_stager" >&2
+    exit 1
+fi
+expected_rknn_model_sha256=
+if [[ "$inference_backend" == rknn-npu ]]; then
+    expected_rknn_model_sha256=$(sha256sum -- "$model_artifact")
+    expected_rknn_model_sha256=${expected_rknn_model_sha256%% *}
+fi
 if [[ "$result_root" != /* ]]; then
     result_root=$workspace/$result_root
 fi
@@ -232,8 +275,14 @@ write_checksums() {
     if [[ -f "$run_dir/raw.csv" ]]; then
         files+=(raw.csv raw.csv.gz)
     fi
+    if [[ -f "$run_dir/rknn.csv" ]]; then
+        files+=(rknn.csv rknn.csv.gz)
+    fi
     if [[ -f "$run_dir/raw-before-reset.csv" ]]; then
         files+=(raw-before-reset.csv raw-before-reset.csv.gz)
+    fi
+    if [[ -f "$run_dir/stage.log" ]]; then
+        files+=(stage.log)
     fi
     (
         cd "$run_dir"
@@ -272,6 +321,12 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     metadata_path=$run_dir/metadata.json
     raw_csv_path=$run_dir/raw.csv
     raw_csv_gzip=$run_dir/raw.csv.gz
+    rknn_csv_path=$run_dir/rknn.csv
+    rknn_csv_gzip=$run_dir/rknn.csv.gz
+    rknn_csv_harvest=
+    if [[ "$inference_backend" == rknn-npu ]]; then
+        rknn_csv_harvest=$rknn_csv_path
+    fi
     pre_reset_raw_csv_path=$run_dir/raw-before-reset.csv
     pre_reset_raw_csv_gzip=$run_dir/raw-before-reset.csv.gz
     console_gzip=$run_dir/console.log.gz
@@ -280,10 +335,16 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
         "$metadata_path" \
         "$raw_csv_path" \
         "$raw_csv_gzip" \
+        "$rknn_csv_path" \
+        "$rknn_csv_gzip" \
         "$pre_reset_raw_csv_path" \
         "$pre_reset_raw_csv_gzip" \
         "$console_gzip" \
         "$run_dir/checksums.sha256"
+
+    if [[ -n "$profile_stager" ]]; then
+        bash "$profile_stager" >"$run_dir/stage.log" 2>&1
+    fi
 
     started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     set +e
@@ -299,6 +360,7 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     ORANGEPI_IVC_RESULT_IMAGE=$result_image \
     ORANGEPI_IVC_EXPECTED_COUNT=$expected_count \
     ORANGEPI_IVC_RAW_CSV=$raw_csv_path \
+    ORANGEPI_IVC_RKNN_CSV=$rknn_csv_harvest \
     ORANGEPI_IVC_PRE_RESET_RAW_CSV=$pre_reset_raw_csv_path \
     ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT=$expected_pre_reset_count \
         "${runner_command[@]}" 2>&1 | tee "$log_path"
@@ -320,6 +382,18 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     elif ((runner_status == 0)); then
         echo "Orange Pi runner completed without harvested raw samples" >&2
         compression_status=1
+    fi
+    if [[ "$inference_backend" == rknn-npu ]]; then
+        if [[ -f "$rknn_csv_path" ]]; then
+            compress_evidence "$rknn_csv_path" "$rknn_csv_gzip"
+            rknn_compression_status=$?
+            if ((compression_status == 0 && rknn_compression_status != 0)); then
+                compression_status=$rknn_compression_status
+            fi
+        elif ((runner_status == 0)); then
+            echo "Orange Pi runner completed without harvested RKNN samples" >&2
+            compression_status=1
+        fi
     fi
     if ((expected_pre_reset_count > 0)); then
         if [[ -f "$pre_reset_raw_csv_path" ]]; then
@@ -351,8 +425,28 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
                 --expected-pre-reset-count "$expected_pre_reset_count"
             )
         fi
+        if [[ "$inference_backend" == rknn-npu ]]; then
+            analyzer_arguments+=(
+                --rknn-csv "$rknn_csv_gzip"
+                --expected-rknn-model-sha256 "$expected_rknn_model_sha256"
+                --expected-rknn-runtime-api "$runtime_version"
+            )
+        fi
         python3 "$analyzer" "${analyzer_arguments[@]}"
         analysis_status=$?
+        if [[ "$inference_backend" == rknn-npu ]]; then
+            for marker in \
+                'backend=rknn-npu' \
+                'IVC-STARRY-RKNN-DEVICE ' \
+                'IVC-RKNN-RUNTIME ' \
+                "IVC-RKNN-RESULT samples=$expected_count positive_device_times=$expected_count " \
+                "IVC-STARRY-RKNN-RAW samples=$expected_count "; do
+                if ! grep -aFq "$marker" "$log_path"; then
+                    echo "RKNN control console is missing required marker: $marker" >&2
+                    analysis_status=1
+                fi
+            done
+        fi
         set -e
     fi
 
@@ -390,11 +484,14 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
         --model-id "$model_id"
         --model-artifact "$model_artifact"
         --inference-backend "$inference_backend"
-        --runtime-version native
+        --runtime-version "$runtime_version"
         --output "$metadata_path"
     )
     if [[ "$require_clean" == 1 ]]; then
         metadata_arguments+=(--require-clean)
+    fi
+    if [[ "$inference_backend" == rknn-npu ]]; then
+        metadata_arguments+=(--rknn-csv "$rknn_csv_gzip")
     fi
     python3 "$metadata_writer" "${metadata_arguments[@]}"
     write_checksums "$run_dir"

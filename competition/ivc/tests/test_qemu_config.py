@@ -375,6 +375,22 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertIn('"$serial_command" sync-host', restore)
         self.assertNotIn('"$serial_command" shutdown', restore)
 
+    def test_linux_restore_discovers_shared_worktree_power_configuration(
+        self,
+    ) -> None:
+        restore = ORANGEPI_AUTOMATION_SCRIPTS[3].read_text(encoding="utf-8")
+
+        self.assertIn("rev-parse --path-format=absolute --git-common-dir", restore)
+        self.assertIn('common_power_config=$common_worktree/.board-power.toml', restore)
+        self.assertIn(
+            'user_power_python=${HOME}/.local/share/tgos-board-power-venv/bin/python',
+            restore,
+        )
+        self.assertLess(
+            restore.index('if [[ ! -r "$power_config"'),
+            restore.index('for input_path in "$serial_command"'),
+        )
+
     def test_axvisor_repeats_the_host_sync_marker_for_the_shared_uart(self) -> None:
         source = AXVISOR_SHELL_HOST.read_text(encoding="utf-8")
 

@@ -1,5 +1,6 @@
 features = [
   "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
   "rknpu",
 ]
 log = "Info"

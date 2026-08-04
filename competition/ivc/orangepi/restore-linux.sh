@@ -80,6 +80,19 @@ if ((linux_boot_wait_seconds == 0)); then
     echo "ORANGEPI_LINUX_BOOT_WAIT_SECONDS must be a positive integer" >&2
     exit 2
 fi
+if [[ ! -r "$power_config" && -z "${TGOS_BOARD_POWER_CONFIG:-}" ]]; then
+    git_common_dir=$(
+        git -C "$workspace" rev-parse --path-format=absolute --git-common-dir \
+            2>/dev/null || true
+    )
+    if [[ -n "$git_common_dir" ]]; then
+        common_worktree=$(dirname -- "$git_common_dir")
+        common_power_config=$common_worktree/.board-power.toml
+        if [[ -r "$common_power_config" ]]; then
+            power_config=$common_power_config
+        fi
+    fi
+fi
 for input_path in "$serial_command" "$power_tool" "$power_config" "$ssh_identity"; do
     if [[ ! -r "$input_path" ]]; then
         echo "Required Linux restore input is not readable: $input_path" >&2
@@ -87,13 +100,17 @@ for input_path in "$serial_command" "$power_tool" "$power_config" "$ssh_identity
     fi
 done
 if [[ -z "$power_python" ]]; then
-    if python3 -c 'import miio' >/dev/null 2>&1; then
+    user_power_python=${HOME}/.local/share/tgos-board-power-venv/bin/python
+    if [[ -x "$user_power_python" ]] \
+        && "$user_power_python" -c 'import miio' >/dev/null 2>&1; then
+        power_python=$user_power_python
+    elif python3 -c 'import miio' >/dev/null 2>&1; then
         power_python=python3
     elif command -v python.exe >/dev/null 2>&1 \
         && python.exe -c 'import miio' >/dev/null 2>&1; then
         power_python=$(command -v python.exe)
     else
-        echo "python-miio is unavailable in both WSL and Windows Python" >&2
+        echo "python-miio is unavailable in the user venv, WSL, and Windows Python" >&2
         exit 1
     fi
 fi

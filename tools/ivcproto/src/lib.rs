@@ -13,6 +13,8 @@ pub mod endpoint;
 pub mod neural;
 mod neural_model_generated;
 pub mod reliability;
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+pub mod rknn;
 pub mod wire;
 
 pub use reliability::ReliablePeer;

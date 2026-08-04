@@ -46,6 +46,15 @@ sequence,cycle_started_us,command_sent_us,response_completed_us,full_loop_us,pre
 4,600,640,840,240,40,200,45000,45000,43000,500,500,2000
 """
 
+RKNN_CSV = """\
+sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns,device_us
+1,00000000,00000000,00000000,00000000,3f000000,500,11000,10
+2,00000000,00000000,00000000,00000000,3f000000,500,13000,12
+3,00000000,00000000,00000000,00000000,3f000000,500,12000,11
+4,00000000,00000000,00000000,00000000,3f000000,500,16000,15
+"""
+RKNN_MODEL_SHA256 = "a" * 64
+
 RAW_LOG_TEMPLATE = """\
 [guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native count=4 period_ms=100 vcpus=2
 [guest-console:pl011-starry] IVC-STARRY-NET iface=eth0 mac=02:00:00:00:00:01 ip=10.0.0.1/24 peer=10.0.0.2 udp_port=5500 segment=1
@@ -114,6 +123,45 @@ class BoardAnalysisTests(unittest.TestCase):
     def raw_log(self, raw_csv: str = RAW_CSV) -> str:
         digest = hashlib.sha256(raw_csv.encode()).hexdigest()
         return RAW_LOG_TEMPLATE.format(raw_sha256=digest)
+
+    def rknn_log(self, rknn_csv: str = RKNN_CSV) -> str:
+        digest = hashlib.sha256(rknn_csv.encode()).hexdigest()
+        rknn_record_set = (
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-DEVICE "
+            "path=/dev/dri/card1 registered=true core_mask=0\n"
+            "[guest-console:pl011-starry] IVC-RKNN-RUNTIME "
+            "api=2.3.2 driver=0.9.8 core=0 init_us=70000\n"
+            "[guest-console:pl011-starry] IVC-RKNN-RESULT "
+            "samples=4 positive_device_times=4 device_p99_us=12 wall_p99_ns=13000\n"
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-MODEL "
+            f"sha256={RKNN_MODEL_SHA256}\n"
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-RAW "
+            f"samples=4 sha256={digest}\n"
+        )
+        rknn_records = rknn_record_set * 3
+        harvest_records = (
+            "BOARD_GUEST_RKNN_MANIFEST path=/var/lib/ivc/rknn.csv "
+            f"samples=4 sha256={digest}\n"
+            "BOARD_RKNN_RESULT_HARVESTED path=/tmp/results/rknn.csv "
+            f"samples=4 sha256={digest}\n"
+        )
+        return (
+            self.raw_log()
+            .replace("backend=native", "backend=rknn-npu")
+            .replace(
+                "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+                rknn_records
+                + "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+            )
+            .replace(
+                "BOARD_IDENTITY board_id=",
+                harvest_records + "BOARD_IDENTITY board_id=",
+            )
+            .replace(
+                "/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img",
+                "/home/orangepi/ivc-rs",
+            )
+        )
 
     def ack_loss_log(self, raw_csv: str = RAW_CSV) -> str:
         normal_outcome = (
@@ -412,6 +460,127 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
             result["lifecycle"]["block_snapshot"]["image_path"],
             "/home/orangepi/ivc-n",
         )
+
+    def test_rknpu_smoke_snapshot_path_is_accepted(self) -> None:
+        rknpu_log = VALID_LOG.replace(
+            "/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img",
+            "/home/orangepi/ivc-rs",
+        )
+
+        result = analyzer.analyze(self.write_log(rknpu_log), 1_800)
+
+        self.assertEqual(
+            result["lifecycle"]["block_snapshot"]["image_path"],
+            "/home/orangepi/ivc-rs",
+        )
+
+    def test_rknn_samples_are_harvested_and_cross_checked(self) -> None:
+        result = analyzer.analyze(
+            self.write_log(self.rknn_log()),
+            4,
+            self.write_raw_csv(),
+            rknn_path=self.write_raw_csv(RKNN_CSV),
+            expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+            expected_rknn_runtime_api="2.3.2",
+        )
+
+        self.assertEqual(result["rknn_samples"]["sample_count"], 4)
+        self.assertEqual(result["rknn_samples"]["device_p99_us"], 12)
+        self.assertEqual(result["rknn_samples"]["wall_p99_ns"], 13_000)
+        self.assertEqual(result["rknn_samples"]["runtime_api"], "2.3.2")
+
+    def test_rknn_uart_quorum_ignores_one_complete_collision_record(self) -> None:
+        corrupt_model_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-MODEL "
+            f"sha256={'b' * 64}\n"
+        )
+        log = self.rknn_log().replace(
+            "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+            corrupt_model_record
+            + "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+        )
+
+        result = analyzer.analyze(
+            self.write_log(log),
+            4,
+            self.write_raw_csv(),
+            rknn_path=self.write_raw_csv(RKNN_CSV),
+            expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+            expected_rknn_runtime_api="2.3.2",
+        )
+
+        self.assertEqual(
+            result["rknn_samples"]["model_sha256"], RKNN_MODEL_SHA256
+        )
+
+    def test_rknn_uart_quorum_rejects_a_split_tie(self) -> None:
+        corrupt_model_records = (
+            "[guest-console:pl011-starry] IVC-STARRY-RKNN-MODEL "
+            f"sha256={'b' * 64}\n"
+        ) * 3
+        log = self.rknn_log().replace(
+            "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+            corrupt_model_records
+            + "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+        )
+
+        with self.assertRaisesRegex(
+            analyzer.ConflictingRecordsError, "RKNN-MODEL"
+        ):
+            analyzer.analyze(
+                self.write_log(log),
+                4,
+                self.write_raw_csv(),
+                rknn_path=self.write_raw_csv(RKNN_CSV),
+                expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+                expected_rknn_runtime_api="2.3.2",
+            )
+
+    def test_rknn_model_must_match_the_expected_artifact_hash(self) -> None:
+        with self.assertRaisesRegex(analyzer.AnalysisError, "model SHA-256"):
+            analyzer.analyze(
+                self.write_log(self.rknn_log()),
+                4,
+                self.write_raw_csv(),
+                rknn_path=self.write_raw_csv(RKNN_CSV),
+                expected_rknn_model_sha256="b" * 64,
+                expected_rknn_runtime_api="2.3.2",
+            )
+
+    def test_rknn_runtime_api_must_match_the_frozen_profile(self) -> None:
+        with self.assertRaisesRegex(analyzer.AnalysisError, "runtime API version"):
+            analyzer.analyze(
+                self.write_log(self.rknn_log()),
+                4,
+                self.write_raw_csv(),
+                rknn_path=self.write_raw_csv(RKNN_CSV),
+                expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+                expected_rknn_runtime_api="2.4.0",
+            )
+
+    def test_rknn_backend_without_harvested_samples_is_rejected(self) -> None:
+        with self.assertRaisesRegex(analyzer.AnalysisError, "RKNN evidence CSV"):
+            analyzer.analyze(
+                self.write_log(self.rknn_log()),
+                4,
+                self.write_raw_csv(),
+            )
+
+    def test_rknn_actuator_mismatch_with_control_csv_is_rejected(self) -> None:
+        mismatched = RKNN_CSV.replace(
+            "1,00000000,00000000,00000000,00000000,3f000000,500,11000,10",
+            "1,00000000,00000000,00000000,00000000,3f000000,499,11000,10",
+        )
+
+        with self.assertRaisesRegex(analyzer.AnalysisError, "actuator.*raw CSV"):
+            analyzer.analyze(
+                self.write_log(self.rknn_log(mismatched)),
+                4,
+                self.write_raw_csv(),
+                rknn_path=self.write_raw_csv(mismatched),
+                expected_rknn_model_sha256=RKNN_MODEL_SHA256,
+                expected_rknn_runtime_api="2.3.2",
+            )
 
     def test_rtos_duplicates_are_rejected(self) -> None:
         log = VALID_LOG.replace("duplicates=0", "duplicates=1")

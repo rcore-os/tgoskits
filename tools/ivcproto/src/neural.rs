@@ -66,6 +66,20 @@ impl NeuralController {
         sample_id: u32,
     ) -> Result<ControlCommand, NeuralError> {
         let output = self.infer_normalized(observation.normalized()?)?;
+        self.command_from_output(observation, sample_id, output)
+    }
+
+    /// Converts one backend-produced control fraction into the protocol command.
+    pub fn command_from_output(
+        self,
+        observation: ThermalObservation,
+        sample_id: u32,
+        output: f32,
+    ) -> Result<ControlCommand, NeuralError> {
+        if !output.is_finite() {
+            return Err(NeuralError::NonFiniteOutput);
+        }
+        let output = output.clamp(OUTPUT_MIN, OUTPUT_MAX);
         // The clamped output is nonnegative, so adding one half implements
         // round-to-nearest without requiring a platform math library.
         let actuator_permille = (output * ACTUATOR_OUTPUT_SCALE + ACTUATOR_ROUNDING_HALF) as u16;
@@ -341,6 +355,37 @@ mod tests {
         assert_eq!(
             NeuralController.infer_normalized([f32::NAN, 0.0, 0.0, 0.0]),
             Err(NeuralError::NonFiniteInput)
+        );
+    }
+
+    #[test]
+    fn backend_output_uses_the_same_clamp_and_actuator_conversion() {
+        let observation = ThermalObservation {
+            temperature_milli_c: 40_000,
+            setpoint_milli_c: 55_000,
+            previous_actuator_permille: 400,
+            temperature_rate_milli_c_per_s: 1_000,
+        };
+        let native_output = NeuralController
+            .infer_normalized(observation.normalized().unwrap())
+            .unwrap();
+
+        assert_eq!(
+            NeuralController
+                .command_from_output(observation, 7, native_output)
+                .unwrap(),
+            NeuralController.command(observation, 7).unwrap()
+        );
+        assert_eq!(
+            NeuralController
+                .command_from_output(observation, 8, 2.0)
+                .unwrap()
+                .actuator_permille,
+            1_000
+        );
+        assert_eq!(
+            NeuralController.command_from_output(observation, 9, f32::NAN),
+            Err(NeuralError::NonFiniteOutput)
         );
     }
 

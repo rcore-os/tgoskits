@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+import struct
 import sys
 import zlib
 from pathlib import Path
@@ -51,11 +52,18 @@ ERROR_EVIDENCE_PREFIXES = (
 STARRY_BOOT_PREFIX = "IVC-STARRY-BOOT "
 STARRY_NETWORK_PREFIX = "IVC-STARRY-NET "
 STARRY_RAW_PREFIX = "IVC-STARRY-RAW "
+STARRY_RKNN_DEVICE_PREFIX = "IVC-STARRY-RKNN-DEVICE "
+STARRY_RKNN_MODEL_PREFIX = "IVC-STARRY-RKNN-MODEL "
+STARRY_RKNN_RAW_PREFIX = "IVC-STARRY-RKNN-RAW "
+RKNN_RUNTIME_PREFIX = "IVC-RKNN-RUNTIME "
+RKNN_RESULT_PREFIX = "IVC-RKNN-RESULT "
 STARRY_RESTART_ARMED_PREFIX = "IVC-STARRY-RESTART-ARMED "
 STARRY_RESTART_RAW_PREFIX = "IVC-STARRY-RESTART-RAW "
 STARRY_RESTART_RESUME_PREFIX = "IVC-STARRY-RESTART-RESUME "
 GUEST_RAW_MANIFEST_PREFIX = "BOARD_GUEST_RAW_MANIFEST "
 HARVEST_RAW_PREFIX = "BOARD_RAW_RESULT_HARVESTED "
+GUEST_RKNN_MANIFEST_PREFIX = "BOARD_GUEST_RKNN_MANIFEST "
+HARVEST_RKNN_PREFIX = "BOARD_RKNN_RESULT_HARVESTED "
 GUEST_PRE_RESET_RAW_MANIFEST_PREFIX = "BOARD_GUEST_PRE_RESET_RAW_MANIFEST "
 HARVEST_PRE_RESET_RAW_PREFIX = "BOARD_PRE_RESET_RAW_RESULT_HARVESTED "
 BOARD_IDENTITY_PREFIX = "BOARD_IDENTITY "
@@ -81,6 +89,17 @@ RAW_COLUMNS = (
     "command_actuator_permille",
     "status_actuator_permille",
     "error_milli_c",
+)
+RKNN_COLUMNS = (
+    "sequence",
+    "input0_bits",
+    "input1_bits",
+    "input2_bits",
+    "input3_bits",
+    "output_bits",
+    "actuator_permille",
+    "wall_ns",
+    "device_us",
 )
 AXVISOR_RESTART_ARMED_PREFIX = "AXVISOR_GUEST_RESTART_ARMED "
 AXVISOR_RESTART_PLACED_PREFIX = "AXVISOR_GUEST_RESTART_PLACED "
@@ -125,6 +144,9 @@ def analyze(
     drop_ack_every: int = 0,
     pre_reset_raw_path: Path | None = None,
     expected_pre_reset_count: int = 0,
+    rknn_path: Path | None = None,
+    expected_rknn_model_sha256: str | None = None,
+    expected_rknn_runtime_api: str | None = None,
 ) -> dict[str, object]:
     if expected_count <= 0:
         raise AnalysisError("expected count must be positive")
@@ -157,6 +179,7 @@ def analyze(
         lines, expected_count, str(controller["policy"]), profile
     )
     raw_samples = None
+    rknn_samples = None
     pre_reset_raw_samples = None
     board = None
     if raw_path is not None:
@@ -168,6 +191,36 @@ def analyze(
             controller,
         )
         board = parse_board_identity(lines)
+    if starry["backend"] == "rknn-npu":
+        if rknn_path is None:
+            raise AnalysisError("RKNN backend requires a harvested RKNN evidence CSV")
+        if raw_path is None:
+            raise AnalysisError("RKNN evidence CSV requires harvested controller samples")
+        if expected_rknn_model_sha256 is None:
+            raise AnalysisError("RKNN backend requires the expected model SHA-256")
+        if re.fullmatch(r"[0-9a-f]{64}", expected_rknn_model_sha256) is None:
+            raise AnalysisError("expected RKNN model SHA-256 is malformed")
+        if expected_rknn_runtime_api is None:
+            raise AnalysisError("RKNN backend requires the expected runtime API version")
+        if re.fullmatch(r"[A-Za-z0-9._+-]+", expected_rknn_runtime_api) is None:
+            raise AnalysisError("expected RKNN runtime API version is malformed")
+        rknn_samples = parse_rknn_samples(
+            lines,
+            rknn_path,
+            raw_path,
+            expected_count,
+            expected_rknn_model_sha256,
+            expected_rknn_runtime_api,
+        )
+    elif any(
+        value is not None
+        for value in (
+            rknn_path,
+            expected_rknn_model_sha256,
+            expected_rknn_runtime_api,
+        )
+    ):
+        raise AnalysisError("RKNN evidence options are only valid for the rknn-npu backend")
     if pre_reset_raw_path is not None:
         pre_reset_raw_samples = parse_pre_reset_raw_samples(
             lines,
@@ -217,6 +270,8 @@ def analyze(
     }
     if raw_samples is not None:
         result["raw_samples"] = raw_samples
+    if rknn_samples is not None:
+        result["rknn_samples"] = rknn_samples
     if pre_reset_raw_samples is not None:
         result["pre_reset_raw_samples"] = pre_reset_raw_samples
     if board is not None:
@@ -1040,6 +1095,230 @@ def parse_raw_samples(
     }
 
 
+def parse_rknn_samples(
+    lines: list[str],
+    rknn_path: Path,
+    raw_path: Path,
+    expected_count: int,
+    expected_model_sha256: str,
+    expected_runtime_api: str,
+) -> dict[str, object]:
+    uart_record = find_quorum_record(
+        lines,
+        STARRY_RKNN_RAW_PREFIX,
+        ("samples", "sha256"),
+    )
+    guest_manifest_record = find_record(
+        lines,
+        GUEST_RKNN_MANIFEST_PREFIX,
+        ("path", "samples", "sha256"),
+    )
+    harvest_record = find_record(
+        lines,
+        HARVEST_RKNN_PREFIX,
+        ("path", "samples", "sha256"),
+    )
+    guest_rknn_path = "/var/lib/ivc/rknn.csv"
+    if (
+        required(guest_manifest_record, "path", GUEST_RKNN_MANIFEST_PREFIX)
+        != guest_rknn_path
+    ):
+        raise AnalysisError("unexpected snapshot guest RKNN evidence path")
+    for record, prefix in (
+        (uart_record, STARRY_RKNN_RAW_PREFIX),
+        (guest_manifest_record, GUEST_RKNN_MANIFEST_PREFIX),
+        (harvest_record, HARVEST_RKNN_PREFIX),
+    ):
+        if integer(record, "samples", prefix) != expected_count:
+            raise AnalysisError(
+                f"{prefix.strip()} sample count does not match expected count"
+            )
+
+    uart_sha256 = complete_sha256(uart_record, STARRY_RKNN_RAW_PREFIX)
+    guest_manifest_sha256 = complete_sha256(
+        guest_manifest_record, GUEST_RKNN_MANIFEST_PREFIX
+    )
+    harvest_sha256 = complete_sha256(harvest_record, HARVEST_RKNN_PREFIX)
+    actual_sha256 = sha256_evidence_content(rknn_path)
+    if len({uart_sha256, guest_manifest_sha256, harvest_sha256, actual_sha256}) != 1:
+        raise AnalysisError(
+            "RKNN CSV SHA-256 does not match UART, snapshot manifest, and harvest records"
+        )
+
+    rows = read_rknn_rows(rknn_path, expected_count)
+    raw_rows = read_raw_rows(raw_path, expected_count)
+    for rknn_row, raw_row in zip(rows, raw_rows, strict=True):
+        if rknn_row["actuator_permille"] != raw_row["command_actuator_permille"]:
+            raise AnalysisError("RKNN actuator does not match the controller raw CSV")
+
+    device_times_us = sorted(row["device_us"] for row in rows)
+    wall_times_ns = sorted(row["wall_ns"] for row in rows)
+    runtime = parse_rknn_runtime(lines, expected_runtime_api)
+    result_record = find_quorum_record(
+        lines,
+        RKNN_RESULT_PREFIX,
+        (
+            "samples",
+            "positive_device_times",
+            "device_p99_us",
+            "wall_p99_ns",
+        ),
+    )
+    derived_device_p99_us = percentile(device_times_us, 99)
+    derived_wall_p99_ns = percentile(wall_times_ns, 99)
+    expected_result = {
+        "samples": expected_count,
+        "positive_device_times": expected_count,
+        "device_p99_us": derived_device_p99_us,
+        "wall_p99_ns": derived_wall_p99_ns,
+    }
+    for field, expected_value in expected_result.items():
+        if integer(result_record, field, RKNN_RESULT_PREFIX) != expected_value:
+            raise AnalysisError(f"console RKNN {field} does not match the evidence CSV")
+
+    model_record = find_quorum_record(
+        lines, STARRY_RKNN_MODEL_PREFIX, ("sha256",)
+    )
+    model_sha256 = complete_sha256(model_record, STARRY_RKNN_MODEL_PREFIX)
+    if model_sha256 != expected_model_sha256:
+        raise AnalysisError("RKNN model SHA-256 does not match the expected artifact")
+    return {
+        "path": str(rknn_path),
+        "sha256": actual_sha256,
+        "artifact_sha256": sha256_file(rknn_path),
+        "guest_manifest_sha256": guest_manifest_sha256,
+        "sample_count": len(rows),
+        "positive_device_times": len(device_times_us),
+        "device_p50_us": percentile(device_times_us, 50),
+        "device_p99_us": derived_device_p99_us,
+        "device_max_us": device_times_us[-1],
+        "wall_p50_ns": percentile(wall_times_ns, 50),
+        "wall_p99_ns": derived_wall_p99_ns,
+        "wall_max_ns": wall_times_ns[-1],
+        "runtime_api": runtime["api"],
+        "runtime_driver": runtime["driver"],
+        "core_mask": runtime["core_mask"],
+        "initialization_us": runtime["initialization_us"],
+        "model_sha256": model_sha256,
+        "actuator_matches": len(rows),
+    }
+
+
+def parse_rknn_runtime(
+    lines: list[str], expected_api: str
+) -> dict[str, object]:
+    device_record = find_quorum_record(
+        lines,
+        STARRY_RKNN_DEVICE_PREFIX,
+        ("path", "registered", "core_mask"),
+    )
+    if required(device_record, "path", STARRY_RKNN_DEVICE_PREFIX) != "/dev/dri/card1":
+        raise AnalysisError("RKNN device path is not /dev/dri/card1")
+    if required(device_record, "registered", STARRY_RKNN_DEVICE_PREFIX) != "true":
+        raise AnalysisError("RKNN device was not registered by StarryOS")
+    if integer(device_record, "core_mask", STARRY_RKNN_DEVICE_PREFIX) != 0:
+        raise AnalysisError("RKNN device core mask does not match the frozen profile")
+
+    runtime_record = find_quorum_record(
+        lines,
+        RKNN_RUNTIME_PREFIX,
+        ("api", "driver", "core", "init_us"),
+    )
+    api = required(runtime_record, "api", RKNN_RUNTIME_PREFIX)
+    driver = required(runtime_record, "driver", RKNN_RUNTIME_PREFIX)
+    if re.fullmatch(r"[A-Za-z0-9._+-]+", api) is None:
+        raise AnalysisError("RKNN runtime API version is malformed")
+    if api != expected_api:
+        raise AnalysisError("RKNN runtime API version does not match the frozen profile")
+    if re.fullmatch(r"[A-Za-z0-9._+-]+", driver) is None:
+        raise AnalysisError("RKNN driver version is malformed")
+    core_mask = integer(runtime_record, "core", RKNN_RUNTIME_PREFIX)
+    if core_mask != 0:
+        raise AnalysisError("RKNN runtime core mask does not match the frozen profile")
+    initialization_us = integer(runtime_record, "init_us", RKNN_RUNTIME_PREFIX)
+    if initialization_us <= 0:
+        raise AnalysisError("RKNN initialization duration must be positive")
+    return {
+        "api": api,
+        "driver": driver,
+        "core_mask": core_mask,
+        "initialization_us": initialization_us,
+    }
+
+
+def read_rknn_rows(rknn_path: Path, expected_count: int) -> list[dict[str, int]]:
+    with open_evidence_text(rknn_path, newline="") as source:
+        reader = csv.DictReader(source)
+        if tuple(reader.fieldnames or ()) != RKNN_COLUMNS:
+            raise AnalysisError("RKNN CSV columns do not match the evidence schema")
+        encoded_rows = list(reader)
+    if len(encoded_rows) != expected_count:
+        raise AnalysisError("RKNN CSV sample count does not match expected count")
+
+    rows: list[dict[str, int]] = []
+    for expected_sequence, encoded in enumerate(encoded_rows, start=1):
+        if None in encoded or any(encoded[column] is None for column in RKNN_COLUMNS):
+            raise AnalysisError(
+                f"RKNN CSV row {expected_sequence} has extra or missing fields"
+            )
+        row = parse_rknn_row(encoded, expected_sequence)
+        rows.append(row)
+    return rows
+
+
+def parse_rknn_row(encoded: dict[str, str], expected_sequence: int) -> dict[str, int]:
+    try:
+        sequence = int(encoded["sequence"])
+        actuator_permille = int(encoded["actuator_permille"])
+        wall_ns = int(encoded["wall_ns"])
+        device_us = int(encoded["device_us"])
+    except ValueError as error:
+        raise AnalysisError(
+            f"RKNN CSV row {expected_sequence} contains a non-integer field"
+        ) from error
+    if sequence != expected_sequence:
+        raise AnalysisError(f"RKNN CSV sequence discontinuity at row {expected_sequence}")
+    if not 0 <= actuator_permille <= 1000:
+        raise AnalysisError(f"RKNN CSV actuator is out of range at row {expected_sequence}")
+    if wall_ns <= 0 or device_us <= 0:
+        raise AnalysisError(f"RKNN CSV timing is non-positive at row {expected_sequence}")
+    if wall_ns < device_us * 1000:
+        raise AnalysisError(
+            f"RKNN CSV wall timing is shorter than device timing at row {expected_sequence}"
+        )
+
+    float_fields = (
+        "input0_bits",
+        "input1_bits",
+        "input2_bits",
+        "input3_bits",
+        "output_bits",
+    )
+    decoded: dict[str, float] = {}
+    for field in float_fields:
+        bits = encoded[field]
+        if re.fullmatch(r"[0-9a-f]{8}", bits) is None:
+            raise AnalysisError(
+                f"RKNN CSV {field} is not canonical f32 bits at row {expected_sequence}"
+            )
+        decoded[field] = struct.unpack(">f", bytes.fromhex(bits))[0]
+        if not math.isfinite(decoded[field]):
+            raise AnalysisError(
+                f"RKNN CSV {field} is non-finite at row {expected_sequence}"
+            )
+    expected_actuator = min(max(decoded["output_bits"], 0.0), 1.0) * 1000.0
+    if abs(actuator_permille - expected_actuator) > 1.0:
+        raise AnalysisError(
+            f"RKNN CSV actuator conflicts with output bits at row {expected_sequence}"
+        )
+    return {
+        "sequence": sequence,
+        "actuator_permille": actuator_permille,
+        "wall_ns": wall_ns,
+        "device_us": device_us,
+    }
+
+
 def parse_pre_reset_raw_samples(
     lines: list[str],
     raw_path: Path,
@@ -1521,7 +1800,7 @@ def parse_block_snapshot(lines: list[str], profile: str) -> dict[str, object]:
     elif profile == "restart":
         compact_names = ("r",)
     else:
-        compact_names = ("n", "ns", "m", "ms")
+        compact_names = ("n", "ns", "m", "ms", "rn", "rs")
     compact_result_path = image_path in {
         f"/home/orangepi/ivc-{name}" for name in compact_names
     }
@@ -1679,6 +1958,43 @@ def find_record(
     if record is None:
         raise AnalysisError(f"missing complete {prefix.strip()} record")
     return record
+
+
+def find_quorum_record(
+    lines: list[str],
+    prefix: str,
+    required_fields: tuple[str, ...],
+    minimum_votes: int = 2,
+) -> dict[str, str]:
+    complete_records: list[tuple[str, ...]] = []
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        try:
+            fields = parse_fields(line, prefix)
+        except AnalysisError:
+            continue
+        if all(field in fields for field in required_fields):
+            complete_records.append(
+                tuple(fields[field] for field in required_fields)
+            )
+
+    if not complete_records:
+        raise AnalysisError(f"missing complete {prefix.strip()} record")
+    record_counts = Counter(complete_records)
+    largest_count = max(record_counts.values())
+    if largest_count < minimum_votes:
+        raise AnalysisError(f"missing {prefix.strip()} record quorum")
+    quorum_records = [
+        record
+        for record, count in record_counts.items()
+        if count == largest_count
+    ]
+    if len(quorum_records) != 1:
+        raise ConflictingRecordsError(
+            f"conflicting complete {prefix.strip()} record quorums"
+        )
+    return dict(zip(required_fields, quorum_records[0], strict=True))
 
 
 def find_hash_fragment_record(lines: list[str], prefix: str) -> dict[str, str]:
@@ -1913,6 +2229,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
     parser.add_argument("--raw-csv", type=Path, required=True)
+    parser.add_argument("--rknn-csv", type=Path)
+    parser.add_argument("--expected-rknn-model-sha256")
+    parser.add_argument("--expected-rknn-runtime-api")
     parser.add_argument("--expected-count", type=int, required=True)
     parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="normal")
     parser.add_argument("--drop-ack-every", type=int, default=0)
@@ -1930,6 +2249,9 @@ def main() -> int:
             drop_ack_every=arguments.drop_ack_every,
             pre_reset_raw_path=arguments.pre_reset_raw_csv,
             expected_pre_reset_count=arguments.expected_pre_reset_count,
+            rknn_path=arguments.rknn_csv,
+            expected_rknn_model_sha256=arguments.expected_rknn_model_sha256,
+            expected_rknn_runtime_api=arguments.expected_rknn_runtime_api,
         )
         arguments.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"

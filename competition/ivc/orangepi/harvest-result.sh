@@ -9,15 +9,19 @@ ssh_target=${ORANGEPI_SSH_TARGET:-orangepi@192.168.31.33}
 ssh_identity=${ORANGEPI_SSH_IDENTITY:-${HOME}/.ssh/orangepi_automation}
 result_image=${ORANGEPI_IVC_RESULT_IMAGE:?set ORANGEPI_IVC_RESULT_IMAGE to the snapshotted StarryOS rootfs image}
 raw_output=${ORANGEPI_IVC_RAW_CSV:?set ORANGEPI_IVC_RAW_CSV to the local result path}
+rknn_output=${ORANGEPI_IVC_RKNN_CSV:-}
 expected_count=${ORANGEPI_IVC_EXPECTED_COUNT:?set ORANGEPI_IVC_EXPECTED_COUNT to the controller sample count}
 pre_reset_raw_output=${ORANGEPI_IVC_PRE_RESET_RAW_CSV:-}
 expected_pre_reset_count=${ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT:-0}
 guest_raw_path=/var/lib/ivc/raw.csv
 guest_raw_manifest_path=/var/lib/ivc/raw.csv.sha256
+guest_rknn_path=/var/lib/ivc/rknn.csv
+guest_rknn_manifest_path=/var/lib/ivc/rknn.csv.sha256
 guest_pre_reset_raw_path=/var/lib/ivc/raw-before-reset.csv
 guest_pre_reset_raw_manifest_path=/var/lib/ivc/raw-before-reset.csv.sha256
 lease_dir=$workspace/tmp/competition/ivc/board-lease
 csv_header='sequence,cycle_started_us,command_sent_us,response_completed_us,full_loop_us,pre_send_us,transport_us,setpoint_milli_c,observed_milli_c,measured_milli_c,command_actuator_permille,status_actuator_permille,error_milli_c'
+rknn_csv_header='sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns,device_us'
 
 case "$result_image" in
     /home/orangepi/*) ;;
@@ -33,6 +37,16 @@ fi
 if [[ "$raw_output" != /* ]]; then
     echo "ORANGEPI_IVC_RAW_CSV must be an absolute path: $raw_output" >&2
     exit 1
+fi
+if [[ -n "$rknn_output" ]]; then
+    if [[ "$rknn_output" != /* ]]; then
+        echo "ORANGEPI_IVC_RKNN_CSV must be an absolute path: $rknn_output" >&2
+        exit 1
+    fi
+    if [[ "$rknn_output" == "$raw_output" ]]; then
+        echo "RKNN and controller raw output paths must differ" >&2
+        exit 1
+    fi
 fi
 case "$expected_count" in
     ''|*[!0-9]*)
@@ -74,6 +88,11 @@ done
 mkdir -p "$lease_dir" "$(dirname -- "$raw_output")"
 lease_log=$(mktemp "$lease_dir/connect.XXXXXX.log")
 temporary_output=$(mktemp "$(dirname -- "$raw_output")/.raw.csv.XXXXXX")
+rknn_temporary_output=
+if [[ -n "$rknn_output" ]]; then
+    mkdir -p "$(dirname -- "$rknn_output")"
+    rknn_temporary_output=$(mktemp "$(dirname -- "$rknn_output")/.rknn.csv.XXXXXX")
+fi
 pre_reset_temporary_output=
 if ((expected_pre_reset_count > 0)); then
     mkdir -p "$(dirname -- "$pre_reset_raw_output")"
@@ -86,7 +105,11 @@ cleanup() {
         kill -TERM "$lease_pid" 2>/dev/null || true
         wait "$lease_pid" 2>/dev/null || true
     fi
-    rm -f -- "$lease_log" "$temporary_output" "$pre_reset_temporary_output"
+    rm -f -- \
+        "$lease_log" \
+        "$temporary_output" \
+        "$rknn_temporary_output" \
+        "$pre_reset_temporary_output"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -173,6 +196,65 @@ if [[ "$guest_raw_manifest" != "$expected_guest_raw_manifest" ]]; then
 fi
 mv -f -- "$temporary_output" "$raw_output"
 temporary_output=
+
+rknn_sha256=
+if [[ -n "$rknn_output" ]]; then
+    ssh "${ssh_options[@]}" "$ssh_target" sh -s -- \
+        "$result_image" "$guest_rknn_path" >"$rknn_temporary_output" <<'REMOTE'
+set -eu
+result_image=$1
+guest_rknn_path=$2
+temporary=$(mktemp /tmp/ivc-rknn.XXXXXX.csv)
+cleanup() {
+    rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+debugfs_path=$(command -v debugfs)
+"$debugfs_path" -R "dump $guest_rknn_path $temporary" "$result_image" >/dev/null
+test -s "$temporary"
+cat "$temporary"
+REMOTE
+
+    IFS= read -r actual_rknn_header <"$rknn_temporary_output"
+    if [[ "$actual_rknn_header" != "$rknn_csv_header" ]]; then
+        echo "Harvested RKNN CSV header does not match the evidence schema" >&2
+        exit 1
+    fi
+    rknn_line_count=$(wc -l <"$rknn_temporary_output")
+    expected_rknn_lines=$((expected_count + 1))
+    if ((rknn_line_count != expected_rknn_lines)); then
+        echo "Harvested RKNN CSV has $rknn_line_count lines; expected $expected_rknn_lines" >&2
+        exit 1
+    fi
+    rknn_sha256=$(sha256sum "$rknn_temporary_output")
+    rknn_sha256=${rknn_sha256%% *}
+    guest_rknn_manifest=$(ssh "${ssh_options[@]}" "$ssh_target" sh -s -- \
+        "$result_image" "$guest_rknn_manifest_path" <<'REMOTE'
+set -eu
+result_image=$1
+guest_rknn_manifest_path=$2
+temporary=$(mktemp /tmp/ivc-rknn-sha256.XXXXXX)
+cleanup() {
+    rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+debugfs_path=$(command -v debugfs)
+"$debugfs_path" -R "dump $guest_rknn_manifest_path $temporary" \
+    "$result_image" >/dev/null
+test -s "$temporary"
+cat "$temporary"
+REMOTE
+    )
+    expected_guest_rknn_manifest="$rknn_sha256  $guest_rknn_path"
+    if [[ "$guest_rknn_manifest" != "$expected_guest_rknn_manifest" ]]; then
+        echo "Snapshot guest RKNN manifest does not match the harvested CSV" >&2
+        exit 1
+    fi
+    mv -f -- "$rknn_temporary_output" "$rknn_output"
+    rknn_temporary_output=
+fi
 
 pre_reset_raw_sha256=
 if ((expected_pre_reset_count > 0)); then
@@ -324,6 +406,10 @@ lease_pid=
 printf '%s\n' "$result_evidence"
 echo "BOARD_GUEST_RAW_MANIFEST path=$guest_raw_path samples=$expected_count sha256=$raw_sha256"
 echo "BOARD_RAW_RESULT_HARVESTED path=$raw_output samples=$expected_count sha256=$raw_sha256"
+if [[ -n "$rknn_output" ]]; then
+    echo "BOARD_GUEST_RKNN_MANIFEST path=$guest_rknn_path samples=$expected_count sha256=$rknn_sha256"
+    echo "BOARD_RKNN_RESULT_HARVESTED path=$rknn_output samples=$expected_count sha256=$rknn_sha256"
+fi
 if ((expected_pre_reset_count > 0)); then
     echo "BOARD_GUEST_PRE_RESET_RAW_MANIFEST path=$guest_pre_reset_raw_path samples=$expected_pre_reset_count sha256=$pre_reset_raw_sha256"
     echo "BOARD_PRE_RESET_RAW_RESULT_HARVESTED path=$pre_reset_raw_output samples=$expected_pre_reset_count sha256=$pre_reset_raw_sha256"

@@ -23,7 +23,13 @@ def build_metadata(arguments: argparse.Namespace) -> dict[str, object]:
 
     summary = optional_file_record(arguments.summary, workspace)
     raw_csv = optional_file_record(arguments.raw_csv, workspace)
+    rknn_csv = (
+        optional_file_record(arguments.rknn_csv, workspace)
+        if arguments.rknn_csv is not None
+        else None
+    )
     summary_document = read_optional_json(arguments.summary)
+    rknn_evidence_required = arguments.inference_backend == "rknn-npu"
     return {
         "schema_version": 1,
         "run": {
@@ -65,12 +71,14 @@ def build_metadata(arguments: argparse.Namespace) -> dict[str, object]:
         "outputs": {
             "console_log": required_file_record(arguments.console_log, workspace),
             "raw_csv": raw_csv,
+            "rknn_csv": rknn_csv,
             "summary": summary,
         },
         "result": {
             "validated": (
                 summary_document is not None
                 and raw_csv is not None
+                and (not rknn_evidence_required or rknn_csv is not None)
                 and arguments.exit_status == 0
             ),
             "controller_policy": nested_value(
@@ -84,6 +92,9 @@ def build_metadata(arguments: argparse.Namespace) -> dict[str, object]:
             ),
             "deadline_misses": nested_value(
                 summary_document, "raw_samples", "deadline_misses"
+            ),
+            "rknn_sample_count": nested_value(
+                summary_document, "rknn_samples", "sample_count"
             ),
             "successful_marker": nested_value(
                 summary_document, "lifecycle", "starry_done"
@@ -205,6 +216,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--exit-status", type=int, required=True)
     parser.add_argument("--console-log", type=Path, required=True)
     parser.add_argument("--raw-csv", type=Path, required=True)
+    parser.add_argument("--rknn-csv", type=Path)
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--build-config", type=Path, required=True)
     parser.add_argument("--board-config", type=Path, required=True)

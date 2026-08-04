@@ -236,7 +236,7 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn('[ "${ivc_ack_timeout_ms:-}" = 1000 ]', autorun)
         self.assertEqual(
             autorun.count('--ack-timeout-ms "$ivc_ack_timeout_ms"'),
-            1,
+            2,
         )
 
     def test_orangepi_guests_use_virtual_interrupt_delivery(self) -> None:

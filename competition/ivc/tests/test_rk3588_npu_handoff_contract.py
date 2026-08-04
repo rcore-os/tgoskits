@@ -55,6 +55,25 @@ BOARD_RUNNER = REPOSITORY_ROOT / "competition/ivc/orangepi/board-runner.sh"
 SERVICE_DTB_PREPARER = (
     REPOSITORY_ROOT / "competition/ivc/orangepi/prepare-service-dtb.sh"
 )
+RKNPU_CONTROL_ROOTFS_BUILDER = (
+    REPOSITORY_ROOT / "competition/ivc/starry/build-rknpu-control-rootfs.sh"
+)
+RKNPU_CONTROL_AUTORUN = REPOSITORY_ROOT / "competition/ivc/starry/autorun.sh"
+RKNPU_CONTROL_RUNNER = REPOSITORY_ROOT / "competition/ivc/run-orangepi-5-plus.sh"
+RKNPU_CONTROL_STAGER = REPOSITORY_ROOT / "competition/ivc/stage-rknpu-control.sh"
+RKNPU_CONTROL_HARVESTER = (
+    REPOSITORY_ROOT / "competition/ivc/orangepi/harvest-result.sh"
+)
+RKNPU_CONTROL_BRIDGE = REPOSITORY_ROOT / "tools/ivcproto/csrc/rknn_bridge.c"
+RKNPU_RUST_BACKEND = REPOSITORY_ROOT / "tools/ivcproto/src/rknn.rs"
+RKNPU_CONTROL_HOST_CONFIG = (
+    REPOSITORY_ROOT
+    / "competition/ivc/config/axvisor-orangepi-5-plus-rknpu-control-smoke.toml"
+)
+RKNPU_CONTROL_GUEST_CONFIG = (
+    REPOSITORY_ROOT
+    / "competition/ivc/config/orangepi-5-plus-starry-smp2-rknpu-control-smoke.toml"
+)
 
 NPU_CORE_RANGES = (
     ("rknpu-core0", 0xFDAB_0000, 0xFDAB_0000, 0x1_0000, 0),
@@ -211,6 +230,20 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, body)
 
+    def test_guest_dts_exposes_the_ivc_virtio_net_transport(self) -> None:
+        source = GUEST_DTS.read_text(encoding="utf-8")
+        node_match = re.search(
+            r"virtio_mmio@a001000\s*\{(?P<body>.*?)\n\s*\};",
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(node_match)
+        body = node_match.group("body")
+        self.assertIn('compatible = "virtio,mmio";', body)
+        self.assertIn("reg = <0 0x0a001000 0 0x1000>;", body)
+        self.assertIn("interrupts = <0 24 1>;", body)
+        self.assertIn("dma-coherent;", body)
+
     def test_host_dtb_reserves_the_identity_mapped_dma_carveout(self) -> None:
         preparer = SERVICE_DTB_PREPARER.read_text(encoding="utf-8")
         runner = BOARD_RUNNER.read_text(encoding="utf-8")
@@ -233,7 +266,7 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
 
         self.assertEqual(
             config["features"],
-            ["ax-driver/virtio-blk", "rknpu"],
+            ["ax-driver/virtio-blk", "ax-driver/virtio-net", "rknpu"],
         )
         self.assertEqual(config["target"], "aarch64-unknown-none-softfloat")
 
@@ -360,6 +393,93 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
         ):
             with self.subTest(board_marker=board_marker):
                 self.assertIn(board_marker, board_runner)
+
+    def test_rknpu_control_backend_reuses_the_starry_zephyr_full_loop(self) -> None:
+        bridge = RKNPU_CONTROL_BRIDGE.read_text(encoding="utf-8")
+        rust_backend = RKNPU_RUST_BACKEND.read_text(encoding="utf-8")
+        builder = RKNPU_CONTROL_ROOTFS_BUILDER.read_text(encoding="utf-8")
+        autorun = RKNPU_CONTROL_AUTORUN.read_text(encoding="utf-8")
+        runner = RKNPU_CONTROL_RUNNER.read_text(encoding="utf-8")
+        stager = RKNPU_CONTROL_STAGER.read_text(encoding="utf-8")
+        harvester = RKNPU_CONTROL_HARVESTER.read_text(encoding="utf-8")
+        with RKNPU_CONTROL_HOST_CONFIG.open("rb") as source:
+            host_config = tomllib.load(source)
+        with RKNPU_CONTROL_GUEST_CONFIG.open("rb") as source:
+            guest_config = tomllib.load(source)
+
+        self.assertIn("rk3588-npu-handoff", host_config["features"])
+        self.assertEqual(len(host_config["vm_configs"]), 2)
+        self.assertTrue(
+            host_config["vm_configs"][1].endswith("orangepi-5-plus-zephyr-smoke.toml")
+        )
+        self.assertEqual(
+            guest_config["devices"]["passthrough_devices"],
+            [list(core_range) for core_range in NPU_CORE_RANGES],
+        )
+        self.assertTrue(
+            any(
+                device[0] == "virtio-net-starry"
+                for device in guest_config["devices"]["emu_devices"]
+            )
+        )
+        for marker in (
+            "rknn_init",
+            "RKNN_QUERY_PERF_RUN",
+            "rknn_outputs_release",
+            "rknn_destroy",
+        ):
+            with self.subTest(bridge_marker=marker):
+                self.assertIn(marker, bridge)
+        for marker in (
+            "pub struct RknnController",
+            "command_from_output",
+            "positive_device_times",
+            "device_p99_us",
+        ):
+            with self.subTest(rust_marker=marker):
+                self.assertIn(marker, rust_backend)
+        for marker in (
+            "--features rknn",
+            "aarch64-unknown-linux-gnu",
+            "libivc_rknn_bridge.a",
+            "librknnrt.so",
+            "ivc_backend=rknn-npu",
+        ):
+            with self.subTest(builder_marker=marker):
+                self.assertIn(marker, builder)
+        for marker in (
+            "IVC-STARRY-RKNN-DEVICE",
+            "IVC-STARRY-RKNN-MODEL",
+            "IVC-STARRY-RKNN-RAW",
+            "--rknn-model",
+            "--rknn-evidence",
+        ):
+            with self.subTest(autorun_marker=marker):
+                self.assertIn(marker, autorun)
+        for marker in (
+            "rknpu-smoke",
+            "rknpu-full",
+            "IVC-RKNN-RUNTIME",
+            "IVC-RKNN-RESULT",
+            "ORANGEPI_IVC_RKNN_CSV",
+            "rknn.csv.gz",
+            "--rknn-csv",
+            "--expected-rknn-model-sha256",
+            "--expected-rknn-runtime-api",
+            "stage-rknpu-control.sh",
+        ):
+            with self.subTest(runner_marker=marker):
+                self.assertIn(marker, runner)
+        for marker in (
+            "/var/lib/ivc/rknn.csv",
+            "/var/lib/ivc/rknn.csv.sha256",
+            "BOARD_GUEST_RKNN_MANIFEST",
+            "BOARD_RKNN_RESULT_HARVESTED",
+        ):
+            with self.subTest(harvest_marker=marker):
+                self.assertIn(marker, harvester)
+        self.assertIn("starry-ivc-rootfs-rknpu-smoke.img", stager)
+        self.assertIn("starry-ivc-rootfs-rknpu.img", stager)
 
     def test_board_flow_requires_guest_pass_and_host_filesystem_sync(self) -> None:
         with RKNPU_BOARD_CONFIG.open("rb") as source:

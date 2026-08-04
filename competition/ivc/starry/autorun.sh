@@ -28,7 +28,7 @@ case "${ivc_mode:-}" in
     *) fatal invalid-controller-mode ;;
 esac
 case "${ivc_backend:-}" in
-    native) ;;
+    native|rknn-npu) ;;
     onnxruntime) fatal onnxruntime-backend-not-installed ;;
     *) fatal invalid-inference-backend ;;
 esac
@@ -44,6 +44,27 @@ case "${ivc_period_ms:-}" in
 esac
 [ "${ivc_ack_timeout_ms:-}" = 1000 ] || fatal invalid-ack-timeout
 [ "${ivc_raw_csv:-}" = /var/lib/ivc/raw.csv ] || fatal invalid-raw-csv-path
+if [ "$ivc_backend" = rknn-npu ]; then
+    [ "${ivc_mode:-}" = neural ] || fatal rknn-requires-neural-mode
+    [ "${ivc_fault_profile:-none}" = none ] || fatal rknn-fault-profile-unsupported
+    [ "${ivc_rknn_model:-}" = /opt/thermal-rknn/thermal-4x6x1-v1-rk3588-fp16.rknn ] \
+        || fatal invalid-rknn-model-path
+    [ "${ivc_rknn_runtime:-}" = /usr/local/bin/lib/librknnrt.so ] \
+        || fatal invalid-rknn-runtime-path
+    [ "${ivc_rknn_evidence:-}" = /var/lib/ivc/rknn.csv ] \
+        || fatal invalid-rknn-evidence-path
+    [ "${ivc_rknn_core_mask:-}" = 0 ] || fatal invalid-rknn-core-mask
+    for expected_hash in \
+        "${ivc_rknn_model_sha256:-}" \
+        "${ivc_rknn_runtime_sha256:-}" \
+        "${ivc_rknn_controller_sha256:-}"; do
+        case "$expected_hash" in
+            ''|*[!0-9a-f]*) fatal invalid-rknn-profile-hash ;;
+            *) ;;
+        esac
+        [ "${#expected_hash}" -eq 64 ] || fatal invalid-rknn-profile-hash-length
+    done
+fi
 if [ "${ivc_fault_profile:-none}" = restart ]; then
     [ "${ivc_restart_previous_session:-}" = 286331153 ] \
         || fatal invalid-restart-previous-session
@@ -69,10 +90,55 @@ validate_raw_csv() {
         || fatal raw-manifest-write-failed
 }
 
+validate_rknn_evidence() {
+    [ -r "$ivc_rknn_evidence" ] || fatal rknn-evidence-not-found
+    rknn_header=$($BB sed -n '1p' "$ivc_rknn_evidence") \
+        || fatal rknn-evidence-header-failed
+    [ "$rknn_header" = sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns,device_us ] \
+        || fatal rknn-evidence-header-mismatch
+    rknn_lines=$($BB wc -l < "$ivc_rknn_evidence") \
+        || fatal rknn-evidence-count-failed
+    expected_rknn_lines=$((ivc_count + 1))
+    [ "$rknn_lines" -eq "$expected_rknn_lines" ] \
+        || fatal rknn-evidence-count-mismatch
+    rknn_checksum=$($BB sha256sum "$ivc_rknn_evidence") \
+        || fatal rknn-evidence-hash-failed
+    validated_rknn_sha256=${rknn_checksum%% *}
+    "$BB" printf '%s  %s\n' "$validated_rknn_sha256" "$ivc_rknn_evidence" \
+        >"$ivc_rknn_evidence.sha256" || fatal rknn-manifest-write-failed
+}
+
 cpu_count=$($BB grep -c '^processor' /proc/cpuinfo 2>/dev/null || true)
 [ "$cpu_count" -ge 2 ] || fatal insufficient-vcpus
 
 echo "IVC-STARRY-BOOT mode=$ivc_mode backend=$ivc_backend fault_profile=${ivc_fault_profile:-none} count=$ivc_count period_ms=$ivc_period_ms vcpus=$cpu_count"
+
+if [ "$ivc_backend" = rknn-npu ]; then
+    [ -c /dev/dri/card1 ] || fatal rknpu-device-not-found
+    actual_rknn_model_sha256=$($BB sha256sum "$ivc_rknn_model") \
+        || fatal rknn-model-hash-failed
+    actual_rknn_model_sha256=${actual_rknn_model_sha256%% *}
+    [ "$actual_rknn_model_sha256" = "$ivc_rknn_model_sha256" ] \
+        || fatal rknn-model-hash-mismatch
+    actual_rknn_runtime_sha256=$($BB sha256sum "$ivc_rknn_runtime") \
+        || fatal rknn-runtime-hash-failed
+    actual_rknn_runtime_sha256=${actual_rknn_runtime_sha256%% *}
+    [ "$actual_rknn_runtime_sha256" = "$ivc_rknn_runtime_sha256" ] \
+        || fatal rknn-runtime-hash-mismatch
+    actual_rknn_controller_sha256=$($BB sha256sum /usr/local/bin/ivcproto) \
+        || fatal rknn-controller-hash-failed
+    actual_rknn_controller_sha256=${actual_rknn_controller_sha256%% *}
+    [ "$actual_rknn_controller_sha256" = "$ivc_rknn_controller_sha256" ] \
+        || fatal rknn-controller-hash-mismatch
+    device_copy=0
+    while [ "$device_copy" -lt 5 ]; do
+        echo "IVC-STARRY-RKNN-DEVICE path=/dev/dri/card1 registered=true core_mask=$ivc_rknn_core_mask"
+        device_copy=$((device_copy + 1))
+        "$BB" sleep 0.025
+    done
+    "$BB" rm -f "$ivc_rknn_evidence" "$ivc_rknn_evidence.sha256" \
+        || fatal rknn-stale-evidence-cleanup-failed
+fi
 
 attempt=0
 while [ "$attempt" -lt 60 ]; do
@@ -169,6 +235,16 @@ if [ "${ivc_fault_profile:-none}" = restart ]; then
     else
         result=$?
     fi
+elif [ "$ivc_backend" = rknn-npu ]; then
+    if /usr/local/bin/ivcproto controller \
+        10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
+        --backend "$ivc_backend" --raw-csv "$ivc_raw_csv" \
+        --fault-profile none --ack-timeout-ms "$ivc_ack_timeout_ms" \
+        --rknn-model "$ivc_rknn_model" --rknn-evidence "$ivc_rknn_evidence"; then
+        result=0
+    else
+        result=$?
+    fi
 elif /usr/local/bin/ivcproto controller \
     10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
     --backend "$ivc_backend" --raw-csv "$ivc_raw_csv" \
@@ -182,6 +258,9 @@ fi
 if [ "$result" -eq 0 ]; then
     validate_raw_csv "$ivc_raw_csv" "$ivc_count"
     raw_sha256=$validated_raw_sha256
+    if [ "$ivc_backend" = rknn-npu ]; then
+        validate_rknn_evidence
+    fi
     # Let the peer VM shutdown messages drain before publishing redundant
     # identities on the shared UART.
     raw_identity_quiet_seconds=4
@@ -190,6 +269,10 @@ if [ "$result" -eq 0 ]; then
     raw_identity_copy=0
     while [ "$raw_identity_copy" -lt 5 ]; do
         echo "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256"
+        if [ "$ivc_backend" = rknn-npu ]; then
+            echo "IVC-STARRY-RKNN-MODEL sha256=$actual_rknn_model_sha256"
+            echo "IVC-STARRY-RKNN-RAW samples=$ivc_count sha256=$validated_rknn_sha256"
+        fi
         raw_identity_copy=$((raw_identity_copy + 1))
         "$BB" sleep "$raw_identity_interval_seconds"
     done

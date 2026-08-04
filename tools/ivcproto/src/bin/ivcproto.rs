@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+use ivcproto::rknn::RknnController;
 use ivcproto::{
     control::{
         AckPayload, ControlCommand, ControlMode, ControlOperation, ErrorReport, StatusReport,
@@ -33,6 +35,8 @@ const BOARD_CONSOLE_RECORD_MAX_BYTES: usize = 160;
 const BOARD_CONSOLE_RECORD_COPIES: usize = 2;
 const BOARD_CONSOLE_RECORD_PAUSE: Duration = Duration::from_millis(10);
 const BOARD_CONSOLE_SUMMARY_SETTLE: Duration = Duration::from_millis(250);
+const RKNPU_RECORD_COPIES: usize = 5;
+const RKNPU_RECORD_PAUSE: Duration = Duration::from_millis(25);
 const ERROR_FAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const ERROR_FAULT_RESULT_SETTLE: Duration = Duration::from_millis(750);
 const ERROR_FAULT_RESULT_RECORD_COPIES: usize = 3;
@@ -52,6 +56,7 @@ const PAYLOAD_LENGTH_OFFSET: usize = 24;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InferenceBackend {
     Native,
+    RknnNpu,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -114,6 +119,7 @@ impl InferenceBackend {
     const fn name(self) -> &'static str {
         match self {
             Self::Native => "native",
+            Self::RknnNpu => "rknn-npu",
         }
     }
 }
@@ -127,9 +133,112 @@ struct ControllerArguments {
     session_id: Option<u32>,
     backend: InferenceBackend,
     raw_csv: Option<PathBuf>,
+    rknn_model: Option<PathBuf>,
+    rknn_evidence: Option<PathBuf>,
     fault_profile: ControllerFaultProfile,
     restart_previous_session: Option<u32>,
     ack_timeout: Duration,
+}
+
+enum ControllerEngine {
+    Manual(ManualFixedController),
+    Native(NeuralController),
+    #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+    Rknn(RknnController),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BackendSummary {
+    api_version: String,
+    driver_version: String,
+    core_mask: u32,
+    initialization_us: u64,
+    samples: usize,
+    positive_device_times: usize,
+    device_p99_us: u64,
+    wall_p99_ns: u64,
+}
+
+impl ControllerEngine {
+    fn new(
+        policy: Policy,
+        backend: InferenceBackend,
+        rknn_model: Option<&std::path::Path>,
+        rknn_evidence: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        match (policy, backend) {
+            (Policy::ManualFixed { actuator_permille }, InferenceBackend::Native) => {
+                Ok(Self::Manual(
+                    ManualFixedController::new(actuator_permille)
+                        .map_err(|error| error.to_string())?,
+                ))
+            }
+            (Policy::Neural, InferenceBackend::Native) => Ok(Self::Native(NeuralController)),
+            (Policy::ManualFixed { .. }, InferenceBackend::RknnNpu) => {
+                Err("RKNN NPU backend requires the neural policy".to_owned())
+            }
+            (Policy::Neural, InferenceBackend::RknnNpu) => {
+                Self::new_rknn(rknn_model, rknn_evidence)
+            }
+        }
+    }
+
+    #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+    fn new_rknn(
+        rknn_model: Option<&std::path::Path>,
+        rknn_evidence: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        let model = rknn_model.ok_or_else(|| "RKNN model path is missing".to_owned())?;
+        let evidence = rknn_evidence.ok_or_else(|| "RKNN evidence path is missing".to_owned())?;
+        RknnController::new(model, evidence, 0)
+            .map(Self::Rknn)
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(not(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu")))]
+    fn new_rknn(
+        _rknn_model: Option<&std::path::Path>,
+        _rknn_evidence: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        Err("controller backend 'rknn-npu' is not available in this build".to_owned())
+    }
+
+    fn command(
+        &mut self,
+        observation: ThermalObservation,
+        sample_id: u32,
+    ) -> Result<ControlCommand, String> {
+        match self {
+            Self::Manual(controller) => Ok(controller.command(observation, sample_id)),
+            Self::Native(controller) => controller
+                .command(observation, sample_id)
+                .map_err(|error| error.to_string()),
+            #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+            Self::Rknn(controller) => controller
+                .command(observation, sample_id)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    fn finish(&mut self) -> Result<Option<BackendSummary>, String> {
+        match self {
+            Self::Manual(_) | Self::Native(_) => Ok(None),
+            #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+            Self::Rknn(controller) => {
+                let summary = controller.finish().map_err(|error| error.to_string())?;
+                Ok(Some(BackendSummary {
+                    api_version: summary.runtime.api_version,
+                    driver_version: summary.runtime.driver_version,
+                    core_mask: summary.runtime.core_mask,
+                    initialization_us: summary.runtime.initialization_us,
+                    samples: summary.samples,
+                    positive_device_times: summary.positive_device_times,
+                    device_p99_us: summary.device_p99_us,
+                    wall_p99_ns: summary.wall_p99_ns,
+                }))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1003,6 +1112,8 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         session_id,
         backend,
         raw_csv,
+        rknn_model,
+        rknn_evidence,
         fault_profile,
         restart_previous_session,
         ack_timeout,
@@ -1036,6 +1147,12 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     }
     let mut sender =
         StopAndWaitSender::new(session_id, reliability).map_err(|error| error.to_string())?;
+    let mut controller_engine = ControllerEngine::new(
+        policy,
+        backend,
+        rknn_model.as_deref(),
+        rknn_evidence.as_deref(),
+    )?;
     let clock = Instant::now();
     let fault_errors_received = match fault_profile {
         ControllerFaultProfile::None => 0,
@@ -1080,16 +1197,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
             previous_actuator_permille: previous_actuator,
             temperature_rate_milli_c_per_s: (measured_milli_c - previous_measured_milli_c) * 10,
         };
-        let command = match policy {
-            Policy::ManualFixed { actuator_permille } => {
-                ManualFixedController::new(actuator_permille)
-                    .map_err(|error| error.to_string())?
-                    .command(observation, sample)
-            }
-            Policy::Neural => NeuralController
-                .command(observation, sample)
-                .map_err(|error| error.to_string())?,
-        };
+        let command = controller_engine.command(observation, sample)?;
         let sent_at_us = elapsed_us(clock);
         let mut datagram = [0u8; HEADER_LEN + MAX_PAYLOAD_LEN];
         let mut header = Header::new(MessageType::Control, session_id, sequence, sent_at_us);
@@ -1293,6 +1401,7 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
     }
 
     let elapsed = run_start.elapsed();
+    let backend_summary = controller_engine.finish()?;
     if let (Some(path), Some(samples)) = (&raw_csv, &controller_samples) {
         write_controller_samples(path, samples).map_err(|error| error.to_string())?;
         println!(
@@ -1335,6 +1444,9 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         }
     }
     println!("{}", summary.legacy_record());
+    if let Some(backend_summary) = backend_summary {
+        report_backend_summary(&backend_summary)?;
+    }
     if fault_profile == ControllerFaultProfile::Error {
         let fault_result_body = format!(
             "profile=error injected={} received={} acknowledged={} continued=1",
@@ -1504,6 +1616,52 @@ fn print_scenario_metrics(name: &str, metrics: ScenarioMetrics) {
     );
 }
 
+fn report_backend_summary(summary: &BackendSummary) -> Result<(), String> {
+    if summary.samples == 0
+        || summary.positive_device_times != summary.samples
+        || summary.device_p99_us == 0
+        || summary.wall_p99_ns == 0
+    {
+        return Err("RKNN backend summary contains incomplete timing evidence".to_owned());
+    }
+    let api_version = compatibility_version(&summary.api_version, "API")?;
+    let driver_version = compatibility_version(&summary.driver_version, "driver")?;
+    let records = [
+        format!(
+            "IVC-RKNN-RUNTIME api={api_version} driver={driver_version} core={} init_us={}",
+            summary.core_mask, summary.initialization_us
+        ),
+        format!(
+            "IVC-RKNN-RESULT samples={} positive_device_times={} device_p99_us={} wall_p99_ns={}",
+            summary.samples,
+            summary.positive_device_times,
+            summary.device_p99_us,
+            summary.wall_p99_ns
+        ),
+    ];
+    for _ in 0..RKNPU_RECORD_COPIES {
+        for record in &records {
+            if record.len() > BOARD_CONSOLE_RECORD_MAX_BYTES {
+                return Err("RKNN backend record exceeds the physical UART budget".to_owned());
+            }
+            println!("{record}");
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush RKNN backend evidence: {error}"))?;
+            std::thread::sleep(RKNPU_RECORD_PAUSE);
+        }
+    }
+    Ok(())
+}
+
+fn compatibility_version<'a>(version: &'a str, label: &str) -> Result<&'a str, String> {
+    version
+        .split_ascii_whitespace()
+        .next()
+        .filter(|identity| !identity.is_empty())
+        .ok_or_else(|| format!("RKNN {label} compatibility version is empty"))
+}
+
 fn policy_name(policy: Policy) -> &'static str {
     match policy {
         Policy::ManualFixed { .. } => "manual-fixed",
@@ -1535,6 +1693,8 @@ fn parse_controller_arguments(
     let mut backend = InferenceBackend::Native;
     let mut backend_was_set = false;
     let mut raw_csv = None;
+    let mut rknn_model = None;
+    let mut rknn_evidence = None;
     let mut fault_profile = ControllerFaultProfile::None;
     let mut fault_profile_was_set = false;
     let mut restart_previous_session = None;
@@ -1549,6 +1709,7 @@ fn parse_controller_arguments(
                 let value = required(&mut arguments, "controller backend")?;
                 backend = match value.as_str() {
                     "native" => InferenceBackend::Native,
+                    "rknn-npu" => InferenceBackend::RknnNpu,
                     "onnxruntime" => {
                         return Err("controller backend 'onnxruntime' is not available in this \
                                     build"
@@ -1556,7 +1717,8 @@ fn parse_controller_arguments(
                     }
                     _ => {
                         return Err(format!(
-                            "controller backend must be 'native' or 'onnxruntime', got '{value}'"
+                            "controller backend must be 'native', 'rknn-npu', or 'onnxruntime', \
+                             got '{value}'"
                         ));
                     }
                 };
@@ -1569,6 +1731,21 @@ fn parse_controller_arguments(
                 raw_csv = Some(PathBuf::from(required(
                     &mut arguments,
                     "controller raw CSV path",
+                )?));
+            }
+            "--rknn-model" => {
+                if rknn_model.is_some() {
+                    return Err("--rknn-model may only be specified once".to_owned());
+                }
+                rknn_model = Some(PathBuf::from(required(&mut arguments, "RKNN model path")?));
+            }
+            "--rknn-evidence" => {
+                if rknn_evidence.is_some() {
+                    return Err("--rknn-evidence may only be specified once".to_owned());
+                }
+                rknn_evidence = Some(PathBuf::from(required(
+                    &mut arguments,
+                    "RKNN evidence path",
                 )?));
             }
             "--fault-profile" => {
@@ -1647,6 +1824,25 @@ fn parse_controller_arguments(
         return Err("--restart-previous-session requires --fault-profile restart".to_owned());
     }
 
+    match backend {
+        InferenceBackend::Native => {
+            if rknn_model.is_some() || rknn_evidence.is_some() {
+                return Err("RKNN paths require --backend rknn-npu".to_owned());
+            }
+        }
+        InferenceBackend::RknnNpu => {
+            if policy != Policy::Neural {
+                return Err("RKNN NPU backend requires the neural policy".to_owned());
+            }
+            if fault_profile != ControllerFaultProfile::None {
+                return Err("RKNN NPU backend currently requires --fault-profile none".to_owned());
+            }
+            if rknn_model.is_none() || rknn_evidence.is_none() {
+                return Err("RKNN NPU backend requires --rknn-model and --rknn-evidence".to_owned());
+            }
+        }
+    }
+
     Ok(ControllerArguments {
         peer,
         count,
@@ -1655,6 +1851,8 @@ fn parse_controller_arguments(
         session_id,
         backend,
         raw_csv,
+        rknn_model,
+        rknn_evidence,
         fault_profile,
         restart_previous_session,
         ack_timeout,
@@ -1745,9 +1943,9 @@ fn improvement(baseline: f64, candidate: f64) -> f64 {
 fn usage() -> &'static str {
     "usage:\n  ivcproto evaluate\n  ivcproto evaluate-csv <output.csv>\n  ivcproto rtos-sim <bind> \
      <expected-count> [drop-every]\n  ivcproto controller <peer> <count> <manual|neural> \
-     [period-ms] [session-id] [--backend <native|onnxruntime>] [--raw-csv <path>] [--fault-profile \
-     <none|error|restart>] [--restart-previous-session <session-id>] [--ack-timeout-ms \
-     <milliseconds>]"
+     [period-ms] [session-id] [--backend <native|rknn-npu|onnxruntime>] [--raw-csv <path>] \
+     [--rknn-model <path> --rknn-evidence <path>] [--fault-profile <none|error|restart>] \
+     [--restart-previous-session <session-id>] [--ack-timeout-ms <milliseconds>]"
 }
 
 #[cfg(test)]
@@ -1949,6 +2147,60 @@ mod tests {
         );
         assert_eq!(parsed.fault_profile, ControllerFaultProfile::None);
         assert_eq!(parsed.ack_timeout, DEFAULT_ACK_TIMEOUT);
+    }
+
+    #[test]
+    fn controller_arguments_require_explicit_rknn_artifact_paths() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "neural",
+            "100",
+            "--backend",
+            "rknn-npu",
+            "--rknn-model",
+            "/opt/thermal-rknn/model.rknn",
+            "--rknn-evidence",
+            "/var/lib/ivc/rknn.csv",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let parsed = parse_controller_arguments(arguments)
+            .expect("RKNN controller arguments should be explicit and complete");
+
+        assert_eq!(parsed.backend, InferenceBackend::RknnNpu);
+        assert_eq!(
+            parsed.rknn_model.as_deref(),
+            Some(std::path::Path::new("/opt/thermal-rknn/model.rknn"))
+        );
+        assert_eq!(
+            parsed.rknn_evidence.as_deref(),
+            Some(std::path::Path::new("/var/lib/ivc/rknn.csv"))
+        );
+    }
+
+    #[test]
+    fn controller_arguments_reject_rknn_for_the_manual_policy() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "manual",
+            "100",
+            "--backend",
+            "rknn-npu",
+            "--rknn-model",
+            "/opt/thermal-rknn/model.rknn",
+            "--rknn-evidence",
+            "/var/lib/ivc/rknn.csv",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let error = parse_controller_arguments(arguments)
+            .expect_err("manual control must not be mislabeled as RKNN inference");
+
+        assert!(error.contains("requires the neural policy"));
     }
 
     #[test]
