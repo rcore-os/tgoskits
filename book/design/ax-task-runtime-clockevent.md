@@ -76,7 +76,7 @@ runtime 只能丢弃旧 generation，不得以相同 deadline 值推断 publicat
 
 ## ax-runtime 的所有权
 
-每个 CPU 只有一个 `LocalClockEvent`，只能在 `ExclusiveCpu` 覆盖本地 IRQ/re-entry 排除时修改。状态机为：
+每个 CPU 只有一个 `LocalClockEvent`，只能在 `ExclusiveCpu` 覆盖本地 IRQ/re-entry 排除时修改。状态机携带单调 CPU lifecycle epoch：
 
 ```text
 Offline
@@ -94,6 +94,10 @@ Armed(deadline) -> Firing ------+
 - `Armed`：一个绝对 deadline 已写入设备；
 - `Firing`：旧 arm 已失效，handler 正在合并更新。
 
+online 与 offline 都推进 epoch。进入 `Firing` 会产生不可复制的
+`ClockEventFiringToken`；finish 与 panic recovery 必须消费该 token。若 CPU 已经过一次
+offline/re-online，旧 token 只能失效，不能提交到新周期。
+
 `LocalClockEvent` 是以下状态的唯一存储：task generation、task deadline、periodic deadline、deferred-work flag 和当前物理 arm。禁止旁路 scalar cache。
 
 ### 重新编程规则
@@ -106,6 +110,13 @@ Armed(deadline) -> Firing ------+
 - 语义状态完全相同：不写设备。
 
 `Firing` 期间只更新逻辑 source state。handler 结束时从最新 task deadline 和 periodic deadline 计算一次 authoritative minimum，并且只提交一次硬件动作。
+
+物理 IRQ 先执行 claim：
+
+- `Offline/Idle/Firing` 收到的 spurious edge 直接忽略；
+- edge 早于当前 `armed_deadline` 时只重编程当前 arm，不调用 ax-task；这同时处理
+  offline 前残留、re-online 后才交付的 pending edge；
+- 只有当前 arm 已到期时才取得 firing token 并进入有界调度处理。
 
 ### 上下线
 
@@ -129,13 +140,16 @@ min(platform_cpu_count, CPU_CAPACITY)
 
 平台控制器和 timer device 在 runtime handler 前 claim/ACK 或失效 delivered event。runtime 顺序固定为：
 
-1. `LocalClockEvent` 进入 `Firing`，忘记旧 arm；
+1. claim 当前 arm；旧/早到边只重编程并返回，已到期边进入 `Firing(token)` 并忘记旧 arm；
 2. 推进 periodic source；
 3. 调用 ax-task 的 bounded `on_clock_event(now, budget)`；
 4. 发布 reschedule 与 deadline/deferred-work sticky state；
 5. 合并 handler 期间所有 source update；
 6. 统一 program 或 stop 一次；
 7. 返回平台完成 EOI。
+
+步骤 3 到 6 都受 firing token 的 CPU epoch 约束；旧 token 的 finish/recover 不得发布
+逻辑 source 或物理动作。
 
 hard IRQ 必须：
 

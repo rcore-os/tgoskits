@@ -160,9 +160,9 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | active mm | `exit_mm()`、`context_switch()`、`enter_lazy_tlb()`、`finish_task_switch()` | task-mm 所有权在 zombie 前解除；lazy CPU carrier 与页表根存储保留到最后 CPU lease | move-only token + task detach + per-CPU active lease 已实现 |
 | 用户 TLB 回收 | `mmu_gather`、`mm_cpumask()`、各架构 `flush_tlb_mm_range()` | 先改 PTE，再同步 active-mm CPU，最后释放物理所有权 | 共享 mm CPU tracker + typed gather 已实现；调度 token 不再各自维护错误的 CPU footprint |
 | task deadline | `hrtimer`、`sched/deadline.c` | IRQ 只处理 generation-bearing 值记录；CBS 状态机是唯一期限真值 | Deadline 已改为 class-owned 有序 AVL rq，并在节点内增广最早 CBS 事件；pick/dequeue/rekey 为 O(log n)；CBS 记账与物理入队同属目标 rq 事务；CBS 生命周期改为互斥状态，删除 `base_deadline` 镜像 |
-| clockevent/nohz | `clockevents_program_event()`、`tick_nohz_idle_enter()`、`tick_nohz_stop_tick()`、`tick_nohz_idle_exit()` | 每 CPU 单一物理 owner；idle 无调度事件时停止 tick；无期限用 `Option` | 已将 scheduler tick 建模为 `Running/Stopped`，idle IRQ-off 提交时从物理选择器撤销 tick，只保留 task deadline；非调度 IRQ 后保持 NOHZ，出现 runnable work 时按原相位追赶并重启 tick |
+| clockevent/nohz | `clockevents_program_event()`、`clockevents_shutdown()`、`hrtimer_interrupt()`、`tick_nohz_idle_enter()`、`tick_nohz_stop_tick()`、`tick_nohz_idle_exit()` | 每 CPU 单一物理 owner；CPU 生命周期与 firing 带 epoch；早到/陈旧边不得进入 scheduler；idle 无调度事件时停止 tick；无期限用 `Option` | scheduler tick 建模为 `Running/Stopped`；online/offline 推进 CPU epoch；IRQ 只有在当前 arm 已到期时才能取得 move-only firing token，旧 pending edge 只重编程当前 arm；idle IRQ-off 提交时撤销 tick，只保留 task deadline |
 | switch tail | `finish_task_switch()` | 清 outgoing `on_cpu` 后才能回收；已提交的 raw switch 不可重试 | `on_switch_in` 已移到 current publication、runtime tail、handoff consumption 之后的 move-only completion，并在释放 `CpuLocal` borrow 后执行；task placement 仍镜像 switch-tail 暂态，待收敛到 CPU handoff |
-| PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；deboost/grant 后锁外 wake | handoff generation 与锁外 wake 已有；`PreemptTicketLock` 仍可能跨 CPU 无界禁抢占自旋，待按 owner 分拆 |
+| PI/锁 | `rtmutex`、`spinlock_rt.c` | raw rq/IRQ gate、sleeping PI、task-local pin 四层分离；局部 wait metadata 与全局 donation graph 分层；deboost/grant 后锁外 wake | mutex-local metadata 已改为任务态短 `SpinNoPreempt` 门；PI graph 在局部门外准备，局部 sequence 校验后发布，再提交 deboost/grant 并锁外 wake；`PreemptTicketLock` 的其余跨 CPU使用仍需按 owner 审计 |
 | 阻塞等待 | `do_lock_file_wait()`、`wait_event_interruptible()`、`locks_delete_block()` | wake 只是重试提示；条件与临时阻塞关系由领域层拥有，返回前必须先注销 | scheduler notification 与 nofault access retry 已类型化分离，fcntl/futex 外层负责重试 |
 | IRQ waiter | `__free_irq()`、`synchronize_irq()` | 撤销后 grace，再释放 | token/drain 类型状态与同地址 ABA 防护已实现 |
 | signal | `recalc_sigpending_tsk()` | scan 后只能确认已观察 generation | 单调 interruption generation 已实现 |
@@ -204,11 +204,14 @@ v7.1 PREEMPT_RT。此次不再把“已有枚举/guard/缓存”当作完成标�
    task-local CPU/preempt lease。跨 CPU 可竞争的 scheduler state 不得使用
    `PreemptTicketLock` 无界等待；PI metadata 中完成 owner generation、deboost、grant
    和 wake-batch 选择，锁外 wake。
-7. **clockevent 与 nohz 是同一个 CPU-local 状态机**。physical clockevent 只合并 typed
+7. **clockevent 与 nohz 是同一个带 CPU epoch 的 CPU-local 状态机**。physical clockevent 只合并 typed
    task deadline 与处于非 idle 状态时的 scheduler tick。`SchedulerTickState` 在 IRQ-off
    final recheck 中从 `Running` 转成 `Stopped` 并保存恢复相位；普通 IRQ 不产生 runnable
    work 时保持 stopped，idle exit/过期恢复只重算一次。无 work 时不得保留永久 periodic
-   source，也不得用调用栈外的第二份布尔状态镜像 NOHZ 生命周期。
+   source，也不得用调用栈外的第二份布尔状态镜像 NOHZ 生命周期。online/offline 都推进
+   epoch；`Firing` 必须持有 move-only epoch token，旧 CPU 周期的 completion 不能提交到
+   新周期。timer edge 只有在当前 `Armed` deadline 已到期时才进入 scheduler，早到或
+   offline 前遗留的 pending edge 只重编程当前 arm。
 8. **scheduler entry、active-mm 与 switch plan 一次提交**。typed entry token 独占
    scheduler baton；next active-mm lease/root/current publication 在 raw switch 前准备，
    previous lease 与资源仅在 switch tail 释放。四架构只允许汇编 idle/switch 细节不同，
@@ -486,7 +489,8 @@ root。Starry 的 `SchedulerAddressSpaceLease` 因此把“scheduler slot 已解
 
 条目只保存 `ThreadId`、generation、typed kind 和有限 deadline，不保存闭包、OS 对象或驱动对象。rearm 必须物理替换旧节点，cancel 必须物理移除；不得以 tombstone 占容量。
 
-`ax-runtime::LocalClockEvent` 是以下状态的唯一 owner：
+`ax-runtime::LocalClockEvent` 是以下状态的唯一 owner，每次 CPU online/offline 转换都会
+推进不可回绕的 lifecycle epoch：
 
 ```text
 Offline | Idle | Armed(deadline) | Firing
@@ -495,12 +499,17 @@ Offline | Idle | Armed(deadline) | Firing
 timer IRQ 顺序：
 
 1. platform claim/ACK；
-2. `Armed -> Firing`，旧 arm 立即失效；
+2. 对照当前 epoch 与 arm：`Idle/Offline` 的边直接忽略；未到期的旧 pending/early edge
+   只重新写入当前 arm；只有已到期的 `Armed -> Firing(token)` 才失效旧 arm；
 3. 非 idle CPU 更新 scheduler tick；idle/nohz 状态不生成 periodic source；
 4. 调用有界 `on_clock_event(now, budget)`；
 5. 发布 sticky deadline work / need-resched；
 6. 合并 task deadline 与当前有效的 scheduler tick，统一编程一次；
 7. 返回平台做 EOI。
+
+`finish/recover` 必须消费同一 move-only firing token。token 的 epoch 已过期时不能发布
+task deadline、periodic advance 或硬件动作。这样 offline 前已经 pending 的 IRQ 即使在
+re-online 后才交付，也不能把新 CPU 周期提前推进到 `Firing`。
 
 无期限用 `Option<MonotonicDeadline>`，不能用 `u64::MAX` 直接下发硬件。ns 到 tick 使用向上取整和饱和转换；已过期值钳制到设备最小非零 delta。
 
