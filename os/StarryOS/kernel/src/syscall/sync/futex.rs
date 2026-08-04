@@ -19,8 +19,7 @@ use crate::{
         read_user_u32_nofault,
     },
     task::{
-        FutexAccessError, FutexKey, FutexKeyMode, FutexWaitError, current_user_task,
-        futex_table_for, get_task,
+        FutexAccessError, FutexContext, FutexKeyMode, FutexWaitError, current_user_task, get_task,
     },
     time::TimeValueLike,
 };
@@ -288,17 +287,19 @@ pub fn sys_futex(
             } else {
                 u32::MAX
             };
+            let context = FutexContext::current();
 
             loop {
-                let key = FutexKey::new_current(uaddr.addr(), op.key_mode);
-                let futex_table = futex_table_for(&key);
-                let futex = futex_table.get_or_insert(&key);
-                let cleanup = futex_table.cleanup_for(&key);
-                match futex
-                    .wq
-                    .wait_if_with_cleanup_nofault(bitset, timeout, Some(cleanup), || {
-                        futex_read_user_nofault(uaddr).map(|observed| observed == value)
-                    }) {
+                let futex = context.resolve(uaddr.addr(), op.key_mode);
+                let entry = futex.table().get_or_insert(futex.key());
+                let cleanup = futex.table().cleanup_for(futex.key());
+                match entry.wq.wait_if_with_cleanup_nofault_for(
+                    context.task(),
+                    bitset,
+                    timeout,
+                    Some(cleanup),
+                    || futex_read_user_nofault(uaddr).map(|observed| observed == value),
+                ) {
                     Ok(true) => break,
                     Ok(false) => return Err(AxError::WouldBlock),
                     Err(FutexWaitError::SchedulerNotification) => continue,
@@ -321,17 +322,16 @@ pub fn sys_futex(
             let wake_count = assert_non_negative_i32(value)? as usize;
             validate_futex_word(uaddr)?;
 
-            let key = FutexKey::new_current(uaddr.addr(), op.key_mode);
-            let futex_table = futex_table_for(&key);
-            let futex = futex_table.get(&key);
+            let futex = FutexContext::current().resolve(uaddr.addr(), op.key_mode);
+            let entry = futex.table().get(futex.key());
             let mut count = 0;
-            if let Some(futex) = futex {
+            if let Some(entry) = entry {
                 let bitset = if op.command == FutexCommand::WakeBitset {
                     value3
                 } else {
                     u32::MAX
                 };
-                count = futex.wq.wake(wake_count, bitset);
+                count = entry.wq.wake(wake_count, bitset);
             }
             complete_futex_wake(count)
         }
@@ -342,16 +342,15 @@ pub fn sys_futex(
                 validate_futex_word(uaddr)?;
             }
             validate_futex_word(uaddr2)?;
+            let context = FutexContext::current();
 
             let count = loop {
-                let key = FutexKey::new_current(uaddr.addr(), op.key_mode);
-                let futex_table = futex_table_for(&key);
-                let key2 = FutexKey::new_current(uaddr2.addr(), op.key_mode);
-                let table2 = futex_table_for(&key2);
-                let target = table2.get_or_insert(&key2);
-                let target_cleanup = table2.cleanup_for(&key2);
+                let (source_futex, target_futex) =
+                    context.resolve_pair(uaddr.addr(), uaddr2.addr(), op.key_mode);
+                let target = target_futex.table().get_or_insert(target_futex.key());
+                let target_cleanup = target_futex.table().cleanup_for(target_futex.key());
 
-                let Some(source) = futex_table.get(&key) else {
+                let Some(source) = source_futex.table().get(source_futex.key()) else {
                     if op.command == FutexCommand::CmpRequeue && uaddr.vm_read()? != value3 {
                         return Err(AxError::WouldBlock);
                     }
@@ -401,18 +400,17 @@ pub fn sys_futex(
                 apply_wake_op_without_waiters(uaddr2, wake_operation)?;
                 0
             } else {
+                let context = FutexContext::current();
                 loop {
                     // Shared keys depend on the current VMA backing and must be
                     // recomputed after fault-in, matching Linux futex retry.
-                    let source_key = FutexKey::new_current(uaddr.addr(), op.key_mode);
-                    let source_table = futex_table_for(&source_key);
-                    let target_key = FutexKey::new_current(uaddr2.addr(), op.key_mode);
-                    let target_table = futex_table_for(&target_key);
-                    match source_table.wake_op(
-                        &source_key,
+                    let (source, target) =
+                        context.resolve_pair(uaddr.addr(), uaddr2.addr(), op.key_mode);
+                    match source.table().wake_op(
+                        source.key(),
                         wake_count,
-                        &target_table,
-                        &target_key,
+                        target.table(),
+                        target.key(),
                         wake2_count,
                         || futex_atomic_op_in_user_nofault(uaddr2, wake_operation),
                     ) {

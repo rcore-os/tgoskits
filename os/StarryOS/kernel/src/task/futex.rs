@@ -3,7 +3,6 @@
 use alloc::{
     collections::{btree_map::BTreeMap, vec_deque::VecDeque},
     sync::{Arc, Weak},
-    vec::Vec,
 };
 #[cfg(axtest)]
 use core::sync::atomic::AtomicUsize;
@@ -18,7 +17,7 @@ use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoPreempt;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::time::monotonic_time;
-use ax_std::os::arceos::task::{self as scheduler, CurrentParkStart, ThreadWakeHandle};
+use ax_std::os::arceos::task::{self as scheduler, CurrentParkStart, ThreadWakeBatch};
 use ax_sync::{LockdepMutexExt, PiMutex};
 use hashbrown::HashMap;
 
@@ -29,6 +28,11 @@ use crate::{
 
 const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
 const NESTED_FUTEX_TABLE_LOCK_SUBCLASS: u32 = 1;
+type WakeBatch = ThreadWakeBatch;
+
+fn wake_batch(wakes: WakeBatch) -> usize {
+    wakes.wake_all()
+}
 
 #[cfg(axtest)]
 static FUTEX_ENTRY_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -325,6 +329,19 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
     ) -> Result<bool, FutexWaitError> {
+        let task = current_user_task();
+        self.wait_if_with_cleanup_nofault_for(&task, bitset, timeout, cleanup, condition)
+    }
+
+    /// Variant for a syscall that already captured its current task identity.
+    pub(crate) fn wait_if_with_cleanup_nofault_for(
+        &self,
+        task: &UserTaskRef,
+        bitset: u32,
+        timeout: Option<Duration>,
+        cleanup: Option<FutexWaitCleanup>,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
+    ) -> Result<bool, FutexWaitError> {
         let deadline_ns = timeout.map(|timeout| {
             monotonic_time()
                 .as_nanos()
@@ -337,7 +354,7 @@ impl WaitQueue {
             if !condition()? {
                 return Ok(false);
             }
-            let task = current_user_task();
+            let task = task.clone();
             let park = match scheduler::begin_current_park().map_err(map_park_error)? {
                 CurrentParkStart::Notified => {
                     let deadline_expired = deadline_ns.is_some_and(|deadline| {
@@ -461,12 +478,7 @@ impl WaitQueue {
         }
     }
 
-    fn wake_locked(
-        queue: &mut VecDeque<Waiter>,
-        count: usize,
-        mask: u32,
-        wakes: &mut Vec<ThreadWakeHandle>,
-    ) {
+    fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakes: &mut WakeBatch) {
         let base = wakes.len();
         let mut index = 0;
         while index < queue.len() {
@@ -480,25 +492,28 @@ impl WaitQueue {
             }
             let waiter = queue.remove(index).expect("waiter index checked");
             if waiter.mark_woken() {
-                wakes.push(waiter.task.wake_handle());
+                Self::push_wake(wakes, waiter);
             }
         }
+    }
+
+    fn push_wake(wakes: &mut WakeBatch, waiter: Waiter) {
+        assert!(
+            wakes.push(waiter.task.wake_handle()),
+            "one futex wait generation cannot enter two live wake batches"
+        );
     }
 
     /// Wakes up at most `count` tasks whose bitset intersects with the given
     /// bitmask.
     pub fn wake(&self, count: usize, mask: u32) -> usize {
-        let mut wakes = Vec::new();
+        let mut wakes = WakeBatch::new();
         {
             let mut inner = self.inner.lock();
             Self::wake_locked(&mut inner.queue, count, mask, &mut wakes);
         }
 
-        let woke = wakes.len();
-        for wake in wakes {
-            let _result = wake.wake_from_task();
-        }
-        woke
+        wake_batch(wakes)
     }
 
     fn collect_wake_op(
@@ -507,9 +522,9 @@ impl WaitQueue {
         target: Option<&Self>,
         wake2_count: usize,
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<Vec<ThreadWakeHandle>, FutexAccessError> {
+    ) -> Result<WakeBatch, FutexAccessError> {
         let mut condition = Some(condition);
-        let mut wakes = Vec::new();
+        let mut wakes = WakeBatch::new();
 
         match (source, target) {
             (Some(source), Some(target)) => {
@@ -569,7 +584,7 @@ impl WaitQueue {
         wake_mask: u32,
         requeue_count: usize,
         target_cleanup: FutexWaitCleanup,
-        wakes: &mut Vec<ThreadWakeHandle>,
+        wakes: &mut WakeBatch,
     ) -> usize {
         src.retain(|waiter| !waiter.is_cancelled());
 
@@ -582,7 +597,7 @@ impl WaitQueue {
 
             let waiter = src.remove(index).expect("waiter index checked");
             if waiter.mark_woken() {
-                wakes.push(waiter.task.wake_handle());
+                Self::push_wake(wakes, waiter);
             }
         }
 
@@ -612,7 +627,7 @@ impl WaitQueue {
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
     ) -> Result<Option<usize>, FutexAccessError> {
         let mut condition = Some(condition);
-        let mut wakes = Vec::new();
+        let mut wakes = WakeBatch::new();
 
         let count = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
             Ordering::Less => {
@@ -663,16 +678,14 @@ impl WaitQueue {
 
                     let waiter = src.queue.remove(index).expect("waiter index checked");
                     if waiter.mark_woken() {
-                        wakes.push(waiter.task.wake_handle());
+                        Self::push_wake(&mut wakes, waiter);
                     }
                 }
                 wakes.len()
             }
         };
 
-        for wake in wakes {
-            let _result = wake.wake_from_task();
-        }
+        wake_batch(wakes);
         Ok(Some(count))
     }
 
@@ -743,24 +756,6 @@ impl FutexKey {
         Self::Private { address }
     }
 
-    /// Shortcut to create a `FutexKey` for the current task's address space.
-    ///
-    /// Private futex keys do not need the VMA walk — they resolve to the
-    /// process‑local futex table regardless of the backing VMA.  Skipping
-    /// the aspace lock for `Private` avoids contention with the mmap/munmap
-    /// paths that also hold the aspace lock across long page-table operations,
-    /// which could otherwise deadlock with concurrent CLONE_THREAD futex
-    /// wait/wake pairs.
-    pub fn new_current(address: usize, mode: FutexKeyMode) -> Self {
-        if matches!(mode, FutexKeyMode::Private) {
-            return Self::Private { address };
-        }
-        let curr = current_user_task();
-        let aspace_arc = curr.as_thread().proc_data.aspace();
-        let aspace = aspace_arc.lock();
-        Self::new(&aspace, address, mode)
-    }
-
     /// Teardown variant that is anchored to the exiting process instead of
     /// whatever scheduler task is currently running on this CPU.
     pub fn new_for_process_teardown(proc_data: &ProcessData, address: usize) -> Self {
@@ -776,6 +771,118 @@ impl FutexKey {
             FutexKey::Private { address } => *address,
             FutexKey::Shared { offset, .. } => *offset,
         }
+    }
+
+    fn shares_table_with(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Private { .. }, Self::Private { .. }) => true,
+            (Self::Shared { region: left, .. }, Self::Shared { region: right, .. }) => {
+                match (left, right) {
+                    (Ok(left), Ok(right)) => Weak::ptr_eq(left, right),
+                    (Err(left), Err(right)) => Weak::ptr_eq(left, right),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Per-syscall futex ownership captured from the calling thread once.
+///
+/// A syscall may retry its nofault user access, but it cannot change process
+/// identity while the syscall is active. Shared keys are intentionally
+/// re-resolved after a fault because their VMA backing may have changed.
+pub(crate) struct FutexContext {
+    task: UserTaskRef,
+}
+
+impl FutexContext {
+    pub(crate) fn current() -> Self {
+        Self {
+            task: current_user_task(),
+        }
+    }
+
+    pub(crate) fn task(&self) -> &UserTaskRef {
+        &self.task
+    }
+
+    fn resolve_keys(
+        &self,
+        first_address: usize,
+        second_address: Option<usize>,
+        mode: FutexKeyMode,
+    ) -> (FutexKey, Option<FutexKey>) {
+        if matches!(mode, FutexKeyMode::Private) {
+            return (
+                FutexKey::Private {
+                    address: first_address,
+                },
+                second_address.map(|address| FutexKey::Private { address }),
+            );
+        }
+
+        let aspace = self.task.as_thread().proc_data.aspace();
+        let aspace = aspace.lock();
+        (
+            FutexKey::new(&aspace, first_address, mode),
+            second_address.map(|address| FutexKey::new(&aspace, address, mode)),
+        )
+    }
+
+    pub(crate) fn resolve(&self, address: usize, mode: FutexKeyMode) -> ResolvedFutex {
+        let (key, None) = self.resolve_keys(address, None, mode) else {
+            unreachable!("single futex resolution returned a second key")
+        };
+        let table = futex_table_for_process(self.task.as_thread().proc_data.as_ref(), &key);
+        ResolvedFutex { key, table }
+    }
+
+    pub(crate) fn resolve_pair(
+        &self,
+        first_address: usize,
+        second_address: usize,
+        mode: FutexKeyMode,
+    ) -> (ResolvedFutex, ResolvedFutex) {
+        let (first_key, Some(second_key)) =
+            self.resolve_keys(first_address, Some(second_address), mode)
+        else {
+            unreachable!("paired futex resolution omitted the second key")
+        };
+        let process = self.task.as_thread().proc_data.as_ref();
+        let first_table = futex_table_for_process(process, &first_key);
+        let second_table = if first_key.shares_table_with(&second_key) {
+            Arc::clone(&first_table)
+        } else {
+            futex_table_for_process(process, &second_key)
+        };
+        (
+            ResolvedFutex {
+                key: first_key,
+                table: first_table,
+            },
+            ResolvedFutex {
+                key: second_key,
+                table: second_table,
+            },
+        )
+    }
+}
+
+/// Key and ownership domain resolved together for one futex operation.
+pub(crate) struct ResolvedFutex {
+    key: FutexKey,
+    table: Arc<FutexTable>,
+}
+
+impl ResolvedFutex {
+    pub(crate) fn key(&self) -> &FutexKey {
+        &self.key
+    }
+
+    pub(crate) fn table(&self) -> &Arc<FutexTable> {
+        &self.table
     }
 }
 
@@ -853,7 +960,7 @@ impl FutexTable {
         target_key: usize,
         wake2_count: usize,
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<Vec<ThreadWakeHandle>, FutexAccessError> {
+    ) -> Result<WakeBatch, FutexAccessError> {
         let wakes = WaitQueue::collect_wake_op(
             source_table.get(&source_key).map(|entry| &entry.wq),
             wake_count,
@@ -873,7 +980,7 @@ impl FutexTable {
         target_key: usize,
         wake2_count: usize,
         condition: impl FnOnce() -> Result<bool, FutexAccessError>,
-    ) -> Result<Vec<ThreadWakeHandle>, FutexAccessError> {
+    ) -> Result<WakeBatch, FutexAccessError> {
         let wakes = WaitQueue::collect_wake_op(
             table.get(&source_key).map(|entry| &entry.wq),
             wake_count,
@@ -947,11 +1054,7 @@ impl FutexTable {
             }
         };
 
-        let woke = wakes.len();
-        for wake in wakes {
-            let _result = wake.wake_from_task();
-        }
-        Ok(woke)
+        Ok(wake_batch(wakes))
     }
 
     /// Returns cleanup metadata for a waiter queued under `key`.
@@ -1036,12 +1139,6 @@ impl FutexTables {
 }
 
 static SHARED_FUTEX_TABLES: PiMutex<FutexTables> = PiMutex::new(FutexTables::new());
-
-/// Returns the futex table for the given key.
-pub fn futex_table_for(key: &FutexKey) -> Arc<FutexTable> {
-    let curr = current_user_task();
-    futex_table_for_process(curr.as_thread().proc_data.as_ref(), key)
-}
 
 /// Returns the futex table for a key in a known process context.
 pub fn futex_table_for_process(proc_data: &ProcessData, key: &FutexKey) -> Arc<FutexTable> {

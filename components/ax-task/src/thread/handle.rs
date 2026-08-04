@@ -4,8 +4,11 @@ use alloc::sync::{Arc, Weak};
 use core::{
     marker::PhantomData,
     mem::ManuallyDrop,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
+
+mod wake_batch;
+pub use wake_batch::ThreadWakeBatch;
 
 use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
@@ -417,6 +420,8 @@ pub(crate) struct ThreadCore {
     policy_update_node: InboxNode,
     affinity_update_node: InboxNode,
     deadline_refresh_node: InboxNode,
+    wake_batch_next: AtomicPtr<ThreadCore>,
+    wake_batch_linked: AtomicBool,
     sleep_timer: TaskDeadlineNode,
     deadline_cbs_timer: TaskDeadlineNode,
     deadline_zero_lag_timer: TaskDeadlineNode,
@@ -466,6 +471,8 @@ impl ThreadCore {
             policy_update_node: InboxNode::new(InboxKind::OwnerControl),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
             deadline_refresh_node: InboxNode::new(InboxKind::OwnerControl),
+            wake_batch_next: AtomicPtr::new(core::ptr::null_mut()),
+            wake_batch_linked: AtomicBool::new(false),
             sleep_timer: TaskDeadlineNode::for_thread(id),
             deadline_cbs_timer: TaskDeadlineNode::deadline_cbs_for_thread(id),
             deadline_zero_lag_timer: TaskDeadlineNode::deadline_zero_lag_for_thread(id),
@@ -1148,6 +1155,24 @@ mod tests {
 
         assert_eq!(wake.wake(), WakeResult::Unavailable);
         assert_eq!(wake.wake(), WakeResult::Unavailable);
+    }
+
+    #[test]
+    fn wake_batch_is_intrusive_and_coalesces_duplicate_threads() {
+        let first = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
+        let second = test_core(ThreadId::from_parts(1, 1), SchedulePolicy::default());
+        let first_wake = ThreadWakeHandle::from_core(Arc::clone(&first));
+        let duplicate = first_wake.clone();
+        let second_wake = ThreadWakeHandle::from_core(Arc::clone(&second));
+        let mut batch = ThreadWakeBatch::new();
+
+        assert!(batch.push(first_wake));
+        assert!(!batch.push(duplicate));
+        assert!(batch.push(second_wake));
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.wake_all(), 2);
+        assert_eq!(first.reap_signal.external_lease_count(), 0);
+        assert_eq!(second.reap_signal.external_lease_count(), 0);
     }
 
     #[test]

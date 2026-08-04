@@ -708,12 +708,23 @@ preemption guard，使待调度状态只能通过 IRQ-return baton 被消费，�
 改善约 19.3%；这证明分配与共享引用流量确实位于热路径，但仍为 Linux RT 的约
 8.05 倍，不能据此结束性能审计。
 
-仍未消除的热路径成本包括 wake 侧 `Vec<ThreadWakeHandle>`、每个 key 动态创建的
-`FutexEntry` 以及进程级 `HashMap` 粗粒度查找。Linux v7.1 使用全局固定 futex
-hash bucket 和锁外 `wake_q`；下一阶段将 key 扩展为稳定地址空间/共享后端身份，
-用固定桶替换 `FutexTable`，再把 wake 收集改为固定容量批次。该步骤必须同时修正
-`CLONE_VM` 但非 `CLONE_THREAD` 时 private futex 应按共享 mm 匹配的语义，不能只
-为降低分配而保留错误的 per-process key 所有权。
+wake 侧的临时 `Vec<ThreadWakeHandle>` 已由 ax-task 的 `ThreadWakeBatch` 取代。
+它把 FIFO link 固定内嵌在 generation-bearing `ThreadCore` 中，batch 通过 owning
+raw-Arc 和 external reap lease 保证节点在锁外 wake 完成前不会回收；加入 batch、
+任意长度收集和锁外 drain 均不分配，重复加入同一线程会被合并。这对应 Linux v7.1
+task-embedded `wake_q_node`，Starry futex 不再需要固定容量或超容量 heap fallback。
+
+同一 futex syscall 还通过 `FutexContext` 只捕获一次当前 task/process；双地址的
+requeue/wake-op 在一次 VMA snapshot 中解析两个 key，相同 private/shared domain 复用
+同一个 table lease。x86_64 两 CPU TCG 的同核 OTHER futex 定向回归为 20,000/20,000
+成功、`not_parked=0`，p50 142,151 ns；相对改造前同配置约 141,958 ns 属噪声范围，
+说明这项改造主要收紧锁内分配和生命周期安全边界，并不是剩余延迟的主导项。
+
+尚未消除的 futex 成本包括每个 key 动态创建的 `FutexEntry` 和进程级 `HashMap`
+粗粒度查找。Linux v7.1 使用全局固定 futex hash bucket；下一阶段将 key 扩展为稳定
+地址空间/共享后端身份并用固定桶替换 `FutexTable`。该步骤必须同时修正 `CLONE_VM`
+但非 `CLONE_THREAD` 时 private futex 应按共享 mm 匹配的语义，不能只为降低查找成本
+而保留错误的 per-process key 所有权。
 
 qperf leaf 采样已能定位 CPU-local、guard、remote wake 和 schedule 小热点。完整
 FP 模式原先会覆盖内核链接 rustflags，postprocess 也无法转发 `-cpu`；两项已由

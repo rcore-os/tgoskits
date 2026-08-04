@@ -16,7 +16,7 @@ pub use ax_task::{
     IrqRegisterResult, IrqWaitCell, IrqWaitDrain, IrqWaitRegistration, IrqWaitToken, Nice,
     PreparedCurrentPark, RtPriority, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork,
     SchedulerTickWorkDisposition, SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps,
-    ThreadHandle, ThreadId, ThreadState, ThreadWakeHandle, WaitQueue, WakeResult,
+    ThreadHandle, ThreadId, ThreadState, ThreadWakeBatch, ThreadWakeHandle, WaitQueue, WakeResult,
     begin_current_park, cpu_busy_runtime_ns, current_cpu_needs_resched, current_thread_extension,
     current_thread_handle, current_thread_id, executor::LocalExecutor, exit_current_thread,
     quiesce_irq_wait, runtime::SchedSwitchRecord, schedule_current_cpu,
