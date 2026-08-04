@@ -6,8 +6,8 @@ use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, Registry,
-    ShareMode, TrapVector,
+    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
+    Registry, ShareMode, TrapVector,
 };
 use spin::Once;
 
@@ -15,6 +15,10 @@ use spin::Once;
 pub mod loongarch64_hv;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64_hv::LoongArchHvIrqIf;
+#[cfg(target_arch = "riscv64")]
+pub mod riscv64_hv;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64_hv::RiscvHvIrqIf;
 
 /// Compatibility IRQ domain used while non-domainized platforms migrate.
 pub const LEGACY_IRQ_DOMAIN: IrqDomainId = IrqDomainId(0);
@@ -343,6 +347,9 @@ pub trait IrqIf {
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError>;
 
+    /// Configures the trigger mode of the given IRQ.
+    fn set_trigger(irq: IrqId, trigger: IrqTrigger) -> Result<(), IrqError>;
+
     /// Routes a global IRQ to a fixed CPU when supported.
     fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError>;
 
@@ -401,6 +408,10 @@ mod tests {
             if FAIL_ENABLE.load(Ordering::Relaxed) != 0 {
                 return Err(IrqError::Controller);
             }
+            Ok(())
+        }
+
+        fn set_trigger(_irq: IrqId, _trigger: IrqTrigger) -> Result<(), IrqError> {
             Ok(())
         }
 

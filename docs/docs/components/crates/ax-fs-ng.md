@@ -1,6 +1,6 @@
 # `ax-fs-ng`
 
-> 路径：`os/arceos/modules/axfs-ng`
+> 路径：`fs/ax-fs-ng`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 内核模块
 > 版本：`0.5.0`
@@ -108,7 +108,7 @@ graph LR
 ax-fs-ng = { workspace = true }
 
 # 如果在仓库外独立验证，也可以显式绑定本地路径：
-# ax-fs-ng = { path = "os/arceos/modules/axfs-ng" }
+# ax-fs-ng = { path = "fs/ax-fs-ng" }
 ```
 
 ### 初始化

@@ -39,6 +39,15 @@ pub enum AxVmError {
         to: VmStatus,
         operation: &'static str,
     },
+    /// A lifecycle operation failed and its compensating cleanup also failed.
+    #[error(
+        "VM lifecycle operation {operation} failed: {primary}; rollback also failed: {rollback}"
+    )]
+    LifecycleRollback {
+        operation: &'static str,
+        primary: String,
+        rollback: String,
+    },
     /// No registered VM has the requested identifier.
     #[error("VM {vm_id} was not found")]
     VmNotFound { vm_id: VMId },
@@ -54,6 +63,9 @@ pub enum AxVmError {
         resource: &'static str,
         detail: String,
     },
+    /// A physical device is permanently owned by the host.
+    #[error("physical device {path} is a host-owned device")]
+    HostOwnedDevice { path: String },
     /// The requested operation is not implemented by this host or backend.
     #[error("unsupported VM operation {operation}: {detail}")]
     Unsupported {
@@ -111,6 +123,18 @@ impl AxVmError {
             from,
             to,
             operation,
+        }
+    }
+
+    pub(crate) fn lifecycle_rollback(
+        operation: &'static str,
+        primary: impl Display,
+        rollback: impl Display,
+    ) -> Self {
+        Self::LifecycleRollback {
+            operation,
+            primary: format!("{primary}"),
+            rollback: format!("{rollback}"),
         }
     }
 

@@ -1366,7 +1366,8 @@ impl SimpleDirOps for ThreadDir {
                         if !data.is_empty() {
                             let value = str::from_utf8(data)
                                 .ok()
-                                .and_then(|it| it.parse::<i32>().ok())
+                                .and_then(|it| it.trim_ascii_end().parse::<i32>().ok())
+                                .filter(|value| (-1000..=1000).contains(value))
                                 .ok_or(VfsError::InvalidInput)?;
                             task.as_thread().set_oom_score_adj(value);
                         }
@@ -1779,6 +1780,20 @@ fn mq_sysctl_file(
     )
 }
 
+/// Builds an integer sysctl whose owning resource limit is not implemented.
+///
+/// Do not acknowledge writes until PID allocation and VMA admission consume
+/// these settings. Returning `EOPNOTSUPP` keeps procfs from reporting a limit
+/// that the kernel does not enforce.
+fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |operation| match operation {
+            SimpleFileOperation::Read => Ok(Some(value)),
+            SimpleFileOperation::Write(_) => Err(VfsError::OperationNotSupported),
+        }),
+    )
+}
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -1898,10 +1913,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add(
-                "pid_max",
-                SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
-            );
+            kernel.add("pid_max", unsupported_limit_sysctl_file(&fs, "32768\n"));
             kernel.add(
                 "osrelease",
                 SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
@@ -1909,6 +1921,58 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+            );
+            kernel.add(
+                "hostname",
+                SimpleFile::new_regular(
+                    fs.clone(),
+                    RwFile::new(move |req| match req {
+                        SimpleFileOperation::Read => {
+                            let nodename = {
+                                let task = current();
+                                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                                let uts_namespace = nsproxy.uts_ns.lock();
+                                uts_namespace.nodename
+                            };
+                            let name_len = nodename
+                                .iter()
+                                .position(|&byte| byte == 0)
+                                .unwrap_or(nodename.len());
+                            let mut output = Vec::with_capacity(name_len + 1);
+                            output.extend(
+                                nodename[..name_len]
+                                    .iter()
+                                    .map(|byte| byte.to_ne_bytes()[0]),
+                            );
+                            output.push(b'\n');
+                            Ok(Some(output))
+                        }
+                        SimpleFileOperation::Write(data) => {
+                            if data.is_empty() {
+                                return Ok(None);
+                            }
+                            let hostname = data.strip_suffix(b"\n").unwrap_or(data);
+                            if hostname.len() > 64
+                                || hostname.iter().any(|byte| matches!(byte, 0 | b'\n'))
+                            {
+                                return Err(VfsError::InvalidInput);
+                            }
+
+                            if current().as_thread().cred().euid != 0 {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
+
+                            let mut nodename = [0; 65];
+                            for (slot, byte) in nodename.iter_mut().zip(hostname) {
+                                *slot = *byte as _;
+                            }
+                            let task = current();
+                            let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                            nsproxy.uts_ns.lock().nodename = nodename;
+                            Ok(None)
+                        }
+                    }),
+                ),
             );
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
@@ -1944,7 +2008,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             vm.add(
                 "max_map_count",
-                SimpleFile::new_regular(fs.clone(), || Ok("65530\n")),
+                unsupported_limit_sysctl_file(&fs, "65530\n"),
             );
             SimpleDir::new_maker(fs.clone(), Arc::new(vm))
         });

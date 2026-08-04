@@ -1,0 +1,17 @@
+args = [
+    "-m",
+    "2G",
+    "-smp",
+    "1",
+    "-display",
+    "none",
+    "-serial",
+    "mon:stdio",
+]
+
+timeout = 60
+# The LoongArch std/PIC test image requires the dynamic UEFI handoff.
+uefi = true
+to_bin = true
+success_regex = ["LOONGARCH_UNALIGNED_FIXUP_OK"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

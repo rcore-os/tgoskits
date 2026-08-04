@@ -16,13 +16,14 @@ use std::sync::{Arc, Mutex};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver, PollableDeviceOps,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime, PollableDeviceOps,
     register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
-    DeviceRegistry as _, InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId,
-    Port, RegistryError, Resource, SysRegAddr,
+    AccessWidth, BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess,
+    DeviceError, DeviceRegistry as _, InterruptControllerId, InterruptEndpoint,
+    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqResult, Port, RegistryError,
+    Resource, SysRegAddr, VirtualInterruptController, WiredIrqInput,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
@@ -335,20 +336,26 @@ fn device_config(
     }
 }
 
-struct RejectingIrqResolver;
+struct RejectingInterruptController;
 
-impl IrqResolver for RejectingIrqResolver {
-    fn resolve_irq(
+impl VirtualInterruptController for RejectingInterruptController {
+    fn id(&self) -> InterruptControllerId {
+        InterruptControllerId::new(0)
+    }
+
+    fn wired_input(
         &self,
-        line: usize,
+        input: ControllerInputId,
         _trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
+    ) -> IrqResult<WiredIrqInput> {
         Err(IrqError::Unsupported {
-            line: IrqLineId(line),
-            operation: "resolve test IRQ",
-            detail: "test resolver rejects every line".into(),
-        }
-        .into())
+            endpoint: InterruptEndpoint::Wired {
+                controller: self.id(),
+                input,
+            },
+            operation: "open test interrupt input",
+            detail: "test controller rejects every input".into(),
+        })
     }
 }
 
@@ -567,8 +574,8 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
 fn test_conflicting_factory_device_config_returns_structured_error() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let first = device_config(
         "factory-mmio-first",
         EmulatedDeviceType::VirtioBlk,
@@ -726,8 +733,8 @@ fn test_factory_registry_rejects_duplicate_device_type() {
 #[test]
 fn test_missing_factory_returns_unsupported() {
     let factories = DeviceFactoryRegistry::new();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let config = device_config(
         "missing-console",
         EmulatedDeviceType::VirtioConsole,
@@ -749,8 +756,8 @@ fn test_missing_factory_returns_unsupported() {
 fn test_factory_build_registers_new_device_type_without_legacy_branch() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let base = 0x1_0000;
     let devices = DeviceRuntime::build_with_factories(
         &[device_config(
@@ -777,8 +784,8 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
 fn test_factory_validation_failure_is_reported_by_static_builder() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let invalid = device_config(
         "invalid-factory-mmio",
         EmulatedDeviceType::VirtioBlk,
@@ -796,8 +803,8 @@ fn test_factory_validation_failure_is_reported_by_static_builder() {
 fn test_builtin_meta_factory_builds_dummy_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let devices = DeviceRuntime::build_with_factories(
         &[device_config("metadata", EmulatedDeviceType::Dummy, 0, 0)],
         &factories,
@@ -905,8 +912,8 @@ fn test_native_device_port_resource_overflow_rejected() {
 fn test_build_with_factories_accepts_ivc_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let devices = DeviceRuntime::build_with_factories(
         &[device_config(
             "ivc",

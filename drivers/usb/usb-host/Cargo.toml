@@ -23,7 +23,7 @@ crossbeam-skiplist = {version = "0.1", features = [
 ], default-features = false}
 dma-api = {workspace = true}
 
-anyhow = {version = "1", default-features = false}
+anyhow = { workspace = true }
 enum_dispatch = "0.3"
 futures = {workspace = true, features = ["alloc"]}
 id-arena = {version = "2", default-features = false}

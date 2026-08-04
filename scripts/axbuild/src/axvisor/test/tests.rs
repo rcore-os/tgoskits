@@ -24,6 +24,7 @@ struct TestVmKernelConfig {
 
 #[derive(serde::Deserialize)]
 struct TestVmKernel {
+    #[serde(default)]
     cmdline: String,
 }
 
@@ -191,13 +192,39 @@ fn orangepi_guest_board_cases_use_matching_vm_configs() {
 }
 
 #[test]
-fn nimbos_uefi_case_uses_uefi_host_boot() {
+fn orangepi_linux_guest_does_not_use_uart_clock_workaround() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = workspace_root.join("test-suit/axvisor/uefi/qemu-nimbos/qemu-x86_64.toml");
-    let config: QemuConfig = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let path = "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
 
-    assert!(config.uefi);
-    assert!(config.to_bin);
+    // The Rockchip assignment and AxVM shared-MMIO tests pin the protection itself. This
+    // board-level contract prevents the guest config from silently bypassing that path.
+    assert!(
+        !config.kernel.cmdline.contains("clk_ignore_unused"),
+        "{path} must protect the host-owned UART clock through shared-provider mediation"
+    );
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the guest console through the machine-owned virtual UART"
+    );
+}
+
+#[test]
+fn rk3568_linux_guest_uses_the_virtual_16550_console() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/roc-rk3568-pc/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the login console through the machine-owned virtual 16550"
+    );
+    assert!(
+        !config.kernel.cmdline.contains("console=ttyFIQ0"),
+        "{path} must not route the login console through the removed physical FIQ debugger"
+    );
 }
 
 #[test]
@@ -537,7 +564,7 @@ fn discovers_qemu_cases_from_selected_group() {
 }
 
 #[test]
-fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
     let root = tempdir().unwrap();
     write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
     write_qemu_config_in_group(
@@ -549,11 +576,11 @@ fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
         "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
          = []\n",
     );
-    write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
     write_qemu_config_in_group(
         root.path(),
-        "uefi",
-        "qemu-nimbos",
+        "custom",
+        "firmware",
         "smoke",
         "x86_64",
         "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
@@ -565,11 +592,11 @@ fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
     assert_eq!(normal_cases.len(), 1);
     assert_eq!(normal_cases[0].case.name, "baseline");
 
-    let uefi_cases =
-        discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None).unwrap();
-    assert_eq!(uefi_cases.len(), 1);
-    assert_eq!(uefi_cases[0].case.name, "smoke");
-    assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
+    let custom_cases =
+        discover_qemu_cases(root.path(), "custom", "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(custom_cases.len(), 1);
+    assert_eq!(custom_cases[0].case.name, "smoke");
+    assert_eq!(custom_cases[0].build_group, "firmware");
 }
 
 #[test]

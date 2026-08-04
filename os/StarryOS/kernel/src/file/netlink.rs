@@ -238,6 +238,7 @@ struct NetlinkState {
     addr: Option<sockaddr_nl>,
     receive_buffer_size: usize,
     passcred: bool,
+    reuse_address: bool,
 }
 
 pub struct NetlinkSocket {
@@ -306,6 +307,14 @@ impl NetlinkSocket {
 
     pub fn set_passcred(&self, enabled: bool) {
         self.state.lock().passcred = enabled;
+    }
+
+    pub fn reuse_address(&self) -> bool {
+        self.state.lock().reuse_address
+    }
+
+    pub fn set_reuse_address(&self, enabled: bool) {
+        self.state.lock().reuse_address = enabled;
     }
 
     #[allow(dead_code)]

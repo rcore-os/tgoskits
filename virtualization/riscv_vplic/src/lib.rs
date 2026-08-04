@@ -26,12 +26,8 @@ extern crate alloc;
 mod consts;
 mod devops_impl;
 mod error;
-#[cfg(target_arch = "riscv64")]
-pub mod host;
-#[cfg(target_arch = "riscv64")]
-mod utils;
 mod vplic;
 
 pub use consts::*;
 pub use error::{VplicError, VplicResult};
-pub use vplic::VPlicGlobal;
+pub use vplic::{VPlicGlobal, VplicCompletion};

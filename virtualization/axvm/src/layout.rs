@@ -296,6 +296,14 @@ impl GuestRegionPlanner {
             normalize_linear_range("passthrough", base_gpa, base_hpa, length)?;
         self.ensure_guest_range("passthrough", base_gpa, size)?;
 
+        // A passthrough address space already contains every identity mapping.
+        // Keep VM-owned holes authoritative instead of re-inserting an
+        // explicitly discovered physical-device range over an emulated or
+        // reserved resource.
+        if self.policy == AddressSpacePolicy::Passthrough && base_gpa == base_hpa {
+            return Ok(());
+        }
+
         for region in &self.owned_regions {
             if ranges_overlap(base_gpa, size, region.base, region.size) {
                 return Err(ax_err_type!(
@@ -608,6 +616,8 @@ fn owned_overlap_allowed(existing: &PlannedRegion, new: &PlannedRegion) -> bool 
         (existing.kind, new.kind),
         (VmRegionKind::Memory, VmRegionKind::BootDescription)
             | (VmRegionKind::BootDescription, VmRegionKind::Memory)
+            | (VmRegionKind::Reserved, VmRegionKind::EmulatedDevice)
+            | (VmRegionKind::EmulatedDevice, VmRegionKind::Reserved)
     ) && (existing.contains(new) || new.contains(existing))
 }
 
@@ -714,6 +724,36 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_identity_device_does_not_refill_emulated_mmio_hole() {
+        let provider = PassThroughDeviceConfig {
+            name: alloc::string::String::from("shared-clock-provider"),
+            base_gpa: 0x8000,
+            base_hpa: 0x8000,
+            length: 0x1000,
+            irq_id: 0,
+        };
+        let emulated = [Resource::MmioRange {
+            base: 0x8000,
+            size: 0x1000,
+        }];
+
+        let layout = build_address_layout(
+            AddressSpacePolicy::Passthrough,
+            GUEST_BASE,
+            GUEST_SIZE,
+            &[provider],
+            &[],
+            &[],
+            &emulated,
+        )
+        .unwrap();
+
+        assert!(layout.mappings().iter().all(|mapping| {
+            !ranges_overlap(mapping.gpa.as_usize(), mapping.size, 0x8000, 0x1000)
+        }));
+    }
+
+    #[test]
     fn passthrough_policy_punches_reserved_regions() {
         let owned = [GuestOwnedRegion::new(
             0x3000,
@@ -745,6 +785,38 @@ mod tests {
         let owned_regions = layout.owned_regions().collect::<Vec<_>>();
         assert_eq!(owned_regions.len(), 1);
         assert_eq!(owned_regions[0].kind, VmRegionKind::Reserved);
+    }
+
+    #[test]
+    fn reserved_host_device_range_can_contain_an_emulated_device() {
+        let owned = [GuestOwnedRegion::new(
+            0x8000,
+            0x1000,
+            VmRegionKind::Reserved,
+        )];
+        let emulated = [Resource::MmioRange {
+            base: 0x8080,
+            size: 0x100,
+        }];
+
+        let layout = build_address_layout(
+            AddressSpacePolicy::Passthrough,
+            GUEST_BASE,
+            GUEST_SIZE,
+            &[],
+            &[],
+            &owned,
+            &emulated,
+        )
+        .unwrap();
+
+        assert!(layout.mappings().iter().all(|mapping| {
+            !ranges_overlap(mapping.gpa.as_usize(), mapping.size, 0x8000, 0x1000)
+        }));
+        let owned_regions = layout.owned_regions().collect::<Vec<_>>();
+        assert_eq!(owned_regions.len(), 2);
+        assert_eq!(owned_regions[0].kind, VmRegionKind::Reserved);
+        assert_eq!(owned_regions[1].kind, VmRegionKind::EmulatedDevice);
     }
 
     #[test]

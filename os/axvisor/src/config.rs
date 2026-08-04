@@ -23,8 +23,6 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-use axvm::InterruptTriggerMode;
 use axvm::{
     AxVM, GuestPhysAddr,
     boot::{
@@ -38,7 +36,7 @@ use axvm::{
 };
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
-use axvmconfig::{AxVMCrateConfig, VMType};
+use axvmconfig::{GuestConfig, GuestType, PassThroughDeviceConfig};
 
 #[cfg(all(
     feature = "fs",
@@ -66,7 +64,7 @@ pub mod vmcfg {
         crate::manager::AxvmManager::filesystem_vm_configs(config_dir)
             .into_iter()
             .filter_map(
-                |content| match axvmconfig::AxVMCrateConfig::from_toml(&content) {
+                |content| match axvmconfig::GuestConfig::from_toml(&content) {
                     Ok(_) => Some(content),
                     Err(e) => {
                         warn!("Filesystem VM config is invalid: {:?}", e);
@@ -116,7 +114,7 @@ pub fn init_guest_vms() {
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     let image_provider = AxvisorBootImageProvider;
     let vm_create_config =
-        AxVMCrateConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+        GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
     let configured_vm_id = vm_create_config.base.id;
 
     #[cfg(all(
@@ -184,18 +182,32 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     ))]
     if release_host_filesystem {
         #[cfg(target_arch = "x86_64")]
-        register_x86_host_fs_passthrough_irq_route(&vm)?;
+        axvm::host::x86::register_qemu_block_passthrough_irq(&vm)
+            .context("register x86 QEMU block passthrough IRQ route")?;
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
 
     Ok(vm_id)
 }
 
-pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
+pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
+    let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
+    let serial_profile = machine.serial;
+    let mut passthrough_devices = cfg.devices.unresolved_passthrough_devices();
+    if cfg.base.guest_type == GuestType::Passthrough
+        && let Some(path) = machine.default_passthrough_device_path
+    {
+        passthrough_devices.insert(
+            0,
+            PassThroughDeviceConfig {
+                name: path.into(),
+                ..Default::default()
+            },
+        );
+    }
     AxVMConfig::new(AxVMConfigParams {
         id: cfg.base.id,
         name: cfg.base.name.clone(),
-        vm_type: VMType::from(cfg.base.vm_type),
         phys_cpu_ls: PhysCpuList::new(
             cfg.base.cpu_num,
             cfg.base.phys_cpu_ids.clone(),
@@ -215,21 +227,22 @@ pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {
                 size: None,
             }),
         },
-        emu_devices: cfg.devices.emu_devices.clone(),
-        pass_through_irqs: cfg.devices.passthrough_irqs.clone(),
-        pass_through_devices: cfg.devices.passthrough_devices.clone(),
-        excluded_devices: cfg.devices.excluded_devices.clone(),
-        pass_through_addresses: cfg.devices.passthrough_addresses.clone(),
+        emu_devices: machine.emulated_devices,
+        pass_through_devices: passthrough_devices,
+        excluded_devices: cfg.devices.disabled_device_paths(),
+        pass_through_addresses: Vec::new(),
         reserved_address_ranges: Vec::new(),
-        pass_through_ports: cfg.devices.passthrough_ports.clone(),
-        address_space_policy: cfg.devices.address_space_policy,
+        pass_through_ports: Vec::new(),
+        address_space_policy: cfg.base.guest_type.address_space_policy(),
         memory_regions: cfg.kernel.memory_regions.clone(),
         boot_policy: GuestBootPolicy::KeepConfigured,
-        interrupt_mode: cfg.devices.interrupt_mode,
+        interrupt_mode: cfg.base.guest_type.interrupt_mode(),
+        serial_profile: Some(serial_profile),
+        serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
     })
 }
 
-fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrateConfig) {
+fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &GuestConfig) {
     vm_config.set_memory_regions(cfg.kernel.memory_regions.clone());
 }
 
@@ -241,11 +254,10 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrat
         target_arch = "loongarch64"
     )
 ))]
-fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
+fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
     config.kernel.image_location.as_deref() == Some("fs")
-        && (!config.devices.passthrough_devices.is_empty()
-            || !config.devices.passthrough_addresses.is_empty()
-            || !config.devices.passthrough_ports.is_empty())
+        && (config.base.guest_type == GuestType::Passthrough
+            || !config.devices.passthrough.is_empty())
 }
 
 #[cfg(all(
@@ -258,129 +270,6 @@ fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
 ))]
 pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn register_x86_host_fs_passthrough_irq_route(vm: &axvm::AxVMRef) -> Result<()> {
-    let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
-    let info = x86_host_fs_passthrough_pci_info();
-
-    let route = match ax_driver::pci::resolve_intx_binding(info) {
-        Ok(Some(binding)) => {
-            let trigger = x86_intx_forwarding_trigger(&binding);
-            resolve_binding_irq(binding).map(|host_irq| (host_irq, trigger))
-        }
-        Ok(None) => {
-            warn!("x86 host filesystem passthrough PCI INTx route was not found for {info:?}");
-            return Ok(());
-        }
-        Err(err) => {
-            warn!("failed to resolve x86 host filesystem passthrough PCI INTx route: {err:?}");
-            return Ok(());
-        }
-    };
-
-    match route {
-        Ok((host_irq, trigger)) => {
-            axvm::register_x86_ioapic_irq_forwarding_route_with_trigger(
-                vm, guest_gsi, host_irq, trigger,
-            )
-            .context("register x86 host filesystem PCI INTx forwarding route")?;
-            axvm::register_x86_ioapic_irq_forwarding_activator(
-                vm,
-                guest_gsi,
-                unmask_x86_host_fs_passthrough_intx,
-            )
-            .context("register x86 host filesystem PCI INTx forwarding activator")?;
-            info!(
-                "Registered x86 host filesystem PCI INTx forwarding route: guest GSI \
-                 {guest_gsi} <- host IRQ {host_irq:?}, trigger {trigger:?}"
-            );
-        }
-        Err(err) => {
-            warn!(
-                "failed to resolve x86 host filesystem passthrough IRQ source into host IRQ: \
-                 {err:?}"
-            );
-        }
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-pub(crate) fn prepare_x86_host_fs_passthrough_devices() {
-    let info = x86_host_fs_passthrough_pci_info();
-    match ax_driver::pci::prepare_intx_passthrough(info) {
-        Ok(()) => {
-            info!("Prepared x86 host filesystem PCI INTx passthrough device {info:?}");
-        }
-        Err(err) => {
-            warn!("failed to prepare x86 host filesystem PCI INTx passthrough device: {err:?}");
-        }
-    }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn unmask_x86_host_fs_passthrough_intx() {
-    let info = x86_host_fs_passthrough_pci_info();
-    match ax_driver::pci::unmask_intx_passthrough(info) {
-        Ok(()) => {
-            info!("Unmasked x86 host filesystem PCI INTx passthrough device {info:?}");
-        }
-        Err(err) => {
-            warn!("failed to unmask x86 host filesystem PCI INTx passthrough device: {err:?}");
-        }
-    }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn x86_host_fs_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
-    use ax_driver::probe::pci::{PciAddress, PciInfo, PciIntxRoute};
-
-    let (device, function, pin, _) = axvm::boot::x86_qemu_passthrough_block_intx();
-    PciInfo {
-        address: PciAddress::new(0, 0, device, function),
-        interrupt_pin: pin,
-        interrupt_line: 0,
-        intx_route: Some(PciIntxRoute {
-            root_device: device,
-            root_function: function,
-            root_pin: pin,
-        }),
-    }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn resolve_binding_irq(
-    binding: ax_driver::BindingIrq,
-) -> Result<ax_hal::irq::IrqId, ax_hal::irq::IrqError> {
-    use ax_hal::irq;
-
-    match binding {
-        ax_driver::BindingIrq::Id(irq) => Ok(irq),
-        ax_driver::BindingIrq::Source(source) => match source {
-            ax_driver::BindingIrqSource::AcpiGsi(gsi) => {
-                irq::resolve_irq_source(irq::IrqSource::AcpiGsi(gsi))
-            }
-            ax_driver::BindingIrqSource::AcpiGsiRoute(route) => {
-                irq::resolve_irq_source(irq::IrqSource::AcpiGsiRoute(route))
-            }
-            ax_driver::BindingIrqSource::FdtInterrupt(_) => Err(irq::IrqError::Unsupported),
-        },
-    }
-}
-
-#[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn x86_intx_forwarding_trigger(binding: &ax_driver::BindingIrq) -> InterruptTriggerMode {
-    match binding {
-        ax_driver::BindingIrq::Source(ax_driver::BindingIrqSource::AcpiGsiRoute(route)) => {
-            match route.trigger {
-                ax_hal::irq::AcpiIrqTrigger::Edge => InterruptTriggerMode::EdgeTriggered,
-                ax_hal::irq::AcpiIrqTrigger::Level => InterruptTriggerMode::LevelTriggered,
-            }
-        }
-        _ => InterruptTriggerMode::LevelTriggered,
-    }
 }
 
 struct AxvisorBootImageProvider;
@@ -442,7 +331,7 @@ mod tests {
 
     #[test]
     fn sync_axvm_config_keeps_fdt_reserved_memory_regions() {
-        let mut crate_config = AxVMCrateConfig::default();
+        let mut crate_config = GuestConfig::default();
         crate_config.kernel.memory_regions.push(memory_region(
             0x8000_0000,
             0x200000,

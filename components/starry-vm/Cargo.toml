@@ -22,7 +22,7 @@ bytemuck = { version = "1.24", features = [
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
-extern-trait = "0.4"
+extern-trait = { workspace = true }
 
 [dev-dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }

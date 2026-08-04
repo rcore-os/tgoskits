@@ -519,7 +519,7 @@ impl<A: VmArchPerCpuOps> Drop for AxPerCpu<A> {
     }
 }
 
-fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
+pub(crate) fn map_vcpu_backend_error(operation: &'static str, error: VmBackendError) -> AxVmError {
     match error {
         VmBackendError::InvalidInput => AxVmError::invalid_input(operation, error),
         VmBackendError::InvalidData => AxVmError::vcpu(operation, error),

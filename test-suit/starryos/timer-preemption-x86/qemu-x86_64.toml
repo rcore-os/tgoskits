@@ -1,0 +1,31 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "Haswell,+avx",
+  "-m",
+  "512M",
+  "-device",
+  "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+]
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+/usr/bin/timer-preemption-x86
+status=$?
+if [ "$status" -eq 0 ]; then
+    echo STARRY_TIMER_PREEMPTION_X86_PASSED
+else
+    echo "STARRY_TIMER_PREEMPTION_X86_FAILED: status=$status"
+    exit "$status"
+fi
+'''
+success_regex = ["(?m)^STARRY_TIMER_PREEMPTION_X86_PASSED\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^lockdep fatal violation\\s*$",
+  "(?m)^STARRY_TIMER_PREEMPTION_X86_FAILED:",
+]
+timeout = 180

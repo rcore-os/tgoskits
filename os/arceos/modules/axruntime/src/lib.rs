@@ -515,7 +515,9 @@ fn program_next_timer() {
         with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, deadline));
     }
     #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = ax_task::next_timer_deadline_nanos() {
+    let task_deadline = ax_task::next_timer_deadline_nanos();
+    #[cfg(feature = "multitask")]
+    if let Some(task_deadline) = task_deadline {
         deadline = core::cmp::min(deadline, task_deadline);
     }
 

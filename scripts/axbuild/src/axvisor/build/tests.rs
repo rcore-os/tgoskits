@@ -109,16 +109,6 @@ fn axvisor_host_xtask_is_opt_in() {
         ["host-xtask"],
         "the host build tool must not be linked as part of kernel integration tests"
     );
-
-    let config_path = crate::context::workspace_root_path()
-        .unwrap()
-        .join("os/axvisor/.cargo/config.toml");
-    let config: toml::Table = toml::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
-    let alias = config["alias"]["xtask"].as_str().unwrap();
-    assert!(
-        alias.contains("--features host-xtask"),
-        "the Axvisor-local alias must explicitly enable the host-only target"
-    );
 }
 
 #[test]

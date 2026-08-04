@@ -43,11 +43,11 @@ sidebar_label: "锁使用问题跟踪"
 
 | 区域 | 当前状态 | 风险 | 后续方向 |
 | --- | --- | --- | --- |
-| `os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` | FAT 主文件系统状态使用 `SpinNoIrq`。 | `read_at`、`write_at`、`append`、`set_len`、`sync` 和目录操作会在持锁期间进入 `fat`，再到块设备 `read_block` / `write_block` / `flush`。这是粗文件系统锁包住 I/O 的典型问题。 | 继续保持为已知技术债。后续应拆分 FAT 内部状态锁，避免持自旋锁进入块 I/O 和外部 sink callback；或者在 sleepable 任务上下文中使用 sleepable 锁。 |
-| `os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs` | rsext4 主状态使用 `SpinNoIrq`。 | `sync_to_disk`、读写、truncate、create、unlink、rename 等路径可能持锁执行 cache、journal、allocation 和 block-device 操作。 | 不应再机械换成其他自旋锁。需要设计 ext4 粗锁拆分、I/O 外移或早期 rootfs 工作上下文调整。 |
-| `os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` | lwext4 文件系统对象使用 `SpinNoIrq`。 | 多个 VFS 操作持锁进入 `lwext4_rust`，`flush()` 也直接在锁内调用后端 flush。 | 与 rsext4 一起复查 ext4 系列锁策略，避免长期在原子上下文包住文件系统实现。 |
-| `components/axfs-ng-vfs/src/node/dir.rs` | dentry cache 使用 `SpinNoIrq`，当前已缩小锁范围。 | 旧问题是 cache guard 下调用 filesystem `lookup`、`create`、`unlink`、`open_file` 等后端操作。当前已调整为 VFS cache 锁内只访问 cache map，后端操作在锁外执行。 | 保持当前边界。新增 dentry cache 路径时禁止在 cache guard 内调用后端 FS、socket、设备或用户态相关回调。 |
-| `components/axfs-ng-vfs/src/mount.rs` | mountpoint location / children / propagation / peer 关系使用 `SpinNoIrq`，已缩小 bind mount 目标 dentry 锁范围。 | 旧问题是 `bind_mount()` 在目标 mountpoint guard 下构造 bind mount、复制递归子 mount 并更新传播组。当前目标 dentry guard 只检查和安装 mountpoint slot；递归复制、传播组维护在该 guard 外执行。 | 保持 mountpoint slot 锁只保护 slot 本身。后续新增 mount tree 逻辑时，不要在 dentry mountpoint guard 内做递归复制、传播组更新、后端 FS 调用或可能扩大的跨 mount 操作。 |
+| `fs/ax-fs-ng/src/fs/fat/fs.rs` | FAT 主文件系统状态使用 `SpinNoIrq`。 | `read_at`、`write_at`、`append`、`set_len`、`sync` 和目录操作会在持锁期间进入 `fat`，再到块设备 `read_block` / `write_block` / `flush`。这是粗文件系统锁包住 I/O 的典型问题。 | 继续保持为已知技术债。后续应拆分 FAT 内部状态锁，避免持自旋锁进入块 I/O 和外部 sink callback；或者在 sleepable 任务上下文中使用 sleepable 锁。 |
+| `fs/ax-fs-ng/src/fs/ext4/rsext4/fs.rs` | rsext4 主状态使用 `SpinNoIrq`。 | `sync_to_disk`、读写、truncate、create、unlink、rename 等路径可能持锁执行 cache、journal、allocation 和 block-device 操作。 | 不应再机械换成其他自旋锁。需要设计 ext4 粗锁拆分、I/O 外移或早期 rootfs 工作上下文调整。 |
+| `fs/ax-fs-ng/src/fs/ext4/lwext4/fs.rs` | lwext4 文件系统对象使用 `SpinNoIrq`。 | 多个 VFS 操作持锁进入 `lwext4_rust`，`flush()` 也直接在锁内调用后端 flush。 | 与 rsext4 一起复查 ext4 系列锁策略，避免长期在原子上下文包住文件系统实现。 |
+| `fs/axfs-ng-vfs/src/node/dir.rs` | dentry cache 使用 `SpinNoIrq`，当前已缩小锁范围。 | 旧问题是 cache guard 下调用 filesystem `lookup`、`create`、`unlink`、`open_file` 等后端操作。当前已调整为 VFS cache 锁内只访问 cache map，后端操作在锁外执行。 | 保持当前边界。新增 dentry cache 路径时禁止在 cache guard 内调用后端 FS、socket、设备或用户态相关回调。 |
+| `fs/axfs-ng-vfs/src/mount.rs` | mountpoint location / children / propagation / peer 关系使用 `SpinNoIrq`，已缩小 bind mount 目标 dentry 锁范围。 | 旧问题是 `bind_mount()` 在目标 mountpoint guard 下构造 bind mount、复制递归子 mount 并更新传播组。当前目标 dentry guard 只检查和安装 mountpoint slot；递归复制、传播组维护在该 guard 外执行。 | 保持 mountpoint slot 锁只保护 slot 本身。后续新增 mount tree 逻辑时，不要在 dentry mountpoint guard 内做递归复制、传播组更新、后端 FS 调用或可能扩大的跨 mount 操作。 |
 | `os/StarryOS/kernel/src/pseudofs/tmp.rs` | tmpfs root、目录 entries、metadata 使用 `SpinNoIrq`，length / symlink 使用 `ax_sync::Mutex`；`read_dir()` 已把 sink callback 移到 entries 锁外。 | tmpfs directory map 仍保留在自旋锁下，以兼容 inode release 和早期启动约束；当前 `read_dir()` 锁内只快照目录项，不再持 entries guard 调用外部 sink 或读取 inode metadata。 | 继续保持 entries 锁内不做回调、不访问用户内存、不进入 VFS 后端。后续再评估 create/link/rename 的 HashMap 分配和跨目录锁顺序，暂不机械改成 sleepable mutex。 |
 | `os/StarryOS/kernel/src/file/epoll.rs` | `mode`、`interests`、`ready_queue` 使用 `SpinNoIrq`，ready queue fast path 已调整。 | 旧问题是 `ready_queue` 可从 waker 路径入队，`VecDeque::push_back` 可能扩容。当前 `EPOLL_CTL_ADD` 预留 ready queue 容量，消费队列时保留全局 queue capacity，waker 入队只使用已有容量；容量意外不足时设置 overflow 标志，后续在 `epoll_wait` 任务上下文扫描恢复 ready 项。 | 保持 waker fast path 不做堆扩容。`PollSet::wake()` 本身若进入 IRQ 路径仍属于更大范围的 poll/waker bridge 设计问题，后续单独审计。 |
 | `os/StarryOS/kernel/src/pseudofs/dev/loop_block.rs` | loop block cache blocks 使用 `SpinNoIrq`。 | 当前临界区主要是 bounded memory copy，风险可控；但它处在 ext4 block-device 回调路径上，不能在锁内做 VFS writeback 或分配。 | 继续保持锁内只做内存拷贝。若以后增加 writeback、动态扩容或 VFS 调用，必须重新设计。 |
@@ -55,7 +55,7 @@ sidebar_label: "锁使用问题跟踪"
 | `os/StarryOS/kernel/src/pseudofs/dev/tty/pty.rs` | PTY producer 使用 `SpinNoIrq`。 | 当前只在锁内 `push_slice` 到 4 KiB ring buffer，wake 在锁外。风险较低。 | 保持短临界区。若未来 writer 可从 IRQ 直接进入或 buffer 需要扩容，应重新评估。 |
 | `net/ax-net/src/unix/mod.rs` | 已调整为从 VFS `user_data` 中 clone `Arc<BindSlot>` 后释放 guard，再调用 transport。 | 旧问题是持 VFS `SpinNoIrq` guard 调用 socket transport，内部再拿 sleepable socket mutex。 | 保持现有边界。新增 path socket 操作时禁止把 transport callback 放在 VFS user_data guard 内执行。 |
 | `os/StarryOS/kernel/src/file/netlink.rs` 和 `os/StarryOS/kernel/src/file/packet.rs` | 已调整为锁内取出消息或包，锁外 copy 到用户缓冲区。 | 旧问题是持 `SpinNoIrq` 时写用户内存，page fault 路径要求 IRQ enabled。 | 保持“队列状态锁内移动数据，用户内存访问锁外执行”的规则。 |
-| `os/arceos/modules/axfs-ng/src/highlevel/file.rs` | 仍有 `spin::RwLock`，包括 `GLOBAL_CACHED_FILES` 和 `append_lock`。 | `spin::RwLock` 仍不属于 lockdep-aware `ax-kspin` / `ax-sync` 路径。`append_lock` 是历史记录中明确延期的 RwLock 设计问题。 | 近期不引入新 RwLock。先确认是否必须读写分离；不必须的点评估 mutex 化，必须的点保留并记录风险。 |
+| `fs/ax-fs-ng/src/highlevel/file.rs` | 仍有 `spin::RwLock`，包括 `GLOBAL_CACHED_FILES` 和 `append_lock`。 | `spin::RwLock` 仍不属于 lockdep-aware `ax-kspin` / `ax-sync` 路径。`append_lock` 是历史记录中明确延期的 RwLock 设计问题。 | 近期不引入新 RwLock。先确认是否必须读写分离；不必须的点评估 mutex 化，必须的点保留并记录风险。 |
 | `os/StarryOS/kernel/src/file/mod.rs`、`task/mod.rs`、`task/ops.rs` 等 | 仍有若干 `spin::RwLock`；`file/signalfd.rs` 的 signal mask 已改成 `SpinNoIrq<SignalSet>`。 | 剩余 RwLock 还不在 lockdep 统一可见范围内，且可能参与 FD table、task 状态等运行时路径。signalfd mask 只是单个可拷贝 bitset，当前不需要外部 `spin::RwLock`。 | 按运行时重要性分批审计：能 mutex 化的先 mutex 化；不能 mutex 化的先冻结新增使用，不把 RwLock 作为近期替换目标。后续若实现项目自有、lockdep-aware 的 RwLock，再评估 signalfd mask 是否值得恢复读写分离。 |
 | drivers / portable crates 中的 `spin::Mutex` | 业务代码中的直接 `spin::Mutex` 已清理，vendored `spin` 也不再暴露 Mutex API。 | 后续若 portable crate 新增锁，仍不能绕回外部 `spin::Mutex`，否则内核运行路径会重新形成 lockdep 盲区。 | 继续依赖 `spin-lint` 和编译期 API 缺失防回退。新增 driver 锁时按 crate 边界选择项目内锁或明确的同步抽象。 |
 
@@ -66,10 +66,10 @@ sidebar_label: "锁使用问题跟踪"
 | 优先级 | 工作项 | 范围 | 完成标准 |
 | --- | --- | --- | --- |
 | P0 | 建立锁使用分类清单 | `SpinNoIrq`、`SpinNoPreempt`、剩余 `spin::RwLock`、关键 atomic | 每个候选点标出保护对象、是否 IRQ/waker 路径、是否可能 sleep / fault / 分配 / I/O / 回调。 |
-| P1 | 缩小 VFS dentry / mount 锁范围 | `components/axfs-ng-vfs/src/node/dir.rs`、`components/axfs-ng-vfs/src/mount.rs` | VFS 自旋锁内只做 cache / mount 元数据操作；FS 后端调用在锁外执行。 |
+| P1 | 缩小 VFS dentry / mount 锁范围 | `fs/axfs-ng-vfs/src/node/dir.rs`、`fs/axfs-ng-vfs/src/mount.rs` | VFS 自旋锁内只做 cache / mount 元数据操作；FS 后端调用在锁外执行。 |
 | P1 | 清理自旋锁内的高风险操作 | 用户内存访问、后端 callback、block I/O、可能分配的 waker 入队 | `might_sleep()` 覆盖路径下不再出现持 spin guard 的 user copy / callback / I/O。 |
 | P1 | 修正 epoll ready queue fast path | `os/StarryOS/kernel/src/file/epoll.rs` | waker 路径不做堆扩容；通过预分配、限长队列或延迟到任务上下文解决。 |
-| P2 | 重新设计 FAT/ext4/lwext4 粗文件系统锁 | `os/arceos/modules/axfs-ng/src/fs/` | 文件系统锁不再长期包住 block I/O / flush / journal / 外部 sink callback，或明确只在 sleepable 上下文使用 sleepable mutex。 |
+| P2 | 重新设计 FAT/ext4/lwext4 粗文件系统锁 | `fs/ax-fs-ng/src/fs/` | 文件系统锁不再长期包住 block I/O / flush / journal / 外部 sink callback，或明确只在 sleepable 上下文使用 sleepable mutex。 |
 | P2 | 明确早期启动 sleepability 边界 | rootfs mount、pseudofs init、tmpfs root_dir | 区分早期启动误伤和运行期 atomic sleep bug；减少因为启动阶段限制而长期保留自旋锁的场景。 |
 | P2 | 复查 tmpfs 保守自旋锁 | `os/StarryOS/kernel/src/pseudofs/tmp.rs` | VFS 后端调用移出 spin guard 后，评估 tmpfs entries / metadata 是否能改成 mutex 或进一步缩短自旋锁范围。 |
 | P3 | 处理已有 `spin::RwLock` 盲区 | `axfs-ng` highlevel file、Starry FD/task/signal 等 | 不新增 RwLock 方案；逐点判断能否 mutex 化，不能的记录为 deferred 并冻结新增使用。 |
@@ -127,10 +127,10 @@ rg -n "ax_kernel_guard::NoPreempt|NoPreempt::new\(|NoPreemptGuard::new\(" \
 
 可能在自旋锁内执行用户内存访问或回调的路径，不能只靠 `rg` 判定。建议从以下入口做人工复查：
 
-- `components/axfs-ng-vfs/src/node/dir.rs`
-- `components/axfs-ng-vfs/src/mount.rs`
-- `os/arceos/modules/axfs-ng/src/fs/`
-- `os/arceos/modules/axfs-ng/src/highlevel/file.rs`
+- `fs/axfs-ng-vfs/src/node/dir.rs`
+- `fs/axfs-ng-vfs/src/mount.rs`
+- `fs/ax-fs-ng/src/fs/`
+- `fs/ax-fs-ng/src/highlevel/file.rs`
 - `os/StarryOS/kernel/src/file/epoll.rs`
 - `os/StarryOS/kernel/src/file/netlink.rs`
 - `os/StarryOS/kernel/src/file/packet.rs`

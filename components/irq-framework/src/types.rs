@@ -47,6 +47,15 @@ pub enum IrqSource {
     },
 }
 
+/// Controller interrupt trigger configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqTrigger {
+    /// Edge-triggered interrupt.
+    Edge,
+    /// Level-triggered interrupt.
+    Level,
+}
+
 /// ACPI IRQ trigger configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AcpiIrqTrigger {

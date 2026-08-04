@@ -12,6 +12,16 @@ use crate::irq_routing::{
 
 pub struct Plat;
 
+pub(crate) fn take_plic_claim(
+    active: &mut plic::ActiveIrq,
+) -> Option<(usize, core::num::NonZeroU32)> {
+    active.take_plic_claim().map(plic::PlicClaim::into_parts)
+}
+
+pub(crate) fn complete_deferred_plic_claim(context: usize, source: core::num::NonZeroU32) -> bool {
+    plic::complete_deferred_claim(context, source)
+}
+
 fn plic_irq_id_from_claimed_source(source: usize) -> Result<IrqId, IrqError> {
     let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvPlic)
         .ok_or(IrqError::Unsupported)?;
