@@ -313,11 +313,6 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 }
 
                 if !unblock_next_signal() {
-                    // POSIX timers are also driven by the alarm task, but polling
-                    // here closes the window where an expired timer is only noticed
-                    // after the current syscall returns to userspace.
-                    poll_process_timer(thr.proc_data.proc.pid());
-
                     let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
                     let restart = if is_syscall
                         && (uctx.retval() as isize) == eintr_code
@@ -334,13 +329,31 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     // whether to restart. Subsequent signals in the same
                     // loop must not re-apply the decision.
                     let mut pending_restart = restart.as_ref();
-                    while check_signals(thr, &mut uctx, None, pending_restart) {
-                        pending_restart = None;
+                    let mut poll_timer = true;
+                    loop {
+                        // Only acknowledge publications visible before this
+                        // return-to-userspace safe-point scan. A signal that
+                        // races after the snapshot remains pending and forces
+                        // another pass before an interruptible syscall parks.
+                        let interrupt_snapshot = curr.interrupt_snapshot();
+                        if poll_timer {
+                            // POSIX timers are also driven by the alarm task, but polling
+                            // here closes the window where an expired timer is only noticed
+                            // after the current syscall returns to userspace.
+                            poll_process_timer(thr.proc_data.proc.pid());
+                            poll_timer = false;
+                        }
+                        while check_signals(thr, &mut uctx, None, pending_restart) {
+                            pending_restart = None;
+                        }
+                        curr.acknowledge_interrupt(interrupt_snapshot);
+                        if !curr.interrupted() {
+                            break;
+                        }
                     }
                 }
 
                 set_timer_state(&curr, TimerState::User);
-                curr.clear_interrupt();
             }
         },
         name.into(),
