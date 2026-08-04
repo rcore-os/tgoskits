@@ -114,11 +114,10 @@ class StarryGuestContractTests(unittest.TestCase):
         )
         self.assertIn('while [ "$raw_identity_copy" -lt 3 ]; do', autorun)
         self.assertIn('raw_identity_copy=$((raw_identity_copy + 1))', autorun)
-        self.assertIn(
-            '"$BB" sleep 1\n    raw_identity_copy=0',
-            autorun,
-        )
-        self.assertIn('"$BB" sleep 0.25', autorun)
+        self.assertIn("raw_identity_quiet_seconds=2", autorun)
+        self.assertIn("raw_identity_interval_seconds=1", autorun)
+        self.assertIn('"$BB" sleep "$raw_identity_quiet_seconds"', autorun)
+        self.assertIn('"$BB" sleep "$raw_identity_interval_seconds"', autorun)
         self.assertIn("raw_manifest=$raw_path.sha256", autorun)
         self.assertIn(
             "printf '%s  %s\\n' \"$validated_raw_sha256\" \"$raw_path\" >\"$raw_manifest\"",
