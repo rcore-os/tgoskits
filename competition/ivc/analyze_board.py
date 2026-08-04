@@ -1706,8 +1706,11 @@ def find_hash_fragment_record(lines: list[str], prefix: str) -> dict[str, str]:
     ):
         raise AnalysisError(f"invalid SHA-256 fragment in {prefix.strip()} record")
     fragment_counts = Counter(fragments)
+    largest_count = max(fragment_counts.values())
     quorum_fragments = [
-        fragment for fragment, count in fragment_counts.items() if count >= 2
+        fragment
+        for fragment, count in fragment_counts.items()
+        if count == largest_count and count >= 2
     ]
     if quorum_fragments:
         longest_fragment = max(quorum_fragments, key=len)

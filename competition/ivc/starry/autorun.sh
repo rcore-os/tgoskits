@@ -184,11 +184,11 @@ if [ "$result" -eq 0 ]; then
     raw_sha256=$validated_raw_sha256
     # Let the peer VM shutdown messages drain before publishing redundant
     # identities on the shared UART.
-    raw_identity_quiet_seconds=2
+    raw_identity_quiet_seconds=4
     raw_identity_interval_seconds=1
     "$BB" sleep "$raw_identity_quiet_seconds"
     raw_identity_copy=0
-    while [ "$raw_identity_copy" -lt 3 ]; do
+    while [ "$raw_identity_copy" -lt 5 ]; do
         echo "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256"
         raw_identity_copy=$((raw_identity_copy + 1))
         "$BB" sleep "$raw_identity_interval_seconds"

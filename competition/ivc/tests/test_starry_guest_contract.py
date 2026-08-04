@@ -112,9 +112,9 @@ class StarryGuestContractTests(unittest.TestCase):
             "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256",
             autorun,
         )
-        self.assertIn('while [ "$raw_identity_copy" -lt 3 ]; do', autorun)
+        self.assertIn('while [ "$raw_identity_copy" -lt 5 ]; do', autorun)
         self.assertIn('raw_identity_copy=$((raw_identity_copy + 1))', autorun)
-        self.assertIn("raw_identity_quiet_seconds=2", autorun)
+        self.assertIn("raw_identity_quiet_seconds=4", autorun)
         self.assertIn("raw_identity_interval_seconds=1", autorun)
         self.assertIn('"$BB" sleep "$raw_identity_quiet_seconds"', autorun)
         self.assertIn('"$BB" sleep "$raw_identity_interval_seconds"', autorun)
