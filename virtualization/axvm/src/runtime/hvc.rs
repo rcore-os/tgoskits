@@ -672,13 +672,10 @@ impl HyperCall {
                     .get_devices()
                     .map_err(|error| self.operation_error("get IVC notify target devices", error))?
                     .ivc_notify_irq();
-                if let Some(irq) = notify_irq
-                    && let Err(err) = target_vm.pulse_interrupt(irq)
-                {
-                    warn!(
-                        "IVC notify could not pulse VM[{}] irq {}: {err:?}",
-                        route.target_vm_id, irq
-                    );
+                if let Some(irq) = notify_irq {
+                    target_vm.pulse_interrupt(irq).map_err(|error| {
+                        self.operation_error("inject IVC notify interrupt", error)
+                    })?;
                 }
                 info!(
                     "IVC notify source VM[{}] target VM[{}] publisher VM[{}] key {:#x} irq={:?}",

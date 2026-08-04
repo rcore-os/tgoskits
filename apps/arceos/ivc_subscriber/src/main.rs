@@ -36,6 +36,7 @@ mod subscriber {
     };
 
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
+    const MAX_PROTOCOL_HEADER_ATTEMPTS: usize = 80;
     const PASS_SEQUENCE: u64 = 5;
     const SUBSCRIBE_DATA_COUNT: u64 = 3;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -81,8 +82,10 @@ mod subscriber {
             );
             return;
         }
-        if !region.protocol_header_matches() {
-            println!("ivc subscribe failed: unsupported phase-2 protocol header");
+        if !wait_for_protocol_header(region, &waiter) {
+            println!(
+                "ivc subscribe failed: protocol header was not initialized before retry limit"
+            );
             return;
         }
 
@@ -134,6 +137,19 @@ mod subscriber {
             }
         }
         None
+    }
+
+    /// Waits for the publisher to finish protocol initialization after the
+    /// channel becomes subscribable. `protocol_header_matches` performs the
+    /// Acquire observation paired with the publisher's Release publication.
+    fn wait_for_protocol_header(region: &IvcRegion, waiter: &IvcPeerEventWaiter<'_>) -> bool {
+        for _ in 0..MAX_PROTOCOL_HEADER_ATTEMPTS {
+            if region.protocol_header_matches() {
+                return true;
+            }
+            waiter.wait_for_peer_event();
+        }
+        false
     }
 
     /// Sends subscriber data messages and acks of publisher data on ring B.
