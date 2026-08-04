@@ -134,11 +134,22 @@ static int wait_for_sequence(struct handoff_state *state,
     }
 }
 
-static int settle_parked_receiver(uint64_t settle_ns)
+static int wait_for_receiver_to_park(const struct handoff_state *state,
+                                     const struct bench_config *config)
 {
+    if (state->receiver_cpu == config->sender_cpu) {
+        /*
+         * Both participants are pinned to one CPU. Yielding gives the armed
+         * receiver a complete scheduling turn in which to enter FUTEX_WAIT;
+         * a timer-based delay would profile an unrelated task deadline on
+         * every handoff.
+         */
+        return sched_yield();
+    }
+
     struct timespec duration = {
-        .tv_sec = (time_t)(settle_ns / 1000000000ULL),
-        .tv_nsec = (long)(settle_ns % 1000000000ULL),
+        .tv_sec = (time_t)(config->park_settle_ns / 1000000000ULL),
+        .tv_nsec = (long)(config->park_settle_ns % 1000000000ULL),
     };
     while (nanosleep(&duration, &duration) != 0) {
         if (errno != EINTR) {
@@ -283,7 +294,7 @@ static int run_sender(struct handoff_state *state,
                               state->private_futex) != 0) {
             return abort_sender(state);
         }
-        if (settle_parked_receiver(config->park_settle_ns) != 0) {
+        if (wait_for_receiver_to_park(state, config) != 0) {
             return abort_sender(state);
         }
         atomic_store_explicit(&state->wake_timestamp_ns,

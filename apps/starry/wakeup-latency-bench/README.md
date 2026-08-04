@@ -15,9 +15,10 @@ ping-pong 总耗时当作单次唤醒延迟。
 
 futex 场景只把 `FUTEX_WAIT` 确实返回“已被唤醒”的样本计入分布。若 producer
 在 waiter 进入内核前更新 futex，`EAGAIN` 样本会记入 `not_parked`，不会伪装成
-极低延迟。所有 producer 都在计时区间外留出 50 us park 窗口；同 CPU 场景也需要
-这个窗口，因为 waiter 发布 armed 后可能被刚唤醒的 sender 抢占。timer 每次执行
-`deadline += period`，因此不会把相对 sleep 漂移混入调度延迟。
+极低延迟。跨 CPU producer 在计时区间外留出 50 us park 窗口；同 CPU 场景改为
+显式 `sched_yield()`，让已发布 armed 的 receiver 获得一次完整调度机会并进入
+`FUTEX_WAIT`。这样同核 wake 调用链不会被每轮无关的 task deadline 污染。timer
+每次执行 `deadline += period`，因此不会把相对 sleep 漂移混入调度延迟。
 
 每个场景输出一行 `WAKEUP_LATENCY_RESULT` JSON，包含：
 
@@ -37,6 +38,19 @@ StarryOS：
 ```bash
 cargo xtask starry app qemu -t wakeup-latency-bench --arch x86_64
 ```
+
+单场景剖析直接调用二进制；`--policy` 和 `--case` 都是显式选择器，不接受隐式
+别名：
+
+```bash
+/usr/bin/wakeup-latency-bench \
+  --policy other \
+  --case thread_futex_same_cpu
+```
+
+每个场景分别输出 `WAKEUP_LATENCY_CASE_START` 和
+`WAKEUP_LATENCY_CASE_DONE`，后跟 `case=<name> policy=<policy>`。qperf 应用这两个
+marker 收窄采样窗口，不能用完整应用的启动和结束 marker 混合多个调用链。
 
 Linux 对照必须从本目录的 `main.c`、`handoff.c`、`timer.c`、`stats.c` 构建，定义
 `BENCH_INIT` 后静态链接为 initramfs 的 `/init`。三方保持以下 QEMU 参数一致：
