@@ -303,10 +303,10 @@ impl CloneArgs {
             if flags.contains(CloneFlags::NEWNS) {
                 new_nsproxy.unshare_mnt();
             }
+            let mut is_pid_namespace_init = false;
             if flags.contains(CloneFlags::NEWPID) {
                 new_nsproxy.unshare_pid();
-                new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
-                new_nsproxy.pid_ns.lock().set_init_global_tid(tid as u64);
+                is_pid_namespace_init = true;
             }
             if flags.contains(CloneFlags::NEWNET) {
                 new_nsproxy.unshare_net();
@@ -325,12 +325,12 @@ impl CloneArgs {
                 let mut parent_ns = old_proc_data.nsproxy.lock();
                 if let Some(child_pid_ns) = parent_ns.child_pid_ns.take() {
                     new_nsproxy.pid_ns = child_pid_ns;
-                    {
-                        let mut pid_ns = new_nsproxy.pid_ns.lock();
-                        pid_ns.alloc_local_pid(tid as u64);
-                        pid_ns.set_init_global_tid(tid as u64);
-                    }
+                    is_pid_namespace_init = true;
                 }
+            }
+            axnsproxy::PidNamespace::alloc_pid_chain(&new_nsproxy.pid_ns, tid as u64);
+            if is_pid_namespace_init {
+                new_nsproxy.pid_ns.lock().set_init_global_tid(tid as u64);
             }
 
             *proc_data.nsproxy.lock() = new_nsproxy;

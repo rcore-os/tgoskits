@@ -26,6 +26,7 @@ use ax_runtime::hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
@@ -950,20 +951,42 @@ impl SimpleDirOps for ThreadFdInfoDir {
         let fs = self.fs.clone();
         let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
-        let pid = FD_TABLE
+        let content = FD_TABLE
             .scope(&task.as_thread().scope.read())
             .read()
             .get(fd as _)
             .ok_or(VfsError::NotFound)?
             .inner
             .downcast_ref::<PidFd>()
-            .map(PidFd::target_pid);
+            .map_or_else(String::new, |pidfd| {
+                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
+                let target_pid_ns = pidfd
+                    .process_data()
+                    .ok()
+                    .map(|process_data| process_data.nsproxy.lock().pid_ns.clone());
+                let pids = target_pid_ns
+                    .as_ref()
+                    .and_then(|target_pid_ns| {
+                        PidNamespace::visible_pid_chain(
+                            &observer_pid_ns,
+                            target_pid_ns,
+                            pidfd.target_pid() as u64,
+                        )
+                    })
+                    .unwrap_or_else(|| vec![0]);
+                let pid = pids[0];
+                let nspid = pids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("Pid:\t{pid}\nNSpid:\t{nspid}\n")
+            });
 
         // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
         // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
         // fallback. Other descriptor kinds still have an fdinfo entry, even
         // though StarryOS does not yet expose their type-specific fields.
-        let content = pid.map_or_else(String::new, |pid| format!("Pid:\t{pid}\nNSpid:\t{pid}\n"));
         Ok(SimpleFile::new_regular(fs, move || Ok(content.clone().into_bytes())).into())
     }
 

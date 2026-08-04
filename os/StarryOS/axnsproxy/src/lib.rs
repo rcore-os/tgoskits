@@ -117,7 +117,7 @@ impl NsProxy {
 
     /// Directly replace the PID namespace — used in `clone(CLONE_NEWPID)`.
     pub fn unshare_pid(&mut self) {
-        let new_inner = self.pid_ns.lock().clone_ns();
+        let new_inner = PidNamespace::new_child(self.pid_ns.clone());
         self.pid_ns = Arc::new(SpinNoIrq::new(new_inner));
     }
 
@@ -127,7 +127,7 @@ impl NsProxy {
     /// its current PID namespace; the new namespace is consumed by the
     /// next `fork` / `clone` child, which becomes PID 1 in that namespace.
     pub fn prepare_child_pid_ns(&mut self) {
-        let new_inner = self.pid_ns.lock().clone_ns();
+        let new_inner = PidNamespace::new_child(self.pid_ns.clone());
         self.child_pid_ns = Some(Arc::new(SpinNoIrq::new(new_inner)));
     }
 
