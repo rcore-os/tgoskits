@@ -137,6 +137,10 @@ printf '%s\n' \
     'vectors=10000' \
     'warmup=32' \
     'core_mask=0' \
+    'lifecycle_cycles=20' \
+    'maximum_post_destroy_growth_kib=4096' \
+    'maximum_peak_rss_kib=524288' \
+    'minimum_rootfs_available_percent_x100=2000' \
     "runner_sha256=$runner_sha256" \
     "model_sha256=$model_sha256" \
     "corpus_sha256=$corpus_sha256" \

@@ -22,6 +22,7 @@ namespace {
 constexpr std::size_t kInputCount = 4;
 constexpr std::size_t kExpectedVectors = 10'000;
 constexpr std::size_t kDefaultWarmup = 32;
+constexpr std::size_t kMaximumLifecycleCycles = 100;
 constexpr double kMaximumF32Error = 0.002;
 constexpr int kMaximumActuatorDelta = 2;
 constexpr std::string_view kCorpusHeader =
@@ -41,6 +42,8 @@ struct Options {
     std::string core_mask_name = "0";
     std::size_t evidence_marker_copies = 1;
     std::uint64_t evidence_marker_interval_ms = 0;
+    std::size_t lifecycle_cycles = 1;
+    std::string resource_output_path;
 };
 
 struct CorpusRecord {
@@ -54,6 +57,24 @@ struct InferenceResult {
     float output = 0.0F;
     std::uint64_t wall_ns = 0;
     std::int64_t device_us = 0;
+};
+
+struct ProcessMemory {
+    std::uint64_t rss_kib = 0;
+    std::uint64_t peak_rss_kib = 0;
+};
+
+struct LifecycleEvidence {
+    std::size_t cycles = 0;
+    std::size_t probe_inferences = 0;
+    std::int64_t cold_init_us = -1;
+    ProcessMemory baseline{};
+    std::uint64_t first_post_destroy_rss_kib = 0;
+    std::uint64_t final_post_destroy_rss_kib = 0;
+    std::uint64_t maximum_post_destroy_rss_kib = 0;
+    std::uint64_t peak_rss_kib = 0;
+    std::int64_t final_post_destroy_growth_kib = 0;
+    std::int64_t maximum_post_destroy_growth_kib = 0;
 };
 
 class Context {
@@ -70,6 +91,15 @@ class Context {
 
     rknn_context *out() { return &value_; }
     rknn_context get() const { return value_; }
+
+    int destroy() {
+        if (value_ == 0) {
+            return RKNN_SUCC;
+        }
+        const rknn_context value = value_;
+        value_ = 0;
+        return rknn_destroy(value);
+    }
 
   private:
     rknn_context value_ = 0;
@@ -92,6 +122,10 @@ std::string hex_encode(std::string_view value) {
         encoded.push_back(kDigits[byte & 0x0fU]);
     }
     return encoded;
+}
+
+std::string_view runtime_api_compatibility_identity(std::string_view version) {
+    return version.substr(0, version.find_first_of(" \t"));
 }
 
 template <typename Writer>
@@ -134,6 +168,76 @@ Integer parse_integer(std::string_view value, int base, std::string_view field) 
         fail("invalid " + std::string(field));
     }
     return result;
+}
+
+std::uint64_t parse_status_kib(std::string_view line, std::string_view field) {
+    line.remove_prefix(field.size());
+    const std::size_t value_start = line.find_first_not_of(" \t");
+    if (value_start == std::string_view::npos) {
+        fail("missing value for " + std::string(field));
+    }
+    line.remove_prefix(value_start);
+    const std::size_t value_end = line.find_first_of(" \t");
+    if (value_end == std::string_view::npos) {
+        fail("missing kB unit for " + std::string(field));
+    }
+    const std::uint64_t value =
+        parse_integer<std::uint64_t>(line.substr(0, value_end), 10, field);
+    line.remove_prefix(value_end);
+    const std::size_t unit_start = line.find_first_not_of(" \t");
+    if (unit_start == std::string_view::npos || line.substr(unit_start) != "kB") {
+        fail("unexpected unit for " + std::string(field));
+    }
+    if (value == 0) {
+        fail("zero value for " + std::string(field));
+    }
+    return value;
+}
+
+ProcessMemory read_process_memory() {
+    std::ifstream status("/proc/self/status");
+    if (!status) {
+        fail("cannot open /proc/self/status");
+    }
+    constexpr std::string_view kRssField = "VmRSS:";
+    constexpr std::string_view kPeakField = "VmHWM:";
+    ProcessMemory memory;
+    bool found_rss = false;
+    bool found_peak = false;
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.compare(0, kRssField.size(), kRssField) == 0) {
+            memory.rss_kib = parse_status_kib(line, kRssField);
+            found_rss = true;
+        } else if (line.compare(0, kPeakField.size(), kPeakField) == 0) {
+            memory.peak_rss_kib = parse_status_kib(line, kPeakField);
+            found_peak = true;
+        }
+    }
+    if (!found_rss || !found_peak) {
+        fail("/proc/self/status lacks VmRSS or VmHWM");
+    }
+    if (memory.peak_rss_kib < memory.rss_kib) {
+        fail("VmHWM is below VmRSS");
+    }
+    return memory;
+}
+
+std::int64_t signed_difference(std::uint64_t value, std::uint64_t baseline) {
+    constexpr std::uint64_t kMaximumSigned =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (value >= baseline) {
+        const std::uint64_t difference = value - baseline;
+        if (difference > kMaximumSigned) {
+            fail("positive RSS difference exceeds int64");
+        }
+        return static_cast<std::int64_t>(difference);
+    }
+    const std::uint64_t difference = baseline - value;
+    if (difference > kMaximumSigned) {
+        fail("negative RSS difference exceeds int64");
+    }
+    return -static_cast<std::int64_t>(difference);
 }
 
 std::uint32_t parse_f32_bits(std::string_view value, std::string_view field) {
@@ -242,7 +346,8 @@ Options parse_options(int argc, char **argv) {
                       << " --model PATH --corpus PATH --output PATH"
                          " [--warmup N] [--core-mask 0|1|2|auto|all]"
                          " [--evidence-marker-copies N]"
-                         " [--evidence-marker-interval-ms N]\n";
+                         " [--evidence-marker-interval-ms N]"
+                         " [--lifecycle-cycles N] [--resource-output PATH]\n";
             std::exit(0);
         }
         if (index + 1 >= argc) {
@@ -272,6 +377,15 @@ Options parse_options(int argc, char **argv) {
             if (options.evidence_marker_interval_ms > 1000) {
                 fail("evidence marker interval exceeds 1000 ms");
             }
+        } else if (argument == "--lifecycle-cycles") {
+            options.lifecycle_cycles =
+                parse_integer<std::size_t>(value, 10, "lifecycle cycles");
+            if (options.lifecycle_cycles == 0 ||
+                options.lifecycle_cycles > kMaximumLifecycleCycles) {
+                fail("lifecycle cycles must be in [1,100]");
+            }
+        } else if (argument == "--resource-output") {
+            options.resource_output_path = value;
         } else if (argument == "--core-mask") {
             options.core_mask_name = value;
             if (value == "0") {
@@ -293,6 +407,9 @@ Options parse_options(int argc, char **argv) {
     }
     if (options.model_path.empty() || options.corpus_path.empty() || options.output_path.empty()) {
         fail("--model, --corpus, and --output are required");
+    }
+    if (options.lifecycle_cycles > 1 && options.resource_output_path.empty()) {
+        fail("--resource-output is required for repeated lifecycle evidence");
     }
     return options;
 }
@@ -373,6 +490,129 @@ InferenceResult infer_one(rknn_context context, const rknn_tensor_attr &input_at
     return {value, static_cast<std::uint64_t>(wall.count()), performance.run_duration};
 }
 
+void load_context(Context &context, const std::vector<std::uint8_t> &model,
+                  const Options &options) {
+    require_status(rknn_init(context.out(), const_cast<std::uint8_t *>(model.data()),
+                             static_cast<std::uint32_t>(model.size()),
+                             RKNN_FLAG_COLLECT_PERF_MASK, nullptr),
+                   "initialize RKNN context");
+    require_status(rknn_set_core_mask(context.get(), options.core_mask),
+                   "set NPU core mask");
+}
+
+void record_post_destroy_memory(LifecycleEvidence &evidence,
+                                const ProcessMemory &memory) {
+    if (evidence.first_post_destroy_rss_kib == 0) {
+        evidence.first_post_destroy_rss_kib = memory.rss_kib;
+    }
+    evidence.maximum_post_destroy_rss_kib =
+        std::max(evidence.maximum_post_destroy_rss_kib, memory.rss_kib);
+    evidence.peak_rss_kib = std::max(evidence.peak_rss_kib, memory.peak_rss_kib);
+}
+
+LifecycleEvidence run_lifecycle_probes(const Options &options,
+                                       const std::vector<std::uint8_t> &model,
+                                       const std::vector<CorpusRecord> &corpus) {
+    LifecycleEvidence evidence;
+    evidence.cycles = options.lifecycle_cycles;
+    evidence.probe_inferences = options.lifecycle_cycles - 1;
+    evidence.baseline = read_process_memory();
+    evidence.peak_rss_kib = evidence.baseline.peak_rss_kib;
+
+    for (std::size_t cycle = 0; cycle < evidence.probe_inferences; ++cycle) {
+        Context probe_context;
+        const auto init_started = std::chrono::steady_clock::now();
+        load_context(probe_context, model, options);
+        const auto init_finished = std::chrono::steady_clock::now();
+        if (cycle == 0) {
+            evidence.cold_init_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    init_finished - init_started)
+                    .count();
+            if (evidence.cold_init_us <= 0) {
+                fail("cold RKNN context initialization duration is not positive");
+            }
+        }
+        rknn_tensor_attr input_attr{};
+        rknn_tensor_attr output_attr{};
+        query_tensor_contract(probe_context.get(), &input_attr, &output_attr);
+        validate_tensor_contract(input_attr, output_attr);
+        static_cast<void>(infer_one(probe_context.get(), input_attr,
+                                    corpus[cycle % corpus.size()]));
+        require_status(probe_context.destroy(), "destroy RKNN probe context");
+        record_post_destroy_memory(evidence, read_process_memory());
+    }
+    return evidence;
+}
+
+void finalize_lifecycle_evidence(LifecycleEvidence &evidence) {
+    const ProcessMemory final_memory = read_process_memory();
+    record_post_destroy_memory(evidence, final_memory);
+    evidence.final_post_destroy_rss_kib = final_memory.rss_kib;
+    evidence.final_post_destroy_growth_kib = signed_difference(
+        evidence.final_post_destroy_rss_kib,
+        evidence.first_post_destroy_rss_kib);
+    evidence.maximum_post_destroy_growth_kib = signed_difference(
+        evidence.maximum_post_destroy_rss_kib,
+        evidence.first_post_destroy_rss_kib);
+}
+
+void write_resource_evidence(const Options &options,
+                             const LifecycleEvidence &evidence) {
+    if (options.resource_output_path.empty()) {
+        return;
+    }
+    std::ofstream output(options.resource_output_path,
+                         std::ios::binary | std::ios::trunc);
+    if (!output) {
+        fail("cannot create resource evidence: " + options.resource_output_path);
+    }
+    output << "schema=1\n"
+           << "lifecycle_cycles=" << evidence.cycles << '\n'
+           << "probe_inferences=" << evidence.probe_inferences << '\n'
+           << "context_init_count=" << evidence.cycles << '\n'
+           << "context_destroy_count=" << evidence.cycles << '\n'
+           << "baseline_rss_kib=" << evidence.baseline.rss_kib << '\n'
+           << "first_post_destroy_rss_kib="
+           << evidence.first_post_destroy_rss_kib << '\n'
+           << "final_post_destroy_rss_kib="
+           << evidence.final_post_destroy_rss_kib << '\n'
+           << "maximum_post_destroy_rss_kib="
+           << evidence.maximum_post_destroy_rss_kib << '\n'
+           << "peak_rss_kib=" << evidence.peak_rss_kib << '\n'
+           << "final_post_destroy_growth_kib="
+           << evidence.final_post_destroy_growth_kib << '\n'
+           << "maximum_post_destroy_growth_kib="
+           << evidence.maximum_post_destroy_growth_kib << '\n';
+    output.close();
+    if (!output) {
+        fail("failed while writing resource evidence");
+    }
+}
+
+void write_resource_markers(const Options &options,
+                            const LifecycleEvidence &evidence) {
+    write_redundant_marker(options, [&] {
+        std::cout << "IVC_RKNN_LIFECYCLE cycles=" << evidence.cycles
+                  << " probe_inferences=" << evidence.probe_inferences
+                  << " init_count=" << evidence.cycles
+                  << " destroy_count=" << evidence.cycles;
+    });
+    write_redundant_marker(options, [&] {
+        std::cout << "IVC_RKNN_MEMORY_BASELINE rss_kib="
+                  << evidence.baseline.rss_kib
+                  << " first_post_destroy_rss_kib="
+                  << evidence.first_post_destroy_rss_kib;
+    });
+    write_redundant_marker(options, [&] {
+        std::cout << "IVC_RKNN_MEMORY_FINAL rss_kib="
+                  << evidence.final_post_destroy_rss_kib
+                  << " peak_rss_kib=" << evidence.peak_rss_kib
+                  << " maximum_post_destroy_growth_kib="
+                  << evidence.maximum_post_destroy_growth_kib;
+    });
+}
+
 void write_hex32(std::ostream &output, std::uint32_t value) {
     output << std::hex << std::setw(8) << std::setfill('0') << value << std::dec;
 }
@@ -383,20 +623,19 @@ int run(const Options &options) {
     std::cout << "IVC_RKNN_LINUX_BEGIN schema=1 vectors=" << corpus.size()
               << " warmup=" << options.warmup << " core_mask=" << options.core_mask_name << '\n';
 
+    LifecycleEvidence lifecycle = run_lifecycle_probes(options, model, corpus);
     Context context;
     const auto init_started = std::chrono::steady_clock::now();
-    require_status(rknn_init(context.out(), const_cast<std::uint8_t *>(model.data()),
-                             static_cast<std::uint32_t>(model.size()), RKNN_FLAG_COLLECT_PERF_MASK,
-                             nullptr),
-                   "initialize RKNN context");
+    load_context(context, model, options);
     const auto init_finished = std::chrono::steady_clock::now();
-    require_status(rknn_set_core_mask(context.get(), options.core_mask), "set NPU core mask");
 
     rknn_sdk_version versions{};
     require_status(rknn_query(context.get(), RKNN_QUERY_SDK_VERSION, &versions, sizeof(versions)),
                    "query SDK version");
     const std::string api_version = bounded_string(versions.api_version, sizeof(versions.api_version));
     const std::string driver_version = bounded_string(versions.drv_version, sizeof(versions.drv_version));
+    const std::string_view api_compatibility_identity =
+        runtime_api_compatibility_identity(api_version);
     if (options.evidence_marker_copies == 1) {
         write_redundant_marker(options, [&] {
             std::cout << "IVC_RKNN_RUNTIME api_version_hex=" << hex_encode(api_version)
@@ -404,7 +643,8 @@ int run(const Options &options) {
         });
     } else {
         write_redundant_marker(options, [&] {
-            std::cout << "IVC_RKNN_RUNTIME_API version_hex=" << hex_encode(api_version);
+            std::cout << "IVC_RKNN_RUNTIME_API version_hex="
+                      << hex_encode(api_compatibility_identity);
         });
         write_redundant_marker(options, [&] {
             std::cout << "IVC_RKNN_RUNTIME_DRIVER version_hex=" << hex_encode(driver_version);
@@ -468,12 +708,22 @@ int run(const Options &options) {
     if (!output) {
         fail("failed while writing output CSV");
     }
+    output.close();
+    if (!output) {
+        fail("failed while closing output CSV");
+    }
     if (maximum_error > kMaximumF32Error || maximum_command_delta > kMaximumActuatorDelta) {
         fail("physical output violates the pre-registered FP16 gate");
     }
+    require_status(context.destroy(), "destroy final RKNN context");
+    finalize_lifecycle_evidence(lifecycle);
+    write_resource_evidence(options, lifecycle);
+    write_resource_markers(options, lifecycle);
 
-    const auto init_us =
+    const auto final_init_us =
         std::chrono::duration_cast<std::chrono::microseconds>(init_finished - init_started).count();
+    const auto init_us =
+        lifecycle.cold_init_us >= 0 ? lifecycle.cold_init_us : final_init_us;
     std::cout << std::setprecision(17);
     if (options.evidence_marker_copies == 1) {
         write_redundant_marker(options, [&] {

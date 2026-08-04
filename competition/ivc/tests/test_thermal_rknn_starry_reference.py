@@ -69,6 +69,7 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
         model_sha256: str,
         corpus_sha256: str,
         runtime_sha256: str,
+        resource_sha256: str,
     ) -> None:
         api_version = "2.3.2 (unit-test)".encode().hex()
         driver_version = "0.9.8".encode().hex()
@@ -105,6 +106,12 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
             "IVC_RKNN_RUNTIME api_version_hex=00",
             f"IVC_RKNN_RUNTIME api_version_hex={api_version} "
             f"driver_version_hex={driver_version}",
+            "IVC_RKNN_LIFECYCLE cycles=20 probe_inferences=19 "
+            "init_count=20 destroy_count=20",
+            "IVC_RKNN_MEMORY_BASELINE rss_kib=10000 "
+            "first_post_destroy_rss_kib=12000",
+            "IVC_RKNN_MEMORY_FINAL rss_kib=12064 peak_rss_kib=64000 "
+            "maximum_post_destroy_growth_kib=256",
         ]
         lines.extend(
             f"IVC_RKNN_PROGRESS completed={completed}"
@@ -127,6 +134,8 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
                 "core_mask=0 backend=rknn-npu "
                 f"model_sha256={model_sha256} corpus_sha256={corpus_sha256} "
                 f"runtime_sha256={runtime_sha256} raw_sha256={raw_sha256}",
+                "THERMAL_RKNN_STARRY_RESOURCE schema=1 lifecycle_cycles=20 "
+                f"sha256={resource_sha256}",
                 "AXVISOR_SNAPSHOT_SYNC_OK",
                 "AXVISOR_HOST_FILESYSTEM_SYNCED",
                 "AXVISOR_HOST_FILESYSTEM_SYNCED",
@@ -142,6 +151,8 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
     ) -> tuple[starry_reference.StarryEvidenceInputs, Path]:
         raw = root / "raw.csv"
         raw_manifest = root / "raw.csv.sha256"
+        resource = root / "resources.txt"
+        resource_manifest = root / "resources.txt.sha256"
         console = root / "console.log"
         profile = root / "rknpu-offline-profile"
         board_facts = root / "board-facts.txt"
@@ -164,6 +175,44 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
         model_sha256 = reference.sha256_file(reference.RKNN_PATH)
         corpus_sha256 = reference.sha256_file(embedded_corpus)
         runtime_sha256 = reference.sha256_file(reference.RUNTIME_PATH)
+        rootfs_total_kib = 98_304
+        rootfs_available_before_kib = 52_000
+        rootfs_available_after_kib = 50_000
+        rootfs_available_percent_x100 = (
+            rootfs_available_after_kib * 10_000 // rootfs_total_kib
+        )
+        resource.write_text(
+            "\n".join(
+                [
+                    "schema=1",
+                    "lifecycle_cycles=20",
+                    "probe_inferences=19",
+                    "context_init_count=20",
+                    "context_destroy_count=20",
+                    "baseline_rss_kib=10000",
+                    "first_post_destroy_rss_kib=12000",
+                    "final_post_destroy_rss_kib=12064",
+                    "maximum_post_destroy_rss_kib=12256",
+                    "peak_rss_kib=64000",
+                    "final_post_destroy_growth_kib=64",
+                    "maximum_post_destroy_growth_kib=256",
+                    f"rootfs_total_kib={rootfs_total_kib}",
+                    "rootfs_available_before_kib=52000",
+                    "rootfs_available_after_kib=50000",
+                    "rootfs_available_percent_x100="
+                    f"{rootfs_available_percent_x100}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        resource_sha256 = reference.sha256_file(resource)
+        resource_manifest.write_text(
+            f"{resource_sha256}  /var/lib/rknn/resources.txt\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         profile.write_text(
             "\n".join(
                 [
@@ -171,6 +220,10 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
                     "vectors=10000",
                     "warmup=32",
                     "core_mask=0",
+                    "lifecycle_cycles=20",
+                    "maximum_post_destroy_growth_kib=4096",
+                    "maximum_peak_rss_kib=524288",
+                    "minimum_rootfs_available_percent_x100=2000",
                     f"runner_sha256={reference.sha256_file(built_runner)}",
                     f"model_sha256={model_sha256}",
                     f"corpus_sha256={corpus_sha256}",
@@ -206,10 +259,13 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
             model_sha256,
             corpus_sha256,
             runtime_sha256,
+            resource_sha256,
         )
         evidence = starry_reference.StarryEvidenceInputs(
             raw_path=raw,
             raw_manifest_path=raw_manifest,
+            resource_path=resource,
+            resource_manifest_path=resource_manifest,
             console_path=console,
             profile_path=profile,
             board_facts_path=board_facts,
@@ -244,6 +300,17 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
             self.assertEqual(report["source"]["provenance"], "captured-before-run")
             self.assertEqual(report["backend"]["positive_device_time_samples"], 10_000)
             self.assertEqual(report["latency"]["device"]["p99"], 156)
+            self.assertEqual(report["resources"]["lifecycle"]["cycles"], 20)
+            self.assertEqual(
+                report["resources"]["memory"][
+                    "maximum_post_destroy_growth_kib"
+                ],
+                256,
+            )
+            self.assertGreater(
+                report["resources"]["rootfs"]["available_percent"],
+                20.0,
+            )
             self.assertEqual(report["console_evidence"]["valid_pass_marker_copies"], 2)
             self.assertEqual(report["console_evidence"]["host_sync_marker_copies"], 2)
             self.assertTrue(report_path.is_file())
@@ -264,6 +331,86 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
                 "bounded final sync marker",
             ):
                 starry_reference.validate_console(evidence.console_path, artifacts)
+
+    def test_post_destroy_rss_growth_above_budget_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence, _ = self.prepare_evidence(Path(directory))
+            resource = evidence.resource_path.read_text(encoding="utf-8")
+            evidence.resource_path.write_text(
+                resource.replace(
+                    "maximum_post_destroy_rss_kib=12256",
+                    "maximum_post_destroy_rss_kib=17000",
+                ).replace(
+                    "maximum_post_destroy_growth_kib=256",
+                    "maximum_post_destroy_growth_kib=5000",
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            profile = reference.parse_key_value_file(evidence.profile_path)
+
+            with self.assertRaisesRegex(
+                reference.ReferenceError,
+                "RSS growth exceeds",
+            ):
+                starry_reference.validate_resource_evidence(evidence, profile)
+
+    def test_compact_guest_device_marker_survives_driver_log_loss(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence, report_path = self.prepare_evidence(Path(directory))
+            console = evidence.console_path.read_text(encoding="utf-8")
+            compact_marker = (
+                "THERMAL_RKNN_STARRY_DEVICE schema=1 path=/dev/dri/card1 "
+                "registered=true"
+            )
+            evidence.console_path.write_text(
+                console.replace("NPU registered successfully\n", "")
+                + (compact_marker + "\n") * 3,
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            report = starry_reference.analyze(evidence, report_path)
+
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["console_evidence"][
+                    "compact_guest_registration_marker_copies"
+                ],
+                3,
+            )
+            self.assertEqual(
+                report["console_evidence"][
+                    "legacy_guest_registration_marker_copies"
+                ],
+                0,
+            )
+
+    def test_rootfs_available_space_below_budget_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence, _ = self.prepare_evidence(Path(directory))
+            resource = evidence.resource_path.read_text(encoding="utf-8")
+            available_after_kib = 19_000
+            available_percent_x100 = available_after_kib * 10_000 // 98_304
+            evidence.resource_path.write_text(
+                resource.replace(
+                    "rootfs_available_after_kib=50000",
+                    f"rootfs_available_after_kib={available_after_kib}",
+                ).replace(
+                    "rootfs_available_percent_x100=5086",
+                    "rootfs_available_percent_x100="
+                    f"{available_percent_x100}",
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            profile = reference.parse_key_value_file(evidence.profile_path)
+
+            with self.assertRaisesRegex(
+                reference.ReferenceError,
+                "rootfs available space is below",
+            ):
+                starry_reference.validate_resource_evidence(evidence, profile)
 
     def test_non_utf8_boot_bytes_do_not_hide_ascii_evidence_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -478,6 +625,32 @@ class ThermalRknnStarryReferenceTests(unittest.TestCase):
         self.assertEqual(selected_driver, driver_version)
         self.assertEqual(legacy_copies, 2)
         self.assertEqual(compact_sets, 2)
+
+    def test_compact_runtime_accepts_short_api_compatibility_identity(self) -> None:
+        api_version = "2.3.2"
+        driver_version = "0.9.8"
+        console = "\n".join(
+            [
+                *(
+                    f"IVC_RKNN_RUNTIME_API version_hex={api_version.encode().hex()}"
+                    for _ in range(5)
+                ),
+                *(
+                    "IVC_RKNN_RUNTIME_DRIVER version_hex="
+                    f"{driver_version.encode().hex()}"
+                    for _ in range(5)
+                ),
+            ]
+        )
+
+        selected_api, selected_driver, legacy_copies, compact_sets = (
+            starry_reference.matching_runtime_marker(console)
+        )
+
+        self.assertEqual(selected_api, api_version)
+        self.assertEqual(selected_driver, driver_version)
+        self.assertEqual(legacy_copies, 5)
+        self.assertEqual(compact_sets, 5)
 
 
 if __name__ == "__main__":

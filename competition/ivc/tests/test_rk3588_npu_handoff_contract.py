@@ -290,7 +290,9 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
                 self.assertIn(option, autorun)
         self.assertIn("evidence_marker_copies = 1", runner_source)
         self.assertIn("write_redundant_marker", runner_source)
-        self.assertEqual(runner_source.count("write_redundant_marker(options"), 8)
+        self.assertIn("runtime_api_compatibility_identity", runner_source)
+        self.assertIn("hex_encode(api_compatibility_identity)", runner_source)
+        self.assertEqual(runner_source.count("write_redundant_marker(options"), 11)
         self.assertIn("std::this_thread::sleep_for", runner_source)
         self.assertIn("--evidence-marker-copies 5", autorun)
         self.assertIn("--evidence-marker-interval-ms 100", autorun)
@@ -310,6 +312,54 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
             autorun,
         )
         self.assertNotIn("backend=rknn-npu model_sha256=", autorun)
+
+    def test_starry_resource_gate_repeats_context_lifecycle_and_persists_metrics(
+        self,
+    ) -> None:
+        runner_source = RKNPU_RUNNER_SOURCE.read_text(encoding="utf-8")
+        builder = STARRY_ROOTFS_BUILDER.read_text(encoding="utf-8")
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+        board_runner = RKNPU_RUNNER.read_text(encoding="utf-8")
+
+        for marker in (
+            "--lifecycle-cycles",
+            "--resource-output",
+            "/proc/self/status",
+            "IVC_RKNN_LIFECYCLE",
+            "IVC_RKNN_MEMORY_BASELINE",
+            "IVC_RKNN_MEMORY_FINAL",
+            "cold_init_us",
+            "rknn_destroy",
+        ):
+            with self.subTest(source_marker=marker):
+                self.assertIn(marker, runner_source)
+        for profile_value in (
+            "lifecycle_cycles=20",
+            "maximum_post_destroy_growth_kib=4096",
+            "maximum_peak_rss_kib=524288",
+            "minimum_rootfs_available_percent_x100=2000",
+        ):
+            with self.subTest(profile_value=profile_value):
+                self.assertIn(profile_value, builder)
+        for autorun_marker in (
+            "resources.txt.partial",
+            "resources.txt.sha256",
+            '--lifecycle-cycles "$lifecycle_cycles"',
+            '--resource-output "$RESOURCE_PARTIAL"',
+            "THERMAL_RKNN_STARRY_RESOURCE",
+            "THERMAL_RKNN_STARRY_DEVICE",
+            "rootfs_available_percent_x100",
+        ):
+            with self.subTest(autorun_marker=autorun_marker):
+                self.assertIn(autorun_marker, autorun)
+        for board_marker in (
+            "/var/lib/rknn/resources.txt",
+            "/var/lib/rknn/resources.txt.sha256",
+            "--resource",
+            "--resource-manifest",
+        ):
+            with self.subTest(board_marker=board_marker):
+                self.assertIn(board_marker, board_runner)
 
     def test_board_flow_requires_guest_pass_and_host_filesystem_sync(self) -> None:
         with RKNPU_BOARD_CONFIG.open("rb") as source:
@@ -338,6 +388,16 @@ class Rk3588NpuHandoffContractTests(unittest.TestCase):
         ):
             with self.subTest(artifact=artifact):
                 self.assertIn(artifact, stager)
+        staging_call = 'bash "$rknpu_stager"'
+        self.assertIn(
+            "rknpu_stager=$script_dir/stage-rknpu-offline.sh",
+            runner,
+        )
+        self.assertIn(staging_call, runner)
+        self.assertLess(
+            runner.index(staging_call),
+            runner.index('start_lease "$result_dir/pre-run-board-connect.log"'),
+        )
         self.assertIn("ORANGEPI_AXVISOR_SHUTDOWN_MARKER_REQUIRED=1", runner)
         self.assertIn("board-orangepi-5-plus-rknpu-smoke.toml", runner)
         self.assertIn("axvisor-orangepi-5-plus-rknpu-smoke.toml", runner)

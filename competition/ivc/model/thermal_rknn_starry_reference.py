@@ -24,6 +24,10 @@ import thermal_rknn_linux_reference as reference
 
 EXPECTED_SNAPSHOT_BYTES = 96 * 1024 * 1024
 EXPECTED_STARRY_DRIVER_VERSION = "0.9.8"
+EXPECTED_LIFECYCLE_CYCLES = 20
+MAXIMUM_POST_DESTROY_GROWTH_KIB = 4096
+MAXIMUM_PEAK_RSS_KIB = 524288
+MINIMUM_ROOTFS_AVAILABLE_PERCENT_X100 = 2000
 ANSI_CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOURCE_COMMIT = re.compile(r"[0-9a-f]{40}")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -41,6 +45,8 @@ class StarryEvidenceInputs:
 
     raw_path: Path
     raw_manifest_path: Path
+    resource_path: Path
+    resource_manifest_path: Path
     console_path: Path
     profile_path: Path
     board_facts_path: Path
@@ -155,6 +161,213 @@ def parse_raw_manifest(path: Path) -> str:
     return match.group(1)
 
 
+def parse_resource_manifest(path: Path) -> str:
+    text = path.read_text(encoding="utf-8").strip()
+    match = re.fullmatch(
+        r"([0-9a-f]{64})  /var/lib/rknn/resources\.txt",
+        text,
+    )
+    reference.require(
+        match is not None,
+        "resource manifest differs from the guest schema",
+    )
+    return match.group(1)
+
+
+def parse_nonnegative_integer(value: str, context: str) -> int:
+    reference.require(re.fullmatch(r"[0-9]+", value) is not None, f"invalid {context}")
+    return int(value)
+
+
+def parse_signed_integer(value: str, context: str) -> int:
+    reference.require(
+        re.fullmatch(r"-?[0-9]+", value) is not None,
+        f"invalid {context}",
+    )
+    return int(value)
+
+
+def validate_resource_evidence(
+    evidence: StarryEvidenceInputs,
+    profile: dict[str, str],
+) -> dict[str, Any]:
+    fields = reference.parse_key_value_file(evidence.resource_path)
+    expected_fields = {
+        "schema",
+        "lifecycle_cycles",
+        "probe_inferences",
+        "context_init_count",
+        "context_destroy_count",
+        "baseline_rss_kib",
+        "first_post_destroy_rss_kib",
+        "final_post_destroy_rss_kib",
+        "maximum_post_destroy_rss_kib",
+        "peak_rss_kib",
+        "final_post_destroy_growth_kib",
+        "maximum_post_destroy_growth_kib",
+        "rootfs_total_kib",
+        "rootfs_available_before_kib",
+        "rootfs_available_after_kib",
+        "rootfs_available_percent_x100",
+    }
+    reference.require(
+        set(fields) == expected_fields,
+        "resource evidence fields differ from schema 1",
+    )
+    reference.require(fields["schema"] == "1", "resource evidence schema differs")
+
+    cycles = reference.parse_positive_integer(
+        fields["lifecycle_cycles"],
+        "lifecycle cycle count",
+    )
+    probe_inferences = parse_nonnegative_integer(
+        fields["probe_inferences"],
+        "lifecycle probe inference count",
+    )
+    init_count = reference.parse_positive_integer(
+        fields["context_init_count"],
+        "context init count",
+    )
+    destroy_count = reference.parse_positive_integer(
+        fields["context_destroy_count"],
+        "context destroy count",
+    )
+    reference.require(
+        cycles == EXPECTED_LIFECYCLE_CYCLES,
+        "lifecycle cycle count differs from the frozen profile",
+    )
+    reference.require(
+        profile.get("lifecycle_cycles") == str(cycles),
+        "resource lifecycle count differs from the profile",
+    )
+    reference.require(
+        probe_inferences == cycles - 1,
+        "lifecycle probe inference count differs",
+    )
+    reference.require(
+        init_count == cycles and destroy_count == cycles,
+        "context lifecycle counts are incomplete",
+    )
+
+    positive_memory_fields = (
+        "baseline_rss_kib",
+        "first_post_destroy_rss_kib",
+        "final_post_destroy_rss_kib",
+        "maximum_post_destroy_rss_kib",
+        "peak_rss_kib",
+    )
+    memory = {
+        name: reference.parse_positive_integer(fields[name], name)
+        for name in positive_memory_fields
+    }
+    final_growth = parse_signed_integer(
+        fields["final_post_destroy_growth_kib"],
+        "final post-destroy RSS growth",
+    )
+    maximum_growth = parse_signed_integer(
+        fields["maximum_post_destroy_growth_kib"],
+        "maximum post-destroy RSS growth",
+    )
+    reference.require(
+        final_growth
+        == memory["final_post_destroy_rss_kib"]
+        - memory["first_post_destroy_rss_kib"],
+        "final post-destroy RSS growth is inconsistent",
+    )
+    reference.require(
+        maximum_growth
+        == memory["maximum_post_destroy_rss_kib"]
+        - memory["first_post_destroy_rss_kib"],
+        "maximum post-destroy RSS growth is inconsistent",
+    )
+    reference.require(
+        memory["maximum_post_destroy_rss_kib"]
+        >= max(
+            memory["first_post_destroy_rss_kib"],
+            memory["final_post_destroy_rss_kib"],
+        ),
+        "maximum post-destroy RSS is below an observed sample",
+    )
+    reference.require(
+        memory["peak_rss_kib"]
+        >= max(memory["baseline_rss_kib"], memory["maximum_post_destroy_rss_kib"]),
+        "peak RSS is below an observed RSS sample",
+    )
+    reference.require(
+        maximum_growth <= MAXIMUM_POST_DESTROY_GROWTH_KIB,
+        "post-destroy RSS growth exceeds the frozen budget",
+    )
+    reference.require(
+        memory["peak_rss_kib"] <= MAXIMUM_PEAK_RSS_KIB,
+        "peak RSS exceeds the frozen budget",
+    )
+
+    rootfs_total_kib = reference.parse_positive_integer(
+        fields["rootfs_total_kib"],
+        "rootfs total KiB",
+    )
+    rootfs_available_before_kib = reference.parse_positive_integer(
+        fields["rootfs_available_before_kib"],
+        "rootfs available-before KiB",
+    )
+    rootfs_available_after_kib = reference.parse_positive_integer(
+        fields["rootfs_available_after_kib"],
+        "rootfs available-after KiB",
+    )
+    rootfs_available_percent_x100 = parse_nonnegative_integer(
+        fields["rootfs_available_percent_x100"],
+        "rootfs available percentage",
+    )
+    reference.require(
+        rootfs_available_before_kib <= rootfs_total_kib
+        and rootfs_available_after_kib <= rootfs_available_before_kib,
+        "rootfs available space is inconsistent",
+    )
+    reference.require(
+        rootfs_available_percent_x100
+        == rootfs_available_after_kib * 10000 // rootfs_total_kib,
+        "rootfs available percentage is inconsistent",
+    )
+    reference.require(
+        rootfs_available_percent_x100 >= MINIMUM_ROOTFS_AVAILABLE_PERCENT_X100,
+        "rootfs available space is below the frozen budget",
+    )
+
+    resource_sha256 = reference.sha256_file(evidence.resource_path)
+    reference.require(
+        parse_resource_manifest(evidence.resource_manifest_path) == resource_sha256,
+        "resource evidence hash differs from the guest manifest",
+    )
+    return {
+        "lifecycle": {
+            "cycles": cycles,
+            "probe_inferences": probe_inferences,
+            "context_init_count": init_count,
+            "context_destroy_count": destroy_count,
+        },
+        "memory": {
+            **memory,
+            "final_post_destroy_growth_kib": final_growth,
+            "maximum_post_destroy_growth_kib": maximum_growth,
+            "maximum_post_destroy_growth_kib_gate": (
+                MAXIMUM_POST_DESTROY_GROWTH_KIB
+            ),
+            "peak_rss_kib_gate": MAXIMUM_PEAK_RSS_KIB,
+        },
+        "rootfs": {
+            "total_kib": rootfs_total_kib,
+            "available_before_kib": rootfs_available_before_kib,
+            "available_after_kib": rootfs_available_after_kib,
+            "available_percent": rootfs_available_percent_x100 / 100,
+            "available_percent_x100": rootfs_available_percent_x100,
+            "minimum_available_percent_x100": (
+                MINIMUM_ROOTFS_AVAILABLE_PERCENT_X100
+            ),
+        },
+        "sha256": resource_sha256,
+    }
+
+
 def validate_source(evidence: StarryEvidenceInputs) -> dict[str, Any]:
     reference.require(RUN_ID.fullmatch(evidence.run_id) is not None, "invalid run ID")
     reference.require(
@@ -208,6 +421,14 @@ def validate_artifacts(
         "vectors": str(reference.EXPECTED_VECTORS),
         "warmup": "32",
         "core_mask": "0",
+        "lifecycle_cycles": str(EXPECTED_LIFECYCLE_CYCLES),
+        "maximum_post_destroy_growth_kib": str(
+            MAXIMUM_POST_DESTROY_GROWTH_KIB
+        ),
+        "maximum_peak_rss_kib": str(MAXIMUM_PEAK_RSS_KIB),
+        "minimum_rootfs_available_percent_x100": str(
+            MINIMUM_ROOTFS_AVAILABLE_PERCENT_X100
+        ),
     }
     for name, expected in expected_profile.items():
         reference.require(profile.get(name) == expected, f"profile {name} differs")
@@ -252,6 +473,7 @@ def validate_artifacts(
         parse_raw_manifest(evidence.raw_manifest_path) == raw_sha256,
         "raw CSV hash differs from the guest manifest",
     )
+    resources = validate_resource_evidence(evidence, profile)
     facts = reference.parse_key_value_file(evidence.board_facts_path)
     reference.require(facts.get("hostname") == "orangepi5plus", "unexpected board hostname")
     reference.require(facts.get("machine") == "aarch64", "unexpected board architecture")
@@ -279,8 +501,13 @@ def validate_artifacts(
         "expected_hashes": expected_hashes,
         "profile": profile,
         "raw_sha256": raw_sha256,
+        "resources": resources,
         "snapshot": snapshot,
     }
+
+
+def is_supported_runtime_api(api_version: str) -> bool:
+    return api_version == "2.3.2" or api_version.startswith("2.3.2 ")
 
 
 def decode_runtime_version(fields: dict[str, str]) -> tuple[str, str]:
@@ -292,7 +519,7 @@ def decode_runtime_version(fields: dict[str, str]) -> tuple[str, str]:
         )
     except KeyError as error:
         raise reference.ReferenceError("runtime marker is incomplete") from error
-    reference.require(api_version.startswith("2.3.2 "), "unexpected RKNN Runtime API")
+    reference.require(is_supported_runtime_api(api_version), "unexpected RKNN Runtime API")
     reference.require(
         driver_version == EXPECTED_STARRY_DRIVER_VERSION,
         "unexpected StarryOS RKNPU driver version",
@@ -321,7 +548,7 @@ def matching_runtime_marker(console: str) -> tuple[str, str, int, int]:
             )
         except (KeyError, reference.ReferenceError):
             continue
-        if api_version.startswith("2.3.2 "):
+        if is_supported_runtime_api(api_version):
             api_versions.append(api_version)
     reference.require(
         api_versions,
@@ -464,6 +691,24 @@ def matching_result_marker(console: str) -> tuple[dict[str, str], int, int]:
     return legacy_candidates[0], len(legacy_candidates), 0
 
 
+def matching_guest_registration_markers(console: str) -> tuple[int, int]:
+    legacy_copies = console.count("NPU registered successfully")
+    compact_expected = {
+        "schema": "1",
+        "path": "/dev/dri/card1",
+        "registered": "true",
+    }
+    compact_copies = sum(
+        all(fields.get(name) == value for name, value in compact_expected.items())
+        for fields in marker_candidates(console, "THERMAL_RKNN_STARRY_DEVICE")
+    )
+    reference.require(
+        legacy_copies > 0 or compact_copies > 0,
+        "guest NPU registration is missing",
+    )
+    return legacy_copies, compact_copies
+
+
 def validate_console(
     console_path: Path,
     artifacts: dict[str, Any],
@@ -481,7 +726,10 @@ def validate_console(
         reference.require(forbidden not in console, f"console contains failure marker: {forbidden}")
 
     legacy_handoff_copies, compact_handoff_sets = matching_handoff_markers(console)
-    reference.require("NPU registered successfully" in console, "guest NPU registration is missing")
+    (
+        legacy_guest_registration_copies,
+        compact_guest_registration_copies,
+    ) = matching_guest_registration_markers(console)
     for completed in range(1000, reference.EXPECTED_VECTORS + 1, 1000):
         reference.require(
             f"IVC_RKNN_PROGRESS completed={completed}" in console,
@@ -510,6 +758,39 @@ def validate_console(
         legacy_result_marker_copies,
         compact_result_marker_sets,
     ) = matching_result_marker(console)
+    lifecycle = artifacts["resources"]["lifecycle"]
+    memory = artifacts["resources"]["memory"]
+    _, lifecycle_marker_copies = matching_marker(
+        console,
+        "IVC_RKNN_LIFECYCLE",
+        {
+            "cycles": str(lifecycle["cycles"]),
+            "probe_inferences": str(lifecycle["probe_inferences"]),
+            "init_count": str(lifecycle["context_init_count"]),
+            "destroy_count": str(lifecycle["context_destroy_count"]),
+        },
+    )
+    _, memory_baseline_marker_copies = matching_marker(
+        console,
+        "IVC_RKNN_MEMORY_BASELINE",
+        {
+            "rss_kib": str(memory["baseline_rss_kib"]),
+            "first_post_destroy_rss_kib": str(
+                memory["first_post_destroy_rss_kib"]
+            ),
+        },
+    )
+    _, memory_final_marker_copies = matching_marker(
+        console,
+        "IVC_RKNN_MEMORY_FINAL",
+        {
+            "rss_kib": str(memory["final_post_destroy_rss_kib"]),
+            "peak_rss_kib": str(memory["peak_rss_kib"]),
+            "maximum_post_destroy_growth_kib": str(
+                memory["maximum_post_destroy_growth_kib"]
+            ),
+        },
+    )
     pass_expected = {
         "schema": "1",
         "vectors": str(reference.EXPECTED_VECTORS),
@@ -542,6 +823,15 @@ def validate_console(
         all(fields.get(name) == value for name, value in raw_marker_expected.items())
         for fields in marker_candidates(console, "THERMAL_RKNN_STARRY_RAW")
     )
+    _, valid_resource_marker_copies = matching_marker(
+        console,
+        "THERMAL_RKNN_STARRY_RESOURCE",
+        {
+            "schema": "1",
+            "lifecycle_cycles": str(lifecycle["cycles"]),
+            "sha256": artifacts["resources"]["sha256"],
+        },
+    )
     reference.require(
         legacy_pass_artifact_copies > 0 or valid_raw_marker_copies > 0,
         "no valid StarryOS UART marker binds completion to the raw evidence",
@@ -561,19 +851,25 @@ def validate_console(
         "api_version": api_version,
         "begin": begin,
         "compact_handoff_marker_sets": compact_handoff_sets,
+        "compact_guest_registration_marker_copies": compact_guest_registration_copies,
         "compact_result_marker_sets": compact_result_marker_sets,
         "compact_runtime_marker_sets": compact_runtime_marker_sets,
         "driver_version": driver_version,
         "host_sync_marker_copies": host_sync_markers,
         "legacy_handoff_marker_copies": legacy_handoff_copies,
+        "legacy_guest_registration_marker_copies": legacy_guest_registration_copies,
         "legacy_pass_artifact_marker_copies": legacy_pass_artifact_copies,
         "legacy_result_marker_copies": legacy_result_marker_copies,
+        "lifecycle_marker_copies": lifecycle_marker_copies,
+        "memory_baseline_marker_copies": memory_baseline_marker_copies,
+        "memory_final_marker_copies": memory_final_marker_copies,
         "result": result,
         "runtime_marker_copies": runtime_marker_copies,
         "snapshot_sync_marker_copies": snapshot_markers,
         "utf8_replacement_characters": utf8_replacement_characters,
         "valid_pass_marker_copies": valid_pass_copies,
         "valid_raw_marker_copies": valid_raw_marker_copies,
+        "valid_resource_marker_copies": valid_resource_marker_copies,
     }
 
 
@@ -669,6 +965,10 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             "profile_sha256": reference.sha256_file(evidence.profile_path),
             "raw_manifest_sha256": reference.sha256_file(evidence.raw_manifest_path),
             "raw_sha256": artifacts["raw_sha256"],
+            "resource_manifest_sha256": reference.sha256_file(
+                evidence.resource_manifest_path
+            ),
+            "resource_sha256": artifacts["resources"]["sha256"],
             "snapshot": artifacts["snapshot"],
             "embedded": artifacts["embedded"],
             "expected_hashes": artifacts["expected_hashes"],
@@ -697,7 +997,15 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             "initialization_us": int(console["result"]["init_us"]),
             "warmup_vectors": int(console["result"]["warmup"]),
         },
+        "resources": {
+            "lifecycle": artifacts["resources"]["lifecycle"],
+            "memory": artifacts["resources"]["memory"],
+            "rootfs": artifacts["resources"]["rootfs"],
+        },
         "console_evidence": {
+            "compact_guest_registration_marker_copies": console[
+                "compact_guest_registration_marker_copies"
+            ],
             "compact_handoff_marker_sets": console[
                 "compact_handoff_marker_sets"
             ],
@@ -714,8 +1022,18 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             "legacy_handoff_marker_copies": console[
                 "legacy_handoff_marker_copies"
             ],
+            "legacy_guest_registration_marker_copies": console[
+                "legacy_guest_registration_marker_copies"
+            ],
             "legacy_result_marker_copies": console[
                 "legacy_result_marker_copies"
+            ],
+            "lifecycle_marker_copies": console["lifecycle_marker_copies"],
+            "memory_baseline_marker_copies": console[
+                "memory_baseline_marker_copies"
+            ],
+            "memory_final_marker_copies": console[
+                "memory_final_marker_copies"
             ],
             "runtime_marker_copies": console["runtime_marker_copies"],
             "snapshot_sync_marker_copies": console["snapshot_sync_marker_copies"],
@@ -724,6 +1042,9 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             ],
             "valid_pass_marker_copies": console["valid_pass_marker_copies"],
             "valid_raw_marker_copies": console["valid_raw_marker_copies"],
+            "valid_resource_marker_copies": console[
+                "valid_resource_marker_copies"
+            ],
         },
         "gates": {
             "all_device_times_positive": True,
@@ -738,6 +1059,11 @@ def analyze(evidence: StarryEvidenceInputs, output_path: Path) -> dict[str, Any]
             "native_f32_actuator_delta": True,
             "native_f32_error": True,
             "raw_manifest": True,
+            "repeated_context_lifecycle": True,
+            "resource_manifest": True,
+            "rootfs_available_space": True,
+            "rss_growth": True,
+            "rss_peak": True,
             "snapshot_matches_board": True,
         },
     }
@@ -749,6 +1075,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", type=Path, required=True)
     parser.add_argument("--raw-manifest", type=Path, required=True)
+    parser.add_argument("--resource", type=Path, required=True)
+    parser.add_argument("--resource-manifest", type=Path, required=True)
     parser.add_argument("--console", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--board-facts", type=Path, required=True)
@@ -781,6 +1109,8 @@ def main() -> int:
     evidence = StarryEvidenceInputs(
         raw_path=args.raw.resolve(),
         raw_manifest_path=args.raw_manifest.resolve(),
+        resource_path=args.resource.resolve(),
+        resource_manifest_path=args.resource_manifest.resolve(),
         console_path=args.console.resolve(),
         profile_path=args.profile.resolve(),
         board_facts_path=args.board_facts.resolve(),
@@ -810,7 +1140,12 @@ def main() -> int:
                 "maximum_absolute_error": report["comparison_to_native_f32"][
                     "maximum_absolute_error"
                 ],
+                "lifecycle_cycles": report["resources"]["lifecycle"]["cycles"],
+                "peak_rss_kib": report["resources"]["memory"]["peak_rss_kib"],
                 "raw_sha256": report["artifacts"]["raw_sha256"],
+                "rootfs_available_percent": report["resources"]["rootfs"][
+                    "available_percent"
+                ],
                 "vectors": report["vectors"],
                 "wall_p99_ns": report["latency"]["wall"]["p99"],
             },

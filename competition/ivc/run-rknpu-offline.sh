@@ -5,6 +5,7 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd -- "$script_dir/../.." && pwd)
 repository_runner=$script_dir/orangepi/board-runner.sh
+rknpu_stager=$script_dir/stage-rknpu-offline.sh
 reference_analyzer=$script_dir/model/thermal_rknn_starry_reference.py
 build_config=competition/ivc/config/axvisor-orangepi-5-plus-rknpu-smoke.toml
 board_config=competition/ivc/config/board-orangepi-5-plus-rknpu-smoke.toml
@@ -21,7 +22,8 @@ usage() {
 Usage: $0 --result-dir PATH
 
 Runs the AxVisor/StarryOS RK3588 NPU smoke test, restores Linux, and harvests
-the immutable virtio-block snapshot and 10,000-vector raw CSV.
+the immutable virtio-block snapshot, 10,000-vector raw CSV, and lifecycle
+resource evidence.
 EOF
 }
 
@@ -70,6 +72,7 @@ esac
 host_root=${ORANGEPI_AXVISOR_HOST_ROOT:?set ORANGEPI_AXVISOR_HOST_ROOT to the board Linux root device or PARTUUID}
 for input_path in \
     "$repository_runner" \
+    "$rknpu_stager" \
     "$reference_analyzer" \
     "$workspace/$build_config" \
     "$workspace/$board_config" \
@@ -117,9 +120,12 @@ fi
 
 mkdir -p "$result_dir"
 console=$result_dir/console.log
+stage_log=$result_dir/stage-rknpu-offline.log
 snapshot=$result_dir/starry-rknpu-result.img
 raw=$result_dir/raw.csv
 raw_manifest=$result_dir/raw.csv.sha256
+resource=$result_dir/resources.txt
+resource_manifest=$result_dir/resources.txt.sha256
 profile=$result_dir/rknpu-offline-profile
 embedded_dir=$result_dir/embedded
 built_runner=$workspace/tmp/competition/ivc/starry/thermal_rknn_starry_reference
@@ -218,6 +224,7 @@ start_lease() {
 }
 
 cd "$workspace"
+bash "$rknpu_stager" 2>&1 | tee "$stage_log"
 start_lease "$result_dir/pre-run-board-connect.log"
 ssh "${ssh_options[@]}" "$ssh_target" \
     'rm -f -- /home/orangepi/rknpu-result.img /home/orangepi/rknpu-result.img.new; sync'
@@ -268,6 +275,9 @@ stop_lease
 
 debugfs -R "dump /var/lib/rknn/raw.csv $raw" "$snapshot" >/dev/null
 debugfs -R "dump /var/lib/rknn/raw.csv.sha256 $raw_manifest" "$snapshot" >/dev/null
+debugfs -R "dump /var/lib/rknn/resources.txt $resource" "$snapshot" >/dev/null
+debugfs -R "dump /var/lib/rknn/resources.txt.sha256 $resource_manifest" \
+    "$snapshot" >/dev/null
 debugfs -R 'cat /etc/rknpu-offline-profile' "$snapshot" >"$profile"
 mkdir -p "$embedded_dir"
 debugfs -R "dump /opt/thermal-rknn/thermal_rknn_reference $embedded_dir/thermal_rknn_reference" \
@@ -294,10 +304,17 @@ if [[ "$actual_raw_sha256" != "$expected_raw_sha256" ]]; then
     echo "Harvested RKNPU raw CSV hash differs from the guest manifest" >&2
     exit 1
 fi
+expected_resource_sha256=$(cut -d ' ' -f 1 "$resource_manifest")
+actual_resource_sha256=$(sha256sum "$resource" | cut -d ' ' -f 1)
+if [[ "$actual_resource_sha256" != "$expected_resource_sha256" ]]; then
+    echo "Harvested RKNPU resource hash differs from the guest manifest" >&2
+    exit 1
+fi
 for marker in \
     AXVISOR_RK3588_NPU_HANDOFF_READY \
     'IVC_RKNN_PROGRESS completed=10000' \
     THERMAL_RKNN_STARRY_PASS \
+    THERMAL_RKNN_STARRY_RESOURCE \
     AXVISOR_SNAPSHOT_SYNC_OK \
     AXVISOR_HOST_FILESYSTEM_SYNCED; do
     if ! grep -aFq "$marker" "$console"; then
@@ -316,6 +333,8 @@ analysis_args=(
     "$reference_analyzer"
     --raw "$raw"
     --raw-manifest "$raw_manifest"
+    --resource "$resource"
+    --resource-manifest "$resource_manifest"
     --console "$console"
     --profile "$profile"
     --board-facts "$result_dir/board-facts.txt"
@@ -343,4 +362,4 @@ fi
     | tee "$result_dir/reference-analysis.log"
 write_checksums
 trap - EXIT HUP INT TERM
-echo "THERMAL_RKNN_STARRY_BOARD_PASS result_dir=$result_dir vectors=10000 raw_sha256=$actual_raw_sha256 analysis=$analysis_report"
+echo "THERMAL_RKNN_STARRY_BOARD_PASS result_dir=$result_dir vectors=10000 raw_sha256=$actual_raw_sha256 resource_sha256=$actual_resource_sha256 analysis=$analysis_report"
