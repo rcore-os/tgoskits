@@ -1179,6 +1179,14 @@ impl ProcessData {
         }
     }
 
+    /// Wake a job-stopped thread so it can publish a pending ptrace event.
+    ///
+    /// This does not alter the job-control state.  Only `SIGCONT` or `SIGKILL`
+    /// may release a job stop.
+    pub fn wake_job_stop_waiter(&self) {
+        unsafe { self.cont_event.wake(IoEvents::IN) };
+    }
+
     /// The wait queue woken when the process is continued or killed.
     pub fn cont_event(&self) -> Arc<PollSet> {
         self.cont_event.clone()
@@ -1326,6 +1334,14 @@ impl ProcessData {
             .lock()
             .get(&tid)
             .and_then(|stop| stop.signo)
+    }
+
+    /// Return whether the selected stop was produced at a syscall boundary.
+    pub fn ptrace_stop_is_syscall_for(&self, tid: u32) -> bool {
+        self.ptrace_stop
+            .lock()
+            .get(&tid)
+            .is_some_and(|stop| stop.is_syscall)
     }
 
     pub fn ptrace_unreported_stop(&self, preferred_tid: Option<u32>) -> Option<(u32, Signo)> {
@@ -1625,6 +1641,30 @@ impl ProcessData {
         } else {
             traces.insert(tid, state);
         }
+    }
+
+    /// Return the next syscall boundary that a `PTRACE_SYSCALL` tracee stops at.
+    pub fn ptrace_syscall_trace_state_for(&self, tid: u32) -> SyscallTraceState {
+        self.ptrace_syscall_trace
+            .lock()
+            .get(&tid)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Continue syscall tracing from the opposite boundary.
+    ///
+    /// This is used only when `PTRACE_SYSCALL` resumes a syscall stop. Resuming
+    /// an event, group, or signal-delivery stop begins with the next entry.
+    pub fn advance_ptrace_syscall_trace_for(&self, tid: u32) {
+        let mut traces = self.ptrace_syscall_trace.lock();
+        let next = match traces.get(&tid).copied() {
+            Some(SyscallTraceState::Entry) => SyscallTraceState::Exit,
+            Some(SyscallTraceState::Exit) | Some(SyscallTraceState::None) | None => {
+                SyscallTraceState::Entry
+            }
+        };
+        traces.insert(tid, next);
     }
 
     pub fn take_ptrace_syscall_trace_for(&self, tid: u32) -> SyscallTraceState {

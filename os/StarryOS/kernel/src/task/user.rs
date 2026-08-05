@@ -131,21 +131,12 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
 
                 match reason {
                     ReturnReason::Syscall => {
-                        let trace_state = thr.proc_data.take_ptrace_syscall_trace_for(tid);
+                        let trace_state = thr.proc_data.ptrace_syscall_trace_state_for(tid);
                         if matches!(trace_state, SyscallTraceState::Entry)
                             && let Some(resume_signo) =
                                 ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                         {
                             enqueue_ptrace_syscall_resume_signal(thr, resume_signo);
-                            match thr.proc_data.take_ptrace_syscall_trace_for(tid) {
-                                SyscallTraceState::Entry | SyscallTraceState::Exit => {
-                                    thr.proc_data.set_ptrace_syscall_trace_state_for(
-                                        tid,
-                                        SyscallTraceState::Exit,
-                                    )
-                                }
-                                SyscallTraceState::None => {}
-                            }
                         }
 
                         if let Some(exit_code) = ptrace_exit_event_code(saved_sysno, saved_a0)
@@ -161,14 +152,6 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;
                         }
-                        if matches!(
-                            thr.proc_data.take_ptrace_syscall_trace_for(tid),
-                            SyscallTraceState::Exit
-                        ) {
-                            let resume_signo =
-                                ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
-                            enqueue_ptrace_syscall_resume_signal(thr, resume_signo.flatten());
-                        }
                         if thr.proc_data.take_ptrace_exec_stop_pending() {
                             let _is_event =
                                 crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
@@ -177,6 +160,14 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             {
                                 continue;
                             }
+                        }
+                        if matches!(
+                            thr.proc_data.ptrace_syscall_trace_state_for(tid),
+                            SyscallTraceState::Exit
+                        ) {
+                            let resume_signo =
+                                ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                            enqueue_ptrace_syscall_resume_signal(thr, resume_signo.flatten());
                         }
                     }
                     ReturnReason::PageFault(addr, flags) => {
