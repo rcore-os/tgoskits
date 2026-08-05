@@ -29,6 +29,7 @@ use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsR
 use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
+use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
@@ -51,6 +52,7 @@ static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 const PROCFS_INIT_PID: Pid = 1;
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
+static BOOT_ID: LazyInit<String> = LazyInit::new();
 
 fn read_kallsyms() -> KallsymsMapped<'static> {
     unsafe extern "C" {
@@ -97,6 +99,61 @@ fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
     } else {
         get_process_data(pid).map_err(|_| VfsError::NotFound)
     }
+}
+
+fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
+    let boot_id = BOOT_ID.get_or_init(generate_boot_id).clone();
+    let file = SimpleFile::new_regular(fs, move || Ok(boot_id.clone()));
+    let now = wall_time();
+    file.set_attrs(
+        NodePermission::from_bits_truncate(0o444),
+        0,
+        0,
+        now,
+        now,
+        now,
+    );
+    file
+}
+
+fn generate_boot_id() -> String {
+    let realtime = wall_time();
+    let wall_clock_nanos = realtime
+        .as_secs()
+        .wrapping_mul(1_000_000_000)
+        .wrapping_add(realtime.subsec_nanos() as u64);
+    let stack_addr = &wall_clock_nanos as *const u64 as usize as u64;
+    // A boot ID must not persist with the generated rootfs or machine identity.
+    // Mix wall-clock and boot-relative time before deriving the one boot-scoped
+    // UUID value.
+    let seed = wall_clock_nanos
+        ^ (monotonic_time().as_nanos() as u64).rotate_left(17)
+        ^ stack_addr.rotate_left(31);
+    let mut random_bytes = [0; 16];
+    ChaCha20Rng::seed_from_u64(seed).fill_bytes(&mut random_bytes);
+    random_bytes[6] = (random_bytes[6] & 0x0f) | 0x40;
+    random_bytes[8] = (random_bytes[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:\
+         02x}{:02x}{:02x}\n",
+        random_bytes[0],
+        random_bytes[1],
+        random_bytes[2],
+        random_bytes[3],
+        random_bytes[4],
+        random_bytes[5],
+        random_bytes[6],
+        random_bytes[7],
+        random_bytes[8],
+        random_bytes[9],
+        random_bytes[10],
+        random_bytes[11],
+        random_bytes[12],
+        random_bytes[13],
+        random_bytes[14],
+        random_bytes[15],
+    )
 }
 
 fn render_meminfo() -> String {
@@ -1974,6 +2031,11 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                     }),
                 ),
             );
+            kernel.add("random", {
+                let mut random = DirMapping::new();
+                random.add("boot_id", boot_id_proc_file(fs.clone()));
+                SimpleDir::new_maker(fs.clone(), Arc::new(random))
+            });
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
             // `perf_event_paranoid` gates how much unprivileged users may

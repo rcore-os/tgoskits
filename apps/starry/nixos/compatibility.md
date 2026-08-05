@@ -36,8 +36,30 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 | Journald reads the current hostname from proc sysctl | Linux v6.18 `kernel/utsname_sysctl.c` exposes `/proc/sys/kernel/hostname` from the caller's current UTS namespace and emits a newline-terminated value | Journald continued past `SO_TIMESTAMP`, printed `Collecting audit messages is disabled`, then failed to open `/proc/sys/kernel/hostname` with `ENOENT` | Resolved with a dynamic read-only proc sysctl node backed by `nsproxy.uts_ns.nodename`; no duplicate hostname state or userspace fallback added | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-hostname/` changed from deterministic `ENOENT` after 3 checks to 12/12 pass; the existing namespace regression also passed 13/13 | Re-run when procfs sysctl reads, UTS namespace cloning, `sethostname`, or `uname` semantics change |
 | systemd passes a pathname Unix stream listener to journald | Linux `socket(7)` defines `SO_ACCEPTCONN` as a read-only integer that is zero before `listen(2)` and one afterwards; systemd 260.2 uses it while identifying inherited Varlink listeners | After the hostname correction, journald reported `1 unknown file descriptors passed, closing.` before `Collecting audit messages is disabled` | Resolved by exposing the owning transport's listener state through `SocketOps`, separating Unix bind from listen, and returning that state for `SO_ACCEPTCONN`; no syscall-layer shadow state added | `test-suit/starryos/qemu/system/bugfix-unix-listener-introspection/` changed from 12/17 to 17/17, matching the host Linux oracle; adjacent accept4 and seqpacket regressions also pass | Re-run when socket listener state, Unix namespace bind slots, accept/connect, or `SO_ACCEPTCONN` handling changes |
 | Journald processes systemd handoff and notification datagrams | Linux systemd-journald accepts authenticated handoff/notification messages and remains available through its activation sockets | After listener introspection was corrected, the unknown-fd diagnostic disappeared; journald logged messages without valid credentials, then `systemd-journalctl.socket` and journald startup timed out | Open diagnostic finding; the visible messages do not yet identify whether the owning gap is credential ancillary data, sender identity, socket activation, or another wait/wakeup boundary | No focused regression yet; the current boot only proves the Varlink listener boundary was crossed | Revisit after a Linux oracle and minimal deterministic reproducer identify the first failing operation |
+| `systemd-journald` appends an entry and obtains the current boot ID | systemd 260.2 [`sd_id128_get_boot()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-id128/sd-id128.c#L169-L193) reads `/proc/sys/kernel/random/boot_id` as a non-null canonical UUID; [`journal_file_append_entry()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-journal/journal-file.c#L2527-L2573) returns that read error before appending. The same direct `open`/`fstat`/`read`/`lseek` C probe passed 9/9 in the project Linux container. | The journal file open returned its expected initial `ENOENT`, then the boot-ID read returned `ENOENT`; journald reported its generic journal-write error immediately afterwards. | Resolved in procfs with one immutable per-kernel-boot UUIDv4 value, exposed as read-only `/proc/sys/kernel/random/boot_id`; no machine-ID derivation, journal mask, or service override was added. | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-random-boot-id/` changed from `open` `ENOENT` to 9/9 pass, including `0444`, exact 37-byte format, EOF, seek/re-read, and two-reader stability. The 2026-08-05 NixOS rerun then reached `Started Journal Service.` and received the flush request without another boot-ID error. | Re-run when procfs initialization, wall-clock entropy, pseudo-file permissions, or boot-identity lifecycle changes. |
 
 ## Run evidence
+
+### 2026-08-05 boot-ID correction acceptance rerun
+
+- CI-like execution used
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`
+  in `ghcr.io/rcore-os/tgoskits-container:latest`, with rootless Podman,
+  `--network none`, a read-only `/workspace` source mount, and only
+  `.ci-cache/{axbuild-tmp,cargo,rustup,target,tmp}` writable. The run did not
+  invoke host Nix, mutate `/nix/store`, or rebuild the NixOS rootfs.
+- The reused generated system identified itself as
+  `/nix/store/q2j5y05w2l4nhvsgzd3b7g49rn92lpkn-nixos-system-starry-nixos-stage2`;
+  systemd was `260.2`.
+- Journald printed `Collecting audit messages is disabled.`, reached
+  `Started Journal Service.`, and later logged `Received client request to flush
+  runtime journal.` The prior `/proc/sys/kernel/random/boot_id` `ENOENT` and
+  generic journal-write error did not recur.
+- The strict matcher then rejected the boot on `Failed to start Apply Kernel
+  Variables.` `Failed to start Flush Journal to Persistent Storage.` followed.
+  Later `fcntl(1027)` and `kcmp` diagnostics are recorded only as observations;
+  this run does not attribute those later failures to a new kernel subsystem.
+  No `STARRY_NIXOS_SYSTEM_PASSED` marker was emitted.
 
 ### 2026-08-01 initial unmasked run
 
