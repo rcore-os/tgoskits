@@ -377,28 +377,40 @@ impl AxVMConfig {
     }
 
     /// Replaces the virtual GIC windows with host firmware resources.
-    pub fn replace_machine_gic(&mut self, profile: GuestGicProfile) -> crate::AxVmResult {
-        const GICD_MINIMUM_SIZE: usize = 0x1_0000;
-        if profile.distributor.length < GICD_MINIMUM_SIZE {
-            return Err(crate::AxVmError::invalid_config(alloc::format!(
-                "AArch64 GIC distributor window {:#x} is smaller than {GICD_MINIMUM_SIZE:#x}",
-                profile.distributor.length
-            )));
-        }
+    pub fn replace_machine_gic(&mut self, mut profile: GuestGicProfile) -> crate::AxVmResult {
         let cpu_num = self.phys_cpu_ls.cpu_num().max(1);
         let (cpu_region, cpu_region_name, cpu_count) = match profile.cpu_region {
-            GuestGicCpuRegion::CpuInterface(region) => {
-                const GICC_MINIMUM_SIZE: usize = 0x1_000;
-                if region.length < GICC_MINIMUM_SIZE {
+            GuestGicCpuRegion::CpuInterface(mut region) => {
+                const GICV2_DISTRIBUTOR_SIZE: usize = 0x1_000;
+                const GICV2_CPU_INTERFACE_SIZE: usize = 0x2_000;
+                if profile.distributor.length < GICV2_DISTRIBUTOR_SIZE {
                     return Err(crate::AxVmError::invalid_config(alloc::format!(
-                        "AArch64 GIC CPU-interface window {:#x} is smaller than \
-                         {GICC_MINIMUM_SIZE:#x}",
+                        "AArch64 GICv2 distributor window {:#x} is smaller than \
+                         {GICV2_DISTRIBUTOR_SIZE:#x}",
+                        profile.distributor.length
+                    )));
+                }
+                if region.length < GICV2_CPU_INTERFACE_SIZE {
+                    return Err(crate::AxVmError::invalid_config(alloc::format!(
+                        "AArch64 GICv2 CPU-interface window {:#x} is smaller than \
+                         {GICV2_CPU_INTERFACE_SIZE:#x}",
                         region.length
                     )));
                 }
+                profile.distributor.length = GICV2_DISTRIBUTOR_SIZE;
+                region.length = GICV2_CPU_INTERFACE_SIZE;
+                profile.cpu_region = GuestGicCpuRegion::CpuInterface(region);
                 (region, "gic-cpu-interface", None)
             }
             GuestGicCpuRegion::Redistributors(region) => {
+                const GICV3_DISTRIBUTOR_MINIMUM_SIZE: usize = 0x1_0000;
+                if profile.distributor.length < GICV3_DISTRIBUTOR_MINIMUM_SIZE {
+                    return Err(crate::AxVmError::invalid_config(alloc::format!(
+                        "AArch64 GICv3 distributor window {:#x} is smaller than \
+                         {GICV3_DISTRIBUTOR_MINIMUM_SIZE:#x}",
+                        profile.distributor.length
+                    )));
+                }
                 let required_size = cpu_num
                     .checked_mul(crate::machine::AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE)
                     .ok_or_else(|| {
@@ -749,6 +761,61 @@ mod tests {
         assert_eq!(
             (redistributor.base_gpa, redistributor.length),
             (0xfe68_0000, 0x10_0000)
+        );
+    }
+
+    #[test]
+    fn replacing_machine_gicv2_normalizes_overlapping_firmware_windows() {
+        let machine =
+            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 1);
+        let mut config = AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            emu_devices: machine.emulated_devices,
+            serial_profile: Some(machine.serial),
+            ..Default::default()
+        });
+        let profile = GuestGicProfile {
+            compatible: "arm,gic-400".into(),
+            node_path: "/interrupt-controller@2a701000".into(),
+            node_phandle: Some(1),
+            distributor: crate::machine::GuestMmioRegion {
+                base: 0x2a70_1000,
+                length: 0x1_0000,
+            },
+            cpu_region: GuestGicCpuRegion::CpuInterface(crate::machine::GuestMmioRegion {
+                base: 0x2a70_2000,
+                length: 0x1_0000,
+            }),
+        };
+
+        config.replace_machine_gic(profile).unwrap();
+
+        let normalized = config.gic_profile().unwrap();
+        assert_eq!(normalized.distributor.length, 0x1_000);
+        assert_eq!(
+            normalized.cpu_region,
+            GuestGicCpuRegion::CpuInterface(crate::machine::GuestMmioRegion {
+                base: 0x2a70_2000,
+                length: 0x2_000,
+            })
+        );
+        let distributor = config
+            .emu_devices()
+            .iter()
+            .find(|device| device.emu_type == EmulatedDeviceType::InterruptController)
+            .unwrap();
+        let cpu_interface = config
+            .emu_devices()
+            .iter()
+            .find(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
+            .unwrap();
+        assert_eq!(
+            (distributor.base_gpa, distributor.length),
+            (0x2a70_1000, 0x1_000)
+        );
+        assert_eq!(
+            (cpu_interface.base_gpa, cpu_interface.length),
+            (0x2a70_2000, 0x2_000)
         );
     }
 

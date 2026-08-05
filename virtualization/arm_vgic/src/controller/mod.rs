@@ -17,10 +17,11 @@ use axdevice_base::ItsId;
 pub use binding::GicV3VcpuBinding;
 
 use crate::{
-    DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config, GicV3SpiOwnership,
-    GicVcpuId, GuestMemory, IntId, InterruptState, ItsDeviceId, ItsState, PhysicalInterruptBinding,
-    PhysicalMsiBinding, PpiId, RedistributorState, SgiId, SgiTarget, SpiId, TriggerMode, VgicError,
-    VgicResult, backend_result,
+    ArmVgicConfig, DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config,
+    GicV3MmioRegion, GicV3SpiOwnership, GicVcpuId, GuestMemory, IntId, InterruptState, ItsDeviceId,
+    ItsState, LPI_INTID_MAX, PhysicalInterruptBinding, PhysicalMsiBinding, PpiId,
+    RedistributorState, SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
+    backend_result,
 };
 
 /// Runtime wake capability associated with one attached vCPU.
@@ -35,6 +36,9 @@ pub struct GicV3Controller {
     inner: Arc<ControllerInner>,
 }
 
+/// Version-neutral canonical VGIC controller used by architecture frontends.
+pub type VgicController = GicV3Controller;
+
 impl core::fmt::Debug for GicV3Controller {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
@@ -45,7 +49,8 @@ impl core::fmt::Debug for GicV3Controller {
 }
 
 struct ControllerInner {
-    config: GicV3Config,
+    config: ControllerConfig,
+    gicv3_config: Option<GicV3Config>,
     backend: Arc<dyn GicV3Backend>,
     guest_memory: Option<Arc<dyn GuestMemory>>,
     // Wired inputs and physical IRQ forwarding can enter from a hard IRQ
@@ -53,6 +58,107 @@ struct ControllerInner {
     // local IRQ state before taking the canonical state lock prevents that
     // re-entry from spinning on a lock interrupted code already owns.
     state: SpinNoIrq<ControllerState>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ControllerConfig {
+    spi_ownership: GicV3SpiOwnership,
+    distributor_size: u64,
+    redistributor_stride: u64,
+    vcpu_count: usize,
+    its: Vec<(ItsId, GicV3MmioRegion)>,
+    spi_count: usize,
+    affinity_level_3: bool,
+    range_selector: bool,
+    lpi_limit: u32,
+    list_register_count: usize,
+    its_command_budget: usize,
+}
+
+impl ControllerConfig {
+    fn from_gicv3(config: &GicV3Config) -> Self {
+        Self {
+            spi_ownership: config.spi_ownership(),
+            distributor_size: config.distributor().size(),
+            redistributor_stride: config.redistributor_stride(),
+            vcpu_count: config.vcpu_count(),
+            its: config.its_instances().to_vec(),
+            spi_count: config.spi_count(),
+            affinity_level_3: config.affinity_level_3(),
+            range_selector: config.range_selector(),
+            lpi_limit: config.lpi_limit(),
+            list_register_count: config.list_register_count(),
+            its_command_budget: config.its_command_budget(),
+        }
+    }
+
+    pub(crate) fn from_arm(config: &ArmVgicConfig) -> VgicResult<Self> {
+        match config {
+            ArmVgicConfig::V2(config) => Ok(Self {
+                spi_ownership: GicV3SpiOwnership::AllGuestOwned,
+                distributor_size: config.distributor().size(),
+                redistributor_stride: 0x2_0000,
+                vcpu_count: config.vcpu_affinities().len(),
+                its: Vec::new(),
+                spi_count: config.spi_count(),
+                affinity_level_3: false,
+                range_selector: false,
+                lpi_limit: LPI_INTID_MAX,
+                list_register_count: config.list_register_count(),
+                its_command_budget: 0,
+            }),
+            ArmVgicConfig::V3(_) => {
+                let config = config.internal_gicv3_config()?;
+                Ok(Self::from_gicv3(&config))
+            }
+        }
+    }
+
+    pub(crate) const fn spi_ownership(&self) -> GicV3SpiOwnership {
+        self.spi_ownership
+    }
+    pub(crate) const fn distributor_size(&self) -> u64 {
+        self.distributor_size
+    }
+    pub(crate) const fn redistributor_stride(&self) -> u64 {
+        self.redistributor_stride
+    }
+    pub(crate) const fn vcpu_count(&self) -> usize {
+        self.vcpu_count
+    }
+    pub(crate) fn its_instances(&self) -> &[(ItsId, GicV3MmioRegion)] {
+        &self.its
+    }
+    pub(crate) fn its(&self) -> Option<GicV3MmioRegion> {
+        self.its.first().map(|(_, region)| *region)
+    }
+    pub(crate) const fn spi_count(&self) -> usize {
+        self.spi_count
+    }
+    pub(crate) const fn spi_limit(&self) -> u32 {
+        32 + self.spi_count as u32
+    }
+    pub(crate) const fn affinity_level_3(&self) -> bool {
+        self.affinity_level_3
+    }
+    pub(crate) const fn range_selector(&self) -> bool {
+        self.range_selector
+    }
+    pub(crate) const fn lpi_limit(&self) -> u32 {
+        self.lpi_limit
+    }
+    pub(crate) const fn list_register_count(&self) -> usize {
+        self.list_register_count
+    }
+    pub(crate) const fn its_command_budget(&self) -> usize {
+        self.its_command_budget
+    }
+    pub(crate) const fn guest_private_interrupt_mask(&self) -> u32 {
+        u32::MAX
+    }
+    pub(crate) const fn exposes_guest_lpis(&self) -> bool {
+        !self.its.is_empty()
+    }
 }
 
 struct ControllerState {
@@ -95,7 +201,8 @@ impl GicV3Controller {
                 detail: "a guest-visible ITS requires a guest-memory capability".into(),
             });
         }
-        let distributor = DistributorState::new(config.spi_count())?;
+        let common = ControllerConfig::from_gicv3(&config);
+        let distributor = DistributorState::new(common.spi_count())?;
         let its = config
             .its_instances()
             .iter()
@@ -103,7 +210,49 @@ impl GicV3Controller {
             .collect();
         Ok(Self {
             inner: Arc::new(ControllerInner {
-                config,
+                config: common,
+                gicv3_config: Some(config),
+                backend,
+                guest_memory,
+                state: SpinNoIrq::new(ControllerState {
+                    distributor,
+                    redistributors: BTreeMap::new(),
+                    spi_backings: BTreeMap::new(),
+                    physical_spi_acknowledged: BTreeMap::new(),
+                    releasing_physical_spis: BTreeSet::new(),
+                    msi_backings: BTreeMap::new(),
+                    active_vcpus: alloc::collections::BTreeSet::new(),
+                    its,
+                }),
+            }),
+        })
+    }
+
+    pub(crate) fn new_from_arm_config(
+        config: &ArmVgicConfig,
+        backend: Arc<dyn GicV3Backend>,
+        guest_memory: Option<Arc<dyn GuestMemory>>,
+    ) -> VgicResult<Self> {
+        let common = ControllerConfig::from_arm(config)?;
+        if !common.its_instances().is_empty() && guest_memory.is_none() {
+            return Err(VgicError::InvalidConfig {
+                detail: "a guest-visible ITS requires a guest-memory capability".into(),
+            });
+        }
+        let distributor = DistributorState::new(common.spi_count())?;
+        let its = common
+            .its_instances()
+            .iter()
+            .map(|(id, _)| (*id, ItsState::new()))
+            .collect();
+        let gicv3_config = match config {
+            ArmVgicConfig::V2(_) => None,
+            ArmVgicConfig::V3(_) => Some(config.internal_gicv3_config()?),
+        };
+        Ok(Self {
+            inner: Arc::new(ControllerInner {
+                config: common,
+                gicv3_config,
                 backend,
                 guest_memory,
                 state: SpinNoIrq::new(ControllerState {
@@ -122,7 +271,15 @@ impl GicV3Controller {
 
     /// Returns immutable validated configuration.
     pub fn config(&self) -> &GicV3Config {
-        &self.inner.config
+        self.inner
+            .gicv3_config
+            .as_ref()
+            .expect("GicV3Controller::config called for a GICv2 VgicCore")
+    }
+
+    /// Returns the GICv3 frontend configuration when this controller has one.
+    pub fn gicv3_config(&self) -> Option<&GicV3Config> {
+        self.inner.gicv3_config.as_ref()
     }
 
     /// Attaches one vCPU and returns its lifecycle binding.
@@ -461,7 +618,7 @@ impl ControllerState {
     fn require_software_spi(
         &self,
         spi: SpiId,
-        config: &GicV3Config,
+        config: &ControllerConfig,
         operation: &'static str,
     ) -> VgicResult {
         self.distributor.interrupt(spi)?;
@@ -482,7 +639,7 @@ impl ControllerState {
         }
     }
 
-    fn has_software_backing(&self, spi: SpiId, config: &GicV3Config) -> bool {
+    fn has_software_backing(&self, spi: SpiId, config: &ControllerConfig) -> bool {
         matches!(self.spi_backings.get(&spi), Some(SpiBacking::Software))
             || (config.spi_ownership() == GicV3SpiOwnership::AllGuestOwned
                 && !self.spi_backings.contains_key(&spi))

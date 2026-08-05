@@ -6,8 +6,8 @@ use axvm_types::AccessWidth;
 
 use super::RedistributorState;
 use crate::{
-    GicV3Config, IntId, InterruptRecord, Priority, RegisterRegion, TriggerMode, VgicError,
-    VgicResult,
+    IntId, InterruptRecord, Priority, RegisterRegion, TriggerMode, VgicError, VgicResult,
+    controller::ControllerConfig as GicV3Config,
     register::{
         GICD_ICACTIVER, GICD_ICENABLER, GICD_ICFGR, GICD_ICPENDR, GICD_IGROUPR, GICD_IPRIORITYR,
         GICD_ISACTIVER, GICD_ISENABLER, GICD_ISPENDR, GICR_CTLR, GICR_IIDR, GICR_PENDBASER,

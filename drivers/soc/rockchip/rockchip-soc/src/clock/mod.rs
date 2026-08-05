@@ -197,7 +197,7 @@ impl ClockAssignmentProtection for Cru {
     fn assignment_mmio_write_protection(&self, id: ClkId) -> Option<Vec<ClockMmioWriteProtection>> {
         match self {
             Self::Rk3568(cru) => cru.assignment_mmio_write_protection(id),
-            Self::Rk3576(_) => None,
+            Self::Rk3576(cru) => cru.assignment_mmio_write_protection(id),
             Self::Rk3588(cru) => cru.assignment_mmio_write_protection(id),
         }
     }

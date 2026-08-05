@@ -365,22 +365,27 @@ fn physical_spi_target(
     let affinity = binding.affinity();
     match version {
         HostGicVersion::V2 => {
-            if affinity.aff3() != 0
-                || affinity.aff2() != 0
-                || affinity.aff1() != 0
-                || affinity.aff0() >= 8
-            {
-                return Err(GicV3BackendError::new(
+            let hardware_cpu_id = usize::try_from(affinity.mpidr()).map_err(|_| {
+                GicV3BackendError::new(
+                    "target assigned physical interrupt",
+                    alloc::format!("host CPU affinity {affinity:?} does not fit usize"),
+                )
+            })?;
+            let target = try_with_gic("target assigned physical interrupt", |intc| {
+                intc.typed_mut::<arm_gic_driver::v2::Gic>()
+                    .and_then(|gic| gic.target_for_hardware_cpu(hardware_cpu_id))
+            })?
+            .ok_or_else(|| {
+                GicV3BackendError::new(
                     "target assigned physical interrupt",
                     alloc::format!(
-                        "GICv2 cannot route host INTID {} to affinity {affinity:?}",
+                        "GICv2 cannot route host INTID {} to affinity {affinity:?}: the host CPU \
+                         route is not initialized",
                         binding.host().raw()
                     ),
-                ));
-            }
-            Ok(PhysicalSpiTarget::V2(arm_gic_driver::v2::TargetList::new(
-                core::iter::once(usize::from(affinity.aff0())),
-            )))
+                )
+            })?;
+            Ok(PhysicalSpiTarget::V2(target))
         }
         HostGicVersion::V3 => Ok(PhysicalSpiTarget::V3(Some(
             arm_gic_driver::v3::Affinity::from_mpidr(affinity.mpidr()),

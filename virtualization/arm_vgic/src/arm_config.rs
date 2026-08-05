@@ -473,26 +473,13 @@ impl ArmVgicConfig {
         }
     }
 
-    pub(crate) fn internal_config(&self) -> VgicResult<GicV3Config> {
+    pub(crate) fn internal_gicv3_config(&self) -> VgicResult<GicV3Config> {
         match self {
             Self::V3(config) => config.internal_config(),
-            Self::V2(config) => {
-                let synthetic_base =
-                    0x8000_0000_0000 + (config.controller_id().value() as u64) * 0x1000_0000;
-                let redistributors = VgicMmioRegion::new(
-                    synthetic_base,
-                    0x2_0000 * config.vcpu_affinities().len() as u64,
-                )?;
-                GicV3Config::new(
-                    GicV3SpiOwnership::AllGuestOwned,
-                    config.distributor(),
-                    redistributors,
-                    0x2_0000,
-                    config.vcpu_affinities().len(),
-                )?
-                .with_spi_count(config.spi_count())?
-                .with_list_register_count(config.list_register_count())
-            }
+            Self::V2(_) => Err(VgicError::Unsupported {
+                operation: "construct GICv3 configuration",
+                detail: "a GICv2 configuration has no GICv3 MMIO layout".into(),
+            }),
         }
     }
 }

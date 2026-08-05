@@ -5,8 +5,9 @@ use alloc::vec::Vec;
 use axvm_types::AccessWidth;
 
 use crate::{
-    GicAffinity, GicV3Config, GicV3SpiOwnership, IntId, InterruptRecord, InterruptState, Priority,
+    GicAffinity, GicV3SpiOwnership, IntId, InterruptRecord, InterruptState, Priority,
     RegisterRegion, SpiId, TriggerMode, VgicError, VgicResult,
+    controller::ControllerConfig as GicV3Config,
     register::{
         GICD_CTLR, GICD_ICACTIVER, GICD_ICENABLER, GICD_ICFGR, GICD_ICPENDR, GICD_IGROUPR,
         GICD_IIDR, GICD_IPRIORITYR, GICD_IROUTER, GICD_ISACTIVER, GICD_ISENABLER, GICD_ISPENDR,
@@ -502,7 +503,7 @@ fn validate_access(
 ) -> VgicResult {
     if offset
         .checked_add(width.size() as u64)
-        .is_none_or(|end| end > config.distributor().size())
+        .is_none_or(|end| end > config.distributor_size())
         || !offset.is_multiple_of(width.size() as u64)
     {
         return Err(VgicError::InvalidAccess {

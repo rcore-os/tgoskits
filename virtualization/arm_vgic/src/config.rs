@@ -287,19 +287,6 @@ impl GicV3Config {
         self.its_command_budget
     }
 
-    /// Returns the guest-visible SGI/PPI mask.
-    ///
-    /// Private interrupts are always VM-local. Physical backing applies only
-    /// to explicitly bound SPIs, so no host Redistributor state is exposed
-    /// through this mask.
-    pub(crate) const fn guest_private_interrupt_mask(&self) -> u32 {
-        u32::MAX
-    }
-
-    pub(crate) const fn exposes_guest_lpis(&self) -> bool {
-        !self.its.is_empty()
-    }
-
     fn validate(&self) -> VgicResult {
         const GICD_MIN_SIZE: u64 = 0x1_0000;
         const GIC_FRAME_ALIGNMENT: u64 = 0x1_0000;

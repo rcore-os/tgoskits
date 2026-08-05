@@ -68,6 +68,22 @@ fn v2_and_v3_require_a_matching_host_backend_version() {
 }
 
 #[test]
+fn v2_accepts_distributor_not_aligned_for_gicv3() {
+    let config = ArmVgicConfig::V2(
+        VgicV2Config::new(
+            InterruptControllerId::new(0),
+            region(0x2a70_1000, 0x1_0000),
+            region(0x2a70_6000, 0x1_0000),
+            vec![GicAffinity::new(0, 0, 1, 2)],
+        )
+        .unwrap(),
+    );
+
+    let core = VgicCore::new(config, Arc::new(V2Backend)).unwrap();
+    assert!(core.controller().gicv3_config().is_none());
+}
+
+#[test]
 fn the_dyn_controller_line_updates_the_same_canonical_state() {
     let config = ArmVgicConfig::V3(
         VgicV3Config::new(

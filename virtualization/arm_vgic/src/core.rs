@@ -12,15 +12,15 @@ use axdevice_base::{
 use axvm_types::AccessWidth;
 
 use crate::{
-    ArmVgicConfig, EventId, GicV3Backend, GicV3Controller, GicV3VcpuBinding, GicV3VcpuWake,
-    GicVcpuId, GuestMemory, HostGicVersion, IntId, ItsDeviceId, LpiId, PhysicalIrqId, SpiId,
-    TriggerMode, VgicError, VgicResult,
+    ArmVgicConfig, EventId, GicV3Backend, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, GuestMemory,
+    HostGicVersion, IntId, ItsDeviceId, LpiId, PhysicalIrqId, SpiId, TriggerMode, VgicController,
+    VgicError, VgicResult,
 };
 
 /// The single canonical virtual interrupt-controller state owner for one VM.
 pub struct VgicCore {
     config: ArmVgicConfig,
-    controller: GicV3Controller,
+    controller: VgicController,
     inputs: SpinRaw<BTreeMap<ControllerInputId, WiredIrqInput>>,
     sink: Arc<VgicWiredSink>,
     message_sink: Arc<VgicMessageSink>,
@@ -40,11 +40,7 @@ impl VgicCore {
     ) -> VgicResult<Self> {
         validate_backend_capabilities(&config, backend.capabilities())?;
         let id = config.controller_id();
-        let controller = GicV3Controller::new_with_guest_memory(
-            config.internal_config()?,
-            backend,
-            guest_memory,
-        )?;
+        let controller = VgicController::new_from_arm_config(&config, backend, guest_memory)?;
         Ok(Self {
             config,
             sink: Arc::new(VgicWiredSink {
@@ -71,7 +67,7 @@ impl VgicCore {
     }
 
     /// Returns the underlying canonical controller for architecture frontends.
-    pub const fn controller(&self) -> &GicV3Controller {
+    pub const fn controller(&self) -> &VgicController {
         &self.controller
     }
 
@@ -375,7 +371,7 @@ impl MessageInterruptController for VgicCore {
 }
 
 struct VgicWiredSink {
-    controller: GicV3Controller,
+    controller: VgicController,
     id: InterruptControllerId,
 }
 
@@ -398,7 +394,7 @@ impl WiredIrqSink for VgicWiredSink {
 }
 
 struct VgicMessageSink {
-    controller: GicV3Controller,
+    controller: VgicController,
     id: InterruptControllerId,
 }
 
