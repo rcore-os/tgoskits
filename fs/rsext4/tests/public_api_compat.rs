@@ -224,6 +224,12 @@ fn assert_layout_eq(left: BlockGroupLayout, right: BlcokGroupLayout) {
     );
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RemovedExtentObservation {
+    extents: Vec<(u32, u32, u64)>,
+    allocated_blocks: BTreeMap<u64, bool>,
+}
+
 #[test]
 fn cantflush_matches_flush_on_cached_block_device() {
     let payload = vec![0x5a; BLOCK_SIZE];
@@ -332,7 +338,7 @@ fn remove_extend_matches_remove_extent() {
             Ext4Extent,
             &mut Jbd2Dev<CompatBlockDevice>,
         ) -> Ext4Result<()>,
-    ) -> (Vec<(u32, u32, u64)>, BTreeMap<u64, bool>) {
+    ) -> RemovedExtentObservation {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
         let base = alloc_contiguous(&mut fs, &mut dev, 4);
@@ -360,7 +366,10 @@ fn remove_extend_matches_remove_extent() {
         })
         .collect();
 
-        (collect_extents(&mut inode, &mut dev), allocated)
+        RemovedExtentObservation {
+            extents: collect_extents(&mut inode, &mut dev),
+            allocated_blocks: allocated,
+        }
     }
 
     let corrected = run_with(|tree, fs, extent, dev| tree.remove_extent(fs, extent, dev));
