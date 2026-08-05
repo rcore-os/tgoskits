@@ -27,10 +27,10 @@ mod images;
 mod irq;
 mod npt;
 mod vm;
-
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
+pub(crate) use vm::RiscvVmPlan;
 
 pub(crate) struct Riscv64Arch;
 

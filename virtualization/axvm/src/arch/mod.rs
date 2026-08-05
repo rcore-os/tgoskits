@@ -18,11 +18,15 @@ mod x86_64;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::Aarch64Arch as CurrentArch;
 #[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::Aarch64VmPlan as ArchVmPlan;
+#[cfg(target_arch = "aarch64")]
 pub use aarch64::ImageLoader;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::fdt;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::LoongArch64Arch as CurrentArch;
+#[cfg(target_arch = "loongarch64")]
+pub(crate) use loongarch64::LoongArchVmPlan as ArchVmPlan;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::boot as guest_platform;
 #[cfg(target_arch = "loongarch64")]
@@ -39,9 +43,13 @@ pub use riscv64::ImageLoader;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use riscv64::Riscv64Arch as CurrentArch;
 #[cfg(target_arch = "riscv64")]
+pub(crate) use riscv64::RiscvVmPlan as ArchVmPlan;
+#[cfg(target_arch = "riscv64")]
 pub(crate) use riscv64::fdt;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use x86_64::X86_64Arch as CurrentArch;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use x86_64::X86VmPlan as ArchVmPlan;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::boot::ImageLoader;
 #[cfg(target_arch = "x86_64")]

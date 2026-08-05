@@ -4,7 +4,7 @@ use std::{boxed::Box, sync::Arc};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
-    DeviceRegistration,
+    DeviceRegistration, ResourceSlot,
 };
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
@@ -119,18 +119,15 @@ impl DeviceFactory for HostPortPassthroughDeviceFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        let base =
-            u16::try_from(config.base_gpa).map_err(|_| DeviceManagerError::InvalidConfig {
+        let (base, length) = context.pio(&ResourceSlot::new("registers")?)?;
+        if usize::from(base) != config.base_gpa || usize::from(length) != config.length {
+            return Err(DeviceManagerError::InvalidConfig {
                 operation: "build host port passthrough",
-                detail: "base port does not fit in u16".into(),
-            })?;
-        let length =
-            u16::try_from(config.length).map_err(|_| DeviceManagerError::InvalidConfig {
-                operation: "build host port passthrough",
-                detail: "port range length does not fit in u16".into(),
-            })?;
+                detail: "planned port range differs from the internal device config".into(),
+            });
+        }
         HostPortPassthroughFactory::new(PassThroughPortConfig { base, length })
             .build()
             .map_err(|error| DeviceManagerError::InvalidConfig {

@@ -10,6 +10,7 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
+    ResourceSlot,
 };
 
 const FW_CFG_SIGNATURE: u16 = 0x00;
@@ -563,7 +564,7 @@ impl DeviceFactory for FwCfgPayloadFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         if config.base_gpa != self.payload.base.as_usize() || config.length != self.payload.size {
             return Err(DeviceManagerError::InvalidConfig {
@@ -581,15 +582,25 @@ impl DeviceFactory for FwCfgPayloadFactory {
                 ),
             });
         }
+        let (base, size) = context.mmio(&ResourceSlot::new("registers")?)?;
+        let base = usize::try_from(base).map_err(fw_cfg_range_conversion_error)?;
+        let size = usize::try_from(size).map_err(fw_cfg_range_conversion_error)?;
         FwCfgDeviceFactory::new().build(FwCfgBuildConfig {
-            base: self.payload.base,
-            size: self.payload.size,
+            base: GuestPhysAddr::from_usize(base),
+            size,
             kernel: self.payload.kernel,
             initrd: self.payload.initrd,
             cmdline: self.payload.cmdline.as_deref(),
             cpu_num: self.payload.cpu_num,
             platform: self.payload.platform.clone(),
         })
+    }
+}
+
+fn fw_cfg_range_conversion_error(_error: core::num::TryFromIntError) -> DeviceManagerError {
+    DeviceManagerError::InvalidConfig {
+        operation: "build fw_cfg device",
+        detail: "planned fw_cfg MMIO range exceeds the target address width".into(),
     }
 }
 

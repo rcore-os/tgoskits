@@ -19,8 +19,9 @@ use axdevice_base::{
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerResult, DeviceRegistration,
-    ServiceCardinality, ServiceKey, VirtualInterruptControllerKey, validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, ResourceSlot, ServiceCardinality, ServiceKey,
+    validate_device_config,
 };
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
@@ -305,14 +306,27 @@ impl DeviceFactory for LoongArchPchPicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         self.validate(config)?;
+        let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+        if base != config.base_gpa as u64 || length != config.length as u64 {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build LoongArch virtual PCH-PIC",
+                detail: "planned MMIO range differs from the machine descriptor".into(),
+            });
+        }
         let device: Arc<dyn Device> = self.pic.clone();
         let output: Arc<dyn PchPicOutputPort> = self.pic.clone();
-        DeviceBundle::from_registration(DeviceRegistration::Device(device))
-            .with_service::<PchPicOutputPortKey>(output)?
-            .with_service::<VirtualInterruptControllerKey>(self.interrupt_controller.clone())
+        let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
+            .with_service::<PchPicOutputPortKey>(output)?;
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(
+                self.interrupt_controller.id(),
+                self.interrupt_controller.clone(),
+            ),
+        ));
+        Ok(bundle)
     }
 }
 

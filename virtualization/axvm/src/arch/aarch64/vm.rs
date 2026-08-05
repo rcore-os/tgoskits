@@ -7,7 +7,7 @@ use axdevice::DeviceFactoryRegistry;
 use axvm_types::NestedPagingConfig;
 
 use super::{
-    Aarch64Arch, npt, shared_provider,
+    Aarch64Arch, Aarch64VmPlan, npt,
     vgic::{self, Aarch64VgicRuntime},
 };
 use crate::{
@@ -29,10 +29,11 @@ use crate::{
 
 impl Aarch64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+        let device_plan = Aarch64VmPlan::new(&config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, |root_paddr| {
+        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels, &placements)
         })
     }
@@ -55,32 +56,24 @@ impl Aarch64Arch {
 fn register_device_factories(
     vm: &AxVM,
     factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult<Aarch64DeviceBootstrap> {
-    let clock_references =
-        vm.with_config(|config| shared_provider::clock_references_for_plan(config));
-    let vgic_runtime = vgic::register_device_factories(vm, factories)?;
-    let extra_device_configs = shared_provider::register_factory(clock_references, factories)?;
-    Ok(Aarch64DeviceBootstrap {
-        vgic_runtime,
-        extra_device_configs,
+) -> AxVmResult<Arc<Aarch64VgicRuntime>> {
+    vm.with_architecture_plan(|plan| {
+        plan.shared_providers().register_factory(factories)?;
+        vgic::register_device_factories(vm, plan.vgic(), factories)
     })
 }
 
 fn init_vm_with(
     vm: &AxVM,
     factories: &DeviceFactoryRegistry,
-    bootstrap: Aarch64DeviceBootstrap,
+    vgic_runtime: Arc<Aarch64VgicRuntime>,
 ) -> AxVmResult {
-    let Aarch64DeviceBootstrap {
-        vgic_runtime,
-        extra_device_configs,
-    } = bootstrap;
     let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> =
         vgic_runtime.core().clone();
     complete_vm_init(
         vm,
         interrupt_controller,
-        |resources, interrupt_controller| {
+        |resources, _interrupt_controller| {
             let vcpu_mappings = resources
                 .config()
                 .phys_cpu_ls
@@ -116,13 +109,8 @@ fn init_vm_with(
                 )?;
             }
 
-            let devices = PreparedDevices::build_common_with_extra(
-                resources,
-                factories,
-                interrupt_controller,
-                &extra_device_configs,
-                vm.device_access_ports(),
-            )?;
+            let devices =
+                PreparedDevices::build_planned(resources, factories, vm.device_access_ports())?;
             validate_guest_dtb(resources)?;
 
             let owned_regions = guest_owned_regions(resources);
@@ -134,11 +122,6 @@ fn init_vm_with(
             Ok(PreparedVm::new(vcpus, devices))
         },
     )
-}
-
-struct Aarch64DeviceBootstrap {
-    vgic_runtime: Arc<Aarch64VgicRuntime>,
-    extra_device_configs: Vec<axvm_types::EmulatedDeviceConfig>,
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {

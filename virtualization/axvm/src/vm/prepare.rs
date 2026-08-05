@@ -1,6 +1,7 @@
 //! Architecture-neutral mechanics used by architecture-owned VM initialization.
 
 pub(crate) mod address_space;
+pub(crate) mod device_plan;
 pub(crate) mod devices;
 pub(crate) mod vcpus;
 

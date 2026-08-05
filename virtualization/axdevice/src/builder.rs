@@ -3,8 +3,8 @@
 use axvm_types::EmulatedDeviceConfig;
 
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerResult, DeviceRuntime,
-    RuntimeAccessPorts, VmResourcePlan,
+    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerResult,
+    DeviceModelRegistry, DeviceRuntime, RuntimeAccessPorts, VmResourcePlan,
 };
 
 /// Builds one `DeviceRuntime` without prescribing architecture device order.
@@ -30,9 +30,11 @@ impl DeviceRuntimeBuilder {
         &mut self,
         device_id: &str,
         config: &EmulatedDeviceConfig,
+        models: &DeviceModelRegistry,
         factories: &DeviceFactoryRegistry,
         plan: &VmResourcePlan,
     ) -> DeviceManagerResult {
+        models.verify(device_id, config, plan)?;
         let bundle = {
             let claims = plan.claim_device(device_id)?;
             let mut context =

@@ -4,7 +4,7 @@ use std::{format, string::String, sync::Arc, vec, vec::Vec};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration,
+    DeviceManagerResult, DeviceRegistration, ResourceSlot,
 };
 use axdevice_base::{AccessWidth, DeviceError};
 use axvm_types::{AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType};
@@ -17,7 +17,7 @@ use crate::{
     machine::{GuestClockReference, GuestMmioRegion},
 };
 
-pub(super) fn clock_references_for_plan(config: &AxVMConfig) -> Vec<GuestClockReference> {
+fn clock_references_for_plan(config: &AxVMConfig) -> Vec<GuestClockReference> {
     if config.address_space_policy() != AddressSpacePolicy::Passthrough {
         return Vec::new();
     }
@@ -27,21 +27,40 @@ pub(super) fn clock_references_for_plan(config: &AxVMConfig) -> Vec<GuestClockRe
         .unwrap_or_default()
 }
 
-pub(super) fn register_factory(
-    references: Vec<GuestClockReference>,
-    registry: &mut DeviceFactoryRegistry,
-) -> AxVmResult<Vec<EmulatedDeviceConfig>> {
-    let plans = build_provider_plans(&references)?;
-    if plans.is_empty() {
-        return Ok(Vec::new());
+/// Immutable shared-provider mediation selected during AArch64 VM planning.
+pub(super) struct SharedProviderBootstrap {
+    plans: Arc<[SharedProviderPlan]>,
+    configs: Vec<EmulatedDeviceConfig>,
+}
+
+impl SharedProviderBootstrap {
+    pub(super) fn from_config(config: &AxVMConfig) -> AxVmResult<Self> {
+        let references = clock_references_for_plan(config);
+        let plans = build_provider_plans(&references)?;
+        let configs = plans
+            .iter()
+            .enumerate()
+            .map(|(index, plan)| plan.device_config(index))
+            .collect();
+        Ok(Self {
+            plans: plans.into(),
+            configs,
+        })
     }
-    let configs = plans
-        .iter()
-        .enumerate()
-        .map(|(index, plan)| plan.device_config(index))
-        .collect();
-    registry.register(Arc::new(SharedProviderFactory { plans }))?;
-    Ok(configs)
+
+    pub(super) fn configs(&self) -> &[EmulatedDeviceConfig] {
+        &self.configs
+    }
+
+    pub(super) fn register_factory(&self, registry: &mut DeviceFactoryRegistry) -> AxVmResult {
+        if self.plans.is_empty() {
+            return Ok(());
+        }
+        registry.register(Arc::new(SharedProviderFactory {
+            plans: self.plans.clone(),
+        }))?;
+        Ok(())
+    }
 }
 
 fn build_provider_plans(references: &[GuestClockReference]) -> AxVmResult<Vec<SharedProviderPlan>> {
@@ -223,7 +242,7 @@ impl SharedProviderPlan {
 }
 
 struct SharedProviderFactory {
-    plans: Vec<SharedProviderPlan>,
+    plans: Arc<[SharedProviderPlan]>,
 }
 
 impl DeviceFactory for SharedProviderFactory {
@@ -234,7 +253,7 @@ impl DeviceFactory for SharedProviderFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         let [index, provider_phandle] = config.cfg_list.as_slice() else {
             return Err(DeviceManagerError::InvalidConfig {
@@ -261,6 +280,17 @@ impl DeviceFactory for SharedProviderFactory {
                 detail: format!(
                     "configuration does not match provider {:#x} plan",
                     plan.provider_phandle
+                ),
+            });
+        }
+
+        let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+        if base != plan.region.base as u64 || length != plan.region.length as u64 {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build shared MMIO provider",
+                detail: format!(
+                    "planned range {base:#x}..+{length:#x} differs from provider {:#x}..+{:#x}",
+                    plan.region.base, plan.region.length
                 ),
             });
         }

@@ -26,8 +26,8 @@ mod idle;
 pub(crate) mod irq;
 mod npt;
 mod vm;
-
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+pub(crate) use vm::LoongArchVmPlan;
 
 pub(crate) struct LoongArch64Arch;
 

@@ -16,10 +16,10 @@ use std::{
 
 use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
-    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
-    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDeviceOps, X86IoApicServiceKey,
-    X86PitDeviceOps, X86PitServiceKey, validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
+    DeviceManagerError, DeviceManagerResult, DeviceRegistration, ResourceSlot, ServiceCardinality,
+    ServiceKey, X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDeviceOps,
+    X86IoApicServiceKey, X86PitDeviceOps, X86PitServiceKey, validate_device_config,
 };
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, IrqError, IrqResult,
@@ -60,9 +60,9 @@ pub(crate) mod port;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
-
 use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
+pub(crate) use vm::X86VmPlan;
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
@@ -729,19 +729,22 @@ impl DeviceFactory for X86IoApicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build x86 virtual IOAPIC")?;
+        consume_mmio_config(context, config, "build x86 virtual IOAPIC")?;
         let service: Arc<dyn X86IoApicDeviceOps> = self.ioapic.clone();
         let domain: Arc<dyn X86InterruptDomainOps> = self.domain.clone();
         let controller: Arc<dyn VirtualInterruptController> = self.domain.clone();
-        let bundle =
+        let mut bundle =
             DeviceBundle::from_registration(DeviceRegistration::Device(self.ioapic.clone()))
                 .with_service::<X86IoApicServiceKey>(service)?;
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(self.domain.id(), controller),
+        ));
         bundle
             .with_service::<X86InterruptDomainKey>(domain)?
-            .with_service::<X86InterruptDomainRuntimeKey>(self.domain.clone())?
-            .with_service::<VirtualInterruptControllerKey>(controller)
+            .with_service::<X86InterruptDomainRuntimeKey>(self.domain.clone())
     }
 }
 
@@ -757,14 +760,36 @@ impl DeviceFactory for X86PitFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build x86 virtual PIT")?;
+        let (base, length) = context.pio(&ResourceSlot::new("registers")?)?;
+        if usize::from(base) != config.base_gpa || usize::from(length) != config.length {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build x86 virtual PIT",
+                detail: "planned port range differs from the machine descriptor".into(),
+            });
+        }
         let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
         let service: Arc<dyn X86PitDeviceOps> = pit.clone();
         DeviceBundle::from_registration(DeviceRegistration::Device(pit))
             .with_service::<X86PitServiceKey>(service)
     }
+}
+
+fn consume_mmio_config(
+    context: &mut DeviceBuildContext<'_>,
+    config: &EmulatedDeviceConfig,
+    operation: &'static str,
+) -> DeviceManagerResult {
+    let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+    if base != config.base_gpa as u64 || length != config.length as u64 {
+        return Err(DeviceManagerError::InvalidConfig {
+            operation,
+            detail: "planned MMIO range differs from the machine descriptor".into(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn x86_apic_access_page_addr() -> AxVmResult<axvm_types::HostPhysAddr> {
@@ -918,9 +943,33 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 
 #[cfg(test)]
 mod tests {
-    use axdevice::{DeviceRuntime, X86InterruptDomainKey, X86IoApicServiceKey, X86PitServiceKey};
+    use axdevice::{
+        DeviceModelError, DeviceModelRegistry, DeviceRuntimeBuilder, X86InterruptDomainKey,
+        X86IoApicServiceKey, X86PitServiceKey,
+    };
 
     use super::*;
+
+    fn x86_test_plan(
+        configs: &[EmulatedDeviceConfig],
+    ) -> crate::vm::prepare::device_plan::VmDevicePlan {
+        use crate::vm::prepare::device_plan::{FixedAddressKind, FixedDeviceModel, VmDevicePlan};
+
+        let mut models = DeviceModelRegistry::new();
+        models
+            .register(Arc::new(FixedDeviceModel::new(
+                EmulatedDeviceType::X86IoApic,
+                FixedAddressKind::Mmio,
+            )))
+            .unwrap();
+        models
+            .register(Arc::new(FixedDeviceModel::new(
+                EmulatedDeviceType::X86Pit,
+                FixedAddressKind::Pio,
+            )))
+            .unwrap();
+        VmDevicePlan::fixed(configs, models).unwrap()
+    }
     fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
 
     #[test]
@@ -1001,10 +1050,21 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let controller = register_device_factories(1, &configs, &mut factories).unwrap();
-        let mut context = DeviceBuildContext::new(controller.as_ref());
-        let devices =
-            DeviceRuntime::build_with_factories(&configs, &factories, &mut context).unwrap();
+        register_device_factories(1, &configs, &mut factories).unwrap();
+        let plan = x86_test_plan(&configs);
+        let mut builder = DeviceRuntimeBuilder::new(Default::default());
+        for config in &configs {
+            builder
+                .build_planned_device(
+                    &config.name,
+                    config,
+                    plan.models(),
+                    &factories,
+                    plan.resources(),
+                )
+                .unwrap();
+        }
+        let devices = builder.finish(plan.resources()).unwrap();
 
         assert_eq!(devices.devices().count(), 2);
         assert!(devices.services().require::<X86IoApicServiceKey>().is_ok());
@@ -1025,21 +1085,39 @@ mod tests {
         configs.retain(|config| config.emu_type != EmulatedDeviceType::Console);
 
         let mut factories = DeviceFactoryRegistry::new();
-        let controller = register_device_factories(1, &configs, &mut factories).unwrap();
-        let pit = configs
-            .iter_mut()
-            .find(|config| config.emu_type == EmulatedDeviceType::X86Pit)
+        register_device_factories(1, &configs, &mut factories).unwrap();
+        let plan = x86_test_plan(&configs);
+        let pit_index = configs
+            .iter()
+            .position(|config| config.emu_type == EmulatedDeviceType::X86Pit)
             .unwrap();
-        pit.base_gpa += 1;
+        configs[pit_index].base_gpa += 1;
+        let ioapic_index = configs
+            .iter()
+            .position(|config| config.emu_type == EmulatedDeviceType::X86IoApic)
+            .unwrap();
 
-        let mut context = DeviceBuildContext::new(controller.as_ref());
-        let result = DeviceRuntime::build_with_factories(&configs, &factories, &mut context);
+        let mut builder = DeviceRuntimeBuilder::new(Default::default());
+        let result = builder.build_planned_device(
+            &configs[ioapic_index].name,
+            &configs[ioapic_index],
+            plan.models(),
+            &factories,
+            plan.resources(),
+        );
+        assert!(result.is_ok());
+        let result = builder.build_planned_device(
+            &configs[pit_index].name,
+            &configs[pit_index],
+            plan.models(),
+            &factories,
+            plan.resources(),
+        );
         assert!(matches!(
             result,
-            Err(axdevice::DeviceManagerError::InvalidConfig {
-                operation: "build x86 virtual PIT",
-                ..
-            })
+            Err(axdevice::DeviceManagerError::DeviceModel(
+                DeviceModelError::FingerprintMismatch { .. }
+            ))
         ));
     }
 }

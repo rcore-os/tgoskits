@@ -173,6 +173,7 @@ pub(crate) struct AxVMResources {
     interrupt_controller: Option<Arc<dyn axdevice_base::VirtualInterruptController>>,
     address_layout: Option<VmAddressLayout>,
     boot_description: GuestBootDescription,
+    device_plan: crate::arch::ArchVmPlan,
 }
 
 unsafe impl Send for AxVMResources {}
@@ -556,6 +557,7 @@ impl AxVMResources {
     pub(crate) fn from_page_table(
         config: AxVMConfig,
         page_table: ArchNestedPageTable,
+        device_plan: crate::arch::ArchVmPlan,
         build_nested_paging: impl FnOnce(HostPhysAddr) -> AxVmResult<NestedPagingConfig>,
     ) -> AxVmResult<Self> {
         let address_space = AddrSpace::new_empty(
@@ -576,11 +578,24 @@ impl AxVMResources {
             interrupt_controller: None,
             address_layout: None,
             boot_description: GuestBootDescription::none(),
+            device_plan,
         })
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     pub(crate) const fn config(&self) -> &AxVMConfig {
         &self.config
+    }
+
+    pub(crate) fn planned_devices(&self) -> &crate::vm::prepare::device_plan::VmDevicePlan {
+        use crate::vm::prepare::device_plan::ArchitectureVmPlan;
+
+        self.device_plan.devices()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) const fn architecture_plan(&self) -> &crate::arch::ArchVmPlan {
+        &self.device_plan
     }
 
     fn vcpu_list(&self) -> AxVmResult<&[AxVCpuRef]> {
@@ -940,6 +955,14 @@ impl AxVM {
             .resources_mut()
             .expect("VM resources are not available for config access");
         f(&mut resources.config)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn with_architecture_plan<F, R>(&self, f: F) -> AxVmResult<R>
+    where
+        F: FnOnce(&crate::arch::ArchVmPlan) -> AxVmResult<R>,
+    {
+        self.with_resources(|resources| f(resources.architecture_plan()))
     }
 
     /// Stores a guest DTB as VM-owned boot-description state.

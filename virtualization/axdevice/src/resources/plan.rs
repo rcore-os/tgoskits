@@ -9,12 +9,13 @@ use super::{
     ResourceNamespace, ResourcePlanningError, ResourcePools, allocation::AllocationState,
     claim::ResourceClaimDomain,
 };
-use crate::{DeviceManagerError, DeviceManagerResult};
+use crate::{DeviceManagerError, DeviceManagerResult, DeviceModelFingerprint};
 
 /// An immutable resource plan for one virtual machine.
 #[derive(Debug)]
 pub struct VmResourcePlan {
     devices: BTreeMap<String, ResolvedDeviceResources>,
+    model_fingerprints: BTreeMap<String, DeviceModelFingerprint>,
     claims: Arc<ResourceClaimDomain>,
 }
 
@@ -32,6 +33,20 @@ impl VmResourcePlan {
     /// Returns the number of planned devices.
     pub fn device_count(&self) -> usize {
         self.devices.len()
+    }
+
+    /// Returns the model identity captured for one planned device.
+    pub fn model_fingerprint(
+        &self,
+        device_id: &str,
+    ) -> DeviceManagerResult<DeviceModelFingerprint> {
+        self.model_fingerprints
+            .get(device_id)
+            .copied()
+            .ok_or_else(|| DeviceManagerError::ResourceNotFound {
+                operation: "read VM device model fingerprint",
+                resource: format!("planned device {device_id}"),
+            })
     }
 
     /// Iterates in stable device-identifier order.
@@ -118,7 +133,15 @@ impl VmResourcePlanner {
         }
 
         let claims = ResourceClaimDomain::new(&devices);
-        Ok(VmResourcePlan { devices, claims })
+        let model_fingerprints = requests
+            .iter()
+            .map(|request| (request.id().into(), request.model_fingerprint()))
+            .collect();
+        Ok(VmResourcePlan {
+            devices,
+            model_fingerprints,
+            claims,
+        })
     }
 }
 

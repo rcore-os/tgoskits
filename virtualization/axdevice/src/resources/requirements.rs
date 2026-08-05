@@ -8,7 +8,7 @@ use axdevice_base::{
     MsiDeviceId, MsiEventId,
 };
 
-use crate::{DeviceManagerError, DeviceManagerResult};
+use crate::{DeviceManagerError, DeviceManagerResult, DeviceModelFingerprint};
 
 /// A model-defined resource name such as `registers` or `irq`.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -78,27 +78,33 @@ impl MsiResourceRequest {
         })
     }
 
-    pub(crate) const fn controller(self) -> InterruptControllerId {
+    /// Returns the controller owning this MSI domain.
+    pub const fn controller(self) -> InterruptControllerId {
         self.controller
     }
 
-    pub(crate) const fn its(self) -> ItsId {
+    /// Returns the VM-local ITS namespace.
+    pub const fn its(self) -> ItsId {
         self.its
     }
 
-    pub(crate) const fn count(self) -> u32 {
+    /// Returns the number of consecutive EventID/LPI pairs.
+    pub const fn count(self) -> u32 {
         self.count
     }
 
-    pub(crate) const fn device(self) -> ResourceRequest<MsiDeviceId> {
+    /// Returns the DeviceID allocation request.
+    pub const fn device(self) -> ResourceRequest<MsiDeviceId> {
         self.device
     }
 
-    pub(crate) const fn event(self) -> ResourceRequest<MsiEventId> {
+    /// Returns the first EventID allocation request.
+    pub const fn event(self) -> ResourceRequest<MsiEventId> {
         self.event
     }
 
-    pub(crate) const fn lpi(self) -> ResourceRequest<LpiId> {
+    /// Returns the first LPI allocation request.
+    pub const fn lpi(self) -> ResourceRequest<LpiId> {
         self.lpi
     }
 }
@@ -292,6 +298,7 @@ impl DeviceRequirements {
 pub struct DevicePlanRequest {
     id: String,
     requirements: DeviceRequirements,
+    model_fingerprint: DeviceModelFingerprint,
 }
 
 impl DevicePlanRequest {
@@ -300,9 +307,23 @@ impl DevicePlanRequest {
         id: impl Into<String>,
         requirements: DeviceRequirements,
     ) -> DeviceManagerResult<Self> {
+        let model_fingerprint = DeviceModelFingerprint::for_requirements(&requirements);
         Ok(Self {
             id: validate_identifier("create planned device identifier", id.into())?,
             requirements,
+            model_fingerprint,
+        })
+    }
+
+    pub(crate) fn for_model(
+        id: impl Into<String>,
+        requirements: DeviceRequirements,
+        model_fingerprint: DeviceModelFingerprint,
+    ) -> DeviceManagerResult<Self> {
+        Ok(Self {
+            id: validate_identifier("create planned device identifier", id.into())?,
+            requirements,
+            model_fingerprint,
         })
     }
 
@@ -314,6 +335,11 @@ impl DevicePlanRequest {
     /// Returns the model requirements.
     pub const fn requirements(&self) -> &DeviceRequirements {
         &self.requirements
+    }
+
+    /// Returns the model/configuration identity captured before allocation.
+    pub const fn model_fingerprint(&self) -> DeviceModelFingerprint {
+        self.model_fingerprint
     }
 }
 

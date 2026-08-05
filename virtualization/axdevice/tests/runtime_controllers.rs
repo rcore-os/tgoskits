@@ -5,9 +5,9 @@ use std::{
 
 use axdevice::{
     ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DevicePlanRequest, DeviceRegistration, DeviceRequirements, DeviceRuntime,
-    DeviceRuntimeBuilder, InterruptRegistrationError, ResourcePools, ResourceRequest, ResourceSlot,
-    VmResourcePlan, VmResourcePlanner,
+    DeviceManagerError, DeviceModel, DeviceModelError, DeviceModelRegistry, DeviceRegistration,
+    DeviceRequirements, DeviceRuntime, DeviceRuntimeBuilder, InterruptRegistrationError,
+    ResourcePools, ResourceRequest, ResourceSlot, VmResourcePlan, VmResourcePlanner,
 };
 use axdevice_base::{
     BusAccess, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
@@ -109,6 +109,31 @@ impl Device for LineDevice {
 struct IrqFactory {
     slot: ResourceSlot,
     lines: Arc<Mutex<Vec<IrqLine>>>,
+    probe_wrong_accessor: bool,
+}
+
+struct IrqModel {
+    controller: InterruptControllerId,
+    sharing: InterruptSharing,
+}
+
+impl DeviceModel for IrqModel {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::Dummy
+    }
+
+    fn requirements(
+        &self,
+        _config: &EmulatedDeviceConfig,
+    ) -> axdevice::DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new().with_wired_irq(
+            irq_slot(),
+            self.controller,
+            InterruptTrigger::LevelTriggered,
+            self.sharing,
+            ResourceRequest::Fixed(ControllerInputId::new(40)),
+        )
+    }
 }
 
 impl DeviceFactory for IrqFactory {
@@ -121,6 +146,9 @@ impl DeviceFactory for IrqFactory {
         _config: &EmulatedDeviceConfig,
         context: &mut DeviceBuildContext<'_>,
     ) -> axdevice::DeviceManagerResult<DeviceBundle> {
+        if self.probe_wrong_accessor {
+            assert!(context.mmio(&self.slot).is_err());
+        }
         let line = context.irq(&self.slot)?;
         self.lines.lock().unwrap().push(line.clone());
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
@@ -166,7 +194,7 @@ fn irq_slot() -> ResourceSlot {
 fn irq_plan(
     controller: InterruptControllerId,
     devices: &[(&str, InterruptSharing)],
-) -> VmResourcePlan {
+) -> (VmResourcePlan, DeviceModelRegistry) {
     let mut pools = ResourcePools::new();
     pools
         .allow_fixed_controller_inputs(
@@ -174,22 +202,22 @@ fn irq_plan(
             ControllerInputId::new(32)..ControllerInputId::new(64),
         )
         .unwrap();
-    let requests = devices.iter().map(|(id, sharing)| {
-        DevicePlanRequest::new(
-            *id,
-            DeviceRequirements::new()
-                .with_wired_irq(
-                    irq_slot(),
-                    controller,
-                    InterruptTrigger::LevelTriggered,
-                    *sharing,
-                    ResourceRequest::Fixed(ControllerInputId::new(40)),
-                )
-                .unwrap(),
-        )
-        .unwrap()
-    });
-    VmResourcePlanner::new(pools).plan(requests).unwrap()
+    let sharing = devices.first().unwrap().1;
+    assert!(devices.iter().all(|(_, candidate)| *candidate == sharing));
+    let mut models = DeviceModelRegistry::new();
+    models
+        .register(Arc::new(IrqModel {
+            controller,
+            sharing,
+        }))
+        .unwrap();
+    let requests = devices
+        .iter()
+        .map(|(id, _)| models.plan_request(id, &dummy_config(id)).unwrap());
+    (
+        VmResourcePlanner::new(pools).plan(requests).unwrap(),
+        models,
+    )
 }
 
 fn dummy_config(name: &str) -> EmulatedDeviceConfig {
@@ -255,20 +283,30 @@ fn controller_registration_is_validated_and_atomic() {
 #[test]
 fn failed_build_releases_claims_for_retry() {
     let id = InterruptControllerId::new(4);
-    let plan = irq_plan(id, &[("uart", InterruptSharing::Exclusive)]);
+    let (plan, models) = irq_plan(id, &[("uart", InterruptSharing::Exclusive)]);
     let lines = Arc::new(Mutex::new(Vec::new()));
     let mut factories = DeviceFactoryRegistry::new();
     factories
         .register(Arc::new(IrqFactory {
             slot: irq_slot(),
             lines,
+            probe_wrong_accessor: true,
         }))
         .unwrap();
     let mut builder = DeviceRuntimeBuilder::new(Default::default());
 
+    let mut changed = dummy_config("uart");
+    changed.base_gpa = 1;
+    assert!(matches!(
+        builder.build_planned_device("uart", &changed, &models, &factories, &plan),
+        Err(DeviceManagerError::DeviceModel(
+            DeviceModelError::FingerprintMismatch { .. }
+        ))
+    ));
+
     assert!(
         builder
-            .build_planned_device("uart", &dummy_config("uart"), &factories, &plan)
+            .build_planned_device("uart", &dummy_config("uart"), &models, &factories, &plan)
             .is_err()
     );
     let controller = Arc::new(TestController::new(id, Arc::default()));
@@ -276,7 +314,7 @@ fn failed_build_releases_claims_for_retry() {
         .register_bundle(controller_bundle(id, controller))
         .unwrap();
     builder
-        .build_planned_device("uart", &dummy_config("uart"), &factories, &plan)
+        .build_planned_device("uart", &dummy_config("uart"), &models, &factories, &plan)
         .unwrap();
     let mut runtime = builder.finish(&plan).unwrap();
     let late_id = InterruptControllerId::new(7);
@@ -292,7 +330,7 @@ fn shared_level_endpoints_preserve_wired_or() {
     let id = InterruptControllerId::new(5);
     let sink = Arc::new(RecordingSink::default());
     let controller = Arc::new(TestController::new(id, sink.clone()));
-    let plan = irq_plan(
+    let (plan, models) = irq_plan(
         id,
         &[
             ("left", InterruptSharing::Shared),
@@ -305,6 +343,7 @@ fn shared_level_endpoints_preserve_wired_or() {
         .register(Arc::new(IrqFactory {
             slot: irq_slot(),
             lines: lines.clone(),
+            probe_wrong_accessor: false,
         }))
         .unwrap();
     let mut builder = DeviceRuntimeBuilder::new(Default::default());
@@ -313,7 +352,7 @@ fn shared_level_endpoints_preserve_wired_or() {
         .unwrap();
     for device in ["right", "left"] {
         builder
-            .build_planned_device(device, &dummy_config(device), &factories, &plan)
+            .build_planned_device(device, &dummy_config(device), &models, &factories, &plan)
             .unwrap();
     }
     let _runtime = builder.finish(&plan).unwrap();

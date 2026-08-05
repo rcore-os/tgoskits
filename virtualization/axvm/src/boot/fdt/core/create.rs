@@ -34,11 +34,11 @@ pub fn create_guest_fdt(
         .phys_cpu_ids
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
-    let machine_interrupt_controllers = fdt
+    let machine_interrupt_providers = fdt
         .iter_node_ids()
         .filter_map(|node_id| {
             let node = fdt.node(node_id)?;
-            is_machine_interrupt_controller(node).then(|| fdt.path_of(node_id))
+            is_machine_interrupt_provider(node).then(|| fdt.path_of(node_id))
         })
         .collect::<Vec<_>>();
 
@@ -50,7 +50,7 @@ pub fn create_guest_fdt(
             node,
             passthrough_device_names,
             phys_cpu_ids,
-            &machine_interrupt_controllers,
+            &machine_interrupt_providers,
         )
     })?;
     prune_dangling_interrupts_extended(fdt, &mut guest_tree)?;
@@ -64,7 +64,7 @@ fn should_keep_generated_node(
     node: &Node,
     passthrough_device_names: &[String],
     phys_cpu_ids: &[usize],
-    machine_interrupt_controllers: &[String],
+    machine_interrupt_providers: &[String],
 ) -> bool {
     if node.name().starts_with("memory") {
         return false;
@@ -78,7 +78,7 @@ fn should_keep_generated_node(
         return need_cpu_node(phys_cpu_ids, fdt, node_id, node_path);
     }
 
-    if machine_interrupt_controllers
+    if machine_interrupt_providers
         .iter()
         .any(|controller| is_path_or_ancestor(node_path, controller))
     {
@@ -92,18 +92,19 @@ fn should_keep_generated_node(
         || is_ancestor_of_passthrough_device(node_path, passthrough_device_names)
 }
 
-fn is_machine_interrupt_controller(node: &Node) -> bool {
-    node.get_property("interrupt-controller").is_some()
-        && node.compatibles().any(|compatible| {
-            matches!(
-                compatible,
-                "arm,gic-v3"
-                    | "arm,cortex-a15-gic"
-                    | "arm,gic-400"
-                    | "riscv,plic0"
-                    | "sifive,plic-1.0.0"
-            )
-        })
+fn is_machine_interrupt_provider(node: &Node) -> bool {
+    node.compatibles().any(|compatible| {
+        compatible == "arm,gic-v3-its"
+            || (node.get_property("interrupt-controller").is_some()
+                && matches!(
+                    compatible,
+                    "arm,gic-v3"
+                        | "arm,cortex-a15-gic"
+                        | "arm,gic-400"
+                        | "riscv,plic0"
+                        | "sifive,plic-1.0.0"
+                ))
+    })
 }
 
 fn is_path_or_ancestor(candidate: &str, path: &str) -> bool {
@@ -576,6 +577,13 @@ mod tests {
         let mut contexts = Property::new("interrupts-extended", std::vec![]);
         contexts.set_u32_ls(&[8, 11, 8, 9, 6, 11, 6, 9]);
         fdt.node_mut(plic).unwrap().set_property(contexts);
+        let its = fdt.add_node(root, Node::new("its@8080000"));
+        let mut compatible = Property::new("compatible", alloc::vec![]);
+        compatible.set_string("arm,gic-v3-its");
+        fdt.node_mut(its).unwrap().set_property(compatible);
+        fdt.node_mut(its)
+            .unwrap()
+            .set_property(Property::new("msi-controller", alloc::vec![]));
 
         let cfg = GuestConfig {
             base: axvmconfig::VMBaseConfig {
@@ -587,6 +595,7 @@ mod tests {
         let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
         let plic = reparsed.get_by_path("/soc/plic@c000000").unwrap();
+        assert!(reparsed.get_by_path_id("/its@8080000").is_some());
 
         assert_eq!(
             plic.as_node().get_property("phandle").unwrap().get_u32(),

@@ -30,9 +30,10 @@ export PS1='~ # '
 cd /root
 
 case "$(/bin/busybox cat /proc/cmdline)" in
-  *axvisor.timer_case=gicv2*) success_marker=AXVISOR_GICV2_TIMER_STRESS_PASSED ;;
-  *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED ;;
-  *) success_marker=TIMER_STRESS_FAILED ;;
+  *axvisor.timer_case=gicv3-its*) success_marker=AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED; require_its=1 ;;
+  *axvisor.timer_case=gicv2*) success_marker=AXVISOR_GICV2_TIMER_STRESS_PASSED; require_its=0 ;;
+  *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED; require_its=0 ;;
+  *) success_marker=TIMER_STRESS_FAILED; require_its=0 ;;
 esac
 
 start=$(/bin/busybox date +%s)
@@ -55,6 +56,9 @@ while [ "$round" -lt 8 ]; do
 done
 end=$(/bin/busybox date +%s)
 elapsed=$((end - start))
+if [ "$require_its" -eq 1 ] && ! /bin/busybox dmesg | /bin/busybox grep -q 'ITS'; then
+  failed=1
+fi
 if [ "$failed" -ne 0 ] || [ "$elapsed" -lt 20 ] || [ "$elapsed" -gt 120 ]; then
   echo TIMER_STRESS_FAILED
 else
@@ -322,6 +326,10 @@ mod tests {
         assert!(
             init.windows(b"AXVISOR_GICV3_TIMER_STRESS_PASSED".len())
                 .any(|window| window == b"AXVISOR_GICV3_TIMER_STRESS_PASSED")
+        );
+        assert!(
+            init.windows(b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED".len())
+                .any(|window| window == b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED")
         );
         for applet in ["date", "mount", "sh", "sleep"] {
             assert_eq!(entries.get(&format!("bin/{applet}")).unwrap(), b"busybox");

@@ -152,8 +152,6 @@ pub struct DeviceRuntime {
     port_index: BTreeMap<u16, RangeEntry>,
     /// System register address → range entry (slot, count).
     sysreg_index: BTreeMap<u32, RangeEntry>,
-    /// Exclusive IRQ line → owning device slot.
-    irq_line_index: BTreeMap<u32, DeviceId>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// Optional lifecycle capabilities in contribution registration order.
@@ -313,7 +311,6 @@ impl DeviceRuntime {
             mmio_index: BTreeMap::new(),
             port_index: BTreeMap::new(),
             sysreg_index: BTreeMap::new(),
-            irq_line_index: BTreeMap::new(),
             pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
@@ -519,9 +516,7 @@ impl DeviceRuntime {
                 Resource::SysReg { addr, .. } => {
                     self.sysreg_index.remove(&addr);
                 }
-                Resource::IrqLine { line, .. } => {
-                    self.irq_line_index.remove(&line);
-                }
+                Resource::IrqLine { .. } => {}
             }
         }
     }
@@ -547,12 +542,6 @@ impl DeviceRuntime {
                         return Err(RegistryError::InvalidResource {
                             resource: Resource::IrqLine { line, trigger },
                             reason: InvalidResourceReason::DuplicateIrqLine { line },
-                        });
-                    }
-                    if let Some(&existing) = self.irq_line_index.get(&line) {
-                        return Err(RegistryError::IrqLineConflict {
-                            line,
-                            existing_device: existing,
                         });
                     }
                 }
@@ -756,7 +745,6 @@ impl DeviceRuntime {
     }
 
     fn insert_resources(&mut self, idx: usize, resources: &[Resource]) {
-        let device_id = DeviceId::new(idx as u32);
         for resource in resources {
             match *resource {
                 Resource::MmioRange { base, size } => {
@@ -780,9 +768,7 @@ impl DeviceRuntime {
                         },
                     );
                 }
-                Resource::IrqLine { line, .. } => {
-                    self.irq_line_index.insert(line, device_id);
-                }
+                Resource::IrqLine { .. } => {}
             }
         }
     }

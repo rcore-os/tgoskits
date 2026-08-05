@@ -379,55 +379,28 @@ impl AxVMConfig {
     /// Replaces the virtual GIC windows with host firmware resources.
     pub fn replace_machine_gic(&mut self, mut profile: GuestGicProfile) -> crate::AxVmResult {
         let cpu_num = self.phys_cpu_ls.cpu_num().max(1);
-        let (cpu_region, cpu_region_name, cpu_count) = match profile.cpu_region {
-            GuestGicCpuRegion::CpuInterface(mut region) => {
-                const GICV2_DISTRIBUTOR_SIZE: usize = 0x1_000;
-                const GICV2_CPU_INTERFACE_SIZE: usize = 0x2_000;
-                if profile.distributor.length < GICV2_DISTRIBUTOR_SIZE {
-                    return Err(crate::AxVmError::invalid_config(std::format!(
-                        "AArch64 GICv2 distributor window {:#x} is smaller than \
-                         {GICV2_DISTRIBUTOR_SIZE:#x}",
-                        profile.distributor.length
-                    )));
-                }
-                if region.length < GICV2_CPU_INTERFACE_SIZE {
-                    return Err(crate::AxVmError::invalid_config(std::format!(
-                        "AArch64 GICv2 CPU-interface window {:#x} is smaller than \
-                         {GICV2_CPU_INTERFACE_SIZE:#x}",
-                        region.length
-                    )));
-                }
-                profile.distributor.length = GICV2_DISTRIBUTOR_SIZE;
-                region.length = GICV2_CPU_INTERFACE_SIZE;
-                profile.cpu_region = GuestGicCpuRegion::CpuInterface(region);
-                (region, "gic-cpu-interface", None)
+        if let GuestGicCpuRegion::CpuInterface(region) = &mut profile.cpu_region {
+            const GICV2_DISTRIBUTOR_SIZE: usize = 0x1_000;
+            const GICV2_CPU_INTERFACE_SIZE: usize = 0x2_000;
+            if profile.distributor.length < GICV2_DISTRIBUTOR_SIZE {
+                return Err(crate::AxVmError::invalid_config(std::format!(
+                    "AArch64 GICv2 distributor window {:#x} is smaller than \
+                     {GICV2_DISTRIBUTOR_SIZE:#x}",
+                    profile.distributor.length
+                )));
             }
-            GuestGicCpuRegion::Redistributors(region) => {
-                const GICV3_DISTRIBUTOR_MINIMUM_SIZE: usize = 0x1_0000;
-                if profile.distributor.length < GICV3_DISTRIBUTOR_MINIMUM_SIZE {
-                    return Err(crate::AxVmError::invalid_config(std::format!(
-                        "AArch64 GICv3 distributor window {:#x} is smaller than \
-                         {GICV3_DISTRIBUTOR_MINIMUM_SIZE:#x}",
-                        profile.distributor.length
-                    )));
-                }
-                let required_size = cpu_num
-                    .checked_mul(crate::machine::AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE)
-                    .ok_or_else(|| {
-                        crate::AxVmError::invalid_config(
-                            "AArch64 redistributor window size overflows usize",
-                        )
-                    })?;
-                if region.length < required_size {
-                    return Err(crate::AxVmError::invalid_config(std::format!(
-                        "AArch64 GIC redistributor window {:#x} is smaller than required size \
-                         {required_size:#x}",
-                        region.length
-                    )));
-                }
-                (region, "gic-redistributors", Some(cpu_num))
+            if region.length < GICV2_CPU_INTERFACE_SIZE {
+                return Err(crate::AxVmError::invalid_config(std::format!(
+                    "AArch64 GICv2 CPU-interface window {:#x} is smaller than \
+                     {GICV2_CPU_INTERFACE_SIZE:#x}",
+                    region.length
+                )));
             }
-        };
+            profile.distributor.length = GICV2_DISTRIBUTOR_SIZE;
+            region.length = GICV2_CPU_INTERFACE_SIZE;
+        }
+        profile.validate_for_vcpus(cpu_num)?;
+        let per_cpu_configs = gic_per_cpu_device_configs(&profile);
 
         let distributor = self
             .emu_devices
@@ -441,21 +414,19 @@ impl AxVMConfig {
         distributor.base_gpa = profile.distributor.base;
         distributor.length = profile.distributor.length;
 
-        let per_cpu = self
+        let per_cpu_index = self
             .emu_devices
-            .iter_mut()
-            .find(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
+            .iter()
+            .position(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
             .ok_or_else(|| {
                 crate::AxVmError::invalid_config(
                     "AArch64 machine profile has no per-CPU GIC region",
                 )
             })?;
-        per_cpu.name = cpu_region_name.into();
-        per_cpu.base_gpa = cpu_region.base;
-        per_cpu.length = cpu_region.length;
-        per_cpu.cfg_list.clear();
-        if let Some(cpu_count) = cpu_count {
-            per_cpu.cfg_list.push(cpu_count);
+        self.emu_devices
+            .retain(|device| device.emu_type != EmulatedDeviceType::GicCpuRegion);
+        for (offset, config) in per_cpu_configs.into_iter().enumerate() {
+            self.emu_devices.insert(per_cpu_index + offset, config);
         }
 
         self.gic_profile = Some(profile);
@@ -561,6 +532,32 @@ impl AxVMConfig {
 impl Default for AxVMConfig {
     fn default() -> Self {
         Self::new(AxVMConfigParams::default())
+    }
+}
+
+fn gic_per_cpu_device_configs(profile: &GuestGicProfile) -> Vec<EmulatedDeviceConfig> {
+    match &profile.cpu_region {
+        GuestGicCpuRegion::CpuInterface(region) => alloc::vec![EmulatedDeviceConfig {
+            name: "gic-cpu-interface".into(),
+            base_gpa: region.base,
+            length: region.length,
+            irq_id: 0,
+            emu_type: EmulatedDeviceType::GicCpuRegion,
+            cfg_list: Vec::new(),
+        }],
+        GuestGicCpuRegion::Redistributors(redistributors) => redistributors
+            .regions
+            .iter()
+            .enumerate()
+            .map(|(index, region)| EmulatedDeviceConfig {
+                name: alloc::format!("gic-redistributor-{index}"),
+                base_gpa: region.base,
+                length: region.length,
+                irq_id: 0,
+                emu_type: EmulatedDeviceType::GicCpuRegion,
+                cfg_list: alloc::vec![index, redistributors.stride],
+            })
+            .collect(),
     }
 }
 
@@ -720,9 +717,9 @@ mod tests {
     #[test]
     fn replacing_machine_gic_updates_both_trapped_windows() {
         let machine =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 1);
+            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 2);
         let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(2, None, None),
             emu_devices: machine.emulated_devices,
             serial_profile: Some(machine.serial),
             ..Default::default()
@@ -735,11 +732,63 @@ mod tests {
                 base: 0xfe60_0000,
                 length: 0x1_0000,
             },
-            cpu_region: GuestGicCpuRegion::Redistributors(crate::machine::GuestMmioRegion {
-                base: 0xfe68_0000,
-                length: 0x10_0000,
-            }),
+            cpu_region: GuestGicCpuRegion::Redistributors(
+                crate::machine::GuestGicRedistributorProfile {
+                    regions: alloc::vec![
+                        crate::machine::GuestMmioRegion {
+                            base: 0xfe68_0000,
+                            length: 0x2_0000,
+                        },
+                        crate::machine::GuestMmioRegion {
+                            base: 0xfe80_0000,
+                            length: 0x2_0000,
+                        },
+                    ],
+                    stride: 0x2_0000,
+                },
+            ),
+            its: Vec::new(),
         };
+
+        let mut overlapping = profile.clone();
+        let GuestGicCpuRegion::Redistributors(redistributors) = &mut overlapping.cpu_region else {
+            unreachable!();
+        };
+        redistributors.regions[1].base = redistributors.regions[0].base;
+        assert!(config.replace_machine_gic(overlapping).is_err());
+
+        let mut overlapping_its = profile.clone();
+        overlapping_its.its = alloc::vec![
+            crate::machine::GuestItsProfile {
+                id: axdevice_base::ItsId::new(0),
+                node_path: "/its@10000000".into(),
+                node_phandle: Some(4),
+                registers: crate::machine::GuestMmioRegion {
+                    base: 0x1000_0000,
+                    length: 0x2_0000,
+                },
+            },
+            crate::machine::GuestItsProfile {
+                id: axdevice_base::ItsId::new(1),
+                node_path: "/its@10010000".into(),
+                node_phandle: Some(5),
+                registers: crate::machine::GuestMmioRegion {
+                    base: 0x1001_0000,
+                    length: 0x2_0000,
+                },
+            },
+        ];
+        assert!(config.replace_machine_gic(overlapping_its).is_err());
+
+        let mut overflowing = profile.clone();
+        let GuestGicCpuRegion::Redistributors(redistributors) = &mut overflowing.cpu_region else {
+            unreachable!();
+        };
+        redistributors.regions[1] = crate::machine::GuestMmioRegion {
+            base: usize::MAX & !0xffff,
+            length: 0x2_0000,
+        };
+        assert!(config.replace_machine_gic(overflowing).is_err());
 
         config.replace_machine_gic(profile.clone()).unwrap();
 
@@ -753,14 +802,15 @@ mod tests {
             (distributor.base_gpa, distributor.length),
             (0xfe60_0000, 0x1_0000)
         );
-        let redistributor = config
+        let redistributors = config
             .emu_devices()
             .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
-            .unwrap();
+            .filter(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
+            .map(|device| (device.base_gpa, device.length))
+            .collect::<Vec<_>>();
         assert_eq!(
-            (redistributor.base_gpa, redistributor.length),
-            (0xfe68_0000, 0x10_0000)
+            redistributors,
+            [(0xfe68_0000, 0x2_0000), (0xfe80_0000, 0x2_0000)]
         );
     }
 
@@ -786,6 +836,7 @@ mod tests {
                 base: 0x2a70_2000,
                 length: 0x1_0000,
             }),
+            its: Vec::new(),
         };
 
         config.replace_machine_gic(profile).unwrap();

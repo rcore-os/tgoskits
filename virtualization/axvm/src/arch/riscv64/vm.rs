@@ -20,6 +20,10 @@ use crate::{
             PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
+            device_plan::{
+                FixedAddressKind, FixedDeviceModel, SimpleVmPlan, VmDevicePlan,
+                machine_model_registry,
+            },
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -27,12 +31,15 @@ use crate::{
     },
 };
 
+pub(crate) type RiscvVmPlan = SimpleVmPlan;
+
 impl Riscv64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+        let device_plan = plan_devices(&config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, |root_paddr| {
+        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels)
         })
     }
@@ -50,6 +57,16 @@ impl Riscv64Arch {
             }
         }
     }
+}
+
+fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
+    let configs = riscv_device_order(config)?;
+    let mut models = machine_model_registry(config)?;
+    models.register(Arc::new(FixedDeviceModel::new(
+        axvm_types::EmulatedDeviceType::PPPTGlobal,
+        FixedAddressKind::Mmio,
+    )))?;
+    Ok(SimpleVmPlan::new(VmDevicePlan::fixed(&configs, models)?))
 }
 
 fn register_device_factory(
@@ -86,7 +103,7 @@ fn init_vm_with(
     complete_vm_init(
         vm,
         interrupt_controller,
-        |resources, interrupt_controller| {
+        |resources, _interrupt_controller| {
             let placements = vcpu_placements(resources);
             let dtb_addr = resources
                 .config()
@@ -99,12 +116,8 @@ fn init_vm_with(
                     dtb_addr: dtb_addr.as_usize(),
                 })
             })?;
-            let devices = PreparedDevices::build_common(
-                resources,
-                factories,
-                interrupt_controller,
-                vm.device_access_ports(),
-            )?;
+            let devices =
+                PreparedDevices::build_planned(resources, factories, vm.device_access_ports())?;
             validate_guest_dtb(resources)?;
 
             let owned_regions = guest_owned_regions(resources);
@@ -114,6 +127,36 @@ fn init_vm_with(
             Ok(PreparedVm::new(vcpus, devices))
         },
     )
+}
+
+fn riscv_device_order(
+    config: &AxVMConfig,
+) -> AxVmResult<alloc::vec::Vec<axvm_types::EmulatedDeviceConfig>> {
+    let controller_type = axvm_types::EmulatedDeviceType::PPPTGlobal;
+    let mut ordered = alloc::vec::Vec::new();
+    let mut controllers = config
+        .emu_devices()
+        .iter()
+        .filter(|device| device.emu_type == controller_type);
+    ordered.push(
+        controllers
+            .next()
+            .cloned()
+            .ok_or_else(|| AxVmError::invalid_config("RISC-V machine profile has no PLIC"))?,
+    );
+    if controllers.next().is_some() {
+        return Err(AxVmError::invalid_config(
+            "RISC-V machine profile has more than one PLIC",
+        ));
+    }
+    ordered.extend(
+        config
+            .emu_devices()
+            .iter()
+            .filter(|device| device.emu_type != controller_type)
+            .cloned(),
+    );
+    Ok(ordered)
 }
 
 fn build_vcpu_setup_config(

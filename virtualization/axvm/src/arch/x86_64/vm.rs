@@ -23,6 +23,10 @@ use crate::{
             PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
+            device_plan::{
+                FixedAddressKind, FixedDeviceModel, SimpleVmPlan, VmDevicePlan,
+                machine_model_registry,
+            },
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -30,12 +34,15 @@ use crate::{
     },
 };
 
+pub(crate) type X86VmPlan = SimpleVmPlan;
+
 impl X86_64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+        let device_plan = plan_devices(&config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = nested_paging::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, |root_paddr| {
+        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
                 4 => 48,
@@ -63,6 +70,26 @@ impl X86_64Arch {
     }
 }
 
+fn plan_devices(config: &AxVMConfig) -> AxVmResult<X86VmPlan> {
+    let extra = arch_extra_device_configs(config);
+    let configs = x86_device_order(config, &extra)?;
+    let mut models = machine_model_registry(config)?;
+    for (device_type, address) in [
+        (EmulatedDeviceType::X86IoApic, FixedAddressKind::Mmio),
+        (EmulatedDeviceType::X86Pit, FixedAddressKind::Pio),
+        (
+            EmulatedDeviceType::X86PortPassthrough,
+            FixedAddressKind::Pio,
+        ),
+    ] {
+        models.register(alloc::sync::Arc::new(FixedDeviceModel::new(
+            device_type,
+            address,
+        )))?;
+    }
+    Ok(SimpleVmPlan::new(VmDevicePlan::fixed(&configs, models)?))
+}
+
 fn prepare_device_bootstrap(
     vm: &AxVM,
 ) -> AxVmResult<(
@@ -83,17 +110,11 @@ fn init_vm_with(
     complete_vm_init(
         vm,
         interrupt_controller,
-        |resources, interrupt_controller| {
+        |resources, _interrupt_controller| {
             let placements = vcpu_placements(resources);
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
-            let extra_devices = arch_extra_device_configs(resources.config());
-            let devices = PreparedDevices::build_common_with_extra(
-                resources,
-                factories,
-                interrupt_controller,
-                &extra_devices,
-                vm.device_access_ports(),
-            )?;
+            let devices =
+                PreparedDevices::build_planned(resources, factories, vm.device_access_ports())?;
             validate_guest_dtb(resources)?;
 
             let mut owned_regions = guest_owned_regions(resources);
@@ -105,6 +126,37 @@ fn init_vm_with(
             Ok(PreparedVm::new(vcpus, devices))
         },
     )
+}
+
+fn x86_device_order(
+    config: &AxVMConfig,
+    extra: &[EmulatedDeviceConfig],
+) -> AxVmResult<alloc::vec::Vec<EmulatedDeviceConfig>> {
+    let mut ordered = alloc::vec::Vec::new();
+    let mut controllers = config
+        .emu_devices()
+        .iter()
+        .filter(|device| device.emu_type == EmulatedDeviceType::X86IoApic);
+    ordered.push(
+        controllers
+            .next()
+            .cloned()
+            .ok_or_else(|| AxVmError::invalid_config("x86 machine profile has no IOAPIC"))?,
+    );
+    if controllers.next().is_some() {
+        return Err(AxVmError::invalid_config(
+            "x86 machine profile has more than one IOAPIC",
+        ));
+    }
+    ordered.extend(
+        config
+            .emu_devices()
+            .iter()
+            .filter(|device| device.emu_type != EmulatedDeviceType::X86IoApic)
+            .cloned(),
+    );
+    ordered.extend_from_slice(extra);
+    Ok(ordered)
 }
 
 fn build_vcpu_setup_config(

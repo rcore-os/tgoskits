@@ -26,6 +26,7 @@ mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
 pub(crate) mod fdt;
+mod firmware_plan;
 mod gic;
 mod images;
 mod npt;
@@ -35,6 +36,8 @@ mod shared_provider;
 mod sysreg;
 mod vgic;
 mod vm;
+mod vm_plan;
+pub(crate) use vm_plan::Aarch64VmPlan;
 mod vtimer;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};

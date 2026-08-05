@@ -1,0 +1,82 @@
+//! Guest firmware identity frozen from the same VGIC construction plan.
+
+use arm_vgic::{ArmVgicConfig, VgicMmioRegion};
+
+use crate::{
+    AxVmError, AxVmResult,
+    config::AxVMConfig,
+    machine::{
+        GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
+        GuestMmioRegion,
+    },
+};
+
+pub(super) struct Aarch64FirmwarePlan {
+    gic: GuestGicProfile,
+}
+
+impl Aarch64FirmwarePlan {
+    pub(super) fn new(config: &AxVMConfig, vgic: &ArmVgicConfig) -> AxVmResult<Self> {
+        let gic = match config.gic_profile() {
+            Some(profile) => profile.clone(),
+            None => fallback_gic_profile(vgic)?,
+        };
+        Ok(Self { gic })
+    }
+
+    pub(super) const fn gic(&self) -> &GuestGicProfile {
+        &self.gic
+    }
+}
+
+fn fallback_gic_profile(config: &ArmVgicConfig) -> AxVmResult<GuestGicProfile> {
+    match config {
+        ArmVgicConfig::V2(v2) => Ok(GuestGicProfile {
+            compatible: "arm,cortex-a15-gic".into(),
+            node_path: alloc::string::String::new(),
+            node_phandle: None,
+            distributor: guest_region(v2.distributor())?,
+            cpu_region: GuestGicCpuRegion::CpuInterface(guest_region(v2.cpu_interface())?),
+            its: alloc::vec![],
+        }),
+        ArmVgicConfig::V3(v3) => Ok(GuestGicProfile {
+            compatible: "arm,gic-v3".into(),
+            node_path: alloc::string::String::new(),
+            node_phandle: None,
+            distributor: guest_region(v3.distributor())?,
+            cpu_region: GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
+                regions: v3
+                    .redistributors()
+                    .iter()
+                    .copied()
+                    .map(guest_region)
+                    .collect::<AxVmResult<_>>()?,
+                stride: usize::try_from(v3.redistributor_stride()).map_err(|_| {
+                    AxVmError::invalid_config("VGIC Redistributor stride does not fit usize")
+                })?,
+            }),
+            its: v3
+                .its()
+                .iter()
+                .map(|its| {
+                    let registers = guest_region(its.registers())?;
+                    Ok(GuestItsProfile {
+                        id: its.id(),
+                        node_path: alloc::format!("/its@{:x}", registers.base),
+                        node_phandle: None,
+                        registers,
+                    })
+                })
+                .collect::<AxVmResult<_>>()?,
+        }),
+    }
+}
+
+fn guest_region(region: VgicMmioRegion) -> AxVmResult<GuestMmioRegion> {
+    Ok(GuestMmioRegion {
+        base: usize::try_from(region.base())
+            .map_err(|_| AxVmError::invalid_config("VGIC MMIO base does not fit usize"))?,
+        length: usize::try_from(region.size())
+            .map_err(|_| AxVmError::invalid_config("VGIC MMIO size does not fit usize"))?,
+    })
+}

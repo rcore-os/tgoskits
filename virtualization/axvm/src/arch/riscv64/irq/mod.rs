@@ -18,9 +18,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
-    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
-    validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
+    DeviceManagerError, DeviceManagerResult, DeviceRegistration, ResourceSlot, ServiceCardinality,
+    ServiceKey, validate_device_config,
 };
 use axdevice_base::{
     BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
@@ -309,16 +309,26 @@ impl DeviceFactory for RiscvPlicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build RISC-V virtual PLIC")?;
+        let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+        if base != config.base_gpa as u64 || length != config.length as u64 {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build RISC-V virtual PLIC",
+                detail: "planned MMIO range differs from the machine descriptor".into(),
+            });
+        }
         let device: Arc<dyn Device> = Arc::new(RiscvPlicDevice {
             runtime: self.runtime.clone(),
         });
         let controller: Arc<dyn VirtualInterruptController> = self.runtime.clone();
-        DeviceBundle::from_registration(DeviceRegistration::Device(device))
-            .with_service::<RiscvPlicRuntimeKey>(self.runtime.clone())?
-            .with_service::<VirtualInterruptControllerKey>(controller)
+        let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
+            .with_service::<RiscvPlicRuntimeKey>(self.runtime.clone())?;
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(self.runtime.id(), controller),
+        ));
+        Ok(bundle)
     }
 }
 

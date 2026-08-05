@@ -177,16 +177,43 @@ pub struct ResourceClaimSet {
 }
 
 impl ResourceClaimSet {
+    pub(crate) fn mmio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
+        match &self.claim(slot)?.resource {
+            ResolvedResource::Mmio { base, size } => Ok((*base, *size)),
+            _ => Err(claim_kind_error(self.claim(slot)?, "MMIO")),
+        }
+    }
+
+    pub(crate) fn pio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
+        match &self.claim(slot)?.resource {
+            ResolvedResource::Pio { base, size } => Ok((*base, *size)),
+            _ => Err(claim_kind_error(self.claim(slot)?, "PIO")),
+        }
+    }
+
+    pub(crate) fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
+        match &self.claim(slot)?.resource {
+            ResolvedResource::WiredIrq(irq) => Ok(*irq),
+            _ => Err(claim_kind_error(self.claim(slot)?, "wired IRQ")),
+        }
+    }
+
+    pub(crate) fn msi(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedMsi> {
+        match &self.claim(slot)?.resource {
+            ResolvedResource::Msi(msi) => Ok(*msi),
+            _ => Err(claim_kind_error(self.claim(slot)?, "MSI")),
+        }
+    }
+
     /// Consumes one named claim and returns its lifetime lease.
     pub fn consume(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<ResourceLease> {
-        let claim =
-            self.claims
-                .remove(slot)
-                .ok_or_else(|| DeviceManagerError::ResourceNotFound {
-                    operation: "consume planned resource claim",
-                    resource: format!("device {} slot {slot}", self.device_id),
-                })?;
-        claim.consume()
+        let lease = self.claim_mut(slot)?.consume()?;
+        let removed = self
+            .claims
+            .remove(slot)
+            .expect("claim was consumed from the same map");
+        debug_assert!(removed.consumed);
+        Ok(lease)
     }
 
     /// Returns the number of claims not yet consumed.
@@ -203,6 +230,18 @@ impl ResourceClaimSet {
             });
         }
         Ok(())
+    }
+
+    fn claim(&self, slot: &ResourceSlot) -> DeviceManagerResult<&ResourceClaim> {
+        self.claims
+            .get(slot)
+            .ok_or_else(|| missing_claim_error(&self.device_id, slot))
+    }
+
+    fn claim_mut(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<&mut ResourceClaim> {
+        self.claims
+            .get_mut(slot)
+            .ok_or_else(|| missing_claim_error(&self.device_id, slot))
     }
 }
 
@@ -225,7 +264,7 @@ pub struct ResourceClaim {
 }
 
 impl ResourceClaim {
-    fn consume(mut self) -> DeviceManagerResult<ResourceLease> {
+    fn consume(&mut self) -> DeviceManagerResult<ResourceLease> {
         self.domain.transition(
             &self.key,
             ClaimState::Issued,
@@ -348,5 +387,16 @@ fn lease_kind_error(key: &ClaimKey, expected: &'static str) -> DeviceManagerErro
             "device {} slot {} is not a {expected} resource",
             key.device_id, key.slot
         ),
+    }
+}
+
+fn claim_kind_error(claim: &ResourceClaim, expected: &'static str) -> DeviceManagerError {
+    lease_kind_error(&claim.key, expected)
+}
+
+fn missing_claim_error(device_id: &str, slot: &ResourceSlot) -> DeviceManagerError {
+    DeviceManagerError::ResourceNotFound {
+        operation: "consume planned resource claim",
+        resource: format!("device {device_id} slot {slot}"),
     }
 }

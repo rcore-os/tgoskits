@@ -116,7 +116,10 @@ Claims transition `planned -> issued -> leased`. Issuing one device is atomic.
 Dropping an unconsumed claim or a lease rolls that slot back to `planned`, so a
 failed device build can retry the same deterministic lowest resource. A
 device build cannot finish with unconsumed slots, and VM sealing cannot finish
-while any planned slot lacks a retained lease.
+while any planned slot lacks a retained lease. A build context validates the
+slot kind and prepares the controller endpoint before consuming the claim; a
+factory that handles an accessor error therefore cannot accidentally discard
+the claim and later commit an incomplete bundle.
 
 ## Runtime controller and endpoint registration
 
@@ -164,6 +167,11 @@ Guest GIC firmware is sanitized from the same configuration:
 - ITS nodes exist only for matching host ITS capabilities;
 - phandles are preserved when safe or rewritten consistently;
 - VGIC MMIO ranges remain stage-2 traps, never host-register mappings.
+
+All GICD, GICC/GICR, and ITS apertures are checked for address-end overflow
+and pairwise overlap before the profile mutates machine configuration. GICR
+capacity is computed across all regions, and VM-local ITS IDs must be unique.
+An ITS node must describe exactly one register aperture.
 
 Physical SPIs are selected while planning and require
 `guest INTID == host INTID`. Host IRQ identity, physical trigger, and host
@@ -220,4 +228,4 @@ the one later consumed by the runtime.
 | VGIC | SGI/PPI/SPI, pending/active, line/latch, priority/route, LR overflow, maintenance, EOI/DIR |
 | Firmware | VGIC config, runtime resources, GIC/ITS nodes, and device interrupt properties originate from one plan |
 | Physical backing | fixed identity/trigger/route, duplicate host SPI rejection, quiesce/drain, guest EOI/DIR to host deactivate |
-| System | QEMU GICv2 two-vCPU, GICv3+ITS four-vCPU with assertions, timer stress, and four-architecture smoke |
+| System | QEMU GICv2 two-vCPU timer stress, GICv3+ITS four-vCPU timer stress with Linux ITS initialization assertion, and four-architecture smoke |

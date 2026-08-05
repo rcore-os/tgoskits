@@ -5,7 +5,7 @@ args = [
   "-machine",
   "virt,virtualization=on,gic-version=2",
   "-smp",
-  "4",
+  "2",
   "-append",
   "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=gicv2",
   "-m",
