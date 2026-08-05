@@ -412,6 +412,13 @@ ORT full 预注册修订记录（2026-08-05，首次失败后、下一次 campai
 - commit `df785eead23cba61f49e9bdf49bb4355c8998846` 只修改终止证据节奏：等待 controller 终止输出排空 `500 ms`，再以 `100 ms` 间隔输出 5 份短 poweroff record。分析器、验收阈值、ONNX/ORT 模型、controller 控制逻辑、1,800 个周期及五次冷启动计划均不变。
 - 修订后 full Zephyr `zephyr.bin` SHA-256 为 `d02b6de2677c8f2a26db1514ae7d6e0a1723ada329c59bc17b6f58333bd075ff`，`zephyr.elf` SHA-256 为 `5acb3b59e935ff5058c37d9e719486616fa48843a9e4755e6ac736a0a1e155f1`，ELF entry 为 `0x4000100c`。下一次正式 campaign 必须使用新的结果目录和包含本修订记录的 clean commit。
 
+ORT full 第二次预注册修订记录（2026-08-05，`v2` 停止后、`v3` 前冻结）：
+
+- `ort-control-full-formal-20260805-v2/run-001` 来自 clean commit `5f4a7ea9d2759a2956fbf6af2b8db8b185283a8d`。五份 poweroff record 全部完整，证明前述 UART 修订生效；功能路径仍为 1,800/1,800 ACK、零协议/可靠性错误，仅 sequence 1 有一次 deadline miss。full-loop p99/max 为 `12017/146458 us`，throughput 为 `9.991877 msg/s`，ORT wall p99/max 为 `175583/17119958 ns`。
+- 当时的 analyzer 在第 1,280 行拒绝证据：`output_bits=3ea72b02` 解码为 f32 `0.3264999985694885`，但 actuator 为 `327`。Rust controller 的实际语义是在每一步执行 f32 舍入，`output * 1000.0F` 得到 `326.5F`，再加 `0.5F` 后截断为 `327`；旧 Python analyzer 将值提升为 f64 后得到 `326`，因此产生假阴性。`v2` 在 `run-001` 后停止，目录保持原样，不追认成正式 campaign，也不补跑其余四轮。
+- commit `f3302d1adbf8244045fea7665414ae8aa97666c5` 用逐操作 IEEE-754 f32 舍入复现 controller 换算。来自实体第 1,280 行的确定性回归在旧实现上失败、修复后通过，并同时验证错误值 `326` 仍会被拒绝；完整 Python 回归为 209/209。
+- 修复后的 analyzer 对未改动的 `v2/run-001` 原始证据独立复核通过，1,800 个 ORT actuator 与 controller raw CSV 全部一致。该修订不改变模型、Runtime、controller、Zephyr、镜像、采样计划或任何验收阈值；`v3` 必须使用新的结果目录和包含本记录的 clean commit 重新执行完整五轮。
+
 退出条件：
 
 - [x] `.ort`、operator config、host 工具链 lock 和官方 AArch64 Runtime 来源/哈希均已冻结并可复核。
