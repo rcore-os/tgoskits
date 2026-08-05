@@ -14,6 +14,7 @@ use starry_process::{Pid, Process};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
+use super::ptrace::PTRACE_EVENT_STOP;
 use crate::{
     file::{PidFd, get_file_like},
     task::{
@@ -114,7 +115,7 @@ fn waitid_pidfd_target(fd: i32) -> AxResult<WaitTarget> {
 }
 fn stopped_wait_signo(data: &ProcessData, signo: Signo) -> i32 {
     let event = data.ptrace_event().unwrap_or(0);
-    let mut wait_signo = if event != 0 {
+    let mut wait_signo = if event != 0 && event != PTRACE_EVENT_STOP {
         Signo::SIGTRAP as i32
     } else {
         signo as i32

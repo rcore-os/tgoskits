@@ -83,7 +83,7 @@ pub const PTRACE_EVENT_CLONE: u32 = 3;
 const PTRACE_EVENT_EXEC: u32 = 4;
 pub const PTRACE_EVENT_VFORK_DONE: u32 = 5;
 const PTRACE_EVENT_EXIT: u32 = 6;
-const PTRACE_EVENT_STOP: u32 = 128;
+pub(crate) const PTRACE_EVENT_STOP: u32 = 128;
 
 const PTRACE_OPTION_MASK: usize = PTRACE_O_TRACESYSGOOD
     | PTRACE_O_TRACEFORK
@@ -372,7 +372,11 @@ fn ptrace_syscall(pid: usize, data: usize) -> AxResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     tracee.set_ptrace_singlestep_for(tid, false);
-    tracee.set_ptrace_syscall_trace_for(tid, true);
+    if tracee.ptrace_stop_is_syscall_for(tid) {
+        tracee.advance_ptrace_syscall_trace_for(tid);
+    } else {
+        tracee.set_ptrace_syscall_trace_for(tid, true);
+    }
     tracee.resume_ptrace_stop_with_signal_for(tid, signo);
     Ok(0)
 }
@@ -669,8 +673,14 @@ fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
     tracee.set_ptrace_pending_event(tracee_tid, PTRACE_EVENT_STOP, 0);
     // PTRACE_INTERRUPT creates a ptrace event stop, not a user-visible
     // SIGTRAP. Interrupt the target so its user-return path consumes the
-    // pending event without leaving a second signal-delivery stop queued.
-    get_task(tracee_tid)?.interrupt();
+    // pending event without leaving a second signal-delivery stop queued. A
+    // tracee already parked in a job-control stop cannot return to userspace,
+    // so wake that wait loop to publish its event stop instead.
+    if tracee.is_job_stopped() {
+        tracee.wake_job_stop_waiter();
+    } else {
+        get_task(tracee_tid)?.interrupt();
+    }
     Ok(0)
 }
 
@@ -759,7 +769,23 @@ fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<ArchUserRegs> {
     let uctx = tracee
         .ptrace_stop_user_context_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
-    Ok(ArchUserRegs::from(&uctx))
+    let regs = ArchUserRegs::from(&uctx);
+    #[cfg(target_arch = "x86_64")]
+    let regs = {
+        let mut regs = regs;
+        if tracee.ptrace_stop_is_syscall_for(tid)
+            && matches!(
+                tracee.ptrace_syscall_trace_state_for(tid),
+                crate::task::SyscallTraceState::Entry
+            )
+        {
+            // Linux exposes the incoming syscall number through `orig_rax` while
+            // presenting `-ENOSYS` in `rax` at a syscall-entry stop.
+            regs.rax = -(LinuxError::ENOSYS.code() as i64) as u64;
+        }
+        regs
+    };
+    Ok(regs)
 }
 
 #[cfg(any(
@@ -792,6 +818,17 @@ fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> AxResult<is
         .ptrace_stop_user_context_for(tid)
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     regs.write_to(&mut uctx)?;
+    #[cfg(target_arch = "x86_64")]
+    if tracee.ptrace_stop_is_syscall_for(tid)
+        && matches!(
+            tracee.ptrace_syscall_trace_state_for(tid),
+            crate::task::SyscallTraceState::Entry
+        )
+    {
+        // `rax` is the synthetic syscall-entry return value. The tracer
+        // changes the syscall to execute through Linux's `orig_rax` field.
+        uctx.set_sysno(regs.orig_rax as usize);
+    }
     if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
