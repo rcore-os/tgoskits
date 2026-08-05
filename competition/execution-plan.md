@@ -419,6 +419,13 @@ ORT full 第二次预注册修订记录（2026-08-05，`v2` 停止后、`v3` 前
 - commit `f3302d1adbf8244045fea7665414ae8aa97666c5` 用逐操作 IEEE-754 f32 舍入复现 controller 换算。来自实体第 1,280 行的确定性回归在旧实现上失败、修复后通过，并同时验证错误值 `326` 仍会被拒绝；完整 Python 回归为 209/209。
 - 修复后的 analyzer 对未改动的 `v2/run-001` 原始证据独立复核通过，1,800 个 ORT actuator 与 controller raw CSV 全部一致。该修订不改变模型、Runtime、controller、Zephyr、镜像、采样计划或任何验收阈值；`v3` 必须使用新的结果目录和包含本记录的 clean commit 重新执行完整五轮。
 
+ORT full 第三次预注册修订记录（2026-08-05，`v3` 停止后、`v4` 前冻结）：
+
+- `ort-control-full-formal-20260805-v3` 来自 clean commit `055585db67d577d67ecab41b70a21c3f56068161`。`run-001` 至 `run-003` 的单轮 metadata 均为 validated；`run-004` 完成 1,800/1,800 ACK、快照和 Linux 恢复后被 analyzer 拒绝，因此 `v3` 整体失败，未执行 `run-005`，现有四轮不作为新 campaign 的前四轮复用。
+- 第四轮两份短 `IVC-CONTROLLER-RELIABILITY` 均完整且一致，但单份 legacy 长 `IVC-CONTROLLER-RESULT` 在 UART 交错后形成 `success_percent=e_send_p50_us=201`。旧 analyzer 只检查字段名存在，误把这个非浮点值视为“完整”并与短记录判冲突。raw/ORT SHA-256 分别为 `cdd4f34e35c05770d06eccb98d53cea6ba4ef4b219cb1433b6c2b8db4dc987af` 与 `6ca97e741f81bc43b159d07348827fe3e1d5bdae1c8677e28963bea40809d2bf`。
+- commit `c05f651cb1617a134a06b732c0ce0460ab04b416` 只让 legacy 字段通过其声明类型后才可参与回退或冲突比较。来自第四轮的确定性回归在旧实现上失败、修复后通过；原有“类型正确但数值冲突的 legacy 必须拒绝”测试继续通过，完整 Python 回归为 210/210。
+- 修复后的 analyzer 对未改动的 `v3/run-004` 独立复核通过：仅 sequence 1 有一次 deadline miss，full-loop p99/max 为 `12278/124817 us`，throughput 为 `9.993105 msg/s`，ORT wall p99/max 为 `175584/17172167 ns`，1,800 个 actuator 全部一致。该修订不改变 producer、模型、Runtime、镜像、采样计划或验收阈值；`v4` 必须从包含本记录的 clean commit 和新目录重新执行全部五轮。
+
 退出条件：
 
 - [x] `.ort`、operator config、host 工具链 lock 和官方 AArch64 Runtime 来源/哈希均已冻结并可复核。
