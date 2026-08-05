@@ -11,6 +11,7 @@ publish = false
 default = ["std"]
 std = []
 rknn = ["std"]
+onnxruntime = ["std"]
 
 [dependencies]
 thiserror.workspace = true

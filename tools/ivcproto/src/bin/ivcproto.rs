@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+use ivcproto::ort::OrtController;
 #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
 use ivcproto::rknn::RknnController;
 use ivcproto::{
@@ -35,8 +37,14 @@ const BOARD_CONSOLE_RECORD_MAX_BYTES: usize = 160;
 const BOARD_CONSOLE_RECORD_COPIES: usize = 2;
 const BOARD_CONSOLE_RECORD_PAUSE: Duration = Duration::from_millis(10);
 const BOARD_CONSOLE_SUMMARY_SETTLE: Duration = Duration::from_millis(250);
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
 const RKNPU_RECORD_COPIES: usize = 5;
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
 const RKNPU_RECORD_PAUSE: Duration = Duration::from_millis(25);
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+const ORT_RECORD_COPIES: usize = 5;
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+const ORT_RECORD_PAUSE: Duration = Duration::from_millis(25);
 const ERROR_FAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
 const ERROR_FAULT_RESULT_SETTLE: Duration = Duration::from_millis(750);
 const ERROR_FAULT_RESULT_RECORD_COPIES: usize = 3;
@@ -57,6 +65,7 @@ const PAYLOAD_LENGTH_OFFSET: usize = 24;
 enum InferenceBackend {
     Native,
     RknnNpu,
+    OnnxRuntime,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -120,6 +129,7 @@ impl InferenceBackend {
         match self {
             Self::Native => "native",
             Self::RknnNpu => "rknn-npu",
+            Self::OnnxRuntime => "onnxruntime",
         }
     }
 }
@@ -135,6 +145,8 @@ struct ControllerArguments {
     raw_csv: Option<PathBuf>,
     rknn_model: Option<PathBuf>,
     rknn_evidence: Option<PathBuf>,
+    ort_model: Option<PathBuf>,
+    ort_evidence: Option<PathBuf>,
     fault_profile: ControllerFaultProfile,
     restart_previous_session: Option<u32>,
     ack_timeout: Duration,
@@ -145,10 +157,13 @@ enum ControllerEngine {
     Native(NeuralController),
     #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
     Rknn(RknnController),
+    #[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+    Ort(OrtController),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct BackendSummary {
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+struct RknnBackendSummary {
     api_version: String,
     driver_version: String,
     core_mask: u32,
@@ -159,12 +174,32 @@ struct BackendSummary {
     wall_p99_ns: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+struct OrtBackendSummary {
+    runtime_version: String,
+    provider: String,
+    initialization_us: u64,
+    samples: usize,
+    wall_p99_ns: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BackendSummary {
+    #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+    Rknn(RknnBackendSummary),
+    #[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+    Ort(OrtBackendSummary),
+}
+
 impl ControllerEngine {
     fn new(
         policy: Policy,
         backend: InferenceBackend,
         rknn_model: Option<&std::path::Path>,
         rknn_evidence: Option<&std::path::Path>,
+        ort_model: Option<&std::path::Path>,
+        ort_evidence: Option<&std::path::Path>,
     ) -> Result<Self, String> {
         match (policy, backend) {
             (Policy::ManualFixed { actuator_permille }, InferenceBackend::Native) => {
@@ -179,6 +214,12 @@ impl ControllerEngine {
             }
             (Policy::Neural, InferenceBackend::RknnNpu) => {
                 Self::new_rknn(rknn_model, rknn_evidence)
+            }
+            (Policy::ManualFixed { .. }, InferenceBackend::OnnxRuntime) => {
+                Err("ONNX Runtime backend requires the neural policy".to_owned())
+            }
+            (Policy::Neural, InferenceBackend::OnnxRuntime) => {
+                Self::new_ort(ort_model, ort_evidence)
             }
         }
     }
@@ -203,6 +244,26 @@ impl ControllerEngine {
         Err("controller backend 'rknn-npu' is not available in this build".to_owned())
     }
 
+    #[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+    fn new_ort(
+        ort_model: Option<&std::path::Path>,
+        ort_evidence: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        let model = ort_model.ok_or_else(|| "ORT model path is missing".to_owned())?;
+        let evidence = ort_evidence.ok_or_else(|| "ORT evidence path is missing".to_owned())?;
+        OrtController::new(model, evidence)
+            .map(Self::Ort)
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(not(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu")))]
+    fn new_ort(
+        _ort_model: Option<&std::path::Path>,
+        _ort_evidence: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        Err("controller backend 'onnxruntime' is not available in this build".to_owned())
+    }
+
     fn command(
         &mut self,
         observation: ThermalObservation,
@@ -217,6 +278,10 @@ impl ControllerEngine {
             Self::Rknn(controller) => controller
                 .command(observation, sample_id)
                 .map_err(|error| error.to_string()),
+            #[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+            Self::Ort(controller) => controller
+                .command(observation, sample_id)
+                .map_err(|error| error.to_string()),
         }
     }
 
@@ -226,7 +291,7 @@ impl ControllerEngine {
             #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
             Self::Rknn(controller) => {
                 let summary = controller.finish().map_err(|error| error.to_string())?;
-                Ok(Some(BackendSummary {
+                Ok(Some(BackendSummary::Rknn(RknnBackendSummary {
                     api_version: summary.runtime.api_version,
                     driver_version: summary.runtime.driver_version,
                     core_mask: summary.runtime.core_mask,
@@ -235,7 +300,18 @@ impl ControllerEngine {
                     positive_device_times: summary.positive_device_times,
                     device_p99_us: summary.device_p99_us,
                     wall_p99_ns: summary.wall_p99_ns,
-                }))
+                })))
+            }
+            #[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+            Self::Ort(controller) => {
+                let summary = controller.finish().map_err(|error| error.to_string())?;
+                Ok(Some(BackendSummary::Ort(OrtBackendSummary {
+                    runtime_version: summary.runtime.runtime_version,
+                    provider: summary.runtime.provider,
+                    initialization_us: summary.runtime.initialization_us,
+                    samples: summary.samples,
+                    wall_p99_ns: summary.wall_p99_ns,
+                })))
             }
         }
     }
@@ -1114,6 +1190,8 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         raw_csv,
         rknn_model,
         rknn_evidence,
+        ort_model,
+        ort_evidence,
         fault_profile,
         restart_previous_session,
         ack_timeout,
@@ -1152,6 +1230,8 @@ fn run_controller(arguments: ControllerArguments) -> Result<(), String> {
         backend,
         rknn_model.as_deref(),
         rknn_evidence.as_deref(),
+        ort_model.as_deref(),
+        ort_evidence.as_deref(),
     )?;
     let clock = Instant::now();
     let fault_errors_received = match fault_profile {
@@ -1617,6 +1697,21 @@ fn print_scenario_metrics(name: &str, metrics: ScenarioMetrics) {
 }
 
 fn report_backend_summary(summary: &BackendSummary) -> Result<(), String> {
+    match summary {
+        #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+        BackendSummary::Rknn(summary) => report_rknn_backend_summary(summary),
+        #[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+        BackendSummary::Ort(summary) => report_ort_backend_summary(summary),
+        #[cfg(not(any(
+            all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"),
+            all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu")
+        )))]
+        _ => unreachable!("a backend summary cannot exist without a compiled backend"),
+    }
+}
+
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
+fn report_rknn_backend_summary(summary: &RknnBackendSummary) -> Result<(), String> {
     if summary.samples == 0
         || summary.positive_device_times != summary.samples
         || summary.device_p99_us == 0
@@ -1654,6 +1749,47 @@ fn report_backend_summary(summary: &BackendSummary) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+fn report_ort_backend_summary(summary: &OrtBackendSummary) -> Result<(), String> {
+    if summary.samples == 0 || summary.wall_p99_ns == 0 || summary.initialization_us == 0 {
+        return Err("ORT backend summary contains incomplete timing evidence".to_owned());
+    }
+    let runtime_version = console_identity(&summary.runtime_version, "ORT runtime version")?;
+    let provider = console_identity(&summary.provider, "ORT execution provider")?;
+    let records = [
+        format!(
+            "IVC-ORT-CONTROL-RUNTIME version={runtime_version} provider={provider} init_us={}",
+            summary.initialization_us
+        ),
+        format!(
+            "IVC-ORT-CONTROL-RESULT samples={} wall_p99_ns={}",
+            summary.samples, summary.wall_p99_ns
+        ),
+    ];
+    for _ in 0..ORT_RECORD_COPIES {
+        for record in &records {
+            if record.len() > BOARD_CONSOLE_RECORD_MAX_BYTES {
+                return Err("ORT backend record exceeds the physical UART budget".to_owned());
+            }
+            println!("{record}");
+            std::io::stdout()
+                .flush()
+                .map_err(|error| format!("flush ORT backend evidence: {error}"))?;
+            std::thread::sleep(ORT_RECORD_PAUSE);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+fn console_identity<'a>(identity: &'a str, label: &str) -> Result<&'a str, String> {
+    if identity.is_empty() || !identity.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(format!("{label} is not a non-empty console-safe token"));
+    }
+    Ok(identity)
+}
+
+#[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
 fn compatibility_version<'a>(version: &'a str, label: &str) -> Result<&'a str, String> {
     version
         .split_ascii_whitespace()
@@ -1695,6 +1831,8 @@ fn parse_controller_arguments(
     let mut raw_csv = None;
     let mut rknn_model = None;
     let mut rknn_evidence = None;
+    let mut ort_model = None;
+    let mut ort_evidence = None;
     let mut fault_profile = ControllerFaultProfile::None;
     let mut fault_profile_was_set = false;
     let mut restart_previous_session = None;
@@ -1710,11 +1848,7 @@ fn parse_controller_arguments(
                 backend = match value.as_str() {
                     "native" => InferenceBackend::Native,
                     "rknn-npu" => InferenceBackend::RknnNpu,
-                    "onnxruntime" => {
-                        return Err("controller backend 'onnxruntime' is not available in this \
-                                    build"
-                            .to_owned());
-                    }
+                    "onnxruntime" => InferenceBackend::OnnxRuntime,
                     _ => {
                         return Err(format!(
                             "controller backend must be 'native', 'rknn-npu', or 'onnxruntime', \
@@ -1746,6 +1880,21 @@ fn parse_controller_arguments(
                 rknn_evidence = Some(PathBuf::from(required(
                     &mut arguments,
                     "RKNN evidence path",
+                )?));
+            }
+            "--ort-model" => {
+                if ort_model.is_some() {
+                    return Err("--ort-model may only be specified once".to_owned());
+                }
+                ort_model = Some(PathBuf::from(required(&mut arguments, "ORT model path")?));
+            }
+            "--ort-evidence" => {
+                if ort_evidence.is_some() {
+                    return Err("--ort-evidence may only be specified once".to_owned());
+                }
+                ort_evidence = Some(PathBuf::from(required(
+                    &mut arguments,
+                    "ORT evidence path",
                 )?));
             }
             "--fault-profile" => {
@@ -1826,11 +1975,18 @@ fn parse_controller_arguments(
 
     match backend {
         InferenceBackend::Native => {
-            if rknn_model.is_some() || rknn_evidence.is_some() {
-                return Err("RKNN paths require --backend rknn-npu".to_owned());
+            if rknn_model.is_some()
+                || rknn_evidence.is_some()
+                || ort_model.is_some()
+                || ort_evidence.is_some()
+            {
+                return Err("backend artifact paths require their matching backend".to_owned());
             }
         }
         InferenceBackend::RknnNpu => {
+            if ort_model.is_some() || ort_evidence.is_some() {
+                return Err("ORT paths require --backend onnxruntime".to_owned());
+            }
             if policy != Policy::Neural {
                 return Err("RKNN NPU backend requires the neural policy".to_owned());
             }
@@ -1839,6 +1995,24 @@ fn parse_controller_arguments(
             }
             if rknn_model.is_none() || rknn_evidence.is_none() {
                 return Err("RKNN NPU backend requires --rknn-model and --rknn-evidence".to_owned());
+            }
+        }
+        InferenceBackend::OnnxRuntime => {
+            if rknn_model.is_some() || rknn_evidence.is_some() {
+                return Err("RKNN paths require --backend rknn-npu".to_owned());
+            }
+            if policy != Policy::Neural {
+                return Err("ONNX Runtime backend requires the neural policy".to_owned());
+            }
+            if fault_profile != ControllerFaultProfile::None {
+                return Err(
+                    "ONNX Runtime backend currently requires --fault-profile none".to_owned(),
+                );
+            }
+            if ort_model.is_none() || ort_evidence.is_none() {
+                return Err(
+                    "ONNX Runtime backend requires --ort-model and --ort-evidence".to_owned(),
+                );
             }
         }
     }
@@ -1853,6 +2027,8 @@ fn parse_controller_arguments(
         raw_csv,
         rknn_model,
         rknn_evidence,
+        ort_model,
+        ort_evidence,
         fault_profile,
         restart_previous_session,
         ack_timeout,
@@ -1944,8 +2120,9 @@ fn usage() -> &'static str {
     "usage:\n  ivcproto evaluate\n  ivcproto evaluate-csv <output.csv>\n  ivcproto rtos-sim <bind> \
      <expected-count> [drop-every]\n  ivcproto controller <peer> <count> <manual|neural> \
      [period-ms] [session-id] [--backend <native|rknn-npu|onnxruntime>] [--raw-csv <path>] \
-     [--rknn-model <path> --rknn-evidence <path>] [--fault-profile <none|error|restart>] \
-     [--restart-previous-session <session-id>] [--ack-timeout-ms <milliseconds>]"
+     [--rknn-model <path> --rknn-evidence <path>] [--ort-model <path> --ort-evidence <path>] \
+     [--fault-profile <none|error|restart>] [--restart-previous-session <session-id>] \
+     [--ack-timeout-ms <milliseconds>]"
 }
 
 #[cfg(test)]
@@ -2178,6 +2355,82 @@ mod tests {
             parsed.rknn_evidence.as_deref(),
             Some(std::path::Path::new("/var/lib/ivc/rknn.csv"))
         );
+    }
+
+    #[test]
+    fn controller_arguments_accept_explicit_ort_artifact_paths() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "neural",
+            "100",
+            "--backend",
+            "onnxruntime",
+            "--ort-model",
+            "/opt/thermal-ort/model.ort",
+            "--ort-evidence",
+            "/var/lib/ivc/ort.csv",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let parsed = parse_controller_arguments(arguments)
+            .expect("ORT controller arguments should be explicit and complete");
+
+        assert_eq!(parsed.policy, Policy::Neural);
+        assert_eq!(parsed.backend, InferenceBackend::OnnxRuntime);
+        assert_eq!(
+            parsed.ort_model.as_deref(),
+            Some(std::path::Path::new("/opt/thermal-ort/model.ort"))
+        );
+        assert_eq!(
+            parsed.ort_evidence.as_deref(),
+            Some(std::path::Path::new("/var/lib/ivc/ort.csv"))
+        );
+    }
+
+    #[test]
+    fn controller_arguments_require_both_ort_artifact_paths() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "neural",
+            "100",
+            "--backend",
+            "onnxruntime",
+            "--ort-model",
+            "/opt/thermal-ort/model.ort",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let error = parse_controller_arguments(arguments)
+            .expect_err("ORT control must not run without its evidence path");
+
+        assert!(error.contains("requires --ort-model and --ort-evidence"));
+    }
+
+    #[test]
+    fn controller_arguments_reject_ort_for_the_manual_policy() {
+        let arguments = [
+            "10.0.0.2:5500",
+            "20",
+            "manual",
+            "100",
+            "--backend",
+            "onnxruntime",
+            "--ort-model",
+            "/opt/thermal-ort/model.ort",
+            "--ort-evidence",
+            "/var/lib/ivc/ort.csv",
+        ]
+        .into_iter()
+        .map(str::to_owned);
+
+        let error = parse_controller_arguments(arguments)
+            .expect_err("manual control must not be mislabeled as ORT inference");
+
+        assert!(error.contains("requires the neural policy"));
     }
 
     #[test]

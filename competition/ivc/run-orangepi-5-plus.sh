@@ -10,7 +10,7 @@ metadata_writer=$script_dir/write_board_metadata.py
 
 usage() {
     cat <<EOF
-Usage: $0 [smoke|full|manual-smoke|manual-full|rknpu-smoke|rknpu-full|fault-ack-loss|fault-error|fault-restart] [options]
+Usage: $0 [smoke|full|manual-smoke|manual-full|rknpu-smoke|rknpu-full|ort-smoke|fault-ack-loss|fault-error|fault-restart] [options]
 
 Options:
   --profile <name>        Select a normal/manual run or deterministic fault campaign.
@@ -208,6 +208,19 @@ case "$profile" in
         starry_dtb_name=starry-orangepi-5-plus-rknpu.dtb
         profile_stager=$script_dir/stage-rknpu-control.sh
         ;;
+    ort-smoke)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-ort-control-smoke.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-ort-control-smoke.toml
+        expected_count=20
+        model_id=thermal-4x6x1-v1
+        inference_backend=onnxruntime
+        guest_image_name=starry-ivc-rootfs-ort-control-smoke.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board-smoke/zephyr/zephyr.bin
+        result_image_name=ivc-os
+        model_artifact=$workspace/competition/ivc/model/thermal-4x6x1-v1.ort
+        runtime_version=1.25.0
+        profile_stager=$script_dir/stage-ort-control.sh
+        ;;
     *)
         echo "Unsupported Orange Pi profile: $profile" >&2
         usage >&2
@@ -261,6 +274,11 @@ if [[ "$inference_backend" == rknn-npu ]]; then
     expected_rknn_model_sha256=$(sha256sum -- "$model_artifact")
     expected_rknn_model_sha256=${expected_rknn_model_sha256%% *}
 fi
+expected_ort_model_sha256=
+if [[ "$inference_backend" == onnxruntime ]]; then
+    expected_ort_model_sha256=$(sha256sum -- "$model_artifact")
+    expected_ort_model_sha256=${expected_ort_model_sha256%% *}
+fi
 if [[ "$result_root" != /* ]]; then
     result_root=$workspace/$result_root
 fi
@@ -277,6 +295,9 @@ write_checksums() {
     fi
     if [[ -f "$run_dir/rknn.csv" ]]; then
         files+=(rknn.csv rknn.csv.gz)
+    fi
+    if [[ -f "$run_dir/ort.csv" ]]; then
+        files+=(ort.csv ort.csv.gz)
     fi
     if [[ -f "$run_dir/raw-before-reset.csv" ]]; then
         files+=(raw-before-reset.csv raw-before-reset.csv.gz)
@@ -327,6 +348,12 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     if [[ "$inference_backend" == rknn-npu ]]; then
         rknn_csv_harvest=$rknn_csv_path
     fi
+    ort_csv_path=$run_dir/ort.csv
+    ort_csv_gzip=$run_dir/ort.csv.gz
+    ort_csv_harvest=
+    if [[ "$inference_backend" == onnxruntime ]]; then
+        ort_csv_harvest=$ort_csv_path
+    fi
     pre_reset_raw_csv_path=$run_dir/raw-before-reset.csv
     pre_reset_raw_csv_gzip=$run_dir/raw-before-reset.csv.gz
     console_gzip=$run_dir/console.log.gz
@@ -337,6 +364,8 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
         "$raw_csv_gzip" \
         "$rknn_csv_path" \
         "$rknn_csv_gzip" \
+        "$ort_csv_path" \
+        "$ort_csv_gzip" \
         "$pre_reset_raw_csv_path" \
         "$pre_reset_raw_csv_gzip" \
         "$console_gzip" \
@@ -361,6 +390,7 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     ORANGEPI_IVC_EXPECTED_COUNT=$expected_count \
     ORANGEPI_IVC_RAW_CSV=$raw_csv_path \
     ORANGEPI_IVC_RKNN_CSV=$rknn_csv_harvest \
+    ORANGEPI_IVC_ORT_CSV=$ort_csv_harvest \
     ORANGEPI_IVC_PRE_RESET_RAW_CSV=$pre_reset_raw_csv_path \
     ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT=$expected_pre_reset_count \
         "${runner_command[@]}" 2>&1 | tee "$log_path"
@@ -392,6 +422,18 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
             fi
         elif ((runner_status == 0)); then
             echo "Orange Pi runner completed without harvested RKNN samples" >&2
+            compression_status=1
+        fi
+    fi
+    if [[ "$inference_backend" == onnxruntime ]]; then
+        if [[ -f "$ort_csv_path" ]]; then
+            compress_evidence "$ort_csv_path" "$ort_csv_gzip"
+            ort_compression_status=$?
+            if ((compression_status == 0 && ort_compression_status != 0)); then
+                compression_status=$ort_compression_status
+            fi
+        elif ((runner_status == 0)); then
+            echo "Orange Pi runner completed without harvested ORT samples" >&2
             compression_status=1
         fi
     fi
@@ -432,6 +474,13 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
                 --expected-rknn-runtime-api "$runtime_version"
             )
         fi
+        if [[ "$inference_backend" == onnxruntime ]]; then
+            analyzer_arguments+=(
+                --ort-csv "$ort_csv_gzip"
+                --expected-ort-model-sha256 "$expected_ort_model_sha256"
+                --expected-ort-runtime-version "$runtime_version"
+            )
+        fi
         python3 "$analyzer" "${analyzer_arguments[@]}"
         analysis_status=$?
         if [[ "$inference_backend" == rknn-npu ]]; then
@@ -443,6 +492,18 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
                 'IVC-STARRY-RKNN-RAW sha256='; do
                 if ! grep -aFq "$marker" "$log_path"; then
                     echo "RKNN control console is missing required marker: $marker" >&2
+                    analysis_status=1
+                fi
+            done
+        fi
+        if [[ "$inference_backend" == onnxruntime ]]; then
+            for marker in \
+                'backend=onnxruntime' \
+                'IVC-ORT-CONTROL-RUNTIME version=1.25.0 provider=CPUExecutionProvider ' \
+                "IVC-ORT-CONTROL-RESULT samples=$expected_count " \
+                'IVC-STARRY-ORT-RAW sha256='; do
+                if ! grep -aFq "$marker" "$log_path"; then
+                    echo "ORT control console is missing required marker: $marker" >&2
                     analysis_status=1
                 fi
             done
@@ -492,6 +553,9 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
     fi
     if [[ "$inference_backend" == rknn-npu ]]; then
         metadata_arguments+=(--rknn-csv "$rknn_csv_gzip")
+    fi
+    if [[ "$inference_backend" == onnxruntime ]]; then
+        metadata_arguments+=(--ort-csv "$ort_csv_gzip")
     fi
     python3 "$metadata_writer" "${metadata_arguments[@]}"
     write_checksums "$run_dir"

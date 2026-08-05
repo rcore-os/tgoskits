@@ -57,6 +57,10 @@ STARRY_RKNN_MODEL_PREFIX = "IVC-STARRY-RKNN-MODEL "
 STARRY_RKNN_RAW_PREFIX = "IVC-STARRY-RKNN-RAW "
 RKNN_RUNTIME_PREFIX = "IVC-RKNN-RUNTIME "
 RKNN_RESULT_PREFIX = "IVC-RKNN-RESULT "
+STARRY_ORT_MODEL_PREFIX = "IVC-STARRY-ORT-MODEL "
+STARRY_ORT_RAW_PREFIX = "IVC-STARRY-ORT-RAW "
+ORT_RUNTIME_PREFIX = "IVC-ORT-CONTROL-RUNTIME "
+ORT_RESULT_PREFIX = "IVC-ORT-CONTROL-RESULT "
 STARRY_RESTART_ARMED_PREFIX = "IVC-STARRY-RESTART-ARMED "
 STARRY_RESTART_RAW_PREFIX = "IVC-STARRY-RESTART-RAW "
 STARRY_RESTART_RESUME_PREFIX = "IVC-STARRY-RESTART-RESUME "
@@ -64,6 +68,8 @@ GUEST_RAW_MANIFEST_PREFIX = "BOARD_GUEST_RAW_MANIFEST "
 HARVEST_RAW_PREFIX = "BOARD_RAW_RESULT_HARVESTED "
 GUEST_RKNN_MANIFEST_PREFIX = "BOARD_GUEST_RKNN_MANIFEST "
 HARVEST_RKNN_PREFIX = "BOARD_RKNN_RESULT_HARVESTED "
+GUEST_ORT_MANIFEST_PREFIX = "BOARD_GUEST_ORT_MANIFEST "
+HARVEST_ORT_PREFIX = "BOARD_ORT_RESULT_HARVESTED "
 GUEST_PRE_RESET_RAW_MANIFEST_PREFIX = "BOARD_GUEST_PRE_RESET_RAW_MANIFEST "
 HARVEST_PRE_RESET_RAW_PREFIX = "BOARD_PRE_RESET_RAW_RESULT_HARVESTED "
 BOARD_IDENTITY_PREFIX = "BOARD_IDENTITY "
@@ -100,6 +106,16 @@ RKNN_COLUMNS = (
     "actuator_permille",
     "wall_ns",
     "device_us",
+)
+ORT_COLUMNS = (
+    "sequence",
+    "input0_bits",
+    "input1_bits",
+    "input2_bits",
+    "input3_bits",
+    "output_bits",
+    "actuator_permille",
+    "wall_ns",
 )
 AXVISOR_RESTART_ARMED_PREFIX = "AXVISOR_GUEST_RESTART_ARMED "
 AXVISOR_RESTART_PLACED_PREFIX = "AXVISOR_GUEST_RESTART_PLACED "
@@ -147,6 +163,9 @@ def analyze(
     rknn_path: Path | None = None,
     expected_rknn_model_sha256: str | None = None,
     expected_rknn_runtime_api: str | None = None,
+    ort_path: Path | None = None,
+    expected_ort_model_sha256: str | None = None,
+    expected_ort_runtime_version: str | None = None,
 ) -> dict[str, object]:
     if expected_count <= 0:
         raise AnalysisError("expected count must be positive")
@@ -180,6 +199,7 @@ def analyze(
     )
     raw_samples = None
     rknn_samples = None
+    ort_samples = None
     pre_reset_raw_samples = None
     board = None
     if raw_path is not None:
@@ -221,6 +241,36 @@ def analyze(
         )
     ):
         raise AnalysisError("RKNN evidence options are only valid for the rknn-npu backend")
+    if starry["backend"] == "onnxruntime":
+        if ort_path is None:
+            raise AnalysisError("ORT backend requires a harvested ORT evidence CSV")
+        if raw_path is None:
+            raise AnalysisError("ORT evidence CSV requires harvested controller samples")
+        if expected_ort_model_sha256 is None:
+            raise AnalysisError("ORT backend requires the expected model SHA-256")
+        if re.fullmatch(r"[0-9a-f]{64}", expected_ort_model_sha256) is None:
+            raise AnalysisError("expected ORT model SHA-256 is malformed")
+        if expected_ort_runtime_version is None:
+            raise AnalysisError("ORT backend requires the expected runtime version")
+        if re.fullmatch(r"[A-Za-z0-9._+-]+", expected_ort_runtime_version) is None:
+            raise AnalysisError("expected ORT runtime version is malformed")
+        ort_samples = parse_ort_samples(
+            lines,
+            ort_path,
+            raw_path,
+            expected_count,
+            expected_ort_model_sha256,
+            expected_ort_runtime_version,
+        )
+    elif any(
+        value is not None
+        for value in (
+            ort_path,
+            expected_ort_model_sha256,
+            expected_ort_runtime_version,
+        )
+    ):
+        raise AnalysisError("ORT evidence options are only valid for the onnxruntime backend")
     if pre_reset_raw_path is not None:
         pre_reset_raw_samples = parse_pre_reset_raw_samples(
             lines,
@@ -272,6 +322,8 @@ def analyze(
         result["raw_samples"] = raw_samples
     if rknn_samples is not None:
         result["rknn_samples"] = rknn_samples
+    if ort_samples is not None:
+        result["ort_samples"] = ort_samples
     if pre_reset_raw_samples is not None:
         result["pre_reset_raw_samples"] = pre_reset_raw_samples
     if board is not None:
@@ -1326,6 +1378,197 @@ def parse_rknn_row(encoded: dict[str, str], expected_sequence: int) -> dict[str,
     }
 
 
+def parse_ort_samples(
+    lines: list[str],
+    ort_path: Path,
+    raw_path: Path,
+    expected_count: int,
+    expected_model_sha256: str,
+    expected_runtime_version: str,
+) -> dict[str, object]:
+    uart_record = find_quorum_record(
+        lines,
+        STARRY_ORT_RAW_PREFIX,
+        ("sha256",),
+        sha256_fields=("sha256",),
+    )
+    guest_manifest_record = find_record(
+        lines,
+        GUEST_ORT_MANIFEST_PREFIX,
+        ("path", "samples", "sha256"),
+    )
+    harvest_record = find_record(
+        lines,
+        HARVEST_ORT_PREFIX,
+        ("path", "samples", "sha256"),
+    )
+    guest_ort_path = "/var/lib/ivc/ort.csv"
+    if (
+        required(guest_manifest_record, "path", GUEST_ORT_MANIFEST_PREFIX)
+        != guest_ort_path
+    ):
+        raise AnalysisError("unexpected snapshot guest ORT evidence path")
+    for record, prefix in (
+        (guest_manifest_record, GUEST_ORT_MANIFEST_PREFIX),
+        (harvest_record, HARVEST_ORT_PREFIX),
+    ):
+        if integer(record, "samples", prefix) != expected_count:
+            raise AnalysisError(
+                f"{prefix.strip()} sample count does not match expected count"
+            )
+
+    uart_sha256 = complete_sha256(uart_record, STARRY_ORT_RAW_PREFIX)
+    guest_manifest_sha256 = complete_sha256(
+        guest_manifest_record, GUEST_ORT_MANIFEST_PREFIX
+    )
+    harvest_sha256 = complete_sha256(harvest_record, HARVEST_ORT_PREFIX)
+    actual_sha256 = sha256_evidence_content(ort_path)
+    if len({uart_sha256, guest_manifest_sha256, harvest_sha256, actual_sha256}) != 1:
+        raise AnalysisError(
+            "ORT CSV SHA-256 does not match UART, snapshot manifest, and harvest records"
+        )
+
+    rows = read_ort_rows(ort_path, expected_count)
+    raw_rows = read_raw_rows(raw_path, expected_count)
+    for ort_row, raw_row in zip(rows, raw_rows, strict=True):
+        if ort_row["actuator_permille"] != raw_row["command_actuator_permille"]:
+            raise AnalysisError("ORT actuator does not match the controller raw CSV")
+
+    wall_times_ns = sorted(row["wall_ns"] for row in rows)
+    runtime = parse_ort_runtime(lines, expected_runtime_version)
+    result_record = find_quorum_record(
+        lines,
+        ORT_RESULT_PREFIX,
+        ("samples", "wall_p99_ns"),
+    )
+    derived_wall_p99_ns = percentile(wall_times_ns, 99)
+    expected_result = {
+        "samples": expected_count,
+        "wall_p99_ns": derived_wall_p99_ns,
+    }
+    for field, expected_value in expected_result.items():
+        if integer(result_record, field, ORT_RESULT_PREFIX) != expected_value:
+            raise AnalysisError(f"console ORT {field} does not match the evidence CSV")
+
+    model_record = find_quorum_record(
+        lines,
+        STARRY_ORT_MODEL_PREFIX,
+        ("sha256",),
+        sha256_fields=("sha256",),
+    )
+    model_sha256 = complete_sha256(model_record, STARRY_ORT_MODEL_PREFIX)
+    if model_sha256 != expected_model_sha256:
+        raise AnalysisError("ORT model SHA-256 does not match the expected artifact")
+    return {
+        "path": str(ort_path),
+        "sha256": actual_sha256,
+        "artifact_sha256": sha256_file(ort_path),
+        "guest_manifest_sha256": guest_manifest_sha256,
+        "sample_count": len(rows),
+        "wall_p50_ns": percentile(wall_times_ns, 50),
+        "wall_p99_ns": derived_wall_p99_ns,
+        "wall_max_ns": wall_times_ns[-1],
+        "runtime_version": runtime["version"],
+        "provider": runtime["provider"],
+        "initialization_us": runtime["initialization_us"],
+        "model_sha256": model_sha256,
+        "actuator_matches": len(rows),
+    }
+
+
+def parse_ort_runtime(
+    lines: list[str], expected_version: str
+) -> dict[str, object]:
+    runtime_record = find_quorum_record(
+        lines,
+        ORT_RUNTIME_PREFIX,
+        ("version", "provider", "init_us"),
+    )
+    version = required(runtime_record, "version", ORT_RUNTIME_PREFIX)
+    provider = required(runtime_record, "provider", ORT_RUNTIME_PREFIX)
+    if re.fullmatch(r"[A-Za-z0-9._+-]+", version) is None:
+        raise AnalysisError("ORT runtime version is malformed")
+    if version != expected_version:
+        raise AnalysisError("ORT runtime version does not match the frozen profile")
+    if provider != "CPUExecutionProvider":
+        raise AnalysisError("ORT execution provider is not CPUExecutionProvider")
+    initialization_us = integer(runtime_record, "init_us", ORT_RUNTIME_PREFIX)
+    if initialization_us <= 0:
+        raise AnalysisError("ORT initialization duration must be positive")
+    return {
+        "version": version,
+        "provider": provider,
+        "initialization_us": initialization_us,
+    }
+
+
+def read_ort_rows(ort_path: Path, expected_count: int) -> list[dict[str, int]]:
+    with open_evidence_text(ort_path, newline="") as source:
+        reader = csv.DictReader(source)
+        if tuple(reader.fieldnames or ()) != ORT_COLUMNS:
+            raise AnalysisError("ORT CSV columns do not match the evidence schema")
+        encoded_rows = list(reader)
+    if len(encoded_rows) != expected_count:
+        raise AnalysisError("ORT CSV sample count does not match expected count")
+
+    rows: list[dict[str, int]] = []
+    for expected_sequence, encoded in enumerate(encoded_rows, start=1):
+        if None in encoded or any(encoded[column] is None for column in ORT_COLUMNS):
+            raise AnalysisError(
+                f"ORT CSV row {expected_sequence} has extra or missing fields"
+            )
+        rows.append(parse_ort_row(encoded, expected_sequence))
+    return rows
+
+
+def parse_ort_row(encoded: dict[str, str], expected_sequence: int) -> dict[str, int]:
+    try:
+        sequence = int(encoded["sequence"])
+        actuator_permille = int(encoded["actuator_permille"])
+        wall_ns = int(encoded["wall_ns"])
+    except ValueError as error:
+        raise AnalysisError(
+            f"ORT CSV row {expected_sequence} contains a non-integer field"
+        ) from error
+    if sequence != expected_sequence:
+        raise AnalysisError(f"ORT CSV sequence discontinuity at row {expected_sequence}")
+    if not 0 <= actuator_permille <= 1000:
+        raise AnalysisError(f"ORT CSV actuator is out of range at row {expected_sequence}")
+    if wall_ns <= 0:
+        raise AnalysisError(f"ORT CSV timing is non-positive at row {expected_sequence}")
+
+    float_fields = (
+        "input0_bits",
+        "input1_bits",
+        "input2_bits",
+        "input3_bits",
+        "output_bits",
+    )
+    decoded: dict[str, float] = {}
+    for field in float_fields:
+        bits = encoded[field]
+        if re.fullmatch(r"[0-9a-f]{8}", bits) is None:
+            raise AnalysisError(
+                f"ORT CSV {field} is not canonical f32 bits at row {expected_sequence}"
+            )
+        decoded[field] = struct.unpack(">f", bytes.fromhex(bits))[0]
+        if not math.isfinite(decoded[field]):
+            raise AnalysisError(
+                f"ORT CSV {field} is non-finite at row {expected_sequence}"
+            )
+    output = min(max(decoded["output_bits"], 0.0), 1.0)
+    expected_actuator = int(output * 1000.0 + 0.5)
+    if actuator_permille != expected_actuator:
+        raise AnalysisError(
+            f"ORT CSV actuator conflicts with output bits at row {expected_sequence}"
+        )
+    return {
+        "sequence": sequence,
+        "actuator_permille": actuator_permille,
+        "wall_ns": wall_ns,
+    }
+
+
 def parse_pre_reset_raw_samples(
     lines: list[str],
     raw_path: Path,
@@ -1807,7 +2050,7 @@ def parse_block_snapshot(lines: list[str], profile: str) -> dict[str, object]:
     elif profile == "restart":
         compact_names = ("r",)
     else:
-        compact_names = ("n", "ns", "m", "ms", "rn", "rs")
+        compact_names = ("n", "ns", "m", "ms", "rn", "rs", "os")
     compact_result_path = image_path in {
         f"/home/orangepi/ivc-{name}" for name in compact_names
     }
@@ -2253,6 +2496,9 @@ def main() -> int:
     parser.add_argument("--rknn-csv", type=Path)
     parser.add_argument("--expected-rknn-model-sha256")
     parser.add_argument("--expected-rknn-runtime-api")
+    parser.add_argument("--ort-csv", type=Path)
+    parser.add_argument("--expected-ort-model-sha256")
+    parser.add_argument("--expected-ort-runtime-version")
     parser.add_argument("--expected-count", type=int, required=True)
     parser.add_argument("--profile", choices=sorted(RUN_PROFILES), default="normal")
     parser.add_argument("--drop-ack-every", type=int, default=0)
@@ -2273,6 +2519,9 @@ def main() -> int:
             rknn_path=arguments.rknn_csv,
             expected_rknn_model_sha256=arguments.expected_rknn_model_sha256,
             expected_rknn_runtime_api=arguments.expected_rknn_runtime_api,
+            ort_path=arguments.ort_csv,
+            expected_ort_model_sha256=arguments.expected_ort_model_sha256,
+            expected_ort_runtime_version=arguments.expected_ort_runtime_version,
         )
         arguments.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"

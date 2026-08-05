@@ -54,6 +54,14 @@ sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_pe
 4,00000000,00000000,00000000,00000000,3f000000,500,16000,15
 """
 RKNN_MODEL_SHA256 = "a" * 64
+ORT_CSV = """\
+sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns
+1,00000000,00000000,00000000,00000000,3f000000,500,121000
+2,00000000,00000000,00000000,00000000,3f000000,500,124000
+3,00000000,00000000,00000000,00000000,3f000000,500,122000
+4,00000000,00000000,00000000,00000000,3f000000,500,130000
+"""
+ORT_MODEL_SHA256 = "c" * 64
 
 RAW_LOG_TEMPLATE = """\
 [guest-console:pl011-starry] IVC-STARRY-BOOT mode=neural backend=native count=4 period_ms=100 vcpus=2
@@ -165,6 +173,47 @@ class BoardAnalysisTests(unittest.TestCase):
             .replace(
                 "/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img",
                 "/home/orangepi/ivc-rs",
+            )
+        )
+
+    def ort_log(self, ort_csv: str = ORT_CSV) -> str:
+        digest = hashlib.sha256(ort_csv.encode()).hexdigest()
+        ort_boot_record = (
+            "[guest-console:pl011-starry] IVC-STARRY-BOOT "
+            "mode=neural backend=onnxruntime count=4 period_ms=100 vcpus=2\n"
+        )
+        ort_record_set = (
+            "[guest-console:pl011-starry] IVC-ORT-CONTROL-RUNTIME "
+            "version=1.25.0 provider=CPUExecutionProvider init_us=1780\n"
+            "[guest-console:pl011-starry] IVC-ORT-CONTROL-RESULT "
+            "samples=4 wall_p99_ns=124000\n"
+            "[guest-console:pl011-starry] IVC-STARRY-ORT-MODEL "
+            f"sha256={ORT_MODEL_SHA256}\n"
+            "[guest-console:pl011-starry] IVC-STARRY-ORT-RAW "
+            f"sha256={digest}\n"
+        )
+        harvest_records = (
+            "BOARD_GUEST_ORT_MANIFEST path=/var/lib/ivc/ort.csv "
+            f"samples=4 sha256={digest}\n"
+            "BOARD_ORT_RESULT_HARVESTED path=/tmp/results/ort.csv "
+            f"samples=4 sha256={digest}\n"
+        )
+        return (
+            self.raw_log()
+            .replace("backend=native", "backend=onnxruntime")
+            .replace(ort_boot_record, ort_boot_record * 3)
+            .replace(
+                "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+                ort_record_set * 3
+                + "[guest-console:pl011-starry] IVC-STARRY-DONE exit=0\n",
+            )
+            .replace(
+                "BOARD_IDENTITY board_id=",
+                harvest_records + "BOARD_IDENTITY board_id=",
+            )
+            .replace(
+                "/home/orangepi/axvisor-guest/starry-ivc-rootfs.result.img",
+                "/home/orangepi/ivc-os",
             )
         )
 
@@ -493,6 +542,53 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertEqual(result["rknn_samples"]["device_p99_us"], 12)
         self.assertEqual(result["rknn_samples"]["wall_p99_ns"], 13_000)
         self.assertEqual(result["rknn_samples"]["runtime_api"], "2.3.2")
+
+    def test_ort_samples_are_harvested_and_cross_checked(self) -> None:
+        result = analyzer.analyze(
+            self.write_log(self.ort_log()),
+            4,
+            self.write_raw_csv(),
+            ort_path=self.write_raw_csv(ORT_CSV),
+            expected_ort_model_sha256=ORT_MODEL_SHA256,
+            expected_ort_runtime_version="1.25.0",
+        )
+
+        self.assertEqual(result["ort_samples"]["sample_count"], 4)
+        self.assertEqual(result["ort_samples"]["wall_p99_ns"], 124_000)
+        self.assertEqual(result["ort_samples"]["runtime_version"], "1.25.0")
+        self.assertEqual(
+            result["ort_samples"]["provider"], "CPUExecutionProvider"
+        )
+
+    def test_ort_actuator_mismatch_with_control_csv_is_rejected(self) -> None:
+        mismatched = ORT_CSV.replace("3f000000,500", "3f19999a,600", 1)
+
+        with self.assertRaisesRegex(
+            analyzer.AnalysisError,
+            "ORT actuator does not match the controller raw CSV",
+        ):
+            analyzer.analyze(
+                self.write_log(self.ort_log(mismatched)),
+                4,
+                self.write_raw_csv(),
+                ort_path=self.write_raw_csv(mismatched),
+                expected_ort_model_sha256=ORT_MODEL_SHA256,
+                expected_ort_runtime_version="1.25.0",
+            )
+
+    def test_ort_runtime_version_must_match_the_frozen_profile(self) -> None:
+        with self.assertRaisesRegex(
+            analyzer.AnalysisError,
+            "ORT runtime version does not match the frozen profile",
+        ):
+            analyzer.analyze(
+                self.write_log(self.ort_log()),
+                4,
+                self.write_raw_csv(),
+                ort_path=self.write_raw_csv(ORT_CSV),
+                expected_ort_model_sha256=ORT_MODEL_SHA256,
+                expected_ort_runtime_version="1.26.0",
+            )
 
     def test_rknn_uart_quorum_ignores_one_complete_collision_record(self) -> None:
         corrupt_model_record = (

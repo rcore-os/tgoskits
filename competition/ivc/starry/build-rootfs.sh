@@ -16,7 +16,8 @@ Usage: $0 [smoke|full] [options]
 Options:
   --profile <smoke|full>             Select the workload size.
   --policy <neural|manual>           Select the controller policy.
-  --backend <native|onnxruntime>      Select the inference backend.
+  --backend <native>                  Select the built-in inference backend.
+                                      Use build-ort-control-rootfs.sh for ORT.
   --fault-profile <none|error|restart> Select deterministic controller faults.
   --count <commands>                  Override the profile command count.
   --period-ms <milliseconds>          Set the control period (default: 100).
@@ -43,15 +44,11 @@ require_positive_integer() {
 
 default_output_image() {
     local policy_suffix=
-    local backend_suffix=
     local profile_suffix=
     local fault_suffix=
 
     if [[ "$policy" == manual ]]; then
         policy_suffix=-manual
-    fi
-    if [[ "$backend" == onnxruntime ]]; then
-        backend_suffix=-onnx
     fi
     if [[ "$profile" == smoke ]]; then
         profile_suffix=-smoke
@@ -60,8 +57,8 @@ default_output_image() {
         error) fault_suffix=-error ;;
         restart) fault_suffix=-restart ;;
     esac
-    printf '%s/starry-ivc-rootfs%s%s%s%s.img\n' \
-        "$output_dir" "$policy_suffix" "$backend_suffix" "$profile_suffix" "$fault_suffix"
+    printf '%s/starry-ivc-rootfs%s%s%s.img\n' \
+        "$output_dir" "$policy_suffix" "$profile_suffix" "$fault_suffix"
 }
 
 find_base_image() {
@@ -156,9 +153,9 @@ case "$policy" in
         ;;
 esac
 case "$backend" in
-    native|onnxruntime) ;;
+    native) ;;
     *)
-        echo "backend must be 'native' or 'onnxruntime': $backend" >&2
+        echo "base rootfs backend must be 'native': $backend" >&2
         exit 2
         ;;
 esac

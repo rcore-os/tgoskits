@@ -10,6 +10,7 @@ ssh_identity=${ORANGEPI_SSH_IDENTITY:-${HOME}/.ssh/orangepi_automation}
 result_image=${ORANGEPI_IVC_RESULT_IMAGE:?set ORANGEPI_IVC_RESULT_IMAGE to the snapshotted StarryOS rootfs image}
 raw_output=${ORANGEPI_IVC_RAW_CSV:?set ORANGEPI_IVC_RAW_CSV to the local result path}
 rknn_output=${ORANGEPI_IVC_RKNN_CSV:-}
+ort_output=${ORANGEPI_IVC_ORT_CSV:-}
 expected_count=${ORANGEPI_IVC_EXPECTED_COUNT:?set ORANGEPI_IVC_EXPECTED_COUNT to the controller sample count}
 pre_reset_raw_output=${ORANGEPI_IVC_PRE_RESET_RAW_CSV:-}
 expected_pre_reset_count=${ORANGEPI_IVC_EXPECTED_PRE_RESET_COUNT:-0}
@@ -17,11 +18,14 @@ guest_raw_path=/var/lib/ivc/raw.csv
 guest_raw_manifest_path=/var/lib/ivc/raw.csv.sha256
 guest_rknn_path=/var/lib/ivc/rknn.csv
 guest_rknn_manifest_path=/var/lib/ivc/rknn.csv.sha256
+guest_ort_path=/var/lib/ivc/ort.csv
+guest_ort_manifest_path=/var/lib/ivc/ort.csv.sha256
 guest_pre_reset_raw_path=/var/lib/ivc/raw-before-reset.csv
 guest_pre_reset_raw_manifest_path=/var/lib/ivc/raw-before-reset.csv.sha256
 lease_dir=$workspace/tmp/competition/ivc/board-lease
 csv_header='sequence,cycle_started_us,command_sent_us,response_completed_us,full_loop_us,pre_send_us,transport_us,setpoint_milli_c,observed_milli_c,measured_milli_c,command_actuator_permille,status_actuator_permille,error_milli_c'
 rknn_csv_header='sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns,device_us'
+ort_csv_header='sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns'
 
 case "$result_image" in
     /home/orangepi/*) ;;
@@ -47,6 +51,20 @@ if [[ -n "$rknn_output" ]]; then
         echo "RKNN and controller raw output paths must differ" >&2
         exit 1
     fi
+fi
+if [[ -n "$ort_output" ]]; then
+    if [[ "$ort_output" != /* ]]; then
+        echo "ORANGEPI_IVC_ORT_CSV must be an absolute path: $ort_output" >&2
+        exit 1
+    fi
+    if [[ "$ort_output" == "$raw_output" ]]; then
+        echo "ORT and controller raw output paths must differ" >&2
+        exit 1
+    fi
+fi
+if [[ -n "$rknn_output" && -n "$ort_output" ]]; then
+    echo "RKNN and ORT evidence cannot be harvested in the same run" >&2
+    exit 1
 fi
 case "$expected_count" in
     ''|*[!0-9]*)
@@ -93,6 +111,11 @@ if [[ -n "$rknn_output" ]]; then
     mkdir -p "$(dirname -- "$rknn_output")"
     rknn_temporary_output=$(mktemp "$(dirname -- "$rknn_output")/.rknn.csv.XXXXXX")
 fi
+ort_temporary_output=
+if [[ -n "$ort_output" ]]; then
+    mkdir -p "$(dirname -- "$ort_output")"
+    ort_temporary_output=$(mktemp "$(dirname -- "$ort_output")/.ort.csv.XXXXXX")
+fi
 pre_reset_temporary_output=
 if ((expected_pre_reset_count > 0)); then
     mkdir -p "$(dirname -- "$pre_reset_raw_output")"
@@ -109,6 +132,7 @@ cleanup() {
         "$lease_log" \
         "$temporary_output" \
         "$rknn_temporary_output" \
+        "$ort_temporary_output" \
         "$pre_reset_temporary_output"
 }
 trap cleanup EXIT HUP INT TERM
@@ -254,6 +278,65 @@ REMOTE
     fi
     mv -f -- "$rknn_temporary_output" "$rknn_output"
     rknn_temporary_output=
+fi
+
+ort_sha256=
+if [[ -n "$ort_output" ]]; then
+    ssh "${ssh_options[@]}" "$ssh_target" sh -s -- \
+        "$result_image" "$guest_ort_path" >"$ort_temporary_output" <<'REMOTE'
+set -eu
+result_image=$1
+guest_ort_path=$2
+temporary=$(mktemp /tmp/ivc-ort.XXXXXX.csv)
+cleanup() {
+    rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+debugfs_path=$(command -v debugfs)
+"$debugfs_path" -R "dump $guest_ort_path $temporary" "$result_image" >/dev/null
+test -s "$temporary"
+cat "$temporary"
+REMOTE
+
+    IFS= read -r actual_ort_header <"$ort_temporary_output"
+    if [[ "$actual_ort_header" != "$ort_csv_header" ]]; then
+        echo "Harvested ORT CSV header does not match the evidence schema" >&2
+        exit 1
+    fi
+    ort_line_count=$(wc -l <"$ort_temporary_output")
+    expected_ort_lines=$((expected_count + 1))
+    if ((ort_line_count != expected_ort_lines)); then
+        echo "Harvested ORT CSV has $ort_line_count lines; expected $expected_ort_lines" >&2
+        exit 1
+    fi
+    ort_sha256=$(sha256sum "$ort_temporary_output")
+    ort_sha256=${ort_sha256%% *}
+    guest_ort_manifest=$(ssh "${ssh_options[@]}" "$ssh_target" sh -s -- \
+        "$result_image" "$guest_ort_manifest_path" <<'REMOTE'
+set -eu
+result_image=$1
+guest_ort_manifest_path=$2
+temporary=$(mktemp /tmp/ivc-ort-sha256.XXXXXX)
+cleanup() {
+    rm -f -- "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
+
+debugfs_path=$(command -v debugfs)
+"$debugfs_path" -R "dump $guest_ort_manifest_path $temporary" \
+    "$result_image" >/dev/null
+test -s "$temporary"
+cat "$temporary"
+REMOTE
+    )
+    expected_guest_ort_manifest="$ort_sha256  $guest_ort_path"
+    if [[ "$guest_ort_manifest" != "$expected_guest_ort_manifest" ]]; then
+        echo "Snapshot guest ORT manifest does not match the harvested CSV" >&2
+        exit 1
+    fi
+    mv -f -- "$ort_temporary_output" "$ort_output"
+    ort_temporary_output=
 fi
 
 pre_reset_raw_sha256=
@@ -409,6 +492,10 @@ echo "BOARD_RAW_RESULT_HARVESTED path=$raw_output samples=$expected_count sha256
 if [[ -n "$rknn_output" ]]; then
     echo "BOARD_GUEST_RKNN_MANIFEST path=$guest_rknn_path samples=$expected_count sha256=$rknn_sha256"
     echo "BOARD_RKNN_RESULT_HARVESTED path=$rknn_output samples=$expected_count sha256=$rknn_sha256"
+fi
+if [[ -n "$ort_output" ]]; then
+    echo "BOARD_GUEST_ORT_MANIFEST path=$guest_ort_path samples=$expected_count sha256=$ort_sha256"
+    echo "BOARD_ORT_RESULT_HARVESTED path=$ort_output samples=$expected_count sha256=$ort_sha256"
 fi
 if ((expected_pre_reset_count > 0)); then
     echo "BOARD_GUEST_PRE_RESET_RAW_MANIFEST path=$guest_pre_reset_raw_path samples=$expected_pre_reset_count sha256=$pre_reset_raw_sha256"

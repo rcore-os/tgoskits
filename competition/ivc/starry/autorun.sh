@@ -28,8 +28,7 @@ case "${ivc_mode:-}" in
     *) fatal invalid-controller-mode ;;
 esac
 case "${ivc_backend:-}" in
-    native|rknn-npu) ;;
-    onnxruntime) fatal onnxruntime-backend-not-installed ;;
+    native|rknn-npu|onnxruntime) ;;
     *) fatal invalid-inference-backend ;;
 esac
 case "${ivc_fault_profile:-none}" in
@@ -63,6 +62,30 @@ if [ "$ivc_backend" = rknn-npu ]; then
             *) ;;
         esac
         [ "${#expected_hash}" -eq 64 ] || fatal invalid-rknn-profile-hash-length
+    done
+fi
+if [ "$ivc_backend" = onnxruntime ]; then
+    [ "${ivc_mode:-}" = neural ] || fatal ort-requires-neural-mode
+    [ "${ivc_fault_profile:-none}" = none ] || fatal ort-fault-profile-unsupported
+    [ "${ivc_ort_model:-}" = /opt/thermal-ort/thermal-4x6x1-v1.ort ] \
+        || fatal invalid-ort-model-path
+    [ "${ivc_ort_runtime:-}" = /usr/local/bin/lib/libonnxruntime.so.1 ] \
+        || fatal invalid-ort-runtime-path
+    [ "${ivc_ort_provider_shared:-}" = /usr/local/bin/lib/libonnxruntime_providers_shared.so ] \
+        || fatal invalid-ort-provider-path
+    [ "${ivc_ort_evidence:-}" = /var/lib/ivc/ort.csv ] \
+        || fatal invalid-ort-evidence-path
+    [ "${ivc_ort_runtime_version:-}" = 1.25.0 ] || fatal invalid-ort-runtime-version
+    for expected_hash in \
+        "${ivc_ort_model_sha256:-}" \
+        "${ivc_ort_runtime_sha256:-}" \
+        "${ivc_ort_provider_shared_sha256:-}" \
+        "${ivc_ort_controller_sha256:-}"; do
+        case "$expected_hash" in
+            ''|*[!0-9a-f]*) fatal invalid-ort-profile-hash ;;
+            *) ;;
+        esac
+        [ "${#expected_hash}" -eq 64 ] || fatal invalid-ort-profile-hash-length
     done
 fi
 if [ "${ivc_fault_profile:-none}" = restart ]; then
@@ -108,11 +131,29 @@ validate_rknn_evidence() {
         >"$ivc_rknn_evidence.sha256" || fatal rknn-manifest-write-failed
 }
 
+validate_ort_evidence() {
+    [ -r "$ivc_ort_evidence" ] || fatal ort-evidence-not-found
+    ort_header=$($BB sed -n '1p' "$ivc_ort_evidence") \
+        || fatal ort-evidence-header-failed
+    [ "$ort_header" = sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,actuator_permille,wall_ns ] \
+        || fatal ort-evidence-header-mismatch
+    ort_lines=$($BB wc -l < "$ivc_ort_evidence") \
+        || fatal ort-evidence-count-failed
+    expected_ort_lines=$((ivc_count + 1))
+    [ "$ort_lines" -eq "$expected_ort_lines" ] \
+        || fatal ort-evidence-count-mismatch
+    ort_checksum=$($BB sha256sum "$ivc_ort_evidence") \
+        || fatal ort-evidence-hash-failed
+    validated_ort_sha256=${ort_checksum%% *}
+    "$BB" printf '%s  %s\n' "$validated_ort_sha256" "$ivc_ort_evidence" \
+        >"$ivc_ort_evidence.sha256" || fatal ort-manifest-write-failed
+}
+
 cpu_count=$($BB grep -c '^processor' /proc/cpuinfo 2>/dev/null || true)
 [ "$cpu_count" -ge 2 ] || fatal insufficient-vcpus
 
 boot_identity="IVC-STARRY-BOOT mode=$ivc_mode backend=$ivc_backend fault_profile=${ivc_fault_profile:-none} count=$ivc_count period_ms=$ivc_period_ms vcpus=$cpu_count"
-if [ "$ivc_backend" = rknn-npu ]; then
+if [ "$ivc_backend" != native ]; then
     boot_identity_copy=0
     while [ "$boot_identity_copy" -lt 5 ]; do
         echo "$boot_identity"
@@ -148,6 +189,32 @@ if [ "$ivc_backend" = rknn-npu ]; then
     done
     "$BB" rm -f "$ivc_rknn_evidence" "$ivc_rknn_evidence.sha256" \
         || fatal rknn-stale-evidence-cleanup-failed
+fi
+if [ "$ivc_backend" = onnxruntime ]; then
+    actual_ort_model_sha256=$($BB sha256sum "$ivc_ort_model") \
+        || fatal ort-model-hash-failed
+    actual_ort_model_sha256=${actual_ort_model_sha256%% *}
+    [ "$actual_ort_model_sha256" = "$ivc_ort_model_sha256" ] \
+        || fatal ort-model-hash-mismatch
+    actual_ort_runtime_sha256=$($BB sha256sum "$ivc_ort_runtime") \
+        || fatal ort-runtime-hash-failed
+    actual_ort_runtime_sha256=${actual_ort_runtime_sha256%% *}
+    [ "$actual_ort_runtime_sha256" = "$ivc_ort_runtime_sha256" ] \
+        || fatal ort-runtime-hash-mismatch
+    actual_ort_provider_shared_sha256=$($BB sha256sum "$ivc_ort_provider_shared") \
+        || fatal ort-provider-hash-failed
+    actual_ort_provider_shared_sha256=${actual_ort_provider_shared_sha256%% *}
+    [ "$actual_ort_provider_shared_sha256" = "$ivc_ort_provider_shared_sha256" ] \
+        || fatal ort-provider-hash-mismatch
+    actual_ort_controller_sha256=$($BB sha256sum /usr/local/bin/ivcproto) \
+        || fatal ort-controller-hash-failed
+    actual_ort_controller_sha256=${actual_ort_controller_sha256%% *}
+    [ "$actual_ort_controller_sha256" = "$ivc_ort_controller_sha256" ] \
+        || fatal ort-controller-hash-mismatch
+    "$BB" rm -f "$ivc_ort_evidence" "$ivc_ort_evidence.sha256" \
+        || fatal ort-stale-evidence-cleanup-failed
+    LD_LIBRARY_PATH=/usr/local/bin/lib:/lib/aarch64-linux-gnu
+    export LD_LIBRARY_PATH
 fi
 
 attempt=0
@@ -255,6 +322,16 @@ elif [ "$ivc_backend" = rknn-npu ]; then
     else
         result=$?
     fi
+elif [ "$ivc_backend" = onnxruntime ]; then
+    if /usr/local/bin/ivcproto controller \
+        10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
+        --backend "$ivc_backend" --raw-csv "$ivc_raw_csv" \
+        --fault-profile none --ack-timeout-ms "$ivc_ack_timeout_ms" \
+        --ort-model "$ivc_ort_model" --ort-evidence "$ivc_ort_evidence"; then
+        result=0
+    else
+        result=$?
+    fi
 elif /usr/local/bin/ivcproto controller \
     10.0.0.2:5500 "$ivc_count" "$ivc_mode" "$ivc_period_ms" \
     --backend "$ivc_backend" --raw-csv "$ivc_raw_csv" \
@@ -270,6 +347,8 @@ if [ "$result" -eq 0 ]; then
     raw_sha256=$validated_raw_sha256
     if [ "$ivc_backend" = rknn-npu ]; then
         validate_rknn_evidence
+    elif [ "$ivc_backend" = onnxruntime ]; then
+        validate_ort_evidence
     fi
     # Let the peer VM shutdown messages drain before publishing redundant
     # identities on the shared UART.
@@ -287,6 +366,12 @@ if [ "$result" -eq 0 ]; then
             # The guest-console routing prefix shares a fixed line budget with
             # this marker, so keep the full digest record compact.
             echo "IVC-STARRY-RKNN-RAW sha256=$validated_rknn_sha256"
+            "$BB" sleep "$raw_identity_line_interval_seconds"
+        elif [ "$ivc_backend" = onnxruntime ]; then
+            "$BB" sleep "$raw_identity_line_interval_seconds"
+            echo "IVC-STARRY-ORT-MODEL sha256=$actual_ort_model_sha256"
+            "$BB" sleep "$raw_identity_line_interval_seconds"
+            echo "IVC-STARRY-ORT-RAW sha256=$validated_ort_sha256"
             "$BB" sleep "$raw_identity_line_interval_seconds"
         fi
         raw_identity_copy=$((raw_identity_copy + 1))

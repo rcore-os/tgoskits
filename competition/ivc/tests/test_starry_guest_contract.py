@@ -170,6 +170,42 @@ class StarryGuestContractTests(unittest.TestCase):
         # Keep margin below the shared console's observed 128-byte boundary.
         self.assertLessEqual(len(routed_record.encode("ascii")), 120)
 
+    def test_ort_uart_identity_lines_are_spaced_individually(self) -> None:
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+        loop_start = autorun.index('while [ "$raw_identity_copy" -lt 5 ]; do')
+        loop_end = autorun.index("    done", loop_start)
+        identity_loop = autorun[loop_start:loop_end]
+        expected_sequence = (
+            'echo "IVC-STARRY-RAW path=$ivc_raw_csv samples=$ivc_count sha256=$raw_sha256"',
+            'elif [ "$ivc_backend" = onnxruntime ]; then',
+            '"$BB" sleep "$raw_identity_line_interval_seconds"',
+            'echo "IVC-STARRY-ORT-MODEL sha256=$actual_ort_model_sha256"',
+            '"$BB" sleep "$raw_identity_line_interval_seconds"',
+            'echo "IVC-STARRY-ORT-RAW sha256=$validated_ort_sha256"',
+            '"$BB" sleep "$raw_identity_line_interval_seconds"',
+            'raw_identity_copy=$((raw_identity_copy + 1))',
+            '"$BB" sleep "$raw_identity_copy_interval_seconds"',
+        )
+        cursor = 0
+        for fragment in expected_sequence:
+            with self.subTest(fragment=fragment):
+                position = identity_loop.find(fragment, cursor)
+                self.assertGreaterEqual(position, 0)
+                cursor = position + len(fragment)
+
+    def test_ort_uart_hash_fits_shared_console_line_budget(self) -> None:
+        autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
+        marker_match = re.search(r'echo "(IVC-STARRY-ORT-RAW [^"]+)"', autorun)
+        self.assertIsNotNone(marker_match)
+        assert marker_match is not None
+        rendered_marker = marker_match.group(1).replace(
+            "$validated_ort_sha256", "a" * 64
+        )
+        routed_record = "[guest-console:pl011-starry] " + rendered_marker
+
+        # Keep margin below the shared console's observed 128-byte boundary.
+        self.assertLessEqual(len(routed_record.encode("ascii")), 120)
+
     def test_restart_profile_persists_phase_one_before_waiting_for_vm_reset(self) -> None:
         builder = STARRY_ROOTFS_BUILD.read_text(encoding="utf-8")
         autorun = STARRY_AUTORUN.read_text(encoding="utf-8")
@@ -277,7 +313,7 @@ class StarryGuestContractTests(unittest.TestCase):
         self.assertIn('[ "${ivc_ack_timeout_ms:-}" = 1000 ]', autorun)
         self.assertEqual(
             autorun.count('--ack-timeout-ms "$ivc_ack_timeout_ms"'),
-            2,
+            3,
         )
 
     def test_orangepi_guests_use_virtual_interrupt_delivery(self) -> None:

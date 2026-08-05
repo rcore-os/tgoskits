@@ -12,6 +12,8 @@ pub mod controller_csv;
 pub mod endpoint;
 pub mod neural;
 mod neural_model_generated;
+#[cfg(all(feature = "onnxruntime", target_arch = "aarch64", target_env = "gnu"))]
+pub mod ort;
 pub mod reliability;
 #[cfg(all(feature = "rknn", target_arch = "aarch64", target_env = "gnu"))]
 pub mod rknn;
