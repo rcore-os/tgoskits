@@ -407,6 +407,24 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
         self.assertTrue(result["lifecycle"]["host_filesystem_synced"])
         self.assertTrue(result["lifecycle"]["board_linux_restored"])
 
+    def test_compact_records_ignore_a_type_invalid_legacy_result(self) -> None:
+        corrupted_legacy = (
+            "[guest-console:pl011-starry] IVC-CONTROLLER-RESULT "
+            "policy=neural sent=1800 acknowledged=1800 errors=0 timeouts=0 "
+            "retransmissions=0 recoveries=0 "
+            "success_percent=e_send_p50_us=201 pre_send_p95_us=224\n"
+        )
+        log = VALID_LOG.replace(
+            "[guest-console:pl011-starry] IVC-CONTROLLER-RESULT "
+            "policy=neural sent=1800 acknowledged=1800 trasg_s=9.995\n",
+            corrupted_legacy,
+        )
+
+        result = analyzer.analyze(self.write_log(log), 1_800)
+
+        self.assertEqual(result["controller"]["acknowledged"], 1_800)
+        self.assertEqual(result["controller"]["success_percent"], 100.0)
+
     def test_complete_legacy_result_recovers_dropped_compact_outcome(self) -> None:
         log = VALID_LOG.replace(
             "[guest-console:pl011-starry] IVC-CONTROLLER-OUTCOME "

@@ -416,18 +416,46 @@ def select_controller_record(
     required_fields: tuple[str, ...],
     compact_prefix: str,
 ) -> dict[str, str]:
+    typed_legacy_result = (
+        legacy_result
+        if legacy_result is not None
+        and legacy_controller_fields_are_well_typed(legacy_result, required_fields)
+        else None
+    )
     if compact_record is None:
-        if legacy_result is None:
+        if typed_legacy_result is None:
             raise AnalysisError(f"missing complete {compact_prefix.strip()} record")
-        return legacy_result
-    if legacy_result is not None and any(
-        compact_record[field] != legacy_result[field] for field in required_fields
+        return typed_legacy_result
+    if typed_legacy_result is not None and any(
+        compact_record[field] != typed_legacy_result[field]
+        for field in required_fields
     ):
         raise AnalysisError(
             f"conflicting complete {compact_prefix.strip()} and "
             f"{LEGACY_RESULT_PREFIX.strip()} records"
         )
     return compact_record
+
+
+def legacy_controller_fields_are_well_typed(
+    record: dict[str, str], required_fields: tuple[str, ...]
+) -> bool:
+    try:
+        for field in required_fields:
+            if field == "policy":
+                if required(record, field, LEGACY_RESULT_PREFIX) not in {
+                    "neural",
+                    "manual-fixed",
+                }:
+                    return False
+            elif field == "success_percent":
+                if not math.isfinite(floating(record, field, LEGACY_RESULT_PREFIX)):
+                    return False
+            else:
+                integer(record, field, LEGACY_RESULT_PREFIX)
+    except AnalysisError:
+        return False
+    return True
 
 
 def parse_console_metrics(
