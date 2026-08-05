@@ -44,7 +44,29 @@ pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>>
         .compatibles()
         .any(|compatible| compatible == "arm,gic-v3");
     let cpu_region = if is_v3 {
-        let regions = regs[1..]
+        let region_count = node
+            .get_property("#redistributor-regions")
+            .and_then(Property::get_u32)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| {
+                ax_err_type!(
+                    InvalidData,
+                    "host GIC #redistributor-regions does not fit usize"
+                )
+            })?
+            .unwrap_or(1);
+        if region_count == 0 || region_count >= regs.len() {
+            return Err(ax_err_type!(
+                InvalidData,
+                alloc::format!(
+                    "host GIC declares {region_count} Redistributor regions but provides {} \
+                     per-CPU register ranges",
+                    regs.len() - 1
+                )
+            ));
+        }
+        let regions = regs[1..=region_count]
             .iter()
             .map(|reg| {
                 checked_reg(reg, "redistributor")
@@ -221,15 +243,33 @@ pub(super) fn install_registers(tree: &mut FdtTree, profile: &GuestGicProfile) -
     tree.set_property(controller, prop_string("compatible", &profile.compatible))?;
     tree.set_property(controller, prop_u32("#interrupt-cells", 3))?;
     match &profile.cpu_region {
-        GuestGicCpuRegion::Redistributors(redistributors) => tree.set_property(
-            controller,
-            prop_u64("redistributor-stride", redistributors.stride as u64),
-        )?,
+        GuestGicCpuRegion::Redistributors(redistributors) => {
+            tree.set_property(
+                controller,
+                prop_u64("redistributor-stride", redistributors.stride as u64),
+            )?;
+            let region_count = u32::try_from(redistributors.regions.len()).map_err(|_| {
+                ax_err_type!(
+                    InvalidData,
+                    "guest GIC Redistributor region count does not fit u32"
+                )
+            })?;
+            if region_count > 1 {
+                tree.set_property(controller, prop_u32("#redistributor-regions", region_count))?;
+            } else {
+                tree.inner_mut()
+                    .node_mut(controller)
+                    .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC node is missing"))?
+                    .remove_property("#redistributor-regions");
+            }
+        }
         GuestGicCpuRegion::CpuInterface(_) => {
-            tree.inner_mut()
+            let node = tree
+                .inner_mut()
                 .node_mut(controller)
-                .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC node is missing"))?
-                .remove_property("redistributor-stride");
+                .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC node is missing"))?;
+            node.remove_property("redistributor-stride");
+            node.remove_property("#redistributor-regions");
         }
     }
     if let Some(phandle) = profile.node_phandle {

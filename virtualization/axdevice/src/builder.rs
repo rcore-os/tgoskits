@@ -1,10 +1,8 @@
 //! Unsealed runtime construction controlled by each architecture.
 
-use axvm_types::EmulatedDeviceConfig;
-
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerResult,
-    DeviceModelRegistry, DeviceRuntime, RuntimeAccessPorts, VmResourcePlan,
+    DeviceBuildContext, DeviceBundle, DeviceManagerResult, DeviceRuntime, ResolvedDeviceNode,
+    RuntimeAccessPorts, VmResourcePlan,
 };
 
 /// Builds one `DeviceRuntime` without prescribing architecture device order.
@@ -25,21 +23,26 @@ impl DeviceRuntimeBuilder {
         self.runtime.register_bundle(bundle)
     }
 
-    /// Builds one configured device by consuming its planned claims.
-    pub fn build_planned_device(
+    /// Builds one resolved graph node with the exact factory that declared it.
+    pub fn build_graph_node(
         &mut self,
-        device_id: &str,
-        config: &EmulatedDeviceConfig,
-        models: &DeviceModelRegistry,
-        factories: &DeviceFactoryRegistry,
+        node: &ResolvedDeviceNode,
         plan: &VmResourcePlan,
     ) -> DeviceManagerResult {
-        models.verify(device_id, config, plan)?;
+        let Some(factory) = node.factory() else {
+            return Ok(());
+        };
+        let config = node
+            .config()
+            .ok_or_else(|| crate::DeviceManagerError::InvalidState {
+                operation: "build resolved device graph node",
+                detail: alloc::format!("runtime node {} has no internal configuration", node.id()),
+            })?;
         let bundle = {
-            let claims = plan.claim_device(device_id)?;
+            let claims = plan.claim_device(node.id().as_str())?;
             let mut context =
                 DeviceBuildContext::planned(self.runtime.interrupt_registry(), claims);
-            let bundle = factories.build(config, &mut context)?;
+            let bundle = factory.build(config, &mut context)?;
             context.finish(bundle)?
         };
         self.runtime.register_bundle(bundle)

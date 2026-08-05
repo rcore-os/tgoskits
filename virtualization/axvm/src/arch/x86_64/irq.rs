@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use ax_std::os::arceos::sync::RawSpinLock as Mutex;
-use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PitServiceKey};
+use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PicServiceKey, X86PitServiceKey};
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
@@ -574,6 +574,17 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         .require::<X86PitServiceKey>()
         .is_ok_and(|pit| pit.consume_irq0_if_due(now_ns))
     {
+        return;
+    }
+    if let Some(vector) = devices
+        .services()
+        .require::<X86PicServiceKey>()
+        .ok()
+        .and_then(|pic| pic.pulse_irq(PIT_TIMER_GSI as u8))
+    {
+        vcpu.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector as _, InterruptTriggerMode::EdgeTriggered)
+            .unwrap();
         return;
     }
 

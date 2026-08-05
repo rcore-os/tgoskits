@@ -2,8 +2,9 @@
 
 use std::vec::Vec;
 
-use axdevice::DeviceRuntime;
+use axdevice::DeviceNodeKind;
 use axdevice_base::Resource;
+use axvm_types::PassThroughDeviceConfig;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::{
@@ -22,19 +23,50 @@ fn stage2_guest_address_space_size(gpa_bits: usize) -> usize {
 pub(crate) fn map_guest_address_space(
     vm: &AxVM,
     resources: &mut AxVMResources,
-    devices: &DeviceRuntime,
     owned_regions: &[GuestOwnedRegion],
 ) -> AxVmResult {
-    let emulated_resources = devices
-        .devices()
-        .flat_map(|device| device.resources().iter().cloned())
-        .collect::<Vec<Resource>>();
+    let graph = resources.planned_devices().graph();
+    let emulated_resources = graph
+        .nodes()
+        .filter(|node| {
+            matches!(
+                node.kind(),
+                DeviceNodeKind::Virtual | DeviceNodeKind::HostReplacement
+            )
+        })
+        .map(|node| graph.resources_for(node.id()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flat_map(|resolved| {
+            resolved
+                .mmio_ranges()
+                .map(|(_, base, size)| Resource::MmioRange { base, size })
+        })
+        .collect::<Vec<_>>();
+    let passthrough_devices = graph
+        .host_mappings()
+        .map(|mapping| {
+            Ok(PassThroughDeviceConfig {
+                name: alloc::string::String::new(),
+                base_gpa: usize::try_from(mapping.guest_base()).map_err(|_| {
+                    AxVmError::invalid_config("planned passthrough GPA does not fit usize")
+                })?,
+                base_hpa: usize::try_from(mapping.host_base()).map_err(|_| {
+                    AxVmError::invalid_config("planned passthrough HPA does not fit usize")
+                })?,
+                length: usize::try_from(mapping.length()).map_err(|_| {
+                    AxVmError::invalid_config("planned passthrough length does not fit usize")
+                })?,
+                irq_id: 0,
+            })
+        })
+        .collect::<AxVmResult<Vec<_>>>()?;
     let address_layout = build_address_layout(
         resources.config.address_space_policy(),
         VM_ASPACE_BASE,
         stage2_guest_address_space_size(resources.nested_paging.gpa_bits),
-        resources.config.pass_through_devices(),
-        resources.config.pass_through_addresses(),
+        &passthrough_devices,
+        &[],
         owned_regions,
         &emulated_resources,
     )?;

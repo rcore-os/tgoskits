@@ -292,6 +292,7 @@ kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.8.2", path = "platforms/somehal" }
 
 # External crates
+acpi_tables = "0.2.1"
 anyhow = { version = "1.0.104", default-features = false }
 bincode = "2.0.1"
 bitflags = "2.11"

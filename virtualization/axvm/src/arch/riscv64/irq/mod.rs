@@ -18,9 +18,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DeviceManagerResult, DeviceRegistration, ResourceSlot, ServiceCardinality,
-    ServiceKey, validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory,
+    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    DeviceRequirements, ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey,
+    validate_device_config,
 };
 use axdevice_base::{
     BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
@@ -254,8 +255,11 @@ impl WiredIrqSink for RiscvPlicWiredSink {
 }
 
 struct RiscvPlicFactory {
+    vm_id: usize,
+    vcpu_count: usize,
     expected: EmulatedDeviceConfig,
-    runtime: Arc<RiscvPlicRuntime>,
+    physical_irqs: alloc::vec::Vec<crate::config::PassthroughInterrupt>,
+    physical_target_cpu: usize,
 }
 
 struct RiscvPlicDevice {
@@ -306,12 +310,29 @@ impl DeviceFactory for RiscvPlicFactory {
         EmulatedDeviceType::PPPTGlobal
     }
 
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        validate_device_config(&self.expected, config, "declare RISC-V virtual PLIC")?;
+        DeviceRequirements::new()
+            .with_mmio(
+                ResourceSlot::new("registers")?,
+                config.length as u64,
+                1,
+                ResourceRequest::Fixed(config.base_gpa as u64),
+            )
+            .map(DeviceDeclaration::with_requirements)
+    }
+
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
         context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build RISC-V virtual PLIC")?;
+        let contexts_num =
+            validate_vplic_config(config).map_err(|error| DeviceManagerError::InvalidConfig {
+                operation: "build RISC-V virtual PLIC",
+                detail: alloc::format!("{error}"),
+            })?;
         let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
         if base != config.base_gpa as u64 || length != config.length as u64 {
             return Err(DeviceManagerError::InvalidConfig {
@@ -319,14 +340,41 @@ impl DeviceFactory for RiscvPlicFactory {
                 detail: "planned MMIO range differs from the machine descriptor".into(),
             });
         }
+        let base = usize::try_from(base).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build RISC-V virtual PLIC",
+            detail: "planned MMIO base does not fit the target address width".into(),
+        })?;
+        let length = usize::try_from(length).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build RISC-V virtual PLIC",
+            detail: "planned MMIO length does not fit the target address width".into(),
+        })?;
+        let vplic = Arc::new(
+            VPlicGlobal::new(base.into(), Some(length), contexts_num).map_err(|error| {
+                DeviceManagerError::InvalidConfig {
+                    operation: "build RISC-V virtual PLIC",
+                    detail: alloc::format!("{error}"),
+                }
+            })?,
+        );
+        let runtime = RiscvPlicRuntime::new(
+            self.vm_id,
+            self.vcpu_count,
+            vplic,
+            &self.physical_irqs,
+            self.physical_target_cpu,
+        )
+        .map_err(|error| DeviceManagerError::InvalidConfig {
+            operation: "build RISC-V virtual PLIC",
+            detail: alloc::format!("{error}"),
+        })?;
         let device: Arc<dyn Device> = Arc::new(RiscvPlicDevice {
-            runtime: self.runtime.clone(),
+            runtime: runtime.clone(),
         });
-        let controller: Arc<dyn VirtualInterruptController> = self.runtime.clone();
+        let controller: Arc<dyn VirtualInterruptController> = runtime.clone();
         let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
-            .with_service::<RiscvPlicRuntimeKey>(self.runtime.clone())?;
+            .with_service::<RiscvPlicRuntimeKey>(runtime.clone())?;
         bundle.push(DeviceRegistration::InterruptController(
-            ControllerRegistration::new(self.runtime.id(), controller),
+            ControllerRegistration::new(runtime.id(), controller),
         ));
         Ok(bundle)
     }
@@ -372,7 +420,7 @@ pub(crate) fn register_device_factory(
     configs: &[EmulatedDeviceConfig],
     physical_irqs: &[crate::config::PassthroughInterrupt],
     physical_target_cpu: usize,
-) -> AxVmResult<Arc<RiscvPlicRuntime>> {
+) -> AxVmResult {
     let mut vplic_configs = configs
         .iter()
         .filter(|config| config.emu_type == EmulatedDeviceType::PPPTGlobal);
@@ -399,17 +447,14 @@ pub(crate) fn register_device_factory(
              {expected_contexts}"
         )));
     }
-    let vplic = Arc::new(
-        VPlicGlobal::new(config.base_gpa.into(), Some(config.length), contexts_num)
-            .map_err(AxVmError::invalid_config)?,
-    );
-    let runtime =
-        RiscvPlicRuntime::new(vm_id, vcpu_count, vplic, physical_irqs, physical_target_cpu)?;
     factories.register(Arc::new(RiscvPlicFactory {
+        vm_id,
+        vcpu_count,
         expected: config.clone(),
-        runtime: runtime.clone(),
+        physical_irqs: physical_irqs.to_vec(),
+        physical_target_cpu,
     }))?;
-    Ok(runtime)
+    Ok(())
 }
 
 struct RiscvPhysicalPlicIngress;

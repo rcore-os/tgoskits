@@ -53,8 +53,9 @@ pub fn prepare_uefi_fdt_config(
     Ok(())
 }
 
-pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) {
-    store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config));
+pub fn prepare_uefi_runtime_config(vm: &AxVMRef, vm_create_config: &GuestConfig) -> AxVmResult {
+    store_guest_irq_routes(vm.id(), super::guest_irq_routes(vm, vm_create_config)?);
+    Ok(())
 }
 
 fn expand_root_passthrough(

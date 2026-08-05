@@ -11,9 +11,9 @@ use arm_vgic::{
 };
 use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DeviceManagerResult, DeviceRegistration, ResourceSlot, ServiceCardinality,
-    ServiceKey,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory,
+    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    DeviceRequirements, ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey,
 };
 use axdevice_base::{MessageInterruptController, VirtualInterruptController};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
@@ -230,12 +230,15 @@ impl GicV3VcpuWake for Aarch64VcpuWake {
 struct Aarch64VgicFactory {
     vm_id: usize,
     plan: Arc<VgicConstructionPlan>,
-    runtime: Arc<Aarch64VgicRuntime>,
 }
 
 impl DeviceFactory for Aarch64VgicFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::InterruptController
+    }
+
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        self.plan.declare(config)
     }
 
     fn build(
@@ -244,25 +247,31 @@ impl DeviceFactory for Aarch64VgicFactory {
         context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         self.plan.validate_and_consume(config, context)?;
+        let runtime = create_runtime(self.vm_id, &self.plan).map_err(|error| {
+            DeviceManagerError::InvalidConfig {
+                operation: "create AArch64 virtual GIC runtime",
+                detail: alloc::format!("{error}"),
+            }
+        })?;
         let access_context: Arc<dyn VgicAccessContext> =
             Arc::new(AxvmVgicAccessContext { vm_id: self.vm_id });
-        let devices = VgicDeviceSet::new(self.runtime.core.clone(), access_context)
+        let devices = VgicDeviceSet::new(runtime.core.clone(), access_context)
             .map_err(|error| vgic_device_error("build AArch64 virtual GIC frontends", error))?;
         let mut bundle = DeviceBundle::new();
         for device in devices.into_devices() {
             bundle.push(DeviceRegistration::Device(device));
         }
-        let controller: Arc<dyn VirtualInterruptController> = self.runtime.core.clone();
-        let mut registration = ControllerRegistration::new(self.runtime.core.id(), controller);
+        let controller: Arc<dyn VirtualInterruptController> = runtime.core.clone();
+        let mut registration = ControllerRegistration::new(runtime.core.id(), controller);
         if matches!(
-            self.runtime.core.config(),
+            runtime.core.config(),
             ArmVgicConfig::V3(config) if !config.its().is_empty()
         ) {
-            let message: Arc<dyn MessageInterruptController> = self.runtime.core.clone();
+            let message: Arc<dyn MessageInterruptController> = runtime.core.clone();
             registration = registration.with_message(message);
         }
         bundle.push(DeviceRegistration::InterruptController(registration));
-        bundle.with_service::<Aarch64VgicRuntimeKey>(self.runtime.clone())
+        bundle.with_service::<Aarch64VgicRuntimeKey>(runtime)
     }
 }
 
@@ -271,6 +280,23 @@ struct Aarch64GicCpuRegionMarkerFactory;
 impl DeviceFactory for Aarch64GicCpuRegionMarkerFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::GicCpuRegion
+    }
+
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        if config.emu_type != EmulatedDeviceType::GicCpuRegion {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "declare AArch64 virtual GIC per-CPU region",
+                detail: "factory received a non-GIC per-CPU descriptor".into(),
+            });
+        }
+        DeviceRequirements::new()
+            .with_mmio(
+                ResourceSlot::new("registers")?,
+                config.length as u64,
+                1,
+                ResourceRequest::Fixed(config.base_gpa as u64),
+            )
+            .map(DeviceDeclaration::with_requirements)
     }
 
     fn build(
@@ -326,30 +352,34 @@ impl VgicAccessContext for AxvmVgicAccessContext {
 
 /// Creates the canonical controller and registers its only construction path.
 pub(crate) fn register_device_factories(
-    vm: &crate::vm::AxVM,
+    vm_id: usize,
     plan: &Arc<VgicConstructionPlan>,
     registry: &mut DeviceFactoryRegistry,
+) -> AxVmResult {
+    registry.register(Arc::new(Aarch64VgicFactory {
+        vm_id,
+        plan: plan.clone(),
+    }))?;
+    registry.register(Arc::new(Aarch64GicCpuRegionMarkerFactory))?;
+    Ok(())
+}
+
+fn create_runtime(
+    vm_id: usize,
+    plan: &Arc<VgicConstructionPlan>,
 ) -> AxVmResult<Arc<Aarch64VgicRuntime>> {
     let backend = plan.backend();
     let guest_memory = matches!(
         plan.config(),
         ArmVgicConfig::V3(config) if !config.its().is_empty()
     )
-    .then(|| {
-        Arc::new(guest_memory::AxvmGuestMemory::new(vm.id())) as Arc<dyn arm_vgic::GuestMemory>
-    });
+    .then(|| Arc::new(guest_memory::AxvmGuestMemory::new(vm_id)) as Arc<dyn arm_vgic::GuestMemory>);
     let core = Arc::new(
         VgicCore::new_with_guest_memory(plan.config().clone(), backend.clone(), guest_memory)
             .map_err(|error| AxVmError::interrupt("create AArch64 virtual GIC", error))?,
     );
-    let runtime = Aarch64VgicRuntime::new(vm.id(), core, backend, plan.host_virtual_timer_intid());
+    let runtime = Aarch64VgicRuntime::new(vm_id, core, backend, plan.host_virtual_timer_intid());
 
-    registry.register(Arc::new(Aarch64VgicFactory {
-        vm_id: vm.id(),
-        plan: plan.clone(),
-        runtime: runtime.clone(),
-    }))?;
-    registry.register(Arc::new(Aarch64GicCpuRegionMarkerFactory))?;
     Ok(runtime)
 }
 

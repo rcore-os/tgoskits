@@ -3,20 +3,21 @@
 use alloc::sync::Arc;
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, ResourceSlot, SerialBackend, build_16550_mmio, build_16550_port,
-    build_pl011_mmio, validate_device_config,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory, DeviceFactoryRegistry,
+    DeviceManagerError, DeviceManagerResult, DeviceRequirements, ResourceRequest, ResourceSlot,
+    SerialBackend, build_16550_mmio, build_16550_port, build_pl011_mmio, validate_device_config,
 };
+use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use super::{GuestSerialModel, GuestSerialProfile, GuestSerialTransport, serial_device_config};
 
-pub(crate) fn register_machine_device_factories(
-    vm: &crate::AxVM,
+pub(crate) fn register_machine_device_factories_from_config(
+    config: &crate::config::AxVMConfig,
     factories: &mut DeviceFactoryRegistry,
 ) -> DeviceManagerResult {
-    let (profile, backend_factory) =
-        vm.with_config(|config| (config.serial_profile(), config.serial_backend_factory()));
+    let profile = config.serial_profile();
+    let backend_factory = config.serial_backend_factory();
     let backend = backend_factory.create();
     factories.register(Arc::new(MachineSerialFactory::new(profile, backend)))
 }
@@ -50,6 +51,36 @@ impl DeviceFactory for MachineSerialFactory {
         EmulatedDeviceType::Console
     }
 
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        self.validate_config(config)?;
+        let mut requirements = match self.profile.transport {
+            GuestSerialTransport::Port { .. } => DeviceRequirements::new().with_pio(
+                ResourceSlot::new("registers")?,
+                u16::try_from(config.length).map_err(serial_declaration_range_error)?,
+                1,
+                ResourceRequest::Fixed(
+                    u16::try_from(config.base_gpa).map_err(serial_declaration_range_error)?,
+                ),
+            )?,
+            GuestSerialTransport::Mmio { .. } => DeviceRequirements::new().with_mmio(
+                ResourceSlot::new("registers")?,
+                u64::try_from(config.length).map_err(serial_declaration_range_error)?,
+                1,
+                ResourceRequest::Fixed(
+                    u64::try_from(config.base_gpa).map_err(serial_declaration_range_error)?,
+                ),
+            )?,
+        };
+        requirements = requirements.with_wired_irq(
+            ResourceSlot::new("irq")?,
+            InterruptControllerId::new(0),
+            InterruptTrigger::LevelTriggered,
+            InterruptSharing::Exclusive,
+            ResourceRequest::Fixed(ControllerInputId::new(config.irq_id)),
+        )?;
+        Ok(DeviceDeclaration::with_requirements(requirements))
+    }
+
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
@@ -57,10 +88,11 @@ impl DeviceFactory for MachineSerialFactory {
     ) -> DeviceManagerResult<DeviceBundle> {
         self.validate_config(config)?;
         let irq = context.irq(&ResourceSlot::new("irq")?)?;
+        let irq_id = irq.input().value();
         let bundle = match (self.profile.model, self.profile.transport) {
             (GuestSerialModel::Uart16550, GuestSerialTransport::Port { .. }) => {
                 let (base, length) = context.pio(&ResourceSlot::new("registers")?)?;
-                build_16550_port(base, length, self.profile.irq, self.backend.clone(), irq)
+                build_16550_port(base, length, irq_id, self.backend.clone(), irq)
             }
             (GuestSerialModel::Uart16550, GuestSerialTransport::Mmio { register_shift, .. }) => {
                 let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
@@ -68,7 +100,7 @@ impl DeviceFactory for MachineSerialFactory {
                     usize::try_from(base).map_err(serial_range_conversion_error)?,
                     usize::try_from(length).map_err(serial_range_conversion_error)?,
                     register_shift,
-                    self.profile.irq,
+                    irq_id,
                     self.backend.clone(),
                     irq,
                 )
@@ -78,7 +110,7 @@ impl DeviceFactory for MachineSerialFactory {
                 build_pl011_mmio(
                     usize::try_from(base).map_err(serial_range_conversion_error)?,
                     usize::try_from(length).map_err(serial_range_conversion_error)?,
-                    self.profile.irq,
+                    irq_id,
                     self.backend.clone(),
                     irq,
                 )
@@ -98,5 +130,12 @@ fn serial_range_conversion_error(_error: core::num::TryFromIntError) -> DeviceMa
     DeviceManagerError::InvalidConfig {
         operation: "build machine-owned virtual serial device",
         detail: "planned serial MMIO range exceeds the target address width".into(),
+    }
+}
+
+fn serial_declaration_range_error(_error: core::num::TryFromIntError) -> DeviceManagerError {
+    DeviceManagerError::InvalidConfig {
+        operation: "declare machine-owned virtual serial resources",
+        detail: "serial address or length exceeds the selected bus width".into(),
     }
 }

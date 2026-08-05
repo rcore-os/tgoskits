@@ -1,6 +1,7 @@
 //! Architecture-provided pools, fixed allowlists, and reservations.
 
 mod address;
+mod host_irq;
 mod msi;
 mod range;
 mod wired;
@@ -22,6 +23,7 @@ pub(crate) use range::ranges_overlap;
 pub struct ResourcePools {
     addresses: AddressPools,
     wired_irqs: WiredIrqPools,
+    host_irqs: HostIrqPools,
     msi: MsiPools,
 }
 
@@ -49,6 +51,13 @@ struct WiredIrqPools {
     automatic: BTreeMap<InterruptControllerId, Vec<Range<usize>>>,
     fixed: BTreeMap<InterruptControllerId, Vec<Range<usize>>>,
     reserved: BTreeMap<InterruptControllerId, Vec<IrqOwner>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct HostIrqPools {
+    automatic: Vec<Range<usize>>,
+    fixed: Vec<Range<usize>>,
+    reserved: Vec<RangeOwner<usize>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -108,6 +117,11 @@ impl ResourcePools {
                 automatic: BTreeMap::new(),
                 fixed: BTreeMap::new(),
                 reserved: BTreeMap::new(),
+            },
+            host_irqs: HostIrqPools {
+                automatic: Vec::new(),
+                fixed: Vec::new(),
+                reserved: Vec::new(),
             },
             msi: MsiPools {
                 automatic: MsiRanges {

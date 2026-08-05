@@ -7,7 +7,7 @@ use arm_vgic::{
     VgicMmioRegion, VgicV2Config, VgicV3Config,
 };
 use axdevice::{
-    DeviceBuildContext, DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceModelRegistry,
+    DeviceBuildContext, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
     DeviceRequirements, ResourceRequest, ResourceSlot,
 };
 use axdevice_base::{HostIrqId, InterruptControllerId};
@@ -67,11 +67,6 @@ impl VgicConstructionPlan {
         }))
     }
 
-    pub(crate) fn register_model(self: &Arc<Self>, models: &mut DeviceModelRegistry) -> AxVmResult {
-        models.register(Arc::new(Aarch64VgicDeviceModel { plan: self.clone() }))?;
-        Ok(())
-    }
-
     pub(crate) const fn config(&self) -> &ArmVgicConfig {
         &self.config
     }
@@ -111,23 +106,13 @@ impl VgicConstructionPlan {
         }
         Ok(())
     }
-}
 
-struct Aarch64VgicDeviceModel {
-    plan: Arc<VgicConstructionPlan>,
-}
-
-impl DeviceModel for Aarch64VgicDeviceModel {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::InterruptController
-    }
-
-    fn requirements(
+    pub(super) fn declare(
         &self,
         config: &EmulatedDeviceConfig,
-    ) -> DeviceManagerResult<DeviceRequirements> {
+    ) -> DeviceManagerResult<DeviceDeclaration> {
         axdevice::validate_device_config(
-            &self.plan.distributor,
+            &self.distributor,
             config,
             "declare AArch64 virtual GIC resources",
         )?;
@@ -137,7 +122,7 @@ impl DeviceModel for Aarch64VgicDeviceModel {
             1,
             ResourceRequest::Fixed(config.base_gpa as u64),
         )?;
-        if let ArmVgicConfig::V3(v3) = self.plan.config() {
+        if let ArmVgicConfig::V3(v3) = self.config() {
             for its in v3.its() {
                 let region = its.registers();
                 requirements = requirements.with_mmio(
@@ -148,7 +133,7 @@ impl DeviceModel for Aarch64VgicDeviceModel {
                 )?;
             }
         }
-        Ok(requirements)
+        Ok(DeviceDeclaration::with_requirements(requirements))
     }
 }
 

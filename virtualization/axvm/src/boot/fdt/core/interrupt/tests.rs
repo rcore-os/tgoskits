@@ -1,15 +1,53 @@
 use alloc::vec;
 
 use axdevice_base::ItsId;
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::RegInfo;
 
 use super::{
     super::tree::FdtTree,
-    gic, host_gic_maintenance_intid, host_gic_profile, host_plic_profile,
+    fallback_gic_profile, gic, host_gic_maintenance_intid, host_gic_profile, host_plic_profile,
     phandle::{prop_string, prop_u32, prop_u64},
     plic,
 };
+
+#[test]
+fn fallback_gic_profile_retains_every_redistributor_region() {
+    let device = |name: &str, base_gpa, length, emu_type| EmulatedDeviceConfig {
+        name: name.into(),
+        base_gpa,
+        length,
+        emu_type,
+        ..Default::default()
+    };
+    let profile = fallback_gic_profile(&[
+        device(
+            "gicd",
+            0x0800_0000,
+            0x1_0000,
+            EmulatedDeviceType::InterruptController,
+        ),
+        device(
+            "gicr-0",
+            0x080a_0000,
+            0x4_0000,
+            EmulatedDeviceType::GicCpuRegion,
+        ),
+        device(
+            "gicr-1",
+            0x0810_0000,
+            0x4_0000,
+            EmulatedDeviceType::GicCpuRegion,
+        ),
+    ])
+    .unwrap();
+    let GuestGicCpuRegion::Redistributors(redistributors) = profile.cpu_region else {
+        panic!("fallback must select GICv3 Redistributors");
+    };
+    assert_eq!(redistributors.regions.len(), 2);
+    assert_eq!(redistributors.regions[1].base, 0x0810_0000);
+}
 use crate::machine::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
     GuestMmioRegion, GuestPlicProfile,
@@ -139,6 +177,8 @@ fn resolves_host_gic_windows_and_phandle() {
         .unwrap();
     tree.set_property(controller, prop_u32("phandle", 1))
         .unwrap();
+    tree.set_property(controller, prop_u32("#redistributor-regions", 2))
+        .unwrap();
     tree.inner_mut()
         .view_typed_mut(controller)
         .unwrap()
@@ -146,6 +186,9 @@ fn resolves_host_gic_windows_and_phandle() {
             RegInfo::new(0xfe60_0000, Some(0x1_0000)),
             RegInfo::new(0xfe68_0000, Some(0x4_0000)),
             RegInfo::new(0xfe80_0000, Some(0x4_0000)),
+            RegInfo::new(0xfe61_0000, Some(0x1_0000)),
+            RegInfo::new(0xfe62_0000, Some(0x1_0000)),
+            RegInfo::new(0xfe63_0000, Some(0x1_0000)),
         ]);
     tree.set_property(controller, prop_u64("redistributor-stride", 0x4_0000))
         .unwrap();

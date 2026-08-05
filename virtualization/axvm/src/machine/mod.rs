@@ -17,7 +17,7 @@ mod gic;
 mod serial;
 mod timer;
 
-pub(crate) use factory::register_machine_device_factories;
+pub(crate) use factory::register_machine_device_factories_from_config;
 pub(crate) use gic::AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE;
 pub use gic::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicProfileError, GuestGicRedistributorProfile,
@@ -108,6 +108,7 @@ fn x86_64_profile() -> MachineProfile {
         default_passthrough_device_path: None,
         emulated_devices: vec![
             serial_device_config(serial),
+            device("fw_cfg", 0x510, 0x0c, 0, EmulatedDeviceType::FwCfg, vec![]),
             device(
                 "ioapic",
                 0xfec0_0000,
@@ -117,6 +118,24 @@ fn x86_64_profile() -> MachineProfile {
                 vec![],
             ),
             device("pit", 0x40, 0x22, 0, EmulatedDeviceType::X86Pit, vec![]),
+            device("pic", 0x20, 2, 0, EmulatedDeviceType::X86Pic, vec![]),
+            device("cmos", 0x70, 2, 0, EmulatedDeviceType::X86Cmos, vec![]),
+            device(
+                "pci-config",
+                0xcf8,
+                8,
+                0,
+                EmulatedDeviceType::X86PciConfig,
+                vec![],
+            ),
+            device(
+                "acpi-pm",
+                0x600,
+                0x80,
+                9,
+                EmulatedDeviceType::X86AcpiPmTimer,
+                vec![],
+            ),
         ],
     }
 }

@@ -16,6 +16,8 @@ pub enum ResourceNamespace {
     Pio,
     /// Inputs of one VM-local interrupt controller.
     ControllerInput(InterruptControllerId),
+    /// Physical interrupt sources in the host interrupt domain.
+    HostIrq,
     /// DeviceID or EventID namespace of one ITS.
     Its {
         /// Controller owning the ITS.
@@ -37,6 +39,7 @@ impl fmt::Display for ResourceNamespace {
             Self::ControllerInput(controller) => {
                 write!(formatter, "controller-input({})", controller.value())
             }
+            Self::HostIrq => formatter.write_str("host-irq"),
             Self::Its { controller, its } => {
                 write!(formatter, "its({}:{})", controller.value(), its.value())
             }

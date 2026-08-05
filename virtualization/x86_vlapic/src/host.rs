@@ -51,6 +51,11 @@ pub trait X86VlapicHostOps {
         vcpu_id: X86VcpuId,
         vector: X86InterruptVector,
     ) -> X86VlapicResult;
+
+    /// Route a PIT IRQ0 edge through the VM's selected legacy or I/O APIC path.
+    fn inject_pit_irq(_vm_id: X86VmId, _vcpu_id: X86VcpuId) -> X86VlapicResult {
+        Err(X86VlapicError::Unsupported)
+    }
 }
 
 /// RAII host frame used by x86 virtual interrupt-controller structures.

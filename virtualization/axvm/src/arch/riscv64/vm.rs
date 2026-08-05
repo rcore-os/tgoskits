@@ -1,29 +1,20 @@
 //! RISC-V VM resource creation and initialization.
 
-use std::sync::Arc;
-
 use axdevice::DeviceFactoryRegistry;
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
-use super::{
-    Riscv64Arch,
-    irq::{self, RiscvPlicRuntime},
-    npt,
-};
+use super::{Riscv64Arch, irq, npt};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
-            device_plan::{
-                FixedAddressKind, FixedDeviceModel, SimpleVmPlan, VmDevicePlan,
-                machine_model_registry,
-            },
+            complete_vm_init,
+            device_plan::{SimpleVmPlan, VmDevicePlan, machine_factory_registry},
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -34,7 +25,10 @@ use crate::{
 pub(crate) type RiscvVmPlan = SimpleVmPlan;
 
 impl Riscv64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+    pub(crate) fn create_vm_resources(
+        config: AxVMConfig,
+        _fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
+    ) -> AxVmResult<AxVMResources> {
         let device_plan = plan_devices(&config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
@@ -44,89 +38,77 @@ impl Riscv64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let mut factories = default_device_factories(vm)?;
-                let runtime = register_device_factory(vm, &mut factories)?;
-                init_vm_with(vm, &factories, runtime)
-            }
-            VmInitRequest::Provided { factories } => {
-                let runtime = register_device_factory(vm, factories)?;
-                init_vm_with(vm, factories, runtime)
-            }
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        init_vm_with(vm)
     }
 }
 
 fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
     let configs = riscv_device_order(config)?;
-    let mut models = machine_model_registry(config)?;
-    models.register(Arc::new(FixedDeviceModel::new(
-        axvm_types::EmulatedDeviceType::PPPTGlobal,
-        FixedAddressKind::Mmio,
-    )))?;
-    Ok(SimpleVmPlan::new(VmDevicePlan::fixed(&configs, models)?))
+    let mut factories = machine_factory_registry(config)?;
+    register_device_factory_for_config(config, &mut factories)?;
+    let mut host_replacements = alloc::vec![axvm_types::EmulatedDeviceType::PPPTGlobal];
+    if config.serial_fdt_identity().is_some() {
+        host_replacements.push(axvm_types::EmulatedDeviceType::Console);
+    }
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+        config,
+        &configs,
+        factories,
+        Some(axvm_types::EmulatedDeviceType::PPPTGlobal),
+        &host_replacements,
+        super::resource_pools::create(config)?,
+    )?))
 }
 
-fn register_device_factory(
-    vm: &AxVM,
+fn register_device_factory_for_config(
+    config: &AxVMConfig,
     factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult<Arc<RiscvPlicRuntime>> {
-    let (configs, placements, physical_irqs) = vm.with_config(|config| {
-        (
-            config.emu_devices().clone(),
-            config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids(),
-            config.pass_through_irqs().to_vec(),
-        )
-    });
+) -> AxVmResult {
+    let configs = config.emu_devices().clone();
+    let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
+    let physical_irqs = config.pass_through_irqs().to_vec();
     let physical_target_cpu = placements
         .first()
         .map(|(_, _, physical_id)| *physical_id)
         .ok_or_else(|| AxVmError::invalid_config("a RISC-V VM must contain at least one vCPU"))?;
     irq::register_device_factory(
-        vm.id(),
+        config.id(),
         placements.len(),
         factories,
         &configs,
         &physical_irqs,
         physical_target_cpu,
-    )
+    )?;
+    Ok(())
 }
 
-fn init_vm_with(
-    vm: &AxVM,
-    factories: &DeviceFactoryRegistry,
-    runtime: Arc<RiscvPlicRuntime>,
-) -> AxVmResult {
-    let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> = runtime;
-    complete_vm_init(
-        vm,
-        interrupt_controller,
-        |resources, _interrupt_controller| {
-            let placements = vcpu_placements(resources);
-            let dtb_addr = resources
-                .config()
-                .image_config()
-                .dtb_load_gpa
-                .unwrap_or_default();
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
-                Ok(RiscvVcpuCreateConfig {
-                    hart_id: placement.id,
-                    dtb_addr: dtb_addr.as_usize(),
-                })
-            })?;
-            let devices =
-                PreparedDevices::build_planned(resources, factories, vm.device_access_ports())?;
-            validate_guest_dtb(resources)?;
+fn init_vm_with(vm: &AxVM) -> AxVmResult {
+    complete_vm_init(vm, |resources| {
+        let placements = vcpu_placements(resources);
+        let dtb_addr = resources
+            .config()
+            .image_config()
+            .dtb_load_gpa
+            .unwrap_or_default();
+        let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            Ok(RiscvVcpuCreateConfig {
+                hart_id: placement.id,
+                dtb_addr: dtb_addr.as_usize(),
+            })
+        })?;
+        let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+        let interrupt_controller = devices
+            .devices()
+            .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
+        validate_guest_dtb(resources)?;
 
-            let owned_regions = guest_owned_regions(resources);
-            map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
-            vcpus.setup(resources, build_vcpu_setup_config)?;
+        let owned_regions = guest_owned_regions(resources);
+        map_guest_address_space(vm, resources, &owned_regions)?;
+        vcpus.setup(resources, build_vcpu_setup_config)?;
 
-            Ok(PreparedVm::new(vcpus, devices))
-        },
-    )
+        Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
+    })
 }
 
 fn riscv_device_order(

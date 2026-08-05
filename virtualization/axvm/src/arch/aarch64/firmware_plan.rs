@@ -7,12 +7,15 @@ use crate::{
     config::AxVMConfig,
     machine::{
         GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
-        GuestMmioRegion,
+        GuestMmioRegion, GuestSerialFdtIdentity, GuestSerialProfile, GuestTimerProfile,
     },
 };
 
 pub(super) struct Aarch64FirmwarePlan {
     gic: GuestGicProfile,
+    serial: GuestSerialProfile,
+    serial_identity: Option<GuestSerialFdtIdentity>,
+    timer: GuestTimerProfile,
 }
 
 impl Aarch64FirmwarePlan {
@@ -21,11 +24,31 @@ impl Aarch64FirmwarePlan {
             Some(profile) => profile.clone(),
             None => fallback_gic_profile(vgic)?,
         };
-        Ok(Self { gic })
+        let timer = config.timer_profile().cloned().ok_or_else(|| {
+            AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
+        })?;
+        Ok(Self {
+            gic,
+            serial: config.serial_profile(),
+            serial_identity: config.serial_fdt_identity().cloned(),
+            timer,
+        })
     }
 
     pub(super) const fn gic(&self) -> &GuestGicProfile {
         &self.gic
+    }
+
+    pub(super) const fn serial(&self) -> GuestSerialProfile {
+        self.serial
+    }
+
+    pub(super) const fn serial_identity(&self) -> Option<&GuestSerialFdtIdentity> {
+        self.serial_identity.as_ref()
+    }
+
+    pub(super) const fn timer(&self) -> &GuestTimerProfile {
+        &self.timer
     }
 }
 

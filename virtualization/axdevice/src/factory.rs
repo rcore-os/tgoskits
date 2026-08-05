@@ -19,8 +19,9 @@ use alloc::{sync::Arc, vec::Vec};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceManagerError, DeviceManagerResult,
-    GuestRangeAllocatorKey, range_alloc::IvcGuestRangeAllocator,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
+    DeviceRequirements, GuestRangeAllocatorKey, ResourceRequest, ResourceSlot,
+    range_alloc::IvcGuestRangeAllocator,
 };
 
 /// Builds all capabilities contributed by one emulated device type.
@@ -32,6 +33,9 @@ use crate::{
 pub trait DeviceFactory: Send + Sync {
     /// Returns the configuration type handled by this factory.
     fn device_type(&self) -> EmulatedDeviceType;
+
+    /// Validates immutable configuration and declares named resources.
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration>;
 
     /// Builds a device without modifying the destination device registry.
     fn build(
@@ -87,6 +91,14 @@ impl DeviceFactoryRegistry {
             .map(|(_, factory)| factory.as_ref())
     }
 
+    /// Clones the factory registered for `device_type`.
+    pub fn get_arc(&self, device_type: EmulatedDeviceType) -> Option<Arc<dyn DeviceFactory>> {
+        self.factories
+            .iter()
+            .find(|(registered_type, _)| *registered_type == device_type)
+            .map(|(_, factory)| factory.clone())
+    }
+
     /// Builds a bundle for `config`.
     pub fn build(
         &self,
@@ -116,19 +128,53 @@ impl DeviceFactory for IvcChannelFactory {
         EmulatedDeviceType::IVCChannel
     }
 
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        let base = u64::try_from(config.base_gpa).map_err(ivc_range_conversion_error)?;
+        let size = u64::try_from(config.length).map_err(ivc_range_conversion_error)?;
+        DeviceRequirements::new()
+            .with_mmio(
+                ResourceSlot::new("guest-window")?,
+                size,
+                0x1000,
+                ResourceRequest::Fixed(base),
+            )
+            .map(DeviceDeclaration::with_requirements)
+    }
+
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &mut DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        let allocator = IvcGuestRangeAllocator::new(config.base_gpa, config.length)?.into_service();
+        let (base, size) = if context.uses_planned_resources() {
+            context.mmio(&ResourceSlot::new("guest-window")?)?
+        } else {
+            (
+                u64::try_from(config.base_gpa).map_err(ivc_range_conversion_error)?,
+                u64::try_from(config.length).map_err(ivc_range_conversion_error)?,
+            )
+        };
+        let base = usize::try_from(base).map_err(ivc_range_conversion_error)?;
+        let size = usize::try_from(size).map_err(ivc_range_conversion_error)?;
+        let allocator = IvcGuestRangeAllocator::new(base, size)?.into_service();
         DeviceBundle::new().with_service::<GuestRangeAllocatorKey>(allocator)
+    }
+}
+
+fn ivc_range_conversion_error(_error: core::num::TryFromIntError) -> DeviceManagerError {
+    DeviceManagerError::InvalidConfig {
+        operation: "declare IVC guest resource window",
+        detail: "IVC guest window does not fit the planner address width".into(),
     }
 }
 
 impl DeviceFactory for MetaDeviceFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::Dummy
+    }
+
+    fn declare(&self, _config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        Ok(DeviceDeclaration::new())
     }
 
     fn build(

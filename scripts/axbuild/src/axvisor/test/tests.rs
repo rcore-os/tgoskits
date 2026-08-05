@@ -829,6 +829,13 @@ fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
         cmdline.contains("-- -n -l /bin/sh -L 115200 ttyS0"),
         "{path} should keep complete getty arguments after `--` so init does not exit"
     );
+    assert!(
+        !cmdline
+            .split_ascii_whitespace()
+            .any(|arg| arg == "acpi=off"),
+        "{path} should exercise the default ACPI boot path; the MP-table fallback has a dedicated \
+         test"
+    );
 }
 
 #[test]

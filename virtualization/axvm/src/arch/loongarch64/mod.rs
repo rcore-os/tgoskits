@@ -25,6 +25,7 @@ pub(crate) mod fdt;
 mod idle;
 pub(crate) mod irq;
 mod npt;
+mod resource_pools;
 mod vm;
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 pub(crate) use vm::LoongArchVmPlan;

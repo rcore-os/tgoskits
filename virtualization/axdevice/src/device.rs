@@ -1132,6 +1132,64 @@ impl DeviceRuntime {
             })?;
         Ok(())
     }
+
+    /// Returns whether this complete port write targets a device with a DMA grant.
+    pub fn port_write_needs_guest_memory(&self, port: Port, width: AccessWidth) -> bool {
+        self.lookup_port(port.number(), width)
+            .map(|index| {
+                let id = DeviceId::new(index as u32);
+                self.dma_grants
+                    .iter()
+                    .any(|(device_id, _)| *device_id == id)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Handles a port write with a VM-provided, access-scoped guest-memory capability.
+    pub fn handle_port_write_with_memory(
+        &self,
+        port: Port,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult {
+        let access = BusAccess {
+            kind: BusKind::Port,
+            is_read: false,
+            addr: u64::from(port.number()),
+            width,
+            data: val as u64,
+        };
+        let idx = self
+            .lookup_port(port.number(), width)
+            .ok_or(DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::Port,
+                addr: access.addr,
+                width,
+                source: DeviceError::NotFound,
+            })?;
+        let id = DeviceId::new(idx as u32);
+        let mut context = RuntimeDeviceAccess {
+            device_id: id,
+            memory: Some(memory),
+            dma_grants: &self.dma_grants,
+            timer_grants: &self.timer_grants,
+            wake_grants: &self.wake_grants,
+            stop_grants: &self.stop_grants,
+            access_ports: &self.access_ports,
+        };
+        let response = self.devices[idx]
+            .access(&access, &mut context)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::Port,
+                addr: access.addr,
+                width,
+                source,
+            })?;
+        Self::expect_write_response(response, "write port device")
+    }
 }
 
 impl Default for DeviceRuntime {
@@ -1477,6 +1535,13 @@ mod tests {
     impl DeviceFactory for EmptyFactory {
         fn device_type(&self) -> EmulatedDeviceType {
             self.device_type
+        }
+
+        fn declare(
+            &self,
+            _config: &EmulatedDeviceConfig,
+        ) -> DeviceManagerResult<crate::DeviceDeclaration> {
+            Ok(crate::DeviceDeclaration::new())
         }
 
         fn build(

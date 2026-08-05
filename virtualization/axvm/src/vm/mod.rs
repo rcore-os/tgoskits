@@ -32,12 +32,12 @@ use ax_memory_addr::align_up_4k;
 use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::{
-    DeviceRuntime, FwCfgPayloadConfig, FwCfgPlatformConfig, RuntimeAccessPorts, StopAccessPort,
-    TimerAccessPort, WakeAccessPort,
+    DeviceRuntime, FwCfgKernelPayload, FwCfgPayloadConfig, FwCfgPayloadSlot, FwCfgPlatformConfig,
+    RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
 };
 use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult, DmaGrant};
 use axvm_types::{
-    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
+    GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, Port, VmVcpuState,
 };
 
 use crate::{
@@ -45,7 +45,7 @@ use crate::{
     arch::ArchNestedPageTable,
     architecture::ops::ArchOps,
     ax_err, ax_err_type,
-    boot::{GuestBootDescription, GuestFdtBuilder},
+    boot::{GuestAcpiTables, GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
     irq::model::PendingVcpuInterrupt,
@@ -648,22 +648,11 @@ impl AxVMResources {
     }
 }
 
-#[allow(dead_code)]
-struct PendingFwCfgPayload {
-    base: GuestPhysAddr,
-    size: usize,
-    kernel: &'static [u8],
-    initrd: Option<&'static [u8]>,
-    cmdline: Option<String>,
-    cpu_num: u16,
-    platform: FwCfgPlatformConfig,
-}
-
 pub struct FwCfgDeviceConfig {
     pub base: GuestPhysAddr,
     pub size: usize,
-    pub kernel: &'static [u8],
-    pub initrd: Option<&'static [u8]>,
+    pub kernel: FwCfgKernelPayload,
+    pub initrd: Option<Arc<[u8]>>,
     pub cmdline: Option<String>,
     pub cpu_num: u16,
     pub platform: FwCfgPlatformConfig,
@@ -793,7 +782,7 @@ pub struct AxVM {
     id: usize,
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
-    pending_fw_cfg_payload: StdMutex<Option<PendingFwCfgPayload>>,
+    fw_cfg_payload: Arc<FwCfgPayloadSlot>,
 }
 
 impl AxVM {
@@ -808,12 +797,14 @@ impl AxVM {
     pub fn new(config: AxVMConfig) -> AxVmResult<AxVMRef> {
         let id = config.id();
         let name = config.name();
-        let resources = crate::arch::CurrentArch::create_vm_resources(config)?;
+        let fw_cfg_payload = Arc::new(FwCfgPayloadSlot::new());
+        let resources =
+            crate::arch::CurrentArch::create_vm_resources(config, fw_cfg_payload.clone())?;
         let result = Arc::new(Self {
             id,
             name,
             machine: Mutex::new(Machine::Ready(resources)),
-            pending_fw_cfg_payload: StdMutex::new(None),
+            fw_cfg_payload,
         });
 
         info!("VM created: id={}", result.id());
@@ -965,6 +956,14 @@ impl AxVM {
         self.with_resources(|resources| f(resources.architecture_plan()))
     }
 
+    /// Reads the immutable device graph resolved during architecture planning.
+    pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
+    where
+        F: FnOnce(&axdevice::ResolvedDeviceGraph) -> AxVmResult<R>,
+    {
+        self.with_resources(|resources| f(resources.planned_devices().graph()))
+    }
+
     /// Stores a guest DTB as VM-owned boot-description state.
     pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
         self.with_resources_mut(|resources| {
@@ -972,6 +971,16 @@ impl AxVM {
             resources
                 .boot_description
                 .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(load_gpa));
+            Ok(())
+        })
+    }
+
+    /// Stores a directly installed guest ACPI image as VM-owned boot state.
+    pub fn set_guest_acpi_tables(&self, rsdp_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
+        self.with_resources_mut(|resources| {
+            resources
+                .boot_description
+                .set_acpi_tables(GuestAcpiTables::generated(rsdp_gpa, bytes));
             Ok(())
         })
     }
@@ -1196,14 +1205,11 @@ impl AxVM {
 
     /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
     pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxVmResult {
-        let mut pending = self.pending_fw_cfg_payload.lock_unpoisoned();
-        if pending.is_some() {
-            return ax_err!(
-                AlreadyExists,
-                format!("VM[{}] fw_cfg device already exists", self.id())
-            );
-        }
-        *pending = Some(PendingFwCfgPayload {
+        let base = config.base;
+        let size = config.size;
+        let kernel_size = config.kernel.total_len();
+        let initrd_size = config.initrd.as_ref().map(|data| data.len());
+        self.fw_cfg_payload.set(FwCfgPayloadConfig {
             base: config.base,
             size: config.size,
             kernel: config.kernel,
@@ -1211,32 +1217,21 @@ impl AxVM {
             cmdline: config.cmdline,
             cpu_num: config.cpu_num,
             platform: config.platform,
-        });
+        })?;
         debug!(
             "VM[{}] queued fw_cfg device: base={:#x}, size={:#x}, kernel={} bytes, initrd={:?}",
             self.id(),
-            config.base.as_usize(),
-            config.size,
-            config.kernel.len(),
-            config.initrd.map(|data| data.len())
+            base.as_usize(),
+            size,
+            kernel_size,
+            initrd_size
         );
         Ok(())
     }
 
     #[allow(dead_code)]
     pub(crate) fn fw_cfg_payload(&self) -> Option<FwCfgPayloadConfig> {
-        self.pending_fw_cfg_payload
-            .lock_unpoisoned()
-            .as_ref()
-            .map(|pending| FwCfgPayloadConfig {
-                base: pending.base,
-                size: pending.size,
-                kernel: pending.kernel,
-                initrd: pending.initrd,
-                cmdline: pending.cmdline.clone(),
-                cpu_num: pending.cpu_num,
-                platform: pending.platform.clone(),
-            })
+        self.fw_cfg_payload.get()
     }
 
     /// Builds the runtime ports used by access-scoped device grants.
@@ -1256,6 +1251,22 @@ impl AxVM {
             devices.handle_mmio_write_with_memory(addr, width, data, &mut memory)?;
         } else {
             devices.handle_mmio_write(addr, width, data)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn handle_port_write(
+        &self,
+        port: Port,
+        width: AccessWidth,
+        data: usize,
+    ) -> AxVmResult {
+        let devices = self.get_devices()?;
+        if devices.port_write_needs_guest_memory(port, width) {
+            let mut memory = VmDmaAccess { vm: self };
+            devices.handle_port_write_with_memory(port, width, data, &mut memory)?;
+        } else {
+            devices.handle_port_write(port, width, data)?;
         }
         Ok(())
     }

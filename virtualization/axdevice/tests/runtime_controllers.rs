@@ -4,10 +4,10 @@ use std::{
 };
 
 use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DeviceModel, DeviceModelError, DeviceModelRegistry, DeviceRegistration,
-    DeviceRequirements, DeviceRuntime, DeviceRuntimeBuilder, InterruptRegistrationError,
-    ResourcePools, ResourceRequest, ResourceSlot, VmResourcePlan, VmResourcePlanner,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceGraphBuilder,
+    DeviceManagerError, DeviceNodeId, DeviceNodeSpec, DeviceRegistration, DeviceRequirements,
+    DeviceRuntime, DeviceRuntimeBuilder, InterruptRegistrationError, ResolvedDeviceGraph,
+    ResourcePools, ResourceRequest, ResourceSlot,
 };
 use axdevice_base::{
     BusAccess, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
@@ -108,37 +108,29 @@ impl Device for LineDevice {
 
 struct IrqFactory {
     slot: ResourceSlot,
-    lines: Arc<Mutex<Vec<IrqLine>>>,
-    probe_wrong_accessor: bool,
-}
-
-struct IrqModel {
     controller: InterruptControllerId,
     sharing: InterruptSharing,
-}
-
-impl DeviceModel for IrqModel {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::Dummy
-    }
-
-    fn requirements(
-        &self,
-        _config: &EmulatedDeviceConfig,
-    ) -> axdevice::DeviceManagerResult<DeviceRequirements> {
-        DeviceRequirements::new().with_wired_irq(
-            irq_slot(),
-            self.controller,
-            InterruptTrigger::LevelTriggered,
-            self.sharing,
-            ResourceRequest::Fixed(ControllerInputId::new(40)),
-        )
-    }
+    lines: Arc<Mutex<Vec<IrqLine>>>,
+    probe_wrong_accessor: bool,
 }
 
 impl DeviceFactory for IrqFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::Dummy
+    }
+
+    fn declare(
+        &self,
+        _config: &EmulatedDeviceConfig,
+    ) -> axdevice::DeviceManagerResult<axdevice::DeviceDeclaration> {
+        let requirements = DeviceRequirements::new().with_wired_irq(
+            self.slot.clone(),
+            self.controller,
+            InterruptTrigger::LevelTriggered,
+            self.sharing,
+            ResourceRequest::Fixed(ControllerInputId::new(40)),
+        )?;
+        Ok(axdevice::DeviceDeclaration::with_requirements(requirements))
     }
 
     fn build(
@@ -191,10 +183,11 @@ fn irq_slot() -> ResourceSlot {
     ResourceSlot::new("irq").unwrap()
 }
 
-fn irq_plan(
+fn irq_graph(
     controller: InterruptControllerId,
-    devices: &[(&str, InterruptSharing)],
-) -> (VmResourcePlan, DeviceModelRegistry) {
+    devices: &[&str],
+    factory: Arc<dyn DeviceFactory>,
+) -> ResolvedDeviceGraph {
     let mut pools = ResourcePools::new();
     pools
         .allow_fixed_controller_inputs(
@@ -202,22 +195,17 @@ fn irq_plan(
             ControllerInputId::new(32)..ControllerInputId::new(64),
         )
         .unwrap();
-    let sharing = devices.first().unwrap().1;
-    assert!(devices.iter().all(|(_, candidate)| *candidate == sharing));
-    let mut models = DeviceModelRegistry::new();
-    models
-        .register(Arc::new(IrqModel {
-            controller,
-            sharing,
-        }))
-        .unwrap();
-    let requests = devices
-        .iter()
-        .map(|(id, _)| models.plan_request(id, &dummy_config(id)).unwrap());
-    (
-        VmResourcePlanner::new(pools).plan(requests).unwrap(),
-        models,
-    )
+    let mut graph = DeviceGraphBuilder::new();
+    for id in devices {
+        graph
+            .add(DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new(*id).unwrap(),
+                dummy_config(id),
+                factory.clone(),
+            ))
+            .unwrap();
+    }
+    graph.declare().unwrap().resolve(pools).unwrap()
 }
 
 fn dummy_config(name: &str) -> EmulatedDeviceConfig {
@@ -283,30 +271,21 @@ fn controller_registration_is_validated_and_atomic() {
 #[test]
 fn failed_build_releases_claims_for_retry() {
     let id = InterruptControllerId::new(4);
-    let (plan, models) = irq_plan(id, &[("uart", InterruptSharing::Exclusive)]);
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let mut factories = DeviceFactoryRegistry::new();
-    factories
-        .register(Arc::new(IrqFactory {
-            slot: irq_slot(),
-            lines,
-            probe_wrong_accessor: true,
-        }))
-        .unwrap();
+    let factory = Arc::new(IrqFactory {
+        slot: irq_slot(),
+        controller: id,
+        sharing: InterruptSharing::Exclusive,
+        lines,
+        probe_wrong_accessor: true,
+    });
+    let graph = irq_graph(id, &["uart"], factory);
+    let node = graph.nodes().next().unwrap();
     let mut builder = DeviceRuntimeBuilder::new(Default::default());
-
-    let mut changed = dummy_config("uart");
-    changed.base_gpa = 1;
-    assert!(matches!(
-        builder.build_planned_device("uart", &changed, &models, &factories, &plan),
-        Err(DeviceManagerError::DeviceModel(
-            DeviceModelError::FingerprintMismatch { .. }
-        ))
-    ));
 
     assert!(
         builder
-            .build_planned_device("uart", &dummy_config("uart"), &models, &factories, &plan)
+            .build_graph_node(node, graph.resource_plan())
             .is_err()
     );
     let controller = Arc::new(TestController::new(id, Arc::default()));
@@ -314,9 +293,9 @@ fn failed_build_releases_claims_for_retry() {
         .register_bundle(controller_bundle(id, controller))
         .unwrap();
     builder
-        .build_planned_device("uart", &dummy_config("uart"), &models, &factories, &plan)
+        .build_graph_node(node, graph.resource_plan())
         .unwrap();
-    let mut runtime = builder.finish(&plan).unwrap();
+    let mut runtime = builder.finish(graph.resource_plan()).unwrap();
     let late_id = InterruptControllerId::new(7);
     let late = Arc::new(TestController::new(late_id, Arc::default()));
     assert!(matches!(
@@ -330,32 +309,25 @@ fn shared_level_endpoints_preserve_wired_or() {
     let id = InterruptControllerId::new(5);
     let sink = Arc::new(RecordingSink::default());
     let controller = Arc::new(TestController::new(id, sink.clone()));
-    let (plan, models) = irq_plan(
-        id,
-        &[
-            ("left", InterruptSharing::Shared),
-            ("right", InterruptSharing::Shared),
-        ],
-    );
     let lines = Arc::new(Mutex::new(Vec::new()));
-    let mut factories = DeviceFactoryRegistry::new();
-    factories
-        .register(Arc::new(IrqFactory {
-            slot: irq_slot(),
-            lines: lines.clone(),
-            probe_wrong_accessor: false,
-        }))
-        .unwrap();
+    let factory = Arc::new(IrqFactory {
+        slot: irq_slot(),
+        controller: id,
+        sharing: InterruptSharing::Shared,
+        lines: lines.clone(),
+        probe_wrong_accessor: false,
+    });
+    let graph = irq_graph(id, &["left", "right"], factory);
     let mut builder = DeviceRuntimeBuilder::new(Default::default());
     builder
         .register_bundle(controller_bundle(id, controller))
         .unwrap();
-    for device in ["right", "left"] {
+    for node in graph.nodes() {
         builder
-            .build_planned_device(device, &dummy_config(device), &models, &factories, &plan)
+            .build_graph_node(node, graph.resource_plan())
             .unwrap();
     }
-    let _runtime = builder.finish(&plan).unwrap();
+    let _runtime = builder.finish(graph.resource_plan()).unwrap();
 
     let lines = lines.lock().unwrap();
     lines[0].assert().unwrap();

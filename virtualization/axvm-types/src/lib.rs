@@ -736,6 +736,14 @@ pub enum EmulatedDeviceType {
     LoongArchPchPic     = 0x25,
     /// x86 host I/O port passthrough range.
     X86PortPassthrough  = 0x26,
+    /// x86 MC146818-compatible CMOS/RTC index and data ports.
+    X86Cmos             = 0x27,
+    /// x86 Q35-compatible ACPI power-management timer.
+    X86AcpiPmTimer      = 0x28,
+    /// x86 PCI configuration mechanism #1 with a minimal Q35 platform identity.
+    X86PciConfig        = 0x29,
+    /// x86 guest-owned master/slave 8259-compatible PIC pair.
+    X86Pic              = 0x2A,
     // 0x30: PPPT (PLIC Partial Passthrough) devices.
     /// RISC-V PLIC Partial Passthrough Global device.
     PPPTGlobal          = 0x30,
@@ -905,6 +913,10 @@ impl Display for EmulatedDeviceType {
             EmulatedDeviceType::GPPTITS => write!(f, "gic partial passthrough its"),
             EmulatedDeviceType::X86IoApic => write!(f, "x86 io apic"),
             EmulatedDeviceType::X86Pit => write!(f, "x86 pit"),
+            EmulatedDeviceType::X86Cmos => write!(f, "x86 cmos"),
+            EmulatedDeviceType::X86AcpiPmTimer => write!(f, "x86 acpi pm timer"),
+            EmulatedDeviceType::X86PciConfig => write!(f, "x86 pci configuration"),
+            EmulatedDeviceType::X86Pic => write!(f, "x86 pic"),
             EmulatedDeviceType::LoongArchPchPic => write!(f, "loongarch pch pic"),
             EmulatedDeviceType::X86PortPassthrough => write!(f, "x86 port passthrough"),
             EmulatedDeviceType::PPPTGlobal => write!(f, "plic partial passthrough global"),
@@ -923,7 +935,7 @@ impl Display for EmulatedDeviceType {
 
 impl EmulatedDeviceType {
     /// All known emulated device types.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 21] = [
         EmulatedDeviceType::Dummy,
         EmulatedDeviceType::InterruptController,
         EmulatedDeviceType::Console,
@@ -935,6 +947,10 @@ impl EmulatedDeviceType {
         EmulatedDeviceType::GPPTITS,
         EmulatedDeviceType::X86IoApic,
         EmulatedDeviceType::X86Pit,
+        EmulatedDeviceType::X86Cmos,
+        EmulatedDeviceType::X86AcpiPmTimer,
+        EmulatedDeviceType::X86PciConfig,
+        EmulatedDeviceType::X86Pic,
         EmulatedDeviceType::LoongArchPchPic,
         EmulatedDeviceType::X86PortPassthrough,
         EmulatedDeviceType::PPPTGlobal,
@@ -958,6 +974,10 @@ impl EmulatedDeviceType {
                 | EmulatedDeviceType::GicCpuRegion
                 | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::X86Pit
+                | EmulatedDeviceType::X86Cmos
+                | EmulatedDeviceType::X86AcpiPmTimer
+                | EmulatedDeviceType::X86PciConfig
+                | EmulatedDeviceType::X86Pic
                 | EmulatedDeviceType::VirtioBlk
                 | EmulatedDeviceType::VirtioNet
                 // | EmulatedDeviceType::GICR
@@ -981,6 +1001,10 @@ impl EmulatedDeviceType {
             0x24 => Some(EmulatedDeviceType::X86Pit),
             0x25 => Some(EmulatedDeviceType::LoongArchPchPic),
             0x26 => Some(EmulatedDeviceType::X86PortPassthrough),
+            0x27 => Some(EmulatedDeviceType::X86Cmos),
+            0x28 => Some(EmulatedDeviceType::X86AcpiPmTimer),
+            0x29 => Some(EmulatedDeviceType::X86PciConfig),
+            0x2A => Some(EmulatedDeviceType::X86Pic),
             0x30 => Some(EmulatedDeviceType::PPPTGlobal),
             0xE1 => Some(EmulatedDeviceType::VirtioBlk),
             0xE2 => Some(EmulatedDeviceType::VirtioNet),

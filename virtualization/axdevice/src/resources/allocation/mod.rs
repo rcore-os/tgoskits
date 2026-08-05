@@ -1,11 +1,13 @@
 //! Allocation orchestration over independent resource namespaces.
 
 mod address;
+mod host_irq;
 mod msi;
 mod search;
 mod wired;
 
 use address::AddressAllocator;
+use host_irq::HostIrqAllocator;
 use msi::MsiAllocator;
 use wired::WiredAllocator;
 
@@ -14,6 +16,7 @@ use super::{DeviceRequirement, ResourcePlanningError, ResourcePools, resolved::R
 pub(super) struct AllocationState<'a> {
     addresses: AddressAllocator<'a>,
     wired: WiredAllocator<'a>,
+    host_irqs: HostIrqAllocator<'a>,
     msi: MsiAllocator<'a>,
 }
 
@@ -22,6 +25,7 @@ impl<'a> AllocationState<'a> {
         Self {
             addresses: AddressAllocator::new(pools),
             wired: WiredAllocator::new(pools),
+            host_irqs: HostIrqAllocator::new(pools),
             msi: MsiAllocator::new(pools),
         }
     }
@@ -57,6 +61,9 @@ impl<'a> AllocationState<'a> {
             } => self
                 .wired
                 .allocate(requester, slot, *controller, *trigger, *sharing, *request),
+            DeviceRequirement::HostIrq { slot, request } => {
+                self.host_irqs.allocate(requester, slot, *request)
+            }
             DeviceRequirement::Msi { slot, request } => {
                 self.msi.allocate(requester, slot, *request)
             }

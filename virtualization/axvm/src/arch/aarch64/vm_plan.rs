@@ -1,8 +1,5 @@
 //! Immutable AArch64 device, VGIC, and firmware construction plan.
 
-use alloc::sync::Arc;
-
-use axdevice::DeviceModelRegistry;
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use super::{
@@ -12,19 +9,14 @@ use super::{
 use crate::{
     AxVmResult,
     config::AxVMConfig,
-    machine::GuestGicProfile,
-    vm::prepare::device_plan::{
-        ArchitectureVmPlan, FixedAddressKind, FixedDeviceModel, VmDevicePlan,
-        machine_model_registry,
-    },
+    machine::{GuestGicProfile, GuestSerialFdtIdentity, GuestSerialProfile, GuestTimerProfile},
+    vm::prepare::device_plan::{ArchitectureVmPlan, VmDevicePlan, machine_factory_registry},
 };
 
 /// Complete AArch64 plan created once before firmware and devices are finalized.
 pub(crate) struct Aarch64VmPlan {
     devices: VmDevicePlan,
-    vgic: Arc<VgicConstructionPlan>,
     firmware: Aarch64FirmwarePlan,
-    shared_providers: SharedProviderBootstrap,
 }
 
 impl Aarch64VmPlan {
@@ -32,27 +24,43 @@ impl Aarch64VmPlan {
         let vgic = VgicConstructionPlan::new(config)?;
         let shared_providers = SharedProviderBootstrap::from_config(config)?;
         let configs = planned_device_configs(config, &shared_providers)?;
-        let models = device_models(config, &vgic)?;
-        let devices = VmDevicePlan::fixed(&configs, models)?;
+        let mut factories = machine_factory_registry(config)?;
+        shared_providers.register_factory(&mut factories)?;
+        super::vgic::register_device_factories(config.id(), &vgic, &mut factories)?;
+        let mut host_replacements = alloc::vec![
+            EmulatedDeviceType::InterruptController,
+            EmulatedDeviceType::GicCpuRegion,
+            EmulatedDeviceType::SharedMmio,
+        ];
+        if config.serial_fdt_identity().is_some() {
+            host_replacements.push(EmulatedDeviceType::Console);
+        }
+        let devices = VmDevicePlan::with_pools_for_vm(
+            config,
+            &configs,
+            factories,
+            Some(EmulatedDeviceType::InterruptController),
+            &host_replacements,
+            super::resource_pools::create(vgic.config())?,
+        )?;
         let firmware = Aarch64FirmwarePlan::new(config, vgic.config())?;
-        Ok(Self {
-            devices,
-            vgic,
-            firmware,
-            shared_providers,
-        })
-    }
-
-    pub(super) const fn vgic(&self) -> &Arc<VgicConstructionPlan> {
-        &self.vgic
-    }
-
-    pub(super) const fn shared_providers(&self) -> &SharedProviderBootstrap {
-        &self.shared_providers
+        Ok(Self { devices, firmware })
     }
 
     pub(crate) const fn gic_profile(&self) -> &GuestGicProfile {
         self.firmware.gic()
+    }
+
+    pub(crate) const fn serial_profile(&self) -> GuestSerialProfile {
+        self.firmware.serial()
+    }
+
+    pub(crate) const fn serial_fdt_identity(&self) -> Option<&GuestSerialFdtIdentity> {
+        self.firmware.serial_identity()
+    }
+
+    pub(crate) const fn timer_profile(&self) -> &GuestTimerProfile {
+        self.firmware.timer()
     }
 }
 
@@ -91,22 +99,4 @@ fn planned_device_configs(
     );
     configs.extend_from_slice(shared_providers.configs());
     Ok(configs)
-}
-
-fn device_models(
-    config: &AxVMConfig,
-    vgic: &Arc<VgicConstructionPlan>,
-) -> AxVmResult<DeviceModelRegistry> {
-    let mut models = machine_model_registry(config)?;
-    vgic.register_model(&mut models)?;
-    for device_type in [
-        EmulatedDeviceType::GicCpuRegion,
-        EmulatedDeviceType::SharedMmio,
-    ] {
-        models.register(Arc::new(FixedDeviceModel::new(
-            device_type,
-            FixedAddressKind::Mmio,
-        )))?;
-    }
-    Ok(models)
 }

@@ -698,6 +698,32 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test axvisor x86_64 ACPI direct boot (svm)
+            use_container: false
+            runs_on: '["self-hosted","linux","amd","kvm"]'
+            require_kvm: true
+            timeout_minutes: 30
+            command: |
+              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+              cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor x86_64 ACPI direct and OVMF boot (vmx)
+            use_container: false
+            runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
+            timeout_minutes: 45
+            command: |
+              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+              cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+              cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+              cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
             runs_on: '["self-hosted","linux","board"]'

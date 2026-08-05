@@ -2,20 +2,19 @@
 
 use alloc::{collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
 
-use axdevice_base::{ControllerInputId, InterruptControllerId};
+use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId};
 
 use super::{
     DevicePlanRequest, DeviceRequirement, ResolvedDeviceResources, ResourceClaimSet,
     ResourceNamespace, ResourcePlanningError, ResourcePools, allocation::AllocationState,
     claim::ResourceClaimDomain,
 };
-use crate::{DeviceManagerError, DeviceManagerResult, DeviceModelFingerprint};
+use crate::{DeviceManagerError, DeviceManagerResult};
 
 /// An immutable resource plan for one virtual machine.
 #[derive(Debug)]
 pub struct VmResourcePlan {
     devices: BTreeMap<String, ResolvedDeviceResources>,
-    model_fingerprints: BTreeMap<String, DeviceModelFingerprint>,
     claims: Arc<ResourceClaimDomain>,
 }
 
@@ -33,20 +32,6 @@ impl VmResourcePlan {
     /// Returns the number of planned devices.
     pub fn device_count(&self) -> usize {
         self.devices.len()
-    }
-
-    /// Returns the model identity captured for one planned device.
-    pub fn model_fingerprint(
-        &self,
-        device_id: &str,
-    ) -> DeviceManagerResult<DeviceModelFingerprint> {
-        self.model_fingerprints
-            .get(device_id)
-            .copied()
-            .ok_or_else(|| DeviceManagerError::ResourceNotFound {
-                operation: "read VM device model fingerprint",
-                resource: format!("planned device {device_id}"),
-            })
     }
 
     /// Iterates in stable device-identifier order.
@@ -73,6 +58,11 @@ impl VmResourcePlan {
         input: ControllerInputId,
     ) -> Option<String> {
         self.claims.owner_of_controller_input(controller, input)
+    }
+
+    /// Returns the planned owner of a host IRQ for diagnostics.
+    pub fn owner_of_host_irq(&self, irq: HostIrqId) -> Option<String> {
+        self.claims.owner_of_host_irq(irq)
     }
 }
 
@@ -133,15 +123,7 @@ impl VmResourcePlanner {
         }
 
         let claims = ResourceClaimDomain::new(&devices);
-        let model_fingerprints = requests
-            .iter()
-            .map(|request| (request.id().into(), request.model_fingerprint()))
-            .collect();
-        Ok(VmResourcePlan {
-            devices,
-            model_fingerprints,
-            claims,
-        })
+        Ok(VmResourcePlan { devices, claims })
     }
 }
 

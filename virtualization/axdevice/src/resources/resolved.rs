@@ -3,8 +3,8 @@
 use alloc::{collections::BTreeMap, format, string::ToString};
 
 use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId, LpiId,
-    MsiDeviceId, MsiEventId,
+    ControllerInputId, HostIrqId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId,
+    LpiId, MsiDeviceId, MsiEventId,
 };
 
 use super::ResourceSlot;
@@ -121,6 +121,7 @@ pub(crate) enum ResolvedResource {
     Mmio { base: u64, size: u64 },
     Pio { base: u16, size: u16 },
     WiredIrq(ResolvedWiredIrq),
+    HostIrq(HostIrqId),
     Msi(ResolvedMsi),
 }
 
@@ -131,12 +132,27 @@ pub struct ResolvedDeviceResources {
 }
 
 impl ResolvedDeviceResources {
+    /// Returns all resolved slots in stable order.
+    pub fn slots(&self) -> alloc::vec::Vec<ResourceSlot> {
+        self.entries.keys().cloned().collect()
+    }
+
     /// Returns a resolved MMIO window.
     pub fn mmio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
         match self.resource(slot)? {
             ResolvedResource::Mmio { base, size } => Ok((*base, *size)),
             _ => Err(resource_kind_error(slot, "MMIO")),
         }
+    }
+
+    /// Iterates all resolved MMIO slots in stable slot order.
+    pub fn mmio_ranges(&self) -> impl Iterator<Item = (&ResourceSlot, u64, u64)> {
+        self.entries
+            .iter()
+            .filter_map(|(slot, resource)| match resource {
+                ResolvedResource::Mmio { base, size } => Some((slot, *base, *size)),
+                _ => None,
+            })
     }
 
     /// Returns a resolved PIO range.
@@ -147,11 +163,29 @@ impl ResolvedDeviceResources {
         }
     }
 
+    /// Iterates all resolved PIO slots in stable slot order.
+    pub fn pio_ranges(&self) -> impl Iterator<Item = (&ResourceSlot, u16, u16)> {
+        self.entries
+            .iter()
+            .filter_map(|(slot, resource)| match resource {
+                ResolvedResource::Pio { base, size } => Some((slot, *base, *size)),
+                _ => None,
+            })
+    }
+
     /// Returns a resolved wired interrupt.
     pub fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
         match self.resource(slot)? {
             ResolvedResource::WiredIrq(irq) => Ok(*irq),
             _ => Err(resource_kind_error(slot, "wired IRQ")),
+        }
+    }
+
+    /// Returns a resolved host physical interrupt.
+    pub fn host_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
+        match self.resource(slot)? {
+            ResolvedResource::HostIrq(irq) => Ok(*irq),
+            _ => Err(resource_kind_error(slot, "host IRQ")),
         }
     }
 
@@ -228,8 +262,9 @@ fn hash_resource(value: &mut u64, resource: &ResolvedResource) {
             0,
             0,
         ],
+        ResolvedResource::HostIrq(irq) => [3, irq.value() as u64, 0, 0, 0, 0, 0],
         ResolvedResource::Msi(msi) => [
-            3,
+            4,
             msi.controller().value() as u64,
             u64::from(msi.its().value()),
             u64::from(msi.device().value()),

@@ -1,11 +1,40 @@
-//! Fixed allowlists derived from model-declared internal ABI resources.
+//! VM address-space reservations and fixed internal ABI allowlists.
+
+use alloc::vec::Vec;
 
 use axdevice::{
     DevicePlanRequest, DeviceRequirement, MsiResourceRequest, ResourcePools, ResourceRequest,
 };
-use axdevice_base::{ControllerInputId, LpiId, MsiDeviceId, MsiEventId};
+use axdevice_base::{ControllerInputId, HostIrqId, LpiId, MsiDeviceId, MsiEventId};
 
 use crate::{AxVmError, AxVmResult};
+
+pub(super) fn reserve_guest_memory(
+    config: &crate::config::AxVMConfig,
+    pools: &mut ResourcePools,
+) -> AxVmResult {
+    let mut ranges = config
+        .memory_regions()
+        .iter()
+        .map(|region| checked_u64_range(region.gpa, region.size, "guest memory"))
+        .collect::<AxVmResult<Vec<_>>>()?;
+    ranges.sort_by_key(|range| range.start);
+
+    let mut merged: Vec<core::ops::Range<u64>> = Vec::new();
+    for range in ranges {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+            continue;
+        }
+        merged.push(range);
+    }
+    for (index, range) in merged.into_iter().enumerate() {
+        pools.reserve_mmio(alloc::format!("guest-memory-{index}"), range)?;
+    }
+    Ok(())
+}
 
 pub(super) fn allow_fixed_requirements(
     requests: &[DevicePlanRequest],
@@ -42,12 +71,25 @@ pub(super) fn allow_fixed_requirements(
                         *input..ControllerInputId::new(end),
                     )?;
                 }
+                DeviceRequirement::HostIrq {
+                    request: ResourceRequest::Fixed(irq),
+                    ..
+                } => {
+                    let end = irq.value().checked_add(1).ok_or_else(|| {
+                        AxVmError::invalid_config(alloc::format!(
+                            "device {} fixed host IRQ overflows",
+                            request.id()
+                        ))
+                    })?;
+                    pools.allow_fixed_host_irqs(*irq..HostIrqId::new(end))?;
+                }
                 DeviceRequirement::Msi { request: msi, .. } => {
                     allow_fixed_msi(request.id(), *msi, pools)?
                 }
                 DeviceRequirement::Mmio { .. }
                 | DeviceRequirement::Pio { .. }
-                | DeviceRequirement::WiredIrq { .. } => {}
+                | DeviceRequirement::WiredIrq { .. }
+                | DeviceRequirement::HostIrq { .. } => {}
             }
         }
     }
@@ -112,6 +154,26 @@ fn fixed_u16_range(
         AxVmError::invalid_config(alloc::format!(
             "device {device_id} fixed {kind} range overflows"
         ))
+    })?;
+    Ok(base..end)
+}
+
+fn checked_u64_range(
+    base: usize,
+    size: usize,
+    kind: &'static str,
+) -> AxVmResult<core::ops::Range<u64>> {
+    let base = u64::try_from(base)
+        .map_err(|_| AxVmError::invalid_config(alloc::format!("{kind} base does not fit u64")))?;
+    let size = u64::try_from(size)
+        .map_err(|_| AxVmError::invalid_config(alloc::format!("{kind} size does not fit u64")))?;
+    if size == 0 {
+        return Err(AxVmError::invalid_config(alloc::format!(
+            "{kind} range is empty"
+        )));
+    }
+    let end = base.checked_add(size).ok_or_else(|| {
+        AxVmError::invalid_config(alloc::format!("{kind} range overflows the address space"))
     })?;
     Ok(base..end)
 }

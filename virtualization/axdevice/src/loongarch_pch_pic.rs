@@ -19,9 +19,9 @@ use axdevice_base::{
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, ResourceSlot, ServiceCardinality, ServiceKey,
-    validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory,
+    DeviceManagerError, DeviceManagerResult, DeviceRegistration, DeviceRequirements,
+    ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey, validate_device_config,
 };
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
@@ -275,21 +275,27 @@ impl PchPicOutputPort for LoongArchPchPic {
 /// Factory for the guest-visible LoongArch PCH-PIC contribution.
 pub struct LoongArchPchPicFactory {
     expected: EmulatedDeviceConfig,
-    pic: Arc<LoongArchPchPic>,
-    interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController>,
+    domain_factory: Arc<dyn LoongArchInterruptDomainFactory>,
+}
+
+/// Architecture adapter that creates the VM-local cascaded interrupt domain.
+pub trait LoongArchInterruptDomainFactory: Send + Sync {
+    /// Creates a controller for one freshly reset PCH-PIC instance.
+    fn create(
+        &self,
+        pic: Arc<LoongArchPchPic>,
+    ) -> Arc<dyn axdevice_base::VirtualInterruptController>;
 }
 
 impl LoongArchPchPicFactory {
     /// Creates the only factory for an architecture-owned PCH-PIC instance.
     pub fn new(
         expected: EmulatedDeviceConfig,
-        pic: Arc<LoongArchPchPic>,
-        interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController>,
+        domain_factory: Arc<dyn LoongArchInterruptDomainFactory>,
     ) -> Self {
         Self {
             expected,
-            pic,
-            interrupt_controller,
+            domain_factory,
         }
     }
 
@@ -301,6 +307,18 @@ impl LoongArchPchPicFactory {
 impl DeviceFactory for LoongArchPchPicFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::LoongArchPchPic
+    }
+
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        self.validate(config)?;
+        DeviceRequirements::new()
+            .with_mmio(
+                ResourceSlot::new("registers")?,
+                config.length as u64,
+                1,
+                ResourceRequest::Fixed(config.base_gpa as u64),
+            )
+            .map(DeviceDeclaration::with_requirements)
     }
 
     fn build(
@@ -316,15 +334,22 @@ impl DeviceFactory for LoongArchPchPicFactory {
                 detail: "planned MMIO range differs from the machine descriptor".into(),
             });
         }
-        let device: Arc<dyn Device> = self.pic.clone();
-        let output: Arc<dyn PchPicOutputPort> = self.pic.clone();
+        let base = usize::try_from(base).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build LoongArch virtual PCH-PIC",
+            detail: "planned MMIO base does not fit the target address width".into(),
+        })?;
+        let length = usize::try_from(length).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build LoongArch virtual PCH-PIC",
+            detail: "planned MMIO length does not fit the target address width".into(),
+        })?;
+        let pic = Arc::new(LoongArchPchPic::new(base.into(), length));
+        let interrupt_controller = self.domain_factory.create(pic.clone());
+        let device: Arc<dyn Device> = pic.clone();
+        let output: Arc<dyn PchPicOutputPort> = pic;
         let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
             .with_service::<PchPicOutputPortKey>(output)?;
         bundle.push(DeviceRegistration::InterruptController(
-            ControllerRegistration::new(
-                self.interrupt_controller.id(),
-                self.interrupt_controller.clone(),
-            ),
+            ControllerRegistration::new(interrupt_controller.id(), interrupt_controller),
         ));
         Ok(bundle)
     }

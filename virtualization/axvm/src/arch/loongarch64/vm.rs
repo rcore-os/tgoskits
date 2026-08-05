@@ -13,13 +13,10 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
-            device_plan::{
-                FixedAddressKind, FixedDeviceModel, SimpleVmPlan, VmDevicePlan,
-                machine_model_registry,
-            },
+            complete_vm_init,
+            device_plan::{SimpleVmPlan, VmDevicePlan, machine_factory_registry},
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -30,8 +27,11 @@ use crate::{
 pub(crate) type LoongArchVmPlan = SimpleVmPlan;
 
 impl LoongArch64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
-        let device_plan = plan_devices(&config)?;
+    pub(crate) fn create_vm_resources(
+        config: AxVMConfig,
+        fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
+    ) -> AxVmResult<AxVMResources> {
+        let device_plan = plan_devices(&config, fw_cfg_payload)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
@@ -50,46 +50,40 @@ impl LoongArch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let mut factories = default_device_factories(vm)?;
-                let interrupt_controller = register_arch_device_factories(vm, &mut factories)?;
-                init_vm_with(vm, &factories, interrupt_controller)
-            }
-            VmInitRequest::Provided { factories } => {
-                let interrupt_controller = register_arch_device_factories(vm, factories)?;
-                init_vm_with(vm, factories, interrupt_controller)
-            }
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        init_vm_with(vm)
     }
 }
 
-fn plan_devices(config: &AxVMConfig) -> AxVmResult<LoongArchVmPlan> {
+fn plan_devices(
+    config: &AxVMConfig,
+    fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
+) -> AxVmResult<LoongArchVmPlan> {
     let configs = loongarch_device_order(config)?;
-    let mut models = machine_model_registry(config)?;
-    for device_type in [
-        axvm_types::EmulatedDeviceType::FwCfg,
-        axvm_types::EmulatedDeviceType::LoongArchPchPic,
-    ] {
-        models.register(Arc::new(FixedDeviceModel::new(
-            device_type,
-            FixedAddressKind::Mmio,
-        )))?;
-    }
-    Ok(SimpleVmPlan::new(VmDevicePlan::fixed(&configs, models)?))
+    let mut factories = machine_factory_registry(config)?;
+    factories.register(Arc::new(axdevice::FwCfgPayloadFactory::deferred(
+        fw_cfg_payload,
+    )))?;
+    register_arch_device_factories_for_config(config, &mut factories)?;
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+        config,
+        &configs,
+        factories,
+        Some(axvm_types::EmulatedDeviceType::LoongArchPchPic),
+        &[axvm_types::EmulatedDeviceType::LoongArchPchPic],
+        super::resource_pools::create()?,
+    )?))
 }
 
-fn register_arch_device_factories(
-    vm: &AxVM,
+fn register_arch_device_factories_for_config(
+    config: &AxVMConfig,
     factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult<Arc<dyn axdevice_base::VirtualInterruptController>> {
-    crate::vm::prepare::register_boot_payload_factories(vm, factories)?;
-    let configs = vm.with_config(|config| config.emu_devices().clone());
+) -> AxVmResult {
+    let configs = config.emu_devices().clone();
     let mut pch_pic_configs = configs
         .iter()
         .filter(|config| config.emu_type == axvm_types::EmulatedDeviceType::LoongArchPchPic);
-    let config = pch_pic_configs.next().ok_or_else(|| {
+    let pch_config = pch_pic_configs.next().ok_or_else(|| {
         AxVmError::resource_unavailable(
             "LoongArch virtual interrupt controller",
             "the machine profile has no PCH-PIC",
@@ -102,65 +96,65 @@ fn register_arch_device_factories(
         );
     }
 
-    let pic = Arc::new(axdevice::LoongArchPchPic::new(
-        config.base_gpa.into(),
-        config.length,
-    ));
-    let domain = irq::create_interrupt_domain(vm.id(), pic.clone());
-    let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> = domain;
     factories.register(Arc::new(axdevice::LoongArchPchPicFactory::new(
-        config.clone(),
-        pic,
-        interrupt_controller.clone(),
+        pch_config.clone(),
+        Arc::new(LoongArchDomainFactory { vm_id: config.id() }),
     )))?;
-    Ok(interrupt_controller)
+    Ok(())
 }
 
-fn init_vm_with(
-    vm: &AxVM,
-    factories: &DeviceFactoryRegistry,
-    interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController>,
-) -> AxVmResult {
-    complete_vm_init(
-        vm,
-        interrupt_controller,
-        |resources, _interrupt_controller| {
-            let placements = vcpu_placements(resources);
-            let state_count = placements
-                .iter()
-                .map(|placement| placement.id)
-                .max()
-                .map_or(0, |vcpu_id| vcpu_id + 1);
-            let iocsr_state =
-                loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))
-                    .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
-            let dtb_addr = resources
-                .config()
-                .image_config()
-                .dtb_load_gpa
-                .unwrap_or_default();
-            let firmware_boot = uses_firmware_boot(resources.config());
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
-                Ok(LoongArchVCpuCreateConfig {
-                    cpu_id: placement.id,
-                    dtb_addr: dtb_addr.as_usize(),
-                    boot_args: [0; 3],
-                    boot_stack_top: 0,
-                    firmware_boot,
-                    iocsr_state: iocsr_state.clone(),
-                })
-            })?;
-            let devices =
-                PreparedDevices::build_planned(resources, factories, vm.device_access_ports())?;
-            validate_guest_dtb(resources)?;
+struct LoongArchDomainFactory {
+    vm_id: usize,
+}
 
-            let owned_regions = guest_owned_regions(resources);
-            map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
-            vcpus.setup(resources, build_vcpu_setup_config)?;
+impl axdevice::LoongArchInterruptDomainFactory for LoongArchDomainFactory {
+    fn create(
+        &self,
+        pic: Arc<axdevice::LoongArchPchPic>,
+    ) -> Arc<dyn axdevice_base::VirtualInterruptController> {
+        irq::create_interrupt_domain(self.vm_id, pic)
+    }
+}
 
-            Ok(PreparedVm::new(vcpus, devices))
-        },
-    )
+fn init_vm_with(vm: &AxVM) -> AxVmResult {
+    complete_vm_init(vm, |resources| {
+        let placements = vcpu_placements(resources);
+        let state_count = placements
+            .iter()
+            .map(|placement| placement.id)
+            .max()
+            .map_or(0, |vcpu_id| vcpu_id + 1);
+        let iocsr_state =
+            loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))
+                .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
+        let dtb_addr = resources
+            .config()
+            .image_config()
+            .dtb_load_gpa
+            .unwrap_or_default();
+        let firmware_boot = uses_firmware_boot(resources.config());
+        let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            Ok(LoongArchVCpuCreateConfig {
+                cpu_id: placement.id,
+                dtb_addr: dtb_addr.as_usize(),
+                boot_args: [0; 3],
+                boot_stack_top: 0,
+                firmware_boot,
+                iocsr_state: iocsr_state.clone(),
+            })
+        })?;
+        let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+        let interrupt_controller = devices
+            .devices()
+            .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
+        validate_guest_dtb(resources)?;
+
+        let owned_regions = guest_owned_regions(resources);
+        map_guest_address_space(vm, resources, &owned_regions)?;
+        vcpus.setup(resources, build_vcpu_setup_config)?;
+
+        Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
+    })
 }
 
 fn loongarch_device_order(

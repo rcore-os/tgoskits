@@ -5,7 +5,7 @@ mod its;
 mod phandle;
 mod plic;
 
-use axvm_types::EmulatedDeviceType;
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) use gic::host_gic_maintenance_intid;
 pub(crate) use gic::host_gic_profile;
@@ -36,38 +36,45 @@ pub(crate) fn install_machine_interrupt_controller(
         Some(profile) => profile,
         None => {
             let machine = crate::machine::current_machine_profile(cpu_num);
-            let distributor = machine
-                .emulated_devices
-                .iter()
-                .find(|device| device.emu_type == EmulatedDeviceType::InterruptController);
-            let per_cpu = machine
-                .emulated_devices
-                .iter()
-                .find(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion);
-            let (Some(distributor), Some(per_cpu)) = (distributor, per_cpu) else {
+            let Some(profile) = fallback_gic_profile(&machine.emulated_devices) else {
                 return Ok(());
             };
-            fallback = GuestGicProfile {
-                compatible: "arm,gic-v3".into(),
-                node_path: alloc::string::String::new(),
-                node_phandle: None,
-                distributor: GuestMmioRegion {
-                    base: distributor.base_gpa,
-                    length: distributor.length,
-                },
-                cpu_region: GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
-                    regions: alloc::vec![GuestMmioRegion {
-                        base: per_cpu.base_gpa,
-                        length: per_cpu.length,
-                    }],
-                    stride: AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE,
-                }),
-                its: alloc::vec![],
-            };
+            fallback = profile;
             &fallback
         }
     };
     gic::install_registers(tree, profile)
+}
+
+fn fallback_gic_profile(devices: &[EmulatedDeviceConfig]) -> Option<GuestGicProfile> {
+    let distributor = devices
+        .iter()
+        .find(|device| device.emu_type == EmulatedDeviceType::InterruptController)?;
+    let regions = devices
+        .iter()
+        .filter(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
+        .map(|device| GuestMmioRegion {
+            base: device.base_gpa,
+            length: device.length,
+        })
+        .collect::<alloc::vec::Vec<_>>();
+    if regions.is_empty() {
+        return None;
+    }
+    Some(GuestGicProfile {
+        compatible: "arm,gic-v3".into(),
+        node_path: alloc::string::String::new(),
+        node_phandle: None,
+        distributor: GuestMmioRegion {
+            base: distributor.base_gpa,
+            length: distributor.length,
+        },
+        cpu_region: GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
+            regions,
+            stride: AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE,
+        }),
+        its: alloc::vec![],
+    })
 }
 
 #[cfg(test)]

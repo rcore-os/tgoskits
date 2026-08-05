@@ -6,7 +6,8 @@ use raw_cpuid::CpuId;
 
 use crate::{
     X86_LOCAL_APIC_GPA, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86NestedPagingConfig,
-    X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit,
+    X86PortIoStringExit, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig,
+    X86VmExit,
     svm::{SvmPerCpuState, SvmVcpu},
     vmx::{VmxPerCpuState, VmxVcpu},
 };
@@ -221,6 +222,15 @@ impl<H: X86HostOps> X86Vcpu<H> {
     /// Set one guest general-purpose register.
     pub fn set_gpr(&mut self, reg: usize, value: usize) {
         dispatch_vcpu!(self, set_gpr, reg, value)
+    }
+
+    /// Commits one string-I/O element after the VMM completed its memory and device access.
+    ///
+    /// # Errors
+    ///
+    /// Propagates backend state-write failures.
+    pub fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> X86VcpuResult {
+        dispatch_vcpu!(self, complete_port_io_string, exit)
     }
 
     /// Queue an edge-triggered interrupt for the guest.

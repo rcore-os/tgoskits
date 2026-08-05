@@ -10,7 +10,7 @@ use alloc::{
 use core::fmt;
 
 use ax_kspin::SpinRaw;
-use axdevice_base::{ControllerInputId, InterruptControllerId};
+use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId};
 
 use super::{ResolvedMsi, ResolvedWiredIrq, ResourceSlot, resolved::ResolvedResource};
 use crate::{DeviceManagerError, DeviceManagerResult};
@@ -168,6 +168,18 @@ impl ResourceClaimDomain {
                 _ => None,
             })
     }
+
+    pub(super) fn owner_of_host_irq(&self, irq: HostIrqId) -> Option<String> {
+        self.records
+            .lock()
+            .iter()
+            .find_map(|(key, record)| match record.resource {
+                ResolvedResource::HostIrq(existing) if existing == irq => {
+                    Some(key.device_id.clone())
+                }
+                _ => None,
+            })
+    }
 }
 
 /// The one-shot claims issued for one planned device.
@@ -195,6 +207,13 @@ impl ResourceClaimSet {
         match &self.claim(slot)?.resource {
             ResolvedResource::WiredIrq(irq) => Ok(*irq),
             _ => Err(claim_kind_error(self.claim(slot)?, "wired IRQ")),
+        }
+    }
+
+    pub(crate) fn host_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
+        match &self.claim(slot)?.resource {
+            ResolvedResource::HostIrq(irq) => Ok(*irq),
+            _ => Err(claim_kind_error(self.claim(slot)?, "host IRQ")),
         }
     }
 
@@ -327,6 +346,14 @@ impl ResourceLease {
         match &self.resource {
             ResolvedResource::WiredIrq(irq) => Ok(*irq),
             _ => Err(lease_kind_error(&self.key, "wired IRQ")),
+        }
+    }
+
+    /// Returns the leased host physical interrupt.
+    pub fn host_irq(&self) -> DeviceManagerResult<HostIrqId> {
+        match &self.resource {
+            ResolvedResource::HostIrq(irq) => Ok(*irq),
+            _ => Err(lease_kind_error(&self.key, "host IRQ")),
         }
     }
 

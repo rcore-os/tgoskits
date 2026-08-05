@@ -3,8 +3,9 @@
 use std::{format, string::String, sync::Arc, vec, vec::Vec};
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, ResourceSlot,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory, DeviceFactoryRegistry,
+    DeviceManagerError, DeviceManagerResult, DeviceRegistration, DeviceRequirements,
+    ResourceRequest, ResourceSlot,
 };
 use axdevice_base::{AccessWidth, DeviceError};
 use axvm_types::{AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType};
@@ -248,6 +249,40 @@ struct SharedProviderFactory {
 impl DeviceFactory for SharedProviderFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::SharedMmio
+    }
+
+    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+        let [index, provider_phandle] = config.cfg_list.as_slice() else {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "declare shared MMIO provider",
+                detail: String::from("internal provider fingerprint is malformed"),
+            });
+        };
+        let plan = self
+            .plans
+            .get(*index)
+            .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                operation: "declare shared MMIO provider",
+                detail: format!("provider plan index {index} is out of range"),
+            })?;
+        let expected = plan.device_config(*index);
+        if config != &expected || *provider_phandle != plan.provider_phandle as usize {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "declare shared MMIO provider",
+                detail: format!(
+                    "configuration does not match provider {:#x} plan",
+                    plan.provider_phandle
+                ),
+            });
+        }
+        DeviceRequirements::new()
+            .with_mmio(
+                ResourceSlot::new("registers")?,
+                plan.region.length as u64,
+                1,
+                ResourceRequest::Fixed(plan.region.base as u64),
+            )
+            .map(DeviceDeclaration::with_requirements)
     }
 
     fn build(

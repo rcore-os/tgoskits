@@ -1,10 +1,12 @@
-# AArch64 VGIC and virtual-device resource topology
+# AArch64 VGIC on the resolved device graph
 
 Status: implementation baseline for PR #1718 rewrite
 
 ## Scope and references
 
-This design covers deterministic virtual-device resources and the non-secure
+The shared graph, factory, allocation, claim, runtime, and firmware contracts
+are defined in `axvisor-resolved-device-graph.md`. This document applies those
+contracts to the non-secure
 Group 1 interrupt paths used by ordinary Linux and ArceOS guests: GICv2,
 GICv3, ITS/LPI, software wired/MSI delivery, and preconfigured physical SPI
 backing. Secure Group 0/Group 1S, GICv3.1 ESPI, GICv4/vPE, nested
@@ -13,7 +15,7 @@ virtualization, and an external live-migration format are out of scope.
 The semantic references are Arm IHI 0048 (GICv2), Arm IHI 0069 (GICv3),
 Linux v7.1 KVM VGIC documentation, and QEMU 10.1.0. Pull request #1612 is
 prior art rather than code to merge. This rewrite keeps its useful
-model-to-plan-to-claim-to-bundle direction while retaining the current
+graph-to-plan-to-claim-to-bundle direction while retaining the current
 `DeviceRuntime`, typed services and grants, lifecycle, timer, LR, and physical
 SPI implementations from `dev`.
 
@@ -26,7 +28,7 @@ axdevice_base
   typed interrupt IDs, IrqLine, controller capability traits
         ^
 axdevice
-  model requirements, resource plan, claims, bundle registrations
+  device graph, factory declarations, resource plan, claims, bundles
         ^
 axvm arch::{aarch64,riscv64,x86_64,loongarch64}::vm
   independent construction and registration order
@@ -40,9 +42,10 @@ AArch64 registers the VGIC before ordinary IRQ devices; RISC-V retains PLIC
 hart/context setup; x86 retains LAPIC/IOAPIC/PIT and APIC-access ordering;
 LoongArch retains IOCSR and EXTIOI/PCH-PIC cascading.
 
-Resource code is split by owned invariant. Address, wired IRQ, MSI, claim
+Resource code is split by owned invariant. Graph topology, address, wired IRQ, MSI, claim
 lifecycle, and immutable resolved data are separate modules. `ResourcePools`
-contains three small sub-pools instead of one structure containing every map.
+composes focused address, wired IRQ, host IRQ, and MSI sub-pools instead of one
+structure containing every map.
 The AArch64 plan follows the same rule: firmware identity, VGIC layout, and
 device resources are composed values, not fields accumulated in one large
 mutable VM structure.
@@ -90,13 +93,14 @@ physical SPI quiesce/drain/deactivate implementations remain authoritative.
 
 Namespaces are explicit. MMIO, PIO, `(controller, input)`,
 `(controller, ITS, DeviceID, EventID)`, controller-global LPI, and host IRQ
-identities never compare as untyped integers. Models declare named slots;
+identities never compare as untyped integers. The exact factory stored in each
+graph node declares named slots;
 architecture code supplies automatic pools, fixed allowlists, and internal
 reservations.
 
 Planning is deterministic:
 
-1. validate model requirements and architecture pools;
+1. validate graph topology, factory requirements, and architecture pools;
 2. copy architecture/controller reservations into local allocation state;
 3. reserve fixed requests in stable device-ID and slot order;
 4. allocate automatic requests in the same stable order;
@@ -147,9 +151,10 @@ code to register controller bundles before sealing.
 
 ## AArch64 immutable plan and firmware
 
-AArch64 produces one immutable `Aarch64VmPlan` before final guest FDT
-serialization. It composes resolved device resources, firmware identity, and
-a complete `ArmVgicConfig`. Device construction consumes that plan and must
+AArch64 produces an immutable plan composed from a `VmDevicePlan`, firmware
+snapshot, and complete `ArmVgicConfig` before final guest FDT serialization.
+The firmware snapshot includes GIC, serial, timer, and node identity facts.
+Device construction consumes that plan and must
 not probe again, allocate again, or reconstruct configuration by downcasting
 a registered GIC frontend.
 

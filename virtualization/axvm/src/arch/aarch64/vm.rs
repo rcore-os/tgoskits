@@ -3,13 +3,9 @@
 use std::{sync::Arc, vec::Vec};
 
 use arm_vcpu::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig};
-use axdevice::DeviceFactoryRegistry;
 use axvm_types::NestedPagingConfig;
 
-use super::{
-    Aarch64Arch, Aarch64VmPlan, npt,
-    vgic::{self, Aarch64VgicRuntime},
-};
+use super::{Aarch64Arch, Aarch64VmPlan, npt, vgic::Aarch64VgicRuntimeKey};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
@@ -17,9 +13,9 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
+            complete_vm_init,
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -28,7 +24,10 @@ use crate::{
 };
 
 impl Aarch64Arch {
-    pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
+    pub(crate) fn create_vm_resources(
+        config: AxVMConfig,
+        _fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
+    ) -> AxVmResult<AxVMResources> {
         let device_plan = Aarch64VmPlan::new(&config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
@@ -38,90 +37,62 @@ impl Aarch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let mut factories = default_device_factories(vm)?;
-                let bootstrap = register_device_factories(vm, &mut factories)?;
-                init_vm_with(vm, &factories, bootstrap)
-            }
-            VmInitRequest::Provided { factories } => {
-                let bootstrap = register_device_factories(vm, factories)?;
-                init_vm_with(vm, factories, bootstrap)
-            }
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        init_vm_with(vm)
     }
 }
 
-fn register_device_factories(
-    vm: &AxVM,
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult<Arc<Aarch64VgicRuntime>> {
-    vm.with_architecture_plan(|plan| {
-        plan.shared_providers().register_factory(factories)?;
-        vgic::register_device_factories(vm, plan.vgic(), factories)
+fn init_vm_with(vm: &AxVM) -> AxVmResult {
+    complete_vm_init(vm, |resources| {
+        let vcpu_mappings = resources
+            .config()
+            .phys_cpu_ls
+            .get_vcpu_affinities_pcpu_ids();
+        let placements = vcpu_placements(resources);
+        let timer_profile = resources.config().timer_profile().cloned().ok_or_else(|| {
+            AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
+        })?;
+        let timer_config = timer_vm_config(&timer_profile, &vcpu_mappings)?;
+        let host_irq_config = super::gic::host_irq_config()
+            .map_err(|error| AxVmError::interrupt("discover host IRQ CPU interface", error))?;
+        let dtb_addr = resources
+            .config()
+            .image_config()
+            .dtb_load_gpa
+            .unwrap_or_default();
+        let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+            Ok(ArmVcpuCreateConfig {
+                mpidr_el1: placement.phys_cpu_id as _,
+                dtb_addr: dtb_addr.as_usize(),
+            })
+        })?;
+        let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+        let vgic_runtime = devices
+            .devices()
+            .services()
+            .require::<Aarch64VgicRuntimeKey>()?;
+        for vcpu in &vcpus {
+            let binding = vgic_runtime
+                .attach_vcpu(vcpu.id(), &timer_profile)
+                .map_err(|error| {
+                    crate::AxVmError::interrupt("attach vCPU to virtual GIC", error)
+                })?;
+            vcpu.get_arch_vcpu()
+                .attach_vgic(vgic_runtime.core().clone(), binding, timer_config)?;
+        }
+
+        validate_guest_dtb(resources)?;
+
+        let owned_regions = guest_owned_regions(resources);
+        map_guest_address_space(vm, resources, &owned_regions)?;
+        vcpus.setup(resources, move |_config, _memory_regions| {
+            Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
+        })?;
+
+        let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> =
+            vgic_runtime.core().clone();
+        Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
     })
-}
-
-fn init_vm_with(
-    vm: &AxVM,
-    factories: &DeviceFactoryRegistry,
-    vgic_runtime: Arc<Aarch64VgicRuntime>,
-) -> AxVmResult {
-    let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> =
-        vgic_runtime.core().clone();
-    complete_vm_init(
-        vm,
-        interrupt_controller,
-        |resources, _interrupt_controller| {
-            let vcpu_mappings = resources
-                .config()
-                .phys_cpu_ls
-                .get_vcpu_affinities_pcpu_ids();
-            let placements = vcpu_placements(resources);
-            let timer_profile = resources.config().timer_profile().cloned().ok_or_else(|| {
-                AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
-            })?;
-            let timer_config = timer_vm_config(&timer_profile, &vcpu_mappings)?;
-            let host_irq_config = super::gic::host_irq_config()
-                .map_err(|error| AxVmError::interrupt("discover host IRQ CPU interface", error))?;
-            let dtb_addr = resources
-                .config()
-                .image_config()
-                .dtb_load_gpa
-                .unwrap_or_default();
-            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
-                Ok(ArmVcpuCreateConfig {
-                    mpidr_el1: placement.phys_cpu_id as _,
-                    dtb_addr: dtb_addr.as_usize(),
-                })
-            })?;
-            for vcpu in &vcpus {
-                let binding = vgic_runtime
-                    .attach_vcpu(vcpu.id(), &timer_profile)
-                    .map_err(|error| {
-                        crate::AxVmError::interrupt("attach vCPU to virtual GIC", error)
-                    })?;
-                vcpu.get_arch_vcpu().attach_vgic(
-                    vgic_runtime.core().clone(),
-                    binding,
-                    timer_config,
-                )?;
-            }
-
-            let devices =
-                PreparedDevices::build_planned(resources, factories, vm.device_access_ports())?;
-            validate_guest_dtb(resources)?;
-
-            let owned_regions = guest_owned_regions(resources);
-            map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
-            vcpus.setup(resources, move |_config, _memory_regions| {
-                Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
-            })?;
-
-            Ok(PreparedVm::new(vcpus, devices))
-        },
-    )
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {

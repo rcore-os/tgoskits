@@ -4,11 +4,11 @@ use alloc::{format, string::String, vec::Vec};
 use core::fmt;
 
 use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId, LpiId,
-    MsiDeviceId, MsiEventId,
+    ControllerInputId, HostIrqId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId,
+    LpiId, MsiDeviceId, MsiEventId,
 };
 
-use crate::{DeviceManagerError, DeviceManagerResult, DeviceModelFingerprint};
+use crate::{DeviceManagerError, DeviceManagerResult};
 
 /// A model-defined resource name such as `registers` or `irq`.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -147,6 +147,13 @@ pub enum DeviceRequirement {
         /// Controller-local input request.
         request: ResourceRequest<ControllerInputId>,
     },
+    /// One physical interrupt source owned by a passthrough or replacement path.
+    HostIrq {
+        /// Model-defined slot.
+        slot: ResourceSlot,
+        /// Host interrupt request.
+        request: ResourceRequest<HostIrqId>,
+    },
     /// One contiguous MSI event/LPI range in an ITS namespace.
     Msi {
         /// Model-defined slot.
@@ -163,6 +170,7 @@ impl DeviceRequirement {
             Self::Mmio { slot, .. }
             | Self::Pio { slot, .. }
             | Self::WiredIrq { slot, .. }
+            | Self::HostIrq { slot, .. }
             | Self::Msi { slot, .. } => slot,
         }
     }
@@ -172,6 +180,7 @@ impl DeviceRequirement {
             Self::Mmio { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::Pio { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::WiredIrq { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
+            Self::HostIrq { request, .. } => matches!(request, ResourceRequest::Fixed(_)),
             Self::Msi { request, .. } => {
                 matches!(request.device, ResourceRequest::Fixed(_))
                     || matches!(request.event, ResourceRequest::Fixed(_))
@@ -262,6 +271,16 @@ impl DeviceRequirements {
         Ok(self)
     }
 
+    /// Adds one host physical interrupt requirement.
+    pub fn with_host_irq(
+        mut self,
+        slot: ResourceSlot,
+        request: ResourceRequest<HostIrqId>,
+    ) -> DeviceManagerResult<Self> {
+        self.insert(DeviceRequirement::HostIrq { slot, request })?;
+        Ok(self)
+    }
+
     /// Adds one contiguous MSI event/LPI range requirement.
     pub fn with_msi(
         mut self,
@@ -298,7 +317,6 @@ impl DeviceRequirements {
 pub struct DevicePlanRequest {
     id: String,
     requirements: DeviceRequirements,
-    model_fingerprint: DeviceModelFingerprint,
 }
 
 impl DevicePlanRequest {
@@ -307,23 +325,9 @@ impl DevicePlanRequest {
         id: impl Into<String>,
         requirements: DeviceRequirements,
     ) -> DeviceManagerResult<Self> {
-        let model_fingerprint = DeviceModelFingerprint::for_requirements(&requirements);
         Ok(Self {
             id: validate_identifier("create planned device identifier", id.into())?,
             requirements,
-            model_fingerprint,
-        })
-    }
-
-    pub(crate) fn for_model(
-        id: impl Into<String>,
-        requirements: DeviceRequirements,
-        model_fingerprint: DeviceModelFingerprint,
-    ) -> DeviceManagerResult<Self> {
-        Ok(Self {
-            id: validate_identifier("create planned device identifier", id.into())?,
-            requirements,
-            model_fingerprint,
         })
     }
 
@@ -336,18 +340,13 @@ impl DevicePlanRequest {
     pub const fn requirements(&self) -> &DeviceRequirements {
         &self.requirements
     }
-
-    /// Returns the model/configuration identity captured before allocation.
-    pub const fn model_fingerprint(&self) -> DeviceModelFingerprint {
-        self.model_fingerprint
-    }
 }
 
 fn validate_identifier(operation: &'static str, value: String) -> DeviceManagerResult<String> {
     let valid = !value.is_empty()
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@'));
     if !valid {
         return Err(DeviceManagerError::InvalidInput {
             operation,

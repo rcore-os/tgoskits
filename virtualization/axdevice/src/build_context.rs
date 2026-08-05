@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use axdevice_base::{IrqLine, MsiEndpoint, VirtualInterruptController};
+use axdevice_base::{HostIrqId, IrqLine, MsiEndpoint, VirtualInterruptController};
 
 use crate::{
     DeviceBundle, DeviceManagerError, DeviceManagerResult, ResolvedMsi, ResourceClaimSet,
@@ -43,6 +43,10 @@ impl<'a> DeviceBuildContext<'a> {
         }
     }
 
+    pub(crate) const fn uses_planned_resources(&self) -> bool {
+        matches!(&self.resources, BuildResources::Planned(_))
+    }
+
     /// Returns the VM's canonical virtual interrupt controller.
     pub fn interrupt_controller(&self) -> DeviceManagerResult<&dyn VirtualInterruptController> {
         match &self.resources {
@@ -79,6 +83,18 @@ impl<'a> DeviceBuildContext<'a> {
     pub fn pio(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
         let planned = self.planned_mut("resolve planned port-I/O resource")?;
         let resource = planned.claims.pio(slot)?;
+        let lease = planned.claims.consume(slot)?;
+        planned.retained.leases.push(lease);
+        Ok(resource)
+    }
+
+    /// Consumes a planned host physical IRQ slot.
+    ///
+    /// This returns only the immutable identity. Architecture code remains
+    /// responsible for claiming and programming its physical IRQ backend.
+    pub fn host_irq(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
+        let planned = self.planned_mut("resolve planned host IRQ")?;
+        let resource = planned.claims.host_irq(slot)?;
         let lease = planned.claims.consume(slot)?;
         planned.retained.leases.push(lease);
         Ok(resource)

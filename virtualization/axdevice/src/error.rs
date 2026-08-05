@@ -4,7 +4,7 @@ use alloc::string::String;
 
 use axdevice_base::{AccessWidth, BusKind, DeviceError, IrqError, RegistryError};
 
-use crate::{DeviceModelError, InterruptRegistrationError};
+use crate::{DeviceGraphError, InterruptRegistrationError};
 
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
@@ -101,9 +101,12 @@ pub enum DeviceManagerError {
     /// Interrupt-controller or endpoint registration failed.
     #[error(transparent)]
     InterruptRegistration(#[from] InterruptRegistrationError),
-    /// Device-model selection or fingerprint validation failed.
+    /// Device graph declaration or dependency validation failed.
     #[error(transparent)]
-    DeviceModel(#[from] DeviceModelError),
+    DeviceGraph(#[from] DeviceGraphError),
+    /// Deterministic VM resource allocation failed.
+    #[error(transparent)]
+    ResourcePlanning(#[from] crate::ResourcePlanningError),
 }
 
 impl From<DeviceManagerError> for DeviceError {
@@ -150,8 +153,12 @@ impl From<DeviceManagerError> for DeviceError {
                 operation: "register interrupt capability",
                 detail: alloc::format!("{error}"),
             },
-            DeviceManagerError::DeviceModel(error) => Self::InvalidInput {
-                operation: "validate device resource model",
+            DeviceManagerError::DeviceGraph(error) => Self::InvalidInput {
+                operation: "resolve device graph",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::ResourcePlanning(error) => Self::InvalidInput {
+                operation: "plan device resources",
                 detail: alloc::format!("{error}"),
             },
         }
