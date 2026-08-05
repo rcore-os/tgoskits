@@ -36,7 +36,7 @@
 | 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 保持冻结，不按后续实体结果修改模型 |
 | RK3588 NPU | clean resource run 已完成 20 次 context 生命周期；`c3f01dc34` 上的闭环 v8 已完成 5 次冷启动 full、9,000/9,000 ACK、自动 Linux 恢复、独立分析和递归 checksum，已汇入报告 | 同时展示首周期 5 次 miss 与其后 8,995 个零 miss 周期；除非改变启动语义，否则不重跑冻结结果 |
 | ONNX Runtime CPU | 离线门与 smoke 已通过；clean commit `0110647de` 的 v4 正式活动完成 5 次冷启动 full、9,000/9,000 ACK、独立重聚合和递归 checksum，formal gate 为 true | 冻结 v4；在最终报告中明确它是 `CPUExecutionProvider` 对照而非 NPU |
-| 报告与视频 | 正式数据已冻结，五份交付文档和入口 README 已同步收口；实际视频尚未录制 | 录制约 5 分钟演示并在获授权后准备目标分支 PR |
+| 报告与视频 | 正式数据已冻结，五份交付文档和入口 README 已同步收口；上游草稿 [PR #1889](https://github.com/rcore-os/tgoskits/pull/1889) 已创建，实际视频尚未录制 | 录制约 5 分钟演示，并跟进 PR 的 CI 与评审意见 |
 
 当前执行顺序固定为：
 
@@ -46,7 +46,7 @@ E0 工作区与证据冻结（完成）
   -> E2 StarryOS manual/neural 正式 5 对（完成）
   -> E3 同源 ONNX 与 RKNN NPU 主路线（完成）
   -> E4 ONNX Runtime CPU 对照路线（完成）
-  -> E5 总体验收、报告和视频（文档完成；视频/PR 待完成）
+  -> E5 总体验收、报告和视频（文档与草稿 PR 完成；视频待完成）
 ```
 
 E0-E2 的正式证据已冻结，不因 M4 结果调整阈值或重跑成功 half。E3/E4 可以共享同一 ONNX 与 golden corpus，但 RKNN 工具链、ORT 工具链和板端 Runtime 必须分别锁定，不能用 host 成功替代实体 StarryOS 结果。
@@ -496,5 +496,5 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 ## 11. 最近三项动作
 
 1. 按 `video-storyboard.md` 录制约 5 分钟演示，画面同时保留 clean source、backend 身份、formal summary/checksum 和 Linux 恢复证据。
-2. 对最终交付 commit 再执行链接、JSON、递归 checksum 与 clean-worktree 审核；冻结的 RKNN/ORT campaign 不因文档或录制重跑。
-3. 获得提交权限后检查目标 `dev` 无冲突，推送正式分支并按项目格式提交 PR；PR 不宣称尚未生成的视频文件。
+2. 跟进 [PR #1889](https://github.com/rcore-os/tgoskits/pull/1889) 的 CI 与评审意见；冻结的 RKNN/ORT campaign 不因文档、评审或录制重跑。
+3. 视频完成后补充最终演示链接和交付说明，继续明确区分已提交的冻结证据与后续录制产物。
