@@ -1,0 +1,69 @@
+# Fixed OVMF entry diagnostics: boot a nested OVMF CODE image through Axvisor.
+#
+# `image_location = "fs"` with the `/guest/ovmf/OVMF_CODE.fd` paths is the
+# checked-in fallback used when no `--firmware-bundle-path` is supplied: the
+# file is absent from the Axvisor rootfs, so the VM fails to initialize with a
+# clear error instead of silently booting a distro OVMF.
+#
+# When `--firmware-bundle-path` is passed, the axbuild runner rewrites this
+# template into a per-run VM config with `image_location = "memory"` and
+# `kernel_path`/`uefi_firmware_path` pointing at the manifest-verified CODE
+# file, which `os/axvisor/build.rs` embeds with `include_bytes!`. The same
+# verified CODE is injected as the QEMU-layer pflash (unit 0) so the host
+# Axvisor binary can be loaded by QEMU `-kernel` at all; both firmware layers
+# use the identical verified file.
+#
+# The layout below is the fixed `qemu_x86_64_axvisor_ovmf_debug` profile:
+# CODE at 0xffc8_4000 (size 0x37c000, reset vector 0xffff_fff0), VARS window
+# at 0xffc0_0000, covered by the 4 MiB memory region below.
+#
+[base]
+# Guest vm id.
+id = 1
+# Guest vm name.
+name = "ovmf-entry"
+# Virtualization type.
+guest_type = "passthrough"
+# The number of virtual CPUs.
+cpu_num = 1
+# Guest vm physical cpu sets.
+phys_cpu_sets = [1]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the UEFI firmware reset vector.
+entry_point = 0xffff_fff0
+# The location of image: "memory" | "fs".
+image_location = "fs"
+# The file path of the UEFI firmware CODE image.
+kernel_path = "/guest/ovmf/OVMF_CODE.fd"
+# The load address of the guest image.
+kernel_load_addr = 0x20_0000
+# Enable external firmware image loading.
+enable_bios = true
+# Select UEFI firmware flow instead of the legacy axvm-bios multiboot trampoline.
+boot_protocol = "uefi"
+# The file path of the UEFI firmware image, for example OVMF_CODE.fd.
+uefi_firmware_path = "/guest/ovmf/OVMF_CODE.fd"
+# Fixed OVMF CODE layout enforced by the axvm x86_64 loader.
+bios_load_addr = 0xffc8_4000
+# The fixed firmware profile matching the verified OVMF bundle.
+firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+memory_regions = [
+  [0x0000_0000, 0x100_0000, 0x7, 0], # Low RAM 16M 0b111 R|W|EXECUTE
+  [0xffc0_0000, 0x40_0000, 0x7, 0], # UEFI firmware window 4M (VARS + CODE)
+]
+
+#
+# Device specifications
+#
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+disabled = []

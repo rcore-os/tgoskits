@@ -1,0 +1,50 @@
+# QEMU (-kernel) boots the Axvisor host. The host binary is a PE32+ UEFI image,
+# so QEMU needs OVMF pflash drives to load it via `-kernel`; the axbuild runner
+# injects the verified `--firmware-bundle-path` CODE/VARS as pflash drives when
+# this case runs, and fails fast without the flag. `uefi = false` keeps ostool
+# from downloading its own OVMF. The nested OVMF is loaded by Axvisor itself
+# from the VM config (`ovmf-entry.toml`), byte-identical to the injected CODE.
+args = [
+  "-no-user-config",
+  "-display",
+  "none",
+  "-serial",
+  "stdio",
+  "-monitor",
+  "none",
+  "-cpu",
+  "host,-la57,+svm,+npt,+nrip-save",
+  "-machine",
+  "q35,smbus=off,usb=off,graphics=off",
+  "-smp",
+  "1",
+  "-accel",
+  "kvm",
+  # The nvme disk is load-bearing for the HOST: the Axvisor host enables
+  # `features = ["fs"]` (axvm/host-fs) and mounts its rootfs at boot, so
+  # without a block device the host panics in init_root. The nested OVMF
+  # guest never touches the disk (it only needs the UEFI SEC marker); the
+  # wrapper therefore needs no ax-driver/nvme feature for the guest.
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65,addr=03.0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-m",
+  "512M",
+  "-net",
+  "none",
+  "-vga",
+  "none",
+]
+timeout = 300
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)failed to initialize guest vm",
+]
+# The fixed OVMF SEC marker printed by the nested firmware on guest COM1.
+success_regex = [
+  "SecCoreStartupWithStack\\(",
+]
+to_bin = true
+uefi = false
