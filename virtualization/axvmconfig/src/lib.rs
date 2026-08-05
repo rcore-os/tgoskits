@@ -283,6 +283,14 @@ pub struct VMKernelConfig {
     /// The file path of the UEFI firmware image, `None` if not used.
     #[serde(default)]
     pub uefi_firmware_path: Option<String>,
+    /// Fixed firmware profile for the x86 loader, `None` if not used.
+    ///
+    /// When set to `"qemu_x86_64_axvisor_ovmf_debug"`, the axvm x86_64 loader
+    /// enforces the fixed OVMF CODE layout (code size, load GPA, and reset
+    /// vector) while loading UEFI firmware for this guest. Any other value, or
+    /// `None`, leaves the loader behavior unchanged.
+    #[serde(default)]
+    pub firmware_profile: Option<String>,
     /// The load address of the BIOS image, `None` if not used.
     pub bios_load_addr: Option<usize>,
     /// The file path of the device tree blob (DTB), `None` if not used.
@@ -341,6 +349,14 @@ impl VMKernelConfig {
     }
 
     fn validate_boot_config_for_arch(&self, arch: &str) -> AxVmConfigResult {
+        if let Some(profile) = self.firmware_profile.as_deref()
+            && self.effective_boot_protocol() != VMBootProtocol::Uefi
+        {
+            return Err(AxVmConfigError::FirmwareProfileRequiresUefi {
+                profile: profile.into(),
+            });
+        }
+
         let protocol = self.effective_boot_protocol();
         if !self.enable_bios {
             if protocol != VMBootProtocol::Direct {

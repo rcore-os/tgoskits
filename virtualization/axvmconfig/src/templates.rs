@@ -75,6 +75,7 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
             boot_protocol: None,
             bios_path: None, // BIOS not used in most configurations
             uefi_firmware_path: None,
+            firmware_profile: None, // No fixed firmware layout by default
             bios_load_addr: None,
             dtb_path: None, // Device tree not specified by default
             dtb_load_addr: None,

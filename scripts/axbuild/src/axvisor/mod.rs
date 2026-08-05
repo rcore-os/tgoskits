@@ -13,6 +13,7 @@ use crate::context::{
 pub mod board;
 pub mod build;
 pub mod config;
+pub mod ovmf;
 pub mod rootfs;
 pub mod test;
 
@@ -156,6 +157,19 @@ pub struct ArgsTestQemu {
     pub test_case: Option<String>,
     #[arg(short = 'l', long, help = "List discovered Axvisor QEMU test cases")]
     pub list: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Path to a verified OVMF firmware bundle directory (must contain manifest.toml) or \
+                an unverified local firmware file (requires --allow-unverified-firmware)"
+    )]
+    pub firmware_bundle_path: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Accept an unverified local firmware file; its SHA-256 is printed for reference \
+                and it must not determine UEFI test results"
+    )]
+    pub allow_unverified_firmware: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -564,6 +578,42 @@ mod tests {
                     assert_eq!(args.arch.as_deref(), Some("aarch64"));
                     assert_eq!(args.test_group.as_deref(), Some("normal"));
                     assert_eq!(args.test_case.as_deref(), Some("smoke"));
+                }
+                _ => panic!("expected qemu test command"),
+            },
+            _ => panic!("expected test command"),
+        }
+    }
+
+    #[test]
+    fn command_parses_test_qemu_firmware_flags() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli = Cli::try_parse_from([
+            "axvisor",
+            "test",
+            "qemu",
+            "--arch",
+            "x86_64",
+            "--firmware-bundle-path",
+            "ovmf-bundle",
+            "--allow-unverified-firmware",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Test(args) => match args.command {
+                TestCommand::Qemu(args) => {
+                    assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                    assert_eq!(
+                        args.firmware_bundle_path,
+                        Some(PathBuf::from("ovmf-bundle"))
+                    );
+                    assert!(args.allow_unverified_firmware);
                 }
                 _ => panic!("expected qemu test command"),
             },

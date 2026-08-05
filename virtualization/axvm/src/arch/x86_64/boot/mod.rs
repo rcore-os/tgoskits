@@ -217,6 +217,12 @@ fn load_boot_image_from_memory(loader: &ImageLoaderCore<'_>, bios: Option<&[u8]>
         let load_gpa = loader
             .bios_load_gpa
             .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
+        if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi
+            && fixed_ovmf_profile_enabled(&loader.config)
+        {
+            validate_fixed_ovmf_layout(bios.len(), load_gpa, loader.config.kernel.entry_point)?;
+            log_fixed_ovmf_load(None, bios.len(), load_gpa);
+        }
         load_vm_image_from_memory(bios, load_gpa, loader.vm.clone())?;
         if should_patch_multiboot_info(&loader.config) {
             load_multiboot_info(loader, bios, load_gpa)?;
@@ -244,6 +250,11 @@ fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxVmResult {
         let load_gpa = loader
             .bios_load_gpa
             .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
+        if fixed_ovmf_profile_enabled(&loader.config) {
+            let code_size = crate::boot::images::fs::image_size(path, loader.provider)?;
+            validate_fixed_ovmf_layout(code_size, load_gpa, loader.config.kernel.entry_point)?;
+            log_fixed_ovmf_load(Some(path), code_size, load_gpa);
+        }
         if should_patch_multiboot_info(&loader.config) {
             let bios = crate::boot::images::fs::read_full_image(path, loader.provider)?;
             validate_bios_patch_region(&bios)?;
@@ -275,6 +286,17 @@ fn load_uefi_from_configured_path(loader: &ImageLoaderCore<'_>) -> AxVmResult {
     let load_gpa = loader
         .bios_load_gpa
         .ok_or_else(|| ax_err_type!(NotFound, "UEFI firmware load addr is missed"))?;
+    if fixed_ovmf_profile_enabled(&loader.config) {
+        #[cfg(any(feature = "fs", feature = "host-fs"))]
+        let code_size = crate::boot::images::fs::image_size(path, loader.provider)?;
+        #[cfg(not(any(feature = "fs", feature = "host-fs")))]
+        let code_size = {
+            let _ = path;
+            0
+        };
+        validate_fixed_ovmf_layout(code_size, load_gpa, loader.config.kernel.entry_point)?;
+        log_fixed_ovmf_load(Some(path), code_size, load_gpa);
+    }
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     {
         crate::boot::images::fs::load_vm_image(path, load_gpa, loader.vm.clone(), loader.provider)
@@ -651,6 +673,74 @@ fn validate_bios_patch_region(bios: &[u8]) -> AxVmResult {
     Ok(())
 }
 
+/// The fixed OVMF CODE layout enforced for the `qemu_x86_64_axvisor_ovmf_debug`
+/// firmware profile.
+///
+/// The values match the bundled OVMF CODE image: it must be loaded as a whole
+/// at [`FIXED_OVMF_CODE_GPA`], and its reset vector entry point must be
+/// [`FIXED_OVMF_RESET_VECTOR`].
+const FIXED_OVMF_PROFILE: &str = "qemu_x86_64_axvisor_ovmf_debug";
+const FIXED_OVMF_CODE_GPA: usize = 0xffc8_4000;
+const FIXED_OVMF_CODE_SIZE: usize = 0x37_c000;
+const FIXED_OVMF_RESET_VECTOR: usize = 0xffff_fff0;
+
+/// Whether the guest config declares the fixed OVMF CODE layout profile.
+fn fixed_ovmf_profile_enabled(config: &axvmconfig::GuestConfig) -> bool {
+    config.kernel.firmware_profile.as_deref() == Some(FIXED_OVMF_PROFILE)
+}
+
+/// Validate the UEFI firmware layout against the fixed OVMF CODE profile.
+///
+/// The code size, firmware load GPA, and reset-vector entry point must match
+/// the fixed OVMF CODE layout exactly.
+fn validate_fixed_ovmf_layout(
+    code_size: usize,
+    load_gpa: GuestPhysAddr,
+    entry_point: usize,
+) -> AxVmResult {
+    if code_size != FIXED_OVMF_CODE_SIZE {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "fixed OVMF CODE size must be {:#x}, but the firmware image size is {code_size:#x}",
+                FIXED_OVMF_CODE_SIZE
+            )
+        ));
+    }
+    if load_gpa.as_usize() != FIXED_OVMF_CODE_GPA {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "fixed OVMF CODE must be loaded at GPA {:#x}, but bios_load_addr is {:#x}",
+                FIXED_OVMF_CODE_GPA,
+                load_gpa.as_usize()
+            )
+        ));
+    }
+    if entry_point != FIXED_OVMF_RESET_VECTOR {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "fixed OVMF CODE reset vector must be {:#x}, but the entry point is \
+                 {entry_point:#x}",
+                FIXED_OVMF_RESET_VECTOR
+            )
+        ));
+    }
+    Ok(())
+}
+
+/// Report a fixed OVMF CODE load that passed layout validation.
+fn log_fixed_ovmf_load(path: Option<&str>, code_size: usize, load_gpa: GuestPhysAddr) {
+    info!(
+        "Loading fixed OVMF CODE profile {} ({} bytes) into GPA @{:#x} with reset vector {:#x}",
+        path.unwrap_or("<memory>"),
+        code_size,
+        load_gpa.as_usize(),
+        FIXED_OVMF_RESET_VECTOR
+    );
+}
+
 fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
     buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
@@ -661,6 +751,8 @@ fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::string::ToString;
+
     use super::*;
 
     #[test]
@@ -714,5 +806,89 @@ mod tests {
 
         config.kernel.enable_bios = false;
         assert!(should_direct_boot_linux(&config));
+    }
+
+    #[test]
+    fn fixed_ovmf_profile_enabled_only_for_exact_profile_name() {
+        let mut config = axvmconfig::GuestConfig::default();
+        assert!(!fixed_ovmf_profile_enabled(&config));
+
+        config.kernel.firmware_profile = Some(FIXED_OVMF_PROFILE.into());
+        assert!(fixed_ovmf_profile_enabled(&config));
+
+        config.kernel.firmware_profile = Some("other_profile".into());
+        assert!(!fixed_ovmf_profile_enabled(&config));
+    }
+
+    #[test]
+    fn fixed_ovmf_layout_accepts_the_expected_values() {
+        let valid_gpa = GuestPhysAddr::from(FIXED_OVMF_CODE_GPA);
+        assert_eq!(
+            validate_fixed_ovmf_layout(FIXED_OVMF_CODE_SIZE, valid_gpa, FIXED_OVMF_RESET_VECTOR),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn fixed_ovmf_layout_rejects_wrong_code_size() {
+        let error = validate_fixed_ovmf_layout(
+            FIXED_OVMF_CODE_SIZE - 0x1000,
+            GuestPhysAddr::from(FIXED_OVMF_CODE_GPA),
+            FIXED_OVMF_RESET_VECTOR,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("size"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{:#x}", FIXED_OVMF_CODE_SIZE))
+        );
+    }
+
+    #[test]
+    fn fixed_ovmf_layout_rejects_wrong_load_gpa() {
+        let error = validate_fixed_ovmf_layout(
+            FIXED_OVMF_CODE_SIZE,
+            GuestPhysAddr::from(0xffc0_0000),
+            FIXED_OVMF_RESET_VECTOR,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("bios_load_addr"));
+        assert!(error.to_string().contains("0xffc00000"));
+    }
+
+    #[test]
+    fn fixed_ovmf_layout_rejects_wrong_reset_vector() {
+        let error = validate_fixed_ovmf_layout(
+            FIXED_OVMF_CODE_SIZE,
+            GuestPhysAddr::from(FIXED_OVMF_CODE_GPA),
+            0x1000,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("reset vector"));
+        assert!(error.to_string().contains("0xfffffff0"));
+    }
+
+    #[test]
+    fn fixed_ovmf_profile_rejects_legacy_uefi_layout_but_not_when_disabled() {
+        // The pre-profile arceos-uefi-smp1 layout (0xffc0_0000, wrong size) is
+        // rejected as soon as the fixed profile is declared.
+        let mut config = axvmconfig::GuestConfig::default();
+        config.kernel.enable_bios = true;
+        config.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
+        config.kernel.entry_point = 0xffff_fff0;
+        config.kernel.firmware_profile = Some(FIXED_OVMF_PROFILE.into());
+        assert!(fixed_ovmf_profile_enabled(&config));
+        assert!(
+            validate_fixed_ovmf_layout(0x40_0000, GuestPhysAddr::from(0xffc0_0000), 0xffff_fff0)
+                .is_err()
+        );
+
+        // Without the profile the same legacy layout must not be validated at
+        // all, so it stays loadable. Every validation call site is gated on
+        // `fixed_ovmf_profile_enabled`, so `false` here guarantees the layout
+        // check is never reached for this config.
+        config.kernel.firmware_profile = None;
+        assert!(!fixed_ovmf_profile_enabled(&config));
     }
 }

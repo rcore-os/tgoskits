@@ -44,6 +44,12 @@ pub enum AxVmConfigError {
         /// The boot protocol requiring a firmware load address.
         protocol: VMBootProtocol,
     },
+    /// A fixed firmware profile was declared for a non-UEFI boot flow.
+    #[error("firmware profile {profile} requires boot_protocol = \"uefi\"")]
+    FirmwareProfileRequiresUefi {
+        /// The declared firmware profile name.
+        profile: String,
+    },
     /// A physical-device selector is not an absolute, concrete device-tree path.
     #[error("physical device path must be absolute and must not select the root: {path}")]
     InvalidPhysicalDevicePath {

@@ -328,3 +328,67 @@ fn rejects_invalid_toml_with_public_error() {
     let result = GuestConfig::from_toml("[base");
     assert!(matches!(result, Err(AxVmConfigError::TomlParse { .. })));
 }
+
+#[test]
+fn firmware_profile_defaults_to_none_when_omitted() {
+    let config = GuestConfig::from_toml(MINIMAL_CONFIG).unwrap();
+    assert_eq!(config.kernel.firmware_profile, None);
+}
+
+#[test]
+fn parses_explicit_firmware_profile() {
+    let raw = format!(
+        r#"
+[kernel]
+firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"
+enable_bios = true
+boot_protocol = "uefi"
+bios_load_addr = 0xffc8_4000
+uefi_firmware_path = "OVMF_CODE.fd"
+"#
+    );
+    let config = GuestConfig::from_toml(&raw).unwrap();
+    assert_eq!(
+        config.kernel.firmware_profile.as_deref(),
+        Some("qemu_x86_64_axvisor_ovmf_debug")
+    );
+}
+
+#[test]
+fn firmware_profile_rejects_non_uefi_boot_protocol() {
+    let uefi_profile = VMKernelConfig {
+        firmware_profile: Some("qemu_x86_64_axvisor_ovmf_debug".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        uefi_profile.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::FirmwareProfileRequiresUefi {
+            profile: "qemu_x86_64_axvisor_ovmf_debug".into(),
+        })
+    );
+
+    let uefi_profile_with_bios = VMKernelConfig {
+        enable_bios: true,
+        firmware_profile: Some("qemu_x86_64_axvisor_ovmf_debug".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        uefi_profile_with_bios.validate_boot_config_for_arch("x86_64"),
+        Err(AxVmConfigError::FirmwareProfileRequiresUefi {
+            profile: "qemu_x86_64_axvisor_ovmf_debug".into(),
+        })
+    );
+}
+
+#[test]
+fn firmware_profile_accepts_uefi_boot_protocol() {
+    let uefi_profile = VMKernelConfig {
+        enable_bios: true,
+        boot_protocol: Some(VMBootProtocol::Uefi),
+        uefi_firmware_path: Some("OVMF_CODE.fd".into()),
+        bios_load_addr: Some(0xffc8_4000),
+        firmware_profile: Some("qemu_x86_64_axvisor_ovmf_debug".into()),
+        ..Default::default()
+    };
+    assert_eq!(uefi_profile.validate_boot_config_for_arch("x86_64"), Ok(()));
+}
