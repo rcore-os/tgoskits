@@ -405,6 +405,13 @@ ORT full 预注册门（在 smoke `v5` 之后、首次 full `run-001` 之前冻�
 - 每轮 ORT 初始化 `> 0` 且 `<= 500000 us`；inference wall p99 `<= 1000000 ns`、max `<= 25000000 ns`；Runtime 必须精确为 `1.25.0`、provider 必须精确为 `CPUExecutionProvider`，禁止静默 fallback。
 - 每轮必须通过 UART、guest manifest、harvest 和压缩前内容的完整 SHA-256 一致性，snapshot `e2fsck -fn`、host filesystem sync、Linux 恢复、clean metadata 和递归 checksum 全部为真。任一门失败即 campaign 不通过，门限不得按 full 结果放宽。
 
+ORT full 预注册修订记录（2026-08-05，首次失败后、下一次 campaign 前冻结）：
+
+- `ort-control-full-formal-20260805-v1/run-001` 来自 clean commit `d99ed9932f31c1d417f9edb4148514a815b91353`。功能路径完成 1,800/1,800 ACK，controller/Zephyr 的 errors、timeouts、retransmissions、recoveries、duplicates、ACK drops 与 protocol errors 均为 0；full-loop p99/max 为 `12038/124559 us`，ORT inference wall p99 为 `175875 ns`。raw 与 ORT CSV SHA-256 分别为 `b5b663951fbaa29f2b4860b75131e52a45293c2a937f301ad4dd54cf7dcc648e` 与 `28270563d5d7fdec7047e5fbe1817edd373d6a43389f6e922e9840feb587b4a8`。
+- 该轮仍被正式门拒绝：Zephyr 的两份 `IVC-RTOS-POWEROFF` 均与 StarryOS 同时输出的终止指标发生 UART 字节级交错，分析器因此找不到一份完整 poweroff record。控制、推理、快照回收和 Linux 恢复实际完成不改变该证据失败结论；`v1` 目录保持原样，不计为通过，也不以补跑替换。
+- commit `df785eead23cba61f49e9bdf49bb4355c8998846` 只修改终止证据节奏：等待 controller 终止输出排空 `500 ms`，再以 `100 ms` 间隔输出 5 份短 poweroff record。分析器、验收阈值、ONNX/ORT 模型、controller 控制逻辑、1,800 个周期及五次冷启动计划均不变。
+- 修订后 full Zephyr `zephyr.bin` SHA-256 为 `d02b6de2677c8f2a26db1514ae7d6e0a1723ada329c59bc17b6f58333bd075ff`，`zephyr.elf` SHA-256 为 `5acb3b59e935ff5058c37d9e719486616fa48843a9e4755e6ac736a0a1e155f1`，ELF entry 为 `0x4000100c`。下一次正式 campaign 必须使用新的结果目录和包含本修订记录的 clean commit。
+
 退出条件：
 
 - [x] `.ort`、operator config、host 工具链 lock 和官方 AArch64 Runtime 来源/哈希均已冻结并可复核。
