@@ -7,11 +7,15 @@ args = [
     "-smp",
     "4",
     "-device",
-    "virtio-blk-device,drive=disk0",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
     "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-blk-device,drive=guestdisk",
+    "-drive",
+    "id=guestdisk,if=none,format=raw,snapshot=on,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img",
     "-append",
-    "root=/dev/vda rw init=/bin/sh",
+    "root=/dev/nvme0n1 rw init=/bin/sh",
     "-m",
     "8g",
 ]
@@ -28,19 +32,5 @@ success_regex = [
     "(?m)^(?:\\x1b\\[[0-9;]*m)*linux ivc demo pass\\s*$",
     "(?m)^(?:\\x1b\\[[0-9;]*m)*ivc ack seq=5 msg=ack from linux subscriber\\s*$",
 ]
-shell_prefix = "~ #"
-shell_init_cmd = '''
-echo "linux ivc kernel $(uname -r)"
-chmod +x /root/ivc-subscribe || true
-if ! insmod /root/axvisor.ko; then
-    echo 'linux ivc demo failed'
-elif ! test -e /dev/axivc; then
-    echo 'linux ivc demo failed'
-elif ! /root/ivc-subscribe 1 0x49564301 5; then
-    echo 'linux ivc demo failed'
-else
-    echo 'linux ivc subscriber finished'
-fi
-'''
 to_bin = true
 uefi = false

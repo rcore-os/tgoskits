@@ -1,5 +1,5 @@
 features = [
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "fs",
 ]
 log = "Info"

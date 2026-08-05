@@ -228,6 +228,7 @@ fn issue_hypercall(invocation: HyperCallInvocation) -> IvcHyperCallResult<isize>
         // value, and x1-x6 for up to six integer arguments.
         core::arch::asm!(
             "hvc #0",
+            "nop",
             inlateout("x0") x0,
             in("x1") args[0],
             in("x2") args[1],

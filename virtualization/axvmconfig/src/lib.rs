@@ -118,6 +118,98 @@ mod vm_mem_config_vec_serde {
     }
 }
 
+mod guest_type_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum GuestTypeInput {
+        Named(GuestType),
+        LegacyVmType(u8),
+    }
+
+    pub fn serialize<S>(value: &GuestType, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<GuestType, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match GuestTypeInput::deserialize(deserializer)? {
+            GuestTypeInput::Named(guest_type) => Ok(guest_type),
+            GuestTypeInput::LegacyVmType(0..=2) => Ok(GuestType::Virtualized),
+            GuestTypeInput::LegacyVmType(value) => Err(de::Error::custom(alloc::format!(
+                "unsupported legacy vm_type {value}"
+            ))),
+        }
+    }
+}
+
+mod emulated_device_config_vec_serde {
+    use serde::{Deserialize, Deserializer, de};
+
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct EmulatedDeviceTuple(String, usize, usize, usize, u8, Vec<usize>);
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<EmulatedDeviceConfig>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<EmulatedDeviceTuple>::deserialize(deserializer)?
+            .into_iter()
+            .map(emulated_device_from_tuple)
+            .collect()
+    }
+
+    fn emulated_device_from_tuple<E>(
+        EmulatedDeviceTuple(name, base_gpa, length, irq_id, raw_type, cfg_list): EmulatedDeviceTuple,
+    ) -> Result<EmulatedDeviceConfig, E>
+    where
+        E: de::Error,
+    {
+        let emu_type = match raw_type {
+            0x0 => EmulatedDeviceType::Dummy,
+            0x1 => EmulatedDeviceType::InterruptController,
+            0x2 => EmulatedDeviceType::Console,
+            0x3 => EmulatedDeviceType::FwCfg,
+            0x4 => EmulatedDeviceType::SharedMmio,
+            0xA => EmulatedDeviceType::IVCChannel,
+            0x20 => EmulatedDeviceType::GicCpuRegion,
+            0x21 => EmulatedDeviceType::GPPTDistributor,
+            0x22 => EmulatedDeviceType::GPPTITS,
+            0x23 => EmulatedDeviceType::X86IoApic,
+            0x24 => EmulatedDeviceType::X86Pit,
+            0x25 => EmulatedDeviceType::LoongArchPchPic,
+            0x26 => EmulatedDeviceType::X86PortPassthrough,
+            0x30 => EmulatedDeviceType::PPPTGlobal,
+            0xE1 => EmulatedDeviceType::VirtioBlk,
+            0xE2 => EmulatedDeviceType::VirtioNet,
+            0xE3 => EmulatedDeviceType::VirtioConsole,
+            value => {
+                return Err(E::custom(alloc::format!(
+                    "unsupported emulated device type {value:#x}"
+                )));
+            }
+        };
+        Ok(EmulatedDeviceConfig {
+            name,
+            base_gpa,
+            length,
+            irq_id,
+            emu_type,
+            cfg_list,
+        })
+    }
+}
+
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum VMBootProtocolSerde {
@@ -230,6 +322,8 @@ pub struct VMBaseConfig {
     /// VM name.
     pub name: String,
     /// Guest address-space and physical-device assignment model.
+    #[serde(alias = "vm_type", with = "guest_type_serde")]
+    #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(with = "GuestType"))]
     pub guest_type: GuestType,
     // Resources.
     /// The number of virtual CPUs.
@@ -452,7 +546,7 @@ pub struct PhysicalDeviceRef {
 
 impl PhysicalDeviceRef {
     fn validate(&self) -> AxVmConfigResult {
-        if !self.path.starts_with('/') || self.path == "/" {
+        if !self.path.starts_with('/') {
             return Err(AxVmConfigError::InvalidPhysicalDevicePath {
                 path: self.path.clone(),
             });
@@ -488,6 +582,14 @@ pub struct GuestDevices {
         schemars(with = "Vec<VirtualDeviceRequestSchema>")
     )]
     pub virtual_devices: Vec<VirtualDeviceRequest>,
+    /// Extra emulated devices requested by the VM configuration.
+    #[serde(
+        default,
+        deserialize_with = "emulated_device_config_vec_serde::deserialize",
+        skip_serializing
+    )]
+    #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(skip))]
+    pub emu_devices: Vec<EmulatedDeviceConfig>,
 }
 
 impl GuestDevices {

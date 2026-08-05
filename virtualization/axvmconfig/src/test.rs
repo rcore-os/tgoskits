@@ -149,23 +149,22 @@ fn guest_type_owns_address_space_policy() {
         }],
         disabled: Vec::new(),
         virtual_devices: Vec::new(),
+        emu_devices: Vec::new(),
     };
     let unresolved = devices.unresolved_host_devices();
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].name, "/soc/net@1000");
     assert!(
         unresolved.iter().all(|device| device.name != "/"),
-        "the config layer must not invent an unresolved root selector"
+        "ordinary device passthrough must not invent a root selector"
     );
 }
 
 #[test]
 fn rejects_removed_configuration_fields() {
     let removed_fields = [
-        ("[base]\n", "vm_type = 1\n"),
         ("", "version = 1\n"),
         ("[devices]\n", "serial = {}\n"),
-        ("[devices]\n", "emu_devices = []\n"),
         ("[devices]\n", "interrupt_mode = \"passthrough\"\n"),
         ("[devices]\n", "passthrough_devices = []\n"),
         ("[devices]\n", "passthrough_addresses = []\n"),
@@ -181,6 +180,32 @@ fn rejects_removed_configuration_fields() {
             "removed field unexpectedly parsed: {field}"
         );
     }
+}
+
+#[test]
+fn parses_legacy_vm_type_and_emulated_devices() {
+    let config = GuestConfig::from_toml(
+        r#"
+[base]
+vm_type = 1
+
+[devices]
+emu_devices = [
+  ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, [60]],
+]
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(config.base.guest_type, GuestType::Virtualized);
+    assert_eq!(config.devices.emu_devices.len(), 1);
+
+    let device = &config.devices.emu_devices[0];
+    assert_eq!(device.name, "ivc-channel");
+    assert_eq!(device.base_gpa, 0xbff0_0000);
+    assert_eq!(device.length, 0x1_0000);
+    assert_eq!(device.emu_type, EmulatedDeviceType::IVCChannel);
+    assert_eq!(device.cfg_list, vec![60]);
 }
 
 #[test]
@@ -217,11 +242,8 @@ passthrough = [{ path = "soc/net@1000" }]
 passthrough = [{ path = "/" }]
 "#,
     )
-    .unwrap_err();
-    assert_eq!(
-        root,
-        AxVmConfigError::InvalidPhysicalDevicePath { path: "/".into() }
-    );
+    .unwrap();
+    assert_eq!(root.devices.passthrough[0].path, "/");
 
     let conflict = GuestConfig::from_toml(
         r#"

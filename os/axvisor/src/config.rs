@@ -183,6 +183,7 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
+    let emu_devices = cfg.devices.emu_devices.clone();
     let mut passthrough_devices = cfg.devices.unresolved_host_devices();
     if cfg.base.guest_type == GuestType::Passthrough
         && let Some(path) = machine.default_passthrough_device_path
@@ -224,6 +225,7 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
                 size: None,
             }),
         },
+        emu_devices,
         pass_through_devices: passthrough_devices,
         excluded_devices: cfg.devices.disabled_device_paths(),
         pass_through_addresses: Vec::new(),

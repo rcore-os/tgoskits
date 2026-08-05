@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -17,6 +19,21 @@ const ARCEOS_QEMU_GUEST_KERNEL_PATH: &str = "/guest/arceos/ax-helloworld-x86_64.
 const ARCEOS_IVC_GUEST_PACKAGES: &[&str] = &["arceos-ivc-publisher", "arceos-ivc-subscriber"];
 const AXVISOR_IVC_LINUX_PUBLISHER_GUEST_PATH: &str = "/root/ivc-publish";
 const AXVISOR_IVC_LINUX_SUBSCRIBER_GUEST_PATH: &str = "/root/ivc-subscribe";
+const AXVISOR_IVC_LINUX_INIT_GUEST_PATH: &str = "/root/ivc-linux-init";
+const AXVISOR_IVC_LINUX_INIT: &str = r#"#!/bin/sh
+echo "linux ivc kernel $(uname -r)"
+chmod +x /root/ivc-subscribe || true
+if ! insmod /root/axvisor.ko; then
+    echo 'linux ivc demo failed'
+elif ! test -e /dev/axivc; then
+    echo 'linux ivc demo failed'
+elif ! /root/ivc-subscribe 1 0x49564301 5; then
+    echo 'linux ivc demo failed'
+else
+    echo 'linux ivc subscriber finished'
+fi
+exec /bin/sh
+"#;
 
 #[derive(Clone, Copy)]
 struct ArceosIvcGuestProfile {
@@ -183,6 +200,13 @@ pub(super) fn inject_linux_ivc_assets(
         AXVISOR_IVC_LINUX_SUBSCRIBER_GUEST_PATH,
         "Linux IVC subscriber demo",
     )?;
+    write_guest_overlay_file(
+        AXVISOR_IVC_LINUX_INIT.as_bytes(),
+        &overlay_dir,
+        AXVISOR_IVC_LINUX_INIT_GUEST_PATH,
+        0o755,
+        "Linux IVC init script",
+    )?;
     let result = crate::rootfs::inject::inject_overlay(&prepared_assets.rootfs_path, &overlay_dir);
     test_case::remove_case_run_dir(temporary_overlay_run_dir.as_deref());
     result
@@ -221,6 +245,28 @@ fn copy_guest_overlay_file(
             overlay_path.display()
         )
     })?;
+    Ok(())
+}
+
+fn write_guest_overlay_file(
+    content: &[u8],
+    overlay_dir: &Path,
+    guest_path: &str,
+    mode: u32,
+    label: &str,
+) -> anyhow::Result<()> {
+    let overlay_path = overlay_dir.join(guest_path.trim_start_matches('/'));
+    if let Some(parent) = overlay_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&overlay_path, content)
+        .with_context(|| format!("failed to write {label} to {}", overlay_path.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(&overlay_path, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("failed to set mode on {}", overlay_path.display()))?;
+    #[cfg(not(unix))]
+    let _ = mode;
     Ok(())
 }
 

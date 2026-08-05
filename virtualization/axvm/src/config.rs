@@ -19,8 +19,9 @@ use std::{string::String, sync::Arc, vec::Vec};
 use axdevice::{NullSerialBackendFactory, SerialBackendFactory};
 use axvm_types::InterruptTriggerMode;
 pub use axvm_types::{
-    AddressSpacePolicy, GuestPhysAddr, HostAddressAssignment, HostDeviceAssignment,
-    HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, HostAddressAssignment,
+    HostDeviceAssignment, HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig,
+    VmMemMappingType,
 };
 use axvmconfig::VirtualDeviceRequest;
 
@@ -89,6 +90,7 @@ pub struct AxVMConfig {
     pub cpu_config: AxVCpuConfig,
     /// VM image configuration.
     pub image_config: VMImageConfig,
+    emu_devices: Vec<EmulatedDeviceConfig>,
     pass_through_devices: Vec<HostDeviceAssignment>,
     excluded_devices: Vec<Vec<String>>,
     pass_through_addresses: Vec<HostAddressAssignment>,
@@ -117,6 +119,7 @@ pub struct AxVMConfigParams {
     pub phys_cpu_ls: PhysCpuList,
     pub cpu_config: AxVCpuConfig,
     pub image_config: VMImageConfig,
+    pub emu_devices: Vec<EmulatedDeviceConfig>,
     pub pass_through_devices: Vec<HostDeviceAssignment>,
     pub excluded_devices: Vec<Vec<String>>,
     pub pass_through_addresses: Vec<HostAddressAssignment>,
@@ -145,6 +148,7 @@ impl AxVMConfig {
             phys_cpu_ls: params.phys_cpu_ls,
             cpu_config: params.cpu_config,
             image_config: params.image_config,
+            emu_devices: params.emu_devices,
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
@@ -286,6 +290,11 @@ impl AxVMConfig {
     /// Sets the policy used to adjust runtime boot image addresses.
     pub fn set_boot_policy(&mut self, boot_policy: GuestBootPolicy) {
         self.boot_policy = boot_policy;
+    }
+
+    /// Returns configurations related to VM emulated devices.
+    pub fn emu_devices(&self) -> &[EmulatedDeviceConfig] {
+        &self.emu_devices
     }
 
     /// Returns configurations related to VM passthrough devices.

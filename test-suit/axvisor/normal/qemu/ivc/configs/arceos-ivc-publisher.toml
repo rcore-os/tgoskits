@@ -37,21 +37,21 @@ memory_regions = [
 # Device specifications
 #
 [devices]
-# The interrupt mode.
-interrupt_mode = "passthrough"
-
-# Pass-through devices.
-passthrough_devices = [
-  ["/",],
+passthrough = [
+  { path = "/" },
 ]
 
-# Passthrough addresses.
-# Base-GPA  Length.
-passthrough_addresses = []
-
 # Devices that are not desired to be passed through to the guest.
-excluded_devices = [
-  ["/pcie@10000000"],
+disabled = [
+  { path = "/virtio_mmio@a003000" },
+  { path = "/virtio_mmio@a003200" },
+  { path = "/virtio_mmio@a003400" },
+  { path = "/virtio_mmio@a003600" },
+  { path = "/virtio_mmio@a003800" },
+  { path = "/virtio_mmio@a003a00" },
+  { path = "/virtio_mmio@a003c00" },
+  { path = "/virtio_mmio@a003e00" },
+  { path = "/pcie@10000000" },
 ]
 
 # Emu_devices.
