@@ -560,6 +560,34 @@ BOARD_IDENTITY board_id=test-rk3588 hostname=orangepi5plus cpu_temp_milli_c=4250
             result["ort_samples"]["provider"], "CPUExecutionProvider"
         )
 
+    def test_ort_actuator_reproduces_f32_half_boundary_scaling(self) -> None:
+        encoded = dict(
+            zip(
+                analyzer.ORT_COLUMNS,
+                (
+                    "1280",
+                    "be1800a8",
+                    "3ec00000",
+                    "bd71a9fc",
+                    "3ea6e979",
+                    "3ea72b02",
+                    "327",
+                    "144958",
+                ),
+                strict=True,
+            )
+        )
+
+        result = analyzer.parse_ort_row(encoded, expected_sequence=1280)
+
+        self.assertEqual(result["actuator_permille"], 327)
+        encoded["actuator_permille"] = "326"
+        with self.assertRaisesRegex(
+            analyzer.AnalysisError,
+            "ORT CSV actuator conflicts with output bits at row 1280",
+        ):
+            analyzer.parse_ort_row(encoded, expected_sequence=1280)
+
     def test_ort_actuator_mismatch_with_control_csv_is_rejected(self) -> None:
         mismatched = ORT_CSV.replace("3f000000,500", "3f19999a,600", 1)
 

@@ -1521,6 +1521,18 @@ def read_ort_rows(ort_path: Path, expected_count: int) -> list[dict[str, int]]:
     return rows
 
 
+def _round_to_f32(value: float) -> float:
+    return struct.unpack(">f", struct.pack(">f", value))[0]
+
+
+def _actuator_permille_from_f32_output(output: float) -> int:
+    output = min(max(output, 0.0), 1.0)
+    # Match the Rust controller's two f32 operations. Python otherwise keeps
+    # the decoded f32 in a double and can cross a half-permille boundary.
+    scaled_output = _round_to_f32(output * 1000.0)
+    return int(_round_to_f32(scaled_output + 0.5))
+
+
 def parse_ort_row(encoded: dict[str, str], expected_sequence: int) -> dict[str, int]:
     try:
         sequence = int(encoded["sequence"])
@@ -1556,8 +1568,7 @@ def parse_ort_row(encoded: dict[str, str], expected_sequence: int) -> dict[str, 
             raise AnalysisError(
                 f"ORT CSV {field} is non-finite at row {expected_sequence}"
             )
-    output = min(max(decoded["output_bits"], 0.0), 1.0)
-    expected_actuator = int(output * 1000.0 + 0.5)
+    expected_actuator = _actuator_permille_from_f32_output(decoded["output_bits"])
     if actuator_permille != expected_actuator:
         raise AnalysisError(
             f"ORT CSV actuator conflicts with output bits at row {expected_sequence}"
