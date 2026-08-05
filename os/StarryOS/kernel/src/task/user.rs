@@ -133,13 +133,19 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                     ReturnReason::Syscall => {
                         let trace_state = thr.proc_data.ptrace_syscall_trace_state_for(tid);
                         if matches!(trace_state, SyscallTraceState::Entry)
-                            && let Some(resume_signo) =
-                                ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx)
+                            && let Some(resume_signo) = ptrace_syscall_stop_current(
+                                thr,
+                                Signo::SIGTRAP,
+                                &mut uctx,
+                                saved_sysno,
+                            )
                         {
                             enqueue_ptrace_syscall_resume_signal(thr, resume_signo);
                         }
 
-                        if let Some(exit_code) = ptrace_exit_event_code(saved_sysno, saved_a0)
+                        let syscall_no = uctx.sysno();
+                        let syscall_arg0 = uctx.arg0();
+                        if let Some(exit_code) = ptrace_exit_event_code(syscall_no, syscall_arg0)
                             && crate::syscall::ptrace_notify_exit(
                                 thr.proc_data.proc.pid(),
                                 exit_code,
@@ -165,8 +171,12 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             thr.proc_data.ptrace_syscall_trace_state_for(tid),
                             SyscallTraceState::Exit
                         ) {
-                            let resume_signo =
-                                ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx);
+                            let resume_signo = ptrace_syscall_stop_current(
+                                thr,
+                                Signo::SIGTRAP,
+                                &mut uctx,
+                                syscall_no,
+                            );
                             enqueue_ptrace_syscall_resume_signal(thr, resume_signo.flatten());
                         }
                     }

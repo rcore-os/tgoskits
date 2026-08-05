@@ -67,6 +67,7 @@ struct PtraceStopRecord {
     uctx: UserContext,
     siginfo: Option<SignalInfo>,
     is_syscall: bool,
+    syscall_no: Option<usize>,
     reported: bool,
     event: u32,
     event_msg: usize,
@@ -1276,6 +1277,7 @@ impl ProcessData {
                 uctx: *uctx,
                 siginfo: Some(SignalInfo::new_kernel(signo)),
                 is_syscall: false,
+                syscall_no: None,
                 reported: false,
                 event: pending_event.as_ref().map_or(0, |event| event.event),
                 event_msg: pending_event.as_ref().map_or(0, |event| event.msg),
@@ -1285,10 +1287,17 @@ impl ProcessData {
     }
 
     /// Record that this tracee is stopped at a syscall entry or exit boundary.
-    pub fn set_ptrace_syscall_stop(&self, tid: u32, signo: Signo, uctx: &UserContext) {
+    pub fn set_ptrace_syscall_stop(
+        &self,
+        tid: u32,
+        signo: Signo,
+        uctx: &UserContext,
+        syscall_no: usize,
+    ) {
         self.set_ptrace_stop(tid, signo, uctx);
         if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
             stop.is_syscall = true;
+            stop.syscall_no = Some(syscall_no);
         }
     }
 
@@ -1342,6 +1351,11 @@ impl ProcessData {
             .lock()
             .get(&tid)
             .is_some_and(|stop| stop.is_syscall)
+    }
+
+    /// Return the original syscall number associated with a syscall stop.
+    pub fn ptrace_stop_syscall_number_for(&self, tid: u32) -> Option<usize> {
+        self.ptrace_stop.lock().get(&tid)?.syscall_no
     }
 
     pub fn ptrace_unreported_stop(&self, preferred_tid: Option<u32>) -> Option<(u32, Signo)> {
@@ -1488,6 +1502,19 @@ impl ProcessData {
             return false;
         };
         stop.uctx = uctx;
+        true
+    }
+
+    /// Replace the original syscall number held for a stopped tracee.
+    pub fn set_ptrace_stop_syscall_number_for(&self, tid: u32, syscall_no: usize) -> bool {
+        let mut stops = self.ptrace_stop.lock();
+        let Some(stop) = stops.get_mut(&tid) else {
+            return false;
+        };
+        if !stop.is_syscall {
+            return false;
+        }
+        stop.syscall_no = Some(syscall_no);
         true
     }
 
