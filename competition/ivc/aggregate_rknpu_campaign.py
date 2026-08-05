@@ -14,6 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+try:
+    import rknpu_deadline
+except ModuleNotFoundError:
+    from competition.ivc import rknpu_deadline
+
 
 MANIFEST_FILES = (
     "console.log",
@@ -502,6 +507,7 @@ def aggregate_campaign(
     runtime_drivers: set[str] = set()
     controller_records: list[dict[str, object]] = []
     rknn_records: list[dict[str, object]] = []
+    deadline_partitions: list[rknpu_deadline.RunDeadlinePartition] = []
     previous_finished: datetime | None = None
     for run_number, run_name in enumerate(expected_names, start=1):
         run_dir = root / run_name
@@ -541,8 +547,21 @@ def aggregate_campaign(
         runtime_drivers.add(str(rknn["runtime_driver"]))
         controller = summary_record["controller"]
         assert isinstance(controller, dict)
+        try:
+            deadline_partition = rknpu_deadline.analyze_run(
+                run_dir / "raw.csv",
+                run_dir / "rknn.csv",
+                expected_count,
+                controller,
+                rknn,
+            )
+        except rknpu_deadline.DeadlineAnalysisError as error:
+            raise AggregationError(
+                f"{run_name} deadline evidence is invalid: {error}"
+            ) from error
         controller_records.append(controller)
         rknn_records.append(rknn)
+        deadline_partitions.append(deadline_partition)
         run_records.append(
             {
                 "run_id": run_name,
@@ -572,6 +591,7 @@ def aggregate_campaign(
                         *RKNN_METRICS,
                     )
                 },
+                "deadline_partition": deadline_partition,
                 "evidence": {
                     "checksums_sha256": sha256_file(run_dir / "checksums.sha256"),
                     "summary_sha256": manifest["summary.json"],
@@ -667,6 +687,7 @@ def aggregate_campaign(
             "controller": controller_statistics,
             "rknn": rknn_statistics,
         },
+        "deadline_partition": rknpu_deadline.aggregate_runs(deadline_partitions),
         "runs": run_records,
     }
 

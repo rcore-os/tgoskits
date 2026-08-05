@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 
 
 IVC_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(IVC_DIR))
 SPEC = importlib.util.spec_from_file_location(
     "ivc_aggregate_rknpu_campaign",
     IVC_DIR / "aggregate_rknpu_campaign.py",
@@ -24,8 +26,6 @@ SPEC.loader.exec_module(aggregate)
 
 SOURCE_COMMIT = "a" * 40
 MODEL_SHA256 = aggregate.DEFAULT_MODEL_SHA256
-RAW_BYTES = b"header\nraw\n"
-RKNN_BYTES = b"header\nrknn\n"
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -60,6 +60,82 @@ def output_record(path: Path, stored_path: str) -> dict[str, object]:
     }
 
 
+def raw_bytes(run_number: int) -> bytes:
+    rows = [
+        (1, 0, 23_000 + run_number, 140_000 + run_number),
+        (
+            2,
+            140_000 + run_number,
+            141_600 + 2 * run_number,
+            148_000 + 2 * run_number,
+        ),
+        (
+            3,
+            240_000 + run_number,
+            241_700 + 2 * run_number,
+            249_000 + 2 * run_number,
+        ),
+        (
+            4,
+            340_000 + run_number,
+            341_800 + 2 * run_number,
+            353_000 + 2 * run_number,
+        ),
+    ]
+    lines = [
+        "sequence,cycle_started_us,command_sent_us,response_completed_us,full_loop_us,"
+        "pre_send_us,transport_us,setpoint_milli_c,observed_milli_c,measured_milli_c,"
+        "command_actuator_permille,status_actuator_permille,error_milli_c"
+    ]
+    measured_milli_c = 20_000
+    for sequence, started, sent, completed in rows:
+        next_measured_milli_c = measured_milli_c + 200
+        actuator_permille = 950 + sequence
+        lines.append(
+            ",".join(
+                str(value)
+                for value in (
+                    sequence,
+                    started,
+                    sent,
+                    completed,
+                    completed - started,
+                    sent - started,
+                    completed - sent,
+                    45_000,
+                    measured_milli_c,
+                    next_measured_milli_c,
+                    actuator_permille,
+                    actuator_permille,
+                    45_000 - next_measured_milli_c,
+                )
+            )
+        )
+        measured_milli_c = next_measured_milli_c
+    return ("\n".join(lines) + "\n").encode()
+
+
+def rknn_bytes(run_number: int) -> bytes:
+    lines = [
+        "sequence,input0_bits,input1_bits,input2_bits,input3_bits,output_bits,"
+        "actuator_permille,wall_ns,device_us"
+    ]
+    timings = (
+        (20_000_000 + run_number, 16_600 + run_number),
+        (1_680_000 + run_number, 1_590 + run_number),
+        (1_680_000 + run_number, 1_590 + run_number),
+        (1_760_000 + run_number, 1_660 + run_number),
+    )
+    for sequence, (wall_ns, device_us) in enumerate(timings, start=1):
+        actuator_permille = 950 + sequence
+        output_bits = struct.pack(">f", actuator_permille / 1000).hex()
+        lines.append(
+            f"{sequence},3f000000,3ea00000,00000000,00000000,{output_bits},"
+            f"{actuator_permille},{wall_ns},{device_us}"
+        )
+    return ("\n".join(lines) + "\n").encode()
+
+
 def refresh_manifest(run_dir: Path) -> None:
     (run_dir / "checksums.sha256").write_text(
         "".join(
@@ -79,8 +155,10 @@ def write_run(
     source_commit: str = SOURCE_COMMIT,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    raw_digest = sha256_bytes(RAW_BYTES)
-    rknn_digest = sha256_bytes(RKNN_BYTES)
+    raw_contents = raw_bytes(run_number)
+    rknn_contents = rknn_bytes(run_number)
+    raw_digest = sha256_bytes(raw_contents)
+    rknn_digest = sha256_bytes(rknn_contents)
     console_text = "".join(
         (
             f"[guest-console:pl011-starry] IVC-STARRY-RKNN-MODEL sha256={MODEL_SHA256}\n"
@@ -92,10 +170,10 @@ def write_run(
     artifacts = {
         "console.log": console_bytes,
         "console.log.gz": gzip.compress(console_bytes, mtime=0),
-        "raw.csv": RAW_BYTES,
-        "raw.csv.gz": gzip.compress(RAW_BYTES, mtime=0),
-        "rknn.csv": RKNN_BYTES,
-        "rknn.csv.gz": gzip.compress(RKNN_BYTES, mtime=0),
+        "raw.csv": raw_contents,
+        "raw.csv.gz": gzip.compress(raw_contents, mtime=0),
+        "rknn.csv": rknn_contents,
+        "rknn.csv.gz": gzip.compress(rknn_contents, mtime=0),
         "stage.log": b"stage passed\n",
     }
     for name, contents in artifacts.items():
@@ -111,18 +189,18 @@ def write_run(
         "recoveries": 0,
         "success_percent": 100,
         "deadline_misses": 1,
-        "full_loop_p50_us": 8_000 + run_number,
-        "full_loop_p95_us": 12_000 + run_number,
+        "full_loop_p50_us": 9_000 + run_number,
+        "full_loop_p95_us": 13_000 + run_number,
         "full_loop_p99_us": 13_000 + run_number,
         "full_loop_max_us": 140_000 + run_number,
-        "pre_send_p50_us": 1_500 + run_number,
-        "pre_send_p95_us": 1_600 + run_number,
-        "pre_send_p99_us": 1_700 + run_number,
-        "pre_send_max_us": 20_000 + run_number,
-        "transport_p50_us": 6_000 + run_number,
-        "transport_p95_us": 10_000 + run_number,
-        "transport_p99_us": 11_000 + run_number,
-        "transport_max_us": 120_000 + run_number,
+        "pre_send_p50_us": 1_700 + run_number,
+        "pre_send_p95_us": 1_800 + run_number,
+        "pre_send_p99_us": 1_800 + run_number,
+        "pre_send_max_us": 23_000 + run_number,
+        "transport_p50_us": 7_300,
+        "transport_p95_us": 11_200,
+        "transport_p99_us": 11_200,
+        "transport_max_us": 117_000,
         "throughput_msg_s": 9.99,
     }
     rknn = {
@@ -296,6 +374,11 @@ class RknpuCampaignAggregationTests(unittest.TestCase):
             result["statistics"]["controller"]["full_loop_p99_us"]["median"],
             13_003,
         )
+        self.assertEqual(result["deadline_partition"]["first_cycle"]["deadline_misses"], 5)
+        self.assertEqual(
+            result["deadline_partition"]["post_first_cycle"]["deadline_misses"],
+            0,
+        )
         self.assertEqual(len(result["runs"]), 5)
 
     def test_dirty_run_is_rejected(self) -> None:
@@ -323,6 +406,24 @@ class RknpuCampaignAggregationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(aggregate.AggregationError, "multiple commits"):
             aggregate.aggregate_campaign(self.root, expected_count=4)
+
+    def test_raw_deadline_recomputation_rejects_summary_mismatch(self) -> None:
+        run_dir = self.root / "run-001"
+        summary = json.loads((run_dir / "summary.json").read_text())
+        controller = dict(summary["controller"])
+        controller["deadline_misses"] = 0
+
+        with self.assertRaisesRegex(
+            aggregate.rknpu_deadline.DeadlineAnalysisError,
+            "deadline misses do not match raw CSV",
+        ):
+            aggregate.rknpu_deadline.analyze_run(
+                run_dir / "raw.csv",
+                run_dir / "rknn.csv",
+                4,
+                controller,
+                summary["rknn_samples"],
+            )
 
     def test_single_compact_hash_marker_is_rejected(self) -> None:
         run_dir = self.root / "run-003"
