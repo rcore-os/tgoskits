@@ -22,7 +22,10 @@ pub mod regs;
 pub mod runtime;
 
 use alloc::sync::Arc;
-use core::ptr::{read_volatile, write_volatile};
+use core::{
+    ptr::{read_volatile, write_volatile},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 pub use runtime::{SdhciDelay, set_delay};
 use sdio_host::{SdioCardIrq, SdioHost, cccr::*, cmd::*, error::SdioError};
@@ -37,6 +40,167 @@ const PHASE2_STEP_MS: u64 = 10;
 const PHASE2_MAX_ITERS: u32 = 20;
 /// Phase 2 中段警告阈值（迭代次数）
 const PHASE2_WARN_AT: u32 = 10;
+
+// ── 诊断计数器：追踪 poll_int_status 每个中断位的 Phase 1/2 命中率 ──
+
+const DIAG_CMD_COMPLETE: usize = 0;
+const DIAG_XFER_COMPLETE: usize = 1;
+const DIAG_BUF_WR_READY: usize = 2;
+const DIAG_BUF_RD_READY: usize = 3;
+const DIAG_NUM_SLOTS: usize = 4;
+const DIAG_NONE: usize = DIAG_NUM_SLOTS;
+
+struct PollBitDiag {
+    total: AtomicU64,
+    phase1_hits: AtomicU64,
+    /// Cumulative wall-clock nanos spent in Phase 1 (from entry to resolve).
+    phase1_ns: AtomicU64,
+    phase2_entries: AtomicU64,
+    /// Cumulative wall-clock nanos spent in Phase 2 for successful resolves.
+    /// Excludes errors and the timeout path.
+    phase2_ns: AtomicU64,
+    /// Sum of `timeout_count` at each successful Phase 2 resolve.
+    /// Excludes errors and the timeout path.
+    phase2_iters: AtomicU64,
+    timeouts: AtomicU64,
+    /// Errors detected inside poll_status_once (SDIO bus errors), split by phase.
+    phase1_errors: AtomicU64,
+    phase2_errors: AtomicU64,
+}
+
+impl PollBitDiag {
+    const fn new() -> Self {
+        Self {
+            total: AtomicU64::new(0),
+            phase1_hits: AtomicU64::new(0),
+            phase1_ns: AtomicU64::new(0),
+            phase2_entries: AtomicU64::new(0),
+            phase2_ns: AtomicU64::new(0),
+            phase2_iters: AtomicU64::new(0),
+            timeouts: AtomicU64::new(0),
+            phase1_errors: AtomicU64::new(0),
+            phase2_errors: AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        self.total.store(0, Ordering::Relaxed);
+        self.phase1_hits.store(0, Ordering::Relaxed);
+        self.phase1_ns.store(0, Ordering::Relaxed);
+        self.phase2_entries.store(0, Ordering::Relaxed);
+        self.phase2_ns.store(0, Ordering::Relaxed);
+        self.phase2_iters.store(0, Ordering::Relaxed);
+        self.timeouts.store(0, Ordering::Relaxed);
+        self.phase1_errors.store(0, Ordering::Relaxed);
+        self.phase2_errors.store(0, Ordering::Relaxed);
+    }
+}
+
+static POLL_DIAG: [PollBitDiag; DIAG_NUM_SLOTS] = [
+    PollBitDiag::new(),
+    PollBitDiag::new(),
+    PollBitDiag::new(),
+    PollBitDiag::new(),
+];
+
+fn diag_slot(bit: u16) -> usize {
+    match bit {
+        NORM_INT_CMD_COMPLETE => DIAG_CMD_COMPLETE,
+        NORM_INT_XFER_COMPLETE => DIAG_XFER_COMPLETE,
+        NORM_INT_BUF_WR_READY => DIAG_BUF_WR_READY,
+        NORM_INT_BUF_RD_READY => DIAG_BUF_RD_READY,
+        _ => DIAG_NONE,
+    }
+}
+
+fn diag_name(slot: usize) -> &'static str {
+    match slot {
+        DIAG_CMD_COMPLETE => "CMD_COMPLETE",
+        DIAG_XFER_COMPLETE => "XFER_COMPLETE",
+        DIAG_BUF_WR_READY => "BUF_WR_READY",
+        DIAG_BUF_RD_READY => "BUF_RD_READY",
+        _ => "?",
+    }
+}
+
+/// Dump per-interrupt-bit poll diagnostics via `log::info`.
+///
+/// Each line reports: total calls, Phase 1 hits + avg wall time, Phase 2
+/// entries / hits + rate + avg wall time + avg iters, timeouts, per-phase errors.
+/// Also prints the IRQ counts and SDHCI clock frequency.
+///
+/// Call this after an iperf3 run to see which bits fall through to the safety
+/// net. Counters are reset after the dump; call [`reset_poll_diagnostics`] to
+/// reset mid-epoch without printing.
+pub fn dump_poll_diagnostics() {
+    for (slot, d) in POLL_DIAG.iter().enumerate() {
+        let total = d.total.load(Ordering::Relaxed);
+        if total == 0 {
+            continue;
+        }
+        let p1 = d.phase1_hits.load(Ordering::Relaxed);
+        let p1_ns = d.phase1_ns.load(Ordering::Relaxed);
+        let p2_entries = d.phase2_entries.load(Ordering::Relaxed);
+        let p2_ns = d.phase2_ns.load(Ordering::Relaxed);
+        let p2_iters = d.phase2_iters.load(Ordering::Relaxed);
+        let timeouts = d.timeouts.load(Ordering::Relaxed);
+        let p1_err = d.phase1_errors.load(Ordering::Relaxed);
+        let p2_err = d.phase2_errors.load(Ordering::Relaxed);
+        // Phase 2 hits = entered Phase 2, resolved Ok (not timeout, not error).
+        let p2_hits = total
+            .saturating_sub(p1)
+            .saturating_sub(timeouts)
+            .saturating_sub(p1_err)
+            .saturating_sub(p2_err);
+        let p2_rate = (p2_entries as f64 / total as f64) * 100.0;
+        let avg_p1_us = if p1 > 0 {
+            p1_ns as f64 / p1 as f64 / 1000.0
+        } else {
+            0.0
+        };
+        let avg_p2_us = if p2_hits > 0 {
+            p2_ns as f64 / p2_hits as f64 / 1000.0
+        } else {
+            0.0
+        };
+        let avg_iters = if p2_hits > 0 {
+            p2_iters as f64 / p2_hits as f64
+        } else {
+            0.0
+        };
+        log::info!(
+            "[SDHCI-diag] {}: total={} p1={} (avg {:.0}us) p2_entry={} p2_hit={} p2_rate={:.1}% \
+             avg_p2={:.0}us avg_p2_iters={:.1} to={} p1err={} p2err={}",
+            diag_name(slot),
+            total,
+            p1,
+            avg_p1_us,
+            p2_entries,
+            p2_hits,
+            p2_rate,
+            avg_p2_us,
+            avg_iters,
+            timeouts,
+            p1_err,
+            p2_err,
+        );
+    }
+    log::info!(
+        "[SDHCI-diag] IRQ: total={} card_int={} clk={}MHz",
+        irq::SDHCI_IRQ_COUNT.load(Ordering::Relaxed),
+        irq::SDHCI_CARD_INT_COUNT.load(Ordering::Relaxed),
+        HIGH_SPEED_CLOCK_HZ / 1_000_000,
+    );
+    reset_poll_diagnostics();
+}
+
+/// Reset all per-bit diagnostic counters to zero.
+/// Call before starting a new measurement epoch (e.g., before iperf3).
+pub fn reset_poll_diagnostics() {
+    for d in POLL_DIAG.iter() {
+        d.reset();
+    }
+}
 
 #[inline]
 pub(crate) fn delay_ms(ms: u64) {
@@ -155,13 +319,46 @@ impl CviSdhci {
     /// 同时检测 Error 中断：如果 ERROR bit (bit 15) 置位，
     /// 读取 ERR_STATUS 并 W1C 清除所有状态位，然后返回错误。
     fn poll_int_status(&self, bit: u16) -> Result<(), SdioError> {
+        let slot = diag_slot(bit);
+        let t_entry = if slot < DIAG_NUM_SLOTS {
+            crate::runtime::delay().now_nanos()
+        } else {
+            0
+        };
+
         // Phase 1: 快速自旋
         for _ in 0..PHASE1_SPIN_ITERS {
             if let Some(result) = self.poll_status_once(bit) {
+                if slot < DIAG_NUM_SLOTS {
+                    let elapsed = crate::runtime::delay().now_nanos().saturating_sub(t_entry);
+                    if result.is_ok() {
+                        POLL_DIAG[slot].phase1_hits.fetch_add(1, Ordering::Relaxed);
+                        POLL_DIAG[slot]
+                            .phase1_ns
+                            .fetch_add(elapsed, Ordering::Relaxed);
+                    } else {
+                        POLL_DIAG[slot]
+                            .phase1_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    POLL_DIAG[slot].total.fetch_add(1, Ordering::Relaxed);
+                }
                 return result;
             }
             core::hint::spin_loop();
         }
+
+        if slot < DIAG_NUM_SLOTS {
+            POLL_DIAG[slot]
+                .phase2_entries
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let t_p2_entry = if slot < DIAG_NUM_SLOTS {
+            crate::runtime::delay().now_nanos()
+        } else {
+            0
+        };
+
         // Phase 2: XFER_COMPLETE 走硬件中断驱动等待；其他位走纯超时睡眠
         // （不经过 WaitQueue——ISR 不会为这些位发 notify，经过 WQ 是无效开销）
         let use_irq = bit == NORM_INT_XFER_COMPLETE;
@@ -171,6 +368,24 @@ impl CviSdhci {
             // 注意：pre-check 不能关闭 unmask→block 之间的丢唤醒窗口，
             // 真正的防护是 XFER_COMPLETE sticky bit + post-wake recheck。
             if let Some(result) = self.poll_status_once(bit) {
+                if slot < DIAG_NUM_SLOTS {
+                    let elapsed = crate::runtime::delay()
+                        .now_nanos()
+                        .saturating_sub(t_p2_entry);
+                    if result.is_ok() {
+                        POLL_DIAG[slot]
+                            .phase2_iters
+                            .fetch_add(timeout_count as u64, Ordering::Relaxed);
+                        POLL_DIAG[slot]
+                            .phase2_ns
+                            .fetch_add(elapsed, Ordering::Relaxed);
+                    } else {
+                        POLL_DIAG[slot]
+                            .phase2_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    POLL_DIAG[slot].total.fetch_add(1, Ordering::Relaxed);
+                }
                 return result;
             }
 
@@ -199,9 +414,34 @@ impl CviSdhci {
 
             // 被唤醒后检查状态寄存器
             if let Some(result) = self.poll_status_once(bit) {
+                if slot < DIAG_NUM_SLOTS {
+                    let elapsed = crate::runtime::delay()
+                        .now_nanos()
+                        .saturating_sub(t_p2_entry);
+                    if result.is_ok() {
+                        POLL_DIAG[slot]
+                            .phase2_iters
+                            .fetch_add(timeout_count as u64, Ordering::Relaxed);
+                        POLL_DIAG[slot]
+                            .phase2_ns
+                            .fetch_add(elapsed, Ordering::Relaxed);
+                    } else {
+                        POLL_DIAG[slot]
+                            .phase2_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    POLL_DIAG[slot].total.fetch_add(1, Ordering::Relaxed);
+                }
                 return result;
             }
         }
+
+        // 超时
+        if slot < DIAG_NUM_SLOTS {
+            POLL_DIAG[slot].timeouts.fetch_add(1, Ordering::Relaxed);
+            POLL_DIAG[slot].total.fetch_add(1, Ordering::Relaxed);
+        }
+
         let pres = self.read::<u32>(SDHCI_PRESENT_STATE);
         let sts = self.read::<u16>(SDHCI_INT_STATUS_NORM);
         log::error!(
