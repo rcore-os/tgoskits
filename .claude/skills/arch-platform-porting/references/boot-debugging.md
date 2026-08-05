@@ -202,9 +202,13 @@ Wiring points to keep aligned:
   `code_size = 0x37c000`, `load_gpa = 0xffc84000`, `reset = 0xfffffff0` only
   when `firmware_profile` is set; `axvmconfig` rejects any profile declared
   with a non-UEFI boot protocol (`FirmwareProfileRequiresUefi`).
-- Guest SEC marker on COM1: `success_regex = ["SecCoreStartupWithStack\\("]`.
-  Reaching the SEC phase proves the nested OVMF executed; it intentionally
-  stops there (stage-1 diagnostics, not a full guest boot).
+- Guest SEC marker on COM1: `success_regex = ["(?s)VCpu\\[0\\] running\\.\\.\\..*SecCoreStartupWithStack"]`.
+  The `VCpu[0] running...` prefix is required: the QEMU-layer host OVMF
+  (injected as pflash to boot the axvisor host binary) prints the same SEC
+  line, so a bare `SecCoreStartupWithStack\(` would match the host firmware
+  instead of the nested guest. Reaching the SEC phase proves the nested OVMF
+  executed; it intentionally stops there (stage-1 diagnostics, not a full
+  guest boot).
 
 Common failures:
 

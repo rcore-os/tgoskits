@@ -131,7 +131,7 @@ flowchart TD
 
 ### 3.3 UEFI 分组与固定 OVMF bundle
 
-`test-suit/axvisor/uefi/ovmf-entry/` 承载 x86_64 的固定 OVMF 固件诊断用例（两个变体 `ovmf-entry-vmx` 与 `ovmf-entry-svm`，按宿主 CPU 的 VMX/SVM 能力分别选择）。该用例以 `-kernel` 启动 Axvisor 宿主，再由 Axvisor 把嵌套 OVMF 作为 UEFI guest 固件加载；`success_regex = ["SecCoreStartupWithStack\\("]` 表示嵌套固件已进入 SEC 阶段（guest COM1 输出），它是阶段 1 的 SEC 启动诊断，而非完整 guest boot。
+`test-suit/axvisor/uefi/ovmf-entry/` 承载 x86_64 的固定 OVMF 固件诊断用例（两个变体 `ovmf-entry-vmx` 与 `ovmf-entry-svm`，按宿主 CPU 的 VMX/SVM 能力分别选择）。该用例以 `-kernel` 启动 Axvisor 宿主，再由 Axvisor 把嵌套 OVMF 作为 UEFI guest 固件加载；`success_regex` 以 `(?s)VCpu[0] running...` 锚定嵌套 VM 后匹配 `SecCoreStartupWithStack`（guest COM1 输出），表示嵌套固件已进入 SEC 阶段。前缀锚定是必需的：QEMU 层为引导 Axvisor 宿主而注入的 pflash OVMF 会输出相同的 SEC 行，裸 `SecCoreStartupWithStack\(` 会误匹配宿主固件。该用例是阶段 1 的 SEC 启动诊断，而非完整 guest boot。
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \

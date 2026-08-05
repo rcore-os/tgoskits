@@ -42,9 +42,13 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)failed to initialize guest vm",
 ]
-# The fixed OVMF SEC marker printed by the nested firmware on guest COM1.
+# The fixed OVMF SEC marker printed by the NESTED firmware on guest COM1.
+# The `(?s)VCpu[0] running...` prefix anchors the match to the nested VM:
+# the QEMU-layer host OVMF (injected as pflash to boot the axvisor host
+# binary) prints the same SEC line while booting, so a bare
+# `SecCoreStartupWithStack\(` would match the host firmware instead.
 success_regex = [
-  "SecCoreStartupWithStack\\(",
+  "(?s)VCpu\\[0\\] running\\.\\.\\..*SecCoreStartupWithStack",
 ]
 to_bin = true
 uefi = false
