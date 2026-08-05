@@ -10,7 +10,7 @@ use rsext4::{
     bmalloc::AbsoluteBN,
     cache::bitmap::CacheKey,
     dir::{normalize_path, split_paren_child_and_translatevalid},
-    disknode::Ext4Extent,
+    disknode::{Ext4Extent, Ext4Inode},
     error::{Ext4Error, Ext4Result},
     ext4::{BlcokGroupLayout, BlockGroupLayout, file_entry_exisr, file_entry_exist},
     extents_tree::{ExtentNode, ExtentTree},
