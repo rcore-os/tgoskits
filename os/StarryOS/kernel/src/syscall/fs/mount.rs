@@ -469,12 +469,15 @@ pub fn sys_move_mount(
         return Err(AxError::InvalidInput);
     }
     let path = vm_load_string(to_path)?;
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
     let target = if path.starts_with('/') {
-        ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?
+        fs_context.lock().resolve(&path)?
     } else {
         crate::file::with_fs(to_dirfd, |fs| fs.resolve(&path))?
     };
     source.inner().mountpoint().attach_detached(&target)?;
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
     Ok(0)
 }
 
@@ -512,7 +515,16 @@ pub fn sys_mount_setattr(
     if !directory.inner().is_root_of_mount() {
         return Err(AxError::InvalidInput);
     }
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let is_visible = mount_namespace
+        .walk_tree()
+        .into_iter()
+        .any(|(_, _, mountpoint)| Arc::ptr_eq(&mountpoint, directory.inner().mountpoint()));
     apply_mount_attributes(directory.inner().mountpoint(), &attributes);
+    if is_visible {
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
+    }
     Ok(0)
 }
 
@@ -589,6 +601,8 @@ pub fn sys_mount(
         return Err(AxError::OperationNotPermitted);
     }
 
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
     let propagation = flags & PROPAGATION_FLAGS;
 
     if propagation.count_ones() > 1 {
@@ -623,6 +637,7 @@ pub fn sys_mount(
                 _ => {}
             }
         }
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
@@ -634,24 +649,27 @@ pub fn sys_mount(
         let mp = target.mountpoint();
         mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_MOVE) != 0 {
-        let fs_context = ax_fs_ng::vfs::current_fs_context();
         let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         source.move_mount(&target)?;
+        drop(ctx);
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_BIND) != 0 {
-        let fs_context = ax_fs_ng::vfs::current_fs_context();
         let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         target.bind_mount(&source, (flags & MS_REC) != 0)?;
+        drop(ctx);
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
@@ -732,6 +750,7 @@ pub fn sys_mount(
         _ => return Err(AxError::NoSuchDevice),
     }
 
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
     Ok(0)
 }
 
@@ -771,12 +790,12 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::NotFound);
     }
 
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
-        ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve_no_follow(target)?
+        fs_context.lock().resolve_no_follow(target)?
     } else {
-        ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?
+        fs_context.lock().resolve(target)?
     };
 
     if !current().as_thread().cred().has_cap_sys_admin() {
@@ -794,6 +813,7 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
 
     if (flags & MNT_DETACH) != 0 {
         target.detach_mount()?;
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
@@ -823,6 +843,7 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::from(LinuxError::EBUSY));
     }
     target.commit_unmount(plan)?;
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     // After unmount, filesystem block I/O has stopped; it is safe to do VFS
     // writeback here. Propagate writeback errors so userspace sees EIO when
@@ -896,6 +917,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // exactly matches the old root Location — mirroring Linux
     // chroot_fs_refs() in fs/namespace.c.
     ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     Ok(0)
 }

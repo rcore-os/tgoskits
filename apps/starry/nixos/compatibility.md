@@ -37,6 +37,7 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 | systemd passes a pathname Unix stream listener to journald | Linux `socket(7)` defines `SO_ACCEPTCONN` as a read-only integer that is zero before `listen(2)` and one afterwards; systemd 260.2 uses it while identifying inherited Varlink listeners | After the hostname correction, journald reported `1 unknown file descriptors passed, closing.` before `Collecting audit messages is disabled` | Resolved by exposing the owning transport's listener state through `SocketOps`, separating Unix bind from listen, and returning that state for `SO_ACCEPTCONN`; no syscall-layer shadow state added | `test-suit/starryos/qemu/system/bugfix-unix-listener-introspection/` changed from 12/17 to 17/17, matching the host Linux oracle; adjacent accept4 and seqpacket regressions also pass | Re-run when socket listener state, Unix namespace bind slots, accept/connect, or `SO_ACCEPTCONN` handling changes |
 | Journald processes systemd handoff and notification datagrams | Linux systemd-journald accepts authenticated handoff/notification messages and remains available through its activation sockets | After listener introspection was corrected, the unknown-fd diagnostic disappeared; journald logged messages without valid credentials, then `systemd-journalctl.socket` and journald startup timed out | Open diagnostic finding; the visible messages do not yet identify whether the owning gap is credential ancillary data, sender identity, socket activation, or another wait/wakeup boundary | No focused regression yet; the current boot only proves the Varlink listener boundary was crossed | Revisit after a Linux oracle and minimal deterministic reproducer identify the first failing operation |
 | `systemd-journald` appends an entry and obtains the current boot ID | systemd 260.2 [`sd_id128_get_boot()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-id128/sd-id128.c#L169-L193) reads `/proc/sys/kernel/random/boot_id` as a non-null canonical UUID; [`journal_file_append_entry()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-journal/journal-file.c#L2527-L2573) returns that read error before appending. The same direct `open`/`fstat`/`read`/`lseek` C probe passed 9/9 in the project Linux container. | The journal file open returned its expected initial `ENOENT`, then the boot-ID read returned `ENOENT`; journald reported its generic journal-write error immediately afterwards. | Resolved in procfs with one immutable per-kernel-boot UUIDv4 value, exposed as read-only `/proc/sys/kernel/random/boot_id`; no machine-ID derivation, journal mask, or service override was added. | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-random-boot-id/` changed from `open` `ENOENT` to 9/9 pass, including `0444`, exact 37-byte format, EOF, seek/re-read, and two-reader stability. The 2026-08-05 NixOS rerun then reached `Started Journal Service.` and received the flush request without another boot-ID error. | Re-run when procfs initialization, wall-clock entropy, pseudo-file permissions, or boot-identity lifecycle changes. |
+| systemd observes mount-table changes through `/proc/<pid>/{mountinfo,mounts}` polling | Linux 6.6 `fs/proc_namespace.c::mounts_poll()` stores one observed mount-namespace event value per open file description and reports `POLLPRI | POLLERR` when `fs/namespace.c::touch_mnt_namespace()` advances that namespace's event counter and wakes poll waiters | The util-linux mount helper completed the `move_mount(2)` operation for `/run/wrappers`, but systemd PID 1 did not receive a mountinfo change event, did not observe the published mount, and reported the mount unit protocol failure | Resolved with namespace-scoped mount-table generations, per-open consumed change events, and notifications after successful mount, bind, move, remount, propagation, `mount_setattr`, unmount, and `pivot_root` publication; no systemd workaround or host-side mount was added | The Linux oracle printed `STARRY_MOUNTINFO_POLL_NOTIFY_PASSED`. The focused Starry regression changed from `ready=0 revents=0` to `POLLPRI | POLLERR`, verified that a repeated poll consumes the event, and passed through the grouped QEMU runner. The real NixOS rerun printed `[  OK  ] Mounted /run/wrappers.`, reached `Local File Systems`, and started `Register Nix Store Paths` without the former mount-unit failure. | Re-run when mount-namespace cloning, proc mount-table generation, poll wakeup, or any mount-tree mutation path changes. |
 
 ## Run evidence
 
@@ -60,6 +61,25 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
   Later `fcntl(1027)` and `kcmp` diagnostics are recorded only as observations;
   this run does not attribute those later failures to a new kernel subsystem.
   No `STARRY_NIXOS_SYSTEM_PASSED` marker was emitted.
+
+### 2026-08-05 mountinfo notification rerun
+
+- The focused regression first failed on the prior kernel with
+  `ready=0 revents=0 expected POLLPRI|POLLERR`, then passed after the correction
+  with `STARRY_MOUNTINFO_POLL_NOTIFY_PASSED` and
+  `result: 1/1 case(s) passed`.
+- Both focused and real-system runs used rootless Podman with `--network none`,
+  a read-only `/workspace`, and writable state only under `.ci-cache`. The real
+  run set `STARRY_NIXOS_REUSE_ROOTFS=1`; neither run invoked host Nix or changed
+  the host `/nix/store`.
+- The real-system run completed generators, queued `Multi-User System`, started
+  journald, completed `systemd-sysctl`, flushed the journal, and completed both
+  static-device-node jobs. It then printed `[  OK  ] Mounted /run/wrappers.`,
+  reached `Local File Systems`, and started `Register Nix Store Paths`.
+- The run was stopped after crossing the recorded mountinfo boundary because it
+  had entered the later Nix registration phase. It did not emit
+  `STARRY_NIXOS_SYSTEM_PASSED`, so T028 and the final acceptance claim remain
+  incomplete.
 
 ### 2026-08-01 initial unmasked run
 
