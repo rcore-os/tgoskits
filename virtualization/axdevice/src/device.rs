@@ -74,17 +74,71 @@ impl RuntimeAccessPorts {
     }
 }
 
-#[inline]
-#[allow(dead_code)]
-fn log_device_io(
-    addr_type: &'static str,
-    addr: impl core::fmt::LowerHex,
-    addr_range: impl core::fmt::LowerHex,
-    read: bool,
-    width: AccessWidth,
+/// Emits a per-access trace line on the routed device-access path.
+///
+/// This is the single, unified log path for every device access that enters
+/// [`DeviceRuntime`]: reads and writes on the MMIO/port buses, plus MMIO
+/// writes carrying an access-scoped guest-memory capability. It replaces the
+/// former dead `log_device_io` helper, which could never be observed because
+/// nothing called it.
+///
+/// `device` is `None` when the access did not match any registered resource
+/// (the access is then recorded with `device=<unregistered>` and the lookup
+/// still returns [`DeviceError::NotFound`]). `result` is `None` in that same
+/// case; for a matched device it is the outcome of [`Device::access`]. When a
+/// read fails, the read value is not available, so it is rendered as
+/// `value=<unavailable>`.
+///
+/// System-register accesses are deliberately not traced: they are emitted on
+/// the architecture hot path with a high frequency, and the caller skips this
+/// function for [`BusKind::SysReg`].
+fn trace_device_access(
+    device: Option<&str>,
+    access: &BusAccess,
+    result: Option<&Result<BusResponse, DeviceError>>,
 ) {
-    let rw = if read { "read" } else { "write" };
-    trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
+    let device = device.unwrap_or("<unregistered>");
+    let direction = if access.is_read { "read" } else { "write" };
+    let bus = match access.kind {
+        BusKind::Mmio => "MMIO",
+        BusKind::Port => "PIO",
+        BusKind::SysReg => "SysReg",
+    };
+    match result {
+        Some(Ok(BusResponse::Read { value })) => trace!(
+            "guest device access: device={device} bus={bus} direction={direction} addr={addr:#x} \
+             width={width:?} value={value:#x} result=ok",
+            addr = access.addr,
+            width = access.width,
+        ),
+        Some(Ok(BusResponse::Write)) => trace!(
+            "guest device access: device={device} bus={bus} direction={direction} addr={addr:#x} \
+             width={width:?} value={data:#x} result=ok",
+            addr = access.addr,
+            width = access.width,
+            data = access.data,
+        ),
+        Some(Err(error)) if access.is_read => trace!(
+            "guest device access: device={device} bus={bus} direction={direction} addr={addr:#x} \
+             width={width:?} value=<unavailable> result=error={error}",
+            addr = access.addr,
+            width = access.width,
+        ),
+        Some(Err(error)) => trace!(
+            "guest device access: device={device} bus={bus} direction={direction} addr={addr:#x} \
+             width={width:?} value={data:#x} result=error={error}",
+            addr = access.addr,
+            width = access.width,
+            data = access.data,
+        ),
+        None => trace!(
+            "guest device access: device={device} bus={bus} direction={direction} addr={addr:#x} \
+             width={width:?} value=<unavailable> result=error={error}",
+            addr = access.addr,
+            width = access.width,
+            error = DeviceError::NotFound,
+        ),
+    }
 }
 
 /// Internal range entry cached in the index maps.
@@ -1100,6 +1154,9 @@ impl DeviceRuntime {
             }
         };
         let Some(index) = index else {
+            if access.kind != BusKind::SysReg {
+                trace_device_access(None, access, None);
+            }
             return Ok(None);
         };
 
@@ -1112,7 +1169,12 @@ impl DeviceRuntime {
             stop_grants: &self.stop_grants,
             access_ports: &self.access_ports,
         };
-        self.devices[index].access(access, &mut context).map(Some)
+        let device = &self.devices[index];
+        let response = device.access(access, &mut context);
+        if access.kind != BusKind::SysReg {
+            trace_device_access(Some(device.name()), access, Some(&response));
+        }
+        response.map(Some)
     }
 }
 
@@ -2070,5 +2132,316 @@ mod tests {
         assert_eq!(lifecycle.reset_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.suspend_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.resume_calls.load(Ordering::Relaxed), 1);
+    }
+
+    // Guest device access tracing.
+    //
+    // These tests exercise the trace points added to the routed device-access
+    // path. The trace itself is a `trace!` log line and is not captured here;
+    // the contract under test is that tracing never changes dispatch return
+    // semantics, and that unregistered accesses keep returning NotFound.
+
+    #[test]
+    fn trace_points_do_not_change_registered_device_read_result() {
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register(Arc::new(AccessAwareDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x4000,
+                    size: 0x100,
+                }],
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x4000,
+                width: AccessWidth::Dword,
+                data: 0,
+            }),
+            Ok(BusResponse::Read { value: 0xfeed })
+        ));
+    }
+
+    #[test]
+    fn trace_points_do_not_change_registered_device_write_result() {
+        struct WriteAckDevice {
+            resources: alloc::vec::Vec<Resource>,
+        }
+        impl Device for WriteAckDevice {
+            fn name(&self) -> &str {
+                "trace-write-ack"
+            }
+            fn resources(&self) -> &[Resource] {
+                &self.resources
+            }
+            fn access(
+                &self,
+                _: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
+                Ok(BusResponse::Write)
+            }
+        }
+
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register(Arc::new(WriteAckDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x4100,
+                    size: 0x100,
+                }],
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: false,
+                addr: 0x4100,
+                width: AccessWidth::Dword,
+                data: 0xabcd,
+            }),
+            Ok(BusResponse::Write)
+        ));
+    }
+
+    #[test]
+    fn trace_points_do_not_change_registered_device_error_result() {
+        struct ErroringDevice;
+        impl Device for ErroringDevice {
+            fn name(&self) -> &str {
+                "trace-error"
+            }
+            fn resources(&self) -> &[Resource] {
+                static R: [Resource; 1] = [Resource::MmioRange {
+                    base: 0x4200,
+                    size: 0x100,
+                }];
+                &R
+            }
+            fn access(
+                &self,
+                _: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
+                Err(DeviceError::Internal)
+            }
+        }
+
+        let mut devices = DeviceRuntime::empty();
+        devices.register(Arc::new(ErroringDevice)).unwrap();
+
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x4200,
+                width: AccessWidth::Dword,
+                data: 0,
+            }),
+            Err(DeviceError::Internal)
+        ));
+    }
+
+    #[test]
+    fn dispatch_keeps_returning_not_found_for_unregistered_accesses() {
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register(Arc::new(D::new_mmio(0x4300, 0x100, "trace-registered")))
+            .unwrap();
+
+        for (addr, width) in [
+            (0x7000u64, AccessWidth::Byte),
+            (0x7001, AccessWidth::Word),
+            (0x7002, AccessWidth::Dword),
+            (0x7003, AccessWidth::Qword),
+        ] {
+            assert!(
+                matches!(
+                    devices.dispatch(&BusAccess {
+                        kind: BusKind::Mmio,
+                        is_read: true,
+                        addr,
+                        width,
+                        data: 0,
+                    }),
+                    Err(DeviceError::NotFound)
+                ),
+                "unregistered access at {addr:#x} must stay NotFound"
+            );
+        }
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Port,
+                is_read: true,
+                addr: 0x3000,
+                width: AccessWidth::Word,
+                data: 0,
+            }),
+            Err(DeviceError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn dispatch_keeps_returning_out_of_range_for_invalid_port_address() {
+        let devices = DeviceRuntime::empty();
+
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Port,
+                is_read: true,
+                addr: u64::from(u16::MAX) + 1,
+                width: AccessWidth::Byte,
+                data: 0,
+            }),
+            Err(DeviceError::OutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn trace_points_cover_every_access_width() {
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register(Arc::new(AccessAwareDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x4400,
+                    size: 0x100,
+                }],
+            }))
+            .unwrap();
+
+        for (offset, width) in [
+            (0x4400u64, AccessWidth::Byte),
+            (0x4401, AccessWidth::Word),
+            (0x4402, AccessWidth::Dword),
+            (0x4403, AccessWidth::Qword),
+        ] {
+            assert!(matches!(
+                devices.dispatch(&BusAccess {
+                    kind: BusKind::Mmio,
+                    is_read: true,
+                    addr: offset,
+                    width,
+                    data: 0,
+                }),
+                Ok(BusResponse::Read { value: 0xfeed })
+            ));
+        }
+    }
+
+    #[test]
+    fn mmio_write_with_memory_keeps_returning_not_found_for_unregistered_address() {
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register(Arc::new(D::new_mmio(0x4500, 0x100, "trace-memory")))
+            .unwrap();
+        let mut memory = TestMemoryPort;
+
+        let error = devices
+            .handle_mmio_write_with_memory(
+                GuestPhysAddr::from_usize(0x7000),
+                AccessWidth::Dword,
+                0x55,
+                &mut memory,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DeviceManagerError::Access {
+                source: DeviceError::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn trace_points_do_not_change_mmio_write_with_memory_result() {
+        let dma_grant = DmaGrant::new();
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register_bundle(DeviceBundle::new().with_guest_memory_device_grant(
+                Arc::new(GuestMemoryRequestDevice {
+                    resources: alloc::vec![Resource::MmioRange {
+                        base: 0x4600,
+                        size: 0x100,
+                    }],
+                    dma_grant: dma_grant.clone(),
+                }),
+                dma_grant,
+            ))
+            .unwrap();
+        let mut memory = TestMemoryPort;
+
+        assert!(
+            devices
+                .handle_mmio_write_with_memory(
+                    GuestPhysAddr::from_usize(0x4600),
+                    AccessWidth::Dword,
+                    0xaa,
+                    &mut memory,
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn trace_points_do_not_change_port_dispatch_result() {
+        struct DirectionAwarePortDevice {
+            resources: alloc::vec::Vec<Resource>,
+        }
+        impl Device for DirectionAwarePortDevice {
+            fn name(&self) -> &str {
+                "trace-direction-port"
+            }
+            fn resources(&self) -> &[Resource] {
+                &self.resources
+            }
+            fn access(
+                &self,
+                access: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
+                if access.is_read {
+                    Ok(BusResponse::Read { value: 0 })
+                } else {
+                    Ok(BusResponse::Write)
+                }
+            }
+        }
+
+        let mut devices = DeviceRuntime::empty();
+        devices
+            .register(Arc::new(DirectionAwarePortDevice {
+                resources: alloc::vec![Resource::PortRange {
+                    base: 0x60,
+                    size: 0x10,
+                }],
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Port,
+                is_read: true,
+                addr: 0x60,
+                width: AccessWidth::Byte,
+                data: 0,
+            }),
+            Ok(BusResponse::Read { value: 0 })
+        ));
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Port,
+                is_read: false,
+                addr: 0x61,
+                width: AccessWidth::Word,
+                data: 0x1234,
+            }),
+            Ok(BusResponse::Write)
+        ));
     }
 }
