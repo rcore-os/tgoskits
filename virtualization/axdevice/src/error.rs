@@ -4,6 +4,8 @@ use alloc::string::String;
 
 use axdevice_base::{AccessWidth, BusKind, DeviceError, IrqError, RegistryError};
 
+use crate::InterruptRegistrationError;
+
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
 
@@ -96,6 +98,9 @@ pub enum DeviceManagerError {
     /// IRQ resolution or signaling failed.
     #[error(transparent)]
     Irq(#[from] IrqError),
+    /// Interrupt-controller or endpoint registration failed.
+    #[error(transparent)]
+    InterruptRegistration(#[from] InterruptRegistrationError),
 }
 
 impl From<DeviceManagerError> for DeviceError {
@@ -136,6 +141,10 @@ impl From<DeviceManagerError> for DeviceError {
             },
             DeviceManagerError::Irq(error) => Self::Backend {
                 operation: "route device IRQ",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::InterruptRegistration(error) => Self::InvalidInput {
+                operation: "register interrupt capability",
                 detail: alloc::format!("{error}"),
             },
         }

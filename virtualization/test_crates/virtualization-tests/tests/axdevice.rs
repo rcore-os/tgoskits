@@ -369,7 +369,7 @@ impl DeviceFactory for MockMmioFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
             return Err(DeviceManagerError::InvalidConfig {
@@ -575,7 +575,7 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     let first = device_config(
         "factory-mmio-first",
         EmulatedDeviceType::VirtioBlk,
@@ -590,7 +590,7 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
     );
 
     assert!(matches!(
-        DeviceRuntime::build_with_factories(&[first, overlap], &factories, &context).err(),
+        DeviceRuntime::build_with_factories(&[first, overlap], &factories, &mut context).err(),
         Some(DeviceManagerError::Registry(
             RegistryError::AddressConflict { .. }
         ))
@@ -734,7 +734,7 @@ fn test_factory_registry_rejects_duplicate_device_type() {
 fn test_missing_factory_returns_unsupported() {
     let factories = DeviceFactoryRegistry::new();
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     let config = device_config(
         "missing-console",
         EmulatedDeviceType::VirtioConsole,
@@ -743,11 +743,11 @@ fn test_missing_factory_returns_unsupported() {
     );
 
     assert!(matches!(
-        factories.build(&config, &context).err(),
+        factories.build(&config, &mut context).err(),
         Some(DeviceManagerError::Unsupported { .. })
     ));
     assert!(matches!(
-        DeviceRuntime::build_with_factories(&[config], &factories, &context).err(),
+        DeviceRuntime::build_with_factories(&[config], &factories, &mut context).err(),
         Some(DeviceManagerError::Unsupported { .. })
     ));
 }
@@ -757,7 +757,7 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     let base = 0x1_0000;
     let devices = DeviceRuntime::build_with_factories(
         &[device_config(
@@ -767,7 +767,7 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
             0x1000,
         )],
         &factories,
-        &context,
+        &mut context,
     )
     .unwrap();
 
@@ -785,7 +785,7 @@ fn test_factory_validation_failure_is_reported_by_static_builder() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     let invalid = device_config(
         "invalid-factory-mmio",
         EmulatedDeviceType::VirtioBlk,
@@ -794,7 +794,7 @@ fn test_factory_validation_failure_is_reported_by_static_builder() {
     );
 
     assert!(matches!(
-        DeviceRuntime::build_with_factories(&[invalid], &factories, &context),
+        DeviceRuntime::build_with_factories(&[invalid], &factories, &mut context),
         Err(DeviceManagerError::InvalidConfig { .. })
     ));
 }
@@ -804,11 +804,11 @@ fn test_builtin_meta_factory_builds_dummy_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     let devices = DeviceRuntime::build_with_factories(
         &[device_config("metadata", EmulatedDeviceType::Dummy, 0, 0)],
         &factories,
-        &context,
+        &mut context,
     )
     .unwrap();
 
@@ -913,7 +913,7 @@ fn test_build_with_factories_accepts_ivc_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     let devices = DeviceRuntime::build_with_factories(
         &[device_config(
             "ivc",
@@ -922,7 +922,7 @@ fn test_build_with_factories_accepts_ivc_config() {
             0x2000,
         )],
         &factories,
-        &context,
+        &mut context,
     )
     .unwrap();
 

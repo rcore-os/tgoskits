@@ -28,11 +28,13 @@ extern crate std;
 #[macro_use]
 extern crate log;
 
+mod builder;
 mod config_validation;
 mod device;
 mod error;
 mod factory;
 mod fw_cfg;
+mod interrupt;
 // Keep the LoongArch-only implementation out of other production targets, but
 // compile its unit tests on the host so output-port behavior is covered by CI.
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -41,6 +43,7 @@ mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
 mod resources;
+mod runtime_resources;
 mod serial;
 mod service;
 #[cfg(target_arch = "x86_64")]
@@ -48,19 +51,21 @@ mod x86;
 
 pub use axdevice_base::{AccessWidth, Device, Port, SysRegAddr};
 pub use axvm_types::GuestPhysAddr;
+pub use builder::DeviceRuntimeBuilder;
 pub use config_validation::validate_device_config;
 pub use device::{
     DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
 };
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
-    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, VirtualInterruptControllerKey,
-    register_builtin_factories,
+    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, MsiEndpointRange,
+    VirtualInterruptControllerKey, register_builtin_factories,
 };
 pub use fw_cfg::{
     FwCfg, FwCfgAcpiBlobs, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice,
     FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPlatformConfig, FwCfgRamRegion,
 };
+pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
 #[cfg(target_arch = "loongarch64")]
 // Reusable LoongArch device models. These are target-gated device packages,
 // not part of the architecture-neutral framework core.

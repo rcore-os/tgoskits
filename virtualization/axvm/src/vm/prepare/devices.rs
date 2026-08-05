@@ -37,13 +37,13 @@ impl PreparedDevices {
         extra_configs: &[EmulatedDeviceConfig],
         access_ports: RuntimeAccessPorts,
     ) -> AxVmResult<Self> {
-        let build_context = DeviceBuildContext::new(interrupt_controller);
+        let mut build_context = DeviceBuildContext::new(interrupt_controller);
         let mut configs: Vec<EmulatedDeviceConfig> = resources.config.emu_devices().to_vec();
         configs.extend_from_slice(extra_configs);
         let devices = DeviceRuntime::build_with_factories_and_ports(
             &configs,
             factories,
-            &build_context,
+            &mut build_context,
             access_ports,
         )?;
 

@@ -240,7 +240,7 @@ impl DeviceFactory for Aarch64VgicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build AArch64 virtual GIC")?;
         let access_context: Arc<dyn VgicAccessContext> =
@@ -270,7 +270,7 @@ impl DeviceFactory for Aarch64GicCpuRegionMarkerFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(
             &self.expected,

@@ -175,7 +175,7 @@ impl DeviceFactory for IrqMmioFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        context: &DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
             return Err(DeviceManagerError::InvalidConfig {
@@ -221,12 +221,12 @@ fn recording_controller() -> (Arc<RecordingInterruptController>, Weak<RecordingI
 #[test]
 fn test_controller_rejection_propagates_through_factory_build() {
     let controller = RejectingInterruptController;
-    let context = DeviceBuildContext::new(&controller);
+    let mut context = DeviceBuildContext::new(&controller);
     assert!(matches!(
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x6_0000, 12)],
             &irq_factory_registry(),
-            &context,
+            &mut context,
         )
         .err(),
         Some(DeviceManagerError::Irq(IrqError::Unsupported { .. }))
@@ -315,11 +315,11 @@ fn test_controller_inputs_signal_backend_without_a_parallel_fabric() {
 fn test_factory_device_emits_irq_through_canonical_controller() {
     let (controller, sink) = recording_controller();
     let devices = {
-        let context = DeviceBuildContext::new(controller.as_ref());
+        let mut context = DeviceBuildContext::new(controller.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x7_0000, 15)],
             &irq_factory_registry(),
-            &context,
+            &mut context,
         )
         .unwrap()
     };
@@ -338,11 +338,11 @@ fn test_factory_device_emits_irq_through_canonical_controller() {
 fn test_dropping_devices_and_controller_releases_irq_backend() {
     let (controller, sink) = recording_controller();
     let devices = {
-        let context = DeviceBuildContext::new(controller.as_ref());
+        let mut context = DeviceBuildContext::new(controller.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x8_0000, 16)],
             &irq_factory_registry(),
-            &context,
+            &mut context,
         )
         .unwrap()
     };
@@ -358,20 +358,20 @@ fn test_equal_irq_numbers_are_isolated_between_controllers() {
     let (controller_a, sink_a) = recording_controller();
     let (controller_b, sink_b) = recording_controller();
     let devices_a = {
-        let context = DeviceBuildContext::new(controller_a.as_ref());
+        let mut context = DeviceBuildContext::new(controller_a.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0x9_0000, 17)],
             &irq_factory_registry(),
-            &context,
+            &mut context,
         )
         .unwrap()
     };
     let devices_b = {
-        let context = DeviceBuildContext::new(controller_b.as_ref());
+        let mut context = DeviceBuildContext::new(controller_b.as_ref());
         DeviceRuntime::build_with_factories(
             &[irq_device_config(0xa_0000, 17)],
             &irq_factory_registry(),
-            &context,
+            &mut context,
         )
         .unwrap()
     };

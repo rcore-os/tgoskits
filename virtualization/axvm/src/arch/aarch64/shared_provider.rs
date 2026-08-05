@@ -234,7 +234,7 @@ impl DeviceFactory for SharedProviderFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         let [index, provider_phandle] = config.cfg_list.as_slice() else {
             return Err(DeviceManagerError::InvalidConfig {

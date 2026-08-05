@@ -553,7 +553,7 @@ impl DeviceFactory for MachineSerialFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        context: &DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         self.validate_config(config)?;
         let irq = context.resolve_irq(self.profile.irq, InterruptTriggerMode::LevelTriggered)?;

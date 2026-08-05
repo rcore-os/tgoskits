@@ -24,6 +24,7 @@ use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr};
 use crate::{
     DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle, DeviceManagerError,
     DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey, PollableDeviceOps,
+    runtime_resources::PlannedRuntimeResources,
 };
 
 /// Runtime backend for access-scoped virtual timer requests.
@@ -159,6 +160,8 @@ pub struct DeviceRuntime {
     lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// Typed capabilities contributed during VM preparation.
     services: DeviceServices,
+    /// Planned controller, endpoint, and lease state.
+    planned: PlannedRuntimeResources,
     /// Devices explicitly granted access to guest memory during a routed access.
     ///
     /// The grant is intentionally narrow: it is supplied only by the VM's MMIO
@@ -314,6 +317,7 @@ impl DeviceRuntime {
             pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
+            planned: PlannedRuntimeResources::new(),
             dma_grants: Vec::new(),
             timer_grants: Vec::new(),
             wake_grants: Vec::new(),
@@ -323,11 +327,19 @@ impl DeviceRuntime {
         }
     }
 
+    pub(crate) fn attach_access_ports(&mut self, access_ports: RuntimeAccessPorts) {
+        self.access_ports = access_ports;
+    }
+
+    pub(crate) const fn interrupt_registry(&self) -> &crate::interrupt::InterruptRegistry {
+        &self.planned.interrupts
+    }
+
     /// Builds all configured devices through registered factories.
     pub fn build_with_factories(
         configs: &[EmulatedDeviceConfig],
         factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<Self> {
         Self::build_with_factories_and_ports(configs, factories, context, RuntimeAccessPorts::new())
     }
@@ -336,7 +348,7 @@ impl DeviceRuntime {
     pub fn build_with_factories_and_ports(
         configs: &[EmulatedDeviceConfig],
         factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
         access_ports: RuntimeAccessPorts,
     ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
@@ -368,7 +380,7 @@ impl DeviceRuntime {
         &mut self,
         config: &EmulatedDeviceConfig,
         factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
+        context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult {
         self.ensure_unsealed("register factory device")?;
         let bundle = factories.build(config, context)?;
@@ -445,6 +457,7 @@ impl DeviceRuntime {
             }
         }
         self.services.validate_merge(&bundle.services)?;
+        self.planned.validate_bundle(&bundle.planned)?;
 
         let saved_len = self.devices.len();
         for device in &bundle.devices {
@@ -480,6 +493,7 @@ impl DeviceRuntime {
         self.pollable_devices.extend(bundle.pollable);
         self.lifecycle_devices.extend(bundle.lifecycle);
         self.services.append(bundle.services);
+        self.planned.append(bundle.planned);
         Ok(())
     }
 
@@ -817,6 +831,22 @@ impl DeviceRuntime {
     /// Returns VM-local typed device services.
     pub const fn services(&self) -> &DeviceServices {
         &self.services
+    }
+
+    /// Returns a registered wired interrupt-controller capability.
+    pub fn interrupt_controller(
+        &self,
+        id: axdevice_base::InterruptControllerId,
+    ) -> DeviceManagerResult<Arc<dyn axdevice_base::VirtualInterruptController>> {
+        self.planned.interrupts.wired_controller(id)
+    }
+
+    /// Returns a registered message interrupt-controller capability.
+    pub fn message_interrupt_controller(
+        &self,
+        id: axdevice_base::InterruptControllerId,
+    ) -> DeviceManagerResult<Arc<dyn axdevice_base::MessageInterruptController>> {
+        self.planned.interrupts.message_controller(id)
     }
 
     /// Resets lifecycle-capable devices in registration order.
@@ -1466,7 +1496,7 @@ mod tests {
         fn build(
             &self,
             _config: &EmulatedDeviceConfig,
-            _context: &DeviceBuildContext<'_>,
+            _context: &mut DeviceBuildContext<'_>,
         ) -> DeviceManagerResult<DeviceBundle> {
             Ok(DeviceBundle::new())
         }
@@ -1776,7 +1806,7 @@ mod tests {
                 device_type: EmulatedDeviceType::Dummy,
             }))
             .unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
+        let mut context = DeviceBuildContext::new(&UnusedInterruptController);
         let mut runtime = DeviceRuntime::build_with_factories(
             &[EmulatedDeviceConfig {
                 name: "seal-test".into(),
@@ -1787,7 +1817,7 @@ mod tests {
                 cfg_list: alloc::vec![],
             }],
             &factories,
-            &context,
+            &mut context,
         )
         .unwrap();
 
@@ -2146,14 +2176,14 @@ mod tests {
                 device_type: EmulatedDeviceType::FwCfg,
             }))
             .unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
+        let mut context = DeviceBuildContext::new(&UnusedInterruptController);
         let config = EmulatedDeviceConfig {
             name: "fw-cfg".into(),
             emu_type: EmulatedDeviceType::FwCfg,
             ..Default::default()
         };
 
-        assert!(DeviceRuntime::build_with_factories(&[config], &factories, &context).is_ok());
+        assert!(DeviceRuntime::build_with_factories(&[config], &factories, &mut context).is_ok());
 
         let unsupported = EmulatedDeviceConfig {
             name: "unsupported".into(),
@@ -2161,7 +2191,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            DeviceRuntime::build_with_factories(&[unsupported], &factories, &context),
+            DeviceRuntime::build_with_factories(&[unsupported], &factories, &mut context),
             Err(crate::DeviceManagerError::Unsupported {
                 operation: "build emulated device",
                 ..
@@ -2173,7 +2203,7 @@ mod tests {
     fn ivc_channel_factory_contributes_static_guest_range_allocator() {
         let mut factories = DeviceFactoryRegistry::new();
         register_builtin_factories(&mut factories).unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
+        let mut context = DeviceBuildContext::new(&UnusedInterruptController);
         let config = EmulatedDeviceConfig {
             name: "ivc".into(),
             emu_type: EmulatedDeviceType::IVCChannel,
@@ -2182,7 +2212,8 @@ mod tests {
             ..Default::default()
         };
 
-        let devices = DeviceRuntime::build_with_factories(&[config], &factories, &context).unwrap();
+        let devices =
+            DeviceRuntime::build_with_factories(&[config], &factories, &mut context).unwrap();
 
         let first = devices.alloc_ivc_channel(0x1000).unwrap();
         let second = devices.alloc_ivc_channel(0x2000).unwrap();

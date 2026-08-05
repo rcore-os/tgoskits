@@ -119,7 +119,7 @@ impl DeviceFactory for HostPortPassthroughDeviceFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         let base =
             u16::try_from(config.base_gpa).map_err(|_| DeviceManagerError::InvalidConfig {

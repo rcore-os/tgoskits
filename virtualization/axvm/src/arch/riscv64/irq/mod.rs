@@ -309,7 +309,7 @@ impl DeviceFactory for RiscvPlicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build RISC-V virtual PLIC")?;
         let device: Arc<dyn Device> = Arc::new(RiscvPlicDevice {

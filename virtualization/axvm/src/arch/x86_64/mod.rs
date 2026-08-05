@@ -729,7 +729,7 @@ impl DeviceFactory for X86IoApicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build x86 virtual IOAPIC")?;
         let service: Arc<dyn X86IoApicDeviceOps> = self.ioapic.clone();
@@ -757,7 +757,7 @@ impl DeviceFactory for X86PitFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         validate_device_config(&self.expected, config, "build x86 virtual PIT")?;
         let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
@@ -1002,8 +1002,9 @@ mod tests {
             },
         ];
         let controller = register_device_factories(1, &configs, &mut factories).unwrap();
-        let context = DeviceBuildContext::new(controller.as_ref());
-        let devices = DeviceRuntime::build_with_factories(&configs, &factories, &context).unwrap();
+        let mut context = DeviceBuildContext::new(controller.as_ref());
+        let devices =
+            DeviceRuntime::build_with_factories(&configs, &factories, &mut context).unwrap();
 
         assert_eq!(devices.devices().count(), 2);
         assert!(devices.services().require::<X86IoApicServiceKey>().is_ok());
@@ -1031,8 +1032,8 @@ mod tests {
             .unwrap();
         pit.base_gpa += 1;
 
-        let context = DeviceBuildContext::new(controller.as_ref());
-        let result = DeviceRuntime::build_with_factories(&configs, &factories, &context);
+        let mut context = DeviceBuildContext::new(controller.as_ref());
+        let result = DeviceRuntime::build_with_factories(&configs, &factories, &mut context);
         assert!(matches!(
             result,
             Err(axdevice::DeviceManagerError::InvalidConfig {

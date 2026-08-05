@@ -563,7 +563,7 @@ impl DeviceFactory for FwCfgPayloadFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         if config.base_gpa != self.payload.base.as_usize() || config.length != self.payload.size {
             return Err(DeviceManagerError::InvalidConfig {

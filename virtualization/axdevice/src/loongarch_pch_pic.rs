@@ -305,7 +305,7 @@ impl DeviceFactory for LoongArchPchPicFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
+        _context: &mut DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         self.validate(config)?;
         let device: Arc<dyn Device> = self.pic.clone();
