@@ -48,12 +48,23 @@ impl Ext4FileSystem {
 }
 
 /// Return whether a path resolves to an inode.
-pub fn file_entry_exisr<B: BlockDevice>(
+pub fn file_entry_exist<B: BlockDevice>(
     fs: &mut Ext4FileSystem,
     device: &mut Jbd2Dev<B>,
     path: &str,
 ) -> Ext4Result<bool> {
     fs.file_entries_exist(device, path)
+}
+
+/// Return whether a path resolves to an inode.
+///
+/// Kept for compatibility with the original misspelled API.
+pub fn file_entry_exisr<B: BlockDevice>(
+    fs: &mut Ext4FileSystem,
+    device: &mut Jbd2Dev<B>,
+    path: &str,
+) -> Ext4Result<bool> {
+    file_entry_exist(fs, device, path)
 }
 
 /// Look up an inode by path.

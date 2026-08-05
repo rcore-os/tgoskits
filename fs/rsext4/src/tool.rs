@@ -81,7 +81,7 @@ pub fn is_numbers_power(number: usize, base: usize) -> bool {
 /// the sparse-super rules and either reserve space for backup superblock/GDT
 /// copies or start directly with their bitmaps.
 #[allow(clippy::too_many_arguments)]
-pub fn cloc_group_layout(
+pub fn calc_group_layout(
     gid: u32,
     sb: &Ext4Superblock,
     blocks_per_group: u32,
@@ -90,9 +90,9 @@ pub fn cloc_group_layout(
     group0_inode_bitmap: u32,
     group0_inode_table: u32,
     gdt_blocks: u32,
-) -> BlcokGroupLayout {
+) -> BlockGroupLayout {
     if gid == 0 {
-        return BlcokGroupLayout {
+        return BlockGroupLayout {
             group_start_block: 0,
             group_blcok_bitmap_startblocks: group0_block_bitmap as u64,
             group_inode_bitmap_startblocks: group0_inode_bitmap as u64,
@@ -124,11 +124,35 @@ pub fn cloc_group_layout(
         (bb, ib, it, meta)
     };
 
-    BlcokGroupLayout {
+    BlockGroupLayout {
         group_start_block: group_start as u64,
         group_blcok_bitmap_startblocks: block_bitmap as u64,
         group_inode_bitmap_startblocks: inode_bitmap as u64,
         group_inode_table_startblocks: inode_table as u64,
         metadata_blocks_in_group: meta_blocks,
     }
+}
+
+/// Group-layout calculation with the original misspelled API name.
+#[allow(clippy::too_many_arguments)]
+pub fn cloc_group_layout(
+    gid: u32,
+    sb: &Ext4Superblock,
+    blocks_per_group: u32,
+    inode_table_blocks: u32,
+    group0_block_bitmap: u32,
+    group0_inode_bitmap: u32,
+    group0_inode_table: u32,
+    gdt_blocks: u32,
+) -> BlockGroupLayout {
+    calc_group_layout(
+        gid,
+        sb,
+        blocks_per_group,
+        inode_table_blocks,
+        group0_block_bitmap,
+        group0_inode_bitmap,
+        group0_inode_table,
+        gdt_blocks,
+    )
 }
