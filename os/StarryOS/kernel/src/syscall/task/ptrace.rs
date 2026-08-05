@@ -269,7 +269,7 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
         PTRACE_SETSIGINFO => ptrace_setsiginfo(pid, data),
         PTRACE_GETREGSET => ptrace_getregset(pid, addr, data),
         PTRACE_SETREGSET => ptrace_setregset(pid, addr, data),
-        PTRACE_SEIZE => ptrace_seize(pid, data),
+        PTRACE_SEIZE => ptrace_seize(pid, addr, data),
         PTRACE_INTERRUPT => ptrace_interrupt(pid),
         _ => Err(AxError::Unsupported),
     }
@@ -346,7 +346,7 @@ fn ptrace_attach(pid: usize) -> AxResult<isize> {
         return Err(AxError::from(LinuxError::EPERM));
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
-    tracee.set_ptrace_attached();
+    tracee.set_ptrace_attach_mode(crate::task::PtraceAttachMode::Attach);
     use starry_signal::SignalInfo;
     let _ = crate::task::send_signal_to_process(
         tracee_pid,
@@ -602,7 +602,10 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
     Err(AxError::Unsupported)
 }
 
-fn ptrace_seize(pid: usize, options: usize) -> AxResult<isize> {
+fn ptrace_seize(pid: usize, addr: usize, options: usize) -> AxResult<isize> {
+    if addr != 0 {
+        return Err(AxError::from(LinuxError::EIO));
+    }
     ptrace_validate_options(options)?;
 
     let tracer_pid = current().as_thread().proc_data.proc.pid();
@@ -620,7 +623,7 @@ fn ptrace_seize(pid: usize, options: usize) -> AxResult<isize> {
     }
     tracee.set_ptrace_tracer_pid(tracer_pid);
     tracee.set_ptrace_options(options);
-    tracee.set_ptrace_attached();
+    tracee.set_ptrace_attach_mode(crate::task::PtraceAttachMode::Seize);
     Ok(0)
 }
 
@@ -663,8 +666,11 @@ fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
     let tracee_tid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
     let tracer_pid = current().as_thread().proc_data.proc.pid();
-    if !tracee.is_ptrace_attached() || tracee.ptrace_tracer_pid() != Some(tracer_pid) {
+    if tracee.ptrace_tracer_pid() != Some(tracer_pid) {
         return Err(AxError::from(LinuxError::ESRCH));
+    }
+    if !tracee.is_ptrace_seized() {
+        return Err(AxError::from(LinuxError::EIO));
     }
     if tracee.ptrace_stop_signo_for(tracee_tid).is_some() {
         return Ok(0);

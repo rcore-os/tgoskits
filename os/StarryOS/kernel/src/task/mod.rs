@@ -62,6 +62,15 @@ pub enum SyscallTraceState {
     Exit,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PtraceAttachMode {
+    #[default]
+    None,
+    Attach,
+    Seize,
+}
+
 struct PtraceStopRecord {
     signo: Option<Signo>,
     uctx: UserContext,
@@ -830,8 +839,8 @@ pub struct ProcessData {
     /// Cleared after the exec-stop is delivered in the user-return loop.
     ptrace_exec_stop_pending: AtomicBool,
 
-    /// Set by `PTRACE_ATTACH` / `PTRACE_SEIZE`.
-    ptrace_attached: AtomicBool,
+    /// Attachment mode established by `PTRACE_ATTACH` or `PTRACE_SEIZE`.
+    ptrace_attach_mode: AtomicU8,
 
     /// TID selected by `PTRACE_SINGLESTEP`; causes a temporary EBREAK insertion.
     ptrace_singlestep_tid: AtomicU32,
@@ -983,7 +992,7 @@ impl ProcessData {
                 ptrace_resume_signo: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_exec_stop_pending: AtomicBool::new(false),
-                ptrace_attached: AtomicBool::new(false),
+                ptrace_attach_mode: AtomicU8::new(PtraceAttachMode::None as u8),
                 ptrace_singlestep_tid: AtomicU32::new(0),
                 ptrace_syscall_trace: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_options: AtomicUsize::new(0),
@@ -1611,16 +1620,28 @@ impl ProcessData {
         unsafe { self.ptrace_stop_event.register(waker, IoEvents::IN) };
     }
 
-    pub fn set_ptrace_attached(&self) {
-        self.ptrace_attached.store(true, Ordering::Release);
+    pub(crate) fn set_ptrace_attach_mode(&self, mode: PtraceAttachMode) {
+        self.ptrace_attach_mode.store(mode as u8, Ordering::Release);
     }
 
     pub fn clear_ptrace_attached(&self) {
-        self.ptrace_attached.store(false, Ordering::Release);
+        self.set_ptrace_attach_mode(PtraceAttachMode::None);
+    }
+
+    pub(crate) fn ptrace_attach_mode(&self) -> PtraceAttachMode {
+        match self.ptrace_attach_mode.load(Ordering::Acquire) {
+            value if value == PtraceAttachMode::Attach as u8 => PtraceAttachMode::Attach,
+            value if value == PtraceAttachMode::Seize as u8 => PtraceAttachMode::Seize,
+            _ => PtraceAttachMode::None,
+        }
     }
 
     pub fn is_ptrace_attached(&self) -> bool {
-        self.ptrace_attached.load(Ordering::Acquire)
+        self.ptrace_attach_mode() != PtraceAttachMode::None
+    }
+
+    pub fn is_ptrace_seized(&self) -> bool {
+        self.ptrace_attach_mode() == PtraceAttachMode::Seize
     }
 
     pub fn set_ptrace_singlestep(&self, val: bool) {

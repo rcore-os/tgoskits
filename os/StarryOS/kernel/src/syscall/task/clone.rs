@@ -436,7 +436,12 @@ impl CloneArgs {
         if trace_clone && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid() {
             if !flags.contains(CloneFlags::THREAD) {
                 new_proc_data.set_ptrace_tracer_pid(tracer_pid);
-                new_proc_data.set_ptrace_attached();
+                let attach_mode = if curr.as_thread().proc_data.is_ptrace_seized() {
+                    crate::task::PtraceAttachMode::Seize
+                } else {
+                    crate::task::PtraceAttachMode::Attach
+                };
+                new_proc_data.set_ptrace_attach_mode(attach_mode);
             }
             new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }

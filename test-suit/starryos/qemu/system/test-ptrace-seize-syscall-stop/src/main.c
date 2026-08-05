@@ -95,18 +95,80 @@ static void kill_tracee(pid_t pid)
     (void)wait_for_tracee_event(pid, &status);
 }
 
-int main(void)
+static int expect_ptrace_errno(long request, pid_t pid, void *addr, void *data,
+                               int expected_errno, const char *description)
 {
-    printf("PTRACE_SEIZE syscall-stop regression\n");
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        return fail("fork tracee");
+    errno = 0;
+    long result = syscall(SYS_ptrace, request, pid, addr, data);
+    if (result != -1 || errno != expected_errno) {
+        printf("FAIL: %s: result=%ld errno=%d (%s), expected errno=%d (%s)\n",
+               description, result, errno, strerror(errno), expected_errno,
+               strerror(expected_errno));
+        return 1;
     }
+    return 0;
+}
+
+static pid_t fork_spinning_tracee(void)
+{
+    pid_t pid = fork();
     if (pid == 0) {
         for (;;) {
             (void)syscall(SYS_getpid);
         }
+    }
+    return pid;
+}
+
+static int test_seize_rejects_nonzero_addr(void)
+{
+    pid_t pid = fork_spinning_tracee();
+    if (pid < 0) {
+        return fail("fork tracee for nonzero PTRACE_SEIZE addr");
+    }
+
+    int result = expect_ptrace_errno(
+        PTRACE_SEIZE, pid, (void *)(uintptr_t)1, NULL, EIO,
+        "PTRACE_SEIZE rejects a nonzero addr");
+    kill_tracee(pid);
+    return result;
+}
+
+static int test_interrupt_rejects_attach_tracee(void)
+{
+    pid_t pid = fork_spinning_tracee();
+    if (pid < 0) {
+        return fail("fork tracee for PTRACE_ATTACH interrupt");
+    }
+
+    if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) != 0) {
+        kill_tracee(pid);
+        return fail("PTRACE_ATTACH before PTRACE_INTERRUPT");
+    }
+    if (expect_ptrace_stop(pid, SIGSTOP, 0, "PTRACE_ATTACH reports SIGSTOP") != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+
+    int result = expect_ptrace_errno(
+        PTRACE_INTERRUPT, pid, NULL, NULL, EIO,
+        "PTRACE_INTERRUPT rejects a PTRACE_ATTACH tracee");
+    kill_tracee(pid);
+    return result;
+}
+
+int main(void)
+{
+    printf("PTRACE_SEIZE syscall-stop regression\n");
+
+    if (test_seize_rejects_nonzero_addr() != 0
+        || test_interrupt_rejects_attach_tracee() != 0) {
+        return 1;
+    }
+
+    pid_t pid = fork_spinning_tracee();
+    if (pid < 0) {
+        return fail("fork tracee");
     }
 
     if (ptrace(PTRACE_SEIZE, pid, NULL, (void *)(uintptr_t)PTRACE_O_TRACESYSGOOD) != 0) {
@@ -168,7 +230,7 @@ int main(void)
         return 1;
     }
 
-    printf("PASS: PTRACE_SEIZE interrupt and syscall signal-stop sequence\n");
+    printf("PASS: PTRACE_SEIZE arguments, interrupt mode, and syscall-stop sequence\n");
     kill_tracee(pid);
     return 0;
 }
