@@ -2050,7 +2050,7 @@ def parse_block_snapshot(lines: list[str], profile: str) -> dict[str, object]:
     elif profile == "restart":
         compact_names = ("r",)
     else:
-        compact_names = ("n", "ns", "m", "ms", "rn", "rs", "os")
+        compact_names = ("n", "ns", "m", "ms", "rn", "rs", "on", "os")
     compact_result_path = image_path in {
         f"/home/orangepi/ivc-{name}" for name in compact_names
     }

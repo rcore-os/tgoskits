@@ -10,7 +10,7 @@ metadata_writer=$script_dir/write_board_metadata.py
 
 usage() {
     cat <<EOF
-Usage: $0 [smoke|full|manual-smoke|manual-full|rknpu-smoke|rknpu-full|ort-smoke|fault-ack-loss|fault-error|fault-restart] [options]
+Usage: $0 [smoke|full|manual-smoke|manual-full|rknpu-smoke|rknpu-full|ort-smoke|ort-full|fault-ack-loss|fault-error|fault-restart] [options]
 
 Options:
   --profile <name>        Select a normal/manual run or deterministic fault campaign.
@@ -221,6 +221,19 @@ case "$profile" in
         runtime_version=1.25.0
         profile_stager=$script_dir/stage-ort-control.sh
         ;;
+    ort-full)
+        build_config=competition/ivc/config/axvisor-orangepi-5-plus-ort-control.toml
+        board_config=competition/ivc/config/board-orangepi-5-plus-ort-control.toml
+        expected_count=1800
+        model_id=thermal-4x6x1-v1
+        inference_backend=onnxruntime
+        guest_image_name=starry-ivc-rootfs-ort-control.img
+        zephyr_guest_image=competition/ivc/zephyr/build-board/zephyr/zephyr.bin
+        result_image_name=ivc-on
+        model_artifact=$workspace/competition/ivc/model/thermal-4x6x1-v1.ort
+        runtime_version=1.25.0
+        profile_stager=$script_dir/stage-ort-control.sh
+        ;;
     *)
         echo "Unsupported Orange Pi profile: $profile" >&2
         usage >&2
@@ -372,7 +385,12 @@ for ((run_number = 1; run_number <= repeat_count; run_number++)); do
         "$run_dir/checksums.sha256"
 
     if [[ -n "$profile_stager" ]]; then
-        bash "$profile_stager" >"$run_dir/stage.log" 2>&1
+        if [[ "$inference_backend" == onnxruntime ]]; then
+            IVC_ORT_CONTROL_ROOTFS="$local_rootfs" \
+                bash "$profile_stager" >"$run_dir/stage.log" 2>&1
+        else
+            bash "$profile_stager" >"$run_dir/stage.log" 2>&1
+        fi
     fi
 
     started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)

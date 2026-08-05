@@ -10,6 +10,14 @@ ssh_identity=${ORANGEPI_SSH_IDENTITY:-${HOME}/.ssh/orangepi_automation}
 guest_dir=${ORANGEPI_IVC_GUEST_DIR:-/home/orangepi/axvisor-guest}
 output_dir=$workspace/tmp/competition/ivc/starry
 lease_dir=$workspace/tmp/competition/ivc/board-lease
+selected_rootfs=${IVC_ORT_CONTROL_ROOTFS:?set IVC_ORT_CONTROL_ROOTFS}
+case "$(basename -- "$selected_rootfs")" in
+    starry-ivc-rootfs-ort-control-smoke.img|starry-ivc-rootfs-ort-control.img) ;;
+    *)
+        echo "Unsupported ORT control rootfs: $selected_rootfs" >&2
+        exit 1
+        ;;
+esac
 
 case "$guest_dir" in
     /home/orangepi/*) ;;
@@ -26,12 +34,12 @@ fi
 artifact_sources=(
     "$output_dir/starryos.bin"
     "$output_dir/starry-orangepi-5-plus.dtb"
-    "$output_dir/starry-ivc-rootfs-ort-control-smoke.img"
+    "$selected_rootfs"
 )
 artifact_names=(
     starryos.bin
     starry-orangepi-5-plus.dtb
-    starry-ivc-rootfs-ort-control-smoke.img
+    "$(basename -- "$selected_rootfs")"
 )
 for artifact in "${artifact_sources[@]}" "$ssh_identity"; do
     if [[ ! -r "$artifact" ]]; then
