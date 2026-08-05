@@ -15,6 +15,9 @@
 #ifndef PTRACE_GETREGSET
 #define PTRACE_GETREGSET 0x4204
 #endif
+#ifndef PTRACE_SETOPTIONS
+#define PTRACE_SETOPTIONS 0x4200
+#endif
 #ifndef PTRACE_SEIZE
 #define PTRACE_SEIZE 0x4206
 #endif
@@ -190,10 +193,164 @@ static int resume_until_execve_entry(pid_t pid)
     return fail("PTRACE_SYSCALL reaches the execve entry stop");
 }
 
+static int trace_syscalls_after_exec(pid_t pid, pid_t expected_parent_pid)
+{
+    int saw_getppid_entry = 0;
+
+    for (int stop_count = 0; stop_count < 128; stop_count++) {
+        int status = 0;
+        if (ptrace(PTRACE_SYSCALL, pid, NULL, NULL) != 0) {
+            return fail("PTRACE_SYSCALL resumes the tracee after PTRACE_EVENT_EXEC");
+        }
+
+        pid_t waited = wait_for_tracee_event(pid, &status);
+        if (waited != pid) {
+            return fail("wait for a tracee event after PTRACE_EVENT_EXEC");
+        }
+        if (WIFEXITED(status)) {
+            printf("FAIL: tracee exited before direct SYS_getppid: status=%#x entry=%d\n", status,
+                   saw_getppid_entry);
+            return 1;
+        }
+        if (!WIFSTOPPED(status) || WSTOPSIG(status) != (SIGTRAP | 0x80)
+            || ((unsigned int)status >> 16) != 0) {
+            print_stop("PTRACE_SYSCALL after PTRACE_EVENT_EXEC", status);
+            return fail("PTRACE_SYSCALL reports a syscall stop after PTRACE_EVENT_EXEC");
+        }
+
+        struct x86_64_user_regs regs = {0};
+        if (read_tracee_regs(pid, &regs) != 0) {
+            return 1;
+        }
+        printf("PTRACE_POST_EXEC_REGS: orig_rax=%lld rax=%lld\n",
+               (long long)(int64_t)regs.orig_rax, (long long)(int64_t)regs.rax);
+
+        if (saw_getppid_entry) {
+            if (regs.orig_rax != SYS_getppid) {
+                errno = EPROTO;
+                return fail("SYS_getppid exit preserves orig_rax after PTRACE_EVENT_EXEC");
+            }
+            if ((pid_t)regs.rax != expected_parent_pid) {
+                errno = EPROTO;
+                return fail("SYS_getppid exit returns the tracer pid after PTRACE_EVENT_EXEC");
+            }
+            if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
+                return fail("PTRACE_CONT resumes the tracee after direct SYS_getppid");
+            }
+            if (wait_for_tracee_event(pid, &status) != pid || !WIFEXITED(status)
+                || WEXITSTATUS(status) != 0) {
+                printf("FAIL: tracee did not exit after direct SYS_getppid: status=%#x\n", status);
+                return 1;
+            }
+            return 0;
+        }
+        if (regs.orig_rax == SYS_getppid) {
+            if ((int64_t)regs.rax != -ENOSYS) {
+                errno = EPROTO;
+                return fail("SYS_getppid entry has the x86_64 syscall-entry return value");
+            }
+            saw_getppid_entry = 1;
+        }
+    }
+
+    errno = ETIMEDOUT;
+    return fail("PTRACE_SYSCALL observes direct SYS_getppid after PTRACE_EVENT_EXEC");
+}
+
+static int trace_two_syscalls_after_exec(pid_t pid, pid_t expected_parent_pid)
+{
+    int saw_getppid_entry = 0;
+    int saw_getpid_entry = 0;
+
+    for (int stop_count = 0; stop_count < 128; stop_count++) {
+        int status = 0;
+        if (ptrace(PTRACE_SYSCALL, pid, NULL, NULL) != 0) {
+            return fail("PTRACE_SYSCALL resumes the traceme tracee after PTRACE_EVENT_EXEC");
+        }
+
+        pid_t waited = wait_for_tracee_event(pid, &status);
+        if (waited != pid) {
+            return fail("wait for a traceme event after PTRACE_EVENT_EXEC");
+        }
+        if (WIFEXITED(status)) {
+            printf("FAIL: traceme tracee exited before direct SYS_getpid: status=%#x "
+                   "getppid_entry=%d getpid_entry=%d\n",
+                   status, saw_getppid_entry, saw_getpid_entry);
+            return 1;
+        }
+        if (!WIFSTOPPED(status) || WSTOPSIG(status) != (SIGTRAP | 0x80)
+            || ((unsigned int)status >> 16) != 0) {
+            print_stop("PTRACE_SYSCALL traceme after PTRACE_EVENT_EXEC", status);
+            return fail("PTRACE_SYSCALL reports a traceme syscall stop after PTRACE_EVENT_EXEC");
+        }
+
+        struct x86_64_user_regs regs = {0};
+        if (read_tracee_regs(pid, &regs) != 0) {
+            return 1;
+        }
+        printf("PTRACE_TRACEME_POST_EXEC_REGS: orig_rax=%lld rax=%lld\n",
+               (long long)(int64_t)regs.orig_rax, (long long)(int64_t)regs.rax);
+
+        if (!saw_getppid_entry && regs.orig_rax == SYS_getppid) {
+            if ((int64_t)regs.rax != -ENOSYS) {
+                errno = EPROTO;
+                return fail("traceme SYS_getppid entry has the x86_64 syscall-entry return value");
+            }
+            saw_getppid_entry = 1;
+            continue;
+        }
+        if (saw_getppid_entry && !saw_getpid_entry && regs.orig_rax == SYS_getppid) {
+            if ((pid_t)regs.rax != expected_parent_pid) {
+                errno = EPROTO;
+                return fail("traceme SYS_getppid exit returns the tracer pid after PTRACE_EVENT_EXEC");
+            }
+            saw_getpid_entry = 1;
+            continue;
+        }
+        if (saw_getpid_entry && regs.orig_rax == SYS_getpid) {
+            if ((int64_t)regs.rax != -ENOSYS) {
+                errno = EPROTO;
+                return fail("traceme SYS_getpid entry has the x86_64 syscall-entry return value");
+            }
+            if (ptrace(PTRACE_SYSCALL, pid, NULL, NULL) != 0) {
+                return fail("PTRACE_SYSCALL resumes traceme SYS_getpid entry");
+            }
+            if (wait_for_tracee_event(pid, &status) != pid || !WIFSTOPPED(status)
+                || WSTOPSIG(status) != (SIGTRAP | 0x80)
+                || ((unsigned int)status >> 16) != 0) {
+                print_stop("PTRACE_SYSCALL traceme SYS_getpid exit", status);
+                return fail("PTRACE_SYSCALL reports traceme SYS_getpid exit");
+            }
+            memset(&regs, 0, sizeof(regs));
+            if (read_tracee_regs(pid, &regs) != 0) {
+                return 1;
+            }
+            printf("PTRACE_TRACEME_POST_EXEC_REGS: orig_rax=%lld rax=%lld\n",
+                   (long long)(int64_t)regs.orig_rax, (long long)(int64_t)regs.rax);
+            if (regs.orig_rax != SYS_getpid || (pid_t)regs.rax != pid) {
+                errno = EPROTO;
+                return fail("traceme SYS_getpid exit preserves its return value");
+            }
+            if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
+                return fail("PTRACE_CONT resumes traceme after direct syscalls");
+            }
+            if (wait_for_tracee_event(pid, &status) != pid || !WIFEXITED(status)
+                || WEXITSTATUS(status) != 0) {
+                printf("FAIL: traceme tracee did not exit after direct syscalls: status=%#x\n",
+                       status);
+                return 1;
+            }
+            return 0;
+        }
+    }
+
+    errno = ETIMEDOUT;
+    return fail("PTRACE_SYSCALL observes direct traceme syscalls after PTRACE_EVENT_EXEC");
+}
+
 static int run_traceexec_sequence(pid_t pid)
 {
     unsigned long old_tid = 0;
-    int status = 0;
 
     if (ptrace(PTRACE_SEIZE, pid, NULL,
                (void *)(uintptr_t)(PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXEC))
@@ -226,21 +383,84 @@ static int run_traceexec_sequence(pid_t pid)
         printf("FAIL: PTRACE_EVENT_EXEC former tid=%lu expected %d\n", old_tid, pid);
         return 1;
     }
-    if (ptrace(PTRACE_CONT, pid, NULL, NULL) != 0) {
-        return fail("PTRACE_CONT resumes PTRACE_EVENT_EXEC");
+    return trace_syscalls_after_exec(pid, getpid());
+}
+
+static int run_traceme_traceexec_sequence(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        return fail("fork traceme traceexec child");
     }
-    if (wait_for_tracee_event(pid, &status) != pid || !WIFEXITED(status)
-        || WEXITSTATUS(status) != 0) {
-        printf("FAIL: tracee did not exit after PTRACE_EVENT_EXEC: status=%#x\n", status);
+    if (pid == 0) {
+        if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) != 0) {
+            _exit(100);
+        }
+        if (raise(SIGSTOP) != 0) {
+            _exit(101);
+        }
+        execl("/proc/self/exe", "test-ptrace-seize-traceexec", "--after-traceme-exec", NULL);
+        _exit(127);
+    }
+
+    int status = 0;
+    if (wait_for_tracee_event(pid, &status) != pid || !WIFSTOPPED(status)
+        || WSTOPSIG(status) != SIGSTOP) {
+        printf("FAIL: traceme tracee initial stop: status=%#x\n", status);
+        kill_tracee(pid);
         return 1;
     }
+    if (ptrace(PTRACE_SETOPTIONS, pid, NULL,
+               (void *)(uintptr_t)(PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXEC))
+        != 0) {
+        kill_tracee(pid);
+        return fail("PTRACE_SETOPTIONS for traceme traceexec");
+    }
+    if (resume_until_execve_entry(pid) != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+    if (ptrace(PTRACE_SYSCALL, pid, NULL, NULL) != 0) {
+        kill_tracee(pid);
+        return fail("PTRACE_SYSCALL resumes traceme execve entry");
+    }
+    if (expect_stop(pid, SIGTRAP, PTRACE_EVENT_EXEC,
+                    "traceme PTRACE_O_TRACEEXEC replaces execve syscall-exit stop")
+        != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+    return trace_two_syscalls_after_exec(pid, getpid());
+}
+
+static int verify_direct_syscall_after_exec(void)
+{
+    long parent_pid = syscall(SYS_getppid);
+    if (parent_pid <= 0) {
+        return fail("direct SYS_getppid after PTRACE_EVENT_EXEC");
+    }
+    printf("TRACE_EXEC_CHILD: direct SYS_getppid=%ld\n", parent_pid);
+    return 0;
+}
+
+static int verify_traceme_syscalls_after_exec(void)
+{
+    long parent_pid = syscall(SYS_getppid);
+    long self_pid = syscall(SYS_getpid);
+    if (parent_pid <= 0 || self_pid <= 0) {
+        return fail("direct traceme syscalls after PTRACE_EVENT_EXEC");
+    }
+    printf("TRACE_EXEC_CHILD: direct traceme getppid=%ld getpid=%ld\n", parent_pid, self_pid);
     return 0;
 }
 
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--after-exec") == 0) {
-        return 0;
+        return verify_direct_syscall_after_exec();
+    }
+    if (argc == 2 && strcmp(argv[1], "--after-traceme-exec") == 0) {
+        return verify_traceme_syscalls_after_exec();
     }
 
     printf("PTRACE_SEIZE TRACEEXEC syscall-stop regression\n");
@@ -263,7 +483,10 @@ int main(int argc, char **argv)
         kill_tracee(pid);
         return 1;
     }
+    if (run_traceme_traceexec_sequence() != 0) {
+        return 1;
+    }
 
-    printf("PASS: PTRACE_EVENT_EXEC replaces the execve syscall-exit stop\n");
+    printf("PASS: PTRACE_EVENT_EXEC preserves seized and traceme syscall ABI\n");
     return 0;
 }

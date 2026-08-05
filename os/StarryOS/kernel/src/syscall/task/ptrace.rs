@@ -773,15 +773,19 @@ fn ptrace_read_stopped_user_regs(pid: usize) -> AxResult<ArchUserRegs> {
     #[cfg(target_arch = "x86_64")]
     let regs = {
         let mut regs = regs;
-        if tracee.ptrace_stop_is_syscall_for(tid)
-            && matches!(
+        if tracee.ptrace_stop_is_syscall_for(tid) {
+            regs.orig_rax = tracee
+                .ptrace_stop_syscall_number_for(tid)
+                .ok_or_else(|| AxError::from(LinuxError::ESRCH))?
+                as u64;
+            if matches!(
                 tracee.ptrace_syscall_trace_state_for(tid),
                 crate::task::SyscallTraceState::Entry
-            )
-        {
-            // Linux exposes the incoming syscall number through `orig_rax` while
-            // presenting `-ENOSYS` in `rax` at a syscall-entry stop.
-            regs.rax = -(LinuxError::ENOSYS.code() as i64) as u64;
+            ) {
+                // Linux exposes the incoming syscall number through `orig_rax` while
+                // presenting `-ENOSYS` in `rax` at a syscall-entry stop.
+                regs.rax = -(LinuxError::ENOSYS.code() as i64) as u64;
+            }
         }
         regs
     };
@@ -819,15 +823,18 @@ fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> AxResult<is
         .ok_or_else(|| AxError::from(LinuxError::ESRCH))?;
     regs.write_to(&mut uctx)?;
     #[cfg(target_arch = "x86_64")]
-    if tracee.ptrace_stop_is_syscall_for(tid)
-        && matches!(
+    if tracee.ptrace_stop_is_syscall_for(tid) {
+        if !tracee.set_ptrace_stop_syscall_number_for(tid, regs.orig_rax as usize) {
+            return Err(AxError::from(LinuxError::ESRCH));
+        }
+        if matches!(
             tracee.ptrace_syscall_trace_state_for(tid),
             crate::task::SyscallTraceState::Entry
-        )
-    {
-        // `rax` is the synthetic syscall-entry return value. The tracer
-        // changes the syscall to execute through Linux's `orig_rax` field.
-        uctx.set_sysno(regs.orig_rax as usize);
+        ) {
+            // `rax` is the synthetic syscall-entry return value. The tracer
+            // changes the syscall to execute through Linux's `orig_rax` field.
+            uctx.set_sysno(regs.orig_rax as usize);
+        }
     }
     if !tracee.set_ptrace_stop_user_context_for(tid, uctx) {
         return Err(AxError::from(LinuxError::ESRCH));

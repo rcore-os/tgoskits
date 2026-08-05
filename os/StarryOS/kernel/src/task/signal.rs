@@ -186,15 +186,16 @@ pub fn ptrace_stop_current(
     signo: Signo,
     uctx: &mut UserContext,
 ) -> Option<Option<Signo>> {
-    ptrace_stop_current_impl(thr, signo, uctx, false)
+    ptrace_stop_current_impl(thr, signo, uctx, None)
 }
 
 pub fn ptrace_syscall_stop_current(
     thr: &Thread,
     signo: Signo,
     uctx: &mut UserContext,
+    syscall_no: usize,
 ) -> Option<Option<Signo>> {
-    ptrace_stop_current_impl(thr, signo, uctx, true)
+    ptrace_stop_current_impl(thr, signo, uctx, Some(syscall_no))
 }
 
 pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
@@ -233,7 +234,7 @@ fn ptrace_stop_current_impl(
     thr: &Thread,
     signo: Signo,
     uctx: &mut UserContext,
-    is_syscall_stop: bool,
+    syscall_no: Option<usize>,
 ) -> Option<Option<Signo>> {
     if !thr.proc_data.is_ptrace_traceme() && !thr.proc_data.is_ptrace_attached() {
         return None;
@@ -264,8 +265,9 @@ fn ptrace_stop_current_impl(
     {
         thr.proc_data.save_current_fp_for_ptrace(tid);
     }
-    if is_syscall_stop {
-        thr.proc_data.set_ptrace_syscall_stop(tid, signo, uctx);
+    if let Some(syscall_no) = syscall_no {
+        thr.proc_data
+            .set_ptrace_syscall_stop(tid, signo, uctx, syscall_no);
     } else {
         thr.proc_data.set_ptrace_stop(tid, signo, uctx);
     }
