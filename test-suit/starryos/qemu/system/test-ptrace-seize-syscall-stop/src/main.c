@@ -7,10 +7,17 @@
 #include <string.h>
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#ifndef PTRACE_GETREGSET
+#define PTRACE_GETREGSET 0x4204
+#endif
+#ifndef PTRACE_SETREGSET
+#define PTRACE_SETREGSET 0x4205
+#endif
 #ifndef PTRACE_SEIZE
 #define PTRACE_SEIZE 0x4206
 #endif
@@ -26,10 +33,43 @@
 #ifndef __WALL
 #define __WALL 0x40000000
 #endif
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
 
 enum {
     WAIT_TIMEOUT_MS = 3000,
     WAIT_POLL_INTERVAL_MS = 10,
+};
+
+struct x86_64_user_regs {
+    uint64_t r15;
+    uint64_t r14;
+    uint64_t r13;
+    uint64_t r12;
+    uint64_t rbp;
+    uint64_t rbx;
+    uint64_t r11;
+    uint64_t r10;
+    uint64_t r9;
+    uint64_t r8;
+    uint64_t rax;
+    uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t orig_rax;
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t eflags;
+    uint64_t rsp;
+    uint64_t ss;
+    uint64_t fs_base;
+    uint64_t gs_base;
+    uint64_t ds;
+    uint64_t es;
+    uint64_t fs;
+    uint64_t gs;
 };
 
 static int fail(const char *message)
@@ -86,6 +126,73 @@ static int expect_getsiginfo_signal(pid_t pid, int expected_signal, const char *
         return 1;
     }
     return 0;
+}
+
+static int read_tracee_regs(pid_t pid, struct x86_64_user_regs *regs)
+{
+    struct iovec iov = {
+        .iov_base = regs,
+        .iov_len = sizeof(*regs),
+    };
+
+    if (ptrace(PTRACE_GETREGSET, pid, (void *)NT_PRSTATUS, &iov) != 0) {
+        return fail("PTRACE_GETREGSET for syscall stop");
+    }
+    if (iov.iov_len != sizeof(*regs)) {
+        printf("FAIL: PTRACE_GETREGSET returned register length %zu, expected %zu\n",
+               iov.iov_len, sizeof(*regs));
+        return 1;
+    }
+    return 0;
+}
+
+static int write_tracee_regs(pid_t pid, struct x86_64_user_regs *regs)
+{
+    struct iovec iov = {
+        .iov_base = regs,
+        .iov_len = sizeof(*regs),
+    };
+
+    if (ptrace(PTRACE_SETREGSET, pid, (void *)NT_PRSTATUS, &iov) != 0) {
+        return fail("PTRACE_SETREGSET replaces the syscall number");
+    }
+    return 0;
+}
+
+static int resume_to_getpid_entry(pid_t pid, struct x86_64_user_regs *regs)
+{
+    int signal_to_deliver = SIGCONT;
+
+    for (int stop_count = 0; stop_count < 32; stop_count++) {
+        if (ptrace(PTRACE_SYSCALL, pid, NULL,
+                   (void *)(uintptr_t)signal_to_deliver)
+            != 0) {
+            return fail("PTRACE_SYSCALL resumes toward a getpid entry stop");
+        }
+        if (expect_ptrace_stop(pid, SIGTRAP | 0x80, 0,
+                               "PTRACE_SYSCALL reports a TRACESYSGOOD syscall stop")
+            != 0) {
+            return 1;
+        }
+        if (expect_getsiginfo_signal(pid, SIGTRAP,
+                                     "syscall stop PTRACE_GETSIGINFO returns SIGTRAP")
+            != 0) {
+            return 1;
+        }
+        if (read_tracee_regs(pid, regs) != 0) {
+            return 1;
+        }
+
+        printf("PTRACE_SYSCALL_REGS: orig_rax=%lld rax=%lld\n",
+               (long long)(int64_t)regs->orig_rax, (long long)(int64_t)regs->rax);
+        if (regs->orig_rax == SYS_getpid && (int64_t)regs->rax == -ENOSYS) {
+            return 0;
+        }
+        signal_to_deliver = 0;
+    }
+
+    errno = ETIMEDOUT;
+    return fail("PTRACE_SYSCALL reaches a getpid entry stop");
 }
 
 static void kill_tracee(pid_t pid)
@@ -192,19 +299,30 @@ int main(void)
         return 1;
     }
 
-    if (ptrace(PTRACE_SYSCALL, pid, NULL, (void *)(uintptr_t)SIGCONT) != 0) {
-        kill_tracee(pid);
-        return fail("PTRACE_SYSCALL resumes PTRACE_EVENT_STOP with SIGCONT");
-    }
-    if (expect_ptrace_stop(pid, SIGTRAP | 0x80, 0,
-                            "PTRACE_SYSCALL reports a TRACESYSGOOD syscall stop")
-        != 0) {
+    struct x86_64_user_regs entry_regs = {0};
+    if (resume_to_getpid_entry(pid, &entry_regs) != 0) {
         kill_tracee(pid);
         return 1;
     }
-    if (expect_getsiginfo_signal(pid, SIGTRAP,
-                                 "syscall stop PTRACE_GETSIGINFO returns SIGTRAP")
-        != 0) {
+    entry_regs.orig_rax = SYS_getppid;
+    if (write_tracee_regs(pid, &entry_regs) != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+    struct x86_64_user_regs replaced_entry_regs = {0};
+    if (read_tracee_regs(pid, &replaced_entry_regs) != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+    printf("PTRACE_REPLACED_ENTRY_REGS: orig_rax=%lld rax=%lld\n",
+           (long long)(int64_t)replaced_entry_regs.orig_rax,
+           (long long)(int64_t)replaced_entry_regs.rax);
+    if (replaced_entry_regs.orig_rax != SYS_getppid
+        || (int64_t)replaced_entry_regs.rax != -ENOSYS) {
+        printf("FAIL: replacement syscall entry view: orig_rax=%lld rax=%lld expected "
+               "orig_rax=%ld rax=%d\n",
+               (long long)(int64_t)replaced_entry_regs.orig_rax,
+               (long long)(int64_t)replaced_entry_regs.rax, (long)SYS_getppid, -ENOSYS);
         kill_tracee(pid);
         return 1;
     }
@@ -216,6 +334,21 @@ int main(void)
     if (expect_ptrace_stop(pid, SIGTRAP | 0x80, 0,
                             "PTRACE_SYSCALL preserves the syscall-exit stop before SIGSTOP")
         != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+    struct x86_64_user_regs exit_regs = {0};
+    if (read_tracee_regs(pid, &exit_regs) != 0) {
+        kill_tracee(pid);
+        return 1;
+    }
+    printf("PTRACE_REPLACED_SYSCALL_REGS: orig_rax=%lld rax=%lld\n",
+           (long long)(int64_t)exit_regs.orig_rax, (long long)(int64_t)exit_regs.rax);
+    if (exit_regs.orig_rax != SYS_getppid || (pid_t)exit_regs.rax != getpid()) {
+        printf("FAIL: replacement syscall result: orig_rax=%lld rax=%lld expected "
+               "orig_rax=%ld rax=%d\n",
+               (long long)(int64_t)exit_regs.orig_rax,
+               (long long)(int64_t)exit_regs.rax, (long)SYS_getppid, getpid());
         kill_tracee(pid);
         return 1;
     }
