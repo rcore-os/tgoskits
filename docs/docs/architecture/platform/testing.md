@@ -42,6 +42,13 @@ cargo xtask starry test qemu --arch riscv64
 cargo xtask axvisor test qemu --arch x86_64 --test-group normal
 ```
 
+x86_64 Axvisor 的 UEFI 固件入口调试走 `uefi` 分组（需 `--firmware-bundle-path`，见 [Axvisor 测试](/docs/build/axvisor/test)）：
+
+```bash
+cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
+  --test-case ovmf-entry-svm --firmware-bundle-path <bundle 目录>
+```
+
 外部平台只有在补齐启动入口、链接脚本、console、timer、内存和 IRQ 后，才应宣称可启动 QEMU。
 
 ## 常见失败信号

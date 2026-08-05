@@ -104,14 +104,14 @@ fn main() {
 
 ### 架构适配
 
-`hal/arch/` 提供四套架构适配，每套实现各自架构的虚拟化启用、中断注入和上下文切换。aarch64 和 riscv64 是当前最成熟的两条路径，loongarch64 处于可用状态，x86_64 仍为 stub 占位。
+`hal/arch/` 提供四套架构适配，每套实现各自架构的虚拟化启用、中断注入和上下文切换。aarch64 和 riscv64 是当前最成熟的两条路径，loongarch64 处于可用状态，x86_64 已从 stub 占位推进为可用的 VMX/SVM 路径：虚拟机扩展在运行时按宿主 CPUID 选择（Intel 走 VMX，AMD 走 SVM），并支持以固定 OVMF bundle 作为 UEFI guest 固件，第一阶段 SEC 启动诊断已落地（`ovmf-entry` 用例）。
 
 | 架构 | 虚拟化方式 | 中断注入 |
 | --- | --- | --- |
 | aarch64 | EL2 虚拟化 | GIC 中断注入 |
 | riscv64 | H 扩展 | PLIC 中断注入 |
 | loongarch64 | LVZ 虚拟化 | 中断注入 |
-| x86_64 | stub 占位 | — |
+| x86_64 | VMX / SVM（运行时按 CPUID 选择） | 中断注入（APIC） |
 
 ### 配置驱动的 VM 实例化
 
@@ -149,7 +149,7 @@ AxVisor 的配置体系分为两层：板级配置控制 Hypervisor 本身的构
 | --- | --- |
 | `qemu-aarch64.toml` | AArch64 QEMU（默认推荐） |
 | `qemu-riscv64.toml` | RISC-V 64 QEMU |
-| `qemu-x86_64.toml` | x86_64 QEMU（stub） |
+| `qemu-x86_64.toml` | x86_64 QEMU（VMX / SVM，UEFI guest 经 `ovmf-entry` 用例验证） |
 | `qemu-loongarch64.toml` | LoongArch64 QEMU |
 | `orangepi-5-plus.toml` | Orange Pi 5 Plus (RK3588) |
 | `phytiumpi.toml` | 飞腾派 (E2000) |
@@ -173,6 +173,8 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 | `[devices]` | 结构化的 `passthrough` 与 `disabled` 物理设备选择器 |
 
 中断控制器、定时器和固件接口由架构创建；默认串口优先由 host FDT/ACPI 派生并以 machine profile 兜底。普通虚拟设备通过 `[[devices.virtual]]` 的 `id + model + options` 交给代码 catalog 创建 dyn model，`console0` 可按 ID 覆盖型号和语义参数，但配置始终不填写地址或中断号。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再按最终解析后设备图为 RAM、禁用设备、宿主物理 UART、host replacement 和虚拟设备打洞。配置不接受旧 `vm_type`、`emu_devices`、裸地址/IRQ 或 `interrupt_mode` 字段。
+
+x86_64 的 UEFI guest 通过 `[kernel]` 段的固件字段声明：`boot_protocol = "uefi"`、`uefi_firmware_path`（回退到 `bios_path`）、`image_location`（`"fs"` 或 `"memory"`）与 `bios_load_addr`。`firmware_profile` 字段固定选择已验证的 OVMF bundle（`qemu_x86_64_axvisor_ovmf_debug`），此时 x86 loader 强制 CODE 布局：`code_size = 0x37c000`、`bios_load_addr = 0xffc84000`、入口 `0xfffffff0`；`firmware_profile` 与非 UEFI boot 协议同时出现会被 `axvmconfig` 拒绝。示例见 `configs/vms/qemu/x86_64/ovmf-entry.toml` 与 [Axvisor 测试](/docs/build/axvisor/test) 的 UEFI 分组说明。
 
 ## 关键执行流程
 

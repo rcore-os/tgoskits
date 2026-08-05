@@ -19,18 +19,30 @@ cargo xtask axvisor test uboot --board <type> [--guest <image>] [--uboot-config 
 cargo xtask axvisor test board --board <type> --server <h> --port <p> [--test-case <c>] [--list]
 ```
 
+`test qemu` 另有固件相关参数（仅 UEFI 分组用例需要，见 §3.3）：
+
+```text
+cargo xtask axvisor test qemu [--firmware-bundle-path <dir>] [--allow-unverified-firmware]
+```
+
 ## 2. 用例发现
 
 Axvisor 测试资产位于：
 
 ```text
 test-suit/axvisor/
-└── normal/
-    └── <case>/
-        └── qemu-{arch}.toml
+├── normal/
+│   └── <case>/
+│       └── qemu-{arch}.toml
+└── uefi/
+    └── ovmf-entry/
+        ├── qemu-x86_64-vmx.toml
+        ├── qemu-x86_64-svm.toml
+        ├── build-x86_64-unknown-none-vmx.toml
+        └── build-x86_64-unknown-none-svm.toml
 ```
 
-与 StarryOS 的平铺结构不同，Axvisor 用 `normal` 测试组目录组织用例。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
+与 StarryOS 的平铺结构不同，Axvisor 用分组目录（`normal`、`uefi`）组织用例，默认组为 `normal`，通过 `--test-group <g>` 切换。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
 
 ## 3. 运行模式
 
@@ -74,7 +86,7 @@ flowchart TD
 
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
-| 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/`，默认 group 为 `normal` |
+| 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/`，默认 group 为 `normal`，可通过 `--test-group uefi` 切换 |
 | VM 配置 | `qemu_group_build_context()` | 读取 axbuild 已解析并写入 `AXVISOR_VM_CONFIGS` 的 VM 配置路径 |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 每个 build group 编译前准备当前 arch 的 managed rootfs |
 | grouped 校验 | `validate_grouped_qemu_commands()` | 检查 `test_commands` 无空命令 |
@@ -117,7 +129,27 @@ flowchart TD
 
 该模式验证完整的"U-Boot → Axvisor → Guest"引导链路，覆盖真实硬件上 U-Boot 加载 Axvisor ELF、Axvisor 初始化硬件虚拟化扩展、再启动 Guest 的全流程。
 
-### 3.3 板卡测试
+### 3.3 UEFI 分组与固定 OVMF bundle
+
+`test-suit/axvisor/uefi/ovmf-entry/` 承载 x86_64 的固定 OVMF 固件诊断用例（两个变体 `ovmf-entry-vmx` 与 `ovmf-entry-svm`，按宿主 CPU 的 VMX/SVM 能力分别选择）。该用例以 `-kernel` 启动 Axvisor 宿主，再由 Axvisor 把嵌套 OVMF 作为 UEFI guest 固件加载；`success_regex = ["SecCoreStartupWithStack\\("]` 表示嵌套固件已进入 SEC 阶段（guest COM1 输出），它是阶段 1 的 SEC 启动诊断，而非完整 guest boot。
+
+```bash
+cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
+  --test-case ovmf-entry-svm --firmware-bundle-path <bundle 目录>
+cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
+  --test-case ovmf-entry-vmx --firmware-bundle-path <bundle 目录>
+```
+
+接线要点（与任务 1/2/4 实现一致）：
+
+- **固定 profile**：`scripts/axbuild/src/axvisor/ovmf.rs` 定义 profile 名 `qemu_x86_64_axvisor_ovmf_debug`（EDK2 tag `edk2-stable202605`）及固定布局：CODE `0xffc84000`（size `0x37c000`，reset vector `0xfffffff0`）、VARS `0xffc00000`（size `0x84000`）、combined `0x400000`。bundle 目录含 `OVMF_CODE.fd`、`OVMF_VARS.fd`、`OVMF.fd` 与 `manifest.toml`，全部按 manifest 校验，不联网下载。
+- **`--firmware-bundle-path <dir>`**：指定已验证 bundle 目录（含 `manifest.toml`）。`--allow-unverified-firmware` 允许本地未验证的 `OVMF_CODE.fd`（仅打印 SHA-256 供参考，不参与结果判定）。不带 bundle 时 ovmf-entry 用例在 prepare 阶段 fail-fast 报错，不会在 `Booting from ROM..` 挂起，也不会静默使用发行版 OVMF；`--list` 不需要 bundle。
+- **QEMU 层 `uefi = false`**：避免 ostool 下载自带 OVMF（`edk2-stable202508-r1`）。runner 注入 pflash unit 0（只读 CODE，已验证文件）与 unit 1（每次运行新建的 VARS 副本），`-kernel` 启动 Axvisor 宿主。
+- **嵌套 OVMF**：VM 配置 `os/axvisor/configs/vms/qemu/x86_64/ovmf-entry.toml` 声明 `guest_type = "passthrough"`、`boot_protocol = "uefi"`、`bios_load_addr = 0xffc84000`、`firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"`。默认 `image_location = "fs"` + `kernel_path = "/guest/ovmf/OVMF_CODE.fd"`（文件不存在时报错，是显式 fallback）；有 bundle 时 runner 改写为 `image_location = "memory"` 并经 `include_bytes!` 嵌入已验证 CODE，与 QEMU 层 pflash 的 CODE 逐字节一致。
+- **loader 强制校验**：`firmware_profile` 启用时，x86 loader（`virtualization/axvm/src/arch/x86_64/boot/mod.rs`）强制 `code_size = 0x37c000`、`bios_load_addr = 0xffc84000`、reset `0xfffffff0`；`axvmconfig` 拒绝非 UEFI boot 协议声明 profile。
+- **non-gating**：`uefi` 分组天然不纳入 CI gating。CI 的 x86_64 行只运行 `smoke-svm`/`smoke-vmx`（`normal` 组），`ovmf-entry-*` 需在本地显式用 `--test-group uefi` 验证。
+
+### 3.4 板卡测试
 
 板级测试通过 `board-{board_name}.toml` 配置文件定义。执行链位于 `axvisor/test/board.rs::test_board()`，使用 `BoardTestRunState` 逐 group 运行并收集结果（与 QEMU 测试的 `QemuTestSummary` 类似）。
 

@@ -71,6 +71,13 @@ sample_rate = 1000
 - `passthrough`：初始选择平台发现的全部 guest-assignable 物理设备，再移除
   `devices.disabled`、宿主拥有的设备和 machine profile 的虚拟资源。
 
+UEFI guest 通过 `[kernel]` 段的固件字段配置：`boot_protocol = "uefi"`、`uefi_firmware_path`
+（回退到 `bios_path`）、`image_location`（`"fs"` 或 `"memory"`）与 `bios_load_addr`。
+x86_64 的 `firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"` 固定选择已验证的 OVMF
+bundle，x86 loader 据此强制 CODE 布局（`0xffc84000` / size `0x37c000` / reset `0xfffffff0`）；
+`firmware_profile` 与非 UEFI boot 协议同时出现会被 `axvmconfig` 拒绝。示例见
+`configs/vms/qemu/x86_64/ovmf-entry.toml`。
+
 `PhysicalDeviceRef` 是物理设备身份，不是资源描述。第一阶段支持设备树路径；
 后续增加 PCI BDF 或 ACPI 身份时必须继续由平台发现层解析，不能重新暴露裸地址或 IRQ。
 

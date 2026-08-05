@@ -131,6 +131,8 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 
 StarryOS stress 测试条目保留在 workflow 中，但当前处于注释状态。启用后仅用于 target 为 `main` 的 PR。
 
+x86_64 的 `uefi` 测试组（`ovmf-entry-vmx`/`ovmf-entry-svm`，需 `--firmware-bundle-path`）天然 non-gating，不进入 CI 矩阵，需在本地显式验证。
+
 ## Self-Hosted Runner 约定
 
 self-hosted runner 任务优先在 `rcore-os` 仓库内运行。带 `self_hosted_owner` 的任务在 fork PR 或非 `rcore-os` 仓库中会回退到 `ubuntu-latest` + 对应容器，避免没有对应 runner 时长时间排队。迁移到 self-hosted 的任务直接在原生 runner 环境中运行，不再套 Docker container。
