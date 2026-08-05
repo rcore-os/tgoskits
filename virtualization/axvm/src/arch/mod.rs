@@ -70,7 +70,8 @@ pub mod platform {
         any(
             target_arch = "aarch64",
             target_arch = "x86_64",
-            target_arch = "loongarch64"
+            target_arch = "loongarch64",
+            target_arch = "riscv64"
         ),
         any(feature = "fs", feature = "host-fs")
     ))]

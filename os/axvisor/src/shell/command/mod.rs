@@ -13,6 +13,8 @@
 // limitations under the License.
 
 mod base;
+#[cfg(feature = "fs")]
+mod fs;
 mod history;
 mod vm;
 
@@ -31,6 +33,14 @@ use std::{print, println, sync::LazyLock};
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
+
+pub(super) fn shutdown(exit_code: i32) -> ! {
+    #[cfg(feature = "fs")]
+    if let Err(error) = axvm::shutdown_host_filesystems() {
+        println!("Warning: failed to shut down host filesystems: {error}");
+    }
+    std::process::exit(exit_code);
+}
 
 #[derive(Debug, Clone)]
 pub struct CommandNode {
@@ -515,7 +525,7 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         [command] if command == "exit" || command == "quit" => {
             println!("Goodbye!");
-            std::process::exit(0);
+            shutdown(0);
         }
         [command] if command == "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence

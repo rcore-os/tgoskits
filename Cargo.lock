@@ -1578,7 +1578,9 @@ version = "0.5.23"
 dependencies = [
  "anyhow",
  "ax-driver",
+ "ax-hal",
  "ax-std",
+ "ax-task",
  "axbacktrace",
  "axbuild",
  "axtest",

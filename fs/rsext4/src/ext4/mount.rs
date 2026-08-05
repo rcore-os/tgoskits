@@ -471,7 +471,7 @@ impl Ext4FileSystem {
         // can distinguish an unclean shutdown from a real EXT4_ERROR_FS state.
         if !options.readonly {
             fs.sync_filesystem(block_dev)?;
-            block_dev.umount_commit();
+            block_dev.umount_commit()?;
         }
 
         Ok(fs)
