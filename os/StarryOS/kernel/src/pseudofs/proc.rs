@@ -26,13 +26,14 @@ use ax_runtime::hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
 use crate::{
-    file::FD_TABLE,
+    file::{FD_TABLE, PidFd},
     mm::{BackendFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
@@ -926,6 +927,76 @@ impl SimpleDirOps for ThreadFdDir {
     }
 }
 
+/// The /proc/[pid]/fdinfo directory.
+struct ThreadFdInfoDir {
+    fs: Arc<SimpleFs>,
+    task: WeakAxTaskRef,
+}
+
+impl SimpleDirOps for ThreadFdInfoDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let Some(task) = self.task.upgrade() else {
+            return Box::new(iter::empty());
+        };
+        let ids = FD_TABLE
+            .scope(&task.as_thread().scope.read())
+            .read()
+            .ids()
+            .map(|id| Cow::Owned(id.to_string()))
+            .collect::<Vec<_>>();
+        Box::new(ids.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+        let pidfd = FD_TABLE
+            .scope(&task.as_thread().scope.read())
+            .read()
+            .get(fd as _)
+            .ok_or(VfsError::NotFound)?
+            .inner
+            .downcast_ref::<PidFd>()
+            .map(|pidfd| (pidfd.identity(), pidfd.target_pid()));
+
+        // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
+        // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
+        // fallback. Other descriptor kinds still have an fdinfo entry, even
+        // though StarryOS does not yet expose their type-specific fields.
+        let Some((identity, target_pid)) = pidfd else {
+            return Ok(SimpleFile::new_regular(fs, || Ok(Vec::new())).into());
+        };
+
+        Ok(SimpleFile::new_regular(fs, move || {
+            let pids: Vec<i32> = if identity.is_exited() {
+                vec![-1]
+            } else {
+                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
+                PidNamespace::visible_pid_chain(
+                    &observer_pid_ns,
+                    &identity.pid_ns(),
+                    target_pid as u64,
+                )
+                .map(|pids| pids.into_iter().map(|pid| pid as i32).collect())
+                .unwrap_or_else(|| vec![0])
+            };
+            let pid = pids[0];
+            let nspid = pids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(format!("Pid:\t{pid}\nNSpid:\t{nspid}\n").into_bytes())
+        })
+        .into())
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
 /// Each entry is a regular file displaying the namespace identifier.
@@ -1240,6 +1311,7 @@ impl SimpleDirOps for ThreadDir {
                 "root",
                 "cwd",
                 "fd",
+                "fdinfo",
                 "uid_map",
                 "gid_map",
                 "setgroups",
@@ -1424,6 +1496,14 @@ impl SimpleDirOps for ThreadDir {
             "fd" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(ThreadFdDir {
+                    fs,
+                    task: Arc::downgrade(&task),
+                }),
+            )
+            .into(),
+            "fdinfo" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(ThreadFdInfoDir {
                     fs,
                     task: Arc::downgrade(&task),
                 }),
@@ -1714,7 +1794,6 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
         }),
     )
 }
-
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(

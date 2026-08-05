@@ -7,4 +7,5 @@ set(CMAKE_C_EXTENSIONS ON)
 
 add_executable(bugfix-pidfd-fdinfo src/main.c)
 target_compile_options(bugfix-pidfd-fdinfo PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(bugfix-pidfd-fdinfo PRIVATE pthread)
 install(TARGETS bugfix-pidfd-fdinfo RUNTIME DESTINATION usr/bin/starry-test-suit)

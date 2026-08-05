@@ -13,6 +13,7 @@ use alloc::{
 use ax_errno::{AxError, AxResult};
 use ax_kspin::{SpinNoIrq, SpinRwLock as RwLock};
 use ax_task::current;
+use axnsproxy::PidNamespace;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 
@@ -21,6 +22,7 @@ use super::{AsThread, Cred, ProcessData};
 /// Generation-specific identity retained by the PID registry and pidfds.
 pub(crate) struct ProcessIdentity {
     process: Arc<Process>,
+    pid_ns: SpinNoIrq<Option<Arc<SpinNoIrq<PidNamespace>>>>,
     exit_event: Arc<PollSet>,
     state: SpinNoIrq<ProcessIdentityState>,
 }
@@ -55,6 +57,7 @@ impl ProcessIdentity {
     ) -> Arc<Self> {
         Arc::new(Self {
             process,
+            pid_ns: SpinNoIrq::new(None),
             exit_event,
             state: SpinNoIrq::new(ProcessIdentityState::Live(proc_data)),
         })
@@ -68,6 +71,26 @@ impl ProcessIdentity {
     /// Returns the numeric PID lookup key.
     pub(crate) fn pid(&self) -> Pid {
         self.process.pid()
+    }
+
+    /// Binds the process PID namespace when this identity is first published.
+    pub(crate) fn bind_pid_ns(&self, pid_ns: Arc<SpinNoIrq<PidNamespace>>) {
+        let mut bound_pid_ns = self.pid_ns.lock();
+        if let Some(bound_pid_ns) = bound_pid_ns.as_ref() {
+            assert!(
+                Arc::ptr_eq(bound_pid_ns, &pid_ns),
+                "process identity PID namespace changed after publication"
+            );
+        } else {
+            *bound_pid_ns = Some(pid_ns);
+        }
+    }
+
+    pub(crate) fn pid_ns(&self) -> Arc<SpinNoIrq<PidNamespace>> {
+        self.pid_ns
+            .lock()
+            .clone()
+            .expect("published process identity must have a PID namespace")
     }
 
     /// Returns the event shared by process pidfds across all lifecycle states.
@@ -86,6 +109,16 @@ impl ProcessIdentity {
     /// Returns whether final process exit has been published but not consumed.
     pub(crate) fn is_zombie(&self) -> bool {
         matches!(*self.state.lock(), ProcessIdentityState::Zombie(_))
+    }
+
+    /// Returns whether the target has published its final exit state.
+    pub(crate) fn is_exited(&self) -> bool {
+        matches!(
+            *self.state.lock(),
+            ProcessIdentityState::Zombie(_)
+                | ProcessIdentityState::Reaping
+                | ProcessIdentityState::Reaped
+        )
     }
 
     /// Returns whether one waiter consumed and retired this identity.
@@ -187,6 +220,8 @@ static PROCESS_TABLE: RwLock<BTreeMap<Pid, Arc<ProcessIdentity>>> = RwLock::new(
 pub(crate) fn register_process_identity(proc_data: &Arc<ProcessData>) {
     let pid = proc_data.proc.pid();
     let identity = proc_data.identity();
+    let pid_ns = proc_data.nsproxy.lock().pid_ns.clone();
+    identity.bind_pid_ns(pid_ns);
     let mut process_table = PROCESS_TABLE.write();
     match process_table.get(&pid) {
         Some(registered) if Arc::ptr_eq(registered, &identity) => {}

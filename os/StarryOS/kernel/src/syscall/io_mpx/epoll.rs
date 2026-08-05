@@ -205,6 +205,7 @@ fn do_epoll_wait(
         || match block_on(future::timeout(
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
+                epoll.register_waiter_wakers()?;
                 epoll.poll_events_with(maxevents, |index, event| {
                     write_epoll_event(events, index, &event)?;
                     Ok(())

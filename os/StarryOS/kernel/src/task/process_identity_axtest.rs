@@ -2,6 +2,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use axnsproxy::ROOT_PID_NS;
+
 use super::*;
 
 const TEST_PID: Pid = Pid::MAX;
@@ -25,6 +27,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let process = Process::new_for_axtest(TEST_PID);
     let identity = Arc::new(ProcessIdentity {
         process: process.clone(),
+        pid_ns: SpinNoIrq::new(Some(ROOT_PID_NS.clone())),
         exit_event: Arc::new(PollSet::new()),
         state: SpinNoIrq::new(ProcessIdentityState::Zombie(ZombieSnapshot {
             cred: Arc::new(Cred::default()),
