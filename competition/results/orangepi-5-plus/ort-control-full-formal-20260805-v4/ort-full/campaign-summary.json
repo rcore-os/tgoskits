@@ -1,0 +1,400 @@
+{
+  "board": {
+    "hostname": "orangepi5plus",
+    "id": "bf61f4d4a1d994ad"
+  },
+  "campaign": {
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m4-formal-20260804/tmp/competition/ivc/ort-control-full-formal-20260805-v4/ort-full",
+    "profile": "ort-full",
+    "run_count": 5,
+    "samples_per_run": 1800,
+    "total_samples": 9000
+  },
+  "formal_gate_passed": true,
+  "frozen_thresholds": {
+    "max_deadline_misses_per_run": 1,
+    "max_full_loop_p99_us": 25000,
+    "max_full_loop_us": 200000,
+    "max_initialization_us": 500000,
+    "max_ort_wall_ns": 25000000,
+    "max_ort_wall_p99_ns": 1000000,
+    "min_throughput_msg_s": 9.5,
+    "post_first_deadline_misses": 0
+  },
+  "model": {
+    "backend": "onnxruntime",
+    "id": "thermal-4x6x1-v1",
+    "provider": "CPUExecutionProvider",
+    "runtime_version": "1.25.0",
+    "sha256": "3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887"
+  },
+  "preregistration": {
+    "created_at": "2026-08-05T07:59:50+00:00",
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m4-formal-20260804/tmp/competition/ivc/ort-control-full-formal-20260805-v4/ort-full/preregistration.json",
+    "predates_first_run": true,
+    "sha256": "04768defc09ce5e9a0069ead59bd01ea9fc696b32f46fdcd3619797327beded4"
+  },
+  "reliability": {
+    "acknowledged": 9000,
+    "deadline_misses": 5,
+    "errors": 0,
+    "post_first_deadline_misses": 0,
+    "post_first_sample_count": 8995,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "sent": 9000,
+    "timeouts": 0
+  },
+  "runs": [
+    {
+      "controller": {
+        "deadline_misses": 1,
+        "full_loop_max_us": 119778,
+        "full_loop_p50_us": 7821,
+        "full_loop_p95_us": 11874,
+        "full_loop_p99_us": 12273,
+        "throughput_msg_s": 9.993446987396803
+      },
+      "cpu_temp_milli_c": 46230,
+      "deadline_partition": {
+        "miss_sequences": [
+          1
+        ],
+        "post_first_deadline_misses": 0,
+        "post_first_full_loop_max_us": 16787,
+        "post_first_full_loop_p99_us": 12266,
+        "post_first_sample_count": 1799
+      },
+      "evidence": {
+        "checksums_sha256": "6394f03a67d3821ff81bd34099b5e1e28d0f3048b7d7c05dd7b4d1eb72d7b26c",
+        "metadata_sha256": "34357ebfac8a462f2ceac492d9e3620c41f9f2bc6501620e22a5d03809cf7247",
+        "model_uart_votes": 5,
+        "ort_sha256": "cfba95735f1602a16957c7c3abaac922951345d8188ef23228e0b643d4a1d362",
+        "ort_uart_votes": 5,
+        "raw_sha256": "4031fc4d0253587a7b31dd6ea047a9a8335704c6d2f23110630ee0f9f9111bc8",
+        "snapshot_sha256": "7cdbb0f30f056e8e5be40deb6847bdb6d79af4b217b0c065a94650677c75bab1",
+        "summary_sha256": "e96668c1e86d86b4cbc8b8f393ea80173dddb22944f3f53d078eb3ed142fcfa3"
+      },
+      "finished_at": "2026-08-05T08:07:43Z",
+      "ort": {
+        "initialization_us": 218205,
+        "wall_max_ns": 17155542,
+        "wall_p50_ns": 143792,
+        "wall_p99_ns": 175583
+      },
+      "run_id": "run-001",
+      "started_at": "2026-08-05T08:00:02Z"
+    },
+    {
+      "controller": {
+        "deadline_misses": 1,
+        "full_loop_max_us": 122201,
+        "full_loop_p50_us": 8058,
+        "full_loop_p95_us": 11872,
+        "full_loop_p99_us": 12251,
+        "throughput_msg_s": 9.993264850565112
+      },
+      "cpu_temp_milli_c": 46230,
+      "deadline_partition": {
+        "miss_sequences": [
+          1
+        ],
+        "post_first_deadline_misses": 0,
+        "post_first_full_loop_max_us": 17546,
+        "post_first_full_loop_p99_us": 12248,
+        "post_first_sample_count": 1799
+      },
+      "evidence": {
+        "checksums_sha256": "1ccdfd90ae0eaa696cca48d9f9ec733b46759cee6036997a97042bf661375041",
+        "metadata_sha256": "28ecf3083b6175a2eb4d1234eebb625958264edcb697083c2970b698fa718508",
+        "model_uart_votes": 5,
+        "ort_sha256": "efc1f8f775c588c9ccec66ca87604367aa1a78b56d4d185ba82f33c8761fe24f",
+        "ort_uart_votes": 5,
+        "raw_sha256": "8111a55f1ba6dc1c36c507b9b33bed528c8a39cd7a9468561be86c45f2e2baed",
+        "snapshot_sha256": "6aac3ba731f2bc4c714a0ca327e4f26ca26403fb6ebd490987ff6540777b5af3",
+        "summary_sha256": "8ac1d32f96ace2f0e02603095a5a5abb9b3f24f74e0a2a0e56c8a6828a13cd7f"
+      },
+      "finished_at": "2026-08-05T08:15:32Z",
+      "ort": {
+        "initialization_us": 218201,
+        "wall_max_ns": 17160791,
+        "wall_p50_ns": 143792,
+        "wall_p99_ns": 175292
+      },
+      "run_id": "run-002",
+      "started_at": "2026-08-05T08:07:55Z"
+    },
+    {
+      "controller": {
+        "deadline_misses": 1,
+        "full_loop_max_us": 120766,
+        "full_loop_p50_us": 7916,
+        "full_loop_p95_us": 11871,
+        "full_loop_p99_us": 12229,
+        "throughput_msg_s": 9.993332741695447
+      },
+      "cpu_temp_milli_c": 46230,
+      "deadline_partition": {
+        "miss_sequences": [
+          1
+        ],
+        "post_first_deadline_misses": 0,
+        "post_first_full_loop_max_us": 16367,
+        "post_first_full_loop_p99_us": 12229,
+        "post_first_sample_count": 1799
+      },
+      "evidence": {
+        "checksums_sha256": "c0685f57b39e55b6c6ec792688138a1407066c16e00ae43508b5675c44c06643",
+        "metadata_sha256": "91e47b00c7f2faf4f29b04358cc7adb7abe11fd37b37ac78ce5c2894449a803b",
+        "model_uart_votes": 5,
+        "ort_sha256": "fa34f3a0baa1bde8451f7693c1f8456f6f3326da57709c9325ff7bb5c126a158",
+        "ort_uart_votes": 5,
+        "raw_sha256": "5bfd29fce8905f923f10518fe3efaee04f25016504b656378249446451a7c5f3",
+        "snapshot_sha256": "70e56367bd6a080ba73af4f4fd179ed5b802daab2f6f451ac50614c9f5149428",
+        "summary_sha256": "f9a4594286021c05cc91568a630a50192849271e8ae157de1d7e72e5c440adf6"
+      },
+      "finished_at": "2026-08-05T08:23:26Z",
+      "ort": {
+        "initialization_us": 224198,
+        "wall_max_ns": 17128709,
+        "wall_p50_ns": 144667,
+        "wall_p99_ns": 174417
+      },
+      "run_id": "run-003",
+      "started_at": "2026-08-05T08:15:45Z"
+    },
+    {
+      "controller": {
+        "deadline_misses": 1,
+        "full_loop_max_us": 127742,
+        "full_loop_p50_us": 7899,
+        "full_loop_p95_us": 11869,
+        "full_loop_p99_us": 12252,
+        "throughput_msg_s": 9.992948666578203
+      },
+      "cpu_temp_milli_c": 45307,
+      "deadline_partition": {
+        "miss_sequences": [
+          1
+        ],
+        "post_first_deadline_misses": 0,
+        "post_first_full_loop_max_us": 16729,
+        "post_first_full_loop_p99_us": 12234,
+        "post_first_sample_count": 1799
+      },
+      "evidence": {
+        "checksums_sha256": "3ca95dc8ee697be23a51b870b20a309a9e053403f2cf44c5cb482bdce5d689a4",
+        "metadata_sha256": "0ebaf3ca13cfabc2a2f8f1fdfc8c4a105c3cfd63ec9f75dbd9325eb93264e226",
+        "model_uart_votes": 5,
+        "ort_sha256": "caeef46c50de1dd8e8081420806fba9f068cfc89c7e0d34f50cb68b7eaec43a4",
+        "ort_uart_votes": 5,
+        "raw_sha256": "e5d4dfebd43305ea339d2eba9f3152f99f274c90722db981b6b0e75462c3b5b5",
+        "snapshot_sha256": "f473ff1b271da910177a03535674cda9eb5133ac8afaca084b8a469f25f6b3ea",
+        "summary_sha256": "c939d088fca8d673da323404c369c64853cc110624d0cd993fd8d1c6453e487e"
+      },
+      "finished_at": "2026-08-05T08:31:14Z",
+      "ort": {
+        "initialization_us": 218217,
+        "wall_max_ns": 17145625,
+        "wall_p50_ns": 143792,
+        "wall_p99_ns": 174709
+      },
+      "run_id": "run-004",
+      "started_at": "2026-08-05T08:23:38Z"
+    },
+    {
+      "controller": {
+        "deadline_misses": 1,
+        "full_loop_max_us": 143429,
+        "full_loop_p50_us": 7185,
+        "full_loop_p95_us": 11647,
+        "full_loop_p99_us": 12023,
+        "throughput_msg_s": 9.992014941522607
+      },
+      "cpu_temp_milli_c": 46230,
+      "deadline_partition": {
+        "miss_sequences": [
+          1
+        ],
+        "post_first_deadline_misses": 0,
+        "post_first_full_loop_max_us": 16322,
+        "post_first_full_loop_p99_us": 12021,
+        "post_first_sample_count": 1799
+      },
+      "evidence": {
+        "checksums_sha256": "6024a068902adef5211eca1caafba819e941f0badaa5aaff11e1de89be05482d",
+        "metadata_sha256": "4e8205cb619c603525fb92dc374b6d84cb71e3c54ac405682c2602550b34a2d5",
+        "model_uart_votes": 5,
+        "ort_sha256": "61c50c23095ccbb3cae8a62db201617daaa3a98f5bbef3addb3f073ac3415ac8",
+        "ort_uart_votes": 5,
+        "raw_sha256": "267f981c771595a450bab5bebc99229256fbcb99b0f9296fcb9f2bceee418d6c",
+        "snapshot_sha256": "75fcf4d8771da89615dba2aee0984fcc8d79be303227007caf712c62e7790322",
+        "summary_sha256": "c642fa63aedd816e3554ffae2712ab2724272d828bda074d9ce27876b6be78ee"
+      },
+      "finished_at": "2026-08-05T08:39:09Z",
+      "ort": {
+        "initialization_us": 224251,
+        "wall_max_ns": 17136000,
+        "wall_p50_ns": 144666,
+        "wall_p99_ns": 174417
+      },
+      "run_id": "run-005",
+      "started_at": "2026-08-05T08:31:27Z"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "branch": "experiment/m4-formal-20260804",
+    "commit": "0110647de52f5e2ad6b550cb594780d7506ffecf",
+    "dirty": false
+  },
+  "statistics": {
+    "controller": {
+      "full_loop_max_us": {
+        "max": 143429,
+        "median": 122201,
+        "min": 119778,
+        "range": 23651,
+        "values": [
+          119778,
+          122201,
+          120766,
+          127742,
+          143429
+        ]
+      },
+      "full_loop_p50_us": {
+        "max": 8058,
+        "median": 7899,
+        "min": 7185,
+        "range": 873,
+        "values": [
+          7821,
+          8058,
+          7916,
+          7899,
+          7185
+        ]
+      },
+      "full_loop_p95_us": {
+        "max": 11874,
+        "median": 11871,
+        "min": 11647,
+        "range": 227,
+        "values": [
+          11874,
+          11872,
+          11871,
+          11869,
+          11647
+        ]
+      },
+      "full_loop_p99_us": {
+        "max": 12273,
+        "median": 12251,
+        "min": 12023,
+        "range": 250,
+        "values": [
+          12273,
+          12251,
+          12229,
+          12252,
+          12023
+        ]
+      },
+      "throughput_msg_s": {
+        "max": 9.993446987396803,
+        "median": 9.993264850565112,
+        "min": 9.992014941522607,
+        "range": 0.0014320458741963193,
+        "values": [
+          9.993446987396803,
+          9.993264850565112,
+          9.993332741695447,
+          9.992948666578203,
+          9.992014941522607
+        ]
+      }
+    },
+    "ort": {
+      "initialization_us": {
+        "max": 224251,
+        "median": 218217,
+        "min": 218201,
+        "range": 6050,
+        "values": [
+          218205,
+          218201,
+          224198,
+          218217,
+          224251
+        ]
+      },
+      "wall_max_ns": {
+        "max": 17160791,
+        "median": 17145625,
+        "min": 17128709,
+        "range": 32082,
+        "values": [
+          17155542,
+          17160791,
+          17128709,
+          17145625,
+          17136000
+        ]
+      },
+      "wall_p50_ns": {
+        "max": 144667,
+        "median": 143792,
+        "min": 143792,
+        "range": 875,
+        "values": [
+          143792,
+          143792,
+          144667,
+          143792,
+          144666
+        ]
+      },
+      "wall_p99_ns": {
+        "max": 175583,
+        "median": 174709,
+        "min": 174417,
+        "range": 1166,
+        "values": [
+          175583,
+          175292,
+          174417,
+          174709,
+          174417
+        ]
+      }
+    },
+    "post_first_full_loop_max_us": {
+      "max": 17546,
+      "median": 16729,
+      "min": 16322,
+      "range": 1224,
+      "values": [
+        16787,
+        17546,
+        16367,
+        16729,
+        16322
+      ]
+    },
+    "post_first_full_loop_p99_us": {
+      "max": 12266,
+      "median": 12234,
+      "min": 12021,
+      "range": 245,
+      "values": [
+        12266,
+        12248,
+        12229,
+        12234,
+        12021
+      ]
+    }
+  }
+}

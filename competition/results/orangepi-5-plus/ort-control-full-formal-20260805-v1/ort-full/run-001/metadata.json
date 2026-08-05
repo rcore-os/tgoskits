@@ -1,0 +1,98 @@
+{
+  "board": {
+    "cpu_temp_milli_c": null,
+    "hostname": null,
+    "id": null,
+    "type": "OrangePi-5-Plus"
+  },
+  "inputs": {
+    "board_config": {
+      "path": "competition/ivc/config/board-orangepi-5-plus-ort-control.toml",
+      "sha256": "1eb49a655f2c6d713fded849a0a3df033544492678e5d7e18ee67f5d617b6d86",
+      "size_bytes": 622
+    },
+    "build_config": {
+      "path": "competition/ivc/config/axvisor-orangepi-5-plus-ort-control.toml",
+      "sha256": "183b0141c612e9dc4403550b7a3ed4347adc802113bc757d0e46c7b9975421ea",
+      "size_bytes": 294
+    },
+    "rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-ort-control.img",
+      "sha256": "6884919950d96f38082e7cc647575bc040d25b7de3ae13c8aed828e39747615c",
+      "size_bytes": 167772160
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb",
+      "sha256": "0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd",
+      "size_bytes": 1766
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos.bin",
+      "sha256": "3bd0a4982d4b6ef278f1a3c20b88cec888bdac772fad119ed6d9fa4e4f9f33bd",
+      "size_bytes": 13639728
+    },
+    "zephyr_guest": {
+      "path": "competition/ivc/zephyr/build-board/zephyr/zephyr.bin",
+      "sha256": "b3fdba64504011e5273b5a6094ddab98b36de0d48fe39e2514559c17cf321ca5",
+      "size_bytes": 121568
+    }
+  },
+  "model": {
+    "artifact": {
+      "path": "competition/ivc/model/thermal-4x6x1-v1.ort",
+      "sha256": "3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887",
+      "size_bytes": 4144
+    },
+    "backend": "onnxruntime",
+    "id": "thermal-4x6x1-v1",
+    "runtime_version": "1.25.0"
+  },
+  "outputs": {
+    "console_log": {
+      "path": "tmp/competition/ivc/ort-control-full-formal-20260805-v1/ort-full/run-001/console.log.gz",
+      "sha256": "679c976706f58dfab193818513023f2317e4e53c4c5bed569fa397528375db0e",
+      "size_bytes": 14900
+    },
+    "ort_csv": {
+      "path": "tmp/competition/ivc/ort-control-full-formal-20260805-v1/ort-full/run-001/ort.csv.gz",
+      "sha256": "b12b89e94265937f745694b68fa8188140c6a6e18b9db67ed7878ac40a2952b3",
+      "size_bytes": 30266
+    },
+    "raw_csv": {
+      "path": "tmp/competition/ivc/ort-control-full-formal-20260805-v1/ort-full/run-001/raw.csv.gz",
+      "sha256": "c24c36e2c3b4db257aaf139794e826f63d05c22d3235f7ff60b1a1842d6e6155",
+      "size_bytes": 53369
+    },
+    "rknn_csv": null,
+    "summary": null
+  },
+  "result": {
+    "controller_policy": null,
+    "deadline_misses": null,
+    "dropped_samples": null,
+    "ort_sample_count": null,
+    "rknn_sample_count": null,
+    "sample_count": null,
+    "successful_marker": null,
+    "validated": false
+  },
+  "run": {
+    "board_type": "OrangePi-5-Plus",
+    "execution_order": 1,
+    "exit_status": 1,
+    "finished_at": "2026-08-05T06:46:18Z",
+    "profile": "ort-full",
+    "repeat_count": 5,
+    "run_id": "run-001",
+    "run_number": 1,
+    "started_at": "2026-08-05T06:38:38Z"
+  },
+  "schema_version": 1,
+  "source": {
+    "branch": "experiment/m4-formal-20260804",
+    "commit": "d99ed9932f31c1d417f9edb4148514a815b91353",
+    "dirty": false,
+    "tracked_change_count": 0,
+    "untracked_file_count": 0
+  }
+}

@@ -1,0 +1,15 @@
+
+sent 13,643,174 bytes  received 35 bytes  9,095,472.67 bytes/sec
+total size is 13,639,728  speedup is 1.00
+
+sent 1,901 bytes  received 35 bytes  1,290.67 bytes/sec
+total size is 1,766  speedup is 0.91
+
+sent 167,813,255 bytes  received 35 bytes  111,875,526.67 bytes/sec
+total size is 167,772,160  speedup is 1.00
+starryos.bin: OK
+starry-orangepi-5-plus.dtb: OK
+starry-ivc-rootfs-ort-control.img: OK
+/dev/mmcblk1p2 ext4   rw,noatime,errors=remount-ro,commit=600
+BOARD_ORT_CONTROL_STAGE_HASHES_VERIFIED
+BOARD_ORT_CONTROL_STAGE_PASS destination=/home/orangepi/axvisor-guest artifacts=3
