@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "tool": "onnxruntime",
+  "version": "1.25.0",
+  "release": {
+    "api_version": 25,
+    "commit": "7a71bc575b189cdedea7fa2c0f87389f870bd10e",
+    "official_repository": "https://github.com/microsoft/onnxruntime",
+    "tag": "v1.25.0",
+    "tag_url": "https://github.com/microsoft/onnxruntime/releases/tag/v1.25.0"
+  },
+  "linux_aarch64_archive": {
+    "official_url": "https://github.com/microsoft/onnxruntime/releases/download/v1.25.0/onnxruntime-linux-aarch64-1.25.0.tgz",
+    "sha256": "849c04634e76446bbe0a92f67955a9641415c37f11930804066057bf9eadbd03",
+    "size_bytes": 7501532,
+    "target": "aarch64-linux-gnu"
+  },
+  "runtime_files": {
+    "libonnxruntime.so.1.25.0": {
+      "sha256": "e03801f70263a028207491471f09a17ed6a62b146568edada797483f8f8ec8d3",
+      "size_bytes": 19215360,
+      "soname": "libonnxruntime.so.1"
+    },
+    "libonnxruntime_providers_shared.so": {
+      "sha256": "3b6be288fbfb7dff8770d08a23defdde18e8f7e0f5a2b344a0e5e238c999ea88",
+      "size_bytes": 198792
+    },
+    "onnxruntime_c_api.h": {
+      "sha256": "4763b298a1ab8b5df88c3949b560c1e00a3605e61995d2d3243fd8007679d585",
+      "size_bytes": 387086
+    },
+    "onnxruntime_cxx_api.h": {
+      "sha256": "e713be1d2b5a11a0750e6a581c11c1d0d589324084fe7bf8b09064eba3835b9d",
+      "size_bytes": 164641
+    }
+  },
+  "dynamic_abi": {
+    "cxxabi_max": "CXXABI_1.3.11",
+    "glibc_max": "GLIBC_2.27",
+    "glibcxx_max": "GLIBCXX_3.4.21",
+    "needed": [
+      "libdl.so.2",
+      "librt.so.1",
+      "libpthread.so.0",
+      "libstdc++.so.6",
+      "libm.so.6",
+      "libgcc_s.so.1",
+      "libc.so.6",
+      "ld-linux-aarch64.so.1"
+    ]
+  },
+  "licensing": {
+    "license": "MIT",
+    "license_sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+    "third_party_notices_sha256": "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2"
+  },
+  "repository_policy": {
+    "runtime_archive_committed": false,
+    "installation": "download the official release archive and require the recorded SHA-256 before staging the StarryOS rootfs"
+  }
+}

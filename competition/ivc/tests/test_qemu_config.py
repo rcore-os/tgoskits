@@ -55,6 +55,9 @@ ZEPHYR_GITIGNORE = REPOSITORY_ROOT / "competition/ivc/zephyr/.gitignore"
 IVCPROTO_BIN = REPOSITORY_ROOT / "tools/ivcproto/src/bin/ivcproto.rs"
 ORANGEPI_RUN_SCRIPT = REPOSITORY_ROOT / "competition/ivc/run-orangepi-5-plus.sh"
 ORANGEPI_STAGE_SCRIPT = REPOSITORY_ROOT / "competition/ivc/stage-orangepi-5-plus.sh"
+ORT_STARRY_BUILD_SCRIPT = (
+    REPOSITORY_ROOT / "competition/ivc/starry/build-ort-offline.sh"
+)
 AXVISOR_SHELL_BASE = REPOSITORY_ROOT / "os/axvisor/src/shell/command/base.rs"
 AXVISOR_SHELL_HOST = REPOSITORY_ROOT / "os/axvisor/src/shell/command/host.rs"
 AXVISOR_SHELL = REPOSITORY_ROOT / "os/axvisor/src/shell/mod.rs"
@@ -273,6 +276,22 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertLess(
             runner.index("\nconfigure_system_libclang\n"),
             runner.index('"${cargo_command[@]}" xtask axvisor board'),
+        )
+
+    def test_ort_build_resolves_reproducible_wsl_dependencies(self) -> None:
+        build_script = ORT_STARRY_BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("configure_system_libclang", build_script)
+        self.assertIn("/usr/lib/llvm-*/lib/libclang.so*", build_script)
+        self.assertIn("resolve_ort_python", build_script)
+        self.assertIn("ivc-ort-py312/bin/python", build_script)
+        self.assertLess(
+            build_script.index("\nconfigure_system_libclang\n"),
+            build_script.index('cargo "+$toolchain" xtask starry build'),
+        )
+        self.assertLess(
+            build_script.index("\nresolve_ort_python\n"),
+            build_script.index('cargo "+$toolchain" xtask starry build'),
         )
 
     def test_board_runner_restores_the_lockfile_after_a_local_cargo_patch(self) -> None:

@@ -492,8 +492,24 @@ def build_manifest(
                 "ir_version": ONNX_IR_VERSION,
                 "opset": ONNX_OPSET,
             },
-            "ort": {"status": "pending-m4-plus"},
-            "rknn": {"status": "pending-m4-2"},
+            "ort": {
+                "backend": "onnxruntime-cpu",
+                "format": "ORT",
+                "path": "competition/ivc/model/thermal-4x6x1-v1.ort",
+                "sha256": "3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887",
+                "size_bytes": 4144,
+                "status": "host-verified-starry-pending",
+                "verification_vectors": 10_000,
+            },
+            "rknn": {
+                "backend": "rk3588-rknpu",
+                "format": "RKNN",
+                "path": "competition/ivc/model/thermal-4x6x1-v1-rk3588-fp16.rknn",
+                "sha256": "2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8",
+                "size_bytes": 15873,
+                "status": "starry-rk3588-verified",
+                "verification_vectors": 10_000,
+            },
         },
         "graph": {
             "input": {"dtype": "float32", "name": "normalized_observation", "shape": [1, 4]},
@@ -518,10 +534,15 @@ def build_manifest(
             "onnx": versions["onnx"],
             "protobuf": versions["protobuf"],
             "python": EXPECTED_PYTHON,
+            "onnxruntime": {
+                "candidate_version": "1.25.0",
+                "source": "https://github.com/microsoft/onnxruntime/releases/tag/v1.25.0",
+                "status": "host-frozen-starry-abi-pending",
+            },
             "rknn_toolkit2": {
                 "candidate_version": "2.3.2",
                 "source": "https://github.com/airockchip/rknn-toolkit2/releases/tag/v2.3.2",
-                "status": "not-frozen-before-m4-2-abi-gate",
+                "status": "frozen-and-physical-rk3588-verified",
             },
         },
         "runtime_compatibility_target": {
@@ -532,6 +553,12 @@ def build_manifest(
             },
             "rknpu_driver_abi": "0.9.8",
             "target_platform": "rk3588",
+            "onnxruntime_cpu": {
+                "api_version": 25,
+                "reported_version": "1.25.0",
+                "sha256": "e03801f70263a028207491471f09a17ed6a62b146568edada797483f8f8ec8d3",
+                "status": "candidate-pending-starry-physical-gate",
+            },
         },
     }
     return canonical_json(manifest)

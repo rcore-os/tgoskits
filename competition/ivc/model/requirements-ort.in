@@ -1,0 +1,8 @@
+# M4-E4 ORT-format export and CPU EP verification environment.
+# The target AArch64 runtime package is frozen separately with its binary ABI.
+flatbuffers==25.12.19
+numpy==1.26.4
+onnx==1.16.1
+onnxruntime==1.25.0
+packaging==26.2
+protobuf==4.25.4

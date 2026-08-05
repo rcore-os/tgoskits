@@ -52,6 +52,79 @@ then compares the generated Rust source, ONNX bytes, golden JSON, and manifest:
 bash competition/ivc/model/rebuild-check.sh
 ```
 
+## Freeze and verify the ORT CPU fallback
+
+The ORT route is a no-training CPU fallback and comparison backend. It converts
+the same frozen ONNX file to ORT format with ONNX Runtime 1.25.0, fixed
+optimization style, ARM targeting, and type-reduced operator metadata. Use the
+separate CPython 3.12.11 environment; its hash-locked packages are intentionally
+independent from the RKNN Toolkit2 environment.
+
+```bash
+uv venv --python 3.12.11 \
+  /home/seven_wsl/.cache/tgoskits/ivc-ort-py312
+uv pip sync \
+  --python /home/seven_wsl/.cache/tgoskits/ivc-ort-py312/bin/python \
+  --require-hashes competition/ivc/model/requirements-ort-lock.txt
+
+ORT_PY=/home/seven_wsl/.cache/tgoskits/ivc-ort-py312/bin/python
+"$ORT_PY" competition/ivc/model/export_thermal_ort.py --check
+IVC_ORT_PYTHON="$ORT_PY" \
+  bash competition/ivc/model/rebuild-ort-check.sh
+```
+
+The frozen 4,144-byte artifact has SHA-256
+`3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887`.
+Its reduced build contract contains only `Clip`, `Gemm`, and the optimized
+`FusedGemm`. CPU EP verification passes all 10,000 vectors with maximum
+absolute error `2.980232238769531e-07`, 9,999 exact actuator commands, one
+explicit half-permille rounding-boundary equivalence, and zero material command
+mismatches.
+
+Repeated conversions with the pinned toolchain exposed two different ORT
+FlatBuffer byte layouts. Both have the same public graph, reduced operator
+contract, and 10,000-vector output fingerprint. The committed report therefore
+freezes one canonical byte sequence while `--check` accepts only the two
+audited regenerated hashes and reruns the complete semantic gate. It does not
+claim byte-deterministic upstream serialization or silently replace the
+canonical artifact.
+
+`onnxruntime-1.25.0-source.json` freezes the official Linux AArch64 archive,
+release commit, headers, shared libraries, license files, and dynamic ABI
+requirements. The full CPU runtime library is 19,215,360 bytes and requires at
+most GLIBC 2.27, GLIBCXX 3.4.21, and CXXABI 1.3.11. Those facts establish a
+candidate rootfs payload, not StarryOS compatibility: the C API runner must
+still load the exact `.ort` and pass the physical-board syscall, resource, and
+10,000-vector gates.
+
+Build the exact AArch64 runner, StarryOS kernel, guest DTB, and 160 MiB glibc
+rootfs from WSL2 with:
+
+```bash
+bash competition/ivc/starry/build-ort-offline.sh
+```
+
+The build entrypoint automatically prefers the Ubuntu system `libclang` over a
+Homebrew LLVM that may require a newer host GLIBC. Unless
+`IVC_ORT_PYTHON` is set explicitly, it uses the locked environment at
+`${XDG_CACHE_HOME:-$HOME/.cache}/tgoskits/ivc-ort-py312/bin/python` and reruns
+the complete frozen ORT check before compiling StarryOS.
+
+After setting the board Linux root selector, one command rebuilds, stages,
+runs, restores Linux, harvests the immutable block snapshot, and independently
+validates every embedded artifact and all 10,000 outputs:
+
+```bash
+ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk1p2 \
+ORANGEPI_ORT_REQUIRE_CLEAN_SOURCE=1 \
+  bash competition/ivc/run-ort-offline.sh \
+    --result-dir tmp/competition/ivc/ort-formal-YYYYMMDD-v1
+```
+
+Do not set the clean-source requirement to zero for formal evidence. Failed
+runs retain their logs, provenance, and checksums under the requested result
+directory and must not be relabeled as passing runs.
+
 ## Rebuild and verify M4-2 RKNN FP16 artifacts
 
 M4-2 uses the exact `/usr/bin/python3.10` from Ubuntu 22.04 (3.10.12). The

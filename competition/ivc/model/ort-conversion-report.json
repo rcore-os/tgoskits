@@ -1,0 +1,95 @@
+{
+  "artifacts": {
+    "ort": {
+      "path": "competition/ivc/model/thermal-4x6x1-v1.ort",
+      "sha256": "3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887",
+      "size_bytes": 4144
+    },
+    "required_operators_and_types": {
+      "path": "competition/ivc/model/thermal-4x6x1-v1.required_operators_and_types.config",
+      "sha256": "81f84f59a7cd5d46a786ff96721e08b6f06adbf82d67277eeb12a544dae133fe",
+      "size_bytes": 154
+    }
+  },
+  "byte_reproducibility": {
+    "canonical_artifact_sha256": "3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887",
+    "observed_semantically_equivalent_sha256": [
+      "3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887",
+      "63ccf6753965138723ea88b5e801754c30f5e398567081e0ff9580f57da92ebf"
+    ],
+    "status": "two-upstream-serializer-layouts-observed",
+    "validation_policy": "freeze the canonical bytes; accept only audited regenerated layouts after the normalized operator and 10000-vector semantic gates pass"
+  },
+  "conversion": {
+    "enable_type_reduction": true,
+    "operators": [
+      "ai.onnx;13;Clip{\"inputs\": {\"0\": [\"float\"]}},Gemm{\"inputs\": {\"0\": [\"float\"]}}",
+      "com.microsoft;1;FusedGemm"
+    ],
+    "optimization_level": "all",
+    "optimization_style": "Fixed",
+    "target_platform": "arm"
+  },
+  "exporter": {
+    "path": "competition/ivc/model/export_thermal_ort.py",
+    "sha256": "0132071615849fa2003ff54bec5ffb81588488172cdaf277c9b8144e71ec0a71",
+    "size_bytes": 19584
+  },
+  "model_id": "thermal-4x6x1-v1",
+  "schema_version": 2,
+  "source": {
+    "path": "competition/ivc/model/thermal-4x6x1-v1.onnx",
+    "sha256": "b21b3441908040c796a7528e6d941ae1f15d0b6fad8362a9d6492cf5b479b5b6",
+    "size_bytes": 1016
+  },
+  "status": "pass",
+  "target_runtime": {
+    "source": {
+      "path": "competition/ivc/model/onnxruntime-1.25.0-source.json",
+      "sha256": "cdab90aab99159d7a7a71f5d47bcaff0862c7ac3170ea9542e0edbf48db66b25",
+      "size_bytes": 2089
+    },
+    "status": "pending-starry-physical-gate"
+  },
+  "toolchain": {
+    "host": "WSL2 Ubuntu 22.04 x86_64",
+    "packages": {
+      "flatbuffers": "25.12.19",
+      "numpy": "1.26.4",
+      "onnx": "1.16.1",
+      "onnxruntime": "1.25.0",
+      "packaging": "26.2",
+      "protobuf": "4.25.4"
+    },
+    "python": "3.12.11",
+    "requirements_lock": {
+      "path": "competition/ivc/model/requirements-ort-lock.txt",
+      "sha256": "ac5f95b7e96796df91e3581c8caaceebf6b92ba521675bbd586283bc901274a7",
+      "size_bytes": 9424
+    }
+  },
+  "verification": {
+    "backend": "onnxruntime-cpu",
+    "exact_actuator_matches": 9999,
+    "material_actuator_mismatches": 0,
+    "maximum_absolute_error": 2.980232238769531e-07,
+    "output_f32le_sha256": "6ec1cf057553bd2ead97d6341f1bda142bb6dd01f3bd75fc3c6fb2ccf2e31a35",
+    "providers": [
+      "CPUExecutionProvider"
+    ],
+    "rounding_boundary_equivalences": 1,
+    "rounding_boundary_examples": [
+      {
+        "actual_command": 475,
+        "actual_output": 0.47450003027915955,
+        "expected_command": 474,
+        "expected_output": 0.47449997067451477,
+        "index": 5743,
+        "label": "lcg-05727",
+        "rounding_boundary": 0.4745
+      }
+    ],
+    "rounding_boundary_tolerance": 1e-06,
+    "vectors": 10000
+  }
+}
