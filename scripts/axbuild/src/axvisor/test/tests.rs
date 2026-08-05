@@ -876,13 +876,23 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             Some("axvisor:/$"),
             "{qemu_path} should wait for the Axvisor host shell"
         );
-        assert_eq!(
-            qemu.success_regex,
+        let expected_success_regex = if name == "aarch64" {
+            vec![
+                r"(?m)^AXVISOR SHLEX  EMPTY\s*$",
+                r"(?m)^Command: vm start\s*$",
+                r"(?m)^Error: Invalid command syntax\s*$",
+                r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
+                r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
+            ]
+        } else {
             vec![
                 r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
                 r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
-            ],
-            "{qemu_path} should require the read-back payload and final file-I/O marker"
+            ]
+        };
+        assert_eq!(
+            qemu.success_regex, expected_success_regex,
+            "{qemu_path} should require all architecture-specific shell markers"
         );
     }
 }
