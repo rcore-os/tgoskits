@@ -99,3 +99,48 @@ pub fn sys_timerfd_gettime(fd: i32, curr_value: *mut __kernel_itimerspec) -> AxR
     curr_value.vm_write(out)?;
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn timerfd_timespec_conversion_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::__kernel_timespec;
+    // Test timespec_to_duration validation
+    let valid_ts = __kernel_timespec {
+        tv_sec: 1,
+        tv_nsec: 500_000_000,
+    };
+    assert!(timespec_to_duration(&valid_ts).is_ok());
+
+    let zero_ts = __kernel_timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    assert!(timespec_to_duration(&zero_ts).is_ok());
+
+    // Negative tv_sec should fail
+    let neg_sec = __kernel_timespec {
+        tv_sec: -1,
+        tv_nsec: 0,
+    };
+    assert!(timespec_to_duration(&neg_sec).is_err());
+
+    // tv_nsec out of range should fail
+    let bad_nsec = __kernel_timespec {
+        tv_sec: 0,
+        tv_nsec: 1_000_000_000,
+    };
+    assert!(timespec_to_duration(&bad_nsec).is_err());
+
+    let neg_nsec = __kernel_timespec {
+        tv_sec: 0,
+        tv_nsec: -1,
+    };
+    assert!(timespec_to_duration(&neg_nsec).is_err());
+
+    // Test duration_to_timespec roundtrip
+    let d = core::time::Duration::new(5, 123_456_789);
+    let ts = duration_to_timespec(d);
+    assert!(ts.tv_sec == 5);
+    assert!(ts.tv_nsec == 123_456_789);
+
+    true
+}

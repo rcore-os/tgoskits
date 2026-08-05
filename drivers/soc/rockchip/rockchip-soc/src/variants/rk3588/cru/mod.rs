@@ -2,6 +2,7 @@ use core::fmt::Debug;
 
 use crate::{Mmio, ResetRockchip, RstId, clock::ClkId, grf::GrfMmio};
 
+mod assignment;
 pub mod clock;
 mod consts;
 mod gate;

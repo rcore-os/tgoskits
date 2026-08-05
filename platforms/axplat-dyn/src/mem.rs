@@ -181,8 +181,3 @@ fn to_somehal_dcache_op(op: DCacheOp) -> somehal::cache::DCacheOp {
         DCacheOp::CleanInvalidate => somehal::cache::DCacheOp::CleanInvalidate,
     }
 }
-
-#[unsafe(no_mangle)]
-fn _percpu_base_ptr(idx: usize) -> *mut u8 {
-    somehal::smp::percpu_data_ptr(idx).unwrap_or_default()
-}

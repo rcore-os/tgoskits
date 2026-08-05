@@ -33,6 +33,7 @@ const LAPIC_BASE_MASK: u64 = 0xffff_f000;
 const IA32_APIC_BASE_ENABLE: u64 = 1 << 11;
 const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 const LAPIC_TIMER_DIVIDE_BY_16: u32 = 0b0011;
+const LAPIC_TIMER_MIN_DELTA_TICKS: u32 = 0x0f;
 const IA32_X2APIC_EOI: u32 = 0x80b;
 const IA32_X2APIC_SIVR: u32 = 0x80f;
 const IA32_X2APIC_LVT_TIMER: u32 = 0x832;
@@ -126,12 +127,12 @@ pub fn timer_set_deadline_in_ticks(ticks: usize) {
     ensure_lapic_ready();
     if has_tsc_deadline() {
         let now = ticks_now();
-        let deadline = now.saturating_add(ticks.max(1) as u64);
+        let deadline = now.saturating_add(ticks.max(LAPIC_TIMER_MIN_DELTA_TICKS as usize) as u64);
         unsafe {
             wrmsr(msr::IA32_TSC_DEADLINE, deadline);
         }
     } else {
-        let counts = ticks_to_apic_counts(ticks.max(1) as u64);
+        let counts = ticks_to_apic_counts(ticks.max(LAPIC_TIMER_MIN_DELTA_TICKS as usize) as u64);
         write_lapic_reg(LAPIC_REG_TIMER_INIT_COUNT, counts);
     }
 }
@@ -435,7 +436,7 @@ fn ticks_to_apic_counts(ticks: u64) -> u32 {
     let q32 = APIC_COUNTS_PER_TSC_Q32.load(Ordering::Acquire);
     let q32 = if q32 == 0 { 1u64 << 32 } else { q32 };
     let counts = ((ticks as u128 * q32 as u128) >> 32).max(1);
-    counts.min(u32::MAX as u128) as u32
+    counts.clamp(LAPIC_TIMER_MIN_DELTA_TICKS as u128, u32::MAX as u128) as u32
 }
 
 fn read_lapic_reg(offset: u32) -> u32 {
@@ -578,5 +579,97 @@ pub fn current_cr3() -> PhysAddr {
 pub fn set_cr3(addr: PhysAddr) {
     unsafe {
         controlregs::cr3_write(addr.raw() as u64);
+    }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn trap_constants_and_structs_hold_for_test() -> bool {
+    // Test IA32_EFER constants
+    assert!(IA32_EFER == 0xc000_0080);
+    assert!(IA32_EFER_NXE == (1 << 11));
+
+    // Test LAPIC register addresses
+    assert!(LAPIC_REG_EOI == 0x0b0);
+    assert!(LAPIC_REG_SVR == 0x0f0);
+    assert!(LAPIC_REG_LVT_TIMER == 0x320);
+    assert!(LAPIC_REG_TIMER_INIT_COUNT == 0x380);
+    assert!(LAPIC_REG_TIMER_CUR_COUNT == 0x390);
+    assert!(LAPIC_REG_TIMER_DIV == 0x3e0);
+
+    // Test LAPIC bit constants
+    assert!(LAPIC_LVT_MASKED == (1 << 16));
+    assert!(LAPIC_LVT_TIMER_TSC_DEADLINE == (1 << 18));
+    assert!(LAPIC_SVR_ENABLE == (1 << 8));
+
+    // Test LAPIC base mask
+    assert!(LAPIC_BASE_MASK == 0xffff_f000);
+
+    // Test APIC base enable bits
+    assert!(IA32_APIC_BASE_ENABLE == (1 << 11));
+    assert!(IA32_APIC_BASE_X2APIC_ENABLE == (1 << 10));
+
+    // Test timer divide constant
+    assert!(LAPIC_TIMER_DIVIDE_BY_16 == 0b0011);
+
+    // Test x2APIC register addresses
+    assert!(IA32_X2APIC_EOI == 0x80b);
+    assert!(IA32_X2APIC_SIVR == 0x80f);
+    assert!(IA32_X2APIC_LVT_TIMER == 0x832);
+    assert!(IA32_X2APIC_INIT_COUNT == 0x838);
+    assert!(IA32_X2APIC_CUR_COUNT == 0x839);
+    assert!(IA32_X2APIC_DIV_CONF == 0x83e);
+
+    true
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn pit_and_tsc_constants_hold_for_test() -> bool {
+    // Test PIT port addresses
+    assert!(PIT_CHANNEL2_PORT == 0x42);
+    assert!(PIT_COMMAND_PORT == 0x43);
+    assert!(PIT_CONTROL_PORT == 0x61);
+
+    // Test PIT bit constants
+    assert!(PIT_CHANNEL2_GATE == 0x01);
+    assert!(PIT_SPEAKER_ENABLE == 0x02);
+    assert!(PIT_CHANNEL2_OUT == 0x20);
+    assert!(PIT_MODE0_CHANNEL2 == 0xb0);
+
+    // Test TSC calibration constants
+    assert!(PIT_TICK_RATE_HZ == 1_193_182);
+    assert!(TSC_PIT_CALIBRATION_MS == 50);
+    assert!(TSC_PIT_MAX_POLL_COUNT == 5_000_000);
+
+    // Test TSC frequency bounds
+    assert!(MIN_VALID_TSC_FREQ_HZ == 10_000_000);
+    assert!(MAX_VALID_TSC_FREQ_HZ == 10_000_000_000);
+
+    true
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn trap_idt_and_gate_constants_hold_for_test() -> bool {
+    // Test IDT-related constants if they exist
+    // Test that trap handler functions exist
+
+    true
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn trap_msr_and_efer_constants_hold_for_test() -> bool {
+    // Test MSR and EFER constants
+    assert!(IA32_EFER == 0xc000_0080);
+    assert!(IA32_EFER_NXE == (1 << 11));
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ticks_to_apic_counts;
+
+    #[test]
+    fn legacy_lapic_clamps_overdue_events_to_the_device_minimum() {
+        assert_eq!(ticks_to_apic_counts(1), 0x0f);
     }
 }

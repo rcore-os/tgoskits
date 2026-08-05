@@ -5,7 +5,7 @@ sidebar_label: "能力边界"
 
 # 能力边界 rdif
 
-`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备已移除原 runtime crate，`rdif-block` 直接承载设备 LBA 语义的 submit/poll capability boundary；其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。块设备不新增 runtime crate：`rdif-block` 承载 owned-DMA controller/queue/IRQ 合同，`ax-fs-ng::block::runtime` 负责 channel、hctx 维护线程、阻塞订阅和 teardown。其它领域如网络仍可按需保留 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
 
 所有 `rdif-*` crate 位于 `drivers/interface/`，公共基础是 `rdif-base`。
 
@@ -13,7 +13,7 @@ sidebar_label: "能力边界"
 
 | 能力 | interface crate | runtime crate | 上层消费 |
 | --- | --- | --- | --- |
-| 块设备 | `rdif-block` | 已删除，直接消费 submit/poll 边界 | block volume service、FS |
+| 块设备 | `rdif-block` | `ax-fs-ng::block::runtime`（现有 crate 内模块） | block volume service、FS |
 | 网络设备 | `rdif-eth` | `rd-net` | net interface service、NET/NET-NG |
 | 显示 | `rdif-display` | `rd-display` | display service、Starry fb |
 | 输入 | `rdif-input` | `rd-input` | input service、Starry input |
@@ -39,16 +39,23 @@ pub trait DriverGeneric: Send + Any {
 
 | 源码 | 职责 |
 | --- | --- |
-| `interface.rs` | `Interface` trait、`IrqHandler` |
-| `request.rs` | `RequestId`、块请求提交 |
-| `planner.rs` | `QueueTopology`、queue 管理 |
-| `irq.rs` | `IrqSourceInfo`、IRQ 事件 |
-| `info.rs` | 设备信息 |
+| `hardware.rs` | `BlockController`、`HardwareQueue`、owned batch 提交与完成 sink |
+| `request.rs` | `OwnedRequest`、`RequestId`、请求形状验证 |
+| `planner.rs` | 依据硬件/DMA 边界生成传输计划 |
+| `irq.rs` | boxed `HardIrqHandler`、`IrqAck` 与 queue mask |
+| `info.rs` | 设备信息、队列深度与硬件限制 |
 | `error.rs` | `BlockError` |
 
-接口保留 blk-mq 风格的结构能力：设备可报告 `QueueTopology`，OS 可创建一个或多个 queue，每个 queue 使用 queue-local `RequestId`/tag，经 `submit_request()` 提交、经 `poll_request()` 回收完成。
+接口保留 blk-mq 风格的结构能力：controller 状态机交付一个或多个
+`HardwareQueue` 与 IRQ endpoint；runtime 把每 CPU channel 的请求组成 owned
+batch，经 `submit_batch_owned()` 交给 queue，并在批次边界调用
+`commit_submissions()`。只有收到已确认的 IRQ 事件后，独占 queue 的 hctx 维护线程
+才调用 `drain_completions()`；没有同步轮询或 polling fallback。
 
-块设备内部的 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回的是 `rdif-block` 能力边界内的事件 source 列表，每个 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask。当前 ArceOS `ax-driver` glue 只取 legacy source `0` 的 handler。
+块设备内部的 IRQ endpoint 按 source 和 queue 分离。每个 endpoint 拥有
+`Box<dyn HardIrqHandler + Send>`；`ack()` 只返回
+`Spurious`、`Cleared` 或 `MaskedNeedsRearm` 以及 queue mask/控制事件。handler
+生命周期由 IRQ 注册 token 持有，不能查找 `rdrive`、drain queue 或完成业务请求。
 
 ## rdif-display / rdif-input / rdif-vsock
 

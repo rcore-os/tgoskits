@@ -8,7 +8,7 @@
 //!
 //! ## 特性
 //!
-//! - 🏗️ 统一抽象接口 - raw 层只提供 UART 寄存器语义，运行期队列由 rdif/OS 层提供
+//! - 🏗️ 统一抽象接口 - 驱动层只提供 UART 寄存器语义，运行期队列由 OS runtime 提供
 //! - 🛡️ 无标准库设计 (`no_std`) - 适用于裸机和嵌入式系统
 //! - 📦 模块化架构 - 每个驱动独立模块，按需选择
 //! - 🔒 类型安全 - 使用 Rust 类型系统确保内存安全
@@ -30,7 +30,7 @@
 //! ```rust,no_run
 //! use core::ptr::NonNull;
 //!
-//! use some_serial::{Config, RawUart as _, ns16550::Ns16550, pl011::Pl011};
+//! use some_serial::{Config, PollingUart as _, UartPort as _, ns16550::Ns16550, pl011::Pl011};
 //!
 //! // 选择合适的驱动
 //! #[cfg(target_arch = "aarch64")]
@@ -60,5 +60,84 @@ extern crate std;
 pub mod ns16550;
 pub mod pl011;
 
-// 重新导出 rdif-serial 的所有类型
+use core::fmt::Display;
+
+use bitflags::bitflags;
+
+/// Allocation-free polling interface used by early consoles.
+pub trait PollingUart {
+    fn poll_status(&mut self) -> PollingEvent;
+
+    fn write_byte(&mut self, byte: u8);
+
+    fn read_byte(&mut self, status: PollingEvent) -> Option<Result<u8, TransferError>>;
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PollingEvent: u32 {
+        const RX_READY = 0x01;
+        const TX_READY = 0x02;
+        const RX_ERROR = 0x04;
+        const TX_ERROR = 0x08;
+        const OVERRUN = 0x10;
+        const MODEM_STATUS = 0x20;
+    }
+}
+
+impl PollingEvent {
+    pub const fn rx_ready(self) -> bool {
+        self.contains(Self::RX_READY)
+    }
+
+    pub const fn tx_ready(self) -> bool {
+        self.contains(Self::TX_READY)
+    }
+
+    pub const fn rx_error(self) -> bool {
+        self.intersects(Self::RX_ERROR.union(Self::OVERRUN))
+    }
+}
+
+pub type SerialEvent = PollingEvent;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialDirection {
+    Input,
+    Output,
+}
+
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferError {
+    #[error("data overrun by `{0:#x}`")]
+    Overrun(u8),
+    #[error("parity error")]
+    Parity,
+    #[error("framing error")]
+    Framing,
+    #[error("break condition")]
+    Break,
+    #[error("serial closed")]
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransBytesError {
+    pub bytes_transferred: usize,
+    pub kind: TransferError,
+}
+
+impl Display for TransBytesError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "transfer error after transferring {} bytes: {}",
+            self.bytes_transferred, self.kind
+        )
+    }
+}
+
+impl core::error::Error for TransBytesError {}
+
+// Runtime capability types are re-exported for concrete driver consumers.
 pub use rdif_serial::*;

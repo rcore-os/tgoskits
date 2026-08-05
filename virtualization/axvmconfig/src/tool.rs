@@ -21,7 +21,7 @@ use std::{env, error::Error, fs, path::Path};
 use clap::{Args, Parser, Subcommand};
 
 use crate::{
-    AxVMCrateConfig,
+    GuestConfig, GuestType,
     templates::{VmTemplateParams, get_vm_config_template},
 };
 
@@ -80,9 +80,9 @@ pub struct TemplateArgs {
     /// The name of the VM.
     #[arg(short = 'n', long, default_value_t = String::from("GuestVM"))]
     name: String,
-    /// The type of the VM, 0 for HostVM, 1 for RTOS, 2 for Linux.
-    #[arg(short = 't', long, default_value_t = 1)]
-    vm_type: usize,
+    /// The physical-device assignment model.
+    #[arg(short = 't', long, value_enum, default_value_t = GuestType::Virtualized)]
+    guest_type: GuestType,
     /// The number of CPUs of the VM.
     #[arg(short = 'c', long, default_value_t = 1)]
     cpu_num: usize,
@@ -160,7 +160,7 @@ pub fn run() {
             };
 
             // Parse and validate the TOML configuration
-            match AxVMCrateConfig::from_toml(&file_content) {
+            match GuestConfig::from_toml(&file_content) {
                 Ok(config) => {
                     println!("Config file '{}' is valid.", file_path);
                     println!("Config: {:#x?}", config);
@@ -190,7 +190,7 @@ pub fn run() {
             let template = get_vm_config_template(VmTemplateParams {
                 id: args.id,
                 name: args.name + "-" + args.arch.as_str(),
-                vm_type: args.vm_type,
+                guest_type: args.guest_type,
                 cpu_num: args.cpu_num,
                 entry_point: args.entry_point,
                 kernel_path,

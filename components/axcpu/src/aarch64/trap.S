@@ -112,6 +112,18 @@ exception_vector_base:
     mrs     x9, tpidr_el0
     ldp     x10, x11, [x1, {trapframe_size}]
     stp     x8, x9, [x1, {trapframe_size}]
+
+    // LinuxCurrent temporarily lends SP_EL0 to userspace. Once user SP/TLS are
+    // in UserContext, recover the task-owned current header from the CPU slot
+    // before returning to any Rust instruction.
+    .ifdef arm_el2
+    mrs     x12, tpidr_el2
+    .else
+    mrs     x12, tpidr_el1
+    .endif
+    ldr     x12, [x12, {current_thread_offset}]
+    msr     sp_el0, x12
+
     mov     sp, x10
     msr     tpidr_el0, x11
 
@@ -139,9 +151,9 @@ enter_user:
     mrs     x11, tpidr_el0
     ldp     x8, x9, [x0, {trapframe_size}]
     stp     x10, x11, [x0,{trapframe_size}]
+    // Restore user SP/TLS only in the final assembly path to eret.
     msr     sp_el0, x8
     msr     tpidr_el0, x9
-
     mov     sp, x0
 
 .Lexception_return:

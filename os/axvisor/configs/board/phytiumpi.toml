@@ -1,6 +1,7 @@
 features = [
     "fs",
-    "phytium-mci",
+    "ax-driver/ahci-fdt",
+    "ax-driver/phytium-mci",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

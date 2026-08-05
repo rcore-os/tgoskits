@@ -52,7 +52,7 @@ static ssize_t recvmsg_with_cmsg(int s, char *buf, size_t len,
 
 int main(void)
 {
-    TEST_START("AF_UNIX stream MSG_PEEK does not consume bytes or cmsg");
+    TEST_START("AF_UNIX stream MSG_PEEK: non-consuming peek, delivers duplicated rights");
 
     int sv[2];
     CHECK_RET(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0, "socketpair");
@@ -63,9 +63,10 @@ int main(void)
     /* Send 4 bytes "PEEK" with a SCM_RIGHTS cmsg attached. */
     CHECK_RET(send_with_cmsg(sv[0], "PEEK", 4, payload_fd), 4, "sendmsg PEEK+cmsg");
 
-    /* First recv with MSG_PEEK: must return the data but must NOT
-     * deliver the cmsg (delivering would consume the cmsg queue entry
-     * and duplicate the SCM_RIGHTS fd). */
+    /* First recv with MSG_PEEK: returns the data WITHOUT consuming the record,
+     * and delivers a DUPLICATE of the SCM_RIGHTS fd. Linux net/unix/af_unix.c
+     * unix_peek_fds() -> scm_fp_dup() clones the fd list on peek (the record
+     * keeps its own fds so the next consuming recv delivers them again). */
     char rxbuf[16];
     char rcbuf[CMSG_SPACE(sizeof(int))];
     struct msghdr mh1;
@@ -74,7 +75,17 @@ int main(void)
     CHECK(r1 == 4, "recvmsg(MSG_PEEK) returns 4 bytes");
     CHECK(memcmp(rxbuf, "PEEK", 4) == 0, "MSG_PEEK delivers correct payload");
     struct cmsghdr *cmh1 = CMSG_FIRSTHDR(&mh1);
-    CHECK(cmh1 == NULL, "MSG_PEEK does not deliver SCM_RIGHTS cmsg");
+    CHECK(cmh1 != NULL, "MSG_PEEK delivers a duplicated SCM_RIGHTS cmsg");
+    if (cmh1 != NULL) {
+        CHECK(cmh1->cmsg_level == SOL_SOCKET, "peek cmsg_level == SOL_SOCKET");
+        CHECK(cmh1->cmsg_type == SCM_RIGHTS, "peek cmsg_type == SCM_RIGHTS");
+        int peek_fd = -1;
+        memcpy(&peek_fd, CMSG_DATA(cmh1), sizeof(int));
+        CHECK(peek_fd >= 0, "peeked fd is valid (duplicated, usable)");
+        if (peek_fd >= 0) {
+            close(peek_fd);
+        }
+    }
 
     /* Second recv WITHOUT MSG_PEEK: must observe the same bytes
      * (since peek did not advance the read index) AND deliver the

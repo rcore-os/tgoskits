@@ -20,6 +20,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
+use ax_task::current;
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use hashbrown::HashMap;
@@ -31,7 +32,10 @@ use super::epoll_topology::{
     EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
     prepare_nested_link, reserve_nested_link,
 };
-use crate::file::{FileLike, get_file_like};
+use crate::{
+    file::{FileLike, get_file_like, signalfd::Signalfd},
+    task::{AsThread, ProcessData},
+};
 
 pub struct EpollEvent {
     pub events: IoEvents,
@@ -171,6 +175,11 @@ struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
     nested_link: Option<EpollTopologyLink>,
+    // Linux keeps inherited signalfd descriptors readable after fork, but an
+    // inherited epoll interest must not observe signals directed to the child.
+    // A weak owner preserves same-process waiter refreshes without extending
+    // the originating process lifetime.
+    signalfd_registration_owner: Option<Weak<ProcessData>>,
     mode: SpinNoIrq<TriggerMode>,
     exclusive: bool,
     in_ready_queue: AtomicBool,
@@ -184,6 +193,10 @@ impl EpollInterest {
         nested_link: Option<EpollTopologyLink>,
     ) -> Self {
         Self {
+            signalfd_registration_owner: key
+                .get_file()
+                .filter(|file| file.is::<Signalfd>())
+                .map(|_| Arc::downgrade(&current().as_thread().proc_data)),
             key,
             event,
             nested_link,
@@ -257,6 +270,16 @@ impl EpollInterest {
 
     fn restore_mode(&self, mode: TriggerMode) {
         *self.mode.lock() = mode;
+    }
+
+    fn can_refresh_waker_from_current_process(&self) -> bool {
+        self.signalfd_registration_owner
+            .as_ref()
+            .is_none_or(|owner| {
+                owner
+                    .upgrade()
+                    .is_some_and(|owner| Arc::ptr_eq(&owner, &current().as_thread().proc_data))
+            })
     }
 }
 
@@ -474,6 +497,10 @@ impl Epoll {
 
     // only register waker, not add to ready queue
     fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
+        if !interest.can_refresh_waker_from_current_process() {
+            return;
+        }
+
         let Some(file) = interest.key.get_file() else {
             return;
         };
@@ -489,6 +516,15 @@ impl Epoll {
 
         let mut context = Context::from_waker(&waker);
         file.register(&mut context, register_events(interest.event.events));
+    }
+
+    /// Registers enabled interests with the thread currently waiting in epoll.
+    pub fn register_waiter_wakers(&self) -> AxResult {
+        let interests = self.inner.snapshot_interests()?;
+        for interest in &interests {
+            self.register_waker_only(interest);
+        }
+        Ok(())
     }
 
     // for add/modify
@@ -726,34 +762,19 @@ impl Epoll {
                     if keep_ready {
                         keep.push_back(Arc::downgrade(&interest));
                     } else {
+                        // EPOLLET edge-triggered: after reporting the fd once,
+                        // it must NOT be reported again until a *new* edge
+                        // (a fresh wakeup) arrives — even if the fd is still
+                        // readable because the caller left data unconsumed
+                        // (man 7 epoll; Linux ep_send_events does not re-add an
+                        // edge-triggered epi to the ready list). Re-arm a fresh
+                        // waker so the next edge transition re-queues the
+                        // interest via InterestWaker::wake_by_ref; do NOT
+                        // re-enqueue based on the current (possibly residual)
+                        // readability, which would degrade EPOLLET into
+                        // level-triggered behavior.
                         interest.mark_not_in_queue();
-                        // EPOLLET: install a fresh waker so the next edge
-                        // transition fires.  There is a race window between
-                        // mark_not_in_queue() above and register_waker_only()
-                        // below: the previous InterestWaker may have already
-                        // been consumed by the wake that delivered the event
-                        // we are returning here, leaving the underlying
-                        // PollSet empty.  If new data arrives in that gap,
-                        // poll_update.wake() hits the empty PollSet and the
-                        // notification is silently dropped — EPOLLET would
-                        // then never fire again because the new waker is
-                        // installed only after the data already arrived.
-                        // Close the window by re-checking the file's poll
-                        // state after registering and re-queueing the
-                        // interest directly if IN-side data is already
-                        // present.  EPOLLOUT is intentionally excluded: it
-                        // is normally always ready on writable sockets and
-                        // would cause a busy-loop.
                         self.register_waker_only(&interest);
-                        let in_mask = interest.event.events
-                            & (IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP);
-                        if !in_mask.is_empty()
-                            && let Some(f) = interest.key.get_file()
-                            && !(f.poll() & in_mask).is_empty()
-                            && interest.try_mark_in_queue()
-                        {
-                            self.inner.enqueue_marked_ready(&interest);
-                        }
                     }
                 }
                 ConsumeResult::NoEvent => {
@@ -789,4 +810,52 @@ impl Epoll {
             Ok(count)
         }
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn epoll_event_matching_rules_hold_for_test() -> bool {
+    use axpoll::IoEvents as E;
+
+    // No overlap between current and interested (and no ALWAYS_POLL bits in
+    // current) yields the empty set.
+    let no_overlap = match_ready_events(E::OUT, E::IN);
+    !no_overlap.contains(E::IN) && !no_overlap.contains(E::OUT)
+        // Always-poll bits (ERR/HUP) in current are forwarded regardless of
+        // the caller's interest mask.
+        && match_ready_events(E::HUP, E::OUT).contains(E::HUP)
+        && match_ready_events(E::ERR, E::empty()).contains(E::ERR)
+        // HUP forces IN even when the caller is not interested in IN, so that
+        // pipes report EOF on EPOLLHUP-only subscriptions.
+        && (match_ready_events(E::HUP, E::OUT).contains(E::IN))
+        // HUP combining with interested IN yields both IN and HUP.
+        && {
+            let m = match_ready_events(E::HUP | E::IN, E::IN);
+            m.contains(E::IN) && m.contains(E::HUP)
+        }
+        // Interested IN with current IN matches.
+        && match_ready_events(E::IN, E::IN).contains(E::IN)
+        // register_events merges interested with ALWAYS_POLL.
+        && (register_events(E::IN).contains(E::IN) && register_events(E::IN).contains(E::ALWAYS_POLL))
+        && (register_events(E::empty()).contains(E::ALWAYS_POLL) && !register_events(E::empty()).contains(E::IN))
+        // TriggerMode transitions: Level always notifies; Edge always notifies;
+        // OneShot notifies once and then goes silent until restored.
+        && matches!(TriggerMode::from_flags(EpollFlags::empty()), TriggerMode::Level)
+        && matches!(TriggerMode::from_flags(EpollFlags::EDGE_TRIGGER), TriggerMode::Edge)
+        && matches!(
+            TriggerMode::from_flags(EpollFlags::ONESHOT),
+            TriggerMode::OneShot { fired: false }
+        )
+        // should_notify: LT always true; Edge always true; OneShot true once.
+        && TriggerMode::Level.should_notify().0
+        && TriggerMode::Edge.should_notify().0
+        && {
+            let (first, new) = TriggerMode::OneShot { fired: false }.should_notify();
+            let (second, _) = new.should_notify();
+            first && !second
+        }
+        // is_enabled: LT and Edge always enabled; OneShot enabled only before fired.
+        && TriggerMode::Level.is_enabled()
+        && TriggerMode::Edge.is_enabled()
+        && TriggerMode::OneShot { fired: false }.is_enabled()
+        && !TriggerMode::OneShot { fired: true }.is_enabled()
 }

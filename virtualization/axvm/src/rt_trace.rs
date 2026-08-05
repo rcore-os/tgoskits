@@ -42,7 +42,7 @@ pub struct VirtualTimerInjectionRecord {
     pub guest_counter_ticks: u64,
     /// Ticks spent in the bounded AxVM forwarding/injection path.
     pub forwarding_ticks: u64,
-    /// Whether a hardware list register accepted the interrupt.
+    /// Whether the vCPU timer binding accepted the host activation for VGIC delivery.
     pub injected: bool,
 }
 

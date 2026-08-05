@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.5...starry-kernel-v0.7.6) - 2026-08-03
+
+### Added
+
+- *(kernel)* browser-prerequisite syscall support and tests, aligned to Linux ([#1569](https://github.com/rcore-os/tgoskits/pull/1569))
+- *(ahci-driver)* add portable multi-disk AHCI support ([#1795](https://github.com/rcore-os/tgoskits/pull/1795))
+- *(net)* add SIOCGIFNAME and share device ioctls across socket families ([#1707](https://github.com/rcore-os/tgoskits/pull/1707))
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+- *(starry)* implement cgroup namespace ([#1642](https://github.com/rcore-os/tgoskits/pull/1642))
+
+### Fixed
+
+- *(starry-task)* publish SIGKILL before ptrace release ([#1801](https://github.com/rcore-os/tgoskits/pull/1801))
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+- *(starry-perf)* separate control and IRQ output locks ([#1793](https://github.com/rcore-os/tgoskits/pull/1793))
+- *(ax-task)* initialize tasks before scheduling ([#1783](https://github.com/rcore-os/tgoskits/pull/1783))
+- *(axbuild)* lint Starry aarch64 configurations ([#1778](https://github.com/rcore-os/tgoskits/pull/1778))
+- *(starry)* make shutdown filesystem teardown best-effort ([#1711](https://github.com/rcore-os/tgoskits/pull/1711))
+- *(starry-task)* retain zombie PID identity through reap ([#1706](https://github.com/rcore-os/tgoskits/pull/1706))
+- *(starry-kernel)* avoid sleeping lock in overlay root ([#1685](https://github.com/rcore-os/tgoskits/pull/1685))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.4...starry-kernel-v0.7.5) - 2026-07-23
+
+### Added
+
+- *(starry)* complete mount tree semantics ([#1644](https://github.com/rcore-os/tgoskits/pull/1644))
+- *(starry-kernel)* implement POSIX message queues (mq_*) ([#1564](https://github.com/rcore-os/tgoskits/pull/1564))
+- *(rockchip-rga)* add the RK3588 RGA2 2D accelerator driver with /dev/rga and dma-heap ([#1388](https://github.com/rcore-os/tgoskits/pull/1388))
+- Add HTML report generation and CI coverage tests ([#1627](https://github.com/rcore-os/tgoskits/pull/1627))
+- *(starry)* /proc/net/dev stats implement ([#1645](https://github.com/rcore-os/tgoskits/pull/1645))
+- *(starry)* add proc process environment and path links ([#1643](https://github.com/rcore-os/tgoskits/pull/1643))
+- *(cvi-vdec)* add SG2002 scaled JPEG replay pipeline ([#1594](https://github.com/rcore-os/tgoskits/pull/1594))
+- *(sg200x-jpu)* add checked scaled decode support ([#1589](https://github.com/rcore-os/tgoskits/pull/1589))
+
+### Fixed
+
+- *(starry-kernel)* validate socket and seccomp flags ([#1678](https://github.com/rcore-os/tgoskits/pull/1678))
+- *(starry)* correct /proc/pid/comm padding and non-blocking partial TCP send ([#1558](https://github.com/rcore-os/tgoskits/pull/1558))
+- *(starry-kernel)* drain PTY data before EOF ([#1638](https://github.com/rcore-os/tgoskits/pull/1638))
+- *(starry-kernel)* accept unchanged interface flags ([#1640](https://github.com/rcore-os/tgoskits/pull/1640))
+- *(starry-kernel)* support usbfs clear-halt and close cleanup ([#1655](https://github.com/rcore-os/tgoskits/pull/1655))
+- *(starry)* support Nix openat2 resolve flags ([#1637](https://github.com/rcore-os/tgoskits/pull/1637))
+- *(starry-kernel)* align syscall behavior with Linux semantics ([#1631](https://github.com/rcore-os/tgoskits/pull/1631))
+- *(starry-kernel)* accept CLONE_PARENT exit signals ([#1641](https://github.com/rcore-os/tgoskits/pull/1641))
+
+### Other
+
+- *(ax-runtime)* centralize UART scheduling ([#1675](https://github.com/rcore-os/tgoskits/pull/1675))
+- support IP_MTU_DISCOVER and flush UDP egress before close ([#1568](https://github.com/rcore-os/tgoskits/pull/1568))
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.3...starry-kernel-v0.7.4) - 2026-07-10
 
 ### Added

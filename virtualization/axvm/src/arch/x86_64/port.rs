@@ -1,8 +1,16 @@
 //! Native x86 host I/O port passthrough devices.
 
-use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType, Port, PortRange,
+use alloc::{boxed::Box, sync::Arc};
+
+use axdevice::{
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
+    DeviceRegistration,
 };
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Port, Resource,
+};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, PassThroughPortConfig};
 
 use crate::{AxVmResult, ax_err};
 
@@ -10,6 +18,7 @@ use crate::{AxVmResult, ax_err};
 pub(crate) struct HostPortPassthrough {
     base: Port,
     length: u16,
+    resources: Box<[Resource]>,
 }
 
 impl HostPortPassthrough {
@@ -24,24 +33,24 @@ impl HostPortPassthrough {
         Ok(Self {
             base: Port::new(base),
             length,
+            resources: alloc::vec![Resource::PortRange { base, size: length }].into_boxed_slice(),
         })
     }
 
     fn end(&self) -> Port {
         Port::new(self.base.number() + self.length - 1)
     }
-}
 
-impl BaseDeviceOps<PortRange> for HostPortPassthrough {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Dummy
+    fn contains(&self, port: Port) -> bool {
+        (self.base.number()..=self.end().number()).contains(&port.number())
     }
 
-    fn address_range(&self) -> PortRange {
-        PortRange::new(self.base, self.end())
-    }
-
-    fn handle_read(&self, port: Port, width: AccessWidth) -> DeviceResult<usize> {
+    fn read_port(&self, port: Port, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(port) {
+            return Err(DeviceError::OutOfRange {
+                addr: port.number() as u64,
+            });
+        }
         match width {
             AccessWidth::Byte => Ok(unsafe { inb(port.number()) } as usize),
             AccessWidth::Word => Ok(unsafe { inw(port.number()) } as usize),
@@ -53,7 +62,12 @@ impl BaseDeviceOps<PortRange> for HostPortPassthrough {
         }
     }
 
-    fn handle_write(&self, port: Port, width: AccessWidth, value: usize) -> DeviceResult {
+    fn write_port(&self, port: Port, width: AccessWidth, value: usize) -> DeviceResult {
+        if !self.contains(port) {
+            return Err(DeviceError::OutOfRange {
+                addr: port.number() as u64,
+            });
+        }
         match width {
             AccessWidth::Byte => unsafe { outb(port.number(), value as u8) },
             AccessWidth::Word => unsafe { outw(port.number(), value as u16) },
@@ -66,6 +80,94 @@ impl BaseDeviceOps<PortRange> for HostPortPassthrough {
             }
         }
         Ok(())
+    }
+}
+
+/// Builds the atomic device contribution for one configured host port range.
+pub(crate) struct HostPortPassthroughFactory {
+    config: PassThroughPortConfig,
+}
+
+impl HostPortPassthroughFactory {
+    /// Creates a factory for one validated-at-build-time port range.
+    pub(crate) const fn new(config: PassThroughPortConfig) -> Self {
+        Self { config }
+    }
+
+    /// Creates the port device contribution.
+    pub(crate) fn build(&self) -> AxVmResult<DeviceBundle> {
+        let passthrough = Arc::new(HostPortPassthrough::new(
+            self.config.base,
+            self.config.length,
+        )?);
+        let device: Arc<dyn Device> = passthrough;
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            device,
+        )))
+    }
+}
+
+/// Factory registry entry for planner-generated x86 host-port passthrough
+/// device configs.
+pub(crate) struct HostPortPassthroughDeviceFactory;
+
+impl DeviceFactory for HostPortPassthroughDeviceFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::X86PortPassthrough
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let base =
+            u16::try_from(config.base_gpa).map_err(|_| DeviceManagerError::InvalidConfig {
+                operation: "build host port passthrough",
+                detail: "base port does not fit in u16".into(),
+            })?;
+        let length =
+            u16::try_from(config.length).map_err(|_| DeviceManagerError::InvalidConfig {
+                operation: "build host port passthrough",
+                detail: "port range length does not fit in u16".into(),
+            })?;
+        HostPortPassthroughFactory::new(PassThroughPortConfig { base, length })
+            .build()
+            .map_err(|error| DeviceManagerError::InvalidConfig {
+                operation: "build host port passthrough",
+                detail: alloc::format!("{error}"),
+            })
+    }
+}
+
+impl Device for HostPortPassthrough {
+    fn name(&self) -> &str {
+        "x86-host-port-passthrough"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Port || access.addr > u16::MAX as u64 {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+
+        let port = Port::new(access.addr as u16);
+        if access.is_read {
+            self.read_port(port, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_port(port, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }
 
@@ -113,6 +215,8 @@ unsafe fn outl(port: u16, value: u32) {
 
 #[cfg(test)]
 mod tests {
+    use axdevice::DeviceRuntime;
+
     use super::*;
 
     #[test]
@@ -120,9 +224,13 @@ mod tests {
         let dev = HostPortPassthrough::new(0x6000, 0x80).unwrap();
 
         assert_eq!(
-            dev.address_range(),
-            PortRange::new(Port::new(0x6000), Port::new(0x607f))
+            dev.resources(),
+            &[Resource::PortRange {
+                base: 0x6000,
+                size: 0x80
+            }]
         );
+        assert_eq!(dev.end(), Port::new(0x607f));
     }
 
     #[test]
@@ -136,12 +244,29 @@ mod tests {
         let dev = HostPortPassthrough::new(0x6000, 0x80).unwrap();
 
         assert!(
-            dev.handle_read(Port::new(0x6000), AccessWidth::Qword)
+            dev.read_port(Port::new(0x6000), AccessWidth::Qword)
                 .is_err()
         );
         assert!(
-            dev.handle_write(Port::new(0x6000), AccessWidth::Qword, 0)
+            dev.write_port(Port::new(0x6000), AccessWidth::Qword, 0)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn passthrough_port_bundle_registers_through_device_runtime() {
+        let bundle = HostPortPassthroughFactory::new(PassThroughPortConfig {
+            base: 0x6000,
+            length: 0x80,
+        })
+        .build()
+        .unwrap();
+        let mut devices = DeviceRuntime::default();
+
+        devices.register_bundle(bundle).unwrap();
+
+        assert!(devices.find_port_dev(Port::new(0x6000)).is_some());
+        assert!(devices.find_port_dev(Port::new(0x607f)).is_some());
+        assert!(devices.find_port_dev(Port::new(0x6080)).is_none());
     }
 }

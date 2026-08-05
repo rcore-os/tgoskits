@@ -2,11 +2,17 @@
 #![cfg_attr(doc, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
 use core::fmt;
 
 use ax_memory_addr::PhysAddr;
 
 mod arch;
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for generic and architecture-specific page table entries.
+pub mod axtest;
 pub use self::arch::*;
 
 bitflags::bitflags! {

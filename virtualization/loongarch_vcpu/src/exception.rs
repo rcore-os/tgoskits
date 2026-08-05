@@ -28,6 +28,23 @@ use crate::{
     },
 };
 
+const LOONGARCH_KSAVE_CSR_BASE: usize = 0x30;
+
+// exception.S requires literal `.equ` values. Bind them to the shared
+// allocation so ax-cpu, cpu-local, and the vCPU cannot drift independently.
+const _: () = {
+    use cpu_local::loongarch64::{
+        HOST_PERCPU_KS, HOST_VCPU_KS, HOST_VCPU_TMP_KS, KSAVE_KSP, KSAVE_T0, KSAVE_T1,
+    };
+
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_KSP == 0x30);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_T0 == 0x31);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + KSAVE_T1 == 0x32);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_PERCPU_KS == 0x33);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_VCPU_KS == 0x34);
+    assert!(LOONGARCH_KSAVE_CSR_BASE + HOST_VCPU_TMP_KS == 0x35);
+};
+
 static NESTED_FAULT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static SYNC_EXIT_LOGS: AtomicUsize = AtomicUsize::new(0);
 static TARGET_GSPR_LOGS: AtomicUsize = AtomicUsize::new(0);
@@ -340,7 +357,7 @@ unsafe extern "C" fn vmexit_trampoline() -> ! {
         "ld.d $s8, $sp, 72",
         "ld.d $fp, $sp, 80",
         "ld.d $tp, $sp, 88",
-        "ld.d $r21, $sp, 96",
+        // SAVE_GUEST_REGS restored the CPU-owned r21 from the KS3 shadow.
         "addi.d $sp, $sp, 14 * 8",
         "jr $ra",
         ctx_size = const core::mem::size_of::<LoongArchContextFrame>(),

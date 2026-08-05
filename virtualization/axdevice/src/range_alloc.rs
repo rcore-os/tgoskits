@@ -1,5 +1,106 @@
-use alloc::{vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::ops::Range;
+
+use ax_kspin::SpinRaw as Mutex;
+use ax_memory_addr::is_aligned_4k;
+use axvm_types::GuestPhysAddr;
+
+use crate::{DeviceManagerError, DeviceManagerResult, ServiceCardinality, ServiceKey};
+
+/// Allocates guest-physical ranges from one statically reserved window.
+pub trait GuestRangeAllocator: Send + Sync {
+    /// Reserves one page-aligned guest range.
+    fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr>;
+
+    /// Releases a previously reserved guest range.
+    fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult;
+}
+
+/// Type key for the VM's IVC guest-range allocator service.
+pub struct GuestRangeAllocatorKey;
+
+impl ServiceKey for GuestRangeAllocatorKey {
+    type Service = dyn GuestRangeAllocator;
+
+    const NAME: &'static str = "ivc-guest-range-allocator";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// IVC's allocator over the guest range reserved during VM preparation.
+pub(crate) struct IvcGuestRangeAllocator {
+    ranges: Mutex<RangeAllocator>,
+}
+
+impl IvcGuestRangeAllocator {
+    pub(crate) fn new(base: usize, length: usize) -> DeviceManagerResult<Self> {
+        let end = base
+            .checked_add(length)
+            .ok_or_else(|| DeviceManagerError::InvalidConfig {
+                operation: "create IVC guest range allocator",
+                detail: "reserved guest range overflows the address space".into(),
+            })?;
+        if length == 0 || !is_aligned_4k(base) || !is_aligned_4k(length) {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "create IVC guest range allocator",
+                detail: alloc::format!(
+                    "base {base:#x} and length {length:#x} must be non-zero and 4 KiB aligned"
+                ),
+            });
+        }
+        Ok(Self {
+            ranges: Mutex::new(RangeAllocator::new(base..end)),
+        })
+    }
+
+    pub(crate) fn into_service(self) -> Arc<dyn GuestRangeAllocator> {
+        Arc::new(self)
+    }
+}
+
+impl GuestRangeAllocator for IvcGuestRangeAllocator {
+    fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
+        if size == 0 || !is_aligned_4k(size) {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "allocate IVC guest range",
+                detail: alloc::format!("size {size:#x} must be non-zero and 4 KiB aligned"),
+            });
+        }
+        self.ranges
+            .lock()
+            .allocate_range(size)
+            .map(|range| GuestPhysAddr::from_usize(range.start))
+            .ok_or(DeviceManagerError::OutOfMemory {
+                operation: "allocate IVC guest range",
+            })
+    }
+
+    fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
+        if size == 0 || !is_aligned_4k(size) {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "release IVC guest range",
+                detail: alloc::format!("size {size:#x} must be non-zero and 4 KiB aligned"),
+            });
+        }
+        let end =
+            addr.as_usize()
+                .checked_add(size)
+                .ok_or_else(|| DeviceManagerError::InvalidInput {
+                    operation: "release IVC guest range",
+                    detail: "guest range end overflows the address space".into(),
+                })?;
+        if self.ranges.lock().free_range(addr.as_usize()..end) {
+            Ok(())
+        } else {
+            Err(DeviceManagerError::InvalidInput {
+                operation: "release IVC guest range",
+                detail: alloc::format!(
+                    "range {:#x}..{end:#x} is outside the reserved window or is not allocated",
+                    addr.as_usize()
+                ),
+            })
+        }
+    }
+}
 
 /// A minimal best-fit range allocator for IVC GPA ranges.
 #[derive(Debug)]

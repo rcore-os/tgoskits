@@ -49,6 +49,7 @@ use crate::{
     addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
+    flush_egress,
     general::GeneralOptions,
     get_control, interface_by_id,
     ip_tos::{EgressIpTosKey, clear_egress_ip_tos, set_egress_ip_tos},
@@ -638,6 +639,11 @@ impl Default for UdpSocket {
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
+        // Dispatch any datagram still queued in the TX buffer to its destination
+        // while the socket is still open, so a send immediately followed by close
+        // is not lost (Linux keeps the datagram in the peer's receive buffer).
+        // smoltcp's `close()` drops the send buffer, so this must run before it.
+        flush_egress();
         self.shutdown(Shutdown::Both).ok();
         self.clear_tracked_egress_ip_tos();
         SOCKET_SET.remove(self.handle);

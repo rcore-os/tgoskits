@@ -69,6 +69,12 @@ cargo doc --no-deps --open
 
 在线文档：[docs.rs/axvm](https://docs.rs/axvm)
 
+### VM 生命周期
+
+- [VM 生命周期模型](docs/lifecycle.md) —— 权威生命周期模型参考（状态、转换、请求与完成语义）。
+- [VM 生命周期实现者视图](docs/lifecycle-internals.md) —— 实现者视角内部细节（生命周期 × runtime
+  两个维度、runtime 生命周期、不可观测状态与锁语义）。
+
 # 贡献
 
 1. Fork 仓库并创建分支

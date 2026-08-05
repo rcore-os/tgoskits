@@ -50,11 +50,7 @@ fn to_cargo_config(
     let guest_restart = config.guest_restart;
     let mut cargo = config
         .build_info
-        .into_prepared_base_cargo_config_with_metadata(
-            &request.package,
-            &config.target,
-            metadata,
-        )?;
+        .into_prepared_std_cargo_config_with_metadata(&request.package, &config.target, metadata)?;
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
     inject_host_noise_config(&mut cargo, host_noise.as_ref(), max_cpu_num)?;
     inject_guest_restart_config(&mut cargo, guest_restart.as_ref(), max_cpu_num)?;

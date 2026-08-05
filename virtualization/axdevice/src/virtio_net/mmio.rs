@@ -1,7 +1,7 @@
 //! Virtio-mmio register handling for the emulated network device.
 
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+use axdevice_base::{AccessWidth, DeviceError, DeviceResult};
+use axvm_types::GuestPhysAddr;
 
 use super::{VIRTIO_F_VERSION_1, VIRTIO_NET_F_MRG_RXBUF, VirtioNet};
 use crate::virtio::queue::{QUEUE_NUM_MAX, QueueAddressKind};
@@ -165,16 +165,9 @@ impl VirtioNet {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for VirtioNet {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::VirtioNet
-    }
-
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.guest_address_range()
-    }
-
-    fn handle_read(&self, address: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+impl VirtioNet {
+    /// Handles one direct MMIO read against the reusable network core.
+    pub fn handle_read(&self, address: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
         let offset = self.mmio_offset(address, width)?;
         if offset >= VIRTIO_MMIO_CONFIG {
             return Ok(self.read_device_config(offset, width));
@@ -187,7 +180,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VirtioNet {
         Ok(value as usize)
     }
 
-    fn handle_write(
+    /// Handles one direct MMIO write against the reusable network core.
+    pub fn handle_write(
         &self,
         address: GuestPhysAddr,
         width: AccessWidth,

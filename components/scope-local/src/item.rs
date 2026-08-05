@@ -5,6 +5,9 @@ use core::{
     ptr::{NonNull, addr_of},
 };
 
+use ax_kernel_guard::NoPreempt;
+use ax_percpu::CpuPin;
+
 use crate::scope::{ActiveScope, Scope};
 
 #[doc(hidden)]
@@ -31,6 +34,24 @@ impl Deref for Registry {
 }
 
 impl Item {
+    /// Creates one type-erased registry descriptor for `T`.
+    ///
+    /// # Safety
+    ///
+    /// `init` must initialize exactly one valid `T` at the supplied address,
+    /// and `drop` must destroy that value without deallocating its storage.
+    #[doc(hidden)]
+    pub const unsafe fn new<T: Send + Sync + 'static>(
+        init: fn(NonNull<()>),
+        drop: fn(NonNull<()>),
+    ) -> Self {
+        Self {
+            layout: Layout::new::<T>(),
+            init,
+            drop,
+        }
+    }
+
     #[inline]
     pub(crate) fn index(&'static self) -> usize {
         unsafe { (self as *const Item).offset_from_unsigned(Registry.as_ptr()) }
@@ -43,14 +64,82 @@ pub struct LocalItem<T> {
     _p: PhantomData<T>,
 }
 
-impl<T> LocalItem<T> {
+impl<T: Send + Sync + 'static> LocalItem<T> {
     #[doc(hidden)]
     #[inline]
-    pub const fn new(item: &'static Item) -> Self {
+    /// # Safety
+    ///
+    /// `item` must have been constructed for exactly `T`.
+    pub const unsafe fn new(item: &'static Item) -> Self {
         Self {
             item,
             _p: PhantomData,
         }
+    }
+
+    /// Runs `operation` with the value selected by the active scope.
+    ///
+    /// The higher-ranked closure prevents a reference into per-CPU-selected
+    /// storage from escaping after preemption is re-enabled. The first global
+    /// access initializes the global scope before entering the pinned access.
+    /// Concurrent first access waits for that initialization to be published.
+    pub fn with<R>(&self, operation: impl for<'access> FnOnce(&'access T) -> R) -> R {
+        let mut operation = Some(operation);
+        loop {
+            let guard = NoPreempt::new();
+            // SAFETY: `NoPreempt` prevents migration for this complete access.
+            let result = unsafe {
+                ax_percpu::with_cpu_pin(|pin| {
+                    ActiveScope::try_with_item(self.item, pin, |item| {
+                        let operation = operation
+                            .take()
+                            .expect("scope-local operation must run at most once");
+                        operation(item.as_ref())
+                    })
+                })
+            }
+            .expect("scope-local access requires an installed CPU area");
+            drop(guard);
+
+            if let Some(result) = result {
+                return result;
+            }
+            ActiveScope::initialize_global();
+        }
+    }
+
+    /// Runs `operation` under an existing CPU pin without initialization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selected global scope has not been initialized by
+    /// [`LocalItem::with`]. Explicit [`Scope`] values are initialized eagerly.
+    pub fn with_pinned<R>(
+        &self,
+        pin: &CpuPin<'_>,
+        operation: impl for<'access> FnOnce(&'access T) -> R,
+    ) -> R {
+        ActiveScope::with_item(self.item, pin, |item| operation(item.as_ref()))
+    }
+
+    /// Runs `operation` without lazy initialization under an existing pin.
+    ///
+    /// This returns `None` when the selected global scope has not yet been
+    /// initialized, allowing hard-IRQ callers to avoid allocation.
+    pub fn try_with_pinned<R>(
+        &self,
+        pin: &CpuPin<'_>,
+        operation: impl for<'access> FnOnce(&'access T) -> R,
+    ) -> Option<R> {
+        ActiveScope::try_with_item(self.item, pin, |item| operation(item.as_ref()))
+    }
+
+    /// Clones the selected value while keeping the CPU pin lifetime short.
+    pub fn clone_current(&self) -> T
+    where
+        T: Clone,
+    {
+        self.with(Clone::clone)
     }
 
     /// Returns a reference to this item within the given scope.
@@ -69,15 +158,6 @@ impl<T> LocalItem<T> {
             scope,
             _p: PhantomData,
         }
-    }
-}
-
-impl<T> Deref for LocalItem<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        ActiveScope::get(self.item).as_ref()
     }
 }
 
@@ -145,18 +225,16 @@ macro_rules! scope_local {
             $(#[$attr])*
             $vis static $name: $crate::LocalItem<$ty> = {
                 #[unsafe(link_section = "scope_local")]
-                static ITEM: $crate::Item = $crate::Item {
-                    layout: core::alloc::Layout::new::<$ty>(),
-                    init: |ptr| {
+                static ITEM: $crate::Item = unsafe {
+                    $crate::Item::new::<$ty>(|ptr| {
                         let val: $ty = $default;
-                        unsafe { ptr.cast().write(val) }
-                    },
-                    drop: |ptr| unsafe {
+                        ptr.cast().write(val)
+                    }, |ptr| {
                         ptr.cast::<$ty>().drop_in_place();
-                    },
+                    })
                 };
 
-                $crate::LocalItem::new(&ITEM)
+                unsafe { $crate::LocalItem::new(&ITEM) }
             };
         )+
     }

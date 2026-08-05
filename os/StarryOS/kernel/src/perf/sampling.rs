@@ -210,6 +210,29 @@ static REGISTRY: [Option<SampleSlot>; 32] = [None; 32];
 /// registry, so a single action installed on all CPUs suffices.
 static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Mutates the current CPU's sampling registry without exposing a reference
+/// beyond the CPU-local exclusive-access scope.
+///
+/// # Safety
+///
+/// The caller must prevent migration, local IRQ re-entry, and remote mutation
+/// for the complete callback. Process-context callers use
+/// [`NoPreemptIrqSave`]; the overflow handler already runs with local IRQs
+/// masked on the CPU that owns the registry.
+unsafe fn with_registry_mut<R>(
+    operation: impl for<'value> FnOnce(&'value mut [Option<SampleSlot>; 32]) -> R,
+) -> R {
+    // SAFETY: the caller establishes the migration and exclusion contract.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                REGISTRY.with_current_mut(exclusive, operation)
+            })
+        })
+    }
+    .unwrap_or_else(|error| panic!("perf sampling CPU-local state is invalid: {error}"))
+}
+
 /// Registers `slot` for programmable counter `n` on the current CPU.
 ///
 /// Runs in process context on the event's core (cpu0 under smp1). The mutation
@@ -223,8 +246,7 @@ pub fn register(n: usize, slot: SampleSlot) {
     let _guard = NoPreemptIrqSave::new();
     // SAFETY: preemption and local IRQs are disabled by `_guard`, so we hold
     // exclusive access to this CPU's `REGISTRY` for the critical section.
-    let registry = unsafe { REGISTRY.current_ref_mut_raw() };
-    registry[n] = Some(slot);
+    unsafe { with_registry_mut(|registry| registry[n] = Some(slot)) };
 }
 
 /// Clears the sampling slot for programmable counter `n` on the current CPU.
@@ -238,8 +260,7 @@ pub fn unregister(n: usize) {
     }
     let _guard = NoPreemptIrqSave::new();
     // SAFETY: see `register`.
-    let registry = unsafe { REGISTRY.current_ref_mut_raw() };
-    registry[n] = None;
+    unsafe { with_registry_mut(|registry| registry[n] = None) };
 }
 
 /// Ensures [`pmu_overflow_handler`] is registered with the IRQ framework and the
@@ -326,84 +347,91 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 
         // SAFETY: we run on the core that took the IRQ with local IRQs masked,
         // so this CPU's `REGISTRY` is not being mutated concurrently (register /
-        // unregister disable local IRQs). Take a mutable borrow so frequency
-        // mode can write the adapted period/`last_time` back into the slot.
-        let registry = unsafe { REGISTRY.current_ref_mut_raw() };
-        let Some(slot) = registry[n].as_mut() else {
-            // Overflow on a counter with no sampling slot (e.g. a counting-only
-            // event that happened to wrap with its IRQ somehow set): just clear
-            // it below. Do not re-arm — counting events manage their own value.
-            continue;
-        };
+        // unregister disable local IRQs). The mutable borrow remains inside the
+        // scoped callback while frequency mode updates `period`/`last_time`.
+        let sample = |registry: &mut [Option<SampleSlot>; 32]| {
+            let Some(slot) = registry[n].as_mut() else {
+                // A counting-only counter may wrap without a sampling slot.
+                // Clear it below but leave re-arming to its owner.
+                return false;
+            };
 
-        // Snapshot the fields the record + re-arm need (copied out so the slot
-        // can be mutated below without aliasing the borrow).
-        let sample_type = slot.sample_type;
-        let id = slot.id;
-        let notify_ptr = slot.notify;
-        let ring_vaddr = slot.ring_vaddr;
-        let ring_len = slot.ring_len;
-        let cur_period = slot.period;
+            // Snapshot the fields the record + re-arm need (copied out so the slot
+            // can be mutated below without aliasing the borrow).
+            let sample_type = slot.sample_type;
+            let id = slot.id;
+            let notify_ptr = slot.notify;
+            let ring_vaddr = slot.ring_vaddr;
+            let ring_len = slot.ring_len;
+            let cur_period = slot.period;
 
-        // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
-        // (validated at open to set IP and only supported bits). pid/tid are
-        // best-effort: the interrupted task's scheduler id (non-zero, stable per
-        // task) — enough for perf to parse + count samples; precise user TID is a
-        // future refinement. time/cpu are the real interrupt-time values.
-        let tid = ax_task::current().id().as_u64() as u32;
-        let time = ax_runtime::hal::time::monotonic_time_nanos();
-        let cpu = ax_hal::percpu::this_cpu_id() as u32;
-        let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
-        let data = SampleData {
-            ip,
-            pid: tid, // best-effort: same scheduler id for pid and tid
-            tid,
-            time,
-            addr: 0,
-            id,
-            stream_id: 0,
-            cpu,
-            period: cur_period as u64,
-        };
-        let len = build_sample(&mut record, sample_type, misc, &data);
+            // Build one PERF_RECORD_SAMPLE honouring the event's `sample_type`
+            // (validated at open to set IP and only supported bits). pid/tid are
+            // best-effort: the interrupted task's scheduler id (non-zero, stable per
+            // task) — enough for perf to parse + count samples; precise user TID is a
+            // future refinement. time/cpu are the real interrupt-time values.
+            let tid = ax_task::current().id().as_u64() as u32;
+            let time = ax_runtime::hal::time::monotonic_time_nanos();
+            let cpu = ax_hal::percpu::this_cpu_id() as u32;
+            let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
+            let data = SampleData {
+                ip,
+                pid: tid, // best-effort: same scheduler id for pid and tid
+                tid,
+                time,
+                addr: 0,
+                id,
+                stream_id: 0,
+                cpu,
+                period: cur_period as u64,
+            };
+            let len = build_sample(&mut record, sample_type, misc, &data);
 
-        // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
-        // as long as the slot is registered (the event pins them, and teardown
-        // unregisters before freeing). `ring_write` only touches that region.
-        unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+            // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
+            // as long as the slot is registered (the event pins them, and teardown
+            // unregisters before freeing). `ring_write` only touches that region.
+            unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
 
-        // Frequency mode: adapt the period toward the target rate and persist it
-        // (plus the sample timestamp) in the slot for the next interval. Fixed
-        // mode re-arms with the unchanged period.
-        let next_period = if slot.freq {
-            let np = if slot.last_time != 0 {
-                next_freq_period(
-                    cur_period,
-                    slot.target_freq,
-                    time.saturating_sub(slot.last_time),
-                )
+            // Frequency mode: adapt the period toward the target rate and persist it
+            // (plus the sample timestamp) in the slot for the next interval. Fixed
+            // mode re-arms with the unchanged period.
+            let next_period = if slot.freq {
+                let np = if slot.last_time != 0 {
+                    next_freq_period(
+                        cur_period,
+                        slot.target_freq,
+                        time.saturating_sub(slot.last_time),
+                    )
+                } else {
+                    cur_period
+                };
+                slot.period = np;
+                slot.last_time = time;
+                np
             } else {
                 cur_period
             };
-            slot.period = np;
-            slot.last_time = time;
-            np
-        } else {
-            cur_period
+
+            // Re-arm the counter for the next sample.
+            ax_cpu::pmu::counter::preload(n, next_period);
+
+            // Wake the deferred worker so it can deliver POLLIN. A redirected event
+            // (`PERF_EVENT_IOC_SET_OUTPUT` into another event's ring) writes into the
+            // leader's ring but has no notify of its own — its `notify` is null, and
+            // the leader's own poller re-checks `data_head` on its next poll. The
+            // pointer, when non-null, is valid: the owning event holds the backing
+            // `Arc<IrqNotify>` while registered (see the module-level soundness note).
+            if !notify_ptr.is_null() {
+                let notify = unsafe { &*(notify_ptr as *const IrqNotify) };
+                notify.notify_irq();
+            }
+            true
         };
-
-        // Re-arm the counter for the next sample.
-        ax_cpu::pmu::counter::preload(n, next_period);
-
-        // Wake the deferred worker so it can deliver POLLIN. A redirected event
-        // (`PERF_EVENT_IOC_SET_OUTPUT` into another event's ring) writes into the
-        // leader's ring but has no notify of its own — its `notify` is null, and
-        // the leader's own poller re-checks `data_head` on its next poll. The
-        // pointer, when non-null, is valid: the owning event holds the backing
-        // `Arc<IrqNotify>` while registered (see the module-level soundness note).
-        if !notify_ptr.is_null() {
-            let notify = unsafe { &*(notify_ptr as *const IrqNotify) };
-            notify.notify_irq();
+        // SAFETY: the handler runs with local IRQs masked on its current CPU,
+        // so the registry cannot be re-entered or accessed after migration.
+        let sampled = unsafe { with_registry_mut(sample) };
+        if !sampled {
+            continue;
         }
     }
 

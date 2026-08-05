@@ -1,84 +1,24 @@
-<h1 align="center">ax-percpu-macros</h1>
+# ax-percpu-macros
 
-<p align="center">Macros to define and access a per-CPU data structure</p>
+`ax-percpu` 使用的过程宏。应用应导入 `ax_percpu::def_percpu`，而不是直接依赖
+本 crate。
 
-<div align="center">
+`#[def_percpu]` 为最终镜像生成三类元数据：
 
-[![Crates.io](https://img.shields.io/crates/v/ax-percpu-macros.svg)](https://crates.io/crates/ax-percpu-macros)
-[![Docs.rs](https://docs.rs/ax-percpu-macros/badge.svg)](https://docs.rs/ax-percpu-macros)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+- `.percpu.template.storage` 中的未初始化类型化存储；
+- `.percpu.init` 中的类型化构造注册项；
+- `.percpu.align` 中的对齐描述符。
 
-</div>
+布尔值和整数使用匹配的原子表示；其他对象保留 Rust 类型，并在每个最终运行时 CPU
+区域中各构造一次。生成的访问包装器只计算模板相对偏移，当前/远端访问校验统一交给
+`ax-percpu`。
 
-[English](README.md) | 中文
-
-# 介绍
-
-`ax-percpu-macros` 提供了 Macros to define and access a per-CPU data structure。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
-
-
-> ax-percpu-macros 派生自 https://github.com/arceos-org/percpu
-
-## 快速开始
-
-### 添加依赖
-
-在 `Cargo.toml` 中加入：
-
-```toml
-[dependencies]
-ax-percpu-macros = "0.4.3"
-```
-
-### 检查与测试
+本 crate 不定义 Cargo feature，也不拥有运行时存储后端。链接布局、动态分配、
+类型化初始化、CPU pin 与寄存器所有权分别属于 `ax-percpu`、平台和 `cpu-local`。
 
 ```bash
-# 进入 crate 目录
-cd components/percpu/percpu_macros
-
-# 代码格式化
-cargo fmt --all
-
-# 运行 clippy
-cargo clippy --all-targets --all-features
-
-# 运行测试
-cargo test --all-features
-
-# 生成文档
-cargo doc --no-deps
+cargo test -p ax-percpu-macros
+cargo xtask clippy --package ax-percpu-macros
 ```
 
-## 集成方式
-
-### 示例
-
-```rust
-use ax_percpu_macros as _;
-
-fn main() {
-    // 在这里将 `ax-percpu-macros` 集成到你的项目中。
-}
-```
-
-### 文档
-
-生成并查看 API 文档：
-
-```bash
-cargo doc --no-deps --open
-```
-
-在线文档：[docs.rs/ax-percpu-macros](https://docs.rs/ax-percpu-macros)
-
-# 贡献
-
-1. Fork 仓库并创建分支
-2. 在本地运行格式化与检查
-3. 运行与该 crate 相关的测试
-4. 提交 PR 并确保 CI 通过
-
-# 许可证
-
-本项目采用 Apache License 2.0 许可证。详情见 [LICENSE](./LICENSE)。
+采用 Apache-2.0 许可证。

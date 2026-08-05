@@ -130,6 +130,8 @@ flowchart TD
 
 `--test-case` 和 `--board` 支持按用例名和板卡名过滤；`--list` 列出所有 board test group。发现算法通过 `discover_board_test_groups()` 递归扫描，board 配置按板卡名命名（`board-{name}.toml`），通过 `nearest_build_wrapper()` 向上查找最近的构建配置。
 
+ROCK 4D 用例从板卡文件系统加载 BSP kernel 和 guest DTB，运行前必须单独准备这两项持久化资产。完整命令见 [ROCK 4D Linux Guest](./rock-4d)。
+
 ## 4. 资产管线
 
 Axvisor 测试的六种 pipeline 类型与 StarryOS 完全一致，因为两者都需要在 rootfs 用户空间中执行测试命令。`resolve_case_pipeline()` 按固定优先级检测每个用例目录的特征文件，同一目录同时出现多个 pipeline 触发条件会直接报错：

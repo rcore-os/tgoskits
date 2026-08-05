@@ -61,7 +61,10 @@ ORT_STARRY_BUILD_SCRIPT = (
 ORT_MODEL_README = REPOSITORY_ROOT / "competition/ivc/model/README.md"
 AXVISOR_SHELL_BASE = REPOSITORY_ROOT / "os/axvisor/src/shell/command/base.rs"
 AXVISOR_SHELL_HOST = REPOSITORY_ROOT / "os/axvisor/src/shell/command/host.rs"
+AXVISOR_SHELL_COMMAND = REPOSITORY_ROOT / "os/axvisor/src/shell/command/mod.rs"
 AXVISOR_SHELL = REPOSITORY_ROOT / "os/axvisor/src/shell/mod.rs"
+AXVM_HOST_ARCEOS = REPOSITORY_ROOT / "virtualization/axvm/src/host/arceos.rs"
+AXVM_ARCH = REPOSITORY_ROOT / "virtualization/axvm/src/arch/mod.rs"
 AXVM_VM_SOURCE = REPOSITORY_ROOT / "virtualization/axvm/src/vm/mod.rs"
 ORANGEPI_MANUAL_BUILD_CONFIGS = (
     (
@@ -437,6 +440,12 @@ class QemuConfigContractTests(unittest.TestCase):
             ),
         )
 
+    def test_axvisor_registers_the_host_persistence_commands(self) -> None:
+        source = AXVISOR_SHELL_COMMAND.read_text(encoding="utf-8")
+
+        self.assertIn("mod host;", source)
+        self.assertIn("host::build_host_cmd(&mut tree);", source)
+
     def test_axvisor_repeats_the_snapshot_marker_for_the_shared_uart(self) -> None:
         source = AXVISOR_SHELL_HOST.read_text(encoding="utf-8")
         snapshot_flow = source.split("fn snapshot_and_sync", maxsplit=1)[1].split(
@@ -534,6 +543,31 @@ class QemuConfigContractTests(unittest.TestCase):
             re.compile(
                 r"for chunk in contents\.chunks\(SNAPSHOT_WRITE_CHUNK_BYTES\).*?"
                 r"write_all\(chunk\).*?sync_host_filesystems\(\)",
+                re.DOTALL,
+            ),
+        )
+
+    def test_axvm_separates_host_flush_from_block_irq_release(self) -> None:
+        host_source = AXVM_HOST_ARCEOS.read_text(encoding="utf-8")
+        arch_source = AXVM_ARCH.read_text(encoding="utf-8")
+        self.assertIn("pub fn sync_host_filesystems", host_source)
+        self.assertIn("pub fn shutdown_host_filesystems", host_source)
+        sync_flow = host_source.split(
+            "pub fn sync_host_filesystems", maxsplit=1
+        )[1].split("pub fn shutdown_host_filesystems", maxsplit=1)[0]
+        shutdown_flow = host_source.split(
+            "pub fn shutdown_host_filesystems", maxsplit=1
+        )[1].split("pub(crate) fn register_qemu", maxsplit=1)[0]
+
+        self.assertIn("shutdown_filesystems()", sync_flow)
+        self.assertNotIn("release_block_irqs_for_passthrough", sync_flow)
+        self.assertIn("sync_host_filesystems()?", shutdown_flow)
+        self.assertIn("release_block_irqs_for_passthrough", shutdown_flow)
+        self.assertRegex(
+            arch_source,
+            re.compile(
+                r"pub use crate::host::arceos::\{[^}]*"
+                r"shutdown_host_filesystems[^}]*sync_host_filesystems[^}]*\}",
                 re.DOTALL,
             ),
         )

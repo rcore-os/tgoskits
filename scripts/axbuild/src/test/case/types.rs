@@ -3,6 +3,8 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use serde::Deserialize;
 
 pub(super) const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
+pub(super) const BOARD_CASE_WORK_ROOT_NAME: &str = "board-cases";
+pub(super) const BOARD_CASE_UPLOAD_DIR_NAME: &str = "upload";
 pub(super) const CASE_CACHE_DIR_NAME: &str = "cache";
 pub(super) const CASE_RUNS_DIR_NAME: &str = "runs";
 /// Sub-directory under `cache_dir` that holds pre-injected rootfs images.

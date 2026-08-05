@@ -29,7 +29,7 @@ const AXTEST_SUITE_OK: &str = "AXTEST_SUITE_OK";
 const AXTEST_SUITE_FAIL: &str = "AXTEST_SUITE_FAIL";
 const AXTEST_CASE_FAIL: &str = "AXTEST_CASE .* status=fail";
 const PANIC_FAIL: &str = "panicked at";
-const COVERAGE_IGNORED_SOURCE_REGEX: &str = r"[/\\]\.(cargo|rustup)[/\\]";
+const COVERAGE_IGNORED_SOURCE_REGEX: &str = r"[/\\](\.(cargo|rustup)|target)[/\\]";
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct ArgsKtest {

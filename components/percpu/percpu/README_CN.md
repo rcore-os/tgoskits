@@ -1,84 +1,75 @@
-<h1 align="center">ax-percpu</h1>
+# ax-percpu
 
-<p align="center">Define and access per-CPU data structures</p>
+面向 `no_std` 内核的类型化 per-CPU 布局、初始化与访问组件。
 
-<div align="center">
+`ax-percpu` 只保留动态实现：最终 ELF 仅携带一份布局模板，平台为每个 CPU
+分配可写运行时区域，并在任何 CPU 绑定前完成整体初始化。架构寄存器的所有权由
+独立的 `cpu-local` crate 提供。
 
-[![Crates.io](https://img.shields.io/crates/v/ax-percpu.svg)](https://crates.io/crates/ax-percpu)
-[![Docs.rs](https://docs.rs/ax-percpu/badge.svg)](https://docs.rs/ax-percpu)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+## 运行时契约
 
-</div>
+初始化顺序固定为：
 
-[English](README.md) | 中文
+1. 链接器只保留一份 `.percpu.template`，以及 `.percpu.init`、
+   `.percpu.align` 两张描述符表。
+2. 平台为所有 CPU 区域分配持续到关机的存储。
+3. `initialize_layout(PerCpuRegion)` 在第一次目标写入前校验完整几何和描述符。
+4. 在最终地址分别构造每个 `CpuAreaPrefix` 和每个类型化值。
+5. 冻结布局后，平台才能取得 `area(cpu).cpu_area()` 并在 offline CPU 上安装。
 
-# 介绍
+不存在链接期运行时布局或按 CPU 数静态复制，因此运行时 CPU 数变化不会改变 ELF
+模板大小。
 
-`ax-percpu` 提供了 Define and access per-CPU data structures。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+链接输出节仅有：
 
+- `.percpu.template`
+- `.percpu.init`
+- `.percpu.align`
 
-> ax-percpu 派生自 https://github.com/arceos-org/percpu
+宏生成的存储位于 `.percpu.template.storage`；固定头和结束哨兵分别位于
+`.percpu.template.header`、`.percpu.template.end`。边界符号统一使用
+`__PERCPU_*` 和 `__CPU_LOCAL_*`。
 
-## 快速开始
+## 类型化访问
 
-### 添加依赖
+```rust,no_run
+#[ax_percpu::def_percpu]
+static CPU_ID: usize = 0;
 
-在 `Cargo.toml` 中加入：
-
-```toml
-[dependencies]
-ax-percpu = "0.4.3"
-```
-
-### 检查与测试
-
-```bash
-# 进入 crate 目录
-cd components/percpu/percpu
-
-# 代码格式化
-cargo fmt --all
-
-# 运行 clippy
-cargo clippy --all-targets --all-features
-
-# 运行 Linux host 测试
-cargo test --features host-test,non-zero-vma
-
-# 生成文档
-cargo doc --no-deps
-```
-
-## 集成方式
-
-### 示例
-
-```rust
-use ax_percpu as _;
-
-fn main() {
-    // 在这里将 `ax-percpu` 集成到你的项目中。
+fn set_cpu_id(pin: &ax_percpu::CpuPin<'_>, cpu_id: usize) {
+    ax_percpu::current_area(pin).expect("CPU area must match the frozen layout");
+    CPU_ID.write_current(pin, cpu_id);
+    assert_eq!(CPU_ID.read_current(pin), cpu_id);
 }
 ```
 
-### 文档
+原始标量使用匹配的原子存储。对象初始化表达式通过类型化描述符保留，并在每个最终
+运行时区域独立构造一次；实现不会复制任意 Rust 对象的模板字节。
 
-生成并查看 API 文档：
+当前 CPU 访问必须使用不可逃逸的 `CpuPin<'scope>`。创建 pin 时会校验实时寄存器、
+area self pointer、CPU index 和 current header。`T: Sync` 对象可在 pin 下共享访问；
+对象可变访问还必须持有 `ExclusiveCpu<'pin>`，证明迁移、IRQ/重入和冲突远端访问均
+已排除。远端访问显式接受 `PerCpuArea`，同步责任留给调用者。
+
+| 操作 | 必要保护 |
+| --- | --- |
+| 原子标量 | 禁止迁移；允许 IRQ |
+| `T: Sync` 共享对象 | 禁止迁移；对象自行同步 |
+| 本地可变对象 | 禁止迁移、IRQ/重入和冲突远端访问 |
+| 调度切换 | IRQ 关闭、禁止迁移、消费事务 token |
+| vCPU 运行 | 禁止迁移；退出汇编先恢复 host 寄存器 |
+| CPU 启动初始化 | CPU offline 且独占尚未构造的区域 |
+
+## Host 测试
+
+crate 只提供一个 feature：`host-test`。`host_test::initialize(NonZeroU32)`
+分配进程生命周期内的动态区域并完成一次初始化；每个模拟 CPU 的线程仍须显式安装
+自己的 `area(cpu).cpu_area()`。
 
 ```bash
-cargo doc --no-deps --open
+cargo test -p ax-percpu --features host-test
+cargo test -p ax-percpu-macros
+cargo xtask clippy --package ax-percpu
 ```
 
-在线文档：[docs.rs/ax-percpu](https://docs.rs/ax-percpu)
-
-# 贡献
-
-1. Fork 仓库并创建分支
-2. 在本地运行格式化与检查
-3. 运行与该 crate 相关的测试
-4. 提交 PR 并确保 CI 通过
-
-# 许可证
-
-本项目采用 Apache License 2.0 许可证。详情见 [LICENSE](./LICENSE)。
+采用 Apache-2.0 许可证。

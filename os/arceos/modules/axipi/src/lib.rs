@@ -38,9 +38,18 @@ const SYNC_IPI_SPIN_LIMIT: usize = 10_000_000;
 
 /// Initialize the per-CPU IPI event queue.
 pub fn init() {
-    IPI_EVENT_QUEUE.with_current(|ipi_queue| {
-        ipi_queue.init_once(SpinNoIrq::new(IpiEventQueue::default()));
-    });
+    // SAFETY: runtime initialization keeps this CPU offline with IRQ/re-entry
+    // excluded until its IPI queue becomes reachable from another processor.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                IPI_EVENT_QUEUE.with_current_mut(exclusive, |ipi_queue| {
+                    ipi_queue.init_once(SpinNoIrq::new(IpiEventQueue::default()));
+                })
+            })
+        })
+    }
+    .expect("IPI initialization requires an installed CPU-local area");
 }
 
 /// Marks the current CPU ready to receive and handle queued IPI callbacks.
@@ -96,7 +105,13 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
         // Execute callback on current CPU immediately
         callback.into().call();
     } else {
-        unsafe { IPI_EVENT_QUEUE.remote_ref_raw(dest_cpu) }
+        let dest_index = ax_percpu::CpuIndex::try_from(dest_cpu)
+            .expect("logical CPU ID must fit the CPU-local ABI");
+        let area =
+            ax_percpu::area(dest_index).expect("destination CPU-local area must be initialized");
+        // SAFETY: the area is permanent, and SpinNoIrq serializes the remote
+        // producer with its owner CPU's interrupt consumer.
+        unsafe { IPI_EVENT_QUEUE.remote_ptr(area).as_ref() }
             .lock()
             .push(this_cpu_id(), callback.into());
         ax_hal::irq::send_ipi(
@@ -169,7 +184,12 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
     // Push the callback to all other CPUs' IPI event queues
     for cpu_id in 0..cpu_num {
         if cpu_id != current_cpu_id {
-            unsafe { IPI_EVENT_QUEUE.remote_ref_raw(cpu_id) }
+            let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
+                .expect("logical CPU ID must fit the CPU-local ABI");
+            let area =
+                ax_percpu::area(cpu_index).expect("destination CPU-local area must be initialized");
+            // SAFETY: the permanent remote object is internally synchronized.
+            unsafe { IPI_EVENT_QUEUE.remote_ptr(area).as_ref() }
                 .lock()
                 .push(current_cpu_id, callback.clone().into_unicast());
         }
@@ -186,10 +206,16 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
 
 /// The handler for IPI events. It retrieves the events from the queue and calls the corresponding callbacks.
 pub fn ipi_handler() {
-    while let Some((src_cpu_id, callback)) = unsafe { IPI_EVENT_QUEUE.current_ref_mut_raw() }
-        .lock()
-        .pop_one()
-    {
+    while let Some((src_cpu_id, callback)) = {
+        // SAFETY: interrupt entry pins this CPU; the queue lock serializes all
+        // local and remote producers without requiring a mutable alias.
+        unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                IPI_EVENT_QUEUE.with_current(pin, |queue| queue.lock().pop_one())
+            })
+        }
+        .expect("IPI handling requires an installed CPU-local area")
+    } {
         debug!("Received IPI event from CPU {src_cpu_id}");
         callback.call();
     }

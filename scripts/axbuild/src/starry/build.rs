@@ -15,6 +15,7 @@ use super::{Starry, board};
 pub type StarryBuildInfo = crate::build::BuildInfo;
 pub use crate::build::LogLevel;
 use crate::{
+    build::BareKernelLinkMode,
     context::{ResolvedStarryRequest, STARRY_PACKAGE, starry_arch_for_target_checked},
     support::process::ProcessExt,
 };
@@ -106,18 +107,26 @@ pub(crate) fn load_cargo_config(request: &ResolvedStarryRequest) -> anyhow::Resu
         )?
     };
     crate::build::apply_makefile_features(&mut build_info, &makefile_features)?;
+    enable_starry_smp_capability(&mut build_info.features);
     build_info.features.sort();
     build_info.features.dedup();
     if let Some(smp) = request.smp {
         build_info.max_cpu_num = Some(smp);
     }
-    let mut cargo = build_info.into_prepared_base_cargo_config_with_metadata(
+    let mut cargo = build_info.into_prepared_no_std_cargo_config_with_metadata(
         &request.package,
         &request.target,
         metadata,
+        BareKernelLinkMode::Pie,
     )?;
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     Ok(cargo)
+}
+
+fn enable_starry_smp_capability(features: &mut Vec<String>) {
+    // Starry always compiles the SMP kernel paths. `SMP` limits the CPUs exposed
+    // at runtime; board configurations may intentionally leave that limit unset.
+    features.push("smp".to_string());
 }
 
 fn patch_starry_cargo_config(

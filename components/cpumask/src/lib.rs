@@ -1,12 +1,19 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
 use core::{
     hash::{Hash, Hasher},
     ops::*,
 };
 
 use bitmaps::{BitOps, Bitmap, Bits, BitsImpl};
+
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for CPU mask operations.
+pub mod axtest;
 
 /// A compact array of bits which represents a set of physical CPUs,
 /// implemented based on [bitmaps::Bitmap](https://docs.rs/bitmaps/latest/bitmaps/struct.Bitmap.html).

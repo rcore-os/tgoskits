@@ -9,7 +9,7 @@ use std::{
 use anyhow::Context;
 use log::info;
 use ostool::{
-    board::{self as ostool_board, RunBoardOptions, config::BoardRunConfig},
+    board::{self as ostool_board, BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
     build::{
         self as ostool_build, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
         RuntimeArtifactInput,
@@ -194,11 +194,17 @@ impl AppContext {
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
-        let _backtrace_capture = capture_backtrace
+        let success_regex = qemu.success_regex.clone();
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let output_capture = capture_backtrace
             .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
-            .context("failed to install backtrace block output capture")?;
+            .context("failed to install QEMU output capture")?;
         self.activate_cargo_build_context(cargo)?;
         let stage = StageLog::start(format!(
             "qemu run package={} target={}",
@@ -210,6 +216,11 @@ impl AppContext {
             RunQemuOptions { dtb_dump: false },
         )
         .await;
+        drop(output_capture);
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            success_output.as_ref(),
+        );
         if result.is_ok() {
             stage.done();
         }
@@ -245,11 +256,17 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let _backtrace_capture = capture_backtrace
+        let success_regex = qemu.success_regex.clone();
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let output_capture = capture_backtrace
             .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
-            .context("failed to install backtrace block output capture")?;
+            .context("failed to install QEMU output capture")?;
         let stage = StageLog::start("qemu run prepared artifact");
         let result = ostool_qemu::run_qemu(
             &mut self.invocation,
@@ -257,6 +274,11 @@ impl AppContext {
             RunQemuOptions { dtb_dump: false },
         )
         .await;
+        drop(output_capture);
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            success_output.as_ref(),
+        );
         if result.is_ok() {
             stage.done();
         }
@@ -359,6 +381,35 @@ impl AppContext {
         result
     }
 
+    pub(crate) async fn board_prepared_elf_with_request(
+        &mut self,
+        elf_path: PathBuf,
+        to_bin: bool,
+        build_config_path: PathBuf,
+        board_request: BoardRunRequest,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        let prepare_stage = StageLog::start(format!(
+            "prepare runtime artifact elf={} to_bin={}",
+            elf_path.display(),
+            to_bin
+        ));
+        ostool_build::prepare_runtime_artifact(
+            &mut self.invocation,
+            RuntimeArtifactInput::new(elf_path, to_bin),
+        )?;
+        prepare_stage.done();
+
+        let run_stage = StageLog::start("board run prepared artifact");
+        let result =
+            ostool_board::run_prepared_board_with_request(&mut self.invocation, board_request)
+                .await;
+        if result.is_ok() {
+            run_stage.done();
+        }
+        result
+    }
+
     pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
         if self.debug == debug {
             return Ok(());
@@ -438,10 +489,25 @@ impl AppContext {
         let guard = PathRestoreGuard::new(self.original_path.clone());
         guard.restore();
         if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
-            configure_loongarch_qemu_path(&self.root)?;
+            configure_loongarch_qemu_path()?;
         }
         Ok(guard)
     }
+}
+
+pub(crate) fn board_run_request(
+    board_config_path: &Path,
+    board_config: BoardRunConfig,
+    options: RunBoardOptions,
+) -> anyhow::Result<BoardRunRequest> {
+    let session_files = board_config.session_files.clone();
+    let config_dir = board_config_path.parent().with_context(|| {
+        format!(
+            "board configuration path `{}` has no parent directory",
+            board_config_path.display()
+        )
+    })?;
+    BoardRunRequest::new(board_config, options).with_session_files(config_dir, &session_files)
 }
 
 struct StageLog {
@@ -536,8 +602,8 @@ fn should_use_loongarch_lvz_for(package: &str, target: &str) -> bool {
     package == "axvisor" && target.contains("loongarch64")
 }
 
-fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
-    let Some(qemu_dir) = find_loongarch_qemu_dir(workspace_root) else {
+fn configure_loongarch_qemu_path() -> anyhow::Result<()> {
+    let Some(qemu_dir) = find_loongarch_qemu_dir() else {
         return Ok(());
     };
 
@@ -549,7 +615,7 @@ fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
+fn find_loongarch_qemu_dir() -> Option<PathBuf> {
     let env_executable = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
         .map(PathBuf::from)
         .filter(|path| path.is_file())
@@ -565,12 +631,12 @@ fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
         return Some(dir);
     }
 
-    loongarch_qemu_dir_candidates(workspace_root)
+    loongarch_qemu_dir_candidates()
         .into_iter()
         .find(|dir| is_loongarch_qemu_dir(dir))
 }
 
-fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
+fn loongarch_qemu_dir_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     let cache_root = env::var_os("AXVISOR_QEMU_LVZ_CACHE")
@@ -580,9 +646,6 @@ fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
         });
     if let Some(cache_root) = cache_root {
         candidates.push(cache_root.join("latest").join("bin"));
-        if let Some(commit) = pinned_qemu_lvz_commit(workspace_root) {
-            candidates.push(cache_root.join(commit).join("bin"));
-        }
         candidates.extend(cached_loongarch_qemu_dirs(&cache_root));
     }
 
@@ -607,17 +670,6 @@ fn cached_loongarch_qemu_dirs(cache_root: &Path) -> Vec<PathBuf> {
         .collect();
     dirs.sort();
     dirs
-}
-
-fn pinned_qemu_lvz_commit(workspace_root: &Path) -> Option<String> {
-    let version_file = workspace_root.join("os/axvisor/scripts/qemu-lvz.version");
-    let content = std::fs::read_to_string(version_file).ok()?;
-    content
-        .lines()
-        .find_map(|line| line.strip_prefix("QEMU_LVZ_COMMIT="))
-        .map(str::trim)
-        .filter(|commit| !commit.is_empty())
-        .map(str::to_owned)
 }
 
 fn is_loongarch_qemu_dir(dir: &Path) -> bool {

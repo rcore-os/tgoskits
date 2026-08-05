@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.14](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.13...axplat-dyn-v0.7.14) - 2026-08-03
+
+### Fixed
+
+- *(someboot)* establish runtime CPU topology mapping ([#1710](https://github.com/rcore-os/tgoskits/pull/1710))
+
+## [0.7.13](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.12...axplat-dyn-v0.7.13) - 2026-07-23
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
+### Changed
+
+- *(cpu-local)* validate and install exact `CpuAreaRef` values from someboot's frozen dynamic
+  CPU-area layout without version/generation/cookie fields, a base callback, or linked-layout
+  feature propagation.
+
 ## [0.7.12](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.11...axplat-dyn-v0.7.12) - 2026-07-10
 
 ### Added

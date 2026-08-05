@@ -17,7 +17,7 @@ use crate::{
     arch::ArchVCpu,
     ax_err,
     host::{HostPlatform, default_host},
-    vcpu::get_current_vcpu,
+    vcpu::with_current_vcpu,
     vm::AxVMRef,
 };
 
@@ -211,41 +211,46 @@ pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> Ax
     crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
-/// Inject a virtual interrupt into a VM's vCPU.
-#[expect(
-    dead_code,
-    reason = "only the LoongArch IRQ backend injects external VM interrupts"
-)]
-pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
-    use crate::AsVCpuTask;
-
-    let current = crate::host::task::current_task();
-    if let Some(task) = current.try_as_vcpu_task()
-        && task.vm().id() == vm_id
-        && task.vcpu.id() == vcpu_id
-    {
-        return task.vcpu.inject_interrupt(vector);
-    }
-
-    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
+/// Wake and kick a target vCPU whose architecture backend already published
+/// pending interrupt state.
+pub fn notify_vm_vcpu(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
+    crate::runtime::vcpus::notify_vcpu(vm_id, vcpu_id)
 }
 
 /// Return the current VM ID from the vCPU currently executing on this CPU.
 pub fn current_vm_id() -> Option<VMId> {
-    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.vm_id())
+    with_current_vcpu::<ArchVCpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
 }
 
 /// Return the current vCPU ID from the vCPU currently executing on this CPU.
 pub fn current_vcpu_id() -> Option<usize> {
-    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.id())
+    with_current_vcpu::<ArchVCpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.id()))
+}
+
+/// Publish an interrupt for the vCPU currently executing on this CPU.
+///
+/// Unlike [`inject_current_vcpu_interrupt`], this path does not access
+/// CPU-local virtual interrupt-controller state from the host IRQ handler.
+/// It publishes the interrupt to the target runtime first, then wakes and
+/// kicks the target vCPU. The vCPU owner drains the interrupt immediately
+/// before the next guest entry.
+pub fn dispatch_current_vcpu_interrupt(vector: usize) -> AxVmResult {
+    let (vm_id, vcpu_id) =
+        with_current_vcpu::<ArchVCpu, _>(|vcpu| vcpu.map(|vcpu| (vcpu.vm_id(), vcpu.id())))
+            .ok_or_else(|| {
+                AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
+            })?;
+    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
 }
 
 /// Inject a virtual interrupt into the vCPU currently executing on this CPU.
 pub fn inject_current_vcpu_interrupt(vector: usize) -> AxVmResult {
-    let vcpu = get_current_vcpu::<ArchVCpu>().ok_or_else(|| {
-        AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
-    })?;
-    vcpu.inject_interrupt(vector)
+    with_current_vcpu::<ArchVCpu, _>(|vcpu| {
+        let vcpu = vcpu.ok_or_else(|| {
+            AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
+        })?;
+        vcpu.inject_interrupt(vector)
+    })
 }
 
 impl AxvmRuntime {
@@ -267,6 +272,16 @@ impl AxvmRuntime {
     /// Start all initialized default VMs and wait for them to stop.
     pub fn start_default_vms(&self) {
         crate::runtime::start();
+    }
+
+    /// Start all initialized default VMs without waiting for completion.
+    pub fn launch_default_vms(&self) -> Vec<VMId> {
+        crate::runtime::launch_all()
+    }
+
+    /// Wait until all running VMs have stopped.
+    pub fn wait_for_all_vms() {
+        crate::runtime::wait_for_all();
     }
 
     /// Run an operation with a VM selected from the runtime registry.
@@ -297,6 +312,11 @@ impl AxvmRuntime {
     /// Reset a VM with a caller-selected stop-wait strategy.
     pub fn reset_vm_with_wait(vm_id: VMId, wait_step: impl FnMut()) -> AxVmResult {
         crate::runtime::reset_vm_with_wait(vm_id, wait_step)
+    }
+
+    /// Wake the primary vCPU of a VM.
+    pub fn notify_vm(vm_id: VMId) -> AxVmResult {
+        crate::runtime::notify_vm(vm_id)
     }
 
     /// Remove a VM selected from the runtime registry.

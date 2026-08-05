@@ -36,9 +36,14 @@ impl AxvmManager {
         self.release_host_filesystem_for_guest_passthrough();
     }
 
-    /// Start the default VM set and wait until it exits.
-    pub fn start_default_vms(&self) {
-        self.runtime.start_default_vms();
+    /// Start the default VM set without blocking the management console.
+    pub fn launch_default_vms(&self) -> Vec<VMId> {
+        self.runtime.launch_default_vms()
+    }
+
+    /// Wait until every running VM has stopped.
+    pub fn wait_for_default_vms() {
+        AxvmRuntime::wait_for_all_vms();
     }
 
     /// Create one VM from a TOML config string.
@@ -72,6 +77,11 @@ impl AxvmManager {
             .with_context(|| format!("reset VM[{vm_id}] with reserved-CPU polling"))
     }
 
+    /// Wake the primary vCPU so it can consume newly queued console input.
+    pub fn notify_vm(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::notify_vm(vm_id).with_context(|| format!("notify VM[{vm_id}]"))
+    }
+
     /// Remove a VM by ID.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
         #[cfg(target_arch = "loongarch64")]
@@ -96,7 +106,11 @@ impl AxvmManager {
 
     #[cfg(all(
         feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        )
     ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
@@ -107,13 +121,17 @@ impl AxvmManager {
             "Failed to release host filesystem before guest passthrough devices take ownership",
         );
         #[cfg(target_arch = "x86_64")]
-        crate::config::prepare_x86_host_fs_passthrough_devices();
+        axvm::host::x86::prepare_qemu_block_passthrough_device();
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
     }
 
     #[cfg(not(all(
         feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        )
     )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 

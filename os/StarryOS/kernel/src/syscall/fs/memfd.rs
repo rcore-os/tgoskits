@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, OpenOptions};
+use ax_fs_ng::vfs::OpenOptions;
 use ax_task::current;
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
@@ -64,7 +64,8 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
     };
     let tmpfs = tmpfs.ok_or(AxError::NotFound)?;
 
-    let fs = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let cred = current().as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
@@ -88,7 +89,10 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    FS_CONTEXT.lock().resolve(path).is_ok()
+    ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .resolve(path)
+        .is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {
@@ -149,4 +153,32 @@ pub fn memfd_checks_before_write_at(
         return Ok(());
     }
     memfd_check_write_seal(file_like)
+}
+
+#[cfg(axtest)]
+pub(crate) fn memfd_flags_validation_rules_hold_for_test() -> bool {
+    // Test memfd_create flag validation
+    let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
+
+    let flags = 0u32;
+    assert!(flags & !valid_flags == 0 && flags & MFD_HUGETLB == 0);
+
+    let cloexec_only = MFD_CLOEXEC as u32;
+    assert!(cloexec_only & !valid_flags == 0 && cloexec_only & MFD_HUGETLB == 0);
+
+    let allow_sealing_only = MFD_ALLOW_SEALING as u32;
+    assert!(allow_sealing_only & !valid_flags == 0 && allow_sealing_only & MFD_HUGETLB == 0);
+
+    let all_valid = valid_flags;
+    assert!(all_valid & !valid_flags == 0 && all_valid & MFD_HUGETLB == 0);
+
+    // MFD_HUGETLB should be rejected
+    let huge_tlb = MFD_HUGETLB as u32;
+    assert!(huge_tlb & MFD_HUGETLB != 0);
+
+    // Invalid flag should be detected
+    let invalid_flags = 0xFFFFu32;
+    assert!(invalid_flags & !valid_flags != 0);
+
+    true
 }

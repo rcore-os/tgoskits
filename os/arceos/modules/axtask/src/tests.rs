@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(feature = "irq")]
 use std::sync::{Arc, Barrier};
 use std::{
@@ -77,9 +77,9 @@ impl Pollable for CountingPollable {
     }
 }
 
-#[cfg(any(feature = "lockdep", feature = "preempt"))]
+#[cfg(any(feature = "host-test", feature = "lockdep", feature = "preempt"))]
 const RAW_TASK_STACK_SIZE: usize = 0x10000;
-#[cfg(not(any(feature = "lockdep", feature = "preempt")))]
+#[cfg(not(any(feature = "host-test", feature = "lockdep", feature = "preempt")))]
 const RAW_TASK_STACK_SIZE: usize = 0x1000;
 
 #[cfg(all(feature = "lockdep", feature = "preempt"))]
@@ -396,6 +396,24 @@ fn test_irq_notify_coalesces_concurrent_irq_callbacks() {
 
 #[cfg(feature = "irq")]
 #[test]
+fn external_timer_deadline_is_included_in_host_reprogramming_selection() {
+    run_in_test_scheduler(|| {
+        const NO_DEADLINE: u64 = u64::MAX;
+
+        let external_deadline = Arc::new(AtomicU64::new(1));
+        let published_deadline = external_deadline.clone();
+        ax_task::register_timer_deadline_source(move || {
+            let deadline = published_deadline.load(Ordering::Acquire);
+            (deadline != NO_DEADLINE).then_some(deadline)
+        });
+
+        assert_eq!(ax_task::next_timer_deadline_nanos(), Some(1));
+        external_deadline.store(NO_DEADLINE, Ordering::Release);
+    });
+}
+
+#[cfg(feature = "irq")]
+#[test]
 fn test_irq_notify_wait_observes_notify_before_wait() {
     run_in_test_scheduler(|| {
         let notify = IrqNotify::new();
@@ -449,6 +467,51 @@ fn test_irq_notify_wakes_sleeping_deferred_worker() {
     });
 }
 
+#[cfg(all(feature = "irq", feature = "sched-rr"))]
+#[test]
+fn test_irq_notify_preserves_rr_ready_order() {
+    run_in_test_scheduler(|| {
+        const NOT_RUN: usize = usize::MAX;
+
+        let notify = Arc::new(IrqNotify::new());
+        let worker_started = Arc::new(AtomicUsize::new(0));
+        let next_order = Arc::new(AtomicUsize::new(0));
+        let queued_order = Arc::new(AtomicUsize::new(NOT_RUN));
+        let worker_order = Arc::new(AtomicUsize::new(NOT_RUN));
+
+        let worker = {
+            let notify = notify.clone();
+            let worker_started = worker_started.clone();
+            let next_order = next_order.clone();
+            let worker_order = worker_order.clone();
+            ax_task::spawn(move || {
+                worker_started.store(1, Ordering::Release);
+                notify.wait();
+                worker_order.store(next_order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+            })
+        };
+
+        ax_task::yield_now();
+        assert_eq!(worker_started.load(Ordering::Acquire), 1);
+
+        let queued = {
+            let next_order = next_order.clone();
+            let queued_order = queued_order.clone();
+            ax_task::spawn(move || {
+                queued_order.store(next_order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+            })
+        };
+
+        notify.notify_irq();
+        ax_task::yield_now();
+
+        assert_eq!(queued.join(), 0);
+        assert_eq!(worker.join(), 0);
+        assert_eq!(queued_order.load(Ordering::Acquire), 0);
+        assert_eq!(worker_order.load(Ordering::Acquire), 1);
+    });
+}
+
 #[cfg(feature = "irq")]
 #[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
@@ -483,6 +546,9 @@ fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
             let notify = notify.clone();
             let barrier = barrier.clone();
             handles.push(thread::spawn(move || {
+                // Model an interrupt arriving on CPU 0: host register state is
+                // thread-local even though the initialized area is shared.
+                ax_hal::percpu::initialize_host_test_cpu();
                 barrier.wait();
                 notify.notify_irq();
             }));

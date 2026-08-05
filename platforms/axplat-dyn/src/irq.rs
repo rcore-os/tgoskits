@@ -1,51 +1,13 @@
-#[cfg(all(target_arch = "aarch64", feature = "hv"))]
-use core::sync::atomic::AtomicPtr;
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use core::sync::atomic::{AtomicBool, AtomicPtr};
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
-use ax_plat::irq::IrqOutcome;
 use ax_plat::irq::{
-    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, TrapVector, dispatch_irq_on,
+    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, IrqTrigger, TrapVector, dispatch_irq_on,
 };
 
 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
 mod loongarch64_hv;
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static VIRTUAL_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-#[cfg(all(target_arch = "aarch64", feature = "hv"))]
-static AARCH64_HARDWARE_IRQ_INJECTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static VIRTUAL_IRQ_TARGET_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static VIRTUAL_IRQ_AFFINITY_CONFIGURED: [AtomicBool; RISCV_PLIC_SOURCE_COUNT] =
-    [const { AtomicBool::new(false) }; RISCV_PLIC_SOURCE_COUNT];
+#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
+mod riscv64_hv;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 const RISCV_PLIC_SOURCE_COUNT: usize = 1024;
-static UNHANDLED_IRQ_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-pub fn register_virtual_irq_injector(injector: fn(usize) -> bool) {
-    VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
-}
-
-#[cfg(all(target_arch = "aarch64", feature = "hv"))]
-pub fn register_aarch64_hardware_irq_injector(injector: fn(usize) -> bool) {
-    AARCH64_HARDWARE_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
-}
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-pub fn set_virtual_irq_targets(cpu_id: usize, irq_sources: &[u32]) {
-    VIRTUAL_IRQ_TARGET_CPU.store(cpu_id, Ordering::Release);
-    for configured in &VIRTUAL_IRQ_AFFINITY_CONFIGURED {
-        configured.store(false, Ordering::Release);
-    }
-    for &irq in irq_sources {
-        route_virtual_irq_to_target_cpu(irq as usize);
-    }
-}
 
 struct IrqIfImpl;
 
@@ -68,6 +30,22 @@ impl IrqIf for IrqIfImpl {
         somehal::irq::irq_set_enable(irq, enabled)
     }
 
+    fn set_trigger(irq: IrqId, trigger: IrqTrigger) -> Result<(), IrqError> {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let trigger = match trigger {
+                IrqTrigger::Edge => somehal::irq::IrqTrigger::Edge,
+                IrqTrigger::Level => somehal::irq::IrqTrigger::Level,
+            };
+            somehal::arch::gic::irq_set_trigger(irq, trigger)
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = (irq, trigger);
+            Err(IrqError::Unsupported)
+        }
+    }
+
     fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
         let affinity = match affinity {
             IrqAffinity::Any => somehal::irq::IrqAffinity::Any,
@@ -82,15 +60,18 @@ impl IrqIf for IrqIfImpl {
             let active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
 
-            #[cfg(all(target_arch = "aarch64", feature = "hv"))]
-            if inject_aarch64_hardware_irq(irq.hwirq.0 as usize) {
-                active.defer_deactivation_for_hardware_vint();
-                return Some(irq);
-            }
+            #[cfg(all(target_arch = "riscv64", feature = "hv"))]
+            let mut active = active;
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-            if should_forward_riscv_guest_irq(irq, IrqOutcome::default())
-                && inject_virtual_irq(irq.hwirq.0 as usize)
+            let mut guest_claim = is_guest_forwardable(irq)
+                .then(|| riscv64_hv::GuestPlicClaim::detach(&mut active, irq))
+                .flatten();
+
+            #[cfg(all(target_arch = "riscv64", feature = "hv"))]
+            if guest_claim
+                .as_mut()
+                .is_some_and(riscv64_hv::GuestPlicClaim::publish_to_guest)
             {
                 return Some(irq);
             }
@@ -106,13 +87,7 @@ impl IrqIf for IrqIfImpl {
                 }
 
                 if outcome.called == 0 {
-                    let unhandled_count = UNHANDLED_IRQ_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                    if should_log_unhandled_irq(unhandled_count) {
-                        warn!(
-                            "Unhandled IRQ {irq:?} on CPU {} (total={unhandled_count})",
-                            cpu.0
-                        );
-                    }
+                    warn!("Unhandled IRQ {irq:?} on CPU {}", cpu.0);
                 } else {
                     debug!("Spurious IRQ {irq:?}");
                 }
@@ -146,7 +121,8 @@ impl IrqIf for IrqIfImpl {
     fn resolve_percpu(hwirq: ax_plat::irq::HwIrq) -> Result<IrqId, IrqError> {
         #[cfg(target_arch = "aarch64")]
         {
-            somehal::irq::aarch64_gic_irq_id_checked(hwirq)
+            let parent = somehal::irq::aarch64_gic_irq_id_checked(hwirq)?;
+            Ok(somehal::irq::resolve_irq_route(parent))
         }
         #[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
         {
@@ -163,30 +139,9 @@ fn current_irq_cpu() -> CpuId {
     CpuId(ax_plat::percpu::this_cpu_id())
 }
 
-const fn should_log_unhandled_irq(unhandled_count: usize) -> bool {
-    unhandled_count.is_power_of_two()
-}
-
-#[cfg(all(target_arch = "aarch64", feature = "hv"))]
-fn inject_aarch64_hardware_irq(irq: usize) -> bool {
-    let injector = AARCH64_HARDWARE_IRQ_INJECTOR.load(Ordering::Acquire);
-    if injector.is_null() {
-        trace!("skip AArch64 hardware virtual IRQ {irq}: injector is not registered");
-        return false;
-    }
-    // SAFETY: registration stores only function pointers with this exact
-    // signature, and Release/Acquire publishes the pointer before invocation.
-    unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
-}
-
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 fn is_guest_forwardable(irq: IrqId) -> bool {
     somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvPlic)
-}
-
-#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
-fn should_forward_riscv_guest_irq(irq: IrqId, _host_outcome: IrqOutcome) -> bool {
-    is_guest_forwardable(irq)
 }
 
 #[cfg(test)]
@@ -204,46 +159,6 @@ fn riscv_plic_source_index(irq: IrqId) -> Option<usize> {
 fn is_loongarch_guest_forwardable(irq: IrqId) -> bool {
     somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::LoongArchEioIntc)
         || somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::LoongArchPchPic)
-}
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn inject_virtual_irq(irq: usize) -> bool {
-    route_virtual_irq_to_target_cpu(irq);
-
-    let injector = VIRTUAL_IRQ_INJECTOR.load(Ordering::Acquire);
-    if injector.is_null() {
-        trace!("skip RISC-V virtual IRQ {irq}: injector is not registered");
-        return false;
-    }
-    unsafe { core::mem::transmute::<*mut (), fn(usize) -> bool>(injector)(irq) }
-}
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn route_virtual_irq_to_target_cpu(irq: usize) {
-    if irq == 0 || irq >= RISCV_PLIC_SOURCE_COUNT {
-        return;
-    }
-    let target_cpu = VIRTUAL_IRQ_TARGET_CPU.load(Ordering::Acquire);
-    if target_cpu == usize::MAX {
-        return;
-    }
-    let configured = &VIRTUAL_IRQ_AFFINITY_CONFIGURED[irq];
-    if configured.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
-    let Some(domain) = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvPlic)
-    else {
-        configured.store(false, Ordering::Release);
-        trace!("skip RISC-V virtual IRQ {irq} affinity: PLIC domain is not registered");
-        return;
-    };
-    let irq_id = IrqId::new(domain, ax_plat::irq::HwIrq(irq as u32));
-    let affinity = somehal::irq::IrqAffinity::Fixed { cpu_id: target_cpu };
-    if let Err(err) = somehal::irq::irq_set_affinity(irq_id, affinity) {
-        configured.store(false, Ordering::Release);
-        trace!("skip RISC-V virtual IRQ {irq} affinity to CPU {target_cpu}: {err:?}");
-    }
 }
 
 #[cfg(test)]
@@ -283,28 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn handled_plic_irq_remains_forwardable_to_passthrough_guest() {
-        let irq = plic_irq(1);
-        let host_outcome = ax_plat::irq::IrqOutcome {
-            handled: true,
-            wake: false,
-            called: 1,
-        };
-
-        assert!(super::should_forward_riscv_guest_irq(irq, host_outcome));
-    }
-
-    #[test]
-    fn unhandled_plic_irq_can_be_forwarded_to_guest() {
-        let irq = plic_irq(2);
-
-        assert!(super::should_forward_riscv_guest_irq(
-            irq,
-            ax_plat::irq::IrqOutcome::default()
-        ));
-    }
-
-    #[test]
     fn only_real_plic_sources_have_virtual_irq_source_index() {
         let irq = plic_irq(2);
         assert_eq!(super::riscv_plic_source_index(irq), Some(2));
@@ -314,14 +207,5 @@ mod tests {
 
         let out_of_range = IrqId::new(irq.domain, HwIrq(super::RISCV_PLIC_SOURCE_COUNT as u32));
         assert_eq!(super::riscv_plic_source_index(out_of_range), None);
-    }
-
-    #[test]
-    fn unhandled_irq_logging_is_exponentially_rate_limited() {
-        let logged: alloc::vec::Vec<_> = (1..=16)
-            .filter(|&count| super::should_log_unhandled_irq(count))
-            .collect();
-
-        assert_eq!(logged, alloc::vec![1, 2, 4, 8, 16]);
     }
 }

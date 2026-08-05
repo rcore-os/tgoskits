@@ -9,7 +9,7 @@ default = ["arceos"]
 arceos = ["dep:ax-std", "ax-std/arceos"]
 
 [dependencies]
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
 
 # minreq: minimal HTTP client, no TLS (we use a local HTTP proxy for HTTPS APIs)
 minreq = { version = "2", default-features = false }

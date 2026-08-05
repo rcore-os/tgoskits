@@ -368,6 +368,25 @@ fn grouped_c_root_configure_command_passes_selected_subcase_list() {
 }
 
 #[test]
+fn grouped_c_root_prebuild_env_exposes_selected_subcase_list() {
+    let root = tempdir().unwrap();
+    let case = fake_case(root.path(), "system");
+    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+    let beta = fake_c_subcase(root.path(), &case, "beta-dir", &["beta"]);
+    let subcases = [&alpha, &beta];
+
+    let env = grouped_c_root_prebuild_env(
+        vec![("SUITE_PACKAGE_REGION".to_string(), "us".to_string())],
+        &subcases,
+    );
+
+    assert!(env.contains(&(
+        "STARRY_GROUPED_C_SUBCASES".to_string(),
+        "alpha,beta-dir".to_string(),
+    )));
+}
+
+#[test]
 fn cross_compile_spec_maps_supported_arches() {
     assert_eq!(
         cross_compile_spec("aarch64").unwrap(),

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.6...someboot-v0.3.7) - 2026-08-03
+
+### Fixed
+
+- *(someboot)* clamp x86 LAPIC timer delta ([#1794](https://github.com/rcore-os/tgoskits/pull/1794))
+- *(someboot)* repair AArch64 EFI handoff ([#1782](https://github.com/rcore-os/tgoskits/pull/1782))
+- *(someboot)* use 64-bit AArch64 timer deadlines ([#1720](https://github.com/rcore-os/tgoskits/pull/1720))
+- *(someboot)* establish runtime CPU topology mapping ([#1710](https://github.com/rcore-os/tgoskits/pull/1710))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+## [0.3.6](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.5...someboot-v0.3.6) - 2026-07-23
+
+### Other
+
+- *(ax-runtime)* centralize UART scheduling ([#1675](https://github.com/rcore-os/tgoskits/pull/1675))
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
+### Changed
+
+- *(cpu-local)* allocate one runtime CPU area per discovered CPU from the single ELF template and
+  publish the layout only after typed initialization completes; the final-image handoff is the
+  unversioned scalar `__percpu_initialize_layout(base, stride, count)` entry.
+
+### Removed
+
+- *(cpu-local)* remove the alternate preallocated layout and legacy per-CPU linker aliases.
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.4...someboot-v0.3.5) - 2026-07-10
 
 ### Added

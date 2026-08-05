@@ -30,7 +30,7 @@ os/arceos/configs/qemu/qemu-<arch>.toml
 
 ```toml
 args = [
-  "-device", "virtio-blk-pci,drive=disk0",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/arceos-aarch64-fat32.img",
 ]
 uefi = false
@@ -41,7 +41,7 @@ to_bin = true
 
 ### 1.1 FAT32 资产
 
-ArceOS 默认 QEMU 路径不使用 StarryOS/Axvisor 的 managed Alpine rootfs。`run_qemu_request_with_cargo()` 调用 `prepare_default_qemu_fat32_rootfs()`，根据 QEMU `-drive` 参数中声明的文件路径准备一个新的 FAT32 盘，以便 app 的文件系统或 virtio-blk 能力有确定的启动介质。
+ArceOS 默认 QEMU 路径不使用 StarryOS/Axvisor 的 managed Alpine rootfs。`run_qemu_request_with_cargo()` 调用 `prepare_default_qemu_fat32_rootfs()`，根据 QEMU `-drive` 参数中声明的文件路径准备一个新的 FAT32 盘，再将它连接到 NVMe `disk0`，使 app 的文件系统与 NVMe 能力有确定的启动介质。
 
 因此，`--rootfs` 虽是共享 CLI 形态的一部分，当前 ArceOS 默认 QEMU 流程仍以 QEMU drive 合同和 FAT32 资产为准；它不应被理解为会把 Alpine rootfs 自动挂到 ArceOS 默认 QEMU 中。
 

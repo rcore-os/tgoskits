@@ -41,7 +41,7 @@ impl ArchTrait for Arch {
         Self::_va(paddr)
     }
 
-    fn _percpu(paddr: usize) -> *mut u8 {
+    fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
         (paddr + addrspace::PERCPU_BASE) as *mut u8
     }
 

@@ -28,7 +28,7 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
 use ax_kspin::SpinRwLock as RwLock;
 use ax_task::{TaskState, current};
@@ -43,11 +43,36 @@ use linux_raw_sys::general::{
 use starry_process::Pid;
 
 #[cfg(axtest)]
+pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
+#[cfg(axtest)]
 pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
 #[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_edge_id_and_constants_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_edge_id_clone_copy_partial_eq_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_direction_and_scan_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_link_clone_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_static_constants_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_struct_and_methods_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_vec_and_reserve_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::push_topology_item_preserves_order_and_grows_capacity;
+#[cfg(axtest)]
+pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
+#[cfg(axtest)]
 pub(crate) use self::pipe::{
-    peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,
+    peer_close_with_multiple_readers_is_visible_for_test,
+    pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
 };
+#[cfg(axtest)]
+pub(crate) use self::wext::is_wext_ioctl_validation_rules_hold_for_test;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
@@ -253,6 +278,16 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(())
     }
 
+    /// Per-close hook, invoked with the closing task's tgid whenever a file
+    /// descriptor referring to this object is dropped from an fd table -
+    /// explicit `close`, `close_range`, `dup2`/`dup3` replacement, exec
+    /// CLOEXEC, or process exit. This mirrors Linux `f_op->flush`
+    /// (`filp_flush`, fs/open.c:1470), which runs on every fd-closing path
+    /// rather than only on the last reference. The default is a no-op; POSIX
+    /// message-queue descriptors override it to drop a matching `mq_notify`
+    /// registration (`mqueue_flush_file`, ipc/mqueue.c:658).
+    fn on_close(&self, _owner: Pid) {}
+
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,
@@ -282,9 +317,17 @@ scope_local::scope_local! {
     pub static FD_TABLE: Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> = Arc::default();
 }
 
+/// Returns an owned reference to the file table of the active scope.
+///
+/// The CPU pin is released after cloning the `Arc`, before callers acquire the
+/// table lock or run descriptor destructors.
+pub fn current_fd_table() -> Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>> {
+    FD_TABLE.clone_current()
+}
+
 /// Get a file-like object by `fd`.
 pub fn get_file_like(fd: c_int) -> AxResult<Arc<dyn FileLike>> {
-    FD_TABLE
+    current_fd_table()
         .read()
         .get(fd as usize)
         .map(|fd| fd.inner.clone())
@@ -306,7 +349,8 @@ pub fn fd_is_path(fd: c_int) -> bool {
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
     let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
-    let mut table = FD_TABLE.write();
+    let fd_table = current_fd_table();
+    let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
         return Err(AxError::TooManyOpenFiles);
     }
@@ -316,7 +360,7 @@ pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
 
 /// Close a file by `fd`.
 pub fn close_file_like(fd: c_int) -> AxResult {
-    let removed = FD_TABLE.write().remove(fd as usize);
+    let removed = current_fd_table().write().remove(fd as usize);
     if let Some(f) = removed {
         debug!("close_file_like <= count: {}", Arc::strong_count(&f.inner));
         release_locks_on_close(f);
@@ -374,6 +418,12 @@ fn notify_close_write(fd: &FileDescriptor) {
 /// `Weak` still alive, and sleep forever.
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
+    // Linux `filp_flush` runs `f_op->flush` on every fd-closing path (explicit
+    // close, close_range, dup2/dup3 replacement, exec CLOEXEC, process exit),
+    // all of which funnel through here. This is where an mq descriptor drops a
+    // matching `mq_notify` registration (`mqueue_flush_file`).
+    fd.inner
+        .on_close(current().as_thread().proc_data.proc.pid());
     notify_close_write(&fd);
     if let Some(k) = key {
         let pid = current().as_thread().proc_data.proc.pid();
@@ -403,12 +453,14 @@ pub fn close_all_fds() {
     //   until we release, so strong_count cannot change during our check.
     // - If clone holds the read lock first, we block on write lock, and by the
     //   time we proceed strong_count already reflects the clone.
-    let mut table = FD_TABLE.write();
+    let fd_table = current_fd_table();
+    let mut table = fd_table.write();
 
     // CLONE_FILES may share the same fd table across multiple tasks/processes.
     // In that case, an exiting sharer must not clear the whole table, or other
     // live sharers (including the parent) will lose stdout/stderr unexpectedly.
-    if Arc::strong_count(&FD_TABLE) > 1 {
+    // One reference belongs to the scope slot and one is this owned snapshot.
+    if Arc::strong_count(&fd_table) > 2 {
         return;
     }
 
@@ -429,7 +481,8 @@ pub fn close_all_fds() {
 
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
     assert_eq!(fd_table.count(), 0);
-    let cx = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let cx = fs_context.lock();
     let open = |options: &mut OpenOptions, flags| {
         AxResult::Ok(Arc::new(File::new(
             options.open(&cx, "/dev/console")?.into_file()?,

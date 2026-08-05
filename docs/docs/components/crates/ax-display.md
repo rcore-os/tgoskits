@@ -49,10 +49,8 @@ graph LR
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-alloc`
-- `ax-allocator`
 - `axbacktrace`
 - `ax-cpu`
-- `ax-dma`
 - `rdif-display`
 - 另外还有 `41` 个同类项未在此展开
 

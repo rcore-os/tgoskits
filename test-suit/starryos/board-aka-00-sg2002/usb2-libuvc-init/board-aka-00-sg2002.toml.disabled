@@ -1,0 +1,19 @@
+# Disabled until StarryOS provides a network device on AKA-00-SG2002.
+# Rename to board-aka-00-sg2002.toml after session HTTP is reachable on-board.
+board_type = "AKA-00-SG2002"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+shell_prefix = "root@starry:"
+shell_init_cmd = "rm -f /tmp/sg2002-libuvc-init; wget -O /tmp/sg2002-libuvc-init '${sessionFile:bin/sg2002-libuvc-init}' && chmod +x /tmp/sg2002-libuvc-init && /tmp/sg2002-libuvc-init || echo STARRY_SG2002_LIBUVC_INIT_FAILED: session_setup_or_execution"
+success_regex = ["(?m)^STARRY_SG2002_LIBUVC_INIT_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "failed to determine root device",
+  "(?i)(wget|chmod): .*not found",
+  "(?m)^STARRY_SG2002_LIBUVC_INIT_FAILED:.*$",
+]
+timeout = 600

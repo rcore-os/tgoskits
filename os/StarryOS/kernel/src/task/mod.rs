@@ -4,11 +4,15 @@ mod cred;
 pub mod futex;
 mod ops;
 pub mod posix_timer;
+mod process_identity;
 mod resources;
 mod seccomp;
 mod signal;
+mod signal_publication;
 mod stat;
 mod timer;
+#[cfg(target_arch = "loongarch64")]
+mod unaligned;
 mod user;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
@@ -36,9 +40,18 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
+pub(crate) use self::process_identity::*;
 pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
     stat::*, timer::*, user::*,
+};
+#[cfg(axtest)]
+pub(crate) use self::{
+    ops::decode_wait_status_rules_hold_for_test,
+    posix_timer::posix_timer_clock_validation_rules_hold_for_test,
+    seccomp::seccomp_action_and_precedence_rules_hold_for_test,
+    seccomp::seccomp_bpf_constants_hold_for_test,
+    timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -146,6 +159,9 @@ pub struct Thread {
     /// Ready to exit
     pub exit: Arc<AtomicBool>,
 
+    /// Claims the one thread-exit cleanup transaction.
+    exit_started: AtomicBool,
+
     /// Woken when a signal arrives at this thread, so signalfd/epoll pollers
     /// can observe newly-pending signals even when the signal is blocked.
     pub signalfd_waker: PollSet,
@@ -240,6 +256,7 @@ impl Thread {
             robust_list_head: AtomicUsize::new(0),
             time: AssumeSync(RefCell::new(TimeManager::new())),
             exit: Arc::new(AtomicBool::new(false)),
+            exit_started: AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
             block_next_signal_check: NextSignalCheckBlock::new(),
@@ -334,6 +351,16 @@ impl Thread {
     /// Check if the thread is ready to exit.
     pub fn pending_exit(&self) -> bool {
         self.exit.load(Ordering::Acquire)
+    }
+
+    /// Claims this thread's exit transaction.
+    ///
+    /// Returns `true` exactly once. The completion flag used by pidfd polling
+    /// remains false until cleanup and process-state publication finish.
+    pub fn begin_exit(&self) -> bool {
+        self.exit_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Set the thread to exit.
@@ -684,6 +711,8 @@ impl ProcessImage {
 pub struct ProcessData {
     /// The process.
     pub proc: Arc<Process>,
+    /// Stable generation identity shared by the registry and pidfds.
+    identity: Arc<ProcessIdentity>,
     /// The executable path
     pub exe_path: RwLock<String>,
     /// The command line arguments
@@ -706,6 +735,8 @@ pub struct ProcessData {
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
+    /// Authoritative cgroup membership shared by every thread in the process.
+    pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
     /// The user heap top
     heap_top: AtomicUsize,
 
@@ -897,72 +928,78 @@ impl ProcessData {
         wait_parent_tid: Pid,
         vm_aspace_shared: bool,
     ) -> Arc<Self> {
-        let this = Arc::new(Self {
-            proc,
-            exe_path: RwLock::new(image.exe_path),
-            cmdline: RwLock::new(image.cmdline),
-            envp: RwLock::new(image.envp),
-            auxv: RwLock::new(image.auxv),
-            root_path: RwLock::new(image.root_path),
-            cwd_path: RwLock::new(image.cwd_path),
-            aspace: SpinNoIrq::new(aspace),
-            uprobe_manager: crate::kprobe::KprobeManager::new(),
-            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
-            heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
+        let this = Arc::new_cyclic(|weak| {
+            let exit_event: Arc<PollSet> = Arc::default();
+            let identity = ProcessIdentity::new(proc.clone(), exit_event.clone(), weak.clone());
+            Self {
+                proc,
+                identity,
+                exe_path: RwLock::new(image.exe_path),
+                cmdline: RwLock::new(image.cmdline),
+                envp: RwLock::new(image.envp),
+                auxv: RwLock::new(image.auxv),
+                root_path: RwLock::new(image.root_path),
+                cwd_path: RwLock::new(image.cwd_path),
+                aspace: SpinNoIrq::new(aspace),
+                uprobe_manager: crate::kprobe::KprobeManager::new(),
+                uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
+                heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
-            rlim: RwLock::default(),
+                rlim: RwLock::default(),
 
-            child_exit_event: Arc::default(),
-            exit_event: Arc::default(),
-            thread_exit_event: Arc::default(),
-            exec_lock: Mutex::new(()),
-            exit_signal,
-            wait_parent_tid,
+                child_exit_event: Arc::default(),
+                exit_event,
+                thread_exit_event: Arc::default(),
+                exec_lock: Mutex::new(()),
+                exit_signal,
+                wait_parent_tid,
 
-            signal: Arc::new(ProcessSignalManager::new(
-                signal_actions,
-                crate::config::SIGNAL_TRAMPOLINE,
-            )),
+                signal: Arc::new(ProcessSignalManager::new(
+                    signal_actions,
+                    crate::config::SIGNAL_TRAMPOLINE,
+                )),
 
-            futex_table: Arc::new(FutexTable::new()),
+                futex_table: Arc::new(FutexTable::new()),
 
-            nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
+                nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
+                cgroup: RwLock::new(crate::cgroup::root()),
 
-            vfork_done: SpinNoIrq::new(None),
+                vfork_done: SpinNoIrq::new(None),
 
-            umask: AtomicU32::new(0o022),
-            nice: AtomicI32::new(0),
-            membarrier_state: AtomicU32::new(0),
-            dumpable: AtomicI32::new(1),
-            thp_disable: AtomicU32::new(0),
+                umask: AtomicU32::new(0o022),
+                nice: AtomicI32::new(0),
+                membarrier_state: AtomicU32::new(0),
+                dumpable: AtomicI32::new(1),
+                thp_disable: AtomicU32::new(0),
 
-            children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+                children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
-            ptrace_tracer_pid: AtomicU32::new(0),
-            ptrace_traceme: AtomicBool::new(false),
-            ptrace_stop: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_stop_tid: AtomicU32::new(0),
-            ptrace_stop_event: Arc::default(),
-            ptrace_resume_signo: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_exec_stop_pending: AtomicBool::new(false),
-            ptrace_attached: AtomicBool::new(false),
-            ptrace_singlestep_tid: AtomicU32::new(0),
-            ptrace_syscall_trace: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_options: AtomicUsize::new(0),
-            ptrace_pending_event: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_ss_saved_insn: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_stop_fp_data: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_tracer_pid: AtomicU32::new(0),
+                ptrace_traceme: AtomicBool::new(false),
+                ptrace_stop: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_stop_tid: AtomicU32::new(0),
+                ptrace_stop_event: Arc::default(),
+                ptrace_resume_signo: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_exec_stop_pending: AtomicBool::new(false),
+                ptrace_attached: AtomicBool::new(false),
+                ptrace_singlestep_tid: AtomicU32::new(0),
+                ptrace_syscall_trace: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_options: AtomicUsize::new(0),
+                ptrace_pending_event: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_ss_saved_insn: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_stop_fp_data: SpinNoIrq::new(BTreeMap::new()),
 
-            personality: AtomicUsize::new(0),
+                personality: AtomicUsize::new(0),
 
-            posix_timers: Arc::new(PosixTimerTable::default()),
+                posix_timers: Arc::new(PosixTimerTable::default()),
 
-            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
-            aspace_slot_released: AtomicBool::new(false),
+                vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
+                aspace_slot_released: AtomicBool::new(false),
 
-            job_control: SpinNoIrq::new(JobControl::default()),
-            cont_event: Arc::default(),
+                job_control: SpinNoIrq::new(JobControl::default()),
+                cont_event: Arc::default(),
+            }
         });
         // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
         // from `lock()` lives until the end of the statement, so calling
@@ -971,6 +1008,11 @@ impl ProcessData {
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
         this
+    }
+
+    /// Returns this process generation's stable PID identity.
+    pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
+        self.identity.clone()
     }
 
     /// Whether this process shares its VM address space (`CLONE_VM`).

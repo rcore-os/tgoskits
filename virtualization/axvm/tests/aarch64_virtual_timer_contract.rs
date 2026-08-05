@@ -12,378 +12,325 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[test]
-fn aarch64_timer_route_comes_from_host_and_guest_device_trees() {
-    let fdt = include_str!("../src/arch/aarch64/fdt.rs");
-    assert!(
-        fdt.contains("arm,armv8-timer")
-            && fdt.contains("ARCH_TIMER_VIRTUAL_IRQ_INDEX")
-            && fdt.contains("set_aarch64_virtual_timer_irq"),
-        "AArch64 must derive the guest virtual-timer PPI from the selected guest FDT"
-    );
-    let capabilities = include_str!("../src/arch/aarch64/capabilities.rs");
-    assert!(
-        capabilities
-            .contains("super::fdt::handle_fdt_operations(vm_config, vm_create_config, provider)"),
-        "the active AArch64 GuestBootPlatform path must retain the derived timer route"
-    );
-
-    let gic = include_str!("../src/arch/aarch64/gic.rs");
-    assert!(
-        gic.contains("try_get_host_fdt")
-            && gic.contains("aarch64_virtual_timer_irq_from_fdt")
-            && gic.contains("HOST_VIRTUAL_TIMER_IRQ"),
-        "AArch64 must derive the physical CNTV PPI from the host FDT"
-    );
+fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    source
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing contract start `{start}`"))
+        .1
+        .split_once(end)
+        .unwrap_or_else(|| panic!("missing contract end `{end}`"))
+        .0
 }
 
 #[test]
-fn aarch64_timer_forwarding_uses_a_hardware_list_register() {
-    let adapter = include_str!("../src/arch/aarch64/mod.rs");
-    assert!(
-        adapter.contains("fn register_platform_irq_injector")
-            && adapter.contains("register_guest_virtual_timer_irq_injector"),
-        "the AArch64 runtime must install its timer injector during platform setup"
-    );
-    let first_run = adapter
-        .split_once("fn before_first_run")
-        .expect("AArch64 must prepare the interrupt interface before guest entry")
-        .1
-        .split_once("fn handle_vcpu_exit_bound")
-        .expect("AArch64 first-run preparation must precede exit handling")
-        .0;
-    assert!(
-        first_run.contains("VMInterruptMode::Emulated")
-            && first_run.contains("prepare_emulated_guest_cpu_interface"),
-        "the virtual CPU interface must be enabled before an emulated-IRQ guest initializes ICC \
-         state"
-    );
-
-    let gic = include_str!("../src/arch/aarch64/gic.rs");
-    let forwarding = gic
-        .split_once("fn forward_current_guest_timer_irq")
-        .expect("AArch64 must expose a current-vCPU timer forwarding callback")
-        .1;
-    assert!(forwarding.contains("VMInterruptMode::Emulated"));
-    assert!(forwarding.contains("aarch64_virtual_timer_irq"));
-    assert!(forwarding.contains("inject_hardware_interrupt"));
-    assert!(
-        gic.contains("ICH_LR_EL2::HW::SET") && gic.contains("ICH_LR_EL2::PINTID"),
-        "the virtual timer must retain its physical PPI ownership in a hardware LR"
-    );
-}
-
-#[test]
-fn fresh_emulated_vcpu_clears_stale_virtual_interrupt_state_before_enable() {
-    let gic = include_str!("../src/arch/aarch64/gic.rs");
-    let prepare = gic
-        .split_once("pub(crate) fn prepare_emulated_guest_cpu_interface()")
-        .expect("AArch64 must prepare the virtual CPU interface before guest entry")
-        .1
-        .split_once("fn inject_interrupt_gic_v2")
-        .expect("virtual-interface preparation must precede interrupt injection")
-        .0;
-    assert!(
-        prepare.contains("reset_gic_v2_virtual_interface")
-            && prepare.contains("reset_gic_v3_virtual_interface"),
-        "a fresh vCPU must reset the pCPU-local virtual interface instead of reusing the previous \
-         VM incarnation's state"
-    );
-
-    let gic_v2_reset = gic
-        .split_once("fn reset_gic_v2_virtual_interface")
-        .expect("GICv2 must expose a current-pCPU virtual-interface reset")
-        .1
-        .split_once("fn reset_gic_v3_virtual_interface")
-        .expect("GICv3 reset must follow the GICv2 reset")
-        .0;
-    assert!(
-        gic_v2_reset.contains("reset_current_cpu") && gic_v2_reset.contains("gich.enable()"),
-        "GICv2 must clear HCR, active priorities, and list registers before enabling the new vCPU"
-    );
-
-    let gic_v3_reset = gic
-        .split_once("fn reset_gic_v3_virtual_interface")
-        .expect("GICv3 must expose a current-pCPU virtual-interface reset")
-        .1
-        .split_once("fn inject_interrupt_gic_v2")
-        .expect("GICv3 reset must remain bounded before interrupt injection")
-        .0;
-    for required in [
-        "ICH_HCR_EL2.set(0)",
-        "ich_lr_el2_write",
-        "ICH_LR_EL2::STATE::Invalid",
-        "ICH_VMCR_EL2.set(0)",
-        "clear_gic_v3_active_priorities",
-        "enable_gic_v3_virtual_interface()",
-        "isb",
+fn aarch64_timer_route_comes_from_the_host_fdt_and_reaches_each_vcpu() {
+    let timer = include_str!("../src/boot/fdt/core/timer.rs");
+    assert!(timer.contains("const TIMER_COMPATIBLE: &str = \"arm,armv8-timer\""));
+    let profile = between(timer, "Ok(Some(GuestTimerProfile {", "}))");
+    for field in [
+        "nonsecure_physical_intid: intids[1]",
+        "virtual_intid: intids[2]",
+        "clock_frequency_hz",
     ] {
         assert!(
-            gic_v3_reset.contains(required),
-            "GICv3 fresh-vCPU reset is missing `{required}`"
+            profile.contains(field),
+            "host timer profile is missing `{field}`"
         );
     }
 
-    let active_priorities = gic
-        .split_once("fn clear_gic_v3_active_priorities")
-        .expect("GICv3 must clear pCPU-local active priorities")
-        .1
-        .split_once("fn reset_gic_v3_virtual_interface")
-        .expect("active-priority cleanup must precede the complete GICv3 reset")
-        .0;
-    for required in [
-        "ICH_VTR_EL2::PREBITS",
-        "ICH_AP0R0_EL2.set(0)",
-        "ICH_AP1R0_EL2.set(0)",
-        "preemption_bits >= 6",
-        "ICH_AP0R1_EL2.set(0)",
-        "ICH_AP1R1_EL2.set(0)",
-        "preemption_bits >= 7",
-        "ICH_AP0R2_EL2.set(0)",
-        "ICH_AP0R3_EL2.set(0)",
-        "ICH_AP1R2_EL2.set(0)",
-        "ICH_AP1R3_EL2.set(0)",
+    let core = include_str!("../src/boot/fdt/core/mod.rs");
+    let parse = core
+        .find("timer::host_timer_profile(&host_fdt)")
+        .expect("machine discovery must parse the host timer profile");
+    let replace = core
+        .find("vm_config.replace_machine_timer(timer)")
+        .expect("machine discovery must retain the parsed timer profile");
+    assert!(parse < replace);
+
+    let vgic = include_str!("../src/arch/aarch64/vgic.rs");
+    let attach = between(
+        vgic,
+        "pub(crate) fn attach_vcpu(",
+        "/// Claims host sources",
+    );
+    for route in [
+        "timer_profile.virtual_intid",
+        "timer_profile.nonsecure_physical_intid",
+        "TriggerMode::Level",
+        "host_virtual_timer_intid: timer_profile.virtual_intid",
     ] {
         assert!(
-            active_priorities.contains(required),
-            "GICv3 active-priority reset is missing `{required}`"
+            attach.contains(route),
+            "vCPU timer route is missing `{route}`"
+        );
+    }
+}
+
+#[test]
+fn aarch64_timer_forwarding_uses_vm_local_vgic_state() {
+    let vgic = include_str!("../src/arch/aarch64/vgic.rs");
+    let activation = between(
+        vgic,
+        "pub(crate) fn activate(&self)",
+        "pub(crate) fn deactivate",
+    );
+    assert!(activation.contains("vtimer::ensure_host_timer_ppi"));
+
+    let adapter = include_str!("../src/arch/aarch64/mod.rs");
+    let deferred = between(
+        adapter,
+        "fn finish_deferred_run_work(",
+        "fn wait_for_vcpu_event(",
+    );
+    assert!(deferred.contains("accept_host_timer_irq(token)"));
+
+    let state = include_str!("../src/arch/aarch64/vtimer/state.rs");
+    let accept = between(
+        state,
+        "fn accept_host_irq(&self",
+        "/// Publishes the current timer",
+    );
+    assert!(accept.contains("host_activation.lock()"));
+    assert!(accept.contains("owner_cpu: default_host().this_cpu_id()"));
+    let publish = between(
+        state,
+        "fn publish_levels(",
+        "pub(in crate::arch::aarch64) fn retire_host_activation",
+    );
+    assert!(publish.contains("controller.set_ppi_level"));
+
+    let run = between(adapter, "fn run(&mut self)", "fn bind(&mut self)");
+    let load = run.find("binding.load()").unwrap();
+    let guest = run.find("self.inner.run(&host_irq_guard)").unwrap();
+    let synchronize = run.find("self.synchronize_timer()").unwrap();
+    let save = run.find("binding.save()").unwrap();
+    assert!(load < guest && guest < synchronize && synchronize < save);
+}
+
+#[test]
+fn fresh_emulated_vcpu_owns_a_fresh_saved_cpu_interface() {
+    let redistributor = include_str!("../../arm_vgic/src/redistributor/mod.rs");
+    assert!(
+        redistributor.contains("cpu_interface: CpuInterfaceState::new(list_register_count)"),
+        "each vCPU redistributor must begin with fresh saved ICH state"
+    );
+
+    let binding = include_str!("../../arm_vgic/src/controller/binding.rs");
+    let load = between(binding, "pub fn load(&self)", "/// Saves ICH state");
+    assert!(load.contains("refill_cpu_interface(self.vcpu)"));
+    assert!(load.contains("load_cpu_interface(self.vcpu, &state)"));
+    let save = between(binding, "pub fn save(&self)", "/// Harvests completed LRs");
+    assert!(save.contains("save_cpu_interface(self.vcpu, &mut saved)"));
+    assert!(save.contains("merge_saved_state(saved, false)"));
+
+    let adapter = include_str!("../src/arch/aarch64/mod.rs");
+    let create = between(
+        adapter,
+        "fn new(vm_id: VMId, vcpu_id: VCpuId",
+        "fn set_entry(&mut self",
+    );
+    for fresh in ["vgic: None", "vgic_binding: None", "timer_binding: None"] {
+        assert!(
+            create.contains(fresh),
+            "new vCPU state is missing `{fresh}`"
         );
     }
 }
 
 #[test]
 fn forwarded_timer_defers_physical_deactivation_until_guest_eoi() {
-    let platform_irq = include_str!("../../../platforms/axplat-dyn/src/irq.rs");
+    let cpu_interface = include_str!("../src/arch/aarch64/gic/cpu_interface.rs");
+    let acknowledge = between(
+        cpu_interface,
+        "fn finish_pending_host_irq_with(",
+        "pub(super) fn deactivate_host_irq(",
+    );
+    assert!(acknowledge.contains("trap.eoi(ack)"));
+    assert!(acknowledge.contains("arm_gic_driver::v3::eoi1(ack)"));
     assert!(
-        platform_irq.contains("inject_aarch64_hardware_irq")
-            && platform_irq.contains("defer_deactivation_for_hardware_vint"),
-        "the platform IRQ path must transfer an injected physical interrupt to the vCPU interface"
+        !acknowledge.contains("dir("),
+        "host acknowledgement must priority-drop without early deactivation"
     );
 
-    let gic_v3 = include_str!("../../../platforms/somehal/src/arch/aarch64/gic/v3.rs");
-    let drop_impl = gic_v3
-        .split_once("impl Drop for ActiveIrq")
-        .expect("GICv3 ActiveIrq must own completion")
-        .1
-        .split_once("pub fn begin_irq")
-        .expect("GICv3 begin_irq must follow ActiveIrq completion")
-        .0;
-    assert!(
-        drop_impl.contains("deactivate_on_drop") && drop_impl.contains("dir(self.ack)"),
-        "normal IRQs must deactivate on drop while hardware virtual IRQs retain active ownership"
+    let state = include_str!("../src/arch/aarch64/vtimer/state.rs");
+    let accept = between(
+        state,
+        "fn accept_host_irq(&self",
+        "/// Publishes the current timer",
     );
+    assert!(accept.contains("*active = Some(activation)"));
+    let retire = between(
+        state,
+        "fn retire_host_activation(&self)",
+        "fn complete_host_activation(&self",
+    );
+    assert!(retire.contains("complete_host_activation(activation)"));
+
+    let backend = include_str!("../src/arch/aarch64/gic.rs");
+    let retirement = between(
+        backend,
+        "fn retire_emulated_interrupt(",
+        "fn bind_physical_interrupt(",
+    );
+    assert!(retirement.contains("binding.retire_host_activation()"));
+
+    let vgic_binding = include_str!("../../arm_vgic/src/controller/binding.rs");
+    let retirements = vgic_binding
+        .split_once("fn apply_retirements(")
+        .expect("VGIC binding must apply saved-interface retirements")
+        .1;
+    assert!(retirements.contains("retire_emulated_interrupt(self.vcpu, intid)"));
 }
 
 #[test]
 fn current_vcpu_irq_injection_does_not_reenter_the_rdrive_gic_lock() {
-    let gic = include_str!("../src/arch/aarch64/gic.rs");
-    let software_injection = gic
-        .split_once("pub(crate) fn inject_interrupt(irq: usize)")
-        .expect("AArch64 must expose software virtual interrupt injection")
-        .1
-        .split_once("pub(crate) fn register_guest_virtual_timer_irq_injector")
-        .expect("timer injector registration must follow software injection")
-        .0;
-    assert!(
-        !software_injection.contains("with_gic("),
-        "software LR injection runs with a current vCPU and must not hold the rdrive GIC lock; \
-         the local timer IRQ can preempt it and recursively inject a hardware LR"
+    let adapter = include_str!("../src/arch/aarch64/mod.rs");
+    let injection = between(
+        adapter,
+        "fn inject_interrupt_with_trigger(",
+        "fn set_return_value(&mut self",
     );
+    assert!(injection.contains("vgic.inject(binding.vcpu().raw(), vector, trigger)"));
+    assert!(!injection.contains("try_with_gic"));
 
-    let hardware_injection = gic
-        .split_once("fn inject_hardware_interrupt")
-        .expect("AArch64 must expose hardware-backed interrupt injection")
-        .1
-        .split_once("fn inject_interrupt_gic_v3")
-        .expect("GICv3 software injection must follow hardware injection")
-        .0;
-    assert!(
-        !hardware_injection.contains("with_gic("),
-        "hard-IRQ timer forwarding must use pre-published IRQ-side state instead of locking an \
-         rdrive device"
+    let state = include_str!("../src/arch/aarch64/vtimer/state.rs");
+    let forwarding = between(
+        state,
+        "fn accept_host_irq(&self",
+        "/// Publishes the current timer",
     );
+    assert!(!forwarding.contains("try_with_gic"));
+    assert!(!forwarding.contains("rdrive"));
+
+    let backend = include_str!("../src/arch/aarch64/gic.rs");
+    assert!(backend.contains("vCPU load/save and IRQ acknowledge/deactivate use the"));
+    assert!(backend.contains("cached CPU-interface capability"));
 }
 
 #[test]
-fn current_vcpu_covers_deferred_hardware_irq_completion() {
+fn deferred_host_irq_completion_stays_on_the_acknowledging_pcpu() {
+    let runtime = include_str!("../src/runtime/vcpus.rs");
+    let run_transaction = between(
+        runtime,
+        "let run_result = {",
+        "#[cfg(feature = \"rt-trace\")]",
+    );
+    let pin = run_transaction
+        .find("NoPreempt::new()")
+        .expect("vCPU transaction must pin its pCPU");
+    let run = run_transaction
+        .find("CurrentArch::run_vcpu(&vm, &vcpu)")
+        .expect("runtime must execute the architecture transaction");
+    assert!(pin < run);
+
     let operations = include_str!("../src/architecture/ops.rs");
-    let run_vcpu = operations
-        .split_once("fn run_vcpu(")
-        .expect("the architecture contract must own the vCPU run loop")
-        .1
-        .split_once("fn run_bound_vcpu(")
-        .expect("the current-vCPU scope must have an explicit bound-run helper")
-        .0;
-    assert!(
-        run_vcpu.contains("vcpu.with_current_cpu_set(||")
-            && run_vcpu.contains("Self::run_bound_vcpu(vm, vcpu)"),
-        "the current vCPU must stay installed for the complete bound run"
-    );
-
-    let bound_run = operations
-        .split_once("fn run_bound_vcpu(")
-        .expect("the current-vCPU scope must have an explicit bound-run helper")
-        .1;
-    assert!(
-        bound_run.contains("Self::finish_deferred_run_work(vm, vcpu, work)"),
-        "deferred host IRQ handling must run before the current vCPU is cleared"
-    );
+    let run_vcpu = between(operations, "fn run_vcpu(", "}\n}");
+    assert!(run_vcpu.contains("vcpu.with_current_cpu_set(||"));
+    let unbind = run_vcpu
+        .rfind("let unbind_result = vcpu.unbind()")
+        .expect("bound vCPU must be unpublished before deferred work");
+    let deferred = run_vcpu
+        .rfind("Self::finish_deferred_run_work(vm, vcpu, work)")
+        .expect("deferred IRQ token must be completed");
+    assert!(unbind < deferred);
 }
 
 #[test]
-fn every_vm_exit_quiesces_saved_guest_timers_before_host_scheduling() {
-    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
-    let run = arm_vcpu
-        .split_once("pub fn run(&mut self)")
-        .expect("arm_vcpu must expose the guest run boundary")
-        .1
-        .split_once("pub fn bind(&mut self)")
-        .expect("the guest run boundary must remain bounded")
-        .0;
-    let handle_exit = run
-        .find("self.vmexit_handler(trap_kind)")
-        .expect("the VM-exit path must acknowledge and route physical IRQs");
-    let quiesce = run
-        .find("disable_local_guest_timers()")
-        .expect("the VM-exit path must quiesce guest timer sources");
-    let restore_host_daif = run
-        .find("msr daif, {saved_daif}")
-        .expect("the VM-exit path must restore host interrupt state");
-    assert!(
-        handle_exit < quiesce && quiesce < restore_host_daif,
-        "the timer source must be disabled after IRQ routing and before host scheduling resumes"
-    );
+fn every_vm_exit_quiesces_guest_timer_hardware_before_host_scheduling() {
+    let adapter = include_str!("../src/arch/aarch64/mod.rs");
+    let run = between(adapter, "fn run(&mut self)", "fn bind(&mut self)");
+    let mask = run.find("ArmHostIrqGuard::mask()").unwrap();
+    let load = run.find("binding.load()").unwrap();
+    let guest = run.find("self.inner.run(&host_irq_guard)").unwrap();
+    let synchronize = run.find("self.synchronize_timer()").unwrap();
+    let save = run.find("binding.save()").unwrap();
+    let unmask = run.find("drop(host_irq_guard)").unwrap();
+    assert!(mask < load && load < guest && guest < synchronize);
+    assert!(synchronize < save && save < unmask);
 
-    let vmexit_handler = arm_vcpu
-        .split_once("fn vmexit_handler")
-        .expect("arm_vcpu must save architecture state on every VM exit")
-        .1
-        .split_once("fn builtin_sysreg_access_handler")
-        .expect("the VM-exit handler must remain bounded")
-        .0;
-    assert!(vmexit_handler.contains("self.guest_system_regs.store()"));
-
-    let context = include_str!("../../arm_vcpu/src/context_frame.rs");
-    let restore = context
-        .split_once("pub unsafe fn restore(&self)")
-        .expect("arm_vcpu must restore saved guest system registers")
-        .1;
-    assert!(
-        restore.contains("msr CNTV_CVAL_EL0")
-            && restore.contains("msr CNTV_CTL_EL0")
-            && restore.contains("timer.cntv_ctl_el0"),
-        "the next guest entry must restore the saved virtual-timer deadline and control state"
+    let assembly = include_str!("../../arm_vcpu/src/architecture/exception.S");
+    let exit = between(
+        assembly,
+        ".macro SAVE_VCPU_RUNTIME_FROM_EL1",
+        ".macro SAVE_VCPU_REGS_FROM_EL1",
     );
+    let capture = exit.find("mrs     x9, cntv_ctl_el0").unwrap();
+    let stop = exit.find("msr     cntv_ctl_el0, xzr").unwrap();
+    let restore_counter = exit.find("msr     cntvoff_el2, xzr").unwrap();
+    let publish_unloaded = exit.find("timer_loaded_offset").unwrap();
+    assert!(capture < stop && stop < restore_counter && restore_counter < publish_unloaded);
+    assert!(exit.contains("msr     cnthctl_el2, x9"));
+    assert!(exit.contains("msr     cntkctl_el1, x9"));
+    assert!(exit.matches("isb").count() >= 2);
 }
 
 #[test]
-fn stale_timer_ppi_is_counted_and_quiesced_without_hot_path_output() {
-    let gic = include_str!("../src/arch/aarch64/gic.rs");
-    let no_current_vcpu = gic
-        .split_once("let Some(vcpu) = get_current_vcpu")
-        .expect("timer forwarding must identify the current vCPU")
-        .1
-        .split_once("let Some(vm) = crate::get_vm_by_id")
-        .expect("current-vCPU validation must precede VM lookup")
-        .0;
-    assert!(
-        no_current_vcpu.contains("record_unowned_virtual_timer_irq")
-            && no_current_vcpu.contains("disable_local_guest_timers"),
-        "a stale guest timer PPI must be counted and its per-CPU source quiesced"
+fn stale_timer_ppi_is_counted_without_hot_path_output() {
+    let host_ppi = include_str!("../src/arch/aarch64/vtimer/host_ppi.rs");
+    assert!(host_ppi.contains("static HOST_TIMER_PPI: Once<HostTimerPpiClaim>"));
+    let fallback = between(
+        host_ppi,
+        "fn host_timer_ppi_fallback(",
+        "fn host_irq_error(",
     );
-    assert!(
-        !no_current_vcpu.contains("warn!") && !no_current_vcpu.contains("println!"),
-        "the stale-timer hard-IRQ path must not synchronously print"
-    );
-
-    let platform_irq = include_str!("../../../platforms/axplat-dyn/src/irq.rs");
-    assert!(
-        platform_irq.contains("should_log_unhandled_irq")
-            && platform_irq.contains("unhandled_count"),
-        "unexpected IRQ diagnostics must be bounded instead of printing once per interrupt"
-    );
+    assert!(fallback.contains("record_unowned_virtual_timer_irq()"));
+    assert!(fallback.contains("irq::IrqReturn::Handled"));
+    for forbidden in ["warn!", "println!", "format!", "Vec"] {
+        assert!(
+            !fallback.contains(forbidden),
+            "stale timer PPI fallback contains hot-path operation `{forbidden}`"
+        );
+    }
 }
 
 #[test]
-fn permanently_stopped_vcpu_disables_local_guest_timers_before_unbind() {
-    let operations = include_str!("../src/architecture/ops.rs");
-    let bound_run = operations
-        .split_once("fn run_bound_vcpu(")
-        .expect("the architecture contract must own the bound vCPU run loop")
-        .1;
-    let stop = bound_run
-        .find("Self::before_vcpu_stop(vm, vcpu)")
-        .expect("permanent vCPU stop must run architecture-local cleanup");
-    let unbind = bound_run
-        .find("vcpu.unbind()")
-        .expect("the bound run loop must unbind the vCPU");
-    assert!(
-        stop < unbind,
-        "guest-owned per-CPU hardware must be quiesced before the vCPU is unbound"
-    );
+fn permanently_stopped_vcpu_retires_timer_lines_and_host_activation() {
+    let state = include_str!("../src/arch/aarch64/vtimer/state.rs");
+    let reset = between(state, "fn reset(&self)", "fn publish_levels(");
+    assert!(reset.contains("set_ppi_level(self.vcpu, self.virtual_ppi, false)"));
+    assert!(reset.contains("set_ppi_level(self.vcpu, self.physical_ppi, false)"));
+    assert!(reset.contains("self.retire_host_activation()"));
+
+    let drop_binding = between(state, "impl Drop for Aarch64TimerBinding", "/// # Safety");
+    assert!(drop_binding.contains("unregister_timer_ppi"));
+    assert!(drop_binding.contains("self.invalidate_wait()"));
+    assert!(drop_binding.contains("self.complete_host_activation(activation)"));
 
     let adapter = include_str!("../src/arch/aarch64/mod.rs");
-    let stop_hook = adapter
-        .split_once("fn before_vcpu_stop")
-        .expect("AArch64 must implement permanent-stop cleanup")
-        .1
-        .split_once("fn handle_vcpu_exit_bound")
-        .expect("AArch64 stop cleanup must precede exit handling")
-        .0;
-    assert!(
-        stop_hook.contains("arm_vcpu::disable_local_guest_timers()"),
-        "AArch64 must remove the stopped guest's timer interrupt sources from the physical CPU"
+    let drop_vcpu = between(
+        adapter,
+        "impl Drop for AxvmArmVcpu",
+        "pub(crate) struct AxvmArmPerCpu",
     );
-
-    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
-    let disable = arm_vcpu
-        .split_once("pub fn disable_local_guest_timers()")
-        .expect("arm_vcpu must expose local guest timer cleanup")
-        .1;
-    assert!(
-        disable.contains("msr CNTP_CTL_EL0, xzr")
-            && disable.contains("msr CNTV_CTL_EL0, xzr")
-            && disable.contains("isb"),
-        "timer cleanup must disable both guest timer sources before returning to host scheduling"
-    );
-    let arm_vcpu_root = include_str!("../../arm_vcpu/src/lib.rs");
-    assert!(
-        arm_vcpu_root.contains("disable_local_guest_timers"),
-        "arm_vcpu must export timer cleanup to its AxVM adapter"
-    );
+    assert!(drop_vcpu.contains("binding.reset()"));
 }
 
 #[test]
-fn every_stopping_vcpu_task_quiesces_its_local_guest_timers() {
+fn every_stopping_vcpu_task_quiesces_local_state_before_exit_accounting() {
     let runtime = include_str!("../src/runtime/vcpus.rs");
-    let stopping = runtime
-        .split_once("if vm.stopping()")
-        .expect("the vCPU runtime must handle VM-wide stop publication")
-        .1
-        .split_once("break;")
-        .expect("the stopping branch must terminate the vCPU task")
-        .0;
+    let stopping = between(runtime, "if vm.stopping()", "break;");
     let quiesce = stopping
         .find("CurrentArch::before_vcpu_task_exit(&vm, &vcpu)")
         .expect("every stopping vCPU task must run architecture-local cleanup");
     let mark_exiting = stopping
         .find("runtime.mark_vcpu_exiting()")
-        .expect("the runtime must account for every exiting vCPU");
-    assert!(
-        quiesce < mark_exiting,
-        "local guest hardware must be quiesced before the vCPU is reported as exited"
-    );
+        .expect("runtime must account for every exiting vCPU");
+    assert!(quiesce < mark_exiting);
 
     let adapter = include_str!("../src/arch/aarch64/mod.rs");
-    let task_exit_hook = adapter
-        .split_once("fn before_vcpu_task_exit")
-        .expect("AArch64 must clean up every stopping vCPU task")
-        .1
-        .split_once("fn handle_vcpu_exit_bound")
-        .expect("AArch64 task-exit cleanup must precede exit handling")
-        .0;
-    assert!(
-        task_exit_hook.contains("arm_vcpu::disable_local_guest_timers()"),
-        "secondary vCPUs stopped by another vCPU must disable their local timer sources"
+    let task_exit = between(
+        adapter,
+        "fn before_vcpu_task_exit(",
+        "fn handle_vcpu_exit_bound(",
     );
+    assert!(task_exit.contains("vm.quiesce_local_reset_memory_cache()"));
+
+    let world_switch = include_str!("../../arm_vcpu/src/architecture/exception.S");
+    let exit = between(
+        world_switch,
+        ".macro SAVE_VCPU_RUNTIME_FROM_EL1",
+        ".macro SAVE_VCPU_REGS_FROM_EL1",
+    );
+    assert!(exit.contains("msr     cntv_ctl_el0, xzr"));
+    assert!(exit.contains("strb    wzr, [sp, {timer_loaded_offset}]"));
 }

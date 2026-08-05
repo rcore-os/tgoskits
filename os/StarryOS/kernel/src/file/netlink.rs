@@ -264,6 +264,7 @@ struct NetlinkState {
     addr: Option<sockaddr_nl>,
     receive_buffer_size: usize,
     passcred: bool,
+    reuse_address: bool,
 }
 
 pub struct NetlinkSocket {
@@ -334,9 +335,33 @@ impl NetlinkSocket {
         self.state.lock().passcred = enabled;
     }
 
+    pub fn reuse_address(&self) -> bool {
+        self.state.lock().reuse_address
+    }
+
+    pub fn set_reuse_address(&self, enabled: bool) {
+        self.state.lock().reuse_address = enabled;
+    }
+
     #[allow(dead_code)]
     pub fn protocol(&self) -> u32 {
         self.protocol
+    }
+
+    /// Enqueue a kernel-originated datagram into this socket's receive queue
+    /// and wake readers, exactly as [`broadcast`] does for a single socket.
+    /// Drops silently when the queue is full (Linux `netlink_unicast` under
+    /// buffer pressure). Used by `mq_notify(SIGEV_THREAD)` to hand the
+    /// notification cookie to the glibc/musl helper thread that reads this
+    /// netlink socket (`netlink_sendskb` in ipc/mqueue.c `__do_notify`).
+    pub fn deliver_datagram(&self, payload: Vec<u8>) {
+        let mut queue = self.queue.lock();
+        if queue.len() < MAX_QUEUED {
+            queue.push_back(payload);
+            drop(queue);
+            // Datagram is queued before readers are woken.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
+        }
     }
 
     fn local_pid(&self) -> u32 {
@@ -606,6 +631,15 @@ impl NetlinkSocket {
 }
 
 impl FileLike for NetlinkSocket {
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        // Device ioctls (SIOCGIF*) are family-agnostic in Linux sock_ioctl, so a
+        // netlink socket answers them too rather than returning ENOTTY.
+        if let Some(result) = crate::file::net::device_ioctl(cmd, arg) {
+            return result;
+        }
+        Err(AxError::NotATty)
+    }
+
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             self.read_one(dst, false, false)

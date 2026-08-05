@@ -1,9 +1,21 @@
 const VCPU_RUNTIME: &str = include_str!("../src/runtime/vcpus.rs");
 const CPU_UP_FLOW: &str = include_str!("../src/architecture/cpu_up.rs");
 const ARCH_OPS: &str = include_str!("../src/architecture/ops.rs");
+const AARCH64_ADAPTER: &str = include_str!("../src/arch/aarch64/mod.rs");
+const RISCV64_ADAPTER: &str = include_str!("../src/arch/riscv64/mod.rs");
 const VCPU_CORE: &str = include_str!("../src/vcpu.rs");
 const VM_CORE: &str = include_str!("../src/vm/mod.rs");
 const TASK_API: &str = include_str!("../../../os/arceos/modules/axtask/src/api.rs");
+
+#[test]
+fn cpu_up_adapters_include_the_shared_startup_configuration_module() {
+    for (architecture, adapter) in [("aarch64", AARCH64_ADAPTER), ("riscv64", RISCV64_ADAPTER)] {
+        assert!(
+            adapter.contains("#[path = \"../../architecture/vcpu_startup.rs\"]\nmod vcpu_startup;"),
+            "{architecture} CPU-up adapter must include the shared vCPU startup module"
+        );
+    }
+}
 
 #[test]
 fn vcpu_spawn_uses_an_affinity_valid_initial_cpu() {
@@ -80,7 +92,7 @@ fn secondary_vcpu_startup_is_reserved_until_task_activation() {
         "every pre-activation failure must release the startup reservation"
     );
     assert!(
-        ARCH_OPS.contains("VmVcpuState::Starting => vcpu.bind_startup()?"),
+        ARCH_OPS.contains("VmVcpuState::Starting => vcpu.bind_after_cpu_on_or_rollback()?"),
         "the activated task must consume the startup reservation while binding"
     );
 }

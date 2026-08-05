@@ -61,7 +61,6 @@ os/arceos/
 │   ├── axsync/       # 同步原语
 │   ├── axmm/         # 页表/内存管理
 │   ├── axdisplay/    # 图形显示
-│   ├── axdma/        # DMA 支持
 │   ├── axinput/      # 输入设备
 │   ├── axipi/        # 核间中断
 │   ├── axruntime/    # 运行时初始化，调用 main()
@@ -240,7 +239,7 @@ sched-rr = ["ax-task/sched-rr", "irq"]
 sched-cfs = ["ax-task/sched-cfs", "irq"]
 
 # 上层协议栈
-fs = ["alloc", "paging", "ax-driver/virtio-blk", "dep:ax-fs", "ax-runtime/fs"]
+fs = ["alloc", "paging", "ax-driver/nvme", "dep:ax-fs", "ax-runtime/fs"]
 net = ["alloc", "paging", "ax-driver/virtio-net", "dep:ax-net", "ax-runtime/net"]
 ```
 
@@ -545,7 +544,7 @@ GDB 连接：
 | `LOG` | `warn` | 日志级别 |
 | `SMP` | 平台默认 | CPU 数量 |
 | `FEATURES` | — | 额外 feature |
-| `BLK` | `n` | 启用 virtio-blk |
+| `BLK` | `n` | 启用 IRQ-driven NVMe 块设备 |
 | `NET` | `n` | 启用 virtio-net |
 | `BUS` | `pci` | `pci` 或 `mmio` |
 | `MEM` | `128M` | 内存大小 |

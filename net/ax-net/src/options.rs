@@ -195,6 +195,7 @@ define_options! {
     RecvTos(bool),
     RecvTrafficClass(bool),
     RecvErr(bool),
+    IpMtuDiscover(u8),
 
     // ---- Extra options ----
     NonBlocking(bool),

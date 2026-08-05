@@ -7,9 +7,16 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-intc"
 repository.workspace = true
-version = "0.15.0"
+version = "0.15.1"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 cfg-if = "1.0"
 irq-framework = { workspace = true }
 rdif-base = {workspace = true}
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

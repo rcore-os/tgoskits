@@ -452,7 +452,7 @@ mod tests {
         let claude = AgentRunner::from_program(AgentKind::Claude, program.clone());
         let args = test_run_args(output.clone());
 
-        run_cases_with_runner(workspace.path(), &[case.clone()], args, &claude)
+        run_cases_with_runner(workspace.path(), std::slice::from_ref(&case), args, &claude)
             .await
             .unwrap();
 
@@ -496,9 +496,14 @@ mod tests {
         let mut reverse_args = test_run_args(reverse_output.clone());
         reverse_args.agent = AgentKind::Codex;
         let codex = AgentRunner::from_program(AgentKind::Codex, program.clone());
-        run_cases_with_runner(workspace.path(), &[case.clone()], reverse_args, &codex)
-            .await
-            .unwrap();
+        run_cases_with_runner(
+            workspace.path(),
+            std::slice::from_ref(&case),
+            reverse_args,
+            &codex,
+        )
+        .await
+        .unwrap();
         let reverse_summary =
             read_json::<serde_json::Value>(&reverse_output.join("summary.json")).unwrap();
         assert_eq!(reverse_summary["reviewer"]["agent"], "codex");

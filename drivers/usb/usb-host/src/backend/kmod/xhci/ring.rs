@@ -264,4 +264,8 @@ impl<R> SendRing<R> {
     pub fn cycle(&self) -> bool {
         self.ring.cycle
     }
+
+    pub fn enqueue_pointer(&self) -> (BusAddr, bool) {
+        (self.ring.trb_bus_addr(self.ring.i), self.ring.cycle)
+    }
 }

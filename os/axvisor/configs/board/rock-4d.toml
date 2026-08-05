@@ -1,0 +1,8 @@
+features = [
+  "fs",
+  "ax-driver/rockchip-dwmmc",
+]
+log = "Info"
+max_cpu_num = 8
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/rock-4d/linux-smp1.toml"]

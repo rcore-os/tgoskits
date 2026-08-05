@@ -2,11 +2,11 @@ args = [
     "-nographic",
     "-m", "2048M",
     "-cpu", "cortex-a72",
-    "-device", "virtio-blk-pci,drive=disk0",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-higress.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
-    "-append", "root=/dev/sda",
+    "-append", "root=/dev/nvme0n1",
 ]
 uefi = false
 to_bin = true

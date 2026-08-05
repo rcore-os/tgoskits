@@ -179,12 +179,10 @@ enum DynamicPciIrqSource {
 
 pub const fn has_pci_endpoint_drivers() -> bool {
     cfg!(any(
-        feature = "ahci",
         feature = "intel-net",
         feature = "realtek-rtl8125",
         feature = "nvme",
         feature = "xhci-pci",
-        feature = "virtio-blk",
         feature = "virtio-net",
         feature = "virtio-gpu",
         feature = "virtio-input",
@@ -533,13 +531,22 @@ mod tests {
                 PhysAddr::from_usize(addr.as_usize())
             }
 
-            fn mem_make_dma_coherent_uncached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
+            fn mem_make_dma_coherent_uncached(
+                _addr: VirtAddr,
+                _size: usize,
+            ) -> axklib::DmaCoherentMappingOutcome {
+                axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
             }
 
             fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
                 Err(AxError::Unsupported)
             }
+
+            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
 
             fn dma_alloc_pages(
                 _dma_mask: u64,

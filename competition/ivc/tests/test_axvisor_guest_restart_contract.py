@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 
-import tomllib
 import unittest
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    import tomli as tomllib
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]

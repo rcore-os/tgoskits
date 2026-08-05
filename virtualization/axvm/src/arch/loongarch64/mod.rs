@@ -3,8 +3,9 @@ use core::time::Duration;
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, VCpuId,
+    VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 use loongarch_vcpu::{
     LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchHostOps,
@@ -115,9 +116,12 @@ impl ArchOps for LoongArch64Arch {
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
         match exit {
-            LoongArchVmExit::Hypercall { nr, args } => {
-                super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
-            }
+            LoongArchVmExit::Hypercall { nr, args } => super::handle_hypercall(
+                vm,
+                vcpu,
+                HypercallExit { nr, args },
+                crate::runtime::hvc::HyperCallAbi::Generic,
+            ),
             LoongArchVmExit::MmioRead {
                 addr,
                 width,
@@ -163,11 +167,15 @@ impl ArchOps for LoongArch64Arch {
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
                     waits_for_event: true,
                     stop_reason: None,
+                    resets_vm: false,
+                    exits_vcpu: false,
                 }))
             }
             LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             })),
             _ => Err(AxVmError::unsupported(
                 "handle LoongArch VM exit",
@@ -190,6 +198,8 @@ impl ArchOps for LoongArch64Arch {
         Ok(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         })
     }
 
@@ -219,6 +229,8 @@ fn handle_loongarch_nested_page_fault(
             return Ok(BoundVcpuExit::Complete(VcpuRunAction {
                 waits_for_event: false,
                 stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
             }));
         };
         return LoongArch64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
@@ -238,6 +250,8 @@ fn handle_loongarch_nested_page_fault(
         Ok(BoundVcpuExit::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         }))
     }
 }
@@ -248,34 +262,56 @@ fn loongarch_external_irq_vector(
     _physical_irq: usize,
 ) -> Option<usize> {
     let devices = vm.get_devices().ok()?;
-    match devices.loongarch_pch_pic_assert_irq(fallback_vector) {
-        Some(Some(vector)) => Some(vector),
-        Some(None) => None,
-        None => Some(fallback_vector),
-    }
+    devices
+        .services()
+        .require::<axdevice::PchPicOutputPortKey>()
+        .ok()
+        .map_or(Some(fallback_vector), |port| {
+            port.set_input_level(fallback_vector, true)
+        })
 }
 
 fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    devices.drain_loongarch_pch_pic_events(|event| {
+    let Ok(port) = devices
+        .services()
+        .require::<axdevice::PchPicOutputPortKey>()
+    else {
+        return;
+    };
+    while let Some(event) = port.take_output_event() {
         if !event.asserted {
             trace!(
                 "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
                 vm.id(),
                 event.vector
             );
-            return;
+            continue;
         }
-        if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
+        if let Err(err) = inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
             warn!(
                 "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
                 vm.id(),
                 event.vector
             );
         }
-    });
+    }
+}
+
+fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    use crate::AsVCpuTask;
+
+    let current = crate::host::task::current_task();
+    if let Some(task) = current.try_as_vcpu_task()
+        && task.vm().id() == vm_id
+        && task.vcpu.id() == vcpu_id
+    {
+        return task.vcpu.inject_interrupt(vector);
+    }
+
+    crate::manager::inject_interrupt(vm_id, vcpu_id, vector)
 }
 
 struct AxvmLoongArchHostOps;
@@ -385,6 +421,20 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         loongarch_result(self.0.inject_interrupt(vector))
+    }
+
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        // The PCH-PIC/EIOINTC Router consumes line trigger semantics before
+        // emitting a guest vector. The vCPU injection is mode-agnostic.
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
+                loongarch_result(self.0.inject_interrupt(vector))
+            }
+        }
     }
 
     fn set_return_value(&mut self, val: usize) {

@@ -86,6 +86,16 @@ int main(void) {
         );
     }
 
+    result = usb_msc_stall_and_recover_bulk_out(&device);
+    if (result != 0) {
+        usb_msc_close(&device);
+        return failf(
+            "bulk OUT did not recover after clear halt (%d, %s)",
+            result,
+            libusb_error_name(result)
+        );
+    }
+
     char vendor[9];
     char product[17];
     result = usb_msc_inquiry(&device, vendor, product);
@@ -177,11 +187,22 @@ int main(void) {
     }
 
     printf("usb readback ok: lba=%u bytes=%u\n", test_lba, block_size);
-    puts("USB storage tests passed!");
-    exit_code = 0;
-
     free(write_buffer);
     free(read_buffer);
+
+    usb_msc_close_without_release(&device);
+    result = usb_msc_find_and_open(&device);
+    if (result != 0) {
+        return failf(
+            "interface remained claimed after closing device (%d, %s)",
+            result,
+            libusb_error_name(result)
+        );
+    }
+    puts("usb interface reclaimed after close without release");
+
+    puts("USB storage tests passed!");
+    exit_code = 0;
     usb_msc_close(&device);
     return exit_code;
 }

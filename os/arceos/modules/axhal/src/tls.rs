@@ -51,6 +51,7 @@
 
 extern crate alloc;
 
+use alloc::alloc::{alloc_zeroed, handle_alloc_error};
 use core::{alloc::Layout, ptr::NonNull};
 
 use ax_memory_addr::align_up;
@@ -106,7 +107,10 @@ impl TlsArea {
     /// Allocates the memory region for TLS, and initializes it.
     pub fn alloc() -> Self {
         let layout = Layout::from_size_align(tls_area_size(), TLS_ALIGN).unwrap();
-        let area_base = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        // SAFETY: `layout` has non-zero power-of-two alignment and remains
+        // owned by the returned `TlsArea` until its matching deallocation.
+        let area_base = NonNull::new(unsafe { alloc_zeroed(layout) })
+            .unwrap_or_else(|| handle_alloc_error(layout));
 
         unsafe {
             let tls_load_base = _stdata as *mut u8;
@@ -114,15 +118,15 @@ impl TlsArea {
             // copy data from .tbdata section
             core::ptr::copy_nonoverlapping(
                 tls_load_base,
-                area_base.add(static_tls_offset()),
+                area_base.as_ptr().add(static_tls_offset()),
                 tls_load_size,
             );
             // initialize TCB
-            init_tcb(area_base);
+            init_tcb(area_base.as_ptr());
         }
 
         Self {
-            base: NonNull::new(area_base).unwrap(),
+            base: area_base,
             layout,
         }
     }

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.3...crab-usb-v0.10.4) - 2026-08-03
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+
+## [0.10.3](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.2...crab-usb-v0.10.3) - 2026-07-23
+
+### Fixed
+
+- *(starry-kernel)* support usbfs clear-halt and close cleanup ([#1655](https://github.com/rcore-os/tgoskits/pull/1655))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.10.2](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.1...crab-usb-v0.10.2) - 2026-07-10
 
 ### Added

@@ -11,7 +11,7 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.25"
+version = "0.5.27"
 
 [features]
 default = []
@@ -24,7 +24,7 @@ qemu = [
 ]
 # The profiling command selects this package-level preset; axbuild must not assemble the
 # individual driver feature list at runtime.
-qperf = ["ax-driver/virtio-blk", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
+qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
 qperf-metrics = []
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 rt-irq-trace = ["starry-kernel/rt-irq-trace"]
@@ -32,8 +32,8 @@ rt-irq-trace-soak = ["rt-irq-trace", "starry-kernel/rt-irq-trace-soak"]
 
 k230 = [
   "starry-kernel/k230-kpu",
-  "ax-driver/k230-sdhci",
   "ax-driver/serial",
+  "ax-driver/k230-sdhci",
 ]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
@@ -51,9 +51,16 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-# Starry links Rust `std` dynamically on the musl target; keep the libc
-# compatibility surface in the package manifest rather than axbuild.
-ax-std = { workspace = true, features = ["ext-ld", "std-compat", "fs", "multitask", "irq"] }
+# Starry is a freestanding PIE. Keep host `std` compatibility and kernel TLS
+# out of the final feature tree.
+ax-std = { workspace = true, default-features = false, features = [
+  "alloc",
+  "fd",
+  "ext-ld",
+  "fs",
+  "multitask",
+  "irq",
+] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
@@ -61,7 +68,7 @@ axplat-dyn.workspace = true
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
-anyhow = "1.0"
+anyhow = { workspace = true, features = ["std"] }
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }

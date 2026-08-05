@@ -3,12 +3,12 @@
         . = ALIGN(PAGE_SIZE);
     }
 
+    ${post_tdata_sections}
     .tdata : ${tdata_align} {
         _stdata = .;
-        *(.tdata .tdata.*)
+        *(.tdata .tdata.* .gnu.linkonce.td.*)
         _etdata = .;
     } ${tdata_output}
-    ${post_tdata_sections}
     ${edata_align}
     _edata = .;
     __kernel_load_end = .;
@@ -16,7 +16,7 @@
 
     .tbss : ${tbss_align} {
         _stbss = .;
-        *(.tbss .tbss.*)
+        *(.tbss .tbss.* .gnu.linkonce.tb.*)
         *(.init.bss)
         *(.tcommon)
         _etbss = .;

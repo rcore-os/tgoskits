@@ -1,0 +1,11 @@
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "Failed to initialize guest VM",
+]
+shell_init_cmd = "pwd && echo 'starry guest test pass'"
+shell_prefix = "root@starry:/root #"
+success_regex = [
+  "(?m)^starry guest test pass\\s*$",
+]
+timeout = 300

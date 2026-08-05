@@ -9,6 +9,7 @@ use crate::{
 mod eiointc;
 mod irq_common;
 mod liointc;
+mod liointc_cpu_interface;
 mod pch_pic;
 
 use crate::irq_routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq};

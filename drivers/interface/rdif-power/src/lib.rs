@@ -5,6 +5,10 @@ extern crate alloc;
 use rdif_base::def_driver;
 pub use rdif_base::{DriverGeneric, custom_type};
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for power-domain ids and interface defaults.
+pub mod axtest;
+
 custom_type!(
     #[doc = "Power domain id"],
     PowerDomainId, u64, "{:#x}");

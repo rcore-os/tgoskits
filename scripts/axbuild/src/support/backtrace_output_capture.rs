@@ -1,4 +1,4 @@
-//! Cross-platform stdout/stderr tee that writes only raw backtrace blocks to a log file.
+//! Cross-platform stdout/stderr tee for QEMU transcripts and raw backtrace blocks.
 
 use std::io;
 
@@ -128,7 +128,7 @@ mod platform {
     pub(super) struct PlatformGuard {
         saved_stdout: i32,
         saved_stderr: i32,
-        capture: Arc<Mutex<BacktraceBlockCapture>>,
+        capture: Option<Arc<Mutex<BacktraceBlockCapture>>>,
         captured_blocks: Arc<Mutex<Vec<Vec<String>>>>,
         stream_symbolize: Option<Arc<crate::backtrace::BacktraceSymbolizeSession>>,
         reader: Option<JoinHandle<io::Result<()>>>,
@@ -139,10 +139,14 @@ mod platform {
         let log_path = capture
             .write_log_during_capture
             .then_some(capture.log_path.as_path());
-        let block_capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(
-            log_path,
-            Some(capture.captured_blocks.clone()),
-        )?));
+        let block_capture = if capture.captures_backtrace_blocks() {
+            Some(Arc::new(Mutex::new(BacktraceBlockCapture::create(
+                log_path,
+                Some(capture.captured_blocks.clone()),
+            )?)))
+        } else {
+            None
+        };
 
         let mut pipe = PipeEnds::new()?;
         if unsafe { libc::dup2(pipe.write_fd, libc::STDOUT_FILENO) } < 0
@@ -160,6 +164,7 @@ mod platform {
         let tee_out = rollback.take_tee_out();
         let capture_for_reader = block_capture.clone();
         let suppress_terminal_raw_blocks = capture.suppress_terminal_raw_blocks;
+        let success_output = capture.success_output.clone();
 
         let reader = std::thread::spawn(move || {
             let mut pipe = unsafe { File::from_raw_fd(pipe_read) };
@@ -170,10 +175,17 @@ mod platform {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        let terminal_chunk = if let Ok(mut capture) = capture_for_reader.lock() {
-                            capture
-                                .push_bytes_for_tee(chunk, suppress_terminal_raw_blocks)
-                                .unwrap_or_else(|_| chunk.to_vec())
+                        if let Some(success_output) = &success_output {
+                            success_output.append(chunk);
+                        }
+                        let terminal_chunk = if let Some(capture) = &capture_for_reader {
+                            if let Ok(mut capture) = capture.lock() {
+                                capture
+                                    .push_bytes_for_tee(chunk, suppress_terminal_raw_blocks)
+                                    .unwrap_or_else(|_| chunk.to_vec())
+                            } else {
+                                chunk.to_vec()
+                            }
                         } else {
                             chunk.to_vec()
                         };
@@ -213,7 +225,9 @@ mod platform {
             if let Some(reader) = self.reader.take() {
                 let _ = reader.join();
             }
-            if let Ok(mut capture) = self.capture.lock() {
+            if let Some(capture) = &self.capture
+                && let Ok(mut capture) = capture.lock()
+            {
                 let _ = capture.finish();
             }
             if let Some(session) = &self.stream_symbolize {
@@ -250,7 +264,7 @@ mod platform {
         orig_stdout: HANDLE,
         orig_stderr: HANDLE,
         pipe_write: HANDLE,
-        capture: Arc<Mutex<BacktraceBlockCapture>>,
+        capture: Option<Arc<Mutex<BacktraceBlockCapture>>>,
         captured_blocks: Arc<Mutex<Vec<Vec<String>>>>,
         stream_symbolize: Option<Arc<crate::backtrace::BacktraceSymbolizeSession>>,
         reader: Option<JoinHandle<io::Result<()>>>,
@@ -287,12 +301,17 @@ mod platform {
         let log_path = capture
             .write_log_during_capture
             .then_some(capture.log_path.as_path());
-        let block_capture = Arc::new(Mutex::new(BacktraceBlockCapture::create(
-            log_path,
-            Some(capture.captured_blocks.clone()),
-        )?));
+        let block_capture = if capture.captures_backtrace_blocks() {
+            Some(Arc::new(Mutex::new(BacktraceBlockCapture::create(
+                log_path,
+                Some(capture.captured_blocks.clone()),
+            )?)))
+        } else {
+            None
+        };
         let capture_for_reader = block_capture.clone();
         let suppress_terminal_raw_blocks = capture.suppress_terminal_raw_blocks;
+        let success_output = capture.success_output.clone();
 
         let reader = std::thread::spawn(move || {
             let mut pipe = unsafe { File::from_raw_handle(read_handle as _) };
@@ -303,10 +322,17 @@ mod platform {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        let terminal_chunk = if let Ok(mut capture) = capture_for_reader.lock() {
-                            capture
-                                .push_bytes_for_tee(chunk, suppress_terminal_raw_blocks)
-                                .unwrap_or_else(|_| chunk.to_vec())
+                        if let Some(success_output) = &success_output {
+                            success_output.append(chunk);
+                        }
+                        let terminal_chunk = if let Some(capture) = &capture_for_reader {
+                            if let Ok(mut capture) = capture.lock() {
+                                capture
+                                    .push_bytes_for_tee(chunk, suppress_terminal_raw_blocks)
+                                    .unwrap_or_else(|_| chunk.to_vec())
+                            } else {
+                                chunk.to_vec()
+                            }
                         } else {
                             chunk.to_vec()
                         };
@@ -345,7 +371,9 @@ mod platform {
             if let Some(reader) = self.reader.take() {
                 let _ = reader.join();
             }
-            if let Ok(mut capture) = self.capture.lock() {
+            if let Some(capture) = &self.capture
+                && let Ok(mut capture) = capture.lock()
+            {
                 let _ = capture.finish();
             }
             if let Some(session) = &self.stream_symbolize {

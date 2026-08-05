@@ -17,17 +17,71 @@
 use alloc::format;
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
+use ax_kernel_guard::NoPreempt;
 use ax_kspin::SpinNoIrq as Mutex;
+use ax_percpu::{CpuAreaRef, CpuPin};
 use axvm_types::{
-    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
-    VmBackendError, VmVcpuState,
+    GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError, VmVcpuState,
 };
 
 use crate::{AxVmError, AxVmResult, ax_err};
 
-#[cfg(test)]
-#[path = "architecture/vcpu_startup.rs"]
-mod vcpu_startup_test_support;
+/// Borrowed proof that one AxVM operation cannot migrate between host CPUs.
+struct PinnedCpuContext<'pin, 'cpu> {
+    cpu_pin: &'pin CpuPin<'cpu>,
+    area: CpuAreaRef,
+    #[cfg(feature = "tls")]
+    kernel_tls: usize,
+}
+
+impl<'pin, 'cpu> PinnedCpuContext<'pin, 'cpu> {
+    fn new(cpu_pin: &'pin CpuPin<'cpu>) -> Self {
+        ax_percpu::current_area(cpu_pin)
+            .expect("vCPU operation requires the installed per-CPU area");
+        Self {
+            cpu_pin,
+            area: cpu_pin.area(),
+            #[cfg(feature = "tls")]
+            kernel_tls: cpu_local::kernel_tls(cpu_pin),
+        }
+    }
+
+    fn assert_host_cpu_binding(&self) {
+        // SAFETY: the outer NoPreempt guard remains active. A new pin forces a
+        // fresh read of both host CPU-local and current-thread registers.
+        let current = unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                (
+                    pin.area(),
+                    #[cfg(feature = "tls")]
+                    cpu_local::kernel_tls(pin),
+                )
+            })
+        }
+        .unwrap_or_else(|error| panic!("vCPU transition did not restore host state: {error}"));
+        assert_eq!(
+            current.0, self.area,
+            "vCPU transition restored a different host CPU area"
+        );
+        #[cfg(feature = "tls")]
+        assert_eq!(
+            current.1, self.kernel_tls,
+            "vCPU transition did not restore the host kernel TLS register"
+        );
+        assert_eq!(self.cpu_pin.area(), self.area);
+    }
+}
+
+struct CurrentVcpuPublication<'scope, 'cpu> {
+    pin: &'scope CpuPin<'cpu>,
+}
+
+impl Drop for CurrentVcpuPublication<'_, '_> {
+    fn drop(&mut self) {
+        CURRENT_VCPU.write_current(self.pin, 0);
+    }
+}
 
 /// Mutable runtime state of a virtual CPU.
 pub struct AxVCpuInnerMut {
@@ -38,6 +92,55 @@ struct AxVCpuInnerConst {
     vm_id: VMId,
     vcpu_id: VCpuId,
     phys_cpu_set: Option<usize>,
+    guest_mpidr: Option<u64>,
+}
+
+#[allow(dead_code)]
+fn reserve_cpu_on_state(state: &mut VmVcpuState) -> AxVmResult {
+    if *state != VmVcpuState::Free {
+        let current_state = *state;
+        return ax_err!(
+            BadState,
+            format!("VCpu state is not Free, but {current_state:?}")
+        );
+    }
+    *state = VmVcpuState::Starting;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn rollback_cpu_on_state(state: &mut VmVcpuState) {
+    if *state == VmVcpuState::Starting {
+        *state = VmVcpuState::Free;
+    }
+}
+
+fn finish_cpu_on_start_state(state: &mut VmVcpuState, bind_succeeded: bool) -> AxVmResult {
+    if *state != VmVcpuState::Starting {
+        let current_state = *state;
+        return ax_err!(
+            BadState,
+            format!("VCpu state is not Starting, but {current_state:?}")
+        );
+    }
+    *state = if bind_succeeded {
+        VmVcpuState::Ready
+    } else {
+        VmVcpuState::Free
+    };
+    Ok(())
+}
+
+fn cpu_off_state(state: &mut VmVcpuState) -> AxVmResult {
+    if *state != VmVcpuState::Ready {
+        let current_state = *state;
+        return ax_err!(
+            BadState,
+            format!("VCpu state is not Ready, but {current_state:?}")
+        );
+    }
+    *state = VmVcpuState::Free;
+    Ok(())
 }
 
 /// AxVM-owned architecture-independent vCPU wrapper.
@@ -55,11 +158,13 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         phys_cpu_set: Option<usize>,
         arch_config: A::CreateConfig,
     ) -> AxVmResult<Self> {
+        let guest_mpidr = A::guest_mpidr_from_create_config(&arch_config);
         Ok(Self {
             inner_const: AxVCpuInnerConst {
                 vm_id,
                 vcpu_id,
                 phys_cpu_set,
+                guest_mpidr,
             },
             inner_mut: Mutex::new(AxVCpuInnerMut {
                 state: VmVcpuState::Created,
@@ -107,18 +212,64 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         self.inner_const.phys_cpu_set
     }
 
+    /// Returns the guest-visible MPIDR affinity for this vCPU, when the architecture has one.
+    pub const fn guest_mpidr(&self) -> Option<u64> {
+        self.inner_const.guest_mpidr
+    }
+
     /// Returns the current vCPU state.
     pub fn state(&self) -> VmVcpuState {
         self.inner_mut.lock().state
     }
 
-    // The runtime task registry owns exclusive backend execution. This lock validates lifecycle
-    // metadata, but is intentionally released while `f` may enter a guest for an unbounded time.
-    fn with_state_transition<F, T>(
+    /// Reserves a free vCPU for PSCI CPU_ON.
+    #[allow(dead_code)]
+    pub(crate) fn reserve_for_cpu_on(&self) -> AxVmResult {
+        let mut inner_mut = self.inner_mut.lock();
+        reserve_cpu_on_state(&mut inner_mut.state)
+    }
+
+    /// Binds a CPU_ON-started vCPU and rolls it back to Free if bind fails.
+    pub(crate) fn bind_after_cpu_on_or_rollback(&self) -> AxVmResult {
+        {
+            let inner_mut = self.inner_mut.lock();
+            if inner_mut.state != VmVcpuState::Starting {
+                let current_state = inner_mut.state;
+                return ax_err!(
+                    BadState,
+                    format!("VCpu state is not Starting, but {current_state:?}")
+                );
+            }
+        }
+
+        let result = self.with_current_cpu_set(|| {
+            self.get_arch_vcpu()
+                .bind()
+                .map_err(|error| map_vcpu_backend_error("bind vCPU", error))
+        });
+        let bind_succeeded = result.is_ok();
+        finish_cpu_on_start_state(&mut self.inner_mut.lock().state, bind_succeeded)?;
+        result
+    }
+
+    /// Rolls a failed PSCI CPU_ON reservation back to Free.
+    #[allow(dead_code)]
+    pub(crate) fn rollback_cpu_on(&self) {
+        let mut inner_mut = self.inner_mut.lock();
+        rollback_cpu_on_state(&mut inner_mut.state);
+    }
+
+    /// Powers off a vCPU after PSCI CPU_OFF so it can be started again.
+    pub(crate) fn power_off_after_cpu_off(&self) -> AxVmResult {
+        let mut inner_mut = self.inner_mut.lock();
+        cpu_off_state(&mut inner_mut.state)
+    }
+
+    /// Runs `f` if the current state equals `from`, then stores `to`.
+    pub fn with_state_transition<F, T>(
         &self,
         from: VmVcpuState,
         to: VmVcpuState,
-        error_state: VmVcpuState,
         f: F,
     ) -> AxVmResult<T>
     where
@@ -136,39 +287,45 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         }
 
         let result = f();
-        self.inner_mut.lock().state = if result.is_err() { error_state } else { to };
+        self.inner_mut.lock().state = if result.is_err() {
+            VmVcpuState::Invalid
+        } else {
+            to
+        };
         result
     }
 
     /// Runs `f` with this vCPU recorded as current on the physical CPU.
-    pub fn with_current_cpu_set<F, T>(&self, f: F) -> T
+    pub(crate) fn with_current_cpu_set<F, T>(&self, f: F) -> T
     where
         F: FnOnce() -> T,
     {
-        if let Some(current_vcpu) = get_current_vcpu::<A>() {
-            if core::ptr::eq(current_vcpu, self) {
-                f()
-            } else {
-                error!(
-                    "AXVM_NESTED_VCPU_OPERATION current_vm={} current_vcpu={} requested_vm={} \
-                     requested_vcpu={}",
-                    current_vcpu.vm_id(),
-                    current_vcpu.id(),
-                    self.vm_id(),
-                    self.id()
-                );
-                panic!("nested vCPU operation is not allowed");
-            }
-        } else {
-            unsafe {
-                set_current_vcpu(self);
-            }
-            let result = f();
-            unsafe {
-                clear_current_vcpu();
-            }
-            result
+        let _guard = NoPreempt::new();
+        // SAFETY: the guard prevents migration through the backend operation,
+        // guest run, restoration check, and publication withdrawal.
+        unsafe {
+            ax_percpu::with_cpu_pin(|cpu_pin| {
+                let pinned_cpu = PinnedCpuContext::new(cpu_pin);
+
+                if let Some(current_vcpu) = get_current_vcpu::<A>(cpu_pin) {
+                    if core::ptr::eq(current_vcpu, self) {
+                        let result = f();
+                        pinned_cpu.assert_host_cpu_binding();
+                        result
+                    } else {
+                        panic!("nested vCPU operation is not allowed");
+                    }
+                } else {
+                    set_current_vcpu(self, cpu_pin);
+                    let publication = CurrentVcpuPublication { pin: cpu_pin };
+                    let result = f();
+                    pinned_cpu.assert_host_cpu_binding();
+                    drop(publication);
+                    result
+                }
+            })
         }
+        .expect("vCPU operation requires an installed CPU-local area")
     }
 
     /// Runs an architecture operation under a state transition.
@@ -181,20 +338,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     where
         F: FnOnce(&mut A) -> AxVmResult<T>,
     {
-        self.manipulate_arch_vcpu_on_error(from, to, VmVcpuState::Invalid, f)
-    }
-
-    pub(crate) fn manipulate_arch_vcpu_on_error<F, T>(
-        &self,
-        from: VmVcpuState,
-        to: VmVcpuState,
-        error_state: VmVcpuState,
-        f: F,
-    ) -> AxVmResult<T>
-    where
-        F: FnOnce(&mut A) -> AxVmResult<T>,
-    {
-        self.with_state_transition(from, to, error_state, || {
+        self.with_state_transition(from, to, || {
             self.with_current_cpu_set(|| f(self.get_arch_vcpu()))
         })
     }
@@ -211,15 +355,6 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         }
         inner_mut.state = to;
         Ok(())
-    }
-
-    /// Consumes a startup reservation while binding the activated host task.
-    pub(crate) fn bind_startup(&self) -> AxVmResult {
-        self.manipulate_arch_vcpu(VmVcpuState::Starting, VmVcpuState::Ready, |arch_vcpu| {
-            arch_vcpu
-                .bind()
-                .map_err(|error| map_vcpu_backend_error("bind starting vCPU", error))
-        })
     }
 
     /// Returns the architecture-specific vCPU.
@@ -257,10 +392,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Sets the guest entry point.
-    #[expect(
-        dead_code,
-        reason = "only non-x86 guest firmware updates secondary vCPU entries"
-    )]
+    #[allow(dead_code)]
     pub fn set_entry(&self, entry: GuestPhysAddr) -> AxVmResult {
         self.get_arch_vcpu()
             .set_entry(entry)
@@ -279,6 +411,17 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
             .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
     }
 
+    /// Injects an interrupt while preserving its trigger-mode metadata.
+    pub fn inject_interrupt_with_trigger(
+        &self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> AxVmResult {
+        self.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector, trigger)
+            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+    }
+
     /// Sets the guest return value.
     pub fn set_return_value(&self, val: usize) {
         self.get_arch_vcpu().set_return_value(val);
@@ -286,44 +429,35 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
 }
 
 #[ax_percpu::def_percpu]
-static mut CURRENT_VCPU: Option<*mut u8> = None;
+static CURRENT_VCPU: usize = 0;
 
 /// Gets the current AxVM vCPU on this physical CPU.
-#[allow(static_mut_refs)]
-pub fn get_current_vcpu<'a, A: VmArchVcpuOps>() -> Option<&'a AxVCpu<A>> {
-    unsafe {
-        CURRENT_VCPU
-            .current_ref_raw()
-            .as_ref()
-            .copied()
-            .and_then(|p| (p as *const AxVCpu<A>).as_ref())
-    }
+pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
+    pin: &'pin CpuPin<'_>,
+) -> Option<&'pin AxVCpu<A>> {
+    let pointer = CURRENT_VCPU.read_current(pin);
+    // SAFETY: publication is scoped by with_current_cpu_set, which borrows the
+    // live AxVCpu and clears this pointer before its CPU pin expires.
+    unsafe { (pointer as *const AxVCpu<A>).as_ref() }
 }
 
-/// Sets the current AxVM vCPU on this physical CPU.
-///
-/// # Safety
-///
-/// The caller must clear the current vCPU before the wrapped operation returns.
-#[allow(static_mut_refs)]
-pub unsafe fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>) {
-    unsafe {
-        CURRENT_VCPU
-            .current_ref_mut_raw()
-            .replace(vcpu as *const _ as *mut u8);
-    }
+fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &CpuPin<'_>) {
+    assert_eq!(
+        CURRENT_VCPU.read_current(pin),
+        0,
+        "current vCPU publication must be empty"
+    );
+    CURRENT_VCPU.write_current(pin, vcpu as *const _ as usize);
 }
 
-/// Clears the current AxVM vCPU on this physical CPU.
-///
-/// # Safety
-///
-/// The caller must only clear a vCPU it previously installed.
-#[allow(static_mut_refs)]
-pub unsafe fn clear_current_vcpu() {
-    unsafe {
-        CURRENT_VCPU.current_ref_mut_raw().take();
-    }
+/// Runs `operation` with the current vCPU borrowed only for a pinned CPU scope.
+pub(crate) fn with_current_vcpu<A: VmArchVcpuOps, R>(
+    operation: impl FnOnce(Option<&AxVCpu<A>>) -> R,
+) -> R {
+    let _guard = NoPreempt::new();
+    // SAFETY: the guard prevents migration through the closure.
+    unsafe { ax_percpu::with_cpu_pin(|pin| operation(get_current_vcpu(pin))) }
+        .expect("current vCPU lookup requires an installed CPU-local area")
 }
 
 /// Host per-CPU virtualization state wrapper owned by AxVM.
@@ -438,9 +572,78 @@ fn map_interrupt_backend_error(operation: &'static str, error: VmBackendError) -
 
 #[cfg(test)]
 mod tests {
-    use axvm_types::{NestedPagingConfig, VmBackendResult};
-
     use super::*;
+
+    #[test]
+    fn vcpu_cpu_on_reservation_moves_free_to_starting() {
+        let mut state = VmVcpuState::Free;
+
+        reserve_cpu_on_state(&mut state).unwrap();
+
+        assert_eq!(state, VmVcpuState::Starting);
+        assert!(reserve_cpu_on_state(&mut state).is_err());
+        assert_eq!(state, VmVcpuState::Starting);
+    }
+
+    #[test]
+    fn vcpu_cpu_on_rollback_restores_starting_to_free() {
+        let mut state = VmVcpuState::Starting;
+
+        rollback_cpu_on_state(&mut state);
+
+        assert_eq!(state, VmVcpuState::Free);
+        rollback_cpu_on_state(&mut state);
+        assert_eq!(state, VmVcpuState::Free);
+    }
+
+    #[test]
+    fn vcpu_cpu_on_start_success_moves_starting_to_ready() {
+        let mut state = VmVcpuState::Starting;
+
+        finish_cpu_on_start_state(&mut state, true).unwrap();
+
+        assert_eq!(state, VmVcpuState::Ready);
+    }
+
+    #[test]
+    fn vcpu_cpu_on_start_failure_restores_starting_to_free() {
+        let mut state = VmVcpuState::Starting;
+
+        finish_cpu_on_start_state(&mut state, false).unwrap();
+
+        assert_eq!(state, VmVcpuState::Free);
+    }
+
+    #[test]
+    fn vcpu_cpu_off_returns_ready_to_free_for_reon() {
+        let mut state = VmVcpuState::Free;
+
+        reserve_cpu_on_state(&mut state).unwrap();
+        assert_eq!(state, VmVcpuState::Starting);
+
+        state = VmVcpuState::Ready;
+        cpu_off_state(&mut state).unwrap();
+        assert_eq!(state, VmVcpuState::Free);
+
+        reserve_cpu_on_state(&mut state).unwrap();
+        assert_eq!(state, VmVcpuState::Starting);
+    }
+
+    #[test]
+    fn vcpu_cpu_off_rejects_non_ready_states() {
+        for initial_state in [
+            VmVcpuState::Created,
+            VmVcpuState::Free,
+            VmVcpuState::Starting,
+            VmVcpuState::Running,
+            VmVcpuState::Invalid,
+        ] {
+            let mut state = initial_state;
+
+            assert!(cpu_off_state(&mut state).is_err());
+            assert_eq!(state, initial_state);
+        }
+    }
 
     #[test]
     fn vcpu_backend_errors_keep_domain_context() {
@@ -506,93 +709,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn configures_secondary_while_primary_vcpu_is_current() {
-        ax_percpu::init();
-        ax_percpu::init_percpu_reg(0);
-
-        let primary = AxVCpu::<TestVcpu>::new(1, 0, None, ()).unwrap();
-        let secondary = AxVCpu::<TestVcpu>::new(1, 1, None, ()).unwrap();
-        secondary
-            .transition_state(VmVcpuState::Created, VmVcpuState::Starting)
-            .unwrap();
-
-        let entry = GuestPhysAddr::from(0x8020_0000usize);
-        let argument = 0x1234;
-        primary.with_current_cpu_set(|| {
-            super::vcpu_startup_test_support::configure_reserved_vcpu_startup(
-                &secondary,
-                entry,
-                |backend| backend.set_gpr(0, argument),
-            )
-            .unwrap();
-            let current = get_current_vcpu::<TestVcpu>().unwrap();
-            assert!(core::ptr::eq(current, &primary));
-        });
-
-        let backend = secondary.get_arch_vcpu();
-        assert_eq!(backend.entry, Some(entry));
-        assert_eq!(backend.argument, argument);
-        assert_eq!(secondary.state(), VmVcpuState::Starting);
-    }
-
-    #[derive(Default)]
-    struct TestVcpu {
-        entry: Option<GuestPhysAddr>,
-        argument: usize,
-    }
-
-    impl VmArchVcpuOps for TestVcpu {
-        type CreateConfig = ();
-        type SetupConfig = ();
-        type Exit = ();
-
-        fn new(
-            _vm_id: usize,
-            _vcpu_id: usize,
-            _config: Self::CreateConfig,
-        ) -> VmBackendResult<Self> {
-            Ok(Self::default())
-        }
-
-        fn set_entry(&mut self, entry: GuestPhysAddr) -> VmBackendResult {
-            self.entry = Some(entry);
-            Ok(())
-        }
-
-        fn set_nested_page_table(&mut self, _config: NestedPagingConfig) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn setup(&mut self, _config: Self::SetupConfig) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn run(&mut self) -> VmBackendResult<Self::Exit> {
-            Ok(())
-        }
-
-        fn bind(&mut self) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn unbind(&mut self) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn set_gpr(&mut self, reg: usize, val: usize) {
-            assert_eq!(reg, 0);
-            self.argument = val;
-        }
-
-        fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
-            Ok(())
-        }
-
-        fn set_return_value(&mut self, val: usize) {
-            self.argument = val;
-        }
     }
 }

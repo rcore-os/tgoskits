@@ -2,7 +2,7 @@ features = [
   "ax-runtime/rtc",
   "ax-driver/rtc",
   "ax-driver/serial",
-  "ax-driver/virtio-blk",
+  "ax-driver/nvme",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",

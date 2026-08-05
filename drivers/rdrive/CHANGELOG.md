@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.8](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.7...rdrive-v0.23.8) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+## [0.23.7](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.6...rdrive-v0.23.7) - 2026-07-23
+
+### Added
+
+- *(axvisor)* Enhance AxLoader and Asus NUC15CRH support with fixes ([#1555](https://github.com/rcore-os/tgoskits/pull/1555))
+
 ## [0.23.6](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.5...rdrive-v0.23.6) - 2026-07-10
 
 ### Added

@@ -55,6 +55,8 @@ pub(crate) fn handle<A: CpuUpOps>(
         return Ok(BoundVcpuExit::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
+            resets_vm: false,
+            exits_vcpu: false,
         }));
     };
 
@@ -68,6 +70,8 @@ pub(crate) fn handle<A: CpuUpOps>(
     Ok(BoundVcpuExit::Complete(VcpuRunAction {
         waits_for_event: false,
         stop_reason: None,
+        resets_vm: false,
+        exits_vcpu: false,
     }))
 }
 

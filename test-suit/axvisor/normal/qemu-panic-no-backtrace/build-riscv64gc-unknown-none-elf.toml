@@ -1,0 +1,11 @@
+features = [
+    "test-panic-no-backtrace",
+]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"
+vm_configs = []
+
+# No BACKTRACE=y — the default-off path.
+# axruntime's #[panic_handler] still emits BACKTRACE_BEGIN/BACKTRACE_END
+# markers, but with alloc=false + BT_ERROR requires_alloc since the
+# capture path is disabled without the backtrace feature.

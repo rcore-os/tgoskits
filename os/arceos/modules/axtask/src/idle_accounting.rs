@@ -16,22 +16,33 @@ static IDLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[ax_percpu::def_percpu]
 static IDLE_TOTAL_TICKS: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn begin_idle_wait(started_ticks: u64) {
+fn with_current_idle_state<R>(
+    operation: impl FnOnce(&AtomicU64, &AtomicU64, &AtomicBool, &AtomicU64) -> R,
+) -> R {
     let _guard = NoPreempt::new();
-    // SAFETY: the guard keeps the caller on this CPU through all accesses. The
-    // objects contain only atomics, so remote snapshots cannot create a data
-    // race.
-    let (sequence, started, active) = unsafe {
-        (
-            IDLE_SEQUENCE.current_ref_raw(),
-            IDLE_STARTED_TICKS.current_ref_raw(),
-            IDLE_ACTIVE.current_ref_raw(),
-        )
-    };
-    sequence.fetch_add(1, Ordering::AcqRel);
-    started.store(started_ticks, Ordering::Relaxed);
-    active.store(true, Ordering::Relaxed);
-    sequence.fetch_add(1, Ordering::Release);
+    // SAFETY: `NoPreempt` prevents migration for the entire callback. Every
+    // pointer addresses an atomic object in the pinned CPU's live per-CPU area,
+    // so shared remote observations cannot create non-atomic aliasing.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            operation(
+                IDLE_SEQUENCE.current_ptr(pin).as_ref(),
+                IDLE_STARTED_TICKS.current_ptr(pin).as_ref(),
+                IDLE_ACTIVE.current_ptr(pin).as_ref(),
+                IDLE_TOTAL_TICKS.current_ptr(pin).as_ref(),
+            )
+        })
+    }
+    .expect("idle accounting requires an initialized CPU-local area")
+}
+
+pub(crate) fn begin_idle_wait(started_ticks: u64) {
+    with_current_idle_state(|sequence, started, active, _total| {
+        sequence.fetch_add(1, Ordering::AcqRel);
+        started.store(started_ticks, Ordering::Relaxed);
+        active.store(true, Ordering::Relaxed);
+        sequence.fetch_add(1, Ordering::Release);
+    });
 }
 
 /// Closes the current CPU's architectural idle interval, if one is open.
@@ -40,28 +51,18 @@ pub(crate) fn begin_idle_wait(started_ticks: u64) {
 /// as running time. The idle loop calls it again after `wait_for_irqs`; that
 /// second call is intentionally a no-op when IRQ entry already closed it.
 pub fn finish_current_idle_wait(finished_ticks: u64) {
-    let _guard = NoPreempt::new();
-    // SAFETY: the guard keeps the caller on this CPU through all accesses. The
-    // objects contain only atomics, so remote snapshots cannot create a data
-    // race.
-    let (sequence, started, active, total) = unsafe {
-        (
-            IDLE_SEQUENCE.current_ref_raw(),
-            IDLE_STARTED_TICKS.current_ref_raw(),
-            IDLE_ACTIVE.current_ref_raw(),
-            IDLE_TOTAL_TICKS.current_ref_raw(),
-        )
-    };
-    sequence.fetch_add(1, Ordering::AcqRel);
-    let was_active = active.swap(false, Ordering::Relaxed);
-    let started_ticks = started.load(Ordering::Relaxed);
-    if was_active {
-        total.fetch_add(
-            finished_ticks.saturating_sub(started_ticks),
-            Ordering::Relaxed,
-        );
-    }
-    sequence.fetch_add(1, Ordering::Release);
+    with_current_idle_state(|sequence, started, active, total| {
+        sequence.fetch_add(1, Ordering::AcqRel);
+        let was_active = active.swap(false, Ordering::Relaxed);
+        let started_ticks = started.load(Ordering::Relaxed);
+        if was_active {
+            total.fetch_add(
+                finished_ticks.saturating_sub(started_ticks),
+                Ordering::Relaxed,
+            );
+        }
+        sequence.fetch_add(1, Ordering::Release);
+    });
 }
 
 /// Returns cumulative architectural-idle ticks for one CPU.
@@ -74,15 +75,18 @@ pub fn idle_time_ticks(cpu_id: usize, now_ticks: u64) -> Option<u64> {
         return None;
     }
 
-    // SAFETY: `cpu_id` was validated against the initialized CPU count. These
-    // remote references expose only atomics; the owning CPU updates them with
-    // the sequence protocol below, so no non-atomic aliasing occurs.
+    let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id).ok()?;
+    let area = ax_percpu::area(cpu_index).ok()?;
+
+    // SAFETY: `area` identifies an initialized, shutdown-lifetime per-CPU
+    // allocation. These references expose only atomics; the owning CPU updates
+    // them with the sequence protocol below, so shared access is synchronized.
     let (sequence, started, active, total) = unsafe {
         (
-            IDLE_SEQUENCE.remote_ref_raw(cpu_id),
-            IDLE_STARTED_TICKS.remote_ref_raw(cpu_id),
-            IDLE_ACTIVE.remote_ref_raw(cpu_id),
-            IDLE_TOTAL_TICKS.remote_ref_raw(cpu_id),
+            IDLE_SEQUENCE.remote_ptr(area).as_ref(),
+            IDLE_STARTED_TICKS.remote_ptr(area).as_ref(),
+            IDLE_ACTIVE.remote_ptr(area).as_ref(),
+            IDLE_TOTAL_TICKS.remote_ptr(area).as_ref(),
         )
     };
 

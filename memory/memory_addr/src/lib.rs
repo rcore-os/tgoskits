@@ -1,9 +1,16 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
 mod addr;
 mod iter;
 mod range;
+
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for address arithmetic and range iteration.
+pub mod axtest;
 
 pub use self::{
     addr::{MemoryAddr, PhysAddr, VirtAddr},
@@ -107,4 +114,34 @@ mod tests {
         assert!(is_aligned_4k(0x12345000));
         assert!(!is_aligned_4k(0x12345678));
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub fn memory_addr_page_size_constants_hold() -> bool {
+    // Page size constants
+    assert!(PAGE_SIZE_4K == 4096);
+    assert!(PAGE_SIZE_2M == 2097152);
+    assert!(PAGE_SIZE_1G == 1073741824);
+
+    // align_down and align_up basic tests
+    assert!(align_down(0, 4096) == 0);
+    assert!(align_up(0, 4096) == 0);
+    assert!(align_down(4096, 4096) == 4096);
+    assert!(align_up(4096, 4096) == 4096);
+    assert!(align_down(4097, 4096) == 4096);
+    assert!(align_up(4097, 4096) == 8192);
+
+    true
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub fn memory_addr_align_4k_helpers_hold() -> bool {
+    // Test 4K-specific alignment helpers
+    assert!(align_down_4k(0x12345) == 0x12000);
+    assert!(align_up_4k(0x12345) == 0x13000);
+    assert!(align_offset_4k(0x12345) == 0x345);
+    assert!(is_aligned_4k(0x12000));
+    assert!(!is_aligned_4k(0x12001));
+
+    true
 }

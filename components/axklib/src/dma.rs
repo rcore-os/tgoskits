@@ -7,6 +7,8 @@ use dma_api::{
 };
 use mbarrier::mb;
 
+use crate::DmaCoherentMappingOutcome;
+
 pub struct KlibDma;
 
 static DMA: KlibDma = KlibDma;
@@ -95,19 +97,21 @@ impl DmaPages {
 struct CoherentDmaPolicy;
 
 impl CoherentDmaPolicy {
-    fn make_uncached(pages: &DmaPages, layout: Layout) -> Result<(), DmaError> {
+    fn make_uncached(pages: &DmaPages, layout: Layout) -> DmaCoherentMappingOutcome {
         if pages.num_pages == 0 {
-            return Ok(());
+            return DmaCoherentMappingOutcome::Updated;
         }
 
         let range_size = pages.num_pages * PAGE_SIZE_4K;
         let start = VirtAddr::from_usize(pages.cpu_addr.as_ptr() as usize).align_down_4k();
-        crate::klib::mem_make_dma_coherent_uncached(start, range_size)
-            .map_err(|_| DmaError::NoMemory)?;
+        let outcome = crate::klib::mem_make_dma_coherent_uncached(start, range_size);
+        if outcome != DmaCoherentMappingOutcome::Updated {
+            return outcome;
+        }
         unsafe {
             pages.cpu_addr.as_ptr().write_bytes(0, layout.size());
         }
-        Ok(())
+        DmaCoherentMappingOutcome::Updated
     }
 
     fn restore_cached(pages: NonNull<u8>, num_pages: usize) -> Result<(), DmaError> {
@@ -118,6 +122,32 @@ impl CoherentDmaPolicy {
         let start = VirtAddr::from_usize(pages.as_ptr() as usize).align_down_4k();
         crate::klib::mem_restore_dma_cached(start, num_pages * PAGE_SIZE_4K)
             .map_err(|_| DmaError::NoMemory)
+    }
+}
+
+fn release_coherent_pages(
+    restore_cached: impl FnOnce() -> Result<(), DmaError>,
+    dealloc_pages: impl FnOnce(),
+) -> Result<(), DmaError> {
+    restore_cached()?;
+    dealloc_pages();
+    Ok(())
+}
+
+fn finish_coherent_mapping(
+    outcome: DmaCoherentMappingOutcome,
+    dealloc_pages: impl FnOnce(),
+) -> Option<()> {
+    match outcome {
+        DmaCoherentMappingOutcome::Updated => Some(()),
+        DmaCoherentMappingOutcome::NotStarted(_) => {
+            dealloc_pages();
+            None
+        }
+        // The PTE update may already be visible on only part of the CPU set.
+        // Returning these pages to the allocator could let cached and uncached
+        // aliases race with a new owner, so quarantine them permanently.
+        DmaCoherentMappingOutcome::StateUncertain(_) => None,
     }
 }
 
@@ -146,20 +176,23 @@ impl DmaOp for KlibDma {
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
         let pages = unsafe { DmaPages::alloc_for_layout(constraints, layout).ok()? };
-        if CoherentDmaPolicy::make_uncached(&pages, layout).is_err() {
-            unsafe { DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages) };
-            return None;
-        }
+        finish_coherent_mapping(
+            CoherentDmaPolicy::make_uncached(&pages, layout),
+            || unsafe { DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages) },
+        )?;
 
         Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         let num_pages = DmaPages::layout_pages(handle.layout());
-        if CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages).is_err() {
-            return;
-        }
-        unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) };
+        release_coherent_pages(
+            || {
+                CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages)
+                    .map_err(|_| DmaError::CoherentReleaseFailed)
+            },
+            || unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) },
+        )
     }
 
     unsafe fn map_streaming(
@@ -235,4 +268,77 @@ fn dma_range_fits_mask(dma_addr: u64, size: usize, dma_mask: u64) -> bool {
 
 fn dma_addr_is_aligned(dma_addr: u64, align: usize) -> bool {
     dma_addr.is_multiple_of(align.max(1) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{rc::Rc, vec::Vec};
+    use core::cell::RefCell;
+
+    use super::*;
+    use crate::AxError;
+
+    #[test]
+    fn coherent_release_restores_mapping_before_free() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let restore_events = events.clone();
+        let free_events = events.clone();
+
+        let result = release_coherent_pages(
+            move || {
+                restore_events.borrow_mut().push("restore");
+                Ok(())
+            },
+            move || free_events.borrow_mut().push("free"),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(*events.borrow(), ["restore", "free"]);
+    }
+
+    #[test]
+    fn coherent_release_quarantines_pages_when_restore_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let restore_events = events.clone();
+        let free_events = events.clone();
+
+        let result = release_coherent_pages(
+            move || {
+                restore_events.borrow_mut().push("restore");
+                Err(DmaError::CoherentReleaseFailed)
+            },
+            move || free_events.borrow_mut().push("free"),
+        );
+
+        assert_eq!(result, Err(DmaError::CoherentReleaseFailed));
+        assert_eq!(*events.borrow(), ["restore"]);
+    }
+
+    #[test]
+    fn coherent_allocation_reclaims_pages_when_mapping_did_not_start() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let free_events = events.clone();
+
+        let result = finish_coherent_mapping(
+            DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported),
+            move || free_events.borrow_mut().push("free"),
+        );
+
+        assert_eq!(result, None);
+        assert_eq!(*events.borrow(), ["free"]);
+    }
+
+    #[test]
+    fn coherent_allocation_quarantines_pages_when_mapping_state_is_uncertain() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let free_events = events.clone();
+
+        let result = finish_coherent_mapping(
+            DmaCoherentMappingOutcome::StateUncertain(AxError::TimedOut),
+            move || free_events.borrow_mut().push("free"),
+        );
+
+        assert_eq!(result, None);
+        assert!(events.borrow().is_empty());
+    }
 }

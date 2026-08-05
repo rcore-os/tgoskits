@@ -1,6 +1,6 @@
 //! AArch64 compatibility facade and target-specific guest FDT policy.
 
-use alloc::{format, vec::Vec};
+use alloc::vec::Vec;
 
 use fdt_edit::Fdt;
 
@@ -19,17 +19,17 @@ pub use core::{
     update_fdt, update_provided_fdt,
 };
 
-const ARCH_TIMER_COMPATIBLE: &str = "arm,armv8-timer";
-const ARCH_TIMER_VIRTUAL_IRQ_INDEX: usize = 2;
-const GIC_PPI_TYPE: u32 = 1;
-const GIC_PPI_BASE: u32 = 16;
-const GIC_PPI_COUNT: u32 = 16;
+pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
+    core::interrupt::host_gic_maintenance_intid(fdt)
+}
 
 pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
         decode_interrupt: super::capabilities::decode_gic_spi,
+        resolve_cpu_index: super::capabilities::resolve_cpu_index,
+        host_cpu_count: super::capabilities::host_cpu_count,
     }
 }
 
@@ -51,7 +51,7 @@ pub(super) fn initrd_start_size_from_image_config(
 pub(super) fn update_cpu_node(
     fdt: &Fdt,
     host_fdt: Option<&Fdt>,
-    crate_config: &axvmconfig::AxVMCrateConfig,
+    crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
     let Some(host_fdt) = host_fdt else {
         return Ok(fdt.encode().as_ref().to_vec());
@@ -101,88 +101,8 @@ pub(super) fn update_cpu_node(
 
 pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+    vm_create_config: &mut axvmconfig::GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<GuestDtbImage>> {
-    let configured_timer_irq = vm_config
-        .aarch64_virtual_timer_irq()
-        .map(validate_gic_ppi_irq)
-        .transpose()?;
-    let guest_dtb = core::prepare_dtb_guest(vm_config, vm_create_config, provider)?;
-    let timer_irq = guest_dtb
-        .as_ref()
-        .map(|dtb| aarch64_virtual_timer_irq_from_fdt(dtb.as_bytes()))
-        .transpose()?
-        .flatten();
-    vm_config.set_aarch64_virtual_timer_irq(timer_irq.or(configured_timer_irq));
-    Ok(guest_dtb)
-}
-
-pub(super) fn aarch64_virtual_timer_irq_from_fdt(dtb: &[u8]) -> AxVmResult<Option<u32>> {
-    let fdt = Fdt::from_bytes(dtb).map_err(|error| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse AArch64 timer route from FDT: {error:#?}")
-        )
-    })?;
-
-    for timer in fdt.find_compatible(&[ARCH_TIMER_COMPATIBLE]) {
-        if timer
-            .as_node()
-            .get_property("status")
-            .and_then(|status| status.as_str())
-            == Some("disabled")
-        {
-            continue;
-        }
-
-        let interrupts = timer.interrupts();
-        let timer_interrupt = interrupts
-            .get(ARCH_TIMER_VIRTUAL_IRQ_INDEX)
-            .ok_or_else(|| {
-                ax_err_type!(
-                    InvalidData,
-                    format!(
-                        "AArch64 timer node {} has no virtual-timer interrupt",
-                        timer.path()
-                    )
-                )
-            })?;
-        return decode_gic_ppi(&timer_interrupt.specifier).map(Some);
-    }
-
-    Ok(None)
-}
-
-fn decode_gic_ppi(specifier: &[u32]) -> AxVmResult<u32> {
-    let (&interrupt_type, &ppi_offset) =
-        specifier.first().zip(specifier.get(1)).ok_or_else(|| {
-            ax_err_type!(
-                InvalidData,
-                "Arm timer IRQ specifier has fewer than 2 cells"
-            )
-        })?;
-    if interrupt_type != GIC_PPI_TYPE {
-        return Err(ax_err_type!(
-            InvalidData,
-            format!("Arm virtual timer IRQ type {interrupt_type} is not a GIC PPI")
-        ));
-    }
-    if ppi_offset >= GIC_PPI_COUNT {
-        return Err(ax_err_type!(
-            InvalidData,
-            format!("Arm virtual timer PPI offset {ppi_offset} is out of range")
-        ));
-    }
-    validate_gic_ppi_irq(GIC_PPI_BASE + ppi_offset)
-}
-
-fn validate_gic_ppi_irq(irq: u32) -> AxVmResult<u32> {
-    if !(GIC_PPI_BASE..GIC_PPI_BASE + GIC_PPI_COUNT).contains(&irq) {
-        return Err(ax_err_type!(
-            InvalidInput,
-            format!("Arm virtual timer IRQ {irq} is not a GIC PPI")
-        ));
-    }
-    Ok(irq)
+    core::prepare_dtb_guest(vm_config, vm_create_config, provider)
 }

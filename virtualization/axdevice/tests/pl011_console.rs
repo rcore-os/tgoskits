@@ -1,10 +1,10 @@
-use std::cell::RefCell;
+use std::sync::{Arc, Barrier, Mutex};
 
-use axdevice::{AccessWidth, Device, GuestPhysAddr, Pl011ConsoleDevice, Pl011ConsoleHostOps};
-use axdevice_base::{BusAccess, BusKind, BusResponse, DeviceError, Resource};
-
-const UART_BASE: usize = 0x0900_0000;
-const UART_SIZE: usize = 0x1000;
+use axdevice::{AccessWidth, Pl011, SerialBackend};
+use axdevice_base::{
+    ControllerInputId, DeviceError, InterruptControllerId, InterruptTriggerMode, IrqResult,
+    WiredIrqInput, WiredIrqSink,
+};
 
 const UARTDR: usize = 0x000;
 const UARTFR: usize = 0x018;
@@ -20,95 +20,87 @@ const UARTCID3: usize = 0xffc;
 const UARTFR_RXFE: u64 = 1 << 4;
 const UARTFR_TXFE: u64 = 1 << 7;
 
-thread_local! {
-    static OUTPUT: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+#[derive(Debug, Default)]
+struct RecordingBackend {
+    writes: Mutex<Vec<Vec<u8>>>,
 }
 
-struct MockHost;
-
-impl Pl011ConsoleHostOps for MockHost {
-    fn write_console_chunk(console: &str, bytes: &[u8]) {
-        OUTPUT.with(|output| {
-            output
-                .borrow_mut()
-                .push((console.to_owned(), bytes.to_vec()));
-        });
+impl RecordingBackend {
+    fn output(&self) -> Vec<u8> {
+        self.writes.lock().unwrap().concat()
     }
 }
 
-fn new_console() -> Pl011ConsoleDevice<MockHost> {
-    OUTPUT.with(|output| output.borrow_mut().clear());
-    Pl011ConsoleDevice::new(
-        "linux-controller".into(),
-        GuestPhysAddr::from_usize(UART_BASE),
-        UART_SIZE,
+impl SerialBackend for RecordingBackend {
+    fn write(&self, bytes: &[u8]) {
+        self.writes.lock().unwrap().push(bytes.to_vec());
+    }
+
+    fn read(&self, _buffer: &mut [u8]) -> usize {
+        0
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecordingIrqSink {
+    levels: Mutex<Vec<bool>>,
+}
+
+impl WiredIrqSink for RecordingIrqSink {
+    fn set_level(&self, _input: ControllerInputId, asserted: bool) -> IrqResult {
+        self.levels.lock().unwrap().push(asserted);
+        Ok(())
+    }
+
+    fn pulse(&self, _input: ControllerInputId) -> IrqResult {
+        Ok(())
+    }
+}
+
+fn new_console() -> (Pl011, Arc<RecordingBackend>, Arc<RecordingIrqSink>) {
+    let backend = Arc::new(RecordingBackend::default());
+    let irq_sink = Arc::new(RecordingIrqSink::default());
+    let irq = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(33),
+        InterruptTriggerMode::LevelTriggered,
+        irq_sink.clone(),
     )
-    .unwrap()
+    .connect()
+    .unwrap();
+    (Pl011::new(backend.clone(), irq), backend, irq_sink)
 }
 
-fn captured_output() -> Vec<(String, Vec<u8>)> {
-    OUTPUT.with(|output| output.borrow().clone())
-}
-
-fn read(device: &Pl011ConsoleDevice<MockHost>, offset: usize) -> Result<u64, DeviceError> {
-    match device.handle(&BusAccess {
-        kind: BusKind::Mmio,
-        is_read: true,
-        addr: (UART_BASE + offset) as u64,
-        width: AccessWidth::Dword,
-        data: 0,
-    })? {
-        BusResponse::Read { value } => Ok(value),
-        BusResponse::Write => panic!("MMIO read returned a write response"),
-    }
-}
-
-fn write(
-    device: &Pl011ConsoleDevice<MockHost>,
-    offset: usize,
-    value: u32,
-) -> Result<(), DeviceError> {
+fn write(device: &Pl011, offset: usize, value: u32) -> Result<(), DeviceError> {
     write_with_width(device, offset, AccessWidth::Dword, value)
 }
 
 fn write_with_width(
-    device: &Pl011ConsoleDevice<MockHost>,
+    device: &Pl011,
     offset: usize,
     width: AccessWidth,
     value: u32,
 ) -> Result<(), DeviceError> {
-    match device.handle(&BusAccess {
-        kind: BusKind::Mmio,
-        is_read: false,
-        addr: (UART_BASE + offset) as u64,
-        width,
-        data: value as u64,
-    })? {
-        BusResponse::Write => Ok(()),
-        BusResponse::Read { .. } => panic!("MMIO write returned a read response"),
-    }
+    device.write(offset, width, u64::from(value))
 }
 
 #[test]
-fn exposes_a_pl011_mmio_window_and_polled_transmit_state() {
-    let device = new_console();
+fn exposes_primecell_identification_and_polled_transmit_state() {
+    let (device, ..) = new_console();
 
+    let flags = device.read(UARTFR, AccessWidth::Dword).unwrap();
     assert_eq!(
-        device.resources(),
-        &[Resource::MmioRange {
-            base: UART_BASE as u64,
-            size: UART_SIZE as u64,
-        }]
+        flags & (UARTFR_RXFE | UARTFR_TXFE),
+        UARTFR_RXFE | UARTFR_TXFE
     );
-    assert_eq!(read(&device, UARTFR).unwrap(), UARTFR_RXFE | UARTFR_TXFE);
-    assert_eq!(read(&device, UARTMIS).unwrap(), 0);
-    assert_eq!(read(&device, UARTPID0).unwrap(), 0x11);
-    assert_eq!(read(&device, UARTCID3).unwrap(), 0xb1);
+    assert_eq!(device.read(UARTMIS, AccessWidth::Dword).unwrap(), 0);
+    assert_eq!(device.read(UARTPID0, AccessWidth::Dword).unwrap(), 0x11);
+    assert_eq!(device.read(UARTCID3, AccessWidth::Dword).unwrap(), 0xb1);
 }
 
 #[test]
-fn preserves_driver_configuration_and_forwards_complete_lines() {
-    let device = new_console();
+fn preserves_driver_configuration_and_forwards_guest_output() {
+    let (device, backend, _) = new_console();
 
     for (register, value) in [
         (UARTCR, 0),
@@ -119,50 +111,33 @@ fn preserves_driver_configuration_and_forwards_complete_lines() {
         (UARTCR, 0x301),
     ] {
         write(&device, register, value).unwrap();
-        assert_eq!(read(&device, register).unwrap(), value as u64);
+        assert_eq!(
+            device.read(register, AccessWidth::Dword).unwrap(),
+            u64::from(value)
+        );
     }
 
     for byte in b"IVC-RTOS-READY\r\n" {
         write(&device, UARTDR, u32::from(*byte)).unwrap();
     }
 
-    assert_eq!(
-        captured_output(),
-        vec![(
-            "linux-controller".to_owned(),
-            b"IVC-RTOS-READY\r\n".to_vec()
-        )]
-    );
-}
-
-#[test]
-fn rejects_ranges_that_cannot_expose_the_primecell_identification_registers() {
-    let result = Pl011ConsoleDevice::<MockHost>::new(
-        "short-uart".into(),
-        GuestPhysAddr::from_usize(UART_BASE),
-        UART_SIZE - 1,
-    );
-
-    assert!(matches!(result, Err(DeviceError::InvalidInput { .. })));
+    assert_eq!(backend.output(), b"IVC-RTOS-READY\r\n");
 }
 
 #[test]
 fn forwards_linux_style_byte_writes_to_the_data_register() {
-    let device = new_console();
+    let (device, backend, _) = new_console();
 
     for byte in b"Linux console\n" {
         write_with_width(&device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
     }
 
-    assert_eq!(
-        captured_output(),
-        vec![("linux-controller".to_owned(), b"Linux console\n".to_vec())]
-    );
+    assert_eq!(backend.output(), b"Linux console\n");
 }
 
 #[test]
-fn keeps_a_long_result_line_in_one_host_chunk() {
-    let device = new_console();
+fn preserves_a_long_result_without_truncation() {
+    let (device, backend, _) = new_console();
     let mut result_line = vec![b'x'; 512];
     result_line.push(b'\n');
 
@@ -170,67 +145,45 @@ fn keeps_a_long_result_line_in_one_host_chunk() {
         write_with_width(&device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
     }
 
-    assert_eq!(
-        captured_output(),
-        vec![("linux-controller".to_owned(), result_line)]
-    );
+    assert_eq!(backend.output(), result_line);
 }
 
 #[test]
-fn concurrent_console_tests_keep_their_captured_output_isolated() {
-    let (first_written_tx, first_written_rx) = std::sync::mpsc::channel();
-    let (second_written_tx, second_written_rx) = std::sync::mpsc::channel();
+fn concurrent_consoles_keep_their_backends_isolated() {
+    let (first_device, first_backend, _) = new_console();
+    let (second_device, second_backend, _) = new_console();
+    let barrier = Arc::new(Barrier::new(2));
 
+    let first_barrier = barrier.clone();
     let first = std::thread::spawn(move || {
-        let device = new_console();
+        first_barrier.wait();
         for byte in b"first\n" {
-            write_with_width(&device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
+            write_with_width(&first_device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
         }
-        first_written_tx.send(()).unwrap();
-        second_written_rx.recv().unwrap();
-
-        assert_eq!(
-            captured_output(),
-            vec![("linux-controller".to_owned(), b"first\n".to_vec())]
-        );
     });
     let second = std::thread::spawn(move || {
-        first_written_rx.recv().unwrap();
-        let device = new_console();
+        barrier.wait();
         for byte in b"second\n" {
-            write_with_width(&device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
+            write_with_width(&second_device, UARTDR, AccessWidth::Byte, u32::from(*byte)).unwrap();
         }
-        second_written_tx.send(()).unwrap();
     });
 
     first.join().unwrap();
     second.join().unwrap();
+    assert_eq!(first_backend.output(), b"first\n");
+    assert_eq!(second_backend.output(), b"second\n");
 }
 
 #[test]
 fn rejects_qword_and_out_of_range_accesses() {
-    let device = new_console();
-    let qword_access = BusAccess {
-        kind: BusKind::Mmio,
-        is_read: true,
-        addr: (UART_BASE + UARTFR) as u64,
-        width: AccessWidth::Qword,
-        data: 0,
-    };
-    let outside_access = BusAccess {
-        kind: BusKind::Mmio,
-        is_read: true,
-        addr: (UART_BASE + UART_SIZE) as u64,
-        width: AccessWidth::Dword,
-        data: 0,
-    };
+    let (device, ..) = new_console();
 
     assert!(matches!(
-        device.handle(&qword_access),
+        device.read(UARTFR, AccessWidth::Qword),
         Err(DeviceError::InvalidWidth { .. })
     ));
     assert!(matches!(
-        device.handle(&outside_access),
+        device.read(0x1000, AccessWidth::Dword),
         Err(DeviceError::OutOfRange { .. })
     ));
 }

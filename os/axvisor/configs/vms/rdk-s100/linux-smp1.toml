@@ -6,7 +6,7 @@ id = 2
 # Guest vm name.
 name = "linux"
 # Virtualization type.
-vm_type = 1
+guest_type = "passthrough"
 # The number of virtual CPUs.
 cpu_num = 1
 # The physical CPU ids.
@@ -39,28 +39,8 @@ memory_regions = [
 #
 # Device specifications
 #
+
+# Physical-device selection. Virtual platform devices are machine-owned.
 [devices]
-# The interrupt mode.
-interrupt_mode = "passthrough"
-
-# Emu_devices.
-# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
-emu_devices = []
-
-# Pass-through devices.
-# Name Base-Ipa Base-Pa Length Alloc-Irq.
-passthrough_devices = [
-    ["/"],
-    #["/timer"],
-]
-
-# Passthrough addresses.
-# Base-GPA  Length.
-passthrough_addresses = [
-    #[0x28041000, 0x100_0000]
-]
-
-# Devices that are not desired to be passed through to the guest
-excluded_devices = [
-   # ["/gic-v3"],
-]
+passthrough = []
+disabled = []

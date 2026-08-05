@@ -1,84 +1,98 @@
-<h1 align="center">ax-percpu</h1>
+# ax-percpu
 
-<p align="center">Define and access per-CPU data structures</p>
+Typed per-CPU layout, initialization, and access for `no_std` kernels.
 
-<div align="center">
+`ax-percpu` is dynamic-only. The final ELF contains one layout template; the
+platform allocates one writable runtime area per CPU and initializes the
+complete layout before any CPU is bound. Architecture register ownership is
+provided by the separate `cpu-local` crate.
 
-[![Crates.io](https://img.shields.io/crates/v/ax-percpu.svg)](https://crates.io/crates/ax-percpu)
-[![Docs.rs](https://docs.rs/ax-percpu/badge.svg)](https://docs.rs/ax-percpu)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+## Runtime contract
 
-</div>
+The initialization sequence is fixed:
 
-English | [中文](README_CN.md)
+1. The linker retains exactly one `.percpu.template` plus the
+   `.percpu.init` and `.percpu.align` descriptor tables.
+2. The platform allocates shutdown-lifetime storage for every CPU area.
+3. `initialize_layout(PerCpuRegion)` validates the complete geometry and
+   descriptor tables before the first destination write.
+4. Each `CpuAreaPrefix` and each typed value is constructed once at its final
+   runtime address.
+5. The layout is frozen; the platform may then install
+   `area(cpu).cpu_area()` through its offline-CPU boundary.
 
-# Introduction
+There is no linked runtime layout or static per-CPU replication. Changing the
+runtime CPU count therefore does not change the ELF template size.
 
-`ax-percpu` provides Define and access per-CPU data structures. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+The linker contract uses only these output sections:
 
+- `.percpu.template`
+- `.percpu.init`
+- `.percpu.align`
 
-> ax-percpu was derived from https://github.com/arceos-org/percpu
+Generated storage is placed in `.percpu.template.storage`; the fixed prefix
+and end sentinel use `.percpu.template.header` and `.percpu.template.end`.
+Linker boundaries use `__PERCPU_*` and `__CPU_LOCAL_*` names.
 
-## Quick Start
+## Typed access
 
-### Installation
+```rust,no_run
+#[ax_percpu::def_percpu]
+static CPU_ID: usize = 0;
 
-Add this crate to your `Cargo.toml`:
-
-```toml
-[dependencies]
-ax-percpu = "0.4.3"
-```
-
-### Run Check and Test
-
-```bash
-# Enter the crate directory
-cd components/percpu/percpu
-
-# Format code
-cargo fmt --all
-
-# Run clippy
-cargo clippy --all-targets --all-features
-
-# Run Linux host tests
-cargo test --features host-test,non-zero-vma
-
-# Build documentation
-cargo doc --no-deps
-```
-
-## Integration
-
-### Example
-
-```rust
-use ax_percpu as _;
-
-fn main() {
-    // Integrate `ax-percpu` into your project here.
+fn set_cpu_id(pin: &ax_percpu::CpuPin<'_>, cpu_id: usize) {
+    ax_percpu::current_area(pin).expect("CPU area must match the frozen layout");
+    CPU_ID.write_current(pin, cpu_id);
+    assert_eq!(CPU_ID.read_current(pin), cpu_id);
 }
 ```
 
-### Documentation
+Primitive values use the matching atomic storage type. Object initializers are
+retained as typed descriptor thunks and construct one independent value in
+each final runtime area; arbitrary Rust object bytes are never duplicated from
+the ELF template.
 
-Generate and view API documentation:
+Current access requires a scoped `CpuPin`, which validates the live register,
+area self pointer, and CPU index when it is created. A mutable object borrow
+additionally requires `ExclusiveCpu`; only the unsafe guard integration can
+create that stronger capability after excluding IRQ/re-entry and conflicting
+remote access.
 
-```bash
-cargo doc --no-deps --open
+| Operation | Required protection |
+| --- | --- |
+| Atomic scalar | Migration disabled; local IRQs may remain enabled |
+| Shared `T: Sync` object | Migration disabled; the object synchronizes itself |
+| Local mutable object | Migration, IRQ/re-entry, and conflicting remote access excluded |
+| Scheduler switch | IRQs and migration disabled; transactional tokens consumed |
+| vCPU run | Migration disabled; exit assembly restores host registers before Rust |
+| CPU-area initialization | CPU offline and raw area exclusively owned |
+
+## Host tests
+
+The crate exposes one feature, `host-test`. It provides:
+
+```rust,ignore
+let layout = ax_percpu::host_test::initialize(
+    core::num::NonZeroU32::new(4).unwrap(),
+)?;
+let area = ax_percpu::area(ax_percpu::CpuIndex::try_from(0)?)?;
+unsafe { cpu_local::install_cpu_area(area.cpu_area()?)? };
+unsafe {
+    ax_percpu::with_cpu_pin(|pin| {
+        assert_eq!(ax_percpu::current_area(pin), Ok(area));
+    })?;
+}
 ```
 
-Online documentation: [docs.rs/ax-percpu](https://docs.rs/ax-percpu)
+The helper owns process-lifetime dynamic storage and initializes it once.
+Each modeled CPU thread must explicitly install its own binding.
 
-# Contributing
+## Validation
 
-1. Fork the repository and create a branch
-2. Run local format and checks
-3. Run local tests relevant to this crate
-4. Submit a PR and ensure CI passes
+```bash
+cargo test -p ax-percpu --features host-test
+cargo test -p ax-percpu-macros
+cargo xtask clippy --package ax-percpu
+```
 
-# License
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.
+Licensed under Apache-2.0.

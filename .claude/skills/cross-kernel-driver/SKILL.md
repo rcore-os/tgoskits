@@ -19,7 +19,10 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 4. Add new driver crates to workspace `members` and `[workspace.dependencies]` when they are meant to be consumed by this repo.
 5. For ArceOS/dynamic-platform integration, keep adapters in the existing platform module names such as `platforms/axplat-dyn/src/drivers/blk`, even if the reusable crate lives under `drivers/block`.
 6. Use small capability traits or API objects instead of a monolithic `KernelHal`. Split MMIO, DMA, IRQ event, queue contract, and wake/poll boundaries.
-7. Model queues as independent running units. Prefer APIs such as `submit`, `reclaim`, `poll`, `submit_request`, and `poll_request`.
+7. Model queues as independent running units. Prefer APIs such as `submit`,
+   `reclaim`, and consumption of synchronized queue-local events. For the
+   production block path, use owned batch submission and IRQ-triggered
+   completion drain; do not add request polling.
 8. For IRQ-driven devices, keep control, IRQ handler, and queue endpoints separate. The control endpoint owns startup/config/service operations; the IRQ endpoint synchronizes hardware events; queue endpoints submit/reclaim work using queue-local state.
 9. Move lifetime-sensitive IRQ handler endpoints into the registered IRQ callback when possible. Prefer `FnMut`/boxed callback ownership or an equivalent OS registration token over sharing the IRQ handler through `Arc<Mutex<_>>`.
 10. IRQ handlers should synchronize hardware events into queue-local completion state; queues should advance their own work without locking the IRQ handler or re-reading shared/destructive IRQ status.
@@ -53,23 +56,44 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 
 Use `&mut self` APIs where exclusive access is the natural contract. Do not require callers to provide an OS lock as part of the portable abstraction. If only the IRQ callback should call a handler, make that visible in the type shape: move the handler into the callback and expose `handle(&mut self, ...)` instead of making the handler a clonable shared object.
 
-For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, DMA/wait policy, and IRQ registration in OS glue/runtime layers; the portable boundary should be submit/poll requests plus an owned IRQ endpoint with `handle_irq(&mut self) -> Event`.
+For block-device integration in ArceOS, expose portable controllers through
+`rdif_block::BlockController` and move-only queues through
+`rdif_block::HardwareQueue`. Keep channel creation, wait policy, IRQ
+registration, and task notification in OS glue/runtime layers. The portable
+boundary owns DMA from accepted submission through terminal completion.
 
 Prefer small interfaces:
 
 ```rust
-pub trait IrqHandle {
-    fn handle_irq(&mut self) -> Event;
+pub trait HardIrqHandler {
+    fn ack(&mut self) -> IrqAck;
 }
 
-pub trait IQueue {
+pub trait HardwareQueue {
     fn id(&self) -> usize;
-    fn submit_request(&mut self, req: Request<'_>) -> Result<RequestId, Error>;
-    fn poll_request(&mut self, id: RequestId) -> Result<(), Error>;
+    fn submit_batch_owned(
+        &mut self,
+        requests: &mut OwnedRequestBatch,
+        accepted: &mut dyn SubmissionSink,
+    ) -> BatchSubmitResult;
+    fn commit_submissions(&mut self) -> Result<(), BlkError>;
+    fn drain_completions(
+        &mut self,
+        completed: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError>;
 }
 ```
 
-IRQ handlers should identify/clear the interrupt source and extract an `Event`. They should not block, run long slow paths, or hold broad locks. Keep the principle visible during reviews: "interrupts synchronize state; tasks advance flow" (`中断只同步状态，任务才推进流程`).
+`submit_batch_owned` removes only an accepted prefix; the runtime retains every
+unaccepted request. `commit_submissions` publishes accepted descriptors once
+per batch. `drain_completions` is called by the queue owner only after a
+matching acknowledged IRQ event.
+
+Hard IRQ handlers should identify/clear or mask the interrupt source and
+publish an `IrqAck` into preallocated state. They must not drain queues, touch
+DMA ownership, allocate, or complete a task. Keep the principle visible during
+reviews: "interrupts synchronize state; tasks advance flow"
+(`中断只同步状态，任务才推进流程`).
 
 For runtime designs with richer state, prefer returning split parts:
 
@@ -85,7 +109,12 @@ Register `irq` by moving it into the OS IRQ callback. Let task/worker code hold 
 
 When a driver intentionally shares registries or queue maps between task setup and IRQ completion paths, prefer an xHCI-style exclusion protocol over taking the same spinlock in IRQ: task context masks the same device interrupter/MSI source before mutation; IRQ context does not take that lock and only touches entries whose lifetime was established before interrupts were enabled. This avoids same-lock IRQ reentry deadlocks, but it does not make allocation, blocking, arbitrary wakers, or unrelated OS callbacks safe in hard IRQ.
 
-For split queue designs, do not make an IRQ handler lock a queue mutex that task context can hold. If IRQ and queues share one hardware register block, put exclusive register access behind one short, non-blocking core/gate, let the IRQ endpoint be the sole reader/clearer of shared or destructive IRQ status, and fan out results into independent per-queue completion state. Queue `poll` should normally mean "consume synchronized completion state", not "peek the global IRQ/status register again".
+For split queue designs, do not make an IRQ handler lock a queue mutex that
+task context can hold. If IRQ and queues share one hardware register block,
+let the IRQ endpoint be the sole reader/clearer of shared or destructive IRQ
+status and fan out results through preallocated atomics. For block devices, the
+maintenance task exclusively owns `HardwareQueue`; hard IRQ only
+acknowledges/latches/notifies and never calls `drain_completions`.
 
 ## Validation
 

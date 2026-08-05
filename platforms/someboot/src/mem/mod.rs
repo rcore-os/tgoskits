@@ -12,7 +12,7 @@ pub(crate) mod region;
 
 pub use page_table_generic::*;
 
-use crate::{ArchTrait, DCacheOp, arch::Arch, smp::percpu_range};
+use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
 
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
@@ -66,8 +66,8 @@ pub fn __io(paddr: usize) -> *mut u8 {
     crate::arch::Arch::_io(paddr)
 }
 
-pub fn __percpu(paddr: usize) -> *mut u8 {
-    crate::arch::Arch::_percpu(paddr)
+pub fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
+    crate::arch::Arch::cpu_area_phys_to_virt(paddr)
 }
 
 /// kernel image 物理地址转换为内核虚拟地址
@@ -99,7 +99,11 @@ pub fn dma_coherent_after_mapping_update() {
     Arch::dma_coherent_after_mapping_update();
 }
 
-#[cfg(any(test, all(target_arch = "riscv64", feature = "thead-mae")))]
+#[cfg(any(
+    test,
+    all(axtest, feature = "axtest"),
+    all(target_arch = "riscv64", feature = "thead-mae")
+))]
 pub(crate) fn cache_line_range(
     addr: usize,
     size: usize,
@@ -112,13 +116,43 @@ pub(crate) fn cache_line_range(
     Some((addr & !(line_size - 1), end))
 }
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn mem_constants_and_cache_line_rules_hold_for_test() -> bool {
+    // KB/MB/GB constants
+    assert!(KB == 1024);
+    assert!(MB == 1024 * KB);
+    assert!(GB == 1024 * MB);
+
+    // KIMAGE_MAP_ALIGN
+    assert!(KIMAGE_MAP_ALIGN == 2 * MB);
+
+    // cache_line_range: valid inputs
+    let result = cache_line_range(0x1000, 64, 64).unwrap();
+    assert!(result.0 == 0x1000); // aligned down
+    assert!(result.1 == 0x1040); // addr + size
+
+    // cache_line_range: zero size returns None
+    assert!(cache_line_range(0x1000, 0, 64).is_none());
+
+    // cache_line_range: zero line_size returns None
+    assert!(cache_line_range(0x1000, 64, 0).is_none());
+
+    // cache_line_range: non-power-of-2 line_size returns None
+    assert!(cache_line_range(0x1000, 64, 63).is_none());
+
+    // cache_line_range: overflow returns None
+    assert!(cache_line_range(usize::MAX, 1, 64).is_none());
+
+    true
+}
+
 /// 物理RAM实际转换为的内核虚拟地址
 pub fn phys_to_virt(paddr: usize) -> *mut u8 {
     if mmu::is_kernel_relocated() {
         if kimage_range().contains(&paddr) {
             __kimage_va(paddr)
-        } else if percpu_range().contains(&paddr) {
-            __percpu(paddr)
+        } else if cpu_area_region().contains(&paddr) {
+            cpu_area_phys_to_virt(paddr)
         } else {
             __va(paddr)
         }
@@ -270,4 +304,29 @@ mod tests {
         assert_eq!(cache_line_range(0x1000, 1, 63), None);
         assert_eq!(cache_line_range(usize::MAX, 2, 64), None);
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn mem_constants_and_types_hold_for_test() -> bool {
+    // Test memory constants
+    assert_eq!(KB, 1024);
+    assert_eq!(MB, 1024 * 1024);
+    assert_eq!(GB, 1024 * 1024 * 1024);
+    assert_eq!(KIMAGE_MAP_ALIGN, 2 * MB);
+
+    // Test MemoryMap capacity
+    assert_eq!(MEMORY_MAP_CAPACITY, 512);
+
+    true
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn mem_byte_unit_types_hold_for_test() -> bool {
+    // Test byte_unit types exist
+    use byte_unit::Byte;
+
+    // Test that Byte can be created
+    let _byte = Byte::from_u64(1024);
+
+    true
 }

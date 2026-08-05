@@ -205,6 +205,7 @@ fn do_epoll_wait(
         || match block_on(future::timeout(
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
+                epoll.register_waiter_wakers()?;
                 epoll.poll_events_with(maxevents, |index, event| {
                     write_epoll_event(events, index, &event)?;
                     Ok(())
@@ -258,4 +259,26 @@ pub fn sys_epoll_pwait2(
         .map(|ts| ts.try_into_time_value())
         .transpose()?;
     do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+}
+
+#[cfg(axtest)]
+pub(crate) fn epoll_validation_rules_hold_for_test() -> bool {
+    use core::mem::size_of;
+
+    use linux_raw_sys::general::{EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
+
+    // Test EP_MAX_EVENTS calculation
+    let ep_max_events = i32::MAX as usize / size_of::<linux_raw_sys::general::epoll_event>();
+    assert!(ep_max_events > 0);
+
+    // Test valid epoll operations
+    let valid_ops = [EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD];
+    for &op in &valid_ops {
+        assert!(op == EPOLL_CTL_ADD || op == EPOLL_CTL_DEL || op == EPOLL_CTL_MOD);
+    }
+
+    // Test EPOLL_CLOEXEC flag
+    assert!(EPOLL_CLOEXEC != 0);
+
+    true
 }

@@ -12,7 +12,7 @@ OUTPUT_ARCH(loongarch)
 ENTRY(kernel_entry)
 PHDRS {
 	text PT_LOAD FLAGS(7);	/* RWX */
-	tls PT_TLS FLAGS(4);	/* R__ */
+${tls_phdr}
 	note PT_NOTE FLAGS(4);	/* R__ */
 }
 

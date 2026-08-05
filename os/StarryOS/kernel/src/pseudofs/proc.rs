@@ -15,7 +15,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 #[cfg(target_arch = "aarch64")]
@@ -26,13 +26,14 @@ use ax_runtime::hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
 use crate::{
-    file::FD_TABLE,
+    file::{FD_TABLE, PidFd},
     mm::{BackendFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
@@ -439,65 +440,17 @@ fn render_proc_net_snmp() -> String {
     buf
 }
 
-/// Block-device major reported for the root virtio-blk disk (`vda`) in
-/// `/proc/diskstats`. Linux assigns virtio-blk a dynamic major through
-/// `register_blkdev(0, "virtblk")`; 254 is the value the single-disk guest
-/// consistently observes.
-const VIRTBLK_MAJOR: u32 = 254;
-
 fn render_diskstats() -> String {
     // 14-field Linux /proc/diskstats layout, one line per block device. Only the
-    // root virtio-blk device ("vda", minor 0) is backed by the block runtime, so
-    // only its request/sector counters are real; the timing and in-flight fields
-    // have no source and stay zero.
+    // selected root device is backed by the block runtime, so only its
+    // request/sector counters are real; timing and in-flight fields have no
+    // source and stay zero.
+    let identity = ax_fs_ng::root::root_block_identity();
     let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
     format!(
-        "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
-         0 0\n"
+        "{}       {} {} {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 0 0\n",
+        identity.major, identity.minor, identity.name
     )
-}
-
-fn render_mounts() -> String {
-    // Root filesystem plus the pseudo-filesystems mounted unconditionally by
-    // `pseudofs::mount_all()` at boot. The root fs type is read live from the
-    // mount table; the pseudo mounts are fixed. Dynamic user mounts are not
-    // enumerated here because the VFS does not expose a public mount-tree
-    // walker, so third-party mounts made via mount(2) are absent.
-    let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
-        ctx.root_dir().filesystem().name().to_string()
-    };
-    let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
-    buf.push_str("devtmpfs /dev devtmpfs rw,nosuid,relatime 0 0\n");
-    buf.push_str("tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n");
-    buf.push_str("tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
-    buf.push_str("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf.push_str("sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf.push_str("debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf
-}
-
-fn render_mountinfo() -> String {
-    // /proc/<pid>/mountinfo (Linux fs/proc_namespace.c show_mountinfo layout):
-    //   id parent major:minor root mount_point options [optional-fields] - fstype source super_opts
-    // Same mount set as render_mounts(): the root fs type is read live; the pseudo mounts are the
-    // fixed boot set. No optional propagation fields are emitted, so the "-" separator immediately
-    // precedes the fs type. Tools such as node_exporter's filesystem collector and findmnt read
-    // this file (in preference to /proc/mounts) to discover mount points before statfs().
-    let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
-        ctx.root_dir().filesystem().name().to_string()
-    };
-    let mut buf = format!("21 20 {VIRTBLK_MAJOR}:0 / / rw,relatime - {root_fstype} /dev/vda rw\n");
-    buf.push_str("22 21 0:5 / /dev rw,nosuid,relatime - devtmpfs devtmpfs rw\n");
-    buf.push_str("23 22 0:16 / /dev/shm rw,nosuid,nodev - tmpfs tmpfs rw\n");
-    buf.push_str("24 21 0:17 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw\n");
-    buf.push_str("25 21 0:18 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n");
-    buf.push_str("26 21 0:19 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw\n");
-    buf.push_str(
-        "27 26 0:20 / /sys/kernel/debug rw,nosuid,nodev,noexec,relatime - debugfs debugfs rw\n",
-    );
-    buf
 }
 
 fn render_proc_bus_usb_devices() -> String {
@@ -680,7 +633,6 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
         _ => "Unk.",
     }
 }
-
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -975,6 +927,76 @@ impl SimpleDirOps for ThreadFdDir {
     }
 }
 
+/// The /proc/[pid]/fdinfo directory.
+struct ThreadFdInfoDir {
+    fs: Arc<SimpleFs>,
+    task: WeakAxTaskRef,
+}
+
+impl SimpleDirOps for ThreadFdInfoDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let Some(task) = self.task.upgrade() else {
+            return Box::new(iter::empty());
+        };
+        let ids = FD_TABLE
+            .scope(&task.as_thread().scope.read())
+            .read()
+            .ids()
+            .map(|id| Cow::Owned(id.to_string()))
+            .collect::<Vec<_>>();
+        Box::new(ids.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+        let pidfd = FD_TABLE
+            .scope(&task.as_thread().scope.read())
+            .read()
+            .get(fd as _)
+            .ok_or(VfsError::NotFound)?
+            .inner
+            .downcast_ref::<PidFd>()
+            .map(|pidfd| (pidfd.identity(), pidfd.target_pid()));
+
+        // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
+        // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
+        // fallback. Other descriptor kinds still have an fdinfo entry, even
+        // though StarryOS does not yet expose their type-specific fields.
+        let Some((identity, target_pid)) = pidfd else {
+            return Ok(SimpleFile::new_regular(fs, || Ok(Vec::new())).into());
+        };
+
+        Ok(SimpleFile::new_regular(fs, move || {
+            let pids: Vec<i32> = if identity.is_exited() {
+                vec![-1]
+            } else {
+                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
+                PidNamespace::visible_pid_chain(
+                    &observer_pid_ns,
+                    &identity.pid_ns(),
+                    target_pid as u64,
+                )
+                .map(|pids| pids.into_iter().map(|pid| pid as i32).collect())
+                .unwrap_or_else(|| vec![0])
+            };
+            let pid = pids[0];
+            let nspid = pids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(format!("Pid:\t{pid}\nNSpid:\t{nspid}\n").into_bytes())
+        })
+        .into())
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
 /// Each entry is a regular file displaying the namespace identifier.
@@ -988,7 +1010,7 @@ struct NsDir {
 impl SimpleDirOps for NsDir {
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
-            ["uts", "ipc", "mnt", "pid", "net", "user"]
+            ["uts", "ipc", "mnt", "pid", "net", "user", "cgroup"]
                 .into_iter()
                 .map(Cow::Borrowed),
         )
@@ -1032,6 +1054,11 @@ impl SimpleDirOps for NsDir {
                 let nsproxy = proc_data.nsproxy.lock();
                 let ns_id = nsproxy.user_ns.lock().id;
                 format!("user:[{}]\n", ns_id)
+            }
+            "cgroup" => {
+                let nsproxy = proc_data.nsproxy.lock();
+                let ns_id = nsproxy.cgroup_ns.lock().id();
+                format!("cgroup:[{}]\n", ns_id)
             }
             _ => return Err(VfsError::NotFound),
         };
@@ -1284,6 +1311,7 @@ impl SimpleDirOps for ThreadDir {
                 "root",
                 "cwd",
                 "fd",
+                "fdinfo",
                 "uid_map",
                 "gid_map",
                 "setgroups",
@@ -1338,7 +1366,8 @@ impl SimpleDirOps for ThreadDir {
                         if !data.is_empty() {
                             let value = str::from_utf8(data)
                                 .ok()
-                                .and_then(|it| it.parse::<i32>().ok())
+                                .and_then(|it| it.trim_ascii_end().parse::<i32>().ok())
+                                .filter(|value| (-1000..=1000).contains(value))
                                 .ok_or(VfsError::InvalidInput)?;
                             task.as_thread().set_oom_score_adj(value);
                         }
@@ -1374,8 +1403,30 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
-            "mounts" => SimpleFile::new_regular(fs, move || Ok(render_mounts())).into(),
-            "mountinfo" => SimpleFile::new_regular(fs, move || Ok(render_mountinfo())).into(),
+            "mounts" => {
+                let task = self.task.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let scope = task.as_thread().scope.read();
+                    let ctx_arc = FS_CONTEXT.scope(&scope).clone();
+                    drop(scope);
+                    let ctx = ctx_arc.lock();
+                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+                })
+                .into()
+            }
+            "mountinfo" => {
+                let task = self.task.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let scope = task.as_thread().scope.read();
+                    let ctx_arc = FS_CONTEXT.scope(&scope).clone();
+                    drop(scope);
+                    let ctx = ctx_arc.lock();
+                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+                })
+                .into()
+            }
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
@@ -1390,11 +1441,17 @@ impl SimpleDirOps for ThreadDir {
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
-                        let mut bytes = vec![0; 16];
+                        // `/proc/<pid>/comm` must return only the name plus one
+                        // trailing newline, with no NUL padding: musl's
+                        // pthread_getname_np() reads the file into a 16-byte buffer
+                        // and strips just the final byte, so any padding would leave
+                        // the newline inside the read-back name and break Envoy's
+                        // thread setName() round-trip assertion.
                         let name = task.name();
                         let copy_len = name.len().min(15);
-                        bytes[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
-                        bytes[copy_len] = b'\n';
+                        let mut bytes = Vec::with_capacity(copy_len + 1);
+                        bytes.extend_from_slice(&name.as_bytes()[..copy_len]);
+                        bytes.push(b'\n');
                         Ok(Some(bytes))
                     }
                     SimpleFileOperation::Write(data) => {
@@ -1439,6 +1496,14 @@ impl SimpleDirOps for ThreadDir {
             "fd" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(ThreadFdDir {
+                    fs,
+                    task: Arc::downgrade(&task),
+                }),
+            )
+            .into(),
+            "fdinfo" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(ThreadFdInfoDir {
                     fs,
                     task: Arc::downgrade(&task),
                 }),
@@ -1580,7 +1645,21 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
+            "cgroup" => SimpleFile::new_regular(fs, move || {
+                let reader = current();
+                let reader_cgroup_ns = reader
+                    .as_thread()
+                    .proc_data
+                    .nsproxy
+                    .lock()
+                    .cgroup_ns
+                    .clone();
+                let reader_root = reader_cgroup_ns.lock().root();
+                let target_membership = task.as_thread().proc_data.cgroup.read().clone();
+                let path = crate::cgroup::relative_path(&reader_root, &target_membership);
+                Ok(format!("0::{path}\n"))
+            })
+            .into(),
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(NsDir {
@@ -1653,6 +1732,68 @@ impl SimpleDirOps for ProcFsHandler {
     }
 }
 
+/// Build a writable `/proc/sys/fs/mqueue/*` tunable file over a live atomic.
+/// Reads render the current value; writes parse a decimal integer, clamp it to
+/// `[min, max]` (as `proc_dointvec_minmax` in ipc/mq_sysctl.c does — an
+/// out-of-range value is rejected with `EINVAL`) and store it, so the next
+/// `mq_open` sees the change.
+///
+/// These files are owned by the ipc-namespace root (uid 0) and mode `0644`, and
+/// Linux gates writes through `mq_permissions` (ipc/mq_sysctl.c:92): only the
+/// owning root gets the write bit, everyone else sees the file read-only. Raising
+/// `msg_max`/`msgsize_max` toward the hard ceiling is a system-wide resource
+/// change, so the faithful capability is `CAP_SYS_RESOURCE`. Reads stay open to
+/// all; an unprivileged write is rejected with `EPERM`.
+fn mq_sysctl_file(
+    fs: &Arc<SimpleFs>,
+    cell: &'static core::sync::atomic::AtomicUsize,
+    min: usize,
+    max: usize,
+) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |req| match req {
+            SimpleFileOperation::Read => Ok(Some(
+                format!("{}\n", cell.load(Ordering::Relaxed)).into_bytes(),
+            )),
+            SimpleFileOperation::Write(data) => {
+                // A truncating open (`fopen(path, "w")`) writes an empty buffer
+                // first; treat it as a no-op rather than a parse error, the way
+                // the other writable procfs files here do. Gate the no-op too so
+                // a truncating open by an unprivileged writer still fails cleanly.
+                if !current().as_thread().cred().has_cap_sys_resource() {
+                    return Err(VfsError::OperationNotPermitted);
+                }
+                let text = core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                let value: usize = trimmed.parse().map_err(|_| VfsError::InvalidInput)?;
+                if value < min || value > max {
+                    return Err(VfsError::InvalidInput);
+                }
+                cell.store(value, Ordering::Relaxed);
+                Ok(None)
+            }
+        }),
+    )
+}
+
+/// Builds an integer sysctl whose owning resource limit is not implemented.
+///
+/// Do not acknowledge writes until PID allocation and VMA admission consume
+/// these settings. Returning `EOPNOTSUPP` keeps procfs from reporting a limit
+/// that the kernel does not enforce.
+fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |operation| match operation {
+            SimpleFileOperation::Read => Ok(Some(value)),
+            SimpleFileOperation::Write(_) => Err(VfsError::OperationNotSupported),
+        }),
+    )
+}
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     #[cfg(feature = "rt-irq-trace")]
@@ -1666,7 +1807,19 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     });
     root.add(
         "mounts",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_mounts())),
+        SimpleFile::new_regular(fs.clone(), || {
+            let fs_context = current_fs_context();
+            let ctx = fs_context.lock();
+            Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+        }),
+    );
+    root.add(
+        "mountinfo",
+        SimpleFile::new_regular(fs.clone(), || {
+            let fs_context = current_fs_context();
+            let ctx = fs_context.lock();
+            Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+        }),
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
@@ -1769,10 +1922,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add(
-                "pid_max",
-                SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
-            );
+            kernel.add("pid_max", unsupported_limit_sysctl_file(&fs, "32768\n"));
             kernel.add(
                 "osrelease",
                 SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
@@ -1780,6 +1930,58 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+            );
+            kernel.add(
+                "hostname",
+                SimpleFile::new_regular(
+                    fs.clone(),
+                    RwFile::new(move |req| match req {
+                        SimpleFileOperation::Read => {
+                            let nodename = {
+                                let task = current();
+                                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                                let uts_namespace = nsproxy.uts_ns.lock();
+                                uts_namespace.nodename
+                            };
+                            let name_len = nodename
+                                .iter()
+                                .position(|&byte| byte == 0)
+                                .unwrap_or(nodename.len());
+                            let mut output = Vec::with_capacity(name_len + 1);
+                            output.extend(
+                                nodename[..name_len]
+                                    .iter()
+                                    .map(|byte| byte.to_ne_bytes()[0]),
+                            );
+                            output.push(b'\n');
+                            Ok(Some(output))
+                        }
+                        SimpleFileOperation::Write(data) => {
+                            if data.is_empty() {
+                                return Ok(None);
+                            }
+                            let hostname = data.strip_suffix(b"\n").unwrap_or(data);
+                            if hostname.len() > 64
+                                || hostname.iter().any(|byte| matches!(byte, 0 | b'\n'))
+                            {
+                                return Err(VfsError::InvalidInput);
+                            }
+
+                            if current().as_thread().cred().euid != 0 {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
+
+                            let mut nodename = [0; 65];
+                            for (slot, byte) in nodename.iter_mut().zip(hostname) {
+                                *slot = *byte as _;
+                            }
+                            let task = current();
+                            let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                            nsproxy.uts_ns.lock().nodename = nodename;
+                            Ok(None)
+                        }
+                    }),
+                ),
             );
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
@@ -1815,7 +2017,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             vm.add(
                 "max_map_count",
-                SimpleFile::new_regular(fs.clone(), || Ok("65530\n")),
+                unsupported_limit_sysctl_file(&fs, "65530\n"),
             );
             SimpleDir::new_maker(fs.clone(), Arc::new(vm))
         });
@@ -1831,6 +2033,60 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "nr_open",
                 SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
             );
+            // /proc/sys/fs/mqueue/{queues_max,msg_max,msgsize_max,
+            // msg_default,msgsize_default} — the writable POSIX message-queue
+            // tunables Linux registers in ipc/mq_sysctl.c. Reads return the
+            // live value; writes clamp to the same [min,max] the kernel
+            // enforces and take effect on the next mq_open.
+            fs_sys.add("mqueue", {
+                let mut mqueue = DirMapping::new();
+                mqueue.add(
+                    "queues_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_QUEUES_MAX,
+                        0,
+                        i32::MAX as usize,
+                    ),
+                );
+                mqueue.add(
+                    "msg_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSG_MAX,
+                        crate::ipc::mqueue::MQ_MIN_MSG_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSG_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msgsize_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msg_default",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSG_DEFAULT,
+                        crate::ipc::mqueue::MQ_MIN_MSG_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSG_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msgsize_default",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSGSIZE_DEFAULT,
+                        crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
+                    ),
+                );
+                SimpleDir::new_maker(fs.clone(), Arc::new(mqueue))
+            });
             SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))
         });
 
@@ -1846,6 +2102,41 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 SimpleDir::new_maker(fs.clone(), Arc::new(core))
             });
             SimpleDir::new_maker(fs.clone(), Arc::new(net))
+        });
+
+        // /proc/sys/user/max_*_namespaces — nix checks these to decide
+        // whether namespaces are available for sandboxed builds.
+        sys.add("user", {
+            let mut user = DirMapping::new();
+            user.add(
+                "max_user_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_mnt_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_pid_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_net_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_uts_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_ipc_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            user.add(
+                "max_cgroup_namespaces",
+                SimpleFile::new_regular(fs.clone(), || Ok("65536\n")),
+            );
+            SimpleDir::new_maker(fs.clone(), Arc::new(user))
         });
 
         SimpleDir::new_maker(fs.clone(), Arc::new(sys))
@@ -2020,6 +2311,231 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
         self.write_str(s).map_err(|_| core::fmt::Error)
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn formatting_contracts_hold_for_test() -> bool {
+    let cpu_presence = collect_cpu_presence([0usize, 1, 32, 63], 64);
+    format_cpu_presence_hex(&cpu_presence) == "80000001,00000003"
+        && format_cpu_presence_list(&collect_cpu_presence([0usize, 2, 3, 4, 7, 9, 10, 11], 12))
+            == "0,2-4,7,9-11"
+        && proc_net_snmp_field_counts_match()
+        && proc_net_dev_header_matches_linux_layout()
+        && task_status_fields_match_linux_layout()
+        && usb_label_helpers_match_busybox_lsusb_layout()
+        && usb_bcd_format_matches_linux_layout()
+        && proc_mountinfo_lines_match_linux_layout()
+        && descriptor_helpers_round_trip_known_offsets()
+        && format_cpu_presence_list_handles_single_cpu()
+        && format_cpu_presence_hex_handles_zero_size_input()
+}
+
+#[cfg(axtest)]
+fn usb_label_helpers_match_busybox_lsusb_layout() -> bool {
+    // usb_class_label: cover every match arm.
+    usb_class_label(0x00) == ">ifc"
+        && usb_class_label(0x03) == "HID"
+        && usb_class_label(0x08) == "stor."
+        && usb_class_label(0x09) == "hub"
+        && usb_class_label(0x0e) == "video"
+        && usb_class_label(0xe0) == "wlcon"
+        && usb_class_label(0xef) == "misc"
+        && usb_class_label(0xff) == "vend."
+        // Unknown class falls back to the "unk." label.
+        && usb_class_label(0x42) == "unk."
+        // usb_endpoint_type_label: cover every match arm.
+        && usb_endpoint_type_label(0) == "Ctrl"
+        && usb_endpoint_type_label(1) == "Isoc"
+        && usb_endpoint_type_label(2) == "Bulk"
+        && usb_endpoint_type_label(3) == "Int."
+        && usb_endpoint_type_label(9) == "Unk."
+}
+
+#[cfg(axtest)]
+fn usb_bcd_format_matches_linux_layout() -> bool {
+    // Linux renders bcdUSB/bcdDevice as Major.Minor_subminor with each nibble
+    // shown as one hex digit. The Rust `{:2x}` spec pads the major field to a
+    // minimum width of 2 with a *space* (not '0'), so single-digit majors are
+    // preceded by one space. 0x0210 -> " 2.10".
+    usb_bcd(0x0210) == " 2.10"
+        // 0x0100 -> " 1.00" (single-digit major, space-padded).
+        && usb_bcd(0x0100) == " 1.00"
+        // 0x0312 -> " 3.12".
+        && usb_bcd(0x0312) == " 3.12"
+        // 0xa051 -> "a0.51" (two-digit major, no padding).
+        && usb_bcd(0xa051) == "a0.51"
+        // 0xffff -> "ff.ff" (largest possible nibbles).
+        && usb_bcd(0xffff) == "ff.ff"
+        // 0x0001 -> " 0.01" (zero major still width-2-padded).
+        && usb_bcd(0x0001) == " 0.01"
+}
+
+#[cfg(axtest)]
+fn proc_mountinfo_lines_match_linux_layout() -> bool {
+    let ctx_arc = current_fs_context();
+    let ctx = ctx_arc.lock();
+    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
+    !text.is_empty()
+        && text.lines().any(|line| line.contains(" / / "))
+        && text.lines().all(|line| {
+            let Some((pre_separator, post_separator)) = line.split_once(" - ") else {
+                return false;
+            };
+            pre_separator.split_whitespace().count() >= 6
+                && post_separator.split_whitespace().count() >= 3
+        })
+}
+
+#[cfg(axtest)]
+fn descriptor_helpers_round_trip_known_offsets() -> bool {
+    // Build a blob with known bytes at the u8 and u16 read offsets.
+    let blob: Vec<u8> = alloc::vec![0x10, 0x20, 0x30, 0x40, 0x50];
+    // In-bounds reads return the expected value.
+    descriptor_u8(&blob, 0) == 0x10
+        && descriptor_u8(&blob, 4) == 0x50
+        // Out-of-bounds u8 reads return 0 (no panic).
+        && descriptor_u8(&blob, 99) == 0
+        && descriptor_u16(&blob, 0) == 0x2010
+        && descriptor_u16(&blob, 3) == 0x5040
+        // Partial out-of-bounds u16 reads (offset+1 past end) return the high
+        // byte paired with 0 (descriptor_u8 returns 0 for the missing byte).
+        && descriptor_u16(&blob, 4) == 0x0050
+}
+
+#[cfg(axtest)]
+fn format_cpu_presence_list_handles_single_cpu() -> bool {
+    // Single present CPU with no neighbors yields a bare number.
+    let presence = collect_cpu_presence([0usize], 1);
+    format_cpu_presence_list(&presence) == "0"
+        // All-absent list renders as the empty string (no ranges).
+        && format_cpu_presence_list(&collect_cpu_presence([], 4)).is_empty()
+        // Contiguous range across the whole mask collapses to one range.
+        && format_cpu_presence_list(&collect_cpu_presence([0usize, 1, 2, 3], 4)) == "0-3"
+}
+
+#[cfg(axtest)]
+fn format_cpu_presence_hex_handles_zero_size_input() -> bool {
+    // Empty input still produces at least one 32-bit word ("00000000").
+    format_cpu_presence_hex(&[]) == "00000000"
+        // Exactly 32 CPUs in one word emits a single word.
+        && format_cpu_presence_hex(&collect_cpu_presence([0usize], 32)) == "00000001"
+        // Boundary: cpu 31 sets bit 31 in the single word.
+        && format_cpu_presence_hex(&collect_cpu_presence([31usize], 32)) == "80000000"
+}
+
+#[cfg(axtest)]
+fn proc_net_snmp_field_counts_match() -> bool {
+    let text = render_proc_net_snmp();
+    let mut tcp_header_count = None;
+    let mut tcp_data_count = None;
+    let mut udp_header_count = None;
+    let mut udp_data_count = None;
+
+    for line in text.lines() {
+        if line.starts_with("Tcp:") && line.contains("RtoAlgorithm") {
+            tcp_header_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Tcp:") {
+            tcp_data_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Udp:") && line.contains("InDatagrams") {
+            udp_header_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Udp:") {
+            udp_data_count = Some(line.split_whitespace().count() - 1);
+        }
+    }
+
+    tcp_header_count.is_some()
+        && udp_header_count.is_some()
+        && tcp_header_count == tcp_data_count
+        && udp_header_count == udp_data_count
+}
+
+#[cfg(axtest)]
+fn proc_net_dev_header_matches_linux_layout() -> bool {
+    let text = render_proc_net_dev();
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    let Some(second) = lines.next() else {
+        return false;
+    };
+
+    first.starts_with("Inter-|")
+        && first.contains("Receive")
+        && first.contains("Transmit")
+        && second.contains("face |bytes")
+        && second.contains("compressed")
+}
+
+#[cfg(axtest)]
+fn task_status_fields_match_linux_layout() -> bool {
+    let cpu_presence = collect_cpu_presence([1usize, 3], 4);
+    let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+    let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+    let mem = ProcessMemStats {
+        vss_pages: 128,
+        resident_pages: 96,
+        rss_anon_pages: 80,
+        rss_file_pages: 8,
+        rss_shmem_pages: 8,
+        peak_pages: 256,
+        hiwater_rss_pages: 128,
+        ..Default::default()
+    };
+    let status = render_task_status_fields(&TaskStatusFields {
+        base: TaskStatusBase {
+            name: "axtest-proc",
+            state: "S (sleeping)",
+            tgid: 42,
+            pid: 43,
+            ppid: 41,
+            tracer_pid: 7,
+            cred: &Cred::root(),
+            num_threads: 3,
+        },
+        cpus_allowed: &cpus_allowed,
+        cpus_allowed_list: &cpus_allowed_list,
+        mem: &mem,
+    });
+
+    status.contains("Name:\taxtest-proc\n")
+        && status.contains("State:\tS (sleeping)\n")
+        && status.contains("Tgid:\t42\n")
+        && status.contains("Pid:\t43\n")
+        && status.contains("PPid:\t41\n")
+        && status.contains("TracerPid:\t7\n")
+        && status.contains("Threads:\t3\n")
+        && status.contains("VmPeak:\t1024 kB\n")
+        && status.contains("VmRSS:\t384 kB\n")
+        && status.contains("Cpus_allowed:\t0000000a\n")
+        && status.contains("Cpus_allowed_list:\t1,3\n")
+}
+
+#[cfg(axtest)]
+pub(crate) fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test() -> bool {
+    let text =
+        render_proc_bus_usb_devices_from_snapshots(&[high_speed_root_hub_snapshot_for_test()]);
+
+    text.contains("T:  Bus=01")
+        && text.contains("Dev#=  1")
+        && text.contains("P:  Vendor=1d6b ProdID=0002 Rev= 6.00")
+        && text.contains("I:* If#= 0")
+        && text.contains("Driver=hub")
+        && text.contains("E:  Ad=81(I)")
+}
+
+#[cfg(axtest)]
+fn high_speed_root_hub_snapshot_for_test() -> crate::pseudofs::usbfs::UsbDeviceSnapshotInfo {
+    crate::pseudofs::usbfs::UsbDeviceSnapshotInfo {
+        bus_num: 1,
+        device_num: 1,
+        descriptor_blob: vec![
+            18, 0x01, 0x00, 0x02, 0x09, 0x00, 0x01, 64, 0x6b, 0x1d, 0x02, 0x00, 0x00, 0x06, 0, 0,
+            0, 1, 9, 0x02, 25, 0, 1, 1, 0, 0xe0, 0, 9, 0x04, 0, 0, 1, 0x09, 0, 0, 0, 7, 0x05, 0x81,
+            0x03, 4, 0, 12,
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::String};

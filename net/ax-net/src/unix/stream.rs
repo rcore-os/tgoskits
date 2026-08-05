@@ -290,7 +290,9 @@ impl TransportOps for StreamTransport {
 
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            return Err(AxError::NotConnected);
+            // Not a listening socket: accept requires a prior listen(). Linux
+            // returns EINVAL for accept on a non-listening socket.
+            return Err(AxError::InvalidInput);
         };
         let ConnRequest {
             channel,
@@ -305,7 +307,9 @@ impl TransportOps for StreamTransport {
 
     fn try_accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            return Err(AxError::NotConnected);
+            // Not a listening socket: accept requires a prior listen(). Linux
+            // returns EINVAL for accept on a non-listening socket.
+            return Err(AxError::InvalidInput);
         };
         match rx.try_recv() {
             Ok(ConnRequest {
@@ -460,11 +464,25 @@ impl TransportOps for StreamTransport {
         })?;
 
         if peek {
-            // MSG_PEEK must not advance the cmsg byte-mark queue. Ancillary
-            // data is attached to the first byte of the carrying message;
-            // delivering and popping it on PEEK would consume the cmsg and
-            // (for SCM_RIGHTS) duplicate file descriptors. A later non-PEEK
-            // recv that actually consumes those bytes will deliver the cmsg.
+            // MSG_PEEK delivers ancillary data without consuming the record.
+            // Linux `unix_stream_read_generic` calls `scm_fp_dup` on peek, so a
+            // peek that reaches the first byte of a cmsg-bearing message returns
+            // duplicated SCM_RIGHTS fds (sharing the open file description); the
+            // byte-mark queue is left intact so the consuming recv delivers them
+            // again. Clone the ready entries without advancing or popping.
+            if let Some(dst) = options.cmsg.as_deref_mut() {
+                let mut guard = self.channel.lock();
+                if let Some(chan) = guard.as_mut() {
+                    let ready_upto = chan.rx_bytes_total.saturating_add(recv_count as u64);
+                    let q = chan.rx_cmsg.lock();
+                    for entry in q.iter() {
+                        if entry.start_byte > ready_upto {
+                            break;
+                        }
+                        dst.extend(entry.cmsg.iter().map(|c| c.clone_box()));
+                    }
+                }
+            }
             return Ok(recv_count);
         }
 

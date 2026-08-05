@@ -66,7 +66,14 @@ pub mod platform {
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
     };
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    #[cfg(all(
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        ),
+        any(feature = "fs", feature = "host-fs")
+    ))]
     pub use crate::host::arceos::{shutdown_host_filesystems, sync_host_filesystems};
 }
 
@@ -74,25 +81,15 @@ pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
 
-pub(crate) fn register_timer_callback() {
-    CurrentArch::register_timer_callback();
+pub(crate) fn register_timer_source(
+    deadline_source: alloc::sync::Arc<crate::timer::PublishedTimerDeadline>,
+    notify: alloc::sync::Arc<ax_std::os::arceos::modules::ax_task::IrqNotify>,
+) {
+    CurrentArch::register_timer_source(deadline_source, notify);
 }
 
-pub(crate) fn passthrough_spi_registrations(
-    vm: &crate::vm::AxVM,
-) -> AxVmResult<alloc::vec::Vec<crate::vm::PassthroughSpiRegistration>> {
-    build_passthrough_spi_registrations::<CurrentArch>(vm)
-}
-
-pub(crate) fn try_inject_passthrough_device_irq(
-    vm: &crate::vm::AxVM,
-    irq: usize,
-) -> AxVmResult<bool> {
-    crate::architecture::try_inject_passthrough_device_irq::<CurrentArch>(vm, irq)
-}
-
-pub(crate) fn set_oneshot_timer(deadline_ns: u64) {
-    CurrentArch::set_oneshot_timer(deadline_ns);
+pub(crate) fn request_timer_deadline(deadline_ns: u64) {
+    CurrentArch::request_timer_deadline(deadline_ns);
 }
 
 pub(crate) fn init_guest_boot_resources() {
@@ -101,7 +98,7 @@ pub(crate) fn init_guest_boot_resources() {
 
 pub(crate) fn prepare_guest_boot(
     vm_config: &mut crate::config::AxVMConfig,
-    vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+    vm_create_config: &mut axvmconfig::GuestConfig,
     provider: &dyn crate::boot::BootImageProvider,
 ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
     CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)
@@ -122,14 +119,14 @@ pub(crate) fn load_images_from_filesystem(
 }
 
 pub(crate) fn is_x86_linux_image_config(
-    config: &axvmconfig::AxVMCrateConfig,
+    config: &axvmconfig::GuestConfig,
     provider: &dyn crate::boot::BootImageProvider,
 ) -> bool {
     CurrentArch::is_x86_linux_image_config(config, provider)
 }
 
 pub(crate) fn default_boot_firmware_load_gpa(
-    config: &axvmconfig::AxVMCrateConfig,
+    config: &axvmconfig::GuestConfig,
 ) -> Option<axvm_types::GuestPhysAddr> {
     CurrentArch::default_boot_firmware_load_gpa(config)
 }

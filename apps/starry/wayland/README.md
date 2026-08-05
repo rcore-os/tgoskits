@@ -114,7 +114,7 @@ qemu-system-riscv64 \
   -device virtio-gpu-pci \
   -device virtio-keyboard-pci \
   -device virtio-mouse-pci \
-  -device virtio-blk-pci,drive=disk0 \
+  -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
   -drive id=disk0,if=none,format=raw,file=tmp/wayland-manual/riscv64.img
 ```
 
@@ -133,7 +133,7 @@ args = [
   "-device", "virtio-gpu-pci",
   "-device", "virtio-keyboard-pci",
   "-device", "virtio-mouse-pci",
-  "-device", "virtio-blk-pci,drive=disk0",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/wayland-manual/x86_64.img",
 ]
 uefi = true

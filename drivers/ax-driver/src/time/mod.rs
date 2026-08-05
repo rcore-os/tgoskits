@@ -3,6 +3,12 @@ use rdrive::probe::OnProbeError;
 
 #[cfg(target_arch = "x86_64")]
 mod cmos;
+#[cfg(all(axtest, target_arch = "x86_64"))]
+pub(crate) use self::cmos::cmos_io_struct_and_constants_hold_for_test;
+#[cfg(all(axtest, target_arch = "x86_64"))]
+pub(crate) use self::cmos::cmos_register_constants_hold_for_test;
+#[cfg(all(axtest, target_arch = "x86_64"))]
+pub(crate) use self::cmos::cmos_register_edge_cases_hold_for_test;
 #[cfg(any(test, target_arch = "x86_64"))]
 mod cmos_decode;
 #[cfg(any(
@@ -63,13 +69,22 @@ mod tests {
                 PhysAddr::from_usize(addr.as_usize())
             }
 
-            fn mem_make_dma_coherent_uncached(_addr: VirtAddr, _size: usize) -> AxResult {
-                Err(AxError::Unsupported)
+            fn mem_make_dma_coherent_uncached(
+                _addr: VirtAddr,
+                _size: usize,
+            ) -> axklib::DmaCoherentMappingOutcome {
+                axklib::DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
             }
 
             fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> AxResult {
                 Err(AxError::Unsupported)
             }
+
+            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
 
             fn dma_alloc_pages(
                 _dma_mask: u64,

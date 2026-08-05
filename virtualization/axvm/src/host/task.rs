@@ -16,6 +16,10 @@ pub(crate) fn current_task() -> CurrentTask {
     arceos::current_task()
 }
 
+pub(crate) fn spawn_task(task: TaskInner) -> AxTaskRef {
+    arceos::spawn_task(task)
+}
+
 pub(crate) fn prepare_task_with_initial_cpu(
     task: TaskInner,
     initial_cpu: usize,
@@ -51,6 +55,14 @@ pub(crate) fn wait_queue_wait_until(queue: &WaitQueueHandle, condition: impl Fn(
 
 pub(crate) fn wait_queue_wake(queue: &WaitQueueHandle, count: u32) {
     arceos::wait_queue_wake(queue, count);
+}
+
+pub(crate) fn run_on_cpu_sync(
+    cpu_id: usize,
+    f: unsafe fn(*mut ()),
+    arg: *mut (),
+) -> Result<(), arceos::ArceOsIrqError> {
+    arceos::run_on_cpu_sync(cpu_id, f, arg)
 }
 
 pub(crate) fn send_ipi(cpu_id: usize) {

@@ -8,6 +8,7 @@
 #define USB_MSC_SUBCLASS_SCSI 0x06
 #define USB_MSC_PROTOCOL_BULK_ONLY 0x50
 #define USB_MSC_TIMEOUT_MS 10000
+#define USB_MSC_REQUEST_RESET 0xff
 #define CBW_SIGNATURE 0x43425355u
 #define CSW_SIGNATURE 0x53425355u
 
@@ -251,6 +252,66 @@ void usb_msc_close(usb_msc_device_t *device) {
         libusb_exit(device->ctx);
         device->ctx = NULL;
     }
+}
+
+void usb_msc_close_without_release(usb_msc_device_t *device) {
+    if (device->handle != NULL) {
+        libusb_close(device->handle);
+        device->handle = NULL;
+    }
+    if (device->ctx != NULL) {
+        libusb_exit(device->ctx);
+        device->ctx = NULL;
+    }
+}
+
+int usb_msc_stall_and_recover_bulk_out(usb_msc_device_t *device) {
+    struct usb_msc_cbw invalid_cbw;
+    int transferred = 0;
+
+    memset(&invalid_cbw, 0, sizeof(invalid_cbw));
+    invalid_cbw.tag = device->tag++;
+    invalid_cbw.command_length = 1;
+
+    int result = libusb_bulk_transfer(
+        device->handle,
+        device->endpoint_out,
+        (unsigned char *)&invalid_cbw,
+        (int)sizeof(invalid_cbw),
+        &transferred,
+        USB_MSC_TIMEOUT_MS
+    );
+    if (result != LIBUSB_ERROR_PIPE) {
+        return result != 0 ? result : LIBUSB_ERROR_OTHER;
+    }
+
+    result = libusb_control_transfer(
+        device->handle,
+        LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE,
+        USB_MSC_REQUEST_RESET,
+        0,
+        device->interface_number,
+        NULL,
+        0,
+        USB_MSC_TIMEOUT_MS
+    );
+    if (result < 0) {
+        return result;
+    }
+
+    result = libusb_clear_halt(device->handle, device->endpoint_in);
+    if (result != 0) {
+        return result;
+    }
+
+    result = libusb_clear_halt(device->handle, device->endpoint_out);
+    if (result != 0) {
+        return result;
+    }
+
+    puts("usb bulk OUT recovered with BOT reset and clear halt");
+    fflush(stdout);
+    return 0;
 }
 
 static int transfer_command(

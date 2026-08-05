@@ -290,7 +290,7 @@ mod tests {
         unsafe fn alloc_coherent(&self, _: DmaConstraints, _: Layout) -> Option<DmaAllocHandle> {
             panic!("imported-buffer path must not allocate")
         }
-        unsafe fn dealloc_coherent(&self, _: DmaAllocHandle) {
+        unsafe fn dealloc_coherent(&self, _: DmaAllocHandle) -> Result<(), DmaError> {
             panic!("imported-buffer path must not deallocate")
         }
         unsafe fn map_streaming(

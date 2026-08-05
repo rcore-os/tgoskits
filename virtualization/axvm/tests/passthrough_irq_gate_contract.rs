@@ -12,149 +12,159 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[test]
-fn emulated_passthrough_spi_uses_the_vm_runtime_gate_without_a_host_ipi() {
-    let vm = include_str!("../src/vm/mod.rs");
-    let injection = vm
-        .split_once("fn inject_device_irq(&self")
-        .expect("AxVM must own emulated-device IRQ delivery")
+fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    source
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing contract start `{start}`"))
         .1
-        .split_once("pub(crate) fn handle_nested_page_fault")
-        .expect("nested-page-fault handling must follow device IRQ delivery")
-        .0;
-
-    assert!(
-        injection.contains("try_inject_passthrough_device_irq"),
-        "common device delivery must dispatch through the architecture capability"
-    );
-    assert!(
-        !injection.contains("deliver_physical_spi"),
-        "the producer must not directly pend a physical SPI"
-    );
-
-    let capabilities = include_str!("../src/architecture/capabilities.rs");
-    let platform_injection = capabilities
-        .split_once("pub(crate) fn try_inject_passthrough_device_irq")
-        .expect("the architecture capability must own passthrough device delivery")
-        .1
-        .split_once("/// Guest firmware preparation")
-        .expect("guest firmware capabilities must follow physical-SPI delivery")
-        .0;
-    assert!(
-        platform_injection.contains("transition_passthrough_spi")
-            && platform_injection.contains("PassthroughSpiSignalRequest"),
-        "passthrough delivery must publish through the per-VM/vCPU gate"
-    );
-    assert!(
-        !platform_injection.contains("send_ipi"),
-        "passthrough publication must not inject a host IPI into the guest-owned interface"
-    );
-
-    let runtime = include_str!("../src/vm/passthrough_irq.rs");
-    let signal = runtime
-        .split_once("pub(crate) fn signal_passthrough_spi")
-        .expect("the runtime gate must expose a passthrough signal operation")
-        .1
-        .split_once("pub(crate) fn prepare_guest_entry")
-        .expect("guest-entry preparation must follow publication")
-        .0;
-    assert!(
-        !signal.contains("send_ipi"),
-        "passthrough publication must not inject a host IPI into the guest-owned interface"
-    );
+        .split_once(end)
+        .unwrap_or_else(|| panic!("missing contract end `{end}`"))
+        .0
 }
 
 #[test]
-fn passthrough_spi_preallocation_covers_block_and_network_devices() {
-    let capabilities = include_str!("../src/architecture/capabilities.rs");
-    let registrations = capabilities
-        .split_once("pub(crate) fn build_passthrough_spi_registrations")
-        .expect("the architecture capability must build passthrough SPI registrations")
-        .1
-        .split_once("pub(crate) fn try_inject_passthrough_device_irq")
-        .expect("device IRQ injection must follow registration")
-        .0;
+fn emulated_device_spi_uses_the_vm_local_vgic_without_a_host_ipi() {
+    let factory = include_str!("../../axdevice/src/factory.rs");
+    let resolve = between(
+        factory,
+        "pub fn resolve_irq(",
+        "/// Builds all capabilities",
+    );
+    assert!(resolve.contains("interrupt_controller"));
+    assert!(resolve.contains(".wired_input"));
+    assert!(resolve.contains(".connect()"));
+    assert!(!resolve.contains("send_ipi"));
 
-    assert!(
-        registrations.contains("devices.virtio_blocks()"),
-        "virtio-blk completion IRQs must be preallocated before the VM starts"
+    let core = include_str!("../../arm_vgic/src/core.rs");
+    let wired_sink = between(
+        core,
+        "impl WiredIrqSink for VgicWiredSink",
+        "struct VgicMessageSink",
     );
-    assert!(
-        registrations.contains("devices.virtio_nets()"),
-        "virtio-net queue IRQs must remain preallocated before the VM starts"
+    assert!(wired_sink.contains("self.controller"));
+    assert!(wired_sink.contains(".set_spi_level"));
+    assert!(wired_sink.contains(".pulse_spi"));
+    assert!(!wired_sink.contains("send_ipi"));
+
+    let vgic = include_str!("../src/arch/aarch64/vgic.rs");
+    let wake = between(
+        vgic,
+        "impl GicV3VcpuWake for Aarch64VcpuWake",
+        "struct Aarch64VgicFactory",
     );
+    assert!(wake.contains("self.kick"));
+    assert!(wake.contains(".publish_from_irq(self.vcpu_id)"));
+    assert!(!wake.contains("send_ipi"));
 }
 
 #[test]
-fn arm_host_hooks_drive_entry_delivery_and_exit_reclamation() {
+fn passthrough_spi_preallocation_covers_every_selected_physical_device() {
+    let parser = include_str!("../src/boot/fdt/core/parser.rs");
+    let interrupts = between(
+        parser,
+        "pub fn parse_vm_interrupt(",
+        "pub fn update_provided_fdt(",
+    );
+    assert!(interrupts.contains("find_all_passthrough_devices"));
+    assert!(interrupts.contains("for interrupt in view.interrupts()"));
+    assert!(interrupts.contains("vm_cfg.add_pass_through_irq"));
+
+    let vgic = include_str!("../src/arch/aarch64/vgic.rs");
+    let construction = between(
+        vgic,
+        "pub(crate) fn register_device_factories(",
+        "fn assigned_spis(",
+    );
+    assert!(construction.contains("config.pass_through_irqs().to_vec()"));
+    assert!(construction.contains("let assigned_spis = assigned_spis(&passthrough_irqs)"));
+    assert!(construction.contains("with_assigned_spis(assigned_spis)"));
+
+    let routes = include_str!("../src/arch/aarch64/gic/physical.rs");
+    let registration = between(
+        routes,
+        "fn register(controller: &Arc<VgicCore>)",
+        "/// Stops accepting new activations",
+    );
+    assert!(registration.contains(".config()"));
+    assert!(registration.contains(".assigned_spis()"));
+    assert!(registration.contains("collect::<Vec<_>>()"));
+    assert!(registration.contains(".into_boxed_slice()"));
+    assert!(registration.contains("AssignedSpiRouteRegistration::install(binding)"));
+}
+
+#[test]
+fn arm_world_switch_and_vgic_binding_drive_delivery_and_reclamation() {
     let adapter = include_str!("../src/arch/aarch64/mod.rs");
-    let host_ops = adapter
-        .split_once("impl ArmHostOps for AxvmArmHostOps")
-        .expect("AxVM must implement arm_vcpu host operations")
-        .1
-        .split_once("pub(crate) struct AxvmArmVcpu")
-        .expect("the Arm host implementation must precede the vCPU adapter")
-        .0;
+    let host_ops = between(
+        adapter,
+        "impl ArmHostOps for AxvmArmHostOps",
+        "pub(crate) struct AxvmArmVcpu",
+    );
+    assert!(host_ops.contains("fn finish_pending_host_irq"));
+    assert!(host_ops.contains("fn handle_current_host_irq"));
+    assert!(host_ops.contains("gic::route_acknowledged_host_irq(token)"));
 
-    assert!(host_ops.contains("fn prepare_guest_entry"));
-    assert!(host_ops.contains("PassthroughInterfaceOwner::Guest"));
-    assert!(host_ops.contains("fn complete_guest_exit"));
-    assert!(host_ops.contains("PassthroughInterfaceOwner::Host"));
+    let run = between(adapter, "fn run(&mut self)", "fn bind(&mut self)");
+    let load = run.find("binding.load()").unwrap();
+    let guest = run.find("self.inner.run(&host_irq_guard)").unwrap();
+    let save = run.find("binding.save()").unwrap();
+    assert!(load < guest && guest < save);
+
+    let backend = include_str!("../src/arch/aarch64/gic.rs");
+    let complete = between(
+        backend,
+        "fn complete_physical_interrupt(",
+        "fn deactivate_physical_interrupt(",
+    );
+    assert!(complete.contains("physical::complete_assigned_spi"));
+    assert!(complete.contains("cpu_interface::deactivate_spi(intid)"));
 }
 
 #[test]
-fn wfi_wait_uses_generic_and_passthrough_pending_work_as_its_predicate() {
-    let runtime_loop = include_str!("../src/runtime/vcpus.rs");
-    let wait = runtime_loop
-        .split_once("fn wait(vm:")
-        .expect("the vCPU runtime must own a WFI wait helper")
-        .1
-        .split_once("fn wait_for")
-        .expect("the lifecycle wait helper must follow the WFI wait helper")
-        .0;
-    assert!(wait.contains("wait_until"));
-    assert!(wait.contains("has_pending_vcpu_work(vcpu_id)"));
+fn wfi_wait_observes_canonical_vgic_state_before_and_after_timer_arming() {
+    let adapter = include_str!("../src/arch/aarch64/mod.rs");
+    let wait = between(adapter, "fn wait_for_vcpu_event(", "fn vgic_runtime(");
+    assert!(wait.contains("runtime.wait_until(||"));
+    assert!(wait.matches("has_pending_interrupt()").count() >= 2);
+    let first_check = wait.find("has_pending_interrupt()").unwrap();
+    let arm_timer = wait.find("arm_timer_wait()").unwrap();
+    let recheck = wait.rfind("has_pending_interrupt()").unwrap();
+    assert!(first_check < arm_timer && arm_timer < recheck);
 
-    let vm_runtime = include_str!("../src/vm/mod.rs");
-    let pending = vm_runtime
-        .split_once("fn has_pending_vcpu_work")
-        .expect("the VM runtime must expose a combined pending-work predicate")
-        .1
-        .split_once("pub(crate) fn wait_until")
-        .expect("wait-queue methods must follow pending-work inspection")
-        .0;
-    assert!(pending.contains("pending_interrupts"));
-    assert!(pending.contains("passthrough_spis.has_queued_spi(vcpu_id)"));
+    let controller = include_str!("../../arm_vgic/src/controller/mod.rs");
+    let pending = controller
+        .split_once("pub fn has_pending_interrupt(&self")
+        .expect("VGIC must expose canonical pending-delivery inspection")
+        .1;
+    assert!(pending.contains("redistributor(vcpu, \"query pending interrupt\")"));
+    assert!(pending.contains("has_pending_delivery()"));
 }
 
 #[test]
-fn physical_spi_hardware_policy_stays_inside_the_architecture_boundary() {
+fn physical_spi_hardware_policy_stays_inside_the_aarch64_boundary() {
     let vm = include_str!("../src/vm/mod.rs");
-    let capabilities = include_str!("../src/architecture/capabilities.rs");
-    let aarch64 = include_str!("../src/arch/aarch64/capabilities.rs");
-
-    assert!(
-        vm.contains("mod passthrough_irq;"),
-        "the architecture-neutral ownership state machine must remain a normal VM submodule"
-    );
-    assert!(
-        vm.contains("passthrough_spis: passthrough_irq::PassthroughSpiGate"),
-        "every runtime must expose one uniform pending-work contract"
-    );
     assert!(
         !vm.contains("target_arch"),
-        "common VM code must not select a target architecture"
+        "architecture-neutral VM lifecycle code must not select a target architecture"
     );
-    assert!(
-        capabilities.contains("trait PhysicalSpiPlatform"),
-        "physical-SPI hardware access must cross a named capability boundary"
-    );
-    assert!(
-        aarch64.contains("impl PhysicalSpiPlatform for Aarch64Arch")
-            && aarch64.contains("vcpu_task_placement")
-            && aarch64.contains("single_enabled_cpu")
-            && aarch64.contains("someboot::smp::cpu_idx_to_id")
-            && aarch64.contains("super::gic::with_passthrough_spi_controller"),
-        "AArch64 must derive the SPI route from validated task placement and own GIC access"
-    );
+
+    let boundary = include_str!("../../axdevice_base/src/interrupt/controller.rs");
+    assert!(boundary.contains("pub trait VirtualInterruptController"));
+    assert!(boundary.contains("fn wired_input("));
+
+    let vgic = include_str!("../src/arch/aarch64/vgic.rs");
+    let assigned = vgic
+        .split_once("fn assigned_spis(")
+        .expect("AArch64 must translate physical IRQ routes")
+        .1;
+    assert!(assigned.contains("AssignedSpiConfig::new"));
+    assert!(assigned.contains("HostIrqId::new"));
+
+    let physical = include_str!("../src/arch/aarch64/gic/physical.rs");
+    assert!(physical.contains("static ASSIGNED_SPI_ROUTES"));
+    assert!(physical.contains("controller.forward_physical_spi(self.irq)"));
+    assert!(physical.contains("fn complete_assigned_spi("));
+
+    let backend = include_str!("../src/arch/aarch64/gic.rs");
+    assert!(backend.contains("cpu_interface::deactivate_spi(intid)"));
 }

@@ -26,6 +26,9 @@
 
 #![no_std]
 
+#[cfg(all(feature = "uspace", feature = "tls"))]
+compile_error!("ax-hal features `uspace` and `tls` select incompatible register ownership modes");
+
 #[allow(unused_imports)]
 #[macro_use]
 extern crate log;
@@ -76,6 +79,29 @@ pub mod power {
     pub use ax_plat::power::{system_off, system_reset};
 }
 
+/// CPU topology.
+pub mod topology {
+    /// Maps a firmware or hardware CPU ID to the runtime logical CPU index.
+    #[cfg(any(test, feature = "host-test"))]
+    pub const fn resolve_cpu_index(hardware_id: usize) -> Option<usize> {
+        if hardware_id == 0 { Some(0) } else { None }
+    }
+
+    #[cfg(not(any(test, feature = "host-test")))]
+    pub use ax_plat::cpu::resolve_cpu_index;
+
+    #[cfg(test)]
+    mod tests {
+        use super::resolve_cpu_index;
+
+        #[test]
+        fn dummy_topology_only_maps_the_boot_cpu() {
+            assert_eq!(resolve_cpu_index(0), Some(0));
+            assert_eq!(resolve_cpu_index(1), None);
+        }
+    }
+}
+
 /// Trap handling.
 pub mod trap {
     #[cfg(target_arch = "x86_64")]
@@ -91,9 +117,10 @@ pub mod trap {
 /// There are two types of context:
 ///
 /// - [`TaskContext`][ax_cpu::TaskContext]: The context of a task.
-/// - [`TrapFrame`][ax_cpu::TrapFrame]: The context of an interrupt or an exception.
+/// - [`UserRegisters`][ax_cpu::UserRegisters]: User-owned registers saved at a trap boundary.
+/// - [`KernelTrapFrame`][ax_cpu::KernelTrapFrame]: A CPU-pinned view of a kernel trap.
 pub mod context {
-    pub use ax_cpu::{TaskContext, TrapFrame};
+    pub use ax_cpu::{KernelTlsBase, KernelTrapFrame, TaskContext, UserRegisters};
 }
 
 pub use ax_cpu as cpu;

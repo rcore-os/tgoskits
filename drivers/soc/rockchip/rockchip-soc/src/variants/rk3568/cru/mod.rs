@@ -4,6 +4,8 @@ use crate::{
     variants::MHZ,
 };
 
+mod assignment;
+
 const OSC_HZ: u64 = 24 * MHZ;
 
 const CLKSEL_CON_OFFSET: u32 = 0x0100;
@@ -16,6 +18,18 @@ const BCLK_EMMC: ClkId = ClkId::new(0x7b);
 const ACLK_EMMC: ClkId = ClkId::new(0x79);
 const HCLK_EMMC: ClkId = ClkId::new(0x7a);
 const TCLK_EMMC: ClkId = ClkId::new(0x7d);
+const HCLK_SDMMC0: ClkId = ClkId::new(0xb0);
+const CLK_SDMMC0: ClkId = ClkId::new(0xb1);
+const HCLK_SDMMC1: ClkId = ClkId::new(0xb2);
+const CLK_SDMMC1: ClkId = ClkId::new(0xb3);
+const HCLK_SDMMC2: ClkId = ClkId::new(0xc1);
+const CLK_SDMMC2: ClkId = ClkId::new(0xc2);
+const SCLK_SDMMC0_DRV: ClkId = ClkId::new(0x18a);
+const SCLK_SDMMC0_SAMPLE: ClkId = ClkId::new(0x18b);
+const SCLK_SDMMC1_DRV: ClkId = ClkId::new(0x18c);
+const SCLK_SDMMC1_SAMPLE: ClkId = ClkId::new(0x18d);
+const SCLK_SDMMC2_DRV: ClkId = ClkId::new(0x18e);
+const SCLK_SDMMC2_SAMPLE: ClkId = ClkId::new(0x18f);
 const EMMC_RESETS: [RstId; 5] = [
     RstId::new(0x78),
     RstId::new(0x76),
@@ -25,6 +39,8 @@ const EMMC_RESETS: [RstId; 5] = [
 ];
 
 const CLKGATE_CON09: u32 = 9;
+const CLKGATE_CON15: u32 = 15;
+const CLKGATE_CON17: u32 = 17;
 const GATE_ACLK_EMMC: u32 = bit(5);
 const GATE_HCLK_EMMC: u32 = bit(6);
 const GATE_BCLK_EMMC: u32 = bit(7);
@@ -44,6 +60,14 @@ const CCLK_EMMC_XIN_375K: u32 = 0x5 << CCLK_EMMC_SEL_SHIFT;
 const BCLK_EMMC_SEL_SHIFT: u32 = 8;
 const BCLK_EMMC_SEL_MASK: u32 = 0x3 << BCLK_EMMC_SEL_SHIFT;
 const BCLK_EMMC_GPLL_200M: u32 = 0x0 << BCLK_EMMC_SEL_SHIFT;
+
+const SDMMC_SEL_MASK: u32 = 0x7;
+const SDMMC_XIN24M: u32 = 0;
+const SDMMC_GPLL_400M: u32 = 1;
+const SDMMC_GPLL_300M: u32 = 2;
+const SDMMC_CPLL_100M: u32 = 3;
+const SDMMC_CPLL_50M: u32 = 4;
+const SDMMC_OSC0_DIV_750K: u32 = 5;
 
 const EMMC_DELAYNUM: u32 = 0x20;
 const EMMC_CON0_DRV_ENABLE: u32 = bit(11);
@@ -92,6 +116,63 @@ const fn fixed_emmc_rate(id: ClkId) -> Option<u64> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ClockGate {
+    register: u32,
+    mask: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SdMmcClock {
+    selector_register: u32,
+    selector_shift: u32,
+}
+
+const fn sdmmc_clock(id: ClkId) -> Option<SdMmcClock> {
+    match id {
+        CLK_SDMMC0 => Some(SdMmcClock {
+            selector_register: 30,
+            selector_shift: 8,
+        }),
+        CLK_SDMMC1 => Some(SdMmcClock {
+            selector_register: 30,
+            selector_shift: 12,
+        }),
+        CLK_SDMMC2 => Some(SdMmcClock {
+            selector_register: 32,
+            selector_shift: 8,
+        }),
+        _ => None,
+    }
+}
+
+const fn sdmmc_phase_parent(id: ClkId) -> Option<ClkId> {
+    match id {
+        SCLK_SDMMC0_DRV | SCLK_SDMMC0_SAMPLE => Some(CLK_SDMMC0),
+        SCLK_SDMMC1_DRV | SCLK_SDMMC1_SAMPLE => Some(CLK_SDMMC1),
+        SCLK_SDMMC2_DRV | SCLK_SDMMC2_SAMPLE => Some(CLK_SDMMC2),
+        _ => None,
+    }
+}
+
+fn sdmmc_rate_selector(rate_hz: u64) -> Option<(u32, u64)> {
+    const CANDIDATES: [(u32, u64); 6] = [
+        (SDMMC_OSC0_DIV_750K, 750_000),
+        (SDMMC_XIN24M, OSC_HZ),
+        (SDMMC_CPLL_50M, 50 * MHZ),
+        (SDMMC_CPLL_100M, 100 * MHZ),
+        (SDMMC_GPLL_300M, 300 * MHZ),
+        (SDMMC_GPLL_400M, 400 * MHZ),
+    ];
+
+    if rate_hz == 0 || rate_hz > 400 * MHZ {
+        return None;
+    }
+    CANDIDATES
+        .into_iter()
+        .min_by_key(|(_, candidate_hz)| candidate_hz.abs_diff(rate_hz))
+}
+
 #[derive(Clone)]
 pub struct Cru {
     base: usize,
@@ -116,44 +197,65 @@ impl Cru {
     }
 
     pub fn clk_enable(&mut self, id: ClkId) -> ClockResult<()> {
-        let Some(mask) = emmc_gate_mask(id) else {
-            return Err(ClockError::unsupported(id));
-        };
-        self.clrreg(clkgate_con(CLKGATE_CON09), mask);
+        if sdmmc_phase_parent(id).is_some() {
+            // The Linux MMC phase clocks have no independent gate. Their
+            // parent card clock is enabled through its own FDT clock line.
+            return Ok(());
+        }
+        let gate = clock_gate(id).ok_or_else(|| ClockError::unsupported(id))?;
+        self.clrreg(clkgate_con(gate.register), gate.mask);
         Ok(())
     }
 
     pub fn clk_disable(&mut self, id: ClkId) -> ClockResult<()> {
-        let Some(mask) = emmc_gate_mask(id) else {
-            return Err(ClockError::unsupported(id));
-        };
-        self.setreg(clkgate_con(CLKGATE_CON09), mask);
+        if sdmmc_phase_parent(id).is_some() {
+            return Ok(());
+        }
+        let gate = clock_gate(id).ok_or_else(|| ClockError::unsupported(id))?;
+        self.setreg(clkgate_con(gate.register), gate.mask);
         Ok(())
     }
 
     pub fn clk_is_enabled(&self, id: ClkId) -> ClockResult<bool> {
-        let Some(mask) = emmc_gate_mask(id) else {
-            return Err(ClockError::unsupported(id));
-        };
-        Ok(self.read(clkgate_con(CLKGATE_CON09)) & mask == 0)
+        let id = sdmmc_phase_parent(id).unwrap_or(id);
+        let gate = clock_gate(id).ok_or_else(|| ClockError::unsupported(id))?;
+        Ok(self.read(clkgate_con(gate.register)) & gate.mask == 0)
     }
 
     pub fn clk_get_rate(&self, id: ClkId) -> ClockResult<u64> {
+        let id = sdmmc_phase_parent(id).unwrap_or(id);
         match id {
             CCLK_EMMC => self.cclk_emmc_rate(),
             BCLK_EMMC => Ok(200 * MHZ),
             ACLK_EMMC | HCLK_EMMC => Ok(200 * MHZ),
             TCLK_EMMC => Ok(OSC_HZ),
-            _ => Err(ClockError::unsupported(id)),
+            _ => {
+                let clock = sdmmc_clock(id).ok_or_else(|| ClockError::unsupported(id))?;
+                self.sdmmc_rate(id, clock)
+            }
         }
     }
 
     pub fn clk_set_rate(&mut self, id: ClkId, rate_hz: u64) -> ClockResult<u64> {
+        let id = sdmmc_phase_parent(id).unwrap_or(id);
         if id == CCLK_EMMC {
             let Some((selector, actual_hz)) = rate_selector(rate_hz) else {
                 return Err(ClockError::invalid_rate(id, rate_hz));
             };
             self.write_clksel(CCLK_EMMC_SEL_MASK, selector);
+            return Ok(actual_hz);
+        }
+
+        if let Some(clock) = sdmmc_clock(id) {
+            let Some((selector, actual_hz)) = sdmmc_rate_selector(rate_hz) else {
+                return Err(ClockError::invalid_rate(id, rate_hz));
+            };
+            let mask = SDMMC_SEL_MASK << clock.selector_shift;
+            self.update_bits(
+                clksel_con(clock.selector_register),
+                mask,
+                selector << clock.selector_shift,
+            );
             return Ok(actual_hz);
         }
 
@@ -207,6 +309,23 @@ impl Cru {
             _ => Err(ClockError::rate_read_failed(
                 CCLK_EMMC,
                 "invalid RK3568 eMMC selector",
+            )),
+        }
+    }
+
+    fn sdmmc_rate(&self, id: ClkId, clock: SdMmcClock) -> ClockResult<u64> {
+        let selector = (self.read(clksel_con(clock.selector_register)) >> clock.selector_shift)
+            & SDMMC_SEL_MASK;
+        match selector {
+            SDMMC_XIN24M => Ok(OSC_HZ),
+            SDMMC_GPLL_400M => Ok(400 * MHZ),
+            SDMMC_GPLL_300M => Ok(300 * MHZ),
+            SDMMC_CPLL_100M => Ok(100 * MHZ),
+            SDMMC_CPLL_50M => Ok(50 * MHZ),
+            SDMMC_OSC0_DIV_750K => Ok(750_000),
+            _ => Err(ClockError::rate_read_failed(
+                id,
+                "invalid RK3568 SDMMC selector",
             )),
         }
     }
@@ -277,13 +396,52 @@ impl ClockOp for Cru {
     }
 }
 
-fn emmc_gate_mask(id: ClkId) -> Option<u32> {
+const fn clock_gate(id: ClkId) -> Option<ClockGate> {
     match id {
-        CCLK_EMMC => Some(GATE_CCLK_EMMC),
-        BCLK_EMMC => Some(GATE_BCLK_EMMC),
-        ACLK_EMMC => Some(GATE_ACLK_EMMC),
-        HCLK_EMMC => Some(GATE_HCLK_EMMC),
-        TCLK_EMMC => Some(GATE_TCLK_EMMC),
+        CCLK_EMMC => Some(ClockGate {
+            register: CLKGATE_CON09,
+            mask: GATE_CCLK_EMMC,
+        }),
+        BCLK_EMMC => Some(ClockGate {
+            register: CLKGATE_CON09,
+            mask: GATE_BCLK_EMMC,
+        }),
+        ACLK_EMMC => Some(ClockGate {
+            register: CLKGATE_CON09,
+            mask: GATE_ACLK_EMMC,
+        }),
+        HCLK_EMMC => Some(ClockGate {
+            register: CLKGATE_CON09,
+            mask: GATE_HCLK_EMMC,
+        }),
+        TCLK_EMMC => Some(ClockGate {
+            register: CLKGATE_CON09,
+            mask: GATE_TCLK_EMMC,
+        }),
+        HCLK_SDMMC0 => Some(ClockGate {
+            register: CLKGATE_CON15,
+            mask: bit(0),
+        }),
+        CLK_SDMMC0 => Some(ClockGate {
+            register: CLKGATE_CON15,
+            mask: bit(1),
+        }),
+        HCLK_SDMMC1 => Some(ClockGate {
+            register: CLKGATE_CON15,
+            mask: bit(2),
+        }),
+        CLK_SDMMC1 => Some(ClockGate {
+            register: CLKGATE_CON15,
+            mask: bit(3),
+        }),
+        HCLK_SDMMC2 => Some(ClockGate {
+            register: CLKGATE_CON17,
+            mask: bit(0),
+        }),
+        CLK_SDMMC2 => Some(ClockGate {
+            register: CLKGATE_CON17,
+            mask: bit(1),
+        }),
         _ => None,
     }
 }
@@ -375,5 +533,23 @@ mod tests {
                 rate_hz,
             } if rate_hz == 100 * MHZ
         ));
+    }
+
+    #[test]
+    fn sdmmc_card_clocks_accept_rates_used_by_rk3568_dwmmc() {
+        let mut regs = [0_u32; 0x600 / core::mem::size_of::<u32>()];
+        let base = regs.as_mut_ptr() as usize;
+        let mut cru = Cru {
+            base,
+            reset: ResetRockchip::new(base + SOFTRST_CON_OFFSET as usize, 512),
+        };
+
+        let sdmmc0 = ClkId::new(0xb1);
+        let sdmmc2 = ClkId::new(0xc2);
+
+        assert_eq!(cru.clk_set_rate(sdmmc0, 50 * MHZ).unwrap(), 50 * MHZ);
+        assert_eq!(cru.clk_get_rate(sdmmc0).unwrap(), 50 * MHZ);
+        assert_eq!(cru.clk_set_rate(sdmmc2, 800_000).unwrap(), 750_000);
+        assert_eq!(cru.clk_get_rate(sdmmc2).unwrap(), 750_000);
     }
 }

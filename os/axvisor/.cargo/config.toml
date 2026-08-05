@@ -32,6 +32,3 @@ rustflags = [
 
 [target.'cfg(target_os = "none")']
 runner = "cargo osrun"
-
-[alias]
-xtask = "run --bin xtask --"

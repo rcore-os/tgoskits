@@ -304,10 +304,10 @@ async fn pull_downloads_and_extracts_image() {
     let dir = tempdir().unwrap();
     let registry = ImageRegistry {
         images: vec![ImageEntry {
-            name: "qemu_x86_64_nimbos".to_string(),
+            name: "demo-x86_64".to_string(),
             version: "0.0.1".to_string(),
             released_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
-            description: "NimbOS guest".to_string(),
+            description: "Demo guest".to_string(),
             sha256,
             arch: "x86_64".to_string(),
             url: archive_url.url().to_string(),
@@ -321,11 +321,11 @@ async fn pull_downloads_and_extracts_image() {
 
     let storage = Storage::new(dir.path().to_path_buf()).unwrap();
     let extracted = storage
-        .pull_image(ImageSpecRef::parse("qemu_x86_64_nimbos"), None, true)
+        .pull_image(ImageSpecRef::parse("demo-x86_64"), None, true)
         .await
         .unwrap();
 
-    assert_eq!(extracted, dir.path().join("qemu_x86_64_nimbos"));
+    assert_eq!(extracted, dir.path().join("demo-x86_64"));
     assert_eq!(fs::read(extracted.join("rootfs.img")).unwrap(), b"rootfs");
     assert!(dir.path().join("archive.tar.gz").exists());
     assert!(!dir.path().join("archive.tar.gz.part").exists());

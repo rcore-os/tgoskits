@@ -10,8 +10,15 @@
 .equ CSR_PGDL,         0x19
 .equ CSR_PGDH,         0x1a
 .equ CSR_BADI,         0x8
-.equ CSR_SAVE0,        0x30
-.equ CSR_SAVE1,        0x31
+// Host KS ownership is shared with normal LoongArch trap entry. KS0-KS2
+// belong to exception handling, KS3 is the immutable CPU-local shadow, and
+// KS4-KS5 belong to virtualization.
+.equ HOST_TRAP_KSP_KS, 0x30
+.equ HOST_TRAP_T0_KS,  0x31
+.equ HOST_TRAP_T1_KS,  0x32
+.equ HOST_PERCPU_KS,  0x33
+.equ HOST_VCPU_KS,   0x34
+.equ HOST_VCPU_TMP_KS, 0x35
 .equ CSR_PGD,          0x1b
 .equ CSR_PWCL,         0x1c
 .equ CSR_PWCH,         0x1d
@@ -96,7 +103,7 @@
     st.d    $r9,  $sp, 72
     st.d    $r10, $sp, 80
     st.d    $r11, $sp, 88
-    csrrd   $t0, CSR_SAVE0
+    csrrd   $t0, HOST_VCPU_TMP_KS
     st.d    $t0, $sp, 96
     st.d    $r13, $sp, 104
     st.d    $r14, $sp, 112
@@ -107,6 +114,9 @@
     st.d    $r19, $sp, 152
     st.d    $r20, $sp, 160
     st.d    $r21, $sp, 168
+    // Guest r21 is durable. Restore the physical CPU's area base before any
+    // later exit work can enter host Rust.
+    RESTORE_HOST_PERCPU
     st.d    $r22, $sp, 176
     st.d    $r23, $sp, 184
     st.d    $r24, $sp, 192
@@ -258,6 +268,10 @@
     st.d    $t0, $sp, 784
 .endm
 
+.macro RESTORE_HOST_PERCPU
+    csrrd   $r21, HOST_PERCPU_KS
+.endm
+
 .macro ENTER_HOST_MODE
     li.d    $t0, CSR_GSTAT_PVM
     csrxchg $zero, $t0, CSR_GSTAT
@@ -272,12 +286,12 @@
 .endm
 
 .macro DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $t1, CSR_SAVE1
+    csrwr   $t1, HOST_TRAP_T1_KS
     csrrd   $t0, CSR_ECFG
     li.d    $t1, CSR_TIMER_IE
     andn    $t0, $t0, $t1
     csrwr   $t0, CSR_ECFG
-    csrrd   $t1, CSR_SAVE1
+    csrrd   $t1, HOST_TRAP_T1_KS
 .endm
 
 .macro PREPARE_GUEST_ENTRY
@@ -482,7 +496,7 @@
 _run_guest:
     move    $t1, $ra
     addi.d  $t0, $a0, {ctx_size}
-    csrwr   $t0, 0x33
+    csrwr   $t0, HOST_VCPU_KS
     move    $sp, $a0
     SWITCH_TO_GUEST_TRANSLATION
     PREPARE_GUEST_ENTRY
@@ -517,10 +531,10 @@ _guest_tlb_refill_vector:
 
 .Lguest_stage2_tlb_invalid:
     csrrd   $t0, CSR_TLBRSAVE
-    csrwr   $t0, CSR_SAVE0
+    csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
-    csrrd   $sp, 0x33
+    csrrd   $sp, HOST_VCPU_KS
     addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
@@ -655,10 +669,10 @@ _exception_vectors:
     b       _irq_handler_vector
 
 _irq_handler_vector:
-    csrwr   $t0, CSR_SAVE0
+    csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
-    csrrd   $sp, 0x33
+    csrrd   $sp, HOST_VCPU_KS
     addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
@@ -667,10 +681,10 @@ _irq_handler_vector:
     b       _guest_exit
 
 _sync_handler_vector:
-    csrwr   $t0, CSR_SAVE0
+    csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
-    csrrd   $sp, 0x33
+    csrrd   $sp, HOST_VCPU_KS
     addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
@@ -679,10 +693,10 @@ _sync_handler_vector:
     b       _guest_exit
 
 _hvc_handler_vector:
-    csrwr   $t0, CSR_SAVE0
+    csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
     csrwr   $sp, 0x502
-    csrrd   $sp, 0x33
+    csrrd   $sp, HOST_VCPU_KS
     addi.d  $sp, $sp, -{ctx_size}
     SAVE_GUEST_REGS
     ENTER_HOST_MODE

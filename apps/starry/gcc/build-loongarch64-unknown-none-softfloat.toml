@@ -2,6 +2,6 @@ target = "loongarch64-unknown-none-softfloat"
 log = "Warn"
 features = [
   "axplat-dyn/efi",
-  "ax-driver/virtio-blk",
+  "ax-driver/nvme",
   "ax-driver/virtio-net",
 ]

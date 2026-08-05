@@ -11,6 +11,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(page_size_16k)");
     println!("cargo::rustc-check-cfg=cfg(uspace)");
     println!("cargo::rustc-check-cfg=cfg(hv)");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_TLS");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-search={}", out_dir.display());
@@ -153,6 +154,7 @@ impl Build {
             LinkerConfig {
                 kernel_load_vaddr: self.kernel_vaddr,
                 kernel_load_paddr: self.kernel_paddr,
+                kernel_tls: std::env::var_os("CARGO_FEATURE_TLS").is_some(),
             },
         );
         let ld_dst = self.out_dir.join(Self::LD_NAME);

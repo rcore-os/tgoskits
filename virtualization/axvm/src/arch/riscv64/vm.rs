@@ -1,11 +1,18 @@
 //! RISC-V VM resource creation and initialization.
 
+use alloc::sync::Arc;
+
+use axdevice::DeviceFactoryRegistry;
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
-use super::{Riscv64Arch, irq, npt};
+use super::{
+    Riscv64Arch,
+    irq::{self, RiscvPlicRuntime},
+    npt,
+};
 use crate::{
-    AxVmResult, ax_err,
+    AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
@@ -33,48 +40,80 @@ impl Riscv64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let mut factories = default_device_factories()?;
-                let mode = vm.interrupt_mode();
-                let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_fabric = irq::configure(&mut factories, mode, &emulated_devices)?;
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let mut factories = default_device_factories(vm)?;
+                let runtime = register_device_factory(vm, &mut factories)?;
+                init_vm_with(vm, &factories, runtime)
             }
-            VmInitRequest::Provided {
-                factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+            VmInitRequest::Provided { factories } => {
+                let runtime = register_device_factory(vm, factories)?;
+                init_vm_with(vm, factories, runtime)
+            }
         }
     }
 }
 
+fn register_device_factory(
+    vm: &AxVM,
+    factories: &mut DeviceFactoryRegistry,
+) -> AxVmResult<Arc<RiscvPlicRuntime>> {
+    let (configs, placements, physical_irqs) = vm.with_config(|config| {
+        (
+            config.emu_devices().clone(),
+            config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids(),
+            config.pass_through_irqs().to_vec(),
+        )
+    });
+    let physical_target_cpu = placements
+        .first()
+        .map(|(_, _, physical_id)| *physical_id)
+        .ok_or_else(|| AxVmError::invalid_config("a RISC-V VM must contain at least one vCPU"))?;
+    irq::register_device_factory(
+        vm.id(),
+        placements.len(),
+        factories,
+        &configs,
+        &physical_irqs,
+        physical_target_cpu,
+    )
+}
+
 fn init_vm_with(
     vm: &AxVM,
-    factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    factories: &DeviceFactoryRegistry,
+    runtime: Arc<RiscvPlicRuntime>,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
-        let placements = vcpu_placements(resources);
-        let dtb_addr = resources
-            .config()
-            .image_config()
-            .dtb_load_gpa
-            .unwrap_or_default();
-        let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
-            Ok(RiscvVcpuCreateConfig {
-                hart_id: placement.id,
-                dtb_addr: dtb_addr.as_usize(),
-            })
-        })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        devices.register_special_devices(vm)?;
-        validate_guest_dtb(resources)?;
+    let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> = runtime;
+    complete_vm_init(
+        vm,
+        interrupt_controller,
+        |resources, interrupt_controller| {
+            let placements = vcpu_placements(resources);
+            let dtb_addr = resources
+                .config()
+                .image_config()
+                .dtb_load_gpa
+                .unwrap_or_default();
+            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+                Ok(RiscvVcpuCreateConfig {
+                    hart_id: placement.id,
+                    dtb_addr: dtb_addr.as_usize(),
+                })
+            })?;
+            let devices = PreparedDevices::build_common(
+                resources,
+                factories,
+                interrupt_controller,
+                vm.device_access_ports(),
+            )?;
+            validate_guest_dtb(resources)?;
 
-        let owned_regions = guest_owned_regions(resources);
-        map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
-        vcpus.setup(resources, build_vcpu_setup_config)?;
+            let owned_regions = guest_owned_regions(resources);
+            map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
+            vcpus.setup(resources, build_vcpu_setup_config)?;
 
-        Ok(PreparedVm::new(vcpus, devices))
-    })
+            Ok(PreparedVm::new(vcpus, devices))
+        },
+    )
 }
 
 fn build_vcpu_setup_config(
@@ -85,13 +124,21 @@ fn build_vcpu_setup_config(
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
-    let mut levels = riscv_vcpu::max_guest_page_table_levels();
-    for cpu_id in crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings) {
-        levels = levels.min(
-            crate::percpu::cpu_max_guest_page_table_levels(cpu_id)
-                .unwrap_or_else(riscv_vcpu::max_guest_page_table_levels),
-        );
-    }
+    let levels = crate::architecture::minimum_recorded_target_cpu_capability(
+        "RISC-V G-stage page-table levels",
+        vcpu_mappings,
+        |cpu_id| {
+            crate::percpu::select_cpu_virtualization_capability(cpu_id, |levels, _, _| {
+                levels as u64
+            })
+        },
+    )
+    .map_err(|error| {
+        crate::architecture::unsupported_target_cpu_capability(
+            "select RISC-V target CPU capability",
+            error,
+        )
+    })? as usize;
     match levels {
         3 | 4 => Ok(levels),
         _ => ax_err!(Unsupported, "no supported RISC-V G-stage paging mode"),

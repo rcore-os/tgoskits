@@ -70,4 +70,8 @@ pub struct ArgsAppBoard {
 
     #[arg(long)]
     pub debug: bool,
+
+    /// Build and upload app files while connecting to the board's default Linux
+    #[arg(long)]
+    pub linux_stage: bool,
 }

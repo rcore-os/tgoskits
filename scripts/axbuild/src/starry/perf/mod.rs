@@ -21,6 +21,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         .arch
         .clone()
         .unwrap_or_else(|| crate::context::DEFAULT_STARRY_ARCH.to_string());
+    qemu::validate_arch(&arch)?;
     let target = starry_target_for_arch_checked(&arch)?.to_string();
     let outputs = outputs::prepare_outputs(
         starry.app.workspace_root(),
@@ -63,8 +64,12 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     args_support::apply_perf_cargo_features(&mut cargo, &args);
     let qemu = rootfs::load_patched_qemu_config(starry, &request, &cargo, None, true).await?;
     let elf = build_output.elf_path().to_path_buf();
+    starry
+        .app
+        .prepare_elf_artifact(elf.clone(), qemu.to_bin)
+        .await?;
     let text_range = symbols::detect_kernel_text_range(&elf)?;
-    qemu::write_qemu_config(&outputs, &tools, &args, &arch, qemu.args, text_range)?;
+    qemu::write_qemu_config(&outputs, &tools, &args, &arch, &qemu, text_range)?;
 
     let kernel_bin = symbols::kernel_bin_path(starry.app.workspace_root(), &target, args.debug);
     let qemu_run = qemu::run_qemu_direct(&outputs, &args, &arch, &kernel_bin)?;
@@ -75,10 +80,14 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
                 qemu_run.status
             );
         }
-        eprintln!(
-            "qperf: QEMU ended with {} after producing samples",
-            qemu_run.status
-        );
+        if qemu_run.timed_out {
+            eprintln!("qperf: completed the configured sampling window after producing samples");
+        } else {
+            eprintln!(
+                "qperf: QEMU ended with {} after producing samples",
+                qemu_run.status
+            );
+        }
     }
 
     analyzer::run_analyzer(analyzer::AnalyzerRun {
@@ -131,7 +140,10 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         &outputs,
         &args,
         &arch,
-        metrics::exit_status_code(&qemu_run.status),
+        metrics::report_returncode(
+            metrics::exit_status_code(&qemu_run.status),
+            qemu_run.timed_out,
+        ),
     )?;
     summary::print_report(&outputs, &args, &report_harness);
     Ok(())

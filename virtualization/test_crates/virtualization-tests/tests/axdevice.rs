@@ -15,63 +15,69 @@
 use std::sync::{Arc, Mutex};
 
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime, PollableDeviceOps,
     register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, Device, DeviceError, DeviceRegistry as _, DeviceResult,
-    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId, Port, PortRange,
-    RegistryError, Resource, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess,
+    DeviceError, DeviceRegistry as _, InterruptControllerId, InterruptEndpoint,
+    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqResult, Port, RegistryError,
+    Resource, SysRegAddr, VirtualInterruptController, WiredIrqInput,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
-/// Registers a legacy MMIO device through the new DeviceManager API.
-fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
-    devices: &mut AxVmDevices,
+fn register_device<T: Device + 'static>(
+    devices: &mut DeviceRuntime,
     dev: Arc<T>,
 ) -> Result<(), RegistryError> {
-    devices.register(MmioDeviceAdapter::from_arc(dev))?;
+    devices.register(dev)?;
     Ok(())
 }
 
-/// Registers a legacy Port device through the new DeviceManager API.
-fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
-    devices: &mut AxVmDevices,
-    dev: Arc<T>,
+fn register_mmio(
+    devices: &mut DeviceRuntime,
+    dev: Arc<MockMmioDevice>,
 ) -> Result<(), RegistryError> {
-    devices.register(PortDeviceAdapter::from_arc(dev))?;
-    Ok(())
+    register_device(devices, dev)
 }
 
-/// Registers a legacy SysReg device through the new DeviceManager API.
-fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
-    devices: &mut AxVmDevices,
-    dev: Arc<T>,
+fn register_port(
+    devices: &mut DeviceRuntime,
+    dev: Arc<MockPortDevice>,
 ) -> Result<(), RegistryError> {
-    devices.register(SysRegDeviceAdapter::from_arc(dev))?;
-    Ok(())
+    register_device(devices, dev)
+}
+
+fn register_sysreg(
+    devices: &mut DeviceRuntime,
+    dev: Arc<MockSysRegDevice>,
+) -> Result<(), RegistryError> {
+    register_device(devices, dev)
 }
 
 struct MockMmioDevice {
     name: String,
-    range: GuestPhysAddrRange,
+    base: usize,
+    end: usize,
+    resources: [Resource; 1],
     last_write: Mutex<Option<(usize, usize)>>,
 }
 
 impl MockMmioDevice {
     fn new(name: &str, base: usize, len: usize) -> Self {
-        let start = GuestPhysAddr::from(base);
-        let end = GuestPhysAddr::from(base + len);
-
-        Self::with_range(name, GuestPhysAddrRange::new(start, end))
+        Self::with_range(name, base, base + len)
     }
 
-    fn with_range(name: &str, range: GuestPhysAddrRange) -> Self {
+    fn with_range(name: &str, base: usize, end: usize) -> Self {
         Self {
             name: String::from(name),
-            range,
+            base,
+            end,
+            resources: [Resource::MmioRange {
+                base: base as u64,
+                size: end.wrapping_sub(base) as u64,
+            }],
             last_write: Mutex::new(None),
         }
     }
@@ -81,63 +87,88 @@ impl MockMmioDevice {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.range
+impl Device for MockMmioDevice {
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::IVCChannel
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0xDEAD_BEEF)
-    }
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio
+            || access.addr < self.base as u64
+            || access.addr >= self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
 
-    fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> DeviceResult {
-        println!(
-            "[Test] Device {} write: addr={:?}, val={:#x}",
-            self.name, addr, val
-        );
-
-        let offset = addr.as_usize() - self.range.start.as_usize();
-        *self.last_write.lock().unwrap() = Some((offset, val));
-        Ok(())
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0xDEAD_BEEF })
+        } else {
+            let offset = access.addr as usize - self.base;
+            *self.last_write.lock().unwrap() = Some((offset, access.data as usize));
+            Ok(BusResponse::Write)
+        }
     }
 }
 
 struct MockPortDevice {
-    range: PortRange,
+    start: u16,
+    end: u16,
+    resources: [Resource; 1],
 }
 
 impl MockPortDevice {
     fn new(start: u16, end: u16) -> Self {
         Self {
-            range: PortRange::new(Port::new(start), Port::new(end)),
+            start,
+            end,
+            resources: [Resource::PortRange {
+                base: start,
+                size: end.wrapping_sub(start).wrapping_add(1),
+            }],
         }
     }
 }
 
-impl BaseDeviceOps<PortRange> for MockPortDevice {
-    fn address_range(&self) -> PortRange {
-        self.range
+impl Device for MockPortDevice {
+    fn name(&self) -> &str {
+        "mock-port"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::Console
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: Port, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: Port, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Port
+            || access.addr < self.start as u64
+            || access.addr > self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            Ok(BusResponse::Write)
+        }
     }
 }
 
 struct MockSysRegDevice {
-    range: SysRegAddrRange,
+    start: u32,
+    end: u32,
+    resources: [Resource; 1],
 }
 
 struct MockResourceDevice {
@@ -163,27 +194,31 @@ impl Device for MockResourceDevice {
         &self.resources
     }
 
-    fn handle(
+    fn access(
         &self,
         _access: &axdevice_base::BusAccess,
+        _context: &mut dyn axdevice_base::DeviceAccess,
     ) -> Result<axdevice_base::BusResponse, DeviceError> {
         Ok(axdevice_base::BusResponse::Read { value: 0x5a })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
 struct MockMmioPollableDevice {
-    range: GuestPhysAddrRange,
+    base: usize,
+    end: usize,
+    resources: [Resource; 1],
     polled_at: Mutex<Vec<u64>>,
 }
 
 impl MockMmioPollableDevice {
     fn new(start: usize, end: usize) -> Self {
         Self {
-            range: GuestPhysAddrRange::new(start.into(), end.into()),
+            base: start,
+            end,
+            resources: [Resource::MmioRange {
+                base: start as u64,
+                size: end.wrapping_sub(start) as u64,
+            }],
             polled_at: Mutex::new(Vec::new()),
         }
     }
@@ -193,21 +228,31 @@ impl MockMmioPollableDevice {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioPollableDevice {
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.range
+impl Device for MockMmioPollableDevice {
+    fn name(&self) -> &str {
+        "mock-mmio-pollable"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::IVCChannel
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio
+            || access.addr < self.base as u64
+            || access.addr >= self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            Ok(BusResponse::Write)
+        }
     }
 }
 
@@ -221,31 +266,46 @@ impl PollableDeviceOps for MockMmioPollableDevice {
 impl MockSysRegDevice {
     fn new(start: usize, end: usize) -> Self {
         Self {
-            range: SysRegAddrRange::new(SysRegAddr::new(start), SysRegAddr::new(end)),
+            start: start as u32,
+            end: end as u32,
+            resources: [Resource::SysReg {
+                addr: start as u32,
+                count: (end as u32).wrapping_sub(start as u32).wrapping_add(1),
+            }],
         }
     }
 }
 
-impl BaseDeviceOps<SysRegAddrRange> for MockSysRegDevice {
-    fn address_range(&self) -> SysRegAddrRange {
-        self.range
+impl Device for MockSysRegDevice {
+    fn name(&self) -> &str {
+        "mock-sysreg"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::InterruptController
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: SysRegAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: SysRegAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::SysReg
+            || access.addr < self.start as u64
+            || access.addr > self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            Ok(BusResponse::Write)
+        }
     }
 }
 
-fn empty_devices() -> AxVmDevices {
-    AxVmDevices::new(AxVmDeviceConfig::new(vec![])).unwrap()
+fn empty_devices() -> DeviceRuntime {
+    DeviceRuntime::default()
 }
 
 fn irq_resource(line: u32, trigger: InterruptTriggerMode) -> Resource {
@@ -257,10 +317,7 @@ fn resource_device(name: &str, resources: Vec<Resource>) -> Arc<MockResourceDevi
 }
 
 fn mmio_device(name: &str, start: usize, end: usize) -> Arc<MockMmioDevice> {
-    Arc::new(MockMmioDevice::with_range(
-        name,
-        GuestPhysAddrRange::new(start.into(), end.into()),
-    ))
+    Arc::new(MockMmioDevice::with_range(name, start, end))
 }
 
 fn device_config(
@@ -279,20 +336,26 @@ fn device_config(
     }
 }
 
-struct RejectingIrqResolver;
+struct RejectingInterruptController;
 
-impl IrqResolver for RejectingIrqResolver {
-    fn resolve_irq(
+impl VirtualInterruptController for RejectingInterruptController {
+    fn id(&self) -> InterruptControllerId {
+        InterruptControllerId::new(0)
+    }
+
+    fn wired_input(
         &self,
-        line: usize,
+        input: ControllerInputId,
         _trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
+    ) -> IrqResult<WiredIrqInput> {
         Err(IrqError::Unsupported {
-            line: IrqLineId(line),
-            operation: "resolve test IRQ",
-            detail: "test resolver rejects every line".into(),
-        }
-        .into())
+            endpoint: InterruptEndpoint::Wired {
+                controller: self.id(),
+                input,
+            },
+            operation: "open test interrupt input",
+            detail: "test controller rejects every input".into(),
+        })
     }
 }
 
@@ -321,21 +384,13 @@ impl DeviceFactory for MockMmioFactory {
             });
         }
 
-        Ok(
-            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(mmio_device(
-                &config.name,
-                config.base_gpa,
-                end,
-            )))
-            .into(),
-        )
+        Ok(DeviceRegistration::Device(mmio_device(&config.name, config.base_gpa, end)).into())
     }
 }
 
 #[test]
 fn test_mmio_dispatch_functionality() {
-    let config = AxVmDeviceConfig::new(vec![]);
-    let mut devices = AxVmDevices::new(config).unwrap();
+    let mut devices = DeviceRuntime::default();
 
     let base_addr = 0x1000_0000;
     let dev_size = 0x1000;
@@ -368,8 +423,7 @@ fn test_mmio_dispatch_functionality() {
 
 #[test]
 fn test_mmio_missing_device_returns_error() {
-    let config = AxVmDeviceConfig::new(vec![]);
-    let devices = AxVmDevices::new(config).unwrap();
+    let devices = DeviceRuntime::default();
 
     let invalid_addr = GuestPhysAddr::from(0x9999_9999);
     let width = AccessWidth::try_from(4).unwrap();
@@ -428,16 +482,11 @@ fn test_mmio_duplicate_and_overlapping_ranges_are_rejected_without_modification(
 #[test]
 fn test_empty_and_wrapped_ranges_are_rejected() {
     let mut devices = empty_devices();
-    let empty_mmio = Arc::new(MockMmioDevice::with_range(
-        "empty-mmio",
-        GuestPhysAddrRange::new(0x1000.into(), 0x1000.into()),
-    ));
+    let empty_mmio = Arc::new(MockMmioDevice::with_range("empty-mmio", 0x1000, 0x1000));
     let wrapped_mmio = Arc::new(MockMmioDevice::with_range(
         "wrapped-mmio",
-        GuestPhysAddrRange {
-            start: (usize::MAX - 0xf).into(),
-            end: 0x10.into(),
-        },
+        usize::MAX - 0xf,
+        0x10,
     ));
     let invalid_port = Arc::new(MockPortDevice::new(0x400, 0x3ff));
     let invalid_sysreg = Arc::new(MockSysRegDevice::new(0x101, 0x100));
@@ -525,8 +574,8 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
 fn test_conflicting_factory_device_config_returns_structured_error() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let first = device_config(
         "factory-mmio-first",
         EmulatedDeviceType::VirtioBlk,
@@ -541,12 +590,7 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
     );
 
     assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![first, overlap]),
-            &factories,
-            &context,
-        )
-        .err(),
+        DeviceRuntime::build_with_factories(&[first, overlap], &factories, &context).err(),
         Some(DeviceManagerError::Registry(
             RegistryError::AddressConflict { .. }
         ))
@@ -557,12 +601,14 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
 fn test_bundle_registers_mmio_and_port_together() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-mmio", 0x4000, 0x5000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-mmio",
+        0x4000,
+        0x5000,
     )));
-    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
-        Arc::new(MockPortDevice::new(0x500, 0x50f)),
-    )));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockPortDevice::new(
+        0x500, 0x50f,
+    ))));
 
     assert_eq!(devices.register_bundle(bundle), Ok(()));
     assert_eq!(devices.devices().count(), 2);
@@ -572,15 +618,19 @@ fn test_bundle_registers_mmio_and_port_together() {
 fn test_bundle_internal_conflict_is_atomic() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-first", 0x4000, 0x5000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-first",
+        0x4000,
+        0x5000,
     )));
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-overlap", 0x4800, 0x5800),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-overlap",
+        0x4800,
+        0x5800,
     )));
-    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
-        Arc::new(MockPortDevice::new(0x500, 0x50f)),
-    )));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockPortDevice::new(
+        0x500, 0x50f,
+    ))));
 
     assert!(matches!(
         devices.register_bundle(bundle).err(),
@@ -598,15 +648,17 @@ fn test_bundle_existing_conflict_leaves_all_registries_unchanged() {
 
     let count_before = devices.devices().count();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-mmio", 0x6000, 0x7000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-mmio",
+        0x6000,
+        0x7000,
     )));
-    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
-        Arc::new(MockPortDevice::new(0x3ff, 0x400)),
-    )));
-    bundle.push(DeviceRegistration::Device(SysRegDeviceAdapter::from_arc(
-        Arc::new(MockSysRegDevice::new(0x200, 0x210)),
-    )));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockPortDevice::new(
+        0x3ff, 0x400,
+    ))));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockSysRegDevice::new(
+        0x200, 0x210,
+    ))));
 
     assert!(matches!(
         devices.register_bundle(bundle).err(),
@@ -622,9 +674,7 @@ fn test_pollable_and_mmio_capabilities_share_one_device() {
     let mut devices = empty_devices();
     let shared = Arc::new(MockMmioPollableDevice::new(0x8000, 0x9000));
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        shared.clone(),
-    )));
+    bundle.push(DeviceRegistration::Device(shared.clone()));
     bundle.push(DeviceRegistration::Pollable(shared.clone()));
 
     assert_eq!(devices.register_bundle(bundle), Ok(()));
@@ -649,9 +699,7 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
         .unwrap();
 
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        shared.clone(),
-    )));
+    bundle.push(DeviceRegistration::Device(shared.clone()));
     bundle.push(DeviceRegistration::Pollable(shared));
 
     assert!(matches!(
@@ -685,8 +733,8 @@ fn test_factory_registry_rejects_duplicate_device_type() {
 #[test]
 fn test_missing_factory_returns_unsupported() {
     let factories = DeviceFactoryRegistry::new();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let config = device_config(
         "missing-console",
         EmulatedDeviceType::VirtioConsole,
@@ -699,12 +747,7 @@ fn test_missing_factory_returns_unsupported() {
         Some(DeviceManagerError::Unsupported { .. })
     ));
     assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![config]),
-            &factories,
-            &context,
-        )
-        .err(),
+        DeviceRuntime::build_with_factories(&[config], &factories, &context).err(),
         Some(DeviceManagerError::Unsupported { .. })
     ));
 }
@@ -713,16 +756,16 @@ fn test_missing_factory_returns_unsupported() {
 fn test_factory_build_registers_new_device_type_without_legacy_branch() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let base = 0x1_0000;
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
+    let devices = DeviceRuntime::build_with_factories(
+        &[device_config(
             "factory-mmio",
             EmulatedDeviceType::VirtioBlk,
             base,
             0x1000,
-        )]),
+        )],
         &factories,
         &context,
     )
@@ -738,14 +781,11 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
 }
 
 #[test]
-fn test_factory_validation_failure_leaves_devices_unchanged() {
-    let mut devices = empty_devices();
-    register_port(&mut devices, Arc::new(MockPortDevice::new(0x3f8, 0x3ff))).unwrap();
-    let count_before = devices.devices().count();
+fn test_factory_validation_failure_is_reported_by_static_builder() {
     let mut factories = DeviceFactoryRegistry::new();
     factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
     let invalid = device_config(
         "invalid-factory-mmio",
         EmulatedDeviceType::VirtioBlk,
@@ -754,25 +794,19 @@ fn test_factory_validation_failure_leaves_devices_unchanged() {
     );
 
     assert!(matches!(
-        devices.register_factory_device(&invalid, &factories, &context),
+        DeviceRuntime::build_with_factories(&[invalid], &factories, &context),
         Err(DeviceManagerError::InvalidConfig { .. })
     ));
-    assert_eq!(devices.devices().count(), count_before);
 }
 
 #[test]
 fn test_builtin_meta_factory_builds_dummy_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
-            "metadata",
-            EmulatedDeviceType::Dummy,
-            0,
-            0,
-        )]),
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
+    let devices = DeviceRuntime::build_with_factories(
+        &[device_config("metadata", EmulatedDeviceType::Dummy, 0, 0)],
         &factories,
         &context,
     )
@@ -788,8 +822,10 @@ fn test_wrapped_native_mmio_resource_is_rejected() {
     // AddressConflict.
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("zero-size", 0x1000, 0x1000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "zero-size",
+        0x1000,
+        0x1000,
     )));
     assert!(matches!(
         devices.register_bundle(bundle).err(),
@@ -816,14 +852,12 @@ fn test_native_device_resource_overflow_rejected() {
             }];
             &R
         }
-        fn handle(
+        fn access(
             &self,
             _: &axdevice_base::BusAccess,
+            _context: &mut dyn axdevice_base::DeviceAccess,
         ) -> Result<axdevice_base::BusResponse, DeviceError> {
             Err(DeviceError::NotFound)
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
         }
     }
 
@@ -854,14 +888,12 @@ fn test_native_device_port_resource_overflow_rejected() {
             }];
             &R
         }
-        fn handle(
+        fn access(
             &self,
             _: &axdevice_base::BusAccess,
+            _context: &mut dyn axdevice_base::DeviceAccess,
         ) -> Result<axdevice_base::BusResponse, DeviceError> {
             Err(DeviceError::NotFound)
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
         }
     }
 
@@ -877,18 +909,18 @@ fn test_native_device_port_resource_overflow_rejected() {
 }
 
 #[test]
-fn test_build_with_factories_preserves_legacy_ivc_config() {
+fn test_build_with_factories_accepts_ivc_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
+    let controller = RejectingInterruptController;
+    let context = DeviceBuildContext::new(&controller);
+    let devices = DeviceRuntime::build_with_factories(
+        &[device_config(
             "ivc",
             EmulatedDeviceType::IVCChannel,
             0x4_0000,
             0x2000,
-        )]),
+        )],
         &factories,
         &context,
     )

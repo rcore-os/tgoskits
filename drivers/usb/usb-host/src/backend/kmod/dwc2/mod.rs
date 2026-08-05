@@ -2298,6 +2298,20 @@ impl crate::backend::ty::ep::EndpointOp for Dwc2Endpoint {
         self.channel_completions.publish(self.channel, HCINT_CHHLTD);
         Ok(())
     }
+
+    fn reset(&mut self) -> crate::backend::ty::ep::EndpointResetFuture {
+        let result = if self.active.is_some() || self.completed.is_some() {
+            Err(TransferError::QueueFull)
+        } else {
+            let _guard = self.channel_gate.lock();
+            self.channel_completions.clear(self.channel);
+            self.regs
+                .channel_write32(self.channel, HCINT, HCINT_ALL_W1C);
+            self.data_toggle = DataToggle::data0();
+            Ok(())
+        };
+        Box::pin(async move { result })
+    }
 }
 
 fn successful_packet_count(actual: usize, requested: usize, max_packet_size: u16) -> u32 {
@@ -2371,6 +2385,7 @@ mod tests {
             // `alloc_coherent`, so they must be released through the same mock
             // deallocation path.
             unsafe { self.dealloc_coherent(handle) }
+                .expect("test coherent DMA release must succeed")
         }
 
         unsafe fn alloc_coherent(
@@ -2393,11 +2408,12 @@ mod tests {
             Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
         }
 
-        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
             // SAFETY: The mock only creates coherent handles from
             // `alloc_zeroed` with the stored layout, so deallocating with the
             // same layout releases exactly that allocation.
-            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) }
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
         }
 
         unsafe fn map_streaming(

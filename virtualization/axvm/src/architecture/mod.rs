@@ -1,13 +1,13 @@
 //! Architecture-neutral contracts shared by target implementations.
 
-mod capabilities;
+pub(crate) mod capabilities;
 mod exit;
 pub(crate) mod ops;
 mod types;
 
 pub(crate) use capabilities::{
-    BootImagePlatform, GuestBootPlatform, HostTimePlatform, PhysicalSpiPlatform,
-    build_passthrough_spi_registrations, try_inject_passthrough_device_irq,
+    BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform,
+    minimum_recorded_target_cpu_capability, unsupported_target_cpu_capability,
 };
 pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 pub(crate) use ops::ArchOps;

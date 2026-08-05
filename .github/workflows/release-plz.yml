@@ -36,6 +36,9 @@ jobs:
         name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Preflight workspace packages
+        run: cargo publish --workspace --dry-run --no-verify
+
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:

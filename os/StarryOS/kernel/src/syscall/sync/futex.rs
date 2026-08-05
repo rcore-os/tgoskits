@@ -329,3 +329,41 @@ pub fn sys_set_robust_list(head: *const robust_list_head, size: usize) -> AxResu
 
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
+    // sign_extend_12: sign-extends a 12-bit value.
+    assert!(sign_extend_12(0x000) == 0);
+    assert!(sign_extend_12(0x7FF) == 2047); // max positive
+    assert!(sign_extend_12(0x800) == -2048); // min negative
+    assert!(sign_extend_12(0xFFF) == -1);
+
+    // futex_wake_op_arg: extracts oparg from encoded_op, optionally shifts.
+    let raw_op_set = FUTEX_OP_SET;
+    let encoded_no_shift = (5u32) << 12; // oparg=5, no shift
+    assert!(futex_wake_op_arg(raw_op_set, encoded_no_shift) == 5);
+
+    let raw_op_shift = FUTEX_OP_SET | FUTEX_OP_OPARG_SHIFT;
+    let encoded_shift = (3u32) << 12; // oparg=3, shift by 3
+    assert!(futex_wake_op_arg(raw_op_shift, encoded_shift) == 8); // 1 << 3 = 8
+
+    // apply_futex_wake_op: applies the operation to old_value.
+    assert!(apply_futex_wake_op(10, FUTEX_OP_SET, 42).unwrap() == 42);
+    assert!(apply_futex_wake_op(10, FUTEX_OP_ADD, 5).unwrap() == 15);
+    assert!(apply_futex_wake_op(0b1100, FUTEX_OP_OR, 0b1010).unwrap() == 0b1110);
+    assert!(apply_futex_wake_op(0xFF, FUTEX_OP_ANDN, 0x0F).unwrap() == 0xF0);
+    assert!(apply_futex_wake_op(0xAA, FUTEX_OP_XOR, 0xFF).unwrap() == 0x55);
+    assert!(apply_futex_wake_op(0, 0xFFFF, 0).is_err()); // unsupported op
+
+    // compare_futex_wake_op: compares old_value with cmparg.
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_EQ, 5).unwrap() == true);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_EQ, 6).unwrap() == false);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_NE, 6).unwrap() == true);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_LT, 10).unwrap() == true);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_LE, 5).unwrap() == true);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_GT, 3).unwrap() == true);
+    assert!(compare_futex_wake_op(5, FUTEX_OP_CMP_GE, 5).unwrap() == true);
+    assert!(compare_futex_wake_op(0, 0xFFFF, 0).is_err()); // unsupported cmp
+
+    true
+}

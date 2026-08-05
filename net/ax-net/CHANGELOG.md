@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.6](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.5...ax-net-v0.12.6) - 2026-08-03
+
+### Added
+
+- *(kernel)* browser-prerequisite syscall support and tests, aligned to Linux ([#1569](https://github.com/rcore-os/tgoskits/pull/1569))
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
+## [0.12.5](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.4...ax-net-v0.12.5) - 2026-07-23
+
+### Added
+
+- *(starry)* /proc/net/dev stats implement ([#1645](https://github.com/rcore-os/tgoskits/pull/1645))
+- *(starry,ax-net)* return L2 frame length from Device send/recv for net_stats byte counters ([#1571](https://github.com/rcore-os/tgoskits/pull/1571))
+
+### Fixed
+
+- *(starry)* correct /proc/pid/comm padding and non-blocking partial TCP send ([#1558](https://github.com/rcore-os/tgoskits/pull/1558))
+- *(ax-net)* publish socket write shutdown to peers ([#1639](https://github.com/rcore-os/tgoskits/pull/1639))
+
+### Other
+
+- support IP_MTU_DISCOVER and flush UDP egress before close ([#1568](https://github.com/rcore-os/tgoskits/pull/1568))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.12.4](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.3...ax-net-v0.12.4) - 2026-07-10
 
 ### Other

@@ -1,8 +1,17 @@
-#![cfg(all(target_os = "linux", feature = "host-test", feature = "non-zero-vma"))]
+#![cfg(all(target_os = "linux", feature = "host-test"))]
 
+use core::{
+    num::{NonZeroU32, NonZeroUsize},
+    ptr::NonNull,
+};
+
+use ax_lazyinit::LazyInit;
 use ax_percpu::*;
 
-// Initial value is unsupported for testing.
+unsafe extern "C" {
+    static __PERCPU_TEMPLATE_ALIGN_START: u8;
+    static __PERCPU_TEMPLATE_ALIGN_END: u8;
+}
 
 #[def_percpu]
 static BOOL: bool = false;
@@ -22,6 +31,29 @@ static U64: u64 = 0;
 #[def_percpu]
 static USIZE: usize = 0;
 
+#[def_percpu]
+static INITIALIZED: usize = 0x5a5a_a5a5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum BootPhase {
+    Ready = 7,
+}
+
+#[def_percpu]
+static BOOT_PHASE: BootPhase = BootPhase::Ready;
+
+#[def_percpu]
+static NON_ZERO: NonZeroUsize = NonZeroUsize::new(0x55aa).expect("constant must be nonzero");
+
+#[def_percpu]
+static LAZY_VALUE: LazyInit<usize> = LazyInit::new();
+
+static FINAL_IMAGE_MARKER: u8 = 0x5a;
+
+#[def_percpu]
+static FINAL_IMAGE_REFERENCE: &'static u8 = &FINAL_IMAGE_MARKER;
+
 struct Struct {
     foo: usize,
     bar: u8,
@@ -30,134 +62,226 @@ struct Struct {
 #[def_percpu]
 static STRUCT: Struct = Struct { foo: 0, bar: 0 };
 
-#[test]
-fn test_percpu() {
-    println!("feature = \"sp-naive\": {}", cfg!(feature = "sp-naive"));
-
-    #[cfg(feature = "sp-naive")]
-    let base = 0;
-
-    #[cfg(not(feature = "sp-naive"))]
-    let base = {
-        assert_eq!(init(), 4);
-        let area_base_0 = percpu_area_base(0);
-        unsafe { write_percpu_reg(area_base_0) };
-
-        let base = read_percpu_reg();
-        println!("per-CPU area base (calculated) = {:#x}", area_base_0);
-        println!("per-CPU area base (read) = {:#x}", base);
-        println!("per-CPU area size = {}", percpu_area_size());
-        base
-    };
-
-    println!("bool offset: {:#x}", BOOL.offset());
-    println!("u8 offset: {:#x}", U8.offset());
-    println!("u16 offset: {:#x}", U16.offset());
-    println!("u32 offset: {:#x}", U32.offset());
-    println!("u64 offset: {:#x}", U64.offset());
-    println!("usize offset: {:#x}", USIZE.offset());
-    println!("struct offset: {:#x}", STRUCT.offset());
-    println!();
-
-    unsafe {
-        assert_eq!(base + BOOL.offset(), BOOL.current_ptr() as usize);
-        assert_eq!(base + U8.offset(), U8.current_ptr() as usize);
-        assert_eq!(base + U16.offset(), U16.current_ptr() as usize);
-        assert_eq!(base + U32.offset(), U32.current_ptr() as usize);
-        assert_eq!(base + U64.offset(), U64.current_ptr() as usize);
-        assert_eq!(base + USIZE.offset(), USIZE.current_ptr() as usize);
-        assert_eq!(base + STRUCT.offset(), STRUCT.current_ptr() as usize);
-    }
-
-    BOOL.write_current(true);
-    U8.write_current(123);
-    U16.write_current(0xabcd);
-    U32.write_current(0xdead_beef);
-    U64.write_current(0xa2ce_a2ce_a2ce_a2ce);
-    USIZE.write_current(0xffff_0000);
-
-    STRUCT.with_current(|s| {
-        s.foo = 0x2333;
-        s.bar = 100;
-    });
-
-    println!("bool value: {}", BOOL.read_current());
-    println!("u8 value: {}", U8.read_current());
-    println!("u16 value: {:#x}", U16.read_current());
-    println!("u32 value: {:#x}", U32.read_current());
-    println!("u64 value: {:#x}", U64.read_current());
-    println!("usize value: {:#x}", USIZE.read_current());
-
-    assert_eq!(U8.read_current(), 123);
-    assert_eq!(U16.read_current(), 0xabcd);
-    assert_eq!(U32.read_current(), 0xdead_beef);
-    assert_eq!(U64.read_current(), 0xa2ce_a2ce_a2ce_a2ce);
-    assert_eq!(USIZE.read_current(), 0xffff_0000);
-
-    STRUCT.with_current(|s| {
-        println!("struct.foo value: {:#x}", s.foo);
-        println!("struct.bar value: {}", s.bar);
-        assert_eq!(s.foo, 0x2333);
-        assert_eq!(s.bar, 100);
-    });
-
-    #[cfg(not(feature = "sp-naive"))]
-    test_remote_access();
+#[derive(Clone, Copy)]
+#[repr(C, align(8192))]
+struct OverAligned {
+    marker: usize,
 }
 
-#[cfg(not(feature = "sp-naive"))]
-fn test_remote_access() {
-    // test remote write
-    unsafe {
-        *BOOL.remote_ref_mut_raw(1) = false;
-        *U8.remote_ref_mut_raw(1) = 222;
-        *U16.remote_ref_mut_raw(1) = 0x1234;
-        *U32.remote_ref_mut_raw(1) = 0xf00d_f00d;
-        *U64.remote_ref_mut_raw(1) = 0xfeed_feed_feed_feed;
-        *USIZE.remote_ref_mut_raw(1) = 0x0000_ffff;
+#[def_percpu]
+static OVER_ALIGNED: OverAligned = OverAligned {
+    marker: 0xfeed_cafe,
+};
 
-        *STRUCT.remote_ref_mut_raw(1) = Struct {
+struct OwnerCpuOnly {
+    pointer: *mut u8,
+}
+
+#[def_percpu]
+static OWNER_CPU_ONLY: OwnerCpuOnly = OwnerCpuOnly {
+    pointer: core::ptr::null_mut(),
+};
+
+#[test]
+fn dynamic_areas_are_scoped_initialized_and_isolated() {
+    let area_count = NonZeroU32::new(4).unwrap();
+    reject_invalid_regions_before_any_destination_write(area_count);
+
+    let layout = host_test::initialize(area_count).unwrap();
+    assert_eq!(host_test::initialize(area_count), Ok(layout));
+    assert_eq!(
+        host_test::initialize(NonZeroU32::new(3).unwrap()),
+        Err(PerCpuError::LayoutAlreadyInitialized)
+    );
+
+    let required_alignment = core::mem::align_of::<OverAligned>();
+    let linker_alignment = (core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_END) as usize)
+        - (core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_START) as usize);
+    assert_eq!(linker_alignment, required_alignment);
+    assert_eq!(layout.runtime_base() % required_alignment, 0);
+    assert_eq!(layout.area_stride() % required_alignment, 0);
+    assert!(matches!(
+        area(CpuIndex::try_from(layout.area_count() as usize).unwrap()),
+        Err(PerCpuError::CpuOutOfRange { .. })
+    ));
+
+    let cpu0 = area(CpuIndex::try_from(0).unwrap()).unwrap();
+    // SAFETY: this host test thread models offline CPU 0 and the host-test
+    // allocation remains live until process shutdown.
+    unsafe { cpu_local::install_cpu_area(cpu0.cpu_area().unwrap()) }.unwrap();
+
+    // SAFETY: the modeled host CPU cannot migrate while this callback runs.
+    unsafe {
+        with_cpu_pin(|pin| {
+            assert_eq!(current_area(pin), Ok(cpu0));
+            assert_eq!(current_cpu_index(pin), cpu0.cpu_index());
+            assert_eq!(pin.area(), cpu0.cpu_area().unwrap());
+            exercise_current_area(pin, cpu0);
+        })
+    }
+    .unwrap();
+
+    exercise_remote_area();
+}
+
+fn reject_invalid_regions_before_any_destination_write(area_count: NonZeroU32) {
+    let alignment = unsafe {
+        core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_END)
+            .offset_from(core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_START))
+    } as usize;
+    let area_size = cpu_local::cpu_area_template_size().unwrap();
+    let stride = align_up(area_size, alignment);
+    let mut scratch = vec![0u8; stride * area_count.get() as usize + alignment * 2];
+    let aligned = align_up(scratch.as_mut_ptr() as usize, alignment);
+
+    let misaligned_base = NonNull::new((aligned + 1) as *mut u8).unwrap();
+    let region = PerCpuRegion::new(misaligned_base, stride, area_count);
+    // SAFETY: the deliberately invalid region is backed by live writable test
+    // storage. Validation must reject it before touching those bytes.
+    assert!(matches!(
+        unsafe { initialize_layout(region) },
+        Err(PerCpuError::MisalignedRuntimeBase {
+            alignment: rejected_alignment,
+            ..
+        }) if rejected_alignment == alignment
+    ));
+
+    let aligned_base = NonNull::new(aligned as *mut u8).unwrap();
+    let region = PerCpuRegion::new(aligned_base, stride + 1, area_count);
+    // SAFETY: as above; the stride is intentionally invalid and validation is
+    // required to complete before the first destination write.
+    assert!(matches!(
+        unsafe { initialize_layout(region) },
+        Err(PerCpuError::MisalignedStride {
+            alignment: rejected_alignment,
+            ..
+        }) if rejected_alignment == alignment
+    ));
+    assert!(scratch.iter().all(|byte| *byte == 0));
+}
+
+fn exercise_current_area(pin: &CpuPin<'_>, cpu0: PerCpuArea) {
+    let base = cpu0.runtime_base();
+    for (offset, pointer) in [
+        (BOOL.offset(), BOOL.current_ptr(pin).as_ptr() as usize),
+        (U8.offset(), U8.current_ptr(pin).as_ptr() as usize),
+        (U16.offset(), U16.current_ptr(pin).as_ptr() as usize),
+        (U32.offset(), U32.current_ptr(pin).as_ptr() as usize),
+        (U64.offset(), U64.current_ptr(pin).as_ptr() as usize),
+        (USIZE.offset(), USIZE.current_ptr(pin).as_ptr() as usize),
+        (STRUCT.offset(), STRUCT.current_ptr(pin).as_ptr() as usize),
+        (
+            OVER_ALIGNED.offset(),
+            OVER_ALIGNED.current_ptr(pin).as_ptr() as usize,
+        ),
+    ] {
+        assert_eq!(base + offset, pointer);
+    }
+    assert_eq!(
+        OVER_ALIGNED.current_ptr(pin).as_ptr() as usize % core::mem::align_of::<OverAligned>(),
+        0
+    );
+
+    BOOL.write_current(pin, true);
+    U8.write_current(pin, 123);
+    U16.write_current(pin, 0xabcd);
+    U32.write_current(pin, 0xdead_beef);
+    U64.write_current(pin, 0xa2ce_a2ce_a2ce_a2ce);
+    USIZE.write_current(pin, 0xffff_0000);
+
+    // SAFETY: this single-threaded fixture excludes migration, IRQ/re-entry,
+    // and remote access for both mutation callbacks.
+    unsafe {
+        with_exclusive_cpu(pin, |exclusive| {
+            STRUCT.with_current_mut(exclusive, |value| {
+                value.foo = 0x2333;
+                value.bar = 100;
+            });
+            OWNER_CPU_ONLY.with_current_mut(exclusive, |value| {
+                assert!(value.pointer.is_null());
+            });
+        });
+    }
+
+    assert!(BOOL.read_current(pin));
+    assert_eq!(U8.read_current(pin), 123);
+    assert_eq!(U16.read_current(pin), 0xabcd);
+    assert_eq!(U32.read_current(pin), 0xdead_beef);
+    assert_eq!(U64.read_current(pin), 0xa2ce_a2ce_a2ce_a2ce);
+    assert_eq!(USIZE.read_current(pin), 0xffff_0000);
+    assert_eq!(INITIALIZED.read_current(pin), 0x5a5a_a5a5);
+    BOOT_PHASE.with_current(pin, |phase| assert_eq!(*phase, BootPhase::Ready));
+    NON_ZERO.with_current(pin, |value| assert_eq!(value.get(), 0x55aa));
+    LAZY_VALUE.with_current(pin, |value| {
+        assert_eq!(value.call_once(|| 0x1111), Some(&0x1111));
+    });
+    FINAL_IMAGE_REFERENCE.with_current(pin, |reference| {
+        assert!(core::ptr::eq(*reference, &FINAL_IMAGE_MARKER));
+    });
+    STRUCT.with_current(pin, |value| {
+        assert_eq!(value.foo, 0x2333);
+        assert_eq!(value.bar, 100);
+    });
+    OVER_ALIGNED.with_current(pin, |value| {
+        assert_eq!(value.marker, 0xfeed_cafe);
+    });
+}
+
+fn exercise_remote_area() {
+    let cpu1 = area(CpuIndex::try_from(1).unwrap()).unwrap();
+
+    // SAFETY: CPU 1 is offline, so this test has exclusive remote ownership.
+    unsafe {
+        assert!(!*BOOL.remote_ptr(cpu1).as_ptr());
+        assert_eq!(*U8.remote_ptr(cpu1).as_ptr(), 0);
+        assert_eq!(*BOOT_PHASE.remote_ptr(cpu1).as_ptr(), BootPhase::Ready);
+        assert_eq!((*NON_ZERO.remote_ptr(cpu1).as_ptr()).get(), 0x55aa);
+        assert!(!(*LAZY_VALUE.remote_ptr(cpu1).as_ptr()).is_inited());
+
+        *BOOL.remote_ptr(cpu1).as_ptr() = false;
+        *U8.remote_ptr(cpu1).as_ptr() = 222;
+        *U16.remote_ptr(cpu1).as_ptr() = 0x1234;
+        *U32.remote_ptr(cpu1).as_ptr() = 0xf00d_f00d;
+        *U64.remote_ptr(cpu1).as_ptr() = 0xfeed_feed_feed_feed;
+        *USIZE.remote_ptr(cpu1).as_ptr() = 0x0000_ffff;
+        *STRUCT.remote_ptr(cpu1).as_ptr() = Struct {
             foo: 0x6666,
             bar: 200,
         };
     }
 
-    // test remote read
-    unsafe {
-        assert!(!*BOOL.remote_ptr(1));
-        assert_eq!(*U8.remote_ptr(1), 222);
-        assert_eq!(*U16.remote_ptr(1), 0x1234);
-        assert_eq!(*U32.remote_ptr(1), 0xf00d_f00d);
-        assert_eq!(*U64.remote_ptr(1), 0xfeed_feed_feed_feed);
-        assert_eq!(*USIZE.remote_ptr(1), 0x0000_ffff);
+    std::thread::spawn(move || {
+        // SAFETY: this dedicated thread models offline CPU 1 and owns its area.
+        unsafe { cpu_local::install_cpu_area(cpu1.cpu_area().unwrap()) }.unwrap();
+        // SAFETY: the modeled CPU remains fixed for the callback.
+        unsafe {
+            with_cpu_pin(|pin| {
+                assert_eq!(current_area(pin), Ok(cpu1));
+                assert!(!BOOL.read_current(pin));
+                assert_eq!(U8.read_current(pin), 222);
+                assert_eq!(U16.read_current(pin), 0x1234);
+                assert_eq!(U32.read_current(pin), 0xf00d_f00d);
+                assert_eq!(U64.read_current(pin), 0xfeed_feed_feed_feed);
+                assert_eq!(USIZE.read_current(pin), 0x0000_ffff);
+                assert_eq!(INITIALIZED.read_current(pin), 0x5a5a_a5a5);
+                BOOT_PHASE.with_current(pin, |phase| assert_eq!(*phase, BootPhase::Ready));
+                NON_ZERO.with_current(pin, |value| assert_eq!(value.get(), 0x55aa));
+                LAZY_VALUE.with_current(pin, |value| {
+                    assert_eq!(value.call_once(|| 0x2222), Some(&0x2222));
+                });
+                STRUCT.with_current(pin, |value| {
+                    assert_eq!(value.foo, 0x6666);
+                    assert_eq!(value.bar, 200);
+                });
+            })
+        }
+        .unwrap();
+    })
+    .join()
+    .unwrap();
+}
 
-        let s = STRUCT.remote_ref_raw(1);
-        assert_eq!(s.foo, 0x6666);
-        assert_eq!(s.bar, 200);
-    }
-
-    // test read on another CPU
-    unsafe { write_percpu_reg(percpu_area_base(1)) }; // we are now on CPU 1
-
-    println!();
-    println!("bool value on CPU 1: {}", BOOL.read_current());
-    println!("u8 value on CPU 1: {}", U8.read_current());
-    println!("u16 value on CPU 1: {:#x}", U16.read_current());
-    println!("u32 value on CPU 1: {:#x}", U32.read_current());
-    println!("u64 value on CPU 1: {:#x}", U64.read_current());
-    println!("usize value on CPU 1: {:#x}", USIZE.read_current());
-
-    assert!(!BOOL.read_current());
-    assert_eq!(U8.read_current(), 222);
-    assert_eq!(U16.read_current(), 0x1234);
-    assert_eq!(U32.read_current(), 0xf00d_f00d);
-    assert_eq!(U64.read_current(), 0xfeed_feed_feed_feed);
-    assert_eq!(USIZE.read_current(), 0x0000_ffff);
-
-    STRUCT.with_current(|s| {
-        println!("struct.foo value on CPU 1: {:#x}", s.foo);
-        println!("struct.bar value on CPU 1: {}", s.bar);
-        assert_eq!(s.foo, 0x6666);
-        assert_eq!(s.bar, 200);
-    });
+fn align_up(value: usize, alignment: usize) -> usize {
+    let mask = alignment - 1;
+    value.checked_add(mask).unwrap() & !mask
 }

@@ -1,14 +1,18 @@
 //! In-memory virtio block device backed by a split virtqueue and virtio-mmio.
 
-use alloc::{boxed::Box, format, vec::Vec};
-use core::fmt;
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
+use core::{cell::RefCell, fmt};
 
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    DmaGrant, InterruptTriggerMode, IrqLine, Resource,
+};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
-    DeviceManagerError, DeviceManagerResult,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceLifecycle, DeviceManagerError,
+    DeviceManagerResult, ServiceCardinality, ServiceKey,
     virtio::{
         memory::{GuestRead, GuestWrite},
         queue::{QueueAddressKind, QueueState},
@@ -63,6 +67,92 @@ const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 /// MMIO window size for one emulated virtio block device.
 pub const VIRTIO_BLOCK_MMIO_SIZE: usize = 0x1000;
+
+/// Typed service key for VM-owned volatile virtio block backings.
+///
+/// Providers are ordered by device configuration order. Consumers clone the
+/// selected [`Arc`] while holding any VM lifecycle lock, then perform the
+/// potentially large snapshot copy after releasing that lock.
+pub struct VirtioBlockBackingKey;
+
+impl ServiceKey for VirtioBlockBackingKey {
+    type Service = MemoryBlockBackend;
+
+    const NAME: &'static str = "virtio-block-backing";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Multiple;
+}
+
+/// Builds memory-backed virtio block devices for one VM.
+pub struct VirtioBlockFactory {
+    backings: Vec<Arc<MemoryBlockBackend>>,
+}
+
+impl VirtioBlockFactory {
+    /// Captures the VM-owned backing capabilities used by block-device configs.
+    pub fn new(backings: &[Arc<MemoryBlockBackend>]) -> Self {
+        Self {
+            backings: backings.to_vec(),
+        }
+    }
+}
+
+impl DeviceFactory for VirtioBlockFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::VirtioBlk
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        if config.length != VIRTIO_BLOCK_MMIO_SIZE {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build virtio block device",
+                detail: format!(
+                    "device '{}' MMIO length {:#x} must be {VIRTIO_BLOCK_MMIO_SIZE:#x}",
+                    config.name, config.length
+                ),
+            });
+        }
+        let [backing_index] = config.cfg_list.as_slice() else {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build virtio block device",
+                detail: format!(
+                    "device '{}' must select exactly one block backing index",
+                    config.name
+                ),
+            });
+        };
+        let backing = self.backings.get(*backing_index).cloned().ok_or_else(|| {
+            DeviceManagerError::InvalidConfig {
+                operation: "build virtio block device",
+                detail: format!(
+                    "device '{}' selects missing block backing index {backing_index}",
+                    config.name
+                ),
+            }
+        })?;
+        let irq = context.resolve_irq(config.irq_id, InterruptTriggerMode::LevelTriggered)?;
+        let dma_grant = DmaGrant::new();
+        let core = Arc::new(VirtioBlock::new(
+            config.base_gpa.into(),
+            config.irq_id,
+            Arc::clone(&backing),
+        ));
+        let device = Arc::new(VirtioBlockDevice::new(
+            config,
+            core,
+            dma_grant.clone(),
+            irq,
+        )?);
+        let mut bundle = DeviceBundle::new();
+        bundle.add_guest_memory_device_with_grant(device.clone(), dma_grant);
+        bundle.add_lifecycle(device);
+        bundle.provide_service::<VirtioBlockBackingKey>(backing)?;
+        Ok(bundle)
+    }
+}
 
 /// A volatile, memory-backed block capability shared with one virtio device.
 ///
@@ -257,6 +347,14 @@ impl VirtioBlock {
         offset == VIRTIO_MMIO_QUEUE_NOTIFY && value as usize == REQUEST_QUEUE
     }
 
+    fn interrupt_asserted(&self) -> bool {
+        self.state.lock().interrupt_status != 0
+    }
+
+    fn reset(&self) {
+        self.state.lock().reset();
+    }
+
     /// Processes all currently available block requests.
     ///
     /// The state lock is always acquired before the backing lock. No backing
@@ -360,10 +458,6 @@ impl VirtioBlock {
         let offset = sector.checked_mul(SECTOR_SIZE).ok_or(())?;
         let end = offset.checked_add(length).ok_or(())?;
         (end <= self.backend.len()).then_some(offset).ok_or(())
-    }
-
-    fn guest_address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.base, self.size)
     }
 
     fn read_register(&self, offset: usize) -> u32 {
@@ -482,21 +576,154 @@ impl VirtioBlock {
     }
 }
 
+/// Unified-device adapter that owns the DMA and interrupt capabilities for one
+/// virtio block core.
+struct VirtioBlockDevice {
+    name: String,
+    base: u64,
+    core: Arc<VirtioBlock>,
+    dma_grant: DmaGrant,
+    irq: IrqLine,
+    resources: Box<[Resource]>,
+}
+
+impl VirtioBlockDevice {
+    fn new(
+        config: &EmulatedDeviceConfig,
+        core: Arc<VirtioBlock>,
+        dma_grant: DmaGrant,
+        irq: IrqLine,
+    ) -> DeviceManagerResult<Self> {
+        let irq_line =
+            u32::try_from(config.irq_id).map_err(|_| DeviceManagerError::InvalidConfig {
+                operation: "build virtio block device",
+                detail: format!(
+                    "device '{}' IRQ {} does not fit the device resource format",
+                    config.name, config.irq_id
+                ),
+            })?;
+        Ok(Self {
+            name: config.name.clone(),
+            base: config.base_gpa as u64,
+            core,
+            dma_grant,
+            irq,
+            resources: alloc::vec![
+                Resource::MmioRange {
+                    base: config.base_gpa as u64,
+                    size: config.length as u64,
+                },
+                Resource::IrqLine {
+                    line: irq_line,
+                    trigger: InterruptTriggerMode::LevelTriggered,
+                },
+            ]
+            .into_boxed_slice(),
+        })
+    }
+
+    fn sync_interrupt_line(&self) -> DeviceResult {
+        let result = if self.core.interrupt_asserted() {
+            self.irq.assert()
+        } else {
+            self.irq.deassert()
+        };
+        result.map_err(|error| DeviceError::Backend {
+            operation: "signal virtio block interrupt",
+            detail: format!("{error}"),
+        })
+    }
+
+    fn process_notified_queue(&self, context: &mut dyn DeviceAccess) -> DeviceResult {
+        let context = RefCell::new(context);
+        let read = |address, buffer: &mut [u8]| {
+            context
+                .borrow_mut()
+                .read_guest_memory(&self.dma_grant, address, buffer)
+                .map_err(DeviceManagerError::from)
+        };
+        let write = |address, buffer: &[u8]| {
+            context
+                .borrow_mut()
+                .write_guest_memory(&self.dma_grant, address, buffer)
+                .map_err(DeviceManagerError::from)
+        };
+        let queue_result = self
+            .core
+            .process_queue(&read, &write)
+            .map(|_| ())
+            .map_err(DeviceError::from);
+        let irq_result = self.sync_interrupt_line();
+        queue_result.and(irq_result)
+    }
+}
+
+impl Device for VirtioBlockDevice {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        context: &mut dyn DeviceAccess,
+    ) -> DeviceResult<BusResponse> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let address = usize::try_from(access.addr)
+            .map(GuestPhysAddr::from_usize)
+            .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+        if access.is_read {
+            let value = self.core.handle_read(address, access.width)?;
+            return Ok(BusResponse::Read {
+                value: value as u64,
+            });
+        }
+
+        let value = usize::try_from(access.data).map_err(|_| DeviceError::InvalidInput {
+            operation: "write virtio block register",
+            detail: format!("value {:#x} does not fit the host word", access.data),
+        })?;
+        self.core.handle_write(address, access.width, value)?;
+        let offset = usize::try_from(access.addr - self.base)
+            .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+        if self.core.is_queue_notify(offset, value as u32) {
+            self.process_notified_queue(context)?;
+        } else {
+            self.sync_interrupt_line()?;
+        }
+        Ok(BusResponse::Write)
+    }
+}
+
+impl DeviceLifecycle for VirtioBlockDevice {
+    fn reset(&self) -> DeviceManagerResult {
+        self.core.reset();
+        self.sync_interrupt_line().map_err(DeviceManagerError::from)
+    }
+
+    fn suspend(&self) -> DeviceManagerResult {
+        Ok(())
+    }
+
+    fn resume(&self) -> DeviceManagerResult {
+        Ok(())
+    }
+}
+
 struct BlockCompletion {
     status: u8,
     used_length: usize,
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for VirtioBlock {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::VirtioBlk
-    }
-
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.guest_address_range()
-    }
-
-    fn handle_read(&self, address: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+impl VirtioBlock {
+    /// Handles one direct MMIO read against the reusable block core.
+    pub fn handle_read(&self, address: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
         let offset = self.mmio_offset(address, width)?;
         if offset == VIRTIO_MMIO_CONFIG && matches!(width, AccessWidth::Qword) {
             return Ok(self.backend.capacity_sectors() as usize);
@@ -509,7 +736,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VirtioBlock {
         Ok(value as usize)
     }
 
-    fn handle_write(
+    /// Handles one direct MMIO write against the reusable block core.
+    pub fn handle_write(
         &self,
         address: GuestPhysAddr,
         width: AccessWidth,

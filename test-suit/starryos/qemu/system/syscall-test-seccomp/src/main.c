@@ -228,6 +228,18 @@ static void check_invalid_seccomp_args(void)
                        "unknown seccomp op returns EINVAL");
 
     errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_GET_ACTION_AVAIL,
+                                   SECCOMP_FILTER_FLAG_TSYNC, &action),
+                       -1, EINVAL,
+                       "GET_ACTION_AVAIL rejects filter-specific flags");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_GET_ACTION_AVAIL,
+                                   SECCOMP_FILTER_FLAG_TSYNC, NULL),
+                       -1, EINVAL,
+                       "GET_ACTION_AVAIL checks flags before its pointer");
+
+    errno = 0;
     expect_syscall_ret(seccomp_raw(SECCOMP_GET_ACTION_AVAIL, 0, NULL), -1,
                        EFAULT, "GET_ACTION_AVAIL NULL pointer returns EFAULT");
 

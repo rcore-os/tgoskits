@@ -57,7 +57,7 @@ case "$ARCH" in
         QEMU_MACHINE="virt"
         QEMU_CPU="rv64"
         QEMU_EXTRA=""
-        QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     x86_64)
@@ -71,7 +71,7 @@ case "$ARCH" in
             QEMU_CPU="IvyBridge"
             QEMU_EXTRA=""
         fi
-        QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     aarch64)
@@ -80,7 +80,7 @@ case "$ARCH" in
         QEMU_MACHINE="virt"
         QEMU_CPU="cortex-a72"
         QEMU_EXTRA=""
-        QEMU_BLK_DEV="virtio-blk-device,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-device,netdev=net0"
         ;;
     *)
@@ -231,7 +231,7 @@ case "$ARCH" in
             -drive if=pflash,format=raw,unit=0,readonly=on,file="$OVMF_CODE" \
             -drive if=pflash,format=raw,unit=1,file="$OVMF_VARS" \
             -drive format=raw,file=fat:rw:"$ESP_DIR" \
-            -device virtio-blk-pci,drive=disk0 \
+            -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
             -drive id=disk0,if=none,format=raw,file="$ROOTFS_IMG",file.locking=off \
             -device virtio-net-pci,netdev=net0 \
             -netdev user,id=net0

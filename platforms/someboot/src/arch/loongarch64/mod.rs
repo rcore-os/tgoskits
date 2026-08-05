@@ -28,13 +28,16 @@ pub use relocate::relocate;
 use crate::{ArchTrait, DCacheOp, efi_stub, irq::IrqId, power::CpuOnError};
 
 const MIN_TICKS: usize = 4;
+#[cfg(feature = "tls")]
 const BOOT_TLS_SIZE: usize = 64 * 1024;
 
+#[cfg(feature = "tls")]
 #[repr(C, align(16))]
 struct BootTls {
     bytes: [u8; BOOT_TLS_SIZE],
 }
 
+#[cfg(feature = "tls")]
 static mut BOOT_TLS: BootTls = BootTls {
     bytes: [0; BOOT_TLS_SIZE],
 };
@@ -68,36 +71,31 @@ impl ArchTrait for Arch {
     fn post_allocator() {}
 
     fn init_boot_tls() {
-        unsafe extern "C" {
-            fn _stdata();
-            fn _etdata();
-            fn _etbss();
-        }
+        #[cfg(feature = "tls")]
+        {
+            unsafe extern "C" {
+                fn _stdata();
+                fn _etdata();
+                fn _etbss();
+            }
 
-        let stdata = _stdata as *const () as usize;
-        let etdata = _etdata as *const () as usize;
-        let etbss = _etbss as *const () as usize;
-        if etdata < stdata || etbss < stdata {
-            return;
-        }
+            let stdata = _stdata as *const () as usize;
+            let etdata = _etdata as *const () as usize;
+            let etbss = _etbss as *const () as usize;
+            if etdata < stdata || etbss < etdata {
+                boot_tls_layout_fatal();
+            }
 
-        let tls_size = align_up(etbss - stdata, 16);
-        if tls_size > BOOT_TLS_SIZE {
-            return;
-        }
+            let tls_size = align_up(etbss - stdata, 16);
+            if tls_size > BOOT_TLS_SIZE {
+                boot_tls_layout_fatal();
+            }
 
-        unsafe {
-            let boot_tls = core::ptr::addr_of_mut!(BOOT_TLS).cast::<u8>();
-            core::ptr::write_bytes(boot_tls, 0, tls_size);
-            core::ptr::copy_nonoverlapping(stdata as *const u8, boot_tls, etdata - stdata);
-            core::arch::asm!("move $tp, {}", in(reg) boot_tls as usize, options(nostack));
-        }
-    }
-
-    fn init_runtime_percpu_reg(cpu_idx: usize) {
-        if let Some(percpu) = crate::smp::percpu_data_ptr(cpu_idx) {
             unsafe {
-                core::arch::asm!("move $r21, {}", in(reg) percpu as usize);
+                let boot_tls = core::ptr::addr_of_mut!(BOOT_TLS).cast::<u8>();
+                core::ptr::write_bytes(boot_tls, 0, tls_size);
+                core::ptr::copy_nonoverlapping(stdata as *const u8, boot_tls, etdata - stdata);
+                core::arch::asm!("move $tp, {}", in(reg) boot_tls as usize, options(nostack));
             }
         }
     }
@@ -339,6 +337,13 @@ impl ArchTrait for Arch {
     }
 }
 
+#[cfg(feature = "tls")]
+#[cold]
+fn boot_tls_layout_fatal() -> ! {
+    panic!("invalid or oversized LoongArch bootstrap TLS image")
+}
+
+#[cfg(feature = "tls")]
 const fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }

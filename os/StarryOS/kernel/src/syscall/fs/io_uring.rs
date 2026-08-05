@@ -274,3 +274,27 @@ pub fn sys_io_uring_register(
         _ => Err(AxError::OperationNotSupported),
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
+    // Test round_ring_entries function
+    // Zero should fail
+    assert!(round_ring_entries(0, 4096, false).is_err());
+
+    // Power of 2 should stay the same
+    assert!(round_ring_entries(256, 4096, false).unwrap() == 256);
+    assert!(round_ring_entries(1024, 4096, false).unwrap() == 1024);
+
+    // Non-power of 2 should round up
+    assert!(round_ring_entries(3, 4096, false).unwrap() == 4);
+    assert!(round_ring_entries(5, 4096, false).unwrap() == 8);
+    assert!(round_ring_entries(100, 4096, false).unwrap() == 128);
+
+    // Over max without clamp should fail
+    assert!(round_ring_entries(8192, 4096, false).is_err());
+
+    // Over max with clamp should return max
+    assert!(round_ring_entries(8192, 4096, true).unwrap() == 4096);
+
+    true
+}

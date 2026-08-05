@@ -2,6 +2,12 @@
 
 use core::{fmt::Display, ops::Deref, ptr::NonNull, sync::atomic::Ordering};
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
+
 #[derive(thiserror::Error, Debug)]
 pub enum MapError {
     #[error("Invalid MMIO address or size")]

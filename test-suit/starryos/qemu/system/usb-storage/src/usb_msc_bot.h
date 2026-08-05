@@ -15,7 +15,9 @@ typedef struct usb_msc_device {
 
 int usb_msc_find_and_open(usb_msc_device_t *device);
 void usb_msc_close(usb_msc_device_t *device);
+void usb_msc_close_without_release(usb_msc_device_t *device);
 
+int usb_msc_stall_and_recover_bulk_out(usb_msc_device_t *device);
 int usb_msc_inquiry(usb_msc_device_t *device, char vendor[9], char product[17]);
 int usb_msc_test_unit_ready(usb_msc_device_t *device);
 int usb_msc_request_sense(

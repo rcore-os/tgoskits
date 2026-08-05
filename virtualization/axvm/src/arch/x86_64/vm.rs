@@ -1,13 +1,12 @@
 //! x86_64 VM resource creation and initialization.
 
-use alloc::sync::Arc;
-
 use ax_memory_addr::PAGE_SIZE_4K;
-use axdevice_base::{BaseDeviceOps, DeviceRegistry as _, PortDeviceAdapter};
-use axvm_types::{EmulatedDeviceType, MappingFlags, NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{
+    EmulatedDeviceConfig, EmulatedDeviceType, MappingFlags, NestedPagingConfig, VmArchVcpuOps,
+};
 use x86_vcpu::{
-    X86GuestMemoryRegion, X86GuestPhysAddr, X86HostVirtAddr, X86VcpuCreateConfig,
-    X86VcpuSetupConfig,
+    X86_LOCAL_APIC_GPA, X86_LOCAL_APIC_SIZE, X86GuestMemoryRegion, X86GuestPhysAddr,
+    X86HostVirtAddr, X86VcpuCreateConfig, X86VcpuSetupConfig,
 };
 
 use super::{
@@ -15,7 +14,7 @@ use super::{
     x86_requires_apic_access_page, x86_result,
 };
 use crate::{
-    AxVmError, AxVmResult, ax_err, ax_err_type,
+    AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     layout::GuestOwnedRegion,
     vm::{
@@ -34,7 +33,7 @@ use crate::{
 impl X86_64Arch {
     pub(crate) fn create_vm_resources(config: AxVMConfig) -> AxVmResult<AxVMResources> {
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-        let levels = guest_page_table_levels(&placements);
+        let levels = guest_page_table_levels(&placements)?;
         let page_table = nested_paging::NestedPageTable::new(levels)?;
         AxVMResources::from_page_table(config, page_table, |root_paddr| {
             let gpa_bits = match levels {
@@ -51,39 +50,61 @@ impl X86_64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
-                init_vm_with(vm, &factories, interrupt_fabric)
+                let (factories, interrupt_controller) = prepare_device_bootstrap(vm)?;
+                init_vm_with(vm, &factories, interrupt_controller)
             }
-            VmInitRequest::Provided {
-                factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+            VmInitRequest::Provided { factories } => {
+                let configs = vm.with_config(|config| config.emu_devices().clone());
+                let interrupt_controller =
+                    super::register_device_factories(vm.id(), &configs, factories)?;
+                init_vm_with(vm, factories, interrupt_controller)
+            }
         }
     }
+}
+
+fn prepare_device_bootstrap(
+    vm: &AxVM,
+) -> AxVmResult<(
+    axdevice::DeviceFactoryRegistry,
+    alloc::sync::Arc<dyn axdevice_base::VirtualInterruptController>,
+)> {
+    let mut factories = default_device_factories(vm)?;
+    let configs = vm.with_config(|config| config.emu_devices().clone());
+    let interrupt_controller = super::register_device_factories(vm.id(), &configs, &mut factories)?;
+    Ok((factories, interrupt_controller))
 }
 
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    interrupt_controller: alloc::sync::Arc<dyn axdevice_base::VirtualInterruptController>,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
-        let placements = vcpu_placements(resources);
-        let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        register_arch_devices(resources.config(), &mut devices.devices)?;
-        devices.register_special_devices(vm)?;
-        validate_guest_dtb(resources)?;
+    complete_vm_init(
+        vm,
+        interrupt_controller,
+        |resources, interrupt_controller| {
+            let placements = vcpu_placements(resources);
+            let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
+            let extra_devices = arch_extra_device_configs(resources.config());
+            let devices = PreparedDevices::build_common_with_extra(
+                resources,
+                factories,
+                interrupt_controller,
+                &extra_devices,
+                vm.device_access_ports(),
+            )?;
+            validate_guest_dtb(resources)?;
 
-        let mut owned_regions = guest_owned_regions(resources);
-        append_arch_owned_regions(&mut owned_regions)?;
-        map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
-        map_arch_address_space(resources)?;
-        vcpus.setup(resources, build_vcpu_setup_config)?;
+            let mut owned_regions = guest_owned_regions(resources);
+            append_arch_owned_regions(&mut owned_regions);
+            map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
+            map_arch_address_space(resources)?;
+            vcpus.setup(resources, build_vcpu_setup_config)?;
 
-        Ok(PreparedVm::new(vcpus, devices))
-    })
+            Ok(PreparedVm::new(vcpus, devices))
+        },
+    )
 }
 
 fn build_vcpu_setup_config(
@@ -112,40 +133,34 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::AxVmDevices) -> AxVmResult {
-    for port in config.pass_through_ports() {
-        let passthrough = Arc::new(super::port::HostPortPassthrough::new(
-            port.base,
-            port.length,
-        )?);
-        let range = passthrough.address_range();
-        debug!(
-            "PT port region: [{:#x}~{:#x}]",
-            range.start.number(),
-            range.end.number(),
-        );
-        devices
-            .register(PortDeviceAdapter::from_arc(passthrough))
-            .map_err(|err| {
-                ax_err_type!(InvalidInput, alloc::format!("register PT port: {err:?}"))
-            })?;
-    }
-    for device_config in config.emu_devices() {
-        super::register_arch_device(device_config, devices)?;
-    }
-    Ok(())
+fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDeviceConfig> {
+    config
+        .pass_through_ports()
+        .iter()
+        .map(|port| {
+            debug!(
+                "PT port region: [{:#x}~{:#x}]",
+                port.base,
+                port.base as u32 + port.length as u32 - 1,
+            );
+            EmulatedDeviceConfig {
+                name: alloc::format!("x86-port-passthrough-{:#x}", port.base),
+                base_gpa: port.base as usize,
+                length: port.length as usize,
+                irq_id: 0,
+                emu_type: EmulatedDeviceType::X86PortPassthrough,
+                cfg_list: alloc::vec![],
+            }
+        })
+        .collect()
 }
 
-fn append_arch_owned_regions(regions: &mut alloc::vec::Vec<GuestOwnedRegion>) -> AxVmResult {
-    if x86_requires_apic_access_page()? {
-        let gpa = x86_apic_access_page_gpa()?;
-        regions.push(GuestOwnedRegion::new(
-            gpa.as_usize(),
-            PAGE_SIZE_4K,
-            crate::layout::VmRegionKind::Reserved,
-        ));
-    }
-    Ok(())
+fn append_arch_owned_regions(regions: &mut alloc::vec::Vec<GuestOwnedRegion>) {
+    regions.push(GuestOwnedRegion::new(
+        X86_LOCAL_APIC_GPA,
+        X86_LOCAL_APIC_SIZE,
+        crate::layout::VmRegionKind::Reserved,
+    ));
 }
 
 fn map_arch_address_space(resources: &mut AxVMResources) -> AxVmResult {
@@ -164,10 +179,67 @@ fn map_arch_address_space(resources: &mut AxVMResources) -> AxVmResult {
     Ok(())
 }
 
-fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> usize {
-    let mut levels = 4;
-    for cpu_id in crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings) {
-        levels = levels.min(crate::percpu::cpu_max_guest_page_table_levels(cpu_id).unwrap_or(4));
+fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
+    crate::architecture::minimum_recorded_target_cpu_capability(
+        "x86 nested page-table levels",
+        vcpu_mappings,
+        |cpu_id| {
+            crate::percpu::select_cpu_virtualization_capability(cpu_id, |levels, _, _| {
+                levels as u64
+            })
+        },
+    )
+    .map(|levels| levels as usize)
+    .map_err(|error| {
+        crate::architecture::unsupported_target_cpu_capability(
+            "select x86 target CPU capability",
+            error,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn svm_reserves_the_local_apic_trap_region() {
+        let mut regions = alloc::vec::Vec::new();
+
+        append_arch_owned_regions(&mut regions);
+
+        assert_eq!(
+            regions,
+            [GuestOwnedRegion::new(
+                X86_LOCAL_APIC_GPA,
+                X86_LOCAL_APIC_SIZE,
+                crate::layout::VmRegionKind::Reserved,
+            )]
+        );
+
+        let layout = crate::layout::build_address_layout(
+            axvm_types::AddressSpacePolicy::Passthrough,
+            0,
+            0x1_0000_0000,
+            &[],
+            &[],
+            &regions,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            layout
+                .mappings()
+                .iter()
+                .map(|mapping| (mapping.gpa.as_usize(), mapping.size))
+                .collect::<alloc::vec::Vec<_>>(),
+            [
+                (0, X86_LOCAL_APIC_GPA),
+                (
+                    X86_LOCAL_APIC_GPA + X86_LOCAL_APIC_SIZE,
+                    0x1_0000_0000 - X86_LOCAL_APIC_GPA - X86_LOCAL_APIC_SIZE,
+                ),
+            ]
+        );
     }
-    levels
 }

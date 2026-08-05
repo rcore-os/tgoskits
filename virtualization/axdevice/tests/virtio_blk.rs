@@ -1,10 +1,14 @@
 use std::{ops::Range, sync::Arc};
 
 use axdevice::{
-    AccessWidth, AxVmDeviceConfig, AxVmDevices, BaseDeviceOps, DeviceManagerError,
-    DeviceManagerResult, GuestPhysAddr, MemoryBlockBackend, VirtioBlock,
+    AccessWidth, DeviceBuildContext, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRuntime, GuestPhysAddr, MemoryBlockBackend, VirtioBlock,
+    VirtioBlockBackingKey, VirtioBlockFactory,
 };
-use axdevice_base::DeviceResult;
+use axdevice_base::{
+    ControllerInputId, DeviceResult, InterruptControllerId, InterruptTriggerMode, IrqResult,
+    VirtualInterruptController, WiredIrqInput, WiredIrqSink,
+};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 const MMIO_BASE: usize = 0x1_0000;
@@ -213,28 +217,40 @@ fn rejects_unaligned_backing_images() {
 
 #[test]
 fn device_config_requires_the_selected_backing() {
-    let config = AxVmDeviceConfig::new(vec![virtio_block_config(vec![1])]);
     let backing = Arc::new(MemoryBlockBackend::new(vec![0; SECTOR_SIZE]).unwrap());
+    let mut factories = DeviceFactoryRegistry::new();
+    factories
+        .register(Arc::new(VirtioBlockFactory::new(&[backing])))
+        .unwrap();
+    let controller = TestInterruptController;
+    let context = DeviceBuildContext::new(&controller);
 
     assert!(matches!(
-        AxVmDevices::new_with_block_backings(config, &[backing]),
+        DeviceRuntime::build_with_factories(&[virtio_block_config(vec![1])], &factories, &context,),
         Err(DeviceManagerError::InvalidConfig { .. })
     ));
 }
 
 #[test]
 fn device_config_registers_a_memory_backed_block_device() {
-    let config = AxVmDeviceConfig::new(vec![virtio_block_config(vec![0])]);
     let backing = Arc::new(MemoryBlockBackend::new(vec![0; SECTOR_SIZE]).unwrap());
+    let mut factories = DeviceFactoryRegistry::new();
+    factories
+        .register(Arc::new(VirtioBlockFactory::new(std::slice::from_ref(
+            &backing,
+        ))))
+        .unwrap();
+    let controller = TestInterruptController;
+    let context = DeviceBuildContext::new(&controller);
 
-    let devices = AxVmDevices::new_with_block_backings(config, &[backing]).unwrap();
+    let devices =
+        DeviceRuntime::build_with_factories(&[virtio_block_config(vec![0])], &factories, &context)
+            .unwrap();
 
-    assert_eq!(devices.virtio_blocks().len(), 1);
-    assert!(
-        devices
-            .virtio_block_for_addr(GuestPhysAddr::from_usize(MMIO_BASE))
-            .is_some()
-    );
+    assert_eq!(devices.devices().count(), 1);
+    let services = devices.services().all::<VirtioBlockBackingKey>();
+    assert_eq!(services.len(), 1);
+    assert!(Arc::ptr_eq(&services[0], &backing));
 }
 
 #[test]
@@ -354,5 +370,38 @@ fn virtio_block_config(cfg_list: Vec<usize>) -> EmulatedDeviceConfig {
         irq_id: 48,
         emu_type: EmulatedDeviceType::VirtioBlk,
         cfg_list,
+    }
+}
+
+struct TestInterruptController;
+
+impl VirtualInterruptController for TestInterruptController {
+    fn id(&self) -> InterruptControllerId {
+        InterruptControllerId::new(0)
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        Ok(WiredIrqInput::new(
+            self.id(),
+            input,
+            trigger,
+            Arc::new(TestIrqSink),
+        ))
+    }
+}
+
+struct TestIrqSink;
+
+impl WiredIrqSink for TestIrqSink {
+    fn set_level(&self, _input: ControllerInputId, _asserted: bool) -> IrqResult {
+        Ok(())
+    }
+
+    fn pulse(&self, _input: ControllerInputId) -> IrqResult {
+        Ok(())
     }
 }

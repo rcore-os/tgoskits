@@ -16,6 +16,7 @@
 
 use alloc::sync::Arc;
 
+use ax_runtime::hal::cpu::UserRegisters;
 use ax_task::current;
 use kprobe::{ProbeBuilder, Uprobe};
 
@@ -54,7 +55,7 @@ pub fn unregister_uprobe(uprobe: Arc<KernelUprobe>) {
 /// with `try_lock()`, which is a single CAS and safe here. At fire time the
 /// manager is uncontended (arming happens in syscall context on the same task),
 /// so the lock is always acquired; a contended miss just reports "unhandled".
-pub fn break_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<()> {
+pub fn break_uprobe_handler(tf: &mut UserRegisters) -> Option<()> {
     let curr = current();
     let manager = &curr.as_thread().proc_data.uprobe_manager;
     let mut pt_regs = trapframe_to_ptregs(tf);
@@ -66,7 +67,7 @@ pub fn break_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<
 /// Dispatch a debug (single-step) exception to the current process' uprobe
 /// manager — the out-of-line step completion path on x86_64.
 #[cfg(target_arch = "x86_64")]
-pub fn debug_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<()> {
+pub fn debug_uprobe_handler(tf: &mut UserRegisters) -> Option<()> {
     let curr = current();
     let manager = &curr.as_thread().proc_data.uprobe_manager;
     let mut pt_regs = trapframe_to_ptregs(tf);

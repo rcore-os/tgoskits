@@ -324,13 +324,13 @@ mod tests {
                     url: "https://example.com/linux-0.0.2.tar.gz".to_string(),
                 },
                 ImageEntry {
-                    name: "nimbos".to_string(),
+                    name: "arceos".to_string(),
                     version: "0.0.1".to_string(),
                     released_at: Some("2025-01-03T00:00:00Z".parse().unwrap()),
-                    description: "NimbOS guest".to_string(),
+                    description: "ArceOS guest".to_string(),
                     sha256: "ghi".to_string(),
                     arch: "x86_64".to_string(),
-                    url: "https://example.com/nimbos-0.0.1.tar.gz".to_string(),
+                    url: "https://example.com/arceos-0.0.1.tar.gz".to_string(),
                 },
             ],
         }
@@ -342,7 +342,7 @@ mod tests {
 
         assert!(table.contains("linux"));
         assert!(table.contains("2 versions"));
-        assert!(table.contains("nimbos"));
+        assert!(table.contains("arceos"));
     }
 
     #[test]
@@ -390,8 +390,8 @@ mod tests {
 
     #[test]
     fn filtering_uses_regex_or_substring() {
-        let table = registry().render_table(true, Some("^nim"));
-        assert!(table.contains("nimbos"));
+        let table = registry().render_table(true, Some("^arc"));
+        assert!(table.contains("arceos"));
         assert!(!table.contains("linux"));
 
         let table = registry().render_table(true, Some("lin"));

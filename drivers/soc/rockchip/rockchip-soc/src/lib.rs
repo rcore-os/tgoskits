@@ -22,7 +22,8 @@ pub(crate) mod variants;
 use core::ptr::NonNull;
 
 pub use clock::{
-    ClkId, ClockError, ClockOp, ClockResult, Cru, ResetOp,
+    ClkId, ClockAssignmentProtection, ClockError, ClockMmioWriteProtection, ClockOp, ClockResult,
+    Cru, ResetOp,
     pll::{PllClock, PllRateParams, PllRateTable, RockchipPllType},
 };
 pub use pinctrl::{
@@ -36,5 +37,6 @@ pub type Mmio = NonNull<u8>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocType {
     Rk3568,
+    Rk3576,
     Rk3588,
 }

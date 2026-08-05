@@ -1,103 +1,70 @@
 //! Small capability boundaries implemented by the selected guest architecture.
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
-use crate::{AxVmError, AxVmResult};
+use ax_std::os::arceos::modules::ax_task::IrqNotify;
 
-/// Hardware capability used to route emulated device IRQs as physical SPIs.
-pub(crate) trait PhysicalSpiPlatform {
-    /// Resolves the physical GIC target for the VM's primary vCPU.
-    fn physical_spi_target_mpidr(_vm: &crate::vm::AxVM) -> AxVmResult<Option<usize>> {
-        Ok(None)
-    }
+use crate::AxVmResult;
 
-    /// Runs an ownership transition while holding the platform interrupt controller.
-    fn with_physical_spi_controller<T, F>(_operation: F) -> AxVmResult<Option<T>>
-    where
-        F: FnOnce(&mut dyn crate::vm::PassthroughSpiController) -> AxVmResult<T>,
-    {
-        Ok(None)
-    }
+/// Failure to collect one capability from every physical CPU targeted by a VM.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum TargetCpuCapabilityError {
+    /// The VM has no physical CPU target.
+    #[error("no target physical CPU is configured for {capability}")]
+    NoTargets { capability: &'static str },
+    /// One target CPU did not publish the requested capability.
+    #[error("target CPU {cpu_id} has no recorded {capability}")]
+    Missing {
+        capability: &'static str,
+        cpu_id: usize,
+    },
 }
 
-pub(crate) fn build_passthrough_spi_registrations<P: PhysicalSpiPlatform>(
-    vm: &crate::vm::AxVM,
-) -> AxVmResult<Vec<crate::vm::PassthroughSpiRegistration>> {
-    if vm.interrupt_mode() != crate::config::VMInterruptMode::Passthrough {
-        return Ok(Vec::new());
-    }
-
-    let devices = vm.get_devices()?;
-    if devices.virtio_blocks().is_empty() && devices.virtio_nets().is_empty() {
-        return Ok(Vec::new());
-    }
-    let Some(target_mpidr) = P::physical_spi_target_mpidr(vm)? else {
-        return Ok(Vec::new());
-    };
-
-    let mut registrations = Vec::new();
-    let registration_count = devices
-        .virtio_blocks()
-        .len()
-        .checked_add(devices.virtio_nets().len())
-        .ok_or(AxVmError::OutOfMemory {
-            operation: "counting emulated passthrough SPI registrations",
-        })?;
-    registrations
-        .try_reserve_exact(registration_count)
-        .map_err(|_| AxVmError::OutOfMemory {
-            operation: "preallocating emulated passthrough SPI registrations",
-        })?;
-    registrations.extend(
-        devices.virtio_blocks().iter().map(|device| {
-            crate::vm::PassthroughSpiRegistration::new(0, device.irq(), target_mpidr)
-        }),
-    );
-    registrations.extend(
-        devices.virtio_nets().iter().map(|device| {
-            crate::vm::PassthroughSpiRegistration::new(0, device.irq(), target_mpidr)
-        }),
-    );
-    Ok(registrations)
+/// Selects the smallest recorded capability across every target physical CPU.
+pub(crate) fn minimum_recorded_target_cpu_capability(
+    capability: &'static str,
+    vcpu_mappings: &[(usize, Option<usize>, usize)],
+    capability_for_cpu: impl FnMut(usize) -> Option<u64>,
+) -> Result<u64, TargetCpuCapabilityError> {
+    let capabilities =
+        recorded_target_cpu_capabilities(capability, vcpu_mappings, capability_for_cpu)?;
+    let mut capabilities = capabilities.into_iter();
+    let (_, first) = capabilities
+        .next()
+        .ok_or(TargetCpuCapabilityError::NoTargets { capability })?;
+    Ok(capabilities.fold(first, |minimum, (_, value)| minimum.min(value)))
 }
 
-pub(crate) fn try_inject_passthrough_device_irq<P: PhysicalSpiPlatform>(
-    vm: &crate::vm::AxVM,
-    irq: usize,
-) -> AxVmResult<bool> {
-    if vm.interrupt_mode() != crate::config::VMInterruptMode::Passthrough {
-        return Ok(false);
+pub(crate) fn recorded_target_cpu_capabilities(
+    capability: &'static str,
+    vcpu_mappings: &[(usize, Option<usize>, usize)],
+    mut capability_for_cpu: impl FnMut(usize) -> Option<u64>,
+) -> Result<Vec<(usize, u64)>, TargetCpuCapabilityError> {
+    let cpu_ids = crate::architecture::ops::target_phys_cpu_ids(vcpu_mappings);
+    if cpu_ids.is_empty() {
+        return Err(TargetCpuCapabilityError::NoTargets { capability });
     }
-    let Some(target_mpidr) = P::physical_spi_target_mpidr(vm)? else {
-        return Ok(false);
-    };
-    let runtime = vm.with_runtime(|runtime| Ok(runtime.clone()))?;
-    let signal = P::with_physical_spi_controller(|controller| {
-        runtime.transition_passthrough_spi(
-            0,
-            core::ops::ControlFlow::Continue(crate::vm::PassthroughSpiSignalRequest {
-                irq,
-                target_mpidr,
-            }),
-            controller,
-        )
-    })?
-    .ok_or_else(|| {
-        AxVmError::invalid_state(
-            "route passthrough device IRQ",
-            "the architecture selected a physical SPI target without a controller",
-        )
-    })?;
-    let crate::vm::PassthroughSpiTransitionResult::Signal(signal) = signal else {
-        return Err(AxVmError::invalid_state(
-            "route passthrough device IRQ",
-            "physical SPI signal returned a non-signal transition result",
-        ));
-    };
-    if signal == crate::vm::PassthroughSpiSignal::Queued {
-        runtime.notify_all();
-    }
-    Ok(true)
+    cpu_ids
+        .into_iter()
+        .map(|cpu_id| {
+            capability_for_cpu(cpu_id)
+                .map(|value| (cpu_id, value))
+                .ok_or(TargetCpuCapabilityError::Missing { capability, cpu_id })
+        })
+        .collect()
+}
+
+/// Maps a missing target-CPU capability into the AxVM host-capability domain.
+pub(crate) fn unsupported_target_cpu_capability(
+    operation: &'static str,
+    error: TargetCpuCapabilityError,
+) -> crate::AxVmError {
+    crate::AxVmError::unsupported(operation, error)
+}
+
+/// Architecture selection for fixed guest machine resources.
+pub(crate) trait MachinePlatform {
+    const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture;
 }
 
 /// Guest firmware preparation performed before common VM memory loading.
@@ -106,7 +73,7 @@ pub(crate) trait GuestBootPlatform {
 
     fn prepare_guest_boot(
         _vm_config: &mut crate::config::AxVMConfig,
-        _vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+        _vm_create_config: &mut axvmconfig::GuestConfig,
         _provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
         Ok(None)
@@ -116,7 +83,7 @@ pub(crate) trait GuestBootPlatform {
 /// Architecture-specific guest image planning layered over common byte loading.
 pub(crate) trait BootImagePlatform {
     fn default_boot_firmware_load_gpa(
-        _config: &axvmconfig::AxVMCrateConfig,
+        _config: &axvmconfig::GuestConfig,
     ) -> Option<axvm_types::GuestPhysAddr> {
         None
     }
@@ -143,7 +110,7 @@ pub(crate) trait BootImagePlatform {
     }
 
     fn is_x86_linux_image_config(
-        _config: &axvmconfig::AxVMCrateConfig,
+        _config: &axvmconfig::GuestConfig,
         _provider: &dyn crate::boot::BootImageProvider,
     ) -> bool {
         false
@@ -152,9 +119,68 @@ pub(crate) trait BootImagePlatform {
 
 /// Architecture-specific host timer policy used by the ArceOS adapter.
 pub(crate) trait HostTimePlatform {
-    fn set_oneshot_timer(deadline_ns: u64) {
-        ax_std::os::arceos::modules::ax_hal::time::set_oneshot_timer(deadline_ns);
+    fn request_timer_deadline(deadline_ns: u64) {
+        ax_std::os::arceos::modules::ax_task::request_timer_deadline_nanos(deadline_ns);
     }
 
-    fn register_timer_callback() {}
+    fn register_timer_source(
+        deadline_source: Arc<crate::timer::PublishedTimerDeadline>,
+        notify: Arc<IrqNotify>,
+    ) {
+        let published_deadline = deadline_source.clone();
+        ax_std::os::arceos::modules::ax_task::register_timer_deadline_source(move || {
+            published_deadline.deadline_nanos()
+        });
+        ax_std::os::arceos::modules::ax_task::register_timer_irq_callback(move |now| {
+            deadline_source.clear_if_elapsed(now.as_nanos().min(u64::MAX as u128) as u64);
+            notify.notify_irq();
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recorded_minimum_includes_every_cpu_in_vcpu_affinity_masks() {
+        let mappings = [
+            (0, Some((1 << 0) | (1 << 2)), 0),
+            (1, None, 1),
+            (2, Some((1 << 2) | (1 << 3)), 0),
+        ];
+        let capabilities = [48, 44, 42, 39];
+
+        assert_eq!(
+            minimum_recorded_target_cpu_capability("IPA bits", &mappings, |cpu_id| {
+                Some(capabilities[cpu_id])
+            }),
+            Ok(39)
+        );
+    }
+
+    #[test]
+    fn recorded_minimum_rejects_an_empty_target_set() {
+        assert_eq!(
+            minimum_recorded_target_cpu_capability("IPA bits", &[], |_| Some(48)),
+            Err(TargetCpuCapabilityError::NoTargets {
+                capability: "IPA bits",
+            })
+        );
+    }
+
+    #[test]
+    fn recorded_minimum_rejects_an_uninitialized_target_cpu() {
+        let mappings = [(0, Some((1 << 0) | (1 << 2)), 0)];
+
+        assert_eq!(
+            minimum_recorded_target_cpu_capability("IPA bits", &mappings, |cpu_id| {
+                [Some(48), None, None][cpu_id]
+            }),
+            Err(TargetCpuCapabilityError::Missing {
+                capability: "IPA bits",
+                cpu_id: 2,
+            })
+        );
+    }
 }

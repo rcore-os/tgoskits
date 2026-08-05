@@ -91,6 +91,27 @@ fn axvisor_ax_std_dependency_declares_std_compat() {
 }
 
 #[test]
+fn axvisor_host_xtask_is_opt_in() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == AXVISOR_PACKAGE)
+        .unwrap();
+    let target = package
+        .targets
+        .iter()
+        .find(|target| target.name == "xtask")
+        .unwrap();
+
+    assert_eq!(
+        target.required_features,
+        ["host-xtask"],
+        "the host build tool must not be linked as part of kernel integration tests"
+    );
+}
+
+#[test]
 fn resolve_build_info_path_uses_default_axvisor_location() {
     let root = tempdir().unwrap();
     let path = resolve_build_info_path(
@@ -573,7 +594,7 @@ fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
     fs::write(
         &config_path,
         r#"
-features = ["ax-driver/virtio-blk", "fs"]
+features = ["ax-driver/nvme", "fs"]
 log = "Info"
 "#,
     )

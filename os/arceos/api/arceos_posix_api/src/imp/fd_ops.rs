@@ -25,7 +25,7 @@ pub trait FileLike: Send + Sync {
 }
 
 scope_local! {
-    pub(crate) static FD_TABLE: RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>> = RwLock::new({
+    pub(crate) static FD_TABLE: Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> = Arc::new(RwLock::new({
         let mut fd_table = flatten_objects::FlattenObjects::new();
         fd_table
             .add_at(0, Arc::new(stdin()) as _)
@@ -37,11 +37,15 @@ scope_local! {
             .add_at(2, Arc::new(stdout()) as _)
             .unwrap_or_else(|_| panic!()); // stderr
         fd_table
-    });
+    }));
+}
+
+fn current_fd_table() -> Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> {
+    FD_TABLE.clone_current()
 }
 
 pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
-    FD_TABLE
+    current_fd_table()
         .read()
         .get(fd as usize)
         .cloned()
@@ -49,11 +53,14 @@ pub fn get_file_like(fd: c_int) -> LinuxResult<Arc<dyn FileLike>> {
 }
 
 pub fn add_file_like(f: Arc<dyn FileLike>) -> LinuxResult<c_int> {
-    Ok(FD_TABLE.write().add(f).map_err(|_| LinuxError::EMFILE)? as c_int)
+    Ok(current_fd_table()
+        .write()
+        .add(f)
+        .map_err(|_| LinuxError::EMFILE)? as c_int)
 }
 
 pub fn close_file_like(fd: c_int) -> LinuxResult {
-    let f = FD_TABLE
+    let f = current_fd_table()
         .write()
         .remove(fd as usize)
         .ok_or(LinuxError::EBADF)?;
@@ -101,7 +108,7 @@ pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> c_int {
         }
 
         let f = get_file_like(old_fd)?;
-        FD_TABLE
+        current_fd_table()
             .write()
             .add_at(new_fd as usize, f)
             .map_err(|_| LinuxError::EMFILE)?;

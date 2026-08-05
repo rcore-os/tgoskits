@@ -7,8 +7,8 @@ use crate::WaitQueue;
 /// `IrqNotify` separates a hard-IRQ notification from the slow work that must
 /// run in task context. IRQ handlers call [`notify_irq`](Self::notify_irq) to
 /// publish a pending bit and wake a deferred worker. The worker then drains the
-/// bit and performs the expensive work, such as polling a device or waking
-/// `axpoll` waiters.
+/// bit and performs deferred work, such as consuming acknowledged device
+/// completions.
 pub struct IrqNotify {
     pending: AtomicBool,
     wait: WaitQueue,
@@ -66,4 +66,36 @@ impl IrqNotify {
     pub fn wait(&self) {
         self.wait.wait_until(|| self.drain());
     }
+
+    /// Blocks until a pending notification is consumed or `duration` elapses.
+    ///
+    /// Returns `true` only when the deadline elapsed without consuming a
+    /// notification.
+    #[track_caller]
+    pub fn wait_timeout(&self, duration: core::time::Duration) -> bool {
+        self.wait.wait_timeout_until(duration, || self.drain())
+    }
+}
+
+#[cfg(axtest)]
+pub(crate) fn irq_notify_constructor_and_pending_hold_for_test() -> bool {
+    // Test IrqNotify::new() creates a non-pending instance
+    let notify = IrqNotify::new();
+    assert!(!notify.is_pending());
+
+    // Test Default trait
+    let default_notify = IrqNotify::default();
+    assert!(!default_notify.is_pending());
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn irq_notify_drain_logic_hold_for_test() -> bool {
+    // Test drain on a fresh IrqNotify returns false (nothing pending)
+    let notify = IrqNotify::new();
+    assert!(!notify.drain()); // Nothing to drain
+    assert!(!notify.is_pending()); // Still not pending after drain
+
+    true
 }

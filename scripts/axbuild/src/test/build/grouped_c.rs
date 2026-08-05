@@ -349,7 +349,10 @@ pub(super) fn prepare_grouped_c_subcases_sync(
                 ("phase", "prebuild".to_string()),
             ],
         );
-        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
+        let extra_script_envs = grouped_c_root_prebuild_env(
+            prepare_guest_package_env(config, &layout.staging_root)?,
+            subcases,
+        );
         let prebuild_env =
             prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
         let mut command = build_prebuild_command_with_work_dir(
@@ -471,7 +474,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             &build_env,
             config,
         );
-        let result = configure.exec().with_context(|| {
+        let result = configure.exec_quiet().with_context(|| {
             format!(
                 "failed to configure grouped C subcase `{}`",
                 subcase.name.as_str()
@@ -489,7 +492,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ],
         );
         let mut build = build_cmake_build_command(&subcase_layout, &build_env);
-        let result = build.exec().with_context(|| {
+        let result = build.exec_quiet().with_context(|| {
             format!(
                 "failed to build grouped C subcase `{}`",
                 subcase.name.as_str()
@@ -507,7 +510,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
             ],
         );
         let mut install = build_cmake_install_command(&subcase_layout, &build_env);
-        let result = install.exec().with_context(|| {
+        let result = install.exec_quiet().with_context(|| {
             format!(
                 "failed to install grouped C subcase `{}`",
                 subcase.name.as_str()
@@ -525,6 +528,19 @@ pub(super) fn prepare_grouped_c_subcases_sync(
     print_slowest_grouped_c_subcases(case, subcase_timings);
 
     Ok(())
+}
+
+pub(super) fn grouped_c_root_prebuild_env(
+    mut env: Vec<(String, String)>,
+    subcases: &[&TestQemuSubcase],
+) -> Vec<(String, String)> {
+    let selected_subcases = subcases
+        .iter()
+        .map(|subcase| subcase.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    env.push(("STARRY_GROUPED_C_SUBCASES".to_string(), selected_subcases));
+    env
 }
 
 pub(super) fn prepare_grouped_c_root_project_sync(
@@ -560,7 +576,7 @@ pub(super) fn prepare_grouped_c_root_project_sync(
         config,
     );
     let result = configure
-        .exec()
+        .exec_quiet()
         .context("failed to configure grouped C root project");
     timing_stage.finish();
     result?;
@@ -575,7 +591,7 @@ pub(super) fn prepare_grouped_c_root_project_sync(
     );
     let mut build = build_cmake_build_command(layout, build_env);
     let result = build
-        .exec()
+        .exec_quiet()
         .context("failed to build grouped C root project");
     timing_stage.finish();
     result?;
@@ -589,7 +605,7 @@ pub(super) fn prepare_grouped_c_root_project_sync(
     );
     let mut install = build_cmake_install_command(layout, build_env);
     let result = install
-        .exec()
+        .exec_quiet()
         .context("failed to install grouped C root project");
     timing_stage.finish();
     result?;

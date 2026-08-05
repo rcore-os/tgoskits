@@ -36,16 +36,16 @@ pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
 
-    /// Read the host architectural counter without unit conversion.
+    /// Read the raw host architectural counter used by RT traces.
     #[cfg(feature = "rt-trace")]
     fn current_ticks(&self) -> u64;
 
-    /// Convert an architectural counter delta to nanoseconds.
+    /// Convert raw host counter ticks to nanoseconds.
     #[cfg(feature = "rt-trace")]
     fn ticks_to_nanos(&self, ticks: u64) -> u64;
 
-    /// Program the host one-shot timer.
-    fn set_oneshot_timer(&self, deadline_ns: u64);
+    /// Publish an earlier deadline to the host's shared timer arbiter.
+    fn request_timer_deadline(&self, deadline_ns: u64);
 }
 
 /// Host CPU topology and affinity operations.
@@ -59,7 +59,7 @@ pub trait HostCpu {
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
 
-    /// Cumulative architectural-idle ticks for one host CPU.
+    /// Return cumulative architectural-idle ticks for one host CPU.
     #[cfg(feature = "rt-trace")]
     fn idle_time_ticks(&self, cpu_id: usize, now_ticks: u64) -> Option<u64>;
 }

@@ -1,11 +1,11 @@
 use alloc::{boxed::Box, sync::Arc};
 
 /// A callback function that will be called when an [`IpiEvent`] is received and handled.
-pub struct Callback(Box<dyn FnOnce()>);
+pub struct Callback(Box<dyn FnOnce() + Send>);
 
 impl Callback {
     /// Create a new [`Callback`] with the given function.
-    pub fn new<F: FnOnce() + 'static>(callback: F) -> Self {
+    pub fn new<F: FnOnce() + Send + 'static>(callback: F) -> Self {
         Self(Box::new(callback))
     }
 
@@ -15,7 +15,7 @@ impl Callback {
     }
 }
 
-impl<T: FnOnce() + 'static> From<T> for Callback {
+impl<T: FnOnce() + Send + 'static> From<T> for Callback {
     fn from(callback: T) -> Self {
         Self::new(callback)
     }
@@ -23,11 +23,11 @@ impl<T: FnOnce() + 'static> From<T> for Callback {
 
 /// A [`Callback`] that can be called multiple times. It's used for multicast IPI events.
 #[derive(Clone)]
-pub struct MulticastCallback(Arc<dyn Fn()>);
+pub struct MulticastCallback(Arc<dyn Fn() + Send + Sync>);
 
 impl MulticastCallback {
     /// Create a new [`MulticastCallback`] with the given function.
-    pub fn new<F: Fn() + 'static>(callback: F) -> Self {
+    pub fn new<F: Fn() + Send + Sync + 'static>(callback: F) -> Self {
         Self(Arc::new(callback))
     }
 
@@ -42,7 +42,7 @@ impl MulticastCallback {
     }
 }
 
-impl<T: Fn() + 'static> From<T> for MulticastCallback {
+impl<T: Fn() + Send + Sync + 'static> From<T> for MulticastCallback {
     fn from(callback: T) -> Self {
         Self::new(callback)
     }

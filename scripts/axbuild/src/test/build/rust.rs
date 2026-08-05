@@ -18,6 +18,18 @@ pub(super) fn rust_musl_target(arch: &str) -> anyhow::Result<&'static str> {
     }
 }
 
+fn rust_case_rustflags(arch: &str) -> &'static str {
+    if arch == "loongarch64" {
+        // Some deployed LoongArch vendor kernels predate the final signal ABI.
+        // Inheriting SIGPIPE keeps static Rust cases from calling signal(2)
+        // before main while preserving the exact same case binary for Linux
+        // staging and StarryOS execution.
+        "-C target-feature=+crt-static -Zon-broken-pipe=inherit"
+    } else {
+        "-C target-feature=+crt-static"
+    }
+}
+
 /// Prepares overlay assets for a Rust-based QEMU test case.
 ///
 /// This pipeline:
@@ -29,6 +41,23 @@ pub(super) fn rust_musl_target(arch: &str) -> anyhow::Result<&'static str> {
 /// The binary name is taken from the Cargo.toml `[[bin]]` name, or falls back
 /// to the package name.  The `rust/` directory must contain a `Cargo.toml`.
 pub(crate) fn prepare_rust_case_assets_sync(
+    arch: &str,
+    case: &TestQemuCase,
+    case_rootfs: &Path,
+    layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
+) -> anyhow::Result<()> {
+    prepare_rust_case_overlay_sync(arch, case, case_rootfs, layout, config)?;
+    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+/// Cross-compiles one Rust case and installs its static binary into the
+/// prepared overlay without mutating the source rootfs.
+///
+/// Board sessions reuse this phase and upload the overlay through the
+/// ostool session endpoint instead of copying it into the persistent board
+/// filesystem.
+pub(crate) fn prepare_rust_case_overlay_sync(
     arch: &str,
     case: &TestQemuCase,
     case_rootfs: &Path,
@@ -108,7 +137,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
         .arg(&cargo_toml)
         .arg("--target-dir")
         .arg(&layout.build_dir)
-        .env("RUSTFLAGS", "-C target-feature=+crt-static")
+        .env("RUSTFLAGS", rust_case_rustflags(arch))
         .env(&linker_env_key, &linker_path)
         // Point pkg-config at the Alpine sysroot so crates with native deps
         // (e.g. dbus via keyring) can find their .pc files when cross-compiling.
@@ -170,7 +199,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
             .with_context(|| format!("failed to chmod {}", bin_dst.display()))?;
     }
 
-    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+    Ok(())
 }
 
 /// Reads the binary name from a `Cargo.toml`.
@@ -208,4 +237,21 @@ pub(super) fn rust_case_bin_name(cargo_toml: &Path) -> anyhow::Result<String> {
             cargo_toml.display()
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rust_case_rustflags;
+
+    #[test]
+    fn loongarch_static_cases_inherit_sigpipe_for_legacy_linux_abi() {
+        assert_eq!(
+            rust_case_rustflags("loongarch64"),
+            "-C target-feature=+crt-static -Zon-broken-pipe=inherit"
+        );
+        assert_eq!(
+            rust_case_rustflags("aarch64"),
+            "-C target-feature=+crt-static"
+        );
+    }
 }

@@ -1,9 +1,6 @@
 #[cfg(not(test))]
 use alloc::format;
-#[cfg(not(test))]
-use core::time::Duration;
 
-use cv181x_sdhci::rdif as cv181x_rdif;
 #[cfg(not(test))]
 use cv181x_sdhci::{
     CV181X_SYSCON_REQUIRED_SIZE, CV181X_TOP_SYSCON_BASE, Cv181xConfig, Cv181xMmio, Cv181xSdhci,
@@ -15,31 +12,24 @@ use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
 };
-use sdmmc_protocol::{Error, error::Phase};
+#[cfg(not(test))]
+use sdhci_host::rdif as sdhci_rdif;
 #[cfg(not(test))]
 use sdmmc_protocol::{
-    OperationPoll,
-    sdio::{
-        card::{CardInfo, SdioSdmmc},
-        host::BusWidth,
-        host2::SdioHost2Adapter,
-        init::{CardInitPreference, SdioInitScratch},
-    },
+    rdif::device::BlockDevice,
+    sdio::{card::SdioSdmmc, host::BusWidth, init::CardInitPreference},
 };
 
 #[cfg(not(test))]
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
+#[cfg(not(test))]
 pub const DEVICE_NAME: &str = "cvsd";
 
 #[cfg(not(test))]
 const DEFAULT_SDMMIF_SIZE: usize = 0x1000;
 #[cfg(not(test))]
 const DEFAULT_SYSCON_SIZE: usize = 0x8000;
-const CVSD_IRQ_DRIVEN: bool = true;
-
-#[cfg(not(test))]
-type CvsdCard = SdioSdmmc<SdioHost2Adapter<Cv181xSdhci>>;
 
 #[cfg(not(test))]
 #[derive(Clone, Copy)]
@@ -92,34 +82,15 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         config.has_card_detect_gpio,
     );
 
-    let host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
-    let mut card = SdioSdmmc::new_host2(host);
+    let mut host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let block_config = sdhci_rdif::dma_config(DEVICE_NAME, 0, &dma);
+    host.configure_dma(dma)
+        .map_err(|err| OnProbeError::other(format!("cvsd ADMA2 configuration failed: {err:?}")))?;
+
+    let mut card = SdioSdmmc::new(host);
     card.set_sd_uhs_selection_enabled(false);
-
-    let card_info = poll_card_init(&mut card, card_init_preference(policy)).map_err(|err| {
-        warn!("cvsd: card init failed: {:?}", err);
-        card_init_error(
-            sdmmc.address,
-            sdmmc.size.unwrap_or(DEFAULT_SDMMIF_SIZE as u64),
-            err,
-        )
-    })?;
-    info!(
-        "cvsd card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} cid={} \
-         ext_csd={}",
-        card_info.kind,
-        card_info.high_capacity,
-        card_info.rca,
-        card_info.ocr,
-        card_info.capacity_blocks,
-        card_info.cid.is_some(),
-        card_info.ext_csd.is_some()
-    );
-
-    let dev = cv181x_rdif::device(
-        card,
-        cvsd_block_config(card_info.capacity_blocks.unwrap_or(0)),
-    );
+    let dev = BlockDevice::new_initializing(card, block_config, card_init_preference(policy));
     let irq = probe.register_block(dev)?;
     info!("cvsd block device registered irq={:?}", irq);
     Ok(())
@@ -205,29 +176,6 @@ fn fdt_u32(info: &FdtInfo<'_>, name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-fn cvsd_block_config(capacity_blocks: u64) -> cv181x_rdif::BlockConfig {
-    cv181x_rdif::fifo_config(DEVICE_NAME, capacity_blocks, CVSD_IRQ_DRIVEN)
-}
-
-#[cfg(not(test))]
-fn poll_card_init(card: &mut CvsdCard, preference: CardInitPreference) -> Result<CardInfo, Error> {
-    let mut scratch = SdioInitScratch::new();
-    let mut request = card.submit_init_with_preference(preference, &mut scratch)?;
-    loop {
-        match card.poll_init_request(&mut request)? {
-            OperationPoll::Pending => {
-                if request.take_needs_pace() {
-                    axklib::time::busy_wait(Duration::from_millis(10));
-                } else {
-                    core::hint::spin_loop();
-                }
-            }
-            OperationPoll::Complete(info) => return Ok(info),
-            _ => return Err(Error::UnsupportedCommand),
-        }
-    }
-}
-
 #[cfg(not(test))]
 fn card_init_preference(policy: CvsdFdtPolicy) -> CardInitPreference {
     if policy.no_sd || policy.non_removable {
@@ -240,71 +188,5 @@ fn card_init_preference(policy: CvsdFdtPolicy) -> CardInitPreference {
         CardInitPreference::SdOnly
     } else {
         CardInitPreference::SdFirst
-    }
-}
-
-#[cfg(not(test))]
-fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    OnProbeError::other(format!(
-        "failed to initialize CVSD device at [PA:{:?}, SZ:0x{:x}): {err:?}",
-        address, size
-    ))
-}
-
-#[cfg(not(test))]
-fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    if is_absent_card_init_error(err) {
-        warn!(
-            "cvsd: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping controller: {err:?}",
-            address, size
-        );
-        return OnProbeError::NotMatch;
-    }
-
-    init_error(address, size, err)
-}
-
-fn is_absent_card_init_error(err: Error) -> bool {
-    match err {
-        Error::NoCard => true,
-        Error::Timeout(ctx) | Error::Crc(ctx) | Error::BadResponse(ctx) => {
-            ctx.cmd.is_some()
-                && matches!(
-                    ctx.phase,
-                    Phase::CommandSend | Phase::ResponseWait | Phase::Init
-                )
-        }
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use sdmmc_protocol::error::ErrorContext;
-
-    use super::*;
-
-    #[test]
-    fn command_timeout_during_card_init_is_absent_card() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::ResponseWait, 1));
-
-        assert!(is_absent_card_init_error(err));
-    }
-
-    #[test]
-    fn data_timeout_after_card_init_is_not_absent_card() {
-        let err = Error::Timeout(ErrorContext::for_cmd(Phase::DataRead, 17));
-
-        assert!(!is_absent_card_init_error(err));
-    }
-
-    #[test]
-    fn cvsd_block_io_uses_irq_driven_sdmmc_rdif_fifo_config() {
-        let config = cvsd_block_config(8);
-
-        assert_eq!(config.name, DEVICE_NAME);
-        assert_eq!(config.capacity_blocks, 8);
-        assert!(!config.uses_dma());
-        assert!(config.irq_driven);
     }
 }

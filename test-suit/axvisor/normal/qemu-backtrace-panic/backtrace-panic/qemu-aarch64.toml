@@ -1,0 +1,20 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "1",
+    "-m",
+    "512M",
+]
+# Positive case: backtrace feature enabled (test-backtrace-panic = ["backtrace"])
+# → axbacktrace compiled with alloc → Backtrace::capture() succeeds.
+# Fail if alloc=false (backtrace feature leaked or capture path broken).
+fail_regex = ["(?s)BACKTRACE_BEGIN(?-u:\\b).*(?-u:\\b)alloc=false(?-u:\\b)"]
+# Assert complete BACKTRACE_BEGIN … BACKTRACE_END block with alloc=true.
+success_regex = ["(?s)BACKTRACE_BEGIN(?-u:\\b).*(?-u:\\b)kind=panic(?-u:\\b).*(?-u:\\b)alloc=true(?-u:\\b).*(?-u:\\b)BACKTRACE_END"]
+timeout = 60
+to_bin = true
+uefi = false

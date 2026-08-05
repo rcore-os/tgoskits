@@ -9,12 +9,88 @@ This reference captures project-specific lessons from enabling LoongArch dynamic
 | Target spec | `scripts/targets/**/<triple>.json` | ABI, soft-float, relocation model, linker, panic, std/musl support |
 | Build orchestration | `scripts/axbuild/src/{build.rs,context,test/qemu.rs,*}` | arch to target mapping, features, UEFI mode, QEMU command, rootfs image |
 | Test data | `test-suit/{arceos,starryos,axvisor}/**` | runtime TOML, build TOML, regexes, SMP count, firmware mode |
-| Bootloader | `components/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
+| Bootloader | `platforms/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
 | CPU runtime | `components/axcpu/src/<arch>/**` | trap frame layout, context switch, FP/SIMD, user return |
 | Dynamic platform | `platforms/{axplat-dyn,somehal}/**` | runtime memory/IRQ/timer/power facts from firmware |
 | Drivers | `drivers/**`, `patches/virtio-drivers/**` | MMIO/iomap, DMA, PCI command bits, virtio transport |
 
 When a boot failure appears in a high layer, still audit lower-layer contracts. For example, a Starry rootfs failure can be caused by PCI command bits, and an Axvisor hang can be caused by a someboot post-UEFI handoff.
+
+## CPU-local Register Ownership
+
+`cpu-local` is the single owner of host CPU-area, current-thread, and kernel-TLS register
+semantics. `ax-percpu` supplies the typed template/layout/area implementation but must not choose
+an architecture register independently. The two image modes are mutually exclusive at a final
+image boundary:
+
+| Architecture | CPU area | Linux-current image | Unikernel-TLS image |
+| --- | --- | --- | --- |
+| x86_64 | GS base | current header in `CpuRuntimeAnchor` | FS base is task TLS |
+| AArch64 | TPIDR_EL1 at EL1, TPIDR_EL2 at EL2 | SP_EL0 is current | TPIDR_EL0 is task TLS |
+| RISC-V | recover from current header, or sscratch | tp is current and sscratch is zero in kernel Rust | tp is task TLS and sscratch is CPU base |
+| LoongArch | r21, mirrored in KS3 | tp is current | tp is task TLS |
+
+The final ELF owns exactly one `.percpu.template`, one `.percpu.init` descriptor table, and one
+`.percpu.align` table. someboot or another platform allocates the runtime areas dynamically from
+that geometry, initializes every typed object at its final address, freezes the layout, and only
+then binds a CPU. There is no linked runtime alias and the template size must not depend on SMP.
+Linker boundaries use only `__PERCPU_*` and `__CPU_LOCAL_*`; x86 trap entry consumes the relative
+`__CPU_LOCAL_TSS_OFFSET`.
+
+The exact initialized `CpuAreaRef` address is the area identity. One final image has no CPU-local
+ABI version, layout generation, cookie, or provider-trait FFI. A `CpuPin<'scope>` validates the
+live CPU base, prefix self pointer/index, and current header and cannot escape its guard. Atomic
+scalars require migration exclusion; shared `T: Sync` values require the same pin plus their own
+synchronization; mutable local objects require `ExclusiveCpu` after IRQ/re-entry and conflicting
+remote access are excluded. CPU-area construction is permitted only while that CPU is offline and
+the raw destination is exclusively owned.
+
+Context-switch publication follows one ordering: validate the outgoing binding, bind the next
+stable task header, prepare every fallible state transition, commit the architecture register,
+perform the naked switch, and unbind the previous header in the incoming tail. The interrupt-off
+`CpuPin` spans that sequence. An uncommitted prepared token rolls the next binding back, while the
+previous binding epoch rejects a stale incoming tail after task rebinding; that epoch is a runtime
+concurrency guard, not an ABI version. vCPU exits must restore the host register contract before returning
+to host Rust; LoongArch KS4/KS5 remain vCPU scratch and AArch64 must restore host TPIDR_EL0 before
+calling Rust exception handlers.
+
+For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
+Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)
+on secondaries. A separate current-task per-CPU variable can mask a stale register during normal
+execution and then fail only on traps or vCPU exits, so it is not a valid fallback.
+
+## Final Image Runtime Modes
+
+- Starry uses its original bare target as a `no_std`/`no_main` PIE with
+  `build-std=core,alloc`; SMP remains a compile-time capability, while the runtime CPU limit is
+  configured separately. Its ELF must be `ET_DYN` without `PT_TLS`, `.tdata`, or `.tbss`.
+- Axvisor remains a std/musl PIE and explicitly selects the complete TLS chain down through
+  axruntime, axhal, `cpu-local`, axvm, axplat-dyn, somehal, and someboot. AxVM snapshots the host
+  kernel-TLS value around each guest transition in addition to validating the exact CPU area.
+- ArceOS retains TLS by default. A userspace build owns the same architecture register for
+  Linux-current semantics, so `uspace + tls` is a configuration error.
+- someboot renders TLS and no-TLS linker layouts separately. For relocatable direct images,
+  audit the final ELF at multiple load biases and accept only the architecture's supported
+  relative relocation types.
+
+## AArch64 Axvisor EL2 Checks
+
+- The Axvisor `hv` feature chain must select `ax-cpu/arm-el2` only for AArch64. Keep the chain
+  `ax-hal/hv` -> `axplat-dyn/hv` -> `somehal/hv`; `somehal`'s AArch64-only optional `ax-cpu`
+  dependency owns the `arm-el2` edge. A successful AArch64 compile does not prove that the EL2
+  register implementation was selected, while an unconditional edge would incorrectly enable it
+  for other architectures.
+- If an EL2 image compiles the EL1 page-table path, `ax-mm` can appear to initialize normally while
+  the new root is written to `TTBR1_EL1`. The active `TTBR0_EL2` then remains the someboot table,
+  so the first access to a dynamically mapped device can fault or look like a hang. On PhytiumPi,
+  the characteristic stop is the first GIC distributor read immediately after the rdrive FDT
+  initialization message.
+- Confirm the runtime reports `EL: 2`, inspect the resolved `ax-cpu` feature set for `arm-el2`, and
+  verify that a post-`ioremap` MMIO access succeeds before instrumenting the device driver itself.
+- Axvisor QEMU and board test cases own their CPU-count contract. Test requests must discard an
+  interactive snapshot's `smp` value; otherwise a stale `tmp/axbuild/.axvisor.toml` can silently
+  shrink the host. A Phytium guest assigned to logical CPU 2 will then fall back to CPU 0 and may
+  stop at its first virtual timer interrupt even though the vCPU world switch is correct.
 
 ## Dynamic UEFI Platform Notes
 
@@ -36,8 +112,10 @@ Use this order when auditing an early boot port:
 6. Trap vectors are installed using the address form required by the architecture at that moment.
 7. MMU enable is followed by the required barrier, TLB flush, and an address-basis-safe jump.
 8. Post-MMU console and panic paths are usable.
-9. Per-CPU data and secondary boot stacks are allocated and initialized.
-10. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+9. The single ELF CPU-local template and descriptor tables are resolved after relocation.
+10. Runtime CPU areas and secondary boot stacks are dynamically allocated; every typed area is
+    initialized once, frozen, and bound through the architecture CPU-local register contract.
+11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
 
 ## RISC-V FDT SMP Notes
 
@@ -45,25 +123,97 @@ Use this order when auditing an early boot port:
 - Keep FDT `reg` hart IDs as firmware CPU IDs and map them onto dense logical CPU IDs separately. On VisionFive2, `cpu@0` is a disabled S7 management hart while the usable U74 cores are `cpu@1` through `cpu@4`; full-core boot should therefore start from hart 1 and bring up harts 2-4, not fall back to single-core mode.
 - If a RISC-V board traps when secondaries are released, dump `/cpus` from the boot FDT before changing `max_cpu_num`; disabled or non-OS CPU nodes are a common cause of `cpu_on` targeting the wrong hart.
 
-## AArch64 Guest Bring-Up Lessons
+## RK3576 ROCK 4D Board Notes
 
-- Assembly offsets into a `repr(C)` vCPU context must include the alignment of every embedded type, not only the sum of preceding field sizes. Lock offsets such as guest system registers to `core::mem::offset_of!` regression tests; an eight-byte padding mistake can make one register restore corrupt an unrelated register such as `TPIDR_EL0`.
-- Decode PSCI IDs using the architectural 32-bit `0x8400_0000..=0x8400_001f` and 64-bit `0xc400_0000..=0xc400_001f` ranges. Implement `PSCI_VERSION` explicitly before forwarding unknown calls so a guest can discover the supported PSCI contract.
-- Prefer the selected guest DTB as the source of its architectural virtual-timer PPI. When a guest binary uses a compile-time device tree and AxVM receives no external DTB, set `[devices].aarch64_virtual_timer_irq` explicitly and validate that it is a PPI (`16..=31`). A board guest with only emulated devices should also use `interrupt_mode = "emulated"`; leaving an empty-passthrough configuration in passthrough mode can expose an unrelated host-private PPI such as the physical timer IRQ.
-- A hardware-backed virtual timer list register transfers physical PPI completion to the guest. Keep the current-vCPU scope installed through deferred IRQ work, and do not deactivate the physical interrupt until the guest EOI path completes it.
-- Quiesce guest timer sources on every AArch64 VM exit before clearing the current-vCPU scope or scheduling host work, while retaining the saved `CNTP/CNTV` compare and control state for the next entry. On an IRQ exit, first acknowledge the level PPI and transfer it into the hardware LR; only after the VM-exit handler returns may the local `CNTP_CTL_EL0` and `CNTV_CTL_EL0` sources be disabled. Disabling them immediately after saving registers can withdraw the level PPI before GIC acknowledgement and leave the guest stuck during IRQ initialization. Restore `CVAL/CTL` on the next guest entry, require the structured `unowned_virtual_timer_irqs` count to remain zero, and keep any defensive stale-source cleanup free of synchronous UART output; generic diagnostics must be bounded or rate-limited.
-- A hardware-backed virtual-timer PPI is owned by the physical CPU on which the vCPU programs it. Do not give that vCPU a multi-pCPU affinity mask unless migration also transfers or re-arms the timer state and physical PPI ownership. A baseline that shares pCPUs with host work should keep each vCPU pinned and set `dedicated_cpus = false`; otherwise an absolute sleep can remain blocked after the vCPU migrates, which measures a broken timer route rather than scheduler contention.
-- `dedicated_cpus` is an AxVM placement contract, not global host isolation. The partition planner removes reserved pCPUs from other shared guest-vCPU affinities; it does not automatically move ordinary AxVisor tasks, housekeeping, or physical IRQs. Prove any claimed isolation with observed pCPU accounting and the actual affinity of the interference source.
-- For a controlled AxVisor host-interference experiment, configure the bounded task explicitly in the AxVisor build profile, start it after VM initialization but before `start_default_vms`, wait until its singleton affinity is observed, and stop/join it after the default VM exits. Persist the requested and observed masks, safety deadline, stop reason, loop count, and coverage window in the host trace. A loop-local counter interval includes time when the task was preempted, so label it as observed pCPU wall time rather than exclusive task CPU runtime; use scheduler/pCPU accounting for utilization claims.
-- Do not assume round-robin makes two AArch64 vCPU tasks safe on one pCPU. Deferring host preemption until an architecture guest run slice returns avoids a nested-current-vCPU panic, but OrangePi-5-Plus testing still produced a current-EL data abort immediately after switching to the second singleton-pinned vCPU. Before using same-pCPU vCPU contention as benchmark evidence, add a deterministic alternating-vCPU regression and pass a physical-board smoke with no nested-vCPU marker, current-EL exception, state corruption, or serial binary output.
-- Treat multi-pCPU vCPU affinity as a separate migration test. A run that allows a vCPU on pCPU1/pCPU3 and later emits an unexpected physical PPI followed by current-EL aborts is a correctness failure, not a latency outlier. Use singleton affinity in formal evidence until both architectural state and timer/PPI ownership migration are covered by regression tests.
-- The AArch64 hardware-timer injector runs in hard-IRQ context. Detect the GIC backend and publish any GICv2 hypervisor MMIO endpoint before registering that injector; neither hardware-timer nor software LR injection may look up or lock an `rdrive` GIC device. Software injection runs with the current vCPU installed and can be preempted by that vCPU's timer PPI, so holding the same device lock creates a same-CPU recursive deadlock. A repeatable guest freeze whose request count moves earlier when LR logging is added is a strong sign of this widened lock/preemption window.
-- Measure direct virtual-timer injection latency in one guest-visible counter domain. At the host PPI entry, read `CNTPCT_EL0`, subtract `CNTVOFF_EL2` modulo 2^64, and record the translated tick with the target vCPU and injection result; at the guest timer handler entry, record `CNTVCT_EL0`. Validate `CNTFRQ_EL0` on both sides before offline pairing. Both IRQ paths must use preallocated, lock-free records with no printing or allocation, and must report dropped, incomplete, failed-injection, and frequency-mismatch counts. If host pCPU utilization is reported, close the architectural-idle interval before IRQ dispatch so handler time is counted as running rather than idle.
-- On permanent vCPU stop, disable both `CNTP_CTL_EL0` and `CNTV_CTL_EL0` on the same physical CPU before unbinding the vCPU. A VM-wide stop initiated by one vCPU must also run idempotent per-task cleanup on every other vCPU's assigned physical CPU, because those tasks can observe the stop only after a recoverable exit has already unbound them. Do not apply this cleanup to ordinary WFI iterations; an enabled stopped-guest timer otherwise becomes a host PPI storm.
-- Virtio MMIO device-configuration reads must pack the requested byte, word, or dword width in little-endian order. A byte-reading guest can hide this bug while a dword-reading guest observes a truncated MAC address.
+The maintained ROCK 4D path uses the repository DTB and a U-Boot/firmware stack
+that can load the StarryOS image and DTB through the board runner. Firmware must
+implement the DTB's PSCI 1.0 `smc` method; otherwise secondary CPU release cannot
+work even when the kernel image and CPU topology are correct.
+
+- Use `os/StarryOS/configs/board/rock-4d.dtb`. Its root compatibles are
+  `radxa,rock-4d` and `rockchip,rk3576`; do not silently substitute a U-Boot
+  resident DTB from a different RK3576 board.
+- The console contract is `serial0` / UART0 at `0x2ad4_0000`, 1,500,000 baud,
+  8-N-1. The local template
+  `os/StarryOS/configs/board/rock-4d-uboot.toml` uses `/dev/ttyUSB0`; adjust
+  only the host serial path when the adapter enumerates differently.
+- The DTB describes eight PSCI CPUs: Cortex-A53 MPIDRs `0x0` through `0x3` and
+  Cortex-A72 MPIDRs `0x100` through `0x103`. Keep these hardware IDs separate
+  from dense logical CPU indices. Both the maintained single-core board test
+  and an eight-core boot have been validated.
+- GICv2 CPU target bits are firmware/controller interface IDs, not dense
+  logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
+  per-CPU initialization and reuse that mask for SPI affinity, AxVM-assigned
+  physical SPIs, and SGIs.
+- The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
+  `0x50000`. Early driver evidence should include
+  `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by
+  `RK3576 CRU clock/reset registered successfully`.
+- The PMU parent must be at `0x2738_0000`, with a child compatible
+  `rockchip,rk3576-power-controller`. Probe completion prints
+  `Rockchip power-domain provider registered successfully`; an individual
+  domain enabled at debug level prints `Rockchip power domain 0x... enabled`.
+- The pinctrl provider must bind `rockchip,rk3576-pinctrl`, map IOC GRF
+  `0x2604_0000` and optional SYS GRF `0x2600_a000`, and discover GPIO0 through
+  GPIO4 from `gpio-ranges`. Successful registration prints
+  `Rockchip RK3576 pinctrl registered successfully`. The generic rdrive FDT
+  probe path applies SDMMC0's default `pinctrl-0` state before invoking the
+  controller probe. Keep regression coverage at both boundaries: rdrive must
+  prove default pinctrl is applied before the consumer callback, and the
+  RK3576 pinctrl test must prove the ROCK 4D SDMMC state programs the expected
+  IOC registers. Do not add a second consumer-specific apply call, and do not
+  treat a later successful mount as sufficient evidence because U-Boot can
+  leave the pads in a usable state.
+- The repository ROCK 4D DTB connects SDMMC0 `vqmmc-supply` to the always-on
+  RK806 `vccio_sd_s0` PMIC rail; it does not declare a fixed GPIO regulator for
+  that controller. If a board DT variant uses a fixed GPIO supply, require
+  `Fixed regulator ... enabled via pinctrl` (or an SD-specific regulator
+  success log) before card initialization.
+- The current CRU capability required by the storage path controls SDMMC0
+  source/HCLK gates, source selection, divider, and reset. If kernel boot
+  reaches storage initialization but cannot mount or access the root device,
+  check CRU registration first, then SDMMC0 clock gating/rate and the relevant
+  PMU domain before debugging the filesystem.
+
+Use the exact board name exposed by the board service. List it first when
+necessary:
+
+```bash
+cargo xtask board ls
+```
+
+The maintained single-core regression is:
+
+```bash
+cargo xtask starry test board \
+  -c boot \
+  --board rock-4d \
+  -b Rock-4D
+```
+
+The validated eight-core path is:
+
+```bash
+cargo xtask starry board \
+  -c os/StarryOS/configs/board/rock-4d.toml \
+  --smp 8 \
+  --board-config os/StarryOS/configs/board/rock-4d-board.toml \
+  -b Rock-4D
+```
+
+Both runs must reach `root@starry:/root #` and print the standalone
+`STARRY_ROCK4D_BOOT_OK` marker. A shell prompt without the marker is not a
+passing board test.
+
+Troubleshoot in handoff order: confirm the board service selected ROCK 4D,
+confirm UART0 output at 1,500,000 baud, confirm the repository DTB compatibles
+and PSCI method, confirm all intended MPIDRs were discovered, then check CRU
+and PMU registration before investigating secondary release, storage, or
+device-specific drivers.
 
 ## LoongArch Lessons
 
+- On LS2K1000, repeated `failed to lock LS2K1000 LIOINTC when claiming LIOINTC IRQ` messages immediately after block hctx activation identify a hard-IRQ/controller-lock inversion, not a harmless spurious interrupt. Follow the AArch64 GIC pattern: keep the `rdif_intc` controller and its configuration registers task-owned, and publish a separate LIOINTC CPU interface containing only the ISR/domain/parent/atomic-enable state used by claim/complete. Looking up or locking the controller from hard IRQ lets a level interrupt continuously re-enter before the interrupted task releases its device guard.
 - For U-Boot FIT boot, keep the producer and handoff contracts aligned: use the canonical FIT architecture name `loongarch`, ensure U-Boot passes the DTB at a DTSpec-compliant 8-byte-aligned address, and hand a FIT-provided FDT to someboot through the UHI convention (`a0 = -2`, `a1 = fdt`). Vendor `CONFIG_LOONGSON_BOOT_FIXUP` paths that inspect `legacy_hdr_os` must not run for FIT images.
 - TLB refill entry and general exception entry use different registers and may require different address forms. Do not reuse a high-half virtual symbol where a physical TLB refill vector is required.
 - Relocated symbols must be resolved relative to the running image. In the LoongArch SMP path, the secondary exception vector had to use a runtime symbol helper such as `sym_running_addr!(__exception_vectors)`, while the TLB refill entry needed the corresponding physical address.
@@ -109,13 +259,7 @@ Important details:
 - Check `/opt/qemu-lvz/bin/qemu-system-loongarch64`, OVMF files under `/tmp/ostool/ovmf/loongarch64`, and the musl toolchain before assuming the kernel is at fault.
 - If output reaches `Exiting UEFI boot services...` and stops before the next someboot print, instrument immediately before and after `ExitBootServices`, memory map handoff, first post-exit console call, and MMU/trap setup.
 - Container success still needs host-independent documentation if the CI or developer flow depends on that image.
-
-## Axvisor Physical-Board Shutdown Handoff
-
-- When an Axvisor board build enables `fs`, use the shell's `shutdown` command before an external reset or power cycle. Wait for the exact `AXVISOR_HOST_FILESYSTEM_SYNCED` marker; it confirms that cached host filesystem state was written and block IRQ registrations were released before the platform powers off.
-- Treat `AXVISOR_HOST_FILESYSTEM_SYNC_FAILED:` as a hard stop. Preserve the serial log and do not remove power automatically, because the host filesystem could still contain dirty state.
-- The Axvisor shell does not interpret shell operators such as `;`. Board automation must send `shutdown` as a standalone command rather than a Linux-style `sync; ...` command line.
-- Never expose the same physical root partition to a guest after Axvisor mounts it. Use an independent guest image or device so the host and guest cannot mutate one filesystem concurrently.
+- For guest-console failures, distinguish the host UART from the machine-owned guest UART. The host UART must never appear in a guest passthrough set. Check the fixed LoongArch guest resources (`ns16550a` at `0x1fe001e0`, PCH-PIC line 2), the generated FDT/SPCR/DSDT, the virtual PCH-PIC level state, and the Axvisor console mux before changing host IRQ routing.
 
 ## QEMU Debugging Patterns
 
@@ -136,6 +280,8 @@ Important details:
 | Secondary CPU silent | `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
+| AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |
+| Phytium guest stops after `arch_timer` | inherited board-test SMP limit, vCPU CPU-mask fallback, virtual timer routing |
 | Axvisor build works but QEMU hangs | firmware/OVMF path, LVZ QEMU, guest image/rootfs, dynamic platform memory map, post-UEFI transition |
 | Virtio block missing | PCI command enable, virtio transport, MMIO map, DMA translation, rootfs disk args |
 

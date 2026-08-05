@@ -9,6 +9,9 @@ use loongArch64::register::{
     eentry, pgdh, pgdl,
 };
 
+#[cfg(feature = "tls")]
+use crate::KernelTlsBase;
+
 /// Allows the current CPU to respond to interrupts.
 #[inline]
 pub fn enable_irqs() {
@@ -178,26 +181,32 @@ pub unsafe fn write_pwc(pwcl: u32, pwch: u32) {
     }
 }
 
-/// Reads the thread pointer of the current CPU (`$tp`).
+/// Reads the current kernel task's TLS base from `$tp`.
 ///
-/// It is used to implement TLS (Thread Local Storage).
+/// This register follows the execution context across CPUs. It is distinct
+/// from the CPU-local base kept in `$r21`.
 #[inline]
-pub fn read_thread_pointer() -> usize {
-    let tp;
-    unsafe { asm!("move {}, $tp", out(reg) tp) };
-    tp
+#[cfg(feature = "tls")]
+pub fn read_thread_pointer() -> KernelTlsBase {
+    let address;
+    unsafe { asm!("move {}, $tp", out(reg) address) };
+    KernelTlsBase::new(address)
 }
 
-/// Writes the thread pointer of the current CPU (`$tp`).
+/// Writes the current kernel task's TLS base to `$tp`.
 ///
-/// It is used to implement TLS (Thread Local Storage).
+/// This register follows the execution context across CPUs. It is distinct
+/// from the CPU-local base kept in `$r21`.
 ///
 /// # Safety
 ///
-/// This function is unsafe as it changes the CPU states.
+/// The caller must ensure `kernel_tls` belongs to the execution context that
+/// is becoming current and that no Rust code observes a half-completed context
+/// switch.
 #[inline]
-pub unsafe fn write_thread_pointer(tp: usize) {
-    unsafe { asm!("move $tp, {}", in(reg) tp) }
+#[cfg(feature = "tls")]
+pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
+    unsafe { asm!("move $tp, {}", in(reg) kernel_tls.as_usize()) }
 }
 
 /// Enables floating-point instructions by setting `EUEN.FPE`.

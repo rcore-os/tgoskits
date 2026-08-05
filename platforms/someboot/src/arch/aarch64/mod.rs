@@ -24,13 +24,15 @@ use aarch64_cpu::registers::*;
 use elx::*;
 pub(crate) use entry::_secondary_entry;
 pub use paging::Entry;
+#[cfg(efi)]
+pub(crate) use relocate::apply as relocate;
 
 use crate::{
     ArchTrait,
     arch::{addrspace::PAGE_OFFSET, trap::trap_addr},
     consts::VM_LOAD_ADDRESS,
     mem::{__kimage_va_to_pa, PageTableInfo},
-    smp::percpu_va_range,
+    smp::cpu_area_virtual_region,
     timer::{self, ArchTimerMode},
 };
 
@@ -44,7 +46,7 @@ impl ArchTrait for Arch {
         (paddr + PAGE_OFFSET) as *mut u8
     }
 
-    fn _percpu(paddr: usize) -> *mut u8 {
+    fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
         (paddr + PAGE_OFFSET + 0xFF00_0000_0000) as *mut u8
     }
 
@@ -158,7 +160,7 @@ impl ArchTrait for Arch {
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
         if crate::mem::mmu::is_kernel_relocated() {
-            if percpu_va_range().contains(&(vaddr as usize)) {
+            if cpu_area_virtual_region().contains(&(vaddr as usize)) {
                 vaddr as usize - 0xFF00_0000_0000 - PAGE_OFFSET
             } else if vaddr as usize >= VM_LOAD_ADDRESS {
                 __kimage_va_to_pa(vaddr)
@@ -235,9 +237,17 @@ impl ArchTrait for Arch {
     }
 
     // Safety: the EFI stub guarantees the same contract as the trait docs.
-    unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
-        unsafe { crate::arch::entry::kernel_entry(0) };
-        unreachable!()
+    unsafe fn efi_enter_kernel(system_table: *const ::core::ffi::c_void) -> bool {
+        #[cfg(efi)]
+        {
+            crate::efi_stub::setup_service(system_table);
+            unsafe { crate::arch::entry::enter_with_boot_state() }
+        }
+        #[cfg(not(efi))]
+        {
+            let _ = system_table;
+            false
+        }
     }
 }
 

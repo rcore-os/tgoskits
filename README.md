@@ -61,7 +61,7 @@ If you do not use the container, prepare at least Rust, basic build tools, and c
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt update
-sudo apt install -y cmake make ninja-build pkg-config
+sudo apt install -y cmake make ninja-build pkg-config e2fsprogs fakeroot
 sudo apt install -y qemu-system-arm qemu-system-riscv64 qemu-system-x86
 cargo install cargo-binutils
 ```

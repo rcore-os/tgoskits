@@ -143,7 +143,7 @@ impl FdtTree {
     pub(crate) fn patch_chosen(
         &mut self,
         initrd_start_size: Option<(u64, u64)>,
-        cmdline_override: Option<&str>,
+        explicit_cmdline: Option<&str>,
     ) -> AxVmResult {
         let chosen_id = self.ensure_path("/chosen")?;
         let chosen = self
@@ -151,12 +151,14 @@ impl FdtTree {
             .node_mut(chosen_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
 
-        let bootargs = cmdline_override.or_else(|| {
-            chosen
-                .get_property("bootargs")
-                .and_then(|property| property.as_str())
-        });
-        if let Some(bootargs) = bootargs.map(sanitize_bootargs) {
+        let bootargs = explicit_cmdline
+            .or_else(|| {
+                chosen
+                    .get_property("bootargs")
+                    .and_then(|prop| prop.as_str())
+            })
+            .map(sanitize_bootargs);
+        if let Some(bootargs) = bootargs {
             chosen.set_property(prop_string("bootargs", &bootargs));
         }
 
@@ -318,7 +320,13 @@ pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
 pub(crate) fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
     matches!(
         prop_name,
-        "riscv,cbop-block-size" | "riscv,cboz-block-size" | "riscv,cbom-block-size"
+        "riscv,cbop-block-size"
+            | "riscv,cboz-block-size"
+            | "riscv,cbom-block-size"
+            | "operating-points-v2"
+            | "#cooling-cells"
+            | "dynamic-power-coefficient"
+            | "cpu-supply"
     )
 }
 

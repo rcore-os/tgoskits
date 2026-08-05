@@ -1,16 +1,21 @@
 use std::{
     ops::Range,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
 use axdevice::{
-    AccessWidth, AxVmDeviceConfig, AxVmDevices, BaseDeviceOps, DeviceManagerError,
-    DeviceManagerResult, GuestPhysAddr, VirtioNet, VirtioNetHeaderMode, VirtioNetOptions,
+    AccessWidth, DeviceBuildContext, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRuntime, GuestPhysAddr, VirtioNet, VirtioNetFactory,
+    VirtioNetHeaderMode, VirtioNetOptions, VirtioNetPortKey,
 };
-use axdevice_base::{DeviceError, DeviceResult};
+use axdevice_base::{
+    ControllerInputId, DeviceAccess, DeviceError, DeviceId, DeviceResult, DmaGrant,
+    InterruptControllerId, InterruptTriggerMode, IrqResult, VirtualInterruptController,
+    WiredIrqInput, WiredIrqSink,
+};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 const MMIO_BASE: usize = 0x1_0000;
@@ -40,6 +45,7 @@ const VIRTIO_MMIO_QUEUE_SEL: usize = 0x030;
 const VIRTIO_MMIO_QUEUE_NUM_MAX: usize = 0x034;
 const VIRTIO_MMIO_QUEUE_NUM: usize = 0x038;
 const VIRTIO_MMIO_QUEUE_READY: usize = 0x044;
+const VIRTIO_MMIO_QUEUE_NOTIFY: usize = 0x050;
 const VIRTIO_MMIO_INTERRUPT_STATUS: usize = 0x060;
 const VIRTIO_MMIO_STATUS: usize = 0x070;
 const VIRTIO_MMIO_QUEUE_DESC_LOW: usize = 0x080;
@@ -123,6 +129,30 @@ impl GuestMemory {
                 detail: format!("range {address:#x}+{length:#x} is outside guest memory"),
             })?;
         Ok(offset..end)
+    }
+}
+
+impl DeviceAccess for GuestMemory {
+    fn device_id(&self) -> DeviceId {
+        DeviceId::new(0)
+    }
+
+    fn read_guest_memory(
+        &mut self,
+        _grant: &DmaGrant,
+        address: GuestPhysAddr,
+        buffer: &mut [u8],
+    ) -> DeviceResult {
+        GuestMemory::read(self, address, buffer).map_err(DeviceError::from)
+    }
+
+    fn write_guest_memory(
+        &mut self,
+        _grant: &DmaGrant,
+        address: GuestPhysAddr,
+        buffer: &[u8],
+    ) -> DeviceResult {
+        GuestMemory::write(self, address, buffer).map_err(DeviceError::from)
     }
 }
 
@@ -449,20 +479,19 @@ fn device_config_reads_pack_mac_bytes_for_the_requested_width() {
 
 #[test]
 fn device_config_assigns_mac_suffix_and_network_segment() {
-    let devices =
-        AxVmDevices::new(AxVmDeviceConfig::new(vec![virtio_net_config(vec![9, 7])])).unwrap();
-    let device = &devices.virtio_nets()[0];
+    let devices = build_devices(virtio_net_config(vec![9, 7])).unwrap();
+    let ports = devices.services().all::<VirtioNetPortKey>();
+    let device = &ports[0];
 
+    assert_eq!(devices.device_count(), 1);
+    assert_eq!(ports.len(), 1);
     assert_eq!(device.mac(), [0x52, 0x54, 0, 0, 0, 9]);
     assert_eq!(device.segment_id(), 7);
 }
 
 #[test]
 fn device_config_rejects_network_segment_outside_u16() {
-    let result = AxVmDevices::new(AxVmDeviceConfig::new(vec![virtio_net_config(vec![
-        1,
-        u16::MAX as usize + 1,
-    ])]));
+    let result = build_devices(virtio_net_config(vec![1, u16::MAX as usize + 1]));
 
     assert!(matches!(
         result,
@@ -472,14 +501,63 @@ fn device_config_rejects_network_segment_outside_u16() {
 
 #[test]
 fn device_config_rejects_unknown_header_compatibility_mode() {
-    let result = AxVmDevices::new(AxVmDeviceConfig::new(vec![virtio_net_config(vec![
-        1, 0, 2,
-    ])]));
+    let result = build_devices(virtio_net_config(vec![1, 0, 2]));
 
     assert!(matches!(
         result,
         Err(DeviceManagerError::InvalidConfig { .. })
     ));
+}
+
+#[test]
+fn routed_tx_notification_uses_dma_grant_and_exposes_owned_frames() {
+    let devices = build_devices(virtio_net_config(vec![9, 7])).unwrap();
+    let ports = devices.services().all::<VirtioNetPortKey>();
+    let mut memory = GuestMemory::new();
+    runtime_mmio_write(&devices, VIRTIO_MMIO_QUEUE_SEL, TX_QUEUE).unwrap();
+    runtime_mmio_write(&devices, VIRTIO_MMIO_QUEUE_NUM, 1).unwrap();
+    runtime_write_address(
+        &devices,
+        VIRTIO_MMIO_QUEUE_DESC_LOW,
+        VIRTIO_MMIO_QUEUE_DESC_HIGH,
+        DESCRIPTOR_AREA,
+    );
+    runtime_write_address(
+        &devices,
+        VIRTIO_MMIO_QUEUE_DRIVER_LOW,
+        VIRTIO_MMIO_QUEUE_DRIVER_HIGH,
+        DRIVER_AREA,
+    );
+    runtime_write_address(
+        &devices,
+        VIRTIO_MMIO_QUEUE_DEVICE_LOW,
+        VIRTIO_MMIO_QUEUE_DEVICE_HIGH,
+        DEVICE_AREA,
+    );
+    runtime_mmio_write(&devices, VIRTIO_MMIO_QUEUE_READY, 1).unwrap();
+    let packet = test_transmit_packet_with_header_len(VIRTIO_NET_BASE_HEADER_LEN);
+    memory.store(BUFFER_AREA, &packet);
+    write_descriptor(&memory, 0, BUFFER_AREA, packet.len(), 0, 0);
+    post_available_descriptor(&memory, 0);
+
+    assert!(devices.mmio_write_needs_guest_memory(
+        GuestPhysAddr::from_usize(MMIO_BASE + VIRTIO_MMIO_QUEUE_NOTIFY),
+        AccessWidth::Dword,
+    ));
+    devices
+        .handle_mmio_write_with_memory(
+            GuestPhysAddr::from_usize(MMIO_BASE + VIRTIO_MMIO_QUEUE_NOTIFY),
+            AccessWidth::Dword,
+            TX_QUEUE as usize,
+            &mut memory,
+        )
+        .unwrap();
+
+    assert_eq!(
+        ports[0].take_transmitted_frames(),
+        vec![packet[VIRTIO_NET_BASE_HEADER_LEN..].to_vec()]
+    );
+    assert_eq!(load_u16(&memory, DEVICE_AREA + 2), 1);
 }
 
 fn new_device() -> VirtioNet {
@@ -561,6 +639,30 @@ fn virtio_net_config(cfg_list: Vec<usize>) -> EmulatedDeviceConfig {
         emu_type: EmulatedDeviceType::VirtioNet,
         cfg_list,
     }
+}
+
+fn build_devices(config: EmulatedDeviceConfig) -> DeviceManagerResult<DeviceRuntime> {
+    let mut factories = DeviceFactoryRegistry::new();
+    factories.register(Arc::new(VirtioNetFactory::new()))?;
+    let controller = TestInterruptController;
+    DeviceRuntime::build_with_factories(
+        &[config],
+        &factories,
+        &DeviceBuildContext::new(&controller),
+    )
+}
+
+fn runtime_mmio_write(devices: &DeviceRuntime, offset: usize, value: u32) -> DeviceManagerResult {
+    devices.handle_mmio_write(
+        GuestPhysAddr::from_usize(MMIO_BASE + offset),
+        AccessWidth::Dword,
+        value as usize,
+    )
+}
+
+fn runtime_write_address(devices: &DeviceRuntime, low: usize, high: usize, address: usize) {
+    runtime_mmio_write(devices, low, address as u32).unwrap();
+    runtime_mmio_write(devices, high, (address as u64 >> 32) as u32).unwrap();
 }
 
 fn configure_queue(device: &VirtioNet, queue: u32, size: u32) {
@@ -669,4 +771,37 @@ fn load_u16(memory: &GuestMemory, address: usize) -> u16 {
 
 fn load_u32(memory: &GuestMemory, address: usize) -> u32 {
     u32::from_le_bytes(memory.load(address, 4).try_into().unwrap())
+}
+
+struct TestInterruptController;
+
+impl VirtualInterruptController for TestInterruptController {
+    fn id(&self) -> InterruptControllerId {
+        InterruptControllerId::new(0)
+    }
+
+    fn wired_input(
+        &self,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        Ok(WiredIrqInput::new(
+            self.id(),
+            input,
+            trigger,
+            Arc::new(TestIrqSink),
+        ))
+    }
+}
+
+struct TestIrqSink;
+
+impl WiredIrqSink for TestIrqSink {
+    fn set_level(&self, _input: ControllerInputId, _asserted: bool) -> IrqResult {
+        Ok(())
+    }
+
+    fn pulse(&self, _input: ControllerInputId) -> IrqResult {
+        Ok(())
+    }
 }

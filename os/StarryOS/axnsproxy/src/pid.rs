@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_kspin::SpinNoIrq;
@@ -21,6 +21,8 @@ pub struct PidNamespace {
     pub id: u64,
     /// PID namespace nesting level.  Root is 0, first child is 1, etc.
     pub level: u32,
+    /// Parent namespace retained while this descendant namespace is live.
+    parent: Option<Arc<SpinNoIrq<PidNamespace>>>,
     /// Next local PID to allocate in this namespace (starts at 1).
     next_pid: u32,
     /// Map from global TID to namespace-local PID.
@@ -34,6 +36,7 @@ impl PidNamespace {
         Self {
             id: NEXT_PID_NS_ID.fetch_add(1, Ordering::Relaxed),
             level: 0,
+            parent: None,
             next_pid: 1,
             pid_map: BTreeMap::new(),
             init_global_tid: None,
@@ -42,10 +45,12 @@ impl PidNamespace {
 
     /// Create a fresh child PID namespace (level + 1, empty pid map,
     /// next_pid starts at 1).
-    pub fn clone_ns(&self) -> Self {
+    pub fn new_child(parent: Arc<SpinNoIrq<Self>>) -> Self {
+        let level = parent.lock().level + 1;
         Self {
             id: NEXT_PID_NS_ID.fetch_add(1, Ordering::Relaxed),
-            level: self.level + 1,
+            level,
+            parent: Some(parent),
             next_pid: 1,
             pid_map: BTreeMap::new(),
             init_global_tid: None,
@@ -54,10 +59,35 @@ impl PidNamespace {
 
     /// Allocate a namespace-local PID for the given global TID.
     pub fn alloc_local_pid(&mut self, global_tid: u64) -> u32 {
+        if let Some(pid) = self.pid_map.get(&global_tid) {
+            return *pid;
+        }
         let local = self.next_pid;
         self.next_pid += 1;
         self.pid_map.insert(global_tid, local);
         local
+    }
+
+    /// Allocate a task ID in this namespace and every non-root ancestor.
+    ///
+    /// PID namespaces assign local IDs to both thread-group leaders and
+    /// non-leader threads.
+    pub fn alloc_pid_chain(namespace: &Arc<SpinNoIrq<Self>>, global_tid: u64) {
+        let mut current = namespace.clone();
+        loop {
+            let parent = {
+                let mut current_lock = current.lock();
+                if current_lock.level == 0 {
+                    return;
+                }
+                current_lock.alloc_local_pid(global_tid);
+                current_lock.parent.clone()
+            };
+            let Some(parent) = parent else {
+                return;
+            };
+            current = parent;
+        }
     }
 
     /// Resolve a global TID to its namespace-local PID.
@@ -67,6 +97,34 @@ impl PidNamespace {
             return Some(global_tid as u32);
         }
         self.pid_map.get(&global_tid).copied()
+    }
+
+    /// Return the target PID as seen from `observer` and every descendant
+    /// namespace through `target`.
+    ///
+    /// Returns [`None`] when `target` is not a descendant of `observer`.
+    pub fn visible_pid_chain(
+        observer: &Arc<SpinNoIrq<Self>>,
+        target: &Arc<SpinNoIrq<Self>>,
+        global_tid: u64,
+    ) -> Option<Vec<u32>> {
+        let mut current = target.clone();
+        let mut chain = Vec::new();
+        loop {
+            let (pid, parent) = {
+                let current_lock = current.lock();
+                (
+                    current_lock.local_pid(global_tid)?,
+                    current_lock.parent.clone(),
+                )
+            };
+            chain.push(pid);
+            if Arc::ptr_eq(&current, observer) {
+                chain.reverse();
+                return Some(chain);
+            }
+            current = parent?;
+        }
     }
 
     /// Record the global TID of this namespace's init process (PID 1).

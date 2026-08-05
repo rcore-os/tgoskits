@@ -1,4 +1,5 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_kspin::SpinRaw as Mutex;
 use dma_api::DmaDirection;
@@ -12,18 +13,21 @@ use usb_if::{
 use xhci::{
     registers::doorbell,
     ring::trb::{
-        event::TransferEvent,
+        command,
+        event::{CompletionCode, TransferEvent},
         transfer::{self, Isoch, Normal},
     },
 };
 
-use super::{DirectionExt, reg::SlotBell, ring::SendRing, transfer::TransferId};
+use super::{
+    DirectionExt, SlotId, cmd::CommandRing, reg::SlotBell, ring::SendRing, transfer::TransferId,
+};
 use crate::{
     BusAddr,
     backend::{
         Dci,
         ty::{
-            ep::{EndpointOp, transfer_to_completion},
+            ep::{EndpointOp, EndpointResetFuture, transfer_to_completion},
             transfer::{Transfer, TransferKind},
         },
     },
@@ -91,9 +95,13 @@ struct IsoPacketTd {
 }
 
 pub struct Endpoint {
+    slot_id: SlotId,
     dci: Dci,
     pub ring: SendRing<TransferEvent>,
     bell: Arc<Mutex<SlotBell>>,
+    cmd: CommandRing,
+    halted: Arc<AtomicBool>,
+    reset_in_progress: Arc<AtomicBool>,
     next_request_id: u64,
     inflight: BTreeMap<EndpointRequestId, SubmittedTd>,
     trb_to_request: BTreeMap<TransferId, EndpointRequestId>,
@@ -112,14 +120,24 @@ unsafe impl Sync for Endpoint {}
 const ENDPOINT_RING_PAGES: usize = 16;
 
 impl Endpoint {
-    pub fn new(dci: Dci, kernel: &Kernel, bell: Arc<Mutex<SlotBell>>) -> crate::err::Result<Self> {
+    pub fn new(
+        slot_id: SlotId,
+        dci: Dci,
+        kernel: &Kernel,
+        bell: Arc<Mutex<SlotBell>>,
+        cmd: CommandRing,
+    ) -> crate::err::Result<Self> {
         let ring =
             SendRing::new_with_pages(ENDPOINT_RING_PAGES, DmaDirection::Bidirectional, kernel)?;
 
         Ok(Self {
+            slot_id,
             dci,
             ring,
             bell,
+            cmd,
+            halted: Arc::new(AtomicBool::new(false)),
+            reset_in_progress: Arc::new(AtomicBool::new(false)),
             next_request_id: 1,
             inflight: BTreeMap::new(),
             trb_to_request: BTreeMap::new(),
@@ -251,6 +269,9 @@ impl Endpoint {
             return Err(TransferError::Cancelled);
         }
 
+        if matches!(event.completion_code(), Ok(CompletionCode::StallError)) {
+            self.halted.store(true, Ordering::Release);
+        }
         if !matches!(submitted.kind, SubmittedTdKind::Iso { .. }) {
             self.validate_completion_code(event, &submitted.transfer)?;
         }
@@ -597,6 +618,9 @@ impl Endpoint {
 
 impl EndpointOp for Endpoint {
     fn submit_request(&mut self, request: TransferRequest) -> Result<RequestId, TransferError> {
+        if self.reset_in_progress.load(Ordering::Acquire) {
+            return Err(TransferError::QueueFull);
+        }
         let required_trbs = Self::required_trbs_for_request(&request);
         self.ensure_ring_capacity(required_trbs)?;
         let transfer = Transfer::from_request(&self.kernel, request)?;
@@ -804,6 +828,60 @@ impl EndpointOp for Endpoint {
             .ok_or(TransferError::InvalidEndpoint)?;
         submitted.cancelled = true;
         Ok(())
+    }
+
+    fn reset(&mut self) -> EndpointResetFuture {
+        if !self.inflight.is_empty() || self.outstanding_trbs != 0 {
+            return Box::pin(async { Err(TransferError::QueueFull) });
+        }
+        if !self.halted.load(Ordering::Acquire) {
+            return Box::pin(async { Ok(()) });
+        }
+        if self
+            .reset_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Box::pin(async { Err(TransferError::QueueFull) });
+        }
+
+        let (dequeue_pointer, dequeue_cycle_state) = self.ring.enqueue_pointer();
+        let slot_id = self.slot_id.as_u8();
+        let endpoint_id = self.dci.as_u8();
+        let mut cmd = self.cmd.clone();
+        let halted = self.halted.clone();
+        let reset_in_progress = self.reset_in_progress.clone();
+
+        Box::pin(async move {
+            let result = async {
+                let reset_endpoint = *command::ResetEndpoint::default()
+                    .set_endpoint_id(endpoint_id)
+                    .set_slot_id(slot_id);
+                cmd.cmd_request(command::Allowed::ResetEndpoint(reset_endpoint))
+                    .await?;
+
+                let mut set_dequeue_pointer = command::SetTrDequeuePointer::default();
+                set_dequeue_pointer
+                    .set_new_tr_dequeue_pointer(dequeue_pointer.raw())
+                    .set_endpoint_id(endpoint_id)
+                    .set_slot_id(slot_id);
+                if dequeue_cycle_state {
+                    set_dequeue_pointer.set_dequeue_cycle_state();
+                } else {
+                    set_dequeue_pointer.clear_dequeue_cycle_state();
+                }
+                cmd.cmd_request(command::Allowed::SetTrDequeuePointer(set_dequeue_pointer))
+                    .await?;
+                Ok(())
+            }
+            .await;
+
+            if result.is_ok() {
+                halted.store(false, Ordering::Release);
+            }
+            reset_in_progress.store(false, Ordering::Release);
+            result
+        })
     }
 }
 

@@ -1,7 +1,7 @@
 [package]
 name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
-version = "0.5.23"
+version = "0.5.25"
 edition.workspace = true
 categories = ["virtualization", "no-std"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
@@ -11,15 +11,22 @@ license = "Apache-2.0"
 
 [features]
 fs = ["ax-std/fs"]
-host-fs = ["ax-std/fs"]
+host-fs = ["ax-std/fs", "dep:ax-driver"]
+host-test = [
+    "ax-hal/host-test",
+    "ax-kspin/host-test",
+    "ax-kernel-guard/host-test",
+    "axdevice/host-test",
+]
 rt-trace = []
 rt-trace-soak = ["rt-trace"]
 sstc = ["riscv_vcpu/sstc"]
+tls = ["ax-hal/tls", "ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
 log = "0.4"
 cfg-if = "1.0"
-extern-trait = "0.4"
+extern-trait = { workspace = true }
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
@@ -35,16 +42,19 @@ ax-kspin.workspace = true
 ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
-ax-percpu = { workspace = true, features = ["arm-el2"] }
+ax-percpu.workspace = true
+cpu-local.workspace = true
 page-table-generic = { workspace = true }
-ax-std = { workspace = true, features = [
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
     "paging",
     "irq",
     "multitask",
     "task-ext",
     "smp",
     "hv",
-    "wake-ipi",
+    "ipi",
 ] }
 ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
@@ -61,10 +71,12 @@ fdt-edit = { workspace = true }
 fdt-raw = { workspace = true }
 hashbrown = "0.14"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+ax-driver = { workspace = true, optional = true, features = ["pci"] }
 x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+ax-plat = { workspace = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
@@ -74,12 +86,16 @@ loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 arm_vcpu = { workspace = true }
-arm_vgic = { workspace = true, features = ["vgicv3"] }
+arm_vgic = { workspace = true }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
+axklib.workspace = true
+mmio-api.workspace = true
 rdif-intc.workspace = true
 rdrive.workspace = true
-someboot.workspace = true
+rdif-clk.workspace = true
 
 [dev-dependencies]
-ax-percpu = { workspace = true, features = ["sp-naive"] }
+ax-hal = { workspace = true, features = ["host-test"] }
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
 ax-kspin = { workspace = true, features = ["host-test"] }
+rdif-clk.workspace = true

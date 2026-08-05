@@ -1,0 +1,21 @@
+id = "1715-arm-vcpu-test-module-and-cfg-boundary"
+pr = 1715
+title = "修复 Arm vCPU：测试模块加载与条件编译边界"
+remote = "https://github.com/rcore-os/tgoskits.git"
+base = "37c8f60e81b135c7d997c39630410db418ee192d"
+head = "974d73ad7668c2d22ba5fbb37f9aea1a2a19e49b"
+source = "https://github.com/rcore-os/tgoskits/pull/1715#pullrequestreview-4803442810"
+
+[[expected]]
+id = "arm-gic-test-parses-source-instead-of-module"
+path = "drivers/intc/arm-gic-driver/tests/ich_vtr_contract.rs"
+line = 3
+severity = "minor"
+description = "新增测试通过 include_str! 读取 ich.rs，再按字符串解析 OFFSET 和 NUMBITS，没有编译或调用真实寄存器模块及其宏展开结果。源码排版变化会造成误报，而宏实现或生成 API 的语义变化也可能在文本仍匹配时漏报；该契约应通过正常的 Rust 测试模块验证实际字段定义。"
+
+[[expected]]
+id = "arm-vcpu-repeats-aarch64-cfg-per-item"
+path = "virtualization/arm_vcpu/src/lib.rs"
+line = 18
+severity = "minor"
+description = "为暴露少量跨架构 API，改动删除 crate 级 aarch64 条件后，在 extern crate、多个模块、导出、类型别名和函数上重复同一个 cfg。平台边界被分散到大量 item，后续新增或导出时容易漏标；便携 API 与 AArch64 实现应拆分，并在共同模块边界集中条件编译。"

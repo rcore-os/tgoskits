@@ -1,7 +1,7 @@
 // Persistent memory backed by the filesystem.
 //
 // Stores key-value pairs as JSON. On ArceOS this uses the FAT filesystem
-// mounted from the virtio-blk device. On Linux it uses a local file.
+// mounted from the NVMe device. On Linux it uses a local file.
 
 use std::collections::BTreeMap;
 

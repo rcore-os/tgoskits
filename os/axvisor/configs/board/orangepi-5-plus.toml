@@ -1,6 +1,5 @@
 features = [
-  "sdmmc",
-  "rockchip-soc",
+  "ax-driver/rockchip-sdhci",
   "fs",
 ]
 log = "Info"

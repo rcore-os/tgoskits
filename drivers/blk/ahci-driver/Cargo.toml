@@ -1,0 +1,21 @@
+[package]
+name = "ahci-driver"
+version = "0.1.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable IRQ-driven AHCI block driver"
+categories = ["embedded", "no-std"]
+keywords = ["ahci", "sata", "driver", "no-std"]
+
+[dependencies]
+dma-api.workspace = true
+log.workspace = true
+mmio-api.workspace = true
+rdif-block.workspace = true
+thiserror.workspace = true
+tock-registers.workspace = true
+
+[dev-dependencies]
+axtest.workspace = true
