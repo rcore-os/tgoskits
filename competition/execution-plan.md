@@ -35,7 +35,7 @@
 | StarryOS manual/neural full | `f4ced3758` 上正式 5 对、10/10 half 已完成 | 汇入最终报告，同时披露 neural 最大超调退化和无稳定延迟优势 |
 | 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 保持冻结，不按后续实体结果修改模型 |
 | RK3588 NPU | clean resource run 已完成 20 次 context 生命周期；`c3f01dc34` 上的闭环 v8 已完成 5 次冷启动 full、9,000/9,000 ACK、自动 Linux 恢复、独立分析和递归 checksum | 把首周期 5 次 cold-start miss 与其后 8,995 个零 miss 周期同时写入报告；除非改变启动语义，否则不重跑冻结结果 |
-| ONNX Runtime CPU | host CPU EP 10,000 组差分已通过；StarryOS `.ort`/minimal runtime 尚未实现 | 冻结 AArch64 musl 版本与 operator config，通过 M4-plus 门后进入实体矩阵 |
+| ONNX Runtime CPU | clean commit `2df7da841` 的 StarryOS 实体离线门已通过：官方 ORT 1.25.0 CPU EP 完成 10,000-vector、5 次 session 生命周期、快照回收和 Linux 恢复 | 接入 IVC 后先跑 smoke，再预注册 5 次 clean full；不改变 RKNN NPU 正式结果 |
 | 报告与视频 | 待最终数据冻结 | 所有正式结果通过聚合门后更新 |
 
 当前执行顺序固定为：
@@ -44,8 +44,8 @@
 E0 工作区与证据冻结（完成）
   -> E1 restart 证据加固与正式 3/3（完成）
   -> E2 StarryOS manual/neural 正式 5 对（完成）
-  -> E3 同源 ONNX 与 RKNN NPU 主路线（执行中）
-  -> E4 ONNX Runtime CPU 对照路线
+  -> E3 同源 ONNX 与 RKNN NPU 主路线（完成）
+  -> E4 ONNX Runtime CPU 对照路线（执行中）
   -> E5 总体验收、报告和视频
 ```
 
@@ -371,20 +371,30 @@ M4-4 clean resource 与正式闭环记录（2026-08-04 至 2026-08-05）：
 
 ONNX Runtime 路线定位为 CPU 对照和标准 Runtime 兼容性增强项，不承担 RK3588 NPU 加速：
 
-1. [ ] 固定 ONNX Runtime release/commit 和 AArch64 musl minimal build 配置。
-2. [ ] 从同一 ONNX 生成 `.ort` 与 reduced operator/type config。
-3. [x] 在 host CPU EP 完成加载、golden vectors 和 10,000 组差分；最大绝对误差 `2.980232238769531e-07`，物质性命令不一致为 0。
-4. [ ] 审计 StarryOS 的线程、futex、mmap、时间、文件和动态链接需求。
-5. [ ] 通过可行性门后执行 StarryOS 离线测试和 5 次 full 闭环。
+1. [x] 固定 ONNX Runtime 1.25.0 release、commit `7a71bc575b189cdedea7fa2c0f87389f870bd10e` 和官方 Linux AArch64 glibc archive；archive SHA-256 为 `849c04634e76446bbe0a92f67955a9641415c37f11930804066057bf9eadbd03`。
+2. [x] 从同一 ONNX 生成 4,144-byte `.ort` 与 reduced operator/type config；canonical `.ort` SHA-256 为 `3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887`，算子仅为 `Clip`、`Gemm` 和优化后的 `FusedGemm`。
+3. [x] 使用冻结 `.ort` 在 host CPU EP 完成 10,000 组差分；最大绝对误差 `2.980232238769531e-07`，9,999 个执行器命令逐值一致，1 个为允许的半千分位边界等价，物质性命令不一致为 0。
+4. [x] 完成静态动态链接审计：`libonnxruntime.so.1.25.0` 为 19,215,360 bytes，最高要求 GLIBC 2.27、GLIBCXX 3.4.21、CXXABI 1.3.11；依赖和许可证哈希冻结在 `onnxruntime-1.25.0-source.json`。
+5. [x] 用 exact C API runner 在 StarryOS glibc rootfs 完成 `.ort` 加载、10,000-vector 离线差分、线程/futex/mmap/时间/文件 ABI 和内存/空间门。
+6. [ ] 离线门通过后再接 IVC，并执行 5 次 full 闭环；若 ABI 或资源门失败则冻结 no-go，不修改 NPU 正式结果。
 
-环境拆分为两条可复现路径：核心 ONNX/RKNN 转换继续使用锁定的 Python 3.10.12；ORT host/构建 spike 使用独立 Python 3.12 环境，因为当前 ORT 1.24/1.25 wheel 不再提供 CPython 3.10 构建。最终 ORT 版本、lock 和 AArch64 musl 配置必须在实体可行性门确认后一起冻结，不能把探索环境写成正式工具链。
+环境拆分为两条可复现路径：核心 ONNX/RKNN 转换继续使用锁定的 Python 3.10.12；ORT 导出和 host 验证使用独立 CPython 3.12.11、ONNX Runtime 1.25.0 和 hash lock。目标端先使用官方 AArch64 glibc 完整 Runtime，而不是尚无证据的 musl/minimal build；只有完整 Runtime 实体门通过且镜像成本确有必要时，才增加 reduced-operator minimal build 作为后续优化。
+
+ORT 1.25.0 对该模型的重复导出已观察到两个语义等价但字节不同的 FlatBuffer layout。正式策略不虚构上游 byte determinism：冻结上述 canonical bytes；重建检查只接受两个已审计哈希，并对每次新产物重跑 normalized operator contract 和全部 10,000-vector 输出指纹。任何第三种哈希、算子变化或数值变化都立即失败。
+
+E4 实体离线记录（2026-08-05）：
+
+- `ort-offline-formal-20260805-v1` 使用了 Linux 设备名 `/dev/mmcblk1p2` 作为 AxVisor root selector，AxVisor 因而选择其 `disk1p2` eMMC `misc` 分区并在 guest 启动前失败。该失败目录保持原样，不重命名为通过结果；正确映射是 AxVisor `/dev/mmcblk0p2` 对应恢复后 Linux 的 `/dev/mmcblk1p2`。
+- `ort-offline-formal-20260805-v2` 来自 clean commit `2df7da841f5fe778c02bb91aafae9ac908f595d5`。官方 ONNX Runtime 1.25.0 `CPUExecutionProvider` 在 StarryOS 完成 10,000/10,000 次推理；最大绝对误差为 `2.980232238769531e-07`，精确命令 9,999、预注册舍入边界等价 1、物质性不一致 0，输出指纹与 host gate 相同。
+- wall p50/p95/p99/max 为 `121333/128042/157208/3090792 ns`，session 初始化为 `1780 us`。5 次 session create/destroy 后主 session 销毁 RSS 相对首次销毁增长 `224 KiB`，peak RSS `16196 KiB`；160 MiB rootfs 剩余 `63.69%`，均通过预注册资源门。
+- raw、resource、runner、`.ort`、corpus、`libonnxruntime.so.1`、provider shared 和 160 MiB snapshot 均由 guest manifest、板端 SHA 和独立 analyzer 交叉验证；raw/resource/snapshot SHA-256 分别为 `e4a6b601804377772a707c4e0684b9822e2a916aebe6ed096cdae41910d21ad2`、`fc50de37eeae39c274622f857afc3d4afe267e785d6bf0cf09ffa8311ab3ea19`、`620b278d19e573df9d0b67d0d77000690ed45ee60dc54b6408a7f7d12502d0c9`。递归 `checksums.sha256` 自身 SHA-256 为 `33eac20d68ba9dfc134b8208f924b583cc6c76f595b90b392ad91ac7620a1999`；只读 `e2fsck -fn` 通过，Linux 恢复为 `/dev/mmcblk1p2 ext4`。
 
 退出条件：
 
-- [ ] `.ort`、operator config 和 Runtime 构建可由固定环境重建。
-- [ ] native/ORT 数值和执行器命令满足预注册门。
-- [ ] 实体结果明确记录 `backend=onnxruntime-cpu`，且不存在静默回退。
-- [ ] 若 StarryOS ABI 或资源成本不可接受，保留明确 no-go 证据，但不阻塞 RKNN NPU 主路线和现有 native 交付。
+- [x] `.ort`、operator config、host 工具链 lock 和官方 AArch64 Runtime 来源/哈希均已冻结并可复核。
+- [x] native/ORT 数值和执行器命令满足预注册门。
+- [x] 实体结果明确记录 `backend=onnxruntime-cpu` 和 `provider=CPUExecutionProvider`，且不存在静默回退。
+- [x] StarryOS ABI 与当前资源门可接受，因此不触发 no-go；仍不阻塞或改写 RKNN NPU 主路线和现有 native 交付。
 
 本项目不新增自定义 ONNX Runtime RKNPU Execution Provider，也不把 RKNN Runtime 结果标成 ONNX Runtime NPU。
 
@@ -414,9 +424,9 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 - [x] 受控干扰场景中的 p99 与 worst-case 改善由多次配对 raw data 支撑，并明确不外推到未通过场景。
 - [x] manual/neural 为同板同配置 5 对正式实验。
 - [x] ACK loss、ERROR、restart recovery 均为实体跨客户机 3/3。
-- [x] ONNX 是唯一跨后端模型来源；native、ONNX 和 RKNN 转换 artifact/工具链均可追溯，ORT 实体 Runtime 仍在 E4 单独冻结。
+- [x] ONNX 是唯一跨后端模型来源；native、ONNX、RKNN 与 ORT artifact/工具链均可追溯，ORT 实体 ABI 门已在 E4 独立通过。
 - [x] RKNN 后端已有 clean resource run、真实 RK3588 NPU 10,000-vector 证据和 5 次 clean StarryOS -> Zephyr formal full；dirty spike 只保留为早期可行性记录。
-- [ ] ORT CPU 后端通过实体门或留下明确 no-go，不冒充 NPU 路线。
+- [x] ORT CPU 后端已通过实体门，明确记录为 CPUExecutionProvider，不冒充 NPU 路线。
 - [ ] 每个正式结论均能追溯到 clean commit、配置、镜像哈希、raw、summary 和 checksum。
 - [x] WSL2 能自动完成板卡部署、冷启动、采集、恢复 Linux、fsck 和结果同步。
 - [ ] 设计、测试、复现和视频内容与冻结的最终数据一致。
@@ -437,6 +447,6 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ## 11. 最近三项动作
 
-1. 冻结 M4-4 v8 聚合摘要，在 `test-report.md` 同时披露 5/9,000 首周期 miss 和其后 0/8,995 miss，不把 cold-start 数据从总指标剔除。
-2. 执行 E4 ONNX Runtime CPU 实体可行性门：先锁定 AArch64 minimal build、operator config 与 ABI/镜像成本；若不满足门则形成明确 no-go。
-3. 所有核心矩阵不再无条件重跑；先完成设计、测试、复现与视频文档的一致性收口，只在实现或镜像变化会影响既有结论时建立新的预注册活动。
+1. 把已通过实体门的 ORT C API backend 接入现有 StarryOS IVC controller，保持同一 ONNX、归一化、执行器取整和协议状态机，先完成一次 smoke。
+2. smoke 通过后冻结 ORT full 的 deadline/资源门，从 clean commit 执行 5 次闭环；若集成成本或周期预算不成立，则保留 no-go，不改写离线门与 RKNN 结果。
+3. 把 M4-4 v8 的 5/9,000 首周期 miss 与其后 0/8,995 miss，以及 ORT v2 实体结果，一并收口到设计、测试、复现和视频文档。

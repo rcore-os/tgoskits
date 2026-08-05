@@ -58,6 +58,7 @@ ORANGEPI_STAGE_SCRIPT = REPOSITORY_ROOT / "competition/ivc/stage-orangepi-5-plus
 ORT_STARRY_BUILD_SCRIPT = (
     REPOSITORY_ROOT / "competition/ivc/starry/build-ort-offline.sh"
 )
+ORT_MODEL_README = REPOSITORY_ROOT / "competition/ivc/model/README.md"
 AXVISOR_SHELL_BASE = REPOSITORY_ROOT / "os/axvisor/src/shell/command/base.rs"
 AXVISOR_SHELL_HOST = REPOSITORY_ROOT / "os/axvisor/src/shell/command/host.rs"
 AXVISOR_SHELL = REPOSITORY_ROOT / "os/axvisor/src/shell/mod.rs"
@@ -292,6 +293,18 @@ class QemuConfigContractTests(unittest.TestCase):
         self.assertLess(
             build_script.index("\nresolve_ort_python\n"),
             build_script.index('cargo "+$toolchain" xtask starry build'),
+        )
+
+    def test_ort_documentation_uses_axvisor_block_numbering(self) -> None:
+        readme = ORT_MODEL_README.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk0p2",
+            readme,
+        )
+        self.assertNotIn(
+            "ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk1p2",
+            readme,
         )
 
     def test_board_runner_restores_the_lockfile_after_a_local_cargo_patch(self) -> None:

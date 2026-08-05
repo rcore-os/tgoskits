@@ -93,9 +93,8 @@ canonical artifact.
 release commit, headers, shared libraries, license files, and dynamic ABI
 requirements. The full CPU runtime library is 19,215,360 bytes and requires at
 most GLIBC 2.27, GLIBCXX 3.4.21, and CXXABI 1.3.11. Those facts establish a
-candidate rootfs payload, not StarryOS compatibility: the C API runner must
-still load the exact `.ort` and pass the physical-board syscall, resource, and
-10,000-vector gates.
+candidate rootfs payload; the exact C API runner has now also passed the
+physical-board syscall, resource, and 10,000-vector gates described below.
 
 Build the exact AArch64 runner, StarryOS kernel, guest DTB, and 160 MiB glibc
 rootfs from WSL2 with:
@@ -115,15 +114,31 @@ runs, restores Linux, harvests the immutable block snapshot, and independently
 validates every embedded artifact and all 10,000 outputs:
 
 ```bash
-ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk1p2 \
+ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk0p2 \
 ORANGEPI_ORT_REQUIRE_CLEAN_SOURCE=1 \
   bash competition/ivc/run-ort-offline.sh \
     --result-dir tmp/competition/ivc/ort-formal-YYYYMMDD-v1
 ```
 
+The selector uses AxVisor block-device numbering: its `disk0p2` is the SD-card
+rootfs that Linux reports as `/dev/mmcblk1p2`. Passing the Linux name to
+AxVisor instead selects the eMMC `misc` partition and is expected to fail
+before the guest starts.
+
 Do not set the clean-source requirement to zero for formal evidence. Failed
 runs retain their logs, provenance, and checksums under the requested result
 directory and must not be relabeled as passing runs.
+
+The formal physical run `ort-offline-formal-20260805-v2` used clean commit
+`2df7da841f5fe778c02bb91aafae9ac908f595d5`. ONNX Runtime 1.25.0
+CPUExecutionProvider completed all 10,000 vectors with maximum absolute error
+`2.980232238769531e-07`, 9,999 exact commands, one accepted rounding-boundary
+equivalence, and zero material mismatches. Wall latency p50/p95/p99/maximum was
+121333/128042/157208/3090792 ns and session initialization was 1780 us. Five
+session create/destroy cycles ended with 224 KiB post-destroy RSS growth, peak
+RSS was 16,196 KiB, and 63.69% of the 160 MiB rootfs remained available. Linux
+was restored on `/dev/mmcblk1p2` ext4. The recursive evidence manifest has
+SHA-256 `33eac20d68ba9dfc134b8208f924b583cc6c76f595b90b392ad91ac7620a1999`.
 
 ## Rebuild and verify M4-2 RKNN FP16 artifacts
 
