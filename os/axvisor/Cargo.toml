@@ -73,7 +73,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "ext-ld",
   "paging",
   "irq",
-  "multitask",
+  "sched-rt",
   "task-ext",
   "smp",
   "hv",
