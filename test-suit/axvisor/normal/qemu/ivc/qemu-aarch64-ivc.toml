@@ -30,6 +30,7 @@ fail_regex = [
 # Concurrent console streams may prepend ANSI SGR resets to a completion line.
 success_regex = [
     "(?m)^(?:\\x1b\\[[0-9;]*m)*linux ivc demo pass\\s*$",
+    "(?m)^(?:\\x1b\\[[0-9;]*m)*linux ivc subscriber finished\\s*$",
     "(?m)^(?:\\x1b\\[[0-9;]*m)*ivc ack seq=5 msg=ack from linux subscriber\\s*$",
 ]
 to_bin = true

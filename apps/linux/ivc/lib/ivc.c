@@ -82,6 +82,9 @@ ivc_subscriber_p ivc_subscribe(ivc_manager_p manager, uint64_t publisher_id, uin
     subscriber->fd = open(subscriber->subscribe_arg.device_name, O_RDONLY);
     if (subscriber->fd < 0) {
         perror("Failed to open subscriber device");
+        if (ioctl(manager->fd, IVC_UNSUBSCRIBE_CHANNEL, &subscriber->subscribe_arg) < 0) {
+            perror("Failed to rollback subscriber channel");
+        }
         free(subscriber);
         return NULL;
     }
@@ -163,6 +166,9 @@ ivc_publisher_p ivc_publish(ivc_manager_p manager, uint64_t channel_key, uint64_
     publisher->fd = open(publisher->publish_arg.device_name, O_WRONLY);
     if (publisher->fd < 0) {
         perror("Failed to open publisher device");
+        if (ioctl(manager->fd, IVC_UNPUBLISH_CHANNEL, &publisher->publish_arg) < 0) {
+            perror("Failed to rollback publisher channel");
+        }
         free(publisher);
         return NULL;
     }
@@ -199,6 +205,10 @@ int ivc_write_all(ivc_publisher_p publisher, const void *buf, size_t count) {
         int bytes_written = ivc_write(publisher, (const char *)buf + total_written, count - total_written);
         if (bytes_written < 0) {
             perror("Failed to write to publisher device");
+            return -1;
+        }
+        if (bytes_written == 0) {
+            fprintf(stderr, "Failed to write to publisher device: no progress\n");
             return -1;
         }
         total_written += bytes_written;

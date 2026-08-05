@@ -17,6 +17,8 @@ use crate::{
 const ARCEOS_QEMU_GUEST_PACKAGE: &str = "ax-helloworld";
 const ARCEOS_QEMU_GUEST_KERNEL_PATH: &str = "/guest/arceos/ax-helloworld-x86_64.bin";
 const ARCEOS_IVC_GUEST_PACKAGES: &[&str] = &["arceos-ivc-publisher", "arceos-ivc-subscriber"];
+const AXVISOR_IVC_LINUX_MODULE_HOST_PATH: &str = "/root/axvisor.ko";
+const AXVISOR_IVC_LINUX_MODULE_GUEST_PATH: &str = "/root/axvisor.ko";
 const AXVISOR_IVC_LINUX_PUBLISHER_GUEST_PATH: &str = "/root/ivc-publish";
 const AXVISOR_IVC_LINUX_SUBSCRIBER_GUEST_PATH: &str = "/root/ivc-subscribe";
 const AXVISOR_IVC_LINUX_INIT_GUEST_PATH: &str = "/root/ivc-linux-init";
@@ -183,11 +185,19 @@ pub(super) fn inject_linux_ivc_assets(
     let out_dir = build_linux_ivc_assets(workspace_root, &request.arch)?;
     let publisher = out_dir.join("ivc-publish");
     let subscriber = out_dir.join("ivc-subscribe");
+    let module = Path::new(AXVISOR_IVC_LINUX_MODULE_HOST_PATH);
     ensure_file_exists(&publisher, "Linux IVC publisher demo")?;
     ensure_file_exists(&subscriber, "Linux IVC subscriber demo")?;
+    ensure_file_exists(module, "Linux IVC kernel module")?;
 
     let (overlay_dir, temporary_overlay_run_dir) =
         direct_overlay_dir(workspace_root, request, case)?;
+    copy_guest_overlay_file(
+        module,
+        &overlay_dir,
+        AXVISOR_IVC_LINUX_MODULE_GUEST_PATH,
+        "Linux IVC kernel module",
+    )?;
     copy_guest_overlay_file(
         &publisher,
         &overlay_dir,
