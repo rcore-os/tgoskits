@@ -13,4 +13,5 @@ starry_arch_filtered_executable(
     src/main.c
 )
 target_compile_options(test-ptrace-seize-syscall-stop PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test-ptrace-seize-syscall-stop PRIVATE pthread)
 install(TARGETS test-ptrace-seize-syscall-stop RUNTIME DESTINATION usr/bin/starry-test-suit)

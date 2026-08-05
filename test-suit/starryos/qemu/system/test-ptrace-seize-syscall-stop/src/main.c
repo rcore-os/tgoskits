@@ -1,7 +1,10 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -106,6 +109,22 @@ static int expect_ptrace_stop(pid_t pid, int expected_signal, int expected_event
         return fail(description);
     }
     if (!WIFSTOPPED(status) || WSTOPSIG(status) != expected_signal
+        || ((unsigned int)status >> 16) != (unsigned int)expected_event) {
+        printf("FAIL: %s: status=%#x signal=%d event=%u\n", description, status,
+               WIFSTOPPED(status) ? WSTOPSIG(status) : -1, (unsigned int)status >> 16);
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_ptrace_event(pid_t pid, int expected_event, const char *description)
+{
+    int status = 0;
+    pid_t waited = wait_for_tracee_event(pid, &status);
+    if (waited != pid) {
+        return fail(description);
+    }
+    if (!WIFSTOPPED(status)
         || ((unsigned int)status >> 16) != (unsigned int)expected_event) {
         printf("FAIL: %s: status=%#x signal=%d event=%u\n", description, status,
                WIFSTOPPED(status) ? WSTOPSIG(status) : -1, (unsigned int)status >> 16);
@@ -227,6 +246,155 @@ static pid_t fork_spinning_tracee(void)
     return pid;
 }
 
+static int wait_for_job_stop(pid_t pid)
+{
+    struct timespec delay = {
+        .tv_sec = 0,
+        .tv_nsec = WAIT_POLL_INTERVAL_MS * 1000 * 1000,
+    };
+
+    for (int waited_ms = 0; waited_ms < WAIT_TIMEOUT_MS; waited_ms += WAIT_POLL_INTERVAL_MS) {
+        int status = 0;
+        pid_t waited = waitpid(pid, &status, WUNTRACED | WNOHANG);
+        if (waited == pid) {
+            if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP) {
+                return 0;
+            }
+            printf("FAIL: tracee job stop: status=%#x\n", status);
+            return 1;
+        }
+        if (waited < 0) {
+            return fail("waitpid for tracee job stop");
+        }
+        (void)nanosleep(&delay, NULL);
+    }
+
+    errno = ETIMEDOUT;
+    return fail("tracee enters a job stop");
+}
+
+static int wait_for_task_sleeping(_Atomic pid_t *tid_slot)
+{
+    struct timespec delay = {
+        .tv_sec = 0,
+        .tv_nsec = WAIT_POLL_INTERVAL_MS * 1000 * 1000,
+    };
+
+    for (int waited_ms = 0; waited_ms < WAIT_TIMEOUT_MS; waited_ms += WAIT_POLL_INTERVAL_MS) {
+        pid_t tid = atomic_load_explicit(tid_slot, memory_order_acquire);
+        if (tid > 0) {
+            char path[128];
+            snprintf(path, sizeof(path), "/proc/self/task/%ld/status", (long)tid);
+            FILE *file = fopen(path, "r");
+            if (file != NULL) {
+                char line[128];
+                while (fgets(line, sizeof(line), file) != NULL) {
+                    if (strncmp(line, "State:\tS ", strlen("State:\tS ")) == 0) {
+                        fclose(file);
+                        return 0;
+                    }
+                }
+                fclose(file);
+            }
+        }
+        (void)nanosleep(&delay, NULL);
+    }
+
+    return -1;
+}
+
+struct sibling_thread_args {
+    int tid_fd;
+    int block_fd;
+    _Atomic pid_t *tid_slot;
+};
+
+static void *block_sibling_thread(void *opaque)
+{
+    struct sibling_thread_args *args = opaque;
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (write(args->tid_fd, &tid, sizeof(tid)) != (ssize_t)sizeof(tid)) {
+        _exit(2);
+    }
+    atomic_store_explicit(args->tid_slot, tid, memory_order_release);
+
+    char byte;
+    if (read(args->block_fd, &byte, sizeof(byte)) >= 0) {
+        _exit(2);
+    }
+    _exit(2);
+}
+
+static pid_t fork_job_stopped_multithreaded_tracee(pid_t *sibling_tid, int *block_write_fd)
+{
+    int tid_pipe[2];
+    int block_pipe[2];
+    if (pipe(tid_pipe) != 0) {
+        return -1;
+    }
+    if (pipe(block_pipe) != 0) {
+        close(tid_pipe[0]);
+        close(tid_pipe[1]);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(tid_pipe[0]);
+        close(block_pipe[1]);
+        _Atomic pid_t sibling_tid_slot = 0;
+        struct sibling_thread_args args = {
+            .tid_fd = tid_pipe[1],
+            .block_fd = block_pipe[0],
+            .tid_slot = &sibling_tid_slot,
+        };
+        pthread_t sibling;
+        if (pthread_create(&sibling, NULL, block_sibling_thread, &args) != 0) {
+            _exit(2);
+        }
+        if (wait_for_task_sleeping(&sibling_tid_slot) != 0) {
+            _exit(2);
+        }
+        if (raise(SIGSTOP) != 0) {
+            _exit(2);
+        }
+        for (;;) {
+            (void)syscall(SYS_getpid);
+        }
+    }
+
+    close(tid_pipe[1]);
+    close(block_pipe[0]);
+    if (pid < 0) {
+        close(tid_pipe[0]);
+        close(block_pipe[1]);
+        return -1;
+    }
+    struct pollfd tid_poll = {
+        .fd = tid_pipe[0],
+        .events = POLLIN,
+    };
+    int poll_result = poll(&tid_poll, 1, WAIT_TIMEOUT_MS);
+    if (poll_result <= 0) {
+        int saved_errno = poll_result == 0 ? ETIMEDOUT : errno;
+        close(tid_pipe[0]);
+        close(block_pipe[1]);
+        kill_tracee(pid);
+        errno = saved_errno;
+        return -1;
+    }
+    ssize_t bytes = read(tid_pipe[0], sibling_tid, sizeof(*sibling_tid));
+    close(tid_pipe[0]);
+    if (bytes != (ssize_t)sizeof(*sibling_tid)) {
+        close(block_pipe[1]);
+        kill_tracee(pid);
+        errno = EIO;
+        return -1;
+    }
+    *block_write_fd = block_pipe[1];
+    return pid;
+}
+
 static int test_seize_rejects_nonzero_addr(void)
 {
     pid_t pid = fork_spinning_tracee();
@@ -264,12 +432,45 @@ static int test_interrupt_rejects_attach_tracee(void)
     return result;
 }
 
+static int test_interrupt_job_stopped_sibling(void)
+{
+    pid_t sibling_tid = -1;
+    int block_write_fd = -1;
+    pid_t pid = fork_job_stopped_multithreaded_tracee(&sibling_tid, &block_write_fd);
+    if (pid < 0) {
+        return fail("fork multithreaded tracee for sibling PTRACE_INTERRUPT");
+    }
+    if (wait_for_job_stop(pid) != 0) {
+        close(block_write_fd);
+        kill_tracee(pid);
+        return 1;
+    }
+
+    if (ptrace(PTRACE_SEIZE, sibling_tid, NULL, NULL) != 0) {
+        close(block_write_fd);
+        kill_tracee(pid);
+        return fail("PTRACE_SEIZE job-stopped sibling");
+    }
+    if (ptrace(PTRACE_INTERRUPT, sibling_tid, NULL, NULL) != 0) {
+        close(block_write_fd);
+        kill_tracee(pid);
+        return fail("PTRACE_INTERRUPT job-stopped sibling");
+    }
+    int result = expect_ptrace_event(
+        sibling_tid, PTRACE_EVENT_STOP,
+        "PTRACE_INTERRUPT reports EVENT_STOP for a running sibling of a job-stop waiter");
+    close(block_write_fd);
+    kill_tracee(pid);
+    return result;
+}
+
 int main(void)
 {
     printf("PTRACE_SEIZE syscall-stop regression\n");
 
     if (test_seize_rejects_nonzero_addr() != 0
-        || test_interrupt_rejects_attach_tracee() != 0) {
+        || test_interrupt_rejects_attach_tracee() != 0
+        || test_interrupt_job_stopped_sibling() != 0) {
         return 1;
     }
 

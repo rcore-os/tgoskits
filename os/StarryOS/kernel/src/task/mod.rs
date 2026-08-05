@@ -686,6 +686,10 @@ struct JobControl {
     /// (e.g. busybox `killall5 -STOP` then `-CONT`) without having to scrub the
     /// pending-signal queue.
     continue_generation: u64,
+    /// TID of the thread currently parked in `do_job_stop`. The implementation
+    /// currently parks only the thread that dequeues the stop signal, so ptrace
+    /// must distinguish that waiter from running or syscall-blocked siblings.
+    waiter_tid: Option<Pid>,
 }
 
 /// [`Process`]-shared data.
@@ -1139,7 +1143,12 @@ impl ProcessData {
     /// [`Self::set_job_continued`] / `continue_generation`. Closing this race at
     /// the stop site lets us avoid scrubbing the pending-signal queue (which
     /// would require modifying `starry-signal`).
-    pub fn set_job_stopped(&self, signo: Signo, continue_gen_snapshot: u64) -> bool {
+    pub fn set_job_stopped(
+        &self,
+        signo: Signo,
+        continue_gen_snapshot: u64,
+        waiter_tid: Pid,
+    ) -> bool {
         let mut jc = self.job_control.lock();
         if jc.continue_generation != continue_gen_snapshot {
             // A continue raced in after we observed `continue_gen_snapshot`;
@@ -1148,7 +1157,14 @@ impl ProcessData {
         }
         jc.stopped = Some(signo);
         jc.status = Some(JobStatus::Stopped(signo));
+        jc.waiter_tid = Some(waiter_tid);
         true
+    }
+
+    /// Returns true when `tid` is the thread parked for the active job stop.
+    pub fn is_job_stop_waiter(&self, tid: Pid) -> bool {
+        let jc = self.job_control.lock();
+        jc.stopped.is_some() && jc.waiter_tid == Some(tid)
     }
 
     /// Snapshot the continue generation. Taken right after a stop signal is
@@ -1168,6 +1184,7 @@ impl ProcessData {
         let mut jc = self.job_control.lock();
         jc.continue_generation = jc.continue_generation.wrapping_add(1);
         let was_stopped = jc.stopped.take().is_some();
+        jc.waiter_tid = None;
         if was_stopped {
             jc.status = Some(JobStatus::Continued);
             drop(jc);
@@ -1182,7 +1199,10 @@ impl ProcessData {
     /// Force-clear the stop (for `SIGKILL`) so a parked thread re-checks and
     /// proceeds to terminate. Does not queue a `Continued` report.
     pub fn clear_job_stop_for_kill(&self) {
-        let was_stopped = self.job_control.lock().stopped.take().is_some();
+        let mut jc = self.job_control.lock();
+        let was_stopped = jc.stopped.take().is_some();
+        jc.waiter_tid = None;
+        drop(jc);
         if was_stopped {
             // Stop state is cleared before waking stopped threads.
             unsafe { self.cont_event.wake(IoEvents::IN) };

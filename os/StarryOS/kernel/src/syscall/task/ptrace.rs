@@ -680,9 +680,11 @@ fn ptrace_interrupt(pid: usize) -> AxResult<isize> {
     // PTRACE_INTERRUPT creates a ptrace event stop, not a user-visible
     // SIGTRAP. Interrupt the target so its user-return path consumes the
     // pending event without leaving a second signal-delivery stop queued. A
-    // tracee already parked in a job-control stop cannot return to userspace,
-    // so wake that wait loop to publish its event stop instead.
-    if tracee.is_job_stopped() {
+    // A tracee parked as the job-stop waiter cannot return to userspace, so
+    // wake that wait loop to publish its event stop. Process-level stopped
+    // state is insufficient here: a sibling may instead be blocked elsewhere
+    // and must be interrupted directly.
+    if tracee.is_job_stop_waiter(tracee_tid) {
         tracee.wake_job_stop_waiter();
     } else {
         get_task(tracee_tid)?.interrupt();
