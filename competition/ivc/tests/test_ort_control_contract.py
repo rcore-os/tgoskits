@@ -44,6 +44,22 @@ class OrtControlContractTests(unittest.TestCase):
         self.assertIn('kProvider = "CPUExecutionProvider"', bridge)
         self.assertIn('pub struct OrtController', adapter)
 
+    def test_tensor_metadata_views_keep_their_type_info_owners_alive(self) -> None:
+        bridge = ORT_BRIDGE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "const auto input_type = session.GetInputTypeInfo(0);", bridge
+        )
+        self.assertIn(
+            "const auto output_type = session.GetOutputTypeInfo(0);", bridge
+        )
+        self.assertNotIn(
+            "session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo()", bridge
+        )
+        self.assertNotIn(
+            "session.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo()", bridge
+        )
+
     def test_rootfs_builder_pins_and_audits_the_official_runtime(self) -> None:
         script = ORT_ROOTFS_BUILD.read_text(encoding="utf-8")
 

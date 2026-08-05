@@ -100,8 +100,12 @@ void validate_model_contract(Ort::Session &session) {
         std::string_view(output_name.get()) != "control_fraction") {
         throw std::runtime_error("ORT model tensor names differ");
     }
-    const auto input_info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
-    const auto output_info = session.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo();
+    // TensorTypeAndShapeInfo borrows metadata owned by TypeInfo, so keep both
+    // owners alive until every shape and element-type check has completed.
+    const auto input_type = session.GetInputTypeInfo(0);
+    const auto output_type = session.GetOutputTypeInfo(0);
+    const auto input_info = input_type.GetTensorTypeAndShapeInfo();
+    const auto output_info = output_type.GetTensorTypeAndShapeInfo();
     if (input_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
         input_info.GetShape() != std::vector<std::int64_t>({1, 4})) {
         throw std::runtime_error("ORT model input contract differs");
