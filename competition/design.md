@@ -63,6 +63,28 @@ board's Linux filesystem, embeds the Zephyr image at build time, and exposes
 separate output-only PL011 consoles instead of passing through the physical
 debug UART.
 
+The controller policy is selected at image-build time while the guest/network
+topology remains fixed. All neural backends originate from one frozen weight
+file and share the same observation, output, actuator, and IVC contracts:
+
+```text
+thermal-4x6x1-v1.weights.json
+       |
+       +--> generated Rust constants --> native f32 CPU inference
+       |
+       +--> thermal-4x6x1-v1.onnx --> thermal-4x6x1-v1.ort
+       |                                  --> ONNX Runtime CPUExecutionProvider
+       |
+       +--> thermal-4x6x1-v1.onnx --> RKNN Toolkit2
+                                          --> RKNN Runtime --> RK3588 NPU
+
+selected backend -> CONTROL/UDP -> Zephyr plant -> STATUS + ACK -> next input
+```
+
+ONNX Runtime is deliberately the standards-based CPU comparison. The hardware
+NPU path uses RKNN Runtime directly; the design does not contain or claim a
+custom ONNX Runtime RKNPU Execution Provider.
+
 ## 3. Guest and platform configuration
 
 The full profile is composed from:
@@ -90,6 +112,15 @@ its smoke variant, matching `board-orangepi-5-plus*.toml` lifecycle checks,
 `orangepi-5-plus-zephyr*.toml`. StarryOS artifacts are staged below
 `/home/orangepi/axvisor-guest`; no sudo password is stored in the WSL host
 automation.
+
+The backend-specific physical profiles are
+`axvisor-orangepi-5-plus-rknpu-control*.toml` with
+`board-orangepi-5-plus-rknpu-control*.toml`, and
+`axvisor-orangepi-5-plus-ort-control*.toml` with
+`board-orangepi-5-plus-ort-control*.toml`. They change the controller rootfs,
+model/runtime, and—only for RKNN—the NPU resource handoff. CPU masks, guest
+memory ownership, virtio network identities, Zephyr image contract, trajectory,
+and 100 ms period remain common.
 
 | Resource | Controller VM 1 | Zephyr VM 2 |
 | --- | --- | --- |
@@ -129,13 +160,15 @@ use `passthrough_devices = [["/"]]` to supply a guest device tree rooted at
 The passthrough interrupt mode routes Linux INTID 56 and Zephyr INTID 64
 through the AArch64 physical-SPI ownership gate described below.
 
-On the physical board, StarryOS boots from `starryos.bin` with a 64 MiB ext4
-virtio-block image. `/usr/bin/starry-run-case-tests` verifies at least two
-online CPUs, configures `eth0` as `10.0.0.1/24`, runs the same static
-`ivcproto` controller for either 20 or 1,800 commands, emits
-`IVC-STARRY-DONE`, synchronizes the guest filesystem, and requests system-off.
-The full and smoke VM descriptions use an emulated virtual timer PPI 27,
-output-only PL011 INTID 33, virtio-block INTID 48, and virtio-net INTID 56.
+On the physical board, StarryOS boots from `starryos.bin` (or the RKNPU-enabled
+kernel) with a finite profile-specific ext4 virtio-block image: 64 MiB for the
+native controller, 128 MiB for RKNN control, and 160 MiB for the official full
+ONNX Runtime archive. `/usr/bin/starry-run-case-tests` verifies at least two online
+CPUs, configures `eth0` as `10.0.0.1/24`, runs the selected controller for
+either 20 or 1,800 commands, emits `IVC-STARRY-DONE`, synchronizes the guest
+filesystem, and requests system-off. The full and smoke VM descriptions use an
+emulated virtual timer PPI 27, output-only PL011 INTID 33, virtio-block INTID
+48, and virtio-net INTID 56.
 
 Zephyr targets upstream `qemu_cortex_a53` v4.3.0. Its device-tree overlay
 enables virtio-mmio slot 16 and fixes the link address. Startup rejects a
@@ -384,17 +417,49 @@ normalized inputs, six ReLU hidden units, and one clamped output. Inputs are:
 3. measured temperature rate; and
 4. previous actuator value.
 
-Weights and biases are checked into
-[`neural.rs`](../tools/ivcproto/src/neural.rs), so inference is deterministic
-and requires no runtime model download or random number generator. The output
-is converted to `0..=1000` actuator permille and encoded as a CONTROL payload.
+The canonical parameters are checked into
+[`thermal-4x6x1-v1.weights.json`](ivc/model/thermal-4x6x1-v1.weights.json).
+The deterministic model pipeline generates the Rust constants consumed by
+[`neural.rs`](../tools/ivcproto/src/neural.rs), the 1,016-byte ONNX graph, the
+golden corpus, and a manifest that binds their hashes. A rebuild in two fresh
+directories must produce identical Rust, ONNX, corpus, and manifest bytes
+before a formal image is accepted. There is no runtime model download or
+random number generator.
 
-The weights are hand-parameterized for this deterministic thermal plant; there
-is no external training dataset or download pipeline. The compact 4x6x1
-dense/ReLU form was selected to make inference observable, dependency-free,
-`no_std`-compatible, and reproducible in a static Linux guest. The retained
-controller binary hash binds the compiled weights. This is a neural inference
-demonstration, not a claim of data-trained generalization.
+The weights are fixed and hand-parameterized for this deterministic thermal
+plant. There is intentionally no training dataset, optimizer, or training
+pipeline; converting the fixed graph to ONNX adds a standard, auditable model
+boundary without inventing a training claim. The graph is fixed as
+`[1,4] -> Gemm -> Relu -> Gemm -> Clip -> [1,1]`.
+
+Three execution paths consume that same model contract:
+
+| Backend | Frozen artifact/runtime | Execution identity | Purpose |
+| --- | --- | --- | --- |
+| Native Rust | generated f32 constants in `ivcproto` | StarryOS CPU | dependency-free `no_std`-compatible reference and formal manual/neural comparison |
+| ONNX Runtime | `thermal-4x6x1-v1.ort`, SHA-256 `3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887`; ORT 1.25.0 | `CPUExecutionProvider` | standard Runtime/ABI compatibility and CPU control comparison |
+| RKNN | `thermal-4x6x1-v1-rk3588-fp16.rknn`, SHA-256 `2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`; Runtime API 2.3.2, driver 0.9.8 | `/dev/dri/card1`, positive `RKNN_QUERY_PERF_RUN` time, `host_submit=false` | actual RK3588 hardware-NPU offload |
+
+All paths normalize inputs and interpret the clamped scalar identically. The
+actuator conversion performs the same IEEE-754 f32 operations as the Rust
+controller—multiply by `1000.0F`, add `0.5F`, then convert to the bounded
+integer. Independent analyzers round after each f32 operation; they do not
+silently promote this half-permille decision boundary to f64.
+
+For the RKNN profile, AxVisor's `rk3588-npu-handoff` feature initializes the
+shared RK3588 NPU power, clock, and reset state before guest entry, then maps
+only the three NPU core MMIO windows (`0xfdab0000`, `0xfdac0000`, and
+`0xfdad0000`) into the trusted StarryOS guest. The guest owns an identity-DMA
+region and uses polling; NPU IRQs, the IOMMU, and shared PMU/CRU blocks are not
+passed through. AxVisor performs no inference submission after handoff. This
+keeps shared SoC control in the host while making the NPU execution identity
+observable, but it is not an IOMMU-confined untrusted-device assignment.
+
+The ORT profile has no NPU MMIO or DMA handoff. It loads the official AArch64
+glibc Runtime from its 160 MiB rootfs and fails unless the reported provider is
+exactly `CPUExecutionProvider`. The full archive establishes compatibility;
+a reduced-operator minimal build is an optional size optimization, not part of
+the frozen result.
 
 The RTOS endpoint applies the command, advances a deterministic thermal plant,
 and returns the resulting measured temperature and applied sequence in STATUS.
@@ -454,6 +519,49 @@ configuration hashes, rootfs/controller hashes, and both normal/fault Zephyr
 image hashes are retained under
 [`results/axvisor-ivc-reference`](results/axvisor-ivc-reference/).
 
+The physical evidence extends this architecture beyond the historical QEMU
+captures. The clean
+[`starry-ivc-control-formal-20260804-v5`](results/orangepi-5-plus/starry-ivc-control-formal-20260804-v5/)
+campaign contains five same-board manual/neural pairs and ten valid 1,800-cycle
+halves. The corresponding ACK-loss, malformed-ERROR, and actual guest-reset
+profiles each have three valid physical StarryOS/Zephyr runs. In the reset
+profile, the endpoint enters safe fallback, retires the old session, rejects
+stale frames, and accepts the new session before control resumes; host-only
+tests are no longer the sole evidence for those transitions.
+
+The two ONNX-derived formal backends then reused the same board, guest CPU
+partition, Zephyr endpoint, 1,800-cycle trajectory, period, and actuator
+contract. Each run was a fresh board boot and a new inference context:
+
+| Formal backend | Valid runs / ACK | Backend timing | Full-loop p99 range | Cold-start / steady partition |
+| --- | ---: | ---: | ---: | --- |
+| RKNN NPU v8 | 5 / 9,000 of 9,000 | device p99 `1666..1678 us` | `13456..13611 us` | five misses, all sequence 1; post-first `0/8995`, worst `17884 us` |
+| ONNX Runtime CPU v4 | 5 / 9,000 of 9,000 | wall p99 `174417..175583 ns` | `12023..12273 us` | five misses, all sequence 1; post-first `0/8995`, worst `17546 us` |
+
+Both campaigns recorded zero application errors, timeouts, retransmissions,
+recoveries, RTOS duplicates, or protocol errors. The frozen ORT v4 archive is
+[`ort-control-full-formal-20260805-v4`](results/orangepi-5-plus/ort-control-full-formal-20260805-v4/);
+its preregistration and summary hashes are
+`04768defc09ce5e9a0069ead59bd01ea9fc696b32f46fdcd3619797327beded4`
+and `57edb5f8a1fc79bcbd43fb3fd77aec25151e7d773985a56b12e6d3530d14d3f9`.
+The earlier ORT v1-v3 directories remain immutable failure evidence and are not
+counted in v4.
+
+The frozen NPU archive is
+[`rknpu-control-full-formal-20260805-v8`](results/orangepi-5-plus/rknpu-control-full-formal-20260805-v8/).
+Its independently reproducible v2 aggregate has SHA-256
+`dfc7d844b4d219992d72e7b8be22a18be6b49d4e18feca993df2eaad2eff6f27`;
+the retained copy preserves all five raw/RKNN CSV pairs, per-run metadata,
+logs, summaries, and manifests without embedding a rootfs or vendor binary.
+
+The tiny model is a deliberately unfavorable acceleration benchmark: RKNN's
+NPU submit/synchronization path has more overhead than ORT CPU inference, and
+the NPU full-loop p99 range is also higher in these captures. The result proves
+real hardware offload and a scalable backend boundary, not speedup. The NPU
+device-time and ORT wall-time instruments also have different boundaries, so
+they are reported with their names and units rather than treated as an exact
+microbenchmark pair.
+
 ## 9. Extension points and residual assurance limits
 
 - A port can be placed in another `u16` segment without changing the switch;
@@ -464,18 +572,20 @@ image hashes are retained under
 - More controller policies can implement the same observation-to-command
   boundary and retain the on-wire contract.
 
-The required shared/partitioned idle/stress/soak campaign, deterministic
-cross-guest ACK-loss campaign, durable QEMU evidence, and retained physical
-Orange Pi StarryOS smoke/full runs are complete. Physical raw logs, strict
-analyzer summaries, artifact hashes, and lifecycle evidence are under
-[`results/orangepi-starry-reference`](results/orangepi-starry-reference/). The
-actual approximately five-minute video and dev-target PR remain outstanding.
+The required shared/partitioned idle/stress/soak campaign, physical
+manual/neural pairs, physical ACK-loss/ERROR/restart campaigns, and native,
+RKNN-NPU, and ORT-CPU controller paths are complete. Every formal board run is
+bounded by source/artifact hashes, synchronized snapshot recovery, read-only
+fsck, and restored Linux checks. The actual approximately five-minute video and
+dev-target PR remain outstanding.
 
-Cross-guest malformed-ERROR, controller-restart, and a third-guest runtime
-cross-segment negative capture would strengthen the evidence, but the current
-ERROR behavior is covered by Rust/C tests, restart by a host reference, and
-access control by the no-external-NIC topology plus switch policy regressions.
-Those scopes are labeled honestly in the test report. Low-overhead evidence is
-still required before claiming bounded guest preemption or direct IRQ latency.
-The native Zephyr baseline is an explicitly different QEMU platform and is
-suitable only for the qualified comparison documented with its results.
+A third-guest runtime cross-segment negative capture would strengthen the
+switch-policy evidence; current access control rests on the no-external-NIC
+topology and focused policy regressions. The polling/identity-DMA NPU handoff is
+appropriate only for the trusted competition guest and does not establish
+IOMMU-grade device isolation. Low-overhead evidence is still required before
+claiming bounded guest preemption or direct IRQ latency. The native Zephyr
+baseline is an explicitly different QEMU platform and is suitable only for the
+qualified comparison documented with its results. Vendor RKNN components and
+the full ORT archive also retain their recorded source and redistribution
+boundaries rather than being described as repository-native code.

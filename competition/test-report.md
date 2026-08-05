@@ -1,6 +1,6 @@
 # Test and evidence report
 
-Report date: 2026-08-04. The retained QEMU evidence was produced from base
+Report date: 2026-08-05. The retained QEMU evidence was produced from base
 commit `263f89d8f3d0481d2712224a7b517a73b1165fb3` plus the then-uncommitted
 competition implementation. The final AxVisor RT and QEMU IVC campaigns share
 source snapshot SHA-256
@@ -13,6 +13,10 @@ reported separately rather than relabeling the historical QEMU archives. The
 current same-board StarryOS manual/neural campaign is a distinct, preregistered
 clean-commit capture from `f4ced37584964aba56e07ff060ae58374608bc26` and is
 reported below without rewriting the historical archives.
+The ONNX-derived RKNN NPU v8 and ONNX Runtime CPU v4 campaigns are later,
+separately preregistered clean-commit captures from `c3f01dc34b83695eddf8da83cf4ed71622f64f7c`
+and `0110647de52f5e2ad6b550cb594780d7506ffecf`; they are reported with their
+backend identities and are not substituted for the native campaign.
 
 ## 1. Requirement status
 
@@ -28,6 +32,8 @@ reported below without rewriting the historical archives.
 | Physical Orange Pi communication | Complete formal physical campaign | The preregistered ten-half campaign runs on board `bf61f4d4a1d994ad`, verifies `backend=native`, synchronizes and snapshots every result disk, and restores `/dev/mmcblk1p2` as ext4 `rw` after the campaign. |
 | Cross-guest ACK-loss recovery | Complete formal physical campaign | Three deterministic 1-in-5 first-ACK loss runs each recover all 20 losses, suppress all 20 duplicate applications, and pass the exact fault and lifecycle gates. |
 | Neural/RTOS closed loop and manual comparison | Complete formal physical campaign | StarryOS manual and native-neural policies run on the same Orange Pi, binaries, topology, trajectory, and sample count. RMSE and IAE favor neural in 5/5 pairs; overshoot and mixed latency results are disclosed below. |
+| Single-source model and standard CPU Runtime | Complete formal physical campaign | One fixed, untrained 4x6x1 weight source deterministically produces Rust/ONNX; ORT export accepts only two audited equivalent layouts. ORT 1.25.0 `CPUExecutionProvider` passes 10,000 offline vectors and five 1,800-cycle physical full runs. |
+| RK3588 hardware NPU execution | Complete formal physical campaign | RKNN Runtime 2.3.2 and driver 0.9.8 report positive device time on `/dev/dri/card1`; five physical full runs complete 9,000/9,000 ACK with `host_submit=false`. This proves offload, not speedup. |
 | StarryOS replacement path | Complete for physical Tasks 1, 2, and 3 | Two-vCPU StarryOS runs the physical RT probes, Linux-ABI controller, virtio block/network, UDP protocol, neural inference, and closed-loop feedback. Linux/QEMU remains historical reference evidence rather than the sole Task 1/manual result. |
 | Error notification | Complete formal physical campaign | Three runs each inject the five preregistered malformed classes, receive the exact cross-guest ERROR code/reason evidence, and then complete 100/100 normal commands. |
 | Guest restart recovery | Complete formal physical campaign | Three actual VM-reset runs reject retired CONTROL and stale STATUS/ACK frames, observe safe fallback, establish a new session, and complete all post-reset commands. |
@@ -224,6 +230,75 @@ already observed `backend=native` field from `summary.starry`. The original ten
 raw captures and failure marker remain unchanged. A regression-first fix added
 the required field at the clean v5 commit; v5 was newly preregistered and
 captured rather than reconstructed from v4.
+
+### Formal ONNX-derived backend campaigns
+
+The fixed, untrained `thermal-4x6x1-v1` weights are the single source for the
+native Rust constants, ONNX graph, ORT FlatBuffer, and RKNN FP16 graph. Before
+closed-loop capture, the ORT CPU path completed 10,000/10,000 physical
+StarryOS inferences with maximum absolute error
+`2.980232238769531e-07`, 9,999 exact actuator commands, one preregistered
+f32-rounding-boundary equivalent, and zero material mismatches. The RKNN route
+separately passed its frozen FP16 corpus gates and a clean 20-context
+create/destroy resource run.
+
+The formal RKNN v8 and ORT v4 campaigns used board `bf61f4d4a1d994ad`, the
+same two-vCPU StarryOS/one-vCPU Zephyr partition, 100 ms period, 1,800-cycle
+scenario, IVC protocol, and lifecycle gates. Each of the ten runs was a cold
+board boot with a new inference context. All ten snapshots passed read-only
+fsck, and every run restored Linux `/dev/mmcblk1p2` as ext4 `rw`.
+
+| Metric | RKNN NPU v8 | ONNX Runtime CPU v4 |
+| --- | ---: | ---: |
+| Clean source commit | `c3f01dc34b83695eddf8da83cf4ed71622f64f7c` | `0110647de52f5e2ad6b550cb594780d7506ffecf` |
+| Valid cold boots / samples | 5 / 9,000 | 5 / 9,000 |
+| Sent / acknowledged | 9,000 / 9,000 | 9,000 / 9,000 |
+| Errors / timeouts / retransmissions / recoveries | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| Backend identity | RKNN Runtime 2.3.2, driver 0.9.8, `/dev/dri/card1`, `host_submit=false` | ONNX Runtime 1.25.0, `CPUExecutionProvider` |
+| Frozen model artifact SHA-256 | `2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8` | `3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887` |
+| Backend p99 | device `1666..1678 us` | wall `174417..175583 ns` |
+| Full-loop p99 across runs | `13456..13611 us` | `12023..12273 us` |
+| Worst full-loop sample | `145522 us`, sequence 1 | `143429 us`, sequence 1 |
+| Deadline misses | 5/9,000, exactly sequence 1 once per run | 5/9,000, exactly sequence 1 once per run |
+| Post-first misses / samples | 0 / 8,995 | 0 / 8,995 |
+| Post-first worst full-loop | `17884 us` | `17546 us` |
+
+For ORT, session initialization was `218201..224251 us`, inference wall
+maximum was `17128709..17160791 ns`, and throughput was
+`9.9920149415..9.9934469874 msg/s`. All five raw and ORT CSV pairs contain
+1,800 contiguous rows and reproduce the controller actuator exactly with
+per-operation f32 rounding. The retained archive is
+[`ort-control-full-formal-20260805-v4`](results/orangepi-5-plus/ort-control-full-formal-20260805-v4/).
+Its preregistration, `campaign-summary.json`, and recursive campaign-checksum
+file SHA-256 values are respectively
+`04768defc09ce5e9a0069ead59bd01ea9fc696b32f46fdcd3619797327beded4`,
+`57edb5f8a1fc79bcbd43fb3fd77aec25151e7d773985a56b12e6d3530d14d3f9`,
+and `601b435f376841dcfbb54e0c8bbac5fd9e6ffb09e4c08c4f67e73f2934d85a25`.
+An independent aggregation at the recorded original campaign path was
+byte-identical to the frozen summary, and every per-run and campaign checksum
+verified. Reaggregation after copying the archive into the repository changes
+only the two self-location fields (`campaign.path` and
+`preregistration.path`); a comparison normalized for exactly those fields is
+otherwise identical.
+
+ORT v1 failed only its terminal UART poweroff-evidence gate; v2 exposed an
+analyzer f64/f32 actuator-rounding mismatch; v3 exposed malformed legacy
+metric typing after UART corruption. Each failed directory remains unchanged,
+and v4 restarted all five runs from a new preregistration rather than reusing
+successful halves. Deterministic regressions were added before each analyzer
+fix, and the producer/model/thresholds were not relaxed.
+
+The RKNN campaign's independently recomputed aggregate SHA-256 is
+`dfc7d844b4d219992d72e7b8be22a18be6b49d4e18feca993df2eaad2eff6f27`.
+Its five per-run logs, raw/RKNN CSV pairs, metadata, summaries, and manifests
+are retained in
+[`rknpu-control-full-formal-20260805-v8`](results/orangepi-5-plus/rknpu-control-full-formal-20260805-v8/).
+Positive `RKNN_QUERY_PERF_RUN` device times, guest RKNPU registration, and
+`host_submit=false` establish hardware NPU execution. They do not establish
+acceleration: for this tiny graph, RKNN submission/synchronization overhead
+exceeds ORT CPU inference and its observed full-loop p99 is higher. The
+backend timing instruments also have different boundaries, so the table does
+not treat NPU device time and ORT wall time as an exact microbenchmark pair.
 
 ## 5. Cross-guest fault campaigns
 
@@ -425,6 +500,18 @@ all ten per-run analyzers, campaign aggregation, final Linux-root verification,
 and an independent reaggregation from the canonical Windows archive. The
 reaggregated campaign summary was byte-identical to the captured summary.
 
+The later model/backend sweep verified deterministic Rust/ONNX/golden-manifest
+rebuilds, both audited ORT FlatBuffer layouts, 10,000-vector native/ORT/RKNN
+numeric gates, the clean RKNN 20-context resource run, and the clean ORT
+five-session resource gate. After the two regression-first analyzer fixes, all
+210 Python contract tests passed together with the applicable host/QEMU
+validation. The ORT v4 campaign then passed five per-run analyzers, exact
+source/artifact/provider gates, recursive manifests, an independent aggregate
+rebuild, snapshot fsck, and Linux restoration. At the recorded original path,
+the independent aggregate was byte-identical to the retained
+`campaign-summary.json`; the repository-relocated copy passes the two-path-only
+normalized comparison described above.
+
 The retained five-run RT comparison and three-run QEMU IVC campaign remain
 pinned to the source/config/image hashes recorded with those measurements. The
 later secondary-CPU startup hardening was validated by the complete host
@@ -448,13 +535,12 @@ CPU partitioning does not establish bounded preemption of a non-yielding
 passthrough guest or isolate every host task/physical interrupt.
 
 The three technical tasks, reproducible commands, source/config/image hashes,
-same-board manual/neural baseline, and all three formal physical fault profiles
-are present. Formal remaining deliverables are:
+same-board manual/neural baseline, all three formal physical fault profiles,
+single-source ONNX pipeline, RKNN hardware-NPU campaign, and ONNX Runtime CPU
+campaign are present. Formal remaining deliverables are:
 
-1. complete M4's deterministic ONNX source, RKNN NPU path, and ONNX Runtime CPU
-   feasibility gate without presenting CPU emulation as NPU execution;
-2. record the actual approximately five-minute demonstration video; and
-3. when authorized, verify a conflict-free dev target, push, and submit the
+1. record the actual approximately five-minute demonstration video; and
+2. when authorized, verify a conflict-free dev target, push, and submit the
    required PR.
 
 A third-guest runtime isolation capture would strengthen the policy evidence,

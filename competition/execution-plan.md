@@ -1,6 +1,6 @@
 # Competition Execution Plan
 
-> 状态：执行中
+> 状态：正式实验已冻结，E5 交付收尾中
 >
 > 基线日期：2026-08-04
 >
@@ -25,18 +25,18 @@
 
 ## 2. 当前状态与剩余关键路径
 
-| 工作包 | 当前状态 | 下一验收点 |
+| 工作包 | 当前状态 | 收尾约束 |
 | --- | --- | --- |
-| WSL2 板卡自动化 | 已打通；RKNN 路线已接入嵌入产物提取、独立 raw 分析、来源门和递归 checksum | 从 clean commit 重跑集成后的冷启动 smoke，确认新分析阶段也能端到端自动结束 |
-| StarryOS 实体任务一/M2 | 正式受控干扰 5 对、双 soak、CPU1 stress 5 对已完成 | 在最终报告中严格限定改善结论的适用场景 |
-| ACK loss | 正式 3/3 已完成 | 汇入最终报告 |
-| ERROR | 正式 3/3 已完成 | 汇入最终报告 |
-| restart recovery | `6adf49e09` 实体正式 3/3 已完成，campaign formal gate 为 true | 汇入最终报告并保留 pre-reset deadline miss 不利指标 |
-| StarryOS manual/neural full | `f4ced3758` 上正式 5 对、10/10 half 已完成 | 汇入最终报告，同时披露 neural 最大超调退化和无稳定延迟优势 |
+| WSL2 板卡自动化 | 已打通；native、RKNN 与 ORT 路线均能从 clean commit 自动完成部署、冷启动、串口采集、独立分析、fsck、Linux 恢复和结果同步 | 保持正式结果只读；录制时复用相同命令或回放未剪辑日志 |
+| StarryOS 实体任务一/M2 | 正式受控干扰 5 对、双 soak、CPU1 stress 5 对已完成并汇入报告 | 录制时严格限定改善结论的适用场景 |
+| ACK loss | 正式 3/3 已完成并汇入报告 | 不以历史 QEMU 单轮代替实体结果 |
+| ERROR | 正式 3/3 已完成并汇入报告 | 展示五类精确 ERROR 与后续正常恢复 |
+| restart recovery | `6adf49e09` 实体正式 3/3 已完成，campaign formal gate 为 true，已汇入报告 | 保留 pre-reset deadline miss 不利指标 |
+| StarryOS manual/neural full | `f4ced3758` 上正式 5 对、10/10 half 已完成并汇入报告 | 同时披露 neural 最大超调退化和无稳定延迟优势 |
 | 模型单一来源与 ONNX | M4-0/M4-1 已完成：固定权重、Rust oracle、10,000 vectors、确定性 ONNX 和 manifest 均已验证 | 保持冻结，不按后续实体结果修改模型 |
-| RK3588 NPU | clean resource run 已完成 20 次 context 生命周期；`c3f01dc34` 上的闭环 v8 已完成 5 次冷启动 full、9,000/9,000 ACK、自动 Linux 恢复、独立分析和递归 checksum | 把首周期 5 次 cold-start miss 与其后 8,995 个零 miss 周期同时写入报告；除非改变启动语义，否则不重跑冻结结果 |
-| ONNX Runtime CPU | 离线门已通过；clean commit `af41cf086` 的 StarryOS→Zephyr 实体 smoke 已完成 20/20 ACK、三重证据哈希、快照 fsck 和 Linux 恢复 | 按 smoke 后、首次 full 前冻结的门执行 5 次 clean full；不改变 RKNN NPU 正式结果 |
-| 报告与视频 | 待最终数据冻结 | 所有正式结果通过聚合门后更新 |
+| RK3588 NPU | clean resource run 已完成 20 次 context 生命周期；`c3f01dc34` 上的闭环 v8 已完成 5 次冷启动 full、9,000/9,000 ACK、自动 Linux 恢复、独立分析和递归 checksum，已汇入报告 | 同时展示首周期 5 次 miss 与其后 8,995 个零 miss 周期；除非改变启动语义，否则不重跑冻结结果 |
+| ONNX Runtime CPU | 离线门与 smoke 已通过；clean commit `0110647de` 的 v4 正式活动完成 5 次冷启动 full、9,000/9,000 ACK、独立重聚合和递归 checksum，formal gate 为 true | 冻结 v4；在最终报告中明确它是 `CPUExecutionProvider` 对照而非 NPU |
+| 报告与视频 | 正式数据已冻结，五份交付文档和入口 README 已同步收口；实际视频尚未录制 | 录制约 5 分钟演示并在获授权后准备目标分支 PR |
 
 当前执行顺序固定为：
 
@@ -45,8 +45,8 @@ E0 工作区与证据冻结（完成）
   -> E1 restart 证据加固与正式 3/3（完成）
   -> E2 StarryOS manual/neural 正式 5 对（完成）
   -> E3 同源 ONNX 与 RKNN NPU 主路线（完成）
-  -> E4 ONNX Runtime CPU 对照路线（执行中）
-  -> E5 总体验收、报告和视频
+  -> E4 ONNX Runtime CPU 对照路线（完成）
+  -> E5 总体验收、报告和视频（文档完成；视频/PR 待完成）
 ```
 
 E0-E2 的正式证据已冻结，不因 M4 结果调整阈值或重跑成功 half。E3/E4 可以共享同一 ONNX 与 golden corpus，但 RKNN 工具链、ORT 工具链和板端 Runtime 必须分别锁定，不能用 host 成功替代实体 StarryOS 结果。
@@ -80,7 +80,7 @@ E0-E2 的正式证据已冻结，不因 M4 结果调整阈值或重跑成功 hal
 
 ## 4. E0：冻结当前实现并建立可复跑基线
 
-### 4.1 待完成动作
+### 4.1 执行清单
 
 - [x] 将本轮 restart UART 加固的精确文件从 Windows 同步到 WSL2 开发 worktree。
 - [x] 保持 shell/Python 文件原有可执行位，统一 LF。
@@ -347,9 +347,10 @@ M4-3 物理 spike 记录（2026-08-04）：
 M4-4 clean resource 与正式闭环记录（2026-08-04 至 2026-08-05）：
 
 - `rknpu-formal-696bc2f-resource-01-20260804` 来自 clean commit `696bc2f467beb073b21f7e729623445f6a61a684`，完成 20 次 context init/destroy 和 19 次 probe inference；第一次销毁后的 RSS 为 5,164 KiB，最终为 5,172 KiB，增长 8 KiB，rootfs 剩余 51.13%。10,000-vector 分析、Runtime/driver、raw、嵌入产物和递归 checksum 均通过。
-- 闭环正式活动 `rknpu-control-full-formal-20260805-v8/rknpu-full/run-001..005` 全部来自 clean commit `c3f01dc34b83695eddf8da83cf4ed71622f64f7c`，每轮 1,800 个样本，共 9,000/9,000 ACK，ERROR、timeout、retransmission、recovery 均为 0；Runtime API 为 2.3.2、driver 为 0.9.8，模型 SHA-256 保持 `2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`。
+- 闭环正式活动 [`rknpu-control-full-formal-20260805-v8`](results/orangepi-5-plus/rknpu-control-full-formal-20260805-v8/) 的 `rknpu-full/run-001..005` 全部来自 clean commit `c3f01dc34b83695eddf8da83cf4ed71622f64f7c`，每轮 1,800 个样本，共 9,000/9,000 ACK，ERROR、timeout、retransmission、recovery 均为 0；Runtime API 为 2.3.2、driver 为 0.9.8，模型 SHA-256 保持 `2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`。
 - 五轮 full-loop p99 为 13,502/13,492/13,611/13,456/13,520 us，NPU device p99 为 1,670/1,669/1,666/1,678/1,678 us。每轮唯一 deadline miss 都是 `sequence=1`：全样本仍保留 5/9,000 miss，首周期 worst 为 145,522 us；其后 8,995 个周期为 0 miss，跨五轮 worst 为 17,884 us。该分层只解释 cold-start 成本，不从总指标中删除失败周期。
-- 聚合器提交 `1d2af15c2` 验证每轮固定 9 文件 manifest、clean source、输入/输出身份、UART 双份哈希、raw/RKNN 数值和版本；提交 `398932fef` 进一步从 raw CSV 重算全样本、首周期和后续周期。不可覆盖的 v2 聚合文件为 `tmp/competition/ivc/rknpu-control-full-formal-20260805-v8-aggregate-v2-398932fef.json`，SHA-256 为 `dfc7d844b4d219992d72e7b8be22a18be6b49d4e18feca993df2eaad2eff6f27`。
+- 聚合器提交 `1d2af15c2` 验证每轮固定 9 文件 manifest、clean source、输入/输出身份、UART 双份哈希、raw/RKNN 数值和版本；提交 `398932fef` 进一步从 raw CSV 重算全样本、首周期和后续周期。不可覆盖的 [v2 聚合文件](results/orangepi-5-plus/rknpu-control-full-formal-20260805-v8/rknpu-control-full-formal-20260805-v8-aggregate-v2-398932fef.json) SHA-256 为 `dfc7d844b4d219992d72e7b8be22a18be6b49d4e18feca993df2eaad2eff6f27`。
+- commit `2998356c5` 将五轮 console/raw/RKNN CSV、metadata、summary、stage log、per-run manifest 和两版 aggregate 原样归档；归档不包含 rootfs、Toolkit wheel、Runtime library 或其他 vendor binary。迁移后独立重聚合除 `campaign.path` 自定位字段外与冻结 v2 aggregate 完全一致。
 
 ### 7.4 RKNN go/no-go
 
@@ -377,7 +378,7 @@ ONNX Runtime 路线定位为 CPU 对照和标准 Runtime 兼容性增强项，�
 4. [x] 完成静态动态链接审计：`libonnxruntime.so.1.25.0` 为 19,215,360 bytes，最高要求 GLIBC 2.27、GLIBCXX 3.4.21、CXXABI 1.3.11；依赖和许可证哈希冻结在 `onnxruntime-1.25.0-source.json`。
 5. [x] 用 exact C API runner 在 StarryOS glibc rootfs 完成 `.ort` 加载、10,000-vector 离线差分、线程/futex/mmap/时间/文件 ABI 和内存/空间门。
 6. [x] 把 ORT CPU EP 接入现有 StarryOS IVC controller，并在实体 StarryOS→Zephyr smoke 完成 20/20 ACK、逐样本 actuator 交叉核对、快照回收和 Linux 恢复。
-7. [ ] 按下述预注册门从同一 clean commit 执行 5 次 full 闭环；若门失败则保留失败 run，不修改离线门或 NPU 正式结果。
+7. [x] 按下述预注册门从同一 clean commit 执行 5 次 full 闭环；失败 run 原样保留，最终 v4 从新目录完成全部五轮且不修改离线门或 NPU 正式结果。
 
 环境拆分为两条可复现路径：核心 ONNX/RKNN 转换继续使用锁定的 Python 3.10.12；ORT 导出和 host 验证使用独立 CPython 3.12.11、ONNX Runtime 1.25.0 和 hash lock。目标端先使用官方 AArch64 glibc 完整 Runtime，而不是尚无证据的 musl/minimal build；只有完整 Runtime 实体门通过且镜像成本确有必要时，才增加 reduced-operator minimal build 作为后续优化。
 
@@ -426,34 +427,44 @@ ORT full 第三次预注册修订记录（2026-08-05，`v3` 停止后、`v4` 前
 - commit `c05f651cb1617a134a06b732c0ce0460ab04b416` 只让 legacy 字段通过其声明类型后才可参与回退或冲突比较。来自第四轮的确定性回归在旧实现上失败、修复后通过；原有“类型正确但数值冲突的 legacy 必须拒绝”测试继续通过，完整 Python 回归为 210/210。
 - 修复后的 analyzer 对未改动的 `v3/run-004` 独立复核通过：仅 sequence 1 有一次 deadline miss，full-loop p99/max 为 `12278/124817 us`，throughput 为 `9.993105 msg/s`，ORT wall p99/max 为 `175584/17172167 ns`，1,800 个 actuator 全部一致。该修订不改变 producer、模型、Runtime、镜像、采样计划或验收阈值；`v4` 必须从包含本记录的 clean commit 和新目录重新执行全部五轮。
 
+E4 正式 full 记录（2026-08-05）：
+
+- [`ort-control-full-formal-20260805-v4`](results/orangepi-5-plus/ort-control-full-formal-20260805-v4/) 从 clean commit `0110647de52f5e2ad6b550cb594780d7506ffecf` 在同一实体板 `bf61f4d4a1d994ad` 完成五次全新冷启动。五轮均为 1,800/1,800 ACK，共 9,000/9,000；errors、timeouts、retransmissions、recoveries、duplicates、ACK drops 和 protocol errors 全为 0，raw/ORT CSV 每轮均连续 1,800 行且 actuator 逐行一致。
+- 五轮各保留一个 `sequence=1` cold-start deadline miss，总计 5/9,000；`sequence=2..1800` 为 0/8,995。全样本 full-loop p99 范围为 `12023..12273 us`、max 范围为 `119778..143429 us`、throughput 范围为 `9.9920149415..9.9934469874 msg/s`；去掉首周期后 p99 为 `12021..12266 us`、跨轮 worst 为 `17546 us`。首周期仍保留在正式总指标中。
+- ORT 初始化范围为 `218201..224251 us`，inference wall p99 为 `174417..175583 ns`、max 为 `17128709..17160791 ns`。五轮均精确记录 ONNX Runtime `1.25.0`、`CPUExecutionProvider` 和模型 SHA-256 `3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887`。
+- 预注册、聚合 summary 与递归 campaign checksum 文件的 SHA-256 分别为 `04768defc09ce5e9a0069ead59bd01ea9fc696b32f46fdcd3619797327beded4`、`57edb5f8a1fc79bcbd43fb3fd77aec25151e7d773985a56b12e6d3530d14d3f9` 和 `601b435f376841dcfbb54e0c8bbac5fd9e6ffb09e4c08c4f67e73f2934d85a25`。在记录的原始正式路径上独立重跑聚合器得到与冻结 summary 字节一致的输出；迁入仓库后重聚合只改变 `campaign.path` 和 `preregistration.path` 两个自定位字段，忽略这两个字段后的结构化结果完全一致。每轮 manifest、campaign checksum、snapshot fsck 和 Linux `/dev/mmcblk1p2 ext4 rw` 恢复均再次验证。
+- commit `7c9da6e5a` 将 ORT v1-v4 的原始 console、raw/ORT CSV、metadata、summary、manifests、聚合文件和 host logs 一并归档；未修改任何冻结结果内容。
+- `v1` 至 `v3` 仍作为不可覆盖的失败活动保留在相邻结果目录；它们不计入 v4 的五轮，也没有用补跑替换失败 run。
+
 退出条件：
 
 - [x] `.ort`、operator config、host 工具链 lock 和官方 AArch64 Runtime 来源/哈希均已冻结并可复核。
 - [x] native/ORT 数值和执行器命令满足预注册门。
 - [x] 实体结果明确记录 `backend=onnxruntime-cpu` 和 `provider=CPUExecutionProvider`，且不存在静默回退。
+- [x] 五次 clean full 均通过单轮门和 campaign formal gate；全样本与 post-first 指标均从 raw 重新计算并通过独立复核。
 - [x] StarryOS ABI 与当前资源门可接受，因此不触发 no-go；仍不阻塞或改写 RKNN NPU 主路线和现有 native 交付。
 
 本项目不新增自定义 ONNX Runtime RKNPU Execution Provider，也不把 RKNN Runtime 结果标成 ONNX Runtime NPU。
 
 ## 9. E5：正式总矩阵与交付
 
-### 9.1 尚需完成的正式矩阵
+### 9.1 正式矩阵状态
 
 | 类别 | 配置 | 次数 |
 | --- | --- | ---: |
 | 控制 | StarryOS neural RKNN NPU full | 5（已完成，clean v8） |
-| 控制 | StarryOS neural ONNX Runtime CPU full | 5（smoke 已通过；门限已在首次 full 前冻结） |
-| 健康检查 | 每个最终 smoke 镜像 | 3 |
+| 控制 | StarryOS neural ONNX Runtime CPU full | 5（已完成，clean v4，formal gate=true） |
+| 生命周期 | RKNN/ORT 每轮冷启动、snapshot fsck、Linux 恢复 | 10/10（随两组 formal full 完成） |
 
 M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERROR、restart recovery 的 3/3 结果不重复采集；除非最终代码或镜像变化会影响其结论，届时必须建立新的预注册 campaign，而不是覆盖旧证据。
 
 ### 9.2 文档更新
 
-- [ ] `competition/design.md`：StarryOS 三任务架构、重启状态机、ONNX/RKNN/ORT 边界。
-- [ ] `competition/test-report.md`：只引用通过正式门的结果，包含不利指标和 no-go 记录。
-- [ ] `competition/reproduce.md`：从 clean WSL2 到板卡部署、运行、恢复和回收的单命令流程。
-- [ ] `competition/README.md`：给出最短评审入口和结果索引。
-- [ ] `competition/video-storyboard.md`：5 分钟内展示自动化、三任务、三种故障、manual/neural 和真实 backend 证据。
+- [x] `competition/design.md`：StarryOS 三任务架构、重启状态机、ONNX/RKNN/ORT 边界。
+- [x] `competition/test-report.md`：只引用通过正式门的结果，包含不利指标和 no-go 记录。
+- [x] `competition/reproduce.md`：从 clean WSL2 到板卡部署、运行、恢复和回收的单命令流程。
+- [x] `competition/README.md`：给出最短评审入口和结果索引。
+- [x] `competition/video-storyboard.md`：5 分钟内展示自动化、三任务、三种故障、manual/neural 和真实 backend 证据。
 
 ### 9.3 最终完成定义
 
@@ -464,9 +475,9 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 - [x] ONNX 是唯一跨后端模型来源；native、ONNX、RKNN 与 ORT artifact/工具链均可追溯，ORT 实体 ABI 门已在 E4 独立通过。
 - [x] RKNN 后端已有 clean resource run、真实 RK3588 NPU 10,000-vector 证据和 5 次 clean StarryOS -> Zephyr formal full；dirty spike 只保留为早期可行性记录。
 - [x] ORT CPU 后端已通过实体门，明确记录为 CPUExecutionProvider，不冒充 NPU 路线。
-- [ ] 每个正式结论均能追溯到 clean commit、配置、镜像哈希、raw、summary 和 checksum。
+- [x] 每个正式结论均能追溯到 clean commit、配置、镜像哈希、raw、summary 和 checksum。
 - [x] WSL2 能自动完成板卡部署、冷启动、采集、恢复 Linux、fsck 和结果同步。
-- [ ] 设计、测试、复现和视频内容与冻结的最终数据一致。
+- [x] 设计、测试、复现和视频分镜内容与冻结的最终数据一致；实际视频文件仍待录制。
 
 ## 10. 风险与处理策略
 
@@ -484,6 +495,6 @@ M2 的受控干扰 5 对、双 soak、CPU1 stress 5 对，以及 ACK loss、ERRO
 
 ## 11. 最近三项动作
 
-1. 构建并冻结 ORT full rootfs/config，验证 dry-run、全量回归和 clean commit 后再开始 `run-001`。
-2. 按上述不可放宽门执行 5 次 ORT full，独立聚合 overall 与 post-first 指标；失败 run 原样保留，不用补跑替换。
-3. 把 M4-4 v8 的 5/9,000 首周期 miss 与其后 0/8,995 miss、ORT 离线 v2 和闭环 smoke/full 结果，一并收口到设计、测试、复现和视频文档。
+1. 按 `video-storyboard.md` 录制约 5 分钟演示，画面同时保留 clean source、backend 身份、formal summary/checksum 和 Linux 恢复证据。
+2. 对最终交付 commit 再执行链接、JSON、递归 checksum 与 clean-worktree 审核；冻结的 RKNN/ORT campaign 不因文档或录制重跑。
+3. 获得提交权限后检查目标 `dev` 无冲突，推送正式分支并按项目格式提交 PR；PR 不宣称尚未生成的视频文件。

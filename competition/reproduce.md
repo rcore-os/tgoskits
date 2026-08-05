@@ -49,6 +49,14 @@ This is an honest dirty-worktree attestation, not a replacement for a future
 committed revision. Generated build trees, `tmp/`, and retained result files
 are pruned from the source manifest.
 
+The later formal physical campaigns use clean commits instead of that
+historical dirty attestation. In particular, RKNN NPU v8 is pinned to
+`c3f01dc34b83695eddf8da83cf4ed71622f64f7c`, and ONNX Runtime CPU v4 is
+pinned to `0110647de52f5e2ad6b550cb594780d7506ffecf`. Reproducing either result
+requires a new clean worktree and a new result directory; do not run a formal
+campaign from the Windows working tree merely because its files have been
+synchronized into WSL2.
+
 ## 2. Environment
 
 The successful AxVisor checks used WSL Ubuntu with:
@@ -64,6 +72,14 @@ The successful AxVisor checks used WSL Ubuntu with:
 | Zephyr guest compiler | `aarch64-linux-gnu-gcc 11.4.0`, selected through the recorded `cross-compile` prefix shim |
 | Physical board | Xunlong Orange Pi 5 Plus, RK3588, 16 GiB DRAM |
 | Board automation host | WSL2 Ubuntu with a CH340 serial adapter at 1,500,000 baud and SSH access to the board Linux image |
+
+The model pipeline additionally uses two isolated, hash-locked environments:
+CPython 3.10.12 for ONNX/RKNN conversion and CPython 3.12.11 with ONNX Runtime
+1.25.0 for ORT export/host verification. Follow
+[`ivc/model/README.md`](ivc/model/README.md) for the exact hash-locked
+`uv pip sync --require-hashes` commands, deterministic rebuild, 10,000-vector,
+vendor-source, and license gates. Do not install the RKNN and ORT lock files
+into one environment.
 
 Typical Ubuntu packages are:
 
@@ -478,14 +494,20 @@ require `AXVISOR_HOST_FILESYSTEM_SYNCED`, and restore the TF-card Linux system.
 The run script retains the console, invokes `analyze_board.py`, and exits zero
 only after the analyzer validates controller/RTOS counts, StarryOS two-vCPU and
 network records, both guest shutdowns, host filesystem sync, and Linux restore.
-With the validated board root selector:
+With the validated AxVisor board root selector:
 
 ```sh
-export ORANGEPI_AXVISOR_HOST_ROOT=PARTUUID=5874edd8-1582-a144-a298-b139acd7b0e6
+export ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk0p2
 
 bash competition/ivc/run-orangepi-5-plus.sh smoke
 bash competition/ivc/run-orangepi-5-plus.sh full
 ```
+
+This name is from AxVisor's block enumeration: AxVisor `disk0p2` is the
+TF-card root filesystem that restored Linux reports as `/dev/mmcblk1p2`.
+Passing Linux's `/dev/mmcblk1p2` string to AxVisor selects its eMMC `disk1p2`
+`misc` partition and fails before guest boot. On another board, inspect both
+Linux and AxVisor enumeration rather than assuming the numbers are identical.
 
 By default, results are written to
 `tmp/competition/ivc/orangepi-last/{smoke,full}-{console.log,summary.json}`.
@@ -523,6 +545,198 @@ short success marker alone as sufficient evidence. Compressed logs, generated
 summaries, exact artifact/configuration hashes, and verification commands are
 retained under
 [`results/orangepi-starry-reference`](results/orangepi-starry-reference/).
+
+#### Reproduce the formal ONNX Runtime CPU campaign
+
+First create the locked ORT environment and verify the canonical model as
+documented in [`ivc/model/README.md`](ivc/model/README.md). Build the 1,800-cycle
+160 MiB control rootfs from the clean formal worktree:
+
+```sh
+export LIBCLANG_PATH=/usr/lib/llvm-14/lib
+export PATH=/home/seven_wsl/.cargo/bin:/home/seven_wsl/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export IVC_ORT_PYTHON=/home/seven_wsl/.cache/tgoskits/ivc-ort-py312/bin/python
+
+bash competition/ivc/starry/build-ort-control-rootfs.sh full
+sha256sum \
+  tmp/competition/ivc/starry/starryos.bin \
+  tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb \
+  tmp/competition/ivc/starry/starry-ivc-rootfs-ort-control.img \
+  competition/ivc/zephyr/build-board/zephyr/zephyr.bin \
+  competition/ivc/model/thermal-4x6x1-v1.ort
+```
+
+The v4 rootfs SHA-256 was
+`6884919950d96f38082e7cc647575bc040d25b7de3ae13c8aed828e39747615c`;
+the StarryOS kernel, DTB, Zephyr binary, and ORT model hashes were respectively
+`3bd0a4982d4b6ef278f1a3c20b88cec888bdac772fad119ed6d9fa4e4f9f33bd`,
+`0f533e1107894dd9b3f062f726fee012519c3e55ef0a2e81e2507e7e3ef303cd`,
+`d02b6de2677c8f2a26db1514ae7d6e0a1723ada329c59bc17b6f58333bd075ff`,
+and `3582869baf9b8cec722208d06f66acd680a64128b52875d22e7f0e43f2ed7887`.
+A different build must be treated as a new campaign, not labeled v4.
+
+Configure the existing SSH, serial, lease, and smart-plug integrations without
+printing their secrets. The following paths are the validated WSL2 layout;
+replace them when reproducing elsewhere:
+
+```sh
+export ORANGEPI_SSH_TARGET=orangepi@192.168.31.33
+export ORANGEPI_SSH_IDENTITY=/home/seven_wsl/.ssh/orangepi_automation
+export ORANGEPI_AXVISOR_HOST_ROOT=/dev/mmcblk0p2
+export TGOS_BOARD_POWER_CONFIG=/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc/.board-power.toml
+export ORANGEPI_POWER_PYTHON=/home/seven_wsl/.local/share/tgos-board-power-venv/bin/python
+
+test -z "$(git status --porcelain=v1)"
+bash competition/ivc/run-ort-control-campaign.sh \
+  --result-dir tmp/competition/ivc/ort-control-full-formal-YYYYMMDD-v1 \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --timeout 900
+```
+
+The wrapper refuses a dirty source or an existing result root. Before
+`run-001`, it writes the five-run order, artifact hashes, cold-start semantics,
+thresholds, and `replacement_runs_allowed=false` into `preregistration.json`.
+It then performs five independent boot/run/snapshot/fsck/Linux-restore cycles
+and aggregates only if every immutable run passes. A failed directory must be
+retained; start any amended campaign in a new directory and rerun all five.
+
+Independently verify the committed v4 archive without modifying it:
+
+```sh
+campaign=competition/results/orangepi-5-plus/ort-control-full-formal-20260805-v4/ort-full
+verify_dir=$(mktemp -d)
+
+python3 competition/ivc/aggregate_ort_campaign.py "$campaign" \
+  --expected-commit 0110647de52f5e2ad6b550cb594780d7506ffecf \
+  --output "$verify_dir/campaign-summary.json"
+
+python3 - "$campaign/campaign-summary.json" \
+  "$verify_dir/campaign-summary.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+captured = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+rebuilt = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for summary in (captured, rebuilt):
+    summary["campaign"]["path"] = "<campaign-root>"
+    summary["preregistration"]["path"] = "<preregistration>"
+if captured != rebuilt:
+    raise SystemExit("reaggregated ORT summary differs beyond relocation paths")
+print("ORT_REAGGREGATION_NORMALIZED_MATCH")
+PY
+
+for run_dir in "$campaign"/run-*; do
+  (cd "$run_dir" && sha256sum -c checksums.sha256)
+done
+(cd "$campaign" && sha256sum -c campaign-checksums.sha256)
+sha256sum \
+  "$campaign/preregistration.json" \
+  "$campaign/campaign-summary.json" \
+  "$campaign/campaign-checksums.sha256"
+```
+
+The final three digests must be
+`04768defc09ce5e9a0069ead59bd01ea9fc696b32f46fdcd3619797327beded4`,
+`57edb5f8a1fc79bcbd43fb3fd77aec25151e7d773985a56b12e6d3530d14d3f9`,
+and `601b435f376841dcfbb54e0c8bbac5fd9e6ffb09e4c08c4f67e73f2934d85a25`.
+The summary must report five runs, 9,000/9,000 ACK,
+`formal_gate_passed=true`, runtime 1.25.0, and
+`provider=CPUExecutionProvider`.
+
+The retained summary intentionally preserves the original formal `tmp/` paths.
+Reaggregating the relocated repository copy therefore changes exactly
+`campaign.path` and `preregistration.path`; the normalization above ignores
+only those two self-location fields and requires every measured value,
+threshold, identity, digest, and timestamp to remain equal. Do not edit the
+frozen summary to make a raw `cmp` pass. A raw byte-for-byte comparison was
+also completed before relocation while the campaign remained at its recorded
+formal path.
+
+#### Reproduce and verify the formal RKNN NPU campaign
+
+Use the separate CPython 3.10.12 RKNN environment and run every conversion,
+simulator, source/license, and deterministic rebuild check from
+[`ivc/model/README.md`](ivc/model/README.md). Reuse the SSH, AxVisor root,
+smart-plug config, and power-Python exports shown above, then build the
+RKNPU-enabled StarryOS kernel/DTB plus 20/1,800-cycle rootfs images:
+
+```sh
+export IVC_RKNN_PYTHON=/home/seven_wsl/.cache/tgoskits/ivc-rknn-py310-formal/bin/python
+
+bash competition/ivc/starry/build-rknpu-control.sh
+test -z "$(git status --porcelain=v1)"
+
+result_root=tmp/competition/ivc/rknpu-control-full-formal-YYYYMMDD-v1
+bash competition/ivc/run-orangepi-5-plus.sh rknpu-full \
+  --repeat 5 \
+  --board OrangePi-5-Plus \
+  --result-dir "$result_root" \
+  --timeout 900 \
+  --restore-linux \
+  --require-clean
+
+python3 competition/ivc/aggregate_rknpu_campaign.py \
+  "$result_root/rknpu-full" \
+  --expected-runs 5 \
+  --expected-count 1800 \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --output "$result_root/aggregate.json"
+```
+
+The generic repeated runner does not create a top-level RKNN preregistration
+file. For a new formal claim, freeze source/artifact hashes, five-run order,
+cold-start semantics, thresholds, and no-replacement policy in a separate
+read-only contract before invoking it. The retained v8 thresholds and
+amendments are recorded in [`execution-plan.md`](execution-plan.md); do not
+retroactively infer a contract from a successful output.
+
+The repository-retained v8 archive contains no rootfs, Toolkit wheel, Runtime
+library, or other vendor binary. It contains the five UART logs, raw/RKNN CSV
+pairs, metadata, summaries, stage logs, and per-run manifests. Verify it and
+recompute the aggregate as follows:
+
+```sh
+rknpu_root=competition/results/orangepi-5-plus/rknpu-control-full-formal-20260805-v8
+rknpu_campaign="$rknpu_root/rknpu-full"
+rknpu_frozen="$rknpu_root/rknpu-control-full-formal-20260805-v8-aggregate-v2-398932fef.json"
+rknpu_verify_dir=$(mktemp -d)
+
+for run_dir in "$rknpu_campaign"/run-*; do
+  (cd "$run_dir" && sha256sum -c checksums.sha256)
+done
+
+python3 competition/ivc/aggregate_rknpu_campaign.py "$rknpu_campaign" \
+  --expected-runs 5 \
+  --expected-count 1800 \
+  --expected-commit c3f01dc34b83695eddf8da83cf4ed71622f64f7c \
+  --output "$rknpu_verify_dir/aggregate.json"
+
+python3 - "$rknpu_frozen" "$rknpu_verify_dir/aggregate.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+captured = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+rebuilt = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for summary in (captured, rebuilt):
+    summary["campaign"]["path"] = "<campaign-root>"
+if captured != rebuilt:
+    raise SystemExit("reaggregated RKNN summary differs beyond relocation path")
+print("RKNN_REAGGREGATION_NORMALIZED_MATCH")
+PY
+
+sha256sum "$rknpu_frozen"
+```
+
+The final digest must be
+`dfc7d844b4d219992d72e7b8be22a18be6b49d4e18feca993df2eaad2eff6f27`.
+The aggregate must report clean source, five runs, 9,000/9,000 ACK, Runtime
+2.3.2, driver 0.9.8, model hash
+`2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8`,
+five sequence-1 misses, and zero misses in the other 8,995 cycles. Positive
+device times and `host_submit=false` establish NPU execution; they do not make
+an acceleration claim.
 
 ## 8. Real-time benchmarks
 
@@ -633,7 +847,14 @@ For every QEMU, native-RTOS, stress, and soak run, retain in a new directory:
 - raw samples before derived statistics when the benchmark emits them; the
   native Zephyr baseline is an explicit exception whose retained console has
   aggregate records only and no serialized individual-sample series;
-- analyzer version/command and derived JSON/CSV; and
+- analyzer version/command and derived JSON/CSV;
+- backend identity, Runtime/driver version, model hash, and raw inference
+  samples when the claim distinguishes native CPU, ORT CPU, or RKNN NPU;
+- preregistration created before the first formal run, immutable failed-run
+  directories, per-run manifests, and an independently rebuilt campaign
+  summary for repeated physical campaigns;
+- synchronized block snapshot, read-only fsck result, smart-plug lifecycle,
+  and restored Linux root-device/FSType/options for every board run; and
 - a limitations note for clock source, QEMU TCG, logging perturbation, and any
   platform difference.
 
