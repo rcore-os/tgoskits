@@ -136,7 +136,6 @@ arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5.18", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.5.5", path = "virtualization/arm_vgic" }
 ax-alloc = { version = "0.8.14", path = "memory/ax-alloc", default-features = false }
-ax-allocator = { version = "0.5.6", path = "memory/axallocator" }
 ax-api = { version = "0.7.6", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 cpu-local = { version = "0.1.2", path = "components/cpu-local" }
@@ -201,7 +200,6 @@ axvm = { version = "0.5.25", path = "virtualization/axvm", default-features = fa
 axvm-types = { version = "0.7.2", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8.3", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.1.1", path = "drivers/blk/ahci-driver" }
-bitmap-allocator = { version = "0.4.6", path = "memory/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }

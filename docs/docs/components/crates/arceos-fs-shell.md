@@ -46,7 +46,6 @@ graph LR
 
 ### 间接依赖
 - `ax-alloc`
-- `ax-allocator`
 - `ax-api`
 - `ax-arm-pl031`
 - `ax-cpu`

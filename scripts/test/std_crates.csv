@@ -3,7 +3,6 @@ aarch64_sysreg
 ax-arm-pl031
 arm_vgic
 axaddrspace
-ax-allocator
 axbacktrace
 axdevice
 axdevice_base
@@ -16,7 +15,6 @@ axpoll
 ax-sched
 axvm
 axvmconfig
-bitmap-allocator
 ax-cpumask
 irq-framework
 ax-kernel-guard
