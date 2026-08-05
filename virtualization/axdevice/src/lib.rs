@@ -40,6 +40,7 @@ mod fw_cfg;
 mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
+mod resources;
 mod serial;
 mod service;
 #[cfg(target_arch = "x86_64")]
@@ -69,6 +70,12 @@ pub use loongarch_pch_pic::{
 };
 pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
+pub use resources::{
+    DevicePlanRequest, DeviceRequirement, DeviceRequirements, MsiResourceRequest,
+    ResolvedDeviceResources, ResolvedMsi, ResolvedWiredIrq, ResourceClaim, ResourceClaimSet,
+    ResourceLease, ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest,
+    ResourceSlot, VmResourcePlan, VmResourcePlanner,
+};
 pub use serial::{
     NullSerialBackend, NullSerialBackendFactory, Pl011, SerialBackend, SerialBackendFactory,
     Uart16550, build_16550_mmio, build_16550_port, build_pl011_mmio,
