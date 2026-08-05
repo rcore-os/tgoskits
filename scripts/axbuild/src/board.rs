@@ -114,7 +114,6 @@ pub(crate) async fn connect_with_session_files(
     println!("Allocated board session:");
     println!("  board_type: {board_type}");
     println!("  board_id: {}", session.info().board_id);
-    println!("  session_id: {}", session.info().session_id);
     println!("  lease_expires_at: {}", session.info().lease_expires_at);
     println!("  boot_mode: {}", session.info().boot_mode);
 

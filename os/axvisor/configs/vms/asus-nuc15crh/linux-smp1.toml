@@ -33,7 +33,7 @@ ramdisk_path = "../../../../../tmp/initramfs-x86_64-busybox.cpio"
 # The load address of the initramfs image.
 ramdisk_load_addr = 0x0600_0000
 # Linux kernel command line.
-cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 ignore_loglevel loglevel=8 rdinit=/init devtmpfs.mount=1 acpi=off pci=off nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init"
+cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 ignore_loglevel loglevel=8 rdinit=/init devtmpfs.mount=1 acpi=off pci=off nox2apic tsc=unstable no_timer_check 8250.nr_uarts=1 initcall_blacklist=ahci_pci_driver_init,i8042_init"
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.

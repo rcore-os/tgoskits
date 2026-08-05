@@ -816,6 +816,20 @@ fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
 }
 
 #[test]
+fn asus_nuc15crh_linux_limits_legacy_serial_probe() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/asus-nuc15crh/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+    let cmdline = config.kernel.cmdline;
+
+    assert!(
+        cmdline.contains("8250.nr_uarts=1"),
+        "{path} should only probe the machine-owned COM1 UART on the ASUS NUC HTTP Boot board path"
+    );
+}
+
+#[test]
 fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 

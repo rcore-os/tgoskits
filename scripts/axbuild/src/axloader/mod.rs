@@ -178,23 +178,17 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
 
     let kernel = (smoke_target.kernel_elf)();
     let http_server = SmokeHttpServer::start(kernel.clone())?;
-    let kernel_url = format!(
-        "http://{QEMU_HOST_GATEWAY}:{}/kernel.elf",
-        http_server.port()
-    );
     let boot_line = format!(
         concat!(
             "AXLOADER BOOT {{",
             "\"protocol_version\":1,",
             "\"boot_id\":\"ci-http-smoke\",",
-            "\"kernel_url\":\"{}\",",
             "\"kernel_size\":{},",
             "\"image_format\":\"elf64\",",
             "\"arch\":\"{}\",",
             "\"entry_symbol\":null",
             "}}\n"
         ),
-        kernel_url,
         kernel.len(),
         smoke_target.arch,
     );
