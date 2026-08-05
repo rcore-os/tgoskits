@@ -1,0 +1,100 @@
+{
+  "board": {
+    "cpu_temp_milli_c": 44384,
+    "hostname": "orangepi5plus",
+    "id": "bf61f4d4a1d994ad",
+    "type": "OrangePi-5-Plus"
+  },
+  "inputs": {
+    "board_config": {
+      "path": "competition/ivc/config/board-orangepi-5-plus-rknpu-control.toml",
+      "sha256": "3cb1e07d0dc74bf3bd9f43dc429fcf21136537545a0e5750cdf9de859465f117",
+      "size_bytes": 622
+    },
+    "build_config": {
+      "path": "competition/ivc/config/axvisor-orangepi-5-plus-rknpu-control.toml",
+      "sha256": "98692f47257d438017fc99b49519a8020c8de1219e4998ea48cd352375823338",
+      "size_bytes": 320
+    },
+    "rootfs": {
+      "path": "tmp/competition/ivc/starry/starry-ivc-rootfs-rknpu.img",
+      "sha256": "65a2cb281a6eb7b3aea054183c290e86d9d87b760b4971b29f5d3c41183bb583",
+      "size_bytes": 134217728
+    },
+    "starry_dtb": {
+      "path": "tmp/competition/ivc/starry/starry-orangepi-5-plus-rknpu.dtb",
+      "sha256": "a8c447bd6c7ab3d687342a882532ace28cbc9b35bf49ef3557abb64888a5f259",
+      "size_bytes": 1922
+    },
+    "starry_kernel": {
+      "path": "tmp/competition/ivc/starry/starryos-rknpu.bin",
+      "sha256": "f75c3a74c513307ff72ac24ad27efbcb2a080fc953133de2ddfefdbfb2168269",
+      "size_bytes": 13791280
+    },
+    "zephyr_guest": {
+      "path": "competition/ivc/zephyr/build-board/zephyr/zephyr.bin",
+      "sha256": "b3fdba64504011e5273b5a6094ddab98b36de0d48fe39e2514559c17cf321ca5",
+      "size_bytes": 121568
+    }
+  },
+  "model": {
+    "artifact": {
+      "path": "competition/ivc/model/thermal-4x6x1-v1-rk3588-fp16.rknn",
+      "sha256": "2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8",
+      "size_bytes": 15873
+    },
+    "backend": "rknn-npu",
+    "id": "thermal-4x6x1-v1",
+    "runtime_version": "2.3.2"
+  },
+  "outputs": {
+    "console_log": {
+      "path": "tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-001/console.log.gz",
+      "sha256": "5567593c4d3b469514c37531158f59d09a5e22c17170395e518cf457dd615b21",
+      "size_bytes": 15421
+    },
+    "raw_csv": {
+      "path": "tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-001/raw.csv.gz",
+      "sha256": "9f0ae359c5fb89e965d35e2bade4b9724ba7fc464ccb39ac443b23ae59eb54f1",
+      "size_bytes": 56558
+    },
+    "rknn_csv": {
+      "path": "tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-001/rknn.csv.gz",
+      "sha256": "defa908498caf50c93870f765508a47b640445b4b9df627a9efc31d0129de709",
+      "size_bytes": 30769
+    },
+    "summary": {
+      "path": "tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-001/summary.json",
+      "sha256": "fdbf57d098c9a131ce4cb692ce3477b48ada91c77621fad356cddedaa603eb4d",
+      "size_bytes": 3909
+    }
+  },
+  "result": {
+    "controller_policy": "neural",
+    "deadline_misses": 1,
+    "dropped_samples": 0,
+    "rknn_sample_count": 1800,
+    "sample_count": 1800,
+    "successful_marker": true,
+    "validated": true
+  },
+  "run": {
+    "board_type": "OrangePi-5-Plus",
+    "execution_order": 1,
+    "exit_status": 0,
+    "finished_at": "2026-08-04T20:18:51Z",
+    "profile": "rknpu-full",
+    "repeat_count": 5,
+    "run_id": "run-001",
+    "run_number": 1,
+    "started_at": "2026-08-04T20:11:32Z"
+  },
+  "schema_version": 1,
+  "source": {
+    "branch": "experiment/m4-formal-20260804",
+    "commit": "c3f01dc34b83695eddf8da83cf4ed71622f64f7c",
+    "dirty": false,
+    "tracked_change_count": 0,
+    "untracked_file_count": 0
+  }
+}

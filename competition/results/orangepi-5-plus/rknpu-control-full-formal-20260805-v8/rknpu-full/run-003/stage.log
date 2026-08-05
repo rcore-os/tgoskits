@@ -1,0 +1,19 @@
+
+sent 13,794,764 bytes  received 35 bytes  9,196,532.67 bytes/sec
+total size is 13,791,280  speedup is 1.00
+
+sent 2,063 bytes  received 35 bytes  1,398.67 bytes/sec
+total size is 1,922  speedup is 0.92
+
+sent 134,250,630 bytes  received 35 bytes  89,500,443.33 bytes/sec
+total size is 134,217,728  speedup is 1.00
+
+sent 134,250,624 bytes  received 35 bytes  89,500,439.33 bytes/sec
+total size is 134,217,728  speedup is 1.00
+starryos-rknpu.bin: OK
+starry-orangepi-5-plus-rknpu.dtb: OK
+starry-ivc-rootfs-rknpu-smoke.img: OK
+starry-ivc-rootfs-rknpu.img: OK
+/dev/mmcblk1p2 ext4   rw,noatime,errors=remount-ro,commit=600
+BOARD_RKNN_CONTROL_STAGE_HASHES_VERIFIED
+BOARD_RKNN_CONTROL_STAGE_PASS destination=/home/orangepi/axvisor-guest artifacts=4

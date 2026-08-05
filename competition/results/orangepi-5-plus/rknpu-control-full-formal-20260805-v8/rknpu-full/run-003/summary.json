@@ -1,0 +1,116 @@
+{
+  "board": {
+    "board_id": "bf61f4d4a1d994ad",
+    "cpu_temp_milli_c": 44384,
+    "hostname": "orangepi5plus"
+  },
+  "controller": {
+    "acknowledged": 1800,
+    "deadline_misses": 1,
+    "errors": 0,
+    "full_loop_max_us": 145522,
+    "full_loop_p50_us": 8697,
+    "full_loop_p95_us": 13146,
+    "full_loop_p99_us": 13611,
+    "iae_milli_c_s": 687067.6,
+    "max_overshoot_milli_c": 13424,
+    "policy": "neural",
+    "pre_send_max_us": 22981,
+    "pre_send_p50_us": 1718,
+    "pre_send_p95_us": 1782,
+    "pre_send_p99_us": 1837,
+    "recoveries": 0,
+    "retransmissions": 0,
+    "rmse_milli_c": 5932.505154467021,
+    "sent": 1800,
+    "success_percent": 100.0,
+    "throughput_msg_s": 9.99236680933219,
+    "timeouts": 0,
+    "transport_max_us": 122541,
+    "transport_p50_us": 6958,
+    "transport_p95_us": 11354,
+    "transport_p99_us": 11763
+  },
+  "guest": "starryos",
+  "lifecycle": {
+    "block_snapshot": {
+      "backing_index": 0,
+      "filesystem_check": "clean",
+      "image_bytes": 134217728,
+      "image_path": "/home/orangepi/ivc-rn",
+      "image_sha256": "6724b036378f83be588a6dd4463a435f999072c21304fc72ef9074986ab0294f",
+      "vm_id": 1
+    },
+    "board_linux_restored": true,
+    "host_filesystem_synced": true,
+    "rtos_powered_off": true,
+    "starry_done": true,
+    "volatile_block_snapshotted": true
+  },
+  "network": {
+    "iface": "eth0",
+    "ip": "10.0.0.1/24",
+    "mac": "unknown",
+    "peer": "10.0.0.2",
+    "segment": 1,
+    "udp_port": 5500
+  },
+  "platform": "orangepi-5-plus",
+  "profile": "normal",
+  "raw_samples": {
+    "artifact_sha256": "ea2d06dbdc254d13a04030da7e5aa9140e81db76f27eabaa91a386c6949d8d24",
+    "deadline_misses": 1,
+    "dropped_samples": 0,
+    "guest_manifest_sha256": "d46049141b6688b31cc0e634e567bdc70059a441d76ccdf336d28fb571be4094",
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m4-formal-20260804/tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-003/raw.csv.gz",
+    "sample_count": 1800,
+    "sha256": "d46049141b6688b31cc0e634e567bdc70059a441d76ccdf336d28fb571be4094",
+    "uart_sha256": "d46049141b6688b31cc0e634e567bdc70059a441d76ccdf336d28fb571be4094",
+    "uart_sha256_complete": true
+  },
+  "rknn_samples": {
+    "actuator_matches": 1800,
+    "artifact_sha256": "c0581060d3e4ba1160a73fdf3b7228f27afb5a7d6baf4785b4fffdd246badce8",
+    "core_mask": 0,
+    "device_max_us": 16662,
+    "device_p50_us": 1593,
+    "device_p99_us": 1666,
+    "guest_manifest_sha256": "ac8d047a2137bdf10b280a7424d9bd0777ec57bbe098c5f24b1474efcc49997b",
+    "initialization_us": 77451,
+    "model_sha256": "2ad3fecedc9767ee57cbcd31787f70297a8f8e2cfcdc8e07b81b949566d53bb8",
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m4-formal-20260804/tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-003/rknn.csv.gz",
+    "positive_device_times": 1800,
+    "runtime_api": "2.3.2",
+    "runtime_driver": "0.9.8",
+    "sample_count": 1800,
+    "sha256": "ac8d047a2137bdf10b280a7424d9bd0777ec57bbe098c5f24b1474efcc49997b",
+    "wall_max_ns": 22871625,
+    "wall_p50_ns": 1680291,
+    "wall_p99_ns": 1754667
+  },
+  "rtos": {
+    "accepted": 1800,
+    "acks_dropped": 0,
+    "acks_sent": 1800,
+    "applied": 1800,
+    "duplicates": 0,
+    "errors_sent": 0,
+    "profile": "normal",
+    "protocol_errors": 0,
+    "status_sent": 1800
+  },
+  "schema_version": 2,
+  "source_log": {
+    "content_sha256": "95e5fc40c006560bdf8c459f2985bff446242d38060730927f897b92a63e8b31",
+    "path": "/home/seven_wsl/Workspace/starry/tgoskits-rt-ivc-m4-formal-20260804/tmp/competition/ivc/rknpu-control-full-formal-20260805-v8/rknpu-full/run-003/console.log.gz",
+    "sha256": "fada871c0eaaadb8f9680643fd3f3fe663e67a5d102e21137c7b5bbdacab238b"
+  },
+  "starry": {
+    "backend": "rknn-npu",
+    "count": 1800,
+    "fault_profile": "none",
+    "mode": "neural",
+    "period_ms": 100,
+    "vcpus": 2
+  }
+}
