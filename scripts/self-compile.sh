@@ -159,12 +159,6 @@ echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JO
 	echo "[self-compile] Filtering workspace for ${ARCH}..."
 	/usr/bin/filter-workspace.sh "${ARCH}" Cargo.toml
 
-# Patch axalloc to 64G capacity
-echo "[self-compile] Patching page allocator to 64G..."
-if [ -f memory/ax-alloc/Cargo.toml ] && [ -s memory/ax-alloc/Cargo.toml ]; then
-    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' memory/ax-alloc/Cargo.toml
-fi
-
 export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Cincremental=false -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
 echo "[self-compile] Rustc version: \$(rustc --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unknown')"

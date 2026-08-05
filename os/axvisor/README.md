@@ -80,6 +80,12 @@ Guest configs are organized by platform first. QEMU configs live under `configs/
 
 On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps the legacy `axvm-bios` path and patches the generated multiboot info into the BIOS image, while `uefi` loads the external firmware from `uefi_firmware_path` without multiboot patching. Legacy UEFI configs that still use `bios_path` are accepted as a compatibility fallback.
 
+## Management Shell Syntax
+
+The AxVisor management shell tokenizes command lines with `shlex` POSIX-style rules. Single and double quotes group words, backslashes follow `shlex` escaping rules, and `""` or `''` produces an empty argument. Unclosed quotes and a trailing standalone backslash are syntax errors. Only ASCII shell whitespace separates arguments.
+
+Tokenization does not provide variable expansion, globbing, pipelines, general redirection, or job control. Command lookup, option validation, and handler behavior remain AxVisor-specific.
+
 ## Compilation
 
 AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart) chapter in the configuration documentation.

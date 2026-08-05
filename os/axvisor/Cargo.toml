@@ -48,6 +48,9 @@ backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
 
+[dependencies]
+shlex.workspace = true
+
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 anyhow.workspace = true
 log = "0.4"

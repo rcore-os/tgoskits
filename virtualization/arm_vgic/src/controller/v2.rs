@@ -30,7 +30,7 @@ impl GicV3Controller {
     ) -> VgicResult<u64> {
         validate_frame_access(
             RegisterRegion::Distributor,
-            self.inner.config.distributor().size(),
+            self.inner.config.distributor_size(),
             offset,
             width,
             "read",
@@ -82,7 +82,7 @@ impl GicV3Controller {
     ) -> VgicResult {
         validate_frame_access(
             RegisterRegion::Distributor,
-            self.inner.config.distributor().size(),
+            self.inner.config.distributor_size(),
             offset,
             width,
             "write",

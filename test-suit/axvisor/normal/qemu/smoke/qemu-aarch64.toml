@@ -23,11 +23,17 @@ fail_regex = [
   "(?m)^(?:echo|cat|rm):",
 ]
 success_regex = [
+  "(?m)^AXVISOR SHLEX  EMPTY\\s*$",
+  "(?m)^Command: vm start\\s*$",
+  "(?m)^Error: Invalid command syntax\\s*$",
   "(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$",
   "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$",
 ]
 shell_prefix = "axvisor:/$"
 shell_init_cmd = """
+echo 'AXVISOR SHLEX' "" EMPTY
+'help' vm start
+echo "unterminated
 echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
 cat /tmp/axvisor-nvme-rw
 rm -f /tmp/axvisor-nvme-rw

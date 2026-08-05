@@ -1,4 +1,8 @@
-use core::ptr::NonNull;
+use core::{
+    hint::spin_loop,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+};
 
 use log::trace;
 use tock_registers::{LocalRegisterCopy, interfaces::*};
@@ -19,6 +23,7 @@ pub struct Gic {
     gicd: VirtAddr,
     gicc: VirtAddr,
     gich: Option<HypervisorInterface>, // Optional for GICv2
+    cpu_targets: Option<&'static CpuTargetMap>,
 }
 
 unsafe impl Send for Gic {}
@@ -77,7 +82,18 @@ impl Gic {
                 }),
                 None => None,
             },
+            cpu_targets: None,
         }
+    }
+
+    /// Attaches the CPU-interface routing table populated during per-CPU init.
+    pub fn set_cpu_target_map(&mut self, cpu_targets: &'static CpuTargetMap) {
+        self.cpu_targets = Some(cpu_targets);
+    }
+
+    /// Returns the target bit associated with a host hardware CPU identifier.
+    pub fn target_for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<TargetList> {
+        self.cpu_targets?.for_hardware_cpu(hardware_cpu_id)
     }
 
     fn gicd(&self) -> &DistributorReg {
@@ -343,10 +359,188 @@ impl TargetList {
     }
 }
 
+const MAX_CPU_INTERFACES: usize = 8;
+const TARGET_INITIALIZING: u8 = u8::MAX;
+
+struct CpuTargetRoute {
+    hardware_cpu_id: AtomicUsize,
+    target: AtomicU8,
+}
+
+impl CpuTargetRoute {
+    const fn empty() -> Self {
+        Self {
+            hardware_cpu_id: AtomicUsize::new(0),
+            target: AtomicU8::new(0),
+        }
+    }
+}
+
+/// Error returned when registering a GICv2 CPU-interface route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuTargetMapError {
+    /// The logical CPU does not fit the eight GICv2 target bits.
+    InvalidLogicalCpu,
+    /// A banked target must contain exactly one CPU-interface bit.
+    InvalidTarget,
+    /// The logical CPU, hardware CPU, or target bit is already mapped differently.
+    ConflictingRoute,
+}
+
+/// GICv2 CPU-interface routes discovered from banked `GICD_ITARGETSR0` values.
+pub struct CpuTargetMap {
+    registration_lock: AtomicBool,
+    routes: [CpuTargetRoute; MAX_CPU_INTERFACES],
+}
+
+impl Default for CpuTargetMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpuTargetMap {
+    /// Creates an empty CPU route table.
+    pub const fn new() -> Self {
+        Self {
+            registration_lock: AtomicBool::new(false),
+            routes: [const { CpuTargetRoute::empty() }; MAX_CPU_INTERFACES],
+        }
+    }
+
+    /// Records one logical/hardware CPU association with its GICv2 target bit.
+    pub fn record(
+        &self,
+        logical_cpu: usize,
+        hardware_cpu_id: usize,
+        target: TargetList,
+    ) -> Result<(), CpuTargetMapError> {
+        let target = target.as_u8();
+        if logical_cpu >= MAX_CPU_INTERFACES {
+            return Err(CpuTargetMapError::InvalidLogicalCpu);
+        }
+        if !target.is_power_of_two() {
+            return Err(CpuTargetMapError::InvalidTarget);
+        }
+
+        while self
+            .registration_lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let result = self.record_locked(logical_cpu, hardware_cpu_id, target);
+        self.registration_lock.store(false, Ordering::Release);
+        result
+    }
+
+    fn record_locked(
+        &self,
+        logical_cpu: usize,
+        hardware_cpu_id: usize,
+        target: u8,
+    ) -> Result<(), CpuTargetMapError> {
+        for (index, route) in self.routes.iter().enumerate() {
+            let existing_target = route.target.load(Ordering::Acquire);
+            if existing_target == 0 || existing_target == TARGET_INITIALIZING {
+                continue;
+            }
+            let existing_hardware_cpu = route.hardware_cpu_id.load(Ordering::Relaxed);
+            if index == logical_cpu {
+                return if existing_hardware_cpu == hardware_cpu_id && existing_target == target {
+                    Ok(())
+                } else {
+                    Err(CpuTargetMapError::ConflictingRoute)
+                };
+            }
+            if existing_hardware_cpu == hardware_cpu_id || existing_target == target {
+                return Err(CpuTargetMapError::ConflictingRoute);
+            }
+        }
+
+        let route = &self.routes[logical_cpu];
+        route.target.store(TARGET_INITIALIZING, Ordering::Relaxed);
+        route
+            .hardware_cpu_id
+            .store(hardware_cpu_id, Ordering::Relaxed);
+        route.target.store(target, Ordering::Release);
+        Ok(())
+    }
+
+    /// Looks up the target bit for a host logical CPU index.
+    pub fn for_logical_cpu(&self, logical_cpu: usize) -> Option<TargetList> {
+        let target = self.routes.get(logical_cpu)?.target.load(Ordering::Acquire);
+        (target != 0 && target != TARGET_INITIALIZING).then(|| TargetList::from_raw(target))
+    }
+
+    /// Looks up the target bit for a host hardware CPU identifier.
+    pub fn for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<TargetList> {
+        self.routes.iter().find_map(|route| {
+            let target = route.target.load(Ordering::Acquire);
+            (target != 0
+                && target != TARGET_INITIALIZING
+                && route.hardware_cpu_id.load(Ordering::Relaxed) == hardware_cpu_id)
+                .then(|| TargetList::from_raw(target))
+        })
+    }
+}
+
 impl SGITarget {
     /// Create a new SGITarget with a specific CPU target list. list is Cpu interface IDs.
     pub fn new_target_list(val: TargetList) -> Self {
         Self::TargetList(val)
+    }
+}
+
+#[cfg(test)]
+mod cpu_target_map_tests {
+    use super::{CpuTargetMap, CpuTargetMapError, TargetList};
+
+    #[test]
+    fn records_and_looks_up_logical_and_hardware_cpu_routes() {
+        let routes = CpuTargetMap::new();
+        let target = TargetList::from_raw(0x40);
+
+        routes.record(5, 0x102, target).unwrap();
+
+        assert_eq!(routes.for_logical_cpu(5).unwrap().as_u8(), 0x40);
+        assert_eq!(routes.for_hardware_cpu(0x102).unwrap().as_u8(), 0x40);
+        assert!(routes.for_logical_cpu(4).is_none());
+        assert!(routes.for_hardware_cpu(0x103).is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_and_conflicting_routes_but_accepts_replay() {
+        let routes = CpuTargetMap::new();
+
+        assert_eq!(
+            routes.record(0, 0, TargetList::from_raw(0)),
+            Err(CpuTargetMapError::InvalidTarget)
+        );
+        assert_eq!(
+            routes.record(0, 0, TargetList::from_raw(3)),
+            Err(CpuTargetMapError::InvalidTarget)
+        );
+        assert_eq!(
+            routes.record(8, 0, TargetList::from_raw(1)),
+            Err(CpuTargetMapError::InvalidLogicalCpu)
+        );
+
+        routes.record(2, 0x102, TargetList::from_raw(0x80)).unwrap();
+        routes.record(2, 0x102, TargetList::from_raw(0x80)).unwrap();
+        assert_eq!(
+            routes.record(2, 0x103, TargetList::from_raw(0x80)),
+            Err(CpuTargetMapError::ConflictingRoute)
+        );
+        assert_eq!(
+            routes.record(3, 0x102, TargetList::from_raw(0x20)),
+            Err(CpuTargetMapError::ConflictingRoute)
+        );
+        assert_eq!(
+            routes.record(3, 0x103, TargetList::from_raw(0x80)),
+            Err(CpuTargetMapError::ConflictingRoute)
+        );
     }
 }
 #[derive(Debug, Clone, Copy)]

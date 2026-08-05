@@ -1,5 +1,4 @@
 use alloc::format;
-use core::sync::atomic::{AtomicU8, Ordering};
 
 use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
@@ -10,10 +9,7 @@ use crate::common::ioremap;
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
-// GICv2 represents CPU interfaces with one bit in an 8-bit target mask.
-const MAX_GIC_V2_CPU_INTERFACES: usize = 8;
-static CPU_TARGETS: [AtomicU8; MAX_GIC_V2_CPU_INTERFACES] =
-    [const { AtomicU8::new(0) }; MAX_GIC_V2_CPU_INTERFACES];
+static CPU_TARGETS: CpuTargetMap = CpuTargetMap::new();
 
 module_driver!(
     name: "GICv2",
@@ -70,6 +66,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into(), hyper) };
+    gic.set_cpu_target_map(&CPU_TARGETS);
     gic.init();
     let cpu = gic.cpu_interface();
     let trap = cpu.trap_operations();
@@ -138,7 +135,16 @@ pub fn init_cpu(cpu_idx: usize) {
             cpu.current_cpu_target()
         })
     };
-    record_cpu_target(cpu_idx, target);
+    let hardware_cpu_id = super::hardware_cpu_id(cpu_idx);
+    CPU_TARGETS
+        .record(cpu_idx, hardware_cpu_id, target)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to record GICv2 route for logical CPU {cpu_idx}, hardware CPU \
+                 {hardware_cpu_id:#x}, target {:#04x}: {error:?}",
+                target.as_u8()
+            )
+        });
 
     debug!(
         "GICCv2 initialized for logical CPU {cpu_idx}, target mask {:#04x}",
@@ -222,19 +228,6 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
     CPU_IF.send_sgi(sgi, target);
 }
 
-fn record_cpu_target(cpu_idx: usize, target: TargetList) {
-    let target_mask = target.as_u8();
-    assert!(
-        target_mask.is_power_of_two(),
-        "invalid GICv2 target mask {target_mask:#04x} for logical CPU {cpu_idx}"
-    );
-    let slot = CPU_TARGETS
-        .get(cpu_idx)
-        .unwrap_or_else(|| panic!("GICv2 logical CPU index out of range: {cpu_idx}"));
-    slot.store(target_mask, Ordering::Release);
-}
-
-fn cpu_target(cpu_idx: usize) -> Option<TargetList> {
-    let target_mask = CPU_TARGETS.get(cpu_idx)?.load(Ordering::Acquire);
-    (target_mask != 0).then(|| TargetList::from_raw(target_mask))
+pub(super) fn cpu_target(cpu_idx: usize) -> Option<TargetList> {
+    CPU_TARGETS.for_logical_cpu(cpu_idx)
 }

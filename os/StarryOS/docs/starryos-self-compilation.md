@@ -56,23 +56,17 @@
 
 **修复**: RISC-V QEMU 默认构建改走 `axplat-dyn`，`axplat-dyn/src/mem.rs` 的 `phys_ram_ranges()` 从 `somehal::mem::memory_map()` 动态读取 Free 区域。
 
-### 2. Bitmap 容量溢出
+### 2. 旧位图页分配器容量溢出
 
-**现象**: 修改 axconfig 为 8G 后，内核 panic:
+**现象**: 旧版 `ax-allocator` 位图页分配路径中，修改 axconfig 为 8G 后，内核 panic:
 
 ```
 bitmap capacity exceeded: need 3145728 pages but CAP is 1048576
 ```
 
-**根因**: 默认 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。8GB 需要 2M pages > 1M CAP。
+**根因**: 旧默认 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。8GB 需要 2M pages > 1M CAP。
 
-**修复** (`memory/ax-alloc/Cargo.toml`):
-```toml
-# Before
-default = ["tlsf", "ax-allocator/page-alloc-4g"]
-# After
-default = ["tlsf", "ax-allocator/page-alloc-64g"]  # 16M bits = 64GB
-```
+**当前状态**: `ax-alloc` 已不再依赖 `ax-allocator` / `bitmap-allocator`，主线改用 `tlsf` 或 `buddy-slab-allocator` 后端，因此不再通过 `page-alloc-*` feature 调整容量。
 
 ### 3. TMPFS 挂载失败
 
@@ -295,7 +289,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉
 | 文件 | 变更 |
 |------|------|
 | 旧 `axconfig.toml` | phys-memory-size: 512M → 8G |
-| `axalloc/Cargo.toml` | page-alloc-4g → page-alloc-64g |
+| `axalloc/Cargo.toml` | 旧位图页分配容量调整，当前已由 `ax-alloc` 后端清理替代 |
 | `syscall/mod.rs` | fsopen/fspick/open_tree → ENOSYS |
 | `linker.ld` | PROVIDE _ex_table_start/end |
 | `axplat-dyn/src/mem.rs` | phys_ram_ranges 从 memory_map 动态读取 |

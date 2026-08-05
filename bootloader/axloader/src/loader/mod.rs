@@ -46,7 +46,6 @@ fn fetch_control_offer() -> bool {
                 offer.image_format,
                 offer.kernel_size
             );
-            logln!("kernel_url: {}", offer.kernel_url);
             if let Some(entry_symbol) = offer.entry_symbol.as_deref() {
                 logln!("entry_symbol: {entry_symbol}");
             }

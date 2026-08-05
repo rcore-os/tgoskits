@@ -5,7 +5,7 @@ sidebar_label: "概述"
 
 # 概述
 
-TGOSKits 仓库包含 **146** 个 crate，按仓库内直接路径依赖自底向上分为 **16** 层。
+TGOSKits 仓库包含 **144** 个 crate，按仓库内直接路径依赖自底向上分为 **16** 层。
 
 ## 分类统计
 
@@ -17,7 +17,7 @@ TGOSKits 仓库包含 **146** 个 crate，按仓库内直接路径依赖自底�
 | 工具层 | 2 |
 | 平台层 | 1 |
 | 测试层 | 17 |
-| 组件层 | 92 |
+| 组件层 | 90 |
 
 ## 依赖图
 
@@ -44,7 +44,7 @@ flowchart TB
     subgraph sg_plat["平台层"]
         p1["axplat-dyn"]
     end
-    subgraph sg_comp["组件层 (92 crates)"]
+    subgraph sg_comp["组件层 (90 crates)"]
         direction LR
         c1["驱动 / 文件系统 / 网络"]
         c2["内存 / 平台 / 调度"]
@@ -106,7 +106,6 @@ flowchart TB
 | `arm_vcpu` | 组件层 | `virtualization/arm_vcpu` | 6 | 1 | [查看](crates/arm-vcpu) |
 | `arm_vgic` | 组件层 | `virtualization/arm_vgic` | 6 | 2 | [查看](crates/arm-vgic) |
 | `ax-alloc` | 内存层 | `memory/ax-alloc` | 6 | 11 | [查看](crates/ax-alloc) |
-| `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
 | `ax-cpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](crates/ax-cpu) |
@@ -168,7 +167,6 @@ flowchart TB
 | `axvisor_api_proc` | 组件层 | `virtualization/axvisor_api_proc` | 0 | 1 | [查看](crates/axvisor-api-proc) |
 | `axvm` | 组件层 | `virtualization/axvm` | 16 | 1 | [查看](crates/axvm) |
 | `axvmconfig` | 组件层 | `virtualization/axvmconfig` | 1 | 4 | [查看](crates/axvmconfig) |
-| `bitmap-allocator` | 组件层 | `memory/bitmap-allocator` | 0 | 1 | [查看](crates/bitmap-allocator) |
 | `bwbench-client` | ArceOS 层 | `os/arceos/tools/bwbench_client` | 0 | 0 | [查看](crates/bwbench-client) |
 | `define-simple-traits` | 组件层 | `components/crate_interface/test_crates/define-simple-traits` | 1 | 2 | [查看](crates/define-simple-traits) |
 | `define-weak-traits` | 组件层 | `components/crate_interface/test_crates/define-weak-traits` | 1 | 4 | [查看](crates/define-weak-traits) |

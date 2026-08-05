@@ -453,7 +453,8 @@ fn do_job_stop(thr: &Thread, signo: Signo, uctx: &mut UserContext) {
     // Snapshot before recording the stop so a racing SIGCONT (which advances the
     // generation) cancels this stop.
     let continue_gen = proc_data.continue_generation();
-    if !proc_data.set_job_stopped(signo, continue_gen) {
+    let tid = thr.tid();
+    if !proc_data.set_job_stopped(signo, continue_gen, tid) {
         return;
     }
     notify_parent_job_change(proc_data, CLD_STOPPED as i32, signo as i32);

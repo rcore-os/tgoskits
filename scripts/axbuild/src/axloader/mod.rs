@@ -178,26 +178,7 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
 
     let kernel = (smoke_target.kernel_elf)();
     let http_server = SmokeHttpServer::start(kernel.clone())?;
-    let kernel_url = format!(
-        "http://{QEMU_HOST_GATEWAY}:{}/kernel.elf",
-        http_server.port()
-    );
-    let boot_line = format!(
-        concat!(
-            "AXLOADER BOOT {{",
-            "\"protocol_version\":1,",
-            "\"boot_id\":\"ci-http-smoke\",",
-            "\"kernel_url\":\"{}\",",
-            "\"kernel_size\":{},",
-            "\"image_format\":\"elf64\",",
-            "\"arch\":\"{}\",",
-            "\"entry_symbol\":null",
-            "}}\n"
-        ),
-        kernel_url,
-        kernel.len(),
-        smoke_target.arch,
-    );
+    let boot_line = format_boot_line(smoke_target.arch, kernel.len(), http_server.port());
 
     println!("axloader http smoke: running QEMU ...");
     let mut child = spawn_axloader_qemu(smoke_target, &firmware, &temp.path().join("esp"))?;
@@ -258,6 +239,23 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
 
     println!("axloader http smoke: kernel transferred and ELF loaded");
     Ok(())
+}
+
+fn format_boot_line(arch: &str, kernel_size: usize, http_port: u16) -> String {
+    format!(
+        concat!(
+            "AXLOADER BOOT {{",
+            "\"protocol_version\":1,",
+            "\"boot_id\":\"ci-http-smoke\",",
+            "\"kernel_url\":\"http://{}:{}/kernel.elf\",",
+            "\"kernel_size\":{},",
+            "\"image_format\":\"elf64\",",
+            "\"arch\":\"{}\",",
+            "\"entry_symbol\":null",
+            "}}\n"
+        ),
+        QEMU_HOST_GATEWAY, http_port, kernel_size, arch,
+    )
 }
 
 fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
@@ -568,5 +566,16 @@ mod tests {
             },
             _ => panic!("expected test command"),
         }
+    }
+
+    #[test]
+    fn boot_line_includes_qemu_reachable_kernel_url() {
+        let boot_line = format_boot_line("x86_64", 4096, 18380);
+
+        assert!(boot_line.starts_with("AXLOADER BOOT "));
+        assert!(boot_line.contains("\"kernel_url\":\"http://10.0.2.2:18380/kernel.elf\""));
+        assert!(boot_line.contains("\"kernel_size\":4096"));
+        assert!(boot_line.contains("\"arch\":\"x86_64\""));
+        assert!(boot_line.ends_with('\n'));
     }
 }

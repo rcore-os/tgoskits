@@ -284,6 +284,9 @@ impl BlockGroupHandle {
                 endpoint_sources.push(source_id);
             }
 
+            for registration in &registrations {
+                registration.enable().map_err(|_| BlkError::Io)?;
+            }
             for source_id in &endpoint_sources {
                 for (_, member) in &bootstrapped {
                     member.inner.controller.call(ControllerEvent::Rearm {
@@ -297,9 +300,6 @@ impl BlockGroupHandle {
                     },
                     CONTROLLER_TRANSITION_TIMEOUT,
                 )?;
-            }
-            for registration in &registrations {
-                registration.enable().map_err(|_| BlkError::Io)?;
             }
             Ok(())
         })();

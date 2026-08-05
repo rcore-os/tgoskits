@@ -78,6 +78,12 @@ Board 运行配置位于 `configs/board/` 目录下，每个配置文件都对�
 
 客户机配置按平台优先组织。QEMU 配置位于 `configs/vms/qemu/<arch>/`，实体板卡配置位于 `configs/vms/<board>/`。文件名只保留客户机系统和变体，例如 `configs/vms/qemu/aarch64/arceos-smp1.toml` 或 `configs/vms/roc-rk3568-pc/linux-smp1.toml`。
 
+## 管理 Shell 语法
+
+AxVisor 管理 Shell 使用 `shlex` 的 POSIX 风格规则拆分命令行。单双引号可以组合参数，反斜杠按 `shlex` 规则转义，`""` 或 `''` 会产生空参数。未闭合引号和末尾孤立反斜杠属于语法错误。只有 ASCII shell 空白字符用于分隔参数。
+
+分词不提供变量展开、glob、管道、通用重定向或 job control。命令查找、选项校验和 handler 行为仍由 AxVisor 自身实现。
+
 ## 编译
 
 AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配置选项。快速构建及运行 AxVisor，请参见配置套文档中的[快速上手](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart)章节。

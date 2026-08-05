@@ -3,6 +3,8 @@ use crate::{
     clock::{ClkId, ClockOp, ResetOp},
 };
 
+mod assignment;
+
 const OSC_HZ: u64 = 24_000_000;
 const CPLL_HZ: u64 = 1_000_000_000;
 const GPLL_HZ: u64 = 1_188_000_000;

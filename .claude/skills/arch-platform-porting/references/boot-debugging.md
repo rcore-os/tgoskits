@@ -143,7 +143,8 @@ work even when the kernel image and CPU topology are correct.
   and an eight-core boot have been validated.
 - GICv2 CPU target bits are firmware/controller interface IDs, not dense
   logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
-  per-CPU initialization and reuse that mask for SPI affinity and SGIs.
+  per-CPU initialization and reuse that mask for SPI affinity, AxVM-assigned
+  physical SPIs, and SGIs.
 - The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
   `0x50000`. Early driver evidence should include
   `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by

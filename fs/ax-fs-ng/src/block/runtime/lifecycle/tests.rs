@@ -368,6 +368,10 @@ impl BlockController for GroupMemberController {
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
                 Vec::new(),
             )),
+            ControllerEvent::Rearm { .. } => {
+                self.log.lock().unwrap().push("member_rearm");
+                Ok(ControllerUpdate::state(ControllerState::Ready))
+            }
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("member_quiesce");
                 Ok(ControllerUpdate::state(ControllerState::Ready))
@@ -808,7 +812,7 @@ fn teardown_disables_controller_before_queue_memory_is_released() {
 }
 
 #[test]
-fn controller_group_registers_one_shared_irq_for_two_members_and_tears_down_once() {
+fn controller_group_enables_shared_irq_before_unmasking_sources_and_tears_down_once() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     let log = Arc::new(StdMutex::new(Vec::new()));
@@ -854,6 +858,12 @@ fn controller_group_registers_one_shared_irq_for_two_members_and_tears_down_once
             .count(),
         1
     );
+    {
+        let log = log.lock().unwrap();
+        let irq_enable = log_position(&log, "irq_enable");
+        assert!(irq_enable < log_position(&log, "member_rearm"));
+        assert!(irq_enable < log_position(&log, "group_rearm"));
+    }
     assert_eq!(runtime.release_irqs_for_passthrough(), 1);
     let log = log.lock().unwrap();
     assert_eq!(

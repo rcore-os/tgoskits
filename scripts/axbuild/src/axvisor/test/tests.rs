@@ -192,6 +192,22 @@ fn orangepi_guest_board_cases_use_matching_vm_configs() {
 }
 
 #[test]
+fn rock4d_board_build_selects_linux_guest() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_path = "os/axvisor/configs/board/rock-4d.toml";
+    let build_config = fs::read_to_string(workspace_root.join(build_path)).unwrap();
+    let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
+
+    assert_eq!(
+        build_config.vm_configs,
+        [PathBuf::from(
+            "os/axvisor/configs/vms/rock-4d/linux-smp1.toml"
+        )],
+        "{build_path} should embed the default ROCK 4D Linux guest config"
+    );
+}
+
+#[test]
 fn orangepi_linux_guest_does_not_use_uart_clock_workaround() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let path = "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml";
@@ -816,6 +832,20 @@ fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
 }
 
 #[test]
+fn asus_nuc15crh_linux_limits_legacy_serial_probe() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/asus-nuc15crh/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+    let cmdline = config.kernel.cmdline;
+
+    assert!(
+        cmdline.contains("8250.nr_uarts=1"),
+        "{path} should only probe the machine-owned COM1 UART on the ASUS NUC HTTP Boot board path"
+    );
+}
+
+#[test]
 fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
@@ -876,13 +906,23 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             Some("axvisor:/$"),
             "{qemu_path} should wait for the Axvisor host shell"
         );
-        assert_eq!(
-            qemu.success_regex,
+        let expected_success_regex = if name == "aarch64" {
+            vec![
+                r"(?m)^AXVISOR SHLEX  EMPTY\s*$",
+                r"(?m)^Command: vm start\s*$",
+                r"(?m)^Error: Invalid command syntax\s*$",
+                r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
+                r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
+            ]
+        } else {
             vec![
                 r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
                 r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
-            ],
-            "{qemu_path} should require the read-back payload and final file-I/O marker"
+            ]
+        };
+        assert_eq!(
+            qemu.success_regex, expected_success_regex,
+            "{qemu_path} should require all architecture-specific shell markers"
         );
     }
 }
