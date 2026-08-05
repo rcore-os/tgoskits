@@ -640,6 +640,18 @@ fn verify_cli_firmware_bundle(
             })?;
     let bundle = ovmf::verify_firmware(&source)
         .with_context(|| format!("failed to verify OVMF firmware `{}`", path.display()))?;
+    if !bundle.verified {
+        // `--allow-unverified-firmware` is a diagnostic-only escape hatch: an
+        // unverified local CODE file must not drive the ovmf-entry test
+        // conclusion, or the "fixed, manifest-verified firmware" guarantee of
+        // the case is bypassed. Reject it before any QEMU wiring.
+        anyhow::bail!(
+            "firmware `{}` is UNVERIFIED (--allow-unverified-firmware); it cannot drive the \
+             ovmf-entry test result — pass a managed bundle directory containing manifest.toml \
+             instead",
+            path.display()
+        );
+    }
     println!(
         "verified OVMF firmware bundle for ovmf-entry cases: {} (sha256={})",
         bundle.code_path.display(),
@@ -870,6 +882,21 @@ disabled = []
         let err = verify_cli_firmware_bundle(&args).unwrap_err();
         let rendered = format!("{err:#}");
         assert!(rendered.contains("does not exist"), "{rendered}");
+    }
+
+    #[test]
+    fn verify_cli_firmware_bundle_rejects_unverified_local_firmware() {
+        let root = tempdir().unwrap();
+        let code = root.path().join("OVMF_CODE.fd");
+        fs::write(&code, vec![0xa5; ovmf::OVMF_CODE_SIZE as usize]).unwrap();
+        let args = test_qemu_args(Some("x86_64".to_string()), Some(code.clone()), true);
+
+        let err = verify_cli_firmware_bundle(&args).unwrap_err();
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("UNVERIFIED") && rendered.contains("cannot drive"),
+            "{rendered}"
+        );
     }
 
     #[test]
