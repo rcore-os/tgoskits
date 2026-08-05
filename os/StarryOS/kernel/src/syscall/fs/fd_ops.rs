@@ -1,4 +1,4 @@
-use alloc::{format, string::ToString, sync::Arc};
+use alloc::{format, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     mem::size_of,
@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, OpenOptions, OpenResult};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_task::current;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeOps, NodeType, Reference};
 use bitflags::bitflags;
@@ -15,8 +15,8 @@ use starry_vm::{VmMutPtr, VmPtr, vm_load};
 
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileDescriptor, FileLike, NsFd, Pipe, add_file_like,
-        close_file_like, get_file_like, memfd::Memfd, with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
+        add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
@@ -75,7 +75,11 @@ fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32))
     options
 }
 
-fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
+fn add_to_fd(
+    result: OpenResult,
+    flags: u32,
+    mount_table_namespace: Option<Arc<MountNamespace>>,
+) -> AxResult<i32> {
     // FIFO + O_NONBLOCK + O_WRONLY (no reader) → ENXIO.
     //
     // man 2 open §"ENXIO" 第 1 variant：
@@ -190,7 +194,12 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                     device.inner().open(flags & O_EXCL != 0)?;
                 }
             }
-            Arc::new(File::new(file, flags))
+            let file = Arc::new(File::new(file, flags));
+            if let Some(namespace) = mount_table_namespace {
+                MountTableFile::new(file, &namespace)
+            } else {
+                file
+            }
         }
         OpenResult::Dir(dir) => Arc::new(Directory::new(dir, flags)),
     };
@@ -198,6 +207,28 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
         f.set_nonblocking(true)?;
     }
     add_file_like(f, flags & O_CLOEXEC != 0)
+}
+
+fn mount_table_namespace(result: &OpenResult) -> Option<Arc<MountNamespace>> {
+    let OpenResult::File(file) = result else {
+        return None;
+    };
+    let path = file.location().absolute_path().ok()?.to_string();
+    let components: Vec<_> = path.trim_start_matches('/').split('/').collect();
+    let pid = match components.as_slice() {
+        ["proc", "mountinfo" | "mounts"] | ["proc", "self", "mountinfo" | "mounts"] => {
+            current().as_thread().proc_data.proc.pid()
+        }
+        ["proc", pid, "mountinfo" | "mounts"] => pid.parse().ok()?,
+        ["proc", _, "task", tid, "mountinfo" | "mounts"] => tid.parse().ok()?,
+        _ => return None,
+    };
+
+    let task = get_task(pid).ok()?;
+    let scope = task.as_thread().scope.read();
+    let fs_context = FS_CONTEXT.scope(&scope).clone();
+    drop(scope);
+    Some(fs_context.lock().mount_namespace().clone())
 }
 
 #[repr(C)]
@@ -422,8 +453,9 @@ pub fn sys_openat(
         })?;
 
     // Open first, then install the file so filesystem errors propagate unchanged.
-    let fd =
-        with_fs(dirfd, |fs| options.open(fs, path)).and_then(|it| add_to_fd(it, flags as _))?;
+    let result = with_fs(dirfd, |fs| options.open(fs, path))?;
+    let mount_table_namespace = mount_table_namespace(&result);
+    let fd = add_to_fd(result, flags as _, mount_table_namespace)?;
     if should_notify_create {
         let file = get_file_like(fd)?;
         crate::file::inotify::notify_create_path(file.path().as_ref(), false);
@@ -508,7 +540,8 @@ pub fn sys_openat2(
         options.no_follow(true);
         options.open(&fs.with_current_dir(parent)?, name.as_ref())
     })?;
-    add_to_fd(result, flags as u32).map(|fd| fd as isize)
+    let mount_table_namespace = mount_table_namespace(&result);
+    add_to_fd(result, flags as u32, mount_table_namespace).map(|fd| fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.

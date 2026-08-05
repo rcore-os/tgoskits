@@ -274,6 +274,9 @@ impl FileLike for File {
         if let Ok(memfd) = any.clone().downcast_arc::<crate::file::memfd::Memfd>() {
             return Ok(memfd.inner().clone());
         }
+        if let Ok(mount_table) = any.clone().downcast_arc::<crate::file::MountTableFile>() {
+            return Ok(mount_table.inner().clone());
+        }
         Err(if any.is::<Directory>() {
             AxError::IsADirectory
         } else {
