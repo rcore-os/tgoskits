@@ -28,6 +28,9 @@
 #define IVC_RESULT_RECORD_COPIES 2U
 #define IVC_RESULT_RECORD_PAUSE_MS 10
 #define IVC_RESTART_RECORD_PAUSE_MS 50
+#define IVC_POWEROFF_RECORD_COPIES 5U
+#define IVC_POWEROFF_INITIAL_PAUSE_MS 500
+#define IVC_POWEROFF_RECORD_PAUSE_MS 100
 
 static const uint8_t expected_mac[IVC_ETHERNET_ADDRESS_LENGTH] = {
 	0x52, 0x54, 0x00, 0x00, 0x00, 0x02,
@@ -355,6 +358,24 @@ static void report_compact_result(const struct ivc_server *server, const char *p
 	}
 }
 
+#if CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS
+static void report_poweroff_evidence(const struct ivc_server *server)
+{
+	uint32_t copy;
+
+	/* The controller emits its terminal metrics on the shared UART immediately
+	 * after the final ACK. Let those records drain before replaying the short
+	 * poweroff identity, otherwise both guests can corrupt every copy.
+	 */
+	k_sleep(K_MSEC(IVC_POWEROFF_INITIAL_PAUSE_MS));
+	for (copy = 0U; copy < IVC_POWEROFF_RECORD_COPIES; ++copy) {
+		printk("IVC-RTOS-POWEROFF accepted=%llu\n",
+		       server->receive_window.metrics.accepted);
+		k_sleep(K_MSEC(IVC_POWEROFF_RECORD_PAUSE_MS));
+	}
+}
+#endif
+
 static void report_result_if_complete(struct ivc_server *server)
 {
 	const uint32_t expected_commands = (uint32_t)CONFIG_IVC_EXPECTED_COMMANDS;
@@ -413,12 +434,7 @@ static void report_result_if_complete(struct ivc_server *server)
 	       server->acknowledgements_sent, server->errors_sent, server->protocol_errors);
 	server->result_reported = true;
 #if CONFIG_IVC_EXIT_AFTER_EXPECTED_COMMANDS
-	for (uint32_t copy = 0U; copy < IVC_RESULT_RECORD_COPIES; ++copy) {
-		printk("IVC-RTOS-POWEROFF accepted=%llu\n",
-		       server->receive_window.metrics.accepted);
-		k_sleep(K_MSEC(IVC_RESULT_RECORD_PAUSE_MS));
-	}
-	k_sleep(K_MSEC(100));
+	report_poweroff_evidence(server);
 	sys_poweroff();
 #endif
 }

@@ -106,10 +106,12 @@ The physical-board overlays keep the normal protocol behavior but make the
 endpoint finite. `board-smoke.conf` accepts 20 fresh commands and `board.conf`
 accepts 1,800. Both preserve the legacy `IVC-RTOS-RESULT` line and additionally
 split terminal counters into compact `IVC-RTOS-OUTCOME` and
-`IVC-RTOS-MESSAGES` records. Each compact record and the
-`IVC-RTOS-POWEROFF` marker is emitted twice with a 10 ms pause before the guest
-requests PSCI system-off, so the AxVisor board runner can regain control even
-when the shared physical UART loses one span:
+`IVC-RTOS-MESSAGES` records. Each compact result record is emitted twice with
+a 10 ms pause. After a 500 ms drain interval, the short
+`IVC-RTOS-POWEROFF` marker is emitted five times at 100 ms intervals before the
+guest requests PSCI system-off. The separate pacing prevents the StarryOS
+controller's simultaneous terminal metrics from corrupting every poweroff copy
+on the shared physical UART:
 
 ```sh
 west build -p always -b qemu_cortex_a53 \
