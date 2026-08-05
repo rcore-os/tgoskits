@@ -16,7 +16,7 @@ impl Ext4FileSystem {
         self.bitmap_cache.flush_all(block_dev)?;
         self.sync_group_descriptors(block_dev)?;
         self.sync_superblock(block_dev)?;
-        block_dev.cantflush()?;
+        block_dev.flush()?;
         Ok(())
     }
 

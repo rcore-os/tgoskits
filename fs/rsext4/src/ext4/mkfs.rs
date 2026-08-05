@@ -388,9 +388,9 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
     fs_layout: &FsLayoutInfo,
 ) -> Ext4Result<()> {
     // Group 0 already holds the primary copy, so backup writing starts from 1.
-    let sprse_feature =
+    let sparse_feature =
         sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER);
-    if sprse_feature {
+    if sparse_feature {
         for gid in 1..groups_count {
             let group_layout = calc_group_layout(
                 gid,
@@ -482,9 +482,9 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
         ));
     }
 
-    let sprse_feature =
+    let sparse_feature =
         sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER);
-    if sprse_feature {
+    if sparse_feature {
         for gid in 1..groups_count {
             if need_redundant_backup(gid) {
                 let group_layout = calc_group_layout(

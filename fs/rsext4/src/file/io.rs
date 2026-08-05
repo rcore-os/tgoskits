@@ -8,7 +8,7 @@ pub fn truncate<B: BlockDevice>(
     path: &str,
     truncate_size: u64,
 ) -> Ext4Result<()> {
-    let norm_path = split_paren_child_and_translatevalid(path);
+    let norm_path = normalize_path(path);
 
     // Resolve the target inode once, then delegate to the inode-based helper.
     let (inode_num, _inode) = match get_inode_with_num(fs, device, &norm_path).ok().flatten() {
@@ -64,7 +64,7 @@ pub fn truncate_inode<B: BlockDevice>(
             let del_start_lbn = new_blocks as u32;
 
             loop {
-                let blocks_map = resolve_inode_block_allextend(fs, device, &mut inode)?;
+                let blocks_map = resolve_inode_blocks(fs, device, &mut inode)?;
                 let del_len = if truncate_size == 0 {
                     blocks_map.len() as u32
                 } else {
@@ -89,7 +89,7 @@ pub fn truncate_inode<B: BlockDevice>(
                 let chunk = core::cmp::min(del_len, Ext4Extent::EXT_INIT_MAX_LEN as u32);
                 {
                     let mut tree = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num);
-                    tree.remove_extend(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
+                    tree.remove_extent(fs, Ext4Extent::new(start_lbn, 0, chunk as u16), device)?;
                 }
             }
         }
@@ -137,7 +137,7 @@ pub fn truncate_inode<B: BlockDevice>(
         inode.i_size_lo = (truncate_size & 0xffff_ffff) as u32;
         inode.i_size_high = (truncate_size >> 32) as u32;
         // i_blocks reflects number of allocated blocks, not logical length. Recompute after edits.
-        let alloc_blocks = resolve_inode_block_allextend(fs, device, &mut inode)?.len() as u64;
+        let alloc_blocks = resolve_inode_blocks(fs, device, &mut inode)?.len() as u64;
         let extent_tree_blocks = ExtentTree::with_checksum(&mut inode, &fs.superblock, inode_num)
             .external_node_blocks(device)?
             .len() as u64;
@@ -226,7 +226,7 @@ fn read_symlink_target<B: BlockDevice>(
     let mut buf = Vec::with_capacity(size);
 
     if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(fs, device, inode)?;
+        let blocks = resolve_inode_blocks(fs, device, inode)?;
         for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data[..block_bytes];
@@ -254,7 +254,7 @@ fn read_symlink_target<B: BlockDevice>(
 
 fn resolve_symlink_path(current_path: &str, target: &str) -> String {
     if target.starts_with('/') {
-        return split_paren_child_and_translatevalid(target);
+        return normalize_path(target);
     }
     let parent = match current_path.rfind('/') {
         Some(0) | None => "/",
@@ -269,7 +269,7 @@ fn resolve_symlink_path(current_path: &str, target: &str) -> String {
         combined.push('/');
         combined.push_str(target);
     }
-    split_paren_child_and_translatevalid(&combined)
+    normalize_path(&combined)
 }
 
 fn read_file_follow<B: BlockDevice>(
@@ -319,7 +319,7 @@ fn read_file_follow<B: BlockDevice>(
     let mut buf = Vec::with_capacity(size);
 
     if inode.have_extend_header_and_use_extend() {
-        let blocks = resolve_inode_block_allextend(fs, device, &mut inode)?;
+        let blocks = resolve_inode_blocks(fs, device, &mut inode)?;
         for &phys in blocks.values() {
             let cached = fs.datablock_cache.get_or_load(device, phys)?;
             let data = &cached.data[..block_bytes];

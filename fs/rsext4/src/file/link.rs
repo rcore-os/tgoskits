@@ -7,8 +7,8 @@ pub fn link<B: BlockDevice>(
     link_path: &str,
     linked_path: &str,
 ) -> Ext4Result<()> {
-    let link_norm = split_paren_child_and_translatevalid(link_path);
-    let linked_norm = split_paren_child_and_translatevalid(linked_path);
+    let link_norm = normalize_path(link_path);
+    let linked_norm = normalize_path(linked_path);
 
     // Resolve the target inode first.
     let (target_ino, target_inode) = match get_file_inode(fs, block_dev, &linked_norm) {
@@ -72,7 +72,7 @@ pub fn link<B: BlockDevice>(
     if let Some((_lpino, mut lp_inode)) = get_inode_with_num(fs, block_dev, &linked_parent_path)
         .ok()
         .flatten()
-        && let Ok(blocks) = resolve_inode_block_allextend(fs, block_dev, &mut lp_inode)
+        && let Ok(blocks) = resolve_inode_blocks(fs, block_dev, &mut lp_inode)
     {
         for &phys in blocks.values() {
             let cached = match fs.datablock_cache.get_or_load(block_dev, phys) {

@@ -399,8 +399,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Flushes the inner cached device.
-    pub fn cantflush(&mut self) -> Ext4Result<()> {
+    pub fn flush(&mut self) -> Ext4Result<()> {
         self.inner.flush()
+    }
+
+    /// Flushes the inner cached device using the original misspelled API name.
+    pub fn cantflush(&mut self) -> Ext4Result<()> {
+        self.flush()
     }
 
     /// Returns the total number of device blocks.

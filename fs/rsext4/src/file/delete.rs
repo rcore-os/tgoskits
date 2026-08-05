@@ -13,7 +13,7 @@ pub fn free_inode<B: BlockDevice>(
     inode_num: InodeNumber,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<()> {
-    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_block_allextend(fs, block_dev, inode)?
+    let mut used_blocks: Vec<AbsoluteBN> = resolve_inode_blocks(fs, block_dev, inode)?
         .into_values()
         .collect();
     if inode.have_extend_header_and_use_extend() {
@@ -55,7 +55,7 @@ pub fn unlink<B: BlockDevice>(
 ) -> Ext4Result<()> {
     // Resolve the parent directory and target entry before mutating link
     // counts or directory contents.
-    let norm_path = split_paren_child_and_translatevalid(link_path);
+    let norm_path = normalize_path(link_path);
     let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
         let parent = if pos == 0 {
             "/".to_string()
@@ -225,7 +225,7 @@ fn parent_dir_data_blocks<B: BlockDevice>(
 ) -> Ext4Result<alloc::vec::Vec<AbsoluteBN>> {
     let mut blocks: alloc::vec::Vec<AbsoluteBN> =
         if parent_inode.have_extend_header_and_use_extend() {
-            resolve_inode_block_allextend(fs, block_dev, parent_inode)?
+            resolve_inode_blocks(fs, block_dev, parent_inode)?
                 .into_values()
                 .collect()
         } else {
@@ -360,7 +360,7 @@ pub fn delete_dir<B: BlockDevice>(
         stage: u8, // 0=scan, 1=cleanup
     }
 
-    let norm_path = split_paren_child_and_translatevalid(path);
+    let norm_path = normalize_path(path);
     if norm_path == "/" {
         return Err(Ext4Error::busy());
     }
@@ -405,7 +405,7 @@ pub fn delete_dir<B: BlockDevice>(
         if frame.stage == 0 {
             let block_bytes = BLOCK_SIZE;
 
-            let dir_blocks = resolve_inode_block_allextend(fs, block_dev, &mut frame.inode)?;
+            let dir_blocks = resolve_inode_blocks(fs, block_dev, &mut frame.inode)?;
 
             let mut to_descend: Vec<(
                 alloc::string::String,
@@ -545,7 +545,7 @@ pub fn is_dir_empty<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
 ) -> Ext4Result<bool> {
-    let dir_blocks = resolve_inode_block_allextend(fs, block_dev, inode)?;
+    let dir_blocks = resolve_inode_blocks(fs, block_dev, inode)?;
     for &phys in dir_blocks.values() {
         let cached = fs.datablock_cache.get_or_load(block_dev, phys)?;
         let data = &cached.data[..BLOCK_SIZE];
@@ -565,7 +565,7 @@ pub fn delete_file<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
     path: &str,
 ) -> Ext4Result<()> {
-    let norm_path = split_paren_child_and_translatevalid(path);
+    let norm_path = normalize_path(path);
     let (parent_path, child_name) = if let Some(pos) = norm_path.rfind('/') {
         let parent = if pos == 0 {
             "/".to_string()
