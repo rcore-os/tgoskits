@@ -39,7 +39,8 @@ int main(void)
         int result = fstatvfs(directory_fd, &filesystem);
         expect_true(result == 0, "fstatvfs accepts directory fd");
         if (result == 0) {
-            expect_true(filesystem.f_bsize > 0, "directory fstatvfs reports block size");
+            expect_true(filesystem.f_bsize > 0,
+                        "directory fstatvfs reports block size");
         }
         close(directory_fd);
     }
@@ -62,10 +63,10 @@ int main(void)
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);
     if (failed == 0) {
-        printf("STARRY_FSTATVFS_DIRECTORY_PASSED\n");
-        printf("STARRY_GROUPED_TEST_PASSED: bugfix-fstatvfs-directory\n");
+        puts("STARRY_FSTATVFS_DIRECTORY_PASSED");
+        puts("STARRY_GROUPED_TEST_PASSED: bugfix-fstatvfs-directory");
         return EXIT_SUCCESS;
     }
-    printf("STARRY_GROUPED_TEST_FAILED: bugfix-fstatvfs-directory\n");
+    puts("STARRY_GROUPED_TEST_FAILED: bugfix-fstatvfs-directory");
     return EXIT_FAILURE;
 }

@@ -102,6 +102,12 @@ impl ArchTrait for Arch {
         }
     }
 
+    fn systimer_stability() -> crate::timer::CounterStability {
+        // The Arm generic timer exposes the system counter shared by all PEs;
+        // a virtual counter uses the platform-provided VM-wide offset.
+        crate::timer::CounterStability::Stable
+    }
+
     fn shutdown() -> ! {
         power::shutdown()
     }

@@ -53,7 +53,8 @@
 //! that node would never get an `on_probe`), and applies exactly once via a
 //! one-shot guard because several `cpu@*` nodes match.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use alloc::format;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use fdt_edit::Phandle;
 use log::{info, warn};
@@ -75,6 +76,8 @@ const A76_MAX_HZ: u64 = 1_200_000_000;
 
 /// One-shot guard: several `cpu@*` nodes match, but the reclock runs once.
 static APPLIED: AtomicBool = AtomicBool::new(false);
+/// Exact SCMI clock-provider identity referenced by the RK3588 CPU nodes.
+static SCMI_CLOCK_PHANDLE: AtomicU32 = AtomicU32::new(0);
 
 crate::model_register!(
     name: "RK3588 CPU DVFS SCMI",
@@ -88,23 +91,39 @@ crate::model_register!(
     ],
 );
 
-fn probe(_probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // Several CPU nodes match this driver; only the first invocation reclocks.
+    if APPLIED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+
+    let phandle = probe
+        .info()
+        .clocks()?
+        .into_iter()
+        .next()
+        .map(|clock| clock.phandle)
+        .ok_or_else(|| OnProbeError::other("RK3588 CPU node has no SCMI clock reference"))?;
+    match SCMI_CLOCK_PHANDLE.compare_exchange(0, phandle.raw(), Ordering::AcqRel, Ordering::Acquire)
+    {
+        Ok(_) => {}
+        Err(existing) if existing == phandle.raw() => {}
+        Err(existing) => {
+            return Err(OnProbeError::other(format!(
+                "RK3588 CPU clocks reference multiple SCMI providers: {existing:#x} and {}",
+                phandle.raw()
+            )));
+        }
+    }
     if APPLIED.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
 
-    // The `scmi::*` helpers ignore the phandle (single global agent); pass a
-    // dummy so we do not depend on parsing the node's clock specifier.
-    let phandle = Phandle::from(0u32);
-
-    // Safety preflight (read-only): confirm this firmware actually services the
-    // CPU-cluster clocks before touching any of them. `describe_rates` changes
-    // no state, so this cannot hang or perturb the clocks; treat its result as
-    // accept/reject only. If any target id is rejected, leave every cluster at
-    // its boot rate and bail — there is no raw-CRU fallback here.
+    // Safety preflight (read-only): confirm this exact provider services all
+    // CPU-cluster clocks before touching any of them. If any target id is
+    // rejected, leave every cluster at its boot rate and bail.
     for id in [A55_CLK_ID, A76_CLK_IDS[0], A76_CLK_IDS[1]] {
-        if scmi::describe_rates(phandle, id).is_none() {
+        if scmi::clock_rate(phandle, id).is_none() {
             warn!(
                 "cpufreq: SCMI does not service CPU cluster clock id {id}; leaving all CPU \
                  clusters at their boot rate (no DVFS applied)"
@@ -149,6 +168,11 @@ fn probe(_probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // voltage lever above armed `GOV_READY` iff both PMIC buses came up.
 
     Ok(())
+}
+
+fn scmi_clock_phandle() -> Option<Phandle> {
+    let phandle = SCMI_CLOCK_PHANDLE.load(Ordering::Acquire);
+    (phandle != 0).then(|| Phandle::from(phandle))
 }
 
 /// Programs `clock_id` to `target`, but never above `ceiling` (the hard cap on
@@ -599,7 +623,10 @@ fn run_apply_steps(order: [ApplyStep; 2], mut run: impl FnMut(ApplyStep) -> bool
 ///     under-volted.
 #[must_use]
 fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) -> bool {
-    let phandle = Phandle::from(0u32);
+    let Some(phandle) = scmi_clock_phandle() else {
+        warn!("cpufreq: SCMI clock provider is not initialized");
+        return false;
+    };
     let hz = opp.ring_khz as u64 * 1_000;
     run_apply_steps(apply_step_order(going_up), |step| match step {
         ApplyStep::Voltage => {
@@ -1030,7 +1057,10 @@ pub fn calibrate_cluster(cluster_idx: usize, intended_cpu: usize) {
         (mpidr >> 8) & 0xff,
         mpidr & 0xff
     );
-    let phandle = Phandle::from(0u32);
+    let Some(phandle) = scmi_clock_phandle() else {
+        warn!("CAL aborted: SCMI clock provider is not initialized");
+        return;
+    };
     for &(uv, khz) in points {
         // Voltage first (points are voltage-non-decreasing, so this only ever
         // over-volts the current ring = safe), then the SCMI ring.

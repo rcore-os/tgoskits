@@ -104,7 +104,7 @@ impl Ext4FileSystem {
         journal_inode: &mut Ext4Inode,
     ) -> Ext4Result<Vec<AbsoluteBN>> {
         let journal_block_count = journal_inode.size().div_ceil(BLOCK_SIZE as u64);
-        let journal_block_map = resolve_inode_block_allextend(self, block_dev, journal_inode)?;
+        let journal_block_map = resolve_inode_blocks(self, block_dev, journal_inode)?;
         let mut journal_blocks = Vec::new();
         for logical in 0..journal_block_count {
             let logical = u32::try_from(logical).map_err(|_| Ext4Error::corrupted())?;

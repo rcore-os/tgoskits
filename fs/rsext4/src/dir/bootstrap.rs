@@ -118,7 +118,7 @@ pub fn create_lost_found_directory<B: BlockDevice>(
     block_dev: &mut Jbd2Dev<B>,
 ) -> Ext4Result<()> {
     // Allow callers to reuse the helper during setup without duplicating the directory.
-    if file_entry_exisr(fs, block_dev, "/lost+found")? {
+    if file_entry_exist(fs, block_dev, "/lost+found")? {
         return Ok(());
     }
 

@@ -54,7 +54,7 @@ pub fn insert_dir_entry<B: BlockDevice>(
     let mut modified_phys: Option<AbsoluteBN> = None;
 
     // Try to satisfy the insertion inside already mapped directory blocks first.
-    let blocks = resolve_inode_block_allextend(fs, device, parent_inode)?;
+    let blocks = resolve_inode_blocks(fs, device, parent_inode)?;
 
     for lbn in 0..total_blocks {
         if modified_phys.is_some() {

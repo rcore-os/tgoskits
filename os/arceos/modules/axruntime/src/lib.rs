@@ -529,6 +529,10 @@ fn program_next_timer() {
 #[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
+    // SAFETY: the local timer IRQ excludes migration and nested local
+    // scheduler-clock publication for this complete stamp.
+    unsafe { ax_hal::time::scheduler_clock_tick() }
+        .expect("current CPU scheduler clock must be online before timer IRQs");
     #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(not(feature = "multitask"))]

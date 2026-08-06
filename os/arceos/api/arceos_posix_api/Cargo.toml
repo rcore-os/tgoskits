@@ -31,6 +31,7 @@ select = ["fd"]
 poll = ["fd"]
 epoll = ["fd"]
 serial = ["ax-runtime/serial"]
+eventfd = ["fd"]
 
 [dependencies]
 # ArceOS modules

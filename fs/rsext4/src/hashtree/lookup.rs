@@ -14,7 +14,7 @@ use crate::{
     disknode::Ext4Inode,
     entries::{DirEntryIterator, Ext4DirEntryInfo, Ext4DxEntry, classic_dir, htree_dir},
     ext4::Ext4FileSystem,
-    loopfile::{resolve_inode_block, resolve_inode_block_allextend},
+    loopfile::{resolve_inode_block, resolve_inode_blocks},
 };
 
 pub(super) fn lookup<B: BlockDevice>(
@@ -205,7 +205,7 @@ impl HashTreeManager {
 
         if dir_inode.have_extend_header_and_use_extend() {
             let mut inode_copy = *dir_inode;
-            let blocks_map = match resolve_inode_block_allextend(fs, block_dev, &mut inode_copy) {
+            let blocks_map = match resolve_inode_blocks(fs, block_dev, &mut inode_copy) {
                 Ok(map) => map,
                 Err(_) => return Err(HashTreeError::BlockOutOfRange),
             };

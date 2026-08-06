@@ -97,6 +97,7 @@ typedef struct {{
             "_SC_.*",
             "EPOLL_CTL_.*",
             "EPOLL.*",
+            "EFD_.*",
             "RLIMIT_.*",
             "EAI_.*",
             "MAXADDRS",

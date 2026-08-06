@@ -26,6 +26,7 @@ ax-kspin = { workspace = true }
 ax-percpu.workspace = true
 rdrive.workspace = true
 spin = { workspace = true }
+thiserror.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

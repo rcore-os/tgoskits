@@ -52,6 +52,9 @@ pub struct BlcokGroupLayout {
     pub metadata_blocks_in_group: u32,
 }
 
+/// Correctly spelled alias for [`BlcokGroupLayout`].
+pub type BlockGroupLayout = BlcokGroupLayout;
+
 pub fn compute_fs_layout(inode_size: u16, total_blocks: u64) -> FsLayoutInfo {
     let block_size: u32 = 1024u32 << LOG_BLOCK_SIZE;
 
@@ -333,7 +336,7 @@ fn build_uninit_group_desc(
 
     // Derive the physical layout from the shared group-layout helper so mkfs
     // and backup-writing logic stay consistent.
-    let gl = cloc_group_layout(
+    let gl = calc_group_layout(
         group_id,
         sb,
         layout.blocks_per_group,
@@ -385,11 +388,11 @@ fn write_superblock_redundant_backup<B: BlockDevice>(
     fs_layout: &FsLayoutInfo,
 ) -> Ext4Result<()> {
     // Group 0 already holds the primary copy, so backup writing starts from 1.
-    let sprse_feature =
+    let sparse_feature =
         sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER);
-    if sprse_feature {
+    if sparse_feature {
         for gid in 1..groups_count {
-            let group_layout = cloc_group_layout(
+            let group_layout = calc_group_layout(
                 gid,
                 sb,
                 fs_layout.blocks_per_group,
@@ -479,12 +482,12 @@ fn write_gdt_redundant_backup<B: BlockDevice>(
         ));
     }
 
-    let sprse_feature =
+    let sparse_feature =
         sb.has_feature_ro_compat(Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER);
-    if sprse_feature {
+    if sparse_feature {
         for gid in 1..groups_count {
             if need_redundant_backup(gid) {
-                let group_layout = cloc_group_layout(
+                let group_layout = calc_group_layout(
                     gid,
                     sb,
                     fs_layout.blocks_per_group,
@@ -641,7 +644,7 @@ fn initialize_other_groups_bitmaps<B: BlockDevice>(
     // Group 0 has already been handled separately.
     for group_id in 1..layout.groups {
         // Reuse the same layout calculation as descriptor construction.
-        let gl = cloc_group_layout(
+        let gl = calc_group_layout(
             group_id,
             sb,
             layout.blocks_per_group,

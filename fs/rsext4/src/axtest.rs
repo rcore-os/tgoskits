@@ -1048,7 +1048,7 @@ fn rsext4_journal_device_overlay_rules_hold() {
         dev.write_blocks(&direct[..8], AbsoluteBN::new(4), 1, false)
             .is_err()
     );
-    dev.cantflush().unwrap();
+    dev.flush().unwrap();
     let inner = dev.into_inner();
     ax_assert_eq!(inner.total_blocks(), 32);
 
@@ -1281,20 +1281,20 @@ fn rsext4_tool_layout_and_blockgroup_disk_rules_hold() {
         s_feature_ro_compat: Ext4Superblock::EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER,
         ..Default::default()
     };
-    let layout0 = tool::cloc_group_layout(0, &superblock, 8192, 64, 3, 4, 5, RESERVED_GDT_BLOCKS);
+    let layout0 = tool::calc_group_layout(0, &superblock, 8192, 64, 3, 4, 5, RESERVED_GDT_BLOCKS);
     ax_assert_eq!(layout0.group_start_block, 0);
     ax_assert_eq!(layout0.group_blcok_bitmap_startblocks, 3);
     ax_assert_eq!(layout0.group_inode_bitmap_startblocks, 4);
     ax_assert_eq!(layout0.group_inode_table_startblocks, 5);
 
-    let sparse = tool::cloc_group_layout(3, &superblock, 8192, 64, 3, 4, 5, 2);
+    let sparse = tool::calc_group_layout(3, &superblock, 8192, 64, 3, 4, 5, 2);
     ax_assert_eq!(sparse.group_start_block, 3 * 8192);
     ax_assert_eq!(sparse.group_blcok_bitmap_startblocks, 3 * 8192 + 1 + 2);
     ax_assert_eq!(sparse.group_inode_bitmap_startblocks, 3 * 8192 + 1 + 2 + 1);
     ax_assert_eq!(sparse.metadata_blocks_in_group, 1 + 2 + 1 + 1 + 64);
 
     superblock.s_feature_ro_compat = 0;
-    let dense = tool::cloc_group_layout(3, &superblock, 8192, 64, 3, 4, 5, 2);
+    let dense = tool::calc_group_layout(3, &superblock, 8192, 64, 3, 4, 5, 2);
     ax_assert_eq!(dense.group_blcok_bitmap_startblocks, 3 * 8192);
     ax_assert_eq!(dense.group_inode_bitmap_startblocks, 3 * 8192 + 1);
     ax_assert_eq!(dense.group_inode_table_startblocks, 3 * 8192 + 2);
@@ -1332,20 +1332,14 @@ fn rsext4_tool_layout_and_blockgroup_disk_rules_hold() {
 fn rsext4_path_and_bitmap_rules_hold() {
     use rsext4::{
         bitmap::{BitmapError, BlockBitmap, InodeBitmap},
-        dir::split_paren_child_and_translatevalid,
+        dir::normalize_path,
     };
 
-    ax_assert_eq!(split_paren_child_and_translatevalid(""), "");
-    ax_assert_eq!(split_paren_child_and_translatevalid("/"), "/");
-    ax_assert_eq!(split_paren_child_and_translatevalid("///"), "/");
-    ax_assert_eq!(
-        split_paren_child_and_translatevalid("//alpha///beta//"),
-        "/alpha/beta"
-    );
-    ax_assert_eq!(
-        split_paren_child_and_translatevalid("alpha//beta///gamma"),
-        "alpha/beta/gamma"
-    );
+    ax_assert_eq!(normalize_path(""), "");
+    ax_assert_eq!(normalize_path("/"), "/");
+    ax_assert_eq!(normalize_path("///"), "/");
+    ax_assert_eq!(normalize_path("//alpha///beta//"), "/alpha/beta");
+    ax_assert_eq!(normalize_path("alpha//beta///gamma"), "alpha/beta/gamma");
 
     let bitmap_errors = [
         (BitmapError::IndexOutOfRange, "bitmap index out of range"),
@@ -2093,7 +2087,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         extents_tree::{ExtentNode, ExtentTree},
         file::build_file_block_mapping_with_inode_num,
         find_file, link,
-        loopfile::{resolve_inode_block, resolve_inode_block_allextend},
+        loopfile::{resolve_inode_block, resolve_inode_blocks},
         metadata::{chmod, chown},
         mkdir, mkdir_with_owner, mkfile, mkfile_with_owner, mkfs, read_file, read_inode_data_into,
         rename, set_flags, set_project,
@@ -2552,8 +2546,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         &mut device,
     );
     ax_assert!(mapped_inode.have_extend_header_and_use_extend());
-    let mapped_blocks =
-        resolve_inode_block_allextend(&mut fs, &mut device, &mut mapped_inode).unwrap();
+    let mapped_blocks = resolve_inode_blocks(&mut fs, &mut device, &mut mapped_inode).unwrap();
     ax_assert_eq!(mapped_blocks.len(), 2);
 
     let mut non_extent_inode = Ext4Inode::default();
@@ -2564,7 +2557,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
         Errno::EOPNOTSUPP
     );
     ax_assert!(
-        resolve_inode_block_allextend(&mut fs, &mut device, &mut non_extent_inode)
+        resolve_inode_blocks(&mut fs, &mut device, &mut non_extent_inode)
             .unwrap()
             .is_empty()
     );
@@ -2603,7 +2596,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     };
     ExtentTree::new(&mut skipped_extent_inode).store_root_to_inode(&skipped_node);
     ax_assert!(
-        resolve_inode_block_allextend(&mut fs, &mut device, &mut skipped_extent_inode)
+        resolve_inode_blocks(&mut fs, &mut device, &mut skipped_extent_inode)
             .unwrap()
             .is_empty()
     );
@@ -2655,7 +2648,7 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     };
     ExtentTree::new(&mut indexed_resolve_inode).store_root_to_inode(&indexed_root);
     let indexed_blocks =
-        resolve_inode_block_allextend(&mut fs, &mut device, &mut indexed_resolve_inode).unwrap();
+        resolve_inode_blocks(&mut fs, &mut device, &mut indexed_resolve_inode).unwrap();
     ax_assert_eq!(indexed_blocks.get(&0).copied(), Some(AbsoluteBN::new(800)));
     ax_assert_eq!(indexed_blocks.get(&9).copied(), Some(AbsoluteBN::new(901)));
 

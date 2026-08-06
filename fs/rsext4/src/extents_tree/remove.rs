@@ -7,7 +7,7 @@ impl<'a> ExtentTree<'a> {
     /// extents, then walks the tree again to free blocks and rewrite touched
     /// leaf/index nodes, and finally collapses degenerate root states back into
     /// the inode-inline form when possible.
-    pub fn remove_extend<B: BlockDevice>(
+    pub fn remove_extent<B: BlockDevice>(
         &mut self,
         fs: &mut Ext4FileSystem,
         deleted_ext: Ext4Extent,
@@ -592,9 +592,18 @@ impl<'a> ExtentTree<'a> {
             }
         }
     }
+
+    /// Removes an allocated logical extent range using the original misspelled API name.
+    pub fn remove_extend<B: BlockDevice>(
+        &mut self,
+        fs: &mut Ext4FileSystem,
+        deleted_ext: Ext4Extent,
+        block_dev: &mut Jbd2Dev<B>,
+    ) -> Ext4Result<()> {
+        self.remove_extent(fs, deleted_ext, block_dev)
+    }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -799,14 +808,14 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_root_leaf_no_degeneration() {
+    fn remove_extent_root_leaf_no_degeneration() {
         let (mut dev, mut fs) = setup_fs(16 * 1024);
         let mut inode = new_extent_inode();
 
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 2);
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, exts[0], &mut dev).unwrap();
+            tree.remove_extent(&mut fs, exts[0], &mut dev).unwrap();
         }
 
         let tree = ExtentTree::new(&mut inode);
@@ -822,14 +831,14 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_root_leaf_degeneration_to_empty() {
+    fn remove_extent_root_leaf_degeneration_to_empty() {
         let (mut dev, mut fs) = setup_fs(16 * 1024);
         let mut inode = new_extent_inode();
 
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 1);
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, exts[0], &mut dev).unwrap();
+            tree.remove_extent(&mut fs, exts[0], &mut dev).unwrap();
         }
 
         let tree = ExtentTree::new(&mut inode);
@@ -844,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_multilevel_to_root_promotion() {
+    fn remove_extent_multilevel_to_root_promotion() {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
 
@@ -861,9 +870,9 @@ mod tests {
 
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, exts[2], &mut dev).unwrap();
-            tree.remove_extend(&mut fs, exts[3], &mut dev).unwrap();
-            tree.remove_extend(&mut fs, exts[4], &mut dev).unwrap();
+            tree.remove_extent(&mut fs, exts[2], &mut dev).unwrap();
+            tree.remove_extent(&mut fs, exts[3], &mut dev).unwrap();
+            tree.remove_extent(&mut fs, exts[4], &mut dev).unwrap();
         }
 
         let tree = ExtentTree::new(&mut inode);
@@ -880,14 +889,14 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_repeated_deletions_consistency() {
+    fn remove_extent_repeated_deletions_consistency() {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
         let exts = insert_n_extents_with_phys_gaps(&mut fs, &mut dev, &mut inode, 5);
 
         for ext in exts {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, ext, &mut dev).unwrap();
+            tree.remove_extent(&mut fs, ext, &mut dev).unwrap();
 
             let tree2 = ExtentTree::new(&mut inode);
             assert!(tree2.load_root_from_inode().is_some());
@@ -905,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_frees_block_bitmap_bit() {
+    fn remove_extent_frees_block_bitmap_bit() {
         let (mut dev, mut fs) = setup_fs(16 * 1024);
         let mut inode = new_extent_inode();
 
@@ -920,14 +929,14 @@ mod tests {
 
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, ext, &mut dev).unwrap();
+            tree.remove_extent(&mut fs, ext, &mut dev).unwrap();
         }
 
         assert!(!bitmap_block_is_allocated(&mut fs, &mut dev, phys));
     }
 
     #[test]
-    fn remove_extend_partial_delete_splits_extent_and_updates_bitmap() {
+    fn remove_extent_partial_delete_splits_extent_and_updates_bitmap() {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
 
@@ -941,7 +950,7 @@ mod tests {
         let del = Ext4Extent::new(1, 0, 2);
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, del, &mut dev).unwrap();
+            tree.remove_extent(&mut fs, del, &mut dev).unwrap();
         }
 
         assert!(bitmap_block_is_allocated(&mut fs, &mut dev, base));
@@ -978,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_full_delete_single_extent_bitmap_and_metadata() {
+    fn remove_extent_full_delete_single_extent_bitmap_and_metadata() {
         let (mut dev, mut fs) = setup_fs(32 * 1024);
         let mut inode = new_extent_inode();
 
@@ -992,7 +1001,7 @@ mod tests {
         let del = Ext4Extent::new(0, 0, 2);
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, del, &mut dev).unwrap();
+            tree.remove_extent(&mut fs, del, &mut dev).unwrap();
         }
 
         assert!(!bitmap_block_is_allocated(&mut fs, &mut dev, base));
@@ -1006,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_multi_extent_skip_hole_and_verify() {
+    fn remove_extent_multi_extent_skip_hole_and_verify() {
         let (mut dev, mut fs) = setup_fs(64 * 1024);
         let mut inode = new_extent_inode();
 
@@ -1026,7 +1035,7 @@ mod tests {
         // delete 3 allocated blocks starting at lbn=1: deletes lbn=1, then skips hole [2..4), then deletes lbn=4 and lbn=5
         {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, Ext4Extent::new(1, 0, 3), &mut dev)
+            tree.remove_extent(&mut fs, Ext4Extent::new(1, 0, 3), &mut dev)
                 .unwrap();
         }
 
@@ -1054,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_extend_over_length_errors_and_does_not_delete_unrelated() {
+    fn remove_extent_over_length_errors_and_does_not_delete_unrelated() {
         let (mut dev, mut fs) = setup_fs(64 * 1024);
         let mut inode = new_extent_inode();
 
@@ -1079,7 +1088,7 @@ mod tests {
 
         let res = {
             let mut tree = ExtentTree::new(&mut inode);
-            tree.remove_extend(&mut fs, Ext4Extent::new(0, 0, 10), &mut dev)
+            tree.remove_extent(&mut fs, Ext4Extent::new(0, 0, 10), &mut dev)
         };
         assert!(res.is_err());
 

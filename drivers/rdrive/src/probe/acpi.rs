@@ -1464,6 +1464,7 @@ impl System {
                         name: register.name,
                         device_id: DeviceId::new(),
                         irq_parent: None,
+                        fdt_node: None,
                     };
                     let device_id = desc.device_id();
                     let info = AcpiInfo {
@@ -1486,6 +1487,7 @@ impl System {
                 name: register.name,
                 device_id: DeviceId::new(),
                 irq_parent: None,
+                fdt_node: None,
             };
             let info = AcpiInfo {
                 root: self,

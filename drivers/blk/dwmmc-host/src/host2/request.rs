@@ -1,4 +1,5 @@
 use super::*;
+use crate::dma::DmaDataTransfer;
 
 pub struct DataRequest<'a> {
     pub(super) id: RequestId,
@@ -94,21 +95,11 @@ impl DwMmc {
         block_count: u32,
         direction: DataDirection,
     ) -> Result<DataRequest<'a>, Error> {
-        if !should_try_dma(command, block_size, block_count, len, direction) {
-            return Err(Error::UnsupportedCommand);
-        }
+        let transfer = dma_transfer_for_protocol(command, block_size, block_count, len, direction)
+            .ok_or(Error::UnsupportedCommand)?;
         let dma = self.dma.take().ok_or(Error::UnsupportedCommand)?;
         let mut slot = BlockRequestSlot::default();
-        let size = NonZeroUsize::new(len).ok_or(Error::InvalidArgument)?;
-        let result = match direction {
-            DataDirection::Read => {
-                self.submit_read_blocks(command.argument, buffer, size, &dma, &mut slot)
-            }
-            DataDirection::Write => {
-                self.submit_write_blocks(command.argument, buffer, size, &dma, &mut slot)
-            }
-            _ => Err(Error::UnsupportedCommand),
-        };
+        let result = self.submit_dma_data(transfer, buffer, &dma, &mut slot);
         self.dma = Some(dma);
         let request = result?;
         let id = request.id();
@@ -210,17 +201,58 @@ impl DwMmc {
     }
 }
 
-pub(super) fn should_try_dma(
+pub(super) fn dma_transfer_for_protocol(
     cmd: &Command,
     block_size: u32,
     block_count: u32,
     len: usize,
     direction: DataDirection,
-) -> bool {
-    block_size == 512
-        && len == block_count as usize * 512
-        && matches!(
-            (direction, cmd.index),
-            (DataDirection::Read, 17 | 18) | (DataDirection::Write, 24 | 25)
-        )
+) -> Option<DmaDataTransfer> {
+    DmaDataTransfer::for_protocol(cmd, block_size, block_count, len, direction)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_dma_accepts_sd_switch_function_data_shape() {
+        let command = sdmmc_protocol::cmd::cmd6_sd_access_mode(false, 0);
+
+        assert!(dma_transfer_for_protocol(&command, 64, 1, 64, DataDirection::Read,).is_some());
+    }
+
+    #[test]
+    fn owned_dma_accepts_mmc_ext_csd_data_shape() {
+        assert!(
+            dma_transfer_for_protocol(
+                &sdmmc_protocol::cmd::CMD8_MMC,
+                512,
+                1,
+                512,
+                DataDirection::Read,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn owned_dma_rejects_ambiguous_or_mismatched_data_shapes() {
+        let sd_switch = sdmmc_protocol::cmd::cmd6_sd_access_mode(false, 0);
+        let sd_if_cond = sdmmc_protocol::cmd::cmd8(1, 0xaa);
+
+        assert!(dma_transfer_for_protocol(&sd_switch, 64, 1, 64, DataDirection::Write).is_none());
+        assert!(dma_transfer_for_protocol(&sd_switch, 512, 1, 512, DataDirection::Read).is_none());
+        assert!(dma_transfer_for_protocol(&sd_if_cond, 512, 1, 512, DataDirection::Read).is_none());
+        assert!(
+            dma_transfer_for_protocol(
+                &sdmmc_protocol::cmd::cmd17(0),
+                512,
+                2,
+                1024,
+                DataDirection::Read,
+            )
+            .is_none()
+        );
+    }
 }

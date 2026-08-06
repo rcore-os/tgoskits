@@ -22,101 +22,6 @@ pub enum Jbd2RunState {
     Replay,
 }
 
-#[cfg(test)]
-mod tests {
-    use alloc::vec;
-
-    use super::*;
-
-    struct MemBlockDev {
-        data: Vec<u8>,
-    }
-
-    impl MemBlockDev {
-        fn new(blocks: usize) -> Self {
-            Self {
-                data: vec![0; blocks * BLOCK_SIZE],
-            }
-        }
-    }
-
-    impl BlockDevice for MemBlockDev {
-        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-            let start = block_id.as_usize()? * BLOCK_SIZE;
-            let end = start + buffer.len();
-            buffer.copy_from_slice(&self.data[start..end]);
-            Ok(())
-        }
-
-        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
-            let start = block_id.as_usize()? * BLOCK_SIZE;
-            let end = start + buffer.len();
-            self.data[start..end].copy_from_slice(buffer);
-            Ok(())
-        }
-
-        fn open(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn close(&mut self) -> Ext4Result<()> {
-            Ok(())
-        }
-
-        fn total_blocks(&self) -> u64 {
-            (self.data.len() / BLOCK_SIZE) as u64
-        }
-
-        fn block_size(&self) -> u32 {
-            BLOCK_SIZE as u32
-        }
-
-        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
-            Ok(Ext4Timestamp::new(0, 0))
-        }
-    }
-
-    #[test]
-    fn auto_commit_invalidates_stale_block_cache() {
-        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
-
-        let target = AbsoluteBN::new(10);
-        dev.read_block(target).expect("prime target cache");
-        assert_eq!(dev.buffer()[0], 0);
-
-        let count = (JBD2_BUFFER_MAX + 1) as u32;
-        let mut updates = vec![0u8; count as usize * BLOCK_SIZE];
-        for idx in 0..count as usize {
-            updates[idx * BLOCK_SIZE] = (idx + 1) as u8;
-        }
-
-        dev.write_blocks(&updates, target, count, true)
-            .expect("queue metadata updates");
-
-        dev.read_block(target)
-            .expect("read target after auto commit");
-        assert_eq!(dev.buffer()[0], 1);
-    }
-
-    #[test]
-    fn bulk_read_overlays_pending_journal_update() {
-        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
-        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
-
-        let target = AbsoluteBN::new(10);
-        let pending = vec![0x5a; BLOCK_SIZE];
-        dev.write_blocks(&pending, target, 1, true)
-            .expect("queue metadata update");
-
-        let mut observed = vec![0; BLOCK_SIZE];
-        dev.read_blocks(&mut observed, target, 1)
-            .expect("bulk read pending metadata");
-
-        assert_eq!(observed, pending);
-    }
-}
-
 /// Block device proxy that optionally routes metadata writes through JBD2.
 pub struct Jbd2Dev<B: BlockDevice> {
     _mode: u8,
@@ -399,8 +304,13 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Flushes the inner cached device.
-    pub fn cantflush(&mut self) -> Ext4Result<()> {
+    pub fn flush(&mut self) -> Ext4Result<()> {
         self.inner.flush()
+    }
+
+    /// Flushes the inner cached device using the original misspelled API name.
+    pub fn cantflush(&mut self) -> Ext4Result<()> {
+        self.flush()
     }
 
     /// Returns the total number of device blocks.
@@ -416,5 +326,100 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     /// Returns the current timestamp from the underlying device.
     pub fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
         self.inner._device().current_time()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    struct MemBlockDev {
+        data: Vec<u8>,
+    }
+
+    impl MemBlockDev {
+        fn new(blocks: usize) -> Self {
+            Self {
+                data: vec![0; blocks * BLOCK_SIZE],
+            }
+        }
+    }
+
+    impl BlockDevice for MemBlockDev {
+        fn read(&mut self, buffer: &mut [u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let end = start + buffer.len();
+            buffer.copy_from_slice(&self.data[start..end]);
+            Ok(())
+        }
+
+        fn write(&mut self, buffer: &[u8], block_id: AbsoluteBN, _count: u32) -> Ext4Result<()> {
+            let start = block_id.as_usize()? * BLOCK_SIZE;
+            let end = start + buffer.len();
+            self.data[start..end].copy_from_slice(buffer);
+            Ok(())
+        }
+
+        fn open(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Ext4Result<()> {
+            Ok(())
+        }
+
+        fn total_blocks(&self) -> u64 {
+            (self.data.len() / BLOCK_SIZE) as u64
+        }
+
+        fn block_size(&self) -> u32 {
+            BLOCK_SIZE as u32
+        }
+
+        fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+            Ok(Ext4Timestamp::new(0, 0))
+        }
+    }
+
+    #[test]
+    fn auto_commit_invalidates_stale_block_cache() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        dev.read_block(target).expect("prime target cache");
+        assert_eq!(dev.buffer()[0], 0);
+
+        let count = (JBD2_BUFFER_MAX + 1) as u32;
+        let mut updates = vec![0u8; count as usize * BLOCK_SIZE];
+        for idx in 0..count as usize {
+            updates[idx * BLOCK_SIZE] = (idx + 1) as u8;
+        }
+
+        dev.write_blocks(&updates, target, count, true)
+            .expect("queue metadata updates");
+
+        dev.read_block(target)
+            .expect("read target after auto commit");
+        assert_eq!(dev.buffer()[0], 1);
+    }
+
+    #[test]
+    fn bulk_read_overlays_pending_journal_update() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let target = AbsoluteBN::new(10);
+        let pending = vec![0x5a; BLOCK_SIZE];
+        dev.write_blocks(&pending, target, 1, true)
+            .expect("queue metadata update");
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        dev.read_blocks(&mut observed, target, 1)
+            .expect("bulk read pending metadata");
+
+        assert_eq!(observed, pending);
     }
 }

@@ -151,7 +151,7 @@ fn sync_with_axfs_ng_order(
     if dev.is_use_journal() {
         dev.umount_commit();
     }
-    dev.cantflush()
+    dev.flush()
 }
 
 fn read_superblock(device: &SharedCrcDevice) -> Ext4Superblock {

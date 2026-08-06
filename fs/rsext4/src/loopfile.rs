@@ -55,7 +55,7 @@ pub fn resolve_inode_block<B: BlockDevice>(
 ///
 /// The helper walks the entire extent tree, materializes every mapped block,
 /// and returns the final map sorted by logical block number.
-pub fn resolve_inode_block_allextend<B: BlockDevice>(
+pub fn resolve_inode_blocks<B: BlockDevice>(
     _fs: &mut Ext4FileSystem,
     block_dev: &mut Jbd2Dev<B>,
     inode: &mut Ext4Inode,
@@ -123,6 +123,15 @@ pub fn resolve_inode_block_allextend<B: BlockDevice>(
     Ok(out)
 }
 
+/// Builds a logical-block map using the original misspelled API name.
+pub fn resolve_inode_block_allextend<B: BlockDevice>(
+    fs: &mut Ext4FileSystem,
+    block_dev: &mut Jbd2Dev<B>,
+    inode: &mut Ext4Inode,
+) -> Ext4Result<BTreeMap<u32, AbsoluteBN>> {
+    resolve_inode_blocks(fs, block_dev, inode)
+}
+
 /// Resolves a path to its inode number and inode contents.
 ///
 /// The path walk tries hash-tree lookup first for each component and falls back
@@ -177,7 +186,7 @@ pub fn get_file_inode<B: BlockDevice>(
 
                 let total_size = current_inode.size() as usize;
                 let block_bytes = BLOCK_SIZE;
-                let blocks = resolve_inode_block_allextend(fs, block_dev, &mut current_inode)?;
+                let blocks = resolve_inode_blocks(fs, block_dev, &mut current_inode)?;
                 debug!(
                     "Directory inode size: {} bytes, blocks used: {}",
                     total_size,

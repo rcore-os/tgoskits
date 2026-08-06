@@ -56,8 +56,13 @@ const MAX_VALID_TSC_FREQ_HZ: u64 = 10_000_000_000;
 static TSC_FREQ_HZ: AtomicU64 = AtomicU64::new(0);
 static APIC_COUNTS_PER_TSC_Q32: AtomicU64 = AtomicU64::new(0);
 static HAS_TSC_DEADLINE: AtomicBool = AtomicBool::new(false);
+static HAS_INVARIANT_TSC: AtomicBool = AtomicBool::new(false);
+static HAS_TSC_ADJUST: AtomicBool = AtomicBool::new(false);
 static LAPIC_READY: AtomicBool = AtomicBool::new(false);
 static TSC_INFO_STATE: AtomicU8 = AtomicU8::new(0);
+static TSC_ADJUST_REFERENCE_STATE: AtomicU8 = AtomicU8::new(0);
+static TSC_ADJUST_REFERENCE: AtomicU64 = AtomicU64::new(0);
+static TSC_ADJUST_CHANGED: AtomicBool = AtomicBool::new(false);
 static IDT_STATE: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,6 +160,51 @@ pub fn ticks_now() -> u64 {
     unsafe { x86::time::rdtsc() }
 }
 
+pub fn scheduler_counter_stability() -> crate::timer::CounterStability {
+    let invariant_tsc = HAS_INVARIANT_TSC.load(Ordering::Acquire);
+    let cpu_count = crate::smp::cpu_count();
+    if !invariant_tsc || cpu_count != 1 {
+        return crate::timer::CounterStability::Unstable;
+    }
+    classify_scheduler_counter(invariant_tsc, cpu_count, tsc_adjust_is_unchanged())
+}
+
+fn tsc_adjust_is_unchanged() -> bool {
+    if !HAS_TSC_ADJUST.load(Ordering::Acquire) {
+        return true;
+    }
+
+    let current_adjust = unsafe { rdmsr(msr::IA32_TSC_ADJUST) };
+    if TSC_ADJUST_REFERENCE_STATE
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        TSC_ADJUST_REFERENCE.store(current_adjust, Ordering::Relaxed);
+        TSC_ADJUST_REFERENCE_STATE.store(2, Ordering::Release);
+    } else {
+        while TSC_ADJUST_REFERENCE_STATE.load(Ordering::Acquire) != 2 {
+            spin_loop();
+        }
+    }
+
+    if current_adjust != TSC_ADJUST_REFERENCE.load(Ordering::Acquire) {
+        TSC_ADJUST_CHANGED.store(true, Ordering::Release);
+    }
+    !TSC_ADJUST_CHANGED.load(Ordering::Acquire)
+}
+
+const fn classify_scheduler_counter(
+    invariant_tsc: bool,
+    cpu_count: usize,
+    tsc_adjust_unchanged: bool,
+) -> crate::timer::CounterStability {
+    if invariant_tsc && cpu_count == 1 && tsc_adjust_unchanged {
+        crate::timer::CounterStability::Stable
+    } else {
+        crate::timer::CounterStability::Unstable
+    }
+}
+
 unsafe fn set_gate(
     index: usize,
     selector: x86::segmentation::SegmentSelector,
@@ -199,8 +249,16 @@ fn init_tsc_freq() {
     let has_deadline = cpuid
         .get_feature_info()
         .is_some_and(|info| info.has_tsc_deadline());
+    let has_invariant_tsc = cpuid
+        .get_advanced_power_mgmt_info()
+        .is_some_and(|info| info.has_invariant_tsc());
+    let has_tsc_adjust = cpuid
+        .get_extended_feature_info()
+        .is_some_and(|info| info.has_tsc_adjust_msr());
 
     HAS_TSC_DEADLINE.store(has_deadline, Ordering::Release);
+    HAS_INVARIANT_TSC.store(has_invariant_tsc, Ordering::Release);
+    HAS_TSC_ADJUST.store(has_tsc_adjust, Ordering::Release);
     if !has_deadline {
         warn!("x86_64 CPU has no TSC deadline timer, fallback to LAPIC one-shot");
     }
@@ -666,10 +724,31 @@ pub(crate) fn trap_msr_and_efer_constants_hold_for_test() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ticks_to_apic_counts;
+    use super::{classify_scheduler_counter, ticks_to_apic_counts};
+    use crate::timer::CounterStability;
 
     #[test]
     fn legacy_lapic_clamps_overdue_events_to_the_device_minimum() {
         assert_eq!(ticks_to_apic_counts(1), 0x0f);
+    }
+
+    #[test]
+    fn only_proven_single_cpu_invariant_tsc_uses_the_stable_path() {
+        assert_eq!(
+            classify_scheduler_counter(true, 1, true),
+            CounterStability::Stable
+        );
+        assert_eq!(
+            classify_scheduler_counter(false, 1, true),
+            CounterStability::Unstable
+        );
+        assert_eq!(
+            classify_scheduler_counter(true, 2, true),
+            CounterStability::Unstable
+        );
+        assert_eq!(
+            classify_scheduler_counter(true, 1, false),
+            CounterStability::Unstable
+        );
     }
 }
