@@ -266,6 +266,38 @@ fn try_reopen_self_pipe(path: &str, flags: u32) -> Option<AxResult<isize>> {
     Some(add_file_like(pipe, flags & O_CLOEXEC != 0).map(|fd| fd as isize))
 }
 
+/// Reopens a filesystem-backed regular file through `/proc/self/fd/<n>`.
+///
+/// Proc fd entries are magic links to the referenced inode, not ordinary
+/// pathname symlinks. Reopening must therefore keep working after unlink or
+/// mount-tree changes make the file's former pathname unresolvable.
+fn try_reopen_self_regular_file(path: &str, flags: u32) -> Option<AxResult<isize>> {
+    if flags & O_NOFOLLOW != 0 {
+        return None;
+    }
+
+    let fd = self_fd_number(path)?;
+    let file_like = match get_file_like(fd) {
+        Ok(file) => file,
+        Err(_) => return Some(Err(AxError::NotFound)),
+    };
+    let file = file_like.downcast_ref::<File>()?;
+    let location = file.inner().location();
+    if location.node_type() != NodeType::RegularFile {
+        return None;
+    }
+
+    let thread = current();
+    let cred = thread.as_thread().cred();
+    let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
+    Some(
+        options
+            .open_loc(location.clone())
+            .and_then(|result| add_to_fd(result, flags, None))
+            .map(|fd| fd as isize),
+    )
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct OpenHow {
@@ -459,6 +491,9 @@ pub fn sys_openat(
     }
 
     if let Some(result) = try_reopen_self_pipe(&path, uflags) {
+        return result;
+    }
+    if let Some(result) = try_reopen_self_regular_file(&path, uflags) {
         return result;
     }
 
