@@ -306,13 +306,18 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         &mut self,
         vaddr: VirtAddr,
     ) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (paddr, flags, page_size) = self.query(vaddr)?;
-        let size = usize::from(page_size);
+        let mapped = self.query(vaddr);
+        let size = match &mapped {
+            Ok((_, _, page_size)) => usize::from(*page_size),
+            Err(PagingError::NotMapped) => T::PAGE_SIZE,
+            Err(err) => return Err(err.clone()),
+        };
         self.unmap_with_config(&UnmapConfig {
             start_vaddr: align_vaddr_down(vaddr, size),
             size,
             flush: true,
         })?;
+        let (paddr, flags, page_size) = mapped?;
         Ok((align_paddr_down(paddr, size), flags, page_size))
     }
 

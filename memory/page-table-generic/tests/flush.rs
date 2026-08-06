@@ -45,6 +45,10 @@ impl PageTableEntry for TestPte {
     fn valid(&self) -> bool {
         self.0 & PRESENT != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 #[derive(Clone, Copy)]

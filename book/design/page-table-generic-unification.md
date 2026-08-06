@@ -70,6 +70,11 @@ stage-2 可以共享执行器而不互相依赖。
 `PageFaultFlags` 与映射属性分离。地址空间在进入映射策略前显式完成转换，避免把
 `DEVICE`、`UNCACHED` 等 PTE 属性误当成 fault 来源。
 
+执行器区分“页表槽未使用”与“硬件 PTE valid/present”。空权限映射可以保留物理地址
+但保持 non-present，以支持 `PROT_NONE` 和按需映射；`protect`/`remap` 可激活这类叶项，
+`unmap` 则必须清除其占用状态。具体架构通过 `PageTableEntry::unused` 报告该区别，
+通用执行器不推断 PTE 位布局。
+
 内核地址空间创建时先建立受管映射，再从 boot 页表深拷贝缺失的根项；用户地址
 空间只在平台需要时借用内核根项。借用范围在页表销毁前解除，防止释放内核拥有的
 页表页。

@@ -33,7 +33,7 @@ impl X64Pte {
 
 impl PageTableEntry for X64Pte {
     fn from_config(config: PteConfig) -> Self {
-        if !config.valid {
+        if !config.valid && config.paddr.as_usize() == 0 {
             return Self(0);
         }
         if config.is_dir && !config.huge {
@@ -43,7 +43,17 @@ impl PageTableEntry for X64Pte {
             );
         }
 
-        let mut flags = X64PteFlags::PRESENT;
+        if !config.valid {
+            let huge = if config.huge {
+                X64PteFlags::HUGE_PAGE.bits()
+            } else {
+                0
+            };
+            return Self((config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | huge);
+        }
+
+        let mut flags = X64PteFlags::empty();
+        flags |= X64PteFlags::PRESENT;
         if config.writable {
             flags |= X64PteFlags::WRITABLE;
         }
@@ -89,6 +99,10 @@ impl PageTableEntry for X64Pte {
 
     fn valid(&self) -> bool {
         self.flags().contains(X64PteFlags::PRESENT)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
     }
 }
 

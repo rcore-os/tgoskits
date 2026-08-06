@@ -191,14 +191,18 @@ where
         level: usize,
     ) -> PagingResult<PageSize> {
         let index = Self::virt_to_index(vaddr, level);
-        let config = self.as_slice()[index].to_config(level > 1);
-        if !config.valid {
+        let entry = self.as_slice()[index];
+        if entry.unused() {
             return Err(PagingError::not_mapped());
         }
+        let config = entry.to_config(level > 1);
         if config.huge || level == 1 {
             self.as_slice_mut()[index] =
                 T::P::from_config(PteConfig::page(config.paddr, flags, config.huge));
             return Self::page_size_from_level(level);
+        }
+        if !config.valid {
+            return Err(PagingError::not_mapped());
         }
 
         let mut child = Self::from_paddr(config.paddr, self.allocator.clone());
@@ -214,9 +218,6 @@ where
     ) -> PagingResult<PageSize> {
         let index = Self::virt_to_index(vaddr, level);
         let config = self.as_slice()[index].to_config(level > 1);
-        if !config.valid {
-            return Err(PagingError::not_mapped());
-        }
         if config.huge || level == 1 {
             let page_size = Self::page_size_from_level(level)?;
             let aligned_paddr =
@@ -224,6 +225,9 @@ where
             self.as_slice_mut()[index] =
                 T::P::from_config(PteConfig::page(aligned_paddr, flags, config.huge));
             return Ok(page_size);
+        }
+        if !config.valid {
+            return Err(PagingError::not_mapped());
         }
 
         let mut child = Self::from_paddr(config.paddr, self.allocator.clone());
@@ -417,7 +421,7 @@ where
                 "Entry index exceeds page-table frame size",
             ));
         }
-        if self.as_slice()[index].valid() {
+        if !self.as_slice()[index].unused() {
             return Ok(false);
         }
 

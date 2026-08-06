@@ -38,6 +38,13 @@ impl La64Pte {
     }
 
     fn leaf_flags(config: PteConfig) -> LaPteFlags {
+        if !config.valid {
+            return if config.huge {
+                LaPteFlags::GH
+            } else {
+                LaPteFlags::empty()
+            };
+        }
         let mut flags = LaPteFlags::V | LaPteFlags::P;
         if !config.read {
             flags |= LaPteFlags::NR;
@@ -74,7 +81,7 @@ impl La64Pte {
 
 impl PageTableEntry for La64Pte {
     fn from_config(config: PteConfig) -> Self {
-        if !config.valid {
+        if !config.valid && config.paddr.as_usize() == 0 {
             return Self(0);
         }
         let paddr = config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK;
@@ -124,6 +131,10 @@ impl PageTableEntry for La64Pte {
     fn valid(&self) -> bool {
         self.flags().contains(LaPteFlags::V) || self.is_table()
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl core::fmt::Debug for La64Pte {
@@ -156,6 +167,18 @@ mod tests {
         let missing_valid = La64Pte(pte.0 & !LaPteFlags::V.bits());
         assert!(!missing_valid.to_config(false).valid);
         assert!(!missing_valid.valid());
+
+        let non_present = La64Pte::from_config(PteConfig::page(
+            PhysAddr::from_usize(0x2345_6000),
+            MappingFlags::empty(),
+            false,
+        ));
+        assert!(!non_present.to_config(false).valid);
+        assert!(!non_present.unused());
+        assert_eq!(
+            non_present.to_config(false).paddr,
+            PhysAddr::from_usize(0x2345_6000)
+        );
 
         let huge = La64Pte::from_config(PteConfig::page(
             PhysAddr::from_usize(0x4000_0000),

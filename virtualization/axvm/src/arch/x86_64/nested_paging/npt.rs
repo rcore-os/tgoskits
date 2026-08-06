@@ -132,6 +132,10 @@ impl ptg::PageTableEntry for NptEntry {
     fn valid(&self) -> bool {
         NptFlags::from_bits_truncate(self.0).contains(NptFlags::PRESENT)
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl fmt::Debug for NptEntry {

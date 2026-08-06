@@ -147,6 +147,10 @@ impl ptg::PageTableEntry for LoongArchPTE {
     fn valid(&self) -> bool {
         PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::V)
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl fmt::Debug for LoongArchPTE {

@@ -85,12 +85,11 @@ where
                 // 创建大页映射
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
-                if pte_ref.valid() {
+                if !pte_ref.unused() {
                     return Err(PagingError::mapping_conflict(vaddr, paddr));
                 }
                 let mut pte_config = config.pte_template;
                 pte_config.paddr = paddr;
-                pte_config.valid = true;
                 pte_config.huge = true;
                 pte_config.is_dir = true;
 
@@ -111,13 +110,12 @@ where
                 // 创建普通页面映射
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
-                if pte_ref.valid() {
+                if !pte_ref.unused() {
                     return Err(PagingError::mapping_conflict(vaddr, paddr));
                 }
 
                 let mut pte_config = config.pte_template;
                 pte_config.paddr = paddr;
-                pte_config.valid = true;
                 pte_config.huge = false;
                 pte_config.is_dir = false;
 
@@ -212,11 +210,19 @@ where
             let entries = self.as_slice_mut();
             let pte_ref = &mut entries[index];
 
-            // 检查当前页表项是否有效
+            // An invalid leaf can still retain its physical address. Treat it
+            // as occupied state and clear it instead of skipping it.
             let pte_config = pte_ref.to_config(config.level > 1);
+            if pte_ref.unused() {
+                vaddr += level_size.min(remaining_size);
+                continue;
+            }
+
             if !pte_config.valid {
-                // 页表项无效，直接跳过
-                // 注意：无效项不影响can_reclaim，因为我们只关心是否还有有效项
+                *pte_ref = T::P::from_config(PteConfig::default());
+                if config.flush {
+                    T::flush(Some(vaddr));
+                }
                 vaddr += level_size.min(remaining_size);
                 continue;
             }
@@ -291,11 +297,11 @@ where
         Ok(can_reclaim)
     }
 
-    /// 检查页表帧是否全为空（所有页表项都无效）
+    /// 检查页表帧是否全为空（所有页表项都未使用）
     fn is_frame_empty(&self) -> bool {
         let entries = self.as_slice();
         for pte in entries {
-            if pte.valid() {
+            if !pte.unused() {
                 return false;
             }
         }

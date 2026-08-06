@@ -100,6 +100,10 @@ impl page_table_generic::PageTableEntry for Entry {
     fn valid(&self) -> bool {
         (self.0 & PTE_PRESENT) != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 #[derive(Clone, Copy)]

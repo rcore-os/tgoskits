@@ -32,6 +32,10 @@ impl PageTableEntry for AddressOnlyDirectoryPte {
     fn valid(&self) -> bool {
         self.0.valid() || self.0.to_config(false).paddr.as_usize() != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0.unused()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -289,6 +293,58 @@ fn unmap_preserves_address_only_sibling_directory() {
         Err(PagingError::NotMapped)
     ));
     assert_eq!(page_table.query(sibling_vaddr).unwrap().0, sibling_paddr);
+}
+
+#[test]
+fn empty_flags_keep_leaf_non_present_until_protected() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(0x40_0000);
+    let paddr = PhysAddr::from_usize(0x80_0000);
+    let unmapped_vaddr = vaddr + usize::from(PageSize::Size4K);
+    let unmapped_paddr = paddr + usize::from(PageSize::Size4K);
+
+    page_table
+        .map_page(vaddr, paddr, PageSize::Size4K, MappingFlags::empty())
+        .unwrap();
+
+    assert!(matches!(
+        page_table.query(vaddr),
+        Err(PagingError::NotMapped)
+    ));
+
+    page_table
+        .protect_region(
+            vaddr,
+            usize::from(PageSize::Size4K),
+            MappingFlags::READ | MappingFlags::USER,
+        )
+        .unwrap();
+
+    let (mapped_paddr, flags, page_size) = page_table.query(vaddr).unwrap();
+    assert_eq!(mapped_paddr, paddr);
+    assert_eq!(flags, MappingFlags::READ | MappingFlags::USER);
+    assert_eq!(page_size, PageSize::Size4K);
+
+    page_table
+        .map_page(
+            unmapped_vaddr,
+            unmapped_paddr,
+            PageSize::Size4K,
+            MappingFlags::empty(),
+        )
+        .unwrap();
+    assert!(matches!(
+        page_table.unmap_page(unmapped_vaddr),
+        Err(PagingError::NotMapped)
+    ));
+    page_table
+        .map_page(
+            unmapped_vaddr,
+            unmapped_paddr,
+            PageSize::Size4K,
+            MappingFlags::READ | MappingFlags::USER,
+        )
+        .unwrap();
 }
 
 /// 测试MemConfig的正确实现

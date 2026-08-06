@@ -177,6 +177,10 @@ impl ptg::PageTableEntry for A64PTEHV {
     fn valid(&self) -> bool {
         DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::VALID)
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl fmt::Debug for A64PTEHV {

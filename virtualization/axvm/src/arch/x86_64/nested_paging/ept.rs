@@ -159,6 +159,10 @@ impl ptg::PageTableEntry for EptEntry {
     fn valid(&self) -> bool {
         self.0 & 0x7 != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl fmt::Debug for EptEntry {

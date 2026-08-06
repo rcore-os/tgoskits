@@ -159,6 +159,10 @@ impl PageTableEntry for MockPte {
     fn valid(&self) -> bool {
         self.0 & Self::V != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 pub struct MockNestedPageTable {

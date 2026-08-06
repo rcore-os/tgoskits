@@ -102,6 +102,12 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
     ///
     /// Implementations must recognize both leaf mappings and child-table entries.
     fn valid(&self) -> bool;
+
+    /// Returns whether this entry contains no descriptor state at all.
+    ///
+    /// This is distinct from [`Self::valid`]: a non-present leaf may retain its
+    /// physical address so that a later protection change can activate it.
+    fn unused(&self) -> bool;
 }
 
 pub trait PageTableOp: Send + 'static {

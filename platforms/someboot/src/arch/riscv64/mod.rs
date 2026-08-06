@@ -161,6 +161,10 @@ impl PageTableEntry for Entry {
     fn valid(&self) -> bool {
         (self.0 & PTE_V) != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 #[derive(Clone, Copy)]

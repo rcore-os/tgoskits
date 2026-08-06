@@ -100,11 +100,19 @@ impl A64Pte {
 
 impl PageTableEntry for A64Pte {
     fn from_config(config: PteConfig) -> Self {
-        if !config.valid {
+        if !config.valid && config.paddr.as_usize() == 0 {
             return Self(0);
         }
         if config.is_dir && !config.huge {
             let attr = A64DescriptorAttr::NON_BLOCK | A64DescriptorAttr::VALID;
+            return Self((config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits());
+        }
+
+        if !config.valid {
+            let mut attr = A64DescriptorAttr::AF;
+            if !config.huge {
+                attr |= A64DescriptorAttr::NON_BLOCK;
+            }
             return Self((config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits());
         }
 
@@ -153,6 +161,10 @@ impl PageTableEntry for A64Pte {
 
     fn valid(&self) -> bool {
         self.attr().contains(A64DescriptorAttr::VALID)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
     }
 }
 

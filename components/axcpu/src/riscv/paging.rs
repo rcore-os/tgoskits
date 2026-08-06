@@ -44,7 +44,10 @@ impl Rv64Pte {
     }
 
     fn leaf_flags(config: PteConfig) -> RvPteFlags {
-        let mut flags = RvPteFlags::V | RvPteFlags::A | RvPteFlags::D;
+        let mut flags = RvPteFlags::A | RvPteFlags::D;
+        if config.valid {
+            flags |= RvPteFlags::V;
+        }
         if config.read || config.writable {
             flags |= RvPteFlags::R;
         }
@@ -73,7 +76,7 @@ impl Rv64Pte {
 
 impl PageTableEntry for Rv64Pte {
     fn from_config(config: PteConfig) -> Self {
-        if !config.valid {
+        if !config.valid && config.paddr.as_usize() == 0 {
             return Self(0);
         }
         let paddr = (config.paddr.as_usize() as u64 >> 2) & Self::PHYS_ADDR_MASK;
@@ -106,6 +109,10 @@ impl PageTableEntry for Rv64Pte {
 
     fn valid(&self) -> bool {
         self.flags().contains(RvPteFlags::V)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
     }
 }
 

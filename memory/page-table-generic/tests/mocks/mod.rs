@@ -60,6 +60,9 @@ impl Debug for PteImpl {
 
 impl PageTableEntry for PteImpl {
     fn from_config(config: PteConfig) -> Self {
+        if !config.valid && config.paddr.as_usize() == 0 {
+            return Self(0);
+        }
         let pte = Self(0);
 
         // 设置物理地址
@@ -121,6 +124,10 @@ impl PageTableEntry for PteImpl {
 
     fn valid(&self) -> bool {
         self.reg().is_set(PTE64::VALID)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
     }
 }
 

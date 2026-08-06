@@ -103,6 +103,10 @@ impl ptg::PageTableEntry for RiscvPte {
     fn valid(&self) -> bool {
         self.0 & Self::V != 0
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 pub(crate) type NestedPageTable<H> =

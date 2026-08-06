@@ -317,6 +317,10 @@ impl PageTableEntry for Entry {
     fn valid(&self) -> bool {
         self.as_base().is_set(PTE::VALID)
     }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl core::fmt::Debug for Entry {
