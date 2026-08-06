@@ -3,12 +3,9 @@
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::ops::Range;
 
-use axdevice_base::{InterruptControllerId, ItsId, LpiId, MsiDeviceId, MsiEventId};
+use axdevice_base::*;
 
-use super::{
-    MsiRanges, RangeOwner, ResourcePools,
-    range::{insert_range, nonempty_owner, reserve_range},
-};
+use super::{range::*, *};
 use crate::DeviceManagerResult;
 
 impl ResourcePools {

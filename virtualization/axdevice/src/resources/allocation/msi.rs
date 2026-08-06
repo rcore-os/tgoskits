@@ -2,16 +2,10 @@
 
 use alloc::{collections::BTreeMap, format, vec::Vec};
 
-use axdevice_base::{InterruptControllerId, ItsId, LpiId, MsiDeviceId, MsiEventId};
+use axdevice_base::*;
 
 use super::search::{find_u32_range, range_allowed};
-use crate::resources::{
-    MsiResourceRequest, ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest,
-    ResourceSlot,
-    error::conflict,
-    pool::{RangeOwner, ranges_overlap},
-    resolved::{ResolvedMsi, ResolvedResource},
-};
+use crate::resources::{error::*, pool::*, resolved::*, *};
 
 pub(super) struct MsiAllocator<'a> {
     pools: &'a ResourcePools,

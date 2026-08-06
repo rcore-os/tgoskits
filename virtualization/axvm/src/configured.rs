@@ -3,11 +3,11 @@
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-use axdevice::{DeviceModel, DeviceNodeId, DeviceNodeSpec, FirmwareModels};
+use axdevice::*;
 use axdevice_base::InterruptControllerId;
 use axvmconfig::VirtualDeviceRequest;
 
-use crate::{AxVmError, AxVmResult, architecture::MachinePlatform, machine::MachineArchitecture};
+use crate::{architecture::*, machine::*, *};
 
 pub trait ConfiguredDeviceFactory: Send + Sync {
     fn model_name(&self) -> &'static str;

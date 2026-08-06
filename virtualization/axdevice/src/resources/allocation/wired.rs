@@ -2,13 +2,9 @@
 
 use alloc::{collections::BTreeMap, string::ToString, vec::Vec};
 
-use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
+use axdevice_base::*;
 
-use crate::resources::{
-    ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest, ResourceSlot,
-    pool::IrqOwner,
-    resolved::{ResolvedResource, ResolvedWiredIrq},
-};
+use crate::resources::{pool::*, resolved::*, *};
 
 pub(super) struct WiredAllocator<'a> {
     pools: &'a ResourcePools,

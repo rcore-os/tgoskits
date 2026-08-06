@@ -6,11 +6,7 @@ use axdevice::DeviceNodeKind;
 use axdevice_base::Resource;
 use axvm_types::HostDeviceAssignment;
 
-use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
-use crate::{
-    AxVmError, AxVmResult,
-    layout::{GuestOwnedRegion, VmRegionKind, build_address_layout},
-};
+use super::super::*;
 
 fn stage2_guest_address_space_size(gpa_bits: usize) -> usize {
     if gpa_bits >= usize::BITS as usize {

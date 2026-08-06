@@ -3,11 +3,7 @@
 use axvm_types::{AccessWidth, GuestPhysAddr, MappingFlags, Port};
 use x86_vcpu::{X86PortIoDirection, X86PortIoStringExit};
 
-use super::{ArchOps, AxvmX86Vcpu, X86_64Arch};
-use crate::{
-    AxVmError, AxVmResult,
-    architecture::{BoundVcpuExit, VcpuRunAction},
-};
+use super::*;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeferredRunWork {

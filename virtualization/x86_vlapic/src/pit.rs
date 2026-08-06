@@ -4,11 +4,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use crate::{
-    X86AccessWidth, X86Port, X86PortRange, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
-    host::{self, X86VlapicHostOps},
-    lock::SpinMutex as Mutex,
-};
+use crate::{host::*, lock::SpinMutex as Mutex, *};
 
 const PIT_CHANNEL0: u16 = 0x40;
 const PIT_CHANNEL2: u16 = 0x42;

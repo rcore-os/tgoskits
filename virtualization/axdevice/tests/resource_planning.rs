@@ -1,11 +1,5 @@
-use axdevice::{
-    DevicePlanRequest, DeviceRequirements, MsiResourceRequest, ResourceNamespace,
-    ResourcePlanningError, ResourcePools, ResourceRequest, ResourceSlot, VmResourcePlanner,
-};
-use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId, LpiId,
-    MsiDeviceId, MsiEventId,
-};
+use axdevice::*;
+use axdevice_base::*;
 
 fn slot(name: &str) -> ResourceSlot {
     ResourceSlot::new(name).unwrap()

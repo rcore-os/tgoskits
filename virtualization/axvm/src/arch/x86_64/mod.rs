@@ -15,40 +15,16 @@ use std::{
 };
 
 use ax_std::os::arceos::sync::RawSpinLock;
-use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration,
-    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRegistration, DeviceRequirements,
-    ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey, X86InterruptDomainKey,
-    X86InterruptDomainOps, X86IoApicDeviceOps, X86IoApicServiceKey, X86PicServiceKey,
-    X86PitDeviceOps, X86PitServiceKey,
-};
-use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptEndpoint, IrqError, IrqResult,
-    VirtualInterruptController, WiredIrqInput, WiredIrqSink,
-};
-use axvm_types::{
-    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, Port,
-    SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
-    VmBackendResult as BackendResult,
-};
+use axdevice::*;
+use axdevice_base::*;
+use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 use x86_vcpu::{
-    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
-    X86MsrAddr, X86NestedPagingConfig, X86PerCpuState, X86Port, X86PortIoStringExit, X86Vcpu,
-    X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit,
+    X86AccessWidth, X86GuestPhysAddr, X86HostPhysAddr, X86HostVirtAddr, X86MsrAddr, X86Port, *,
 };
-use x86_vlapic::{
-    X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicHostOps,
-    X86VlapicResult, X86VmId,
-};
+use x86_vlapic::*;
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
-use crate::{
-    AxVmError, AxVmResult, StopReason,
-    host::{HostMemory, default_host},
-    irq::deferred::DeferredVcpuKick,
-    manager,
-    vcpu::with_current_vcpu,
-};
+use super::*;
+use crate::{host::*, irq::deferred::*, vcpu::*};
 
 mod acpi_pm_timer;
 pub(crate) mod boot;
@@ -66,7 +42,7 @@ mod resource_pools;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
-use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
+use exit::*;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 pub(crate) use vm::X86VmPlan;
 

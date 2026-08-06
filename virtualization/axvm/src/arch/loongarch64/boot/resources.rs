@@ -4,10 +4,7 @@ use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal, sync::IrqSafeMute
 use axvmconfig::GuestConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
-use crate::{
-    AxVMRef, AxVmResult, ax_err_type,
-    config::{AxVMConfig, HostDeviceAssignment},
-};
+use crate::{config::*, *};
 
 static LOONGARCH_GUEST_IRQ_ROUTES: OnceLock<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
     OnceLock::new();

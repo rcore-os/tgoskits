@@ -3,10 +3,7 @@
 use alloc::{format, string::String, vec::Vec};
 use core::fmt;
 
-use axdevice_base::{
-    ControllerInputId, HostIrqId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId,
-    LpiId, MsiDeviceId, MsiEventId,
-};
+use axdevice_base::*;
 
 use crate::{DeviceManagerError, DeviceManagerResult};
 

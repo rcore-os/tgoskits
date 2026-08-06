@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, string::String};
 
-use axdevice_base::{BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, Resource};
+use axdevice_base::*;
 use x86_vlapic::{EmulatedPic, X86Port};
 
 use super::{X86PicDeviceOps, port_resource, x86_access_width};

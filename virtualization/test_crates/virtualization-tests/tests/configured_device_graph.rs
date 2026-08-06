@@ -1,20 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use axdevice::{
-    AcpiDeviceSpec, AcpiNodeModel, ControllerRegistration, DeviceBuildContext, DeviceBundle,
-    DeviceDeclaration, DeviceGraphBuilder, DeviceModel, DeviceNodeId, DeviceNodeSpec,
-    DeviceRegistration, DeviceRequirements, FdtNodeModel, FdtNodeSpec, FirmwareBuildError,
-    FirmwareModels, FirmwareProperty, ResourcePools, ResourceRequest, ResourceSlot,
-    render_device_firmware,
-};
-use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger, IrqResult,
-    VirtualInterruptController, WiredIrqInput, WiredIrqSink,
-};
-use axvm::{
-    ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredDeviceFactory,
-    ConfiguredDeviceInstance, DeviceInstantiationContext, machine::MachineArchitecture,
-};
+use axdevice::*;
+use axdevice_base::*;
+use axvm::{machine::*, *};
 use axvmconfig::{GuestConfig, VirtualDeviceRequest};
 
 // Host tests link AxVM without a bare-metal linker script. These symbols only

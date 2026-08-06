@@ -16,7 +16,7 @@
 //!
 //! This module provides functionality to generate VM configuration templates
 //! with sensible defaults based on user-provided parameters.
-use crate::{GuestConfig, GuestDevices, GuestType, VMBaseConfig, VMKernelConfig};
+use crate::*;
 
 /// Configuration parameters for generating a VM template.
 ///

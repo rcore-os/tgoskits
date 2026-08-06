@@ -5,19 +5,8 @@ use core::ops::Range;
 
 use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 
-use super::{
-    firmware_plan::Aarch64FirmwarePlan, shared_provider::SharedProviderBootstrap,
-    vgic::VgicConstructionPlan,
-};
-use crate::{
-    AxVmError, AxVmResult,
-    config::AxVMConfig,
-    machine::{
-        GuestGicCpuRegion, GuestGicProfile, GuestMmioRegion, GuestSerialFdtIdentity,
-        GuestSerialProfile, GuestSerialTransport, GuestTimerProfile,
-    },
-    vm::prepare::device_plan::{ArchitectureVmPlan, VmDevicePlan},
-};
+use super::{firmware_plan::*, shared_provider::*, vgic::*};
+use crate::{config::*, machine::*, vm::prepare::device_plan::*, *};
 
 /// Complete AArch64 plan created once before firmware and devices are finalized.
 pub(crate) struct Aarch64VmPlan {

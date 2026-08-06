@@ -24,13 +24,7 @@ pub use axvm_types::{
 };
 use axvmconfig::VirtualDeviceRequest;
 
-use crate::{
-    arch::{ArchOps, CurrentArch},
-    machine::{
-        GuestGicProfile, GuestPlicProfile, GuestSerialFdtIdentity, GuestSerialProfile,
-        GuestTimerProfile,
-    },
-};
+use crate::{arch::*, machine::*};
 
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

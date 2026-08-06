@@ -2,10 +2,7 @@
 
 use alloc::{collections::BTreeMap, format, string::ToString};
 
-use axdevice_base::{
-    ControllerInputId, HostIrqId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId,
-    LpiId, MsiDeviceId, MsiEventId,
-};
+use axdevice_base::*;
 
 use super::ResourceSlot;
 use crate::{DeviceManagerError, DeviceManagerResult};

@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axdevice_base::{MessageInterruptController, VirtualInterruptController};
 
-use crate::{ResolvedMsi, ResolvedWiredIrq, ResourceLease};
+use crate::*;
 
 /// A VM-local interrupt controller contributed by a device bundle.
 #[derive(Clone)]

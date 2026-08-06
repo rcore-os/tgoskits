@@ -33,28 +33,8 @@ use x86_64::registers::{
 };
 use x86_vlapic::EmulatedLocalApic;
 
-use super::{
-    VmxExitInfo, as_axerr,
-    definitions::VmxExitReason,
-    structs::{IOBitmap, MsrBitmap, VmxRegion},
-    vmcs::{
-        self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
-        VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
-        VmcsReadOnlyNW,
-    },
-};
-use crate::{
-    X86_LOCAL_APIC_GPA, X86_LOCAL_APIC_SIZE, X86AccessFlags, X86AccessWidth, X86GuestMemoryRegion,
-    X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps, X86HostPhysAddr, X86MsrAddr,
-    X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port, X86PortIoDirection,
-    X86PortIoStringExit, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig,
-    X86VmExit, host,
-    msr::Msr,
-    port_io::{X86AddressSize, X86PortIoAccess, X86PortIoIteration},
-    regs::GeneralRegisters,
-    restore_host_interrupt_flag, x86_real_mode_entry_state,
-    xstate::XState,
-};
+use super::{VmxExitInfo, definitions::*, structs::*, vmcs::*, *};
+use crate::{msr::*, port_io::*, regs::*, xstate::*, *};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
 

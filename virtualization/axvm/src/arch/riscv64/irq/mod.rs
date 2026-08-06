@@ -17,21 +17,10 @@
 use std::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_std::os::arceos::sync::IrqSafeMutex;
-use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration,
-    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRegistration, DeviceRequirements,
-    ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey,
-};
-use axdevice_base::{
-    BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
-    InterruptControllerId, InterruptEndpoint, IrqError, IrqResult, VirtualInterruptController,
-    WiredIrqInput, WiredIrqSink,
-};
+use axdevice::*;
+use axdevice_base::*;
 use axvm_types::{GuestPhysAddr, InterruptTriggerMode};
-use riscv_vplic::{
-    PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
-    PLIC_NUM_SOURCES, VPlicGlobal,
-};
+use riscv_vplic::*;
 
 use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::deferred::DeferredVcpuKick};
 

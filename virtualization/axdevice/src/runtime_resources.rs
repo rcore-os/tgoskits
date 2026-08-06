@@ -2,10 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{
-    DeviceManagerResult, ResourceLease,
-    interrupt::{InterruptRegistry, PlannedBundleResources},
-};
+use crate::{interrupt::*, *};
 
 #[derive(Default)]
 pub(crate) struct PlannedRuntimeResources {

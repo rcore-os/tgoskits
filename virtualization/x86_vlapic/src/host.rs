@@ -2,10 +2,7 @@
 
 use core::marker::PhantomData;
 
-use crate::{
-    X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VcpuId,
-    X86VlapicError, X86VlapicResult, X86VmId,
-};
+use crate::*;
 
 /// Size of a 4 KiB host frame.
 pub const X86_PAGE_SIZE_4K: usize = 0x1000;

@@ -2,14 +2,7 @@
 
 use arm_vgic::{ArmVgicConfig, VgicMmioRegion};
 
-use crate::{
-    AxVmError, AxVmResult,
-    config::AxVMConfig,
-    machine::{
-        GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
-        GuestMmioRegion, GuestSerialFdtIdentity, GuestSerialProfile, GuestTimerProfile,
-    },
-};
+use crate::{config::*, machine::*, *};
 
 pub(super) struct Aarch64FirmwarePlan {
     gic: GuestGicProfile,

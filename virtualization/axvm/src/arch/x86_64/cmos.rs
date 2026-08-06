@@ -2,10 +2,7 @@
 
 use alloc::sync::Arc;
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceModel, DeviceRegistration, DeviceRequirements, ResourceRequest, ResourceSlot,
-};
+use axdevice::*;
 use axvm_types::VmMemMappingType;
 
 use crate::{AxVmResult, config::AxVMConfig};

@@ -2,12 +2,8 @@
 
 use alloc::{format, string::String, vec::Vec};
 
-use super::search::{find_u16_range, find_u64_range, range_allowed};
-use crate::resources::{
-    ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest, ResourceSlot,
-    pool::{RangeOwner, ranges_overlap},
-    resolved::ResolvedResource,
-};
+use super::search::*;
+use crate::resources::{pool::*, resolved::*, *};
 
 pub(super) struct AddressAllocator<'a> {
     pools: &'a ResourcePools,

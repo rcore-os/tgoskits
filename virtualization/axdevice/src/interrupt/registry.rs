@@ -2,16 +2,10 @@
 
 use alloc::{collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
 
-use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger,
-    MessageInterruptController, VirtualInterruptController,
-};
+use axdevice_base::*;
 
-use super::{
-    ControllerRegistration, EndpointRegistration, MessageEndpointRegistration,
-    PlannedBundleResources, WiredEndpointRegistration,
-};
-use crate::{DeviceManagerError, DeviceManagerResult, ResolvedMsi, ResolvedWiredIrq};
+use super::*;
+use crate::*;
 
 /// Structured runtime controller/endpoint registration failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

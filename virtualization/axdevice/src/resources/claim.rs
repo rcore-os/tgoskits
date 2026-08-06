@@ -12,7 +12,7 @@ use core::fmt;
 use ax_kspin::SpinRaw;
 use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId};
 
-use super::{ResolvedMsi, ResolvedWiredIrq, ResourceSlot, resolved::ResolvedResource};
+use super::{resolved::*, *};
 use crate::{DeviceManagerError, DeviceManagerResult};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

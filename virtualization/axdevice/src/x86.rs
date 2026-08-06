@@ -7,11 +7,8 @@
 use alloc::{boxed::Box, string::String};
 use core::marker::PhantomData;
 
-use axdevice_base::{AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceError, Resource};
-use x86_vlapic::{
-    EmulatedIoApic, EmulatedPit, IoApicEoi, IoApicInterrupt, X86AccessWidth, X86GuestPhysAddr,
-    X86GuestPhysAddrRange, X86Port, X86PortRange, X86VlapicHostOps,
-};
+use axdevice_base::*;
+use x86_vlapic::*;
 
 use crate::{ServiceCardinality, ServiceKey};
 

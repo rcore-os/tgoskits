@@ -15,12 +15,7 @@
 use bit_field::BitField;
 use bitflags::bitflags;
 
-use crate::{
-    X86HostOps, X86HostPhysAddr, X86VcpuResult,
-    host::PhysFrame,
-    msr::{Msr, MsrReadWrite},
-    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
-};
+use crate::{host::*, msr::*, types::X86_PAGE_SIZE_4K as PAGE_SIZE, *};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]

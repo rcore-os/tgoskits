@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use ax_std::os::arceos::sync::RawSpinLock as Mutex;
-use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PicServiceKey, X86PitServiceKey};
+use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
 use crate::{

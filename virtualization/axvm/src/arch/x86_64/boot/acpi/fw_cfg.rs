@@ -8,9 +8,7 @@ use super::{
     config::X86FirmwarePlan,
     tables::{build_fadt, build_madt, serialize},
 };
-use crate::boot::acpi::{
-    AcpiAllocation, AcpiBuildError, AcpiLoaderPlan, AcpiTableArena, LoaderZone,
-};
+use crate::boot::acpi::*;
 
 const TABLE_FILE: &str = "etc/acpi/tables";
 const RSDP_FILE: &str = "etc/acpi/rsdp";

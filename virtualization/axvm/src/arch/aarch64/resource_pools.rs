@@ -2,7 +2,7 @@
 
 use arm_vgic::{ArmVgicConfig, LPI_INTID_BASE};
 use axdevice::ResourcePools;
-use axdevice_base::{ControllerInputId, InterruptSharing, LpiId, MsiDeviceId, MsiEventId};
+use axdevice_base::*;
 
 use crate::AxVmResult;
 

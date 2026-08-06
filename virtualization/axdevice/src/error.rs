@@ -2,7 +2,7 @@
 
 use alloc::string::String;
 
-use axdevice_base::{AccessWidth, BusKind, DeviceError, IrqError, RegistryError};
+use axdevice_base::*;
 
 use crate::{DeviceGraphError, InterruptRegistrationError};
 

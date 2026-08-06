@@ -4,11 +4,7 @@ use alloc::{collections::BTreeMap, format, string::String, sync::Arc, vec::Vec};
 
 use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId};
 
-use super::{
-    DevicePlanRequest, DeviceRequirement, ResolvedDeviceResources, ResourceClaimSet,
-    ResourceNamespace, ResourcePlanningError, ResourcePools, allocation::AllocationState,
-    claim::ResourceClaimDomain,
-};
+use super::{allocation::*, claim::*, *};
 use crate::{DeviceManagerError, DeviceManagerResult};
 
 /// An immutable resource plan for one virtual machine.

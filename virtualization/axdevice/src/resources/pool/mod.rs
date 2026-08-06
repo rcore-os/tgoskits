@@ -9,10 +9,7 @@ mod wired;
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::ops::Range;
 
-use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger, ItsId,
-    MsiDeviceId,
-};
+use axdevice_base::*;
 pub(crate) use range::ranges_overlap;
 
 /// Resources available to one architecture-owned VM plan.

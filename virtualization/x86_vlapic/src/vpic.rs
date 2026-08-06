@@ -1,7 +1,4 @@
-use crate::{
-    X86AccessWidth, X86Port, X86PortRange, X86VlapicError, X86VlapicResult,
-    lock::SpinMutex as Mutex,
-};
+use crate::{lock::SpinMutex as Mutex, *};
 
 const MASTER_COMMAND: u16 = 0x20;
 const MASTER_DATA: u16 = 0x21;

@@ -2,22 +2,12 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use arm_vgic::{
-    ArmVgicConfig, AssignedSpiConfig, GicAffinity, GicV3Backend, HostGicVersion, ItsConfig, SpiId,
-    VgicMmioRegion, VgicV2Config, VgicV3Config,
-};
-use axdevice::{
-    DeviceBuildContext, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceRequirements, ResourceRequest, ResourceSlot,
-};
+use arm_vgic::*;
+use axdevice::*;
 use axdevice_base::{HostIrqId, InterruptControllerId};
 
 use super::super::gic;
-use crate::{
-    AxVmError, AxVmResult,
-    config::AxVMConfig,
-    machine::{GuestGicCpuRegion, GuestGicProfile, GuestMmioRegion},
-};
+use crate::{config::*, machine::*, *};
 
 /// Immutable controller construction shared by resource planning and runtime build.
 pub(crate) struct VgicConstructionPlan {

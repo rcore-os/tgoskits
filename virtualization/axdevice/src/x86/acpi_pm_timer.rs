@@ -3,10 +3,7 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
-    InterruptTriggerMode, IrqLine, Resource,
-};
+use axdevice_base::*;
 
 const PM_TIMER_FREQUENCY_HZ: u64 = 3_579_545;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;

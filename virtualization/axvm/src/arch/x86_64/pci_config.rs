@@ -2,10 +2,7 @@
 
 use alloc::sync::Arc;
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceModel, DeviceRegistration, DeviceRequirements, ResourceRequest, ResourceSlot,
-};
+use axdevice::*;
 
 pub(super) fn model() -> Arc<dyn DeviceModel> {
     Arc::new(X86PciConfigModel)

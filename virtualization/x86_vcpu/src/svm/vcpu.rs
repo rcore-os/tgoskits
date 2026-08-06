@@ -15,22 +15,12 @@ use x86_64::registers::{
 use x86_vlapic::EmulatedLocalApic;
 
 use super::{
-    definitions::{SvmExitCode, SvmIntercept},
-    flags::{InterruptType, VmcbIntInfo},
-    structs::{IOPm, MSRPm, VmcbFrame},
-    vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
+    definitions::*,
+    flags::*,
+    structs::*,
+    vmcb::{VmcbTlbControl, *},
 };
-use crate::{
-    X86_LOCAL_APIC_GPA, X86_LOCAL_APIC_SIZE, X86AccessFlags, X86AccessWidth, X86GuestPhysAddr,
-    X86GuestVirtAddr, X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo,
-    X86NestedPagingConfig, X86Port, X86PortIoDirection, X86PortIoStringExit, X86VcpuCreateConfig,
-    X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
-    msr::Msr,
-    port_io::{X86AddressSize, X86PortIoAccess, X86PortIoIteration},
-    regs::GeneralRegisters,
-    restore_host_interrupt_flag, x86_real_mode_entry_state,
-    xstate::XState,
-};
+use crate::{msr::*, port_io::*, regs::*, xstate::*, *};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const X86_PIT_PORT_BASE: u16 = 0x40;

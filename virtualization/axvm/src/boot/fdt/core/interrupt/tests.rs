@@ -10,10 +10,7 @@ use super::{
     phandle::{prop_string, prop_u32, prop_u64},
     plic,
 };
-use crate::machine::{
-    GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
-    GuestMmioRegion, GuestPlicProfile,
-};
+use crate::machine::*;
 
 #[test]
 fn replaces_host_gic_windows_with_virtual_machine_windows() {

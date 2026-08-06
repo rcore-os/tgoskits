@@ -2,14 +2,8 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{
-    DeviceFirmwareBinding, DeviceNodeId, DeviceNodeKind, HostPassthroughMapping,
-    builder::DeclaredDeviceNode,
-};
-use crate::{
-    DeviceManagerResult, DeviceModel, FirmwareModels, ResolvedDeviceResources, ResourceLease,
-    VmResourcePlan,
-};
+use super::{builder::*, *};
+use crate::*;
 
 /// One topologically ordered node in a resolved graph.
 pub struct ResolvedDeviceNode {

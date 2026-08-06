@@ -3,11 +3,7 @@
 use std::format;
 
 use super::Aarch64Arch;
-use crate::{
-    AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform},
-    ax_err_type,
-};
+use crate::{architecture::*, *};
 
 impl HostTimePlatform for Aarch64Arch {}
 

@@ -23,19 +23,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
-use axvm::{
-    AxVM, GuestPhysAddr,
-    boot::{
-        BootImageProvider, StaticVmImage, boot_firmware_load_gpa, get_image_header,
-        guest_boot_policy, init_guest_boot_resources, prepare_guest_boot,
-    },
-    config::{
-        AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
-        VMImageConfig,
-    },
-};
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
+use axvm::{boot::*, config::*, *};
 use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
 #[cfg(all(

@@ -7,7 +7,7 @@ use ax_kspin::SpinRaw as Mutex;
 use ax_memory_addr::is_aligned_4k;
 use axvm_types::GuestPhysAddr;
 
-use crate::{DeviceManagerError, DeviceManagerResult, ServiceCardinality, ServiceKey};
+use crate::*;
 
 /// Allocates guest-physical ranges from one graph-owned window.
 pub trait GuestRangeAllocator: Send + Sync {

@@ -1,7 +1,7 @@
 use super::frame::ContiguousPhysFrames;
 #[cfg(test)]
 use crate::types::X86_PAGE_SIZE_4K as PAGE_SIZE;
-use crate::{X86HostOps, X86HostPhysAddr, X86VcpuResult, host::PhysFrame, svm::vmcb::VmcbStruct};
+use crate::{host::*, svm::vmcb::*, *};
 
 /// Virtual-machine control block backing page.
 #[derive(Debug)]

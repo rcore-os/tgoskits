@@ -1,6 +1,6 @@
 //! State transition for one emulated x86 string-I/O element.
 
-use crate::{X86AccessWidth, X86GuestPhysAddr, X86Port, X86VcpuError, X86VcpuResult};
+use crate::*;
 
 /// Direction of a string port-I/O instruction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

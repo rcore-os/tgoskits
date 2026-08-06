@@ -2,14 +2,10 @@
 
 use alloc::sync::Arc;
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceModel, DeviceRequirements, ResourceRequest, ResourceSlot, SerialBackend,
-    build_16550_mmio, build_16550_port, build_pl011_mmio,
-};
-use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
+use axdevice::*;
+use axdevice_base::*;
 
-use super::{GuestSerialModel, GuestSerialProfile, GuestSerialTransport};
+use super::*;
 
 pub(crate) fn serial_device_model(config: &crate::config::AxVMConfig) -> Arc<dyn DeviceModel> {
     let profile = config.serial_profile();

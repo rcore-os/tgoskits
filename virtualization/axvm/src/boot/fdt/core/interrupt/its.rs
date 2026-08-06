@@ -10,10 +10,7 @@ use super::{
     phandle,
     phandle::{prop_string, prop_u32},
 };
-use crate::{
-    AxVmResult, ax_err_type,
-    machine::{GuestItsProfile, GuestMmioRegion},
-};
+use crate::{machine::*, *};
 
 pub(super) fn host_profiles(fdt: &Fdt) -> AxVmResult<alloc::vec::Vec<GuestItsProfile>> {
     let mut nodes = fdt

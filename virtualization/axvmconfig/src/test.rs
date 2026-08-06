@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    AddressSpacePolicy, AxVmConfigError, GuestConfig, GuestDevices, GuestType, PhysicalDeviceRef,
-    VMBootProtocol, VMKernelConfig, VmMemMappingType,
-};
+use crate::*;
 
 const MINIMAL_CONFIG: &str = r#"
 [base]

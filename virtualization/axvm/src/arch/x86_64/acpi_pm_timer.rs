@@ -2,11 +2,8 @@
 
 use alloc::sync::Arc;
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceModel, DeviceRegistration, DeviceRequirements, ResourceRequest, ResourceSlot,
-};
-use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
+use axdevice::*;
+use axdevice_base::*;
 pub(super) fn model() -> Arc<dyn DeviceModel> {
     Arc::new(X86AcpiPmTimerModel)
 }

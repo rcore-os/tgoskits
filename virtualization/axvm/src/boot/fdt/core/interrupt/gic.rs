@@ -8,10 +8,7 @@ use super::{
     its, phandle,
     phandle::{prop_string, prop_u32, prop_u64},
 };
-use crate::{
-    AxVmResult, ax_err_type,
-    machine::{GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestMmioRegion},
-};
+use crate::{machine::*, *};
 
 const DEFAULT_REDISTRIBUTOR_STRIDE: usize = 0x2_0000;
 

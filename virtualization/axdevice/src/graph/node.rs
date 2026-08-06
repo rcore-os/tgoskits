@@ -3,9 +3,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-use crate::{
-    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRequirements, FirmwareModels,
-};
+use crate::*;
 
 /// Stable identity of one node in a VM-local device graph.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

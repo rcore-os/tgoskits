@@ -1,7 +1,7 @@
 //! x86 machine-owned automatic device resource windows.
 
 use axdevice::ResourcePools;
-use axdevice_base::{ControllerInputId, HostIrqId, InterruptControllerId, InterruptSharing};
+use axdevice_base::*;
 
 use crate::{AxVmResult, config::AxVMConfig};
 

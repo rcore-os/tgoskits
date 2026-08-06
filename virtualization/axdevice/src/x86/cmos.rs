@@ -3,9 +3,7 @@
 use alloc::boxed::Box;
 
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, Resource,
-};
+use axdevice_base::*;
 
 const INDEX_PORT: u16 = 0x70;
 const DATA_PORT: u16 = 0x71;

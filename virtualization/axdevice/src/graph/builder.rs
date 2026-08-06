@@ -6,11 +6,8 @@ use alloc::{
     vec::Vec,
 };
 
-use super::{
-    DeviceDeclaration, DeviceGraphError, DeviceNodeId, DeviceNodeKind, DeviceNodeSpec,
-    resolved::{ResolvedDeviceGraph, ResolvedDeviceNode},
-};
-use crate::{DeviceManagerResult, DevicePlanRequest, ResourcePools, VmResourcePlanner};
+use super::*;
+use crate::*;
 
 /// Mutable architecture-owned device graph construction surface.
 #[derive(Default)]

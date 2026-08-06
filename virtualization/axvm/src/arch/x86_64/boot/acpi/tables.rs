@@ -16,7 +16,7 @@ use super::{
     aml::{build_dsdt, build_spcr, oem_id, oem_revision, oem_table_id},
     config::{X86AcpiIoRegisterPlan, X86FirmwarePlan},
 };
-use crate::boot::acpi::{AcpiBuildError, AcpiImage, AcpiTableArena, AcpiTableRecord, AcpiTableSet};
+use crate::boot::acpi::*;
 
 pub(super) const DIRECT_ACPI_BASE: u64 = 0x000e_0000;
 const DIRECT_ACPI_LIMIT: u64 = 0x0010_0000;

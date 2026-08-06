@@ -22,10 +22,7 @@ use std::{
 
 use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k};
 use axdevice_base::Resource;
-use axvm_types::{
-    AddressSpacePolicy, GuestPhysAddr, HostAddressAssignment, HostDeviceAssignment, HostPhysAddr,
-    MappingFlags,
-};
+use axvm_types::*;
 
 use crate::{AxVmResult, ax_err_type};
 

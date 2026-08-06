@@ -4,10 +4,7 @@ use alloc::{string::ToString, vec::Vec};
 
 use axdevice_base::HostIrqId;
 
-use crate::resources::{
-    ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest, ResourceSlot,
-    pool::RangeOwner, resolved::ResolvedResource,
-};
+use crate::resources::{pool::*, resolved::*, *};
 
 pub(super) struct HostIrqAllocator<'a> {
     pools: &'a ResourcePools,

@@ -11,7 +11,7 @@ use axdevice_base::VirtualInterruptController;
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
-use crate::{AxVmResult, ax_err, ax_err_type};
+use crate::*;
 
 pub(crate) struct PreparedVm {
     vcpus: PreparedVcpus,

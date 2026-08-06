@@ -3,17 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceGraphBuilder,
-    DeviceManagerError, DeviceModel, DeviceNodeId, DeviceNodeSpec, DeviceRegistration,
-    DeviceRequirements, DeviceRuntime, DeviceRuntimeBuilder, InterruptRegistrationError,
-    ResolvedDeviceGraph, ResourcePools, ResourceRequest, ResourceSlot,
-};
-use axdevice_base::{
-    BusAccess, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
-    InterruptControllerId, InterruptSharing, InterruptTrigger, IrqError, IrqLine, IrqResult,
-    Resource, VirtualInterruptController, WiredIrqInput, WiredIrqSink,
-};
+use axdevice::*;
+use axdevice_base::*;
 
 #[derive(Default)]
 struct RecordingSink {

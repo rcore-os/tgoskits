@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 
-use axdevice::{DeviceManagerError, ResolvedDeviceGraph, ResolvedDeviceResources, ResourceSlot};
+use axdevice::*;
 
 /// Guest processor/APIC identities.
 #[derive(Clone, Debug, Eq, PartialEq)]

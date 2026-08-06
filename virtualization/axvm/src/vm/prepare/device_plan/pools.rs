@@ -2,10 +2,8 @@
 
 use alloc::vec::Vec;
 
-use axdevice::{
-    DevicePlanRequest, DeviceRequirement, MsiResourceRequest, ResourcePools, ResourceRequest,
-};
-use axdevice_base::{ControllerInputId, HostIrqId, LpiId, MsiDeviceId, MsiEventId};
+use axdevice::*;
+use axdevice_base::*;
 
 use crate::{AxVmError, AxVmResult};
 

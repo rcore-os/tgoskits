@@ -6,12 +6,9 @@ use core::{
     ops::Range,
 };
 
-use axdevice::{
-    DeviceDeclaration, DeviceFirmwareBinding, DeviceGraphBuilder, DeviceNodeId, DeviceNodeSpec,
-    DeviceRequirements, HostPassthroughMapping, ResourceRequest, ResourceSlot,
-};
+use axdevice::*;
 
-use crate::{AxVmError, AxVmResult, config::AxVMConfig};
+use crate::{config::*, *};
 
 pub(super) fn add_host_nodes(
     config: &AxVMConfig,

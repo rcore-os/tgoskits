@@ -4,14 +4,7 @@ use alloc::vec::Vec;
 
 use axdevice_base::{HostIrqId, IrqLine, MsiEndpoint};
 
-use crate::{
-    DeviceBundle, DeviceManagerError, DeviceManagerResult, ResolvedMsi, ResourceClaimSet,
-    ResourceSlot,
-    interrupt::{
-        EndpointRegistration, InterruptRegistry, MessageEndpointRegistration,
-        PlannedBundleResources, WiredEndpointRegistration,
-    },
-};
+use crate::{interrupt::*, *};
 
 /// VM-owned services available while a device factory is building a device.
 pub struct DeviceBuildContext<'a> {

@@ -2,14 +2,8 @@
 
 use std::{boxed::Box, sync::Arc};
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceModel, DeviceRegistration, DeviceRequirements, ResourceRequest, ResourceSlot,
-};
-use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
-    Port, Resource,
-};
+use axdevice::*;
+use axdevice_base::*;
 use axvm_types::HostPortAssignment;
 
 use crate::{AxVmResult, ax_err};

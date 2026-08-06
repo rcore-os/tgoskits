@@ -3,21 +3,13 @@
 use core::ops::Range;
 use std::{format, sync::Arc, vec::Vec};
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
-    DeviceModel, DeviceNodeId, DeviceNodeSpec, DeviceRegistration, DeviceRequirements,
-    ResourceRequest, ResourceSlot,
-};
+use axdevice::*;
 use axdevice_base::{AccessWidth, DeviceError};
 use axvm_types::AddressSpacePolicy;
 use rdif_clk::ClockMmioWriteProtection;
 
 use super::shared_mmio::{MmioRegisterAccess, SharedMmioDevice};
-use crate::{
-    AxVmError, AxVmResult,
-    config::AxVMConfig,
-    machine::{GuestClockReference, GuestMmioRegion},
-};
+use crate::{config::*, machine::*, *};
 
 fn clock_references_for_plan(config: &AxVMConfig) -> Vec<GuestClockReference> {
     if config.address_space_policy() != AddressSpacePolicy::Passthrough {

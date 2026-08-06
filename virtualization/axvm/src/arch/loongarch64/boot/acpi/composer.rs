@@ -12,7 +12,7 @@ use super::{
     },
     tables::*,
 };
-use crate::boot::acpi::{AcpiBuildError, AcpiLoaderPlan, AcpiTableArena, LoaderZone};
+use crate::boot::acpi::*;
 
 const ACPI_TABLE_FILE: &str = "etc/acpi/tables";
 const ACPI_RSDP_FILE: &str = "etc/acpi/rsdp";

@@ -4,10 +4,7 @@ use alloc::vec::Vec;
 
 use axdevice::FwCfgRamRegion;
 
-use super::{
-    aml::build_loongarch_dsdt_aml,
-    config::{LoongArchFwCfgInterruptConfig, LoongArchFwCfgPciConfig, LoongArchFwCfgSerialConfig},
-};
+use super::{aml::*, config::*};
 
 const ACPI_OEM_ID: &[u8; 6] = b"BOCHS ";
 const ACPI_OEM_TABLE_ID: &[u8; 8] = b"BXPC    ";

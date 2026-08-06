@@ -1,10 +1,7 @@
 //! Target architecture selection and stable internal dispatch.
 
 pub(crate) use crate::architecture::*;
-use crate::{
-    AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
-};
+use crate::*;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;

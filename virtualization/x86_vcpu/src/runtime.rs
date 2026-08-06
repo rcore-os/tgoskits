@@ -4,13 +4,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use raw_cpuid::CpuId;
 
-use crate::{
-    X86_LOCAL_APIC_GPA, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86NestedPagingConfig,
-    X86PortIoStringExit, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig,
-    X86VmExit,
-    svm::{SvmPerCpuState, SvmVcpu},
-    vmx::{VmxPerCpuState, VmxVcpu},
-};
+use crate::{svm::*, vmx::*, *};
 
 const UNSELECTED: u8 = 0;
 const VMX: u8 = 1;

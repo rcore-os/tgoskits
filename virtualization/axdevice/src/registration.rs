@@ -16,12 +16,9 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::{Device, DmaGrant, StopGrant, TimerGrant, WakeGrant};
+use axdevice_base::*;
 
-use crate::{
-    ControllerRegistration, DeviceManagerResult, DeviceServices, ServiceKey,
-    interrupt::PlannedBundleResources,
-};
+use crate::{interrupt::*, *};
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {

@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::{DeviceNodeId, ResolvedDeviceGraph, ResolvedDeviceResources};
+use crate::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FdtNodeSpec {

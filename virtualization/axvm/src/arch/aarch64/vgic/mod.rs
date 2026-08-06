@@ -5,16 +5,9 @@ mod plan;
 
 use std::sync::Arc;
 
-use arm_vgic::{
-    ArmVgicConfig, GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, PpiId, TriggerMode,
-    VgicAccessContext, VgicCore, VgicDeviceSet, VgicError, VgicResult,
-};
+use arm_vgic::*;
 use ax_std::os::arceos::sync::IrqSafeMutex;
-use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration,
-    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRegistration, ServiceCardinality,
-    ServiceKey,
-};
+use axdevice::*;
 use axdevice_base::{MessageInterruptController, VirtualInterruptController};
 pub(super) use plan::VgicConstructionPlan;
 
@@ -22,7 +15,7 @@ use super::{
     gic::{self, AssignedSpiRoutes},
     vtimer,
 };
-use crate::{AxVmError, AxVmResult, irq::deferred::DeferredVcpuKick, machine::GuestTimerProfile};
+use crate::{irq::deferred::*, machine::*, *};
 
 /// vCPU-local VGIC resources derived from the machine timer profile.
 pub(crate) struct Aarch64VcpuIrqBinding {

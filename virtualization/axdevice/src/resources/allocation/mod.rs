@@ -11,7 +11,7 @@ use host_irq::HostIrqAllocator;
 use msi::MsiAllocator;
 use wired::WiredAllocator;
 
-use super::{DeviceRequirement, ResourcePlanningError, ResourcePools, resolved::ResolvedResource};
+use super::{resolved::*, *};
 
 pub(super) struct AllocationState<'a> {
     addresses: AddressAllocator<'a>,
