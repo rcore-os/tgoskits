@@ -155,6 +155,20 @@ impl CviSdhci {
     /// 同时检测 Error 中断：如果 ERROR bit (bit 15) 置位，
     /// 读取 ERR_STATUS 并 W1C 清除所有状态位，然后返回错误。
     fn poll_int_status(&self, bit: u16) -> Result<(), SdioError> {
+        // Drain the store buffer before entering the Phase 1 spin loop.
+        // Without this fence, pending MMIO writes (e.g. pio_write's 128
+        // stores to SDHCI_BUFFER) can still be queued in the CPU's store
+        // buffer when the following mmio_read(INT_STATUS_NORM) loop begins.
+        // The reads then compete with the draining writes on the SDHCI bus,
+        // delaying the hardware from actually receiving the data and
+        // asserting BUF_WR_READY / CMD_COMPLETE.  Phase 1's 1000-iteration
+        // window (≈50 µs) can then expire before the status bit becomes
+        // visible, causing a fall-through into the 10 ms Phase 2 delay.
+        // A single fence here guarantees the store buffer is empty before
+        // polling starts — the same effect that task-switch implied fences
+        // (mret) provided in the old yield_now-based busy-wait scheme.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
         // Phase 1: 快速自旋
         for _ in 0..PHASE1_SPIN_ITERS {
             if let Some(result) = self.poll_status_once(bit) {
