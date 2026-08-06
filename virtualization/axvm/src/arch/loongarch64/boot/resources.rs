@@ -1,7 +1,6 @@
-use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
+use std::{collections::BTreeMap, format, string::String, sync::OnceLock, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
-use ax_lazyinit::LazyInit;
+use ax_std::os::arceos::{driver as ax_driver, modules::ax_hal, sync::IrqSafeMutex as Mutex};
 use axvmconfig::GuestConfig;
 
 use super::UEFI_FIRMWARE_FDT_BASE;
@@ -10,8 +9,8 @@ use crate::{
     config::{AxVMConfig, PassThroughDeviceConfig},
 };
 
-static LOONGARCH_GUEST_IRQ_ROUTES: LazyInit<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
-    LazyInit::new();
+static LOONGARCH_GUEST_IRQ_ROUTES: OnceLock<Mutex<BTreeMap<usize, Vec<LoongArchGuestIrqRoute>>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LoongArchGuestIrqRoute {
@@ -20,7 +19,7 @@ pub struct LoongArchGuestIrqRoute {
 }
 
 pub fn init() {
-    LOONGARCH_GUEST_IRQ_ROUTES.init_once(Mutex::new(BTreeMap::new()));
+    let _ = LOONGARCH_GUEST_IRQ_ROUTES.set(Mutex::new(BTreeMap::new()));
 }
 
 pub fn store_guest_irq_routes(vm_id: usize, routes: Vec<LoongArchGuestIrqRoute>) {

@@ -14,7 +14,7 @@
 
 //! Guest boot-description ownership for AxVM.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axvm_types::GuestPhysAddr;
 

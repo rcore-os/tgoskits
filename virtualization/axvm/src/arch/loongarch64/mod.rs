@@ -1,5 +1,4 @@
-use alloc::boxed::Box;
-use core::time::Duration;
+use std::{boxed::Box, time::Duration};
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
@@ -206,7 +205,7 @@ impl ArchOps for LoongArch64Arch {
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
         unsafe {
             cache_range::<DCACHE_WB>(addr, size);
-            core::arch::asm!("dbar 0");
+            std::arch::asm!("dbar 0");
         }
     }
 }
@@ -541,7 +540,7 @@ unsafe fn cache_range<const OP: u8>(addr: VirtAddr, size: usize) {
 
     while current < end {
         unsafe {
-            core::arch::asm!("cacop {0}, {1}, 0", const OP, in(reg) current);
+            std::arch::asm!("cacop {0}, {1}, 0", const OP, in(reg) current);
         }
         current += CACHE_LINE_SIZE;
     }

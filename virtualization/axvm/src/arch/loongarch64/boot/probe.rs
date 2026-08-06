@@ -1,4 +1,6 @@
-use alloc::vec::Vec;
+use std::vec::Vec;
+
+use ax_std::os::arceos::driver as ax_driver;
 
 use super::{
     FirmwareDevices, FlashDevice, GedDevice, GuestPlatform, InterruptTopology, IrqMmioDevice,

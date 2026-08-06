@@ -17,7 +17,7 @@
 //! The sender holds only a [`Weak`] reference to the VM, so it never creates
 //! a strong reference cycle and automatically fails when the VM is destroyed.
 
-use alloc::sync::{Arc, Weak};
+use std::sync::{Arc, Weak};
 
 use crate::{AxVM, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt};
 
@@ -111,10 +111,9 @@ impl<T> StableInterruptTarget<T> {
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
-    use alloc::vec::Vec;
-    use core::cell::RefCell;
+    use std::{cell::RefCell, vec::Vec};
 
-    use ax_kspin::SpinNoIrq;
+    use ax_std::os::arceos::sync::IrqSafeMutex;
 
     use super::*;
     use crate::{
@@ -125,13 +124,13 @@ mod tests {
     };
 
     struct TestVm {
-        machine: SpinNoIrq<Machine<(), Arc<VmRuntimeHandle>>>,
+        machine: IrqSafeMutex<Machine<(), Arc<VmRuntimeHandle>>>,
     }
 
     impl TestVm {
         fn new(machine: Machine<(), Arc<VmRuntimeHandle>>) -> Arc<Self> {
             Arc::new(Self {
-                machine: SpinNoIrq::new(machine),
+                machine: IrqSafeMutex::new(machine),
             })
         }
 
@@ -196,7 +195,7 @@ mod tests {
             send(&sender, 0, interrupt(1), &events).unwrap();
 
             assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
-            assert_eq!(runtime.irq_dispatcher().drain(0), alloc::vec![interrupt(1)]);
+            assert_eq!(runtime.irq_dispatcher().drain(0), std::vec![interrupt(1)]);
         }
     }
 
@@ -281,11 +280,11 @@ mod tests {
 
         assert_eq!(
             old_runtime.irq_dispatcher().drain(0),
-            alloc::vec![interrupt(1)]
+            std::vec![interrupt(1)]
         );
         assert_eq!(
             new_runtime.irq_dispatcher().drain(0),
-            alloc::vec![interrupt(2)]
+            std::vec![interrupt(2)]
         );
         assert_eq!(
             *events.borrow(),

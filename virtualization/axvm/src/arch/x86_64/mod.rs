@@ -3,14 +3,18 @@
 //! This module owns the AxVM/ArceOS glue for the OS-neutral `x86_vcpu` and
 //! `x86_vlapic` cores.
 
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
-use core::{
+use std::{
     arch::asm,
-    sync::atomic::{AtomicUsize, Ordering},
+    boxed::Box,
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
-use ax_kspin::SpinRaw;
+use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
     DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
@@ -534,12 +538,12 @@ fn unique_x86_machine_device<'a>(
         .iter()
         .filter(|config| config.emu_type == device_type);
     let config = matches.next().ok_or_else(|| {
-        AxVmError::resource_unavailable("x86 machine device", alloc::format!("missing {resource}"))
+        AxVmError::resource_unavailable("x86 machine device", std::format!("missing {resource}"))
     })?;
     if matches.next().is_some() {
         return Err(AxVmError::resource_conflict(
             "x86 machine device",
-            alloc::format!("more than one {resource} descriptor is configured"),
+            std::format!("more than one {resource} descriptor is configured"),
         ));
     }
     Ok(config)
@@ -552,9 +556,9 @@ fn unique_x86_machine_device<'a>(
 /// VM-owned domain.
 pub(super) struct X86InterruptDomain {
     wired: Arc<X86WiredState>,
-    inputs: SpinRaw<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
-    forwarding: SpinRaw<irq::X86IoApicForwardingState>,
-    forwarding_hooks: SpinRaw<alloc::vec::Vec<host_irq::IrqHandle>>,
+    inputs: RawSpinLock<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    forwarding: RawSpinLock<irq::X86IoApicForwardingState>,
+    forwarding_hooks: RawSpinLock<std::vec::Vec<host_irq::IrqHandle>>,
 }
 
 struct X86WiredState {
@@ -587,9 +591,9 @@ impl X86InterruptDomain {
                 pending_level: AtomicUsize::new(0),
                 kick: DeferredVcpuKick::new(vm_id),
             }),
-            inputs: SpinRaw::new(BTreeMap::new()),
-            forwarding: SpinRaw::new(irq::X86IoApicForwardingState::new()),
-            forwarding_hooks: SpinRaw::new(alloc::vec::Vec::new()),
+            inputs: RawSpinLock::new(BTreeMap::new()),
+            forwarding: RawSpinLock::new(irq::X86IoApicForwardingState::new()),
+            forwarding_hooks: RawSpinLock::new(std::vec::Vec::new()),
         }
     }
 
@@ -614,8 +618,8 @@ impl X86InterruptDomain {
         self.forwarding_hooks.lock().push(hook);
     }
 
-    pub(super) fn take_forwarding_hooks(&self) -> alloc::vec::Vec<host_irq::IrqHandle> {
-        core::mem::take(&mut *self.forwarding_hooks.lock())
+    pub(super) fn take_forwarding_hooks(&self) -> std::vec::Vec<host_irq::IrqHandle> {
+        std::mem::take(&mut *self.forwarding_hooks.lock())
     }
 }
 
@@ -651,7 +655,7 @@ impl VirtualInterruptController for X86InterruptDomain {
                     input,
                 },
                 operation: "open x86 IOAPIC input",
-                detail: alloc::format!("GSI {gsi} is outside 0..{}", irq::IOAPIC_GSI_COUNT),
+                detail: std::format!("GSI {gsi} is outside 0..{}", irq::IOAPIC_GSI_COUNT),
             });
         }
         let mut inputs = self.inputs.lock();
@@ -663,7 +667,7 @@ impl VirtualInterruptController for X86InterruptDomain {
                         input,
                     },
                     operation: "open x86 IOAPIC input",
-                    detail: alloc::format!(
+                    detail: std::format!(
                         "GSI {gsi} is already registered as {registered_trigger:?}"
                     ),
                 });
@@ -696,7 +700,7 @@ impl X86WiredState {
                     input,
                 },
                 operation: "publish x86 IOAPIC vCPU kick",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             })
     }
 }
@@ -981,7 +985,7 @@ mod tests {
     #[test]
     fn x86_platform_devices_are_built_by_registered_factories() {
         let mut factories = DeviceFactoryRegistry::new();
-        let configs = alloc::vec![
+        let configs = std::vec![
             EmulatedDeviceConfig {
                 name: "ioapic".into(),
                 base_gpa: 0xfec0_0000,

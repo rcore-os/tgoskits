@@ -1,6 +1,6 @@
 //! Guest address-space construction for VM preparation.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axdevice::DeviceRuntime;
 use axdevice_base::Resource;

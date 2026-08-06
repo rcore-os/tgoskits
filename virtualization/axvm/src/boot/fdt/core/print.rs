@@ -14,23 +14,21 @@
 
 //! FDT parsing and processing functionality.
 
-use alloc::format;
+use std::format;
 
 use fdt_edit::Fdt;
 use fdt_raw::Header;
 
 #[allow(dead_code)]
 pub fn print_fdt(fdt_addr: usize) {
-    let header = unsafe {
-        core::slice::from_raw_parts(fdt_addr as *const u8, core::mem::size_of::<Header>())
-    };
+    let header =
+        unsafe { std::slice::from_raw_parts(fdt_addr as *const u8, std::mem::size_of::<Header>()) };
     let fdt_header = Header::from_bytes(header)
         .map_err(|e| format!("Failed to parse FDT header: {e:#?}"))
         .unwrap();
 
-    let fdt_bytes = unsafe {
-        core::slice::from_raw_parts(fdt_addr as *const u8, fdt_header.totalsize as usize)
-    };
+    let fdt_bytes =
+        unsafe { std::slice::from_raw_parts(fdt_addr as *const u8, fdt_header.totalsize as usize) };
 
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| format!("Failed to parse FDT: {e:#?}"))
@@ -38,7 +36,7 @@ pub fn print_fdt(fdt_addr: usize) {
 
     // Statistics of node count and level distribution
     let mut node_count = 0;
-    let mut level_counts = alloc::collections::BTreeMap::new();
+    let mut level_counts = std::collections::BTreeMap::new();
     let mut max_level = 0;
 
     info!("=== FDT Node Information Statistics ===");
@@ -94,7 +92,7 @@ pub fn print_guest_fdt(fdt_bytes: &[u8]) {
         .expect("Failed to parse FDT");
     // Statistics of node count and level distribution
     let mut node_count = 0;
-    let mut level_counts = alloc::collections::BTreeMap::new();
+    let mut level_counts = std::collections::BTreeMap::new();
     let mut max_level = 0;
 
     info!("=== FDT Node Information Statistics ===");

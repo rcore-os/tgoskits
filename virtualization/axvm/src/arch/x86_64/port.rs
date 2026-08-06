@@ -1,6 +1,6 @@
 //! Native x86 host I/O port passthrough devices.
 
-use alloc::{boxed::Box, sync::Arc};
+use std::{boxed::Box, sync::Arc};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
@@ -33,7 +33,7 @@ impl HostPortPassthrough {
         Ok(Self {
             base: Port::new(base),
             length,
-            resources: alloc::vec![Resource::PortRange { base, size: length }].into_boxed_slice(),
+            resources: std::vec![Resource::PortRange { base, size: length }].into_boxed_slice(),
         })
     }
 
@@ -135,7 +135,7 @@ impl DeviceFactory for HostPortPassthroughDeviceFactory {
             .build()
             .map_err(|error| DeviceManagerError::InvalidConfig {
                 operation: "build host port passthrough",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             })
     }
 }
@@ -174,7 +174,7 @@ impl Device for HostPortPassthrough {
 unsafe fn inb(port: u16) -> u8 {
     let value: u8;
     unsafe {
-        core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack));
+        std::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack));
     }
     value
 }
@@ -182,7 +182,7 @@ unsafe fn inb(port: u16) -> u8 {
 unsafe fn inw(port: u16) -> u16 {
     let value: u16;
     unsafe {
-        core::arch::asm!("in ax, dx", in("dx") port, out("ax") value, options(nomem, nostack));
+        std::arch::asm!("in ax, dx", in("dx") port, out("ax") value, options(nomem, nostack));
     }
     value
 }
@@ -190,26 +190,26 @@ unsafe fn inw(port: u16) -> u16 {
 unsafe fn inl(port: u16) -> u32 {
     let value: u32;
     unsafe {
-        core::arch::asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack));
+        std::arch::asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack));
     }
     value
 }
 
 unsafe fn outb(port: u16, value: u8) {
     unsafe {
-        core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack));
+        std::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack));
     }
 }
 
 unsafe fn outw(port: u16, value: u16) {
     unsafe {
-        core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));
+        std::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));
     }
 }
 
 unsafe fn outl(port: u16, value: u32) {
     unsafe {
-        core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack));
+        std::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack));
     }
 }
 

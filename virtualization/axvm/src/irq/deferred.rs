@@ -4,13 +4,14 @@
 //! Architecture interrupt controllers own that state.  A hard-IRQ producer
 //! publishes only the target-vCPU bit and wakes one pre-created worker.
 
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
-use ax_kspin::SpinNoIrq;
 use ax_std::os::arceos::modules::ax_task::IrqNotify;
 
-use crate::{AxVmResult, ax_err};
+use crate::{AxVmResult, ax_err, sync::MutexExt};
 
 const KICK_WORKER_STACK_SIZE: usize = 0x20_000;
 
@@ -21,7 +22,7 @@ pub(crate) struct DeferredVcpuKick {
     worker_started: AtomicBool,
     stopping: AtomicBool,
     notify: IrqNotify,
-    worker: SpinNoIrq<Option<crate::AxTaskRef>>,
+    worker: Mutex<Option<crate::AxTaskRef>>,
 }
 
 impl DeferredVcpuKick {
@@ -33,13 +34,13 @@ impl DeferredVcpuKick {
             worker_started: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             notify: IrqNotify::new(),
-            worker: SpinNoIrq::new(None),
+            worker: Mutex::new(None),
         })
     }
 
     /// Starts the task-context worker before an architecture enables IRQ input.
     pub(crate) fn start(self: &Arc<Self>) {
-        let mut worker = self.worker.lock();
+        let mut worker = self.worker.lock_unpoisoned();
         if worker.is_some() {
             return;
         }
@@ -47,7 +48,7 @@ impl DeferredVcpuKick {
         let state = self.clone();
         let task = crate::TaskInner::new(
             move || state.run_worker(),
-            alloc::format!("VM[{}]-irq-kick", self.vm_id),
+            std::format!("VM[{}]-irq-kick", self.vm_id),
             KICK_WORKER_STACK_SIZE,
         );
         *worker = Some(crate::host::task::spawn_task(task));
@@ -65,7 +66,7 @@ impl DeferredVcpuKick {
         let Some(bit) = 1usize.checked_shl(vcpu_id as u32) else {
             return ax_err!(
                 InvalidInput,
-                alloc::format!(
+                std::format!(
                     "VM[{}] vCPU {vcpu_id} exceeds the deferred IRQ kick bitmap",
                     self.vm_id
                 )
@@ -83,7 +84,7 @@ impl DeferredVcpuKick {
         self.worker_started.store(false, Ordering::Release);
         self.stopping.store(true, Ordering::Release);
         self.notify.notify();
-        let worker = self.worker.lock().take();
+        let worker = self.worker.lock_unpoisoned().take();
         if let Some(worker) = worker {
             worker.join();
         }

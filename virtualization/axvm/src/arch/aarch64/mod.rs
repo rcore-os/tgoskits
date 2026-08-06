@@ -4,7 +4,7 @@
 //! Guest interrupt state belongs to one VM-local [`arm_vgic::VgicCore`];
 //! host IRQ tokens remain opaque until that controller completes split EOI.
 
-use alloc::sync::Arc;
+use std::sync::Arc;
 
 use arm_vcpu::{
     ArmAccessWidth, ArmGicCpuInterfaceRegister, ArmGuestPhysAddr, ArmHostIrqGuard, ArmHostOps,
@@ -413,7 +413,7 @@ impl AxvmArmVcpu {
         let snapshot = self.inner.timer_snapshot().map_err(|error| {
             crate::AxVmError::vcpu(
                 "snapshot AArch64 architectural timers",
-                alloc::format!("{error:?}"),
+                std::format!("{error:?}"),
             )
         })?;
         self.timer_binding

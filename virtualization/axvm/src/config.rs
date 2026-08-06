@@ -14,7 +14,7 @@
 
 //! Runtime configuration structures for an AxVM instance.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use std::{string::String, sync::Arc, vec::Vec};
 
 use axdevice::{NullSerialBackendFactory, SerialBackendFactory};
 pub use axvm_types::{
@@ -241,7 +241,7 @@ impl AxVMConfig {
             .flatten()
             .any(|excluded| excluded == &path)
         {
-            self.excluded_devices.push(alloc::vec![path]);
+            self.excluded_devices.push(std::vec![path]);
         }
     }
 
@@ -384,14 +384,14 @@ impl AxVMConfig {
                 const GICV2_DISTRIBUTOR_SIZE: usize = 0x1_000;
                 const GICV2_CPU_INTERFACE_SIZE: usize = 0x2_000;
                 if profile.distributor.length < GICV2_DISTRIBUTOR_SIZE {
-                    return Err(crate::AxVmError::invalid_config(alloc::format!(
+                    return Err(crate::AxVmError::invalid_config(std::format!(
                         "AArch64 GICv2 distributor window {:#x} is smaller than \
                          {GICV2_DISTRIBUTOR_SIZE:#x}",
                         profile.distributor.length
                     )));
                 }
                 if region.length < GICV2_CPU_INTERFACE_SIZE {
-                    return Err(crate::AxVmError::invalid_config(alloc::format!(
+                    return Err(crate::AxVmError::invalid_config(std::format!(
                         "AArch64 GICv2 CPU-interface window {:#x} is smaller than \
                          {GICV2_CPU_INTERFACE_SIZE:#x}",
                         region.length
@@ -405,7 +405,7 @@ impl AxVMConfig {
             GuestGicCpuRegion::Redistributors(region) => {
                 const GICV3_DISTRIBUTOR_MINIMUM_SIZE: usize = 0x1_0000;
                 if profile.distributor.length < GICV3_DISTRIBUTOR_MINIMUM_SIZE {
-                    return Err(crate::AxVmError::invalid_config(alloc::format!(
+                    return Err(crate::AxVmError::invalid_config(std::format!(
                         "AArch64 GICv3 distributor window {:#x} is smaller than \
                          {GICV3_DISTRIBUTOR_MINIMUM_SIZE:#x}",
                         profile.distributor.length
@@ -419,7 +419,7 @@ impl AxVMConfig {
                         )
                     })?;
                 if region.length < required_size {
-                    return Err(crate::AxVmError::invalid_config(alloc::format!(
+                    return Err(crate::AxVmError::invalid_config(std::format!(
                         "AArch64 GIC redistributor window {:#x} is smaller than required size \
                          {required_size:#x}",
                         region.length
@@ -511,7 +511,7 @@ impl AxVMConfig {
                 crate::AxVmError::invalid_config("RISC-V PLIC context window size overflows usize")
             })?;
         if profile.length < minimum_length {
-            return Err(crate::AxVmError::invalid_config(alloc::format!(
+            return Err(crate::AxVmError::invalid_config(std::format!(
                 "RISC-V PLIC window {:#x} is smaller than required size {minimum_length:#x}",
                 profile.length
             )));
@@ -638,7 +638,7 @@ impl PhysCpuList {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use super::*;
 

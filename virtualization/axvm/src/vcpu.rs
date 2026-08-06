@@ -14,12 +14,13 @@
 
 //! AxVM-owned architecture-independent vCPU wrapper.
 
-use alloc::format;
-use core::{cell::UnsafeCell, mem::MaybeUninit};
+use std::{cell::UnsafeCell, format, mem::MaybeUninit};
 
-use ax_kernel_guard::NoPreempt;
-use ax_kspin::SpinNoIrq as Mutex;
-use ax_percpu::{CpuAreaRef, CpuPin};
+use ax_std::os::arceos::{
+    guard::NoPreempt,
+    percpu::{self as ax_percpu, CpuAreaRef, CpuPin},
+    sync::IrqSafeMutex as Mutex,
+};
 use axvm_types::{
     GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
     VmArchVcpuOps, VmBackendError, VmVcpuState,
@@ -37,7 +38,7 @@ struct PinnedCpuContext<'pin, 'cpu> {
 
 impl<'pin, 'cpu> PinnedCpuContext<'pin, 'cpu> {
     fn new(cpu_pin: &'pin CpuPin<'cpu>) -> Self {
-        ax_percpu::current_area(cpu_pin)
+        ax_std::os::arceos::percpu::current_area(cpu_pin)
             .expect("vCPU operation requires the installed per-CPU area");
         Self {
             cpu_pin,
@@ -51,7 +52,7 @@ impl<'pin, 'cpu> PinnedCpuContext<'pin, 'cpu> {
         // SAFETY: the outer NoPreempt guard remains active. A new pin forces a
         // fresh read of both host CPU-local and current-thread registers.
         let current = unsafe {
-            ax_percpu::with_cpu_pin(|pin| {
+            ax_std::os::arceos::percpu::with_cpu_pin(|pin| {
                 (
                     pin.area(),
                     #[cfg(feature = "tls")]
@@ -304,11 +305,11 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         // SAFETY: the guard prevents migration through the backend operation,
         // guest run, restoration check, and publication withdrawal.
         unsafe {
-            ax_percpu::with_cpu_pin(|cpu_pin| {
+            ax_std::os::arceos::percpu::with_cpu_pin(|cpu_pin| {
                 let pinned_cpu = PinnedCpuContext::new(cpu_pin);
 
                 if let Some(current_vcpu) = get_current_vcpu::<A>(cpu_pin) {
-                    if core::ptr::eq(current_vcpu, self) {
+                    if std::ptr::eq(current_vcpu, self) {
                         let result = f();
                         pinned_cpu.assert_host_cpu_binding();
                         result
@@ -447,7 +448,7 @@ pub(crate) fn with_current_vcpu<A: VmArchVcpuOps, R>(
 ) -> R {
     let _guard = NoPreempt::new();
     // SAFETY: the guard prevents migration through the closure.
-    unsafe { ax_percpu::with_cpu_pin(|pin| operation(get_current_vcpu(pin))) }
+    unsafe { ax_std::os::arceos::percpu::with_cpu_pin(|pin| operation(get_current_vcpu(pin))) }
         .expect("current vCPU lookup requires an installed CPU-local area")
 }
 

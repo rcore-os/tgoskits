@@ -1,6 +1,6 @@
 //! AArch64 implementations of AxVM platform capability hooks.
 
-use alloc::format;
+use std::format;
 
 use super::Aarch64Arch;
 use crate::{
@@ -22,7 +22,7 @@ impl BootImagePlatform for Aarch64Arch {
         dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         let bytes = dtb.as_bytes();
-        let source = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
+        let source = std::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
         super::fdt::core::update_fdt(source, bytes.len(), loader.vm.clone(), &loader.config)
     }
@@ -72,7 +72,7 @@ pub(super) fn patch_runtime_fdt(
     fdt_bytes: &[u8],
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::GuestConfig,
-) -> AxVmResult<alloc::vec::Vec<u8>> {
+) -> AxVmResult<std::vec::Vec<u8>> {
     let (initrd, serial_profile, serial_identity, gic_profile, timer_profile) =
         vm.with_config(|config| {
             (
@@ -103,7 +103,7 @@ pub(super) fn patch_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: Option<&[u8]>,
     crate_config: &axvmconfig::GuestConfig,
-) -> AxVmResult<alloc::vec::Vec<u8>> {
+) -> AxVmResult<std::vec::Vec<u8>> {
     let provided_fdt = fdt_edit::Fdt::from_bytes(provided_dtb).map_err(|err| {
         ax_err_type!(
             InvalidData,

@@ -1,6 +1,6 @@
 //! RISC-V implementations of AxVM platform capability hooks.
 
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use super::Riscv64Arch;
 use crate::{
@@ -22,7 +22,7 @@ impl BootImagePlatform for Riscv64Arch {
         dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         let bytes = dtb.as_bytes();
-        let source = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
+        let source = std::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
         super::fdt::core::update_fdt(source, bytes.len(), loader.vm.clone(), &loader.config)
     }

@@ -1,6 +1,6 @@
 //! Device construction for VM preparation.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axdevice::{DeviceBuildContext, DeviceFactoryRegistry, DeviceRuntime, RuntimeAccessPorts};
 use axdevice_base::VirtualInterruptController;

@@ -18,7 +18,7 @@ pub(crate) mod vcpus;
 
 mod dispatcher;
 mod queue;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
 // embed the dispatcher as a field and expose it to the vCPU run loop.
@@ -49,9 +49,9 @@ pub fn start() {
 }
 
 /// Start all registered VMs and return the IDs that entered Running.
-pub fn launch_all() -> alloc::vec::Vec<usize> {
+pub fn launch_all() -> std::vec::Vec<usize> {
     info!("VMM starting, booting VMs...");
-    let mut started = alloc::vec::Vec::new();
+    let mut started = std::vec::Vec::new();
     for vm in crate::get_vm_list() {
         match vm.start() {
             Ok(_) => {
@@ -167,8 +167,7 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-    use core::cell::RefCell;
+    use std::{cell::RefCell, vec::Vec};
 
     use super::*;
 

@@ -4,7 +4,7 @@ pub(crate) mod address_space;
 pub(crate) mod devices;
 pub(crate) mod vcpus;
 
-use alloc::{format, sync::Arc};
+use std::{format, sync::Arc};
 
 use axdevice::{DeviceFactoryRegistry, FwCfgPayloadFactory, register_builtin_factories};
 use axdevice_base::VirtualInterruptController;

@@ -25,6 +25,16 @@ default = ["alloc", "tls", "fd"]
 # through their own `arceos` feature instead of axbuild completing it at runtime.
 arceos = ["irq", "paging", "std-compat", "smp"]
 
+# Host-side implementations for OS-specific ArceOS capabilities.
+host-test = [
+    "ax-api/host-test",
+    "ax-hal/host-test",
+    "ax-kernel-guard/host-test",
+    "ax-kspin/host-test",
+    "ax-percpu/host-test",
+    "ax-task/host-test",
+]
+
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
@@ -125,8 +135,10 @@ ax-driver.workspace = true
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
+ax-kernel-guard.workspace = true
 ax-kspin.workspace = true
 ax-lazyinit.workspace = true
+ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
 ax-task.workspace = true

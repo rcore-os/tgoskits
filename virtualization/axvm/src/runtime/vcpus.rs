@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, sync::Arc};
+use std::{format, sync::Arc};
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
@@ -166,10 +166,7 @@ fn mark_vcpu_running(vm: &VMRef) {
     });
 }
 
-#[cfg(test)]
 type CpuOnStartAckLock<T> = std::sync::Mutex<T>;
-#[cfg(not(test))]
-type CpuOnStartAckLock<T> = ax_kspin::SpinNoIrq<T>;
 
 #[allow(dead_code)]
 pub(crate) struct CpuOnStartAck {
@@ -230,14 +227,9 @@ impl CpuOnStartAck {
         self.lock_inner().result.take()
     }
 
-    #[cfg(test)]
-    fn lock_inner(&self) -> impl core::ops::DerefMut<Target = CpuOnStartAckInner> + '_ {
-        self.inner.lock().unwrap()
-    }
-
-    #[cfg(not(test))]
-    fn lock_inner(&self) -> impl core::ops::DerefMut<Target = CpuOnStartAckInner> + '_ {
-        self.inner.lock()
+    fn lock_inner(&self) -> impl std::ops::DerefMut<Target = CpuOnStartAckInner> + '_ {
+        use crate::sync::MutexExt;
+        self.inner.lock_unpoisoned()
     }
 }
 

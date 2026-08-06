@@ -3,7 +3,7 @@ mod fdt;
 mod probe;
 mod resources;
 
-use alloc::{boxed::Box, format, vec::Vec};
+use std::{boxed::Box, format, vec::Vec};
 
 use axdevice::{FwCfgPlatformConfig, FwCfgRamRegion};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
@@ -314,7 +314,7 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
     for region in regions {
         // SAFETY: AxVM returned this writable guest-memory region and the fill
         // is bounded by its length.
-        unsafe { core::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
+        unsafe { std::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
         crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
         filled_size += region.len();
     }

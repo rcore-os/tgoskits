@@ -1,6 +1,6 @@
 //! AArch64 VM resource creation and initialization.
 
-use alloc::{sync::Arc, vec::Vec};
+use std::{sync::Arc, vec::Vec};
 
 use arm_vcpu::{ArmTimerVmConfig, ArmVcpuCreateConfig, ArmVcpuSetupConfig};
 use axdevice::DeviceFactoryRegistry;
@@ -224,7 +224,7 @@ fn timer_vm_config(
         ArmTimerVmConfig::uniform_frequency(&frequency_values).map_err(|_| {
             AxVmError::unsupported(
                 "configure AArch64 architectural timers",
-                alloc::format!(
+                std::format!(
                     "target CPUs report different counter frequencies: {target_frequencies:?}"
                 ),
             )
@@ -236,7 +236,7 @@ fn timer_vm_config(
     ArmTimerVmConfig::new(guest_frequency, super::vtimer::physical_counter(), 0).map_err(|error| {
         AxVmError::unsupported(
             "configure AArch64 architectural timers",
-            alloc::format!("{error:?}"),
+            std::format!("{error:?}"),
         )
     })
 }

@@ -1,17 +1,13 @@
 //! Default private ArceOS host adapter for AxVM.
 
-extern crate alloc;
-
-use core::{
+use std::{
     sync::atomic::{AtomicUsize, Ordering},
+    thread,
     time::Duration,
 };
 
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_std::{
-    os::arceos::{api, modules},
-    thread,
-};
+use ax_std::os::arceos::{api, modules};
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
@@ -358,7 +354,7 @@ impl HostPlatform for ArceOsHost {
                     info!("Hardware virtualization support enabled on core {cpu_id}");
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
-                alloc::format!("axvm-hv-init-{cpu_id}"),
+                std::format!("axvm-hv-init-{cpu_id}"),
                 modules::ax_task::default_task_stack_size(),
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));

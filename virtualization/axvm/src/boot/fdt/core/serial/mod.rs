@@ -1,6 +1,6 @@
 //! Machine-owned virtual serial description for guest device trees.
 
-use alloc::{format, string::String, vec, vec::Vec};
+use std::{format, string::String, vec, vec::Vec};
 
 use axdevice_base::AccessWidth;
 use fdt_edit::{Fdt, Node, Property, RegFixed};
@@ -372,7 +372,7 @@ fn install_mmio_serial(
     };
 
     let mut old_paths = physical_serial_paths(tree.inner());
-    old_paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
+    old_paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
     for path in old_paths {
         tree.inner_mut().remove_by_path(&path);
     }

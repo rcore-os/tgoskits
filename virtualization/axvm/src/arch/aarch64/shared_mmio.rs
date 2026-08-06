@@ -1,6 +1,6 @@
 //! Portable write filtering for shared physical MMIO providers.
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use std::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, Resource,
@@ -128,7 +128,7 @@ impl SharedMmioDevice {
         if !offset.is_multiple_of(width) {
             return Err(DeviceError::InvalidInput {
                 operation: "access shared MMIO provider",
-                detail: alloc::format!(
+                detail: std::format!(
                     "unaligned {:?} access at provider offset {offset:#x}",
                     access.width
                 ),

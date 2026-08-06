@@ -39,7 +39,7 @@ pub(crate) fn install_machine_interrupt_controller(
             };
             fallback = GuestGicProfile {
                 compatible: "arm,gic-v3".into(),
-                node_path: alloc::string::String::new(),
+                node_path: std::string::String::new(),
                 node_phandle: None,
                 distributor: GuestMmioRegion {
                     base: distributor.base_gpa,
@@ -92,7 +92,7 @@ pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>>
         }
         node.compatibles()
             .find(|compatible| is_supported_gic(compatible))
-            .map(|compatible| (node_id, alloc::string::String::from(compatible)))
+            .map(|compatible| (node_id, std::string::String::from(compatible)))
     }) else {
         return Ok(None);
     };
@@ -185,7 +185,7 @@ pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
     if interrupt_type != 1 || source >= 16 {
         return Err(ax_err_type!(
             Unsupported,
-            alloc::format!(
+            std::format!(
                 "host GIC maintenance interrupt must be a PPI, got type {interrupt_type} source \
                  {source}"
             )
@@ -198,7 +198,7 @@ fn checked_reg(reg: &fdt_edit::RegFixed, name: &str) -> AxVmResult<(usize, usize
     let base = usize::try_from(reg.address).map_err(|_| {
         ax_err_type!(
             InvalidData,
-            alloc::format!("host GIC {name} address does not fit usize")
+            std::format!("host GIC {name} address does not fit usize")
         )
     })?;
     let length = reg
@@ -206,21 +206,21 @@ fn checked_reg(reg: &fdt_edit::RegFixed, name: &str) -> AxVmResult<(usize, usize
         .ok_or_else(|| {
             ax_err_type!(
                 InvalidData,
-                alloc::format!("host GIC {name} range has no size")
+                std::format!("host GIC {name} range has no size")
             )
         })
         .and_then(|length| {
             usize::try_from(length).map_err(|_| {
                 ax_err_type!(
                     InvalidData,
-                    alloc::format!("host GIC {name} range size does not fit usize")
+                    std::format!("host GIC {name} range size does not fit usize")
                 )
             })
         })?;
     if length == 0 {
         return Err(ax_err_type!(
             InvalidData,
-            alloc::format!("host GIC {name} range is empty")
+            std::format!("host GIC {name} range is empty")
         ));
     }
     Ok((base, length))
@@ -322,7 +322,7 @@ fn install_controller_phandle(
     {
         return Err(ax_err_type!(
             InvalidData,
-            alloc::format!(
+            std::format!(
                 "host {controller_name} phandle {phandle:#x} conflicts with another guest node"
             )
         ));
@@ -346,7 +346,7 @@ fn install_controller_phandle(
                     })
                 })
             })
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<std::vec::Vec<_>>();
         for node_id in references {
             for name in ["interrupt-parent", "msi-parent"] {
                 let matches = tree
@@ -366,13 +366,13 @@ fn install_controller_phandle(
 }
 
 fn prop_u32(name: &str, value: u32) -> Property {
-    let mut property = Property::new(name, alloc::vec![]);
+    let mut property = Property::new(name, std::vec![]);
     property.set_u32_ls(&[value]);
     property
 }
 
 fn prop_string(name: &str, value: &str) -> Property {
-    let mut property = Property::new(name, alloc::vec![]);
+    let mut property = Property::new(name, std::vec![]);
     property.set_string(value);
     property
 }
@@ -419,7 +419,7 @@ fn find_plic_in_fdt(fdt: &Fdt) -> Option<NodeId> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use fdt_edit::{Fdt, Node, Property};
 

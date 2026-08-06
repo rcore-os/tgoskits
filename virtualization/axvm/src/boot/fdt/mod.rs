@@ -1,6 +1,6 @@
 //! Guest device-tree artifact and selected architecture compatibility facade.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 pub use crate::arch::fdt::*;
 

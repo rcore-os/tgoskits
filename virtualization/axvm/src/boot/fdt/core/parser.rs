@@ -14,7 +14,7 @@
 
 //! Architecture-neutral FDT parsing and guest configuration enrichment.
 
-use alloc::{
+use std::{
     collections::BTreeSet,
     format,
     string::{String, ToString},
@@ -729,7 +729,7 @@ pub fn update_provided_fdt(
 
 #[cfg(test)]
 mod tests {
-    use alloc::{string::ToString, vec, vec::Vec};
+    use std::{string::ToString, vec, vec::Vec};
 
     use axvm_types::{AddressSpacePolicy, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType};
     use axvmconfig::{GuestConfig, GuestDevices, GuestType, PhysicalDeviceRef};
@@ -743,13 +743,13 @@ mod tests {
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
 
     fn prop_u32(name: &str, value: u32) -> fdt_edit::Property {
-        let mut prop = fdt_edit::Property::new(name, alloc::vec![]);
+        let mut prop = fdt_edit::Property::new(name, std::vec![]);
         prop.set_u32_ls(&[value]);
         prop
     }
 
     fn prop_u32_list(name: &str, values: &[u32]) -> fdt_edit::Property {
-        let mut prop = fdt_edit::Property::new(name, alloc::vec![]);
+        let mut prop = fdt_edit::Property::new(name, std::vec![]);
         prop.set_u32_ls(values);
         prop
     }
@@ -783,10 +783,7 @@ mod tests {
         let intc = fdt.add_node(root, Node::new("interrupt-controller@0"));
         fdt.node_mut(intc)
             .unwrap()
-            .set_property(fdt_edit::Property::new(
-                "interrupt-controller",
-                alloc::vec![],
-            ));
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("#interrupt-cells", 1));
@@ -826,10 +823,7 @@ mod tests {
         let intc = fdt.add_node(root, Node::new("interrupt-controller@0"));
         fdt.node_mut(intc)
             .unwrap()
-            .set_property(fdt_edit::Property::new(
-                "interrupt-controller",
-                alloc::vec![],
-            ));
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("#interrupt-cells", 1));
@@ -875,10 +869,7 @@ mod tests {
             .set_property(super::super::tree::prop_string("compatible", "riscv,plic0"));
         fdt.node_mut(intc)
             .unwrap()
-            .set_property(fdt_edit::Property::new(
-                "interrupt-controller",
-                alloc::vec![],
-            ));
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
         fdt.view_typed_mut(intc)
             .unwrap()
             .set_regs(&[RegInfo::new(0x0c00_0000, Some(0x40_0000))]);

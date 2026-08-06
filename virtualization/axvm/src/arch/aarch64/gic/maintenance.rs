@@ -1,10 +1,11 @@
 //! Per-CPU host interrupt used to force VGIC state folding after guest EOI.
 
+use std::sync::OnceLock;
+
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult};
 use fdt_edit::Fdt;
-use spin::Once;
 
-static HOST_MAINTENANCE_INTID: Once<u32> = Once::new();
+static HOST_MAINTENANCE_INTID: OnceLock<u32> = OnceLock::new();
 
 pub(super) fn enable_current_cpu() -> BackendResult {
     set_current_cpu_enabled(true)
@@ -24,7 +25,7 @@ pub(super) fn matches_token(token: usize) -> bool {
 }
 
 fn set_current_cpu_enabled(enabled: bool) -> BackendResult {
-    let intid = *HOST_MAINTENANCE_INTID.try_call_once(discover_host_maintenance_intid)?;
+    let intid = *HOST_MAINTENANCE_INTID.get_or_try_init(discover_host_maintenance_intid)?;
     set_enabled(intid, enabled)
 }
 

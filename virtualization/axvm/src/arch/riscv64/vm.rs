@@ -1,6 +1,6 @@
 //! RISC-V VM resource creation and initialization.
 
-use alloc::sync::Arc;
+use std::sync::Arc;
 
 use axdevice::DeviceFactoryRegistry;
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};

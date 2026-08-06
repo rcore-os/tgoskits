@@ -4,7 +4,7 @@
 //! LoongArch platform description so architecture policy does not leak into the
 //! reusable device crate.
 
-use alloc::{format, vec, vec::Vec};
+use std::{format, vec, vec::Vec};
 
 use axdevice::{FwCfgAcpiBlobs, FwCfgRamRegion};
 
@@ -762,7 +762,7 @@ fn qword_memory_resource(base: u64, size: u64, prefetchable: bool, fixed: bool) 
 }
 
 fn extended_interrupt_resource(irqs: &[u32], consumer: bool) -> Vec<u8> {
-    let payload_len = 2 + core::mem::size_of_val(irqs);
+    let payload_len = 2 + std::mem::size_of_val(irqs);
     let mut out = vec![0x89];
     out.extend_from_slice(&(payload_len as u16).to_le_bytes());
     out.push(if consumer { 0x09 } else { 0x01 });
@@ -864,7 +864,7 @@ fn push_loader_add_checksum(out: &mut Vec<u8>, file: &str, start: usize, length:
 
 fn write_loader_file(dst: &mut [u8], file: &str) {
     let bytes = file.as_bytes();
-    let len = core::cmp::min(bytes.len(), dst.len().saturating_sub(1));
+    let len = std::cmp::min(bytes.len(), dst.len().saturating_sub(1));
     dst[..len].copy_from_slice(&bytes[..len]);
 }
 

@@ -1,6 +1,6 @@
 //! Minimal Intel MultiProcessor table for x86 Linux direct boot.
 
-use alloc::{vec, vec::Vec};
+use std::{vec, vec::Vec};
 
 use super::linux::X86LinuxRange;
 

@@ -1,6 +1,6 @@
 //! Architecture-neutral vCPU collection construction and setup.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, sync::Arc, vec::Vec};
 
 use axvm_types::VmArchVcpuOps;
 
@@ -84,7 +84,7 @@ impl PreparedVcpus {
 
 impl<'a> IntoIterator for &'a PreparedVcpus {
     type Item = &'a AxVCpuRef;
-    type IntoIter = core::slice::Iter<'a, AxVCpuRef>;
+    type IntoIter = std::slice::Iter<'a, AxVCpuRef>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.vcpus.iter()

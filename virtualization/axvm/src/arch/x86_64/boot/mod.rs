@@ -1,6 +1,6 @@
 //! x86_64 Linux direct boot, BIOS/UEFI firmware, and MP-table image planning.
 
-use alloc::format;
+use std::format;
 
 use axvm_types::GuestPhysAddr;
 use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
@@ -479,7 +479,7 @@ fn builtin_bios_load_gpa(configured: Option<GuestPhysAddr>) -> AxVmResult<GuestP
 }
 
 fn validate_bios_patch_region(bios: &[u8]) -> AxVmResult {
-    let patch_end = multiboot::AXVM_BIOS_EBX_IMM_OFFSET + core::mem::size_of::<u32>();
+    let patch_end = multiboot::AXVM_BIOS_EBX_IMM_OFFSET + std::mem::size_of::<u32>();
     if bios.len() < patch_end
         || bios[multiboot::AXVM_BIOS_EBX_IMM_OFFSET - 1] != multiboot::MOV_EBX_IMM32_OPCODE
     {

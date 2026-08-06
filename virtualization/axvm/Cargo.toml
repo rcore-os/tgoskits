@@ -3,7 +3,7 @@ name = "axvm"
 authors = ["aarkegz <aarkegz@gmail.com>"]
 version = "0.5.25"
 edition.workspace = true
-categories = ["virtualization", "no-std"]
+categories = ["virtualization"]
 description = "Virtual Machine resource management crate for ArceOS's hypervisor variant."
 repository = "https://github.com/arceos-hypervisor/axvm"
 keywords = ["vm", "hypervisor", "arceos"]
@@ -13,39 +13,29 @@ license = "Apache-2.0"
 fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs", "dep:ax-driver"]
 host-test = [
-    "ax-hal/host-test",
-    "ax-kspin/host-test",
-    "ax-kernel-guard/host-test",
+    "ax-std/host-test",
     "axdevice/host-test",
 ]
 sstc = ["riscv_vcpu/sstc"]
-tls = ["ax-hal/tls", "ax-std/tls", "cpu-local/tls"]
+tls = ["ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
 log = "0.4"
-cfg-if = "1.0"
 extern-trait = { workspace = true }
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
 numeric-enum-macro = "0.2"
-spin = { workspace = true }
 thiserror = { workspace = true }
 
 # System independent crates provided by ArceOS.
 ax-cpumask = { workspace = true }
 ax-crate-interface = { workspace = true }
-ax-kernel-guard = { workspace = true }
-ax-kspin.workspace = true
-ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
-ax-percpu.workspace = true
 cpu-local.workspace = true
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, default-features = false, features = [
-    "alloc",
-    "fd",
     "paging",
     "irq",
     "multitask",
@@ -54,7 +44,6 @@ ax-std = { workspace = true, default-features = false, features = [
     "hv",
     "ipi",
 ] }
-ax-hal = { workspace = true, features = ["ipi"] }
 ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
 # System dependent modules provided by ArceOS-Hypervisor.
@@ -66,7 +55,6 @@ axdevice_base = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
 fdt-edit = { workspace = true }
 fdt-raw = { workspace = true }
-hashbrown = "0.14"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-driver = { workspace = true, optional = true, features = ["pci"] }
 x86 = "0.52"
@@ -77,7 +65,6 @@ ax-plat = { workspace = true }
 riscv_vcpu = { workspace = true }
 riscv_vplic = { workspace = true }
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
-ax-driver = { workspace = true }
 ax-plat = { workspace = true }
 loongarch_vcpu = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
@@ -92,7 +79,4 @@ rdrive.workspace = true
 rdif-clk.workspace = true
 
 [dev-dependencies]
-ax-hal = { workspace = true, features = ["host-test"] }
-ax-kernel-guard = { workspace = true, features = ["host-test"] }
-ax-kspin = { workspace = true, features = ["host-test"] }
 rdif-clk.workspace = true
