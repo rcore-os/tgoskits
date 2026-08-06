@@ -103,10 +103,18 @@ int main(void)
 
     errno = 0;
     fd = open(BOOT_ID_PATH, O_RDONLY | O_CLOEXEC);
-    expect_true(fd >= 0, "open boot ID proc file read-only");
     if (fd < 0) {
+        /*
+         * boot_id is an optional node: platforms without a trusted boot
+         * entropy source (UEFI RNG or a 32-byte FDT /chosen/rng-seed) omit
+         * it, while the parent /proc/sys/kernel/random directory still
+         * exists, so open(2) must fail with ENOENT. Any other errno is a
+         * regression of the omit contract.
+         */
+        expect_true(errno == ENOENT, "boot ID omitted without trusted entropy (ENOENT)");
         goto out;
     }
+    expect_true(1, "open boot ID proc file read-only");
 
     errno = 0;
     expect_true(
