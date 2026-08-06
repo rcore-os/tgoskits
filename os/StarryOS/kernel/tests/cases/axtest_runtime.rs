@@ -27,6 +27,11 @@ fn random_write_mixes_entropy() {
 }
 
 #[axtest]
+fn kmsg_reports_no_readiness_without_read_side() {
+    ax_assert!(axtest_exports::kmsg_reports_no_readiness_without_read_side());
+}
+
+#[axtest]
 fn time_value_conversion_rules_hold() {
     ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }

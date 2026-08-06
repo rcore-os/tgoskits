@@ -334,6 +334,11 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn kmsg_reports_no_readiness_without_read_side_for_test() -> bool {
+    kmsg::reports_no_readiness_without_read_side_for_test()
+}
+
+#[cfg(axtest)]
 fn splitmix64_determinism_rules_hold() -> bool {
     // splitmix64 is a pure bijection: the same input always yields the same
     // 64-bit output (deterministic PRNG), and distinct inputs yield distinct

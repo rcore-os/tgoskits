@@ -36,11 +36,45 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 | `systemd-journald` enables receive timestamps on its Unix datagram socket | Linux v6.18 `sock_set_timestamp`, `unix_dgram_sendmsg`, and `__sock_recv_timestamp`: `SO_TIMESTAMP` is per receiver, records wall time before queue insertion, conditionally emits `SOL_SOCKET/SCM_TIMESTAMP`, and fills a missing timestamp when enabling races with an already queued packet | Journald initialization after systemd queued `Multi-User System`; `setsockopt(SOL_SOCKET, SO_TIMESTAMP)` returned `ENOPROTOOPT` | Resolved in the Unix datagram/seqpacket option, queue-time metadata, and timeval cmsg boundaries; no protocol-wide fake support added | `test-suit/starryos/qemu/system/bugfix-socket-timestamp/` changed from 14 pass/11 fail to 30 pass/0 fail, matching the host Linux oracle; adjacent QoS cmsg and seqpacket regressions also pass | Re-run when Unix queueing, `recvmsg`, ancillary layout, timestamp options, or wall-clock plumbing changes |
 | Journald reads the current hostname from proc sysctl | Linux v6.18 `kernel/utsname_sysctl.c` exposes `/proc/sys/kernel/hostname` from the caller's current UTS namespace and emits a newline-terminated value | Journald continued past `SO_TIMESTAMP`, printed `Collecting audit messages is disabled`, then failed to open `/proc/sys/kernel/hostname` with `ENOENT` | Resolved with a dynamic read-only proc sysctl node backed by `nsproxy.uts_ns.nodename`; no duplicate hostname state or userspace fallback added | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-hostname/` changed from deterministic `ENOENT` after 3 checks to 12/12 pass; the existing namespace regression also passed 13/13 | Re-run when procfs sysctl reads, UTS namespace cloning, `sethostname`, or `uname` semantics change |
 | systemd passes a pathname Unix stream listener to journald | Linux `socket(7)` defines `SO_ACCEPTCONN` as a read-only integer that is zero before `listen(2)` and one afterwards; systemd 260.2 uses it while identifying inherited Varlink listeners | After the hostname correction, journald reported `1 unknown file descriptors passed, closing.` before `Collecting audit messages is disabled` | Resolved by exposing the owning transport's listener state through `SocketOps`, separating Unix bind from listen, and returning that state for `SO_ACCEPTCONN`; no syscall-layer shadow state added | `test-suit/starryos/qemu/system/bugfix-unix-listener-introspection/` changed from 12/17 to 17/17, matching the host Linux oracle; adjacent accept4 and seqpacket regressions also pass | Re-run when socket listener state, Unix namespace bind slots, accept/connect, or `SO_ACCEPTCONN` handling changes |
+| Journald polls Starry's write-only `/dev/kmsg` fd | Linux v6.12 `kernel/printk/printk.c::devkmsg_poll()` reports `EPOLLIN | EPOLLRDNORM` only when a log record is available and does not report unconditional write readiness | Starry's `/dev/kmsg` read side returns EOF, but the generic device fallback advertised `POLLIN | POLLOUT`; journald therefore observed a readiness event it could not consume | Resolved by making `Kmsg` explicitly pollable with empty readiness until read-history support exists; no synthetic record, wakeup, or journald special case was added | The kernel axtest changed from `AXTEST_SUMMARY pass=397 fail=1` to `pass=398 fail=0`; the 4-vCPU NixOS rerun registered fd 8 but never delivered it, completed journal flush, and moved the strict failure to `systemd-udevd.service` | Re-run when `/dev/kmsg` gains read-history support, log-record wakeups, or its poll contract changes |
 | Journald processes systemd handoff and notification datagrams | Linux systemd-journald accepts authenticated handoff/notification messages and remains available through its activation sockets | After listener introspection was corrected, the unknown-fd diagnostic disappeared; journald logged messages without valid credentials, then `systemd-journalctl.socket` and journald startup timed out | Open diagnostic finding; the visible messages do not yet identify whether the owning gap is credential ancillary data, sender identity, socket activation, or another wait/wakeup boundary | No focused regression yet; the current boot only proves the Varlink listener boundary was crossed | Revisit after a Linux oracle and minimal deterministic reproducer identify the first failing operation |
 | `systemd-journald` appends an entry and obtains the current boot ID | systemd 260.2 [`sd_id128_get_boot()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-id128/sd-id128.c#L169-L193) reads `/proc/sys/kernel/random/boot_id` as a non-null canonical UUID; [`journal_file_append_entry()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-journal/journal-file.c#L2527-L2573) returns that read error before appending. The same direct `open`/`fstat`/`read`/`lseek` C probe passed 9/9 in the project Linux container. | The journal file open returned its expected initial `ENOENT`, then the boot-ID read returned `ENOENT`; journald reported its generic journal-write error immediately afterwards. | Resolved in procfs with one immutable per-kernel-boot UUIDv4 value, exposed as read-only `/proc/sys/kernel/random/boot_id`; no machine-ID derivation, journal mask, or service override was added. | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-random-boot-id/` changed from `open` `ENOENT` to 9/9 pass, including `0444`, exact 37-byte format, EOF, seek/re-read, and two-reader stability. The 2026-08-05 NixOS rerun then reached `Started Journal Service.` and received the flush request without another boot-ID error. | Re-run when procfs initialization, wall-clock entropy, pseudo-file permissions, or boot-identity lifecycle changes. |
 | systemd observes mount-table changes through `/proc/<pid>/{mountinfo,mounts}` polling | Linux 6.6 `fs/proc_namespace.c::mounts_poll()` stores one observed mount-namespace event value per open file description and reports `POLLPRI | POLLERR` when `fs/namespace.c::touch_mnt_namespace()` advances that namespace's event counter and wakes poll waiters | The util-linux mount helper completed the `move_mount(2)` operation for `/run/wrappers`, but systemd PID 1 did not receive a mountinfo change event, did not observe the published mount, and reported the mount unit protocol failure | Resolved with namespace-scoped mount-table generations, per-open consumed change events, and notifications after successful mount, bind, move, remount, propagation, `mount_setattr`, unmount, and `pivot_root` publication; no systemd workaround or host-side mount was added | The Linux oracle printed `STARRY_MOUNTINFO_POLL_NOTIFY_PASSED`. The focused Starry regression changed from `ready=0 revents=0` to `POLLPRI | POLLERR`, verified that a repeated poll consumes the event, and passed through the grouped QEMU runner. The real NixOS rerun printed `[  OK  ] Mounted /run/wrappers.`, reached `Local File Systems`, and started `Register Nix Store Paths` without the former mount-unit failure. | Re-run when mount-namespace cloning, proc mount-table generation, poll wakeup, or any mount-tree mutation path changes. |
 
 ## Run evidence
+
+### 2026-08-06 `/dev/kmsg` poll correction acceptance rerun
+
+- The focused kernel axtest first failed with
+  `kmsg_reports_only_supported_poll_events` and
+  `AXTEST_SUMMARY pass=397 fail=1 skip=0 total=398`. After matching the Linux
+  readiness contract, `kmsg_reports_no_readiness_without_read_side` passed with
+  `AXTEST_SUMMARY pass=398 fail=0 skip=0 total=398` and `AXTEST_SUITE_OK`.
+- `cargo fmt --all` passed, and
+  `cargo xtask clippy --package starry-kernel` passed all 25 configurations.
+  These checks ran in Podman with target and tool state under `.ci-cache`.
+- The published image and manifest passed the builder's strict reuse validation:
+  lock SHA-256 `e484df03c41a61badf4c0dddb62ef5c3c1c60a15cfc9e5b78f5477f8e1314ac4`,
+  image SHA-256
+  `9b1208f33534975a7b786342b557351ce016e454d444849da58e524b044943b1`,
+  system
+  `/nix/store/q2j5y05w2l4nhvsgzd3b7g49rn92lpkn-nixos-system-starrynixos-starry-nixos-stage2`,
+  and systemd `260.2`.
+- CI-like execution used
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`
+  in `ghcr.io/rcore-os/tgoskits-container:latest`, with
+  `.ci-cache/{cargo,rustup,target-nixos-kmsg,tmp}` for isolated build and
+  temporary state. QEMU ran with `-smp 4`; no host Nix command or host
+  `/nix/store` mutation was used.
+- Journald registered fd 8 for `EPOLLIN`, but no readiness delivery for that fd
+  appeared. It printed `Received client request to flush runtime journal.`;
+  `journalctl` exited 0, and systemd printed
+  `Finished Flush Journal to Persistent Storage.` The previous unconsumable
+  `/dev/kmsg` readiness boundary was therefore crossed.
+- The strict matcher later stopped at
+  `Failed to start Rule-based Manager for Device Events and Files.` No
+  `STARRY_NIXOS_SYSTEM_PASSED` marker was emitted, so T028 remains incomplete.
+  Log: `.ci-cache/nixos-kmsg-poll-green.log`.
 
 ### 2026-08-05 boot-ID correction acceptance rerun
 

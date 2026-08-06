@@ -34,6 +34,10 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+pub fn kmsg_reports_no_readiness_without_read_side() -> bool {
+    super::pseudofs::dev::kmsg_reports_no_readiness_without_read_side_for_test()
+}
+
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
     super::file::peer_close_with_multiple_readers_is_visible_for_test()
 }
