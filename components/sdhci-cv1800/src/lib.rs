@@ -134,9 +134,13 @@ impl CviSdhci {
         if norm & NORM_INT_ERROR != 0 {
             let err = self.read::<u16>(SDHCI_INT_STATUS_ERR);
             self.write::<u16>(SDHCI_INT_STATUS_ERR, err);
-            // Selective clear: only error bits + waited bit, preserving CARD_INT
-            // (mirrors the timeout path's narrowed clear policy).
-            self.clear_int_status_norm(NORM_INT_ERROR | bit);
+            // Selective clear: error bits + waited bit + XFER_COMPLETE.
+            // XFER_COMPLETE may be asserted concurrently with an error
+            // (e.g. DAT error after data-phase completion).  Consuming it
+            // here prevents a stale bit from leaking into the next
+            // transfer's wait_transfer_complete as a false early success.
+            // CARD_INT is intentionally preserved (ISR/mask protocol).
+            self.clear_int_status_norm(NORM_INT_ERROR | bit | NORM_INT_XFER_COMPLETE);
             self.reset_dat_line();
             return Some(Err(Self::classify_error(err)));
         }
@@ -233,8 +237,9 @@ impl CviSdhci {
         // 超时后总线可能仍处于 DAT-busy(PRES bit1 DATA_INHIBIT 置位),若不复位
         // DAT 线状态机,后续任何数据命令的 wait_data_idle 都会一直超时,整条 SDIO
         // 总线被焊死(连 WiFi 模式切回 AP 也起不来)。这里对齐错误中断分支:选择性
-        // 清除错误位 + 当前等待位（避免误清 CARD_INT），然后复位 DAT 线。
-        self.clear_int_status_norm(NORM_INT_ERROR | bit);
+        // 清除错误位 + 当前等待位 + XFER_COMPLETE（防止 stale bit 泄漏到下一传输），
+        // 保留 CARD_INT，然后复位 DAT 线。
+        self.clear_int_status_norm(NORM_INT_ERROR | bit | NORM_INT_XFER_COMPLETE);
         self.reset_dat_line();
         Err(SdioError::Timeout)
     }
