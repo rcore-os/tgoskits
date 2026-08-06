@@ -34,8 +34,12 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
-pub fn boot_id_uses_kernel_random_bytes() -> bool {
-    super::pseudofs::proc::boot_id_uses_kernel_random_bytes_for_test()
+pub fn boot_id_formats_firmware_entropy() -> bool {
+    super::pseudofs::proc::boot_id_formats_firmware_entropy_for_test()
+}
+
+pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
+    super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
 }
 
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {

@@ -27,8 +27,13 @@ fn random_write_mixes_entropy() {
 }
 
 #[axtest]
-fn boot_id_uses_kernel_random_bytes() {
-    ax_assert!(axtest_exports::boot_id_uses_kernel_random_bytes());
+fn boot_id_formats_firmware_entropy() {
+    ax_assert!(axtest_exports::boot_id_formats_firmware_entropy());
+}
+
+#[axtest]
+fn boot_id_is_omitted_without_trusted_entropy() {
+    ax_assert!(axtest_exports::boot_id_is_omitted_without_trusted_entropy());
 }
 
 #[axtest]

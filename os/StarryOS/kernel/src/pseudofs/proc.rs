@@ -100,8 +100,9 @@ fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
     }
 }
 
-fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
-    let boot_id = BOOT_ID.get_or_init(generate_boot_id).clone();
+fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
+    let generated_boot_id = boot_id_from_entropy(ax_runtime::hal::boot::boot_entropy())?;
+    let boot_id = BOOT_ID.get_or_init(|| generated_boot_id).clone();
     let file = SimpleFile::new_regular(fs, move || Ok(boot_id.clone()));
     let now = wall_time();
     file.set_attrs(
@@ -112,16 +113,15 @@ fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
         now,
         now,
     );
-    file
+    Some(file)
 }
 
-fn generate_boot_id() -> String {
-    let boot_entropy = ax_runtime::hal::boot::boot_entropy()
-        .expect("boot ID requires UEFI RNG or FDT /chosen/rng-seed");
+fn boot_id_from_entropy(boot_entropy: Option<[u8; 32]>) -> Option<String> {
+    let boot_entropy = boot_entropy?;
     let random_bytes = boot_entropy[..16]
         .try_into()
         .expect("boot entropy contains 16 UUID bytes");
-    format_boot_id(random_bytes)
+    Some(format_boot_id(random_bytes))
 }
 
 fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
@@ -151,11 +151,19 @@ fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
 }
 
 #[cfg(axtest)]
-pub(crate) fn boot_id_uses_kernel_random_bytes_for_test() -> bool {
-    format_boot_id([
+pub(crate) fn boot_id_formats_firmware_entropy_for_test() -> bool {
+    boot_id_from_entropy(Some([
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f,
-    ]) == "00010203-0405-4607-8809-0a0b0c0d0e0f\n"
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ]))
+    .as_deref()
+        == Some("00010203-0405-4607-8809-0a0b0c0d0e0f\n")
+}
+
+#[cfg(axtest)]
+pub(crate) fn boot_id_is_omitted_without_trusted_entropy_for_test() -> bool {
+    boot_id_from_entropy(None).is_none()
 }
 
 fn render_meminfo() -> String {
@@ -2035,7 +2043,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             kernel.add("random", {
                 let mut random = DirMapping::new();
-                random.add("boot_id", boot_id_proc_file(fs.clone()));
+                if let Some(boot_id) = boot_id_proc_file(fs.clone()) {
+                    random.add("boot_id", boot_id);
+                }
                 SimpleDir::new_maker(fs.clone(), Arc::new(random))
             });
 
