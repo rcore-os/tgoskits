@@ -96,6 +96,7 @@ rockchip-dwmmc = [
     "block",
     "rockchip-pm",
     "rockchip-soc",
+    "dep:arm-scmi-rs",
     "dep:dwmmc-host",
     "dep:rdif-clk",
     "dep:sdmmc-protocol",

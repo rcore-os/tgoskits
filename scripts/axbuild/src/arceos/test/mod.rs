@@ -37,6 +37,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE,
     ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE,
     "display-basic",
+    "eventfd-epoll",
     "exception-breakpoint",
     ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
     "fs-basic",

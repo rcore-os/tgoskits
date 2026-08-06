@@ -50,6 +50,12 @@ impl DeviceContainer {
         devices.push(DeviceOwner::new(descriptor, device));
     }
 
+    pub(crate) fn can_insert<T: DriverGeneric>(&self, device_id: DeviceId) -> bool {
+        self.devices
+            .get(&device_id)
+            .is_none_or(|devices| !devices.iter().any(DeviceOwner::is::<T>))
+    }
+
     pub fn get_typed<T: DriverGeneric>(&self, id: DeviceId) -> Result<Device<T>, GetDeviceError> {
         let devices = self.devices.get(&id).ok_or(GetDeviceError::NotFound)?;
         for dev in devices {

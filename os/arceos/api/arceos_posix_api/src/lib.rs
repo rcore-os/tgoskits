@@ -32,6 +32,8 @@ pub mod ctypes_gen {
     include!(concat!(env!("OUT_DIR"), "/ctypes_gen.rs"));
 }
 
+#[cfg(feature = "eventfd")]
+pub use imp::eventfd::sys_eventfd;
 #[cfg(feature = "fd")]
 pub use imp::fd_ops::{sys_close, sys_dup, sys_dup2, sys_fcntl};
 #[cfg(feature = "fs")]

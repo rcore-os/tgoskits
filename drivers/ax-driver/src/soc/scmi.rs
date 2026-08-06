@@ -1,18 +1,17 @@
-use alloc::format;
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{format, string::ToString, sync::Arc};
 
 use arm_scmi_rs::{Scmi, Shmem, Smc};
 use ax_kspin::SpinNoIrq as Mutex;
 use fdt_edit::Phandle;
 use log::{info, warn};
 
-use crate::{DriverGeneric, mmio::iomap, probe::OnProbeError, register::ProbeFdt};
+use crate::{DriverGeneric, KError, mmio::iomap, probe::OnProbeError, register::ProbeFdt};
 
 const SCMI_SHMEM_SIZE: usize = 0x100;
 const RK3588_SCMI_SHMEM_BASE: usize = 0x10f000;
+const SCMI_CLOCK_PROTOCOL_ID: u32 = 0x14;
 
-static SCMI: Mutex<Option<Scmi<Smc>>> = Mutex::new(None);
-static SCMI_REGISTERED: AtomicBool = AtomicBool::new(false);
+type ScmiAgent = Arc<Mutex<Scmi<Smc>>>;
 
 crate::model_register!(
     name: "ARM SCMI SMC",
@@ -69,10 +68,28 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         bus_address: shmem_addr,
         size: shmem_size,
     };
-    let scmi = Scmi::new(Smc::new(smc_id, None), shmem);
-    *SCMI.lock() = Some(scmi);
-    SCMI_REGISTERED.store(true, Ordering::Release);
-    plat_dev.register(ScmiDevice);
+    let agent = Arc::new(Mutex::new(Scmi::new(Smc::new(smc_id, None), shmem)));
+    if let Some(clock_child) = clock_protocol_child(&info) {
+        let clock_path = clock_child.path().to_string();
+        let clock_phandle = clock_child.node().as_node().phandle();
+        plat_dev
+            .register_with_fdt_child(
+                ScmiDevice {
+                    _agent: agent.clone(),
+                },
+                clock_child,
+                rdif_clk::Clk::new(ScmiClockProvider { agent }),
+            )
+            .map_err(|error| OnProbeError::other(error.to_string()))?;
+        info!(
+            "SCMI clock protocol registered: path={clock_path}, phandle={clock_phandle:?}, \
+             protocol={:#x}",
+            SCMI_CLOCK_PROTOCOL_ID
+        );
+    } else {
+        plat_dev.register(ScmiDevice { _agent: agent });
+        warn!("[{}] has no SCMI clock protocol", info.node.name());
+    }
     info!(
         "SCMI SMC registered: smc_id={:#x}, shmem_phandle={}, shmem={:#x}+{:#x}",
         smc_id, shmem_phandle, shmem_addr, shmem_size
@@ -80,130 +97,131 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-pub fn clock_rate(_phandle: Phandle, clock_id: u32) -> Option<u64> {
-    if !SCMI_REGISTERED.load(Ordering::Acquire) {
-        warn!(
-            "SCMI clock rate requested before SCMI registration: clock_id={:#x}",
-            clock_id
-        );
-        return None;
-    }
-    let mut guard = SCMI.lock();
-    let scmi = guard.as_mut()?;
-    match scmi.clock_rate_get_direct(clock_id) {
-        Ok(rate) => {
-            info!(
-                "SCMI clock rate get: clock_id={:#x}, rate={} Hz",
-                clock_id, rate
-            );
-            Some(rate)
-        }
-        Err(err) => {
-            warn!(
-                "SCMI clock rate get failed: clock_id={:#x}, {:?}",
-                clock_id, err
-            );
-            None
-        }
-    }
+fn clock_protocol_child(
+    info: &crate::register::FdtInfo<'_>,
+) -> Option<rdrive::probe::fdt::FdtChild> {
+    info.available_children().into_iter().find(|child| {
+        child
+            .node()
+            .as_node()
+            .get_property("reg")
+            .and_then(|property| property.get_u32())
+            == Some(SCMI_CLOCK_PROTOCOL_ID)
+    })
 }
 
-pub fn enable_clock(_phandle: Phandle, clock_id: u32) -> Option<()> {
-    if !SCMI_REGISTERED.load(Ordering::Acquire) {
-        warn!(
-            "SCMI clock enable requested before SCMI registration: clock_id={:#x}",
-            clock_id
-        );
-        return None;
-    }
-    let mut guard = SCMI.lock();
-    let scmi = guard.as_mut()?;
-    let mut clock = scmi.protocol_clk_no_init();
-    match clock.clk_enable(clock_id) {
-        Ok(()) => {
-            info!("SCMI clock enabled: clock_id={:#x}", clock_id);
-            Some(())
-        }
-        Err(err) => {
+pub fn clock_rate(phandle: Phandle, clock_id: u32) -> Option<u64> {
+    let provider = clock_provider(phandle)?;
+    let provider = provider.lock().ok()?;
+    provider
+        .get_rate(rdif_clk::ClockId::from(clock_id as usize))
+        .map_err(|error| {
             warn!(
-                "SCMI clock enable failed: clock_id={:#x}, {:?}",
-                clock_id, err
+                "SCMI clock rate get failed: provider={phandle}, clock_id={clock_id:#x}, {error:?}"
             );
-            None
-        }
-    }
+        })
+        .ok()
 }
 
-pub fn set_clock_rate(_phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> {
-    if !SCMI_REGISTERED.load(Ordering::Acquire) {
-        warn!(
-            "SCMI clock rate set requested before SCMI registration: clock_id={:#x}, rate={} Hz",
-            clock_id, rate
-        );
-        return None;
-    }
-    let mut guard = SCMI.lock();
-    let scmi = guard.as_mut()?;
-    match scmi.clock_rate_set_direct(clock_id, rate) {
-        Ok(()) => {
-            info!(
-                "SCMI clock rate set: clock_id={:#x}, rate={} Hz",
-                clock_id, rate
-            );
-            Some(())
-        }
-        Err(err) => {
+pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {
+    let provider = clock_provider(phandle)?;
+    let mut provider = provider.lock().ok()?;
+    provider
+        .enable(rdif_clk::ClockId::from(clock_id as usize))
+        .map_err(|error| {
             warn!(
-                "SCMI clock rate set failed: clock_id={:#x}, rate={} Hz, {:?}",
-                clock_id, rate, err
+                "SCMI clock enable failed: provider={phandle}, clock_id={clock_id:#x}, {error:?}"
             );
-            None
-        }
-    }
+        })
+        .ok()
 }
 
-/// Query the rates the platform permits for `clock_id`
-/// (SCMI `CLOCK_DESCRIBE_RATES`, message 0x4).
-///
-/// This is a **read-only** operation: it changes no clock state and is intended
-/// as a safety preflight to confirm the firmware actually services a clock
-/// before any rate is programmed. Returns `Some(())` when the platform answers
-/// the query (the clock exists and its operations are serviced) and `None` when
-/// it rejects it. The permitted rates are logged for diagnostics. `_phandle` is
-/// ignored (single global agent), mirroring the other helpers here.
-pub fn describe_rates(_phandle: Phandle, clock_id: u32) -> Option<()> {
-    if !SCMI_REGISTERED.load(Ordering::Acquire) {
-        warn!(
-            "SCMI describe rates requested before SCMI registration: clock_id={:#x}",
-            clock_id
-        );
-        return None;
-    }
-    let mut guard = SCMI.lock();
-    let scmi = guard.as_mut()?;
-    let mut clock = scmi.protocol_clk_no_init();
-    match clock.describe_rates(clock_id, 0) {
-        Ok(rates) => {
-            info!(
-                "SCMI describe rates: clock_id={:#x}, rates={:?}",
-                clock_id, rates
-            );
-            Some(())
-        }
-        Err(err) => {
+pub fn set_clock_rate(phandle: Phandle, clock_id: u32, rate: u64) -> Option<()> {
+    let provider = clock_provider(phandle)?;
+    let mut provider = provider.lock().ok()?;
+    provider
+        .set_rate(rdif_clk::ClockId::from(clock_id as usize), rate)
+        .map_err(|error| {
             warn!(
-                "SCMI describe rates failed: clock_id={:#x}, {:?}",
-                clock_id, err
+                "SCMI clock rate set failed: provider={phandle}, clock_id={clock_id:#x}, \
+                 rate={rate} Hz, {error:?}"
             );
-            None
-        }
-    }
+        })
+        .ok()
 }
 
-struct ScmiDevice;
+fn clock_provider(phandle: Phandle) -> Option<rdrive::Device<rdif_clk::Clk>> {
+    let Some(device_id) = rdrive::fdt_phandle_to_device_id(phandle) else {
+        warn!("SCMI clock provider phandle {phandle} has no FDT device identity");
+        return None;
+    };
+    rdrive::get::<rdif_clk::Clk>(device_id)
+        .map_err(|error| {
+            warn!("SCMI clock provider {phandle} is unavailable: {error}");
+        })
+        .ok()
+}
+
+struct ScmiDevice {
+    _agent: ScmiAgent,
+}
 
 impl DriverGeneric for ScmiDevice {
     fn name(&self) -> &str {
         "arm-scmi-smc"
     }
+}
+
+struct ScmiClockProvider {
+    agent: ScmiAgent,
+}
+
+impl DriverGeneric for ScmiClockProvider {
+    fn name(&self) -> &str {
+        "arm-scmi-clock"
+    }
+}
+
+impl rdif_clk::Interface for ScmiClockProvider {
+    fn perper_enable(&mut self) {}
+
+    fn enable(&mut self, id: rdif_clk::ClockId) -> Result<(), KError> {
+        let clock_id = clock_id(id)?;
+        let agent = self.agent.lock();
+        agent
+            .protocol_clk_no_init()
+            .clk_enable(clock_id)
+            .map_err(|error| {
+                warn!("SCMI clock enable failed: clock_id={clock_id:#x}, {error:?}");
+                KError::Io
+            })
+    }
+
+    fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
+        let clock_id = clock_id(id)?;
+        self.agent
+            .lock()
+            .clock_rate_get_direct(clock_id)
+            .map_err(|error| {
+                warn!("SCMI clock rate get failed: clock_id={clock_id:#x}, {error:?}");
+                KError::Io
+            })
+    }
+
+    fn set_rate(&mut self, id: rdif_clk::ClockId, rate: u64) -> Result<(), KError> {
+        let clock_id = clock_id(id)?;
+        self.agent
+            .lock()
+            .clock_rate_set_direct(clock_id, rate)
+            .map_err(|error| {
+                warn!(
+                    "SCMI clock rate set failed: clock_id={clock_id:#x}, rate={rate} Hz, {error:?}"
+                );
+                KError::Io
+            })
+    }
+}
+
+fn clock_id(id: rdif_clk::ClockId) -> Result<u32, KError> {
+    u32::try_from(id.raw()).map_err(|_| KError::InvalidArg { name: "clock_id" })
 }

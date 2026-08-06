@@ -1,6 +1,8 @@
+use alloc::string::String;
 pub use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use fdt_edit::NodeId;
 pub use rdif_base::irq::IrqConfig;
 
 use crate::custom_id;
@@ -13,7 +15,29 @@ pub struct Descriptor {
     pub(crate) device_id: DeviceId,
     pub name: &'static str,
     pub irq_parent: Option<DeviceId>,
+    pub(crate) fdt_node: Option<FdtNodeIdentity>,
     // pub irqs: Vec<IrqConfig>,
+}
+
+/// Stable firmware identity for a device originating from an FDT node.
+#[derive(Debug, Clone)]
+pub struct FdtNodeIdentity {
+    node_id: NodeId,
+    path: String,
+}
+
+impl FdtNodeIdentity {
+    pub(crate) fn new(node_id: NodeId, path: String) -> Self {
+        Self { node_id, path }
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
 }
 
 impl Descriptor {
@@ -28,6 +52,10 @@ impl Descriptor {
 impl Descriptor {
     pub fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    pub fn fdt_node(&self) -> Option<&FdtNodeIdentity> {
+        self.fdt_node.as_ref()
     }
 }
 
