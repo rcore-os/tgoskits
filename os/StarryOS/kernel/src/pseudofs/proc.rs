@@ -29,7 +29,6 @@ use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsR
 use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
-use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
@@ -117,20 +116,12 @@ fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
 }
 
 fn generate_boot_id() -> String {
-    let realtime = wall_time();
-    let wall_clock_nanos = realtime
-        .as_secs()
-        .wrapping_mul(1_000_000_000)
-        .wrapping_add(realtime.subsec_nanos() as u64);
-    let stack_addr = &wall_clock_nanos as *const u64 as usize as u64;
-    // A boot ID must not persist with the generated rootfs or machine identity.
-    // Mix wall-clock and boot-relative time before deriving the one boot-scoped
-    // UUID value.
-    let seed = wall_clock_nanos
-        ^ (monotonic_time().as_nanos() as u64).rotate_left(17)
-        ^ stack_addr.rotate_left(31);
     let mut random_bytes = [0; 16];
-    ChaCha20Rng::seed_from_u64(seed).fill_bytes(&mut random_bytes);
+    super::dev::fill_kernel_random(&mut random_bytes);
+    format_boot_id(random_bytes)
+}
+
+fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
     random_bytes[6] = (random_bytes[6] & 0x0f) | 0x40;
     random_bytes[8] = (random_bytes[8] & 0x3f) | 0x80;
 
@@ -154,6 +145,14 @@ fn generate_boot_id() -> String {
         random_bytes[14],
         random_bytes[15],
     )
+}
+
+#[cfg(axtest)]
+pub(crate) fn boot_id_uses_kernel_random_bytes_for_test() -> bool {
+    format_boot_id([
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f,
+    ]) == "00010203-0405-4607-8809-0a0b0c0d0e0f\n"
 }
 
 fn render_meminfo() -> String {

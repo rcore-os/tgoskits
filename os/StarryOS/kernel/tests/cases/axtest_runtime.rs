@@ -27,6 +27,11 @@ fn random_write_mixes_entropy() {
 }
 
 #[axtest]
+fn boot_id_uses_kernel_random_bytes() {
+    ax_assert!(axtest_exports::boot_id_uses_kernel_random_bytes());
+}
+
+#[axtest]
 fn time_value_conversion_rules_hold() {
     ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }
