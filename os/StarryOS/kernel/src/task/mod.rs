@@ -2004,15 +2004,18 @@ impl ProcessData {
     /// ```
     ///
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
-    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
-    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+    /// **after** the `SpinNoIrq` guard, in normal preemptible context. The old
+    /// address space must also stay alive until the current task has switched
+    /// away from its page table.
+    pub fn replace_current_aspace(&self, current: &TaskInner, new_aspace: Arc<Mutex<AddrSpace>>) {
+        let new_page_table_root = new_aspace.lock().page_table_root();
+        crate::mm::attach_process_slot(&new_aspace);
         let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
+        current.switch_page_table(new_page_table_root);
         crate::mm::release_process_slot(&old);
-        let aspace_arc = self.aspace.lock().clone();
-        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,

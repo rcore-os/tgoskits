@@ -12,7 +12,10 @@ use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
-    cpu::{asm::user_copy, trap::page_fault_handler},
+    cpu::{
+        asm::user_copy,
+        trap::{PageFaultFlags, page_fault_handler},
+    },
     paging::MappingFlags,
 };
 use ax_task::{current, might_sleep};
@@ -245,7 +248,7 @@ pub(crate) use nullable;
 pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[page_fault_handler]
-fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
+fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     debug!("Page fault at {vaddr:#x}, access_flags: {access_flags:#x?}");
 
     #[cfg(feature = "stack-guard-page")]

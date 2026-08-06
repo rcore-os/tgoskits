@@ -40,23 +40,23 @@ impl<H> Copy for GenericFrameAllocator<H> {}
 
 impl<H: PagingHandler + 'static> ptg::FrameAllocator for GenericFrameAllocator<H> {
     fn alloc_frame(&self) -> Option<ptg::PhysAddr> {
-        H::alloc_frame().map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        H::alloc_frame()
     }
 
     fn dealloc_frame(&self, frame: ptg::PhysAddr) {
-        H::dealloc_frame(PhysAddr::from(frame.raw()));
+        H::dealloc_frame(frame);
     }
 
     fn phys_to_virt(&self, paddr: ptg::PhysAddr) -> *mut u8 {
-        H::phys_to_virt(PhysAddr::from(paddr.raw())).as_usize() as *mut u8
+        H::phys_to_virt(paddr).as_usize() as *mut u8
     }
 
     fn alloc_frames(&self, frames: usize, align: usize) -> Option<ptg::PhysAddr> {
-        H::alloc_frames(frames, align).map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        H::alloc_frames(frames, align)
     }
 
     fn dealloc_frames(&self, start: ptg::PhysAddr, frames: usize, _frame_size: usize) {
-        H::dealloc_frames(PhysAddr::from(start.raw()), frames);
+        H::dealloc_frames(start, frames);
     }
 }
 
@@ -82,7 +82,7 @@ where
     }
 
     pub(crate) fn root_paddr(&self) -> PhysAddr {
-        PhysAddr::from(self.inner.root_paddr().raw())
+        self.inner.root_paddr()
     }
 
     pub(crate) fn map(
@@ -93,8 +93,8 @@ where
         flags: MappingFlags,
     ) -> ptg::PagingResult {
         self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-            paddr: ptg::PhysAddr::new(paddr.as_usize()),
+            vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            paddr,
             size: size.into(),
             pte: flags_to_config(flags),
             allow_huge: size.is_huge(),
@@ -112,8 +112,8 @@ where
     ) -> ptg::PagingResult {
         let paddr = get_paddr(vaddr);
         self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-            paddr: ptg::PhysAddr::new(paddr.as_usize()),
+            vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            paddr,
             size,
             pte: flags_to_config(flags),
             allow_huge,
@@ -126,13 +126,16 @@ where
         vaddr: GuestPhysAddr,
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, flags, page_size) = self.query(vaddr)?;
-        self.inner
-            .unmap(ptg::VirtAddr::new(vaddr.as_usize()), page_size.into())?;
+        self.inner.unmap(
+            ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            page_size.into(),
+        )?;
         Ok((paddr, flags, page_size))
     }
 
     pub(crate) fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> ptg::PagingResult {
-        self.inner.unmap(ptg::VirtAddr::new(start.as_usize()), size)
+        self.inner
+            .unmap(ptg::VirtAddr::from_usize(start.as_usize()), size)
     }
 
     pub(crate) fn remap(
@@ -156,8 +159,10 @@ where
         let end = start + size;
         while vaddr < end {
             let (paddr, _, page_size) = self.query(vaddr)?;
-            self.inner
-                .unmap(ptg::VirtAddr::new(vaddr.as_usize()), page_size.into())?;
+            self.inner.unmap(
+                ptg::VirtAddr::from_usize(vaddr.as_usize()),
+                page_size.into(),
+            )?;
             self.map(vaddr, paddr, page_size, new_flags)?;
             vaddr += usize::from(page_size);
         }
@@ -170,10 +175,10 @@ where
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, pte, level) = self
             .inner
-            .translate_with_level(ptg::VirtAddr::new(vaddr.as_usize()))?;
+            .translate_with_level(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
         let config = pte.to_config(level > 1);
         Ok((
-            PhysAddr::from(paddr.raw()),
+            paddr,
             config_to_flags(config),
             page_size_for_level::<M, GenericFrameAllocator<H>>(level, config.huge),
         ))

@@ -116,7 +116,7 @@ impl ptg::PageTableEntry for LoongArchPTE {
         if config.huge {
             flags |= PTEFlags::GH;
         }
-        Self(flags.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
+        Self(flags.bits() | (config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
     fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
@@ -125,7 +125,7 @@ impl ptg::PageTableEntry for LoongArchPTE {
         let huge = is_dir && flags.contains(PTEFlags::GH);
         let mapping_flags = MappingFlags::from(flags);
         ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
+            paddr: self.paddr(),
             valid,
             read: mapping_flags.contains(MappingFlags::READ),
             writable: mapping_flags.contains(MappingFlags::WRITE),

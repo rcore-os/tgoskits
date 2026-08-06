@@ -33,15 +33,15 @@ struct MockAllocator;
 
 impl ptg::FrameAllocator for MockAllocator {
     fn alloc_frame(&self) -> Option<ptg::PhysAddr> {
-        mock_alloc_frame().map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        mock_alloc_frame()
     }
 
     fn dealloc_frame(&self, frame: ptg::PhysAddr) {
-        mock_dealloc_frame(PhysAddr::from(frame.raw()));
+        mock_dealloc_frame(frame);
     }
 
     fn phys_to_virt(&self, paddr: ptg::PhysAddr) -> *mut u8 {
-        MockHal::mock_phys_to_virt(PhysAddr::from(paddr.raw())).as_usize() as *mut u8
+        MockHal::mock_phys_to_virt(paddr).as_usize() as *mut u8
     }
 }
 
@@ -120,7 +120,7 @@ impl PageTableEntry for MockPte {
         if !config.valid {
             return Self(0);
         }
-        let mut bits = config.paddr.raw() & Self::PPN_MASK;
+        let mut bits = config.paddr.as_usize() & Self::PPN_MASK;
         bits |= Self::V;
         if !config.is_dir || config.huge {
             if config.read {
@@ -143,7 +143,7 @@ impl PageTableEntry for MockPte {
     fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
         let leaf = self.0 & (Self::R | Self::W | Self::X) != 0;
         ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.0 & Self::PPN_MASK),
+            paddr: ptg::PhysAddr::from_usize(self.0 & Self::PPN_MASK),
             valid: self.0 & Self::V != 0,
             read: self.0 & Self::R != 0,
             writable: self.0 & Self::W != 0,
@@ -179,7 +179,7 @@ impl MockNestedPageTable {
 
 impl NestedPageTableOps for MockNestedPageTable {
     fn root_paddr(&self) -> PhysAddr {
-        PhysAddr::from(self.inner.root_paddr().raw())
+        self.inner.root_paddr()
     }
 
     fn levels(&self) -> usize {
@@ -208,8 +208,8 @@ impl NestedPageTableOps for MockNestedPageTable {
         Ok(self
             .inner
             .map(&ptg::MapConfig {
-                vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-                paddr: ptg::PhysAddr::new(paddr.as_usize()),
+                vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+                paddr,
                 size: size.into(),
                 pte: MockPte::flags_to_config(flags, paddr),
                 allow_huge: false,
@@ -224,7 +224,7 @@ impl NestedPageTableOps for MockNestedPageTable {
     ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, flags, _) = self.query(vaddr)?;
         self.inner
-            .unmap(ptg::VirtAddr::new(vaddr.as_usize()), PAGE_SIZE)
+            .unmap(ptg::VirtAddr::from_usize(vaddr.as_usize()), PAGE_SIZE)
             .map_err(Self::convert_err)?;
         Ok((paddr, flags, PageSize::Size4K))
     }
@@ -241,8 +241,8 @@ impl NestedPageTableOps for MockNestedPageTable {
         Ok(self
             .inner
             .map(&ptg::MapConfig {
-                vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-                paddr: ptg::PhysAddr::new(paddr.as_usize()),
+                vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+                paddr,
                 size,
                 pte: MockPte::flags_to_config(flags, paddr),
                 allow_huge: false,
@@ -254,7 +254,7 @@ impl NestedPageTableOps for MockNestedPageTable {
     fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> AddrSpaceResult {
         Ok(self
             .inner
-            .unmap(ptg::VirtAddr::new(start.as_usize()), size)
+            .unmap(ptg::VirtAddr::from_usize(start.as_usize()), size)
             .map_err(Self::convert_err)?)
     }
 
@@ -288,16 +288,12 @@ impl NestedPageTableOps for MockNestedPageTable {
     fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, pte) = self
             .inner
-            .translate(ptg::VirtAddr::new(vaddr.as_usize()))
+            .translate(ptg::VirtAddr::from_usize(vaddr.as_usize()))
             .map_err(Self::convert_err)?;
         let config = pte.to_config(false);
         if !config.valid || MockPte::config_to_flags(config).is_empty() {
             return Err(AddrSpaceError::MappingState);
         }
-        Ok((
-            PhysAddr::from(paddr.raw()),
-            MockPte::config_to_flags(config),
-            PageSize::Size4K,
-        ))
+        Ok((paddr, MockPte::config_to_flags(config), PageSize::Size4K))
     }
 }

@@ -1,129 +1,8 @@
-use core::ptr::NonNull;
+pub use ax_memory_addr::{PhysAddr, VirtAddr};
 
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
 pub const GB: usize = 1024 * MB;
-
-macro_rules! def_addr {
-    ($name:ident, $t:ty) => {
-        #[repr(transparent)]
-        #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-        pub struct $name($t);
-
-        impl From<$t> for $name {
-            #[inline(always)]
-            fn from(value: $t) -> Self {
-                Self(value)
-            }
-        }
-
-        impl From<$name> for $t {
-            #[inline(always)]
-            fn from(value: $name) -> Self {
-                value.0
-            }
-        }
-
-        impl $name {
-            #[inline(always)]
-            pub fn raw(&self) -> $t {
-                self.0
-            }
-
-            #[inline(always)]
-            pub const fn new(value: $t) -> Self {
-                Self(value)
-            }
-        }
-
-        impl core::ops::Add<$t> for $name {
-            type Output = Self;
-
-            #[inline(always)]
-            fn add(self, rhs: $t) -> Self::Output {
-                Self(self.0 + rhs)
-            }
-        }
-
-        impl core::ops::AddAssign<$t> for $name {
-            #[inline(always)]
-            fn add_assign(&mut self, rhs: $t) {
-                self.0 += rhs;
-            }
-        }
-
-        impl core::ops::Sub<$t> for $name {
-            type Output = Self;
-
-            #[inline(always)]
-            fn sub(self, rhs: $t) -> Self::Output {
-                Self(self.0 - rhs)
-            }
-        }
-
-        impl core::ops::Sub<Self> for $name {
-            type Output = $t;
-
-            #[inline(always)]
-            fn sub(self, rhs: Self) -> Self::Output {
-                self.0 - rhs.0
-            }
-        }
-
-        impl core::fmt::Debug for $name {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(f, "0x{:0>16x}", self.0)
-            }
-        }
-    };
-}
-
-def_addr!(PhysAddr, usize);
-def_addr!(VirtAddr, usize);
-
-impl VirtAddr {
-    #[inline(always)]
-    pub fn as_ptr(self) -> *mut u8 {
-        self.0 as _
-    }
-}
-
-impl From<*mut u8> for VirtAddr {
-    #[inline(always)]
-    fn from(val: *mut u8) -> Self {
-        Self(val as _)
-    }
-}
-
-impl From<NonNull<u8>> for VirtAddr {
-    #[inline(always)]
-    fn from(val: NonNull<u8>) -> Self {
-        Self(val.as_ptr() as _)
-    }
-}
-
-impl From<*const u8> for VirtAddr {
-    #[inline(always)]
-    fn from(val: *const u8) -> Self {
-        Self(val as _)
-    }
-}
-
-#[cfg(target_pointer_width = "64")]
-impl From<u64> for PhysAddr {
-    #[inline(always)]
-    fn from(value: u64) -> Self {
-        Self(value as _)
-    }
-}
-
-#[cfg(target_pointer_width = "32")]
-impl From<u32> for PhysAddr {
-    #[inline(always)]
-    fn from(value: u32) -> Self {
-        Self(value as _)
-    }
-}
 
 #[derive(thiserror::Error, Clone, PartialEq, Eq)]
 pub enum PagingError {
@@ -149,18 +28,6 @@ pub enum PagingError {
     InvalidRange { details: &'static str },
     #[error("Address not mapped")]
     NotMapped,
-}
-
-impl core::fmt::LowerHex for VirtAddr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#x}", self.raw())
-    }
-}
-
-impl core::fmt::LowerHex for PhysAddr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:#x}", self.raw())
-    }
 }
 
 impl PagingError {
@@ -208,8 +75,8 @@ impl core::fmt::Debug for PagingError {
                 write!(
                     f,
                     "MappingConflict: vaddr={:#x}, existing_paddr={:#x}",
-                    vaddr.raw(),
-                    existing_paddr.raw()
+                    vaddr.as_usize(),
+                    existing_paddr.as_usize()
                 )
             }
             Self::AddressOverflow { details } => write!(f, "AddressOverflow: {details}"),
@@ -218,6 +85,58 @@ impl core::fmt::Debug for PagingError {
             Self::InvalidRange { details } => write!(f, "InvalidRange: {details}"),
             Self::NotMapped => write!(f, "NotMapped"),
         }
+    }
+}
+
+bitflags::bitflags! {
+    /// Generic page mapping permissions and memory attributes.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct MappingFlags: usize {
+        /// The memory is readable.
+        const READ = 1 << 0;
+        /// The memory is writable.
+        const WRITE = 1 << 1;
+        /// The memory is executable.
+        const EXECUTE = 1 << 2;
+        /// The memory is accessible from a lower-privileged context.
+        const USER = 1 << 3;
+        /// The memory is device memory.
+        const DEVICE = 1 << 4;
+        /// The memory is uncached.
+        const UNCACHED = 1 << 5;
+    }
+}
+
+/// Page sizes supported by the page-table engine.
+#[repr(usize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum PageSize {
+    /// Size of 4 kilobytes.
+    Size4K = 0x1000,
+    /// Size of 1 megabytes.
+    Size1M = 0x10_0000,
+    /// Size of 2 megabytes.
+    Size2M = 0x20_0000,
+    /// Size of 1 gigabytes.
+    Size1G = 0x4000_0000,
+}
+
+impl PageSize {
+    /// Whether this page size is larger than the base 4K page.
+    pub const fn is_huge(self) -> bool {
+        matches!(self, Self::Size1G | Self::Size2M | Self::Size1M)
+    }
+
+    /// Checks whether an address or length is aligned to this page size.
+    pub const fn is_aligned(self, addr_or_size: usize) -> bool {
+        ax_memory_addr::is_aligned(addr_or_size, self as usize)
+    }
+}
+
+impl From<PageSize> for usize {
+    #[inline]
+    fn from(size: PageSize) -> usize {
+        size as usize
     }
 }
 
@@ -289,4 +208,57 @@ pub struct PteConfig {
     pub is_dir: bool,
     pub huge: bool,
     pub mem_attr: MemAttributes,
+}
+
+impl PteConfig {
+    /// Builds a leaf mapping config from generic mapping flags.
+    pub fn page(paddr: PhysAddr, flags: MappingFlags, is_huge: bool) -> Self {
+        Self {
+            paddr,
+            valid: !flags.is_empty(),
+            read: flags.contains(MappingFlags::READ),
+            writable: flags.contains(MappingFlags::WRITE),
+            executable: flags.contains(MappingFlags::EXECUTE),
+            lower: flags.contains(MappingFlags::USER),
+            dirty: flags.contains(MappingFlags::WRITE),
+            global: !flags.contains(MappingFlags::USER),
+            is_dir: false,
+            huge: is_huge,
+            mem_attr: if flags.contains(MappingFlags::DEVICE) {
+                MemAttributes::Device
+            } else if flags.contains(MappingFlags::UNCACHED) {
+                MemAttributes::Uncached
+            } else {
+                MemAttributes::Normal
+            },
+        }
+    }
+}
+
+impl From<PteConfig> for MappingFlags {
+    fn from(config: PteConfig) -> Self {
+        if !config.valid {
+            return Self::empty();
+        }
+
+        let mut flags = Self::empty();
+        if config.read {
+            flags |= Self::READ;
+        }
+        if config.writable {
+            flags |= Self::WRITE;
+        }
+        if config.executable {
+            flags |= Self::EXECUTE;
+        }
+        if config.lower {
+            flags |= Self::USER;
+        }
+        match config.mem_attr {
+            MemAttributes::Device => flags |= Self::DEVICE,
+            MemAttributes::Uncached => flags |= Self::UNCACHED,
+            MemAttributes::Normal | MemAttributes::PerCpu => {}
+        }
+        flags
+    }
 }

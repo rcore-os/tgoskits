@@ -8,6 +8,9 @@ mod trap;
 pub mod asm;
 pub mod init;
 
+#[cfg(feature = "paging")]
+pub(crate) mod paging;
+
 #[cfg(feature = "uspace")]
 pub mod uspace;
 

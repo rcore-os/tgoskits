@@ -1,7 +1,7 @@
 use ax_memory_addr::VirtAddr;
-use ax_runtime::hal::{
-    cpu::uspace::{ExceptionKind, ReturnReason, UserContext},
-    paging::MappingFlags,
+use ax_runtime::hal::cpu::{
+    trap::PageFaultFlags,
+    uspace::{ExceptionKind, ReturnReason, UserContext},
 };
 use ax_task::TaskInner;
 use starry_process::Pid;
@@ -21,7 +21,7 @@ use crate::syscall::{handle_syscall, syscall_allows_signal_restart};
 fn handle_user_page_fault(
     thread: &Thread,
     address: VirtAddr,
-    flags: MappingFlags,
+    flags: PageFaultFlags,
     context: &UserContext,
 ) {
     // Count every user-mode fault for /proc/vmstat pgfault (mm/vmstat.c

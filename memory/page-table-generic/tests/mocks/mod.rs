@@ -63,7 +63,7 @@ impl PageTableEntry for PteImpl {
         let pte = Self(0);
 
         // 设置物理地址
-        let paddr = config.paddr.raw() >> 12;
+        let paddr = config.paddr.as_usize() >> 12;
         pte.reg().modify(PTE64::PA.val(paddr as _));
 
         // 设置标志位
@@ -571,14 +571,14 @@ impl FrameAllocator for Fram4k {
         if ptr.is_null() {
             None
         } else {
-            Some(PhysAddr::new(ptr as usize))
+            Some(PhysAddr::from_usize(ptr as usize))
         }
     }
 
     fn dealloc_frame(&self, frame: PhysAddr) {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         unsafe {
-            alloc::dealloc(frame.raw() as *mut u8, layout);
+            alloc::dealloc(frame.as_usize() as *mut u8, layout);
         }
     }
 
@@ -588,19 +588,19 @@ impl FrameAllocator for Fram4k {
         if ptr.is_null() {
             None
         } else {
-            Some(PhysAddr::new(ptr as usize))
+            Some(PhysAddr::from_usize(ptr as usize))
         }
     }
 
     fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
         let layout = Layout::from_size_align(4096 * frames, 4096 * frames).unwrap();
         unsafe {
-            alloc::dealloc(start.raw() as *mut u8, layout);
+            alloc::dealloc(start.as_usize() as *mut u8, layout);
         }
     }
 
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.raw() as *mut u8
+        paddr.as_usize() as *mut u8
     }
 }
 
@@ -683,12 +683,12 @@ impl FrameAllocator for TrackedFram4k {
                 let frames = &*self.allocated_frames;
                 frames.lock().unwrap().insert(addr);
             }
-            Some(PhysAddr::new(addr))
+            Some(PhysAddr::from_usize(addr))
         }
     }
 
     fn dealloc_frame(&self, frame: PhysAddr) {
-        let addr = frame.raw();
+        let addr = frame.as_usize();
 
         // 从跟踪记录中移除
         unsafe {
@@ -719,11 +719,11 @@ impl FrameAllocator for TrackedFram4k {
                 tracked_frames.insert(addr + i * 4096);
             }
         }
-        Some(PhysAddr::new(addr))
+        Some(PhysAddr::from_usize(addr))
     }
 
     fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
-        let addr = start.raw();
+        let addr = start.as_usize();
         unsafe {
             let tracked_frames = &*self.allocated_frames;
             let mut tracked_frames = tracked_frames.lock().unwrap();
@@ -743,6 +743,6 @@ impl FrameAllocator for TrackedFram4k {
     }
 
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.raw() as *mut u8
+        paddr.as_usize() as *mut u8
     }
 }

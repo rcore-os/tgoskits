@@ -12,9 +12,9 @@ pub const USER_SPACE_BASE: usize = 0x1000;
 pub const USER_SPACE_SIZE: usize = 0x3f_ffff_f000;
 /// The size of the user space.
 ///
-/// 128 TiB, matching aarch64/x86_64 (#242). LoongArch LA64 uses a 4-level page
-/// table with a 48-bit VA (`page_table_multiarch` `LA64MetaData`: LEVELS=4,
-/// VA_MAX_BITS=48), so the low-half user window widens to the same
+/// 128 TiB, matching aarch64/x86_64 (#242). LoongArch LA64 uses the
+/// `page-table-generic` engine through `ax-hal` with 4 levels and 48-bit VA, so
+/// the low-half user window widens to the same
 /// `0x7fff_ffff_f000` as aarch64. The previous 256 GiB window predated the #242
 /// widen and was too small for high virtual reservations such as the JVM
 /// CompressedOops heap base (HotSpot probes 2 GiB → 4/32 GiB), which on loong

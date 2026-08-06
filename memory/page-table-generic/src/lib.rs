@@ -16,6 +16,16 @@ pub use walk::*;
 
 pub type PagingResult<T = ()> = Result<T, PagingError>;
 
+#[cfg(feature = "ax-errno")]
+impl From<PagingError> for ax_errno::AxErrorKind {
+    fn from(value: PagingError) -> Self {
+        match value {
+            PagingError::NoMemory => ax_errno::AxErrorKind::NoMemory,
+            _ => ax_errno::AxErrorKind::InvalidInput,
+        }
+    }
+}
+
 pub trait FrameAllocator: Clone + Sync + Send + 'static {
     fn alloc_frame(&self) -> Option<PhysAddr>;
 
@@ -37,7 +47,7 @@ pub trait FrameAllocator: Clone + Sync + Send + 'static {
             return;
         }
         for i in 0..frames {
-            self.dealloc_frame(PhysAddr::new(start.raw() + i * frame_size));
+            self.dealloc_frame(PhysAddr::from_usize(start.as_usize() + i * frame_size));
         }
     }
 }
@@ -56,6 +66,12 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
 
     /// Whether addresses must fit the address width described by [`LEVEL_BITS`].
     const STRICT_ADDRESS_WIDTH: bool = false;
+
+    /// Converts an address reconstructed from page-table indexes into the
+    /// architecture's virtual-address representation.
+    fn canonicalize_vaddr(vaddr: VirtAddr) -> VirtAddr {
+        vaddr
+    }
 
     /// 刷新TLB
     fn flush(vaddr: Option<VirtAddr>);
@@ -82,6 +98,9 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
     /// 包含当前页表项所有状态的 PteConfig
     fn to_config(&self, is_dir: bool) -> PteConfig;
 
+    /// Returns whether this entry is valid without requiring its page-table level.
+    ///
+    /// Implementations must recognize both leaf mappings and child-table entries.
     fn valid(&self) -> bool;
 }
 

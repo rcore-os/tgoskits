@@ -87,7 +87,7 @@ StarryOS 的 Linux 兼容语义中，有一部分抽象足够通用，被提取�
 
 - **starry-process** — 进程抽象（`Process` 结构体），管理 PID 分配、进程组、会话、退出事件等。
 - **starry-signal** — 信号处理框架，提供 `ProcessSignalManager` 和 `ThreadSignalManager`。
-- **starry-vm** — 虚拟地址空间抽象（`AddrSpace`），基于 `ax-page-table-multiarch` 提供跨架构页表管理。
+- **starry-vm** — 虚拟地址空间抽象（`AddrSpace`），通过 `ax-hal` 使用 `page-table-generic`，并由 `ax-cpu` 提供当前架构的 stage-1 页表格式。
 
 ## 进程与线程模型
 

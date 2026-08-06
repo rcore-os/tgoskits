@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
+use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
 use ax_sync::Mutex;
 
 use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
@@ -57,7 +57,7 @@ impl BackendOps for LinearBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         let pa_range =
             ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
@@ -70,13 +70,13 @@ impl BackendOps for LinearBackend {
         &self,
         range: VirtAddrRange,
         _acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         let pa_range =
             ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::unmap: {range:?} -> {pa_range:?}");
         for vaddr in pages_in(range, PageSize::Size4K)? {
-            match pt.unmap(vaddr) {
+            match pt.unmap_page(vaddr) {
                 Ok((_, _, page_size)) => debug_assert_eq!(page_size, PageSize::Size4K),
                 Err(PagingError::NotMapped) => {}
                 Err(err) => return Err(err.into()),
@@ -89,8 +89,8 @@ impl BackendOps for LinearBackend {
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        _old_pt: &mut PageTableCursor,
-        _new_pt: &mut PageTableCursor,
+        _old_pt: &mut PageTable,
+        _new_pt: &mut PageTable,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {

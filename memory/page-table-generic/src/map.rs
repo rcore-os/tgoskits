@@ -50,8 +50,8 @@ pub struct UnmapRecursiveConfig {
 impl core::fmt::Debug for MapConfig {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MapConfig")
-            .field("vaddr", &format_args!("{:#x}", self.vaddr.raw()))
-            .field("paddr", &format_args!("{:#x}", self.paddr.raw()))
+            .field("vaddr", &format_args!("{:#x}", self.vaddr.as_usize()))
+            .field("paddr", &format_args!("{:#x}", self.paddr.as_usize()))
             .field("size", &format_args!("{:#x}", self.size))
             .field("allow_huge", &self.allow_huge)
             .field("flush", &self.flush)
@@ -79,8 +79,8 @@ where
                 && config.level > 1
                 && config.level <= T::MAX_BLOCK_LEVEL
                 && level_size <= remaining_size
-                && vaddr.raw().is_multiple_of(level_size)
-                && paddr.raw().is_multiple_of(level_size)
+                && vaddr.as_usize().is_multiple_of(level_size)
+                && paddr.as_usize().is_multiple_of(level_size)
             {
                 // 创建大页映射
                 let entries = self.as_slice_mut();
@@ -170,10 +170,11 @@ where
 
             // 计算当前页表条目对应的范围结束地址
             // 使用 saturating 操作防止溢出，同时确保不超过地址空间最大值
-            let current_entry_end = (vaddr.raw() / level_size)
+            let current_entry_end = (vaddr.as_usize() / level_size)
                 .saturating_add(1)
                 .saturating_mul(level_size);
-            let next_level_vaddr = VirtAddr::new(current_entry_end.min(config.end_vaddr.raw()));
+            let next_level_vaddr =
+                VirtAddr::from_usize(current_entry_end.min(config.end_vaddr.as_usize()));
             let mut child_frame = child_frame;
             let child_config = MapRecursiveConfig {
                 start_vaddr: vaddr,
@@ -247,8 +248,9 @@ where
             let child_paddr = pte_config.paddr;
 
             // 计算当前页表条目对应的范围结束地址
-            let current_entry_end = ((vaddr.raw() / level_size) + 1) * level_size;
-            let next_level_vaddr = VirtAddr::new(current_entry_end.min(config.end_vaddr.raw()));
+            let current_entry_end = ((vaddr.as_usize() / level_size) + 1) * level_size;
+            let next_level_vaddr =
+                VirtAddr::from_usize(current_entry_end.min(config.end_vaddr.as_usize()));
 
             {
                 let mut child_frame: Frame<T, A> =
@@ -293,7 +295,7 @@ where
     fn is_frame_empty(&self) -> bool {
         let entries = self.as_slice();
         for pte in entries {
-            if pte.to_config(false).valid {
+            if pte.valid() {
                 return false;
             }
         }

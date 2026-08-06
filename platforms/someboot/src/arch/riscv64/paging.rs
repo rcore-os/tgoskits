@@ -162,13 +162,16 @@ fn setup_page_table() -> anyhow::Result<()> {
     }
 
     let tb_addr = table.root_paddr();
-    println!("Boot page table at physical address: {:#x}", tb_addr.raw());
+    println!(
+        "Boot page table at physical address: {:#x}",
+        tb_addr.as_usize()
+    );
 
     crate::mem::mmu::set_boot_table(table);
-    crate::set_kernel_page_table_paddr(tb_addr.raw());
+    crate::set_kernel_page_table_paddr(tb_addr.as_usize());
     let _ = PageTableInfo {
         asid: 0,
-        addr: tb_addr.raw(),
+        addr: tb_addr.as_usize(),
     };
 
     Ok(())

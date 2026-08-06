@@ -3,7 +3,7 @@ use core::{any::Any, ops::Deref};
 
 use ax_errno::AxResult;
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
+use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
 use ax_sync::Mutex;
 
 use super::{
@@ -118,14 +118,14 @@ impl BackendOps for SharedBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         debug!("Shared::map: {:?} {:?}", range, flags);
         for (vaddr, paddr) in
             pages_in(range, self.pages.size)?.zip(self.pages_starting_from(range.start))
         {
             let newly_mapped = pt.query(vaddr).is_err();
-            pt.map(vaddr, *paddr, self.pages.size, flags)?;
+            pt.map_page(vaddr, *paddr, self.pages.size, flags)?;
             if newly_mapped && let Some(acct) = acct {
                 acct.inc(RssKind::Shmem, 1);
             }
@@ -137,11 +137,11 @@ impl BackendOps for SharedBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         debug!("Shared::unmap: {:?}", range);
         for vaddr in pages_in(range, self.pages.size)? {
-            match pt.unmap(vaddr) {
+            match pt.unmap_page(vaddr) {
                 Ok((_, _, page_size)) => {
                     debug_assert_eq!(page_size, self.pages.size);
                     if let Some(acct) = acct {
@@ -159,8 +159,8 @@ impl BackendOps for SharedBackend {
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        _old_pt: &mut PageTableCursor,
-        _new_pt: &mut PageTableCursor,
+        _old_pt: &mut PageTable,
+        _new_pt: &mut PageTable,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {

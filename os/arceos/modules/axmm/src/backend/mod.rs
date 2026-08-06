@@ -63,10 +63,7 @@ impl MappingBackend for Backend {
         new_flags: Self::Flags,
         page_table: &mut Self::PageTable,
     ) -> bool {
-        page_table
-            .cursor()
-            .protect_region(start, size, new_flags)
-            .is_ok()
+        page_table.protect_region(start, size, new_flags).is_ok()
     }
 
     fn split(&mut self, _align_diff: usize) -> Option<Self> {

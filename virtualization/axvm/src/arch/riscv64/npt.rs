@@ -62,7 +62,7 @@ impl ptg::PageTableEntry for RiscvPte {
             return Self(0);
         }
 
-        let mut bits = (config.paddr.raw() >> 2) & Self::PPN_MASK;
+        let mut bits = (config.paddr.as_usize() >> 2) & Self::PPN_MASK;
         bits |= Self::V;
         if !config.is_dir || config.huge {
             if config.read {
@@ -86,7 +86,7 @@ impl ptg::PageTableEntry for RiscvPte {
         let flags = self.0;
         let leaf = flags & (Self::R | Self::W | Self::X) != 0;
         ptg::PteConfig {
-            paddr: ptg::PhysAddr::new((flags & Self::PPN_MASK) << 2),
+            paddr: ptg::PhysAddr::from_usize((flags & Self::PPN_MASK) << 2),
             valid: flags & Self::V != 0,
             read: flags & Self::R != 0,
             writable: flags & Self::W != 0,

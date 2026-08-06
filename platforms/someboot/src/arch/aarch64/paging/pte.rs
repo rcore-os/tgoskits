@@ -58,7 +58,7 @@ impl PageTableEntry for Entry {
             val += PTE::AF::SET;
         }
 
-        val += PTE::PHYS_ADDR.val((config.paddr.raw() as u64) >> 12);
+        val += PTE::PHYS_ADDR.val((config.paddr.as_usize() as u64) >> 12);
 
         // 设置大页标志（NON_BLOCK=0 表示大页）
         if !config.huge {

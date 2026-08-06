@@ -293,13 +293,9 @@ fn do_execve(
     // Replace the aspace Arc so the parent's shared Arc<Mutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
     // keeps pointing at the original still-live AddrSpace.
-    let new_pt_root = new_aspace.page_table_root();
     let newaspace_arc = Arc::new(Mutex::new(new_aspace));
-    proc_data.replace_aspace(newaspace_arc);
+    proc_data.replace_current_aspace(&curr, newaspace_arc);
     proc_data.mark_vm_aspace_private_after_exec();
-
-    // Switch the hardware page table now that the new aspace is installed.
-    curr.switch_page_table(new_pt_root);
 
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;

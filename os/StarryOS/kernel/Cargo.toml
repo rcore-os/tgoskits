@@ -120,7 +120,7 @@ ax-hal = { workspace = true, features = ["fp-simd", "uspace"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
-ax-mm.workspace = true
+ax-mm = { workspace = true, features = ["copy"] }
 ax-net = { workspace = true }
 ax-driver = { workspace = true, features = ["usb"] }
 axklib.workspace = true
@@ -271,8 +271,8 @@ ranges-ext.workspace = true
 rdrive = { workspace = true, features = ["axtest"] }
 rsext4 = { workspace = true, features = ["axtest"] }
 scope-local = { workspace = true, features = ["axtest"] }
-ax-page-table-entry = { workspace = true, features = ["axtest"] }
 buddy-slab-allocator = { workspace = true, features = ["axtest"] }
+page-table-generic = { workspace = true }
 
 [[test]]
 name = "axtest_kernel"
@@ -285,6 +285,3 @@ x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
 riscv.workspace = true
-
-[target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
-ax-page-table-multiarch = { workspace = true, features = ["copy-from"] }

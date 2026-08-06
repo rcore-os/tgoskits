@@ -1,14 +1,19 @@
-use core::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut, Range};
 
 use crate::{
-    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, TableMeta, VirtAddr,
+    FrameAllocator, MappingFlags, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr,
+    PteConfig, TableMeta, VirtAddr,
     frame::Frame,
     map::{MapConfig, MapRecursiveConfig, UnmapConfig, UnmapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
 };
 
+const TARGETED_FLUSH_LIMIT: usize = 32;
+
 pub struct PageTable<T: TableMeta, A: FrameAllocator> {
     inner: PageTableRef<T, A>,
+    #[cfg(feature = "copy-from")]
+    borrowed_root_entries: Option<Range<usize>>,
 }
 
 impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
@@ -17,16 +22,133 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
     /// 创建一个新的页表
     pub fn new(allocator: A) -> PagingResult<Self> {
         let inner = unsafe { PageTableRef::new(allocator) }?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            #[cfg(feature = "copy-from")]
+            borrowed_root_entries: None,
+        })
     }
 
     pub fn valid_bits(&self) -> usize {
         Frame::<T, A>::PT_VALID_BITS
     }
+
+    pub const fn root_paddr(&self) -> PhysAddr {
+        self.inner.root.paddr
+    }
+
+    /// Deep-copies source root entries that are absent from this page table.
+    ///
+    /// Leaf mappings keep referring to the same physical memory, while every
+    /// copied intermediate page-table frame is independently owned by this
+    /// page table. Existing destination root entries are left unchanged.
+    ///
+    /// If allocation fails, entries copied before the failure remain installed
+    /// and are reclaimed normally when this page table is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the range overflows or wraps around the root table,
+    /// or if an intermediate page-table frame cannot be allocated.
+    pub fn clone_missing_root_entries_from(
+        &mut self,
+        other: &PageTableRef<T, A>,
+        start_vaddr: VirtAddr,
+        size: usize,
+    ) -> PagingResult {
+        let Some(entries) = Self::root_entry_range(start_vaddr, size)? else {
+            return Ok(());
+        };
+
+        let root_level = Frame::<T, A>::PT_LEVEL;
+        let mut changed = false;
+        for index in entries {
+            changed |= self
+                .inner
+                .root
+                .clone_entry_from(&other.root, index, root_level)?;
+        }
+        if changed {
+            T::flush(None);
+        }
+        Ok(())
+    }
+
+    /// Shares root page-table entries from another page table.
+    ///
+    /// Mappings below the shared root entries remain owned by the source and
+    /// changes made there are visible through both page tables.
+    ///
+    /// # Safety
+    ///
+    /// The source page table must outlive this page table. The caller must
+    /// also prevent this page table from modifying or unmapping the shared
+    /// virtual-address range.
+    #[cfg(feature = "copy-from")]
+    pub unsafe fn share_root_entries_from(
+        &mut self,
+        other: &Self,
+        start_vaddr: VirtAddr,
+        size: usize,
+    ) -> PagingResult {
+        if size == 0 {
+            return Ok(());
+        }
+        if self.borrowed_root_entries.is_some() {
+            return Err(PagingError::hierarchy_error(
+                "Page table already contains shared root entries",
+            ));
+        }
+
+        let Some(entries) = Self::root_entry_range(start_vaddr, size)? else {
+            return Ok(());
+        };
+        let root_level = Frame::<T, A>::PT_LEVEL;
+
+        for index in entries.clone() {
+            self.inner.root.dealloc_entry_recursive(index, root_level);
+            self.inner.root.as_slice_mut()[index] = other.inner.root.as_slice()[index];
+        }
+        self.borrowed_root_entries = Some(entries);
+        T::flush(None);
+        Ok(())
+    }
+
+    fn root_entry_range(start_vaddr: VirtAddr, size: usize) -> PagingResult<Option<Range<usize>>> {
+        if size == 0 {
+            return Ok(None);
+        }
+        let end_vaddr = start_vaddr
+            .as_usize()
+            .checked_add(size)
+            .ok_or_else(|| PagingError::address_overflow("root_entry_range"))?;
+        let root_level = Frame::<T, A>::PT_LEVEL;
+        let start_index = Frame::<T, A>::virt_to_index(start_vaddr, root_level);
+        let end_index =
+            Frame::<T, A>::virt_to_index(VirtAddr::from_usize(end_vaddr - 1), root_level) + 1;
+        if start_index >= end_index {
+            return Err(PagingError::invalid_range(
+                "Range must be contiguous in the root page table",
+            ));
+        }
+        Ok(Some(start_index..end_index))
+    }
+
+    #[cfg(feature = "copy-from")]
+    fn detach_borrowed_root_entries(&mut self) {
+        let Some(entries) = self.borrowed_root_entries.take() else {
+            return;
+        };
+        for index in entries {
+            self.inner.root.as_slice_mut()[index] = T::P::from_config(PteConfig::default());
+        }
+    }
 }
 
 impl<T: TableMeta, A: FrameAllocator> Drop for PageTable<T, A> {
     fn drop(&mut self) {
+        #[cfg(feature = "copy-from")]
+        self.detach_borrowed_root_entries();
         unsafe {
             // 释放所有页表帧，但不释放映射的物理页
             self.deallocate();
@@ -59,7 +181,10 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PageTable")
-            .field("root_paddr", &format_args!("{:#x}", self.root.paddr.raw()))
+            .field(
+                "root_paddr",
+                &format_args!("{:#x}", self.root.paddr.as_usize()),
+            )
             .field("table_levels", &T::LEVEL_BITS.len())
             .field("max_block_level", &T::MAX_BLOCK_LEVEL)
             .field("page_size", &format_args!("{:#x}", T::PAGE_SIZE))
@@ -83,14 +208,183 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         Self { root }
     }
 
+    /// Maps one page with the requested page size.
+    pub fn map_page(
+        &mut self,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        page_size: PageSize,
+        flags: MappingFlags,
+    ) -> PagingResult {
+        let Some(level) = Frame::<T, A>::level_for_page_size(page_size) else {
+            return Err(PagingError::invalid_size(
+                "Page size is not represented by the page-table levels",
+            ));
+        };
+        if level > 1 && level > T::MAX_BLOCK_LEVEL {
+            return Err(PagingError::invalid_size(
+                "Page size exceeds the architecture's block-mapping level",
+            ));
+        }
+        let size = usize::from(page_size);
+        self.map(&MapConfig {
+            vaddr: align_vaddr_down(vaddr, size),
+            paddr: align_paddr_down(paddr, size),
+            size,
+            pte: PteConfig::page(align_paddr_down(paddr, size), flags, page_size.is_huge()),
+            allow_huge: page_size.is_huge(),
+            flush: true,
+        })
+    }
+
+    /// Maps a contiguous virtual region, choosing large pages when possible.
+    /// TLB invalidation is deferred and batched until the region has been updated.
+    pub fn map_region(
+        &mut self,
+        start_vaddr: VirtAddr,
+        get_paddr: impl Fn(VirtAddr) -> PhysAddr,
+        size: usize,
+        flags: MappingFlags,
+        allow_huge: bool,
+    ) -> PagingResult {
+        if size == 0 {
+            return Err(PagingError::invalid_size("Region size cannot be zero"));
+        }
+        if !start_vaddr.as_usize().is_multiple_of(T::PAGE_SIZE)
+            || !size.is_multiple_of(T::PAGE_SIZE)
+        {
+            return Err(PagingError::alignment_error(
+                "Region start and size must be base-page aligned",
+            ));
+        }
+
+        let mut offset = 0;
+        let mut flush_addrs = heapless::Vec::<VirtAddr, TARGETED_FLUSH_LIMIT>::new();
+        let mut full_flush = false;
+        let result = loop {
+            if offset >= size {
+                break Ok(());
+            }
+            let vaddr = start_vaddr + offset;
+            let paddr = get_paddr(vaddr);
+            let remaining = size - offset;
+            let page_size = largest_page_size::<T, A>(vaddr, paddr, remaining, allow_huge);
+            let page_bytes = usize::from(page_size);
+            if let Err(err) = self.map(&MapConfig {
+                vaddr: align_vaddr_down(vaddr, page_bytes),
+                paddr: align_paddr_down(paddr, page_bytes),
+                size: page_bytes,
+                pte: PteConfig::page(
+                    align_paddr_down(paddr, page_bytes),
+                    flags,
+                    page_size.is_huge(),
+                ),
+                allow_huge: page_size.is_huge(),
+                flush: false,
+            }) {
+                break Err(err);
+            }
+            if !full_flush && flush_addrs.push(vaddr).is_err() {
+                full_flush = true;
+                flush_addrs.clear();
+            }
+            offset += page_bytes;
+        };
+
+        if full_flush {
+            T::flush(None);
+        } else {
+            for vaddr in flush_addrs {
+                T::flush(Some(vaddr));
+            }
+        }
+        result
+    }
+
+    /// Unmaps one page and returns its physical address, flags, and page size.
+    pub fn unmap_page(
+        &mut self,
+        vaddr: VirtAddr,
+    ) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
+        let (paddr, flags, page_size) = self.query(vaddr)?;
+        let size = usize::from(page_size);
+        self.unmap_with_config(&UnmapConfig {
+            start_vaddr: align_vaddr_down(vaddr, size),
+            size,
+            flush: true,
+        })?;
+        Ok((align_paddr_down(paddr, size), flags, page_size))
+    }
+
+    /// Unmaps a virtual region.
+    pub fn unmap_region(&mut self, start_vaddr: VirtAddr, size: usize) -> PagingResult {
+        self.unmap(start_vaddr, size)
+    }
+
+    /// Changes one existing mapping's flags and returns its page size.
+    pub fn protect_page(&mut self, vaddr: VirtAddr, flags: MappingFlags) -> PagingResult<PageSize> {
+        let page_size = self
+            .root
+            .protect_recursive(vaddr, flags, Frame::<T, A>::PT_LEVEL)?;
+        T::flush(Some(vaddr));
+        Ok(page_size)
+    }
+
+    /// Changes flags for a region. Unmapped base pages are skipped.
+    pub fn protect_region(
+        &mut self,
+        start_vaddr: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> PagingResult {
+        let end = start_vaddr
+            .as_usize()
+            .checked_add(size)
+            .ok_or_else(|| PagingError::address_overflow("protect_region"))?;
+        let mut vaddr = start_vaddr;
+        while vaddr.as_usize() < end {
+            match self.protect_page(vaddr, flags) {
+                Ok(page_size) => vaddr += usize::from(page_size),
+                Err(PagingError::NotMapped) => vaddr += T::PAGE_SIZE,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(())
+    }
+
+    /// Remaps one existing mapping and returns its page size.
+    pub fn remap_page(
+        &mut self,
+        vaddr: VirtAddr,
+        paddr: PhysAddr,
+        flags: MappingFlags,
+    ) -> PagingResult<PageSize> {
+        let page_size = self
+            .root
+            .remap_recursive(vaddr, paddr, flags, Frame::<T, A>::PT_LEVEL)?;
+        T::flush(Some(vaddr));
+        Ok(page_size)
+    }
+
+    /// Queries one mapping and returns the translated physical address, flags, and page size.
+    pub fn query(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
+        let (paddr, pte, level) = self.translate_with_level(vaddr)?;
+        let config = pte.to_config(level > 1);
+        Ok((
+            paddr,
+            MappingFlags::from(config),
+            Frame::<T, A>::page_size_from_level(level)?,
+        ))
+    }
+
     /// 映射虚拟地址范围到物理地址范围
     pub fn map(&mut self, config: &MapConfig) -> PagingResult {
         // 验证输入参数
         self.validate_map_config(config)?;
 
         // 检查大小溢出
-        if config.vaddr.raw().checked_add(config.size).is_none()
-            || config.paddr.raw().checked_add(config.size).is_none()
+        if config.vaddr.as_usize().checked_add(config.size).is_none()
+            || config.paddr.as_usize().checked_add(config.size).is_none()
         {
             return Err(PagingError::address_overflow(
                 "Virtual or physical address overflow",
@@ -131,8 +425,8 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         self.validate_unmap_params(start_vaddr, size)?;
 
         // 检查大小溢出
-        let end_vaddr: VirtAddr = match start_vaddr.raw().checked_add(size) {
-            Some(end) => VirtAddr::new(end),
+        let end_vaddr: VirtAddr = match start_vaddr.as_usize().checked_add(size) {
+            Some(end) => VirtAddr::from_usize(end),
             None => {
                 return Err(PagingError::address_overflow(
                     "Virtual address overflow in unmap",
@@ -155,8 +449,8 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     pub fn unmap_with_config(&mut self, config: &UnmapConfig) -> PagingResult<()> {
         self.validate_unmap_params(config.start_vaddr, config.size)?;
 
-        let end_vaddr = match config.start_vaddr.raw().checked_add(config.size) {
-            Some(end) => VirtAddr::new(end),
+        let end_vaddr = match config.start_vaddr.as_usize().checked_add(config.size) {
+            Some(end) => VirtAddr::from_usize(end),
             None => {
                 return Err(PagingError::address_overflow(
                     "Virtual address overflow in unmap_with_config",
@@ -182,7 +476,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         }
 
         // 检查虚拟地址是否页对齐
-        if !start_vaddr.raw().is_multiple_of(T::PAGE_SIZE) {
+        if !start_vaddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
             return Err(PagingError::alignment_error(
                 "Start virtual address not page aligned in unmap",
             ));
@@ -230,13 +524,13 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         }
 
         // 检查虚拟地址和物理地址是否页对齐
-        if !config.vaddr.raw().is_multiple_of(T::PAGE_SIZE) {
+        if !config.vaddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
             return Err(PagingError::alignment_error(
                 "Virtual address not page aligned",
             ));
         }
 
-        if !config.paddr.raw().is_multiple_of(T::PAGE_SIZE) {
+        if !config.paddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
             return Err(PagingError::alignment_error(
                 "Physical address not page aligned",
             ));
@@ -254,13 +548,13 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         if !T::STRICT_ADDRESS_WIDTH {
             return Ok(());
         }
-        let Some(end) = start_vaddr.raw().checked_add(size) else {
+        let Some(end) = start_vaddr.as_usize().checked_add(size) else {
             return Err(PagingError::address_overflow(
                 "Virtual address range overflow",
             ));
         };
         let last = end.saturating_sub(1);
-        if !Self::is_addr_in_width(start_vaddr.raw()) || !Self::is_addr_in_width(last) {
+        if !Self::is_addr_in_width(start_vaddr.as_usize()) || !Self::is_addr_in_width(last) {
             return Err(PagingError::address_overflow(operation));
         }
         Ok(())
@@ -358,7 +652,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
 
     /// Translates a virtual address and returns the matched PTE level.
     pub fn translate_with_level(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, T::P, usize)> {
-        if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.raw()) {
+        if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.as_usize()) {
             return Err(PagingError::address_overflow("translate"));
         }
 
@@ -372,16 +666,16 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         let (phys_addr, _) = if pte_config.huge {
             // 大页映射：需要使用实际级别的大小来计算偏移
             let level_size = Frame::<T, A>::level_size(level);
-            let offset_in_page = vaddr.raw() % level_size;
+            let offset_in_page = vaddr.as_usize() % level_size;
             (
-                PhysAddr::new(pte_config.paddr.raw() + offset_in_page),
+                PhysAddr::from_usize(pte_config.paddr.as_usize() + offset_in_page),
                 level_size,
             )
         } else {
             // 普通页面映射：使用页面大小
-            let offset_in_page = vaddr.raw() % T::PAGE_SIZE;
+            let offset_in_page = vaddr.as_usize() % T::PAGE_SIZE;
             (
-                PhysAddr::new(pte_config.paddr.raw() + offset_in_page),
+                PhysAddr::from_usize(pte_config.paddr.as_usize() + offset_in_page),
                 T::PAGE_SIZE,
             )
         };
@@ -420,4 +714,34 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     pub fn root_paddr(&self) -> crate::PhysAddr {
         self.root.paddr
     }
+}
+
+fn align_vaddr_down(addr: VirtAddr, align: usize) -> VirtAddr {
+    VirtAddr::from_usize(ax_memory_addr::align_down(addr.as_usize(), align))
+}
+
+fn align_paddr_down(addr: PhysAddr, align: usize) -> PhysAddr {
+    PhysAddr::from_usize(ax_memory_addr::align_down(addr.as_usize(), align))
+}
+
+fn largest_page_size<T: TableMeta, A: FrameAllocator>(
+    vaddr: VirtAddr,
+    paddr: PhysAddr,
+    remaining: usize,
+    allow_huge: bool,
+) -> PageSize {
+    if allow_huge {
+        for page_size in [PageSize::Size1G, PageSize::Size2M, PageSize::Size1M] {
+            let supported = Frame::<T, A>::level_for_page_size(page_size)
+                .is_some_and(|level| level > 1 && level <= T::MAX_BLOCK_LEVEL);
+            if supported
+                && page_size.is_aligned(vaddr.as_usize())
+                && page_size.is_aligned(paddr.as_usize())
+                && remaining >= usize::from(page_size)
+            {
+                return page_size;
+            }
+        }
+    }
+    PageSize::Size4K
 }

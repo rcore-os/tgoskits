@@ -11,7 +11,7 @@ use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRang
 use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
+    paging::{MappingFlags, PageSize, PageTable},
 };
 use ax_sync::Mutex;
 use enum_dispatch::enum_dispatch;
@@ -77,7 +77,7 @@ pub trait BackendOps {
         range: VirtAddrRange,
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult;
 
     /// Unmap a memory region.
@@ -85,7 +85,7 @@ pub trait BackendOps {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult;
 
     /// Called before a memory region is protected.
@@ -93,7 +93,7 @@ pub trait BackendOps {
         &self,
         _range: VirtAddrRange,
         _new_flags: MappingFlags,
-        _pt: &mut PageTableCursor,
+        _pt: &mut PageTable,
     ) -> AxResult {
         Ok(())
     }
@@ -109,7 +109,7 @@ pub trait BackendOps {
         _flags: MappingFlags,
         _access_flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
-        _pt: &mut PageTableCursor,
+        _pt: &mut PageTable,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         Ok((0, None))
     }
@@ -124,8 +124,8 @@ pub trait BackendOps {
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
-        old_pt: &mut PageTableCursor,
-        new_pt: &mut PageTableCursor,
+        old_pt: &mut PageTable,
+        new_pt: &mut PageTable,
         new_aspace: &Arc<Mutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend>;
@@ -219,7 +219,7 @@ impl MappingBackend for Backend {
     fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::map(self, range, flags, acct, &mut pt.cursor()) {
+        if let Err(err) = BackendOps::map(self, range, flags, acct, pt) {
             warn!("Failed to map area: {:?}", err);
             false
         } else {
@@ -230,7 +230,7 @@ impl MappingBackend for Backend {
     fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::unmap(self, range, acct, &mut pt.cursor()) {
+        if let Err(err) = BackendOps::unmap(self, range, acct, pt) {
             warn!("Failed to unmap area: {:?}", err);
             false
         } else {
@@ -246,8 +246,7 @@ impl MappingBackend for Backend {
         pt: &mut Self::PageTable,
     ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        let mut cursor = pt.cursor();
-        if let Err(err) = BackendOps::on_protect(self, range, new_flags, &mut cursor) {
+        if let Err(err) = BackendOps::on_protect(self, range, new_flags, pt) {
             warn!("Failed to protect area: {:?}", err);
             return false;
         }
@@ -255,7 +254,7 @@ impl MappingBackend for Backend {
             Backend::Cow(c) => c.pte_flags_for_protect(new_flags),
             _ => new_flags,
         };
-        cursor.protect_region(start, size, pte_flags).is_ok()
+        pt.protect_region(start, size, pte_flags).is_ok()
     }
 
     fn split(&mut self, align_diff: usize) -> Option<Self> {

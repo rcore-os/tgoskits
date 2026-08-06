@@ -1,8 +1,17 @@
 //! Helper functions to initialize the CPU states on systems bootstrapping.
 
 use ax_memory_addr::PhysAddr;
-use ax_page_table_multiarch::loongarch64::LA64MetaData;
 use loongArch64::register::{MemoryAccessType, crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
+
+/// PWCL(Page Walk Controller for Lower Half Address Space) CSR flags.
+///
+/// <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#page-walk-controller-for-lower-half-address-space>
+const PWCL_VALUE: u32 = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 25);
+
+/// PWCH(Page Walk Controller for Higher Half Address Space) CSR flags.
+///
+/// <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#page-walk-controller-for-higher-half-address-space>
+const PWCH_VALUE: u32 = 39 | (9 << 6);
 
 /// Initializes TLB and MMU related registers on the current CPU.
 ///
@@ -26,7 +35,7 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
 
     // Configure page table walking
     unsafe {
-        crate::asm::write_pwc(LA64MetaData::PWCL_VALUE, LA64MetaData::PWCH_VALUE);
+        crate::asm::write_pwc(PWCL_VALUE, PWCH_VALUE);
         crate::asm::write_kernel_page_table(root_paddr);
         crate::asm::write_user_page_table(pa!(0));
     }
