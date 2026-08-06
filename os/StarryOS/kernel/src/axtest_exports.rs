@@ -62,6 +62,10 @@ pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }
 
+pub fn epoll_requeues_readiness_observed_during_rearm() -> bool {
+    super::file::epoll_requeues_readiness_observed_during_rearm_for_test()
+}
+
 pub fn process_mem_stats_formats_linux_fields() -> bool {
     use super::mm::ProcessMemStats;
 

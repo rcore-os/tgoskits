@@ -518,6 +518,32 @@ impl Epoll {
         file.register(&mut context, register_events(interest.event.events));
     }
 
+    fn register_waker_and_recheck(&self, interest: &Arc<EpollInterest>) {
+        if !interest.can_refresh_waker_from_current_process() {
+            return;
+        }
+
+        let Some(file) = interest.key.get_file() else {
+            return;
+        };
+
+        if !interest.is_enabled() {
+            return;
+        }
+
+        let waker = Waker::from(Arc::new(InterestWaker {
+            epoll: Arc::downgrade(&self.inner),
+            interest: Arc::downgrade(interest),
+        }));
+
+        let mut context = Context::from_waker(&waker);
+        file.register(&mut context, register_events(interest.event.events));
+
+        if !match_ready_events(file.poll(), interest.event.events).is_empty() {
+            waker.wake_by_ref();
+        }
+    }
+
     /// Registers enabled interests with the thread currently waiting in epoll.
     pub fn register_waiter_wakers(&self) -> AxResult {
         let interests = self.inner.snapshot_interests()?;
@@ -632,6 +658,18 @@ impl Epoll {
         )
     }
 
+    #[cfg(axtest)]
+    pub(super) fn add_file_for_test(&self, fd: i32, file: Arc<dyn FileLike>) -> AxResult<()> {
+        self.add_interest(
+            EntryKey::for_test(fd, &file),
+            EpollEvent {
+                events: IoEvents::IN,
+                user_data: fd as u64,
+            },
+            EpollFlags::empty(),
+        )
+    }
+
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> AxResult<()> {
         let key = EntryKey::new(fd)?;
 
@@ -709,11 +747,12 @@ impl Epoll {
         // into the loop and filling out[] with duplicates of one ready fd.
         let mut txlist = self.inner.drain_ready_queue()?;
         let mut count = 0;
-        let mut keep: VecDeque<Weak<EpollInterest>> = VecDeque::new();
+        let mut unreported_ready: VecDeque<Weak<EpollInterest>> = VecDeque::new();
+        let mut reported_level_ready: VecDeque<Weak<EpollInterest>> = VecDeque::new();
 
         while let Some(weak_interest) = txlist.pop_front() {
             if count >= max_events {
-                keep.push_back(weak_interest);
+                unreported_ready.push_back(weak_interest);
                 continue;
             }
 
@@ -748,7 +787,11 @@ impl Epoll {
                         interest.restore_mode(old_mode);
                         interest.in_ready_queue.store(true, Ordering::Release);
                         self.inner.enqueue_marked_ready(&interest);
-                        for entry in txlist.into_iter().chain(keep) {
+                        for entry in txlist
+                            .into_iter()
+                            .chain(unreported_ready)
+                            .chain(reported_level_ready)
+                        {
                             if let Some(interest) = entry.upgrade()
                                 && interest.is_in_queue()
                             {
@@ -760,7 +803,7 @@ impl Epoll {
 
                     count += 1;
                     if keep_ready {
-                        keep.push_back(Arc::downgrade(&interest));
+                        reported_level_ready.push_back(Arc::downgrade(&interest));
                     } else {
                         // EPOLLET edge-triggered: after reporting the fd once,
                         // it must NOT be reported again until a *new* edge
@@ -781,26 +824,26 @@ impl Epoll {
                     // Spurious wakeup: the waker fired but file.poll() did
                     // not match the interest mask (e.g. a shared PollSet
                     // wake on a socket that has only EPOLLOUT ready when
-                    // the interest is for EPOLLIN).  Re-arm with a plain
-                    // waker registration — using check_and_register_waker
-                    // here would immediately re-queue the interest via
-                    // waker.wake_by_ref() whenever file.poll() is non-empty,
-                    // which a connected TCP socket (always EPOLLOUT-ready)
-                    // satisfies on every iteration, producing a tight loop
-                    // that fills the ready_queue with phantom events.
+                    // the interest is for EPOLLIN). Register first, then
+                    // recheck only events matching this interest. This closes
+                    // the consume-to-register lost-wakeup window without
+                    // treating a connected socket's persistent EPOLLOUT as a
+                    // phantom EPOLLIN event.
                     interest.mark_not_in_queue();
-                    self.register_waker_only(&interest);
+                    self.register_waker_and_recheck(&interest);
                 }
             }
         }
 
-        if !keep.is_empty() {
-            for entry in keep {
-                if let Some(interest) = entry.upgrade()
-                    && interest.is_in_queue()
-                {
-                    self.inner.enqueue_marked_ready(&interest);
-                }
+        // Linux rotates a level-triggered fd that was returned by this call
+        // behind ready fds that did not fit in the caller's output buffer.
+        // Keeping reported entries first would let one persistent fd starve
+        // every later fd whenever max_events is smaller than the ready set.
+        for entry in unreported_ready.into_iter().chain(reported_level_ready) {
+            if let Some(interest) = entry.upgrade()
+                && interest.is_in_queue()
+            {
+                self.inner.enqueue_marked_ready(&interest);
             }
         }
 

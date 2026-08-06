@@ -46,7 +46,10 @@ use starry_process::Pid;
 #[cfg(axtest)]
 pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
 #[cfg(axtest)]
-pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
+pub(crate) use self::epoll_axtest::{
+    concurrent_reverse_add_is_serialized_for_test,
+    epoll_requeues_readiness_observed_during_rearm_for_test,
+};
 #[cfg(axtest)]
 pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
 #[cfg(axtest)]

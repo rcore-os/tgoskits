@@ -27,6 +27,11 @@ fn concurrent_epoll_reverse_add_is_serialized() {
 }
 
 #[axtest]
+fn epoll_requeues_readiness_observed_during_rearm() {
+    ax_assert!(axtest_exports::epoll_requeues_readiness_observed_during_rearm());
+}
+
+#[axtest]
 fn pipe_resize_rounding_and_state_rules_hold() {
     ax_assert!(axtest_exports::pipe_resize_rounding_and_state_rules_hold());
 }
