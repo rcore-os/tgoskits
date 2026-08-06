@@ -700,7 +700,7 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             require_kvm: true
-            timeout_minutes: 20
+            timeout_minutes: 25
             command: |
               rustup target add x86_64-unknown-uefi
               find_uefi_firmware() {

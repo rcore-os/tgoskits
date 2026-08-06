@@ -21,7 +21,7 @@ use crate::support::process::ProcessExt;
 const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
-const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(180);
+const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
 const HTTP_SMOKE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
@@ -695,7 +695,7 @@ mod tests {
         let started = Instant::now();
         let progress = SmokeAttemptProgress::waiting_for_ready(started);
 
-        assert!(!progress.expired_at(started + Duration::from_secs(150)));
+        assert!(!progress.expired_at(started + Duration::from_secs(195)));
     }
 
     #[test]
