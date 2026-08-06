@@ -9249,7 +9249,10 @@ dependencies = [
  "axdevice_base",
  "axvm",
  "axvm-types",
+ "axvmconfig",
  "irq-framework",
+ "serde",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
