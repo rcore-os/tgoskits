@@ -203,6 +203,10 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
     run_loader_build(workspace_root, target, true)?;
 
     let firmware = find_uefi_firmware(smoke_target)?;
+    println!(
+        "axloader http smoke: using UEFI firmware {}",
+        firmware.display()
+    );
     let kernel = (smoke_target.kernel_elf)();
     let attempt_context = SmokeAttemptContext {
         workspace_root,
@@ -397,8 +401,7 @@ fn find_uefi_firmware(target: LoaderSmokeTarget) -> anyhow::Result<PathBuf> {
         }
     }
 
-    for candidate in target.firmware_candidates {
-        let path = PathBuf::from(candidate);
+    for path in uefi_firmware_candidates(target, &std::env::temp_dir()) {
         if path.is_file() {
             return Ok(path);
         }
@@ -409,6 +412,21 @@ fn find_uefi_firmware(target: LoaderSmokeTarget) -> anyhow::Result<PathBuf> {
         target.cargo_target,
         target.firmware_env
     )
+}
+
+fn uefi_firmware_candidates(target: LoaderSmokeTarget, temp_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::with_capacity(target.firmware_candidates.len() + 1);
+    if target.arch == "x86_64" {
+        candidates.push(
+            temp_dir
+                .join("ostool")
+                .join("ovmf")
+                .join("x64")
+                .join("code.fd"),
+        );
+    }
+    candidates.extend(target.firmware_candidates.iter().map(PathBuf::from));
+    candidates
 }
 
 fn spawn_axloader_qemu(
@@ -676,6 +694,20 @@ mod tests {
         assert!(boot_line.contains("\"kernel_size\":4096"));
         assert!(boot_line.contains("\"arch\":\"x86_64\""));
         assert!(boot_line.ends_with('\n'));
+    }
+
+    #[test]
+    fn x86_64_firmware_search_prefers_ostool_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cached_firmware = temp.path().join("ostool/ovmf/x64/code.fd");
+        fs::create_dir_all(cached_firmware.parent().unwrap()).unwrap();
+        fs::write(&cached_firmware, b"OVMF").unwrap();
+        let target = smoke_target("x86_64-unknown-uefi").unwrap();
+
+        let candidates = uefi_firmware_candidates(target, temp.path());
+        let selected = candidates.into_iter().find(|path| path.is_file());
+
+        assert_eq!(selected, Some(cached_firmware));
     }
 
     #[test]
