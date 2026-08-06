@@ -13,7 +13,7 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    file::{File, FileLike, resolve_at},
+    file::{Directory, File, get_file_like, memfd::Memfd, resolve_at},
     mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
@@ -244,7 +244,17 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
 pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
-    buf.vm_write(statfs(File::from_fd(fd)?.inner().location())?)?;
+    let file_like = get_file_like(fd)?;
+    let location = if let Some(directory) = file_like.downcast_ref::<Directory>() {
+        directory.inner()
+    } else if let Some(file) = file_like.downcast_ref::<File>() {
+        file.inner().location()
+    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+        memfd.inner().inner().location()
+    } else {
+        return Err(AxError::InvalidInput);
+    };
+    buf.vm_write(statfs(location)?)?;
     Ok(0)
 }
 
