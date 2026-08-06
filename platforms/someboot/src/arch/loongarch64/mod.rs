@@ -150,6 +150,12 @@ impl ArchTrait for Arch {
         Time::read()
     }
 
+    fn systimer_stability() -> crate::timer::CounterStability {
+        // The constant timer reads the architecture's stable counter shared
+        // across logical CPUs rather than a CPU-local cycle counter.
+        crate::timer::CounterStability::Stable
+    }
+
     fn shutdown() -> ! {
         if efi_stub::is_uefi_available() {
             efi_stub::reset(

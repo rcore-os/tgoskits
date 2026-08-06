@@ -113,7 +113,7 @@ pub use self::{
     router::NetDevStats,
     socket::{
         CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
-        SocketAddrEx, SocketOps,
+        SocketAddrEx, SocketCmsg, SocketOps,
     },
 };
 

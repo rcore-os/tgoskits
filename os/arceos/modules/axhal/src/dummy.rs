@@ -123,6 +123,10 @@ impl TimeIf for DummyTime {
         nanos
     }
 
+    fn scheduler_clock_stability() -> crate::time::SchedulerClockStability {
+        crate::time::SchedulerClockStability::Stable
+    }
+
     fn epochoffset_nanos() -> u64 {
         0
     }

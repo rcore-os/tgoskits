@@ -4,14 +4,16 @@ use core::{net::Ipv4Addr, time::Duration};
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
 use ax_net::{
-    CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
+    CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketCmsg,
+    SocketOps,
 };
 use ax_runtime::hal::time::wall_time;
 use linux_raw_sys::{
-    general::timespec,
+    general::{timespec, timeval},
     net::{
         IP_TOS, IPPROTO_IPV6, IPV6_TCLASS, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT, MSG_OOB,
-        MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, mmsghdr, msghdr, sockaddr, socklen_t,
+        MSG_PEEK, MSG_TRUNC, SCM_CREDENTIALS, SCM_RIGHTS, SCM_TIMESTAMP, SOL_SOCKET, cmsghdr,
+        mmsghdr, msghdr, sockaddr, socklen_t, ucred,
     },
 };
 
@@ -107,11 +109,12 @@ fn send_impl(
 
         let sent = socket.send(
             &mut src,
-            SendOptions {
+            Socket::with_current_sender_credentials(SendOptions {
                 to: addr,
                 flags: send_flags,
                 cmsg,
-            },
+                ..Default::default()
+            }),
         )?;
 
         return Ok(sent as isize);
@@ -248,6 +251,9 @@ fn recv_impl(
             .write_to_user(addr, addrlen.get_as_mut()?)?;
     }
 
+    if cmsg_builder.is_none() && !cmsg.is_empty() {
+        *control_truncated_out = true;
+    }
     if let Some(mut builder) = cmsg_builder {
         for cmsg in cmsg {
             let pushed = match cmsg.into_any().downcast::<CMsg>() {
@@ -298,13 +304,58 @@ fn recv_impl(
                             },
                         )?,
                     },
-                    Err(_) => {
-                        warn!("received unexpected cmsg");
-                        continue;
-                    }
+                    Err(cmsg) => match cmsg.downcast::<SocketCmsg>() {
+                        Ok(cmsg) => match *cmsg {
+                            SocketCmsg::Credentials(credentials) => builder.push_sized(
+                                SOL_SOCKET,
+                                SCM_CREDENTIALS,
+                                size_of::<ucred>(),
+                                |data| {
+                                    let credentials = ucred {
+                                        pid: credentials.pid as _,
+                                        uid: credentials.uid,
+                                        gid: credentials.gid,
+                                    };
+                                    // SAFETY: `credentials` lives through the
+                                    // copy, and `ucred` is a plain C ABI record.
+                                    data.copy_from_slice(unsafe {
+                                        core::slice::from_raw_parts(
+                                            (&credentials as *const ucred).cast::<u8>(),
+                                            size_of::<ucred>(),
+                                        )
+                                    });
+                                    Ok(size_of::<ucred>())
+                                },
+                            )?,
+                            SocketCmsg::Timestamp(timestamp) => builder.push_sized(
+                                SOL_SOCKET,
+                                SCM_TIMESTAMP,
+                                size_of::<timeval>(),
+                                |data| {
+                                    let timestamp = timeval::from_time_value(timestamp);
+                                    // SAFETY: `timestamp` lives through the
+                                    // copy, and `timeval` is a plain C ABI
+                                    // record with no padding requirements for
+                                    // reading its initialized byte layout.
+                                    data.copy_from_slice(unsafe {
+                                        core::slice::from_raw_parts(
+                                            (&timestamp as *const timeval).cast::<u8>(),
+                                            size_of::<timeval>(),
+                                        )
+                                    });
+                                    Ok(size_of::<timeval>())
+                                },
+                            )?,
+                        },
+                        Err(_) => {
+                            warn!("received unexpected cmsg");
+                            continue;
+                        }
+                    },
                 },
             };
             if !pushed {
+                *control_truncated_out = true;
                 break;
             }
         }

@@ -86,7 +86,12 @@ aic8800-wifi = ["ax-runtime/aic8800-wifi"]
 dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
+fd = [
+  "ax-posix-api/fd",
+  "ax-posix-api/poll",
+  "ax-posix-api/epoll",
+  "ax-posix-api/eventfd",
+]
 
 # Driver feature forwards used by std-aware apps that depend on `axstd` directly.
 nvme = ["ax-driver/nvme"]

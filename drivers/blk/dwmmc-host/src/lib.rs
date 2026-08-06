@@ -58,7 +58,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull, time::Duration};
+use core::{marker::PhantomData, ptr::NonNull, time::Duration};
 
 use log::warn;
 

@@ -188,6 +188,13 @@ fn reopen_cached_file(backing: Arc<CacheTestFile>) -> CachedFile {
 }
 
 #[test]
+fn tmpfs_and_ramfs_use_unbounded_page_cache() {
+    assert!(filesystem_uses_unbounded_page_cache("tmpfs"));
+    assert!(filesystem_uses_unbounded_page_cache("ramfs"));
+    assert!(!filesystem_uses_unbounded_page_cache("ext4"));
+}
+
+#[test]
 fn page_cache_paddr_reports_bad_state_when_translation_is_missing() {
     with_test_page_provider(false, |_| {
         let page = PageCache::new().unwrap();

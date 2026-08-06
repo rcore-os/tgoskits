@@ -16,6 +16,7 @@ pub mod mem;
 pub mod percpu;
 pub mod platform;
 pub mod power;
+mod scheduler_clock;
 pub mod time;
 
 pub use ax_crate_interface::impl_interface as impl_plat_interface;

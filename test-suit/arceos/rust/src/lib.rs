@@ -37,6 +37,8 @@ pub mod display;
 pub mod exception;
 #[cfg(all(feature = "fs-basic", feature = "ax-std"))]
 pub mod fs;
+#[cfg(all(feature = "eventfd-epoll", feature = "ax-std"))]
+pub mod io_mpx;
 #[cfg(all(
     feature = "ax-std",
     any(feature = "lockdep-baseline", feature = "lockdep-detect",)
@@ -92,6 +94,7 @@ test_runner!(
     debug::panic_path::run
 );
 test_runner!("display-basic", run_display_basic, display::basic::run);
+test_runner!("eventfd-epoll", run_eventfd_epoll, io_mpx::run);
 test_runner!(
     "exception-breakpoint",
     run_exception_breakpoint,
@@ -156,6 +159,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "display-basic",
         "draw framebuffer primitives",
         run_display_basic,
+    ),
+    #[cfg(feature = "eventfd-epoll")]
+    TestCase::new(
+        "eventfd-epoll",
+        "eventfd semantics and epoll wake smoke",
+        run_eventfd_epoll,
     ),
     #[cfg(feature = "exception-breakpoint")]
     TestCase::new(

@@ -14,6 +14,7 @@ pub mod io_uring;
 #[cfg(feature = "sg2002")]
 pub mod ion;
 pub mod memfd;
+mod mount_table;
 mod net;
 pub mod netlink;
 mod nsfd;
@@ -66,6 +67,7 @@ pub(crate) use self::epoll_topology::epoll_topology_vec_and_reserve_hold_for_tes
 pub(crate) use self::epoll_topology::push_topology_item_preserves_order_and_grows_capacity;
 #[cfg(axtest)]
 pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
+pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
     peer_close_with_multiple_readers_is_visible_for_test,

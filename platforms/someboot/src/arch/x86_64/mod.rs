@@ -174,6 +174,10 @@ impl ArchTrait for Arch {
         trap::ticks_now() as usize
     }
 
+    fn systimer_stability() -> crate::timer::CounterStability {
+        trap::scheduler_counter_stability()
+    }
+
     fn irq_all_is_enabled() -> bool {
         trap::irq_local_enabled()
     }

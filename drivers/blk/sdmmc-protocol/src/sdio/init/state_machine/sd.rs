@@ -7,12 +7,7 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
         cause: ProgressCause,
     ) -> Result<OperationProgress<CardInfo>, Error> {
         match request.state {
-            SdioInitState::PrepareSdSpeed => submit_switch_function_owned(
-                self,
-                request,
-                &crate::cmd::cmd6_sd_access_mode(false, 0),
-                SdioInitState::PollSdSwitchFunctionCheck,
-            ),
+            SdioInitState::PrepareSdSpeed => self.submit_sd_speed_check(request),
             SdioInitState::PollSdSwitchFunctionCheck => {
                 let switch_request = request
                     .switch_function_request
@@ -200,6 +195,25 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
                 }
             }
             _ => unreachable!("state dispatched to the wrong initialization phase"),
+        }
+    }
+
+    fn submit_sd_speed_check(
+        &mut self,
+        request: &mut SdioInitRequest<H>,
+    ) -> Result<OperationProgress<CardInfo>, Error> {
+        match submit_switch_function_owned(
+            self,
+            request,
+            &crate::cmd::cmd6_sd_access_mode(false, 0),
+            SdioInitState::PollSdSwitchFunctionCheck,
+        ) {
+            Err(Error::UnsupportedCommand) => {
+                warn!("sdio: host does not support SD CMD6; staying at default speed");
+                request.state = SdioInitState::Complete;
+                Ok(OperationProgress::Pending)
+            }
+            result => result,
         }
     }
 }
