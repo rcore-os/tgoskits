@@ -82,10 +82,6 @@ impl SdhciDelay for ArceosDelay {
     fn block_timeout(&self, timeout_ms: u64) -> bool {
         SDHCI_PIO_WQ.wait_timeout(Duration::from_millis(timeout_ms))
     }
-
-    fn now_nanos(&self) -> u64 {
-        ax_hal::time::monotonic_time_nanos()
-    }
 }
 
 static ARCEOS_RUNTIME: ArceosWifiRuntime = ArceosWifiRuntime;

@@ -20,12 +20,6 @@ pub trait SdhciDelay: Send + Sync + 'static {
         self.delay_ms(timeout_ms);
         true
     }
-    /// Monotonic timestamp in nanoseconds. Used by the diagnostic counters to
-    /// measure per-phase wall-clock time. Returns 0 when the OS glue does not
-    /// provide a clock (diagnostics remain usable from iteration counts alone).
-    fn now_nanos(&self) -> u64 {
-        0
-    }
 }
 
 static DELAY: AtomicPtr<&'static dyn SdhciDelay> = AtomicPtr::new(core::ptr::null_mut());
