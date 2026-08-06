@@ -65,6 +65,13 @@ impl WifiRuntime for ArceosWifiRuntime {
 /// WaitQueue for PIO interrupt-driven wakeup.
 /// The SDHCI ISR calls `sdhci_pio_wake_callback` which notifies this queue,
 /// waking tasks blocked in `ArceosDelay::block_timeout`.
+///
+/// # Single-waiter invariant
+///
+/// At most one task is ever blocked on this queue at a time — the SDIO bus
+/// lock (`SdioTransport`) serialises all transfers, so only the TX or RX
+/// thread (never both) can be inside `block_timeout`.  This invariant is part
+/// of the `SdhciDelay::block_timeout` contract.
 static SDHCI_PIO_WQ: WaitQueue = WaitQueue::new();
 
 fn sdhci_pio_wake_callback() {

@@ -14,6 +14,12 @@ pub trait SdhciDelay: Send + Sync + 'static {
     /// Block the current task until a hardware interrupt wakes it, or timeout.
     /// Returns `true` if the wait timed out, `false` if woken by interrupt.
     ///
+    /// # Single-waiter contract
+    ///
+    /// The driver guarantees at most one task is blocked in this method at any
+    /// time (serialised by the SDIO bus lock). The OS glue may rely on this to
+    /// use a single shared wake queue; a lost wake is bounded by the timeout.
+    ///
     /// The default implementation uses a sleep-based fallback for compatibility
     /// with OS glue that hasn't been updated with interrupt-driven wake support.
     fn block_timeout(&self, timeout_ms: u64) -> bool {

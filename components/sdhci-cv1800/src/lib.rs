@@ -147,13 +147,14 @@ impl CviSdhci {
         None
     }
 
-    /// 直接轮询 INT_STATUS_NORM，等待指定 bit 置位后 W1C 清除
+    /// 轮询 INT_STATUS_NORM，等待指定 bit 置位后选择性 W1C 清除。
     ///
     /// Phase 1: 快速自旋 (PHASE1_SPIN_ITERS 次, ~50µs)
     /// Phase 2: XFER_COMPLETE 走硬件中断驱动等待；其他位使用 10ms 睡眠轮询
     ///
     /// 同时检测 Error 中断：如果 ERROR bit (bit 15) 置位，
-    /// 读取 ERR_STATUS 并 W1C 清除所有状态位，然后返回错误。
+    /// 读取 ERR_STATUS，选择性 W1C 清除错误位 + 当前等待位（保留 CARD_INT），
+    /// 然后复位 DAT 线并返回错误。
     fn poll_int_status(&self, bit: u16) -> Result<(), SdioError> {
         // Drain the store buffer before entering the Phase 1 spin loop.
         // Without this fence, pending MMIO writes (e.g. pio_write's 128
@@ -179,6 +180,9 @@ impl CviSdhci {
         // Phase 2: XFER_COMPLETE 走硬件中断驱动等待；其他位走纯超时睡眠
         // （不经过 WaitQueue——ISR 不会为这些位发 notify，经过 WQ 是无效开销）
         let use_irq = bit == NORM_INT_XFER_COMPLETE;
+        if !use_irq {
+            log::trace!("[SDHCI] poll_int Phase-2 fallback: bit=0x{:04x}", bit);
+        }
         let mut timeout_count: u32 = 0;
         for i in 0..PHASE2_MAX_ITERS {
             // Race guard: 阻塞前先检查状态寄存器。
@@ -307,17 +311,25 @@ impl CviSdhci {
         }
     }
 
-    /// Clear stale INT_STATUS bits (W1C clear all set bits)
+    /// Clear stale INT_STATUS bits before starting a command.
+    ///
+    /// Uses selective W1C: preserves XFER_COMPLETE (may be consumed by a task
+    /// blocked in `poll_int_status` Phase 2).  The ISR does not clear
+    /// XFER_COMPLETE either — only the waiting task's recheck in
+    /// `poll_int_status` may consume it.
     fn clear_stale_status(&self) {
         let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
-        if norm != 0 {
-            if norm & NORM_INT_ERROR != 0 {
+        // Mask out XFER_COMPLETE — it belongs to a potentially blocked PIO
+        // waiter and must not be destroyed by the command path.
+        let clearable = norm & !NORM_INT_XFER_COMPLETE;
+        if clearable != 0 {
+            if clearable & NORM_INT_ERROR != 0 {
                 let err = self.read::<u16>(SDHCI_INT_STATUS_ERR);
                 if err != 0 {
                     self.write::<u16>(SDHCI_INT_STATUS_ERR, err);
                 }
             }
-            self.write::<u16>(SDHCI_INT_STATUS_NORM, norm);
+            self.write::<u16>(SDHCI_INT_STATUS_NORM, clearable);
         }
     }
 
