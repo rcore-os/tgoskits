@@ -74,7 +74,7 @@ pub const ERR_INT_CMD_MASK: u16 =
 
 pub const ERR_INT_DAT_MASK: u16 = ERR_INT_DAT_TIMEOUT | ERR_INT_DAT_CRC | ERR_INT_DAT_END_BIT;
 
-/// Signal Enable: 仅使能 CARD_INT（XFER_COMPLETE 信号由 poll_int_status 阻塞前动态 un-mask）
+/// 信号使能：仅使能 CARD_INT（XFER_COMPLETE 信号由 poll_int_status 阻塞前动态 un-mask）
 pub const NORM_INT_SIG_MASK: u16 = NORM_INT_CARD_INT;
 
 pub const ERR_INT_SIG_MASK: u16 = 0;

@@ -1,27 +1,25 @@
-//! OS timing capability injection.
+//! OS 时序能力注入。
 //!
-//! The controller driver needs millisecond delays and an interrupt-driven
-//! blocking wait, but must not bind to any specific kernel's task runtime.
-//! The OS glue installs a [`SdhciDelay`] provider once via [`set_delay`];
-//! the driver reaches it through [`delay`].
+//! 控制器驱动需要毫秒级延迟和中断驱动的阻塞等待，
+//! 但不能绑定到任何特定内核的任务运行时。
+//! OS 胶水层通过 [`set_delay`] 一次性安装 [`SdhciDelay`] 提供者；
+//! 驱动通过 [`delay`] 访问它。
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-/// Timing capabilities the SDHCI controller needs from the OS.
+/// SDHCI 控制器所需的 OS 时序能力。
 pub trait SdhciDelay: Send + Sync + 'static {
-    /// Blocking delay for the given milliseconds.
+    /// 阻塞延迟指定毫秒数。
     fn delay_ms(&self, ms: u64);
-    /// Block the current task until a hardware interrupt wakes it, or timeout.
-    /// Returns `true` if the wait timed out, `false` if woken by interrupt.
+    /// 阻塞当前任务直至硬件中断唤醒或超时。
+    /// 超时返回 `true`，被中断唤醒返回 `false`。
     ///
-    /// # Single-waiter contract
+    /// # 单 waiter 契约
     ///
-    /// The driver guarantees at most one task is blocked in this method at any
-    /// time (serialised by the SDIO bus lock). The OS glue may rely on this to
-    /// use a single shared wake queue; a lost wake is bounded by the timeout.
+    /// 调用方保证至多一个任务同时阻塞于此方法（由 SDIO 总线锁序列化）。
+    /// OS 胶水层可依赖此保证使用单一共享唤醒队列；丢失唤醒由超时兜底。
     ///
-    /// The default implementation uses a sleep-based fallback for compatibility
-    /// with OS glue that hasn't been updated with interrupt-driven wake support.
+    /// 默认实现使用基于 sleep 的回退，兼容尚未更新为中断驱动唤醒的 OS 胶水层。
     fn block_timeout(&self, timeout_ms: u64) -> bool {
         self.delay_ms(timeout_ms);
         true
@@ -30,8 +28,8 @@ pub trait SdhciDelay: Send + Sync + 'static {
 
 static DELAY: AtomicPtr<&'static dyn SdhciDelay> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Installs the timing capability provider. Call once during init, before
-/// driving the controller. Must not be called concurrently with [`delay`].
+/// 安装时序能力提供者。在初始化期间、操作控制器前调用一次。
+/// 不得与 [`delay`] 并发调用。
 pub fn set_delay(provider: &'static dyn SdhciDelay) {
     let boxed = alloc::boxed::Box::new(provider);
     let ptr = alloc::boxed::Box::into_raw(boxed);

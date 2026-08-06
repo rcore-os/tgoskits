@@ -118,28 +118,26 @@ impl CviSdhci {
         }
     }
 
-    /// W1C-clear only the given bits in INT_STATUS_NORM.
-    /// Never clears CARD_INT — that is exclusively managed by the ISR/mask protocol.
+    /// 仅 W1C 清除 INT_STATUS_NORM 中指定的位。
+    /// 绝不清除 CARD_INT——该位由 ISR/mask 协议独占管理。
     fn clear_int_status_norm(&self, bits: u16) {
         self.write::<u16>(SDHCI_INT_STATUS_NORM, bits);
     }
 
-    /// Poll INT_STATUS once: check for error or the wanted bit, consuming on match.
-    /// Returns:
-    /// - `Some(Ok(()))` if the wanted bit is set (W1C cleared)
-    /// - `Some(Err(...))` if an error interrupt is detected (W1C cleared + DAT reset)
-    /// - `None` if neither condition is met (keep polling/waiting)
+    /// 轮询 INT_STATUS 一次：检查错误或目标位，命中时消费。
+    /// 返回：
+    /// - `Some(Ok(()))` 目标位置位（W1C 清除）
+    /// - `Some(Err(...))` 检测到错误中断（W1C 清除 + DAT 复位）
+    /// - `None` 两个条件均未满足（继续轮询/等待）
     fn poll_status_once(&self, bit: u16) -> Option<Result<(), SdioError>> {
         let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
         if norm & NORM_INT_ERROR != 0 {
             let err = self.read::<u16>(SDHCI_INT_STATUS_ERR);
             self.write::<u16>(SDHCI_INT_STATUS_ERR, err);
-            // Selective clear: error bits + waited bit + XFER_COMPLETE.
-            // XFER_COMPLETE may be asserted concurrently with an error
-            // (e.g. DAT error after data-phase completion).  Consuming it
-            // here prevents a stale bit from leaking into the next
-            // transfer's wait_transfer_complete as a false early success.
-            // CARD_INT is intentionally preserved (ISR/mask protocol).
+            // 选择性清除：错误位 + 等待位 + XFER_COMPLETE。
+            // XFER_COMPLETE 可能与错误同时被置位（如数据阶段完成后 DAT 错误）。
+            // 在此消费可防止 stale bit 泄漏至下一传输的 wait_transfer_complete
+            // 导致虚假过早成功。CARD_INT 有意保留（ISR/mask 协议）。
             self.clear_int_status_norm(NORM_INT_ERROR | bit | NORM_INT_XFER_COMPLETE);
             self.reset_dat_line();
             return Some(Err(Self::classify_error(err)));
@@ -160,18 +158,14 @@ impl CviSdhci {
     /// 读取 ERR_STATUS，选择性 W1C 清除错误位 + 当前等待位（保留 CARD_INT），
     /// 然后复位 DAT 线并返回错误。
     fn poll_int_status(&self, bit: u16) -> Result<(), SdioError> {
-        // Drain the store buffer before entering the Phase 1 spin loop.
-        // Without this fence, pending MMIO writes (e.g. pio_write's 128
-        // stores to SDHCI_BUFFER) can still be queued in the CPU's store
-        // buffer when the following mmio_read(INT_STATUS_NORM) loop begins.
-        // The reads then compete with the draining writes on the SDHCI bus,
-        // delaying the hardware from actually receiving the data and
-        // asserting BUF_WR_READY / CMD_COMPLETE.  Phase 1's 1000-iteration
-        // window (≈50 µs) can then expire before the status bit becomes
-        // visible, causing a fall-through into the 10 ms Phase 2 delay.
-        // A single fence here guarantees the store buffer is empty before
-        // polling starts — the same effect that task-switch implied fences
-        // (mret) provided in the old yield_now-based busy-wait scheme.
+        // 在进入 Phase 1 自旋循环前排空存储缓冲区。
+        // 若无此栅栏，待处理的 MMIO 写（如 pio_write 的 128 次 SDHCI_BUFFER
+        // 写入）可能仍排在 CPU 存储缓冲区中，而此时后续的
+        // mmio_read(INT_STATUS_NORM) 循环已开始。读取与排空写入在 SDHCI
+        // 总线上竞争，延迟硬件实际接收数据并置位 BUF_WR_READY/CMD_COMPLETE。
+        // Phase 1 的 1000 次迭代窗口（约 50µs）可能在状态位可见前过期，
+        // 导致落入 10ms Phase 2 延迟。此处单一栅栏保证轮询开始前存储缓冲区
+        // 已空——与旧 yield_now 忙等待方案中任务切换隐含栅栏（mret）效果相同。
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         // Phase 1: 快速自旋
@@ -316,16 +310,16 @@ impl CviSdhci {
         }
     }
 
-    /// Clear stale INT_STATUS bits before starting a command.
+    /// 在启动命令前清除残留的 INT_STATUS 位。
     ///
-    /// Uses selective W1C: preserves XFER_COMPLETE (may be consumed by a task
-    /// blocked in `poll_int_status` Phase 2).  The ISR does not clear
-    /// XFER_COMPLETE either — only the waiting task's recheck in
-    /// `poll_int_status` may consume it.
+    /// 使用选择性 W1C：保留 XFER_COMPLETE（可能被阻塞在
+    /// `poll_int_status` Phase 2 的任务消费）。ISR 同样不清除
+    /// XFER_COMPLETE——仅等待任务的 recheck 在 `poll_int_status`
+    /// 中可消费它。
     fn clear_stale_status(&self) {
         let norm = self.read::<u16>(SDHCI_INT_STATUS_NORM);
-        // Mask out XFER_COMPLETE — it belongs to a potentially blocked PIO
-        // waiter and must not be destroyed by the command path.
+        // Mask 掉 XFER_COMPLETE——它属于可能阻塞的 PIO waiter，
+        // 不得被命令路径破坏。
         let clearable = norm & !NORM_INT_XFER_COMPLETE;
         if clearable != 0 {
             if clearable & NORM_INT_ERROR != 0 {
@@ -621,10 +615,10 @@ impl CviSdhci {
     /// XFER_COMPLETE 信号由 poll_int_status 阻塞前通过 unmask_xfer_complete_signal 动态启用。
     fn enable_interrupts_irq(&self) -> Result<(), SdioError> {
         irq::irq_state_init(self.base);
-        // Status Enable: 使能所有状态位 (用于 poll_int_status 轮询)
+        // 状态使能：使能所有状态位（用于 poll_int_status 轮询）
         self.write::<u16>(SDHCI_NORM_INT_STS_EN, NORM_INT_ENABLE_MASK);
         self.write::<u16>(SDHCI_ERR_INT_STS_EN, ERR_INT_ENABLE_MASK);
-        // Signal Enable: 仅使能 CARD_INT；XFER_COMPLETE 由 poll_int_status 动态 un-mask
+        // 信号使能：仅使能 CARD_INT；XFER_COMPLETE 由 poll_int_status 动态 un-mask
         irq::enable_irq_signals();
         Ok(())
     }

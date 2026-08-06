@@ -62,23 +62,22 @@ impl WifiRuntime for ArceosWifiRuntime {
     }
 }
 
-/// WaitQueue for PIO interrupt-driven wakeup.
-/// The SDHCI ISR calls `sdhci_pio_wake_callback` which notifies this queue,
-/// waking tasks blocked in `ArceosDelay::block_timeout`.
+/// PIO 中断驱动唤醒的 WaitQueue。
+/// SDHCI ISR 调用 `sdhci_pio_wake_callback` 通知此队列，
+/// 唤醒阻塞在 `ArceosDelay::block_timeout` 中的任务。
 ///
-/// # Single-waiter invariant
+/// # 单 waiter 不变量
 ///
-/// At most one task is ever blocked on this queue at a time — the SDIO bus
-/// lock (`SdioTransport`) serialises all transfers, so only the TX or RX
-/// thread (never both) can be inside `block_timeout`.  This invariant is part
-/// of the `SdhciDelay::block_timeout` contract.
+/// 至多一个任务同时阻塞在此队列上——SDIO 总线锁（`SdioTransport`）
+/// 序列化所有传输，因此仅 TX 或 RX 线程（不会两者同时）可处于
+/// `block_timeout` 中。此不变量是 `SdhciDelay::block_timeout` 契约的一部分。
 static SDHCI_PIO_WQ: WaitQueue = WaitQueue::new();
 
 fn sdhci_pio_wake_callback() {
     SDHCI_PIO_WQ.notify_one_from_irq();
 }
 
-/// ArceOS-backed SDHCI delay/wake provider.
+/// 基于 ArceOS 的 SDHCI 延迟/唤醒提供者。
 struct ArceosDelay;
 
 impl SdhciDelay for ArceosDelay {
@@ -94,11 +93,11 @@ impl SdhciDelay for ArceosDelay {
 static ARCEOS_RUNTIME: ArceosWifiRuntime = ArceosWifiRuntime;
 static ARCEOS_DELAY: ArceosDelay = ArceosDelay;
 
-/// Installs the ArceOS runtime into the aic8800 driver core *and* the
-/// sdhci-cv1800 delay glue. Call once during init, before any Wi-Fi operation.
+/// 将 ArceOS 运行时安装到 aic8800 驱动核心和 sdhci-cv1800 延迟胶水层。
+/// 在初始化期间、任何 WiFi 操作前调用一次。
 pub(crate) fn install_runtime() {
-    // The ISR/task SIG_EN RMW protocol relies on single-core serialization;
-    // wake correctness under SMP requires additional fencing (see irq.rs).
+    // ISR/task SIG_EN RMW 协议依赖单核序列化；
+    // SMP 下的唤醒正确性需要额外围栏（见 irq.rs）。
     debug_assert!(
         ax_hal::cpu_num() == 1,
         "sdhci-cv1800 ISR design assumes single-core; SMP not yet supported"

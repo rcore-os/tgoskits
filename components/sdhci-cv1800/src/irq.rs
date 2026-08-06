@@ -19,11 +19,10 @@ use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use crate::{mmio_read, mmio_write, regs::*};
 
-/// Callback slot: stores a function pointer for ISR invocation.
+/// 回调槽：存储 ISR 调用的函数指针。
 ///
-/// Uses `AtomicUsize` because `fn()` is pointer-width on all supported
-/// targets (riscv64, aarch64, x86_64). A zero value means unregistered;
-/// the ISR guards against this.
+/// 使用 `AtomicUsize` 因为 `fn()` 在所有支持的平台上是指针宽度
+/// （riscv64、aarch64、x86_64）。零值表示未注册，ISR 对此有防护。
 struct CallbackSlot {
     ptr: AtomicUsize,
 }
@@ -35,28 +34,25 @@ impl CallbackSlot {
         }
     }
 
-    /// Register a callback. Call once during init before IRQs are enabled.
+    /// 注册回调函数。在初始化期间、IRQ 使能前调用一次。
     fn register(&self, cb: fn()) {
         self.ptr.store(cb as usize, Ordering::Release);
     }
 
-    /// Invoke the registered callback, if any.
+    /// 调用已注册的回调（如果有）。
     ///
-    /// # Safety
+    /// # 安全性
     ///
-    /// - The stored value must be a valid `fn()` previously stored via
-    ///   `register`. A zero value (empty slot) is guarded and does not
-    ///   invoke the callback.
-    /// - Single-core assumption: no concurrent store to this slot from another
-    ///   hart while the callback is being invoked.
-    /// - The callback runs in hard-IRQ context on the calling hart and must not
-    ///   allocate, hold locks, schedule, or call `log` macros that synchronously
-    ///   write UART.
+    /// - 存储的值必须是先前通过 `register` 存储的有效 `fn()`。
+    ///   零值（空槽）被防护，不会触发回调调用。
+    /// - 单核假设：回调调用期间没有其他 hart 并发写入此槽。
+    /// - 回调在硬中断上下文中运行，禁止：分配堆、持锁、调度、
+    ///   调用同步写 UART 的 `log` 宏。
     unsafe fn invoke(&self) {
         let v = self.ptr.load(Ordering::Acquire);
         if v != 0 {
-            // SAFETY: v was stored as `cb as usize` by register().
-            // fn() and usize are the same size on all supported targets.
+            // SAFETY: v 由 register() 以 `cb as usize` 存入。
+            // fn() 和 usize 在所有支持的平台上大小相同。
             let cb: fn() = unsafe { core::mem::transmute::<usize, fn()>(v) };
             cb();
         }
@@ -137,7 +133,7 @@ pub fn disable_irq_signals() {
 // 方便审查单核竞态假设和未来 SMP 适配。
 // 注意：enable_irq_signals/disable_irq_signals 是全量写入（reset 语义），不属于 RMW。
 
-/// Read-Modify-Write on `SDHCI_NORM_INT_SIG_EN`.
+/// 对 `SDHCI_NORM_INT_SIG_EN` 执行 Read-Modify-Write。
 ///
 /// RMW 本身不是原子的（可能被 ISR 抢占），但设计依赖 XFER_COMPLETE sticky bit
 /// 自愈：即使本次写入携带过期值，中断线在 task 阻塞后重新断言，ISR 重新触发。
@@ -193,26 +189,24 @@ pub fn sdhci_irq_handler(_irq: usize) {
     if norm & NORM_INT_CARD_INT != 0 {
         SDHCI_CARD_INT_COUNT.fetch_add(1, Ordering::Relaxed);
         mask_card_irq_raw(base, true);
-        // SAFETY: CARD_INT callback is registered once during init via
-        // register_card_irq_callback. Single-core: no concurrent store.
+        // SAFETY: CARD_INT 回调在初始化期间通过 register_card_irq_callback
+        // 注册一次。单核：无并发写入。
         unsafe { SDHCI_IRQ_STATE.card_irq_callback.invoke() };
     }
 
-    // Handle XFER_COMPLETE: mask signal, then wake blocked task.
-    // The sticky status bit is NOT cleared here — the task observes and
-    // W1C-clears it after wake. Clearing it here would destroy the
-    // wake condition and cause guaranteed 200ms timeout.
-    // XFER_COMPLETE is normally only enabled in SIG_EN while a task is
-    // blocked in poll_int_status (see unmask_xfer_complete_signal), so
-    // this path is idle in steady state. After a race-guard win or timeout
-    // the SIG_EN bit may briefly remain set; the resulting spurious ISR
-    // re-masks and notifies harmlessly.
+    // 处理 XFER_COMPLETE：mask 信号，然后唤醒阻塞任务。
+    // sticky 状态位不在此处清除——任务在唤醒后观察并 W1C 清除它。
+    // 若在此清除会破坏唤醒条件并导致必然的 200ms 超时。
+    // XFER_COMPLETE 通常仅在任务阻塞于 poll_int_status 时才在 SIG_EN 中
+    // 使能（见 unmask_xfer_complete_signal），因此此路径在稳态时空闲。
+    // 在 race-guard 胜出或超时后 SIG_EN 位可能短暂保持置位；
+    // 由此产生的多余 ISR 重新 mask 并通知，无害。
     if norm & NORM_INT_XFER_COMPLETE != 0 {
-        // Mask the XFER_COMPLETE signal to prevent re-firing
+        // Mask XFER_COMPLETE 信号以防重复触发
         rmw_norm_sig_en(base, 0, NORM_INT_XFER_COMPLETE);
-        // Wake the blocked task (status bit stays sticky for task to observe)
-        // SAFETY: PIO wake callback is registered once during init via
-        // register_pio_wake_callback. Single-core: no concurrent store.
+        // 唤醒阻塞任务（状态位保持 sticky 供任务观察）
+        // SAFETY: PIO 唤醒回调在初始化期间通过 register_pio_wake_callback
+        // 注册一次。单核：无并发写入。
         unsafe { SDHCI_IRQ_STATE.pio_wake_callback.invoke() };
     }
 }
