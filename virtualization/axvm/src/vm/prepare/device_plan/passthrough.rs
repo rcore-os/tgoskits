@@ -10,14 +10,12 @@ use axdevice::{
     DeviceDeclaration, DeviceFirmwareBinding, DeviceGraphBuilder, DeviceNodeId, DeviceNodeSpec,
     DeviceRequirements, HostPassthroughMapping, ResourceRequest, ResourceSlot,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use crate::{AxVmError, AxVmResult, config::AxVMConfig};
 
 pub(super) fn add_host_nodes(
     config: &AxVMConfig,
-    planned_configs: &[EmulatedDeviceConfig],
-    host_replacements: &[EmulatedDeviceType],
+    replacement_ranges: &[Range<u64>],
     builder: &mut DeviceGraphBuilder,
 ) -> AxVmResult {
     let mut mappings = Vec::new();
@@ -43,50 +41,13 @@ pub(super) fn add_host_nodes(
             HostMappingNode::new(mapping, alloc::format!("identity-{index}"), None),
         )?;
     }
-    subtract_replacement_ranges(
-        &mut mappings,
-        replacement_ranges(planned_configs, host_replacements)?,
-    )?;
+    subtract_replacement_ranges(&mut mappings, replacement_ranges.to_vec())?;
     mappings.sort_by_key(|node| mapping_key(node.mapping));
 
     for (index, mapping_node) in mappings.into_iter().enumerate() {
         add_host_mapping_node(builder, index, mapping_node)?;
     }
     Ok(())
-}
-
-fn replacement_ranges(
-    configs: &[EmulatedDeviceConfig],
-    replacement_types: &[EmulatedDeviceType],
-) -> AxVmResult<Vec<Range<u64>>> {
-    configs
-        .iter()
-        .filter(|config| replacement_types.contains(&config.emu_type))
-        .map(|config| {
-            let base = u64::try_from(config.base_gpa).map_err(|_| {
-                AxVmError::invalid_config(alloc::format!(
-                    "host replacement '{}' GPA does not fit u64",
-                    config.name
-                ))
-            })?;
-            let length = u64::try_from(config.length).map_err(|_| {
-                AxVmError::invalid_config(alloc::format!(
-                    "host replacement '{}' length does not fit u64",
-                    config.name
-                ))
-            })?;
-            let end = base
-                .checked_add(length)
-                .filter(|_| length != 0)
-                .ok_or_else(|| {
-                    AxVmError::invalid_config(alloc::format!(
-                        "host replacement '{}' has an invalid MMIO range",
-                        config.name
-                    ))
-                })?;
-            Ok(base..end)
-        })
-        .collect()
 }
 
 fn subtract_replacement_ranges(
@@ -289,7 +250,7 @@ const fn mapping_key(mapping: HostPassthroughMapping) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use axdevice::ResourcePools;
-    use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, PassThroughDeviceConfig};
+    use axvm_types::HostDeviceAssignment;
 
     use super::*;
     use crate::config::{AxVMConfigParams, PhysCpuList};
@@ -298,17 +259,16 @@ mod tests {
     fn overlapping_linear_host_ranges_share_one_reservation() {
         let mut config = AxVMConfig::default_for_test(1, "overlapping-host-mmio");
         for (name, length) in [("provider", 0x7f00), ("consumer", 0x100)] {
-            config.add_pass_through_device(PassThroughDeviceConfig {
+            config.add_pass_through_device(HostDeviceAssignment {
                 name: name.into(),
                 base_gpa: 0xfdcb_0000,
                 base_hpa: 0xfdcb_0000,
                 length,
-                irq_id: 0,
             });
         }
 
         let mut builder = DeviceGraphBuilder::new();
-        add_host_nodes(&config, &[], &[], &mut builder).unwrap();
+        add_host_nodes(&config, &[], &mut builder).unwrap();
         let declared = builder.declare().unwrap();
         let requests = declared.requests().unwrap();
         let mut pools = ResourcePools::new();
@@ -326,32 +286,17 @@ mod tests {
     fn host_replacement_range_is_not_reserved_as_passthrough() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            emu_devices: alloc::vec![EmulatedDeviceConfig {
-                name: "shared-clock-provider@fd7c0000".into(),
-                base_gpa: 0xfd7c_0000,
-                length: 0x50_000,
-                irq_id: 0,
-                emu_type: EmulatedDeviceType::SharedMmio,
-                cfg_list: alloc::vec![],
-            }],
-            pass_through_devices: alloc::vec![PassThroughDeviceConfig {
+            pass_through_devices: alloc::vec![HostDeviceAssignment {
                 name: "clock-controller@fd7c0000".into(),
                 base_gpa: 0xfd7c_0000,
                 base_hpa: 0xfd7c_0000,
                 length: 0x50_000,
-                irq_id: 0,
             }],
             ..Default::default()
         });
 
         let mut builder = DeviceGraphBuilder::new();
-        add_host_nodes(
-            &config,
-            config.emu_devices(),
-            &[EmulatedDeviceType::SharedMmio],
-            &mut builder,
-        )
-        .unwrap();
+        add_host_nodes(&config, &[0xfd7c_0000..0xfd81_0000], &mut builder).unwrap();
         let declared = builder.declare().unwrap();
         let requests = declared.requests().unwrap();
         let mut pools = ResourcePools::new();

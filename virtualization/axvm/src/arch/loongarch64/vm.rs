@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use axdevice::DeviceFactoryRegistry;
+use axdevice::{DeviceNodeId, DeviceNodeSpec};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
@@ -16,7 +16,7 @@ use crate::{
             PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init,
-            device_plan::{SimpleVmPlan, VmDevicePlan, machine_factory_registry},
+            device_plan::{SimpleVmPlan, VmDevicePlan},
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -59,48 +59,41 @@ fn plan_devices(
     config: &AxVMConfig,
     fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
 ) -> AxVmResult<LoongArchVmPlan> {
-    let configs = loongarch_device_order(config)?;
-    let mut factories = machine_factory_registry(config)?;
-    factories.register(Arc::new(axdevice::FwCfgPayloadFactory::deferred(
-        fw_cfg_payload,
-    )))?;
-    register_arch_device_factories_for_config(config, &mut factories)?;
+    const PCH_PIC_BASE: usize = 0x1000_0000;
+    const PCH_PIC_SIZE: usize = 0x1000;
+    const FW_CFG_BASE: usize = 0x1e02_0000;
+    const FW_CFG_SIZE: usize = 0x18;
+    let controller_id = DeviceNodeId::new("pch-pic")?;
+    let mut nodes = alloc::vec![
+        DeviceNodeSpec::host_replacement(
+            controller_id.clone(),
+            Arc::new(axdevice::LoongArchPchPicFactory::new(
+                PCH_PIC_BASE,
+                PCH_PIC_SIZE,
+                Arc::new(LoongArchDomainFactory { vm_id: config.id() }),
+            )),
+        ),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("serial")?,
+            crate::machine::serial_device_model(config),
+        )
+        .with_dependency(controller_id.clone()),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("fw-cfg")?,
+            Arc::new(axdevice::FwCfgPayloadFactory::deferred(
+                axvm_types::GuestPhysAddr::from(FW_CFG_BASE),
+                FW_CFG_SIZE,
+                fw_cfg_payload,
+            )),
+        ),
+    ];
+    crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
         config,
-        &configs,
-        factories,
-        Some(axvm_types::EmulatedDeviceType::LoongArchPchPic),
-        &[axvm_types::EmulatedDeviceType::LoongArchPchPic],
+        nodes,
+        &[PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64],
         super::resource_pools::create()?,
     )?))
-}
-
-fn register_arch_device_factories_for_config(
-    config: &AxVMConfig,
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult {
-    let configs = config.emu_devices().clone();
-    let mut pch_pic_configs = configs
-        .iter()
-        .filter(|config| config.emu_type == axvm_types::EmulatedDeviceType::LoongArchPchPic);
-    let pch_config = pch_pic_configs.next().ok_or_else(|| {
-        AxVmError::resource_unavailable(
-            "LoongArch virtual interrupt controller",
-            "the machine profile has no PCH-PIC",
-        )
-    })?;
-    if pch_pic_configs.next().is_some() {
-        return ax_err!(
-            AlreadyExists,
-            "a VM can register only one LoongArch virtual PCH-PIC"
-        );
-    }
-
-    factories.register(Arc::new(axdevice::LoongArchPchPicFactory::new(
-        pch_config.clone(),
-        Arc::new(LoongArchDomainFactory { vm_id: config.id() }),
-    )))?;
-    Ok(())
 }
 
 struct LoongArchDomainFactory {
@@ -157,41 +150,11 @@ fn init_vm_with(vm: &AxVM) -> AxVmResult {
     })
 }
 
-fn loongarch_device_order(
-    config: &AxVMConfig,
-) -> AxVmResult<alloc::vec::Vec<axvm_types::EmulatedDeviceConfig>> {
-    let controller_type = axvm_types::EmulatedDeviceType::LoongArchPchPic;
-    let mut ordered = alloc::vec::Vec::new();
-    let mut controllers = config
-        .emu_devices()
-        .iter()
-        .filter(|device| device.emu_type == controller_type);
-    ordered.push(
-        controllers
-            .next()
-            .cloned()
-            .ok_or_else(|| AxVmError::invalid_config("LoongArch machine profile has no PCH-PIC"))?,
-    );
-    if controllers.next().is_some() {
-        return Err(AxVmError::invalid_config(
-            "LoongArch machine profile has more than one PCH-PIC",
-        ));
-    }
-    ordered.extend(
-        config
-            .emu_devices()
-            .iter()
-            .filter(|device| device.emu_type != controller_type)
-            .cloned(),
-    );
-    Ok(ordered)
-}
-
 fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
+    let passthrough = config.uses_passthrough_address_space();
     Ok(LoongArchVCpuSetupConfig {
         passthrough_interrupt: passthrough,
         passthrough_timer: passthrough,

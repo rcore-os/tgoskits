@@ -5,10 +5,9 @@
 //! default virtual UART with the host-selected UART's register model, layout,
 //! address, and firmware identity before VM construction.
 
-use alloc::{vec, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 
 use axdevice_base::AccessWidth;
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 use crate::{arch::CurrentArch, architecture::MachinePlatform};
 
@@ -17,13 +16,12 @@ mod gic;
 mod serial;
 mod timer;
 
-pub(crate) use factory::register_machine_device_factories_from_config;
+pub(crate) use factory::serial_device_model;
 pub(crate) use gic::AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE;
 pub use gic::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicProfileError, GuestGicRedistributorProfile,
     GuestItsProfile,
 };
-pub(crate) use serial::serial_device_config;
 pub use serial::{
     GuestClockReference, GuestSerialFdtIdentity, GuestSerialFdtInterrupt, GuestSerialModel,
     GuestSerialProfile, GuestSerialTransport,
@@ -63,32 +61,16 @@ pub struct MachineProfile {
     pub serial_fdt_interrupt: Option<GuestSerialFdtInterrupt>,
     /// Machine-owned architectural timer resources, when described in FDT.
     pub timer: Option<GuestTimerProfile>,
+    /// Machine-owned GIC resources, when used by this architecture.
+    pub gic: Option<GuestGicProfile>,
+    /// Machine-owned PLIC resources, when used by this architecture.
+    pub plic: Option<GuestPlicProfile>,
     /// Physical-device discovery root used for default passthrough assignment.
     ///
     /// `None` means that the architecture's address-space policy alone
     /// provides the default mapping and no unresolved discovery selector
     /// should enter the runtime mapping planner.
     pub default_passthrough_device_path: Option<&'static str>,
-    /// Internal device construction descriptors.
-    pub emulated_devices: Vec<EmulatedDeviceConfig>,
-}
-
-fn device(
-    name: &str,
-    base_gpa: usize,
-    length: usize,
-    irq_id: usize,
-    emu_type: EmulatedDeviceType,
-    cfg_list: Vec<usize>,
-) -> EmulatedDeviceConfig {
-    EmulatedDeviceConfig {
-        name: name.into(),
-        base_gpa,
-        length,
-        irq_id,
-        emu_type,
-        cfg_list,
-    }
 }
 
 fn x86_64_profile() -> MachineProfile {
@@ -105,38 +87,9 @@ fn x86_64_profile() -> MachineProfile {
         serial,
         serial_fdt_interrupt: None,
         timer: None,
+        gic: None,
+        plic: None,
         default_passthrough_device_path: None,
-        emulated_devices: vec![
-            serial_device_config(serial),
-            device("fw_cfg", 0x510, 0x0c, 0, EmulatedDeviceType::FwCfg, vec![]),
-            device(
-                "ioapic",
-                0xfec0_0000,
-                0x1000,
-                0,
-                EmulatedDeviceType::X86IoApic,
-                vec![],
-            ),
-            device("pit", 0x40, 0x22, 0, EmulatedDeviceType::X86Pit, vec![]),
-            device("pic", 0x20, 2, 0, EmulatedDeviceType::X86Pic, vec![]),
-            device("cmos", 0x70, 2, 0, EmulatedDeviceType::X86Cmos, vec![]),
-            device(
-                "pci-config",
-                0xcf8,
-                8,
-                0,
-                EmulatedDeviceType::X86PciConfig,
-                vec![],
-            ),
-            device(
-                "acpi-pm",
-                0x600,
-                0x80,
-                9,
-                EmulatedDeviceType::X86AcpiPmTimer,
-                vec![],
-            ),
-        ],
     }
 }
 
@@ -172,30 +125,29 @@ fn aarch64_profile(cpu_num: usize) -> MachineProfile {
             hypervisor_intid: 26,
             clock_frequency_hz: None,
         }),
+        gic: Some(GuestGicProfile {
+            compatible: String::from("arm,gic-v3"),
+            node_path: String::from("/intc@8000000"),
+            node_phandle: None,
+            distributor: GuestMmioRegion {
+                base: 0x0800_0000,
+                length: 0x1_0000,
+            },
+            cpu_region: GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
+                regions: vec![GuestMmioRegion {
+                    base: 0x080a_0000,
+                    length: cpu_num.saturating_mul(AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE),
+                }],
+                stride: AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE,
+            }),
+            its: Vec::new(),
+        }),
+        plic: None,
         default_passthrough_device_path: Some("/"),
-        emulated_devices: vec![
-            device(
-                "vgic",
-                0x0800_0000,
-                0x1_0000,
-                0,
-                EmulatedDeviceType::InterruptController,
-                vec![],
-            ),
-            device(
-                "gic-redistributor",
-                0x080a_0000,
-                cpu_num.saturating_mul(AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE),
-                0,
-                EmulatedDeviceType::GicCpuRegion,
-                vec![cpu_num, AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE],
-            ),
-            serial_device_config(serial),
-        ],
     }
 }
 
-fn riscv64_profile(cpu_num: usize) -> MachineProfile {
+fn riscv64_profile(_cpu_num: usize) -> MachineProfile {
     let serial = GuestSerialProfile {
         model: GuestSerialModel::Uart16550,
         transport: GuestSerialTransport::Mmio {
@@ -211,18 +163,14 @@ fn riscv64_profile(cpu_num: usize) -> MachineProfile {
         serial,
         serial_fdt_interrupt: Some(GuestSerialFdtInterrupt::PlicSource),
         timer: None,
+        gic: None,
+        plic: Some(GuestPlicProfile {
+            node_path: String::from("/soc/plic@c000000"),
+            node_phandle: None,
+            base: 0x0c00_0000,
+            length: 0x60_0000,
+        }),
         default_passthrough_device_path: Some("/"),
-        emulated_devices: vec![
-            device(
-                "plic",
-                0x0c00_0000,
-                0x60_0000,
-                0,
-                EmulatedDeviceType::PPPTGlobal,
-                vec![cpu_num * 2],
-            ),
-            serial_device_config(serial),
-        ],
     }
 }
 
@@ -242,26 +190,9 @@ fn loongarch64_profile() -> MachineProfile {
         serial,
         serial_fdt_interrupt: None,
         timer: None,
+        gic: None,
+        plic: None,
         default_passthrough_device_path: Some("/"),
-        emulated_devices: vec![
-            device(
-                "fw_cfg",
-                0x1e02_0000,
-                0x18,
-                0,
-                EmulatedDeviceType::FwCfg,
-                vec![],
-            ),
-            device(
-                "pch-pic",
-                0x1000_0000,
-                0x1000,
-                0,
-                EmulatedDeviceType::LoongArchPchPic,
-                vec![],
-            ),
-            serial_device_config(serial),
-        ],
     }
 }
 

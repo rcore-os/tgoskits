@@ -1,14 +1,15 @@
 //! Mediation for physical MMIO providers shared with a passthrough guest.
 
-use std::{format, string::String, sync::Arc, vec, vec::Vec};
+use core::ops::Range;
+use std::{format, sync::Arc, vec::Vec};
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DeviceManagerResult, DeviceRegistration, DeviceRequirements,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
+    DeviceModel, DeviceNodeId, DeviceNodeSpec, DeviceRegistration, DeviceRequirements,
     ResourceRequest, ResourceSlot,
 };
 use axdevice_base::{AccessWidth, DeviceError};
-use axvm_types::{AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType};
+use axvm_types::AddressSpacePolicy;
 use rdif_clk::ClockMmioWriteProtection;
 
 use super::shared_mmio::{MmioRegisterAccess, SharedMmioDevice};
@@ -31,36 +32,38 @@ fn clock_references_for_plan(config: &AxVMConfig) -> Vec<GuestClockReference> {
 /// Immutable shared-provider mediation selected during AArch64 VM planning.
 pub(super) struct SharedProviderBootstrap {
     plans: Arc<[SharedProviderPlan]>,
-    configs: Vec<EmulatedDeviceConfig>,
 }
 
 impl SharedProviderBootstrap {
     pub(super) fn from_config(config: &AxVMConfig) -> AxVmResult<Self> {
         let references = clock_references_for_plan(config);
         let plans = build_provider_plans(&references)?;
-        let configs = plans
-            .iter()
-            .enumerate()
-            .map(|(index, plan)| plan.device_config(index))
-            .collect();
         Ok(Self {
             plans: plans.into(),
-            configs,
         })
     }
 
-    pub(super) fn configs(&self) -> &[EmulatedDeviceConfig] {
-        &self.configs
+    pub(super) fn device_nodes(&self) -> AxVmResult<Vec<DeviceNodeSpec>> {
+        let mut nodes = Vec::with_capacity(self.plans.len());
+        for plan in self.plans.iter() {
+            let name = format!("shared-clock-provider@{:x}", plan.region.base);
+            nodes.push(DeviceNodeSpec::host_replacement(
+                DeviceNodeId::new(name.clone())?,
+                Arc::new(SharedProviderModel {
+                    name,
+                    region: plan.region,
+                    protections: plan.protections.clone(),
+                }),
+            ));
+        }
+        Ok(nodes)
     }
 
-    pub(super) fn register_factory(&self, registry: &mut DeviceFactoryRegistry) -> AxVmResult {
-        if self.plans.is_empty() {
-            return Ok(());
-        }
-        registry.register(Arc::new(SharedProviderFactory {
-            plans: self.plans.clone(),
-        }))?;
-        Ok(())
+    pub(super) fn replacement_ranges(&self) -> AxVmResult<Vec<Range<u64>>> {
+        self.plans
+            .iter()
+            .map(|plan| checked_range(plan.region))
+            .collect()
     }
 }
 
@@ -229,120 +232,59 @@ struct SharedProviderPlan {
     protections: Vec<ClockMmioWriteProtection>,
 }
 
-impl SharedProviderPlan {
-    fn device_config(&self, index: usize) -> EmulatedDeviceConfig {
-        EmulatedDeviceConfig {
-            name: format!("shared-clock-provider@{:x}", self.region.base),
-            base_gpa: self.region.base,
-            length: self.region.length,
-            irq_id: 0,
-            emu_type: EmulatedDeviceType::SharedMmio,
-            cfg_list: vec![index, self.provider_phandle as usize],
-        }
-    }
+fn checked_range(region: GuestMmioRegion) -> AxVmResult<Range<u64>> {
+    let base = region.base as u64;
+    let length = region.length as u64;
+    let end = base
+        .checked_add(length)
+        .filter(|_| length != 0)
+        .ok_or_else(|| AxVmError::invalid_config("shared provider MMIO range is invalid"))?;
+    Ok(base..end)
 }
 
-struct SharedProviderFactory {
-    plans: Arc<[SharedProviderPlan]>,
+struct SharedProviderModel {
+    name: std::string::String,
+    region: GuestMmioRegion,
+    protections: Vec<ClockMmioWriteProtection>,
 }
 
-impl DeviceFactory for SharedProviderFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::SharedMmio
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        let [index, provider_phandle] = config.cfg_list.as_slice() else {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "declare shared MMIO provider",
-                detail: String::from("internal provider fingerprint is malformed"),
-            });
-        };
-        let plan = self
-            .plans
-            .get(*index)
-            .ok_or_else(|| DeviceManagerError::InvalidConfig {
-                operation: "declare shared MMIO provider",
-                detail: format!("provider plan index {index} is out of range"),
-            })?;
-        let expected = plan.device_config(*index);
-        if config != &expected || *provider_phandle != plan.provider_phandle as usize {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "declare shared MMIO provider",
-                detail: format!(
-                    "configuration does not match provider {:#x} plan",
-                    plan.provider_phandle
-                ),
-            });
-        }
+impl DeviceModel for SharedProviderModel {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
         DeviceRequirements::new()
             .with_mmio(
                 ResourceSlot::new("registers")?,
-                plan.region.length as u64,
+                self.region.length as u64,
                 1,
-                ResourceRequest::Fixed(plan.region.base as u64),
+                ResourceRequest::Fixed(self.region.base as u64),
             )
             .map(DeviceDeclaration::with_requirements)
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        let [index, provider_phandle] = config.cfg_list.as_slice() else {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build shared MMIO provider",
-                detail: String::from("internal provider fingerprint is malformed"),
-            });
-        };
-        let plan = self
-            .plans
-            .get(*index)
-            .ok_or_else(|| DeviceManagerError::InvalidConfig {
-                operation: "build shared MMIO provider",
-                detail: format!("provider plan index {index} is out of range"),
-            })?;
-        let expected = plan.device_config(*index);
-        if config.emu_type != EmulatedDeviceType::SharedMmio
-            || config.name != expected.name
-            || config.base_gpa != expected.base_gpa
-            || config.length != expected.length
-            || *provider_phandle != plan.provider_phandle as usize
-        {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build shared MMIO provider",
-                detail: format!(
-                    "configuration does not match provider {:#x} plan",
-                    plan.provider_phandle
-                ),
-            });
-        }
-
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
-        if base != plan.region.base as u64 || length != plan.region.length as u64 {
+        if base != self.region.base as u64 || length != self.region.length as u64 {
             return Err(DeviceManagerError::InvalidConfig {
                 operation: "build shared MMIO provider",
                 detail: format!(
                     "planned range {base:#x}..+{length:#x} differs from provider {:#x}..+{:#x}",
-                    plan.region.base, plan.region.length
+                    self.region.base, self.region.length
                 ),
             });
         }
 
         let mapped = axklib::mmio::ioremap(
-            mmio_api::MmioAddr::from(plan.region.base),
-            plan.region.length,
+            mmio_api::MmioAddr::from(self.region.base),
+            self.region.length,
         )
         .map_err(|error| DeviceManagerError::ResourceNotFound {
             operation: "map shared MMIO provider",
-            resource: format!("{:#x}/{:#x}: {error}", plan.region.base, plan.region.length),
+            resource: format!("{:#x}/{:#x}: {error}", self.region.base, self.region.length),
         })?;
         let device = Arc::new(SharedMmioDevice::new(
-            config.name.clone(),
-            plan.region.base,
-            plan.region.length,
-            plan.protections.clone(),
+            self.name.clone(),
+            self.region.base,
+            self.region.length,
+            self.protections.clone(),
             Arc::new(MappedMmio { mapped }),
         ));
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(

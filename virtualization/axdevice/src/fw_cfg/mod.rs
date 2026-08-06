@@ -6,11 +6,11 @@ use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
     DmaGrant, Resource,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
+use axvm_types::GuestPhysAddr;
 
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory, DeviceManagerError,
-    DeviceManagerResult, DeviceRequirements, ResourceRequest, ResourceSlot,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
+    DeviceModel, DeviceRequirements, ResourceRequest, ResourceSlot,
 };
 
 const FW_CFG_SIGNATURE: u16 = 0x00;

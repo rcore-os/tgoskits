@@ -10,10 +10,9 @@ pub struct FwCfgDmaDevice {
 
 /// Runtime image payload used to build one fw_cfg device contribution.
 ///
-/// fw_cfg is supplied by the boot loader rather than a static
-/// `EmulatedDeviceConfig`: its kernel, initrd and command-line bytes are VM
-/// image state.  Keeping that input typed prevents it from becoming an
-/// architecture-side registration special case.
+/// fw_cfg is supplied by the boot loader rather than guest TOML: its kernel,
+/// initrd and command-line bytes are VM image state. Keeping that input typed
+/// prevents it from becoming an architecture-side registration special case.
 pub struct FwCfgBuildConfig {
     /// Guest MMIO base address.
     pub base: GuestPhysAddr,
@@ -50,6 +49,8 @@ pub struct FwCfgPayloadConfig {
 pub struct FwCfgPayloadFactory {
     payload: FwCfgPayloadSource,
     transport: FwCfgTransport,
+    base: GuestPhysAddr,
+    size: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -104,6 +105,8 @@ impl Default for FwCfgPayloadSlot {
 impl FwCfgPayloadFactory {
     pub const fn new(payload: FwCfgPayloadConfig) -> Self {
         Self {
+            base: payload.base,
+            size: payload.size,
             payload: FwCfgPayloadSource::Fixed(payload),
             transport: FwCfgTransport::Mmio,
         }
@@ -112,24 +115,38 @@ impl FwCfgPayloadFactory {
     /// Creates an x86 PIO factory from an already available boot payload.
     pub const fn new_pio(payload: FwCfgPayloadConfig) -> Self {
         Self {
+            base: payload.base,
+            size: payload.size,
             payload: FwCfgPayloadSource::Fixed(payload),
             transport: FwCfgTransport::Pio,
         }
     }
 
     /// Creates a factory whose payload is populated by the boot loader later.
-    pub const fn deferred(payload: Arc<FwCfgPayloadSlot>) -> Self {
+    pub const fn deferred(
+        base: GuestPhysAddr,
+        size: usize,
+        payload: Arc<FwCfgPayloadSlot>,
+    ) -> Self {
         Self {
             payload: FwCfgPayloadSource::Deferred(payload),
             transport: FwCfgTransport::Mmio,
+            base,
+            size,
         }
     }
 
     /// Creates an x86 PIO factory whose payload is populated by the boot loader.
-    pub const fn deferred_pio(payload: Arc<FwCfgPayloadSlot>) -> Self {
+    pub const fn deferred_pio(
+        base: GuestPhysAddr,
+        size: usize,
+        payload: Arc<FwCfgPayloadSlot>,
+    ) -> Self {
         Self {
             payload: FwCfgPayloadSource::Deferred(payload),
             transport: FwCfgTransport::Pio,
+            base,
+            size,
         }
     }
 
@@ -146,16 +163,13 @@ impl FwCfgPayloadFactory {
     }
 }
 
-impl DeviceFactory for FwCfgPayloadFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::FwCfg
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
+impl DeviceModel for FwCfgPayloadFactory {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
         let requirements = match self.transport {
             FwCfgTransport::Mmio => {
-                let size = u64::try_from(config.length).map_err(fw_cfg_range_conversion_error)?;
-                let base = u64::try_from(config.base_gpa).map_err(fw_cfg_range_conversion_error)?;
+                let size = u64::try_from(self.size).map_err(fw_cfg_range_conversion_error)?;
+                let base =
+                    u64::try_from(self.base.as_usize()).map_err(fw_cfg_range_conversion_error)?;
                 DeviceRequirements::new().with_mmio(
                     ResourceSlot::new("registers")?,
                     size,
@@ -163,25 +177,21 @@ impl DeviceFactory for FwCfgPayloadFactory {
                     ResourceRequest::Fixed(base),
                 )?
             }
-            FwCfgTransport::Pio => pio_requirements(config)?,
+            FwCfgTransport::Pio => pio_requirements(self.base, self.size)?,
         };
         Ok(DeviceDeclaration::with_requirements(requirements))
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let payload = self.payload()?;
-        if config.base_gpa != payload.base.as_usize() || config.length != payload.size {
+        if self.base != payload.base || self.size != payload.size {
             return Err(DeviceManagerError::InvalidConfig {
                 operation: "build fw_cfg device",
                 detail: format!(
                     "configured range [{:#x}, {:#x}) differs from boot payload range [{:#x}, \
                      {:#x})",
-                    config.base_gpa,
-                    config.base_gpa.saturating_add(config.length),
+                    self.base.as_usize(),
+                    self.base.as_usize().saturating_add(self.size),
                     payload.base.as_usize(),
                     payload.base.as_usize().saturating_add(payload.size),
                 ),
@@ -223,16 +233,16 @@ impl DeviceFactory for FwCfgPayloadFactory {
     }
 }
 
-fn pio_requirements(config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceRequirements> {
+fn pio_requirements(base: GuestPhysAddr, size: usize) -> DeviceManagerResult<DeviceRequirements> {
     const PIO_SPAN: usize = 0x0c;
     const DMA_OFFSET: u16 = 4;
-    if config.length != PIO_SPAN {
+    if size != PIO_SPAN {
         return Err(DeviceManagerError::InvalidConfig {
             operation: "declare x86 PIO fw_cfg device",
             detail: format!("fw_cfg PIO span must be {PIO_SPAN:#x} bytes"),
         });
     }
-    let base = u16::try_from(config.base_gpa).map_err(fw_cfg_range_conversion_error)?;
+    let base = u16::try_from(base.as_usize()).map_err(fw_cfg_range_conversion_error)?;
     let dma_base =
         base.checked_add(DMA_OFFSET)
             .ok_or_else(|| DeviceManagerError::InvalidConfig {

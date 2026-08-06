@@ -4,7 +4,7 @@ use std::{format, sync::Arc, vec::Vec};
 
 use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion};
 use axvm_types::GuestPhysAddr;
-use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
+use axvmconfig::{VMBootProtocol, VmMemMappingType};
 
 use super::X86_64Arch;
 #[cfg(not(any(feature = "fs", feature = "host-fs")))]
@@ -542,12 +542,10 @@ fn build_boot_params(
             builder.add_ram_range(linux::X86LinuxRange::new(memory.gpa, memory.size));
         }
     }
-    let machine = crate::machine::current_machine_profile(loader.config.base.cpu_num);
-    for device in &machine.emulated_devices {
-        if matches!(device.emu_type, EmulatedDeviceType::X86IoApic) {
-            builder.add_reserved_range(linux::X86LinuxRange::new(device.base_gpa, device.length));
-        }
-    }
+    builder.add_reserved_range(linux::X86LinuxRange::new(
+        firmware.plan.io_apic_base() as usize,
+        0x1000,
+    ));
     builder.add_reserved_range(mptable::reserved_range());
     builder.build().map_err(|err| {
         ax_err_type!(

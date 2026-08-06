@@ -1,53 +1,15 @@
 use alloc::vec;
 
 use axdevice_base::ItsId;
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::RegInfo;
 
 use super::{
     super::tree::FdtTree,
-    fallback_gic_profile, gic, host_gic_maintenance_intid, host_gic_profile, host_plic_profile,
+    gic, host_gic_maintenance_intid, host_gic_profile, host_plic_profile,
     phandle::{prop_string, prop_u32, prop_u64},
     plic,
 };
-
-#[test]
-fn fallback_gic_profile_retains_every_redistributor_region() {
-    let device = |name: &str, base_gpa, length, emu_type| EmulatedDeviceConfig {
-        name: name.into(),
-        base_gpa,
-        length,
-        emu_type,
-        ..Default::default()
-    };
-    let profile = fallback_gic_profile(&[
-        device(
-            "gicd",
-            0x0800_0000,
-            0x1_0000,
-            EmulatedDeviceType::InterruptController,
-        ),
-        device(
-            "gicr-0",
-            0x080a_0000,
-            0x4_0000,
-            EmulatedDeviceType::GicCpuRegion,
-        ),
-        device(
-            "gicr-1",
-            0x0810_0000,
-            0x4_0000,
-            EmulatedDeviceType::GicCpuRegion,
-        ),
-    ])
-    .unwrap();
-    let GuestGicCpuRegion::Redistributors(redistributors) = profile.cpu_region else {
-        panic!("fallback must select GICv3 Redistributors");
-    };
-    assert_eq!(redistributors.regions.len(), 2);
-    assert_eq!(redistributors.regions[1].base, 0x0810_0000);
-}
 use crate::machine::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicRedistributorProfile, GuestItsProfile,
     GuestMmioRegion, GuestPlicProfile,

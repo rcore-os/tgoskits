@@ -4,17 +4,16 @@ use std::{
 };
 
 use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceGraphBuilder,
-    DeviceManagerError, DeviceNodeId, DeviceNodeSpec, DeviceRegistration, DeviceRequirements,
-    DeviceRuntime, DeviceRuntimeBuilder, InterruptRegistrationError, ResolvedDeviceGraph,
-    ResourcePools, ResourceRequest, ResourceSlot,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceGraphBuilder,
+    DeviceManagerError, DeviceModel, DeviceNodeId, DeviceNodeSpec, DeviceRegistration,
+    DeviceRequirements, DeviceRuntime, DeviceRuntimeBuilder, InterruptRegistrationError,
+    ResolvedDeviceGraph, ResourcePools, ResourceRequest, ResourceSlot,
 };
 use axdevice_base::{
     BusAccess, BusResponse, ControllerInputId, Device, DeviceAccess, DeviceError,
     InterruptControllerId, InterruptSharing, InterruptTrigger, IrqError, IrqLine, IrqResult,
     Resource, VirtualInterruptController, WiredIrqInput, WiredIrqSink,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 #[derive(Default)]
 struct RecordingSink {
@@ -114,15 +113,8 @@ struct IrqFactory {
     probe_wrong_accessor: bool,
 }
 
-impl DeviceFactory for IrqFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::Dummy
-    }
-
-    fn declare(
-        &self,
-        _config: &EmulatedDeviceConfig,
-    ) -> axdevice::DeviceManagerResult<axdevice::DeviceDeclaration> {
+impl DeviceModel for IrqFactory {
+    fn declare(&self) -> axdevice::DeviceManagerResult<axdevice::DeviceDeclaration> {
         let requirements = DeviceRequirements::new().with_wired_irq(
             self.slot.clone(),
             self.controller,
@@ -135,7 +127,6 @@ impl DeviceFactory for IrqFactory {
 
     fn build(
         &self,
-        _config: &EmulatedDeviceConfig,
         context: &mut DeviceBuildContext<'_>,
     ) -> axdevice::DeviceManagerResult<DeviceBundle> {
         if self.probe_wrong_accessor {
@@ -186,7 +177,7 @@ fn irq_slot() -> ResourceSlot {
 fn irq_graph(
     controller: InterruptControllerId,
     devices: &[&str],
-    factory: Arc<dyn DeviceFactory>,
+    factory: Arc<dyn DeviceModel>,
 ) -> ResolvedDeviceGraph {
     let mut pools = ResourcePools::new();
     pools
@@ -200,20 +191,11 @@ fn irq_graph(
         graph
             .add(DeviceNodeSpec::virtual_device(
                 DeviceNodeId::new(*id).unwrap(),
-                dummy_config(id),
                 factory.clone(),
             ))
             .unwrap();
     }
     graph.declare().unwrap().resolve(pools).unwrap()
-}
-
-fn dummy_config(name: &str) -> EmulatedDeviceConfig {
-    EmulatedDeviceConfig {
-        name: name.into(),
-        emu_type: EmulatedDeviceType::Dummy,
-        ..Default::default()
-    }
 }
 
 fn controller_bundle(

@@ -16,20 +16,20 @@ use std::{
 
 use ax_std::os::arceos::sync::RawSpinLock;
 use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    DeviceRequirements, ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey,
-    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDeviceOps, X86IoApicServiceKey,
-    X86PicServiceKey, X86PitDeviceOps, X86PitServiceKey, validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration,
+    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRegistration, DeviceRequirements,
+    ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey, X86InterruptDomainKey,
+    X86InterruptDomainOps, X86IoApicDeviceOps, X86IoApicServiceKey, X86PicServiceKey,
+    X86PitDeviceOps, X86PitServiceKey,
 };
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, IrqError, IrqResult,
     VirtualInterruptController, WiredIrqInput, WiredIrqSink,
 };
 use axvm_types::{
-    AccessWidth, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode,
-    MappingFlags, NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, Port,
+    SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 use x86_vcpu::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
@@ -517,74 +517,23 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
     }
 }
 
-/// Pre-creates the canonical x86 interrupt controller and registers factories
-/// that expose that same instance through the device runtime.
-pub(crate) fn register_device_factories(
-    vm_id: usize,
-    configs: &[EmulatedDeviceConfig],
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult {
-    let machine =
-        crate::machine::machine_profile_for(crate::machine::MachineArchitecture::X86_64, 1);
-    let expected_ioapic = unique_x86_machine_device(
-        &machine.emulated_devices,
-        EmulatedDeviceType::X86IoApic,
-        "virtual IOAPIC",
-    )?;
-    let expected_pit = unique_x86_machine_device(
-        &machine.emulated_devices,
-        EmulatedDeviceType::X86Pit,
-        "virtual PIT",
-    )?;
-    let ioapic_config =
-        unique_x86_machine_device(configs, EmulatedDeviceType::X86IoApic, "virtual IOAPIC")?;
-    let pit_config = unique_x86_machine_device(configs, EmulatedDeviceType::X86Pit, "virtual PIT")?;
-    validate_device_config(
-        expected_ioapic,
-        ioapic_config,
-        "validate x86 virtual IOAPIC machine descriptor",
-    )?;
-    validate_device_config(
-        expected_pit,
-        pit_config,
-        "validate x86 virtual PIT machine descriptor",
-    )?;
-
-    factories.register(Arc::new(X86IoApicFactory {
+/// Provides the canonical x86 interrupt-controller device model.
+pub(crate) fn ioapic_model(vm_id: usize, base: usize, length: usize) -> Arc<dyn DeviceModel> {
+    Arc::new(X86IoApicModel {
         vm_id,
-        expected: ioapic_config.clone(),
-    }))?;
-    factories.register(Arc::new(X86PitFactory {
-        vm_id,
-        expected: pit_config.clone(),
-    }))?;
-    factories.register(Arc::new(port::HostPortPassthroughDeviceFactory))?;
-    Ok(())
+        base,
+        length,
+    })
 }
 
-struct X86IoApicFactory {
-    vm_id: usize,
-    expected: EmulatedDeviceConfig,
+pub(crate) fn pit_model(vm_id: usize) -> Arc<dyn DeviceModel> {
+    Arc::new(X86PitModel { vm_id })
 }
 
-fn unique_x86_machine_device<'a>(
-    configs: &'a [EmulatedDeviceConfig],
-    device_type: EmulatedDeviceType,
-    resource: &'static str,
-) -> AxVmResult<&'a EmulatedDeviceConfig> {
-    let mut matches = configs
-        .iter()
-        .filter(|config| config.emu_type == device_type);
-    let config = matches.next().ok_or_else(|| {
-        AxVmError::resource_unavailable("x86 machine device", std::format!("missing {resource}"))
-    })?;
-    if matches.next().is_some() {
-        return Err(AxVmError::resource_conflict(
-            "x86 machine device",
-            std::format!("more than one {resource} descriptor is configured"),
-        ));
-    }
-    Ok(config)
+struct X86IoApicModel {
+    vm_id: usize,
+    base: usize,
+    length: usize,
 }
 
 /// Adapts the IOAPIC device capability to the x86 interrupt-runtime boundary.
@@ -759,23 +708,14 @@ impl WiredIrqSink for X86WiredState {
     }
 }
 
-impl DeviceFactory for X86IoApicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86IoApic
+impl DeviceModel for X86IoApicModel {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+        fixed_mmio_declaration(self.base, self.length, "declare x86 virtual IOAPIC")
     }
 
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        validate_device_config(&self.expected, config, "declare x86 virtual IOAPIC")?;
-        fixed_mmio_declaration(config, "declare x86 virtual IOAPIC")
-    }
-
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build x86 virtual IOAPIC")?;
-        let (base, length) = consume_mmio_config(context, config, "build x86 virtual IOAPIC")?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let (base, length) =
+            consume_mmio_config(context, self.base, self.length, "build x86 virtual IOAPIC")?;
         let ioapic = Arc::new(axdevice::X86IoApicDevice::new(
             x86_vlapic::X86GuestPhysAddr::from_usize(base),
             Some(length),
@@ -795,18 +735,12 @@ impl DeviceFactory for X86IoApicFactory {
     }
 }
 
-struct X86PitFactory {
+struct X86PitModel {
     vm_id: usize,
-    expected: EmulatedDeviceConfig,
 }
 
-impl DeviceFactory for X86PitFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86Pit
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        validate_device_config(&self.expected, config, "declare x86 virtual PIT")?;
+impl DeviceModel for X86PitModel {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
         let [timer, speaker] = x86_vlapic::EmulatedPit::<AxvmX86HostOps>::port_ranges();
         let timer_size = timer.end.number() - timer.start.number() + 1;
         let speaker_size = speaker.end.number() - speaker.start.number() + 1;
@@ -826,12 +760,7 @@ impl DeviceFactory for X86PitFactory {
             .map(DeviceDeclaration::with_requirements)
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build x86 virtual PIT")?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let timer = context.pio(&ResourceSlot::new("timer-registers")?)?;
         let speaker = context.pio(&ResourceSlot::new("speaker-control")?)?;
         let [expected_timer, expected_speaker] =
@@ -861,11 +790,12 @@ fn pio_range_parts(range: x86_vlapic::X86PortRange) -> (u16, u16) {
 
 fn consume_mmio_config(
     context: &mut DeviceBuildContext<'_>,
-    config: &EmulatedDeviceConfig,
+    expected_base: usize,
+    expected_length: usize,
     operation: &'static str,
 ) -> DeviceManagerResult<(usize, usize)> {
     let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
-    if base != config.base_gpa as u64 || length != config.length as u64 {
+    if base != expected_base as u64 || length != expected_length as u64 {
         return Err(DeviceManagerError::InvalidConfig {
             operation,
             detail: "planned MMIO range differs from the machine descriptor".into(),
@@ -878,11 +808,12 @@ fn consume_mmio_config(
 }
 
 fn fixed_mmio_declaration(
-    config: &EmulatedDeviceConfig,
+    base: usize,
+    length: usize,
     operation: &'static str,
 ) -> DeviceManagerResult<DeviceDeclaration> {
-    let size = u64::try_from(config.length).map_err(|_| declaration_range_error(operation))?;
-    let base = u64::try_from(config.base_gpa).map_err(|_| declaration_range_error(operation))?;
+    let size = u64::try_from(length).map_err(|_| declaration_range_error(operation))?;
+    let base = u64::try_from(base).map_err(|_| declaration_range_error(operation))?;
     DeviceRequirements::new()
         .with_mmio(
             ResourceSlot::new("registers")?,
@@ -1051,21 +982,7 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 
 #[cfg(test)]
 mod tests {
-    use axdevice::{
-        DeviceRuntimeBuilder, X86InterruptDomainKey, X86IoApicServiceKey, X86PitServiceKey,
-    };
-
     use super::*;
-
-    fn x86_test_plan(
-        configs: &[EmulatedDeviceConfig],
-    ) -> crate::vm::prepare::device_plan::VmDevicePlan {
-        use crate::vm::prepare::device_plan::VmDevicePlan;
-
-        let mut factories = DeviceFactoryRegistry::new();
-        register_device_factories(1, configs, &mut factories).unwrap();
-        VmDevicePlan::fixed(configs, factories, Some(EmulatedDeviceType::X86IoApic), &[]).unwrap()
-    }
     fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
 
     #[test]
@@ -1130,113 +1047,5 @@ mod tests {
             X86AccessWidth::Dword,
             QEMU_EXIT_MAGIC
         ));
-    }
-
-    #[test]
-    fn x86_platform_devices_are_built_by_registered_factories() {
-        let configs = alloc::vec![
-            EmulatedDeviceConfig {
-                name: "ioapic".into(),
-                base_gpa: 0xfec0_0000,
-                length: 0x1000,
-                emu_type: EmulatedDeviceType::X86IoApic,
-                ..Default::default()
-            },
-            EmulatedDeviceConfig {
-                name: "pit".into(),
-                base_gpa: 0x40,
-                length: 0x22,
-                emu_type: EmulatedDeviceType::X86Pit,
-                ..Default::default()
-            },
-        ];
-        let plan = x86_test_plan(&configs);
-        let mut builder = DeviceRuntimeBuilder::new(Default::default());
-        for node in plan.graph().nodes() {
-            builder
-                .build_graph_node(node, plan.graph().resource_plan())
-                .unwrap();
-        }
-        let devices = builder.finish(plan.graph().resource_plan()).unwrap();
-
-        assert_eq!(devices.devices().count(), 2);
-        assert!(devices.services().require::<X86IoApicServiceKey>().is_ok());
-        assert!(
-            devices
-                .services()
-                .require::<X86InterruptDomainKey>()
-                .is_ok()
-        );
-        assert!(devices.services().require::<X86PitServiceKey>().is_ok());
-    }
-
-    #[test]
-    fn x86_pit_plan_does_not_claim_the_i8042_data_port() {
-        let configs = alloc::vec![
-            EmulatedDeviceConfig {
-                name: "ioapic".into(),
-                base_gpa: 0xfec0_0000,
-                length: 0x1000,
-                emu_type: EmulatedDeviceType::X86IoApic,
-                ..Default::default()
-            },
-            EmulatedDeviceConfig {
-                name: "pit".into(),
-                base_gpa: 0x40,
-                length: 0x22,
-                emu_type: EmulatedDeviceType::X86Pit,
-                ..Default::default()
-            },
-        ];
-        let plan = x86_test_plan(&configs);
-        let pit = plan
-            .graph()
-            .nodes()
-            .find(|node| {
-                node.config()
-                    .is_some_and(|config| config.emu_type == EmulatedDeviceType::X86Pit)
-            })
-            .unwrap();
-        let mut ranges = plan
-            .graph()
-            .resources_for(pit.id())
-            .unwrap()
-            .pio_ranges()
-            .map(|(_, base, size)| (base, size))
-            .collect::<alloc::vec::Vec<_>>();
-        ranges.sort_unstable();
-
-        assert_eq!(ranges, alloc::vec![(0x40, 4), (0x61, 1)]);
-        assert!(ranges.iter().all(|(base, size)| {
-            !(u32::from(*base)..u32::from(*base) + u32::from(*size)).contains(&0x60)
-        }));
-    }
-
-    #[test]
-    fn x86_graph_retains_the_declared_machine_descriptor() {
-        let mut configs =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::X86_64, 1)
-                .emulated_devices;
-        configs.retain(|config| {
-            matches!(
-                config.emu_type,
-                EmulatedDeviceType::X86IoApic | EmulatedDeviceType::X86Pit
-            )
-        });
-
-        let plan = x86_test_plan(&configs);
-        let pit_index = configs
-            .iter()
-            .position(|config| config.emu_type == EmulatedDeviceType::X86Pit)
-            .unwrap();
-        configs[pit_index].base_gpa += 1;
-
-        let mut builder = DeviceRuntimeBuilder::new(Default::default());
-        for node in plan.graph().nodes() {
-            builder
-                .build_graph_node(node, plan.graph().resource_plan())
-                .unwrap();
-        }
-        builder.finish(plan.graph().resource_plan()).unwrap();
     }
 }

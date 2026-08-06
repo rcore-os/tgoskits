@@ -23,12 +23,11 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{collections::BTreeSet, string::String, vec, vec::Vec};
 
 pub use axvm_types::{
-    AddressSpacePolicy, EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig,
-    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
-    VMInterruptMode, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, HostAddressAssignment, HostDeviceAssignment, HostPortAssignment,
+    ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
 
 mod error;
@@ -298,8 +297,6 @@ pub struct VMKernelConfig {
     pub image_location: Option<String>,
     /// The command line of the kernel.
     pub cmdline: Option<String>,
-    /// The path of the disk image.
-    pub disk_path: Option<String>,
     /// Memory Information
     #[cfg_attr(
         all(feature = "std", any(windows, unix)),
@@ -439,17 +436,6 @@ impl GuestType {
             Self::Passthrough => AddressSpacePolicy::Passthrough,
         }
     }
-
-    /// Returns AxVM's internal physical-interrupt forwarding policy.
-    ///
-    /// Passthrough devices still terminate at the guest's virtual interrupt
-    /// controller; this mode only enables forwarding their physical sources.
-    pub const fn interrupt_mode(self) -> VMInterruptMode {
-        match self {
-            Self::Virtualized => VMInterruptMode::Emulated,
-            Self::Passthrough => VMInterruptMode::Passthrough,
-        }
-    }
 }
 
 /// A structured reference to a host physical device.
@@ -475,8 +461,8 @@ impl PhysicalDeviceRef {
     }
 
     /// Converts this selector into the internal unresolved FDT device form.
-    pub fn unresolved_device(&self) -> PassThroughDeviceConfig {
-        PassThroughDeviceConfig {
+    pub fn unresolved_assignment(&self) -> HostDeviceAssignment {
+        HostDeviceAssignment {
             name: self.path.clone(),
             ..Default::default()
         }
@@ -488,13 +474,20 @@ impl PhysicalDeviceRef {
 /// Virtual platform devices, including the serial port and interrupt
 /// controller, are selected by the machine profile and never appear here.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuestDevices {
     /// Physical devices explicitly assigned to the guest.
     pub passthrough: Vec<PhysicalDeviceRef>,
     /// Physical devices removed from a passthrough guest's default assignment.
     pub disabled: Vec<PhysicalDeviceRef>,
+    /// Virtual devices instantiated through the code-registered model catalog.
+    #[serde(rename = "virtual")]
+    #[cfg_attr(
+        all(feature = "std", any(windows, unix)),
+        schemars(with = "Vec<VirtualDeviceRequestSchema>")
+    )]
+    pub virtual_devices: Vec<VirtualDeviceRequest>,
 }
 
 impl GuestDevices {
@@ -512,14 +505,23 @@ impl GuestDevices {
                 path: device.path.clone(),
             });
         }
+        let mut ids = BTreeSet::new();
+        for request in &self.virtual_devices {
+            request.validate()?;
+            if !ids.insert(request.id.clone()) {
+                return Err(AxVmConfigError::DuplicateVirtualDeviceId {
+                    id: request.id.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
     /// Builds the unresolved FDT selectors consumed by AxVM's boot pipeline.
-    pub fn unresolved_passthrough_devices(&self) -> Vec<PassThroughDeviceConfig> {
+    pub fn unresolved_host_devices(&self) -> Vec<HostDeviceAssignment> {
         self.passthrough
             .iter()
-            .map(PhysicalDeviceRef::unresolved_device)
+            .map(PhysicalDeviceRef::unresolved_assignment)
             .collect()
     }
 
@@ -530,6 +532,101 @@ impl GuestDevices {
             .map(|device| vec![device.path.clone()])
             .collect()
     }
+}
+
+/// Open configuration boundary for one code-registered virtual-device model.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct VirtualDeviceRequest {
+    /// Stable VM-local identity used for graph ordering and diagnostics.
+    pub id: String,
+    /// Canonical model name resolved by AxVM's configured-device catalog.
+    pub model: String,
+    /// Model-owned options retained until the catalog creates a typed instance.
+    #[serde(flatten)]
+    pub options: toml::Table,
+}
+
+impl<'de> serde::Deserialize<'de> for VirtualDeviceRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let mut table = <toml::Table as serde::Deserialize>::deserialize(deserializer)?;
+        let id = table
+            .remove("id")
+            .and_then(|value| value.as_str().map(String::from))
+            .ok_or_else(|| D::Error::custom("virtual device requires string field 'id'"))?;
+        let model = table
+            .remove("model")
+            .and_then(|value| value.as_str().map(String::from))
+            .ok_or_else(|| D::Error::custom("virtual device requires string field 'model'"))?;
+        Ok(Self {
+            id,
+            model,
+            options: table,
+        })
+    }
+}
+
+impl VirtualDeviceRequest {
+    /// Deserializes model-owned options into a device-specific configuration.
+    pub fn deserialize_options<T>(&self) -> Result<T, toml::de::Error>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        toml::Value::Table(self.options.clone()).try_into()
+    }
+
+    fn validate(&self) -> AxVmConfigResult {
+        let valid_id = !self.id.is_empty()
+            && self.id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@')
+            });
+        if !valid_id {
+            return Err(AxVmConfigError::InvalidVirtualDeviceId {
+                id: self.id.clone(),
+            });
+        }
+        let valid_model = !self.model.is_empty()
+            && self.model.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
+            });
+        if !valid_model {
+            return Err(AxVmConfigError::InvalidVirtualDeviceModel {
+                model: self.model.clone(),
+            });
+        }
+        const FRAMEWORK_RESOURCES: &[&str] = &[
+            "irq_id",
+            "base_gpa",
+            "base_hpa",
+            "mmio_base",
+            "pio_base",
+            "msi_device_id",
+            "msi_event_id",
+            "lpi_id",
+        ];
+        if let Some(option) = FRAMEWORK_RESOURCES
+            .iter()
+            .find(|option| self.options.contains_key(**option))
+        {
+            return Err(AxVmConfigError::ForbiddenVirtualDeviceResourceOption {
+                id: self.id.clone(),
+                option: String::from(*option),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "std", any(windows, unix)))]
+#[derive(schemars::JsonSchema)]
+#[doc(hidden)]
+pub struct VirtualDeviceRequestSchema {
+    pub id: String,
+    pub model: String,
 }
 
 /// The configuration structure for the guest VM serialized from a toml file provided by user,

@@ -6,7 +6,6 @@ mod resources;
 use std::{format, sync::Arc, vec::Vec};
 
 use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion, ResourceSlot};
-use axvm_types::EmulatedDeviceType;
 use axvmconfig::{GuestConfig, VMBootProtocol};
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
@@ -203,10 +202,7 @@ fn resolved_fw_cfg(vm: &AxVMRef) -> AxVmResult<MmioRegion> {
     vm.with_planned_device_graph(|graph| {
         let node = graph
             .nodes()
-            .find(|node| {
-                node.config()
-                    .is_some_and(|config| config.emu_type == EmulatedDeviceType::FwCfg)
-            })
+            .find(|node| node.id().as_str() == "fw-cfg")
             .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI boot requires an fw_cfg node"))?;
         let (base, size) = graph
             .resources_for(node.id())?

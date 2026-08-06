@@ -10,7 +10,6 @@ use crate::{
         X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
     },
-    config::VMInterruptMode,
     runtime::{VCpuRef, VMRef},
 };
 
@@ -561,7 +560,7 @@ pub fn register_ioapic_irq_forwarding_activator(
 }
 
 pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -611,7 +610,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -688,7 +687,7 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -754,7 +753,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn activate_ready_ioapic_forwarding_routes(vm: &VMRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
     let Some(domain) = interrupt_domain_for_vm(vm) else {
@@ -801,7 +800,7 @@ fn forward_passthrough_gsi(
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return true;
     }
 

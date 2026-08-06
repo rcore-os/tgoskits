@@ -1,32 +1,6 @@
 use super::*;
 
 #[test]
-fn all_machine_profiles_have_exactly_one_serial_device() {
-    for profile in [
-        x86_64_profile(),
-        aarch64_profile(1),
-        riscv64_profile(2),
-        loongarch64_profile(),
-    ] {
-        let serial_devices = profile
-            .emulated_devices
-            .iter()
-            .filter(|device| device.emu_type == EmulatedDeviceType::Console)
-            .collect::<Vec<_>>();
-        assert_eq!(serial_devices.len(), 1);
-
-        let serial_device = serial_devices[0];
-        let (base, length) = match profile.serial.transport {
-            GuestSerialTransport::Port { base, length } => (usize::from(base), usize::from(length)),
-            GuestSerialTransport::Mmio { base, length, .. } => (base, length),
-        };
-        assert_eq!(serial_device.base_gpa, base);
-        assert_eq!(serial_device.length, length);
-        assert_eq!(serial_device.irq_id, profile.serial.irq);
-    }
-}
-
-#[test]
 fn only_device_discovery_machines_emit_a_default_root_selector() {
     assert_eq!(x86_64_profile().default_passthrough_device_path, None);
     assert_eq!(

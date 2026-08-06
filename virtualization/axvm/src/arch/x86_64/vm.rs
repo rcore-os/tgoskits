@@ -1,9 +1,8 @@
 //! x86_64 VM resource creation and initialization.
 
 use ax_memory_addr::PAGE_SIZE_4K;
-use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, MappingFlags, NestedPagingConfig, VmArchVcpuOps,
-};
+use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
+use axvm_types::{GuestPhysAddr, MappingFlags, NestedPagingConfig, VmArchVcpuOps};
 use x86_vcpu::{
     X86_LOCAL_APIC_GPA, X86_LOCAL_APIC_SIZE, X86GuestMemoryRegion, X86GuestPhysAddr,
     X86HostVirtAddr, X86VcpuCreateConfig, X86VcpuSetupConfig,
@@ -23,7 +22,7 @@ use crate::{
             PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init,
-            device_plan::{SimpleVmPlan, VmDevicePlan, machine_factory_registry},
+            device_plan::{SimpleVmPlan, VmDevicePlan},
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -63,23 +62,59 @@ fn plan_devices(
     config: &AxVMConfig,
     fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
 ) -> AxVmResult<X86VmPlan> {
-    let extra = arch_extra_device_configs(config);
-    let configs = x86_device_order(config, &extra)?;
     let low_memory_size = super::cmos::guest_low_memory_size(config)?;
-    let mut factories = machine_factory_registry(config)?;
-    factories.register(alloc::sync::Arc::new(
-        axdevice::FwCfgPayloadFactory::deferred_pio(fw_cfg_payload),
-    ))?;
-    super::register_device_factories(config.id(), &configs, &mut factories)?;
-    super::acpi_pm_timer::register_factory(&configs, &mut factories)?;
-    super::cmos::register_factory(&configs, low_memory_size, &mut factories)?;
-    super::pci_config::register_factory(&configs, &mut factories)?;
-    super::pic::register_factory(&configs, &mut factories)?;
+    let controller_id = DeviceNodeId::new("ioapic")?;
+    let mut nodes = alloc::vec![
+        DeviceNodeSpec::virtual_device(
+            controller_id.clone(),
+            super::ioapic_model(config.id(), 0xfec0_0000, 0x1000),
+        )
+        .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("IOAPIC".into())),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("serial")?,
+            crate::machine::serial_device_model(config),
+        )
+        .with_dependency(controller_id.clone())
+        .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("\\_SB.COM1".into())),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("fw-cfg")?,
+            alloc::sync::Arc::new(axdevice::FwCfgPayloadFactory::deferred_pio(
+                GuestPhysAddr::from(0x510),
+                0x0c,
+                fw_cfg_payload,
+            )),
+        )
+        .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("\\_SB.FWCF".into())),
+        DeviceNodeSpec::virtual_device(DeviceNodeId::new("pit")?, super::pit_model(config.id()),),
+        DeviceNodeSpec::virtual_device(DeviceNodeId::new("pic")?, super::pic::model()),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("cmos")?,
+            super::cmos::model(low_memory_size)
+        ),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("pci-config")?,
+            super::pci_config::model(),
+        ),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("acpi-pm-timer")?,
+            super::acpi_pm_timer::model(),
+        )
+        .with_dependency(controller_id.clone()),
+    ];
+    for port in config.pass_through_ports() {
+        let id = DeviceNodeId::new(alloc::format!("host-port-{:x}", port.base))?;
+        nodes.push(DeviceNodeSpec::virtual_device(
+            id,
+            alloc::sync::Arc::new(super::port::HostPortPassthroughDeviceModel::new(
+                port.base,
+                port.length,
+            )),
+        ));
+    }
+    crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
         config,
-        &configs,
-        factories,
-        Some(EmulatedDeviceType::X86IoApic),
+        nodes,
         &[],
         super::resource_pools::create(config)?,
     )?))
@@ -106,37 +141,6 @@ fn init_vm_with(vm: &AxVM) -> AxVmResult {
 
         Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
     })
-}
-
-fn x86_device_order(
-    config: &AxVMConfig,
-    extra: &[EmulatedDeviceConfig],
-) -> AxVmResult<alloc::vec::Vec<EmulatedDeviceConfig>> {
-    let mut ordered = alloc::vec::Vec::new();
-    let mut controllers = config
-        .emu_devices()
-        .iter()
-        .filter(|device| device.emu_type == EmulatedDeviceType::X86IoApic);
-    ordered.push(
-        controllers
-            .next()
-            .cloned()
-            .ok_or_else(|| AxVmError::invalid_config("x86 machine profile has no IOAPIC"))?,
-    );
-    if controllers.next().is_some() {
-        return Err(AxVmError::invalid_config(
-            "x86 machine profile has more than one IOAPIC",
-        ));
-    }
-    ordered.extend(
-        config
-            .emu_devices()
-            .iter()
-            .filter(|device| device.emu_type != EmulatedDeviceType::X86IoApic)
-            .cloned(),
-    );
-    ordered.extend_from_slice(extra);
-    Ok(ordered)
 }
 
 fn build_vcpu_setup_config(
@@ -174,28 +178,6 @@ fn resolved_port_intercepts(resources: &AxVMResources) -> AxVmResult<alloc::vec:
         );
     }
     Ok(ranges)
-}
-
-fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDeviceConfig> {
-    config
-        .pass_through_ports()
-        .iter()
-        .map(|port| {
-            debug!(
-                "PT port region: [{:#x}~{:#x}]",
-                port.base,
-                port.base as u32 + port.length as u32 - 1,
-            );
-            EmulatedDeviceConfig {
-                name: std::format!("x86-port-passthrough-{:#x}", port.base),
-                base_gpa: port.base as usize,
-                length: port.length as usize,
-                irq_id: 0,
-                emu_type: EmulatedDeviceType::X86PortPassthrough,
-                cfg_list: std::vec![],
-            }
-        })
-        .collect()
 }
 
 fn append_arch_owned_regions(regions: &mut std::vec::Vec<GuestOwnedRegion>) {

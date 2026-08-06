@@ -46,7 +46,7 @@ use crate::{
     architecture::ops::ArchOps,
     ax_err, ax_err_type,
     boot::{GuestAcpiTables, GuestBootDescription, GuestFdtBuilder},
-    config::{AxVMConfig, PhysCpuList, VMInterruptMode},
+    config::{AxVMConfig, PhysCpuList},
     host::paging::virt_to_phys,
     irq::model::PendingVcpuInterrupt,
     layout::VmAddressLayout,
@@ -828,10 +828,10 @@ impl AxVM {
         self.machine.lock().status()
     }
 
-    /// Returns the configured VM interrupt mode.
-    pub fn interrupt_mode(&self) -> VMInterruptMode {
-        self.with_resources(|resources| Ok(resources.config.interrupt_mode()))
-            .unwrap_or(VMInterruptMode::NoIrq)
+    /// Returns whether the guest address space starts from host identity mappings.
+    pub fn uses_passthrough_address_space(&self) -> bool {
+        self.with_resources(|resources| Ok(resources.config.uses_passthrough_address_space()))
+            .unwrap_or(false)
     }
 
     fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>

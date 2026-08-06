@@ -3,46 +3,19 @@
 use alloc::sync::Arc;
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DeviceManagerResult, DeviceRegistration, DeviceRequirements,
-    ResourceRequest, ResourceSlot, X86PicDeviceOps, X86PicServiceKey, validate_device_config,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
+    DeviceModel, DeviceRegistration, DeviceRequirements, ResourceRequest, ResourceSlot,
+    X86PicDeviceOps, X86PicServiceKey,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::{AxVmError, AxVmResult};
-
-pub(super) fn register_factory(
-    configs: &[EmulatedDeviceConfig],
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult {
-    let mut matches = configs
-        .iter()
-        .filter(|config| config.emu_type == EmulatedDeviceType::X86Pic);
-    let Some(expected) = matches.next() else {
-        return Ok(());
-    };
-    if matches.next().is_some() {
-        return Err(AxVmError::invalid_config(
-            "x86 machine profile has more than one legacy PIC device",
-        ));
-    }
-    factories.register(Arc::new(X86PicFactory {
-        expected: expected.clone(),
-    }))?;
-    Ok(())
+pub(super) fn model() -> Arc<dyn DeviceModel> {
+    Arc::new(X86PicModel)
 }
 
-struct X86PicFactory {
-    expected: EmulatedDeviceConfig,
-}
+struct X86PicModel;
 
-impl DeviceFactory for X86PicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86Pic
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        validate_device_config(&self.expected, config, "declare x86 legacy PIC")?;
+impl DeviceModel for X86PicModel {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
         DeviceRequirements::new()
             .with_pio(
                 ResourceSlot::new("master-registers")?,
@@ -59,12 +32,7 @@ impl DeviceFactory for X86PicFactory {
             .map(DeviceDeclaration::with_requirements)
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build x86 legacy PIC")?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let master = context.pio(&ResourceSlot::new("master-registers")?)?;
         let slave = context.pio(&ResourceSlot::new("slave-registers")?)?;
         if master != (0x20, 2) || slave != (0xa0, 2) {

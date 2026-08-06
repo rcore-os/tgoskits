@@ -1,6 +1,6 @@
 //! RISC-V VM resource creation and initialization.
 
-use axdevice::DeviceFactoryRegistry;
+use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
@@ -14,7 +14,7 @@ use crate::{
             PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init,
-            device_plan::{SimpleVmPlan, VmDevicePlan, machine_factory_registry},
+            device_plan::{SimpleVmPlan, VmDevicePlan},
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -44,43 +44,45 @@ impl Riscv64Arch {
 }
 
 fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
-    let configs = riscv_device_order(config)?;
-    let mut factories = machine_factory_registry(config)?;
-    register_device_factory_for_config(config, &mut factories)?;
-    let mut host_replacements = alloc::vec![axvm_types::EmulatedDeviceType::PPPTGlobal];
-    if config.serial_fdt_identity().is_some() {
-        host_replacements.push(axvm_types::EmulatedDeviceType::Console);
-    }
-    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
-        config,
-        &configs,
-        factories,
-        Some(axvm_types::EmulatedDeviceType::PPPTGlobal),
-        &host_replacements,
-        super::resource_pools::create(config)?,
-    )?))
-}
-
-fn register_device_factory_for_config(
-    config: &AxVMConfig,
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult {
-    let configs = config.emu_devices().clone();
+    let profile = config
+        .plic_profile()
+        .ok_or_else(|| AxVmError::invalid_config("RISC-V machine profile has no PLIC"))?;
     let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
-    let physical_irqs = config.pass_through_irqs().to_vec();
     let physical_target_cpu = placements
         .first()
         .map(|(_, _, physical_id)| *physical_id)
         .ok_or_else(|| AxVmError::invalid_config("a RISC-V VM must contain at least one vCPU"))?;
-    irq::register_device_factory(
-        config.id(),
-        placements.len(),
-        factories,
-        &configs,
-        &physical_irqs,
-        physical_target_cpu,
-    )?;
-    Ok(())
+    let controller_id = DeviceNodeId::new("plic")?;
+    let controller = DeviceNodeSpec::host_replacement(
+        controller_id.clone(),
+        irq::model(
+            config.id(),
+            placements.len(),
+            profile.base,
+            profile.length,
+            config.pass_through_irqs(),
+            physical_target_cpu,
+        )?,
+    )
+    .with_firmware_binding(DeviceFirmwareBinding::FdtNode(profile.node_path.clone()));
+    let serial_id = DeviceNodeId::new("serial")?;
+    let serial = if let Some(identity) = config.serial_fdt_identity() {
+        DeviceNodeSpec::host_replacement(serial_id, crate::machine::serial_device_model(config))
+            .with_firmware_binding(DeviceFirmwareBinding::FdtNode(identity.node_path.clone()))
+    } else {
+        DeviceNodeSpec::virtual_device(serial_id, crate::machine::serial_device_model(config))
+    }
+    .with_dependency(controller_id.clone());
+    let replacement_ranges =
+        alloc::vec![profile.base as u64..profile.base as u64 + profile.length as u64,];
+    let mut nodes = alloc::vec![controller, serial];
+    crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
+    Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
+        config,
+        nodes,
+        &replacement_ranges,
+        super::resource_pools::create(config)?,
+    )?))
 }
 
 fn init_vm_with(vm: &AxVM) -> AxVmResult {
@@ -109,36 +111,6 @@ fn init_vm_with(vm: &AxVM) -> AxVmResult {
 
         Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
     })
-}
-
-fn riscv_device_order(
-    config: &AxVMConfig,
-) -> AxVmResult<alloc::vec::Vec<axvm_types::EmulatedDeviceConfig>> {
-    let controller_type = axvm_types::EmulatedDeviceType::PPPTGlobal;
-    let mut ordered = alloc::vec::Vec::new();
-    let mut controllers = config
-        .emu_devices()
-        .iter()
-        .filter(|device| device.emu_type == controller_type);
-    ordered.push(
-        controllers
-            .next()
-            .cloned()
-            .ok_or_else(|| AxVmError::invalid_config("RISC-V machine profile has no PLIC"))?,
-    );
-    if controllers.next().is_some() {
-        return Err(AxVmError::invalid_config(
-            "RISC-V machine profile has more than one PLIC",
-        ));
-    }
-    ordered.extend(
-        config
-            .emu_devices()
-            .iter()
-            .filter(|device| device.emu_type != controller_type)
-            .cloned(),
-    );
-    Ok(ordered)
 }
 
 fn build_vcpu_setup_config(

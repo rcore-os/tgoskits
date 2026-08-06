@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use axdevice_base::{HostIrqId, IrqLine, MsiEndpoint, VirtualInterruptController};
+use axdevice_base::{HostIrqId, IrqLine, MsiEndpoint};
 
 use crate::{
     DeviceBundle, DeviceManagerError, DeviceManagerResult, ResolvedMsi, ResourceClaimSet,
@@ -15,12 +15,7 @@ use crate::{
 
 /// VM-owned services available while a device factory is building a device.
 pub struct DeviceBuildContext<'a> {
-    resources: BuildResources<'a>,
-}
-
-enum BuildResources<'a> {
-    Legacy(&'a dyn VirtualInterruptController),
-    Planned(PlannedBuildResources<'a>),
+    resources: PlannedBuildResources<'a>,
 }
 
 struct PlannedBuildResources<'a> {
@@ -36,40 +31,6 @@ pub struct MsiEndpointRange {
 }
 
 impl<'a> DeviceBuildContext<'a> {
-    /// Creates a device build context backed by the VM's canonical controller.
-    pub const fn new(interrupt_controller: &'a dyn VirtualInterruptController) -> Self {
-        Self {
-            resources: BuildResources::Legacy(interrupt_controller),
-        }
-    }
-
-    pub(crate) const fn uses_planned_resources(&self) -> bool {
-        matches!(&self.resources, BuildResources::Planned(_))
-    }
-
-    /// Returns the VM's canonical virtual interrupt controller.
-    pub fn interrupt_controller(&self) -> DeviceManagerResult<&dyn VirtualInterruptController> {
-        match &self.resources {
-            BuildResources::Legacy(controller) => Ok(*controller),
-            BuildResources::Planned(_) => Err(DeviceManagerError::InvalidState {
-                operation: "read canonical interrupt controller from device build context",
-                detail: "planned devices must select their controller through an IRQ slot".into(),
-            }),
-        }
-    }
-
-    /// Claims a source connection on one VM-local controller input.
-    pub fn resolve_irq(
-        &self,
-        line: usize,
-        trigger: axdevice_base::InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
-        Ok(self
-            .interrupt_controller()?
-            .wired_input(axdevice_base::ControllerInputId::new(line), trigger)?
-            .connect()?)
-    }
-
     /// Consumes a planned MMIO slot.
     pub fn mmio(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
         let planned = self.planned_mut("resolve planned MMIO resource")?;
@@ -139,34 +100,29 @@ impl<'a> DeviceBuildContext<'a> {
 
     pub(crate) fn planned(interrupts: &'a InterruptRegistry, claims: ResourceClaimSet) -> Self {
         Self {
-            resources: BuildResources::Planned(PlannedBuildResources {
+            resources: PlannedBuildResources {
                 interrupts,
                 claims,
                 retained: PlannedBundleResources::new(),
-            }),
+            },
         }
     }
 
     pub(crate) fn finish(self, mut bundle: DeviceBundle) -> DeviceManagerResult<DeviceBundle> {
-        if let BuildResources::Planned(planned) = self.resources {
-            planned.claims.finish()?;
-            bundle.planned.endpoints.extend(planned.retained.endpoints);
-            bundle.planned.leases.extend(planned.retained.leases);
-        }
+        self.resources.claims.finish()?;
+        bundle
+            .planned
+            .endpoints
+            .extend(self.resources.retained.endpoints);
+        bundle.planned.leases.extend(self.resources.retained.leases);
         Ok(bundle)
     }
 
     fn planned_mut(
         &mut self,
-        operation: &'static str,
+        _operation: &'static str,
     ) -> DeviceManagerResult<&mut PlannedBuildResources<'a>> {
-        match &mut self.resources {
-            BuildResources::Planned(planned) => Ok(planned),
-            BuildResources::Legacy(_) => Err(DeviceManagerError::InvalidState {
-                operation,
-                detail: "the device was not built from a VM resource plan".into(),
-            }),
-        }
+        Ok(&mut self.resources)
     }
 
     fn build_msi_range(

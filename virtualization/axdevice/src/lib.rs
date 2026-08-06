@@ -30,13 +30,13 @@ extern crate log;
 
 mod build_context;
 mod builder;
-mod config_validation;
 mod device;
 mod error;
-mod factory;
+mod firmware;
 mod fw_cfg;
 mod graph;
 mod interrupt;
+mod model;
 // Keep the LoongArch-only implementation out of other production targets, but
 // compile its unit tests on the host so output-port behavior is covered by CI.
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -55,12 +55,14 @@ pub use axdevice_base::{AccessWidth, Device, Port, SysRegAddr};
 pub use axvm_types::GuestPhysAddr;
 pub use build_context::{DeviceBuildContext, MsiEndpointRange};
 pub use builder::DeviceRuntimeBuilder;
-pub use config_validation::validate_device_config;
 pub use device::{
     DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
 };
 pub use error::{DeviceManagerError, DeviceManagerResult};
-pub use factory::{DeviceFactory, DeviceFactoryRegistry, register_builtin_factories};
+pub use firmware::{
+    AcpiDeviceSpec, AcpiNodeModel, FdtNodeModel, FdtNodeSpec, FirmwareBuildError, FirmwareModels,
+    FirmwareProperty, RenderedFirmwareModels, render_device_firmware,
+};
 pub use fw_cfg::{
     FwCfg, FwCfgAcpiBlobs, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice,
     FwCfgKernelPayload, FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPayloadSlot, FwCfgPioDevice,
@@ -79,7 +81,8 @@ pub use loongarch_pch_pic::{
     LoongArchInterruptDomainFactory, LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent,
     PchPicOutputPort, PchPicOutputPortKey,
 };
-pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
+pub use model::DeviceModel;
+pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey, GuestRangePool};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
 pub use resources::{
     DevicePlanRequest, DeviceRequirement, DeviceRequirements, MsiResourceRequest,

@@ -1,16 +1,22 @@
 //! Immutable AArch64 device, VGIC, and firmware construction plan.
 
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
+use alloc::vec::Vec;
+use core::ops::Range;
+
+use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 
 use super::{
     firmware_plan::Aarch64FirmwarePlan, shared_provider::SharedProviderBootstrap,
     vgic::VgicConstructionPlan,
 };
 use crate::{
-    AxVmResult,
+    AxVmError, AxVmResult,
     config::AxVMConfig,
-    machine::{GuestGicProfile, GuestSerialFdtIdentity, GuestSerialProfile, GuestTimerProfile},
-    vm::prepare::device_plan::{ArchitectureVmPlan, VmDevicePlan, machine_factory_registry},
+    machine::{
+        GuestGicCpuRegion, GuestGicProfile, GuestMmioRegion, GuestSerialFdtIdentity,
+        GuestSerialProfile, GuestSerialTransport, GuestTimerProfile,
+    },
+    vm::prepare::device_plan::{ArchitectureVmPlan, VmDevicePlan},
 };
 
 /// Complete AArch64 plan created once before firmware and devices are finalized.
@@ -22,25 +28,42 @@ pub(crate) struct Aarch64VmPlan {
 impl Aarch64VmPlan {
     pub(crate) fn new(config: &AxVMConfig) -> AxVmResult<Self> {
         let vgic = VgicConstructionPlan::new(config)?;
-        let shared_providers = SharedProviderBootstrap::from_config(config)?;
-        let configs = planned_device_configs(config, &shared_providers)?;
-        let mut factories = machine_factory_registry(config)?;
-        shared_providers.register_factory(&mut factories)?;
-        super::vgic::register_device_factories(config.id(), &vgic, &mut factories)?;
-        let mut host_replacements = alloc::vec![
-            EmulatedDeviceType::InterruptController,
-            EmulatedDeviceType::GicCpuRegion,
-            EmulatedDeviceType::SharedMmio,
+        let profile = config
+            .gic_profile()
+            .ok_or_else(|| AxVmError::invalid_config("AArch64 machine profile has no VGIC"))?;
+        let controller_id = DeviceNodeId::new("vgic")?;
+        let mut nodes = alloc::vec![
+            DeviceNodeSpec::host_replacement(
+                controller_id.clone(),
+                super::vgic::model(config.id(), &vgic),
+            )
+            .with_firmware_binding(DeviceFirmwareBinding::FdtNode(profile.node_path.clone())),
         ];
-        if config.serial_fdt_identity().is_some() {
-            host_replacements.push(EmulatedDeviceType::Console);
+
+        let serial_id = DeviceNodeId::new("serial")?;
+        let serial = if let Some(identity) = config.serial_fdt_identity() {
+            DeviceNodeSpec::host_replacement(serial_id, crate::machine::serial_device_model(config))
+                .with_firmware_binding(DeviceFirmwareBinding::FdtNode(identity.node_path.clone()))
+        } else {
+            DeviceNodeSpec::virtual_device(serial_id, crate::machine::serial_device_model(config))
         }
+        .with_dependency(controller_id.clone());
+        nodes.push(serial);
+
+        let shared_providers = SharedProviderBootstrap::from_config(config)?;
+        nodes.extend(shared_providers.device_nodes()?);
+        crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
+
+        let mut replacement_ranges = gic_ranges(profile)?;
+        replacement_ranges.extend(shared_providers.replacement_ranges()?);
+        if config.serial_fdt_identity().is_some() {
+            replacement_ranges.push(serial_range(config.serial_profile())?);
+        }
+
         let devices = VmDevicePlan::with_pools_for_vm(
             config,
-            &configs,
-            factories,
-            Some(EmulatedDeviceType::InterruptController),
-            &host_replacements,
+            nodes,
+            &replacement_ranges,
             super::resource_pools::create(vgic.config())?,
         )?;
         let firmware = Aarch64FirmwarePlan::new(config, vgic.config())?;
@@ -70,33 +93,41 @@ impl ArchitectureVmPlan for Aarch64VmPlan {
     }
 }
 
-fn planned_device_configs(
-    config: &AxVMConfig,
-    shared_providers: &SharedProviderBootstrap,
-) -> AxVmResult<alloc::vec::Vec<EmulatedDeviceConfig>> {
-    let controller_type = EmulatedDeviceType::InterruptController;
-    let mut controllers = config
-        .emu_devices()
-        .iter()
-        .filter(|device| device.emu_type == controller_type);
-    let controller = controllers
-        .next()
-        .cloned()
-        .ok_or_else(|| crate::AxVmError::invalid_config("AArch64 machine profile has no VGIC"))?;
-    if controllers.next().is_some() {
-        return Err(crate::AxVmError::invalid_config(
-            "AArch64 machine profile has more than one VGIC",
-        ));
+fn gic_ranges(profile: &GuestGicProfile) -> AxVmResult<Vec<Range<u64>>> {
+    let mut ranges = alloc::vec![checked_range(profile.distributor, "GIC Distributor")?];
+    match &profile.cpu_region {
+        GuestGicCpuRegion::CpuInterface(region) => {
+            ranges.push(checked_range(*region, "GIC CPU interface")?);
+        }
+        GuestGicCpuRegion::Redistributors(redistributors) => {
+            for region in &redistributors.regions {
+                ranges.push(checked_range(*region, "GIC Redistributor")?);
+            }
+        }
     }
+    for its in &profile.its {
+        ranges.push(checked_range(its.registers, "GIC ITS")?);
+    }
+    Ok(ranges)
+}
 
-    let mut configs = alloc::vec![controller];
-    configs.extend(
-        config
-            .emu_devices()
-            .iter()
-            .filter(|device| device.emu_type != controller_type)
-            .cloned(),
-    );
-    configs.extend_from_slice(shared_providers.configs());
-    Ok(configs)
+fn serial_range(profile: GuestSerialProfile) -> AxVmResult<Range<u64>> {
+    match profile.transport {
+        GuestSerialTransport::Mmio { base, length, .. } => {
+            checked_range(GuestMmioRegion { base, length }, "serial")
+        }
+        GuestSerialTransport::Port { .. } => Err(AxVmError::invalid_config(
+            "AArch64 serial replacement must use MMIO",
+        )),
+    }
+}
+
+fn checked_range(region: GuestMmioRegion, owner: &'static str) -> AxVmResult<Range<u64>> {
+    let base = region.base as u64;
+    let length = region.length as u64;
+    let end = base
+        .checked_add(length)
+        .filter(|_| length != 0)
+        .ok_or_else(|| AxVmError::invalid_config(alloc::format!("{owner} range is invalid")))?;
+    Ok(base..end)
 }

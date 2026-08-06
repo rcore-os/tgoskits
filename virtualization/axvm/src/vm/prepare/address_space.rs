@@ -4,7 +4,7 @@ use std::vec::Vec;
 
 use axdevice::DeviceNodeKind;
 use axdevice_base::Resource;
-use axvm_types::PassThroughDeviceConfig;
+use axvm_types::HostDeviceAssignment;
 
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::{
@@ -46,7 +46,7 @@ pub(crate) fn map_guest_address_space(
     let passthrough_devices = graph
         .host_mappings()
         .map(|mapping| {
-            Ok(PassThroughDeviceConfig {
+            Ok(HostDeviceAssignment {
                 name: alloc::string::String::new(),
                 base_gpa: usize::try_from(mapping.guest_base()).map_err(|_| {
                     AxVmError::invalid_config("planned passthrough GPA does not fit usize")
@@ -57,7 +57,6 @@ pub(crate) fn map_guest_address_space(
                 length: usize::try_from(mapping.length()).map_err(|_| {
                     AxVmError::invalid_config("planned passthrough length does not fit usize")
                 })?,
-                irq_id: 0,
             })
         })
         .collect::<AxVmResult<Vec<_>>>()?;

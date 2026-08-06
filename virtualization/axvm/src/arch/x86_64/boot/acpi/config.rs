@@ -7,7 +7,6 @@ use alloc::{
 };
 
 use axdevice::{DeviceManagerError, ResolvedDeviceGraph, ResolvedDeviceResources, ResourceSlot};
-use axvm_types::EmulatedDeviceType;
 
 /// Guest processor/APIC identities.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -99,10 +98,10 @@ impl X86FirmwarePlan {
             });
         }
 
-        let ioapic = resources_for_type(graph, EmulatedDeviceType::X86IoApic)?;
-        let serial = resources_for_type(graph, EmulatedDeviceType::Console)?;
-        let fw_cfg = resources_for_type(graph, EmulatedDeviceType::FwCfg)?;
-        let pm_timer = resources_for_type(graph, EmulatedDeviceType::X86AcpiPmTimer)?;
+        let ioapic = resources_for_node(graph, "ioapic")?;
+        let serial = resources_for_node(graph, "serial")?;
+        let fw_cfg = resources_for_node(graph, "fw-cfg")?;
+        let pm_timer = resources_for_node(graph, "acpi-pm-timer")?;
         let (io_apic_base, io_apic_size) = ioapic.mmio(&ResourceSlot::new("registers")?)?;
         if io_apic_size == 0 {
             return Err(X86FirmwarePlanError::InvalidValue {
@@ -265,30 +264,22 @@ fn resolved_pm_register(
     Ok(X86AcpiIoRegisterPlan { port, length })
 }
 
-fn resources_for_type(
-    graph: &ResolvedDeviceGraph,
-    device_type: EmulatedDeviceType,
-) -> Result<&ResolvedDeviceResources, X86FirmwarePlanError> {
-    let mut nodes = graph.nodes().filter(|node| {
-        node.config()
-            .is_some_and(|config| config.emu_type == device_type)
-    });
-    let node = nodes
-        .next()
-        .ok_or(X86FirmwarePlanError::MissingDevice { device_type })?;
-    if nodes.next().is_some() {
-        return Err(X86FirmwarePlanError::DuplicateDevice { device_type });
-    }
+fn resources_for_node<'a>(
+    graph: &'a ResolvedDeviceGraph,
+    node_id: &'static str,
+) -> Result<&'a ResolvedDeviceResources, X86FirmwarePlanError> {
+    let node = graph
+        .nodes()
+        .find(|node| node.id().as_str() == node_id)
+        .ok_or(X86FirmwarePlanError::MissingDevice { node_id })?;
     graph.resources_for(node.id()).map_err(Into::into)
 }
 
 /// Failure to derive firmware facts from the sealed device graph.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum X86FirmwarePlanError {
-    #[error("resolved x86 graph has no {device_type} device")]
-    MissingDevice { device_type: EmulatedDeviceType },
-    #[error("resolved x86 graph has more than one {device_type} device")]
-    DuplicateDevice { device_type: EmulatedDeviceType },
+    #[error("resolved x86 graph has no '{node_id}' node")]
+    MissingDevice { node_id: &'static str },
     #[error("invalid {field}: {value}")]
     InvalidValue { field: &'static str, value: String },
     #[error(transparent)]

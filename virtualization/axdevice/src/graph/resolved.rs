@@ -2,14 +2,13 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axvm_types::EmulatedDeviceConfig;
-
 use super::{
     DeviceFirmwareBinding, DeviceNodeId, DeviceNodeKind, HostPassthroughMapping,
     builder::DeclaredDeviceNode,
 };
 use crate::{
-    DeviceFactory, DeviceManagerResult, ResolvedDeviceResources, ResourceLease, VmResourcePlan,
+    DeviceManagerResult, DeviceModel, FirmwareModels, ResolvedDeviceResources, ResourceLease,
+    VmResourcePlan,
 };
 
 /// One topologically ordered node in a resolved graph.
@@ -19,8 +18,8 @@ pub struct ResolvedDeviceNode {
     parent: Option<DeviceNodeId>,
     dependencies: Vec<DeviceNodeId>,
     firmware: DeviceFirmwareBinding,
-    config: Option<EmulatedDeviceConfig>,
-    factory: Option<Arc<dyn DeviceFactory>>,
+    firmware_models: FirmwareModels,
+    model: Option<Arc<dyn DeviceModel>>,
     host_mapping: Option<HostPassthroughMapping>,
 }
 
@@ -32,8 +31,8 @@ impl ResolvedDeviceNode {
             parent: node.parent,
             dependencies: node.dependencies,
             firmware: node.firmware,
-            config: node.config,
-            factory: node.factory,
+            firmware_models: node.firmware_models,
+            model: node.model,
             host_mapping: node.host_mapping,
         }
     }
@@ -63,14 +62,14 @@ impl ResolvedDeviceNode {
         &self.firmware
     }
 
-    /// Returns the internal compatibility configuration, if runtime-backed.
-    pub const fn config(&self) -> Option<&EmulatedDeviceConfig> {
-        self.config.as_ref()
+    /// Returns device-owned guest firmware rendering capabilities.
+    pub const fn firmware_models(&self) -> &FirmwareModels {
+        &self.firmware_models
     }
 
-    /// Returns the exact factory that declared this node.
-    pub fn factory(&self) -> Option<&Arc<dyn DeviceFactory>> {
-        self.factory.as_ref()
+    /// Returns the exact model that declared this node.
+    pub fn model(&self) -> Option<&Arc<dyn DeviceModel>> {
+        self.model.as_ref()
     }
 
     /// Returns the normalized host mapping retained for a passthrough node.
@@ -79,7 +78,7 @@ impl ResolvedDeviceNode {
     }
 
     pub(crate) const fn builds_at_runtime(&self) -> bool {
-        self.factory.is_some()
+        self.model.is_some()
     }
 }
 

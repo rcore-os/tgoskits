@@ -25,6 +25,7 @@ extern crate log;
 mod arch;
 mod architecture;
 pub mod boot;
+mod configured;
 mod error;
 pub mod host;
 pub mod irq;
@@ -58,6 +59,10 @@ pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,
+};
+pub use configured::{
+    ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredDeviceFactory,
+    ConfiguredDeviceInstance, DeviceInstantiationContext,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};

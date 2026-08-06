@@ -11,12 +11,11 @@ use arm_vgic::{
 };
 use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    DeviceRequirements, ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration,
+    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRegistration, ServiceCardinality,
+    ServiceKey,
 };
 use axdevice_base::{MessageInterruptController, VirtualInterruptController};
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 pub(super) use plan::VgicConstructionPlan;
 
 use super::{
@@ -232,21 +231,13 @@ struct Aarch64VgicFactory {
     plan: Arc<VgicConstructionPlan>,
 }
 
-impl DeviceFactory for Aarch64VgicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::InterruptController
+impl DeviceModel for Aarch64VgicFactory {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+        self.plan.declare()
     }
 
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        self.plan.declare(config)
-    }
-
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        self.plan.validate_and_consume(config, context)?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        self.plan.validate_and_consume(context)?;
         let runtime = create_runtime(self.vm_id, &self.plan).map_err(|error| {
             DeviceManagerError::InvalidConfig {
                 operation: "create AArch64 virtual GIC runtime",
@@ -275,69 +266,6 @@ impl DeviceFactory for Aarch64VgicFactory {
     }
 }
 
-struct Aarch64GicCpuRegionMarkerFactory;
-
-impl DeviceFactory for Aarch64GicCpuRegionMarkerFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::GicCpuRegion
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        if config.emu_type != EmulatedDeviceType::GicCpuRegion {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "declare AArch64 virtual GIC per-CPU region",
-                detail: "factory received a non-GIC per-CPU descriptor".into(),
-            });
-        }
-        DeviceRequirements::new()
-            .with_mmio(
-                ResourceSlot::new("registers")?,
-                config.length as u64,
-                1,
-                ResourceRequest::Fixed(config.base_gpa as u64),
-            )
-            .map(DeviceDeclaration::with_requirements)
-    }
-
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        if config.emu_type != EmulatedDeviceType::GicCpuRegion {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "validate AArch64 virtual GIC per-CPU region",
-                detail: "factory received a non-GIC per-CPU descriptor".into(),
-            });
-        }
-        consume_mmio_config(
-            context,
-            config,
-            "validate AArch64 virtual GIC per-CPU region",
-        )?;
-        // The Distributor contribution atomically registers every frontend
-        // from one VgicCore. This marker consumes the machine descriptor so
-        // neither the GICC nor Redistributor window gets a second construction
-        // path.
-        Ok(DeviceBundle::new())
-    }
-}
-
-fn consume_mmio_config(
-    context: &mut DeviceBuildContext<'_>,
-    config: &EmulatedDeviceConfig,
-    operation: &'static str,
-) -> DeviceManagerResult {
-    let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
-    if base != config.base_gpa as u64 || length != config.length as u64 {
-        return Err(DeviceManagerError::InvalidConfig {
-            operation,
-            detail: "planned MMIO range differs from the machine descriptor".into(),
-        });
-    }
-    Ok(())
-}
-
 struct AxvmVgicAccessContext {
     vm_id: usize,
 }
@@ -350,18 +278,12 @@ impl VgicAccessContext for AxvmVgicAccessContext {
     }
 }
 
-/// Creates the canonical controller and registers its only construction path.
-pub(crate) fn register_device_factories(
-    vm_id: usize,
-    plan: &Arc<VgicConstructionPlan>,
-    registry: &mut DeviceFactoryRegistry,
-) -> AxVmResult {
-    registry.register(Arc::new(Aarch64VgicFactory {
+/// Creates the canonical controller model used by the AArch64 device graph.
+pub(crate) fn model(vm_id: usize, plan: &Arc<VgicConstructionPlan>) -> Arc<dyn DeviceModel> {
+    Arc::new(Aarch64VgicFactory {
         vm_id,
         plan: plan.clone(),
-    }))?;
-    registry.register(Arc::new(Aarch64GicCpuRegionMarkerFactory))?;
-    Ok(())
+    })
 }
 
 fn create_runtime(

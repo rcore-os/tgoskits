@@ -1,11 +1,10 @@
 //! Guest-visible serial resources selected by a machine profile.
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
 use axdevice_base::AccessWidth;
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use super::{GuestMmioRegion, device};
+use super::GuestMmioRegion;
 
 /// Guest-visible serial register model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,47 +79,4 @@ pub enum GuestSerialFdtInterrupt {
     GicSpi,
     /// RISC-V PLIC source number.
     PlicSource,
-}
-
-pub(crate) fn serial_device_config(serial: GuestSerialProfile) -> EmulatedDeviceConfig {
-    let (name, base_gpa, length, cfg_list) = match (serial.model, serial.transport) {
-        (GuestSerialModel::Uart16550, GuestSerialTransport::Port { base, length }) => {
-            ("com1", usize::from(base), usize::from(length), vec![])
-        }
-        (
-            GuestSerialModel::Uart16550,
-            GuestSerialTransport::Mmio {
-                base,
-                length,
-                register_shift,
-                register_width,
-            },
-        ) => (
-            "uart",
-            base,
-            length,
-            vec![
-                serial.clock_hz as usize,
-                usize::from(register_shift),
-                register_width.size(),
-            ],
-        ),
-        (GuestSerialModel::Pl011, GuestSerialTransport::Mmio { base, length, .. }) => {
-            ("pl011", base, length, vec![serial.clock_hz as usize])
-        }
-        (GuestSerialModel::Pl011, GuestSerialTransport::Port { base, length }) => (
-            "pl011",
-            usize::from(base),
-            usize::from(length),
-            vec![serial.clock_hz as usize],
-        ),
-    };
-    device(
-        name,
-        base_gpa,
-        length,
-        serial.irq,
-        EmulatedDeviceType::Console,
-        cfg_list,
-    )
 }

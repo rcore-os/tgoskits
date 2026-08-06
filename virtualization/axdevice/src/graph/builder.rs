@@ -63,39 +63,36 @@ pub(crate) struct DeclaredDeviceNode {
     pub(crate) parent: Option<DeviceNodeId>,
     pub(crate) dependencies: Vec<DeviceNodeId>,
     pub(crate) firmware: super::DeviceFirmwareBinding,
-    pub(crate) config: Option<axvm_types::EmulatedDeviceConfig>,
-    pub(crate) factory: Option<alloc::sync::Arc<dyn crate::DeviceFactory>>,
+    pub(crate) firmware_models: crate::FirmwareModels,
+    pub(crate) model: Option<alloc::sync::Arc<dyn crate::DeviceModel>>,
     pub(crate) declaration: DeviceDeclaration,
     pub(crate) host_mapping: Option<super::HostPassthroughMapping>,
 }
 
 impl DeviceNodeSpec {
     fn to_declared(&self) -> Result<DeclaredDeviceNode, DeviceGraphError> {
-        if self.kind.requires_factory() && self.factory.is_none() {
+        if self.kind.requires_factory() && self.model.is_none() {
             return Err(DeviceGraphError::MissingFactory {
                 node: self.id.to_string(),
             });
         }
-        if self.kind == DeviceNodeKind::FirmwareOnly && self.factory.is_some() {
+        if self.kind == DeviceNodeKind::FirmwareOnly && self.model.is_some() {
             return Err(DeviceGraphError::FirmwareFactory {
                 node: self.id.to_string(),
             });
         }
-        let declaration = match (&self.factory, &self.config, &self.declaration) {
-            (Some(factory), Some(config), _) => {
-                factory
-                    .declare(config)
-                    .map_err(|error| DeviceGraphError::Declaration {
-                        node: self.id.to_string(),
-                        detail: error.to_string(),
-                    })?
-            }
-            (None, None, Some(declaration)) => declaration.clone(),
+        let declaration = match (&self.model, &self.declaration) {
+            (Some(model), _) => model
+                .declare()
+                .map_err(|error| DeviceGraphError::Declaration {
+                    node: self.id.to_string(),
+                    detail: error.to_string(),
+                })?,
+            (None, Some(declaration)) => declaration.clone(),
             _ => {
                 return Err(DeviceGraphError::Declaration {
                     node: self.id.to_string(),
-                    detail: "node has inconsistent factory, configuration, and declaration state"
-                        .into(),
+                    detail: "node has inconsistent model and declaration state".into(),
                 });
             }
         };
@@ -105,8 +102,8 @@ impl DeviceNodeSpec {
             parent: self.parent.clone(),
             dependencies: self.dependencies.clone(),
             firmware: self.firmware.clone(),
-            config: self.config.clone(),
-            factory: self.factory.clone(),
+            firmware_models: self.firmware_models.clone(),
+            model: self.model.clone(),
             declaration,
             host_mapping: self.host_mapping,
         })

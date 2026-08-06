@@ -23,26 +23,20 @@ impl DeviceRuntimeBuilder {
         self.runtime.register_bundle(bundle)
     }
 
-    /// Builds one resolved graph node with the exact factory that declared it.
+    /// Builds one resolved graph node with the exact model that declared it.
     pub fn build_graph_node(
         &mut self,
         node: &ResolvedDeviceNode,
         plan: &VmResourcePlan,
     ) -> DeviceManagerResult {
-        let Some(factory) = node.factory() else {
+        let Some(model) = node.model() else {
             return Ok(());
         };
-        let config = node
-            .config()
-            .ok_or_else(|| crate::DeviceManagerError::InvalidState {
-                operation: "build resolved device graph node",
-                detail: alloc::format!("runtime node {} has no internal configuration", node.id()),
-            })?;
         let bundle = {
             let claims = plan.claim_device(node.id().as_str())?;
             let mut context =
                 DeviceBuildContext::planned(self.runtime.interrupt_registry(), claims);
-            let bundle = factory.build(config, &mut context)?;
+            let bundle = model.build(&mut context)?;
             context.finish(bundle)?
         };
         self.runtime.register_bundle(bundle)

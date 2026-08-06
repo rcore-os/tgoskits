@@ -3,11 +3,10 @@
 use alloc::sync::Arc;
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory, DeviceFactoryRegistry,
-    DeviceManagerError, DeviceManagerResult, DeviceRegistration, DeviceRequirements,
-    ResourceRequest, ResourceSlot, validate_device_config,
+    DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceManagerError, DeviceManagerResult,
+    DeviceModel, DeviceRegistration, DeviceRequirements, ResourceRequest, ResourceSlot,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VmMemMappingType};
+use axvm_types::VmMemMappingType;
 
 use crate::{AxVmResult, config::AxVMConfig};
 
@@ -25,59 +24,27 @@ pub(super) fn guest_low_memory_size(config: &AxVMConfig) -> AxVmResult<u64> {
         .ok_or_else(|| crate::AxVmError::invalid_config("x86 firmware requires guest RAM at GPA 0"))
 }
 
-pub(super) fn register_factory(
-    configs: &[EmulatedDeviceConfig],
-    low_memory_size: u64,
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult {
-    let mut matches = configs
-        .iter()
-        .filter(|config| config.emu_type == EmulatedDeviceType::X86Cmos);
-    let Some(expected) = matches.next() else {
-        return Ok(());
-    };
-    if matches.next().is_some() {
-        return Err(crate::AxVmError::invalid_config(
-            "x86 machine profile has more than one CMOS device",
-        ));
-    }
-    factories.register(Arc::new(X86CmosFactory {
-        expected: expected.clone(),
-        low_memory_size,
-    }))?;
-    Ok(())
+pub(super) fn model(low_memory_size: u64) -> Arc<dyn DeviceModel> {
+    Arc::new(X86CmosModel { low_memory_size })
 }
 
-struct X86CmosFactory {
-    expected: EmulatedDeviceConfig,
+struct X86CmosModel {
     low_memory_size: u64,
 }
 
-impl DeviceFactory for X86CmosFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86Cmos
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        validate_device_config(&self.expected, config, "declare x86 CMOS")?;
-        let size = u16::try_from(config.length).map_err(range_error)?;
-        let base = u16::try_from(config.base_gpa).map_err(range_error)?;
+impl DeviceModel for X86CmosModel {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
         DeviceRequirements::new()
             .with_pio(
                 ResourceSlot::new("registers")?,
-                size,
+                2,
                 1,
-                ResourceRequest::Fixed(base),
+                ResourceRequest::Fixed(0x70),
             )
             .map(DeviceDeclaration::with_requirements)
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build x86 CMOS")?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let range = context.pio(&ResourceSlot::new("registers")?)?;
         if range != (0x70, 2) {
             return Err(DeviceManagerError::InvalidConfig {
@@ -88,12 +55,5 @@ impl DeviceFactory for X86CmosFactory {
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
             Arc::new(axdevice::X86CmosDevice::new(self.low_memory_size)),
         )))
-    }
-}
-
-fn range_error(_error: core::num::TryFromIntError) -> DeviceManagerError {
-    DeviceManagerError::InvalidConfig {
-        operation: "declare x86 CMOS",
-        detail: "CMOS port range exceeds 16 bits".into(),
     }
 }

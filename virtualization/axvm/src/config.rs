@@ -17,12 +17,12 @@
 use std::{string::String, sync::Arc, vec::Vec};
 
 use axdevice::{NullSerialBackendFactory, SerialBackendFactory};
+use axvm_types::InterruptTriggerMode;
 pub use axvm_types::{
-    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
-    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
-    VMInterruptMode, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, GuestPhysAddr, HostAddressAssignment, HostDeviceAssignment,
+    HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
-use axvm_types::{EmulatedDeviceType, InterruptTriggerMode};
+use axvmconfig::VirtualDeviceRequest;
 
 use crate::{
     arch::{ArchOps, CurrentArch},
@@ -95,24 +95,24 @@ pub struct AxVMConfig {
     pub cpu_config: AxVCpuConfig,
     /// VM image configuration.
     pub image_config: VMImageConfig,
-    emu_devices: Vec<EmulatedDeviceConfig>,
-    pass_through_devices: Vec<PassThroughDeviceConfig>,
+    pass_through_devices: Vec<HostDeviceAssignment>,
     excluded_devices: Vec<Vec<String>>,
-    pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pass_through_addresses: Vec<HostAddressAssignment>,
     reserved_address_ranges: Vec<ReservedAddressConfig>,
-    pass_through_ports: Vec<PassThroughPortConfig>,
+    pass_through_ports: Vec<HostPortAssignment>,
     address_space_policy: AddressSpacePolicy,
     memory_regions: Vec<VmMemConfig>,
     boot_policy: GuestBootPolicy,
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<PassthroughInterrupt>,
-    interrupt_mode: VMInterruptMode,
     serial_profile: GuestSerialProfile,
     serial_fdt_identity: Option<GuestSerialFdtIdentity>,
     gic_profile: Option<GuestGicProfile>,
     plic_profile: Option<GuestPlicProfile>,
     timer_profile: Option<GuestTimerProfile>,
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
+    virtual_device_requests: Vec<VirtualDeviceRequest>,
+    virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -123,20 +123,22 @@ pub struct AxVMConfigParams {
     pub phys_cpu_ls: PhysCpuList,
     pub cpu_config: AxVCpuConfig,
     pub image_config: VMImageConfig,
-    pub emu_devices: Vec<EmulatedDeviceConfig>,
-    pub pass_through_devices: Vec<PassThroughDeviceConfig>,
+    pub pass_through_devices: Vec<HostDeviceAssignment>,
     pub excluded_devices: Vec<Vec<String>>,
-    pub pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pub pass_through_addresses: Vec<HostAddressAssignment>,
     pub reserved_address_ranges: Vec<ReservedAddressConfig>,
-    pub pass_through_ports: Vec<PassThroughPortConfig>,
+    pub pass_through_ports: Vec<HostPortAssignment>,
     pub address_space_policy: AddressSpacePolicy,
     pub memory_regions: Vec<VmMemConfig>,
     pub boot_policy: GuestBootPolicy,
-    pub interrupt_mode: VMInterruptMode,
     /// Machine-owned virtual serial resources.
     pub serial_profile: Option<GuestSerialProfile>,
     /// App-owned backend factory for the mandatory virtual serial device.
     pub serial_backend_factory: Option<Arc<dyn SerialBackendFactory>>,
+    /// Open-ended virtual-device requests parsed from guest configuration.
+    pub virtual_device_requests: Vec<VirtualDeviceRequest>,
+    /// Code-registered factories available to this VM.
+    pub virtual_device_catalog: Option<Arc<crate::ConfiguredDeviceCatalog>>,
 }
 
 impl AxVMConfig {
@@ -149,7 +151,6 @@ impl AxVMConfig {
             phys_cpu_ls: params.phys_cpu_ls,
             cpu_config: params.cpu_config,
             image_config: params.image_config,
-            emu_devices: params.emu_devices,
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
@@ -159,15 +160,18 @@ impl AxVMConfig {
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
-            interrupt_mode: params.interrupt_mode,
             serial_profile,
             serial_fdt_identity: None,
-            gic_profile: None,
-            plic_profile: None,
+            gic_profile: machine.gic,
+            plic_profile: machine.plic,
             timer_profile: machine.timer,
             serial_backend_factory: params
                 .serial_backend_factory
                 .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
+            virtual_device_requests: params.virtual_device_requests,
+            virtual_device_catalog: params
+                .virtual_device_catalog
+                .unwrap_or_else(|| Arc::new(crate::ConfiguredDeviceCatalog::new())),
         }
     }
 
@@ -246,7 +250,7 @@ impl AxVMConfig {
     }
 
     /// Returns the list of passthrough address configurations.
-    pub fn pass_through_addresses(&self) -> &Vec<PassThroughAddressConfig> {
+    pub fn pass_through_addresses(&self) -> &Vec<HostAddressAssignment> {
         &self.pass_through_addresses
     }
 
@@ -261,7 +265,7 @@ impl AxVMConfig {
     }
 
     /// Returns the list of passthrough host I/O port configurations.
-    pub fn pass_through_ports(&self) -> &Vec<PassThroughPortConfig> {
+    pub fn pass_through_ports(&self) -> &Vec<HostPortAssignment> {
         &self.pass_through_ports
     }
 
@@ -290,23 +294,18 @@ impl AxVMConfig {
         self.boot_policy = boot_policy;
     }
 
-    /// Returns configurations related to VM emulated devices.
-    pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
-        &self.emu_devices
-    }
-
     /// Returns configurations related to VM passthrough devices.
-    pub fn pass_through_devices(&self) -> &Vec<PassThroughDeviceConfig> {
+    pub fn pass_through_devices(&self) -> &Vec<HostDeviceAssignment> {
         &self.pass_through_devices
     }
 
     /// Adds a new passthrough device to the VM configuration.
-    pub fn add_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
+    pub fn add_pass_through_device(&mut self, device: HostDeviceAssignment) {
         self.pass_through_devices.push(device);
     }
 
     /// Removes passthrough device from the VM configuration.
-    pub fn remove_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
+    pub fn remove_pass_through_device(&mut self, device: HostDeviceAssignment) {
         self.pass_through_devices.retain(|d| d != &device);
     }
 
@@ -334,9 +333,9 @@ impl AxVMConfig {
         &self.passthrough_irq_list
     }
 
-    /// Returns the interrupt mode of the VM.
-    pub fn interrupt_mode(&self) -> VMInterruptMode {
-        self.interrupt_mode
+    /// Returns whether the guest address space starts from host identity mappings.
+    pub fn uses_passthrough_address_space(&self) -> bool {
+        self.address_space_policy == AddressSpacePolicy::Passthrough
     }
 
     /// Returns the machine-owned virtual serial resources.
@@ -344,28 +343,12 @@ impl AxVMConfig {
         self.serial_profile
     }
 
-    /// Replaces the machine serial resources and its bus descriptor atomically.
+    /// Replaces the machine serial resources and firmware identity atomically.
     pub fn replace_machine_serial(
         &mut self,
         profile: GuestSerialProfile,
         identity: Option<GuestSerialFdtIdentity>,
     ) -> crate::AxVmResult {
-        let mut serial_index = None;
-        for (index, device) in self.emu_devices.iter().enumerate() {
-            if device.emu_type != EmulatedDeviceType::Console {
-                continue;
-            }
-            if serial_index.replace(index).is_some() {
-                return Err(crate::AxVmError::invalid_config(
-                    "machine profile has more than one serial device",
-                ));
-            }
-        }
-        let serial_index = serial_index.ok_or_else(|| {
-            crate::AxVmError::invalid_config("machine profile has no serial device")
-        })?;
-
-        self.emu_devices[serial_index] = crate::machine::serial_device_config(profile);
         self.serial_profile = profile;
         self.serial_fdt_identity = identity;
         Ok(())
@@ -400,35 +383,6 @@ impl AxVMConfig {
             region.length = GICV2_CPU_INTERFACE_SIZE;
         }
         profile.validate_for_vcpus(cpu_num)?;
-        let per_cpu_configs = gic_per_cpu_device_configs(&profile);
-
-        let distributor = self
-            .emu_devices
-            .iter_mut()
-            .find(|device| device.emu_type == EmulatedDeviceType::InterruptController)
-            .ok_or_else(|| {
-                crate::AxVmError::invalid_config(
-                    "AArch64 machine profile has no interrupt controller",
-                )
-            })?;
-        distributor.base_gpa = profile.distributor.base;
-        distributor.length = profile.distributor.length;
-
-        let per_cpu_index = self
-            .emu_devices
-            .iter()
-            .position(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
-            .ok_or_else(|| {
-                crate::AxVmError::invalid_config(
-                    "AArch64 machine profile has no per-CPU GIC region",
-                )
-            })?;
-        self.emu_devices
-            .retain(|device| device.emu_type != EmulatedDeviceType::GicCpuRegion);
-        for (offset, config) in per_cpu_configs.into_iter().enumerate() {
-            self.emu_devices.insert(per_cpu_index + offset, config);
-        }
-
         self.gic_profile = Some(profile);
         Ok(())
     }
@@ -459,18 +413,14 @@ impl AxVMConfig {
 
     /// Replaces the virtual PLIC window with host firmware resources.
     pub fn replace_machine_plic(&mut self, profile: GuestPlicProfile) -> crate::AxVmResult {
-        let plic = self
-            .emu_devices
-            .iter_mut()
-            .find(|device| device.emu_type == EmulatedDeviceType::PPPTGlobal)
+        let contexts = self
+            .phys_cpu_ls
+            .cpu_num()
+            .max(1)
+            .checked_mul(2)
             .ok_or_else(|| {
-                crate::AxVmError::invalid_config("RISC-V machine profile has no PLIC controller")
+                crate::AxVmError::invalid_config("RISC-V PLIC context count overflows usize")
             })?;
-        let [contexts] = plic.cfg_list.as_slice() else {
-            return Err(crate::AxVmError::invalid_config(
-                "RISC-V PLIC profile has no context count",
-            ));
-        };
         const CONTEXT_CONTROL_OFFSET: usize = 0x20_0000;
         const CONTEXT_STRIDE: usize = 0x1000;
         const CLAIM_COMPLETE_SIZE: usize = 8;
@@ -488,8 +438,6 @@ impl AxVMConfig {
             )));
         }
 
-        plic.base_gpa = profile.base;
-        plic.length = profile.length;
         self.plic_profile = Some(profile);
         Ok(())
     }
@@ -502,6 +450,14 @@ impl AxVMConfig {
     /// Returns the factory that creates a backend for each virtual UART graph.
     pub fn serial_backend_factory(&self) -> Arc<dyn SerialBackendFactory> {
         self.serial_backend_factory.clone()
+    }
+
+    pub(crate) fn virtual_device_requests(&self) -> &[VirtualDeviceRequest] {
+        &self.virtual_device_requests
+    }
+
+    pub(crate) fn virtual_device_catalog(&self) -> &crate::ConfiguredDeviceCatalog {
+        &self.virtual_device_catalog
     }
 
     /// Relocate the guest kernel image while preserving the configured
@@ -532,32 +488,6 @@ impl AxVMConfig {
 impl Default for AxVMConfig {
     fn default() -> Self {
         Self::new(AxVMConfigParams::default())
-    }
-}
-
-fn gic_per_cpu_device_configs(profile: &GuestGicProfile) -> Vec<EmulatedDeviceConfig> {
-    match &profile.cpu_region {
-        GuestGicCpuRegion::CpuInterface(region) => alloc::vec![EmulatedDeviceConfig {
-            name: "gic-cpu-interface".into(),
-            base_gpa: region.base,
-            length: region.length,
-            irq_id: 0,
-            emu_type: EmulatedDeviceType::GicCpuRegion,
-            cfg_list: Vec::new(),
-        }],
-        GuestGicCpuRegion::Redistributors(redistributors) => redistributors
-            .regions
-            .iter()
-            .enumerate()
-            .map(|(index, region)| EmulatedDeviceConfig {
-                name: alloc::format!("gic-redistributor-{index}"),
-                base_gpa: region.base,
-                length: region.length,
-                irq_id: 0,
-                emu_type: EmulatedDeviceType::GicCpuRegion,
-                cfg_list: alloc::vec![index, redistributors.stride],
-            })
-            .collect(),
     }
 }
 
@@ -667,161 +597,9 @@ mod tests {
     }
 
     #[test]
-    fn replacing_machine_serial_updates_the_internal_bus_descriptor() {
-        let machine =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 1);
+    fn replacing_machine_gicv2_normalizes_host_windows() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            emu_devices: machine.emulated_devices,
-            serial_profile: Some(machine.serial),
-            ..Default::default()
-        });
-        let profile = GuestSerialProfile {
-            model: crate::machine::GuestSerialModel::Uart16550,
-            transport: crate::machine::GuestSerialTransport::Mmio {
-                base: 0xfeb5_0000,
-                length: 0x100,
-                register_shift: 2,
-                register_width: axdevice_base::AccessWidth::Dword,
-            },
-            irq: 33,
-            clock_hz: 24_000_000,
-        };
-        let identity = GuestSerialFdtIdentity {
-            node_path: "/serial@feb50000".into(),
-            node_phandle: Some(0x2d1),
-            interrupt_parent: 1,
-            interrupt_specifier: vec![0, 0x14d, 4],
-            stdout_path: "/serial@feb50000:1500000".into(),
-            clock_references: Vec::new(),
-        };
-
-        config
-            .replace_machine_serial(profile, Some(identity.clone()))
-            .unwrap();
-
-        assert_eq!(config.serial_profile(), profile);
-        assert_eq!(config.serial_fdt_identity(), Some(&identity));
-        let descriptor = config
-            .emu_devices()
-            .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::Console)
-            .unwrap();
-        assert_eq!(descriptor.name, "uart");
-        assert_eq!(descriptor.base_gpa, 0xfeb5_0000);
-        assert_eq!(descriptor.length, 0x100);
-        assert_eq!(descriptor.irq_id, 33);
-        assert_eq!(descriptor.cfg_list, [24_000_000, 2, 4]);
-    }
-
-    #[test]
-    fn replacing_machine_gic_updates_both_trapped_windows() {
-        let machine =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 2);
-        let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(2, None, None),
-            emu_devices: machine.emulated_devices,
-            serial_profile: Some(machine.serial),
-            ..Default::default()
-        });
-        let profile = GuestGicProfile {
-            compatible: "arm,gic-v3".into(),
-            node_path: "/interrupt-controller@fe600000".into(),
-            node_phandle: Some(1),
-            distributor: crate::machine::GuestMmioRegion {
-                base: 0xfe60_0000,
-                length: 0x1_0000,
-            },
-            cpu_region: GuestGicCpuRegion::Redistributors(
-                crate::machine::GuestGicRedistributorProfile {
-                    regions: alloc::vec![
-                        crate::machine::GuestMmioRegion {
-                            base: 0xfe68_0000,
-                            length: 0x2_0000,
-                        },
-                        crate::machine::GuestMmioRegion {
-                            base: 0xfe80_0000,
-                            length: 0x2_0000,
-                        },
-                    ],
-                    stride: 0x2_0000,
-                },
-            ),
-            its: Vec::new(),
-        };
-
-        let mut overlapping = profile.clone();
-        let GuestGicCpuRegion::Redistributors(redistributors) = &mut overlapping.cpu_region else {
-            unreachable!();
-        };
-        redistributors.regions[1].base = redistributors.regions[0].base;
-        assert!(config.replace_machine_gic(overlapping).is_err());
-
-        let mut overlapping_its = profile.clone();
-        overlapping_its.its = alloc::vec![
-            crate::machine::GuestItsProfile {
-                id: axdevice_base::ItsId::new(0),
-                node_path: "/its@10000000".into(),
-                node_phandle: Some(4),
-                registers: crate::machine::GuestMmioRegion {
-                    base: 0x1000_0000,
-                    length: 0x2_0000,
-                },
-            },
-            crate::machine::GuestItsProfile {
-                id: axdevice_base::ItsId::new(1),
-                node_path: "/its@10010000".into(),
-                node_phandle: Some(5),
-                registers: crate::machine::GuestMmioRegion {
-                    base: 0x1001_0000,
-                    length: 0x2_0000,
-                },
-            },
-        ];
-        assert!(config.replace_machine_gic(overlapping_its).is_err());
-
-        let mut overflowing = profile.clone();
-        let GuestGicCpuRegion::Redistributors(redistributors) = &mut overflowing.cpu_region else {
-            unreachable!();
-        };
-        redistributors.regions[1] = crate::machine::GuestMmioRegion {
-            base: usize::MAX & !0xffff,
-            length: 0x2_0000,
-        };
-        assert!(config.replace_machine_gic(overflowing).is_err());
-
-        config.replace_machine_gic(profile.clone()).unwrap();
-
-        assert_eq!(config.gic_profile(), Some(&profile));
-        let distributor = config
-            .emu_devices()
-            .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::InterruptController)
-            .unwrap();
-        assert_eq!(
-            (distributor.base_gpa, distributor.length),
-            (0xfe60_0000, 0x1_0000)
-        );
-        let redistributors = config
-            .emu_devices()
-            .iter()
-            .filter(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
-            .map(|device| (device.base_gpa, device.length))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            redistributors,
-            [(0xfe68_0000, 0x2_0000), (0xfe80_0000, 0x2_0000)]
-        );
-    }
-
-    #[test]
-    fn replacing_machine_gicv2_normalizes_overlapping_firmware_windows() {
-        let machine =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Aarch64, 1);
-        let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
-            emu_devices: machine.emulated_devices,
-            serial_profile: Some(machine.serial),
             ..Default::default()
         });
         let profile = GuestGicProfile {
@@ -850,51 +628,5 @@ mod tests {
                 length: 0x2_000,
             })
         );
-        let distributor = config
-            .emu_devices()
-            .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::InterruptController)
-            .unwrap();
-        let cpu_interface = config
-            .emu_devices()
-            .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::GicCpuRegion)
-            .unwrap();
-        assert_eq!(
-            (distributor.base_gpa, distributor.length),
-            (0x2a70_1000, 0x1_000)
-        );
-        assert_eq!(
-            (cpu_interface.base_gpa, cpu_interface.length),
-            (0x2a70_2000, 0x2_000)
-        );
-    }
-
-    #[test]
-    fn replacing_machine_plic_updates_the_trapped_window() {
-        let machine =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::Riscv64, 1);
-        let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
-            emu_devices: machine.emulated_devices,
-            serial_profile: Some(machine.serial),
-            ..Default::default()
-        });
-        let profile = GuestPlicProfile {
-            node_path: "/soc/plic@d000000".into(),
-            node_phandle: Some(9),
-            base: 0x0d00_0000,
-            length: 0x80_0000,
-        };
-
-        config.replace_machine_plic(profile.clone()).unwrap();
-
-        assert_eq!(config.plic_profile(), Some(&profile));
-        let plic = config
-            .emu_devices()
-            .iter()
-            .find(|device| device.emu_type == EmulatedDeviceType::PPPTGlobal)
-            .unwrap();
-        assert_eq!((plic.base_gpa, plic.length), (0x0d00_0000, 0x80_0000));
     }
 }

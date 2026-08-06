@@ -19,12 +19,11 @@ use axdevice_base::{
     DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
     StopGrant, SysRegAddr, TimerGrant, WakeGrant,
 };
-use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr};
+use axvm_types::GuestPhysAddr;
 
 use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle, DeviceManagerError,
-    DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey, PollableDeviceOps,
-    runtime_resources::PlannedRuntimeResources,
+    DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceServices,
+    GuestRangeAllocatorKey, PollableDeviceOps, runtime_resources::PlannedRuntimeResources,
 };
 
 /// Runtime backend for access-scoped virtual timer requests.
@@ -332,31 +331,6 @@ impl DeviceRuntime {
         &self.planned.interrupts
     }
 
-    /// Builds all configured devices through registered factories.
-    pub fn build_with_factories(
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<Self> {
-        Self::build_with_factories_and_ports(configs, factories, context, RuntimeAccessPorts::new())
-    }
-
-    /// Builds all configured devices and attaches VM runtime access ports.
-    pub fn build_with_factories_and_ports(
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
-        context: &mut DeviceBuildContext<'_>,
-        access_ports: RuntimeAccessPorts,
-    ) -> DeviceManagerResult<Self> {
-        let mut this = Self::empty();
-        this.access_ports = access_ports;
-        for config in configs {
-            this.register_factory_device(config, factories, context)?;
-        }
-        this.seal();
-        Ok(this)
-    }
-
     /// Freezes this runtime topology after VM preparation.
     pub(crate) fn seal(&mut self) {
         self.sealed = true;
@@ -372,26 +346,14 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Builds and atomically registers one factory-managed device.
-    pub(crate) fn register_factory_device(
-        &mut self,
-        config: &EmulatedDeviceConfig,
-        factories: &DeviceFactoryRegistry,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult {
-        self.ensure_unsealed("register factory device")?;
-        let bundle = factories.build(config, context)?;
-        self.register_bundle(bundle)
-    }
-
-    /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
+    /// Allocates an IVC channel from a graph-claimed guest range service.
     pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
         self.services
             .require::<GuestRangeAllocatorKey>()?
             .allocate(size)
     }
 
-    /// Releases an IVC channel at the specified address and size.
+    /// Releases a previously allocated IVC channel.
     pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
         self.services
             .require::<GuestRangeAllocatorKey>()?
@@ -1275,20 +1237,18 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use axdevice_base::{
-        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, ControllerInputId, Device,
-        DeviceAccess, DeviceError, DeviceId, DeviceRegistry, DmaGrant, InterruptControllerId,
-        InterruptTriggerMode, InvalidResourceReason, IrqResult, Port, RegistryError, Resource,
-        StopGrant, SysRegAddr, TimerGrant, VirtualInterruptController, WakeGrant, WiredIrqInput,
+        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
+        DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
+        StopGrant, SysRegAddr, TimerGrant, WakeGrant,
     };
-    use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
+    use axvm_types::GuestPhysAddr;
 
     use super::{
         DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
     };
     use crate::{
-        DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
-        DeviceManagerError, DeviceManagerResult, DeviceRegistration, ServiceCardinality,
-        ServiceKey, register_builtin_factories,
+        DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+        ServiceCardinality, ServiceKey,
     };
 
     struct D {
@@ -1525,47 +1485,6 @@ mod tests {
             _context: &mut dyn DeviceAccess,
         ) -> Result<BusResponse, DeviceError> {
             Ok(BusResponse::Read { value: 0 })
-        }
-    }
-
-    struct EmptyFactory {
-        device_type: EmulatedDeviceType,
-    }
-
-    impl DeviceFactory for EmptyFactory {
-        fn device_type(&self) -> EmulatedDeviceType {
-            self.device_type
-        }
-
-        fn declare(
-            &self,
-            _config: &EmulatedDeviceConfig,
-        ) -> DeviceManagerResult<crate::DeviceDeclaration> {
-            Ok(crate::DeviceDeclaration::new())
-        }
-
-        fn build(
-            &self,
-            _config: &EmulatedDeviceConfig,
-            _context: &mut DeviceBuildContext<'_>,
-        ) -> DeviceManagerResult<DeviceBundle> {
-            Ok(DeviceBundle::new())
-        }
-    }
-
-    struct UnusedInterruptController;
-
-    impl VirtualInterruptController for UnusedInterruptController {
-        fn id(&self) -> InterruptControllerId {
-            InterruptControllerId::new(0)
-        }
-
-        fn wired_input(
-            &self,
-            _input: ControllerInputId,
-            _trigger: InterruptTriggerMode,
-        ) -> IrqResult<WiredIrqInput> {
-            unreachable!("empty factory never resolves an IRQ")
         }
     }
 
@@ -1847,39 +1766,6 @@ mod tests {
         assert_eq!(timer_calls.load(Ordering::Relaxed), 1);
         assert_eq!(wake_calls.load(Ordering::Relaxed), 1);
         assert_eq!(stop_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn factory_built_runtime_rejects_late_registration_after_seal() {
-        let mut factories = DeviceFactoryRegistry::new();
-        factories
-            .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::Dummy,
-            }))
-            .unwrap();
-        let mut context = DeviceBuildContext::new(&UnusedInterruptController);
-        let mut runtime = DeviceRuntime::build_with_factories(
-            &[EmulatedDeviceConfig {
-                name: "seal-test".into(),
-                base_gpa: 0,
-                length: 0,
-                irq_id: 0,
-                emu_type: EmulatedDeviceType::Dummy,
-                cfg_list: alloc::vec![],
-            }],
-            &factories,
-            &mut context,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            runtime.register_bundle(DeviceBundle::new()),
-            Err(DeviceManagerError::InvalidState { .. })
-        ));
-        assert!(matches!(
-            runtime.register(Arc::new(D::new_mmio(0x9000, 0x100, "late"))),
-            Err(RegistryError::InvalidState { .. })
-        ));
     }
 
     #[test]
@@ -2217,60 +2103,5 @@ mod tests {
         assert_eq!(lifecycle.reset_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.suspend_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.resume_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn factory_build_rejects_unregistered_device_type() {
-        let mut factories = DeviceFactoryRegistry::new();
-        factories
-            .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::FwCfg,
-            }))
-            .unwrap();
-        let mut context = DeviceBuildContext::new(&UnusedInterruptController);
-        let config = EmulatedDeviceConfig {
-            name: "fw-cfg".into(),
-            emu_type: EmulatedDeviceType::FwCfg,
-            ..Default::default()
-        };
-
-        assert!(DeviceRuntime::build_with_factories(&[config], &factories, &mut context).is_ok());
-
-        let unsupported = EmulatedDeviceConfig {
-            name: "unsupported".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
-            ..Default::default()
-        };
-        assert!(matches!(
-            DeviceRuntime::build_with_factories(&[unsupported], &factories, &mut context),
-            Err(crate::DeviceManagerError::Unsupported {
-                operation: "build emulated device",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn ivc_channel_factory_contributes_static_guest_range_allocator() {
-        let mut factories = DeviceFactoryRegistry::new();
-        register_builtin_factories(&mut factories).unwrap();
-        let mut context = DeviceBuildContext::new(&UnusedInterruptController);
-        let config = EmulatedDeviceConfig {
-            name: "ivc".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
-            base_gpa: 0x8000_0000,
-            length: 0x4000,
-            ..Default::default()
-        };
-
-        let devices =
-            DeviceRuntime::build_with_factories(&[config], &factories, &mut context).unwrap();
-
-        let first = devices.alloc_ivc_channel(0x1000).unwrap();
-        let second = devices.alloc_ivc_channel(0x2000).unwrap();
-        assert_eq!(first.as_usize(), 0x8000_0000);
-        assert_eq!(second.as_usize(), 0x8000_1000);
-        devices.release_ivc_channel(first, 0x1000).unwrap();
-        assert_eq!(devices.alloc_ivc_channel(0x1000).unwrap(), first);
     }
 }

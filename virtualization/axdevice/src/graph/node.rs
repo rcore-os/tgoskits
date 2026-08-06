@@ -3,9 +3,9 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-use axvm_types::EmulatedDeviceConfig;
-
-use crate::{DeviceFactory, DeviceManagerError, DeviceManagerResult, DeviceRequirements};
+use crate::{
+    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRequirements, FirmwareModels,
+};
 
 /// Stable identity of one node in a VM-local device graph.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -121,7 +121,7 @@ impl HostPassthroughMapping {
     }
 }
 
-/// Pure output of [`DeviceFactory::declare`](crate::DeviceFactory::declare).
+/// Pure output of [`DeviceModel::declare`](crate::DeviceModel::declare).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DeviceDeclaration {
     requirements: DeviceRequirements,
@@ -153,29 +153,21 @@ pub struct DeviceNodeSpec {
     pub(crate) parent: Option<DeviceNodeId>,
     pub(crate) dependencies: Vec<DeviceNodeId>,
     pub(crate) firmware: DeviceFirmwareBinding,
-    pub(crate) config: Option<EmulatedDeviceConfig>,
-    pub(crate) factory: Option<Arc<dyn DeviceFactory>>,
+    pub(crate) firmware_models: FirmwareModels,
+    pub(crate) model: Option<Arc<dyn DeviceModel>>,
     pub(crate) declaration: Option<DeviceDeclaration>,
     pub(crate) host_mapping: Option<HostPassthroughMapping>,
 }
 
 impl DeviceNodeSpec {
     /// Creates a runtime-backed virtual node.
-    pub fn virtual_device(
-        id: DeviceNodeId,
-        config: EmulatedDeviceConfig,
-        factory: Arc<dyn DeviceFactory>,
-    ) -> Self {
-        Self::runtime(id, DeviceNodeKind::Virtual, config, factory)
+    pub fn virtual_device(id: DeviceNodeId, model: Arc<dyn DeviceModel>) -> Self {
+        Self::runtime(id, DeviceNodeKind::Virtual, model)
     }
 
     /// Creates a virtual replacement for one host-described device.
-    pub fn host_replacement(
-        id: DeviceNodeId,
-        config: EmulatedDeviceConfig,
-        factory: Arc<dyn DeviceFactory>,
-    ) -> Self {
-        Self::runtime(id, DeviceNodeKind::HostReplacement, config, factory)
+    pub fn host_replacement(id: DeviceNodeId, model: Arc<dyn DeviceModel>) -> Self {
+        Self::runtime(id, DeviceNodeKind::HostReplacement, model)
     }
 
     /// Creates a host passthrough node with fixed resource reservations.
@@ -186,8 +178,8 @@ impl DeviceNodeSpec {
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
-            config: None,
-            factory: None,
+            firmware_models: FirmwareModels::default(),
+            model: None,
             declaration: Some(declaration),
             host_mapping: None,
         }
@@ -201,27 +193,22 @@ impl DeviceNodeSpec {
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
-            config: None,
-            factory: None,
+            firmware_models: FirmwareModels::default(),
+            model: None,
             declaration: Some(DeviceDeclaration::new()),
             host_mapping: None,
         }
     }
 
-    fn runtime(
-        id: DeviceNodeId,
-        kind: DeviceNodeKind,
-        config: EmulatedDeviceConfig,
-        factory: Arc<dyn DeviceFactory>,
-    ) -> Self {
+    fn runtime(id: DeviceNodeId, kind: DeviceNodeKind, model: Arc<dyn DeviceModel>) -> Self {
         Self {
             id,
             kind,
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
-            config: Some(config),
-            factory: Some(factory),
+            firmware_models: FirmwareModels::default(),
+            model: Some(model),
             declaration: None,
             host_mapping: None,
         }
@@ -242,6 +229,12 @@ impl DeviceNodeSpec {
     /// Associates this node with normalized firmware identity.
     pub fn with_firmware_binding(mut self, binding: DeviceFirmwareBinding) -> Self {
         self.firmware = binding;
+        self
+    }
+
+    /// Associates device-owned FDT and ACPI rendering capabilities.
+    pub fn with_firmware_models(mut self, models: FirmwareModels) -> Self {
+        self.firmware_models = models;
         self
     }
 

@@ -16,12 +16,12 @@ use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
     Resource,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
+use axvm_types::GuestPhysAddr;
 
 use crate::{
-    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration, DeviceFactory,
-    DeviceManagerError, DeviceManagerResult, DeviceRegistration, DeviceRequirements,
-    ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey, validate_device_config,
+    ControllerRegistration, DeviceBuildContext, DeviceBundle, DeviceDeclaration,
+    DeviceManagerError, DeviceManagerResult, DeviceModel, DeviceRegistration, DeviceRequirements,
+    ResourceRequest, ResourceSlot, ServiceCardinality, ServiceKey,
 };
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
@@ -274,7 +274,8 @@ impl PchPicOutputPort for LoongArchPchPic {
 
 /// Factory for the guest-visible LoongArch PCH-PIC contribution.
 pub struct LoongArchPchPicFactory {
-    expected: EmulatedDeviceConfig,
+    base: usize,
+    length: usize,
     domain_factory: Arc<dyn LoongArchInterruptDomainFactory>,
 }
 
@@ -290,45 +291,33 @@ pub trait LoongArchInterruptDomainFactory: Send + Sync {
 impl LoongArchPchPicFactory {
     /// Creates the only factory for an architecture-owned PCH-PIC instance.
     pub fn new(
-        expected: EmulatedDeviceConfig,
+        base: usize,
+        length: usize,
         domain_factory: Arc<dyn LoongArchInterruptDomainFactory>,
     ) -> Self {
         Self {
-            expected,
+            base,
+            length,
             domain_factory,
         }
     }
-
-    fn validate(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult {
-        validate_device_config(&self.expected, config, "build LoongArch virtual PCH-PIC")
-    }
 }
 
-impl DeviceFactory for LoongArchPchPicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::LoongArchPchPic
-    }
-
-    fn declare(&self, config: &EmulatedDeviceConfig) -> DeviceManagerResult<DeviceDeclaration> {
-        self.validate(config)?;
+impl DeviceModel for LoongArchPchPicFactory {
+    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
         DeviceRequirements::new()
             .with_mmio(
                 ResourceSlot::new("registers")?,
-                config.length as u64,
+                self.length as u64,
                 1,
-                ResourceRequest::Fixed(config.base_gpa as u64),
+                ResourceRequest::Fixed(self.base as u64),
             )
             .map(DeviceDeclaration::with_requirements)
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        context: &mut DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        self.validate(config)?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
-        if base != config.base_gpa as u64 || length != config.length as u64 {
+        if base != self.base as u64 || length != self.length as u64 {
             return Err(DeviceManagerError::InvalidConfig {
                 operation: "build LoongArch virtual PCH-PIC",
                 detail: "planned MMIO range differs from the machine descriptor".into(),
