@@ -39,7 +39,31 @@ impl Riscv64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        init_vm_with(vm)
+        complete_vm_init(vm, |resources| {
+            let placements = vcpu_placements(resources);
+            let dtb_addr = resources
+                .config()
+                .image_config()
+                .dtb_load_gpa
+                .unwrap_or_default();
+            let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+                Ok(RiscvVcpuCreateConfig {
+                    hart_id: placement.id,
+                    dtb_addr: dtb_addr.as_usize(),
+                })
+            })?;
+            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let interrupt_controller = devices
+                .devices()
+                .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
+            validate_guest_dtb(resources)?;
+
+            let owned_regions = guest_owned_regions(resources);
+            map_guest_address_space(vm, resources, &owned_regions)?;
+            vcpus.setup(resources, build_vcpu_setup_config)?;
+
+            Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
+        })
     }
 }
 
@@ -83,34 +107,6 @@ fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
         &replacement_ranges,
         super::resource_pools::create(config)?,
     )?))
-}
-
-fn init_vm_with(vm: &AxVM) -> AxVmResult {
-    complete_vm_init(vm, |resources| {
-        let placements = vcpu_placements(resources);
-        let dtb_addr = resources
-            .config()
-            .image_config()
-            .dtb_load_gpa
-            .unwrap_or_default();
-        let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
-            Ok(RiscvVcpuCreateConfig {
-                hart_id: placement.id,
-                dtb_addr: dtb_addr.as_usize(),
-            })
-        })?;
-        let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
-        let interrupt_controller = devices
-            .devices()
-            .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-        validate_guest_dtb(resources)?;
-
-        let owned_regions = guest_owned_regions(resources);
-        map_guest_address_space(vm, resources, &owned_regions)?;
-        vcpus.setup(resources, build_vcpu_setup_config)?;
-
-        Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
-    })
 }
 
 fn build_vcpu_setup_config(

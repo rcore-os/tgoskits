@@ -227,7 +227,7 @@ fn configured_dyn_models_share_graph_firmware_and_runtime_resources() {
 [[devices.virtual]]
 id = "data1"
 model = "virtio-blk-like"
-capacity = "20GiB"
+capacity = "40GiB"
 
 [[devices.virtual]]
 id = "data0"
@@ -285,11 +285,53 @@ capacity = "20GiB"
         built,
         vec![
             (0x1000_0000, 32, "20GiB".into()),
-            (0x1000_1000, 33, "20GiB".into()),
+            (0x1000_1000, 33, "40GiB".into()),
         ]
     );
-    assert_eq!(firmware.fdt().len(), 2);
-    assert_eq!(firmware.acpi().len(), 2);
+    assert_eq!(
+        firmware.fdt(),
+        [
+            (
+                DeviceNodeId::new("data0").unwrap(),
+                FdtNodeSpec {
+                    path: "/virtio@10000000".into(),
+                    properties: vec![FirmwareProperty {
+                        name: "interrupt".into(),
+                        value: 32_u64.to_be_bytes().to_vec(),
+                    }],
+                },
+            ),
+            (
+                DeviceNodeId::new("data1").unwrap(),
+                FdtNodeSpec {
+                    path: "/virtio@10001000".into(),
+                    properties: vec![FirmwareProperty {
+                        name: "interrupt".into(),
+                        value: 33_u64.to_be_bytes().to_vec(),
+                    }],
+                },
+            ),
+        ]
+    );
+    assert_eq!(
+        firmware.acpi(),
+        [
+            (
+                DeviceNodeId::new("data0").unwrap(),
+                AcpiDeviceSpec {
+                    path: "\\_SB.V000".into(),
+                    aml: 0x1000_0000_usize.to_le_bytes().to_vec(),
+                },
+            ),
+            (
+                DeviceNodeId::new("data1").unwrap(),
+                AcpiDeviceSpec {
+                    path: "\\_SB.V001".into(),
+                    aml: 0x1000_1000_usize.to_le_bytes().to_vec(),
+                },
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -333,6 +375,22 @@ capacity = 20
     .unwrap();
     assert!(matches!(
         catalog.instantiate_node(&invalid.devices.virtual_devices[0], &context),
+        Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
+
+    let unknown_option = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "data0"
+model = "virtio-blk-like"
+capacity = "20GiB"
+cache = "writeback"
+"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        catalog.instantiate_node(&unknown_option.devices.virtual_devices[0], &context),
         Err(ConfiguredDeviceError::InvalidOptions { .. })
     ));
 }

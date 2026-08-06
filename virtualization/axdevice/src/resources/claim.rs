@@ -190,38 +190,43 @@ pub struct ResourceClaimSet {
 
 impl ResourceClaimSet {
     pub(crate) fn mmio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        match &self.claim(slot)?.resource {
-            ResolvedResource::Mmio { base, size } => Ok((*base, *size)),
-            _ => Err(claim_kind_error(self.claim(slot)?, "MMIO")),
-        }
+        let claim = self.claim(slot)?;
+        claim
+            .resource
+            .mmio()
+            .ok_or_else(|| claim_kind_error(claim, "MMIO"))
     }
 
     pub(crate) fn pio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
-        match &self.claim(slot)?.resource {
-            ResolvedResource::Pio { base, size } => Ok((*base, *size)),
-            _ => Err(claim_kind_error(self.claim(slot)?, "PIO")),
-        }
+        let claim = self.claim(slot)?;
+        claim
+            .resource
+            .pio()
+            .ok_or_else(|| claim_kind_error(claim, "PIO"))
     }
 
     pub(crate) fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
-        match &self.claim(slot)?.resource {
-            ResolvedResource::WiredIrq(irq) => Ok(*irq),
-            _ => Err(claim_kind_error(self.claim(slot)?, "wired IRQ")),
-        }
+        let claim = self.claim(slot)?;
+        claim
+            .resource
+            .wired_irq()
+            .ok_or_else(|| claim_kind_error(claim, "wired IRQ"))
     }
 
     pub(crate) fn host_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
-        match &self.claim(slot)?.resource {
-            ResolvedResource::HostIrq(irq) => Ok(*irq),
-            _ => Err(claim_kind_error(self.claim(slot)?, "host IRQ")),
-        }
+        let claim = self.claim(slot)?;
+        claim
+            .resource
+            .host_irq()
+            .ok_or_else(|| claim_kind_error(claim, "host IRQ"))
     }
 
     pub(crate) fn msi(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedMsi> {
-        match &self.claim(slot)?.resource {
-            ResolvedResource::Msi(msi) => Ok(*msi),
-            _ => Err(claim_kind_error(self.claim(slot)?, "MSI")),
-        }
+        let claim = self.claim(slot)?;
+        claim
+            .resource
+            .msi()
+            .ok_or_else(|| claim_kind_error(claim, "MSI"))
     }
 
     /// Consumes one named claim and returns its lifetime lease.
@@ -327,42 +332,37 @@ impl ResourceLease {
 
     /// Returns the leased MMIO window.
     pub fn mmio(&self) -> DeviceManagerResult<(u64, u64)> {
-        match &self.resource {
-            ResolvedResource::Mmio { base, size } => Ok((*base, *size)),
-            _ => Err(lease_kind_error(&self.key, "MMIO")),
-        }
+        self.resource
+            .mmio()
+            .ok_or_else(|| lease_kind_error(&self.key, "MMIO"))
     }
 
     /// Returns the leased port-I/O range.
     pub fn pio(&self) -> DeviceManagerResult<(u16, u16)> {
-        match &self.resource {
-            ResolvedResource::Pio { base, size } => Ok((*base, *size)),
-            _ => Err(lease_kind_error(&self.key, "PIO")),
-        }
+        self.resource
+            .pio()
+            .ok_or_else(|| lease_kind_error(&self.key, "PIO"))
     }
 
     /// Returns the leased wired interrupt.
     pub fn wired_irq(&self) -> DeviceManagerResult<ResolvedWiredIrq> {
-        match &self.resource {
-            ResolvedResource::WiredIrq(irq) => Ok(*irq),
-            _ => Err(lease_kind_error(&self.key, "wired IRQ")),
-        }
+        self.resource
+            .wired_irq()
+            .ok_or_else(|| lease_kind_error(&self.key, "wired IRQ"))
     }
 
     /// Returns the leased host physical interrupt.
     pub fn host_irq(&self) -> DeviceManagerResult<HostIrqId> {
-        match &self.resource {
-            ResolvedResource::HostIrq(irq) => Ok(*irq),
-            _ => Err(lease_kind_error(&self.key, "host IRQ")),
-        }
+        self.resource
+            .host_irq()
+            .ok_or_else(|| lease_kind_error(&self.key, "host IRQ"))
     }
 
     /// Returns the leased MSI range.
     pub fn msi(&self) -> DeviceManagerResult<ResolvedMsi> {
-        match &self.resource {
-            ResolvedResource::Msi(msi) => Ok(*msi),
-            _ => Err(lease_kind_error(&self.key, "MSI")),
-        }
+        self.resource
+            .msi()
+            .ok_or_else(|| lease_kind_error(&self.key, "MSI"))
     }
 }
 

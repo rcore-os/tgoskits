@@ -702,6 +702,7 @@ impl HyperCall {
             | AxVmError::Device { .. }
             | AxVmError::DeviceResourcePlanning(_)
             | AxVmError::GuestGicProfile(_)
+            | AxVmError::GuestPlicProfile(_)
             | AxVmError::Vcpu { .. }
             | AxVmError::Interrupt { .. }
             | AxVmError::Host { .. } => HyperCallError::Internal {

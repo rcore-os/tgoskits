@@ -33,20 +33,12 @@ pub struct MsiEndpointRange {
 impl<'a> DeviceBuildContext<'a> {
     /// Consumes a planned MMIO slot.
     pub fn mmio(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        let planned = self.planned_mut("resolve planned MMIO resource")?;
-        let resource = planned.claims.mmio(slot)?;
-        let lease = planned.claims.consume(slot)?;
-        planned.retained.leases.push(lease);
-        Ok(resource)
+        self.resources.consume(slot, ResourceClaimSet::mmio)
     }
 
     /// Consumes a planned port-I/O slot.
     pub fn pio(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
-        let planned = self.planned_mut("resolve planned port-I/O resource")?;
-        let resource = planned.claims.pio(slot)?;
-        let lease = planned.claims.consume(slot)?;
-        planned.retained.leases.push(lease);
-        Ok(resource)
+        self.resources.consume(slot, ResourceClaimSet::pio)
     }
 
     /// Consumes a planned host physical IRQ slot.
@@ -54,16 +46,12 @@ impl<'a> DeviceBuildContext<'a> {
     /// This returns only the immutable identity. Architecture code remains
     /// responsible for claiming and programming its physical IRQ backend.
     pub fn host_irq(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
-        let planned = self.planned_mut("resolve planned host IRQ")?;
-        let resource = planned.claims.host_irq(slot)?;
-        let lease = planned.claims.consume(slot)?;
-        planned.retained.leases.push(lease);
-        Ok(resource)
+        self.resources.consume(slot, ResourceClaimSet::host_irq)
     }
 
     /// Consumes a planned wired IRQ slot and connects one device source.
     pub fn irq(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<IrqLine> {
-        let planned = self.planned_mut("resolve planned wired IRQ")?;
+        let planned = &mut self.resources;
         let resolved = planned.claims.wired_irq(slot)?;
         let controller = planned.interrupts.wired_controller(resolved.controller())?;
         let line = controller
@@ -118,19 +106,12 @@ impl<'a> DeviceBuildContext<'a> {
         Ok(bundle)
     }
 
-    fn planned_mut(
-        &mut self,
-        _operation: &'static str,
-    ) -> DeviceManagerResult<&mut PlannedBuildResources<'a>> {
-        Ok(&mut self.resources)
-    }
-
     fn build_msi_range(
         &mut self,
         slot: &ResourceSlot,
         require_single: bool,
     ) -> DeviceManagerResult<MsiEndpointRange> {
-        let planned = self.planned_mut("resolve planned MSI endpoint")?;
+        let planned = &mut self.resources;
         let resolved = planned.claims.msi(slot)?;
         if require_single && resolved.count() != 1 {
             return Err(DeviceManagerError::InvalidConfig {
@@ -177,6 +158,18 @@ impl<'a> DeviceBuildContext<'a> {
             resolved,
             endpoints,
         })
+    }
+}
+
+impl PlannedBuildResources<'_> {
+    fn consume<T>(
+        &mut self,
+        slot: &ResourceSlot,
+        resolve: fn(&ResourceClaimSet, &ResourceSlot) -> DeviceManagerResult<T>,
+    ) -> DeviceManagerResult<T> {
+        let resource = resolve(&self.claims, slot)?;
+        self.retained.leases.push(self.claims.consume(slot)?);
+        Ok(resource)
     }
 }
 

@@ -116,6 +116,9 @@ pub enum AxVmError {
     /// Host-derived GIC firmware geometry is invalid.
     #[error(transparent)]
     GuestGicProfile(#[from] crate::machine::GuestGicProfileError),
+    /// Host-derived PLIC firmware geometry is invalid.
+    #[error(transparent)]
+    GuestPlicProfile(#[from] crate::machine::GuestPlicProfileError),
 }
 
 impl AxVmError {

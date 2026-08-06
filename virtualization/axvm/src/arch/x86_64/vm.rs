@@ -54,7 +54,26 @@ impl X86_64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        init_vm_with(vm)
+        complete_vm_init(vm, |resources| {
+            let placements = vcpu_placements(resources);
+            let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
+            let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
+            let interrupt_controller = devices
+                .devices()
+                .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
+            validate_guest_dtb(resources)?;
+
+            let mut owned_regions = guest_owned_regions(resources);
+            append_arch_owned_regions(&mut owned_regions);
+            map_guest_address_space(vm, resources, &owned_regions)?;
+            map_arch_address_space(resources)?;
+            let intercepted_ports = resolved_port_intercepts(resources)?;
+            vcpus.setup(resources, |config, memory_regions| {
+                build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
+            })?;
+
+            Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
+        })
     }
 }
 
@@ -118,29 +137,6 @@ fn plan_devices(
         &[],
         super::resource_pools::create(config)?,
     )?))
-}
-
-fn init_vm_with(vm: &AxVM) -> AxVmResult {
-    complete_vm_init(vm, |resources| {
-        let placements = vcpu_placements(resources);
-        let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
-        let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
-        let interrupt_controller = devices
-            .devices()
-            .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-        validate_guest_dtb(resources)?;
-
-        let mut owned_regions = guest_owned_regions(resources);
-        append_arch_owned_regions(&mut owned_regions);
-        map_guest_address_space(vm, resources, &owned_regions)?;
-        map_arch_address_space(resources)?;
-        let intercepted_ports = resolved_port_intercepts(resources)?;
-        vcpus.setup(resources, |config, memory_regions| {
-            build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
-        })?;
-
-        Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
-    })
 }
 
 fn build_vcpu_setup_config(

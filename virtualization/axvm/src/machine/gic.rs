@@ -62,6 +62,31 @@ pub struct GuestGicProfile {
 }
 
 impl GuestGicProfile {
+    /// Normalizes host register windows to the architectural guest-visible
+    /// frames, then validates the complete profile.
+    pub(crate) fn normalized_for_vcpus(
+        mut self,
+        vcpu_count: usize,
+    ) -> Result<Self, GuestGicProfileError> {
+        if let GuestGicCpuRegion::CpuInterface(region) = &mut self.cpu_region {
+            if self.distributor.length < GICV2_DISTRIBUTOR_SIZE {
+                return Err(GuestGicProfileError::DistributorTooSmall {
+                    length: self.distributor.length,
+                    minimum: GICV2_DISTRIBUTOR_SIZE,
+                });
+            }
+            if region.length < GICC_MINIMUM_SIZE {
+                return Err(GuestGicProfileError::CpuInterfaceTooSmall {
+                    length: region.length,
+                });
+            }
+            self.distributor.length = GICV2_DISTRIBUTOR_SIZE;
+            region.length = GICC_MINIMUM_SIZE;
+        }
+        self.validate_for_vcpus(vcpu_count)?;
+        Ok(self)
+    }
+
     /// Validates host-derived register geometry for the requested vCPU count.
     pub(crate) fn validate_for_vcpus(&self, vcpu_count: usize) -> Result<(), GuestGicProfileError> {
         let distributor_minimum = match &self.cpu_region {
@@ -258,4 +283,38 @@ pub enum GuestGicProfileError {
     /// VM-local ITS identifiers must be unique.
     #[error("AArch64 GIC profile contains duplicate ITS identifier {id:?}")]
     DuplicateItsId { id: ItsId },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gicv2_normalization_retains_only_guest_visible_frames() {
+        let profile = GuestGicProfile {
+            compatible: "arm,gic-400".into(),
+            node_path: "/interrupt-controller@2a701000".into(),
+            node_phandle: Some(1),
+            distributor: GuestMmioRegion {
+                base: 0x2a70_1000,
+                length: 0x1_0000,
+            },
+            cpu_region: GuestGicCpuRegion::CpuInterface(GuestMmioRegion {
+                base: 0x2a70_2000,
+                length: 0x1_0000,
+            }),
+            its: Vec::new(),
+        };
+
+        let normalized = profile.normalized_for_vcpus(1).unwrap();
+
+        assert_eq!(normalized.distributor.length, GICV2_DISTRIBUTOR_SIZE);
+        assert_eq!(
+            normalized.cpu_region,
+            GuestGicCpuRegion::CpuInterface(GuestMmioRegion {
+                base: 0x2a70_2000,
+                length: GICC_MINIMUM_SIZE,
+            })
+        );
+    }
 }

@@ -18,19 +18,6 @@ pub(crate) struct VmDevicePlan {
 }
 
 impl VmDevicePlan {
-    #[cfg(test)]
-    pub(crate) fn fixed(nodes: Vec<DeviceNodeSpec>) -> AxVmResult<Self> {
-        Self::with_pools(nodes, ResourcePools::new())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_pools(
-        nodes: Vec<DeviceNodeSpec>,
-        mut pools: ResourcePools,
-    ) -> AxVmResult<Self> {
-        Self::build(None, nodes, &[], &mut pools)
-    }
-
     pub(crate) fn with_pools_for_vm(
         config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
@@ -38,11 +25,11 @@ impl VmDevicePlan {
         mut pools: ResourcePools,
     ) -> AxVmResult<Self> {
         pools::reserve_guest_memory(config, &mut pools)?;
-        Self::build(Some(config), nodes, replacement_ranges, &mut pools)
+        Self::build(config, nodes, replacement_ranges, &mut pools)
     }
 
     fn build(
-        vm_config: Option<&AxVMConfig>,
+        config: &AxVMConfig,
         nodes: Vec<DeviceNodeSpec>,
         replacement_ranges: &[Range<u64>],
         pools: &mut ResourcePools,
@@ -52,9 +39,7 @@ impl VmDevicePlan {
             builder.add(node).map_err(DeviceManagerError::from)?;
         }
 
-        if let Some(config) = vm_config {
-            passthrough::add_host_nodes(config, replacement_ranges, &mut builder)?;
-        }
+        passthrough::add_host_nodes(config, replacement_ranges, &mut builder)?;
 
         let declared = builder.declare().map_err(DeviceManagerError::from)?;
         let requests = declared.requests()?;

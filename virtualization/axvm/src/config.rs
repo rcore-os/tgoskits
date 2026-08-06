@@ -27,8 +27,8 @@ use axvmconfig::VirtualDeviceRequest;
 use crate::{
     arch::{ArchOps, CurrentArch},
     machine::{
-        GuestGicCpuRegion, GuestGicProfile, GuestPlicProfile, GuestSerialFdtIdentity,
-        GuestSerialProfile, GuestTimerProfile,
+        GuestGicProfile, GuestPlicProfile, GuestSerialFdtIdentity, GuestSerialProfile,
+        GuestTimerProfile,
     },
 };
 
@@ -233,7 +233,7 @@ impl AxVMConfig {
     }
 
     /// Returns the list of excluded devices.
-    pub fn excluded_devices(&self) -> &Vec<Vec<String>> {
+    pub fn excluded_devices(&self) -> &[Vec<String>] {
         &self.excluded_devices
     }
 
@@ -250,12 +250,12 @@ impl AxVMConfig {
     }
 
     /// Returns the list of passthrough address configurations.
-    pub fn pass_through_addresses(&self) -> &Vec<HostAddressAssignment> {
+    pub fn pass_through_addresses(&self) -> &[HostAddressAssignment] {
         &self.pass_through_addresses
     }
 
     /// Returns guest address ranges reserved from default passthrough mapping.
-    pub fn reserved_address_ranges(&self) -> &Vec<ReservedAddressConfig> {
+    pub fn reserved_address_ranges(&self) -> &[ReservedAddressConfig] {
         &self.reserved_address_ranges
     }
 
@@ -265,7 +265,7 @@ impl AxVMConfig {
     }
 
     /// Returns the list of passthrough host I/O port configurations.
-    pub fn pass_through_ports(&self) -> &Vec<HostPortAssignment> {
+    pub fn pass_through_ports(&self) -> &[HostPortAssignment] {
         &self.pass_through_ports
     }
 
@@ -295,7 +295,7 @@ impl AxVMConfig {
     }
 
     /// Returns configurations related to VM passthrough devices.
-    pub fn pass_through_devices(&self) -> &Vec<HostDeviceAssignment> {
+    pub fn pass_through_devices(&self) -> &[HostDeviceAssignment] {
         &self.pass_through_devices
     }
 
@@ -360,30 +360,14 @@ impl AxVMConfig {
     }
 
     /// Replaces the virtual GIC windows with host firmware resources.
-    pub fn replace_machine_gic(&mut self, mut profile: GuestGicProfile) -> crate::AxVmResult {
-        let cpu_num = self.phys_cpu_ls.cpu_num().max(1);
-        if let GuestGicCpuRegion::CpuInterface(region) = &mut profile.cpu_region {
-            const GICV2_DISTRIBUTOR_SIZE: usize = 0x1_000;
-            const GICV2_CPU_INTERFACE_SIZE: usize = 0x2_000;
-            if profile.distributor.length < GICV2_DISTRIBUTOR_SIZE {
-                return Err(crate::AxVmError::invalid_config(std::format!(
-                    "AArch64 GICv2 distributor window {:#x} is smaller than \
-                     {GICV2_DISTRIBUTOR_SIZE:#x}",
-                    profile.distributor.length
-                )));
-            }
-            if region.length < GICV2_CPU_INTERFACE_SIZE {
-                return Err(crate::AxVmError::invalid_config(std::format!(
-                    "AArch64 GICv2 CPU-interface window {:#x} is smaller than \
-                     {GICV2_CPU_INTERFACE_SIZE:#x}",
-                    region.length
-                )));
-            }
-            profile.distributor.length = GICV2_DISTRIBUTOR_SIZE;
-            region.length = GICV2_CPU_INTERFACE_SIZE;
+    pub fn replace_machine_gic(&mut self, profile: GuestGicProfile) -> crate::AxVmResult {
+        if self.gic_profile.is_none() {
+            return Err(crate::AxVmError::invalid_config(
+                "the selected machine has no AArch64 GIC",
+            ));
         }
-        profile.validate_for_vcpus(cpu_num)?;
-        self.gic_profile = Some(profile);
+        let cpu_num = self.phys_cpu_ls.cpu_num().max(1);
+        self.gic_profile = Some(profile.normalized_for_vcpus(cpu_num)?);
         Ok(())
     }
 
@@ -413,31 +397,12 @@ impl AxVMConfig {
 
     /// Replaces the virtual PLIC window with host firmware resources.
     pub fn replace_machine_plic(&mut self, profile: GuestPlicProfile) -> crate::AxVmResult {
-        let contexts = self
-            .phys_cpu_ls
-            .cpu_num()
-            .max(1)
-            .checked_mul(2)
-            .ok_or_else(|| {
-                crate::AxVmError::invalid_config("RISC-V PLIC context count overflows usize")
-            })?;
-        const CONTEXT_CONTROL_OFFSET: usize = 0x20_0000;
-        const CONTEXT_STRIDE: usize = 0x1000;
-        const CLAIM_COMPLETE_SIZE: usize = 8;
-        let minimum_length = contexts
-            .checked_mul(CONTEXT_STRIDE)
-            .and_then(|offset| offset.checked_add(CONTEXT_CONTROL_OFFSET))
-            .and_then(|offset| offset.checked_add(CLAIM_COMPLETE_SIZE))
-            .ok_or_else(|| {
-                crate::AxVmError::invalid_config("RISC-V PLIC context window size overflows usize")
-            })?;
-        if profile.length < minimum_length {
-            return Err(crate::AxVmError::invalid_config(std::format!(
-                "RISC-V PLIC window {:#x} is smaller than required size {minimum_length:#x}",
-                profile.length
-            )));
+        if self.plic_profile.is_none() {
+            return Err(crate::AxVmError::invalid_config(
+                "the selected machine has no RISC-V PLIC",
+            ));
         }
-
+        profile.validate_for_vcpus(self.phys_cpu_ls.cpu_num())?;
         self.plic_profile = Some(profile);
         Ok(())
     }
@@ -596,37 +561,43 @@ mod tests {
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
-    fn replacing_machine_gicv2_normalizes_host_windows() {
+    fn controller_replacements_require_machine_capabilities() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
             ..Default::default()
         });
-        let profile = GuestGicProfile {
+        let gic = GuestGicProfile {
             compatible: "arm,gic-400".into(),
-            node_path: "/interrupt-controller@2a701000".into(),
-            node_phandle: Some(1),
+            node_path: "/interrupt-controller".into(),
+            node_phandle: None,
             distributor: crate::machine::GuestMmioRegion {
-                base: 0x2a70_1000,
-                length: 0x1_0000,
+                base: 0x1000,
+                length: 0x1000,
             },
-            cpu_region: GuestGicCpuRegion::CpuInterface(crate::machine::GuestMmioRegion {
-                base: 0x2a70_2000,
-                length: 0x1_0000,
-            }),
+            cpu_region: crate::machine::GuestGicCpuRegion::CpuInterface(
+                crate::machine::GuestMmioRegion {
+                    base: 0x2000,
+                    length: 0x2000,
+                },
+            ),
             its: Vec::new(),
         };
+        let plic = GuestPlicProfile {
+            node_path: "/plic".into(),
+            node_phandle: None,
+            base: 0x0c00_0000,
+            length: 0x60_0000,
+        };
 
-        config.replace_machine_gic(profile).unwrap();
-
-        let normalized = config.gic_profile().unwrap();
-        assert_eq!(normalized.distributor.length, 0x1_000);
-        assert_eq!(
-            normalized.cpu_region,
-            GuestGicCpuRegion::CpuInterface(crate::machine::GuestMmioRegion {
-                base: 0x2a70_2000,
-                length: 0x2_000,
-            })
-        );
+        assert!(matches!(
+            config.replace_machine_gic(gic),
+            Err(crate::AxVmError::InvalidConfig { .. })
+        ));
+        assert!(matches!(
+            config.replace_machine_plic(plic),
+            Err(crate::AxVmError::InvalidConfig { .. })
+        ));
     }
 }

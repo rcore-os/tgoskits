@@ -125,6 +125,43 @@ pub(crate) enum ResolvedResource {
     Msi(ResolvedMsi),
 }
 
+impl ResolvedResource {
+    pub(crate) const fn mmio(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::Mmio { base, size } => Some((*base, *size)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn pio(&self) -> Option<(u16, u16)> {
+        match self {
+            Self::Pio { base, size } => Some((*base, *size)),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn wired_irq(&self) -> Option<ResolvedWiredIrq> {
+        match self {
+            Self::WiredIrq(irq) => Some(*irq),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn host_irq(&self) -> Option<HostIrqId> {
+        match self {
+            Self::HostIrq(irq) => Some(*irq),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn msi(&self) -> Option<ResolvedMsi> {
+        match self {
+            Self::Msi(msi) => Some(*msi),
+            _ => None,
+        }
+    }
+}
+
 /// Named immutable resources produced for one device.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolvedDeviceResources {
@@ -139,62 +176,51 @@ impl ResolvedDeviceResources {
 
     /// Returns a resolved MMIO window.
     pub fn mmio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        match self.resource(slot)? {
-            ResolvedResource::Mmio { base, size } => Ok((*base, *size)),
-            _ => Err(resource_kind_error(slot, "MMIO")),
-        }
+        self.resource(slot)?
+            .mmio()
+            .ok_or_else(|| resource_kind_error(slot, "MMIO"))
     }
 
     /// Iterates all resolved MMIO slots in stable slot order.
     pub fn mmio_ranges(&self) -> impl Iterator<Item = (&ResourceSlot, u64, u64)> {
         self.entries
             .iter()
-            .filter_map(|(slot, resource)| match resource {
-                ResolvedResource::Mmio { base, size } => Some((slot, *base, *size)),
-                _ => None,
-            })
+            .filter_map(|(slot, resource)| resource.mmio().map(|(base, size)| (slot, base, size)))
     }
 
     /// Returns a resolved PIO range.
     pub fn pio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
-        match self.resource(slot)? {
-            ResolvedResource::Pio { base, size } => Ok((*base, *size)),
-            _ => Err(resource_kind_error(slot, "PIO")),
-        }
+        self.resource(slot)?
+            .pio()
+            .ok_or_else(|| resource_kind_error(slot, "PIO"))
     }
 
     /// Iterates all resolved PIO slots in stable slot order.
     pub fn pio_ranges(&self) -> impl Iterator<Item = (&ResourceSlot, u16, u16)> {
         self.entries
             .iter()
-            .filter_map(|(slot, resource)| match resource {
-                ResolvedResource::Pio { base, size } => Some((slot, *base, *size)),
-                _ => None,
-            })
+            .filter_map(|(slot, resource)| resource.pio().map(|(base, size)| (slot, base, size)))
     }
 
     /// Returns a resolved wired interrupt.
     pub fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
-        match self.resource(slot)? {
-            ResolvedResource::WiredIrq(irq) => Ok(*irq),
-            _ => Err(resource_kind_error(slot, "wired IRQ")),
-        }
+        self.resource(slot)?
+            .wired_irq()
+            .ok_or_else(|| resource_kind_error(slot, "wired IRQ"))
     }
 
     /// Returns a resolved host physical interrupt.
     pub fn host_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
-        match self.resource(slot)? {
-            ResolvedResource::HostIrq(irq) => Ok(*irq),
-            _ => Err(resource_kind_error(slot, "host IRQ")),
-        }
+        self.resource(slot)?
+            .host_irq()
+            .ok_or_else(|| resource_kind_error(slot, "host IRQ"))
     }
 
     /// Returns a resolved MSI range.
     pub fn msi(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedMsi> {
-        match self.resource(slot)? {
-            ResolvedResource::Msi(msi) => Ok(*msi),
-            _ => Err(resource_kind_error(slot, "MSI")),
-        }
+        self.resource(slot)?
+            .msi()
+            .ok_or_else(|| resource_kind_error(slot, "MSI"))
     }
 
     /// Returns a deterministic fingerprint of all resolved slot values.

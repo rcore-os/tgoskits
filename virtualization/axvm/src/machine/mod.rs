@@ -13,6 +13,7 @@ use crate::{arch::CurrentArch, architecture::MachinePlatform};
 
 mod factory;
 mod gic;
+mod plic;
 mod serial;
 mod timer;
 
@@ -22,6 +23,7 @@ pub use gic::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicProfileError, GuestGicRedistributorProfile,
     GuestItsProfile,
 };
+pub use plic::{GuestPlicProfile, GuestPlicProfileError};
 pub use serial::{
     GuestClockReference, GuestSerialFdtIdentity, GuestSerialFdtInterrupt, GuestSerialModel,
     GuestSerialProfile, GuestSerialTransport,
@@ -36,19 +38,6 @@ pub struct GuestMmioRegion {
     /// Register base.
     pub base: usize,
     /// Register span.
-    pub length: usize,
-}
-
-/// Host firmware resources retained by the virtual PLIC.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GuestPlicProfile {
-    /// Absolute path of the host PLIC node.
-    pub node_path: alloc::string::String,
-    /// PLIC node phandle, when supplied by firmware.
-    pub node_phandle: Option<u32>,
-    /// Guest-visible PLIC register base.
-    pub base: usize,
-    /// Guest-visible PLIC register span.
     pub length: usize,
 }
 
