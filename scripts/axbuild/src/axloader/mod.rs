@@ -465,7 +465,9 @@ fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
         "-netdev".into(),
         "user,id=net0".into(),
         "-device".into(),
-        "e1000,netdev=net0".into(),
+        // ostool's OVMF prebuilt always includes VirtioNetDxe, while its E1000
+        // driver is optional and absent from the pinned firmware build.
+        "virtio-net-pci,netdev=net0".into(),
         "-drive".into(),
         format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -708,6 +710,16 @@ mod tests {
         let selected = candidates.into_iter().find(|path| path.is_file());
 
         assert_eq!(selected, Some(cached_firmware));
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_network_device_supported_by_ostool_ovmf() {
+        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"));
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-device", "virtio-net-pci,netdev=net0"])
+        );
     }
 
     #[test]
