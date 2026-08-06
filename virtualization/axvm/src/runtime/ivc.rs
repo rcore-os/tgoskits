@@ -17,7 +17,6 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     format,
     sync::Mutex,
-    vec::Vec,
 };
 
 use ax_memory_addr::{PAGE_SIZE_4K, align_up_4k};
