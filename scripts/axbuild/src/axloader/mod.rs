@@ -21,7 +21,9 @@ use crate::support::process::ProcessExt;
 const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
-const HTTP_SMOKE_TIMEOUT: Duration = Duration::from_secs(120);
+const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(120);
+const HTTP_SMOKE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
 const LEGACY_X86_64_UEFI_FIRMWARE_ENV: &str = "AXVISOR_X86_64_UEFI_FIRMWARE";
 
@@ -35,6 +37,41 @@ struct LoaderSmokeTarget {
     qemu_program: &'static str,
     qemu_args: fn(&Path, &Path) -> Vec<String>,
     kernel_elf: fn() -> Vec<u8>,
+}
+
+struct SmokeAttemptContext<'a> {
+    workspace_root: &'a Path,
+    target: &'a str,
+    smoke_target: LoaderSmokeTarget,
+    firmware: &'a Path,
+    kernel: &'a [u8],
+}
+
+struct SmokeAttemptProgress {
+    deadline: Instant,
+    boot_sent: bool,
+}
+
+impl SmokeAttemptProgress {
+    fn waiting_for_ready(started: Instant) -> Self {
+        Self {
+            deadline: started + HTTP_SMOKE_BOOT_TIMEOUT,
+            boot_sent: false,
+        }
+    }
+
+    fn mark_boot_sent(&mut self, sent_at: Instant) {
+        self.boot_sent = true;
+        self.deadline = sent_at + HTTP_SMOKE_TRANSFER_TIMEOUT;
+    }
+
+    fn boot_sent(&self) -> bool {
+        self.boot_sent
+    }
+
+    fn expired_at(&self, now: Instant) -> bool {
+        now >= self.deadline
+    }
 }
 
 const X86_64_UEFI_FIRMWARE_CANDIDATES: &[&str] = &[
@@ -166,22 +203,77 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
     run_loader_build(workspace_root, target, true)?;
 
     let firmware = find_uefi_firmware(smoke_target)?;
+    let kernel = (smoke_target.kernel_elf)();
+    let attempt_context = SmokeAttemptContext {
+        workspace_root,
+        target,
+        smoke_target,
+        firmware: &firmware,
+        kernel: &kernel,
+    };
+    let mut attempt = 1;
+    let mut failures = Vec::new();
+
+    loop {
+        println!(
+            "axloader http smoke: running QEMU attempt {attempt}/{HTTP_SMOKE_MAX_ATTEMPTS} ..."
+        );
+        let failure = match run_http_smoke_attempt(&attempt_context) {
+            Ok(()) => {
+                println!("axloader http smoke: kernel transferred and ELF loaded");
+                return Ok(());
+            }
+            Err(error) => format!("attempt {attempt}: {error:#}"),
+        };
+
+        let Some(next_attempt) = next_smoke_attempt(attempt) else {
+            failures.push(failure);
+            bail!(
+                "axloader HTTP smoke failed after {attempt} attempt(s):\n{}",
+                failures.join("\n")
+            );
+        };
+        eprintln!("axloader http smoke: {failure}; retrying with a fresh QEMU instance");
+        failures.push(failure);
+        attempt = next_attempt;
+    }
+}
+
+fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<()> {
     let temp = tempfile::tempdir().context("failed to create axloader HTTP smoke temp dir")?;
     let efi_boot_dir = temp.path().join("esp/EFI/BOOT");
     fs::create_dir_all(&efi_boot_dir)
         .with_context(|| format!("failed to create {}", efi_boot_dir.display()))?;
     fs::copy(
-        axloader_efi_path(workspace_root, target),
-        efi_boot_dir.join(smoke_target.efi_output_file),
+        axloader_efi_path(context.workspace_root, context.target),
+        efi_boot_dir.join(context.smoke_target.efi_output_file),
     )
     .context("failed to stage axloader EFI binary")?;
 
-    let kernel = (smoke_target.kernel_elf)();
-    let http_server = SmokeHttpServer::start(kernel.clone())?;
-    let boot_line = format_boot_line(smoke_target.arch, kernel.len(), http_server.port());
+    let http_server = SmokeHttpServer::start(context.kernel.to_vec())?;
+    let boot_line = format_boot_line(
+        context.smoke_target.arch,
+        context.kernel.len(),
+        http_server.port(),
+    );
 
-    println!("axloader http smoke: running QEMU ...");
-    let mut child = spawn_axloader_qemu(smoke_target, &firmware, &temp.path().join("esp"))?;
+    let mut child = spawn_axloader_qemu(
+        context.smoke_target,
+        context.firmware,
+        &temp.path().join("esp"),
+    )?;
+    let smoke_result = drive_http_smoke_session(&mut child, &boot_line);
+    stop_child(&mut child);
+    smoke_result?;
+
+    if !http_server.was_requested() {
+        bail!("axloader HTTP smoke reached elf_loaded without observing /kernel.elf request");
+    }
+
+    Ok(())
+}
+
+fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Result<()> {
     let mut stdin = child
         .stdin
         .take()
@@ -198,47 +290,54 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
     spawn_output_reader(stdout, output_tx.clone());
     spawn_output_reader(stderr, output_tx);
 
-    let started = Instant::now();
+    let mut progress = SmokeAttemptProgress::waiting_for_ready(Instant::now());
     let mut transcript = String::new();
-    let mut boot_sent = false;
-    let mut loaded = false;
-    while started.elapsed() < HTTP_SMOKE_TIMEOUT {
+    while !progress.expired_at(Instant::now()) {
         match output_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(chunk) => {
                 print!("{chunk}");
                 transcript.push_str(&chunk);
-                if !boot_sent && transcript.contains("AXLOADER READY") {
+                if !progress.boot_sent() && transcript.contains("AXLOADER READY") {
                     stdin
                         .write_all(boot_line.as_bytes())
                         .context("failed to send AXLOADER BOOT over QEMU serial")?;
                     stdin.flush().ok();
-                    boot_sent = true;
+                    progress.mark_boot_sent(Instant::now());
                 }
                 if transcript.contains("elf_loaded:") {
-                    loaded = true;
-                    break;
+                    return Ok(());
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if child.try_wait()?.is_some() {
-                    break;
+                if let Some(status) = child.try_wait()? {
+                    bail!(
+                        "QEMU exited before elf_loaded with status {status}; \
+                         transcript:\n{transcript}"
+                    );
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let status = child
+                    .try_wait()?
+                    .map_or_else(|| "unknown".to_owned(), |status| status.to_string());
+                bail!(
+                    "QEMU output closed before elf_loaded with status {status}; \
+                     transcript:\n{transcript}"
+                );
+            }
         }
     }
 
-    stop_child(&mut child);
+    let phase = if progress.boot_sent() {
+        "kernel transfer"
+    } else {
+        "UEFI startup"
+    };
+    bail!("axloader HTTP smoke timed out during {phase}; transcript:\n{transcript}")
+}
 
-    if !loaded {
-        bail!("axloader HTTP smoke did not reach elf_loaded; transcript:\n{transcript}");
-    }
-    if !http_server.was_requested() {
-        bail!("axloader HTTP smoke reached elf_loaded without observing /kernel.elf request");
-    }
-
-    println!("axloader http smoke: kernel transferred and ELF loaded");
-    Ok(())
+fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
+    (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
 }
 
 fn format_boot_line(arch: &str, kernel_size: usize, http_port: u16) -> String {
@@ -577,5 +676,23 @@ mod tests {
         assert!(boot_line.contains("\"kernel_size\":4096"));
         assert!(boot_line.contains("\"arch\":\"x86_64\""));
         assert!(boot_line.ends_with('\n'));
+    }
+
+    #[test]
+    fn ready_near_startup_deadline_gets_a_transfer_window() {
+        let started = Instant::now();
+        let ready_at = started + HTTP_SMOKE_BOOT_TIMEOUT - Duration::from_millis(1);
+        let mut progress = SmokeAttemptProgress::waiting_for_ready(started);
+
+        progress.mark_boot_sent(ready_at);
+
+        assert_eq!(progress.deadline, ready_at + HTTP_SMOKE_TRANSFER_TIMEOUT);
+        assert!(!progress.expired_at(ready_at + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn first_failed_qemu_attempt_is_retried() {
+        assert_eq!(next_smoke_attempt(1), Some(2));
+        assert_eq!(next_smoke_attempt(2), None);
     }
 }
