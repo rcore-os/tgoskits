@@ -6,8 +6,8 @@
 //! - `NETLINK_KOBJECT_UEVENT` (15): subscribe to kernel uevent broadcasts;
 //!   listener side only — kernel emitters call [`broadcast`].
 //! - `NETLINK_ROUTE` (0): rtnetlink socket; `bind` + `read`/`recv` work,
-//!   actual RTM_GETLINK / RTM_GETADDR responder lives elsewhere (the socket
-//!   here just provides the byte transport).
+//!   supports RTM_GETLINK / RTM_GETADDR plus IPv4 default-route dumps through
+//!   RTM_GETROUTE.
 //! - `NETLINK_GENERIC` (16): same shape as NETLINK_ROUTE — a queued byte
 //!   transport that genl userspace can drive.
 //!
@@ -83,6 +83,8 @@ const RTM_NEWLINK: u16 = 16;
 const RTM_GETADDR: u16 = 22;
 const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
+const RTM_NEWROUTE: u16 = 24;
+const RTM_GETROUTE: u16 = 26;
 
 const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
@@ -109,11 +111,21 @@ const IFA_LOCAL: u16 = 2;
 const IFA_LABEL: u16 = 3;
 const IFA_BROADCAST: u16 = 4;
 
+const RTA_OIF: u16 = 4;
+const RTA_GATEWAY: u16 = 5;
+const RTA_PRIORITY: u16 = 6;
+const RTA_PREFSRC: u16 = 7;
+
 const IF_OPER_UNKNOWN: u8 = 0;
 const IF_OPER_UP: u8 = 6;
 
 const RT_SCOPE_UNIVERSE: u8 = 0;
 const RT_SCOPE_HOST: u8 = 254;
+
+const RT_TABLE_UNSPEC: u8 = 0;
+const RT_TABLE_MAIN: u8 = 254;
+const RTPROT_BOOT: u8 = 3;
+const RTN_UNICAST: u8 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -167,6 +179,20 @@ struct IfAddrMsg {
     flags: u8,
     scope: u8,
     index: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RtMsg {
+    family: u8,
+    dst_len: u8,
+    src_len: u8,
+    tos: u8,
+    table: u8,
+    protocol: u8,
+    scope: u8,
+    ty: u8,
+    flags: u32,
 }
 
 struct LinkInfo {
@@ -459,6 +485,29 @@ impl NetlinkSocket {
                 if !matched && !is_dump_request(header.flags) && filter.has_selector() {
                     push_nlmsg_error_from_ax(&mut response, request, pid, AxError::NoSuchDevice);
                     return Ok(response);
+                }
+            }
+            RTM_GETROUTE => {
+                if !is_dump_request(header.flags) {
+                    push_nlmsg_error(&mut response, request, pid, -libc_EOPNOTSUPP);
+                    return Ok(response);
+                }
+                let route = match parse_route_request(request) {
+                    Ok(route) => route,
+                    Err(err) => {
+                        push_nlmsg_error_from_ax(&mut response, request, pid, err);
+                        return Ok(response);
+                    }
+                };
+                if matches!(route.family, AF_UNSPEC | AF_INET)
+                    && matches!(route.table, RT_TABLE_UNSPEC | RT_TABLE_MAIN)
+                {
+                    for route in ax_net::default_routes() {
+                        if !in_root && route.interface_id != InterfaceId::LOOPBACK {
+                            continue;
+                        }
+                        push_default_route_message(&mut response, header.seq, pid, &route);
+                    }
                 }
             }
             RTM_NEWADDR => {
@@ -813,6 +862,41 @@ fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
     out.extend_from_slice(&body);
 }
 
+fn push_default_route_message(out: &mut Vec<u8>, seq: u32, pid: u32, route: &ax_net::RouteInfo) {
+    let Some(gateway) = route.via else {
+        return;
+    };
+    let core::net::IpAddr::V4(gateway) = gateway.into() else {
+        return;
+    };
+    let core::net::IpAddr::V4(source) = route.source.into() else {
+        return;
+    };
+
+    let mut body = Vec::new();
+    push_struct(
+        &mut body,
+        &RtMsg {
+            family: AF_INET,
+            dst_len: 0,
+            src_len: 0,
+            tos: 0,
+            table: RT_TABLE_MAIN,
+            protocol: RTPROT_BOOT,
+            scope: RT_SCOPE_UNIVERSE,
+            ty: RTN_UNICAST,
+            flags: 0,
+        },
+    );
+    push_attr(&mut body, RTA_GATEWAY, &gateway.octets());
+    push_attr(&mut body, RTA_OIF, &route.interface_id.get().to_ne_bytes());
+    push_attr(&mut body, RTA_PRIORITY, &route.metric.to_ne_bytes());
+    push_attr(&mut body, RTA_PREFSRC, &source.octets());
+
+    push_nl_header(out, RTM_NEWROUTE, NLM_F_MULTI, seq, pid, body.len());
+    out.extend_from_slice(&body);
+}
+
 fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
     let mut payload = Vec::new();
     push_struct(
@@ -969,6 +1053,28 @@ fn parse_addr_filter(request: &[u8]) -> AddrFilter {
         index: (info.index > 0).then_some(info.index),
         label: parse_string_attr(attrs, IFA_LABEL),
     }
+}
+
+fn parse_route_request(request: &[u8]) -> AxResult<RtMsg> {
+    if request.len() < size_of::<NlMsgHdr>() + size_of::<RtMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    // SAFETY: The length check above covers a complete header, and
+    // `read_unaligned` accepts the byte alignment of the request buffer.
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let msg_len = (header.len as usize).min(request.len());
+    if msg_len < size_of::<NlMsgHdr>() + size_of::<RtMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    // SAFETY: `msg_len` proves that the request contains a complete `RtMsg`
+    // after the header, and `read_unaligned` accepts the buffer alignment.
+    Ok(unsafe {
+        request
+            .as_ptr()
+            .add(size_of::<NlMsgHdr>())
+            .cast::<RtMsg>()
+            .read_unaligned()
+    })
 }
 
 fn parse_link_filter(request: &[u8]) -> LinkFilter {

@@ -277,6 +277,7 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
+            (PROTO_IP, IP_RECVTTL) => RecvTtl as IntBool,
             (PROTO_IP, linux_raw_sys::net::IP_RECVTOS) => RecvTos as IntBool,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // Path-MTU discovery mode is stored for ABI compatibility (dnsmasq TFTP sets
@@ -347,12 +348,13 @@ pub fn sys_getsockopt(
 
     let socket = Socket::from_fd(fd)?;
 
-    // SO_TYPE is handled at the kernel level because the socket type is
-    // known from the Socket enum variant, not from a per-protocol option.
+    // SO_TYPE is normally implied by the kernel socket variant. Raw and Unix
+    // transports have multiple Linux-visible socket types, so query their
+    // per-socket options instead.
     {
         use ax_net::Socket as SocketInner;
         use linux_raw_sys::net::{
-            SO_ACCEPTCONN, SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET,
+            SO_ACCEPTCONN, SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET,
         };
 
         if level == SOL_SOCKET && optname == SO_ACCEPTCONN {
@@ -366,10 +368,7 @@ pub fn sys_getsockopt(
             let so_type: i32 = match &**socket {
                 SocketInner::Tcp(_) => SOCK_STREAM as i32,
                 SocketInner::Udp(_) => SOCK_DGRAM as i32,
-                SocketInner::Raw(_) => SOCK_RAW as i32,
-                // Unix sockets carry stream/dgram/seqpacket; the concrete type
-                // lives in the transport's socket options, not the enum variant.
-                SocketInner::Unix(_) => {
+                SocketInner::Raw(_) | SocketInner::Unix(_) => {
                     let mut t = 0i32;
                     socket.get_option(GetSocketOption::SocketType(&mut t))?;
                     t
