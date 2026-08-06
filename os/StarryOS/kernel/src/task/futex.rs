@@ -400,12 +400,16 @@ impl WaitQueue {
     }
 
     /// Checks if the wait queue is empty.
+    ///
+    /// O(1): reads the queue length only. This is called from `FutexGuard::Drop`
+    /// while holding the (per-process) futex-table lock on EVERY futex op, so it must
+    /// not scan — a prior `queue.retain(cancelled)` here made it O(n) under the table
+    /// lock, i.e. an O(N²) collapse of contended futex throughput (schbench's tail).
+    /// Cancelled waiters are already pruned by `wake` (its retain) and by each waiter's
+    /// own `WaitIfFuture::Drop`, so dropping the scan here only delays a benign
+    /// table-entry cleanup (also swept by the periodic `FutexTables` GC), never leaks.
     pub fn is_empty(&self) -> bool {
-        let mut inner = self.inner.lock();
-        inner
-            .queue
-            .retain(|waiter| !waiter.state.cancelled.load(AtomicOrdering::SeqCst));
-        inner.queue.is_empty()
+        self.inner.lock().queue.is_empty()
     }
 }
 
