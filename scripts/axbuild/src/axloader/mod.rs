@@ -456,6 +456,12 @@ fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
         "1".into(),
         "-machine".into(),
         "q35".into(),
+        "-accel".into(),
+        "kvm".into(),
+        "-cpu".into(),
+        // The pinned OVMF build does not publish its network protocols with
+        // QEMU's restricted default CPU. This smoke runs on KVM-labelled hosts.
+        "host".into(),
         "-display".into(),
         "none".into(),
         "-monitor".into(),
@@ -720,6 +726,14 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-device", "virtio-net-pci,netdev=net0"])
         );
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_kvm_host_cpu_for_ovmf_network_stack() {
+        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"));
+
+        assert!(args.windows(2).any(|pair| pair == ["-accel", "kvm"]));
+        assert!(args.windows(2).any(|pair| pair == ["-cpu", "host"]));
     }
 
     #[test]
