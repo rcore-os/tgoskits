@@ -167,12 +167,12 @@ enum Counter {
     Programmable(usize),
 }
 
-/// The counter allocator is per-CPU (`super::percpu::ALLOC`): `PMEVCNTRn_EL0` is
-/// banked per-PE, so each core owns its own pool. Reservation/release go through
-/// [`super::percpu::alloc_programmable_counter`] /
-/// [`super::percpu::free_programmable_counter`] (and the cycle-counter pair),
-/// which the per-task path drives per scheduling slice and the system-wide path
-/// at open/close on the owning core.
+// The counter allocator is per-CPU (`super::percpu::ALLOC`): `PMEVCNTRn_EL0` is
+// banked per-PE, so each core owns its own pool. Reservation/release go through
+// `super::percpu::alloc_programmable_counter` /
+// `super::percpu::free_programmable_counter` (and the cycle-counter pair),
+// which the per-task path drives per scheduling slice and the system-wide path
+// at open/close on the owning core.
 
 /// The backing pages of a sampling event's mmap ring buffer, after the first
 /// `mmap(perf_fd)`.
@@ -743,7 +743,7 @@ impl HwPerfEvent {
         if ax_ipi::wait_until_cpu_ready(home) {
             // SAFETY: `self` outlives the synchronous IPI (we block until the
             // thunk returns), so the remote `&mut` does not alias our paused one.
-            let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(home, hw_home_thunk, arg) };
+            let _ = unsafe { ax_ipi::call_on_cpu(ax_hal::irq::CpuId(home), hw_home_thunk, arg) };
             ho.value
         } else {
             // Home core not ready (should not happen for an online core);
@@ -778,7 +778,7 @@ struct HwHomeOp {
 /// # Safety
 /// `arg` must point at a live [`HwHomeOp`] whose `ev` is a valid `HwPerfEvent`
 /// kept alive for the call — guaranteed because the caller blocks on
-/// `run_on_cpu_sync_raw` until this returns.
+/// `call_on_cpu` until this returns.
 #[cfg(target_arch = "aarch64")]
 unsafe fn hw_home_thunk(arg: *mut ()) {
     let ho = unsafe { &mut *(arg as *mut HwHomeOp) };
@@ -881,7 +881,7 @@ fn run_sys_cpu_op(cpu: usize, op: &mut SysCpuOp) {
     } else if ax_ipi::wait_until_cpu_ready(cpu) {
         // SAFETY: `op` outlives the synchronous IPI (we block until it returns),
         // and the thunk only touches `cpu`'s per-CPU PMU state.
-        let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, sys_cpu_op_thunk, arg) };
+        let _ = unsafe { ax_ipi::call_on_cpu(ax_hal::irq::CpuId(cpu), sys_cpu_op_thunk, arg) };
     }
 }
 

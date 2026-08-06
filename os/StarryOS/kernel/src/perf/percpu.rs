@@ -48,7 +48,7 @@ pub fn force_clusters_enabled() -> bool {
 /// brought up (and not under the override) reads as `Other(0)`.
 pub fn cluster_of_cpu(cpu: usize) -> ClusterId {
     if FORCE_CLUSTER_BY_PARITY.load(Ordering::Acquire) {
-        return if cpu % 2 == 0 {
+        return if cpu.is_multiple_of(2) {
             ClusterId::Little
         } else {
             ClusterId::Big
@@ -150,40 +150,56 @@ static CLUSTER: ClusterId = ClusterId::Other(0);
 /// Idempotent and cheap after the first call. MUST run on the core it
 /// initializes (PMU sysregs are per-PE banked).
 pub fn ensure_core_inited() -> (usize, ClusterId) {
-    if !CORE_INITED.read_current() {
-        // PMCR.E (global enable) + P (reset programmable) + PMUSERENR (rdpmc).
-        pmu::init_cpu();
-        // Clean slate (≈ Linux armv8pmu_reset). Done ONCE per core, so re-opens
-        // do not disable live counters of other events.
-        pmu::counter::disable_all();
-        pmu::overflow::disable_all_irq();
-        pmu::overflow::clear_all();
-        let num = pmu::probe().map(|i| i.num_counters).unwrap_or(0);
-        let cluster = pmu::cluster_id();
-        // Record this core's REAL-MIDR cluster in the global per-cluster CPU masks
-        // (backs the dual sysfs PMUs' `cpus`). The parity test override is applied
-        // on top in [`cluster_of_cpu`]; it does not touch these masks.
-        let bit = 1usize
-            .checked_shl(ax_hal::percpu::this_cpu_id() as u32)
-            .unwrap_or(0);
-        match cluster {
-            ClusterId::Little => {
-                A55_CPUS.fetch_or(bit, Ordering::AcqRel);
-            }
-            ClusterId::Big => {
-                A76_CPUS.fetch_or(bit, Ordering::AcqRel);
-            }
-            ClusterId::Other(_) => {}
-        }
-        NUM_COUNTERS.write_current(num);
-        // `ClusterId` is not a primitive int, so the `def_percpu` macro does not
-        // generate `write_current`/`read_current` for it; use `with_current`
-        // (which disables preemption for the access, nesting safely under the
-        // IRQ-off scheduler hooks).
-        CLUSTER.with_current(|c| *c = cluster);
-        CORE_INITED.write_current(true);
+    // Preemption + local IRQs off so the whole per-core bring-up runs on one
+    // stable core: the PMU sysregs are per-PE banked and the `CORE_INITED` /
+    // `NUM_COUNTERS` / `CLUSTER` cells are this CPU's (mirrors the sibling
+    // counter-pool helpers' discipline).
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
+    // SAFETY: `_guard` disables preemption + local IRQs, so this CPU cannot
+    // migrate for the duration — the pin / exclusive tokens' validated area
+    // stays current.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                if !CORE_INITED.read_current(pin) {
+                    // PMCR.E (global enable) + P (reset programmable) + PMUSERENR (rdpmc).
+                    pmu::init_cpu();
+                    // Clean slate (≈ Linux armv8pmu_reset). Done ONCE per core, so re-opens
+                    // do not disable live counters of other events.
+                    pmu::counter::disable_all();
+                    pmu::overflow::disable_all_irq();
+                    pmu::overflow::clear_all();
+                    let num = pmu::probe().map(|i| i.num_counters).unwrap_or(0);
+                    let cluster = pmu::cluster_id();
+                    // Record this core's REAL-MIDR cluster in the global per-cluster CPU
+                    // masks (backs the dual sysfs PMUs' `cpus`). The parity test override
+                    // is applied on top in [`cluster_of_cpu`]; it does not touch these.
+                    let bit = 1usize
+                        .checked_shl(ax_hal::percpu::this_cpu_id() as u32)
+                        .unwrap_or(0);
+                    match cluster {
+                        ClusterId::Little => {
+                            A55_CPUS.fetch_or(bit, Ordering::AcqRel);
+                        }
+                        ClusterId::Big => {
+                            A76_CPUS.fetch_or(bit, Ordering::AcqRel);
+                        }
+                        ClusterId::Other(_) => {}
+                    }
+                    NUM_COUNTERS.write_current(pin, num);
+                    // `ClusterId` is not a primitive int, so it uses the object API;
+                    // the write needs the `ExclusiveCpu` token.
+                    CLUSTER.with_current_mut(exclusive, |c| *c = cluster);
+                    CORE_INITED.write_current(pin, true);
+                }
+                (
+                    NUM_COUNTERS.read_current(pin),
+                    CLUSTER.with_current(pin, |c| *c),
+                )
+            })
+        })
     }
-    (NUM_COUNTERS.read_current(), CLUSTER.with_current(|c| *c))
+    .unwrap_or_else(|error| panic!("perf per-core PMU state is invalid: {error}"))
 }
 
 /// This core's programmable-counter count (after [`ensure_core_inited`]).
@@ -215,6 +231,26 @@ impl HwAlloc {
 #[ax_percpu::def_percpu]
 static ALLOC: HwAlloc = HwAlloc::new();
 
+/// Run `operation` with a `&mut HwAlloc` for the current core.
+///
+/// Centralizes the counter-pool access discipline: preemption + local IRQs off
+/// (so this CPU stays pinned and no IRQ re-enters) around a validated
+/// `with_cpu_pin` / `with_exclusive_cpu` scope. Mirrors [`super::sampling`]'s
+/// `with_registry_mut`.
+fn with_hw_alloc_mut<R>(operation: impl for<'a> FnOnce(&'a mut HwAlloc) -> R) -> R {
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
+    // SAFETY: `_guard` disables preemption + local IRQs, so this CPU cannot
+    // migrate and holds exclusive access to its `ALLOC` for the section.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                ALLOC.with_current_mut(exclusive, operation)
+            })
+        })
+    }
+    .unwrap_or_else(|error| panic!("perf counter pool CPU-local state is invalid: {error}"))
+}
+
 /// Allocate the lowest free programmable counter on the current core, or `None`
 /// if all `num_counters` are in use.
 ///
@@ -222,17 +258,15 @@ static ALLOC: HwAlloc = HwAlloc::new();
 /// on a stable core (mirrors [`super::sampling`]'s `REGISTRY` discipline).
 pub fn alloc_programmable_counter() -> Option<usize> {
     let num = current_num_counters().min(32);
-    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
-    // SAFETY: preemption + local IRQs are disabled by `_guard`, so we hold
-    // exclusive access to this CPU's `ALLOC` for the critical section.
-    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
-    for n in 0..num {
-        if alloc.used & (1 << n) == 0 {
-            alloc.used |= 1 << n;
-            return Some(n);
+    with_hw_alloc_mut(|alloc| {
+        for n in 0..num {
+            if alloc.used & (1 << n) == 0 {
+                alloc.used |= 1 << n;
+                return Some(n);
+            }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Release a programmable counter previously allocated on the current core.
@@ -240,10 +274,7 @@ pub fn free_programmable_counter(n: usize) {
     if n >= 32 {
         return;
     }
-    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
-    // SAFETY: see [`alloc_programmable_counter`].
-    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
-    alloc.used &= !(1 << n);
+    with_hw_alloc_mut(|alloc| alloc.used &= !(1 << n));
 }
 
 /// Number of programmable counters currently FREE in this core's pool. Used by
@@ -252,9 +283,7 @@ pub fn free_programmable_counter(n: usize) {
 /// consumes a slot), not the raw `PMCR.N`.
 pub fn free_programmable_count() -> usize {
     let num = current_num_counters().min(32);
-    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
-    // SAFETY: see [`alloc_programmable_counter`].
-    let used = unsafe { ALLOC.current_ref_mut_raw().used };
+    let used = with_hw_alloc_mut(|alloc| alloc.used);
     let mask: u32 = if num >= 32 {
         u32::MAX
     } else {
@@ -265,20 +294,16 @@ pub fn free_programmable_count() -> usize {
 
 /// Allocate the dedicated cycle counter on the current core; `false` if taken.
 pub fn alloc_cycle_counter() -> bool {
-    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
-    // SAFETY: see [`alloc_programmable_counter`].
-    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
-    if alloc.cycle_used {
-        return false;
-    }
-    alloc.cycle_used = true;
-    true
+    with_hw_alloc_mut(|alloc| {
+        if alloc.cycle_used {
+            return false;
+        }
+        alloc.cycle_used = true;
+        true
+    })
 }
 
 /// Release the dedicated cycle counter on the current core.
 pub fn free_cycle_counter() {
-    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
-    // SAFETY: see [`alloc_programmable_counter`].
-    let alloc = unsafe { ALLOC.current_ref_mut_raw() };
-    alloc.cycle_used = false;
+    with_hw_alloc_mut(|alloc| alloc.cycle_used = false);
 }

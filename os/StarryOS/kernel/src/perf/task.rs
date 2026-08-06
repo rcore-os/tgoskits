@@ -682,9 +682,10 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 /// into the task's ring only while the task runs. (If the ring is not mapped yet,
 /// the slice is skipped — `perf` always mmaps before enable, so this is a rare race.)
 ///
-/// Runs with IRQs disabled inside `switch_to`: [`IrqMutex`](crate::sync::IrqMutex)
-/// + atomics + sysreg writes only, no allocation. `sampling::register` nests a
-///   further local-IRQ-off section, which is fine.
+/// Runs with IRQs disabled inside `switch_to`
+/// ([`IrqMutex`](crate::sync::IrqMutex) + atomics + sysreg writes only, no
+/// allocation). `sampling::register` nests a further local-IRQ-off section,
+/// which is fine.
 /// Arm `ptc` onto programmable counter `n` on the current core: configure
 /// (counting) or configure + preload + register a [`SampleSlot`] (sampling),
 /// enable, and mark it running from `now`. IRQ-off, alloc-free. Shared by
@@ -933,10 +934,21 @@ pub fn perf_rotate_current() {
     let now = now_ns();
     // Advance the per-CPU cursor; the holding window is the `free` eligible events
     // at ranks `[cursor, cursor + free)` (mod `n_eligible`).
-    let cursor = ROTATE_CURSOR.with_current(|c| {
-        *c = c.wrapping_add(1);
-        *c
-    }) % n_eligible;
+    // Advance the per-CPU rotation cursor (primitive: read-modify-write under a
+    // pin). The tick already runs on the local CPU; the guard keeps it pinned.
+    let cursor = {
+        let _guard = crate::sync::PreemptIrqSaveGuard::new();
+        // SAFETY: `_guard` disables preemption + local IRQs, so this CPU cannot
+        // migrate across the cursor read-modify-write.
+        unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                let c = ROTATE_CURSOR.read_current(pin).wrapping_add(1);
+                ROTATE_CURSOR.write_current(pin, c);
+                c
+            })
+        }
+        .unwrap_or_else(|error| panic!("perf rotation cursor CPU-local state is invalid: {error}"))
+    } % n_eligible;
 
     // Pass 1 — evict counters that hold a slot but fell out of the window. This
     // frees slots first, so the admits in pass 2 can allocate them.
@@ -1360,7 +1372,7 @@ fn teardown_slice_local(ptc: &PerTaskCounter) {
 ///
 /// # Safety
 /// `arg` must be a `*const PerTaskCounter` kept alive for the duration of the
-/// call — guaranteed because [`free_hw`] blocks on `run_on_cpu_sync_raw` until
+/// call — guaranteed because [`free_hw`] blocks on `call_on_cpu` until
 /// this returns.
 unsafe fn teardown_slice_thunk(arg: *mut ()) {
     let ptc = unsafe { &*(arg as *const PerTaskCounter) };
@@ -1403,10 +1415,12 @@ pub fn free_hw(ptc: &PerTaskCounter) {
         // Target is mid-slice on a remote core: tear the slice down ON that core.
         let arg = ptc as *const PerTaskCounter as *mut ();
         if ax_ipi::wait_until_cpu_ready(owner) {
-            // SAFETY: `ptc` outlives the synchronous call (`run_on_cpu_sync_raw`
+            // SAFETY: `ptc` outlives the synchronous call (`call_on_cpu`
             // blocks until the thunk returns), and `teardown_slice_thunk` only
             // touches per-CPU PMU state on `owner`.
-            let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(owner, teardown_slice_thunk, arg) };
+            let _ = unsafe {
+                ax_ipi::call_on_cpu(ax_hal::irq::CpuId(owner), teardown_slice_thunk, arg)
+            };
         } else {
             // Owner not ready (should not happen for a running target); fall back
             // to a local teardown attempt rather than leaking the slice.
