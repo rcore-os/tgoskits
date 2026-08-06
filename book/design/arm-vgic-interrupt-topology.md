@@ -1,236 +1,135 @@
-# AArch64 VGIC on the resolved device graph
+# 基于解析后设备图的 AArch64 VGIC 与中断拓扑
 
-Status: implementation baseline for PR #1718 rewrite
+状态：PR #1718 的实现基线
 
-## Scope and references
+## 范围与参考
 
-The shared graph, factory, allocation, claim, runtime, and firmware contracts
-are defined in `axvisor-resolved-device-graph.md`. This document applies those
-contracts to the non-secure
-Group 1 interrupt paths used by ordinary Linux and ArceOS guests: GICv2,
-GICv3, ITS/LPI, software wired/MSI delivery, and preconfigured physical SPI
-backing. Secure Group 0/Group 1S, GICv3.1 ESPI, GICv4/vPE, nested
-virtualization, and an external live-migration format are out of scope.
+通用设备图、dyn 模型、资源、claim、runtime 和固件契约见 `axvisor-resolved-device-graph.md`。本文只规定 AArch64 非安全 Group1 客户机需要的 GICv2、GICv3、ITS/LPI、软件中断和预配置物理 SPI 路径。
 
-The semantic references are Arm IHI 0048 (GICv2), Arm IHI 0069 (GICv3),
-Linux v7.1 KVM VGIC documentation, and QEMU 10.1.0. Pull request #1612 is
-prior art rather than code to merge. This rewrite keeps its useful
-graph-to-plan-to-claim-to-bundle direction while retaining the current
-`DeviceRuntime`, typed services and grants, lifecycle, timer, LR, and physical
-SPI implementations from `dev`.
+语义参考 Arm IHI 0048、Arm IHI 0069、Linux v7.1 KVM VGIC 文档和 QEMU 10.1.0。PR #1612 只作为设计和测试参考，不复制其与当前 `dev` 冲突的 machine/provider/SCMI 等实现。
 
-## Dependency direction and module size
+Secure Group0/Group1S、GICv3.1 ESPI、GICv4/vPE、嵌套虚拟化和外部 live-migration 格式不属于本次范围。
 
-Architecture initialization policy remains architecture-owned:
+## 分层原则
 
 ```text
 axdevice_base
-  typed interrupt IDs, IrqLine, controller capability traits
+  类型化中断 ID、IrqLine、控制器能力 trait
         ^
 axdevice
-  device graph, factory declarations, resource plan, claims, bundles
+  dyn DeviceModel、设备图、资源、claim、bundle、runtime
         ^
-axvm arch::{aarch64,riscv64,x86_64,loongarch64}::vm
-  independent construction and registration order
+axvm::arch::aarch64
+  host FDT 解析、ArmVgicConfig、固件、vCPU 与物理 IRQ 生命周期
         ^
-architecture controller implementations
+arm_vgic / arm_vcpu / host GIC backend
 ```
 
-Shared code supplies allocation, validation, rollback, and registration
-mechanisms. It does not prescribe one cross-architecture device order.
-AArch64 registers the VGIC before ordinary IRQ devices; RISC-V retains PLIC
-hart/context setup; x86 retains LAPIC/IOAPIC/PIT and APIC-access ordering;
-LoongArch retains IOCSR and EXTIOI/PCH-PIC cascading.
+通用层不规定四架构的设备顺序。AArch64 自己完成 host GIC/FDT 解析、VGIC 计划、控制器 bundle 注册、普通设备构建、vCPU binding、物理 SPI backing、地址空间和 vCPU setup。RISC-V、x86 与 LoongArch 保留各自完全不同的顺序。
 
-Resource code is split by owned invariant. Graph topology, address, wired IRQ, MSI, claim
-lifecycle, and immutable resolved data are separate modules. `ResourcePools`
-composes focused address, wired IRQ, host IRQ, and MSI sub-pools instead of one
-structure containing every map.
-The AArch64 plan follows the same rule: firmware identity, VGIC layout, and
-device resources are composed values, not fields accumulated in one large
-mutable VM structure.
+资源、固件身份、VGIC 配置和可变运行时状态按变化原因拆分，不建立同时持有所有内容的巨型 `VmPlan`。AArch64 计划由 `VmDevicePlan`、VGIC construction plan 和 firmware plan 等小组件组合。
 
-## Allocator choice
+## 状态所有权
 
-`vm-allocator` provides useful lowest-first address and numeric ID allocation,
-but it does not model resource namespaces, owners, shared IRQ compatibility,
-compound DeviceID/EventID/LPI reservations, or one-shot transactional claims.
-The repository also has similar allocation code under `rdif-pcie`; making the
-architecture-neutral device framework depend on a PCI driver-interface crate
-would reverse the intended dependency direction.
+每个 VM 只有一个 `Arc<VgicCore>`。enable、pending latch、当前 line level、active、priority、group、trigger、target/route 和 backing 都只保存在该 core 中。GICD、GICC/GICR、ICC 和 ITS 前端只负责架构访问解码，不保存第二份状态，也不向 host GICD/GICR 透传客户机写入。
 
-The planner therefore uses a small private range-search mechanism and keeps
-the domain semantics in typed modules. Allocation state is created locally
-for one call to `plan()` and is published only after every request succeeds.
-This provides transaction rollback without snapshots or a second persistent
-allocator state. If a neutral workspace allocator is introduced later, only
-the private range-search module should change.
+同一个 `Arc<VgicCore>` 同时以具体类型服务 vCPU、EOI 和物理 backing，并转换为 `Arc<dyn VirtualInterruptController>` 注册给设备框架。这里没有转发状态机和 `InterruptFabric`。
 
-## State ownership
+`WiredIrqInput` 只表达电气 source 聚合：edge 调用 `pulse()`；level 调用 `assert()/deassert()`；shared-level 使用 wired-OR；source drop 自动撤销断言。LR 只是规范状态的有限硬件缓存，满时保留在软件 overflow 队列，不 panic。
 
-There is no independent interrupt fabric. Each concrete virtual interrupt
-controller is the only owner of enable, pending, line level, active, priority,
-route/target, and EOI state. `WiredIrqInput` owns only electrical source
-aggregation:
+## 配置与不可变计划
 
-- edge sources call `pulse()`;
-- level sources call `assert()` and `deassert()`;
-- shared level sources combine as wired-OR;
-- dropping an asserted source withdraws that source.
+AArch64 在最终客户机 FDT 生成前完成两阶段计划：
 
-AArch64 has one `Arc<VgicCore>` per VM. The same allocation remains typed for
-vCPU and physical IRQ operations and is also registered as
-`Arc<dyn VirtualInterruptController>` for virtual devices. GICD, GICC/GICR,
-ICC, and ITS frontends decode architectural accesses into that core; none is
-a second state owner and none forwards guest writes to host GICD/GICR state.
+1. 解析 host GIC、ITS、串口、timer、vCPU affinity 和物理 IRQ，净化为拥有所有权的 machine/firmware profile；
+2. 创建 `ArmVgicConfig`、设备图和资源计划，之后禁止重新探测、重新分配或从 guest DT 反向恢复配置。
 
-Every INTID distinguishes a pending latch from the current line level. LRs are
-a finite hardware cache of canonical state. Overflow stays in software and is
-refilled by priority and routing. The mainline timer, LR save/restore, and
-physical SPI quiesce/drain/deactivate implementations remain authoritative.
+`ArmVgicConfig::{V2,V3}` 包含 GICD/GICC 或 GICD/GICR region、全部 GICR region、stride、vCPU affinity、SPI/LPI 容量、LR/priority 能力、ITS 和固定 `AssignedSpiConfig`。host 与 guest GIC 版本必须一致，跨版本直接拒绝。
 
-## Resource planning and claims
+GICv2 最多支持 8 个 vCPU。GICv3 校验 MPIDR affinity 唯一性、GICR frame 容量、region 不重叠和 stride。host 没有可用 ITS 时，配置不包含 ITS，固件不生成 ITS，任何 MSI 需求明确失败。
 
-Namespaces are explicit. MMIO, PIO, `(controller, input)`,
-`(controller, ITS, DeviceID, EventID)`, controller-global LPI, and host IRQ
-identities never compare as untyped integers. The exact factory stored in each
-graph node declares named slots;
-architecture code supplies automatic pools, fixed allowlists, and internal
-reservations.
+## VGIC 作为 dyn host replacement
 
-Planning is deterministic:
+设备图中的 VGIC 节点是 `HostReplacement`，保存同一个 VGIC model 实例。`declare()` 为 distributor、每段 CPU-interface/redistributor region 和每个 ITS 声明命名 fixed MMIO slot；`build()` 逐项消费并校验解析后的范围，然后创建 VGIC frontends、系统寄存器适配器和 `ControllerRegistration`。
 
-1. validate graph topology, factory requirements, and architecture pools;
-2. copy architecture/controller reservations into local allocation state;
-3. reserve fixed requests in stable device-ID and slot order;
-4. allocate automatic requests in the same stable order;
-5. choose the lowest aligned value from the matching namespace;
-6. publish immutable resources and one-shot claims only after all requests
-   succeed.
+host replacement 沿用 host 固件地址、GICR/ITS 布局和中断身份，客户机只修改虚拟状态。所有 VGIC MMIO 仍由 stage-2 捕获，不直接映射 host 寄存器。普通虚拟设备只依赖 dyn controller，通过自动分配或平台 fixed slot 获得中断线。
 
-Automatic pools and fixed allowlists are separate. A host-derived fixed GIC,
-UART, timer, or ITS address cannot silently expand the range used for new
-automatic devices.
+注册顺序为：
 
-Conflict detection is part of reservation, not an `is_free()` query followed
-by a later claim. Errors carry the namespace, value/range, existing owner, and
-requester. Owner lookup is diagnostic only.
+1. 创建并注册 VGIC bundle；
+2. 构建普通 IRQ/MSI 设备；
+3. 为每个 vCPU 建立类型化 VGIC binding；
+4. 建立物理 SPI backing；
+5. 映射地址空间并完成 vCPU setup。
 
-Claims transition `planned -> issued -> leased`. Issuing one device is atomic.
-Dropping an unconsumed claim or a lease rolls that slot back to `planned`, so a
-failed device build can retry the same deterministic lowest resource. A
-device build cannot finish with unconsumed slots, and VM sealing cannot finish
-while any planned slot lacks a retained lease. A build context validates the
-slot kind and prepares the controller endpoint before consuming the claim; a
-factory that handles an accessor error therefore cannot accidentally discard
-the claim and later commit an incomplete bundle.
+不允许遍历设备并 downcast 某个 GIC frontend 补配置。
 
-## Runtime controller and endpoint registration
+## 资源命名空间与 claim
 
-`VirtualInterruptController` remains a narrow capability: it converts a
-planned controller input and trigger into controller-owned `WiredIrqInput`.
-It does not expose MMIO, system registers, vCPU state, host IRQs, firmware,
-EOI, or architecture routing. MSI is a separate optional capability.
+MMIO、PIO、`(controller,input)`、host IRQ、按 ITS 隔离的 DeviceID/EventID 和 controller-global LPI 是不同命名空间。AArch64 resource pool 提供自动 MMIO 和可分配 SPI；VGIC 内部范围、timer PPI、host replacement 和物理 SPI 在自动分配前保留。
 
-The runtime builder accepts `ControllerRegistration` as a `DeviceBundle`
-member. Registration validates the declared ID against `controller.id()`,
-rejects duplicate IDs, and installs wired and optional message capabilities
-atomically with controller frontend devices. Ordinary factories receive an
-exclusive `DeviceBuildContext`; `mmio(slot)`, `pio(slot)`, `irq(slot)`, and
-`msi(slot)` consume claims rather than raw configuration fields.
+fixed 请求先占用，auto 请求按节点 ID、种类和 slot 稳定排序并 lowest-first 分配。冲突检查发生在原子 reserve/claim，不执行 `is_free()` 后再占用。错误包含资源域、值、已有所有者和请求者。
 
-Endpoint registrations retain both the controller-created endpoint and its
-resource lease. Runtime validation rejects missing controllers, mismatched
-IDs, endpoint values that differ from the plan, and incompatible sharing. A
-failed bundle registration restores device, bus, controller, endpoint,
-service, grant, lifecycle, and pollable indices to their prior state.
+claim 只能从 `planned` 进入 `issued` 再进入 `leased`。构建失败、未消费或 bundle 注册失败会回滚；重新构建得到相同最低资源。endpoint registration 与 lease 一同进入 bundle，并与 VGIC controller 索引原子提交。
 
-The current mainline services, grants, access ports, lifecycle transitions,
-and topology seal remain unchanged. The builder only permits architecture
-code to register controller bundles before sealing.
+不采用 `vm-allocator`，因为这里还需要 owner 诊断、跨 controller 域、共享 IRQ 兼容、MSI/LPI 复合占用和 VM 事务语义。私有 lowest-first 搜索以后可以独立替换。
 
-## AArch64 immutable plan and firmware
+## GICv2/GICv3 主路径
 
-AArch64 produces an immutable plan composed from a `VmDevicePlan`, firmware
-snapshot, and complete `ArmVgicConfig` before final guest FDT serialization.
-The firmware snapshot includes GIC, serial, timer, and node identity facts.
-Device construction consumes that plan and must
-not probe again, allocate again, or reconstruct configuration by downcasting
-a registered GIC frontend.
+主线 `VgicCore` 继续负责常规非安全客户机路径：
 
-Host and guest GIC versions must match. GICv2 supports at most eight vCPUs.
-GICv3 validates unique MPIDR affinities against all configured redistributor
-regions and their stride. A host without a usable ITS produces neither guest
-ITS firmware nor an MSI capability; an MSI requirement then fails explicitly.
+- v2：GICD、GICC、SGI source、PPI、SPI、CPU target、priority、pending/active、EOI/DIR；
+- v3：GICD、每 vCPU GICR、ICC 系统寄存器、affinity routing、SGI/PPI/SPI；
+- ITS/LPI：host 能力存在时使用同一 VM-local core 与检查过的 guest memory。
 
-Guest GIC firmware is sanitized from the same configuration:
+保留位和不支持的安全扩展按架构 RAZ/WI，不使用 `todo!`、panic 或 host register passthrough。每个 INTID 明确区分 pending latch 与仍有效的 line level。
 
-- GICv2 preserves selected host GICD/GICC layout while removing GICH/GICV,
-  maintenance, secure, and host-only properties;
-- GICv3 preserves GICD, every selected GICR region, redistributor stride, and
-  interrupt-cell layout;
-- ITS nodes exist only for matching host ITS capabilities;
-- phandles are preserved when safe or rewritten consistently;
-- VGIC MMIO ranges remain stage-2 traps, never host-register mappings.
-
-All GICD, GICC/GICR, and ITS apertures are checked for address-end overflow
-and pairwise overlap before the profile mutates machine configuration. GICR
-capacity is computed across all regions, and VM-local ITS IDs must be unique.
-An ITS node must describe exactly one register aperture.
-
-Physical SPIs are selected while planning and require
-`guest INTID == host INTID`. Host IRQ identity, physical trigger, and host
-route are immutable to the guest. Guest writes update virtual state only.
-The existing AArch64 route slot gains VM-lifetime reservation state; it is not
-replaced by a second generic host-IRQ registry.
-
-## Locking and callbacks
-
-The lock order is:
+vCPU 路径为：
 
 ```text
-resource claim state
-  -> device/controller registry
-    -> VGIC distributor/per-vCPU/ITS state
-      -> backend-local LR or physical-route state
+fold 已保存 LR -> refill -> restore -> guest run -> save -> fold
 ```
 
-No resource or device-registry lock is acquired while holding VGIC state.
-VGIC critical sections update canonical state and produce actions. vCPU
-wakeups, IPIs, maintenance notification, host acknowledge/deactivate, and
-physical route operations run after releasing the VGIC lock.
+pause/resume 保存 HCR、VMCR、APR 和全部 LR。主线虚拟 timer、maintenance、EOI/DIR 和 LR overflow 实现保持权威，不在本分支复制另一套状态机。
 
-A vCPU binding follows:
+## 物理 SPI
+
+物理 SPI 在计划阶段固定，强制 `guest INTID == host INTID`。host IRQ identity、物理 trigger 和 route 对客户机不可修改。host acknowledge 后进入同一 VGIC 状态，只有客户机 EOI/DIR 后才执行正确的 host deactivate。
+
+host route 使用 AArch64 平台现有 route slot 和 VM 生命周期状态，不增加第二个通用 host IRQ registry。重复物理 SPI 在 VM 可运行前失败。停止、quiesce、drain、deactivate 和销毁沿用主线生命周期。
+
+## FDT
+
+VGIC runtime 与 FDT 使用同一个不可变 profile/config：
+
+- v2 保留 host GICD/GICC 地址，删除 GICH/GICV、maintenance、安全和 host-only 属性；
+- v3 保留 host GICD、全部 GICR region、stride 与 cell 描述；
+- ITS 只在 host 能力存在时生成；
+- phandle 保持或一致重写；
+- host replacement 与物理 SPI 保持地址和 INTID 身份。
+
+普通设备固件模型读取解析后的 MMIO/IRQ/MSI slot，不重新分配。固件中出现的每个数字必须能回溯到 `ResolvedDeviceGraph` 或不可变架构计划。
+
+## 锁顺序与锁外动作
+
+锁顺序为：
 
 ```text
-fold saved LR state -> refill -> restore -> guest run -> save -> fold
+resource claim -> device/controller registry -> VGIC state -> backend LR/route state
 ```
 
-Pause/resume preserves HCR, VMCR, APR, and all LRs. IRQ-facing VGIC locks are
-IRQ-safe because injection can re-enter on the same physical CPU. Mainline
-physical SPI reader draining and deactivate ordering remain unchanged.
+持有 VGIC 状态锁时只更新规范状态并产生待执行动作。唤醒、IPI、maintenance 通知、host acknowledge/deactivate 和物理 route 操作都在锁外执行。资源/registry 锁不能在 VGIC 锁内获取。
 
-## Failure and rollback
+## 失败与验证矩阵
 
-Planning is all-or-nothing. A validation or exhaustion failure publishes no
-plan. A failed factory build drops endpoints and leases, returning claims to
-`planned`. A failed bundle registration leaves all runtime indices unchanged.
-A failed AArch64 physical binding tears down host routing before dropping the
-VGIC registration. Destruction releases the VM-lifetime route reservation.
+规划和注册都是全成或全退。VGIC 构建失败释放 endpoint 与 lease；物理 backing 失败先撤销 host route，再销毁注册。固件序列化只读取不可变资源，因此不能描述与 runtime 不同的地址、IRQ、GICR 或 ITS。
 
-Firmware serialization reads only immutable resolved resources. It therefore
-cannot describe an address, IRQ, GICR region, or ITS instance different from
-the one later consumed by the runtime.
-
-## Validation matrix
-
-| Area | Required evidence |
+| 区域 | 必要证据 |
 | --- | --- |
-| Planner | fixed-before-auto, stable lowest-first, alignment/overflow/exhaustion, duplicate device/slot, retry after build failure |
-| Namespaces | same input on different controllers, exclusive conflict, shared trigger mismatch, ITS isolation, controller-global LPI |
-| Claims | duplicate issue/consume, unconsumed rejection, lease rollback, bundle rollback, seal verification |
-| Controller contract | dyn-only edge/level/shared lines, duplicate/missing/ID-mismatched controller, source-drop deassert |
-| VGIC | SGI/PPI/SPI, pending/active, line/latch, priority/route, LR overflow, maintenance, EOI/DIR |
-| Firmware | VGIC config, runtime resources, GIC/ITS nodes, and device interrupt properties originate from one plan |
-| Physical backing | fixed identity/trigger/route, duplicate host SPI rejection, quiesce/drain, guest EOI/DIR to host deactivate |
-| System | QEMU GICv2 two-vCPU timer stress, GICv3+ITS four-vCPU timer stress with Linux ITS initialization assertion, and four-architecture smoke |
+| planner | fixed 优先、输入顺序无关、lowest-first、溢出/耗尽、失败后最低资源重试 |
+| namespace | 跨 controller 同号、exclusive 冲突、shared trigger 不匹配、ITS 隔离、全局 LPI |
+| claim/runtime | 重复/未消费、bundle 回滚、controller 缺失/重复/ID 不匹配、seal |
+| VGIC | SGI/PPI/SPI、line/latch、pending/active、priority/route、overflow、maintenance、EOI/DIR |
+| firmware | VGIC config、设备资源、GIC/ITS/interrupts 来自同一计划 |
+| physical | 固定 identity/trigger/route、重复 host SPI、quiesce/drain、EOI/DIR 到 deactivate |
+| system | QEMU GICv2 2-vCPU、GICv3+ITS 4-vCPU timer stress 和四架构 smoke |

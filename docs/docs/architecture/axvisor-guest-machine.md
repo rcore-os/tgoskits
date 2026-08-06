@@ -17,8 +17,9 @@ sidebar_label: "Axvisor 客户机 Machine"
 
 本设计的目标是：
 
-- 用户只描述客户机类型和需要选择或禁用的物理设备。
+- 用户描述客户机类型、需要选择或禁用的物理设备，以及开放式的虚拟设备语义选项。
 - machine profile 独占虚拟串口、中断控制器、定时器和固件接口等平台事实。
+- 普通虚拟设备只声明所需资源数量，地址和中断由设备图确定性自动分配。
 - 全虚拟化客户机从空物理地址空间开始；设备直通客户机从可分配物理资源全集开始。
 - 宿主物理 UART 永远由宿主持有；每个客户机总有一个虚拟串口。
 - 所有虚拟设备只使用客户机本地 IRQ 线，不接收宿主裸 IRQ 编号。
@@ -56,6 +57,11 @@ passthrough = [
 disabled = [
   { path = "/pcie@10000000" },
 ]
+
+[[devices.virtual]]
+id = "sensor0"
+model = "demo-mmio"
+sample_rate = 1000
 ```
 
 `GuestType` 只有两个值：
@@ -67,10 +73,15 @@ disabled = [
 `PhysicalDeviceRef` 是物理设备身份，不是资源描述。第一阶段支持设备树路径；
 后续增加 PCI BDF 或 ACPI 身份时必须继续由平台发现层解析，不能重新暴露裸地址或 IRQ。
 
+`devices.virtual` 使用稳定 `id`、规范 `model` 和设备私有 options。配置 catalog 把
+options 解析为类型化模型；未知 model 或未知字段明确失败。普通设备不能在 TOML 中
+指定 MMIO、PIO、IRQ、MSI 或 LPI 数字。
+
 以下字段被永久移除并应在解析时失败：
 
 - `vm_type`、`address_space_policy`、`interrupt_mode`
 - `emu_devices`、数字设备类型和 `cfg_list`
+- `irq_id`、`kernel.disk_path` 及其他裸虚拟设备资源
 - `passthrough_devices`、`excluded_devices`
 - `passthrough_addresses`、`passthrough_ports`
 - `serial`、配置版本或任何串口型号、地址、IRQ、后端、启停字段
@@ -101,7 +112,7 @@ CPU 上，规划器必须对这些 CPU 的真实能力取最小支持位宽，�
 1. 根据 `GuestType` 建立空映射或默认 identity-passthrough window。
 2. 保留客户机 RAM 与启动描述区。
 3. 保留宿主物理控制台 UART 等 host-owned 设备。
-4. 保留所有 machine profile 虚拟 MMIO/PIO 资源。
+4. 解析完整设备图并保留 machine、host replacement 和配置虚拟设备资源。
 5. 应用 `disabled` 设备形成的保留区。
 6. 解析并加入最终允许的物理设备映射。
 
@@ -113,11 +124,13 @@ hole 上安装 APIC-access backing page，SVM 保持未映射并通过 nested pa
 
 ## 设备 runtime
 
-普通设备遵循统一的 `factory -> DeviceBundle -> DeviceRuntime` 构建路径。架构层只创建
-中断控制器、bootstrap factory 和不可变 machine plan；factory 只能构造 bundle，
-不能在构建过程中直接修改 runtime。bundle 注册资源、typed service、grant 和
-interrupt endpoint 是一个事务，任一步失败都必须完整回滚。拓扑 seal 后不能再增加
-资源或服务，也不保留按具体设备扩张的 legacy fallback 字段。
+普通设备遵循统一的 `ConfiguredDeviceFactory -> Arc<dyn DeviceModel> ->
+ResolvedDeviceGraph -> DeviceBundle -> DeviceRuntime` 路径。配置 factory 只负责把
+options 转为类型化 model；同一个 model 实例执行纯 `declare()` 与受限 `build()`。
+架构层创建中断控制器、host replacement 和不可变 machine plan，并决定自己的注册顺序。
+bundle 注册资源、typed service、grant、controller 和 interrupt endpoint 是一个事务，
+任一步失败都必须完整回滚。拓扑 seal 后不能再增加资源或服务，不保留设备类型 enum、
+中心 factory lookup 或 legacy fallback。
 
 ## 串口与中断所有权
 
@@ -186,7 +199,7 @@ flowchart LR
 `ESC` 序列保持原顺序交给当前客户机或 shell，因此方向键不会被快捷键解析吞掉。
 `vm console <id>` 和 `vm start --console <id>` 只允许附着运行中客户机。前台 VM
 停止或删除时自动返回 shell，并使旧虚拟串口 backend 代次失效；reset 重建设备图时
-由 factory 创建新代次，旧 backend 不能读写替代实例。
+由 machine serial model 创建新代次，旧 backend 不能读写替代实例。
 
 单 VM 输出不加前缀；多个 VM 同时运行时，复用器按完整行串行写出
 `[VM <id>] ` 前缀。另一个 VM 在当前未换行片段后输出时，复用器先补换行再切换，
@@ -216,5 +229,5 @@ flowchart LR
 - 控制台前台路由、转义、停止/删除、并发输出和多 VM 行前缀测试。
 - 四架构 Axvisor QEMU smoke；LoongArch 使用仓库规定的 LVZ 容器。
 
-回滚需要同时恢复配置格式、模板与解析器，不能仅删除虚拟设备，否则已迁移配置将
-失去串口和平台控制器。
+这是一条破坏性配置边界，不支持运行时回退旧 descriptor。需要回退提交时必须同时
+恢复配置、设备图、固件与 runtime，不能保留两套事实来源。
