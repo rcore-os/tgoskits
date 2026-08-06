@@ -328,6 +328,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     crate_config: &GuestConfig,
     serial_profile: crate::machine::GuestSerialProfile,
     serial_identity: Option<&crate::machine::GuestSerialFdtIdentity>,
+    additional_serials: &[crate::machine::GuestSerialProfile],
     gic_profile: Option<&crate::machine::GuestGicProfile>,
     plic_profile: Option<&crate::machine::GuestPlicProfile>,
     timer_profile: Option<&crate::machine::GuestTimerProfile>,
@@ -352,6 +353,9 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     )?;
     super::timer::install_machine_timer(&mut tree, timer_profile)?;
     super::serial::install_machine_serial(&mut tree, serial_profile, serial_identity)?;
+    for serial in additional_serials {
+        super::serial::install_additional_serial(&mut tree, *serial)?;
+    }
     Ok(tree.finish())
 }
 
@@ -498,6 +502,7 @@ mod tests {
             &cfg,
             serial,
             None,
+            &[],
             None,
             None,
             None,
@@ -516,6 +521,7 @@ mod tests {
             &cfg,
             serial,
             None,
+            &[],
             None,
             None,
             None,

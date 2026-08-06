@@ -12,7 +12,6 @@ pub struct ResolvedDeviceNode {
     parent: Option<DeviceNodeId>,
     dependencies: Vec<DeviceNodeId>,
     firmware: DeviceFirmwareBinding,
-    firmware_models: FirmwareModels,
     model: Option<Arc<dyn DeviceModel>>,
     host_mapping: Option<HostPassthroughMapping>,
 }
@@ -25,7 +24,6 @@ impl ResolvedDeviceNode {
             parent: node.parent,
             dependencies: node.dependencies,
             firmware: node.firmware,
-            firmware_models: node.firmware_models,
             model: node.model,
             host_mapping: node.host_mapping,
         }
@@ -56,9 +54,11 @@ impl ResolvedDeviceNode {
         &self.firmware
     }
 
-    /// Returns device-owned guest firmware rendering capabilities.
-    pub const fn firmware_models(&self) -> &FirmwareModels {
-        &self.firmware_models
+    /// Returns conventional firmware metadata from the same runtime model.
+    pub fn firmware(&self) -> DeviceFirmwareSpec {
+        self.model
+            .as_ref()
+            .map_or_else(DeviceFirmwareSpec::default, |model| model.firmware())
     }
 
     /// Returns the exact model that declared this node.

@@ -25,11 +25,14 @@ hart/context setup, x86 retains LAPIC/IOAPIC/PIT/APIC-access ordering, and
 LoongArch retains IOCSR and EXTIOI/PCH cascading.
 
 When debugging a missing device or interrupt, follow one resource slot from
-the factory's pure declaration, through `ResolvedDeviceGraph`, into both the
+`DeviceModel::requirements()`, through `ResolvedDeviceGraph`, into both the
 FDT/ACPI plan and `DeviceBuildContext`. Runtime devices must use the resolved
-address and `IrqLine.input()` rather than the compatibility configuration
-value. The exact factory object retained by the graph performs the build, and
-the runtime seals only after every claim becomes a lease.
+address and `IrqLine.input()`. The exact dyn model retained by the graph performs
+the build, and the runtime seals only after every `ResourceClaimSet` slot becomes
+a lease. For `console0`, first verify whether machine fallback, host FDT/ACPI
+snapshot, or a same-ID user override supplied the final model and fixed binding.
+MMIO/PIO exits must call the runtime optional-dispatch path once; a `find_*`
+probe followed by a second dispatch indicates a stale routing path.
 
 For x86 direct Linux boot, verify all of the following before changing Linux
 command-line policy:

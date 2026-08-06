@@ -60,9 +60,8 @@ pub(crate) struct DeclaredDeviceNode {
     pub(crate) parent: Option<DeviceNodeId>,
     pub(crate) dependencies: Vec<DeviceNodeId>,
     pub(crate) firmware: super::DeviceFirmwareBinding,
-    pub(crate) firmware_models: crate::FirmwareModels,
     pub(crate) model: Option<alloc::sync::Arc<dyn crate::DeviceModel>>,
-    pub(crate) declaration: DeviceDeclaration,
+    pub(crate) requirements: DeviceRequirements,
     pub(crate) host_mapping: Option<super::HostPassthroughMapping>,
 }
 
@@ -78,14 +77,16 @@ impl DeviceNodeSpec {
                 node: self.id.to_string(),
             });
         }
-        let declaration = match (&self.model, &self.declaration) {
-            (Some(model), _) => model
-                .declare()
-                .map_err(|error| DeviceGraphError::Declaration {
-                    node: self.id.to_string(),
-                    detail: error.to_string(),
-                })?,
-            (None, Some(declaration)) => declaration.clone(),
+        let requirements = match (&self.model, &self.requirements) {
+            (Some(model), _) => {
+                model
+                    .requirements()
+                    .map_err(|error| DeviceGraphError::Declaration {
+                        node: self.id.to_string(),
+                        detail: error.to_string(),
+                    })?
+            }
+            (None, Some(requirements)) => requirements.clone(),
             _ => {
                 return Err(DeviceGraphError::Declaration {
                     node: self.id.to_string(),
@@ -99,9 +100,8 @@ impl DeviceNodeSpec {
             parent: self.parent.clone(),
             dependencies: self.dependencies.clone(),
             firmware: self.firmware.clone(),
-            firmware_models: self.firmware_models.clone(),
             model: self.model.clone(),
-            declaration,
+            requirements,
             host_mapping: self.host_mapping,
         })
     }
@@ -117,9 +117,7 @@ impl DeclaredDeviceGraph {
     pub fn requests(&self) -> DeviceManagerResult<Vec<DevicePlanRequest>> {
         self.nodes
             .iter()
-            .map(|node| {
-                DevicePlanRequest::new(node.id.as_str(), node.declaration.requirements().clone())
-            })
+            .map(|node| DevicePlanRequest::new(node.id.as_str(), node.requirements.clone()))
             .collect()
     }
 

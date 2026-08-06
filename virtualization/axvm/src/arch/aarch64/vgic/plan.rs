@@ -49,7 +49,7 @@ impl VgicConstructionPlan {
         self.host_virtual_timer_intid
     }
 
-    pub(super) fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+    pub(super) fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         let mut requirements = DeviceRequirements::new();
         match self.config() {
             ArmVgicConfig::V2(config) => {
@@ -67,7 +67,7 @@ impl VgicConstructionPlan {
                 }
             }
         }
-        Ok(DeviceDeclaration::with_requirements(requirements))
+        Ok(requirements)
     }
 
     pub(super) fn validate_and_consume(

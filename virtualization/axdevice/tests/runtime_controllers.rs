@@ -105,7 +105,7 @@ struct IrqFactory {
 }
 
 impl DeviceModel for IrqFactory {
-    fn declare(&self) -> axdevice::DeviceManagerResult<axdevice::DeviceDeclaration> {
+    fn requirements(&self) -> axdevice::DeviceManagerResult<DeviceRequirements> {
         let requirements = DeviceRequirements::new().with_wired_irq(
             self.slot.clone(),
             self.controller,
@@ -113,7 +113,7 @@ impl DeviceModel for IrqFactory {
             self.sharing,
             ResourceRequest::Fixed(ControllerInputId::new(40)),
         )?;
-        Ok(axdevice::DeviceDeclaration::with_requirements(requirements))
+        Ok(requirements)
     }
 
     fn build(

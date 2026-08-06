@@ -7,10 +7,10 @@
 - `DeviceModel`：同一个 dyn 实例声明资源并构建 bundle；
 - `DeviceGraphBuilder` / `ResolvedDeviceGraph`：保存稳定节点、依赖、host identity 和唯一资源计划；
 - `ResourcePools` / `VmResourcePlan`：fixed-first、稳定 lowest-first 分配；
-- `ResourceClaim` / `ResourceLease`：一次性消费和失败回滚；
+- `ResourceClaimSet` / `ResourceLease`：按节点一次签发、按槽消费和失败回滚；
 - `DeviceBundle`：原子注册设备、controller、endpoint、service、grant 和 lifecycle；
 - `DeviceRuntime`：封口后的 MMIO、PIO、SysReg 与中断能力索引；
-- `FdtNodeModel` / `AcpiNodeModel`：从解析后资源生成设备固件片段。
+- `DeviceFirmwareSpec`：声明简单固件元数据和对应的资源槽。
 
 crate 不再提供设备类型 enum、`DeviceFactoryRegistry`、裸配置直建设备或兼容 fallback。
 
@@ -18,7 +18,11 @@ crate 不再提供设备类型 enum、`DeviceFactoryRegistry`、裸配置直建�
 
 ```rust
 pub trait DeviceModel: Send + Sync {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration>;
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements>;
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::default()
+    }
 
     fn build(
         &self,
@@ -27,7 +31,7 @@ pub trait DeviceModel: Send + Sync {
 }
 ```
 
-`declare()` 只产生命名 MMIO/PIO/IRQ/MSI slot。`build()` 只能从独占 `DeviceBuildContext` 消费这些 slot。图保存准确的 `Arc<dyn DeviceModel>`，不会在构建时按类型查找另一个 factory。
+`requirements()` 只产生命名 MMIO/PIO/IRQ/MSI slot。`firmware()` 声明节点名、compatible/HID、简单属性和使用哪些 slot。`build()` 只能从独占 `DeviceBuildContext` 消费这些 slot；接口直接接受 `mmio("registers")`、`irq("irq")` 等名称。图保存准确的 `Arc<dyn DeviceModel>`，不会在构建时按类型查找另一个 factory。
 
 ## 资源与中断
 
@@ -37,11 +41,11 @@ pub trait DeviceModel: Send + Sync {
 
 ## 固件
 
-节点可挂载 `FirmwareModels { fdt, acpi }`。`render_device_firmware()` 按图顺序读取每个节点的 `ResolvedDeviceResources`，返回拥有所有权的片段。最终 FDT/ACPI 表间关系仍由架构 composer 负责。
+节点读取 model 的 `DeviceFirmwareSpec`，再与该节点的 `ResolvedDeviceResources` 组合。串口等常规设备使用通用元数据；GIC、ITS、PCI、MADT 和 `_PRT` 等架构拓扑由架构 composer 读取同一 resolved graph 生成，不存在第二组固件 dyn 容器。
 
 ## Runtime 与能力
 
-runtime 通过 `handle_mmio_*`、`handle_port_*` 和 `handle_sys_reg_*` 分发访问。敏感操作使用 typed service、DMA/timer/wake/stop grant 和短生命周期 `DeviceAccess`；生产代码不 downcast `Arc<dyn Device>`。
+runtime 通过 `handle_mmio_*`、`handle_port_*` 和 `handle_sys_reg_*` 分发访问。可选命中接口让 nested fault 和 x86 未映射 PIO 在一次索引后决定是否进入架构 fallback；运行路径没有 `find_*` 后二次 dispatch。敏感操作使用 typed service、DMA/timer/wake/stop grant 和短生命周期 `DeviceAccess`；生产代码不 downcast `Arc<dyn Device>`。
 
 controller bundle 必须先于依赖设备注册。bundle 任一步失败会恢复全部索引和资源 lease。全部图节点构建完成后 seal runtime，seal 后拒绝继续注册。
 

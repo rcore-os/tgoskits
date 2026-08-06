@@ -72,11 +72,16 @@ pub(super) fn patch_runtime_fdt(
     let initrd = vm.with_config(|config| {
         super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
     });
-    let (serial_profile, serial_identity, gic_profile, timer_profile) =
-        vm.with_architecture_plan(|plan| {
+    let (serial_profile, serial_identity, additional_serials, gic_profile, timer_profile) = vm
+        .with_architecture_plan(|plan| {
             Ok((
                 plan.serial_profile(),
                 plan.serial_fdt_identity().cloned(),
+                plan.serial_devices()
+                    .iter()
+                    .filter(|serial| serial.id() != "console0")
+                    .map(crate::machine::ResolvedSerialDevice::profile)
+                    .collect::<alloc::vec::Vec<_>>(),
                 plan.gic_profile().clone(),
                 plan.timer_profile().clone(),
             ))
@@ -87,6 +92,7 @@ pub(super) fn patch_runtime_fdt(
         crate_config,
         serial_profile,
         serial_identity.as_ref(),
+        &additional_serials,
         Some(&gic_profile),
         None,
         Some(&timer_profile),

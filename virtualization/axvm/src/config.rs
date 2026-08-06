@@ -100,7 +100,7 @@ pub struct AxVMConfig {
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<PassthroughInterrupt>,
     serial_profile: GuestSerialProfile,
-    serial_fdt_identity: Option<GuestSerialFdtIdentity>,
+    serial_firmware_identity: Option<GuestSerialFirmwareIdentity>,
     gic_profile: Option<GuestGicProfile>,
     plic_profile: Option<GuestPlicProfile>,
     timer_profile: Option<GuestTimerProfile>,
@@ -155,7 +155,7 @@ impl AxVMConfig {
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
             serial_profile,
-            serial_fdt_identity: None,
+            serial_firmware_identity: None,
             gic_profile: machine.gic,
             plic_profile: machine.plic,
             timer_profile: machine.timer,
@@ -341,16 +341,16 @@ impl AxVMConfig {
     pub fn replace_machine_serial(
         &mut self,
         profile: GuestSerialProfile,
-        identity: Option<GuestSerialFdtIdentity>,
+        identity: Option<GuestSerialFirmwareIdentity>,
     ) -> crate::AxVmResult {
         self.serial_profile = profile;
-        self.serial_fdt_identity = identity;
+        self.serial_firmware_identity = identity;
         Ok(())
     }
 
     /// Returns firmware identity retained for the virtual serial node.
-    pub fn serial_fdt_identity(&self) -> Option<&GuestSerialFdtIdentity> {
-        self.serial_fdt_identity.as_ref()
+    pub fn serial_firmware_identity(&self) -> Option<&GuestSerialFirmwareIdentity> {
+        self.serial_firmware_identity.as_ref()
     }
 
     /// Replaces the virtual GIC windows with host firmware resources.

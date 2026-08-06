@@ -20,9 +20,10 @@ pub(crate) type LoongArchVmPlan = SimpleVmPlan;
 
 impl LoongArch64Arch {
     pub(crate) fn create_vm_resources(
-        config: AxVMConfig,
+        mut config: AxVMConfig,
         fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
+        super::boot::probe::apply_host_serial(&mut config)?;
         let device_plan = plan_devices(&config, fw_cfg_payload)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
@@ -103,11 +104,6 @@ fn plan_devices(
             )),
         ),
         DeviceNodeSpec::virtual_device(
-            DeviceNodeId::new("serial")?,
-            crate::machine::serial_device_model(config),
-        )
-        .with_dependency(controller_id.clone()),
-        DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("fw-cfg")?,
             Arc::new(axdevice::FwCfgPayloadFactory::deferred(
                 axvm_types::GuestPhysAddr::from(FW_CFG_BASE),
@@ -116,7 +112,12 @@ fn plan_devices(
             )),
         ),
     ];
-    crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
+    crate::configured::append_configured_devices(
+        config,
+        &mut nodes,
+        &controller_id,
+        axdevice_base::InterruptControllerId::new(0),
+    )?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
         config,
         nodes,

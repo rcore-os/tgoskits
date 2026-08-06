@@ -5,13 +5,13 @@ use alloc::{string::ToString, vec::Vec};
 use acpi_tables::{
     Aml,
     aml::{
-        AddressSpace, AddressSpaceCacheable, Device, EISAName, IO, Interrupt, Name, Package,
-        PackageBuilder, ResourceTemplate, ZERO,
+        AddressSpace, AddressSpaceCacheable, Device, EISAName, IO, Interrupt, Memory32Fixed, Name,
+        Package, PackageBuilder, ResourceTemplate, ZERO,
     },
     sdt::Sdt,
 };
 
-use super::config::X86FirmwarePlan;
+use super::{config::X86FirmwarePlan, serial::*};
 use crate::boot::acpi::AcpiBuildError;
 
 const OEM_ID: [u8; 6] = *b"AXVISR";
@@ -21,7 +21,9 @@ const OEM_REVISION: u32 = 1;
 pub(super) fn build_dsdt(plan: &X86FirmwarePlan) -> Result<Vec<u8>, AcpiBuildError> {
     let mut aml = Vec::new();
     build_pci_device(plan, &mut aml);
-    build_serial_device(plan, &mut aml)?;
+    for serial in &plan.resources.serials {
+        build_serial_device(serial, &mut aml)?;
+    }
     build_fw_cfg_device(plan, &mut aml)?;
 
     let mut dsdt = Sdt::new(*b"DSDT", 36, 2, OEM_ID, OEM_TABLE_ID, OEM_REVISION);
@@ -81,27 +83,33 @@ const fn cacheability(cacheable: bool) -> AddressSpaceCacheable {
     }
 }
 
-fn build_serial_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) -> Result<(), AcpiBuildError> {
-    let size =
-        u8::try_from(plan.resources.serial_size).map_err(|_| AcpiBuildError::InvalidValue {
-            field: "COM1 PIO size",
-            value: plan.resources.serial_size.to_string(),
-        })?;
-    let hid = Name::new("_HID".into(), &EISAName::new("PNP0501"));
+fn build_serial_device(serial: &X86SerialPlan, aml: &mut Vec<u8>) -> Result<(), AcpiBuildError> {
+    let hid_value = serial.hid.clone();
+    let hid = Name::new("_HID".into(), &hid_value);
     let uid = Name::new("_UID".into(), &0u8);
-    let crs = Name::new(
-        "_CRS".into(),
-        &ResourceTemplate::new(alloc::vec![
-            &Interrupt::new(true, true, false, false, plan.resources.serial_irq),
-            &IO::new(
-                plan.resources.serial_base,
-                plan.resources.serial_base,
-                0,
-                size,
-            ),
-        ]),
-    );
-    Device::new("_SB_.COM1".into(), alloc::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
+    let interrupt = Interrupt::new(true, true, false, false, serial.irq);
+    let path = serial
+        .namespace_path
+        .clone()
+        .unwrap_or_else(|| alloc::format!("_SB_.{}", serial.name));
+    match serial.registers {
+        X86SerialRegisters::Port { base, size } => {
+            let size = u8::try_from(size).map_err(|_| AcpiBuildError::InvalidValue {
+                field: "serial PIO size",
+                value: size.to_string(),
+            })?;
+            let registers = IO::new(base, base, 0, size);
+            let resources = ResourceTemplate::new(alloc::vec![&interrupt, &registers]);
+            let crs = Name::new("_CRS".into(), &resources);
+            Device::new(path.as_str().into(), alloc::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
+        }
+        X86SerialRegisters::Mmio { base, size } => {
+            let registers = Memory32Fixed::new(true, base, size);
+            let resources = ResourceTemplate::new(alloc::vec![&interrupt, &registers]);
+            let crs = Name::new("_CRS".into(), &resources);
+            Device::new(path.as_str().into(), alloc::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
+        }
+    }
     Ok(())
 }
 
@@ -143,24 +151,34 @@ fn build_fw_cfg_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) -> Result<(), 
 pub(super) fn build_spcr(plan: &X86FirmwarePlan) -> Vec<u8> {
     const HEADER_SIZE: usize = 36;
     const INFO_SIZE: usize = 52;
-    const NAMESPACE: &[u8] = b".\0";
+    let serial = plan
+        .resources
+        .serials
+        .first()
+        .expect("the x86 firmware plan validates console0");
+    let namespace = serial.namespace_path.as_deref().unwrap_or(".");
+    let namespace_length = namespace.len() + 1;
     let mut spcr = Sdt::new(
         *b"SPCR",
-        (HEADER_SIZE + INFO_SIZE + NAMESPACE.len()) as u32,
+        (HEADER_SIZE + INFO_SIZE + namespace_length) as u32,
         4,
         OEM_ID,
         OEM_TABLE_ID,
         OEM_REVISION,
     );
-    spcr.write_u8(36, 0); // Fully 16550 compatible.
-    spcr.write_u8(40, 1); // System I/O address space.
+    spcr.write_u8(36, serial.interface_type);
+    let (address_space, address) = match serial.registers {
+        X86SerialRegisters::Port { base, .. } => (1, u64::from(base)),
+        X86SerialRegisters::Mmio { base, .. } => (0, u64::from(base)),
+    };
+    spcr.write_u8(40, address_space);
     spcr.write_u8(41, 8);
     spcr.write_u8(42, 0);
     spcr.write_u8(43, 1);
-    spcr.write_u64(44, u64::from(plan.resources.serial_base));
+    spcr.write_u64(44, address);
     spcr.write_u8(52, 2); // I/O APIC interrupt.
-    spcr.write_u8(53, plan.resources.serial_irq as u8);
-    spcr.write_u32(54, plan.resources.serial_irq);
+    spcr.write_u8(53, serial.irq as u8);
+    spcr.write_u32(54, serial.irq);
     spcr.write_u8(58, 7); // 115200 baud.
     spcr.write_u8(59, 0); // No parity.
     spcr.write_u8(60, 1); // One stop bit.
@@ -168,11 +186,12 @@ pub(super) fn build_spcr(plan: &X86FirmwarePlan) -> Vec<u8> {
     spcr.write_u8(62, 0);
     spcr.write_u16(64, u16::MAX);
     spcr.write_u16(66, u16::MAX);
-    spcr.write_u32(76, 1_843_200);
+    spcr.write_u32(76, serial.clock_hz);
     spcr.write_u32(80, 115_200);
-    spcr.write_u16(84, NAMESPACE.len() as u16);
+    spcr.write_u16(84, namespace_length as u16);
     spcr.write_u16(86, INFO_SIZE as u16);
-    spcr.write_bytes(88, NAMESPACE);
+    spcr.write_bytes(88, namespace.as_bytes());
+    spcr.write_u8(88 + namespace.len(), 0);
     spcr.as_slice().to_vec()
 }
 

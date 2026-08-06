@@ -29,6 +29,12 @@ impl fmt::Display for ResourceSlot {
     }
 }
 
+impl AsRef<str> for ResourceSlot {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Selects automatic allocation or a fixed ABI value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceRequest<T> {

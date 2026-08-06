@@ -8,7 +8,6 @@ mod resolved;
 pub use builder::{DeclaredDeviceGraph, DeviceGraphBuilder};
 pub use error::DeviceGraphError;
 pub use node::{
-    DeviceDeclaration, DeviceFirmwareBinding, DeviceNodeId, DeviceNodeKind, DeviceNodeSpec,
-    HostPassthroughMapping,
+    DeviceFirmwareBinding, DeviceNodeId, DeviceNodeKind, DeviceNodeSpec, HostPassthroughMapping,
 };
 pub use resolved::{ResolvedDeviceGraph, ResolvedDeviceNode};

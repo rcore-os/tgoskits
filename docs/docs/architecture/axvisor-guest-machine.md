@@ -25,8 +25,9 @@ sidebar_label: "Axvisor 客户机 Machine"
 - 所有虚拟设备只使用客户机本地 IRQ 线，不接收宿主裸 IRQ 编号。
 - Axvisor 应用层是宿主控制台输入的唯一读取者，并按 VM ID 路由字符。
 
-非目标包括 IRQ 直达、用户可选串口型号/地址/后端、自动改写客户机内核命令行，
-以及兼容旧客户机配置。
+非目标包括 IRQ 直达、用户填写串口地址/IRQ、关闭默认串口、自动改写客户机内核命令行，
+以及兼容旧客户机配置。用户可以通过普通 `devices.virtual` 请求覆盖 `console0` 的型号和
+语义参数，或增加其他串口。
 
 ## 配置格式
 
@@ -84,24 +85,31 @@ options 解析为类型化模型；未知 model 或未知字段明确失败。�
 - `irq_id`、`kernel.disk_path` 及其他裸虚拟设备资源
 - `passthrough_devices`、`excluded_devices`
 - `passthrough_addresses`、`passthrough_ports`
-- `serial`、配置版本或任何串口型号、地址、IRQ、后端、启停字段
+- 顶层 `serial`、配置版本、串口裸地址/IRQ/controller 和 `enabled = false`
 
 ## Machine profile
 
-machine profile 根据编译目标创建客户机平台设备。配置不能覆盖这些资源。
+machine profile 只提供 host 固件未选择控制台时的最后兜底。有效的 host FDT/ACPI
+snapshot 优先；用户同 ID 请求随后覆盖 model/options。固定地址和 IRQ 始终是内部 binding，
+不进入 TOML。
 
 | 架构 | 虚拟串口 | 资源来源 |
 | --- | --- | --- |
-| x86_64 | 16550 COM1 | PIO `0x3f8..=0x3ff`，GSI 4 |
+| x86_64 | SPCR 选择的 16550/PL011；否则 16550 COM1 | host ACPI 地址空间、range、GSI、clock 和 namespace；否则 PIO `0x3f8..=0x3ff`、GSI 4 |
 | AArch64 | PL011 或 16550 | 复用 host FDT `stdout-path` 的地址、跨度、IRQ 与节点身份；QEMU `virt` 回退为 PL011 `0x0900_0000/0x1000`、INTID 33、24 MHz |
-| RISC-V | NS16550 | MMIO `0x1000_0000/0x100`，PLIC source 10，3.6864 MHz |
-| LoongArch | NS16550 | MMIO `0x1fe0_01e0/0x100`，PCH-PIC line 2，100 MHz |
+| RISC-V | host FDT 选择的 PL011/NS16550；否则 NS16550 | host `stdout-path`；否则 MMIO `0x1000_0000/0x100`、PLIC source 10、3.6864 MHz |
+| LoongArch | SPCR 选择的 MMIO 16550/PL011；否则 NS16550 | host ACPI range、GSI、clock 和 namespace；否则 MMIO `0x1fe0_01e0/0x100`、PCH-PIC line 2、100 MHz |
 
-在 AArch64 固件平台上，machine 根据 host FDT 控制台节点的 compatible 选择模型：
+在 FDT 固件平台上，machine 根据 host 控制台节点的 compatible 选择模型：
 `arm,pl011` 创建虚拟 PL011，`ns16550(a)` 或 DW APB UART 创建虚拟 16550。虚拟节点
 保留 host 的节点路径、phandle、`reg`、`interrupt-parent`、interrupt specifier、
-`reg-shift` 和 `reg-io-width`；原硬件时钟依赖替换为虚拟 fixed-clock，波特率不是
-可配置的客户机硬件资源。
+`reg-shift` 和 `reg-io-width`；原硬件时钟依赖替换为虚拟 fixed-clock。ACPI 平台把
+SPCR 先转为拥有所有权的结构化 snapshot，不复制任意 host AML。
+
+默认请求规范化为稳定 ID `console0`。用户不提供该 ID 时行为不变；同 ID 请求完整替换
+model/options，不做逐字段 TOML merge。model/transport 兼容时保留 host fixed binding 与
+firmware identity，不兼容时自动分配新地址和 IRQ。其他 ID 表示新增串口。每 VM 只能有
+一个 `host-console` backend owner。
 
 stage-2 GPA 位宽同样由 machine plan 决定。若一个 VM 的 vCPU 可以运行在多个物理
 CPU 上，规划器必须对这些 CPU 的真实能力取最小支持位宽，不能按启动 CPU 的能力
@@ -124,9 +132,9 @@ hole 上安装 APIC-access backing page，SVM 保持未映射并通过 nested pa
 
 ## 设备 runtime
 
-普通设备遵循统一的 `ConfiguredDeviceFactory -> Arc<dyn DeviceModel> ->
-ResolvedDeviceGraph -> DeviceBundle -> DeviceRuntime` 路径。配置 factory 只负责把
-options 转为类型化 model；同一个 model 实例执行纯 `declare()` 与受限 `build()`。
+普通设备遵循统一的 `ConfiguredModelRegistration -> Arc<dyn DeviceModel> ->
+ResolvedDeviceGraph -> DeviceBundle -> DeviceRuntime` 路径。registration 的普通函数只负责把
+options 转为类型化 model；同一个 model 实例执行纯 `requirements()`、`firmware()` 与受限 `build()`。
 架构层创建中断控制器、host replacement 和不可变 machine plan，并决定自己的注册顺序。
 bundle 注册资源、typed service、grant、controller 和 interrupt endpoint 是一个事务，
 任一步失败都必须完整回滚。拓扑 seal 后不能再增加资源或服务，不保留设备类型 enum、
@@ -146,13 +154,13 @@ bundle 注册资源、typed service、grant、controller 和 interrupt endpoint 
 虚拟中断控制器拥有 pending/active/routing 状态。UART 保持中断条件时，客户机 EOI
 之后控制器必须再次投递；UART 不直接向 vCPU 写入架构 IRQ 编号。
 
-固件描述与 machine profile 使用同一组资源常量：
+固件描述与 runtime 使用同一个 resolved graph：
 
 - AArch64 FDT 按 host compatible 设置 PL011 或 16550 节点、fixed-clock 和
   `/chosen/stdout-path`。
 - RISC-V FDT 设置 `ns16550a`、时钟和 PLIC source。
-- LoongArch FDT、SPCR 与 DSDT 使用同一个 `GuestPlatform.serial`。
-- x86 MP table/ACPI 保持 COM1 与 GSI 4 的平台约定。
+- LoongArch FDT、SPCR 与 DSDT 从最终 `console0` 节点解析资源，不在启动后重新选择 host UART。
+- x86 MP table/ACPI 使用同一串口计划；无 host/用户覆盖时仍保持 COM1 与 GSI 4 的约定。
 
 物理设备直通不等于 IRQ 直达。AArch64 SPI 由 vGIC 作为 backing source 分阶段管理：
 
@@ -209,9 +217,10 @@ flowchart LR
 
 | 方案 | 结果 |
 | --- | --- |
-| 保留用户串口字段 | 重复 machine 固有事实，并允许地址/IRQ 不一致；不采用 |
+| 独立顶层串口配置 | 重复 machine/host 事实，并允许地址/IRQ 不一致；不采用 |
+| 普通 `devices.virtual` 覆盖 `console0` | 只覆盖型号和语义参数，数字资源仍由内部 binding/规划器决定；采用 |
 | 每架构直接读写宿主 console | 多 VM 竞争输入，设备层反向拥有 UI；不采用 |
-| 把串口后端放入用户配置 | 把宿主字符后端与客户机硬件混合；不采用 |
+| 为普通串口选择 `host-console`/`null` 后端 | 后端作为设备语义选项，且每 VM 强制单 owner；采用 |
 | machine profile + 字节后端 + 应用层 mux | 资源只有一个来源，依赖方向稳定；采用 |
 | IRQ 直达 | 破坏虚拟控制器 level/EOI 语义，本阶段明确不实现 |
 

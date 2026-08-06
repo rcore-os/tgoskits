@@ -46,8 +46,6 @@ use exit::*;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 pub(crate) use vm::X86VmPlan;
 
-const QEMU_EXIT_PORT: u16 = 0x604;
-const QEMU_EXIT_MAGIC: u64 = 0x2000;
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) struct X86_64Arch;
@@ -109,26 +107,14 @@ impl ArchOps for X86_64Arch {
                     width: x86_access_width_to_ax(width),
                 },
             ),
-            X86VmExit::PortIoWrite { port, width, data } => {
-                if x86_qemu_shutdown_port(port, width, data) {
-                    warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                    Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                        waits_for_event: false,
-                        stop_reason: Some(StopReason::SystemDown),
-                        resets_vm: false,
-                        exits_vcpu: false,
-                    }))
-                } else {
-                    exit::handle_io_write(
-                        vm,
-                        IoWriteExit {
-                            port: x86_port_to_ax(port),
-                            width: x86_access_width_to_ax(width),
-                            data,
-                        },
-                    )
-                }
-            }
+            X86VmExit::PortIoWrite { port, width, data } => exit::handle_io_write(
+                vm,
+                IoWriteExit {
+                    port: x86_port_to_ax(port),
+                    width: x86_access_width_to_ax(width),
+                    data,
+                },
+            ),
             X86VmExit::PortIoString(exit) => exit::handle_io_string(vm, vcpu, exit),
             X86VmExit::MmioRead {
                 addr,
@@ -685,7 +671,7 @@ impl WiredIrqSink for X86WiredState {
 }
 
 impl DeviceModel for X86IoApicModel {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         fixed_mmio_declaration(self.base, self.length, "declare x86 virtual IOAPIC")
     }
 
@@ -716,7 +702,7 @@ struct X86PitModel {
 }
 
 impl DeviceModel for X86PitModel {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         let [timer, speaker] = x86_vlapic::EmulatedPit::<AxvmX86HostOps>::port_ranges();
         let timer_size = timer.end.number() - timer.start.number() + 1;
         let speaker_size = speaker.end.number() - speaker.start.number() + 1;
@@ -733,7 +719,6 @@ impl DeviceModel for X86PitModel {
                 1,
                 ResourceRequest::Fixed(speaker.start.number()),
             )
-            .map(DeviceDeclaration::with_requirements)
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -787,17 +772,15 @@ fn fixed_mmio_declaration(
     base: usize,
     length: usize,
     operation: &'static str,
-) -> DeviceManagerResult<DeviceDeclaration> {
+) -> DeviceManagerResult<DeviceRequirements> {
     let size = u64::try_from(length).map_err(|_| declaration_range_error(operation))?;
     let base = u64::try_from(base).map_err(|_| declaration_range_error(operation))?;
-    DeviceRequirements::new()
-        .with_mmio(
-            ResourceSlot::new("registers")?,
-            size,
-            1,
-            ResourceRequest::Fixed(base),
-        )
-        .map(DeviceDeclaration::with_requirements)
+    DeviceRequirements::new().with_mmio(
+        ResourceSlot::new("registers")?,
+        size,
+        1,
+        ResourceRequest::Fixed(base),
+    )
 }
 
 fn declaration_range_error(operation: &'static str) -> DeviceManagerError {
@@ -828,20 +811,6 @@ fn handle_x86_nested_page_fault(
     vm: &crate::AxVMRef,
     exit: NestedPageFaultExit,
 ) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
-    if vm.get_devices()?.find_mmio_dev(exit.addr).is_some() {
-        warn!(
-            "VM[{}] nested page fault at {:#x} maps MMIO but x86 core did not decode it",
-            vm.id(),
-            exit.addr.as_usize()
-        );
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        }));
-    }
-
     if vm.handle_nested_page_fault(exit.addr, exit.access_flags) {
         Ok(BoundVcpuExit::Continue)
     } else {
@@ -927,10 +896,6 @@ fn x86_msr_addr_to_ax(addr: X86MsrAddr) -> SysRegAddr {
     SysRegAddr::new(addr.addr())
 }
 
-fn x86_qemu_shutdown_port(port: X86Port, width: X86AccessWidth, data: u64) -> bool {
-    port.number() == QEMU_EXIT_PORT && width == X86AccessWidth::Word && data == QEMU_EXIT_MAGIC
-}
-
 fn current_rflags() -> u64 {
     let flags: u64;
     unsafe {
@@ -1008,20 +973,6 @@ mod tests {
         ));
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
-        ));
-    }
-
-    #[test]
-    fn qemu_shutdown_port_is_axvm_policy() {
-        assert!(x86_qemu_shutdown_port(
-            X86Port::new(QEMU_EXIT_PORT),
-            X86AccessWidth::Word,
-            QEMU_EXIT_MAGIC
-        ));
-        assert!(!x86_qemu_shutdown_port(
-            X86Port::new(QEMU_EXIT_PORT),
-            X86AccessWidth::Dword,
-            QEMU_EXIT_MAGIC
         ));
     }
 }

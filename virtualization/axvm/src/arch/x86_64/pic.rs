@@ -1,17 +1,11 @@
 //! Device-graph factory for the x86 guest-owned legacy PIC pair.
 
-use alloc::sync::Arc;
-
 use axdevice::*;
 
-pub(super) fn model() -> Arc<dyn DeviceModel> {
-    Arc::new(X86PicModel)
-}
-
-struct X86PicModel;
+pub(super) struct X86PicModel;
 
 impl DeviceModel for X86PicModel {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         DeviceRequirements::new()
             .with_pio(
                 ResourceSlot::new("master-registers")?,
@@ -25,7 +19,6 @@ impl DeviceModel for X86PicModel {
                 1,
                 ResourceRequest::Fixed(0xa0),
             )
-            .map(DeviceDeclaration::with_requirements)
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -37,8 +30,8 @@ impl DeviceModel for X86PicModel {
                 detail: "planned PIC ranges must be 0x20..=0x21 and 0xa0..=0xa1".into(),
             });
         }
-        let pic = Arc::new(axdevice::X86PicDevice::new());
-        let service: Arc<dyn X86PicDeviceOps> = pic.clone();
+        let pic = alloc::sync::Arc::new(axdevice::X86PicDevice::new());
+        let service: alloc::sync::Arc<dyn X86PicDeviceOps> = pic.clone();
         DeviceBundle::from_registration(DeviceRegistration::Device(pic))
             .with_service::<X86PicServiceKey>(service)
     }

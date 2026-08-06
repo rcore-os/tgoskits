@@ -814,44 +814,6 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    // ─── Find helpers ───────────────────────────────────────────────
-
-    /// Find specific MMIO device by ipa.
-    pub fn find_mmio_dev(&self, ipa: GuestPhysAddr) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::Mmio,
-            is_read: true,
-            addr: ipa.as_usize() as u64,
-            width: AccessWidth::Dword,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
-    /// Find specific system register device by address.
-    pub fn find_sys_reg_dev(&self, sys_reg_addr: SysRegAddr) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::SysReg,
-            is_read: true,
-            addr: sys_reg_addr.0 as u64,
-            width: AccessWidth::Qword,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
-    /// Find specific port device by port number.
-    pub fn find_port_dev(&self, port: Port) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::Port,
-            is_read: true,
-            addr: port.0 as u64,
-            width: AccessWidth::Byte,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
     // ─── Hot-path dispatch handlers ─────────────────────────────────
 
     /// Handle the MMIO read by GuestPhysAddr and data width.
@@ -860,6 +822,20 @@ impl DeviceRuntime {
         addr: GuestPhysAddr,
         width: AccessWidth,
     ) -> DeviceManagerResult<usize> {
+        self.try_handle_mmio_read(addr, width)?
+            .ok_or_else(|| missing_access("read", BusKind::Mmio, addr.as_usize() as u64, width))
+    }
+
+    /// Handles one MMIO read when the address belongs to this runtime.
+    ///
+    /// A missing mapping is returned as `None` so architecture fault handlers
+    /// can fall through to their stage-2 mapping policy without a second
+    /// interval lookup.
+    pub fn try_handle_mmio_read(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+    ) -> DeviceManagerResult<Option<usize>> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: true,
@@ -868,16 +844,12 @@ impl DeviceRuntime {
             data: 0,
         };
         match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+            .dispatch_optional(&access, None)
+            .map_err(|source| access_error("read", &access, source))?
+        {
+            Some(BusResponse::Read { value }) => Ok(Some(value as usize)),
+            None => Ok(None),
+            Some(BusResponse::Write) => Err(DeviceManagerError::UnexpectedResponse {
                 operation: "read MMIO device",
                 detail: "device returned a write acknowledgement".into(),
             }),
@@ -910,19 +882,6 @@ impl DeviceRuntime {
         Self::expect_write_response(response, "write MMIO device")
     }
 
-    /// Returns whether this complete MMIO write access targets a device that
-    /// declared an access-scoped guest-memory capability.
-    pub fn mmio_write_needs_guest_memory(&self, addr: GuestPhysAddr, width: AccessWidth) -> bool {
-        self.lookup_mmio(addr.as_usize() as u64, width)
-            .map(|index| {
-                let id = DeviceId::new(index as u32);
-                self.dma_grants
-                    .iter()
-                    .any(|(device_id, _)| *device_id == id)
-            })
-            .unwrap_or(false)
-    }
-
     /// Handles MMIO with a VM-provided, access-scoped guest-memory capability.
     pub fn handle_mmio_write_with_memory(
         &self,
@@ -931,6 +890,19 @@ impl DeviceRuntime {
         val: usize,
         memory: &mut dyn axdevice_base::DeviceAccess,
     ) -> DeviceManagerResult {
+        self.try_handle_mmio_write_with_memory(addr, width, val, memory)?
+            .then_some(())
+            .ok_or_else(|| missing_access("write", BusKind::Mmio, addr.as_usize() as u64, width))
+    }
+
+    /// Handles one MMIO write when the address belongs to this runtime.
+    pub fn try_handle_mmio_write_with_memory(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult<bool> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: false,
@@ -938,35 +910,14 @@ impl DeviceRuntime {
             width,
             data: val as u64,
         };
-        let idx =
-            self.lookup_mmio(access.addr, access.width)
-                .ok_or(DeviceManagerError::Access {
-                    operation: "write",
-                    bus: BusKind::Mmio,
-                    addr: access.addr,
-                    width,
-                    source: DeviceError::NotFound,
-                })?;
-        let id = DeviceId::new(idx as u32);
-        let mut context = RuntimeDeviceAccess {
-            device_id: id,
-            memory: Some(memory),
-            dma_grants: &self.dma_grants,
-            timer_grants: &self.timer_grants,
-            wake_grants: &self.wake_grants,
-            stop_grants: &self.stop_grants,
-            access_ports: &self.access_ports,
+        let Some(response) = self
+            .dispatch_optional(&access, Some(memory))
+            .map_err(|source| access_error("write", &access, source))?
+        else {
+            return Ok(false);
         };
-        let response = self.devices[idx]
-            .access(&access, &mut context)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Self::expect_write_response(response, "write MMIO device")
+        Self::expect_write_response(response, "write MMIO device")?;
+        Ok(true)
     }
 
     fn expect_write_response(
@@ -1039,6 +990,16 @@ impl DeviceRuntime {
 
     /// Handle the port read by port number and data width.
     pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> DeviceManagerResult<usize> {
+        self.try_handle_port_read(port, width)?
+            .ok_or_else(|| missing_access("read", BusKind::Port, u64::from(port.number()), width))
+    }
+
+    /// Handles one port read when the address belongs to this runtime.
+    pub fn try_handle_port_read(
+        &self,
+        port: Port,
+        width: AccessWidth,
+    ) -> DeviceManagerResult<Option<usize>> {
         let access = BusAccess {
             kind: BusKind::Port,
             is_read: true,
@@ -1047,16 +1008,12 @@ impl DeviceRuntime {
             data: 0,
         };
         match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::Port,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+            .dispatch_optional(&access, None)
+            .map_err(|source| access_error("read", &access, source))?
+        {
+            Some(BusResponse::Read { value }) => Ok(Some(value as usize)),
+            None => Ok(None),
+            Some(BusResponse::Write) => Err(DeviceManagerError::UnexpectedResponse {
                 operation: "read port device",
                 detail: "device returned a write acknowledgement".into(),
             }),
@@ -1088,18 +1045,6 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Returns whether this complete port write targets a device with a DMA grant.
-    pub fn port_write_needs_guest_memory(&self, port: Port, width: AccessWidth) -> bool {
-        self.lookup_port(port.number(), width)
-            .map(|index| {
-                let id = DeviceId::new(index as u32);
-                self.dma_grants
-                    .iter()
-                    .any(|(device_id, _)| *device_id == id)
-            })
-            .unwrap_or(false)
-    }
-
     /// Handles a port write with a VM-provided, access-scoped guest-memory capability.
     pub fn handle_port_write_with_memory(
         &self,
@@ -1108,6 +1053,19 @@ impl DeviceRuntime {
         val: usize,
         memory: &mut dyn axdevice_base::DeviceAccess,
     ) -> DeviceManagerResult {
+        self.try_handle_port_write_with_memory(port, width, val, memory)?
+            .then_some(())
+            .ok_or_else(|| missing_access("write", BusKind::Port, u64::from(port.number()), width))
+    }
+
+    /// Handles one port write when the address belongs to this runtime.
+    pub fn try_handle_port_write_with_memory(
+        &self,
+        port: Port,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult<bool> {
         let access = BusAccess {
             kind: BusKind::Port,
             is_read: false,
@@ -1115,35 +1073,77 @@ impl DeviceRuntime {
             width,
             data: val as u64,
         };
-        let idx = self
-            .lookup_port(port.number(), width)
-            .ok_or(DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Port,
-                addr: access.addr,
-                width,
-                source: DeviceError::NotFound,
-            })?;
-        let id = DeviceId::new(idx as u32);
+        let Some(response) = self
+            .dispatch_optional(&access, Some(memory))
+            .map_err(|source| access_error("write", &access, source))?
+        else {
+            return Ok(false);
+        };
+        Self::expect_write_response(response, "write port device")?;
+        Ok(true)
+    }
+
+    fn dispatch_optional<'a>(
+        &'a self,
+        access: &BusAccess,
+        memory: Option<&'a mut dyn axdevice_base::DeviceAccess>,
+    ) -> Result<Option<BusResponse>, DeviceError> {
+        let index = match access.kind {
+            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
+            BusKind::Port => {
+                let port = u16::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_port(port, access.width)
+            }
+            BusKind::SysReg => {
+                let register = u32::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_sysreg(register)
+            }
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+
         let mut context = RuntimeDeviceAccess {
-            device_id: id,
-            memory: Some(memory),
+            device_id: DeviceId::new(index as u32),
+            memory,
             dma_grants: &self.dma_grants,
             timer_grants: &self.timer_grants,
             wake_grants: &self.wake_grants,
             stop_grants: &self.stop_grants,
             access_ports: &self.access_ports,
         };
-        let response = self.devices[idx]
-            .access(&access, &mut context)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Port,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Self::expect_write_response(response, "write port device")
+        self.devices[index].access(access, &mut context).map(Some)
+    }
+}
+
+fn access_error(
+    operation: &'static str,
+    access: &BusAccess,
+    source: DeviceError,
+) -> DeviceManagerError {
+    DeviceManagerError::Access {
+        operation,
+        bus: access.kind,
+        addr: access.addr,
+        width: access.width,
+        source,
+    }
+}
+
+fn missing_access(
+    operation: &'static str,
+    bus: BusKind,
+    addr: u64,
+    width: AccessWidth,
+) -> DeviceManagerError {
+    DeviceManagerError::Access {
+        operation,
+        bus,
+        addr,
+        width,
+        source: DeviceError::NotFound,
     }
 }
 
@@ -1176,32 +1176,8 @@ impl DeviceRegistry for DeviceRuntime {
 
 impl BusRouter for DeviceRuntime {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
-        let idx = match access.kind {
-            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
-            BusKind::Port => {
-                let port = u16::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_port(port, access.width)
-            }
-            BusKind::SysReg => {
-                let reg = u32::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_sysreg(reg)
-            }
-        }
-        .ok_or(DeviceError::NotFound)?;
-
-        let device = &self.devices[idx];
-        let mut context = RuntimeDeviceAccess {
-            device_id: DeviceId::new(idx as u32),
-            memory: None,
-            dma_grants: &self.dma_grants,
-            timer_grants: &self.timer_grants,
-            wake_grants: &self.wake_grants,
-            stop_grants: &self.stop_grants,
-            access_ports: &self.access_ports,
-        };
-        device.access(access, &mut context)
+        self.dispatch_optional(access, None)?
+            .ok_or(DeviceError::NotFound)
     }
 
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {

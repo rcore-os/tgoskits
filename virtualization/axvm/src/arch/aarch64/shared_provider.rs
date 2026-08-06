@@ -16,7 +16,8 @@ fn clock_references_for_plan(config: &AxVMConfig) -> Vec<GuestClockReference> {
         return Vec::new();
     }
     config
-        .serial_fdt_identity()
+        .serial_firmware_identity()
+        .and_then(GuestSerialFirmwareIdentity::fdt)
         .map(|identity| identity.clock_references.clone())
         .unwrap_or_default()
 }
@@ -241,15 +242,13 @@ struct SharedProviderModel {
 }
 
 impl DeviceModel for SharedProviderModel {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
-        DeviceRequirements::new()
-            .with_mmio(
-                ResourceSlot::new("registers")?,
-                self.region.length as u64,
-                1,
-                ResourceRequest::Fixed(self.region.base as u64),
-            )
-            .map(DeviceDeclaration::with_requirements)
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new().with_mmio(
+            ResourceSlot::new("registers")?,
+            self.region.length as u64,
+            1,
+            ResourceRequest::Fixed(self.region.base as u64),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {

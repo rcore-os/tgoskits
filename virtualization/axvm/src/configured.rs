@@ -1,40 +1,100 @@
-//! Code-registered configuration factories for open-ended virtual-device models.
+//! Code-registered constructors for open-ended virtual-device models.
 
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
 use axdevice::*;
-use axdevice_base::InterruptControllerId;
+use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
 use axvmconfig::VirtualDeviceRequest;
 
-use crate::{architecture::*, machine::*, *};
+use crate::{machine::GuestSerialFirmwareIdentity, *};
 
-pub trait ConfiguredDeviceFactory: Send + Sync {
-    fn model_name(&self) -> &'static str;
+mod append;
 
-    fn instantiate(
-        &self,
-        request: &VirtualDeviceRequest,
-        context: &DeviceInstantiationContext,
-    ) -> Result<ConfiguredDeviceInstance, ConfiguredDeviceError>;
+pub use append::DefaultVirtualDeviceIntent;
+pub(crate) use append::append_configured_devices;
+
+/// Creates one graph node from a validated, model-specific request.
+pub type ConfiguredModelConstructor = for<'a> fn(
+    DeviceNodeId,
+    &VirtualDeviceRequest,
+    &'a DeviceInstantiationContext,
+) -> Result<DeviceNodeSpec, ConfiguredDeviceError>;
+
+/// One explicit catalog entry. Adding a device changes its module and the
+/// catalog assembly site, not a framework-wide device enum.
+#[derive(Clone, Copy)]
+pub struct ConfiguredModelRegistration {
+    pub model: &'static str,
+    pub create: ConfiguredModelConstructor,
 }
 
 #[derive(Clone, Debug)]
+pub struct FixedWiredBinding {
+    pub controller: InterruptControllerId,
+    pub input: ControllerInputId,
+    pub trigger: InterruptTrigger,
+    pub sharing: InterruptSharing,
+}
+
+/// Planner-only fixed resources derived from a machine profile or host
+/// firmware. These values never cross the user configuration boundary.
+#[derive(Clone, Debug, Default)]
+pub struct FixedDeviceBindings {
+    mmio: BTreeMap<ResourceSlot, (u64, u64)>,
+    pio: BTreeMap<ResourceSlot, (u16, u16)>,
+    wired: BTreeMap<ResourceSlot, FixedWiredBinding>,
+}
+
+impl FixedDeviceBindings {
+    pub fn with_mmio(mut self, slot: ResourceSlot, base: u64, size: u64) -> Self {
+        self.mmio.insert(slot, (base, size));
+        self
+    }
+
+    pub fn with_pio(mut self, slot: ResourceSlot, base: u16, size: u16) -> Self {
+        self.pio.insert(slot, (base, size));
+        self
+    }
+
+    pub fn with_wired(mut self, slot: ResourceSlot, binding: FixedWiredBinding) -> Self {
+        self.wired.insert(slot, binding);
+        self
+    }
+
+    pub fn mmio(&self, slot: &ResourceSlot) -> Option<(u64, u64)> {
+        self.mmio.get(slot).copied()
+    }
+
+    pub fn pio(&self, slot: &ResourceSlot) -> Option<(u16, u16)> {
+        self.pio.get(slot).copied()
+    }
+
+    pub fn wired(&self, slot: &ResourceSlot) -> Option<&FixedWiredBinding> {
+        self.wired.get(slot)
+    }
+}
+
+#[derive(Clone)]
 pub struct DeviceInstantiationContext {
-    architecture: MachineArchitecture,
     default_wired_controller: Option<(DeviceNodeId, InterruptControllerId)>,
+    fixed: FixedDeviceBindings,
+    firmware_binding: DeviceFirmwareBinding,
+    serial_profile: Option<crate::machine::GuestSerialProfile>,
+    serial_backend_factory: Arc<dyn SerialBackendFactory>,
+    host_console_by_default: bool,
 }
 
 impl DeviceInstantiationContext {
-    pub const fn new(architecture: MachineArchitecture) -> Self {
+    pub fn new() -> Self {
         Self {
-            architecture,
             default_wired_controller: None,
+            fixed: FixedDeviceBindings::default(),
+            firmware_binding: DeviceFirmwareBinding::None,
+            serial_profile: None,
+            serial_backend_factory: Arc::new(NullSerialBackendFactory),
+            host_console_by_default: false,
         }
-    }
-
-    pub const fn architecture(&self) -> MachineArchitecture {
-        self.architecture
     }
 
     pub fn with_default_wired_controller(
@@ -56,79 +116,79 @@ impl DeviceInstantiationContext {
     pub fn default_wired_controller_node(&self) -> Option<&DeviceNodeId> {
         self.default_wired_controller.as_ref().map(|(node, _)| node)
     }
-}
 
-pub struct ConfiguredDeviceInstance {
-    model: Arc<dyn DeviceModel>,
-    firmware: FirmwareModels,
-    dependencies: Vec<DeviceNodeId>,
-}
-
-impl ConfiguredDeviceInstance {
-    pub fn new(model: Arc<dyn DeviceModel>) -> Self {
-        Self {
-            model,
-            firmware: FirmwareModels::default(),
-            dependencies: Vec::new(),
-        }
+    pub fn fixed_bindings(&self) -> &FixedDeviceBindings {
+        &self.fixed
     }
 
-    pub fn with_firmware(mut self, firmware: FirmwareModels) -> Self {
-        self.firmware = firmware;
+    pub fn firmware_binding(&self) -> &DeviceFirmwareBinding {
+        &self.firmware_binding
+    }
+
+    pub(crate) fn with_serial_defaults(
+        mut self,
+        profile: crate::machine::GuestSerialProfile,
+        backend_factory: Arc<dyn SerialBackendFactory>,
+        fixed: FixedDeviceBindings,
+        firmware_binding: DeviceFirmwareBinding,
+        host_console_by_default: bool,
+    ) -> Self {
+        self.serial_profile = Some(profile);
+        self.serial_backend_factory = backend_factory;
+        self.fixed = fixed;
+        self.firmware_binding = firmware_binding;
+        self.host_console_by_default = host_console_by_default;
         self
     }
 
-    pub fn with_dependency(mut self, dependency: DeviceNodeId) -> Self {
-        self.dependencies.push(dependency);
-        self
+    pub(crate) const fn serial_profile(&self) -> Option<crate::machine::GuestSerialProfile> {
+        self.serial_profile
     }
 
-    fn into_node(self, id: DeviceNodeId) -> DeviceNodeSpec {
-        let mut node =
-            DeviceNodeSpec::virtual_device(id, self.model).with_firmware_models(self.firmware);
-        for dependency in self.dependencies {
-            node = node.with_dependency(dependency);
-        }
-        node
+    pub(crate) fn serial_backend_factory(&self) -> Arc<dyn SerialBackendFactory> {
+        self.serial_backend_factory.clone()
+    }
+
+    pub(crate) const fn host_console_by_default(&self) -> bool {
+        self.host_console_by_default
     }
 }
 
-#[derive(Default)]
+impl Default for DeviceInstantiationContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct ConfiguredDeviceCatalog {
-    factories: BTreeMap<String, Arc<dyn ConfiguredDeviceFactory>>,
+    registrations: BTreeMap<String, ConfiguredModelRegistration>,
 }
 
 impl ConfiguredDeviceCatalog {
-    pub const fn new() -> Self {
-        Self {
-            factories: BTreeMap::new(),
+    pub fn new() -> Self {
+        let mut catalog = Self {
+            registrations: BTreeMap::new(),
+        };
+        for registration in crate::machine::SERIAL_REGISTRATIONS {
+            let previous = catalog
+                .registrations
+                .insert(registration.model.into(), *registration);
+            debug_assert!(previous.is_none());
         }
+        catalog
     }
 
     pub fn register(
         &mut self,
-        factory: Arc<dyn ConfiguredDeviceFactory>,
+        registration: ConfiguredModelRegistration,
     ) -> Result<(), ConfiguredDeviceError> {
-        let name = factory.model_name();
+        let name = registration.model;
         validate_model_name(name)?;
-        if self.factories.contains_key(name) {
+        if self.registrations.contains_key(name) {
             return Err(ConfiguredDeviceError::DuplicateModel { model: name.into() });
         }
-        self.factories.insert(name.into(), factory);
+        self.registrations.insert(name.into(), registration);
         Ok(())
-    }
-
-    fn instantiate(
-        &self,
-        request: &VirtualDeviceRequest,
-        context: &DeviceInstantiationContext,
-    ) -> Result<ConfiguredDeviceInstance, ConfiguredDeviceError> {
-        self.factories
-            .get(&request.model)
-            .ok_or_else(|| ConfiguredDeviceError::UnknownVirtualDeviceModel {
-                model: request.model.clone(),
-            })?
-            .instantiate(request, context)
     }
 
     pub fn instantiate_node(
@@ -136,14 +196,24 @@ impl ConfiguredDeviceCatalog {
         request: &VirtualDeviceRequest,
         context: &DeviceInstantiationContext,
     ) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
-        let instance = self.instantiate(request, context)?;
         let id = DeviceNodeId::new(request.id.clone()).map_err(|error| {
             ConfiguredDeviceError::InvalidDeviceId {
                 device: request.id.clone(),
                 detail: alloc::format!("{error}"),
             }
         })?;
-        Ok(instance.into_node(id))
+        let registration = self.registrations.get(&request.model).ok_or_else(|| {
+            ConfiguredDeviceError::UnknownVirtualDeviceModel {
+                model: request.model.clone(),
+            }
+        })?;
+        (registration.create)(id, request, context)
+    }
+}
+
+impl Default for ConfiguredDeviceCatalog {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -151,7 +221,7 @@ impl fmt::Debug for ConfiguredDeviceCatalog {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ConfiguredDeviceCatalog")
-            .field("models", &self.factories.keys().collect::<Vec<_>>())
+            .field("models", &self.registrations.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -178,23 +248,6 @@ pub enum ConfiguredDeviceError {
     },
     #[error("invalid virtual device id '{device}': {detail}")]
     InvalidDeviceId { device: String, detail: String },
-}
-
-pub(crate) fn append_configured_devices(
-    config: &crate::config::AxVMConfig,
-    nodes: &mut Vec<DeviceNodeSpec>,
-    default_controller: &DeviceNodeId,
-) -> AxVmResult {
-    let context = DeviceInstantiationContext::new(crate::arch::CurrentArch::MACHINE_ARCHITECTURE)
-        .with_default_wired_controller(default_controller.clone(), InterruptControllerId::new(0));
-    for request in config.virtual_device_requests() {
-        let node = config
-            .virtual_device_catalog()
-            .instantiate_node(request, &context)
-            .map_err(|error| AxVmError::invalid_config(alloc::format!("{error}")))?;
-        nodes.push(node);
-    }
-    Ok(())
 }
 
 fn validate_model_name(name: &str) -> Result<(), ConfiguredDeviceError> {

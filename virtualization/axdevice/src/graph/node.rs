@@ -119,31 +119,6 @@ impl HostPassthroughMapping {
     }
 }
 
-/// Pure output of [`DeviceModel::declare`](crate::DeviceModel::declare).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct DeviceDeclaration {
-    requirements: DeviceRequirements,
-}
-
-impl DeviceDeclaration {
-    /// Creates an empty declaration.
-    pub const fn new() -> Self {
-        Self {
-            requirements: DeviceRequirements::new(),
-        }
-    }
-
-    /// Creates a declaration from named resource requirements.
-    pub const fn with_requirements(requirements: DeviceRequirements) -> Self {
-        Self { requirements }
-    }
-
-    /// Returns all resources requested by this node.
-    pub const fn requirements(&self) -> &DeviceRequirements {
-        &self.requirements
-    }
-}
-
 /// One unsealed device graph node.
 pub struct DeviceNodeSpec {
     pub(crate) id: DeviceNodeId,
@@ -151,9 +126,8 @@ pub struct DeviceNodeSpec {
     pub(crate) parent: Option<DeviceNodeId>,
     pub(crate) dependencies: Vec<DeviceNodeId>,
     pub(crate) firmware: DeviceFirmwareBinding,
-    pub(crate) firmware_models: FirmwareModels,
     pub(crate) model: Option<Arc<dyn DeviceModel>>,
-    pub(crate) declaration: Option<DeviceDeclaration>,
+    pub(crate) requirements: Option<DeviceRequirements>,
     pub(crate) host_mapping: Option<HostPassthroughMapping>,
 }
 
@@ -169,16 +143,15 @@ impl DeviceNodeSpec {
     }
 
     /// Creates a host passthrough node with fixed resource reservations.
-    pub fn host_passthrough(id: DeviceNodeId, declaration: DeviceDeclaration) -> Self {
+    pub fn host_passthrough(id: DeviceNodeId, requirements: DeviceRequirements) -> Self {
         Self {
             id,
             kind: DeviceNodeKind::HostPassthrough,
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
-            firmware_models: FirmwareModels::default(),
             model: None,
-            declaration: Some(declaration),
+            requirements: Some(requirements),
             host_mapping: None,
         }
     }
@@ -191,9 +164,8 @@ impl DeviceNodeSpec {
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
-            firmware_models: FirmwareModels::default(),
             model: None,
-            declaration: Some(DeviceDeclaration::new()),
+            requirements: Some(DeviceRequirements::new()),
             host_mapping: None,
         }
     }
@@ -205,9 +177,8 @@ impl DeviceNodeSpec {
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
-            firmware_models: FirmwareModels::default(),
             model: Some(model),
-            declaration: None,
+            requirements: None,
             host_mapping: None,
         }
     }
@@ -227,12 +198,6 @@ impl DeviceNodeSpec {
     /// Associates this node with normalized firmware identity.
     pub fn with_firmware_binding(mut self, binding: DeviceFirmwareBinding) -> Self {
         self.firmware = binding;
-        self
-    }
-
-    /// Associates device-owned FDT and ACPI rendering capabilities.
-    pub fn with_firmware_models(mut self, models: FirmwareModels) -> Self {
-        self.firmware_models = models;
         self
     }
 

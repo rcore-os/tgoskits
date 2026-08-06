@@ -18,6 +18,7 @@ pub struct X86AcpiPmTimerDevice {
     status: AtomicU16,
     enable: AtomicU16,
     control: AtomicU16,
+    stop: StopGrant,
     // Retaining the line keeps the planned SCI endpoint and its lease alive.
     _sci: IrqLine,
     resources: Box<[Resource]>,
@@ -45,7 +46,11 @@ impl X86AcpiPmTimerDevice {
     const TIMER_OFFSET: u64 = Self::TIMER_PORT_OFFSET as u64;
 
     /// Creates a PM timer and inert fixed-event block backed by the supplied clock.
-    pub fn new(monotonic_nanos: X86MonotonicNanos, sci: IrqLine) -> DeviceResult<Self> {
+    pub fn new(
+        monotonic_nanos: X86MonotonicNanos,
+        sci: IrqLine,
+        stop: StopGrant,
+    ) -> DeviceResult<Self> {
         let sci_line =
             u32::try_from(sci.input().value()).map_err(|_| DeviceError::InvalidInput {
                 operation: "create x86 ACPI PM device",
@@ -56,6 +61,7 @@ impl X86AcpiPmTimerDevice {
             status: AtomicU16::new(0),
             enable: AtomicU16::new(0),
             control: AtomicU16::new(0),
+            stop,
             _sci: sci,
             resources: alloc::vec![
                 Resource::PortRange {
@@ -120,7 +126,7 @@ impl X86AcpiPmTimerDevice {
         Ok(value)
     }
 
-    fn write(&self, access: &BusAccess) -> Result<(), DeviceError> {
+    fn write(&self, access: &BusAccess, context: &mut dyn DeviceAccess) -> Result<(), DeviceError> {
         let width = Self::access_size(access)?;
         let offset = self.offset(access, width)?;
         let mut status_clear = 0u16;
@@ -150,20 +156,23 @@ impl X86AcpiPmTimerDevice {
             self.status.fetch_and(!status_clear, Ordering::AcqRel);
         }
         update_register(&self.enable, enable_mask, enable_value);
-        update_register(&self.control, control_mask, control_value);
+        let control = update_register(&self.control, control_mask, control_value);
+        if control_mask & (1 << 13) != 0 && control & 0x3c00 == 0x2000 {
+            context.request_vm_stop(&self.stop, "ACPI soft-off")?;
+        }
         Ok(())
     }
 }
 
-fn update_register(register: &AtomicU16, mask: u16, value: u16) {
+fn update_register(register: &AtomicU16, mask: u16, value: u16) -> u16 {
     if mask == 0 {
-        return;
+        return register.load(Ordering::Acquire);
     }
     let mut current = register.load(Ordering::Acquire);
     loop {
         let next = (current & !mask) | value;
         match register.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return,
+            Ok(_) => return next,
             Err(observed) => current = observed,
         }
     }
@@ -181,7 +190,7 @@ impl Device for X86AcpiPmTimerDevice {
     fn access(
         &self,
         access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
+        context: &mut dyn DeviceAccess,
     ) -> Result<BusResponse, DeviceError> {
         if access.kind != BusKind::Port {
             return Err(DeviceError::OutOfRange { addr: access.addr });
@@ -189,7 +198,7 @@ impl Device for X86AcpiPmTimerDevice {
         if access.is_read {
             self.read(access).map(|value| BusResponse::Read { value })
         } else {
-            self.write(access).map(|()| BusResponse::Write)
+            self.write(access, context).map(|()| BusResponse::Write)
         }
     }
 }
@@ -224,6 +233,23 @@ mod tests {
         }
     }
 
+    struct StopAccess {
+        grant: StopGrant,
+        requested: bool,
+    }
+
+    impl DeviceAccess for StopAccess {
+        fn device_id(&self) -> DeviceId {
+            DeviceId::new(0)
+        }
+
+        fn request_vm_stop(&mut self, grant: &StopGrant, _reason: &str) -> DeviceResult {
+            assert!(grant.same_token(&self.grant));
+            self.requested = true;
+            Ok(())
+        }
+    }
+
     fn now_nanos() -> u64 {
         NOW_NANOS.load(Ordering::Relaxed)
     }
@@ -254,7 +280,7 @@ mod tests {
     #[test]
     fn pm_timer_advances_at_the_acpi_frequency() {
         NOW_NANOS.store(0, Ordering::Relaxed);
-        let timer = X86AcpiPmTimerDevice::new(now_nanos, sci_line()).unwrap();
+        let timer = X86AcpiPmTimerDevice::new(now_nanos, sci_line(), StopGrant::new()).unwrap();
         let mut memory = NoMemory;
         let access = BusAccess {
             kind: BusKind::Port,
@@ -275,5 +301,29 @@ mod tests {
 
         assert_eq!(first, 0);
         assert_eq!(second, PM_TIMER_FREQUENCY_HZ);
+    }
+
+    #[test]
+    fn pm1_control_soft_off_uses_the_device_stop_capability() {
+        let grant = StopGrant::new();
+        let timer = X86AcpiPmTimerDevice::new(now_nanos, sci_line(), grant.clone()).unwrap();
+        let mut access_context = StopAccess {
+            grant,
+            requested: false,
+        };
+        timer
+            .access(
+                &BusAccess {
+                    kind: BusKind::Port,
+                    is_read: false,
+                    addr: u64::from(X86AcpiPmTimerDevice::PORT_BASE)
+                        + X86AcpiPmTimerDevice::CONTROL_OFFSET,
+                    width: AccessWidth::Word,
+                    data: 1 << 13,
+                },
+                &mut access_context,
+            )
+            .unwrap();
+        assert!(access_context.requested);
     }
 }

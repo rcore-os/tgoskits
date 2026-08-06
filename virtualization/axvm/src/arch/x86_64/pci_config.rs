@@ -1,25 +1,17 @@
 //! Device-graph factory for the x86 PCI configuration port window.
 
-use alloc::sync::Arc;
-
 use axdevice::*;
 
-pub(super) fn model() -> Arc<dyn DeviceModel> {
-    Arc::new(X86PciConfigModel)
-}
-
-struct X86PciConfigModel;
+pub(super) struct X86PciConfigModel;
 
 impl DeviceModel for X86PciConfigModel {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
-        DeviceRequirements::new()
-            .with_pio(
-                ResourceSlot::new("registers")?,
-                axdevice::X86PciConfigDevice::PORT_SIZE,
-                1,
-                ResourceRequest::Fixed(axdevice::X86PciConfigDevice::PORT_BASE),
-            )
-            .map(DeviceDeclaration::with_requirements)
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new().with_pio(
+            ResourceSlot::new("registers")?,
+            axdevice::X86PciConfigDevice::PORT_SIZE,
+            1,
+            ResourceRequest::Fixed(axdevice::X86PciConfigDevice::PORT_BASE),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -35,7 +27,7 @@ impl DeviceModel for X86PciConfigModel {
             });
         }
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            Arc::new(axdevice::X86PciConfigDevice::new()),
+            alloc::sync::Arc::new(axdevice::X86PciConfigDevice::new()),
         )))
     }
 }

@@ -6,13 +6,18 @@ use crate::{config::*, machine::*, *};
 
 pub(super) struct Aarch64FirmwarePlan {
     gic: GuestGicProfile,
-    serial: GuestSerialProfile,
+    console: GuestSerialProfile,
+    serials: alloc::vec::Vec<ResolvedSerialDevice>,
     serial_identity: Option<GuestSerialFdtIdentity>,
     timer: GuestTimerProfile,
 }
 
 impl Aarch64FirmwarePlan {
-    pub(super) fn new(config: &AxVMConfig, vgic: &ArmVgicConfig) -> AxVmResult<Self> {
+    pub(super) fn new(
+        config: &AxVMConfig,
+        vgic: &ArmVgicConfig,
+        graph: &axdevice::ResolvedDeviceGraph,
+    ) -> AxVmResult<Self> {
         let gic = match config.gic_profile() {
             Some(profile) => profile.clone(),
             None => fallback_gic_profile(vgic)?,
@@ -20,10 +25,25 @@ impl Aarch64FirmwarePlan {
         let timer = config.timer_profile().cloned().ok_or_else(|| {
             AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
         })?;
+        let serials = resolved_serial_devices(graph)?;
+        let console = serials
+            .iter()
+            .find(|serial| serial.id() == "console0")
+            .ok_or_else(|| AxVmError::invalid_config("AArch64 plan has no console0 serial node"))?;
+        let console_profile = console.profile();
+        let serial_identity = match console.firmware_binding() {
+            axdevice::DeviceFirmwareBinding::FdtNode(path) => config
+                .serial_firmware_identity()
+                .and_then(GuestSerialFirmwareIdentity::fdt)
+                .filter(|identity| identity.node_path == *path)
+                .cloned(),
+            _ => None,
+        };
         Ok(Self {
             gic,
-            serial: config.serial_profile(),
-            serial_identity: config.serial_fdt_identity().cloned(),
+            console: console_profile,
+            serials,
+            serial_identity,
             timer,
         })
     }
@@ -33,7 +53,7 @@ impl Aarch64FirmwarePlan {
     }
 
     pub(super) const fn serial(&self) -> GuestSerialProfile {
-        self.serial
+        self.console
     }
 
     pub(super) const fn serial_identity(&self) -> Option<&GuestSerialFdtIdentity> {
@@ -42,6 +62,10 @@ impl Aarch64FirmwarePlan {
 
     pub(super) const fn timer(&self) -> &GuestTimerProfile {
         &self.timer
+    }
+
+    pub(super) fn serials(&self) -> &[ResolvedSerialDevice] {
+        &self.serials
     }
 }
 

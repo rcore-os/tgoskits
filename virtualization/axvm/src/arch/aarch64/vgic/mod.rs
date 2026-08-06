@@ -225,8 +225,8 @@ struct Aarch64VgicFactory {
 }
 
 impl DeviceModel for Aarch64VgicFactory {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
-        self.plan.declare()
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        self.plan.requirements()
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {

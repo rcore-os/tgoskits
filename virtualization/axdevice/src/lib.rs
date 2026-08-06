@@ -32,7 +32,6 @@ mod build_context;
 mod builder;
 mod device;
 mod error;
-mod firmware;
 mod fw_cfg;
 mod graph;
 mod interrupt;
@@ -59,19 +58,15 @@ pub use device::{
     DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
 };
 pub use error::{DeviceManagerError, DeviceManagerResult};
-pub use firmware::{
-    AcpiDeviceSpec, AcpiNodeModel, FdtNodeModel, FdtNodeSpec, FirmwareBuildError, FirmwareModels,
-    FirmwareProperty, RenderedFirmwareModels, render_device_firmware,
-};
 pub use fw_cfg::{
     FwCfg, FwCfgAcpiBlobs, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice,
     FwCfgKernelPayload, FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPayloadSlot, FwCfgPioDevice,
     FwCfgPlatformConfig, FwCfgRamRegion,
 };
 pub use graph::{
-    DeclaredDeviceGraph, DeviceDeclaration, DeviceFirmwareBinding, DeviceGraphBuilder,
-    DeviceGraphError, DeviceNodeId, DeviceNodeKind, DeviceNodeSpec, HostPassthroughMapping,
-    ResolvedDeviceGraph, ResolvedDeviceNode,
+    DeclaredDeviceGraph, DeviceFirmwareBinding, DeviceGraphBuilder, DeviceGraphError, DeviceNodeId,
+    DeviceNodeKind, DeviceNodeSpec, HostPassthroughMapping, ResolvedDeviceGraph,
+    ResolvedDeviceNode,
 };
 pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
 #[cfg(target_arch = "loongarch64")]
@@ -81,14 +76,14 @@ pub use loongarch_pch_pic::{
     LoongArchInterruptDomainFactory, LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent,
     PchPicOutputPort, PchPicOutputPortKey,
 };
-pub use model::DeviceModel;
+pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
 pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey, GuestRangePool};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
 pub use resources::{
     DevicePlanRequest, DeviceRequirement, DeviceRequirements, MsiResourceRequest,
-    ResolvedDeviceResources, ResolvedMsi, ResolvedWiredIrq, ResourceClaim, ResourceClaimSet,
-    ResourceLease, ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest,
-    ResourceSlot, VmResourcePlan, VmResourcePlanner,
+    ResolvedDeviceResources, ResolvedMsi, ResolvedWiredIrq, ResourceClaimSet, ResourceLease,
+    ResourceNamespace, ResourcePlanningError, ResourcePools, ResourceRequest, ResourceSlot,
+    VmResourcePlan, VmResourcePlanner,
 };
 pub use serial::{
     NullSerialBackend, NullSerialBackendFactory, Pl011, SerialBackend, SerialBackendFactory,

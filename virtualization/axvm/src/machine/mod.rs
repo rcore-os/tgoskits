@@ -17,16 +17,32 @@ mod plic;
 mod serial;
 mod timer;
 
-pub(crate) use factory::serial_device_model;
+pub(crate) use factory::{
+    SERIAL_REGISTRATIONS, fallback_profile as default_serial_profile, is_serial_model,
+    model_name as serial_model_name,
+};
 pub(crate) use gic::AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE;
 pub use gic::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicProfileError, GuestGicRedistributorProfile,
     GuestItsProfile,
 };
 pub use plic::{GuestPlicProfile, GuestPlicProfileError};
+#[cfg(any(
+    target_arch = "aarch64",
+    target_arch = "riscv64",
+    target_arch = "x86_64"
+))]
+pub(crate) use serial::ResolvedSerialDevice;
+#[cfg(any(
+    target_arch = "loongarch64",
+    all(target_arch = "x86_64", feature = "host-fs")
+))]
+pub(crate) use serial::host_serial_from_acpi;
+pub(crate) use serial::resolved_serial_devices;
 pub use serial::{
-    GuestClockReference, GuestSerialFdtIdentity, GuestSerialFdtInterrupt, GuestSerialModel,
-    GuestSerialProfile, GuestSerialTransport,
+    GuestClockReference, GuestSerialAcpiIdentity, GuestSerialFdtIdentity, GuestSerialFdtInterrupt,
+    GuestSerialFirmwareIdentity, GuestSerialModel, GuestSerialProfile, GuestSerialTransport,
+    HostSerialSnapshot,
 };
 pub use timer::GuestTimerProfile;
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]

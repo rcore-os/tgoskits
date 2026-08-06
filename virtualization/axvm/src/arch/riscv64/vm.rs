@@ -81,18 +81,15 @@ fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
         )?,
     )
     .with_firmware_binding(DeviceFirmwareBinding::FdtNode(profile.node_path.clone()));
-    let serial_id = DeviceNodeId::new("serial")?;
-    let serial = if let Some(identity) = config.serial_fdt_identity() {
-        DeviceNodeSpec::host_replacement(serial_id, crate::machine::serial_device_model(config))
-            .with_firmware_binding(DeviceFirmwareBinding::FdtNode(identity.node_path.clone()))
-    } else {
-        DeviceNodeSpec::virtual_device(serial_id, crate::machine::serial_device_model(config))
-    }
-    .with_dependency(controller_id.clone());
     let replacement_ranges =
         alloc::vec![profile.base as u64..profile.base as u64 + profile.length as u64,];
-    let mut nodes = alloc::vec![controller, serial];
-    crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
+    let mut nodes = alloc::vec![controller];
+    crate::configured::append_configured_devices(
+        config,
+        &mut nodes,
+        &controller_id,
+        axdevice_base::InterruptControllerId::new(0),
+    )?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
         config,
         nodes,

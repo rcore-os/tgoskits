@@ -3,6 +3,7 @@
 mod aml;
 mod config;
 mod fw_cfg;
+mod serial;
 mod tables;
 
 pub(super) use config::X86FirmwarePlan;

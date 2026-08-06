@@ -84,7 +84,7 @@ Provider resolution 在架构资源构建期间的 task context 中执行：
 8. device claim 完整 provider MMIO range；
 9. 地址 planner 把该资源视为 emulated-device hole，因此 stage-2 passthrough mapping 不与其重叠。
 
-模型直接持有拥有所有权的 provider region 和 protection rule，不保存原始 TOML，也不依赖设备类型枚举或中心 factory lookup。`declare()` 只声明完整 provider 固定 MMIO slot；`build()` 必须消费并核对该 slot 后才映射硬件。后续构建失败时，`DeviceBundle` 与资源 lease 会一起原子回滚。
+模型直接持有拥有所有权的 provider region 和 protection rule，不保存原始 TOML，也不依赖设备类型枚举或中心 factory lookup。`requirements()` 只声明完整 provider 固定 MMIO slot；`build()` 必须消费并核对该 slot 后才映射硬件。后续构建失败时，`DeviceBundle` 与资源 lease 会一起原子回滚。
 
 读取按原 width 转发。写入先检查 range 与 alignment，再由不可变规则过滤，最后转发或抑制。Runtime path 不执行 driver lookup、不分配、不查找 VM、不调用 callback，也不获取 provider lock。
 

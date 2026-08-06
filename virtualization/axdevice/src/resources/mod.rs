@@ -8,7 +8,7 @@ mod pool;
 mod requirements;
 mod resolved;
 
-pub use claim::{ResourceClaim, ResourceClaimSet, ResourceLease};
+pub use claim::{ResourceClaimSet, ResourceLease};
 pub use error::{ResourceNamespace, ResourcePlanningError};
 pub use plan::{VmResourcePlan, VmResourcePlanner};
 pub use pool::ResourcePools;

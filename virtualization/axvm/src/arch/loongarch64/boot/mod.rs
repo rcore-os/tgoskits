@@ -1,6 +1,6 @@
 mod acpi;
 mod fdt;
-mod probe;
+pub(super) mod probe;
 mod resources;
 
 use std::{format, sync::Arc, vec::Vec};
@@ -131,8 +131,10 @@ pub struct GedDevice {
 impl GuestPlatform {
     pub fn discover(vm: &AxVMRef, _config: &GuestConfig) -> AxVmResult<Self> {
         let fw_cfg = resolved_fw_cfg(vm)?;
+        let serial = resolved_serial(vm)?;
         Ok(
             probe::GuestPlatformBuilder::new(ram_regions(vm), Some(fw_cfg))
+                .with_serial(serial)
                 .apply_host_acpi()
                 .build(),
         )
@@ -151,6 +153,34 @@ impl GuestPlatform {
             acpi,
         })
     }
+}
+
+fn resolved_serial(vm: &AxVMRef) -> AxVmResult<SerialDevice> {
+    vm.with_planned_device_graph(|graph| {
+        let serials = crate::machine::resolved_serial_devices(graph)?;
+        let serial = serials
+            .iter()
+            .find(|serial| serial.id() == "console0")
+            .ok_or_else(|| AxVmError::invalid_config("LoongArch plan has no console0"))?
+            .profile();
+        let crate::machine::GuestSerialTransport::Mmio { base, length, .. } = serial.transport
+        else {
+            return Err(AxVmError::unsupported(
+                "build LoongArch guest firmware",
+                "LoongArch console0 must use MMIO",
+            ));
+        };
+        Ok(SerialDevice {
+            mmio: MmioRegion {
+                base: base as u64,
+                size: length as u64,
+            },
+            irq: u32::try_from(serial.irq)
+                .map_err(|_| AxVmError::invalid_config("LoongArch console IRQ exceeds u32"))?,
+            clock_hz: serial.clock_hz,
+            baud: 115_200,
+        })
+    })
 }
 
 pub fn load_firmware_fdt(vm: &AxVMRef, config: &GuestConfig) -> AxVmResult {

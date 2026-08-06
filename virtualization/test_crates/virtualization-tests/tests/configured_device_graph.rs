@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use axdevice::*;
 use axdevice_base::*;
-use axvm::{machine::*, *};
+use axvm::*;
 use axvmconfig::{GuestConfig, VirtualDeviceRequest};
 
 // Host tests link AxVM without a bare-metal linker script. These symbols only
@@ -25,61 +25,54 @@ struct BlockLikeOptions {
     capacity: String,
 }
 
-struct BlockLikeFactory {
-    built: Arc<Mutex<Vec<(u64, usize, String)>>>,
-}
+static BUILT: Mutex<Vec<(u64, usize, String)>> = Mutex::new(Vec::new());
 
-impl ConfiguredDeviceFactory for BlockLikeFactory {
-    fn model_name(&self) -> &'static str {
-        "virtio-blk-like"
-    }
+const BLOCK_LIKE_REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
+    model: "virtio-blk-like",
+    create: create_block_like,
+};
 
-    fn instantiate(
-        &self,
-        request: &VirtualDeviceRequest,
-        context: &DeviceInstantiationContext,
-    ) -> Result<ConfiguredDeviceInstance, ConfiguredDeviceError> {
-        let options = request
-            .deserialize_options::<BlockLikeOptions>()
-            .map_err(|error| ConfiguredDeviceError::InvalidOptions {
-                device: request.id.clone(),
-                model: request.model.clone(),
-                detail: error.to_string(),
-            })?;
-        let controller = context.default_wired_controller().ok_or_else(|| {
-            ConfiguredDeviceError::Instantiation {
+fn create_block_like(
+    id: DeviceNodeId,
+    request: &VirtualDeviceRequest,
+    context: &DeviceInstantiationContext,
+) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
+    let options = request
+        .deserialize_options::<BlockLikeOptions>()
+        .map_err(|error| ConfiguredDeviceError::InvalidOptions {
+            device: request.id.clone(),
+            model: request.model.clone(),
+            detail: error.to_string(),
+        })?;
+    let controller =
+        context
+            .default_wired_controller()
+            .ok_or_else(|| ConfiguredDeviceError::Instantiation {
                 device: request.id.clone(),
                 model: request.model.clone(),
                 detail: "architecture has no default wired interrupt domain".into(),
-            }
-        })?;
-        let model = Arc::new(BlockLikeModel {
+            })?;
+    let dependency = context
+        .default_wired_controller_node()
+        .expect("the controller ID and graph dependency are one capability")
+        .clone();
+    Ok(DeviceNodeSpec::virtual_device(
+        id,
+        Arc::new(BlockLikeModel {
             capacity: options.capacity,
             controller,
-            built: self.built.clone(),
-        });
-        let firmware = FirmwareModels {
-            fdt: Some(model.clone()),
-            acpi: Some(model.clone()),
-        };
-        let dependency = context
-            .default_wired_controller_node()
-            .expect("the controller ID and graph dependency are one capability")
-            .clone();
-        Ok(ConfiguredDeviceInstance::new(model)
-            .with_firmware(firmware)
-            .with_dependency(dependency))
-    }
+        }),
+    )
+    .with_dependency(dependency))
 }
 
 struct BlockLikeModel {
     capacity: String,
     controller: InterruptControllerId,
-    built: Arc<Mutex<Vec<(u64, usize, String)>>>,
 }
 
 impl DeviceModel for BlockLikeModel {
-    fn declare(&self) -> axdevice::DeviceManagerResult<DeviceDeclaration> {
+    fn requirements(&self) -> axdevice::DeviceManagerResult<DeviceRequirements> {
         DeviceRequirements::new()
             .with_mmio(
                 ResourceSlot::new("registers")?,
@@ -94,7 +87,14 @@ impl DeviceModel for BlockLikeModel {
                 InterruptSharing::Exclusive,
                 ResourceRequest::Auto,
             )
-            .map(DeviceDeclaration::with_requirements)
+    }
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::new("virtio")
+            .with_compatible("virtio,mmio")
+            .with_acpi_hid("LNRO0005")
+            .with_register(ResourceSlot::new("registers").unwrap())
+            .with_interrupt(ResourceSlot::new("irq").unwrap())
     }
 
     fn build(
@@ -103,54 +103,11 @@ impl DeviceModel for BlockLikeModel {
     ) -> axdevice::DeviceManagerResult<DeviceBundle> {
         let (base, _) = context.mmio(&ResourceSlot::new("registers")?)?;
         let irq = context.irq(&ResourceSlot::new("irq")?)?;
-        self.built
+        BUILT
             .lock()
             .unwrap()
             .push((base, irq.input().value(), self.capacity.clone()));
         Ok(DeviceBundle::new())
-    }
-}
-
-impl FdtNodeModel for BlockLikeModel {
-    fn render(
-        &self,
-        resources: &axdevice::ResolvedDeviceResources,
-    ) -> Result<FdtNodeSpec, FirmwareBuildError> {
-        let (base, _) = resources
-            .mmio(&ResourceSlot::new("registers").unwrap())
-            .map_err(firmware_error)?;
-        let irq = resources
-            .wired_irq(&ResourceSlot::new("irq").unwrap())
-            .map_err(firmware_error)?;
-        Ok(FdtNodeSpec {
-            path: format!("/virtio@{base:x}"),
-            properties: vec![FirmwareProperty {
-                name: "interrupt".into(),
-                value: (irq.input().value() as u64).to_be_bytes().to_vec(),
-            }],
-        })
-    }
-}
-
-impl AcpiNodeModel for BlockLikeModel {
-    fn render(
-        &self,
-        resources: &axdevice::ResolvedDeviceResources,
-    ) -> Result<AcpiDeviceSpec, FirmwareBuildError> {
-        let (base, _) = resources
-            .mmio(&ResourceSlot::new("registers").unwrap())
-            .map_err(firmware_error)?;
-        Ok(AcpiDeviceSpec {
-            path: format!("\\_SB.V{:03X}", (base >> 12) & 0xfff),
-            aml: base.to_le_bytes().to_vec(),
-        })
-    }
-}
-
-fn firmware_error(error: axdevice::DeviceManagerError) -> FirmwareBuildError {
-    FirmwareBuildError::InvalidModel {
-        node: "virtio-blk-like".into(),
-        detail: error.to_string(),
     }
 }
 
@@ -189,8 +146,8 @@ impl VirtualInterruptController for TestController {
 struct ControllerModel;
 
 impl DeviceModel for ControllerModel {
-    fn declare(&self) -> axdevice::DeviceManagerResult<DeviceDeclaration> {
-        Ok(DeviceDeclaration::new())
+    fn requirements(&self) -> axdevice::DeviceManagerResult<DeviceRequirements> {
+        Ok(DeviceRequirements::new())
     }
 
     fn build(
@@ -208,7 +165,7 @@ impl DeviceModel for ControllerModel {
 }
 
 #[test]
-fn configured_dyn_models_share_graph_firmware_and_runtime_resources() {
+fn configured_dyn_models_share_graph_metadata_and_runtime_resources() {
     let config = GuestConfig::from_toml(
         r#"
 [devices]
@@ -224,16 +181,12 @@ capacity = "20GiB"
 "#,
     )
     .unwrap();
-    let built = Arc::new(Mutex::new(Vec::new()));
+    BUILT.lock().unwrap().clear();
     let mut catalog = ConfiguredDeviceCatalog::new();
-    catalog
-        .register(Arc::new(BlockLikeFactory {
-            built: built.clone(),
-        }))
-        .unwrap();
+    catalog.register(BLOCK_LIKE_REGISTRATION).unwrap();
 
     let controller_id = DeviceNodeId::new("controller").unwrap();
-    let context = DeviceInstantiationContext::new(MachineArchitecture::X86_64)
+    let context = DeviceInstantiationContext::new()
         .with_default_wired_controller(controller_id.clone(), InterruptControllerId::new(0));
     let mut graph = DeviceGraphBuilder::new();
     graph
@@ -257,7 +210,18 @@ capacity = "20GiB"
         .unwrap();
     let graph = graph.declare().unwrap().resolve(pools).unwrap();
 
-    let firmware = render_device_firmware(&graph).unwrap();
+    for node in graph
+        .nodes()
+        .filter(|node| node.id().as_str().starts_with("data"))
+    {
+        let firmware = node.firmware();
+        assert_eq!(firmware.node_name().map(String::as_str), Some("virtio"));
+        assert_eq!(firmware.compatible(), ["virtio,mmio"]);
+        assert_eq!(firmware.acpi_hid().map(String::as_str), Some("LNRO0005"));
+        let resources = graph.resources_for(node.id()).unwrap();
+        assert!(resources.mmio(&firmware.register_slots()[0]).is_ok());
+        assert!(resources.wired_irq(&firmware.interrupt_slots()[0]).is_ok());
+    }
 
     let mut runtime = axdevice::DeviceRuntimeBuilder::new(Default::default());
     for node in graph.nodes() {
@@ -267,7 +231,7 @@ capacity = "20GiB"
     }
     runtime.finish(graph.resource_plan()).unwrap();
 
-    let mut built = built.lock().unwrap().clone();
+    let mut built = BUILT.lock().unwrap().clone();
     built.sort_by_key(|entry| entry.0);
     assert_eq!(
         built,
@@ -276,71 +240,21 @@ capacity = "20GiB"
             (0x1000_1000, 33, "40GiB".into()),
         ]
     );
-    assert_eq!(
-        firmware.fdt(),
-        [
-            (
-                DeviceNodeId::new("data0").unwrap(),
-                FdtNodeSpec {
-                    path: "/virtio@10000000".into(),
-                    properties: vec![FirmwareProperty {
-                        name: "interrupt".into(),
-                        value: 32_u64.to_be_bytes().to_vec(),
-                    }],
-                },
-            ),
-            (
-                DeviceNodeId::new("data1").unwrap(),
-                FdtNodeSpec {
-                    path: "/virtio@10001000".into(),
-                    properties: vec![FirmwareProperty {
-                        name: "interrupt".into(),
-                        value: 33_u64.to_be_bytes().to_vec(),
-                    }],
-                },
-            ),
-        ]
-    );
-    assert_eq!(
-        firmware.acpi(),
-        [
-            (
-                DeviceNodeId::new("data0").unwrap(),
-                AcpiDeviceSpec {
-                    path: "\\_SB.V000".into(),
-                    aml: 0x1000_0000_usize.to_le_bytes().to_vec(),
-                },
-            ),
-            (
-                DeviceNodeId::new("data1").unwrap(),
-                AcpiDeviceSpec {
-                    path: "\\_SB.V001".into(),
-                    aml: 0x1000_1000_usize.to_le_bytes().to_vec(),
-                },
-            ),
-        ]
-    );
 }
 
 #[test]
 fn configured_catalog_rejects_ambiguous_or_untyped_requests() {
-    let built = Arc::new(Mutex::new(Vec::new()));
     let mut catalog = ConfiguredDeviceCatalog::new();
-    catalog
-        .register(Arc::new(BlockLikeFactory {
-            built: built.clone(),
-        }))
-        .unwrap();
+    catalog.register(BLOCK_LIKE_REGISTRATION).unwrap();
     assert!(matches!(
-        catalog.register(Arc::new(BlockLikeFactory { built })),
+        catalog.register(BLOCK_LIKE_REGISTRATION),
         Err(ConfiguredDeviceError::DuplicateModel { .. })
     ));
 
-    let context = DeviceInstantiationContext::new(MachineArchitecture::X86_64)
-        .with_default_wired_controller(
-            DeviceNodeId::new("controller").unwrap(),
-            InterruptControllerId::new(0),
-        );
+    let context = DeviceInstantiationContext::new().with_default_wired_controller(
+        DeviceNodeId::new("controller").unwrap(),
+        InterruptControllerId::new(0),
+    );
     let unknown = VirtualDeviceRequest {
         id: "unknown0".into(),
         model: "not-registered".into(),

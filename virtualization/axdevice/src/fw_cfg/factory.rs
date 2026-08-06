@@ -164,7 +164,7 @@ impl FwCfgPayloadFactory {
 }
 
 impl DeviceModel for FwCfgPayloadFactory {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         let requirements = match self.transport {
             FwCfgTransport::Mmio => {
                 let size = u64::try_from(self.size).map_err(fw_cfg_range_conversion_error)?;
@@ -179,7 +179,7 @@ impl DeviceModel for FwCfgPayloadFactory {
             }
             FwCfgTransport::Pio => pio_requirements(self.base, self.size)?,
         };
-        Ok(DeviceDeclaration::with_requirements(requirements))
+        Ok(requirements)
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {

@@ -11,7 +11,7 @@
 ```text
 Guest TOML: id + model + options
               |
-ConfiguredDeviceCatalog
+ConfiguredDeviceCatalog（显式 registration）
               |
        Arc<dyn DeviceModel>
               |
@@ -49,7 +49,7 @@ capacity = "20GiB"
 backend = { type = "file", path = "/images/data.raw" }
 ```
 
-`VirtualDeviceRequest` 只保留稳定 ID、规范 model 名和剩余 TOML table。它禁止用户填写 MMIO、PIO、IRQ、MSI 或 LPI 数字。具体 `ConfiguredDeviceFactory` 使用带 `deny_unknown_fields` 的类型化结构解析 options，并创建 `ConfiguredDeviceInstance`。未知 model、重复注册、重复设备 ID 和未知选项都明确失败。
+`VirtualDeviceRequest` 只保留稳定 ID、规范 model 名和剩余 TOML table。它禁止用户填写 MMIO、PIO、IRQ、MSI 或 LPI 数字。catalog 中的 `ConfiguredModelRegistration` 保存规范 model 名和普通构造函数指针；构造函数使用带 `deny_unknown_fields` 的类型化结构解析 options，并直接返回 `DeviceNodeSpec`。未知 model、重复注册、重复设备 ID 和未知选项都明确失败，不存在额外 factory trait 或 instance 包装层。
 
 catalog 由代码显式构造；不使用 linker section、全局静态发现、动态库或外部插件。新增标准设备只增加自己的模块并在标准 catalog 注册一次，不修改设备类型枚举或四个架构的中心 `match`。本 PR 不注册真正的 virtio-blk，因此上例会返回 `UnknownVirtualDeviceModel`，不会伪装成功。
 
@@ -61,7 +61,11 @@ catalog 由代码显式构造；不使用 linker section、全局静态发现、
 
 ```rust
 pub trait DeviceModel: Send + Sync {
-    fn declare(&self) -> Result<DeviceDeclaration, DeviceManagerError>;
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements>;
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::default()
+    }
 
     fn build(
         &self,
@@ -70,7 +74,7 @@ pub trait DeviceModel: Send + Sync {
 }
 ```
 
-`declare()` 是纯声明阶段，只能返回命名资源槽和能力需求；`build()` 只能通过 `mmio(slot)`、`pio(slot)`、`irq(slot)`、`msi(slot)` 等接口消费计划签发的 claim。模型自己的类型化配置捕获在具体结构体中，不保存原始 TOML，也不重新查找 factory。
+`requirements()` 是纯声明阶段，只能返回命名资源槽和能力需求；`firmware()` 返回简单、拥有所有权的节点元数据；`build()` 只能通过 `mmio("slot")`、`pio("slot")`、`irq("slot")`、`msi("slot")` 等接口消费计划签发的 claim。模型自己的类型化配置捕获在具体结构体中，不保存原始 TOML，也不重新查找 factory。
 
 这里删除的是“每新增设备就增长”的设备类型 enum。`DeviceNodeKind`、`ResourceRequest`、trigger/sharing 等封闭且稳定的领域枚举继续保留。
 
@@ -110,7 +114,7 @@ pub trait DeviceModel: Send + Sync {
 
 ## claim、lease 与 bundle 事务
 
-资源槽只能经历 `planned -> issued -> leased`。重复签发或重复消费失败；未消费 claim 不能完成构建。构建或 bundle 注册失败时，endpoint 与 lease 一起释放，资源恢复到 `planned`，相同输入可再次得到同一个最低资源。
+资源槽只能经历 `planned -> issued -> leased`。每个节点一次取得 `ResourceClaimSet`，按名称消费后直接生成 lease，不再为每个槽构造一层 claim 对象。重复签发或重复消费失败；未消费 claim 不能完成构建。构建或 bundle 注册失败时，endpoint 与 lease 一起释放，资源恢复到 `planned`，相同输入可再次得到同一个最低资源。
 
 `DeviceBuildContext::irq()` 根据 controller ID 找到已注册的 `VirtualInterruptController`，取得 `WiredIrqInput` 并为当前设备创建独立 `IrqLine`。edge 只使用 `pulse()`；level 使用 `assert()/deassert()`；shared-level 按 source 聚合为 wired-OR，source drop 自动撤销断言。
 
@@ -118,9 +122,17 @@ pub trait DeviceModel: Send + Sync {
 
 ## 固件模型
 
-节点可以分别挂载 `Arc<dyn FdtNodeModel>` 与 `Arc<dyn AcpiNodeModel>`。`render_device_firmware()` 按图顺序把模型应用到该节点的 `ResolvedDeviceResources`，输出拥有所有权的 FDT/ACPI 片段。固件模型不能重新分配资源、按设备类型匹配或 downcast 运行时设备。
+节点不再挂第二组 FDT/ACPI dyn trait。`DeviceModel::firmware()` 只返回 `DeviceFirmwareSpec`：节点名、compatible/HID、资源槽和简单属性。架构 composer 将它与同一节点的 `ResolvedDeviceResources` 组合成最终 FDT/AML；固件代码不能重新分配资源、按设备类型匹配或 downcast 运行时设备。
 
-简单 MMIO+IRQ 设备应复用通用固件模型；GIC、ITS、PCI、IOAPIC 等特殊拓扑由设备或架构实现小型专用模型。架构固件 composer 负责把片段安装到最终 FDT/AML，并处理 provider、phandle、总线和表间引用。
+串口等简单设备直接使用这份通用元数据。GIC、ITS、PCI、IOAPIC 等特殊拓扑仍由架构计划处理，因为 phandle、MADT、PCI `_PRT` 和系统寄存器属于架构事实；特殊实现仍只能读取 resolved graph。
+
+## Host 派生的默认串口
+
+默认串口按 `machine fallback -> host FDT/ACPI snapshot -> console0 -> 用户同 ID 覆盖` 解析。FDT snapshot 保存所选 UART 的型号、reg、IRQ、clock、节点路径、phandle、clock provider 和 stdout identity；ACPI snapshot 保存 SPCR 的型号、地址空间、reg、IRQ、clock、baud 和 namespace。snapshot 拥有全部数据，不保存 parser 引用或 AML 字节。
+
+用户不写 `console0` 时保留 host 优先和 machine 兜底行为。同 ID 请求完整替换 model/options：型号和 transport 兼容时继续使用 host fixed binding 与 identity，不兼容时丢弃 host identity，按普通虚拟设备自动分配资源。其他 ID 新增串口。每个 VM 最多一个 `host-console` backend owner，当前不能关闭默认串口。
+
+VGIC、vPLIC、IOAPIC 等控制器不是 catalog 设备；它们由架构创建并先注册到同一个 `DeviceRuntime`。所有 MMIO/PIO exit 只查询 runtime 区间索引一次并调用 `Arc<dyn Device>::access`，未命中后的行为由架构策略决定。VGICv3 ICC 等系统寄存器仍属于 vCPU binding，不伪装成 MMIO。
 
 透传 VM 以 host identity map 为基线，再扣除客户机 RAM、启动数据、虚拟 MMIO、host replacement 捕获区和架构保留区。LoongArch 等架构不得在早期代码中再次枚举“虚拟设备地址”；最终设备图统一完成扣洞。无法表示的重叠直接导致启动失败。
 

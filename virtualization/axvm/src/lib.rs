@@ -61,8 +61,9 @@ pub use axvm_types::{
     VMId, VmVcpuState,
 };
 pub use configured::{
-    ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredDeviceFactory,
-    ConfiguredDeviceInstance, DeviceInstantiationContext,
+    ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
+    ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
+    FixedDeviceBindings, FixedWiredBinding,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};

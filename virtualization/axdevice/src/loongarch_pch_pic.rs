@@ -297,15 +297,13 @@ impl LoongArchPchPicFactory {
 }
 
 impl DeviceModel for LoongArchPchPicFactory {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
-        DeviceRequirements::new()
-            .with_mmio(
-                ResourceSlot::new("registers")?,
-                self.length as u64,
-                1,
-                ResourceRequest::Fixed(self.base as u64),
-            )
-            .map(DeviceDeclaration::with_requirements)
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new().with_mmio(
+            ResourceSlot::new("registers")?,
+            self.length as u64,
+            1,
+            ResourceRequest::Fixed(self.base as u64),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {

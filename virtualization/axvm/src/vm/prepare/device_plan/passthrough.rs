@@ -74,11 +74,8 @@ fn add_host_mapping_node(
     let mut firmware_paths = mapping_node.firmware_paths.into_iter();
     let first_firmware_path = firmware_paths.next();
     let requirements = fixed_mmio(mapping)?;
-    let mut node = DeviceNodeSpec::host_passthrough(
-        id.clone(),
-        DeviceDeclaration::with_requirements(requirements),
-    )
-    .with_host_mapping(mapping);
+    let mut node =
+        DeviceNodeSpec::host_passthrough(id.clone(), requirements).with_host_mapping(mapping);
     if let Some(path) = first_firmware_path {
         node = node.with_firmware_binding(DeviceFirmwareBinding::FdtNode(path));
     }

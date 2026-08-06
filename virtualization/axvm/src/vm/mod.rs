@@ -1225,36 +1225,30 @@ impl AxVM {
         AxVmDeviceAccessPorts::new(self.id()).into_ports()
     }
 
-    pub(crate) fn handle_mmio_write(
+    pub(crate) fn try_handle_mmio_write(
         &self,
         addr: GuestPhysAddr,
         width: AccessWidth,
         data: usize,
-    ) -> AxVmResult {
+    ) -> AxVmResult<bool> {
         let devices = self.get_devices()?;
-        if devices.mmio_write_needs_guest_memory(addr, width) {
-            let mut memory = VmDmaAccess { vm: self };
-            devices.handle_mmio_write_with_memory(addr, width, data, &mut memory)?;
-        } else {
-            devices.handle_mmio_write(addr, width, data)?;
-        }
-        Ok(())
+        let mut memory = VmDmaAccess { vm: self };
+        devices
+            .try_handle_mmio_write_with_memory(addr, width, data, &mut memory)
+            .map_err(Into::into)
     }
 
-    pub(crate) fn handle_port_write(
+    pub(crate) fn try_handle_port_write(
         &self,
         port: Port,
         width: AccessWidth,
         data: usize,
-    ) -> AxVmResult {
+    ) -> AxVmResult<bool> {
         let devices = self.get_devices()?;
-        if devices.port_write_needs_guest_memory(port, width) {
-            let mut memory = VmDmaAccess { vm: self };
-            devices.handle_port_write_with_memory(port, width, data, &mut memory)?;
-        } else {
-            devices.handle_port_write(port, width, data)?;
-        }
-        Ok(())
+        let mut memory = VmDmaAccess { vm: self };
+        devices
+            .try_handle_port_write_with_memory(port, width, data, &mut memory)
+            .map_err(Into::into)
     }
 
     pub(crate) fn handle_nested_page_fault(

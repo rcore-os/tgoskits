@@ -29,23 +29,22 @@ impl Aarch64VmPlan {
             .with_firmware_binding(DeviceFirmwareBinding::FdtNode(profile.node_path.clone())),
         ];
 
-        let serial_id = DeviceNodeId::new("serial")?;
-        let serial = if let Some(identity) = config.serial_fdt_identity() {
-            DeviceNodeSpec::host_replacement(serial_id, crate::machine::serial_device_model(config))
-                .with_firmware_binding(DeviceFirmwareBinding::FdtNode(identity.node_path.clone()))
-        } else {
-            DeviceNodeSpec::virtual_device(serial_id, crate::machine::serial_device_model(config))
-        }
-        .with_dependency(controller_id.clone());
-        nodes.push(serial);
-
         let shared_providers = SharedProviderBootstrap::from_config(config)?;
         nodes.extend(shared_providers.device_nodes()?);
-        crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
+        crate::configured::append_configured_devices(
+            config,
+            &mut nodes,
+            &controller_id,
+            vgic.config().controller_id(),
+        )?;
 
         let mut replacement_ranges = gic_ranges(profile)?;
         replacement_ranges.extend(shared_providers.replacement_ranges()?);
-        if config.serial_fdt_identity().is_some() {
+        if config
+            .serial_firmware_identity()
+            .and_then(GuestSerialFirmwareIdentity::fdt)
+            .is_some()
+        {
             replacement_ranges.push(serial_range(config.serial_profile())?);
         }
 
@@ -55,7 +54,7 @@ impl Aarch64VmPlan {
             &replacement_ranges,
             super::resource_pools::create(vgic.config())?,
         )?;
-        let firmware = Aarch64FirmwarePlan::new(config, vgic.config())?;
+        let firmware = Aarch64FirmwarePlan::new(config, vgic.config(), devices.graph())?;
         Ok(Self { devices, firmware })
     }
 
@@ -69,6 +68,10 @@ impl Aarch64VmPlan {
 
     pub(crate) const fn serial_fdt_identity(&self) -> Option<&GuestSerialFdtIdentity> {
         self.firmware.serial_identity()
+    }
+
+    pub(crate) fn serial_devices(&self) -> &[ResolvedSerialDevice] {
+        self.firmware.serials()
     }
 
     pub(crate) const fn timer_profile(&self) -> &GuestTimerProfile {

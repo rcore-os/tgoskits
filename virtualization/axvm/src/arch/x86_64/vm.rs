@@ -20,6 +20,12 @@ impl X86_64Arch {
         config: AxVMConfig,
         fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
+        #[cfg(feature = "host-fs")]
+        let config = {
+            let mut config = config;
+            apply_host_serial(&mut config)?;
+            config
+        };
         let device_plan = plan_devices(&config, fw_cfg_payload)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
@@ -60,6 +66,23 @@ impl X86_64Arch {
     }
 }
 
+#[cfg(feature = "host-fs")]
+fn apply_host_serial(config: &mut AxVMConfig) -> AxVmResult {
+    let Some(serial) = ax_driver::probe::acpi::with_acpi(|acpi| acpi.serial_console()) else {
+        return Ok(());
+    };
+    let Some(serial) = serial.map_err(|error| {
+        AxVmError::invalid_config(alloc::format!(
+            "failed to parse host ACPI serial console: {error}"
+        ))
+    })?
+    else {
+        return Ok(());
+    };
+    let snapshot = crate::machine::host_serial_from_acpi(serial, config.serial_profile())?;
+    config.replace_machine_serial(snapshot.profile, Some(snapshot.identity))
+}
+
 fn plan_devices(
     config: &AxVMConfig,
     fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
@@ -73,12 +96,6 @@ fn plan_devices(
         )
         .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("IOAPIC".into())),
         DeviceNodeSpec::virtual_device(
-            DeviceNodeId::new("serial")?,
-            crate::machine::serial_device_model(config),
-        )
-        .with_dependency(controller_id.clone())
-        .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("\\_SB.COM1".into())),
-        DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("fw-cfg")?,
             alloc::sync::Arc::new(axdevice::FwCfgPayloadFactory::deferred_pio(
                 GuestPhysAddr::from(0x510),
@@ -88,18 +105,21 @@ fn plan_devices(
         )
         .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("\\_SB.FWCF".into())),
         DeviceNodeSpec::virtual_device(DeviceNodeId::new("pit")?, super::pit_model(config.id()),),
-        DeviceNodeSpec::virtual_device(DeviceNodeId::new("pic")?, super::pic::model()),
+        DeviceNodeSpec::virtual_device(
+            DeviceNodeId::new("pic")?,
+            alloc::sync::Arc::new(super::pic::X86PicModel),
+        ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("cmos")?,
-            super::cmos::model(low_memory_size)
+            alloc::sync::Arc::new(super::cmos::X86CmosModel::new(low_memory_size)),
         ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("pci-config")?,
-            super::pci_config::model(),
+            alloc::sync::Arc::new(super::pci_config::X86PciConfigModel),
         ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("acpi-pm-timer")?,
-            super::acpi_pm_timer::model(),
+            alloc::sync::Arc::new(super::acpi_pm_timer::X86AcpiPmTimerModel),
         )
         .with_dependency(controller_id.clone()),
     ];
@@ -113,7 +133,12 @@ fn plan_devices(
             )),
         ));
     }
-    crate::configured::append_configured_devices(config, &mut nodes, &controller_id)?;
+    crate::configured::append_configured_devices(
+        config,
+        &mut nodes,
+        &controller_id,
+        axdevice_base::InterruptControllerId::new(0),
+    )?;
     Ok(SimpleVmPlan::new(VmDevicePlan::with_pools_for_vm(
         config,
         nodes,

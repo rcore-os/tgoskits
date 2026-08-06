@@ -50,7 +50,7 @@ GICv2 最多支持 8 个 vCPU。GICv3 校验 MPIDR affinity 唯一性、GICR fra
 
 ## VGIC 作为 dyn host replacement
 
-设备图中的 VGIC 节点是 `HostReplacement`，保存同一个 VGIC model 实例。`declare()` 为 distributor、每段 CPU-interface/redistributor region 和每个 ITS 声明命名 fixed MMIO slot；`build()` 逐项消费并校验解析后的范围，然后创建 VGIC frontends、系统寄存器适配器和 `ControllerRegistration`。
+设备图中的 VGIC 节点是 `HostReplacement`，保存同一个 VGIC model 实例。`requirements()` 为 distributor、每段 CPU-interface/redistributor region 和每个 ITS 声明命名 fixed MMIO slot；`build()` 逐项消费并校验解析后的范围，然后创建 VGIC frontends、系统寄存器适配器和 `ControllerRegistration`。
 
 host replacement 沿用 host 固件地址、GICR/ITS 布局和中断身份，客户机只修改虚拟状态。所有 VGIC MMIO 仍由 stage-2 捕获，不直接映射 host 寄存器。普通虚拟设备只依赖 dyn controller，通过自动分配或平台 fixed slot 获得中断线。
 

@@ -97,18 +97,11 @@ impl ResourceClaimDomain {
                 .get_mut(&key)
                 .expect("claim key was collected from the same locked map");
             record.state = ClaimState::Issued;
-            claims.insert(
-                key.slot.clone(),
-                ResourceClaim {
-                    domain: self.clone(),
-                    key,
-                    resource: record.resource.clone(),
-                    consumed: false,
-                },
-            );
+            claims.insert(key.slot, record.resource.clone());
         }
         Ok(ResourceClaimSet {
             device_id: device_id.into(),
+            domain: self.clone(),
             claims,
         })
     }
@@ -185,59 +178,62 @@ impl ResourceClaimDomain {
 /// The one-shot claims issued for one planned device.
 pub struct ResourceClaimSet {
     device_id: String,
-    claims: BTreeMap<ResourceSlot, ResourceClaim>,
+    domain: Arc<ResourceClaimDomain>,
+    claims: BTreeMap<ResourceSlot, ResolvedResource>,
 }
 
 impl ResourceClaimSet {
     pub(crate) fn mmio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        let claim = self.claim(slot)?;
-        claim
-            .resource
+        self.claim(slot)?
             .mmio()
-            .ok_or_else(|| claim_kind_error(claim, "MMIO"))
+            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "MMIO"))
     }
 
     pub(crate) fn pio(&self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
-        let claim = self.claim(slot)?;
-        claim
-            .resource
+        self.claim(slot)?
             .pio()
-            .ok_or_else(|| claim_kind_error(claim, "PIO"))
+            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "PIO"))
     }
 
     pub(crate) fn wired_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedWiredIrq> {
-        let claim = self.claim(slot)?;
-        claim
-            .resource
+        self.claim(slot)?
             .wired_irq()
-            .ok_or_else(|| claim_kind_error(claim, "wired IRQ"))
+            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "wired IRQ"))
     }
 
     pub(crate) fn host_irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
-        let claim = self.claim(slot)?;
-        claim
-            .resource
+        self.claim(slot)?
             .host_irq()
-            .ok_or_else(|| claim_kind_error(claim, "host IRQ"))
+            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "host IRQ"))
     }
 
     pub(crate) fn msi(&self, slot: &ResourceSlot) -> DeviceManagerResult<ResolvedMsi> {
-        let claim = self.claim(slot)?;
-        claim
-            .resource
+        self.claim(slot)?
             .msi()
-            .ok_or_else(|| claim_kind_error(claim, "MSI"))
+            .ok_or_else(|| claim_kind_error(&self.device_id, slot, "MSI"))
     }
 
     /// Consumes one named claim and returns its lifetime lease.
     pub fn consume(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<ResourceLease> {
-        let lease = self.claim_mut(slot)?.consume()?;
-        let removed = self
-            .claims
+        let resource = self.claim(slot)?.clone();
+        let key = ClaimKey {
+            device_id: self.device_id.clone(),
+            slot: slot.clone(),
+        };
+        self.domain.transition(
+            &key,
+            ClaimState::Issued,
+            ClaimState::Leased,
+            "consume planned resource claim",
+        )?;
+        self.claims
             .remove(slot)
-            .expect("claim was consumed from the same map");
-        debug_assert!(removed.consumed);
-        Ok(lease)
+            .expect("the transitioned claim came from the same set");
+        Ok(ResourceLease {
+            domain: self.domain.clone(),
+            key,
+            resource,
+        })
     }
 
     /// Returns the number of claims not yet consumed.
@@ -256,15 +252,9 @@ impl ResourceClaimSet {
         Ok(())
     }
 
-    fn claim(&self, slot: &ResourceSlot) -> DeviceManagerResult<&ResourceClaim> {
+    fn claim(&self, slot: &ResourceSlot) -> DeviceManagerResult<&ResolvedResource> {
         self.claims
             .get(slot)
-            .ok_or_else(|| missing_claim_error(&self.device_id, slot))
-    }
-
-    fn claim_mut(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<&mut ResourceClaim> {
-        self.claims
-            .get_mut(slot)
             .ok_or_else(|| missing_claim_error(&self.device_id, slot))
     }
 }
@@ -279,35 +269,16 @@ impl fmt::Debug for ResourceClaimSet {
     }
 }
 
-/// One planner-issued claim. Dropping it rolls the slot back to `planned`.
-pub struct ResourceClaim {
-    domain: Arc<ResourceClaimDomain>,
-    key: ClaimKey,
-    resource: ResolvedResource,
-    consumed: bool,
-}
-
-impl ResourceClaim {
-    fn consume(&mut self) -> DeviceManagerResult<ResourceLease> {
-        self.domain.transition(
-            &self.key,
-            ClaimState::Issued,
-            ClaimState::Leased,
-            "consume planned resource claim",
-        )?;
-        self.consumed = true;
-        Ok(ResourceLease {
-            domain: self.domain.clone(),
-            key: self.key.clone(),
-            resource: self.resource.clone(),
-        })
-    }
-}
-
-impl Drop for ResourceClaim {
+impl Drop for ResourceClaimSet {
     fn drop(&mut self) {
-        if !self.consumed {
-            self.domain.rollback(&self.key, ClaimState::Issued);
+        for slot in self.claims.keys() {
+            self.domain.rollback(
+                &ClaimKey {
+                    device_id: self.device_id.clone(),
+                    slot: slot.clone(),
+                },
+                ClaimState::Issued,
+            );
         }
     }
 }
@@ -417,8 +388,18 @@ fn lease_kind_error(key: &ClaimKey, expected: &'static str) -> DeviceManagerErro
     }
 }
 
-fn claim_kind_error(claim: &ResourceClaim, expected: &'static str) -> DeviceManagerError {
-    lease_kind_error(&claim.key, expected)
+fn claim_kind_error(
+    device_id: &str,
+    slot: &ResourceSlot,
+    expected: &'static str,
+) -> DeviceManagerError {
+    lease_kind_error(
+        &ClaimKey {
+            device_id: device_id.into(),
+            slot: slot.clone(),
+        },
+        expected,
+    )
 }
 
 fn missing_claim_error(device_id: &str, slot: &ResourceSlot) -> DeviceManagerError {

@@ -37,13 +37,10 @@ pub(crate) fn handle_io_read(
     exit: IoReadExit,
 ) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
     let devices = vm.get_devices()?;
-    let val = if devices.find_port_dev(exit.port).is_some() {
-        devices
-            .handle_port_read(exit.port, exit.width)
-            .map_err(|error| AxVmError::device("read guest I/O port", error))?
-    } else {
-        unmapped_port_value(exit.width)
-    };
+    let val = devices
+        .try_handle_port_read(exit.port, exit.width)
+        .map_err(|error| AxVmError::device("read guest I/O port", error))?
+        .unwrap_or_else(|| unmapped_port_value(exit.width));
     vcpu.set_gpr(0, val);
     Ok(BoundVcpuExit::Continue)
 }
@@ -52,10 +49,8 @@ pub(crate) fn handle_io_write(
     vm: &crate::AxVM,
     exit: IoWriteExit,
 ) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
-    if vm.get_devices()?.find_port_dev(exit.port).is_some() {
-        vm.handle_port_write(exit.port, exit.width, exit.data as usize)
-            .map_err(|error| AxVmError::device("write guest I/O port", error))?;
-    }
+    vm.try_handle_port_write(exit.port, exit.width, exit.data as usize)
+        .map_err(|error| AxVmError::device("write guest I/O port", error))?;
     Ok(BoundVcpuExit::Continue)
 }
 
@@ -72,23 +67,18 @@ pub(crate) fn handle_io_string(
     match exit.direction() {
         X86PortIoDirection::In => {
             let devices = vm.get_devices()?;
-            let value = if devices.find_port_dev(port).is_some() {
-                devices
-                    .handle_port_read(port, width)
-                    .map_err(|error| AxVmError::device("read guest string I/O port", error))?
-            } else {
-                unmapped_port_value(width)
-            };
+            let value = devices
+                .try_handle_port_read(port, width)
+                .map_err(|error| AxVmError::device("read guest string I/O port", error))?
+                .unwrap_or_else(|| unmapped_port_value(width));
             vm.write_to_guest(guest_paddr, &value.to_le_bytes()[..size])?;
         }
         X86PortIoDirection::Out => {
             let mut bytes = [0u8; 8];
             vm.read_from_guest(guest_paddr, &mut bytes[..size])?;
             let value = u64::from_le_bytes(bytes);
-            if vm.get_devices()?.find_port_dev(port).is_some() {
-                vm.handle_port_write(port, width, value as usize)
-                    .map_err(|error| AxVmError::device("write guest string I/O port", error))?;
-            }
+            vm.try_handle_port_write(port, width, value as usize)
+                .map_err(|error| AxVmError::device("write guest string I/O port", error))?;
         }
     }
 

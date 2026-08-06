@@ -25,32 +25,36 @@ pub struct MsiEndpointRange {
 
 impl<'a> DeviceBuildContext<'a> {
     /// Consumes a planned MMIO slot.
-    pub fn mmio(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<(u64, u64)> {
-        self.resources.consume(slot, ResourceClaimSet::mmio)
+    pub fn mmio(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<(u64, u64)> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
+        self.resources.consume(&slot, ResourceClaimSet::mmio)
     }
 
     /// Consumes a planned port-I/O slot.
-    pub fn pio(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<(u16, u16)> {
-        self.resources.consume(slot, ResourceClaimSet::pio)
+    pub fn pio(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<(u16, u16)> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
+        self.resources.consume(&slot, ResourceClaimSet::pio)
     }
 
     /// Consumes a planned host physical IRQ slot.
     ///
     /// This returns only the immutable identity. Architecture code remains
     /// responsible for claiming and programming its physical IRQ backend.
-    pub fn host_irq(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<HostIrqId> {
-        self.resources.consume(slot, ResourceClaimSet::host_irq)
+    pub fn host_irq(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<HostIrqId> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
+        self.resources.consume(&slot, ResourceClaimSet::host_irq)
     }
 
     /// Consumes a planned wired IRQ slot and connects one device source.
-    pub fn irq(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<IrqLine> {
+    pub fn irq(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<IrqLine> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
         let planned = &mut self.resources;
-        let resolved = planned.claims.wired_irq(slot)?;
+        let resolved = planned.claims.wired_irq(&slot)?;
         let controller = planned.interrupts.wired_controller(resolved.controller())?;
         let line = controller
             .wired_input(resolved.input(), resolved.trigger())?
             .connect()?;
-        let lease = planned.claims.consume(slot)?;
+        let lease = planned.claims.consume(&slot)?;
         planned
             .retained
             .endpoints
@@ -62,8 +66,9 @@ impl<'a> DeviceBuildContext<'a> {
     }
 
     /// Consumes a single-message MSI slot.
-    pub fn msi(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<MsiEndpoint> {
-        let range = self.build_msi_range(slot, true)?;
+    pub fn msi(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<MsiEndpoint> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
+        let range = self.build_msi_range(&slot, true)?;
         range
             .endpoints
             .into_iter()
@@ -75,8 +80,9 @@ impl<'a> DeviceBuildContext<'a> {
     }
 
     /// Consumes a contiguous MSI event/LPI range.
-    pub fn msi_range(&mut self, slot: &ResourceSlot) -> DeviceManagerResult<MsiEndpointRange> {
-        self.build_msi_range(slot, false)
+    pub fn msi_range(&mut self, slot: impl AsRef<str>) -> DeviceManagerResult<MsiEndpointRange> {
+        let slot = ResourceSlot::new(slot.as_ref())?;
+        self.build_msi_range(&slot, false)
     }
 
     pub(crate) fn planned(interrupts: &'a InterruptRegistry, claims: ResourceClaimSet) -> Self {

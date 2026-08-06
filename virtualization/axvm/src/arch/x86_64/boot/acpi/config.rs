@@ -8,6 +8,8 @@ use alloc::{
 
 use axdevice::*;
 
+use super::serial::*;
+
 /// Guest processor/APIC identities.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct X86CpuPlan {
@@ -57,11 +59,9 @@ pub(super) struct X86AcpiIoRegisterPlan {
 }
 
 /// Firmware-visible serial and fw_cfg resources resolved by the planner.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct X86FirmwareResources {
-    pub(super) serial_base: u16,
-    pub(super) serial_size: u16,
-    pub(super) serial_irq: u32,
+    pub(super) serials: Vec<X86SerialPlan>,
     pub(super) fw_cfg_selector_base: u16,
     pub(super) fw_cfg_selector_size: u16,
     pub(super) fw_cfg_dma_base: u16,
@@ -99,7 +99,6 @@ impl X86FirmwarePlan {
         }
 
         let ioapic = resources_for_node(graph, "ioapic")?;
-        let serial = resources_for_node(graph, "serial")?;
         let fw_cfg = resources_for_node(graph, "fw-cfg")?;
         let pm_timer = resources_for_node(graph, "acpi-pm-timer")?;
         let (io_apic_base, io_apic_size) = ioapic.mmio(&ResourceSlot::new("registers")?)?;
@@ -109,8 +108,7 @@ impl X86FirmwarePlan {
                 value: "0".into(),
             });
         }
-        let (serial_base, serial_size) = serial.pio(&ResourceSlot::new("registers")?)?;
-        let serial_irq = serial.wired_irq(&ResourceSlot::new("irq")?)?;
+        let serials = x86_serial_plans(graph)?;
         let (fw_cfg_selector_base, fw_cfg_selector_size) =
             fw_cfg.pio(&ResourceSlot::new("selector-data")?)?;
         let (fw_cfg_dma_base, fw_cfg_dma_size) = fw_cfg.pio(&ResourceSlot::new("dma")?)?;
@@ -183,14 +181,7 @@ impl X86FirmwarePlan {
                 )?,
             },
             resources: X86FirmwareResources {
-                serial_base,
-                serial_size,
-                serial_irq: u32::try_from(serial_irq.input().value()).map_err(|_| {
-                    X86FirmwarePlanError::InvalidValue {
-                        field: "serial IRQ",
-                        value: serial_irq.input().value().to_string(),
-                    }
-                })?,
+                serials,
                 fw_cfg_selector_base,
                 fw_cfg_selector_size,
                 fw_cfg_dma_base,
@@ -331,9 +322,18 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             },
         },
         resources: X86FirmwareResources {
-            serial_base: 0x3f8,
-            serial_size: 8,
-            serial_irq: 4,
+            serials: alloc::vec![X86SerialPlan {
+                name: "COM1".into(),
+                namespace_path: None,
+                hid: "PNP0501".into(),
+                interface_type: 0,
+                registers: X86SerialRegisters::Port {
+                    base: 0x3f8,
+                    size: 8,
+                },
+                irq: 4,
+                clock_hz: 1_843_200,
+            }],
             fw_cfg_selector_base: 0x510,
             fw_cfg_selector_size: 2,
             fw_cfg_dma_base: 0x514,

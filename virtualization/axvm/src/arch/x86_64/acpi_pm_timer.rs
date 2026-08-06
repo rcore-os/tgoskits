@@ -1,17 +1,12 @@
 //! Device-graph factory for the x86 firmware ACPI PM timer.
 
-use alloc::sync::Arc;
-
 use axdevice::*;
 use axdevice_base::*;
-pub(super) fn model() -> Arc<dyn DeviceModel> {
-    Arc::new(X86AcpiPmTimerModel)
-}
 
-struct X86AcpiPmTimerModel;
+pub(super) struct X86AcpiPmTimerModel;
 
 impl DeviceModel for X86AcpiPmTimerModel {
-    fn declare(&self) -> DeviceManagerResult<DeviceDeclaration> {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         DeviceRequirements::new()
             .with_pio(
                 ResourceSlot::new("registers")?,
@@ -26,7 +21,6 @@ impl DeviceModel for X86AcpiPmTimerModel {
                 InterruptSharing::Exclusive,
                 ResourceRequest::Fixed(ControllerInputId::new(9)),
             )
-            .map(DeviceDeclaration::with_requirements)
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -42,12 +36,11 @@ impl DeviceModel for X86AcpiPmTimerModel {
             });
         }
         let sci = context.irq(&ResourceSlot::new("sci")?)?;
-        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            Arc::new(axdevice::X86AcpiPmTimerDevice::new(
-                monotonic_time_nanos,
-                sci,
-            )?),
-        )))
+        let stop = StopGrant::new();
+        let device: alloc::sync::Arc<dyn Device> = alloc::sync::Arc::new(
+            axdevice::X86AcpiPmTimerDevice::new(monotonic_time_nanos, sci, stop.clone())?,
+        );
+        Ok(DeviceBundle::new().with_stop_device_grant(device, stop))
     }
 }
 
