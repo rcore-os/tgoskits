@@ -487,7 +487,8 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
                     if unsafe { ring_write(ring_vaddr, ring_len, &lost_rec) } {
                         // SAFETY: as above.
                         unsafe {
-                            (*(lost_reported_ptr as *const AtomicU64)).store(total, Ordering::Relaxed)
+                            (*(lost_reported_ptr as *const AtomicU64))
+                                .store(total, Ordering::Relaxed)
                         };
                     }
                 }
