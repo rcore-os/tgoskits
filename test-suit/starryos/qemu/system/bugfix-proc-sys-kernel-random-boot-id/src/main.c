@@ -104,14 +104,17 @@ int main(void)
     errno = 0;
     fd = open(BOOT_ID_PATH, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
+#if defined(__x86_64__)
+        /* qemu-x86_64 boots through UEFI, whose RNG protocol is required here. */
+        expect_true(0, "open boot ID proc file read-only");
+#else
         /*
-         * boot_id is an optional node: platforms without a trusted boot
-         * entropy source (UEFI RNG or a 32-byte FDT /chosen/rng-seed) omit
-         * it, while the parent /proc/sys/kernel/random directory still
-         * exists, so open(2) must fail with ENOENT. Any other errno is a
-         * regression of the omit contract.
+         * Platforms without a trusted boot entropy source (UEFI RNG or a
+         * 32-byte FDT /chosen/rng-seed) omit boot_id while retaining the
+         * parent directory, so open(2) must fail with ENOENT.
          */
         expect_true(errno == ENOENT, "boot ID omitted without trusted entropy (ENOENT)");
+#endif
         goto out;
     }
     expect_true(1, "open boot ID proc file read-only");
