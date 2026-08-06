@@ -769,7 +769,12 @@ static PMU_TRAP_FRAME: usize = 0;
 /// has already returned.
 #[inline]
 pub unsafe fn set_trap_frame(tf: *const TrapFrame) {
-    PMU_TRAP_FRAME.write_current(tf as usize);
+    // SAFETY: called at IRQ entry with interrupts masked, so this CPU cannot
+    // migrate before the paired `clear_trap_frame`, and the per-CPU area is
+    // installed by the time IRQs fire. A failed pin just leaves the frame
+    // unpublished (callers then fall back to a leaf-only callchain).
+    let _ =
+        unsafe { ax_percpu::with_cpu_pin(|pin| PMU_TRAP_FRAME.write_current(pin, tf as usize)) };
 }
 
 /// Clears the published interrupted trap frame for the current CPU.
@@ -778,7 +783,10 @@ pub unsafe fn set_trap_frame(tf: *const TrapFrame) {
 /// interrupt can observe a stale (already-returned) frame.
 #[inline]
 pub fn clear_trap_frame() {
-    PMU_TRAP_FRAME.write_current(0);
+    // SAFETY: paired with `set_trap_frame` inside the same IRQ-masked dispatch
+    // window, so this CPU is pinned. If the pin fails nothing was published,
+    // so there is nothing to clear.
+    let _ = unsafe { ax_percpu::with_cpu_pin(|pin| PMU_TRAP_FRAME.write_current(pin, 0)) };
 }
 
 /// The interrupted frame pointer (`x29`), from the trap frame published at IRQ
@@ -789,7 +797,9 @@ pub fn clear_trap_frame() {
 /// plumbing ran. Callers must fall back to a leaf-only callchain in that case
 /// rather than skipping the sample.
 pub fn interrupted_fp() -> Option<usize> {
-    let p = PMU_TRAP_FRAME.read_current();
+    // SAFETY: runs inside `dispatch_irq` with interrupts masked, so this CPU is
+    // pinned for the read; a failed pin yields `None` (leaf-only callchain).
+    let p = unsafe { ax_percpu::with_cpu_pin(|pin| PMU_TRAP_FRAME.read_current(pin)) }.ok()?;
     if p == 0 {
         return None;
     }
@@ -815,7 +825,9 @@ pub fn interrupted_sp() -> Option<usize> {
         }
         return Some(sp as usize);
     }
-    let p = PMU_TRAP_FRAME.read_current();
+    // SAFETY: runs inside `dispatch_irq` with interrupts masked, so this CPU is
+    // pinned for the read; a failed pin yields `None` (leaf-only callchain).
+    let p = unsafe { ax_percpu::with_cpu_pin(|pin| PMU_TRAP_FRAME.read_current(pin)) }.ok()?;
     if p == 0 {
         return None;
     }
