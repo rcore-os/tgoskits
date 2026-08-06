@@ -16,7 +16,7 @@ use uefi::{
     boot::{self, MemoryDescriptor, MemoryType},
     guid,
     prelude::*,
-    proto::loaded_image::LoadedImage,
+    proto::{loaded_image::LoadedImage, rng::Rng},
     runtime::{self, set_virtual_address_map},
     system::with_config_table,
     table::{self, cfg::ConfigTableEntry},
@@ -145,6 +145,14 @@ pub(crate) fn exit_boot_services() {
     }
 
     memmap::setup_memory_map(mem_map.entries());
+}
+
+pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
+    let handle = boot::get_handle_for_protocol::<Rng>().ok()?;
+    let mut rng = boot::open_protocol_exclusive::<Rng>(handle).ok()?;
+    let mut seed = [0; 32];
+    rng.get_rng(None, &mut seed).ok()?;
+    Some(seed)
 }
 
 struct ExitBootMemoryMap {

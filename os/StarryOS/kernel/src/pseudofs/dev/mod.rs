@@ -48,7 +48,6 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_lazyinit::LazyInit;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use spin::Once;
@@ -64,7 +63,6 @@ use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, Simple
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
-static KERNEL_RANDOM: LazyInit<Mutex<RandomState>> = LazyInit::new();
 static INITIAL_PTS_INSTANCE: Once<Arc<tty::PtsInstance>> = Once::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
@@ -105,7 +103,6 @@ pub(super) fn request_shared_disabled(
 }
 
 pub(crate) fn new_devfs() -> Filesystem {
-    kernel_random();
     SimpleFs::new_with("devfs".into(), 0x01021994, builder)
 }
 
@@ -198,11 +195,22 @@ impl DeviceOps for Zero {
     }
 }
 
-struct Random;
+struct Random {
+    state: Mutex<RandomState>,
+}
 
 impl Random {
     pub fn new() -> Self {
-        Self
+        Self {
+            state: Mutex::new(RandomState::new(random_seed())),
+        }
+    }
+
+    #[cfg(any(test, axtest))]
+    fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
+        Self {
+            state: Mutex::new(RandomState::new(seed)),
+        }
     }
 }
 
@@ -243,12 +251,12 @@ impl RandomState {
 
 impl DeviceOps for Random {
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
-        fill_kernel_random(buf);
+        self.state.lock().fill_bytes(buf);
         Ok(buf.len())
     }
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
-        kernel_random().lock().mix_entropy(buf);
+        self.state.lock().mix_entropy(buf);
         Ok(buf.len())
     }
 
@@ -259,19 +267,6 @@ impl DeviceOps for Random {
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
-}
-
-/// Returns the boot-scoped kernel random pool.
-///
-/// `new_devfs` initializes this pool once during every kernel boot. Both random
-/// devices and in-kernel consumers draw from the same stream, and writes to
-/// either device reseed that shared stream.
-fn kernel_random() -> &'static Mutex<RandomState> {
-    KERNEL_RANDOM.get_or_init(|| Mutex::new(RandomState::new(random_seed())))
-}
-
-pub(crate) fn fill_kernel_random(buf: &mut [u8]) {
-    kernel_random().lock().fill_bytes(buf);
 }
 
 fn random_seed() -> [u8; 32] {
@@ -311,17 +306,27 @@ fn splitmix64(mut value: u64) -> u64 {
 #[cfg(axtest)]
 pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
     let seed = *b"0123456789abcdef0123456789abcdef";
-    let mut baseline = RandomState::new(seed);
-    let mut mixed = RandomState::new(seed);
+    let baseline = Random::new_with_seed_for_test(seed);
+    let mixed = Random::new_with_seed_for_test(seed);
     let mut discarded = [0; 32];
     let mut baseline_next = [0; 32];
     let mut mixed_next = [0; 32];
 
-    baseline.fill_bytes(&mut discarded);
-    mixed.fill_bytes(&mut discarded);
-    mixed.mix_entropy(b"caller entropy");
-    baseline.fill_bytes(&mut baseline_next);
-    mixed.fill_bytes(&mut mixed_next);
+    if baseline.read_at(&mut discarded, 0) != Ok(discarded.len()) {
+        return false;
+    }
+    if mixed.read_at(&mut discarded, 0) != Ok(discarded.len()) {
+        return false;
+    }
+    if mixed.write_at(b"caller entropy", 0) != Ok(14) {
+        return false;
+    }
+    if baseline.read_at(&mut baseline_next, 0) != Ok(baseline_next.len()) {
+        return false;
+    }
+    if mixed.read_at(&mut mixed_next, 0) != Ok(mixed_next.len()) {
+        return false;
+    }
 
     baseline_next != mixed_next
         && splitmix64_determinism_rules_hold()
@@ -805,22 +810,28 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
 #[cfg(test)]
 mod tests {
-    use super::RandomState;
+    use super::{DeviceOps, Random};
 
     #[test]
     fn random_write_mixes_entropy_into_stream() {
         let seed = *b"0123456789abcdef0123456789abcdef";
-        let mut baseline = RandomState::new(seed);
-        let mut mixed = RandomState::new(seed);
+        let baseline = Random::new_with_seed_for_test(seed);
+        let mixed = Random::new_with_seed_for_test(seed);
         let mut discarded = [0; 32];
         let mut baseline_next = [0; 32];
         let mut mixed_next = [0; 32];
 
-        baseline.fill_bytes(&mut discarded);
-        mixed.fill_bytes(&mut discarded);
-        mixed.mix_entropy(b"caller entropy");
-        baseline.fill_bytes(&mut baseline_next);
-        mixed.fill_bytes(&mut mixed_next);
+        assert_eq!(
+            baseline.read_at(&mut discarded, 0).unwrap(),
+            discarded.len()
+        );
+        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
+        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
+        assert_eq!(
+            baseline.read_at(&mut baseline_next, 0).unwrap(),
+            baseline_next.len()
+        );
+        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
 
         assert_ne!(baseline_next, mixed_next);
     }

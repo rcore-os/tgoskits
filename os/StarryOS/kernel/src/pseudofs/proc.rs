@@ -116,8 +116,11 @@ fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
 }
 
 fn generate_boot_id() -> String {
-    let mut random_bytes = [0; 16];
-    super::dev::fill_kernel_random(&mut random_bytes);
+    let boot_entropy = ax_runtime::hal::boot::boot_entropy()
+        .expect("boot ID requires UEFI RNG or FDT /chosen/rng-seed");
+    let random_bytes = boot_entropy[..16]
+        .try_into()
+        .expect("boot entropy contains 16 UUID bytes");
     format_boot_id(random_bytes)
 }
 
