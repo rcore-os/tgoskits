@@ -48,6 +48,9 @@ use crate::{
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
+const TCIFLUSH: usize = 0;
+const TCOFLUSH: usize = 1;
+const TCIOFLUSH: usize = 2;
 
 pub(crate) enum TerminalDevice {
     Location(Location),
@@ -293,6 +296,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.writer.drain()?;
                 return Err(AxError::Unsupported);
             }
+            TCFLSH => match arg {
+                TCIFLUSH | TCIOFLUSH => self.ldisc.lock().drain_input(),
+                TCOFLUSH => {}
+                _ => return Err(AxError::InvalidInput),
+            },
             TIOCSPTLCK => {}
             TIOCGPTN => {
                 (arg as *mut u32).vm_write(self.pty_number())?;

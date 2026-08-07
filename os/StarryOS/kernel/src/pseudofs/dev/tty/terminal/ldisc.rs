@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, task::Wake, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     future::poll_fn,
     marker::PhantomData,
@@ -409,22 +409,6 @@ pub struct LineDiscipline<R, W> {
     _writer: PhantomData<W>,
 }
 
-struct WakeSignal {
-    fired: Arc<AtomicBool>,
-    task: Waker,
-}
-
-impl Wake for WakeSignal {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.fired.store(true, Ordering::Release);
-        self.task.wake_by_ref();
-    }
-}
-
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     fn drive_input(reader: &mut InputReader<R, W>, input_ready: &PollSet) -> bool {
         let mut progressed = false;
@@ -447,36 +431,21 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         worker_source: Arc<PollSet>,
     ) {
         ax_task::spawn_with_name(
-            move || loop {
-                Self::drive_input(&mut reader, input_ready.as_ref());
-
-                let fired = Arc::new(AtomicBool::new(false));
+            move || {
                 block_on(poll_fn(|cx| {
-                    if Self::drive_input(&mut reader, input_ready.as_ref())
-                        || fired.swap(false, Ordering::AcqRel)
-                    {
-                        return Poll::Ready(());
-                    }
-
-                    let waker = Waker::from(Arc::new(WakeSignal {
-                        fired: fired.clone(),
-                        task: cx.waker().clone(),
-                    }));
+                    Self::drive_input(&mut reader, input_ready.as_ref());
                     // The reader task registers from ordinary task context.
-                    unsafe { input_source.register(&waker, IoEvents::IN) };
+                    unsafe { input_source.register(cx.waker(), IoEvents::IN) };
                     if let Some(output_source) = output_source.as_ref() {
-                        unsafe { output_source.register(&waker, IoEvents::OUT) };
+                        unsafe { output_source.register(cx.waker(), IoEvents::OUT) };
                     }
-                    unsafe { worker_source.register(&waker, IoEvents::OUT) };
+                    unsafe { worker_source.register(cx.waker(), IoEvents::OUT) };
 
-                    if Self::drive_input(&mut reader, input_ready.as_ref())
-                        || fired.swap(false, Ordering::AcqRel)
-                    {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                }));
+                    // Close the check/register race. block_on's stable AxWaker
+                    // remembers a concurrent source wake before it parks.
+                    Self::drive_input(&mut reader, input_ready.as_ref());
+                    Poll::<()>::Pending
+                }))
             },
             "tty-reader".into(),
         );
