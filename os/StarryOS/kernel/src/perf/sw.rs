@@ -104,6 +104,10 @@ pub struct SwPerTaskCounter {
     /// Userspace wants this event counting (`!disabled` at open or after
     /// `ioctl(ENABLE)`). Hooks and `read` ignore a disabled counter.
     enabled: AtomicBool,
+    /// `attr.enable_on_exec`: the event is opened disabled and flipped to enabled
+    /// only when the attached task `execve`s a new image (by [`on_exec`]),
+    /// mirroring the hardware per-task path. `perf stat -- cmd` opens with this.
+    enable_on_exec: bool,
     /// The owning fd has closed; hooks stop touching this counter and it may be
     /// reaped from the thread's list.
     dead: AtomicBool,
@@ -126,16 +130,18 @@ pub struct SwPerTaskCounter {
 
 impl SwPerTaskCounter {
     fn new(kind: SwId, attr: &perf_event_attr) -> Self {
-        // Enable at open unless the event is opened disabled *and* not armed to
-        // start on exec. `perf stat -- cmd` opens with enable_on_exec; treat that
-        // as enable-at-open (the pre-exec window is negligible) so counts appear
-        // without a dedicated exec hook.
-        let enabled = attr.disabled() == 0 || attr.enable_on_exec() != 0;
+        // An event starts enabled iff opened with `disabled == 0`. `enable_on_exec`
+        // (opened disabled) instead arms it to start at the task's next `execve`
+        // — flipped by [`on_exec`], mirroring the hardware per-task path — so a
+        // caller that runs long before exec, never execs, or whose exec fails is
+        // not miscounted.
+        let enabled = attr.disabled() == 0;
         let now = now_ns();
         Self {
             kind,
             read_format: attr.read_format,
             enabled: AtomicBool::new(enabled),
+            enable_on_exec: attr.enable_on_exec() != 0,
             dead: AtomicBool::new(false),
             count: AtomicU64::new(0),
             runtime_ns: AtomicU64::new(0),
@@ -356,6 +362,38 @@ pub fn sched_out(thr: &Thread) {
                 c.count.fetch_add(1, Ordering::Relaxed);
             }
             _ => {}
+        }
+    }
+}
+
+/// Exec hook: `thr` (the current, running task) has committed a new image in
+/// `execve`. Flips any `enable_on_exec` software counter to enabled and opens its
+/// live window now — mirroring the hardware [`super::task::on_exec`] path — so
+/// `perf stat -- cmd` starts counting at the child's exec rather than at open.
+pub fn on_exec(thr: &Thread) {
+    if PERF_SW_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let list = thr.perf_sw_counters.lock();
+    if list.is_empty() {
+        return;
+    }
+    let now = now_ns();
+    let this_cpu = ax_hal::percpu::this_cpu_id() as u32;
+    for c in list.iter() {
+        if c.dead.load(Ordering::Acquire) {
+            continue;
+        }
+        // Only counters armed for exec that are not already enabled.
+        if c.enable_on_exec && !c.enabled.swap(true, Ordering::AcqRel) {
+            c.enabled_since_ns.store(now, Ordering::Release);
+            // The task is running right now, so open its live slice exactly as
+            // `sched_in` would for a freshly-enabled counter.
+            match c.kind {
+                SwId::TaskClock => c.run_since_ns.store(now, Ordering::Release),
+                SwId::CpuMigrations => c.last_cpu.store(this_cpu, Ordering::Release),
+                _ => {}
+            }
         }
     }
 }

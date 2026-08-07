@@ -29,12 +29,16 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #ifndef MADV_DONTNEED
 #define MADV_DONTNEED 4
@@ -95,6 +99,7 @@ struct perf_event_attr {
 };
 
 #define PERF_ATTR_FLAG_DISABLED (1ull << 0)
+#define PERF_ATTR_FLAG_ENABLE_ON_EXEC (1ull << 12)
 
 #ifndef SYS_perf_event_open
 #define SYS_perf_event_open 241
@@ -158,7 +163,86 @@ struct sw_event {
     int require_positive;
 };
 
-int main(void) {
+/* enable_on_exec regression: an event opened `disabled | enable_on_exec` must NOT
+ * count before the attached task execs (the bug enabled it at open), and MUST
+ * count after. Runs in a forked child on pid=0 (self): the child opens the
+ * counter, burns CPU WITHOUT execing and asserts the count is still 0, then
+ * `execve`s back into this binary in `--exec-check` mode (the counter fd survives
+ * exec) which burns CPU under the now-exec-enabled counter and asserts > 0.
+ * Returns 0 pass / non-zero fail; a missing self-exec capability is treated as a
+ * skip (the zero-before-exec half is already validated in-child). */
+static int test_enable_on_exec(void) {
+    pid_t child = fork();
+    if (child < 0) {
+        printf("perf-sw-counters FAILED: fork errno=%d\n", errno);
+        return 1;
+    }
+    if (child == 0) {
+        struct perf_event_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        attr.type = PERF_TYPE_SOFTWARE;
+        attr.size = (uint32_t)sizeof(attr);
+        attr.config = PERF_COUNT_SW_TASK_CLOCK;
+        attr.flags = PERF_ATTR_FLAG_DISABLED | PERF_ATTR_FLAG_ENABLE_ON_EXEC;
+        long fd = perf_event_open(&attr, 0, -1, -1, 0ul);
+        if (fd < 0) {
+            _exit(42); /* sw not wired (unexpected if main opened) -> skip */
+        }
+        /* Burn CPU without execing: an enable_on_exec counter must stay 0. */
+        workload();
+        uint64_t before = 1;
+        if (read((int)fd, &before, sizeof(before)) == (ssize_t)sizeof(before) &&
+            before != 0) {
+            printf("perf-sw-counters FAILED: enable_on_exec counted %llu BEFORE "
+                   "exec (must be 0)\n",
+                   (unsigned long long)before);
+            _exit(2);
+        }
+        /* Now exec: the kernel exec hook must enable the counter. Hand the fd to
+         * the new image via argv (fd survives exec, no CLOEXEC). */
+        char fdbuf[16];
+        snprintf(fdbuf, sizeof(fdbuf), "%d", (int)fd);
+        char *av[] = {(char *)"/proc/self/exe", (char *)"--exec-check", fdbuf, NULL};
+        execve("/proc/self/exe", av, environ);
+        _exit(42); /* self-exec unavailable -> skip after-half */
+    }
+    int st = 0;
+    if (waitpid(child, &st, 0) < 0 || !WIFEXITED(st)) {
+        printf("perf-sw-counters FAILED: enable_on_exec child did not exit "
+               "cleanly\n");
+        return 1;
+    }
+    int code = WEXITSTATUS(st);
+    if (code == 0) {
+        return 0; /* before == 0 AND after > 0 */
+    }
+    if (code == 42) {
+        printf("STARRY_PERF_SW_COUNTERS exec-skip: self-exec path unavailable "
+               "(zero-before-exec validated)\n");
+        return 0;
+    }
+    printf("perf-sw-counters FAILED: enable_on_exec regression child exit=%d\n",
+           code);
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    /* Self-exec target for the enable_on_exec regression: burn CPU so the
+     * now-exec-enabled counter accrues, then read fd argv[2] and assert > 0. */
+    if (argc >= 3 && strcmp(argv[1], "--exec-check") == 0) {
+        int fd = atoi(argv[2]);
+        workload();
+        uint64_t after = 0;
+        if (read(fd, &after, sizeof(after)) != (ssize_t)sizeof(after)) {
+            printf("perf-sw-counters FAILED: exec-check read errno=%d\n", errno);
+            return 3;
+        }
+        printf("STARRY_PERF_SW_COUNTERS exec-after=%llu\n",
+               (unsigned long long)after);
+        return after > 0 ? 0 : 4;
+    }
+    (void)argc;
+    (void)argv;
     struct sw_event events[] = {
         {"cpu-clock", PERF_COUNT_SW_CPU_CLOCK, 1},
         {"task-clock", PERF_COUNT_SW_TASK_CLOCK, 1},
@@ -186,12 +270,26 @@ int main(void) {
     }
 
     for (size_t i = 0; i < n; i++) {
-        (void)ioctl(fds[i], PERF_EVENT_IOC_RESET, 0);
-        (void)ioctl(fds[i], PERF_EVENT_IOC_ENABLE, 0);
+        /* Check the fd control lifecycle: a failed RESET/ENABLE would otherwise
+         * leave stale/disabled counters that could still read plausibly. */
+        if (ioctl(fds[i], PERF_EVENT_IOC_RESET, 0) != 0) {
+            printf("perf-sw-counters FAILED: RESET %s errno=%d\n", events[i].name,
+                   errno);
+            return 1;
+        }
+        if (ioctl(fds[i], PERF_EVENT_IOC_ENABLE, 0) != 0) {
+            printf("perf-sw-counters FAILED: ENABLE %s errno=%d\n", events[i].name,
+                   errno);
+            return 1;
+        }
     }
     workload();
     for (size_t i = 0; i < n; i++) {
-        (void)ioctl(fds[i], PERF_EVENT_IOC_DISABLE, 0);
+        if (ioctl(fds[i], PERF_EVENT_IOC_DISABLE, 0) != 0) {
+            printf("perf-sw-counters FAILED: DISABLE %s errno=%d\n", events[i].name,
+                   errno);
+            return 1;
+        }
     }
 
     int rc = 0;
@@ -214,6 +312,10 @@ int main(void) {
             }
         }
         close(fds[i]);
+    }
+
+    if (rc == 0) {
+        rc = test_enable_on_exec();
     }
 
     if (rc == 0) {
