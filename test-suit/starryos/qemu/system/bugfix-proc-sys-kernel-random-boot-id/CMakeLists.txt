@@ -11,6 +11,7 @@ target_compile_options(
     bugfix-proc-sys-kernel-random-boot-id
     PRIVATE -Wall -Wextra -Werror
 )
+target_link_options(bugfix-proc-sys-kernel-random-boot-id PRIVATE -static)
 
 install(
     TARGETS bugfix-proc-sys-kernel-random-boot-id

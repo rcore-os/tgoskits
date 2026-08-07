@@ -29,7 +29,6 @@ use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsR
 use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
-use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
@@ -101,8 +100,9 @@ fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
     }
 }
 
-fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
-    let boot_id = BOOT_ID.get_or_init(generate_boot_id).clone();
+fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
+    let generated_boot_id = boot_id_from_entropy(ax_runtime::hal::boot::boot_entropy())?;
+    let boot_id = BOOT_ID.get_or_init(|| generated_boot_id).clone();
     let file = SimpleFile::new_regular(fs, move || Ok(boot_id.clone()));
     let now = wall_time();
     file.set_attrs(
@@ -113,24 +113,18 @@ fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Arc<SimpleFile> {
         now,
         now,
     );
-    file
+    Some(file)
 }
 
-fn generate_boot_id() -> String {
-    let realtime = wall_time();
-    let wall_clock_nanos = realtime
-        .as_secs()
-        .wrapping_mul(1_000_000_000)
-        .wrapping_add(realtime.subsec_nanos() as u64);
-    let stack_addr = &wall_clock_nanos as *const u64 as usize as u64;
-    // A boot ID must not persist with the generated rootfs or machine identity.
-    // Mix wall-clock and boot-relative time before deriving the one boot-scoped
-    // UUID value.
-    let seed = wall_clock_nanos
-        ^ (monotonic_time().as_nanos() as u64).rotate_left(17)
-        ^ stack_addr.rotate_left(31);
-    let mut random_bytes = [0; 16];
-    ChaCha20Rng::seed_from_u64(seed).fill_bytes(&mut random_bytes);
+fn boot_id_from_entropy(boot_entropy: Option<[u8; 32]>) -> Option<String> {
+    let boot_entropy = boot_entropy?;
+    let random_bytes = boot_entropy[..16]
+        .try_into()
+        .expect("boot entropy contains 16 UUID bytes");
+    Some(format_boot_id(random_bytes))
+}
+
+fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
     random_bytes[6] = (random_bytes[6] & 0x0f) | 0x40;
     random_bytes[8] = (random_bytes[8] & 0x3f) | 0x80;
 
@@ -154,6 +148,22 @@ fn generate_boot_id() -> String {
         random_bytes[14],
         random_bytes[15],
     )
+}
+
+#[cfg(axtest)]
+pub(crate) fn boot_id_formats_firmware_entropy_for_test() -> bool {
+    boot_id_from_entropy(Some([
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ]))
+    .as_deref()
+        == Some("00010203-0405-4607-8809-0a0b0c0d0e0f\n")
+}
+
+#[cfg(axtest)]
+pub(crate) fn boot_id_is_omitted_without_trusted_entropy_for_test() -> bool {
+    boot_id_from_entropy(None).is_none()
 }
 
 fn render_meminfo() -> String {
@@ -2033,7 +2043,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             kernel.add("random", {
                 let mut random = DirMapping::new();
-                random.add("boot_id", boot_id_proc_file(fs.clone()));
+                if let Some(boot_id) = boot_id_proc_file(fs.clone()) {
+                    random.add("boot_id", boot_id);
+                }
                 SimpleDir::new_maker(fs.clone(), Arc::new(random))
             });
 

@@ -34,6 +34,14 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+pub fn boot_id_formats_firmware_entropy() -> bool {
+    super::pseudofs::proc::boot_id_formats_firmware_entropy_for_test()
+}
+
+pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
+    super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
+}
+
 pub fn kmsg_reports_no_readiness_without_read_side() -> bool {
     super::pseudofs::dev::kmsg_reports_no_readiness_without_read_side_for_test()
 }
