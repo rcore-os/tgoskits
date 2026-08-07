@@ -235,6 +235,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Maps a contiguous virtual region, choosing large pages when possible.
+    /// Mappings installed by this call are rolled back if a later page fails.
     /// TLB invalidation is deferred and batched until the region has been updated.
     pub fn map_region(
         &mut self,
@@ -254,6 +255,10 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 "Region start and size must be base-page aligned",
             ));
         }
+        start_vaddr.as_usize().checked_add(size).ok_or_else(|| {
+            PagingError::address_overflow("Virtual address overflow in map_region")
+        })?;
+        self.validate_address_width(start_vaddr, size, "map_region")?;
 
         let mut offset = 0;
         let mut flush_addrs = heapless::Vec::<VirtAddr, TARGETED_FLUSH_LIMIT>::new();
@@ -274,7 +279,19 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 allow_huge: page_size > T::PAGE_SIZE,
                 flush: false,
             }) {
-                break Err(err);
+                let rollback_result = if offset == 0 {
+                    Ok(())
+                } else {
+                    self.unmap_with_config(&UnmapConfig {
+                        start_vaddr,
+                        size: offset,
+                        flush: false,
+                    })
+                };
+                break match rollback_result {
+                    Ok(()) => Err(err),
+                    Err(rollback_err) => Err(rollback_err),
+                };
             }
             if !full_flush && flush_addrs.push(vaddr).is_err() {
                 full_flush = true;

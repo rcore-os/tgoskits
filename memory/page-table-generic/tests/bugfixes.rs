@@ -9,11 +9,21 @@ use mocks::*;
 #[derive(Clone, Copy, Debug)]
 struct AddressOnlyDirectoryPte(PteImpl);
 
+impl AddressOnlyDirectoryPte {
+    // Simulate a huge-page flag that overlaps the normal physical-address mask.
+    const HUGE_ADDRESS_FLAG: usize = 0x1000;
+}
+
 impl PageTableEntry for AddressOnlyDirectoryPte {
     type PteConfig = PteConfig;
 
     fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
-        Self(PteImpl::new_page(paddr, config, is_huge))
+        let encoded_paddr = if is_huge {
+            paddr + Self::HUGE_ADDRESS_FLAG
+        } else {
+            paddr
+        };
+        Self(PteImpl::new_page(encoded_paddr, config, is_huge))
     }
 
     fn new_table(paddr: PhysAddr) -> Self {
@@ -25,11 +35,17 @@ impl PageTableEntry for AddressOnlyDirectoryPte {
     }
 
     fn paddr(&self, is_dir: bool) -> PhysAddr {
-        self.0.paddr(is_dir)
+        let paddr = self.0.paddr(is_dir);
+        if is_dir && self.0.huge(true) {
+            PhysAddr::from_usize(paddr.as_usize() & !Self::HUGE_ADDRESS_FLAG)
+        } else {
+            paddr
+        }
     }
 
     fn config(&self, is_dir: bool) -> Self::PteConfig {
         let mut config = self.0.to_config(is_dir);
+        config.paddr = self.paddr(is_dir);
         if is_dir && !config.huge && config.paddr.as_usize() != 0 {
             config.valid = true;
             config.is_dir = true;
@@ -392,6 +408,90 @@ fn non_present_huge_mapping_rejects_child_mapping() {
     assert_eq!(removed_paddr, huge_paddr);
     assert_eq!(removed_flags, MappingFlags::empty());
     assert_eq!(removed_size, 0x20_0000);
+}
+
+#[test]
+fn huge_mapping_conflict_reports_level_decoded_paddr() {
+    let mut page_table = PageTable::<AddressOnlyDirectoryMeta, Fram4k>::new(Fram4k).unwrap();
+    let huge_vaddr = VirtAddr::from_usize(0x20_0000);
+    let huge_paddr = PhysAddr::from_usize(0x40_0000);
+
+    page_table
+        .map_page(huge_vaddr, huge_paddr, 0x20_0000, MappingFlags::READ.into())
+        .unwrap();
+
+    let conflict_vaddr = huge_vaddr + 0x1000;
+    let result = page_table.map_page(
+        conflict_vaddr,
+        PhysAddr::from_usize(0x80_0000),
+        0x1000,
+        MappingFlags::READ.into(),
+    );
+
+    assert_eq!(
+        result,
+        Err(PagingError::MappingConflict {
+            vaddr: conflict_vaddr,
+            existing_paddr: huge_paddr,
+        })
+    );
+}
+
+#[test]
+fn map_region_rejects_virtual_overflow_before_mapping() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let max_aligned = usize::MAX & !0xfff;
+    let start_vaddr = VirtAddr::from_usize(max_aligned - 0x1000);
+
+    let result = page_table.map_region(
+        start_vaddr,
+        |_| PhysAddr::from_usize(0x10_0000),
+        0x3000,
+        MappingFlags::READ.into(),
+        false,
+    );
+
+    assert!(matches!(result, Err(PagingError::AddressOverflow { .. })));
+    assert!(matches!(
+        page_table.query(start_vaddr),
+        Err(PagingError::NotMapped)
+    ));
+}
+
+#[test]
+fn map_region_rolls_back_prefix_after_late_conflict() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let start_vaddr = VirtAddr::from_usize(0x20_0000);
+    let conflicting_vaddr = start_vaddr + 0x1000;
+    let existing_paddr = PhysAddr::from_usize(0x90_0000);
+    let requested_paddr = PhysAddr::from_usize(0x40_0000);
+
+    page_table
+        .map_page(
+            conflicting_vaddr,
+            existing_paddr,
+            0x1000,
+            MappingFlags::READ.into(),
+        )
+        .unwrap();
+
+    let result = page_table.map_region(
+        start_vaddr,
+        |vaddr| requested_paddr + (vaddr - start_vaddr),
+        0x2000,
+        MappingFlags::READ.into(),
+        false,
+    );
+
+    assert!(matches!(result, Err(PagingError::MappingConflict { .. })));
+    assert!(matches!(
+        page_table.query(start_vaddr),
+        Err(PagingError::NotMapped)
+    ));
+    assert_eq!(
+        page_table.query(conflicting_vaddr).unwrap().0,
+        existing_paddr
+    );
 }
 
 /// 测试MemConfig的正确实现

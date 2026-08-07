@@ -53,7 +53,8 @@ impl La64Pte {
             return if is_huge {
                 LaPteFlags::GH
             } else {
-                LaPteFlags::empty()
+                // Keep a non-present leaf distinct from an address-only directory entry.
+                LaPteFlags::P
             };
         }
         let mut flags = LaPteFlags::V | LaPteFlags::P;

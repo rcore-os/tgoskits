@@ -132,7 +132,7 @@ where
                 if current_pte.huge(true) {
                     return Err(PagingError::mapping_conflict(
                         vaddr,
-                        current_pte.paddr(false),
+                        current_pte.paddr(true),
                     ));
                 }
                 if !current_pte.present() {

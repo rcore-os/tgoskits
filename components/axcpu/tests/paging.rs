@@ -19,6 +19,7 @@ mod riscv_paging;
 
 use ax_cpu::trap::PageFaultFlags;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
+use loongarch64_paging::La64Pte;
 use page_table_generic::{PageTableEntry, TableMeta};
 use paging::MappingFlags;
 use riscv_paging::Rv64Pte;
@@ -45,5 +46,15 @@ fn non_present_riscv_huge_leaf_retains_its_structure() {
     assert!(!pte.present());
     assert!(!pte.unused());
     assert!(pte.huge(true));
+    assert_eq!(pte.paddr(false), paddr);
+}
+
+#[test]
+fn non_present_loongarch_base_leaf_is_not_a_table() {
+    let paddr = PhysAddr::from_usize(0x2345_6000);
+    let pte = La64Pte::new_page(paddr, MappingFlags::empty(), false);
+
+    assert!(!pte.present());
+    assert!(!pte.unused());
     assert_eq!(pte.paddr(false), paddr);
 }
