@@ -59,6 +59,24 @@ pub fn sys_time(tloc: *mut usize) -> AxResult<isize> {
     Ok(secs)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_alarm(seconds: u32) -> AxResult<isize> {
+    let remaining_ns = seconds as usize * NANOS_PER_SEC as usize;
+    let (_, old_remaining) =
+        current()
+            .as_thread()
+            .time
+            .borrow_mut()
+            .set_itimer(ITimerType::Real, 0, remaining_ns);
+
+    let mut old_seconds = old_remaining.as_secs();
+    let old_subsecond = old_remaining.subsec_nanos() as u64;
+    if (old_seconds == 0 && old_subsecond != 0) || old_subsecond >= NANOS_PER_SEC / 2 {
+        old_seconds += 1;
+    }
+    Ok(old_seconds as isize)
+}
+
 pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> AxResult<isize> {
     let resolution = match clock_id as u32 {
         CLOCK_REALTIME

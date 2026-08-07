@@ -89,7 +89,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             if proto == NETLINK_KOBJECT_UEVENT && ty != SOCK_RAW {
                 return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
             }
-            let socket = NetlinkSocket::new(proto);
+            let socket = NetlinkSocket::new(proto, ty);
             if raw_ty & O_NONBLOCK != 0 {
                 socket.set_nonblocking(true)?;
             }

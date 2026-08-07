@@ -243,6 +243,7 @@ struct NetlinkState {
 
 pub struct NetlinkSocket {
     protocol: u32,
+    socket_type: u32,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
     state: Mutex<NetlinkState>,
@@ -256,9 +257,10 @@ static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
-    pub fn new(protocol: u32) -> Arc<Self> {
+    pub fn new(protocol: u32, socket_type: u32) -> Arc<Self> {
         Arc::new(Self {
             protocol,
+            socket_type,
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
             state: Mutex::new(NetlinkState::default()),
@@ -317,9 +319,12 @@ impl NetlinkSocket {
         self.state.lock().reuse_address = enabled;
     }
 
-    #[allow(dead_code)]
     pub fn protocol(&self) -> u32 {
         self.protocol
+    }
+
+    pub fn socket_type(&self) -> u32 {
+        self.socket_type
     }
 
     /// Enqueue a kernel-originated datagram into this socket's receive queue

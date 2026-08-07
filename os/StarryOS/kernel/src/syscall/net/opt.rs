@@ -337,11 +337,28 @@ pub fn sys_getsockopt(
     }
 
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
-        use linux_raw_sys::net::{SO_REUSEADDR, SOL_SOCKET};
+        use linux_raw_sys::net::{
+            AF_NETLINK, SO_DOMAIN, SO_PROTOCOL, SO_REUSEADDR, SO_TYPE, SOL_SOCKET,
+        };
 
-        if (level, optname) == (SOL_SOCKET, SO_REUSEADDR) {
-            *get::<i32>(optval, optlen)? = i32::from(socket.reuse_address());
-            return Ok(0);
+        match (level, optname) {
+            (SOL_SOCKET, SO_REUSEADDR) => {
+                *get::<i32>(optval, optlen)? = i32::from(socket.reuse_address());
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_TYPE) => {
+                *get::<i32>(optval, optlen)? = socket.socket_type() as i32;
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_DOMAIN) => {
+                *get::<i32>(optval, optlen)? = AF_NETLINK as i32;
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_PROTOCOL) => {
+                *get::<i32>(optval, optlen)? = socket.protocol() as i32;
+                return Ok(0);
+            }
+            _ => {}
         }
     }
 
