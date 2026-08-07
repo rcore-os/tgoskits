@@ -102,7 +102,10 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::asm::enable_irqs();
 
     #[cfg(all(feature = "irq", feature = "ipi"))]
-    ax_ipi::mark_current_cpu_ready();
+    {
+        ax_hal::asm::flush_tlb(None);
+        ax_ipi::mark_current_cpu_ready();
+    }
 
     info!("Secondary CPU {cpu_id:x} init OK.");
     super::INITED_CPUS.fetch_add(1, Ordering::Release);

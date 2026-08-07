@@ -5,7 +5,10 @@ use core::{
 use std::{
     os::arceos::{
         api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_ipi},
+        modules::{
+            ax_hal::{irq::CpuId, percpu::this_cpu_id},
+            ax_ipi,
+        },
     },
     println,
     sync::Arc,
@@ -23,6 +26,7 @@ const POLL_INTERVAL_MS: u64 = 1;
 static TARGET_CPU: AtomicUsize = AtomicUsize::new(0);
 static SENT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static EXECUTED_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static EXECUTED_HARD_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn pin_current_to_cpu(cpu_id: usize) {
     assert!(
@@ -59,6 +63,16 @@ fn noop_callback() {
         target_cpu,
         "IPI callback ran on the wrong CPU"
     );
+}
+
+unsafe fn counting_hard_call(argument: *mut ()) {
+    let expected_cpu = unsafe { *(argument as *const usize) };
+    assert_eq!(
+        this_cpu_id(),
+        expected_cpu,
+        "IPI hard call ran on the wrong CPU"
+    );
+    EXECUTED_HARD_CALLS.fetch_add(1, Ordering::Relaxed);
 }
 
 fn wait_for_callbacks_or_stall(expected: usize) -> bool {
@@ -161,6 +175,20 @@ pub fn run() -> crate::TestResult {
             }
         }
     }
+
+    pin_current_to_cpu(sender_cpus[0]);
+    EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
+    // SAFETY: call_on_cpu is synchronous, so target_cpu remains borrowed until
+    // the hard-IRQ-safe counting thunk completes on the target.
+    unsafe {
+        ax_ipi::call_on_cpu(
+            CpuId(target_cpu),
+            counting_hard_call,
+            core::ptr::from_ref(&target_cpu).cast_mut().cast(),
+        )
+    }
+    .expect("failed to execute IPI hard call");
+    assert_eq!(EXECUTED_HARD_CALLS.load(Ordering::Relaxed), 1);
 
     Ok(())
 }

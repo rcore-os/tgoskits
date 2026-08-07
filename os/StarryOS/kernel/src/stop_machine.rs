@@ -99,3 +99,21 @@ where
 
     result
 }
+
+#[cfg(axtest)]
+pub(crate) fn stop_machine_runs_action_and_sync_on_each_cpu_for_test() -> bool {
+    let action_count = AtomicUsize::new(0);
+    let sync_count = Arc::new(AtomicUsize::new(0));
+    let remote_sync_count = sync_count.clone();
+
+    stop_machine(
+        || {
+            action_count.fetch_add(1, Ordering::Relaxed);
+        },
+        move || {
+            remote_sync_count.fetch_add(1, Ordering::Relaxed);
+        },
+    );
+
+    action_count.load(Ordering::Relaxed) == 1 && sync_count.load(Ordering::Relaxed) == cpu_num()
+}
