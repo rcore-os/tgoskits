@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy the harness to the board (run from the host, board in Linux).
-# Builds the instruments if missing, copies cpuprobe/membw/starry-harness.sh (and
-# optionally a sysbench binary) into /usr/local/bin, then syncs (commit=600 trap).
+# Builds the instruments if missing, copies cpuprobe/membw/starry-harness.sh/
+# starry-gov-harness.sh (and optionally a sysbench binary) into /usr/local/bin,
+# then syncs (commit=600 trap).
 #
 #   BOARD=orangepi@169.254.50.2 SB=../../../tmp/sysbench-static/sysbench-glibc-aarch64 \
 #     bash deploy-harness.sh
@@ -19,7 +20,7 @@ if [ ! -x cpuprobe ] || [ ! -x membw ]; then
 fi
 
 echo "== copy to $BOARD:/tmp =="
-scp "${SSHOPTS[@]}" cpuprobe membw starry-harness.sh "$BOARD:/tmp/"
+scp "${SSHOPTS[@]}" cpuprobe membw starry-harness.sh starry-gov-harness.sh "$BOARD:/tmp/"
 [ -n "$SB" ] && scp "${SSHOPTS[@]}" "$SB" "$BOARD:/tmp/sysbench.new"
 
 echo "== install + sync on board =="
@@ -28,9 +29,10 @@ ssh "${SSHOPTS[@]}" "$BOARD" "
   echo '$PW' | sudo -S install -m755 /tmp/cpuprobe          /usr/local/bin/cpuprobe
   echo '$PW' | sudo -S install -m755 /tmp/membw             /usr/local/bin/membw
   echo '$PW' | sudo -S install -m755 /tmp/starry-harness.sh /usr/local/bin/starry-harness.sh
+  echo '$PW' | sudo -S install -m755 /tmp/starry-gov-harness.sh /usr/local/bin/starry-gov-harness.sh
   [ -f /tmp/sysbench.new ] && echo '$PW' | sudo -S install -m755 /tmp/sysbench.new /usr/bin/sysbench || true
   echo '$PW' | sudo -S sync
   echo DEPLOYED
-  ls -l /usr/local/bin/cpuprobe /usr/local/bin/membw /usr/local/bin/starry-harness.sh 2>&1
+  ls -l /usr/local/bin/cpuprobe /usr/local/bin/membw /usr/local/bin/starry-harness.sh /usr/local/bin/starry-gov-harness.sh 2>&1
   command -v sysbench && sysbench --version || echo 'sysbench: (deploy separately if missing)'
 " 2>&1 | grep -v "Warning: Permanently"
