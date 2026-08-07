@@ -100,6 +100,14 @@ fn is_cpu_online(cpu: usize) -> bool {
             & (1 << (cpu % usize::BITS as usize))
             != 0
 }
+/// Per-CPU count of scheduler ticks during which a non-idle task was running, for
+/// the ondemand cpufreq governor's load metric. Bumped once per timer tick in
+/// [`AxRunQueue::scheduler_timer_tick`] when the current task is not the idle task
+/// (that path already runs with IRQ + preempt disabled). Read cross-CPU by the
+/// governor via [`crate::cpu_busy_ticks`]; `Relaxed` atomics keep the bump a single
+/// instruction on the owning CPU while avoiding a data race on the read.
+pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
@@ -223,9 +231,12 @@ unsafe fn current_run_queue_pointer() -> NonNull<AxRunQueue> {
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
-#[cfg_attr(all(test, feature = "host-test"), allow(dead_code))]
-fn request_current_reschedule() {
-    clear_remote_reschedule_pending_for_current_cpu();
+/// Consumes the current CPU's scheduler-owned IPI publication and requests a
+/// forced local reschedule when work was pending.
+pub fn handle_ipi_reschedule() {
+    if !take_remote_reschedule_pending_for_current_cpu() {
+        return;
+    }
     #[cfg(all(feature = "preempt", feature = "host-test"))]
     if let Some(curr) = crate::current_may_uninit() {
         curr.set_force_resched_pending(true);
@@ -252,30 +263,39 @@ static REMOTE_RESCHEDULE_PENDING: [AtomicBool; crate::build_info::CPU_CAPACITY] 
 static REMOTE_RESCHEDULE_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
-pub(crate) fn clear_remote_reschedule_pending_for_current_cpu() {
+fn take_remote_reschedule_pending_for_current_cpu() -> bool {
     #[cfg(not(all(test, feature = "host-test")))]
-    REMOTE_RESCHEDULE_PENDING[this_cpu_id()].store(false, Ordering::Release);
+    let pending = REMOTE_RESCHEDULE_PENDING[this_cpu_id()].swap(false, Ordering::AcqRel);
     #[cfg(all(test, feature = "host-test"))]
-    REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
+    let pending = REMOTE_RESCHEDULE_PENDING.swap(false, Ordering::AcqRel);
+    pending
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
-fn request_remote_reschedule_if_not_pending<F>(pending: &AtomicBool, request: F)
+fn request_remote_reschedule_if_not_pending<F>(
+    pending: &AtomicBool,
+    request: F,
+) -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError>
 where
-    F: FnOnce(),
+    F: FnOnce() -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError>,
 {
-    if !pending.swap(true, Ordering::AcqRel) {
-        request();
+    if pending.swap(true, Ordering::AcqRel) {
+        Ok(ax_ipi::IpiNotification::Coalesced)
+    } else {
+        request()
     }
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
-fn force_remote_reschedule_request<F>(pending: &AtomicBool, request: F)
+fn force_remote_reschedule_request<F>(
+    pending: &AtomicBool,
+    request: F,
+) -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError>
 where
-    F: FnOnce(),
+    F: FnOnce() -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError>,
 {
     pending.store(true, Ordering::Release);
-    request();
+    request()
 }
 
 #[cfg(all(
@@ -283,10 +303,12 @@ where
     feature = "ipi",
     not(all(test, feature = "host-test"))
 ))]
-fn request_remote_reschedule(cpu_id: usize) {
+fn request_remote_reschedule(
+    cpu_id: usize,
+) -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError> {
     request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
-        ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
-    });
+        ax_ipi::notify_cpu(ax_hal::irq::CpuId(cpu_id))
+    })
 }
 
 #[cfg(all(
@@ -294,28 +316,34 @@ fn request_remote_reschedule(cpu_id: usize) {
     feature = "ipi",
     not(all(test, feature = "host-test"))
 ))]
-fn force_remote_reschedule(cpu_id: usize) {
+fn force_remote_reschedule(
+    cpu_id: usize,
+) -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError> {
     force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING[cpu_id], || {
-        ax_ipi::run_on_cpu(cpu_id, request_current_reschedule);
-    });
+        ax_ipi::notify_cpu(ax_hal::irq::CpuId(cpu_id))
+    })
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
-fn request_remote_reschedule(cpu_id: usize) {
+fn request_remote_reschedule(
+    cpu_id: usize,
+) -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError> {
     let _ = cpu_id;
-    // Host tests run with one dummy CPU and a no-op send_ipi(), so record the
-    // scheduler-visible request that a real ax-ipi callback would carry.
     request_remote_reschedule_if_not_pending(&REMOTE_RESCHEDULE_PENDING, || {
         REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
-    });
+        Ok(ax_ipi::IpiNotification::Sent)
+    })
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
-fn force_remote_reschedule(cpu_id: usize) {
+fn force_remote_reschedule(
+    cpu_id: usize,
+) -> Result<ax_ipi::IpiNotification, ax_hal::irq::IrqError> {
     let _ = cpu_id;
     force_remote_reschedule_request(&REMOTE_RESCHEDULE_PENDING, || {
         REMOTE_RESCHEDULE_REQUESTS.fetch_add(1, Ordering::Release);
-    });
+        Ok(ax_ipi::IpiNotification::Sent)
+    })
 }
 
 // The coalescing kick: only sends the reschedule IPI if one is not already
@@ -329,17 +357,18 @@ fn force_remote_reschedule(cpu_id: usize) {
 #[cfg_attr(not(all(test, feature = "host-test")), allow(dead_code))]
 fn kick_remote_cpu(cpu_id: usize) {
     if is_remote_cpu(cpu_id) {
-        // axruntime's IPI handler only drains ax-ipi callbacks. A bare hardware
-        // IPI can wake an idle CPU, but it does not ask a running remote CPU to
-        // reschedule after a task is queued there.
-        request_remote_reschedule(cpu_id);
+        request_remote_reschedule(cpu_id).unwrap_or_else(|error| {
+            panic!("failed to deliver reschedule IPI to CPU {cpu_id}: {error:?}")
+        });
     }
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
 fn force_kick_remote_cpu(cpu_id: usize) {
     if is_remote_cpu(cpu_id) {
-        force_remote_reschedule(cpu_id);
+        force_remote_reschedule(cpu_id).unwrap_or_else(|error| {
+            panic!("failed to deliver forced reschedule IPI to CPU {cpu_id}: {error:?}")
+        });
     }
 }
 
@@ -388,7 +417,7 @@ mod tests {
             "remote CPU kicks should coalesce identical pending reschedule requests",
         );
 
-        super::clear_remote_reschedule_pending_for_current_cpu();
+        assert!(super::take_remote_reschedule_pending_for_current_cpu());
         super::kick_remote_cpu(REMOTE_CPU);
 
         assert_eq!(
@@ -405,7 +434,7 @@ mod tests {
             curr.set_force_resched_pending(false);
             super::REMOTE_RESCHEDULE_PENDING.store(true, Ordering::Release);
 
-            super::request_current_reschedule();
+            super::handle_ipi_reschedule();
 
             assert!(
                 curr.force_resched_pending_for_test(),
@@ -417,7 +446,7 @@ mod tests {
             );
             assert!(
                 !super::REMOTE_RESCHEDULE_PENDING.load(Ordering::Acquire),
-                "remote IPI callback must clear the coalescing bit when it is delivered",
+                "the runtime IPI handler must consume the scheduler pending bit",
             );
 
             curr.set_force_resched_pending(false);
@@ -430,7 +459,7 @@ mod tests {
             assert_eq!(
                 super::REMOTE_RESCHEDULE_REQUESTS.load(Ordering::Acquire),
                 3,
-                "a delivered remote IPI must allow a later kick to enqueue a new callback",
+                "a delivered remote IPI must allow a later kick to arm a fresh edge",
             );
         }
 
@@ -445,7 +474,9 @@ mod tests {
 
         super::force_remote_reschedule_request(&pending, || {
             requests.fetch_add(1, Ordering::Release);
-        });
+            Ok(ax_ipi::IpiNotification::Sent)
+        })
+        .unwrap();
 
         assert_eq!(
             requests.load(Ordering::Acquire),
@@ -455,7 +486,9 @@ mod tests {
 
         super::request_remote_reschedule_if_not_pending(&pending, || {
             requests.fetch_add(1, Ordering::Release);
-        });
+            Ok(ax_ipi::IpiNotification::Sent)
+        })
+        .unwrap();
 
         assert_eq!(
             requests.load(Ordering::Acquire),
@@ -465,12 +498,29 @@ mod tests {
 
         super::force_remote_reschedule_request(&pending, || {
             requests.fetch_add(1, Ordering::Release);
-        });
+            Ok(ax_ipi::IpiNotification::Sent)
+        })
+        .unwrap();
 
         assert_eq!(
             requests.load(Ordering::Acquire),
             2,
             "forced remote kicks must not coalesce required migration reschedules",
+        );
+    }
+
+    #[test]
+    fn remote_reschedule_send_failure_is_reported_and_keeps_pending() {
+        let pending = AtomicBool::new(false);
+
+        let result = super::request_remote_reschedule_if_not_pending(&pending, || {
+            Err(ax_hal::irq::IrqError::Controller)
+        });
+
+        assert_eq!(result, Err(ax_hal::irq::IrqError::Controller));
+        assert!(
+            pending.load(Ordering::Acquire),
+            "the scheduler publication must survive a physical IPI delivery failure",
         );
     }
 }
@@ -904,9 +954,17 @@ impl<G: BaseGuard> CurrentRunQueueRef<G> {
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
-        if !curr.is_idle() && self.inner.scheduler.lock().task_tick(curr) {
-            #[cfg(feature = "preempt")]
-            curr.set_preempt_pending(true);
+        if !curr.is_idle() {
+            // Ondemand-governor load accounting: this CPU ran a real (non-idle)
+            // task this tick. Already IRQ + preempt off here; a single relaxed
+            // fetch_add is essentially free.
+            if let Some(t) = BUSY_TICKS.get(this_cpu_id()) {
+                t.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            if self.inner.scheduler.lock().task_tick(curr) {
+                #[cfg(feature = "preempt")]
+                curr.set_preempt_pending(true);
+            }
         }
     }
 
@@ -1530,7 +1588,7 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
             // (`next_task`, possibly `idle`) is forced to reschedule when the
             // switch chain unwinds and its preempt guard is released
             // (`current_check_preempt_pending` consumes the flag), mirroring the
-            // reschedule the IPI path (`request_current_reschedule`) performed.
+            // reschedule the runtime IPI handler performed.
             #[cfg(feature = "preempt")]
             crate::current().set_force_resched_pending(true);
         }

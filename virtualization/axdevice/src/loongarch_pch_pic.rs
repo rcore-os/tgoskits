@@ -1,9 +1,21 @@
+//! Reusable LoongArch PCH-PIC device model.
+//!
+//! This module is a target-gated architecture device package. It provides a
+//! guest-visible MMIO irqchip plus a narrow output-port service for the AxVM
+//! LoongArch architecture layer; it is not part of the architecture-neutral
+//! device runtime core.
+
+use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(not(test))]
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+#[cfg(test)]
+use ax_kspin::SpinRaw as Mutex;
+use axdevice_base::*;
+use axvm_types::GuestPhysAddr;
 
+use crate::*;
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
 const PCH_PIC_INT_MASK_LO: usize = 0x020;
@@ -88,6 +100,29 @@ pub struct PchPicOutputEvent {
     pub asserted: bool,
 }
 
+/// Architecture port through which LoongArch consumes PCH-PIC output.
+///
+/// The guest-visible PCH-PIC remains a normal MMIO device.  This narrow port
+/// is only for the architecture to feed physical IRQs into it and to drain
+/// output vectors produced by guest MMIO configuration.
+pub trait PchPicOutputPort: Send + Sync {
+    /// Updates one PCH-PIC input level and returns the routed EIOINTC vector.
+    fn set_input_level(&self, irq: usize, asserted: bool) -> Option<usize>;
+
+    /// Takes the next output event produced by the PCH-PIC.
+    fn take_output_event(&self) -> Option<PchPicOutputEvent>;
+}
+
+/// Type key for the VM-local LoongArch PCH-PIC output port.
+pub struct PchPicOutputPortKey;
+
+impl ServiceKey for PchPicOutputPortKey {
+    type Service = dyn PchPicOutputPort;
+
+    const NAME: &'static str = "loongarch-pch-pic-output-port";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
 /// Minimal LS7A PCH-PIC model for LoongArch QEMU virt guests.
 ///
 /// Linux configures this irqchip through ACPI even when the backing PCI devices
@@ -96,6 +131,7 @@ pub struct PchPicOutputEvent {
 pub struct LoongArchPchPic {
     base: GuestPhysAddr,
     size: usize,
+    resources: Box<[Resource]>,
     state: Mutex<PchPicState>,
 }
 
@@ -104,6 +140,11 @@ impl LoongArchPchPic {
         Self {
             base,
             size,
+            resources: alloc::vec![Resource::MmioRange {
+                base: base.as_usize() as u64,
+                size: size as u64,
+            }]
+            .into_boxed_slice(),
             state: Mutex::new(PchPicState::default()),
         }
     }
@@ -152,18 +193,26 @@ impl LoongArchPchPic {
             }
         }
     }
-}
 
-impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::LoongArchPchPic
+    fn take_output_event(&self) -> Option<PchPicOutputEvent> {
+        let mut state = self.state.lock();
+        pop_output_event(&mut state)
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.base, self.size)
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.base.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+    /// Reads a guest-visible PCH-PIC MMIO register.
+    pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let offset = addr.as_usize() - self.base.as_usize();
         let state = self.state.lock();
         let value = match width {
@@ -178,7 +227,18 @@ impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
         Ok(value)
     }
 
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
+    /// Writes a guest-visible PCH-PIC MMIO register.
+    pub fn write_register(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+    ) -> DeviceResult {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let offset = addr.as_usize() - self.base.as_usize();
         let mut state = self.state.lock();
         log_pch_pic_io("write", offset, width, val);
@@ -195,6 +255,120 @@ impl BaseDeviceOps<GuestPhysAddrRange> for LoongArchPchPic {
     }
 }
 
+impl PchPicOutputPort for LoongArchPchPic {
+    fn set_input_level(&self, irq: usize, asserted: bool) -> Option<usize> {
+        self.set_irq_level(irq, asserted)
+    }
+
+    fn take_output_event(&self) -> Option<PchPicOutputEvent> {
+        self.take_output_event()
+    }
+}
+
+/// Factory for the guest-visible LoongArch PCH-PIC contribution.
+pub struct LoongArchPchPicFactory {
+    base: usize,
+    length: usize,
+    domain_factory: Arc<dyn LoongArchInterruptDomainFactory>,
+}
+
+/// Architecture adapter that creates the VM-local cascaded interrupt domain.
+pub trait LoongArchInterruptDomainFactory: Send + Sync {
+    /// Creates a controller for one freshly reset PCH-PIC instance.
+    fn create(
+        &self,
+        pic: Arc<LoongArchPchPic>,
+    ) -> Arc<dyn axdevice_base::VirtualInterruptController>;
+}
+
+impl LoongArchPchPicFactory {
+    /// Creates the only factory for an architecture-owned PCH-PIC instance.
+    pub fn new(
+        base: usize,
+        length: usize,
+        domain_factory: Arc<dyn LoongArchInterruptDomainFactory>,
+    ) -> Self {
+        Self {
+            base,
+            length,
+            domain_factory,
+        }
+    }
+}
+
+impl DeviceModel for LoongArchPchPicFactory {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        DeviceRequirements::new().with_mmio(
+            ResourceSlot::new("registers")?,
+            self.length as u64,
+            1,
+            ResourceRequest::Fixed(self.base as u64),
+        )
+    }
+
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+        if base != self.base as u64 || length != self.length as u64 {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build LoongArch virtual PCH-PIC",
+                detail: "planned MMIO range differs from the machine descriptor".into(),
+            });
+        }
+        let base = usize::try_from(base).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build LoongArch virtual PCH-PIC",
+            detail: "planned MMIO base does not fit the target address width".into(),
+        })?;
+        let length = usize::try_from(length).map_err(|_| DeviceManagerError::InvalidConfig {
+            operation: "build LoongArch virtual PCH-PIC",
+            detail: "planned MMIO length does not fit the target address width".into(),
+        })?;
+        let pic = Arc::new(LoongArchPchPic::new(base.into(), length));
+        let interrupt_controller = self.domain_factory.create(pic.clone());
+        let device: Arc<dyn Device> = pic.clone();
+        let output: Arc<dyn PchPicOutputPort> = pic;
+        let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(device))
+            .with_service::<PchPicOutputPortKey>(output)?;
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(interrupt_controller.id(), interrupt_controller),
+        ));
+        Ok(bundle)
+    }
+}
+
+impl Device for LoongArchPchPic {
+    fn name(&self) -> &str {
+        "loongarch-pch-pic"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+
+        if access.is_read {
+            self.read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
+    }
+}
+
 fn read_byte(state: &PchPicState, offset: usize) -> usize {
     if let Some(index) = reg8_offset(offset) {
         return match index {
@@ -208,12 +382,8 @@ fn read_byte(state: &PchPicState, offset: usize) -> usize {
         };
     }
 
-    match offset {
-        _ => {
-            let shift = (offset & 0x3) * 8;
-            (read_dword(state, offset & !0x3) >> shift) & 0xff
-        }
-    }
+    let shift = (offset & 0x3) * 8;
+    (read_dword(state, offset & !0x3) >> shift) & 0xff
 }
 
 fn write_byte(state: &mut PchPicState, offset: usize, val: u8) {
@@ -234,15 +404,11 @@ fn write_byte(state: &mut PchPicState, offset: usize, val: u8) {
         return;
     }
 
-    match offset {
-        _ => {
-            let aligned = offset & !0x3;
-            let shift = (offset & 0x3) * 8;
-            let old = read_dword(state, aligned);
-            let new = (old & !(0xff << shift)) | ((val as usize) << shift);
-            write_dword(state, aligned, new as u32);
-        }
-    }
+    let aligned = offset & !0x3;
+    let shift = (offset & 0x3) * 8;
+    let old = read_dword(state, aligned);
+    let new = (old & !(0xff << shift)) | ((val as usize) << shift);
+    write_dword(state, aligned, new as u32);
 }
 
 fn read_split_bytes(state: &PchPicState, offset: usize, len: usize) -> usize {
@@ -392,15 +558,12 @@ fn update_int_mask(state: &mut PchPicState, val: u32, high: bool) {
         } else {
             newly_masked as u64
         };
-        if let Some(vector) = update_irq(state, mask, false) {
-            push_output_event(
-                state,
-                PchPicOutputEvent {
-                    vector,
-                    asserted: false,
-                },
-            );
-        }
+        // Masking disconnects the PCH source from EIOINTC even if its input
+        // level remains high. Keep `intirr` latched so a later unmask can
+        // assert it again, but retract every output line already in service.
+        let active = state.intisr & mask;
+        state.intisr &= !active;
+        queue_events_for_mask(state, active, false);
     }
 }
 
@@ -490,7 +653,7 @@ fn log_pch_pic_irq(state: &PchPicState, op: &str, irq: usize, level: bool, mask:
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
 
     use super::*;
 
@@ -499,7 +662,7 @@ mod tests {
         let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
         assert_eq!(pic.set_irq_level(5, true), None);
 
-        pic.handle_write(
+        pic.write_register(
             GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO),
             AccessWidth::Dword,
             !(1u32 << 5) as usize,
@@ -520,7 +683,7 @@ mod tests {
     #[test]
     fn clear_asserted_irq_emits_deassert_event() {
         let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
-        pic.handle_write(
+        pic.write_register(
             GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO),
             AccessWidth::Dword,
             !(1u32 << 5) as usize,
@@ -528,7 +691,7 @@ mod tests {
         .unwrap();
         assert_eq!(pic.set_irq_level(5, true), Some(5));
 
-        pic.handle_write(
+        pic.write_register(
             GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_CLEAR_LO),
             AccessWidth::Dword,
             (1u32 << 5) as usize,
@@ -543,6 +706,42 @@ mod tests {
                 vector: 5,
                 asserted: false
             }]
+        );
+    }
+
+    #[test]
+    fn output_port_preserves_deassert_then_reassert_order() {
+        let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
+        let irq = 5;
+        let address = GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO);
+
+        pic.write_register(address, AccessWidth::Dword, !(1u32 << irq) as usize)
+            .unwrap();
+        assert_eq!(pic.set_input_level(irq, true), Some(irq));
+
+        // Masking an active level produces a deassert event. Re-enabling the
+        // same still-latched source must queue a later assert, not discard it.
+        pic.write_register(address, AccessWidth::Dword, usize::MAX)
+            .unwrap();
+        pic.write_register(address, AccessWidth::Dword, !(1u32 << irq) as usize)
+            .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(event) = PchPicOutputPort::take_output_event(&pic) {
+            events.push(event);
+        }
+        assert_eq!(
+            events,
+            vec![
+                PchPicOutputEvent {
+                    vector: irq,
+                    asserted: false,
+                },
+                PchPicOutputEvent {
+                    vector: irq,
+                    asserted: true,
+                },
+            ]
         );
     }
 }

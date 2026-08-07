@@ -1,6 +1,6 @@
 [package]
 name = "ax-api"
-version = "0.7.5"
+version = "0.7.6"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -10,15 +10,21 @@ license.workspace = true
 [features]
 default = []
 
+host-test = [
+  "ax-hal/host-test",
+  "ax-ipi?/host-test",
+  "ax-runtime/host-test",
+  "ax-task?/host-test",
+]
 irq = ["ax-task?/irq"]
 ipi = ["dep:ax-ipi"]
 alloc = ["dep:ax-alloc"]
 paging = ["dep:ax-mm"]
-dma = ["dep:ax-dma"]
 multitask = ["ax-task/multitask", "ax-sync/multitask"]
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
 display = ["dep:ax-display"]
+serial = ["ax-runtime/serial"]
 
 
 # Use stub functions if the feature is not enabled.
@@ -27,7 +33,6 @@ dummy-if-not-enabled = []
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
-ax-dma = { workspace = true, optional = true }
 ax-errno.workspace = true
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
@@ -40,3 +45,5 @@ axpoll.workspace = true
 ax-runtime.workspace = true
 ax-sync.workspace = true
 ax-task = { workspace = true, optional = true }
+axklib.workspace = true
+dma-api.workspace = true

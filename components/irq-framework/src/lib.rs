@@ -17,5 +17,5 @@ pub use types::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     ConcurrentBoxedIrqHandler, CpuId, CpuMask, CpuMaskIter, HwIrq, IrqAffinity, IrqContext,
     IrqDomainId, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest,
-    IrqReturn, IrqScope, IrqSource, IrqStatus, ShareMode, TrapVector,
+    IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger, ShareMode, TrapVector,
 };

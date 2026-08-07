@@ -1,6 +1,6 @@
 [package]
 name = "axnsproxy"
-version = "0.3.2"
+version = "0.3.3"
 edition.workspace = true
 description = "Namespace proxy for Starry OS"
 keywords = ["starry-os"]
@@ -21,4 +21,4 @@ log = "0.4"
 spin = { workspace = true }
 
 [build-dependencies]
-quote = "1.0"
+quote = { workspace = true }

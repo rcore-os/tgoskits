@@ -7,6 +7,7 @@
 #include <time.h>
 #include <poll.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>

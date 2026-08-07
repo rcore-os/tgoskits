@@ -51,11 +51,11 @@ No missing syscall or loader blocker observed.
 
 ## 已知配置要求
 
-1. **aarch64 QEMU 需要 `root=/dev/sda`**：在 `qemu-aarch64.toml` 的 args 中添加 `-append root=/dev/sda`。
-2. **riscv64/x86_64 不需要 `-append`**：kernel 自动检测 virtio-blk 根设备。
+1. **aarch64 QEMU 需要 `root=/dev/nvme0n1`**：在 `qemu-aarch64.toml` 的 args 中添加 `-append root=/dev/nvme0n1`。
+2. **riscv64/x86_64 不需要 `-append`**：kernel 自动检测 NVMe 根设备。
 3. **x86_64 需要 `-cpu max`**：否则 SSE4.2 指令导致 SIGILL。
 4. **x86_64 `to_bin = false`**：x86_64 使用 ELF 直接运行，不转 binary。
-5. **需要 build config**：必须包含 `ax-driver/virtio-blk` 等驱动特性。
+5. **需要 build config**：必须包含 `ax-driver/nvme` 等驱动特性。
 6. **prebuild.sh 必须安装 `dynamic-test.sh`**：除了编译产物，还需安装运行脚本到 overlay。
 7. **riscv64 lld 需要 `--strip-debug`**：musl CRT 对象包含 lld 不支持的 RISC-V debug relocation。
 8. **声明依赖满足时可直接复现**：按"环境依赖"表装齐 `clang`、`lld`/`ld.lld`、`debugfs`、`qemu-system-*` 与 musl rootfs 后，"测试命令"一节中的 3 条 `cargo xtask starry app run -t musl-dynamic-smoke --arch {aarch64,riscv64,x86_64}` 可直接复现三架构 PASS，无需额外 PATH shim。

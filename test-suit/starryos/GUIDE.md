@@ -99,6 +99,19 @@ qemu/system/<subcase>/
 STARRY_GROUPED_TESTS_PASSED
 ```
 
+日志为每个 binary 保留一条开始标记和一条带耗时的完成结果，失败结果还包含退出码；
+suite 结束时只打印一条总数、成功数、失败数和总耗时汇总，不再重复输出一份逐项
+timing 列表。例如：
+
+```text
+STARRY_SYSTEM_TEST_BEGIN: /usr/bin/starry-test-suit/mytest
+STARRY_SYSTEM_TEST_PASSED: /usr/bin/starry-test-suit/mytest elapsed_s=1
+STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=1
+```
+
+开始标记用于在超时时定位卡住的 binary；失败时保留该 binary 的原始输出、
+`STARRY_SYSTEM_TEST_FAILED`、退出码和耗时。
+
 子测例 CMake 产物应安装到：
 
 ```cmake
@@ -113,7 +126,8 @@ install(TARGETS mytest RUNTIME DESTINATION usr/bin/starry-test-suit)
 `system/qemu-x86_64.toml`、`system/qemu-aarch64.toml`、`system/qemu-riscv64.toml`
 需要同时覆盖常规系统回归、DRM、evdev 和 USB：
 
-- `virtio-blk` 主启动盘 `disk0` 使用 Alpine rootfs。
+- NVMe 主启动盘 `disk0` 使用 Alpine rootfs，统一配置
+  `max_ioqpairs=64,msix_qsize=65`，不回退到 `virtio-blk`。
 - `virtio-net` 提供基础网络。
 - `virtio-gpu`、`virtio-keyboard`、`virtio-tablet` 支持 DRM/evdev。
 - `qemu-xhci,id=xhci,msi=off,msix=off`、`usb-audio`、`usb-storage` 支持 USB 回归。
@@ -143,6 +157,12 @@ target/<target>/qemu-cases/<build_group>/<case>/cache/rootfs/
 
 plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落回共享镜像。
 
+需要 staging rootfs 的 pipeline 依赖 `debugfs` 和 `fakeroot`。xtask 会在启动
+`debugfs rdump` 前检查 EUID；Linux 上还会检查 UID/GID identity mapping 和有效
+`CAP_CHOWN`。只有能完整恢复 guest ownership 时才直接提取，否则预先进入
+`fakeroot`，避免产生大量权限警告。如果此时缺少 `fakeroot`，xtask 会在启动
+`debugfs` 前明确失败，不会先执行再过滤警告或静默回退。
+
 ## QEMU TOML
 
 每个 `qemu-<arch>.toml` 定义运行配置，而不是构建配置。常用字段如下：
@@ -164,7 +184,7 @@ plain case 不复制 rootfs，依赖 QEMU `-snapshot` 保证 guest 写入不落�
 ```toml
 args = [
     "-nographic", "-cpu", "rv64",
-    "-device", "virtio-blk-pci,drive=disk0",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
@@ -228,6 +248,10 @@ apk add zlib-dev
 - `STARRY_CASE_WORK_DIR`
 - `STARRY_CASE_BUILD_DIR`
 - `STARRY_CASE_OVERLAY_DIR`
+
+xtask 对 CMake configure、build 和 install 的成功输出默认静默，只保留对应阶段耗时。
+任一阶段失败时会回放完整命令、stdout、stderr、退出状态和阶段上下文。`prebuild.sh`
+以及 QEMU/guest 输出仍然实时显示，不能依赖成功路径的 CMake 输出作为测试判定标记。
 
 ## Grouped 用例
 
@@ -365,6 +389,26 @@ CMake `install()` 到该 upload root 的所有普通文件都会按原相对路�
 `shell_init_cmd` 中；ostool 不会自动执行上传的程序。upload root 为空、包含符号链接，
 或者手写 `session_files` 与 CMake install 产物同路径时会在分配板卡前报错。
 
+位于 `apps/starry/<app>/` 的重型板测仍应保留在 app 目录，不要为了复用共享文件能力
+迁入 test-suit。app 下存在 `rust/Cargo.toml` 时，`starry app board` 会复用同一套
+musl 交叉编译流水线，把静态程序安装到每次运行独立的
+`target/<target>/board-cases/app/<app>/runs/<run-id>/upload/usr/bin/`，并作为 session
+文件上传。`init.sh` 通过 `${sessionFile:usr/bin/<program>}` 显式下载、赋权和执行；
+该流程不通过 SSH，也不把程序预装到持久 rootfs。
+
+若 Starry 尚无对应板卡网卡驱动，可给 `starry app board` 增加
+`--linux-stage`。xtask 会完成同一 app 资产构建，在 `board connect` 的默认 Linux
+会话中上传资产并打印 board-visible HTTP URL，而不启动 Starry 内核。操作者应在该
+Linux 会话中下载并验证资产，写入 Starry 可见的持久 rootfs 路径并执行 `sync`；
+退出会话释放 lease 后，再运行不带 `--linux-stage` 的正常 Starry 板测。这个流程只
+改变二进制交付位置，Linux 与 Starry 必须执行同一资产；不得以另一个 shell workload
+复用成功标记。
+
+App 的 `board-<name>.toml` 默认复用
+`os/StarryOS/configs/board/<name>.toml` 作为内核 build config；只有 app 目录存在
+精确的 `build-<target>.toml` 时才覆盖。多个同架构板卡需要不同 SoC feature 时应
+省略共享覆盖，避免把某块板的 CPU、MMU 或控制器 feature 注入另一块板。
+
 运行示例：
 
 ```bash
@@ -377,6 +421,27 @@ cargo xtask starry test board -c iperf-smoke --board orangepi-5-plus --server 10
 HTTP 端点下载同名脚本，并连接 `${boardServerIp}:5201` 执行 2 秒、1 Mbit/s 的
 iperf3 UDP JSON 测试。该用例只验证下载、执行和网络连通性，不设置吞吐门槛；服务端
 需预先运行 iperf3 server。
+
+ROCK 4D 使用板卡服务名称 `Rock-4D`、仓库内的 RK3576 DTB 和 1,500,000 baud
+串口。维护的单核启动回归命令为：
+
+```bash
+cargo xtask starry test board -c boot --board rock-4d -b Rock-4D
+```
+
+已验证的 8 核启动命令为：
+
+```bash
+cargo xtask starry board \
+  -c os/StarryOS/configs/board/rock-4d.toml \
+  --smp 8 \
+  --board-config os/StarryOS/configs/board/rock-4d-board.toml \
+  -b Rock-4D
+```
+
+两条路径都必须进入 `root@starry:/root #` 并打印独立的
+`STARRY_ROCK4D_BOOT_OK` 成功行。RK3576 的固件、PSCI、CPU 拓扑和 CRU/PMU
+检查点见 `.claude/skills/arch-platform-porting/references/boot-debugging.md`。
 
 `board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
 C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有

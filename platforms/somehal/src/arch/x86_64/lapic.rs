@@ -7,7 +7,6 @@ const LAPIC_REG_ICR_HIGH: u32 = 0x310;
 const ICR_DELIVERY_PENDING: u32 = 1 << 12;
 pub(super) const ICR_FIXED_BASE: u32 = 0x0000_4000;
 pub(super) const ICR_DEST_SELF: u32 = 0x0004_0000;
-pub(super) const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0x000c_0000;
 const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
 
 const IA32_APIC_BASE_MSR: u32 = 0x1b;
@@ -71,6 +70,8 @@ pub(super) fn send_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
 }
 
 fn send_xapic_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
+    // x86 TSO orders earlier write-back stores before the APIC's UC MMIO
+    // doorbell, so no additional publication fence is required here.
     unsafe {
         lapic_write(LAPIC_REG_ICR_HIGH, destination);
         lapic_write(LAPIC_REG_ICR_LOW, icr_low);
@@ -79,6 +80,8 @@ fn send_xapic_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
 }
 
 fn send_x2apic_ipi(icr: u64) -> Result<(), IrqError> {
+    // WRMSR preserves the required x86 publication order for the x2APIC
+    // doorbell; an MFENCE would add serialization without strengthening it.
     unsafe {
         x86::msr::wrmsr(IA32_X2APIC_ICR, icr);
     }

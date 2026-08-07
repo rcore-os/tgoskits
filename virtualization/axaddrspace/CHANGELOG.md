@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.17...axaddrspace-v0.5.18) - 2026-08-03
+
+### Other
+
+- updated the following local packages: ax-lazyinit, ax-memory-addr, ax-memory-set, axvm-types
+
 ## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.16...axaddrspace-v0.5.17) - 2026-07-23
 
 ### Other

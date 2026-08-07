@@ -36,6 +36,21 @@ impl TimingTable {
             (..) => Err(Error::UnsupportedCommand),
         }
     }
+
+    /// Return the controller-specific divider paired with `CLKDIV`.
+    ///
+    /// Phytium's Linux driver programs `MCI_CLK_DIVIDER` with twice the
+    /// low-byte divider whenever that divider is at least two. Keeping this
+    /// derivation next to the validated timing table prevents the synchronous
+    /// and event-driven register sequences from diverging.
+    pub const fn mci_clock_divider(self) -> Option<u16> {
+        let divider = (self.clk_div & 0xff) as u16;
+        if divider >= 2 {
+            Some(divider * 2)
+        } else {
+            None
+        }
+    }
 }
 
 pub const MMC_SD_400KHZ: TimingTable = TimingTable {
@@ -50,7 +65,7 @@ pub const SD_25MHZ: TimingTable = TimingTable {
     target_hz: 25_000_000,
     use_hold: true,
     clk_div: 0x030204,
-    clk_src: 0x000302,
+    clk_src: 0x000102,
     shift: 0,
 };
 
@@ -58,7 +73,7 @@ pub const SD_50MHZ: TimingTable = TimingTable {
     target_hz: 50_000_000,
     use_hold: true,
     clk_div: 0x030204,
-    clk_src: 0x000502,
+    clk_src: 0x000102,
     shift: 0,
 };
 
@@ -66,7 +81,7 @@ pub const SD_100MHZ: TimingTable = TimingTable {
     target_hz: 100_000_000,
     use_hold: false,
     clk_div: 0x010002,
-    clk_src: 0x000202,
+    clk_src: 0x000102,
     shift: 0,
 };
 
@@ -74,7 +89,7 @@ pub const MMC_26MHZ: TimingTable = TimingTable {
     target_hz: 26_000_000,
     use_hold: true,
     clk_div: 0x030204,
-    clk_src: 0x000302,
+    clk_src: 0x000102,
     shift: 0,
 };
 
@@ -82,7 +97,7 @@ pub const MMC_52MHZ: TimingTable = TimingTable {
     target_hz: 52_000_000,
     use_hold: false,
     clk_div: 0x030204,
-    clk_src: 0x000202,
+    clk_src: 0x000102,
     shift: 0,
 };
 
@@ -90,6 +105,6 @@ pub const MMC_100MHZ: TimingTable = TimingTable {
     target_hz: 100_000_000,
     use_hold: false,
     clk_div: 0x010002,
-    clk_src: 0x000202,
+    clk_src: 0x000102,
     shift: 0,
 };

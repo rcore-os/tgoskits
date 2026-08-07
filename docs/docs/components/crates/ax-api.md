@@ -24,9 +24,9 @@
 
 ## 核心功能
 - 功能定位：Public APIs and types for ArceOS modules
-- 对外接口：从源码可见的主要公开入口包括 `ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`、`ax_alloc_coherent`、`ax_dealloc_coherent`。
+- 对外接口：从源码可见的主要公开入口包括 `ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`，并从 `modules` 无条件重导出 `dma-api` 与 `axklib`。
 - 典型使用场景：主要作为仓库中的专用支撑 crate 被上层组件调用。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `ax_alloc()` -> `ax_alloc_coherent()` -> `ax_spawn()` -> `ax_open_file()` -> `ax_open_dir()` -> ...。
+- DMA 调用方直接使用 `modules::dma_api` 的 owned 类型；旧的裸 coherent allocate/free API 不再提供。
 
 ## 依赖关系
 ```mermaid
@@ -34,7 +34,8 @@ graph LR
     current["ax-api"]
     current --> ax-alloc["ax-alloc"]
     current --> ax-display["ax-display"]
-    current --> ax_dma["ax-dma"]
+    current --> dma_api["dma-api"]
+    current --> axklib["axklib"]
     current --> ax-driver["ax-driver"]
     current --> ax_errno["ax-errno"]
     current --> ax-runtime["ax-runtime"]
@@ -45,7 +46,8 @@ graph LR
 ### 直接依赖
 - `ax-alloc`
 - `ax-display`
-- `ax-dma`
+- `dma-api`
+- `axklib`
 - `ax-driver`
 - `ax-errno`
 - `ax-runtime`
@@ -59,7 +61,6 @@ graph LR
 ### 间接依赖
 - `ax-arm-pl031`
 - `axaddrspace`
-- `ax-allocator`
 - `axbacktrace`
 - `ax-cpu`
 - `rdrive`
@@ -105,7 +106,7 @@ ax-api = { workspace = true }
 3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
 
 ### API 使用
-- 优先关注函数入口：`ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`、`ax_alloc_coherent`、`ax_dealloc_coherent` 等（另有 60 项）。
+- 优先关注函数入口：`ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`，以及 `modules::{dma_api, axklib}`。
 
 ## 测试
 ### 测试覆盖

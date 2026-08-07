@@ -160,6 +160,14 @@ impl ItsCommand {
         cmd.le()
     }
 
+    pub fn movi(device_id: u32, event_id: u32, collection: u16) -> Self {
+        let mut cmd = Self::opcode(0x01);
+        cmd.encode_device(device_id);
+        cmd.encode_event(event_id);
+        cmd.encode_collection(collection);
+        cmd.le()
+    }
+
     pub fn inv(device_id: u32, event_id: u32) -> Self {
         let mut cmd = Self::opcode(0x0c);
         cmd.encode_device(device_id);
@@ -349,5 +357,23 @@ impl Its {
 
     fn regs(&self) -> &ItsRegs {
         unsafe { &*self.base.as_ptr() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ItsCommand;
+
+    #[test]
+    fn movi_encodes_device_event_and_collection() {
+        assert_eq!(
+            ItsCommand::movi(0x1234, 0x5678, 0x9abc).raw(),
+            [
+                (0x01 | (0x1234_u64 << 32)).to_le(),
+                0x5678_u64.to_le(),
+                0x9abc_u64.to_le(),
+                0,
+            ]
+        );
     }
 }

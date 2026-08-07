@@ -35,3 +35,13 @@ fn time_value_conversion_rules_hold() {
 fn dummy_stat_fs_fields_match_expected_defaults() {
     ax_assert!(axtest_exports::dummy_stat_fs_fields_match_expected_defaults());
 }
+
+#[axtest]
+fn perf_control_callback_runs_preemptible() {
+    ax_assert!(axtest_exports::perf_control_callback_runs_preemptible());
+}
+
+#[axtest]
+fn stop_machine_runs_action_and_sync_on_each_cpu() {
+    ax_assert!(axtest_exports::stop_machine_runs_action_and_sync_on_each_cpu());
+}

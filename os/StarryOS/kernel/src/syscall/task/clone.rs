@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{AxTaskExt, current, spawn_task};
+use ax_task::{AxTaskExt, current, spawn_task_with};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
@@ -303,10 +303,10 @@ impl CloneArgs {
             if flags.contains(CloneFlags::NEWNS) {
                 new_nsproxy.unshare_mnt();
             }
+            let mut is_pid_namespace_init = false;
             if flags.contains(CloneFlags::NEWPID) {
                 new_nsproxy.unshare_pid();
-                new_nsproxy.pid_ns.lock().alloc_local_pid(tid as u64);
-                new_nsproxy.pid_ns.lock().set_init_global_tid(tid as u64);
+                is_pid_namespace_init = true;
             }
             if flags.contains(CloneFlags::NEWNET) {
                 new_nsproxy.unshare_net();
@@ -325,18 +325,23 @@ impl CloneArgs {
                 let mut parent_ns = old_proc_data.nsproxy.lock();
                 if let Some(child_pid_ns) = parent_ns.child_pid_ns.take() {
                     new_nsproxy.pid_ns = child_pid_ns;
-                    {
-                        let mut pid_ns = new_nsproxy.pid_ns.lock();
-                        pid_ns.alloc_local_pid(tid as u64);
-                        pid_ns.set_init_global_tid(tid as u64);
-                    }
+                    is_pid_namespace_init = true;
                 }
+            }
+            axnsproxy::PidNamespace::alloc_pid_chain(&new_nsproxy.pid_ns, tid as u64);
+            if is_pid_namespace_init {
+                new_nsproxy.pid_ns.lock().set_init_global_tid(tid as u64);
             }
 
             *proc_data.nsproxy.lock() = new_nsproxy;
 
             proc_data
         };
+
+        if flags.contains(CloneFlags::THREAD) {
+            let pid_ns = new_proc_data.nsproxy.lock().pid_ns.clone();
+            axnsproxy::PidNamespace::alloc_pid_chain(&pid_ns, tid as u64);
+        }
 
         let mut scope = Scope::new();
         let current_fd_table = crate::file::current_fd_table();
@@ -384,10 +389,14 @@ impl CloneArgs {
             thr.set_clear_child_tid(child_tid);
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+            // The pidfd and the later registry publication share the identity
+            // embedded in ProcessData. A failed clone therefore cannot leave a
+            // prematurely registered PID behind.
+            let identity = new_proc_data.identity();
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(&thr, tid)
+                PidFd::new_thread(identity, &thr, tid)
             } else {
-                PidFd::new_process(&new_proc_data)
+                PidFd::new_process(identity)
             };
             let fd = pidfd_obj.add_to_fd_table(true)?;
             if let Err(err) = (pidfd as *mut i32).vm_write(fd) {
@@ -427,7 +436,12 @@ impl CloneArgs {
         if trace_clone && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid() {
             if !flags.contains(CloneFlags::THREAD) {
                 new_proc_data.set_ptrace_tracer_pid(tracer_pid);
-                new_proc_data.set_ptrace_attached();
+                let attach_mode = if curr.as_thread().proc_data.is_ptrace_seized() {
+                    crate::task::PtraceAttachMode::Seize
+                } else {
+                    crate::task::PtraceAttachMode::Attach
+                };
+                new_proc_data.set_ptrace_attach_mode(attach_mode);
             }
             new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
@@ -444,8 +458,7 @@ impl CloneArgs {
             guard.commit();
         }
 
-        let task = spawn_task(new_task);
-        add_task_to_table(&task);
+        spawn_task_with(new_task, add_task_to_table);
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -602,12 +615,12 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_err();
-    let newcgroup_rejected = CloneArgs {
+    let newcgroup_allowed = CloneArgs {
         flags: CloneFlags::NEWCGROUP,
         ..Default::default()
     }
     .validate()
-    .is_err();
+    .is_ok();
     // Empty flags + no exit signal is the minimal valid configuration.
     let minimal_valid = CloneArgs {
         flags: CloneFlags::empty(),
@@ -633,7 +646,7 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && thread_without_vm_sighand_rejected
         && vfork_with_thread_rejected
         && pidfd_with_detached_rejected
-        && newcgroup_rejected
+        && newcgroup_allowed
         && minimal_valid
         && thread_valid
 }

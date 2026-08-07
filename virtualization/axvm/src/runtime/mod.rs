@@ -18,7 +18,7 @@ pub(crate) mod vcpus;
 
 mod dispatcher;
 mod queue;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
 // embed the dispatcher as a field and expose it to the vCPU run loop.
@@ -44,18 +44,30 @@ pub fn init() {
 
 /// Start the VMM.
 pub fn start() {
+    launch_all();
+    wait_for_all();
+}
+
+/// Start all registered VMs and return the IDs that entered Running.
+pub fn launch_all() -> std::vec::Vec<usize> {
     info!("VMM starting, booting VMs...");
+    let mut started = std::vec::Vec::new();
     for vm in crate::get_vm_list() {
         match vm.start() {
             Ok(_) => {
                 RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);
                 vcpus::notify_primary_vcpu(vm.id());
-                info!("VM[{}] boot success", vm.id())
+                started.push(vm.id());
+                info!("VM[{}] boot success", vm.id());
             }
             Err(err) => warn!("VM[{}] boot failed, error {:?}", vm.id(), err),
         }
     }
+    started
+}
 
+/// Wait until every counted VM runtime has stopped.
+pub fn wait_for_all() {
     // Do not exit until all VMs are stopped.
     crate::host::task::wait_queue_wait_until(&VMM, || {
         let vm_count = RUNNING_VM_COUNT.load(Ordering::Acquire);
@@ -94,6 +106,21 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
     add_running_vm_count(1);
     vcpus::notify_primary_vcpu(vm_id);
     Ok(())
+}
+
+/// Wake the primary vCPU of a VM.
+pub fn notify_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    notify_vm_with_device_poll(
+        || vcpus::poll_vm_devices(&vm),
+        || vcpus::notify_primary_vcpu(vm_id),
+    );
+    Ok(())
+}
+
+fn notify_vm_with_device_poll(poll_devices: impl FnOnce(), wake_vcpu: impl FnOnce()) {
+    poll_devices();
+    wake_vcpu();
 }
 
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
@@ -140,6 +167,8 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, vec::Vec};
+
     use super::*;
 
     #[test]
@@ -162,5 +191,18 @@ mod tests {
     fn missing_vm_is_reported_with_its_id() {
         let vm_id = usize::MAX;
         assert_eq!(missing_vm_error(vm_id), AxVmError::VmNotFound { vm_id });
+    }
+
+    #[test]
+    fn console_notification_polls_devices_before_waking_vcpu() {
+        let steps = RefCell::new(Vec::new());
+        notify_vm_with_device_poll(
+            || steps.borrow_mut().push("poll"),
+            || {
+                assert_eq!(steps.borrow().as_slice(), ["poll"]);
+                steps.borrow_mut().push("wake");
+            },
+        );
+        assert_eq!(steps.into_inner(), ["poll", "wake"]);
     }
 }

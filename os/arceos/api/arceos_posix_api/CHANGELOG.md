@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.30...ax-posix-api-v0.5.31) - 2026-08-03
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.5.30](https://github.com/rcore-os/tgoskits/compare/ax-posix-api-v0.5.29...ax-posix-api-v0.5.30) - 2026-07-23
 
 ### Other

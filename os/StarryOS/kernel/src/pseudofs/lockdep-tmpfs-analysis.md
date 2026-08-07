@@ -366,7 +366,7 @@ covered by lockdep.
 The relevant FAT32 implementation uses the project-local kernel spin lock:
 
 ```text
-os/arceos/modules/axfs-ng/src/fs/fat/fs.rs:
+fs/ax-fs-ng/src/fs/fat/fs.rs:
   use ax_kspin::{SpinNoPreempt as Mutex, SpinNoPreemptGuard as MutexGuard};
 ```
 
@@ -377,7 +377,7 @@ At the time of this analysis, the VFS layer still imported the third-party
 `spin` crate directly:
 
 ```text
-components/axfs-ng-vfs/src/lib.rs:
+fs/axfs-ng-vfs/src/lib.rs:
   use spin::{Mutex, MutexGuard};
 ```
 
@@ -385,7 +385,7 @@ That dependency was already present when `axfs-ng-vfs` was imported as a
 subtree:
 
 ```text
-components/axfs-ng-vfs/Cargo.toml:
+fs/axfs-ng-vfs/Cargo.toml:
   spin = { version = "0.10", default-features = false, features = ["mutex"] }
 ```
 

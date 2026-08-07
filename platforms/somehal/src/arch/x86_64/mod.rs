@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod lapic;
+mod msi;
 mod vector;
 
 #[cfg(test)]
@@ -72,6 +73,14 @@ impl X86IoApicCpuInterface {
     fn irq_for_vector(&self, vector: usize) -> Option<IrqId> {
         let vector = u8::try_from(vector).ok()?;
         decode_irq_id(self.vector_routes[usize::from(vector)].load(Ordering::Acquire))
+    }
+
+    fn forget_vector_route(&self, vector: usize, irq: IrqId) -> Result<(), IrqError> {
+        let vector = validate_external_vector(vector)?;
+        self.vector_routes[usize::from(vector)]
+            .compare_exchange(encode_irq_id(irq), 0, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| IrqError::InvalidIrq)
     }
 }
 
@@ -373,12 +382,14 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
         return Err(OnProbeError::NotMatch);
     }
 
-    let domain = crate::irq::alloc_irq_domain(
-        dev.descriptor.device_id(),
-        crate::irq::IrqDomainKind::X86IoApic,
-    )
-    .map_err(|err| OnProbeError::other(format!("failed to register IOAPIC domain: {err:?}")))?;
+    let owner = dev.descriptor.device_id();
+    let domain = crate::irq::alloc_irq_domain(owner, crate::irq::IrqDomainKind::X86IoApic)
+        .map_err(|err| OnProbeError::other(format!("failed to register IOAPIC domain: {err:?}")))?;
     dev.register(rdif_intc::Intc::new(domain, X86IoApicIntc::new(ioapics)));
+    let msi = msi::X86MsiProvider::new(owner).map_err(|err| {
+        OnProbeError::other(format!("failed to register x86 MSI domain: {err:?}"))
+    })?;
+    dev.register(rdif_msi::Msi::new(msi.provider_id(), msi));
     Ok(())
 }
 
@@ -403,6 +414,15 @@ impl PlatOp for Plat {
             let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
             return intc.set_enabled(irq.hwirq, enable);
         }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86Msi) {
+            // MSI-X source masking is owned by the PCI endpoint table. The
+            // parent domain only validates that the allocated vector exists.
+            return IOAPIC_CPU_IF
+                .irq_for_vector(irq.hwirq.0 as usize)
+                .filter(|registered| *registered == irq)
+                .map(|_| ())
+                .ok_or(IrqError::InvalidIrq);
+        }
 
         Err(IrqError::InvalidIrq)
     }
@@ -410,6 +430,9 @@ impl PlatOp for Plat {
     fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
         if irq.domain == X86_LAPIC_DOMAIN || irq.domain == CPU_LOCAL_IRQ_DOMAIN {
             return Err(IrqError::Unsupported);
+        }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86Msi) {
+            return msi::set_irq_affinity(irq, affinity);
         }
         if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
             return Err(IrqError::InvalidIrq);
@@ -431,35 +454,21 @@ impl PlatOp for Plat {
         }
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
-        let Ok(vector) = lapic::ipi_vector(irq) else {
-            warn!("refuse to send non-runtime IPI IRQ {irq:?}");
-            return;
-        };
+    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) -> Result<(), IrqError> {
+        let vector = lapic::ipi_vector(irq)?;
 
-        let result = match target {
-            crate::irq::IpiTarget::Current { .. } => lapic::send_ipi(
+        match target {
+            crate::irq::IpiTarget::Current => lapic::send_ipi(
                 0,
                 lapic::ICR_FIXED_BASE | lapic::ICR_DEST_SELF | u32::from(vector),
             ),
-            crate::irq::IpiTarget::Other { cpu_id } => {
-                let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
-                    warn!("failed to resolve CPU index {cpu_id} to APIC ID");
-                    return;
-                };
+            crate::irq::IpiTarget::Cpu(cpu) => {
+                let apic_id = someboot::smp::cpu_idx_to_id(cpu.0).ok_or(IrqError::InvalidCpu)?;
                 lapic::send_ipi_to_apic_id(
-                    apic_id as u32,
+                    u32::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?,
                     lapic::ICR_FIXED_BASE | u32::from(vector),
                 )
             }
-            crate::irq::IpiTarget::AllExceptCurrent { .. } => lapic::send_ipi(
-                0,
-                lapic::ICR_FIXED_BASE | lapic::ICR_DEST_ALL_EXCLUDING_SELF | u32::from(vector),
-            ),
-        };
-
-        if let Err(err) = result {
-            warn!("failed to send runtime IPI vector {vector:#x}: {err:?}");
         }
     }
 
@@ -514,8 +523,11 @@ impl PlatOp for Plat {
 
     fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) {}
 
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        Self::send_ipi(lapic_ipi_irq_id(), crate::irq::IpiTarget::Other { cpu_id });
+    fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
+        Self::send_ipi(
+            lapic_ipi_irq_id(),
+            crate::irq::IpiTarget::Cpu(crate::irq::CpuId(cpu_id)),
+        )
     }
 }
 

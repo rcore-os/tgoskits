@@ -1,0 +1,254 @@
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Result, bail};
+use regex_automata::{
+    Input,
+    dfa::{Automaton, dense},
+    util::primitives::StateID,
+};
+
+const TRANSCRIPT_TAIL_BYTES: usize = 2048;
+
+#[derive(Clone)]
+pub(crate) struct QemuSuccessOutput {
+    state: Arc<Mutex<QemuSuccessOutputState>>,
+}
+
+impl QemuSuccessOutput {
+    fn new(success_regex: &[String]) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(QemuSuccessOutputState {
+                matcher: StreamingMatcher::new(success_regex),
+                tail: Vec::with_capacity(TRANSCRIPT_TAIL_BYTES),
+            })),
+        }
+    }
+
+    pub(crate) fn append(&self, chunk: &[u8]) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.append(chunk);
+    }
+
+    fn snapshot(&self) -> QemuSuccessSnapshot {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        QemuSuccessSnapshot {
+            matched: state.matcher.as_ref().is_ok_and(StreamingMatcher::is_match),
+            matcher_error: state.matcher.as_ref().err().cloned(),
+            tail: state.tail.clone(),
+        }
+    }
+}
+
+struct QemuSuccessOutputState {
+    matcher: std::result::Result<StreamingMatcher, String>,
+    tail: Vec<u8>,
+}
+
+impl QemuSuccessOutputState {
+    fn append(&mut self, chunk: &[u8]) {
+        if let Ok(matcher) = &mut self.matcher {
+            matcher.append(chunk);
+        }
+        append_bounded_tail(&mut self.tail, chunk);
+    }
+}
+
+struct StreamingMatcher {
+    dfa: dense::DFA<Vec<u32>>,
+    state: StateID,
+    matched: bool,
+}
+
+impl StreamingMatcher {
+    fn new(patterns: &[String]) -> std::result::Result<Self, String> {
+        let dfa = dense::Builder::new()
+            .build_many(patterns)
+            .map_err(|err| err.to_string())?;
+        let state = dfa
+            .start_state_forward(&Input::new(b""))
+            .map_err(|err| err.to_string())?;
+        Ok(Self {
+            dfa,
+            state,
+            matched: false,
+        })
+    }
+
+    fn append(&mut self, chunk: &[u8]) {
+        if self.matched {
+            return;
+        }
+        for &byte in chunk {
+            self.state = self.dfa.next_state(self.state, byte);
+            if self.dfa.is_match_state(self.state) {
+                self.matched = true;
+                return;
+            }
+        }
+    }
+
+    fn is_match(&self) -> bool {
+        self.matched || self.dfa.is_match_state(self.dfa.next_eoi_state(self.state))
+    }
+}
+
+struct QemuSuccessSnapshot {
+    matched: bool,
+    matcher_error: Option<String>,
+    tail: Vec<u8>,
+}
+
+fn append_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
+    if chunk.len() >= TRANSCRIPT_TAIL_BYTES {
+        tail.clear();
+        tail.extend_from_slice(&chunk[chunk.len() - TRANSCRIPT_TAIL_BYTES..]);
+        return;
+    }
+
+    let overflow = tail
+        .len()
+        .saturating_add(chunk.len())
+        .saturating_sub(TRANSCRIPT_TAIL_BYTES);
+    if overflow > 0 {
+        tail.drain(..overflow);
+    }
+    tail.extend_from_slice(chunk);
+}
+
+pub(crate) fn capture_required_success_output(
+    success_regex: &[String],
+    capture: Option<crate::backtrace::BacktraceQemuCapture>,
+) -> (
+    Option<crate::backtrace::BacktraceQemuCapture>,
+    Option<QemuSuccessOutput>,
+) {
+    if success_regex.is_empty() {
+        return (capture, None);
+    }
+
+    let success_output = QemuSuccessOutput::new(success_regex);
+    let capture = match capture {
+        Some(capture) => capture.with_success_output(success_output.clone()),
+        None => crate::backtrace::BacktraceQemuCapture::success_output_only(success_output.clone()),
+    };
+    (Some(capture), Some(success_output))
+}
+
+pub(crate) fn verify_qemu_success_contract(
+    run_result: Result<()>,
+    success_output: Option<&QemuSuccessOutput>,
+) -> Result<()> {
+    run_result?;
+    let Some(success_output) = success_output else {
+        return Ok(());
+    };
+
+    let snapshot = success_output.snapshot();
+    if let Some(err) = snapshot.matcher_error {
+        bail!("failed to compile QEMU success regex set: {err}");
+    }
+    if snapshot.matched {
+        return Ok(());
+    }
+
+    let tail = String::from_utf8_lossy(&snapshot.tail);
+    bail!("QEMU stopped without matching a configured success regex; transcript tail:\n{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, verify_qemu_success_contract};
+
+    fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
+        let patterns = patterns.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let output = QemuSuccessOutput::new(&patterns);
+        for chunk in chunks {
+            output.append(chunk);
+        }
+        output
+    }
+
+    #[test]
+    fn exit_zero_without_required_success_marker_is_an_error() {
+        let output = captured_output(
+            &[r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$"],
+            &[b"guest exited before completing the suite\n"],
+        );
+        let err = verify_qemu_success_contract(Ok(()), Some(&output)).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("without matching a configured success regex")
+        );
+    }
+
+    #[test]
+    fn configured_success_marker_is_accepted() {
+        let output = captured_output(
+            &[r"(?m)^STARRY_GROUPED_TESTS_PASSED\s*$"],
+            &[b"booting\nSTARRY_GROUPED_TESTS_PASSED\n"],
+        );
+        verify_qemu_success_contract(Ok(()), Some(&output)).unwrap();
+    }
+
+    #[test]
+    fn empty_success_contract_preserves_normal_exit() {
+        verify_qemu_success_contract(Ok(()), None).unwrap();
+    }
+
+    #[test]
+    fn runner_error_takes_precedence_over_missing_marker() {
+        let output = captured_output(&["PASS"], &[]);
+        let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "QEMU timeout");
+    }
+
+    #[test]
+    fn streaming_matcher_preserves_chunk_boundaries() {
+        let output = captured_output(
+            &[r"(?m)^STARRY_GROUPED_TESTS_PASSED$"],
+            &[b"STARRY_GROUPED_", b"TESTS_PASSED\n"],
+        );
+        verify_qemu_success_contract(Ok(()), Some(&output)).unwrap();
+    }
+
+    #[test]
+    fn sustained_noise_keeps_only_the_bounded_diagnostic_tail() {
+        let output = captured_output(&["PASS"], &[]);
+        let chunk = [b'x'; 8192];
+
+        for _ in 0..1024 {
+            output.append(&chunk);
+        }
+
+        let snapshot = output.snapshot();
+        assert_eq!(snapshot.tail.len(), TRANSCRIPT_TAIL_BYTES);
+        assert!(!snapshot.matched);
+    }
+
+    #[test]
+    fn runner_error_takes_precedence_over_invalid_success_regex() {
+        let output = captured_output(&["("], &[]);
+
+        let err = verify_qemu_success_contract(Err(anyhow::anyhow!("QEMU timeout")), Some(&output))
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "QEMU timeout");
+    }
+
+    #[test]
+    fn success_only_output_does_not_enable_backtrace_block_capture() {
+        let output = captured_output(&["PASS"], &[]);
+        let capture = crate::backtrace::BacktraceQemuCapture::success_output_only(output);
+
+        assert!(!capture.captures_backtrace_blocks());
+    }
+}

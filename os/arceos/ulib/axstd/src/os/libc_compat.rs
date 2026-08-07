@@ -787,6 +787,98 @@ pub unsafe extern "C" fn poll(
 /// # Safety
 ///
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_create1(flags: c_int) -> c_int {
+    ok_or_errno(ax_posix_api::sys_epoll_create1(flags))
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_create1(_flags: c_int) -> c_int {
+    fail(LinuxError::ENOSYS)
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_ctl(
+    epfd: c_int,
+    op: c_int,
+    fd: c_int,
+    event: *mut libc::epoll_event,
+) -> c_int {
+    ok_or_errno(unsafe { ax_posix_api::sys_epoll_ctl(epfd, op, fd, event.cast()) })
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_ctl(
+    _epfd: c_int,
+    _op: c_int,
+    _fd: c_int,
+    _event: *mut libc::epoll_event,
+) -> c_int {
+    fail(LinuxError::ENOSYS)
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_wait(
+    epfd: c_int,
+    events: *mut libc::epoll_event,
+    maxevents: c_int,
+    timeout: c_int,
+) -> c_int {
+    ok_or_errno(unsafe { ax_posix_api::sys_epoll_wait(epfd, events.cast(), maxevents, timeout) })
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_wait(
+    _epfd: c_int,
+    _events: *mut libc::epoll_event,
+    _maxevents: c_int,
+    _timeout: c_int,
+) -> c_int {
+    fail(LinuxError::ENOSYS)
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fd")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eventfd(initval: c_uint, flags: c_int) -> c_int {
+    ok_or_errno(ax_posix_api::sys_eventfd(initval, flags))
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(not(feature = "fd"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn eventfd(_initval: c_uint, _flags: c_int) -> c_int {
+    fail(LinuxError::ENOSYS)
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn isatty(_fd: c_int) -> c_int {
     fail(LinuxError::ENOTTY)

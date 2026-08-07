@@ -158,7 +158,7 @@ pub(crate) fn prepare_c_case_overlay_sync(
     );
     let mut configure = build_cmake_configure_command(case, layout, &build_env, config);
     let result = configure
-        .exec()
+        .exec_quiet()
         .context("failed to configure case C project");
     timing_stage.finish();
     result?;
@@ -171,7 +171,7 @@ pub(crate) fn prepare_c_case_overlay_sync(
         ],
     );
     let mut build = build_cmake_build_command(layout, &build_env);
-    let result = build.exec().context("failed to build case C project");
+    let result = build.exec_quiet().context("failed to build case C project");
     timing_stage.finish();
     result?;
 
@@ -183,7 +183,9 @@ pub(crate) fn prepare_c_case_overlay_sync(
         ],
     );
     let mut install = build_cmake_install_command(layout, &build_env);
-    let result = install.exec().context("failed to install case C project");
+    let result = install
+        .exec_quiet()
+        .context("failed to install case C project");
     timing_stage.finish();
     result?;
 

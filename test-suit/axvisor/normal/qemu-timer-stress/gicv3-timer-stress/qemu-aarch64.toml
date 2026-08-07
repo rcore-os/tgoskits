@@ -1,0 +1,24 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3,its=on",
+  "-smp",
+  "4",
+  "-append",
+  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=gicv3-its",
+  "-m",
+  "8g",
+]
+timeout = 600
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+  "(?m)^TIMER_STRESS_FAILED\\s*$",
+]
+success_regex = ["(?m)^AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED\\s*$"]
+to_bin = true
+uefi = false

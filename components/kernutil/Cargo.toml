@@ -1,6 +1,6 @@
 [package]
 name = "kernutil"
-version = "0.2.2"
+version = "0.2.3"
 license.workspace = true
 categories.workspace = true
 description = "Utilities for kernel development."

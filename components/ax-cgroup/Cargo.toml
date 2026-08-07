@@ -1,6 +1,6 @@
 [package]
 name = "ax-cgroup"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "Cgroup v2 hierarchy, membership, and namespace model"
 authors.workspace = true

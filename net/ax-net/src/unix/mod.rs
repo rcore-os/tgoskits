@@ -65,6 +65,16 @@ pub trait TransportOps: Configurable + Pollable + Send + Sync {
     /// Connect the transport to a remote address.
     fn connect(&self, slot: &BindSlot, local_addr: &UnixSocketAddr) -> AxResult;
 
+    /// Marks a bound connection-oriented transport as accepting connections.
+    fn listen(&self) -> AxResult {
+        Err(AxError::OperationNotSupported)
+    }
+
+    /// Returns whether this transport currently accepts connections.
+    fn is_listening(&self) -> bool {
+        false
+    }
+
     /// Accept an incoming connection, returning the new transport and peer address.
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)>;
 
@@ -115,6 +125,10 @@ pub struct BindSlot {
     stream: Mutex<Option<stream::Bind>>,
     /// Datagram endpoint bound at this address.
     dgram: Mutex<Option<dgram::Bind>>,
+    /// Seqpacket listener bound at this address. Seqpacket is connection
+    /// oriented (like stream) but preserves message boundaries (like dgram),
+    /// so it carries its own connection-request queue.
+    seqpacket: Mutex<Option<dgram::SeqBind>>,
 }
 
 static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
@@ -216,7 +230,11 @@ impl SocketOps for UnixSocket {
     }
 
     fn listen(&self, _backlog: usize) -> AxResult {
-        Ok(())
+        self.transport.listen()
+    }
+
+    fn is_listening(&self) -> bool {
+        self.transport.is_listening()
     }
 
     fn accept(&self) -> AxResult<Socket> {

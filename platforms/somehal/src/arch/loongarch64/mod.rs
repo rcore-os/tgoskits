@@ -7,16 +7,15 @@ use crate::{
 };
 
 mod eiointc;
+mod ipi_command;
 mod irq_common;
 mod liointc;
+mod liointc_cpu_interface;
 mod pch_pic;
 
 use crate::irq_routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq};
 
 pub struct Plat;
-
-const IOCSR_IPI_SEND_CPU_SHIFT: u32 = 16;
-const IOCSR_IPI_SEND_BLOCKING: u32 = 1 << 31;
 
 const IOCSR_IPI_STATUS: usize = 0x1000;
 const IOCSR_IPI_ENABLE: usize = 0x1004;
@@ -55,14 +54,6 @@ fn is_loongarch_external_domain(domain: crate::irq::IrqDomainId) -> bool {
     crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchPchPic)
         || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchEioIntc)
         || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::LoongArchLioIntc)
-}
-
-fn make_ipi_send_value(cpu_id: usize, vector: u32, blocking: bool) -> u32 {
-    let mut value = (cpu_id as u32) << IOCSR_IPI_SEND_CPU_SHIFT | vector;
-    if blocking {
-        value |= IOCSR_IPI_SEND_BLOCKING;
-    }
-    value
 }
 
 fn ack_pending_ipi() -> u32 {
@@ -150,22 +141,16 @@ impl PlatOp for Plat {
         }
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) -> Result<(), IrqError> {
         if irq != Self::ipi_irq() {
-            warn!("refuse to send non-runtime LoongArch IPI IRQ {irq:?}");
-            return;
+            return Err(IrqError::InvalidIrq);
         }
         match target {
-            crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
-                Self::send_ipi_to_cpu(cpu_id);
+            crate::irq::IpiTarget::Current => {
+                let cpu = crate::cpu::current_cpu_idx().ok_or(IrqError::InvalidCpu)?;
+                Self::send_ipi_to_cpu(cpu)
             }
-            crate::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
-                for target_cpu in 0..cpu_num {
-                    if target_cpu != cpu_id {
-                        Self::send_ipi_to_cpu(target_cpu);
-                    }
-                }
-            }
+            crate::irq::IpiTarget::Cpu(cpu) => Self::send_ipi_to_cpu(cpu.0),
         }
     }
 
@@ -242,15 +227,20 @@ impl PlatOp for Plat {
 
     fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) {}
 
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        if cpu_id > u16::MAX as usize {
-            warn!("refuse to send LoongArch IPI to out-of-range CPU id {cpu_id}");
-            return;
+    fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
+        if cpu_id >= someboot::smp::cpu_count() {
+            return Err(IrqError::InvalidCpu);
         }
-        iocsr_write_w(
-            IOCSR_IPI_SEND,
-            make_ipi_send_value(cpu_id, IPI_VECTOR, false),
-        );
+        let command =
+            ipi_command::make_ipi_send_value(cpu_id, IPI_VECTOR).ok_or(IrqError::InvalidCpu)?;
+        // The blocking command waits for transport acceptance, not for prior
+        // shared-memory stores. Complete those stores before ringing the IOCSR
+        // doorbell so the target cannot observe a stale payload.
+        unsafe {
+            core::arch::asm!("dbar 0", options(nostack));
+        }
+        iocsr_write_w(IOCSR_IPI_SEND, command);
+        Ok(())
     }
 }
 

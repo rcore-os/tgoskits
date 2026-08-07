@@ -10,6 +10,7 @@ use crate::RkBoard;
 #[macro_use]
 mod _macros;
 
+mod rk3576;
 mod rk3588;
 
 /// Map of power domains to their configuration info
@@ -83,6 +84,7 @@ impl RockchipPmuInfo {
     pub fn new(board: RkBoard) -> Self {
         match board {
             RkBoard::Rk3588 => rk3588::pmu_info(),
+            RkBoard::Rk3576 => rk3576::pmu_info(),
             RkBoard::Rk3568 => unimplemented!(),
         }
     }

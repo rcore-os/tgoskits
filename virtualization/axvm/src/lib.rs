@@ -12,33 +12,42 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![no_std]
-
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!
 //! This crate contains:
 //! - [`AxVM`]: The main structure representing a VM.
 
-extern crate alloc;
+#![cfg_attr(any(test, target_arch = "aarch64"), feature(once_cell_try))]
+
 #[macro_use]
 extern crate log;
 
 mod arch;
 mod architecture;
 pub mod boot;
+mod configured;
 mod error;
-mod host;
+pub mod host;
 pub mod irq;
 pub mod layout;
 pub mod lifecycle;
+pub mod machine;
 mod manager;
 mod npt;
 mod percpu;
 mod runtime;
+mod sync;
 mod task;
 mod timer;
 mod vcpu;
 mod vm;
+
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/shared_mmio.rs"]
+mod aarch64_shared_mmio_tests;
+#[cfg(all(test, not(target_arch = "aarch64")))]
+#[path = "arch/aarch64/vtimer/percpu.rs"]
+mod aarch64_timer_percpu_tests;
 
 use crate::arch::ArchOps;
 
@@ -46,15 +55,15 @@ pub mod config;
 
 pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
-/// Compatibility export for legacy/common normalized VM events.
-///
-/// Architecture-local raw exits are handled by `arch::CurrentArch` through
-/// `VmArchVcpuOps::Exit`; new code should not treat this as the universal raw
-/// vCPU exit type.
-pub use axvm_types::VmExit;
+pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,
+};
+pub use configured::{
+    ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
+    ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
+    FixedDeviceBindings, FixedWiredBinding,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
@@ -62,11 +71,10 @@ pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
-pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
-    AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
-    inject_current_vcpu_interrupt, register_vm,
+    AxvmRuntime, current_vcpu_id, current_vm_id, dispatch_current_vcpu_interrupt, get_vm_by_id,
+    get_vm_list, inject_current_vcpu_interrupt, notify_vm_vcpu, register_vm,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{

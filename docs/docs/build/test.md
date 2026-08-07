@@ -71,7 +71,6 @@ aarch64_sysreg
 ax-errno
 ax-io
 ax-kspin
-bitmap-allocator
 irq-framework
 memory_addr
 page_table_entry

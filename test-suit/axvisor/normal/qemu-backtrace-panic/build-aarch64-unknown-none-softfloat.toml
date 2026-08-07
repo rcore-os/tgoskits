@@ -1,0 +1,9 @@
+features = [
+    "test-backtrace-panic",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+[env]
+BACKTRACE = "y"

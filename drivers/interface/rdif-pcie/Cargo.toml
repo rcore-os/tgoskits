@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-pcie"
 repository.workspace = true
-version = "0.2.5"
+version = "0.2.6"
 
 [dependencies]
 axtest = { workspace = true, optional = true }

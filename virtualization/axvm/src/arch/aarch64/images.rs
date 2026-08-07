@@ -1,6 +1,6 @@
 //! Public AArch64 image-loader facade preserving the DTB constructor contract.
 
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::GuestConfig;
 
 use crate::{
     AxVMRef, AxVmResult, VMMemoryRegion,
@@ -12,7 +12,7 @@ pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
 impl<'a> ImageLoader<'a> {
     pub fn new(
         main_memory: VMMemoryRegion,
-        config: AxVMCrateConfig,
+        config: GuestConfig,
         vm: AxVMRef,
         provider: &'a dyn BootImageProvider,
         guest_dtb: Option<GuestDtbImage>,

@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(feature = "irq")]
 use std::sync::{Arc, Barrier};
 use std::{
@@ -336,6 +336,24 @@ fn test_irq_notify_coalesces_concurrent_irq_callbacks() {
     assert!(notify.is_pending());
     assert!(notify.drain());
     assert!(!notify.drain());
+}
+
+#[cfg(feature = "irq")]
+#[test]
+fn external_timer_deadline_is_included_in_host_reprogramming_selection() {
+    run_in_test_scheduler(|| {
+        const NO_DEADLINE: u64 = u64::MAX;
+
+        let external_deadline = Arc::new(AtomicU64::new(1));
+        let published_deadline = external_deadline.clone();
+        ax_task::register_timer_deadline_source(move || {
+            let deadline = published_deadline.load(Ordering::Acquire);
+            (deadline != NO_DEADLINE).then_some(deadline)
+        });
+
+        assert_eq!(ax_task::next_timer_deadline_nanos(), Some(1));
+        external_deadline.store(NO_DEADLINE, Ordering::Release);
+    });
 }
 
 #[cfg(feature = "irq")]

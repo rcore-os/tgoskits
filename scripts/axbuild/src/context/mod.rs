@@ -194,11 +194,17 @@ impl AppContext {
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
-        let _backtrace_capture = capture_backtrace
+        let success_regex = qemu.success_regex.clone();
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let output_capture = capture_backtrace
             .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
-            .context("failed to install backtrace block output capture")?;
+            .context("failed to install QEMU output capture")?;
         self.activate_cargo_build_context(cargo)?;
         let stage = StageLog::start(format!(
             "qemu run package={} target={}",
@@ -210,6 +216,11 @@ impl AppContext {
             RunQemuOptions { dtb_dump: false },
         )
         .await;
+        drop(output_capture);
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            success_output.as_ref(),
+        );
         if result.is_ok() {
             stage.done();
         }
@@ -245,11 +256,17 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let _backtrace_capture = capture_backtrace
+        let success_regex = qemu.success_regex.clone();
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let output_capture = capture_backtrace
             .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
-            .context("failed to install backtrace block output capture")?;
+            .context("failed to install QEMU output capture")?;
         let stage = StageLog::start("qemu run prepared artifact");
         let result = ostool_qemu::run_qemu(
             &mut self.invocation,
@@ -257,6 +274,11 @@ impl AppContext {
             RunQemuOptions { dtb_dump: false },
         )
         .await;
+        drop(output_capture);
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            success_output.as_ref(),
+        );
         if result.is_ok() {
             stage.done();
         }
@@ -467,7 +489,7 @@ impl AppContext {
         let guard = PathRestoreGuard::new(self.original_path.clone());
         guard.restore();
         if should_use_loongarch_lvz_for(&cargo.package, &cargo.target) {
-            configure_loongarch_qemu_path(&self.root)?;
+            configure_loongarch_qemu_path()?;
         }
         Ok(guard)
     }
@@ -580,8 +602,8 @@ fn should_use_loongarch_lvz_for(package: &str, target: &str) -> bool {
     package == "axvisor" && target.contains("loongarch64")
 }
 
-fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
-    let Some(qemu_dir) = find_loongarch_qemu_dir(workspace_root) else {
+fn configure_loongarch_qemu_path() -> anyhow::Result<()> {
+    let Some(qemu_dir) = find_loongarch_qemu_dir() else {
         return Ok(());
     };
 
@@ -593,7 +615,7 @@ fn configure_loongarch_qemu_path(workspace_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
+fn find_loongarch_qemu_dir() -> Option<PathBuf> {
     let env_executable = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
         .map(PathBuf::from)
         .filter(|path| path.is_file())
@@ -609,12 +631,12 @@ fn find_loongarch_qemu_dir(workspace_root: &Path) -> Option<PathBuf> {
         return Some(dir);
     }
 
-    loongarch_qemu_dir_candidates(workspace_root)
+    loongarch_qemu_dir_candidates()
         .into_iter()
         .find(|dir| is_loongarch_qemu_dir(dir))
 }
 
-fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
+fn loongarch_qemu_dir_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     let cache_root = env::var_os("AXVISOR_QEMU_LVZ_CACHE")
@@ -624,9 +646,6 @@ fn loongarch_qemu_dir_candidates(workspace_root: &Path) -> Vec<PathBuf> {
         });
     if let Some(cache_root) = cache_root {
         candidates.push(cache_root.join("latest").join("bin"));
-        if let Some(commit) = pinned_qemu_lvz_commit(workspace_root) {
-            candidates.push(cache_root.join(commit).join("bin"));
-        }
         candidates.extend(cached_loongarch_qemu_dirs(&cache_root));
     }
 
@@ -651,17 +670,6 @@ fn cached_loongarch_qemu_dirs(cache_root: &Path) -> Vec<PathBuf> {
         .collect();
     dirs.sort();
     dirs
-}
-
-fn pinned_qemu_lvz_commit(workspace_root: &Path) -> Option<String> {
-    let version_file = workspace_root.join("os/axvisor/scripts/qemu-lvz.version");
-    let content = std::fs::read_to_string(version_file).ok()?;
-    content
-        .lines()
-        .find_map(|line| line.strip_prefix("QEMU_LVZ_COMMIT="))
-        .map(str::trim)
-        .filter(|commit| !commit.is_empty())
-        .map(str::to_owned)
 }
 
 fn is_loongarch_qemu_dir(dir: &Path) -> bool {

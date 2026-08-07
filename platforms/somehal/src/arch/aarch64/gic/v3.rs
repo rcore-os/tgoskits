@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use aarch64_cpu::registers::ID_AA64PFR0_EL1;
+use aarch64_cpu::{asm::barrier, registers::ID_AA64PFR0_EL1};
 use arm_gic_driver::{checked_intid, v3::*};
 use irq_framework::IrqId;
 use kernutil::StaticCell;
@@ -158,6 +158,26 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
     })?
 }
 
+pub fn irq_set_trigger(irq: IrqId, trigger: Trigger) -> Result<(), crate::irq::IrqError> {
+    super::trigger::dispatch_trigger_configuration(
+        irq.hwirq.0,
+        Some(super::its::LPI_INTID_BASE as u32),
+        |raw| {
+            let intid = checked_private_intid(raw)?;
+            current_cpu_interface().set_cfg(intid, trigger);
+            Ok(())
+        },
+        |raw| {
+            super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+                let intid = checked_runtime_intid(raw, gic.max_intid())?;
+                gic.set_cfg(intid, trigger);
+                Ok(())
+            })?
+        },
+        || crate::irq::IrqError::Unsupported,
+    )
+}
+
 pub fn irq_set_affinity(
     irq: IrqId,
     affinity: crate::irq::IrqAffinity,
@@ -166,15 +186,12 @@ pub fn irq_set_affinity(
         return Err(crate::irq::IrqError::Unsupported);
     }
     if irq.hwirq.0 >= super::its::LPI_INTID_BASE {
-        return match affinity {
-            crate::irq::IrqAffinity::Any => Ok(()),
-            crate::irq::IrqAffinity::Fixed { .. } => Err(crate::irq::IrqError::Unsupported),
-        };
+        return super::its::set_lpi_affinity(irq, affinity);
     }
     let target = match affinity {
         crate::irq::IrqAffinity::Any => None,
         crate::irq::IrqAffinity::Fixed { cpu_id } => {
-            Some(affinity_from_mpidr(super::hardware_cpu_id(cpu_id)))
+            Some(affinity_from_mpidr(super::hardware_cpu_id(cpu_id)?))
         }
     };
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
@@ -193,16 +210,24 @@ fn checked_runtime_intid(raw: u32, max_intid: u32) -> Result<IntId, crate::irq::
     checked_intid(raw, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)
 }
 
-pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
-    let sgi = IntId::sgi(raw as u32);
+pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::irq::IrqError> {
+    let raw = u32::try_from(raw).map_err(|_| crate::irq::IrqError::InvalidIrq)?;
+    if raw >= 16 {
+        return Err(crate::irq::IrqError::InvalidIrq);
+    }
+    let sgi = IntId::sgi(raw);
     let target = match target {
-        crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::current(),
-        crate::irq::IpiTarget::Other { cpu_id: cpu_idx } => {
-            SGITarget::list([affinity_from_mpidr(super::hardware_cpu_id(cpu_idx))])
+        crate::irq::IpiTarget::Current => SGITarget::current(),
+        crate::irq::IpiTarget::Cpu(cpu) => {
+            SGITarget::list([affinity_from_mpidr(super::hardware_cpu_id(cpu.0)?)])
         }
-        crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::All,
     };
+    // ICC_SGI1R_EL1 is the IPI doorbell. Complete prior Inner-Shareable
+    // Normal-memory stores before issuing the SGI; the driver's trailing ISB
+    // only forces execution of the system-register write.
+    barrier::dsb(barrier::ISHST);
     current_cpu_interface().send_sgi(sgi, target);
+    Ok(())
 }
 
 fn affinity_from_mpidr(mpidr: usize) -> Affinity {
@@ -241,7 +266,13 @@ fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {
     let mut cpu = CPU_IF_INIT.cpu_interface();
     cpu.init_current_cpu()?;
     #[cfg(feature = "hv")]
-    cpu.set_eoi_mode(true);
+    {
+        // Hypervisor-owned physical interrupts must remain active after EOIR
+        // until the guest completes the corresponding virtual interrupt. The
+        // normal host path still performs both operations in `ActiveIrq::drop`.
+        cpu.set_eoi_mode(true);
+        info!("GICv3 CPU {cpu_idx} EOI mode: two_step={}", cpu.eoi_mode());
+    }
 
     // SAFETY: CPU_IF was preallocated during BSP probe. Each CPU initializes
     // only its own logical CPU slot before it can send SGIs through that slot.

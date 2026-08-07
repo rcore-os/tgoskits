@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use tempfile::tempdir;
 
-use super::resolve_board_case;
+use super::{merge_board_init_command, resolve_board_case};
 use crate::starry::app::test_support::{
     write_board_default, write_case_file, write_minimal_board_case,
 };
@@ -82,6 +82,21 @@ fn explicit_relative_board_config_can_resolve_inside_case() {
 }
 
 #[test]
+fn board_shell_prelude_is_injected_before_the_shared_init_script() {
+    assert_eq!(
+        merge_board_init_command(
+            "echo hello",
+            Some(
+                "export BLOCK_RW_BENCH_CONTROLLER='custom-controller'\nexport \
+                 BLOCK_RW_BENCH_SUCCESS_MARKER='CUSTOM_BLOCK_RW_BENCH_PASSED'"
+            )
+        ),
+        "export BLOCK_RW_BENCH_CONTROLLER='custom-controller'\nexport \
+         BLOCK_RW_BENCH_SUCCESS_MARKER='CUSTOM_BLOCK_RW_BENCH_PASSED'\necho hello"
+    );
+}
+
+#[test]
 fn board_default_target_picks_matching_build_config() {
     let root = tempdir().unwrap();
     write_case_file(root.path(), "demo", "init.sh", "echo hello\n");
@@ -103,7 +118,7 @@ fn board_default_target_picks_matching_build_config() {
         "build-riscv64gc-unknown-none-elf.toml",
         "target = \"riscv64gc-unknown-none-elf\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
     );
-    write_board_default(
+    let board_build = write_board_default(
         root.path(),
         "orangepi-5-plus",
         "aarch64-unknown-none-softfloat",
@@ -112,4 +127,23 @@ fn board_default_target_picks_matching_build_config() {
     let case = resolve_board_case(root.path(), "demo", None).unwrap();
 
     assert_eq!(case.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(case.build_config_path, board_build);
+}
+
+#[test]
+fn board_default_build_config_is_used_without_an_app_override() {
+    let root = tempdir().unwrap();
+    write_case_file(root.path(), "demo", "init.sh", "echo hello\n");
+    write_case_file(
+        root.path(),
+        "demo",
+        "board-visionfive2.toml",
+        "board_type = \"VisionFive2\"\nshell_prefix = \"root@starry:\"\n",
+    );
+    let board_build = write_board_default(root.path(), "visionfive2", "riscv64gc-unknown-none-elf");
+
+    let case = resolve_board_case(root.path(), "demo", None).unwrap();
+
+    assert_eq!(case.target, "riscv64gc-unknown-none-elf");
+    assert_eq!(case.build_config_path, board_build);
 }

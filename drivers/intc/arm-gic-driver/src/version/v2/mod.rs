@@ -1,4 +1,8 @@
-use core::ptr::NonNull;
+use core::{
+    hint::spin_loop,
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+};
 
 use log::trace;
 use tock_registers::{LocalRegisterCopy, interfaces::*};
@@ -19,9 +23,37 @@ pub struct Gic {
     gicd: VirtAddr,
     gicc: VirtAddr,
     gich: Option<HypervisorInterface>, // Optional for GICv2
+    cpu_targets: Option<&'static CpuTargetMap>,
 }
 
 unsafe impl Send for Gic {}
+
+/// Lock-free access to GICv2 Distributor state used by IRQ completion paths.
+#[derive(Clone, Copy)]
+pub struct DistributorOperations {
+    gicd: *mut DistributorReg,
+}
+
+// SAFETY: the pointer names the immutable, permanently mapped GICD register
+// block. Individual Distributor registers provide the required MMIO
+// synchronization; this capability does not expose ordinary Rust memory.
+unsafe impl Send for DistributorOperations {}
+// SAFETY: see the `Send` implementation. Concurrent reads of GICD_ISPENDR are
+// architecturally supported and do not create Rust aliases to mutable memory.
+unsafe impl Sync for DistributorOperations {}
+
+impl DistributorOperations {
+    fn gicd(&self) -> &DistributorReg {
+        // SAFETY: `Gic::distributor_operations` only constructs this capability
+        // from the live GICD mapping established during platform discovery.
+        unsafe { &*self.gicd }
+    }
+
+    /// Returns the Distributor pending state for one interrupt.
+    pub fn is_pending(&self, intid: IntId) -> bool {
+        self.gicd().ISPENDR.get_irq_bit(intid.into())
+    }
+}
 
 pub struct HyperAddress {
     pub gich: VirtAddr,
@@ -50,7 +82,18 @@ impl Gic {
                 }),
                 None => None,
             },
+            cpu_targets: None,
         }
+    }
+
+    /// Attaches the CPU-interface routing table populated during per-CPU init.
+    pub fn set_cpu_target_map(&mut self, cpu_targets: &'static CpuTargetMap) {
+        self.cpu_targets = Some(cpu_targets);
+    }
+
+    /// Returns the target bit associated with a host hardware CPU identifier.
+    pub fn target_for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<TargetList> {
+        self.cpu_targets?.for_hardware_cpu(hardware_cpu_id)
     }
 
     fn gicd(&self) -> &DistributorReg {
@@ -63,6 +106,16 @@ impl Gic {
 
     pub fn gicd_addr(&self) -> VirtAddr {
         self.gicd
+    }
+
+    /// Returns an IRQ-safe view of stable Distributor state.
+    ///
+    /// The returned capability does not own the register mapping. It remains
+    /// valid for the lifetime of the initialized GIC driver.
+    pub fn distributor_operations(&self) -> DistributorOperations {
+        DistributorOperations {
+            gicd: self.gicd.as_ptr(),
+        }
     }
 
     pub fn max_intid(&self) -> u32 {
@@ -90,6 +143,7 @@ impl Gic {
             "Initializing GICv2 Distributor@{:#p}...",
             self.gicd.as_ptr::<u8>()
         );
+        let bsp_target = self.cpu_interface().current_cpu_target();
         // 1. Disable the Distributor first
         self.gicd().disable();
 
@@ -113,8 +167,11 @@ impl Gic {
         self.gicd().set_default_spi_priorities(max_spi);
 
         // 8. Configure interrupt targets (for SPIs)
-        self.gicd().configure_interrupt_targets(max_spi);
-        trace!("[GICv2] Configure all SPIs to target cpu 0");
+        self.gicd().configure_interrupt_targets(max_spi, bsp_target);
+        trace!(
+            "[GICv2] Configure all SPIs to target BSP mask {:#04x}",
+            bsp_target.as_u8()
+        );
         // 9. Configure interrupt configuration (edge/level trigger)
         self.gicd().configure_interrupt_config(max_spi);
 
@@ -273,6 +330,11 @@ pub enum SGITarget {
 pub struct TargetList(u8);
 
 impl TargetList {
+    /// Creates a target list from the CPU target mask reported by GICv2.
+    pub const fn from_raw(raw: u8) -> Self {
+        Self(raw)
+    }
+
     /// Create a new TargetList with a specific CPU target list. list is Cpu interface IDs.
     pub fn new(list: impl Iterator<Item = usize>) -> Self {
         let mut raw = 0;
@@ -297,10 +359,188 @@ impl TargetList {
     }
 }
 
+const MAX_CPU_INTERFACES: usize = 8;
+const TARGET_INITIALIZING: u8 = u8::MAX;
+
+struct CpuTargetRoute {
+    hardware_cpu_id: AtomicUsize,
+    target: AtomicU8,
+}
+
+impl CpuTargetRoute {
+    const fn empty() -> Self {
+        Self {
+            hardware_cpu_id: AtomicUsize::new(0),
+            target: AtomicU8::new(0),
+        }
+    }
+}
+
+/// Error returned when registering a GICv2 CPU-interface route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuTargetMapError {
+    /// The logical CPU does not fit the eight GICv2 target bits.
+    InvalidLogicalCpu,
+    /// A banked target must contain exactly one CPU-interface bit.
+    InvalidTarget,
+    /// The logical CPU, hardware CPU, or target bit is already mapped differently.
+    ConflictingRoute,
+}
+
+/// GICv2 CPU-interface routes discovered from banked `GICD_ITARGETSR0` values.
+pub struct CpuTargetMap {
+    registration_lock: AtomicBool,
+    routes: [CpuTargetRoute; MAX_CPU_INTERFACES],
+}
+
+impl Default for CpuTargetMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpuTargetMap {
+    /// Creates an empty CPU route table.
+    pub const fn new() -> Self {
+        Self {
+            registration_lock: AtomicBool::new(false),
+            routes: [const { CpuTargetRoute::empty() }; MAX_CPU_INTERFACES],
+        }
+    }
+
+    /// Records one logical/hardware CPU association with its GICv2 target bit.
+    pub fn record(
+        &self,
+        logical_cpu: usize,
+        hardware_cpu_id: usize,
+        target: TargetList,
+    ) -> Result<(), CpuTargetMapError> {
+        let target = target.as_u8();
+        if logical_cpu >= MAX_CPU_INTERFACES {
+            return Err(CpuTargetMapError::InvalidLogicalCpu);
+        }
+        if !target.is_power_of_two() {
+            return Err(CpuTargetMapError::InvalidTarget);
+        }
+
+        while self
+            .registration_lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            spin_loop();
+        }
+        let result = self.record_locked(logical_cpu, hardware_cpu_id, target);
+        self.registration_lock.store(false, Ordering::Release);
+        result
+    }
+
+    fn record_locked(
+        &self,
+        logical_cpu: usize,
+        hardware_cpu_id: usize,
+        target: u8,
+    ) -> Result<(), CpuTargetMapError> {
+        for (index, route) in self.routes.iter().enumerate() {
+            let existing_target = route.target.load(Ordering::Acquire);
+            if existing_target == 0 || existing_target == TARGET_INITIALIZING {
+                continue;
+            }
+            let existing_hardware_cpu = route.hardware_cpu_id.load(Ordering::Relaxed);
+            if index == logical_cpu {
+                return if existing_hardware_cpu == hardware_cpu_id && existing_target == target {
+                    Ok(())
+                } else {
+                    Err(CpuTargetMapError::ConflictingRoute)
+                };
+            }
+            if existing_hardware_cpu == hardware_cpu_id || existing_target == target {
+                return Err(CpuTargetMapError::ConflictingRoute);
+            }
+        }
+
+        let route = &self.routes[logical_cpu];
+        route.target.store(TARGET_INITIALIZING, Ordering::Relaxed);
+        route
+            .hardware_cpu_id
+            .store(hardware_cpu_id, Ordering::Relaxed);
+        route.target.store(target, Ordering::Release);
+        Ok(())
+    }
+
+    /// Looks up the target bit for a host logical CPU index.
+    pub fn for_logical_cpu(&self, logical_cpu: usize) -> Option<TargetList> {
+        let target = self.routes.get(logical_cpu)?.target.load(Ordering::Acquire);
+        (target != 0 && target != TARGET_INITIALIZING).then(|| TargetList::from_raw(target))
+    }
+
+    /// Looks up the target bit for a host hardware CPU identifier.
+    pub fn for_hardware_cpu(&self, hardware_cpu_id: usize) -> Option<TargetList> {
+        self.routes.iter().find_map(|route| {
+            let target = route.target.load(Ordering::Acquire);
+            (target != 0
+                && target != TARGET_INITIALIZING
+                && route.hardware_cpu_id.load(Ordering::Relaxed) == hardware_cpu_id)
+                .then(|| TargetList::from_raw(target))
+        })
+    }
+}
+
 impl SGITarget {
     /// Create a new SGITarget with a specific CPU target list. list is Cpu interface IDs.
     pub fn new_target_list(val: TargetList) -> Self {
         Self::TargetList(val)
+    }
+}
+
+#[cfg(test)]
+mod cpu_target_map_tests {
+    use super::{CpuTargetMap, CpuTargetMapError, TargetList};
+
+    #[test]
+    fn records_and_looks_up_logical_and_hardware_cpu_routes() {
+        let routes = CpuTargetMap::new();
+        let target = TargetList::from_raw(0x40);
+
+        routes.record(5, 0x102, target).unwrap();
+
+        assert_eq!(routes.for_logical_cpu(5).unwrap().as_u8(), 0x40);
+        assert_eq!(routes.for_hardware_cpu(0x102).unwrap().as_u8(), 0x40);
+        assert!(routes.for_logical_cpu(4).is_none());
+        assert!(routes.for_hardware_cpu(0x103).is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_and_conflicting_routes_but_accepts_replay() {
+        let routes = CpuTargetMap::new();
+
+        assert_eq!(
+            routes.record(0, 0, TargetList::from_raw(0)),
+            Err(CpuTargetMapError::InvalidTarget)
+        );
+        assert_eq!(
+            routes.record(0, 0, TargetList::from_raw(3)),
+            Err(CpuTargetMapError::InvalidTarget)
+        );
+        assert_eq!(
+            routes.record(8, 0, TargetList::from_raw(1)),
+            Err(CpuTargetMapError::InvalidLogicalCpu)
+        );
+
+        routes.record(2, 0x102, TargetList::from_raw(0x80)).unwrap();
+        routes.record(2, 0x102, TargetList::from_raw(0x80)).unwrap();
+        assert_eq!(
+            routes.record(2, 0x103, TargetList::from_raw(0x80)),
+            Err(CpuTargetMapError::ConflictingRoute)
+        );
+        assert_eq!(
+            routes.record(3, 0x102, TargetList::from_raw(0x20)),
+            Err(CpuTargetMapError::ConflictingRoute)
+        );
+        assert_eq!(
+            routes.record(3, 0x103, TargetList::from_raw(0x80)),
+            Err(CpuTargetMapError::ConflictingRoute)
+        );
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -359,6 +599,11 @@ impl CpuInterface {
 
     fn gicd(&self) -> &DistributorReg {
         unsafe { &*self.gicd }
+    }
+
+    /// Returns the banked CPU target mask for the current CPU interface.
+    pub fn current_cpu_target(&self) -> TargetList {
+        TargetList::from_raw(self.gicd().ITARGETSR[0].get())
     }
 
     /// Initialize the CPU interface for the current CPU
@@ -851,6 +1096,55 @@ impl HypervisorInterface {
         (self.gich().VTR.read(gich::VTR::ListRegs) + 1) as usize
     }
 
+    /// Returns the number of implemented priority bits.
+    pub fn priority_bits(&self) -> u8 {
+        (self.gich().VTR.read(gich::VTR::PRIbits) + 1) as u8
+    }
+
+    /// Returns the raw GICH_HCR value for vCPU context save.
+    pub fn hcr_raw(&self) -> u32 {
+        self.gich().HCR.get()
+    }
+
+    /// Restores a raw GICH_HCR value for vCPU context load.
+    pub fn set_hcr_raw(&self, value: u32) {
+        self.gich().HCR.set(value);
+    }
+
+    /// Returns the raw GICH_VMCR value for vCPU context save.
+    pub fn vmcr_raw(&self) -> u32 {
+        self.gich().VMCR.get()
+    }
+
+    /// Restores a raw GICH_VMCR value for vCPU context load.
+    pub fn set_vmcr_raw(&self, value: u32) {
+        self.gich().VMCR.set(value);
+    }
+
+    /// Returns the raw GICH_APR value for vCPU context save.
+    pub fn apr_raw(&self) -> u32 {
+        self.gich().APR.get()
+    }
+
+    /// Restores the raw GICH_APR value for vCPU context load.
+    pub fn set_apr_raw(&self, value: u32) {
+        self.gich().APR.set(value);
+    }
+
+    /// Returns one raw GICH_LR value after validating the hardware index.
+    pub fn list_register_raw(&self, index: usize) -> Option<u32> {
+        (index < self.get_list_register_count()).then(|| self.gich().LR[index].get())
+    }
+
+    /// Restores one raw GICH_LR value after validating the hardware index.
+    pub fn set_list_register_raw(&self, index: usize, value: u32) -> Result<(), &'static str> {
+        if index >= self.get_list_register_count() {
+            return Err("list register index exceeds the implemented GICH range");
+        }
+        self.gich().LR[index].set(value);
+        Ok(())
+    }
+
     /// Get EOI status registers
     pub fn get_eoi_status(&self) -> (u32, u32) {
         (self.gich().EISR0.get(), self.gich().EISR1.get())
@@ -986,13 +1280,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn distributor_initializes_all_spi_byte_registers() {
-        let mut regs = std::boxed::Box::new([0u8; 0x1000]);
-        let gic = unsafe { Gic::new(VirtAddr::from(regs.as_mut_ptr()), VirtAddr::new(0), None) };
+    fn target_list_preserves_banked_cpu_target_mask() {
+        let target = TargetList::from_raw(0x20);
 
-        let max_interrupts = 64;
-        gic.gicd().set_default_spi_priorities(max_interrupts);
-        gic.gicd().configure_interrupt_targets(max_interrupts);
+        assert_eq!(target.as_u8(), 0x20);
+        assert_eq!(target.cpu_id_list().collect::<std::vec::Vec<_>>(), [5]);
+    }
+
+    #[test]
+    fn cpu_interface_reads_current_banked_target_mask() {
+        let mut distributor = std::boxed::Box::new([0u8; 0x1000]);
+        let mut cpu_registers = std::boxed::Box::new([0u8; 0x1000]);
+        let cpu = CpuInterface {
+            gicd: distributor.as_mut_ptr().cast(),
+            gicc: cpu_registers.as_mut_ptr().cast(),
+        };
+        cpu.gicd().ITARGETSR[0].set(0x40);
+
+        assert_eq!(cpu.current_cpu_target().as_u8(), 0x40);
+    }
+
+    #[test]
+    fn distributor_initializes_spis_with_bsp_target_mask() {
+        let mut regs = std::boxed::Box::new([0u8; 0x1000]);
+        regs[4..8].copy_from_slice(&1u32.to_ne_bytes());
+        regs[0x800] = 0x40;
+        let mut gic = unsafe {
+            Gic::new(
+                VirtAddr::from(regs.as_mut_ptr()),
+                VirtAddr::from(regs.as_mut_ptr()),
+                None,
+            )
+        };
+
+        let bsp_target = TargetList::from_raw(0x40);
+        gic.init();
 
         let regs = gic.gicd();
         assert_eq!(regs.IPRIORITYR[31].get(), 0);
@@ -1001,8 +1323,8 @@ mod tests {
         assert_eq!(regs.IPRIORITYR[64].get(), 0);
 
         assert_eq!(regs.ITARGETSR[31].get(), 0);
-        assert_eq!(regs.ITARGETSR[32].get(), 0x01);
-        assert_eq!(regs.ITARGETSR[63].get(), 0x01);
+        assert_eq!(regs.ITARGETSR[32].get(), bsp_target.as_u8());
+        assert_eq!(regs.ITARGETSR[63].get(), bsp_target.as_u8());
         assert_eq!(regs.ITARGETSR[64].get(), 0);
     }
 }

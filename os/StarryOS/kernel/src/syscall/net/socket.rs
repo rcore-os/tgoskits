@@ -80,6 +80,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         }
         (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
         (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
+        (AF_UNIX, SOCK_SEQPACKET) => UnixSocket::new(DgramTransport::new_seqpacket(pid)).into(),
         (AF_NETLINK, SOCK_RAW) | (AF_NETLINK, SOCK_DGRAM) => {
             match proto {
                 NETLINK_KOBJECT_UEVENT | NETLINK_ROUTE | NETLINK_GENERIC => {}
@@ -224,6 +225,12 @@ pub fn sys_accept4(
 ) -> AxResult<isize> {
     debug!("sys_accept <= fd: {fd}, flags: {flags}");
 
+    // accept4 only accepts SOCK_CLOEXEC / SOCK_NONBLOCK (== O_CLOEXEC / O_NONBLOCK);
+    // any other bit is EINVAL (Linux net/socket.c __sys_accept4).
+    if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
     let cloexec = flags & O_CLOEXEC != 0;
 
     let listener = Socket::from_fd(fd)?;
@@ -275,8 +282,12 @@ pub fn sys_socketpair(
             let (sock1, sock2) = StreamTransport::new_pair(pid);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
-        SOCK_DGRAM | SOCK_SEQPACKET => {
+        SOCK_DGRAM => {
             let (sock1, sock2) = DgramTransport::new_pair(pid);
+            (UnixSocket::new(sock1), UnixSocket::new(sock2))
+        }
+        SOCK_SEQPACKET => {
+            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(pid);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {

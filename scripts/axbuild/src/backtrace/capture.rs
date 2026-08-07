@@ -19,6 +19,38 @@ pub(crate) struct BacktraceQemuCapture {
     pub write_log_during_capture: bool,
     /// All complete raw blocks captured during QEMU (for stream symbolize and deferred log write).
     pub captured_blocks: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    /// Optional bounded QEMU output state used to enforce configured success markers.
+    pub success_output: Option<crate::support::qemu_success::QemuSuccessOutput>,
+}
+
+impl BacktraceQemuCapture {
+    pub(crate) fn success_output_only(
+        success_output: crate::support::qemu_success::QemuSuccessOutput,
+    ) -> Self {
+        Self {
+            log_path: PathBuf::new(),
+            stream_symbolize: None,
+            suppress_terminal_raw_blocks: false,
+            write_log_during_capture: false,
+            captured_blocks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            success_output: Some(success_output),
+        }
+    }
+
+    pub(crate) fn with_success_output(
+        mut self,
+        success_output: crate::support::qemu_success::QemuSuccessOutput,
+    ) -> Self {
+        self.success_output = Some(success_output);
+        self
+    }
+
+    pub(crate) fn captures_backtrace_blocks(&self) -> bool {
+        !self.log_path.as_os_str().is_empty()
+            || self.stream_symbolize.is_some()
+            || self.suppress_terminal_raw_blocks
+            || self.write_log_during_capture
+    }
 }
 
 /// Incremental state machine: captures `BACKTRACE_BEGIN` ... `BACKTRACE_END` blocks to memory

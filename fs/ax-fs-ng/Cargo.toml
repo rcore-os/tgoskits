@@ -1,0 +1,48 @@
+[package]
+name = "ax-fs-ng"
+version = "0.8.6"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+authors = ["Mivik <mivikq@gmail.com>"]
+description = "ArceOS filesystem module"
+license.workspace = true
+
+[features]
+axtest = []
+fat = ["dep:fatfs"]
+ext4 = ["dep:rsext4"]
+vfs = ["ax-sync/multitask"]
+lockdep = ["axfs-ng-vfs/lockdep"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
+[dependencies]
+ax-errno = { workspace = true }
+axfs-ng-vfs = { workspace = true }
+ax-io = { workspace = true, features = ["alloc"] }
+ax-sync = { workspace = true }
+bitflags = "2.10"
+cfg-if = { workspace = true }
+chrono = { workspace = true }
+dma-api = { workspace = true }
+intrusive-collections = "0.9"
+ax-kspin = { workspace = true }
+irq-framework = { workspace = true }
+log = { workspace = true }
+lru = "0.16"
+rdif-block = { workspace = true }
+scope-local = { workspace = true }
+slab = { version = "0.4", default-features = false }
+spin = { workspace = true }
+
+[dependencies.rsext4]
+workspace = true
+optional = true
+
+[dependencies.fatfs]
+package = "starry-fatfs"
+version = "0.4.1-preview.2"
+default-features = false
+optional = true
+features = ["alloc", "lfn", "log_level_trace", "unicode"]

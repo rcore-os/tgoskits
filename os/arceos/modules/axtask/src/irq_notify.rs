@@ -7,8 +7,8 @@ use crate::WaitQueue;
 /// `IrqNotify` separates a hard-IRQ notification from the slow work that must
 /// run in task context. IRQ handlers call [`notify_irq`](Self::notify_irq) to
 /// publish a pending bit and wake a deferred worker. The worker then drains the
-/// bit and performs the expensive work, such as polling a device or waking
-/// `axpoll` waiters.
+/// bit and performs deferred work, such as consuming acknowledged device
+/// completions.
 pub struct IrqNotify {
     pending: AtomicBool,
     wait: WaitQueue,
@@ -65,6 +65,15 @@ impl IrqNotify {
     #[track_caller]
     pub fn wait(&self) {
         self.wait.wait_until(|| self.drain());
+    }
+
+    /// Blocks until a pending notification is consumed or `duration` elapses.
+    ///
+    /// Returns `true` only when the deadline elapsed without consuming a
+    /// notification.
+    #[track_caller]
+    pub fn wait_timeout(&self, duration: core::time::Duration) -> bool {
+        self.wait.wait_timeout_until(duration, || self.drain())
     }
 }
 

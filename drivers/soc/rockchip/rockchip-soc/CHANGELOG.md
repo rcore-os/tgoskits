@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.2...rockchip-soc-v0.4.3) - 2026-08-03
+
+### Added
+
+- *(rockchip)* add RK3576 ROCK 4D support ([#1704](https://github.com/rcore-os/tgoskits/pull/1704))
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.1...rockchip-soc-v0.4.2) - 2026-07-23
 
 ### Added

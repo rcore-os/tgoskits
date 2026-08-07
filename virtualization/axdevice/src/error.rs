@@ -2,7 +2,9 @@
 
 use alloc::string::String;
 
-use axdevice_base::{AccessWidth, BusKind, DeviceError, IrqError, RegistryError};
+use axdevice_base::*;
+
+use crate::{DeviceGraphError, InterruptRegistrationError};
 
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
@@ -24,6 +26,14 @@ pub enum DeviceManagerError {
         /// The operation that rejected the input.
         operation: &'static str,
         /// Diagnostic detail describing the invalid input.
+        detail: String,
+    },
+    /// Device manager state does not allow the requested operation.
+    #[error("invalid device manager state for {operation}: {detail}")]
+    InvalidState {
+        /// The operation rejected by the current state.
+        operation: &'static str,
+        /// Diagnostic detail describing the current state.
         detail: String,
     },
     /// A required device resource was not found.
@@ -88,6 +98,15 @@ pub enum DeviceManagerError {
     /// IRQ resolution or signaling failed.
     #[error(transparent)]
     Irq(#[from] IrqError),
+    /// Interrupt-controller or endpoint registration failed.
+    #[error(transparent)]
+    InterruptRegistration(#[from] InterruptRegistrationError),
+    /// Device graph declaration or dependency validation failed.
+    #[error(transparent)]
+    DeviceGraph(#[from] DeviceGraphError),
+    /// Deterministic VM resource allocation failed.
+    #[error(transparent)]
+    ResourcePlanning(#[from] crate::ResourcePlanningError),
 }
 
 impl From<DeviceManagerError> for DeviceError {
@@ -103,6 +122,9 @@ impl From<DeviceManagerError> for DeviceError {
             }
             DeviceManagerError::InvalidInput { operation, detail } => {
                 Self::InvalidInput { operation, detail }
+            }
+            DeviceManagerError::InvalidState { operation, detail } => {
+                Self::InvalidState { operation, detail }
             }
             DeviceManagerError::ResourceNotFound {
                 operation,
@@ -125,6 +147,18 @@ impl From<DeviceManagerError> for DeviceError {
             },
             DeviceManagerError::Irq(error) => Self::Backend {
                 operation: "route device IRQ",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::InterruptRegistration(error) => Self::InvalidInput {
+                operation: "register interrupt capability",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::DeviceGraph(error) => Self::InvalidInput {
+                operation: "resolve device graph",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::ResourcePlanning(error) => Self::InvalidInput {
+                operation: "plan device resources",
                 detail: alloc::format!("{error}"),
             },
         }

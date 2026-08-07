@@ -4,7 +4,7 @@ features = [
   "ax-std",
   "irq",
   "multitask",
-  "dma",
+  "paging",
   "ax-task/multitask",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",

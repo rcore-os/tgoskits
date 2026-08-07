@@ -26,13 +26,14 @@ use ax_runtime::hal::{
 };
 use ax_task::{AxCpuMask, AxTaskRef, TaskState, WeakAxTaskRef, current};
 use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axnsproxy::PidNamespace;
 use kernel_elf_parser::{AuxEntry, AuxType};
 use ksym::KallsymsMapped;
 use starry_process::{Pid, Process};
 use zerocopy::IntoBytes;
 
 use crate::{
-    file::FD_TABLE,
+    file::{FD_TABLE, PidFd},
     mm::{BackendFileInfo, ProcessMemStats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
@@ -439,21 +440,16 @@ fn render_proc_net_snmp() -> String {
     buf
 }
 
-/// Block-device major reported for the root virtio-blk disk (`vda`) in
-/// `/proc/diskstats`. Linux assigns virtio-blk a dynamic major through
-/// `register_blkdev(0, "virtblk")`; 254 is the value the single-disk guest
-/// consistently observes.
-const VIRTBLK_MAJOR: u32 = 254;
-
 fn render_diskstats() -> String {
     // 14-field Linux /proc/diskstats layout, one line per block device. Only the
-    // root virtio-blk device ("vda", minor 0) is backed by the block runtime, so
-    // only its request/sector counters are real; the timing and in-flight fields
-    // have no source and stay zero.
+    // selected root device is backed by the block runtime, so only its
+    // request/sector counters are real; timing and in-flight fields have no
+    // source and stay zero.
+    let identity = ax_fs_ng::root::root_block_identity();
     let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
     format!(
-        "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
-         0 0\n"
+        "{}       {} {} {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 0 0\n",
+        identity.major, identity.minor, identity.name
     )
 }
 
@@ -637,7 +633,6 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
         _ => "Unk.",
     }
 }
-
 pub fn new_procfs() -> Filesystem {
     SimpleFs::new_with("proc".into(), 0x9fa0, builder)
 }
@@ -925,6 +920,76 @@ impl SimpleDirOps for ThreadFdDir {
             .path()
             .into_owned();
         Ok(SimpleFile::new(fs, NodeType::Symlink, move || Ok(path.clone())).into())
+    }
+
+    fn is_cacheable(&self) -> bool {
+        false
+    }
+}
+
+/// The /proc/[pid]/fdinfo directory.
+struct ThreadFdInfoDir {
+    fs: Arc<SimpleFs>,
+    task: WeakAxTaskRef,
+}
+
+impl SimpleDirOps for ThreadFdInfoDir {
+    fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
+        let Some(task) = self.task.upgrade() else {
+            return Box::new(iter::empty());
+        };
+        let ids = FD_TABLE
+            .scope(&task.as_thread().scope.read())
+            .read()
+            .ids()
+            .map(|id| Cow::Owned(id.to_string()))
+            .collect::<Vec<_>>();
+        Box::new(ids.into_iter())
+    }
+
+    fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
+        let fs = self.fs.clone();
+        let task = self.task.upgrade().ok_or(VfsError::NotFound)?;
+        let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
+        let pidfd = FD_TABLE
+            .scope(&task.as_thread().scope.read())
+            .read()
+            .get(fd as _)
+            .ok_or(VfsError::NotFound)?
+            .inner
+            .downcast_ref::<PidFd>()
+            .map(|pidfd| (pidfd.identity(), pidfd.target_pid()));
+
+        // Linux exposes these fields for pidfds. systemd uses `Pid:` to recover
+        // the child PID after pidfd_spawn(), with `NSpid:` as a namespace-aware
+        // fallback. Other descriptor kinds still have an fdinfo entry, even
+        // though StarryOS does not yet expose their type-specific fields.
+        let Some((identity, target_pid)) = pidfd else {
+            return Ok(SimpleFile::new_regular(fs, || Ok(Vec::new())).into());
+        };
+
+        Ok(SimpleFile::new_regular(fs, move || {
+            let pids: Vec<i32> = if identity.is_exited() {
+                vec![-1]
+            } else {
+                let observer_pid_ns = task.as_thread().proc_data.nsproxy.lock().pid_ns.clone();
+                PidNamespace::visible_pid_chain(
+                    &observer_pid_ns,
+                    &identity.pid_ns(),
+                    target_pid as u64,
+                )
+                .map(|pids| pids.into_iter().map(|pid| pid as i32).collect())
+                .unwrap_or_else(|| vec![0])
+            };
+            let pid = pids[0];
+            let nspid = pids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(format!("Pid:\t{pid}\nNSpid:\t{nspid}\n").into_bytes())
+        })
+        .into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1246,6 +1311,7 @@ impl SimpleDirOps for ThreadDir {
                 "root",
                 "cwd",
                 "fd",
+                "fdinfo",
                 "uid_map",
                 "gid_map",
                 "setgroups",
@@ -1300,7 +1366,8 @@ impl SimpleDirOps for ThreadDir {
                         if !data.is_empty() {
                             let value = str::from_utf8(data)
                                 .ok()
-                                .and_then(|it| it.parse::<i32>().ok())
+                                .and_then(|it| it.trim_ascii_end().parse::<i32>().ok())
+                                .filter(|value| (-1000..=1000).contains(value))
                                 .ok_or(VfsError::InvalidInput)?;
                             task.as_thread().set_oom_score_adj(value);
                         }
@@ -1429,6 +1496,14 @@ impl SimpleDirOps for ThreadDir {
             "fd" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(ThreadFdDir {
+                    fs,
+                    task: Arc::downgrade(&task),
+                }),
+            )
+            .into(),
+            "fdinfo" => SimpleDir::new_maker(
+                fs.clone(),
+                Arc::new(ThreadFdInfoDir {
                     fs,
                     task: Arc::downgrade(&task),
                 }),
@@ -1705,6 +1780,20 @@ fn mq_sysctl_file(
     )
 }
 
+/// Builds an integer sysctl whose owning resource limit is not implemented.
+///
+/// Do not acknowledge writes until PID allocation and VMA admission consume
+/// these settings. Returning `EOPNOTSUPP` keeps procfs from reporting a limit
+/// that the kernel does not enforce.
+fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |operation| match operation {
+            SimpleFileOperation::Read => Ok(Some(value)),
+            SimpleFileOperation::Write(_) => Err(VfsError::OperationNotSupported),
+        }),
+    )
+}
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -1824,10 +1913,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         sys.add("kernel", {
             let mut kernel = DirMapping::new();
 
-            kernel.add(
-                "pid_max",
-                SimpleFile::new_regular(fs.clone(), || Ok("32768\n")),
-            );
+            kernel.add("pid_max", unsupported_limit_sysctl_file(&fs, "32768\n"));
             kernel.add(
                 "osrelease",
                 SimpleFile::new_regular(fs.clone(), || Ok("6.6.0-starry\n")),
@@ -1835,6 +1921,58 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             kernel.add(
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
+            );
+            kernel.add(
+                "hostname",
+                SimpleFile::new_regular(
+                    fs.clone(),
+                    RwFile::new(move |req| match req {
+                        SimpleFileOperation::Read => {
+                            let nodename = {
+                                let task = current();
+                                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                                let uts_namespace = nsproxy.uts_ns.lock();
+                                uts_namespace.nodename
+                            };
+                            let name_len = nodename
+                                .iter()
+                                .position(|&byte| byte == 0)
+                                .unwrap_or(nodename.len());
+                            let mut output = Vec::with_capacity(name_len + 1);
+                            output.extend(
+                                nodename[..name_len]
+                                    .iter()
+                                    .map(|byte| byte.to_ne_bytes()[0]),
+                            );
+                            output.push(b'\n');
+                            Ok(Some(output))
+                        }
+                        SimpleFileOperation::Write(data) => {
+                            if data.is_empty() {
+                                return Ok(None);
+                            }
+                            let hostname = data.strip_suffix(b"\n").unwrap_or(data);
+                            if hostname.len() > 64
+                                || hostname.iter().any(|byte| matches!(byte, 0 | b'\n'))
+                            {
+                                return Err(VfsError::InvalidInput);
+                            }
+
+                            if current().as_thread().cred().euid != 0 {
+                                return Err(VfsError::OperationNotPermitted);
+                            }
+
+                            let mut nodename = [0; 65];
+                            for (slot, byte) in nodename.iter_mut().zip(hostname) {
+                                *slot = *byte as _;
+                            }
+                            let task = current();
+                            let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                            nsproxy.uts_ns.lock().nodename = nodename;
+                            Ok(None)
+                        }
+                    }),
+                ),
             );
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
@@ -1870,7 +2008,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             );
             vm.add(
                 "max_map_count",
-                SimpleFile::new_regular(fs.clone(), || Ok("65530\n")),
+                unsupported_limit_sysctl_file(&fs, "65530\n"),
             );
             SimpleDir::new_maker(fs.clone(), Arc::new(vm))
         });

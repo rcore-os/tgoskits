@@ -1,13 +1,10 @@
 use core::{
-    cell::UnsafeCell,
-    hint::spin_loop,
     mem,
     ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
 };
 
 use dma_api::{CoherentArray, DeviceDma};
-use log::debug;
 use mbarrier::{rmb, wmb};
 use tock_registers::register_bitfields;
 
@@ -153,10 +150,6 @@ impl CommandSet {
         }
     }
 
-    pub fn nvm_cmd_read(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u32) -> Self {
-        Self::nvm_cmd_read_with_cid(nsid, paddr, 0, starting_lba, blk_num, next_id() as u16)
-    }
-
     pub fn nvm_cmd_read_with_cid(
         nsid: u32,
         prp1: u64,
@@ -180,10 +173,6 @@ impl CommandSet {
             cdw12,
             ..Default::default()
         }
-    }
-
-    pub fn nvm_cmd_write(nsid: u32, paddr: u64, starting_lba: u64, blk_num: u32) -> Self {
-        Self::nvm_cmd_write_with_cid(nsid, paddr, 0, starting_lba, blk_num, next_id() as u16)
     }
 
     pub fn nvm_cmd_write_with_cid(
@@ -260,29 +249,20 @@ impl CompletionStatus {
     // }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::CompletionStatus;
-
-    #[test]
-    fn completion_status_ignores_phase_for_success() {
-        assert!(CompletionStatus(0).is_success());
-        assert!(CompletionStatus(1).is_success());
-    }
-
-    #[test]
-    fn completion_status_checks_full_status_field() {
-        assert!(!CompletionStatus(1 | (1 << 2)).is_success());
-        assert!(!CompletionStatus(1 | (1 << 9)).is_success());
-        assert!(!CompletionStatus(1 | (1 << 11)).is_success());
-    }
-}
-
 pub struct NvmeQueue {
     pub qid: u32,
-    sq: UnsafeCell<SubmitQueue>,
-    cq: UnsafeCell<CompleteQueue>,
+    sq: SubmitQueue,
+    cq: CompleteQueue,
     reg: NonNull<NvmeReg>,
+    publish_state: DoorbellPublishState,
+}
+
+#[derive(Default)]
+struct DoorbellPublishState {
+    staged_sq_tail: u32,
+    consumed_cq_head: u32,
+    sq_dirty: bool,
+    cq_dirty: bool,
 }
 
 // SAFETY: An `NvmeQueue` is owned by exactly one RDIF queue after creation.
@@ -303,10 +283,11 @@ impl NvmeQueue {
         let complete_queue = CompleteQueue::new(dma, cq, page_size)?;
 
         Ok(NvmeQueue {
-            sq: UnsafeCell::new(submit_queue),
-            cq: UnsafeCell::new(complete_queue),
+            sq: submit_queue,
+            cq: complete_queue,
             qid,
             reg,
+            publish_state: DoorbellPublishState::default(),
         })
     }
 
@@ -314,34 +295,40 @@ impl NvmeQueue {
         unsafe { self.reg.as_ref() }
     }
 
-    fn with_sq<R>(&self, f: impl FnOnce(&mut SubmitQueue) -> R) -> R {
-        let sq = unsafe { &mut *self.sq.get() };
-        f(sq)
+    pub(crate) fn submit_admin_data(&mut self, data: CommandSet) {
+        self.stage_io_data(data);
+        self.commit_io_submissions();
     }
 
-    fn with_cq<R>(&self, f: impl FnOnce(&mut CompleteQueue) -> R) -> R {
-        let cq = unsafe { &mut *self.cq.get() };
-        f(cq)
+    /// Writes one command into the coherent SQ without publishing its tail.
+    pub(crate) fn stage_io_data(&mut self, data: CommandSet) {
+        let tail = self.sq.submit(data);
+        self.publish_state.stage_sq_tail(tail);
     }
 
-    fn submit_admin_data(&self, data: CommandSet) {
-        let tail = self.with_sq(|sq| sq.submit(data));
+    /// Publishes every SQ entry staged since the previous commit.
+    pub(crate) fn commit_io_submissions(&mut self) {
+        let Some(tail) = self.publish_state.take_sq_tail() else {
+            return;
+        };
         wmb();
         self.reg().write_sq_y_tail_doolbell(self.qid as _, tail);
     }
 
-    pub(crate) fn submit_io_data(&self, data: CommandSet) {
-        self.submit_admin_data(data);
+    /// Takes one CQ entry after the owning maintenance task receives an IRQ.
+    pub(crate) fn take_completion_after_irq(&mut self) -> Option<NvmeCompletion> {
+        let completion = self.cq.take_complete()?;
+        self.publish_state.consume_cq_head(self.cq.head());
+        Some(completion)
     }
 
-    pub(crate) fn poll_completion(&self) -> Option<NvmeCompletion> {
-        let (complete, head) = self.with_cq(|cq| {
-            let complete = cq.take_complete()?;
-            Some((complete, cq.head))
-        })?;
+    /// Publishes the CQ head once after a maintenance-task drain pass.
+    pub(crate) fn commit_completion_head(&mut self) {
+        let Some(head) = self.publish_state.take_cq_head() else {
+            return;
+        };
         wmb();
         self.reg().write_cq_y_head_doolbell(self.qid as _, head);
-        Some(complete)
     }
 
     pub(crate) fn depth(&self) -> usize {
@@ -349,39 +336,47 @@ impl NvmeQueue {
     }
 
     pub(crate) fn sq_len(&self) -> usize {
-        unsafe { &*self.sq.get() }.len()
+        self.sq.len()
     }
 
     pub(crate) fn cq_len(&self) -> usize {
-        unsafe { &*self.cq.get() }.len()
+        self.cq.len()
     }
 
     pub(crate) fn sq_bus_addr(&self) -> u64 {
-        unsafe { &*self.sq.get() }.bus_addr()
+        self.sq.bus_addr()
     }
 
     pub(crate) fn cq_bus_addr(&self) -> u64 {
-        unsafe { &*self.cq.get() }.bus_addr()
+        self.cq.bus_addr()
+    }
+}
+
+impl DoorbellPublishState {
+    fn stage_sq_tail(&mut self, tail: u32) {
+        self.staged_sq_tail = tail;
+        self.sq_dirty = true;
     }
 
-    pub fn command_sync(&mut self, data: CommandSet) -> Result<()> {
-        self.submit_admin_data(data);
-        let (complete, head) = self.with_cq(|cq| {
-            let complete = cq.spin_for_complete();
-            (complete, cq.head)
-        });
-        wmb();
-        self.reg().write_cq_y_head_doolbell(self.qid as _, head);
-
-        if complete.status.is_success() {
-            Ok(())
-        } else {
-            debug!(
-                "command failed: status {:#x}, result {:#x}",
-                complete.status.0, complete.result
-            );
-            Err(Error::Unknown("send command failed"))
+    fn take_sq_tail(&mut self) -> Option<u32> {
+        if !self.sq_dirty {
+            return None;
         }
+        self.sq_dirty = false;
+        Some(self.staged_sq_tail)
+    }
+
+    fn consume_cq_head(&mut self, head: u32) {
+        self.consumed_cq_head = head;
+        self.cq_dirty = true;
+    }
+
+    fn take_cq_head(&mut self) -> Option<u32> {
+        if !self.cq_dirty {
+            return None;
+        }
+        self.cq_dirty = false;
+        Some(self.consumed_cq_head)
     }
 }
 
@@ -442,15 +437,6 @@ impl CompleteQueue {
         if complete { Some(cqe) } else { None }
     }
 
-    fn spin_for_complete(&mut self) -> NvmeCompletion {
-        loop {
-            if let Some(e) = self.take_complete() {
-                return e;
-            }
-            spin_loop();
-        }
-    }
-
     fn take_complete(&mut self) -> Option<NvmeCompletion> {
         let complete = self.complete()?;
         let next_head = self.head + 1;
@@ -468,7 +454,57 @@ impl CompleteQueue {
         self.queue.len()
     }
 
+    fn head(&self) -> u32 {
+        self.head
+    }
+
     pub fn bus_addr(&self) -> u64 {
         self.queue.dma_addr().as_u64()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompletionStatus, DoorbellPublishState};
+
+    #[test]
+    fn completion_status_ignores_phase_for_success() {
+        assert!(CompletionStatus(0).is_success());
+        assert!(CompletionStatus(1).is_success());
+    }
+
+    #[test]
+    fn completion_status_checks_full_status_field() {
+        assert!(!CompletionStatus(1 | (1 << 2)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 9)).is_success());
+        assert!(!CompletionStatus(1 | (1 << 11)).is_success());
+    }
+
+    #[test]
+    fn multiple_sq_entries_coalesce_into_one_doorbell_publish() {
+        let mut state = DoorbellPublishState::default();
+
+        state.stage_sq_tail(1);
+        state.stage_sq_tail(2);
+        state.stage_sq_tail(3);
+
+        assert_eq!(state.take_sq_tail(), Some(3));
+        assert_eq!(state.take_sq_tail(), None);
+        state.stage_sq_tail(0);
+        assert_eq!(state.take_sq_tail(), Some(0));
+    }
+
+    #[test]
+    fn multiple_cq_entries_coalesce_into_one_head_publish() {
+        let mut state = DoorbellPublishState::default();
+
+        state.consume_cq_head(1);
+        state.consume_cq_head(2);
+        state.consume_cq_head(3);
+
+        assert_eq!(state.take_cq_head(), Some(3));
+        assert_eq!(state.take_cq_head(), None);
+        state.consume_cq_head(0);
+        assert_eq!(state.take_cq_head(), Some(0));
     }
 }

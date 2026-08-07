@@ -203,7 +203,7 @@ You may need to select the corresponding device drivers by setting the
 ```toml
 # In Cargo.toml
  [dependencies]
-ax-alloc = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # modules/axalloc
+ax-alloc = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # ax-alloc
 ax-hal = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # modules/axhal
 ```
 

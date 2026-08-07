@@ -67,7 +67,11 @@ fn new_uni_channel() -> (HeapProd<u8>, HeapCons<u8>) {
     let rb = HeapRb::new(BUF_SIZE);
     rb.split()
 }
-fn new_channels(pid: u32) -> (Channel, Channel) {
+fn new_channels(
+    pid: u32,
+    first_receive_credentials: Arc<AtomicBool>,
+    second_receive_credentials: Arc<AtomicBool>,
+) -> (Channel, Channel) {
     let (client_tx, server_rx) = new_uni_channel();
     let (server_tx, client_rx) = new_uni_channel();
     let poll_update = Arc::new(PollSet::new());
@@ -88,6 +92,7 @@ fn new_channels(pid: u32) -> (Channel, Channel) {
             peer_tx_closed: server_tx_closed.clone(),
             poll_update: poll_update.clone(),
             peer_pid: pid,
+            peer_receive_credentials: second_receive_credentials,
         },
         Channel {
             tx: server_tx,
@@ -100,6 +105,7 @@ fn new_channels(pid: u32) -> (Channel, Channel) {
             peer_tx_closed: client_tx_closed,
             poll_update,
             peer_pid: pid,
+            peer_receive_credentials: first_receive_credentials,
         },
     )
 }
@@ -124,18 +130,39 @@ struct Channel {
     peer_tx_closed: Arc<AtomicBool>,
     poll_update: Arc<PollSet>,
     peer_pid: u32,
+    /// Peer receiver's `SO_PASSCRED` state.
+    peer_receive_credentials: Arc<AtomicBool>,
 }
 
 pub struct Bind {
     /// New connections are sent to this channel.
     conn_tx: async_channel::Sender<ConnRequest>,
     poll_new_conn: Arc<PollSet>,
+    /// Shared listener state published by `listen`.
+    listening: Arc<AtomicBool>,
     /// PID of the process that created the listening transport.
     pid: u32,
+    /// Receiver passcred state inherited by accepted transports.
+    receive_credentials: Arc<AtomicBool>,
 }
 impl Bind {
-    fn connect(&self, local_addr: UnixSocketAddr, pid: u32) -> AxResult<Channel> {
-        let (mut client_chan, mut server_chan) = new_channels(0);
+    fn connect(
+        &self,
+        local_addr: UnixSocketAddr,
+        pid: u32,
+        client_receive_credentials: Arc<AtomicBool>,
+    ) -> AxResult<Channel> {
+        if !self.listening.load(Ordering::Acquire) {
+            return Err(AxError::ConnectionRefused);
+        }
+        let server_receive_credentials = Arc::new(AtomicBool::new(
+            self.receive_credentials.load(Ordering::Acquire),
+        ));
+        let (mut client_chan, mut server_chan) = new_channels(
+            0,
+            client_receive_credentials,
+            server_receive_credentials.clone(),
+        );
         client_chan.peer_pid = self.pid;
         server_chan.peer_pid = pid;
         self.conn_tx
@@ -143,6 +170,7 @@ impl Bind {
                 channel: server_chan,
                 addr: local_addr,
                 pid,
+                receive_credentials: server_receive_credentials,
             })
             .map_err(|_| AxError::ConnectionRefused)?;
         // The connection request is queued before waking accept waiters.
@@ -158,6 +186,8 @@ struct ConnRequest {
     addr: UnixSocketAddr,
     /// Client pid used for peer credentials.
     pid: u32,
+    /// Passcred state owned by the accepted server socket.
+    receive_credentials: Arc<AtomicBool>,
 }
 
 /// Stream transport for Unix domain sockets.
@@ -166,10 +196,14 @@ pub struct StreamTransport {
     channel: Mutex<Option<Channel>>,
     /// Listener receive queue installed by bind/listen.
     conn_rx: Mutex<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
+    /// True after `listen` publishes the bound endpoint for connection attempts.
+    listening: Arc<AtomicBool>,
     /// Poll set for local stream state.
     poll_state: PollSet,
     /// Shared socket options.
     general: GeneralOptions,
+    /// Per-receiver `SO_PASSCRED` state.
+    receive_credentials: Arc<AtomicBool>,
     /// Creator pid used for credentials.
     pid: u32,
     /// Public receive-half shutdown flag.
@@ -180,15 +214,21 @@ pub struct StreamTransport {
 impl StreamTransport {
     /// Create a new unconnected stream transport.
     pub fn new(pid: u32) -> Self {
-        StreamTransport::new_channel(None, pid)
+        StreamTransport::new_channel(None, pid, Arc::new(AtomicBool::new(false)))
     }
 
-    fn new_channel(channel: Option<Channel>, pid: u32) -> Self {
+    fn new_channel(
+        channel: Option<Channel>,
+        pid: u32,
+        receive_credentials: Arc<AtomicBool>,
+    ) -> Self {
         StreamTransport {
             channel: Mutex::new(channel),
             conn_rx: Mutex::new(None),
+            listening: Arc::new(AtomicBool::new(false)),
             poll_state: PollSet::new(),
             general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
+            receive_credentials,
             pid,
             rx_closed: AtomicBool::new(false),
             tx_closed: AtomicBool::new(false),
@@ -197,9 +237,11 @@ impl StreamTransport {
 
     /// Create a connected pair of stream transports.
     pub fn new_pair(pid: u32) -> (Self, Self) {
-        let (chan1, chan2) = new_channels(pid);
-        let transport1 = StreamTransport::new_channel(Some(chan1), pid);
-        let transport2 = StreamTransport::new_channel(Some(chan2), pid);
+        let credentials1 = Arc::new(AtomicBool::new(false));
+        let credentials2 = Arc::new(AtomicBool::new(false));
+        let (chan1, chan2) = new_channels(pid, credentials1.clone(), credentials2.clone());
+        let transport1 = StreamTransport::new_channel(Some(chan1), pid, credentials1);
+        let transport2 = StreamTransport::new_channel(Some(chan2), pid, credentials2);
         (transport1, transport2)
     }
 }
@@ -216,7 +258,9 @@ impl Configurable for StreamTransport {
             O::SendBuffer(size) => {
                 **size = BUF_SIZE;
             }
-            O::PassCredentials(_) => {}
+            O::PassCredentials(enabled) => {
+                **enabled = self.receive_credentials.load(Ordering::Acquire);
+            }
             O::PeerCredentials(cred) => {
                 let peer_pid = self
                     .channel
@@ -238,7 +282,9 @@ impl Configurable for StreamTransport {
         }
 
         match opt {
-            O::PassCredentials(_) => {}
+            O::PassCredentials(enabled) => {
+                self.receive_credentials.store(*enabled, Ordering::Release);
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -260,7 +306,9 @@ impl TransportOps for StreamTransport {
         *slot = Some(Bind {
             conn_tx: tx,
             poll_new_conn: poll.clone(),
+            listening: self.listening.clone(),
             pid: self.pid,
+            receive_credentials: self.receive_credentials.clone(),
         });
         *guard = Some((rx, poll));
         drop(guard);
@@ -268,6 +316,18 @@ impl TransportOps for StreamTransport {
         // Bind state is published before waking poll waiters.
         unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
+    }
+
+    fn listen(&self) -> AxResult<()> {
+        if self.conn_rx.lock().is_none() {
+            return Err(AxError::InvalidInput);
+        }
+        self.listening.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn is_listening(&self) -> bool {
+        self.listening.load(Ordering::Acquire)
     }
 
     fn connect(&self, slot: &super::BindSlot, local_addr: &UnixSocketAddr) -> AxResult<()> {
@@ -280,7 +340,11 @@ impl TransportOps for StreamTransport {
                 .lock()
                 .as_ref()
                 .ok_or(AxError::NotConnected)?
-                .connect(local_addr.clone(), self.pid)?,
+                .connect(
+                    local_addr.clone(),
+                    self.pid,
+                    self.receive_credentials.clone(),
+                )?,
         );
         drop(guard);
         // Connection state is installed before waking poll waiters.
@@ -289,31 +353,51 @@ impl TransportOps for StreamTransport {
     }
 
     async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            return Err(AxError::NotConnected);
+            // Not a listening socket: accept requires a prior listen(). Linux
+            // returns EINVAL for accept on a non-listening socket.
+            return Err(AxError::InvalidInput);
         };
         let ConnRequest {
             channel,
             addr: peer_addr,
             pid,
+            receive_credentials,
         } = rx.recv().await.map_err(|_| AxError::ConnectionReset)?;
         Ok((
-            Transport::Stream(StreamTransport::new_channel(Some(channel), pid)),
+            Transport::Stream(StreamTransport::new_channel(
+                Some(channel),
+                pid,
+                receive_credentials,
+            )),
             peer_addr,
         ))
     }
 
     fn try_accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            return Err(AxError::NotConnected);
+            // Not a listening socket: accept requires a prior listen(). Linux
+            // returns EINVAL for accept on a non-listening socket.
+            return Err(AxError::InvalidInput);
         };
         match rx.try_recv() {
             Ok(ConnRequest {
                 channel,
                 addr: peer_addr,
                 pid,
+                receive_credentials,
             }) => Ok((
-                Transport::Stream(StreamTransport::new_channel(Some(channel), pid)),
+                Transport::Stream(StreamTransport::new_channel(
+                    Some(channel),
+                    pid,
+                    receive_credentials,
+                )),
                 peer_addr,
             )),
             Err(async_channel::TryRecvError::Empty) => Err(AxError::WouldBlock),
@@ -333,6 +417,17 @@ impl TransportOps for StreamTransport {
         // call (Linux semantics: cmsg is delivered with the first byte of
         // the message). We stash the vec here and push into the peer's
         // cmsg queue once some bytes actually got written.
+        if self
+            .channel
+            .lock()
+            .as_ref()
+            .is_some_and(|channel| channel.peer_receive_credentials.load(Ordering::Acquire))
+            && let Some(credentials) = options.sender_credentials
+        {
+            options
+                .cmsg
+                .push(Box::new(crate::SocketCmsg::Credentials(credentials)));
+        }
         let pending_cmsg = core::mem::take(&mut options.cmsg);
         let had_cmsg = !pending_cmsg.is_empty();
         let mut cmsg_slot: Option<Vec<CMsgData>> = had_cmsg.then_some(pending_cmsg);
@@ -460,11 +555,25 @@ impl TransportOps for StreamTransport {
         })?;
 
         if peek {
-            // MSG_PEEK must not advance the cmsg byte-mark queue. Ancillary
-            // data is attached to the first byte of the carrying message;
-            // delivering and popping it on PEEK would consume the cmsg and
-            // (for SCM_RIGHTS) duplicate file descriptors. A later non-PEEK
-            // recv that actually consumes those bytes will deliver the cmsg.
+            // MSG_PEEK delivers ancillary data without consuming the record.
+            // Linux `unix_stream_read_generic` calls `scm_fp_dup` on peek, so a
+            // peek that reaches the first byte of a cmsg-bearing message returns
+            // duplicated SCM_RIGHTS fds (sharing the open file description); the
+            // byte-mark queue is left intact so the consuming recv delivers them
+            // again. Clone the ready entries without advancing or popping.
+            if let Some(dst) = options.cmsg.as_deref_mut() {
+                let mut guard = self.channel.lock();
+                if let Some(chan) = guard.as_mut() {
+                    let ready_upto = chan.rx_bytes_total.saturating_add(recv_count as u64);
+                    let q = chan.rx_cmsg.lock();
+                    for entry in q.iter() {
+                        if entry.start_byte > ready_upto {
+                            break;
+                        }
+                        dst.extend(entry.cmsg.iter().map(|c| c.clone_box()));
+                    }
+                }
+            }
             return Ok(recv_count);
         }
 

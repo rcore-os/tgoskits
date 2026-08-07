@@ -8,7 +8,8 @@ use anyhow::{Context, bail, ensure};
 use super::{
     StarryAppBoardCase,
     build_config::{
-        collect_prefixed_toml_files, default_target_for_board_config, discover_case_build_config,
+        collect_prefixed_toml_files, default_build_config_for_board_config,
+        discover_case_build_config,
     },
     discovery::{
         apps_starry_dir, available_case_names, resolve_case_relative_path, validate_case_name,
@@ -56,9 +57,11 @@ pub(crate) fn resolve_board_case(
         Some(path) => resolve_explicit_board_config(&case_dir, path),
         None => discover_case_board_config(&case_dir)?,
     };
-    let default_target = default_target_for_board_config(workspace_root, &board_config_path)?;
     let (build_config_path, target) =
-        discover_case_build_config(&case_dir, default_target.as_deref())?;
+        match default_build_config_for_board_config(workspace_root, &board_config_path)? {
+            Some((board_build_config, target)) => (board_build_config, target),
+            None => discover_case_build_config(&case_dir, None)?,
+        };
 
     Ok(StarryAppBoardCase {
         name: case_name.to_string(),
@@ -69,6 +72,16 @@ pub(crate) fn resolve_board_case(
         board_config_path,
         target,
     })
+}
+
+pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&str>) -> String {
+    match board_prelude
+        .map(str::trim)
+        .filter(|prelude| !prelude.is_empty())
+    {
+        Some(prelude) => format!("{prelude}\n{init_cmd}"),
+        None => init_cmd.to_string(),
+    }
 }
 
 fn discover_case_board_config(case_dir: &Path) -> anyhow::Result<PathBuf> {

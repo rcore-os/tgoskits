@@ -3,10 +3,7 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use core::alloc::Layout;
 #[cfg(feature = "smp")]
 use core::sync::atomic::AtomicPtr;
-#[cfg(any(
-    feature = "preempt",
-    all(feature = "stack-guard-page", feature = "smp", feature = "ipi")
-))]
+#[cfg(feature = "preempt")]
 use core::sync::atomic::AtomicUsize;
 use core::{
     cell::{Cell, UnsafeCell},
@@ -33,7 +30,10 @@ use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "lockdep")]
 use crate::lockdep::HeldLockStack;
-use crate::{AxCpuMask, AxTask, AxTaskRef, WaitQueue};
+use crate::{
+    AxCpuMask, AxTask, AxTaskRef, WaitQueue,
+    interrupt::{InterruptSnapshot, InterruptState},
+};
 
 #[cfg(target_pointer_width = "64")]
 const STACK_END_MAGIC: usize = 0x57AC_CE11_57AC_CE11usize;
@@ -129,7 +129,7 @@ pub struct TaskInner {
     #[cfg(feature = "preempt")]
     preempt_disable_count: AtomicUsize,
 
-    interrupted: AtomicBool,
+    interrupted: InterruptState,
     interrupt_waker: AtomicWaker,
 
     exit_code: AtomicI32,
@@ -322,25 +322,28 @@ impl TaskInner {
         // allow `interrupt()` to run and call `wake()` on an empty waker
         // slot — the wake is lost. Registering first closes the window.
         self.interrupt_waker.register(cx.waker());
-        if self.interrupted.swap(false, Ordering::AcqRel) {
+        if self.interrupted.consume() {
             Poll::Ready(())
         } else {
             Poll::Pending
         }
     }
 
-    /// Clears the interrupt state of the task.
+    /// Acknowledges all interruption publications visible at this call.
+    ///
+    /// Publications that race after the internal snapshot remain pending.
     #[inline]
     pub fn clear_interrupt(&self) {
-        self.interrupted.store(false, Ordering::Release);
+        let snapshot = self.interrupt_snapshot();
+        self.acknowledge_interrupt(snapshot);
     }
 
-    /// Atomically checks and clears the interrupt flag.
+    /// Consumes the interruption publications currently visible to this task.
     ///
     /// Returns `true` if the task was interrupted.
     #[inline]
     pub fn take_interrupt(&self) -> bool {
-        self.interrupted.swap(false, Ordering::AcqRel)
+        self.interrupted.consume()
     }
 
     /// Checks whether the task has been interrupted without clearing
@@ -351,14 +354,26 @@ impl TaskInner {
     /// consumers (e.g., an [`interruptible`] future wrapper).
     #[inline]
     pub fn interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
+        self.interrupted.is_pending()
     }
 
     /// Interrupts the task.
     #[inline]
     pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::Release);
+        self.interrupted.publish();
         self.interrupt_waker.wake();
+    }
+
+    /// Captures the interruption publications visible before a safe-point scan.
+    #[inline]
+    pub fn interrupt_snapshot(&self) -> InterruptSnapshot {
+        self.interrupted.snapshot()
+    }
+
+    /// Acknowledges the interruption publications covered by `snapshot`.
+    #[inline]
+    pub fn acknowledge_interrupt(&self, snapshot: InterruptSnapshot) {
+        self.interrupted.acknowledge(snapshot);
     }
 }
 
@@ -390,7 +405,7 @@ impl TaskInner {
             force_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             preempt_disable_count: AtomicUsize::new(0),
-            interrupted: AtomicBool::new(false),
+            interrupted: InterruptState::new(),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
@@ -591,6 +606,15 @@ impl TaskInner {
     #[cfg(feature = "preempt")]
     pub(crate) fn enable_preempt(&self, resched: bool) {
         if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1 && resched {
+            // Keep local IRQs masked until the preemption check has completely
+            // unwound. A device IRQ may wake a pinned maintenance task and
+            // immediately become pending again when that task rearms the
+            // source. If IRQs are restored by the scheduler's inner guard
+            // before this frame returns, every pending IRQ can recursively
+            // enter another preemption check on the interrupted task's stack.
+            // The outer IRQ guard turns that chain into successive IRQ exits
+            // instead of unbounded scheduler-stack growth.
+            let _irq_guard = ax_kernel_guard::IrqSave::new();
             // If current task is pending to be preempted, do rescheduling.
             Self::current_check_preempt_pending();
         }
@@ -607,8 +631,6 @@ impl TaskInner {
             // disable preemption here, because the ax-log may cause preemption.
             let mut rq = crate::current_run_queue::<NoPreemptIrqSave>();
             if curr.take_force_resched_pending() {
-                #[cfg(all(feature = "smp", feature = "ipi"))]
-                crate::run_queue::clear_remote_reschedule_pending_for_current_cpu();
                 rq.force_resched()
             } else if curr.need_resched.load(Ordering::Acquire) {
                 rq.preempt_resched()
@@ -895,8 +917,6 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
 fn flush_stack_guard_tlb(vaddr: VirtAddr) {
     let _guard = ax_kernel_guard::NoPreempt::new();
     let current_cpu = ax_hal::percpu::this_cpu_id();
-    let ack_count = Arc::new(AtomicUsize::new(0));
-    let mut remote_cpu_count = 0;
 
     core::sync::atomic::fence(Ordering::SeqCst);
 
@@ -905,31 +925,26 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
             continue;
         }
 
-        remote_cpu_count += 1;
-        let ack_count = ack_count.clone();
-        ax_ipi::run_on_cpu(cpu_id, move || {
-            ax_hal::asm::flush_tlb(Some(vaddr));
-            ack_count.fetch_add(1, Ordering::Release);
+        unsafe fn flush_on_target(argument: *mut ()) {
+            let address = unsafe { &*(argument as *const VirtAddr) };
+            ax_hal::asm::flush_tlb(Some(*address));
+        }
+
+        // SAFETY: call_on_cpu is synchronous, so the stack-borrowed address
+        // remains valid until the target finishes the hard-IRQ-safe TLB flush.
+        unsafe {
+            ax_ipi::call_on_cpu(
+                ax_hal::irq::CpuId(cpu_id),
+                flush_on_target,
+                core::ptr::from_ref(&vaddr).cast_mut().cast(),
+            )
+        }
+        .unwrap_or_else(|error| {
+            panic!("failed to flush stack guard TLB on CPU {cpu_id}: {error:?}")
         });
     }
 
     ax_hal::asm::flush_tlb(Some(vaddr));
-    if remote_cpu_count == 0 {
-        return;
-    }
-
-    const MAX_WAIT_NS: u64 = 5 * ax_hal::time::NANOS_PER_SEC;
-    let start = ax_hal::time::monotonic_time_nanos();
-    while ack_count.load(Ordering::Acquire) != remote_cpu_count {
-        core::hint::spin_loop();
-        if ax_hal::time::monotonic_time_nanos() - start > MAX_WAIT_NS {
-            let acked = ack_count.load(Ordering::Acquire);
-            panic!(
-                "task stack guard page TLB shootdown timeout: CPU {current_cpu} got \
-                 {acked}/{remote_cpu_count} ack(s) for vaddr={vaddr:#x}"
-            );
-        }
-    }
 }
 
 #[cfg(feature = "stack-guard-page")]

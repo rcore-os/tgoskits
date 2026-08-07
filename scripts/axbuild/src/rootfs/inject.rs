@@ -1,7 +1,8 @@
 //! Rootfs image content extraction and overlay injection helpers.
 //!
 //! Main responsibilities:
-//! - Use `debugfs` to extract a rootfs image into a staging directory
+//! - Use `debugfs` (under `fakeroot` when host ownership cannot be restored
+//!   directly) to extract a rootfs image into a staging directory
 //! - Write overlay files and directories back into a rootfs image
 //! - Generate and execute `debugfs` scripts for image content updates
 //!
@@ -10,7 +11,7 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -26,6 +27,23 @@ pub(crate) fn read_text_file(
     rootfs_img: &Path,
     guest_path: &str,
 ) -> anyhow::Result<Option<String>> {
+    let Some(contents) = read_binary_file(rootfs_img, guest_path)? else {
+        return Ok(None);
+    };
+
+    String::from_utf8(contents)
+        .map(Some)
+        .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
+}
+
+/// Reads a binary file from a rootfs image with `debugfs`.
+///
+/// Returns `Ok(None)` when the image is readable but the guest path does not
+/// exist.
+pub(crate) fn read_binary_file(
+    rootfs_img: &Path,
+    guest_path: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
     ensure!(
         guest_path.starts_with('/'),
         "guest path must be absolute: `{guest_path}`"
@@ -50,9 +68,7 @@ pub(crate) fn read_text_file(
         return Ok(None);
     }
 
-    String::from_utf8(output.stdout)
-        .map(Some)
-        .with_context(|| format!("{}:{guest_path} is not valid UTF-8", rootfs_img.display()))
+    Ok(Some(output.stdout))
 }
 
 /// Replaces one regular file inside a rootfs image with a host file.
@@ -95,20 +111,157 @@ pub(crate) fn replace_file(
 
 /// Extracts the contents of a rootfs image into a host staging directory.
 pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Result<()> {
-    let extracted = Command::new("debugfs")
-        .arg("-R")
-        .arg(format!("rdump / {}", output_dir.display()))
-        .arg(rootfs_img)
-        .status()
-        .with_context(|| format!("failed to spawn debugfs for {}", rootfs_img.display()))?
-        .success();
-    ensure!(
-        extracted,
-        "failed to extract {} into {}",
-        rootfs_img.display(),
-        output_dir.display()
-    );
+    #[cfg(unix)]
+    let fakeroot_program = current_process_requires_fakeroot().then_some(Path::new("fakeroot"));
+    #[cfg(not(unix))]
+    let fakeroot_program = None;
+
+    RootfsExtraction {
+        rootfs_img,
+        output_dir,
+        debugfs_program: Path::new("debugfs"),
+        fakeroot_program,
+    }
+    .run()?;
     relativize_absolute_symlinks(output_dir)
+}
+
+/// A preselected rootfs extraction command.
+///
+/// `debugfs rdump` always attempts to restore inode ownership. Callers that
+/// cannot safely perform those `chown` calls therefore run it inside
+/// `fakeroot` before `debugfs` starts. There is intentionally no
+/// direct-execution fallback: a missing `fakeroot` fails before extraction
+/// instead of producing thousands of permission warnings and continuing with
+/// partially restored metadata.
+struct RootfsExtraction<'a> {
+    rootfs_img: &'a Path,
+    output_dir: &'a Path,
+    debugfs_program: &'a Path,
+    fakeroot_program: Option<&'a Path>,
+}
+
+impl RootfsExtraction<'_> {
+    fn run(&self) -> anyhow::Result<()> {
+        let mut command = self.command();
+        let rendered_command = format!("{command:?}");
+        let output = command.output().with_context(|| {
+            if let Some(fakeroot) = self.fakeroot_program {
+                format!(
+                    "failed to spawn fakeroot `{}`; rootfs extraction without full host ownership \
+                     privileges requires fakeroot",
+                    fakeroot.display()
+                )
+            } else {
+                format!("failed to spawn debugfs for {}", self.rootfs_img.display())
+            }
+        })?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        eprintln!("rootfs extraction command failed: {rendered_command}");
+        io::stdout()
+            .write_all(&output.stdout)
+            .context("failed to replay rootfs extraction stdout")?;
+        io::stderr()
+            .write_all(&output.stderr)
+            .context("failed to replay rootfs extraction stderr")?;
+        bail!(
+            "failed to extract {} into {}: command exited with status {}",
+            self.rootfs_img.display(),
+            self.output_dir.display(),
+            output.status
+        );
+    }
+
+    fn command(&self) -> Command {
+        let mut command = if let Some(fakeroot) = self.fakeroot_program {
+            let mut command = Command::new(fakeroot);
+            command.arg("--").arg(self.debugfs_program);
+            command
+        } else {
+            Command::new(self.debugfs_program)
+        };
+        command
+            .arg("-R")
+            .arg(format!("rdump / {}", self.output_dir.display()))
+            .arg(self.rootfs_img);
+        command
+    }
+}
+
+#[cfg(unix)]
+fn effective_uid() -> libc::uid_t {
+    // SAFETY: `geteuid` has no arguments or caller-side safety preconditions.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+fn current_process_requires_fakeroot() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        requires_fakeroot(
+            effective_uid(),
+            linux_id_map_is_full_identity("/proc/self/uid_map"),
+            linux_id_map_is_full_identity("/proc/self/gid_map"),
+            linux_has_effective_cap_chown(),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        effective_uid() != 0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn requires_fakeroot(
+    effective_uid: libc::uid_t,
+    full_uid_map: bool,
+    full_gid_map: bool,
+    has_effective_cap_chown: bool,
+) -> bool {
+    effective_uid != 0 || !full_uid_map || !full_gid_map || !has_effective_cap_chown
+}
+
+#[cfg(target_os = "linux")]
+fn linux_id_map_is_full_identity(path: &str) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .is_some_and(|contents| id_map_is_full_identity(&contents))
+}
+
+#[cfg(target_os = "linux")]
+fn id_map_is_full_identity(contents: &str) -> bool {
+    let mut lines = contents.lines().filter(|line| !line.trim().is_empty());
+    let Some(line) = lines.next() else {
+        return false;
+    };
+    if lines.next().is_some() {
+        return false;
+    }
+    let fields = line
+        .split_ascii_whitespace()
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>();
+    matches!(fields.as_deref(), Ok([0, 0, 4_294_967_295]))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_has_effective_cap_chown() -> bool {
+    fs::read_to_string("/proc/self/status")
+        .ok()
+        .is_some_and(|status| status_has_effective_cap_chown(&status))
+}
+
+#[cfg(target_os = "linux")]
+fn status_has_effective_cap_chown(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:"))
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .is_some_and(|capabilities| capabilities & 1 != 0)
 }
 
 /// Rewrites absolute symlinks in an extracted staging root as equivalent
@@ -441,5 +594,108 @@ mod tests {
             sym0_pos > write_pos,
             "symlink must be second pass, after its target"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_root_extraction_starts_debugfs_inside_fakeroot() {
+        let root = tempdir().unwrap();
+        let fakeroot = root.path().join("fakeroot");
+        let debugfs = root.path().join("debugfs");
+        let marker = root.path().join("debugfs-ran-inside-fakeroot");
+        write_executable(
+            &fakeroot,
+            "#!/bin/sh\ntest \"$1\" = \"--\" || exit 91\nshift\nexport \
+             AXBUILD_TEST_FAKEROOT=1\nexec \"$@\"\n",
+        );
+        write_executable(
+            &debugfs,
+            &format!(
+                "#!/bin/sh\ntest \"${{AXBUILD_TEST_FAKEROOT:-}}\" = \"1\" || exit 92\ntouch '{}'\n",
+                marker.display()
+            ),
+        );
+
+        let output_dir = root.path().join("staging");
+        fs::create_dir(&output_dir).unwrap();
+        RootfsExtraction {
+            rootfs_img: Path::new("rootfs.img"),
+            output_dir: &output_dir,
+            debugfs_program: &debugfs,
+            fakeroot_program: Some(&fakeroot),
+        }
+        .run()
+        .unwrap();
+
+        assert!(marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_fakeroot_fails_before_debugfs_starts() {
+        let root = tempdir().unwrap();
+        let debugfs = root.path().join("debugfs");
+        let marker = root.path().join("debugfs-started");
+        write_executable(
+            &debugfs,
+            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        );
+
+        let output_dir = root.path().join("staging");
+        fs::create_dir(&output_dir).unwrap();
+        let error = RootfsExtraction {
+            rootfs_img: Path::new("rootfs.img"),
+            output_dir: &output_dir,
+            debugfs_program: &debugfs,
+            fakeroot_program: Some(&root.path().join("missing-fakeroot")),
+        }
+        .run()
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("failed to spawn fakeroot"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!marker.exists(), "debugfs must not run without fakeroot");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_extraction_requires_full_host_ownership_privileges() {
+        assert!(!requires_fakeroot(0, true, true, true));
+        assert!(requires_fakeroot(1, true, true, true));
+        assert!(requires_fakeroot(0, false, true, true));
+        assert!(requires_fakeroot(0, true, false, true));
+        assert!(requires_fakeroot(0, true, true, false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn full_identity_map_rejects_partial_or_split_user_namespaces() {
+        assert!(id_map_is_full_identity("0 0 4294967295\n"));
+        assert!(!id_map_is_full_identity("0 1000 1\n"));
+        assert!(!id_map_is_full_identity("0 1000 1\n1 100000 65535\n"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cap_chown_parser_requires_effective_capability_bit() {
+        assert!(status_has_effective_cap_chown(
+            "Name:\ttg-xtask\nCapEff:\t0000000000000001\n"
+        ));
+        assert!(!status_has_effective_cap_chown(
+            "Name:\ttg-xtask\nCapEff:\t0000000000000000\n"
+        ));
+        assert!(!status_has_effective_cap_chown(
+            "Name:\ttg-xtask\nCapEff:\tinvalid\n"
+        ));
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, contents).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 }

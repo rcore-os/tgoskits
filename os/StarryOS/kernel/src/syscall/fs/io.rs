@@ -23,7 +23,7 @@ use super::memfd::{
 use crate::{
     file::{
         Directory, File, FileLike, Pipe, get_file_like,
-        memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
+        memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
     task::AsThread,
@@ -289,12 +289,13 @@ pub fn sys_fallocate(
         return Err(AxError::from(LinuxError::EFBIG));
     }
     // For memfd fds, enforce the seal mask before changing the size.
-    // `F_SEAL_WRITE` already forbids any data-mutating path; `F_SEAL_GROW`
-    // additionally forbids a fallocate that would extend EOF. Linux
-    // surfaces both as EPERM (memfd_test.c covers this).
+    // `F_SEAL_WRITE`/`F_SEAL_FUTURE_WRITE` already forbid any data-mutating
+    // path; `F_SEAL_GROW` additionally forbids a fallocate that would extend
+    // EOF. Linux surfaces all as EPERM (shmem_fallocate checks the same
+    // `F_SEAL_WRITE | F_SEAL_FUTURE_WRITE` mask; memfd_test.c covers this).
     if let Ok(memfd) = Memfd::from_fd(fd) {
         let seals = memfd.get_seals();
-        if seals & F_SEAL_WRITE != 0 {
+        if seals & F_SEAL_ANY_WRITE != 0 {
             return Err(AxError::OperationNotPermitted);
         }
         let cur_len = f.inner().backend()?.location().len()?;
@@ -693,14 +694,23 @@ impl SendFile {
     }
 }
 
-fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> {
+fn do_send(mut src: SendFile, mut dst: SendFile, len: usize, nonblock: bool) -> AxResult<usize> {
     let mut buf = vec![0; 0x1000];
     let mut total_written = 0;
     let mut remaining = len;
 
     while remaining > 0 {
-        if total_written > 0 && !src.has_data() {
-            break;
+        if !src.has_data() {
+            if total_written > 0 {
+                break;
+            }
+            // splice(2) SPLICE_F_NONBLOCK: if the operation would block on the
+            // source (e.g. an empty pipe) and nothing has been transferred yet,
+            // fail with EAGAIN instead of blocking on the read below. Without
+            // this flag the read blocks, matching Linux's default splice.
+            if nonblock {
+                return Err(AxError::WouldBlock);
+            }
         }
         let to_read = buf.len().min(remaining);
         let bytes_read = match src.read(&mut buf[..to_read]) {
@@ -767,7 +777,7 @@ pub fn sys_sendfile(out_fd: c_int, in_fd: c_int, offset: *mut u64, len: usize) -
 
     let dst: SendFile = SendFile::Direct(out_file);
 
-    do_send(src, dst, len).map(|n: usize| n as _)
+    do_send(src, dst, len, false).map(|n: usize| n as _)
 }
 
 pub fn sys_copy_file_range(
@@ -857,7 +867,7 @@ pub fn sys_copy_file_range(
         SendFile::Direct(get_file_like(fd_out)?)
     };
 
-    do_send(src, dst, len).map(|n: usize| n as isize)
+    do_send(src, dst, len, false).map(|n: usize| n as isize)
 }
 
 pub fn sys_splice(
@@ -1005,7 +1015,7 @@ pub fn sys_splice(
         SendFile::Direct(f)
     };
 
-    let n = do_send(src, dst, len)?;
+    let n = do_send(src, dst, len, flags & SPLICE_F_NONBLOCK != 0)?;
 
     isize::try_from(n).map_err(|_| AxError::InvalidInput)
 }

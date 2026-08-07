@@ -1,0 +1,25 @@
+board_type = "AKA-00-SG2002"
+dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
+kernel_load_addr = "0x80200000"
+fit_load_addr = "0x82200000"
+bootm_addr = "0x82200000"
+shell_prefix = "root@starry:"
+success_regex = [
+  '(?m)^SG2002_BLOCK_RW_BENCH_PASSED$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^SG2002_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^block-rw-bench: error: .*$',
+  '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
+  '(?i)(block-rw-bench|sh): .*not found',
+  '(?i)\bI/O error\b',
+]
+timeout = 1200
+
+shell_init_cmd = """
+export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/mmcblk0'
+export BLOCK_RW_BENCH_CONTROLLER='cv181x-sdhci'
+export BLOCK_RW_BENCH_SUCCESS_MARKER='SG2002_BLOCK_RW_BENCH_PASSED'
+export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'
+"""

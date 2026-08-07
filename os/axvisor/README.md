@@ -46,7 +46,6 @@ AxVisor supports multiple operating systems as guests, with good compatibility f
 |--------------|-------------|---------------------|-------------------|
 | [ArceOS](https://github.com/arceos-org/arceos) | Unikernel | ARM64, x86_64, RISC-V | Rust-based componentized operating system, lightweight and high-performance |
 | [Starry-OS](https://github.com/Starry-OS) | Macrokernel OS | ARM64, x86_64 | Real-time operating system for embedded scenarios |
-| [NimbOS](https://github.com/equation314/nimbos) | RTOS System | ARM64, x86_64, RISC-V | Concise Unix-like system, supports POSIX interface |
 | Linux | Macrokernel OS | ARM64, x86_64, RISC-V | Mature and stable general-purpose operating system, rich software ecosystem |
 
 # Build
@@ -55,7 +54,7 @@ AxVisor is built based on the Rust ecosystem, providing complete project build, 
 
 ## Build Environment
 
-> **Quick Start**: To quickly run AxVisor on QEMU, see the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for a complete walkthrough from environment setup to running guest OSes.
+> **Quick Start**: Run `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` from the workspace root.
 
 First, in a Linux environment, you need to install basic development tool packages such as `libssl-dev gcc libudev-dev pkg-config`.
 
@@ -79,27 +78,25 @@ Guest configuration files are located in the `configs/vms/` directory, defining 
 
 Guest configs are organized by platform first. QEMU configs live under `configs/vms/qemu/<arch>/`, while board configs live under `configs/vms/<board>/`. File names keep only the guest system and variant, such as `configs/vms/qemu/aarch64/arceos-smp1.toml` or `configs/vms/roc-rk3568-pc/linux-smp1.toml`.
 
-On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps the legacy `axvm-bios` path and patches the generated multiboot info into the BIOS image, while `uefi` loads the external firmware from `uefi_firmware_path` without multiboot patching. Legacy UEFI configs that still use `bios_path` are accepted as a compatibility fallback. See `configs/vms/qemu/x86_64/linux-uefi-smp1.toml`, `configs/vms/qemu/x86_64/arceos-uefi-smp1.toml`, and the QEMU quickstart for the UEFI guest path.
+On x86_64, `boot_protocol` selects the guest firmware flow. `multiboot` keeps the legacy `axvm-bios` path and patches the generated multiboot info into the BIOS image, while `uefi` loads the external firmware from `uefi_firmware_path` without multiboot patching. Legacy UEFI configs that still use `bios_path` are accepted as a compatibility fallback.
+
+## Management Shell Syntax
+
+The AxVisor management shell tokenizes command lines with `shlex` POSIX-style rules. Single and double quotes group words, backslashes follow `shlex` escaping rules, and `""` or `''` produces an empty argument. Unclosed quotes and a trailing standalone backslash are syntax errors. Only ASCII shell whitespace separates arguments.
+
+Tokenization does not provide variable expansion, globbing, pipelines, general redirection, or job control. Command lookup, option validation, and handler behavior remain AxVisor-specific.
 
 ## Compilation
 
 AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart) chapter in the configuration documentation.
 
-1. **List Available Boards**: Use `cargo xtask config ls` to view the available board names under `configs/board/`.
+1. **List Available Boards**: Use `cargo xtask axvisor config ls` to view the available board names under `configs/board/`.
 
-2. **Generate Configuration**: Use `cargo xtask defconfig <board_name>` to copy the selected board-level configuration to `.build.toml`.
+2. **Generate Configuration**: Use `cargo xtask axvisor defconfig <board_name>` to copy the selected board-level configuration to `.build.toml`.
 
-3. **Execute Build**: Use `cargo xtask build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask build --config configs/board/<board_name>.toml`.
+3. **Execute Build**: Use `cargo xtask axvisor build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask axvisor build --config configs/board/<board_name>.toml`.
 
-4. **Run on QEMU or Board**:
-   - QEMU: `cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
-   - U-Boot board flow: `cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/roc-rk3568-pc/arceos-smp1.toml`
-
-For local bring-up, you can also use `./scripts/quick-start.sh` for the supported QEMU and board platforms. See the [QEMU Quickstart Guide](doc/qemu-quickstart.md) for examples.
-
-## QEMU Quick Run
-
-To quickly run AxVisor on QEMU with a guest OS (ArceOS / Linux / NimbOS), see the [QEMU Quickstart Guide](doc/qemu-quickstart.md).
+4. **Run on QEMU**: From the workspace root, use `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` to run the maintained smoke case.
 
 # Contributing
 

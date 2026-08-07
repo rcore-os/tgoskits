@@ -35,6 +35,9 @@ pub mod types;
 mod vcpu;
 mod vpmu;
 
+#[cfg(test)]
+mod world_switch_tests;
+
 pub use detect::{detect_h_extension as has_hardware_support, max_guest_page_table_levels};
 pub use regs::GprIndex;
 pub use types::{

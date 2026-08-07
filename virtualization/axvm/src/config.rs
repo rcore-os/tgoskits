@@ -14,15 +14,17 @@
 
 //! Runtime configuration structures for an AxVM instance.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, sync::Arc, vec::Vec};
 
+use axdevice::{NullSerialBackendFactory, SerialBackendFactory};
+use axvm_types::InterruptTriggerMode;
 pub use axvm_types::{
-    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
-    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
-    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    AddressSpacePolicy, GuestPhysAddr, HostAddressAssignment, HostDeviceAssignment,
+    HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
+use axvmconfig::VirtualDeviceRequest;
 
-use crate::arch::{ArchOps, CurrentArch};
+use crate::{arch::*, machine::*};
 
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,30 +70,43 @@ pub struct VMImageConfig {
     pub ramdisk: Option<RamdiskInfo>,
 }
 
+/// Physical interrupt source forwarded through a guest's virtual controller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PassthroughInterrupt {
+    /// Architecture-local physical interrupt source number.
+    pub source: u32,
+    /// Trigger mode declared by firmware for the physical device.
+    pub trigger: InterruptTriggerMode,
+}
+
 /// Runtime configuration for one VM.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AxVMConfig {
     id: usize,
     name: String,
-    #[allow(dead_code)]
-    vm_type: VMType,
     pub(crate) phys_cpu_ls: PhysCpuList,
     /// vCPU configuration.
     pub cpu_config: AxVCpuConfig,
     /// VM image configuration.
     pub image_config: VMImageConfig,
-    emu_devices: Vec<EmulatedDeviceConfig>,
-    pass_through_devices: Vec<PassThroughDeviceConfig>,
+    pass_through_devices: Vec<HostDeviceAssignment>,
     excluded_devices: Vec<Vec<String>>,
-    pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pass_through_addresses: Vec<HostAddressAssignment>,
     reserved_address_ranges: Vec<ReservedAddressConfig>,
-    pass_through_ports: Vec<PassThroughPortConfig>,
+    pass_through_ports: Vec<HostPortAssignment>,
     address_space_policy: AddressSpacePolicy,
     memory_regions: Vec<VmMemConfig>,
     boot_policy: GuestBootPolicy,
     // Physical interrupt sources forwarded to the guest in passthrough mode.
-    passthrough_irq_list: Vec<u32>,
-    interrupt_mode: VMInterruptMode,
+    passthrough_irq_list: Vec<PassthroughInterrupt>,
+    serial_profile: GuestSerialProfile,
+    serial_firmware_identity: Option<GuestSerialFirmwareIdentity>,
+    gic_profile: Option<GuestGicProfile>,
+    plic_profile: Option<GuestPlicProfile>,
+    timer_profile: Option<GuestTimerProfile>,
+    serial_backend_factory: Arc<dyn SerialBackendFactory>,
+    virtual_device_requests: Vec<VirtualDeviceRequest>,
+    virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -99,32 +114,37 @@ pub struct AxVMConfig {
 pub struct AxVMConfigParams {
     pub id: usize,
     pub name: String,
-    pub vm_type: VMType,
     pub phys_cpu_ls: PhysCpuList,
     pub cpu_config: AxVCpuConfig,
     pub image_config: VMImageConfig,
-    pub emu_devices: Vec<EmulatedDeviceConfig>,
-    pub pass_through_devices: Vec<PassThroughDeviceConfig>,
+    pub pass_through_devices: Vec<HostDeviceAssignment>,
     pub excluded_devices: Vec<Vec<String>>,
-    pub pass_through_addresses: Vec<PassThroughAddressConfig>,
+    pub pass_through_addresses: Vec<HostAddressAssignment>,
     pub reserved_address_ranges: Vec<ReservedAddressConfig>,
-    pub pass_through_ports: Vec<PassThroughPortConfig>,
+    pub pass_through_ports: Vec<HostPortAssignment>,
     pub address_space_policy: AddressSpacePolicy,
     pub memory_regions: Vec<VmMemConfig>,
     pub boot_policy: GuestBootPolicy,
-    pub interrupt_mode: VMInterruptMode,
+    /// Machine-owned virtual serial resources.
+    pub serial_profile: Option<GuestSerialProfile>,
+    /// App-owned backend factory for the mandatory virtual serial device.
+    pub serial_backend_factory: Option<Arc<dyn SerialBackendFactory>>,
+    /// Open-ended virtual-device requests parsed from guest configuration.
+    pub virtual_device_requests: Vec<VirtualDeviceRequest>,
+    /// Code-registered factories available to this VM.
+    pub virtual_device_catalog: Option<Arc<crate::ConfiguredDeviceCatalog>>,
 }
 
 impl AxVMConfig {
     pub fn new(params: AxVMConfigParams) -> Self {
+        let machine = crate::machine::current_machine_profile(params.phys_cpu_ls.cpu_num());
+        let serial_profile = params.serial_profile.unwrap_or(machine.serial);
         Self {
             id: params.id,
             name: params.name,
-            vm_type: params.vm_type,
             phys_cpu_ls: params.phys_cpu_ls,
             cpu_config: params.cpu_config,
             image_config: params.image_config,
-            emu_devices: params.emu_devices,
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
@@ -134,7 +154,18 @@ impl AxVMConfig {
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
-            interrupt_mode: params.interrupt_mode,
+            serial_profile,
+            serial_firmware_identity: None,
+            gic_profile: machine.gic,
+            plic_profile: machine.plic,
+            timer_profile: machine.timer,
+            serial_backend_factory: params
+                .serial_backend_factory
+                .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
+            virtual_device_requests: params.virtual_device_requests,
+            virtual_device_catalog: params
+                .virtual_device_catalog
+                .unwrap_or_else(|| Arc::new(crate::ConfiguredDeviceCatalog::new())),
         }
     }
 
@@ -196,17 +227,29 @@ impl AxVMConfig {
     }
 
     /// Returns the list of excluded devices.
-    pub fn excluded_devices(&self) -> &Vec<Vec<String>> {
+    pub fn excluded_devices(&self) -> &[Vec<String>] {
         &self.excluded_devices
     }
 
+    /// Adds one physical-device path to the passthrough exclusion set.
+    pub fn exclude_device_path(&mut self, path: String) {
+        if !self
+            .excluded_devices
+            .iter()
+            .flatten()
+            .any(|excluded| excluded == &path)
+        {
+            self.excluded_devices.push(std::vec![path]);
+        }
+    }
+
     /// Returns the list of passthrough address configurations.
-    pub fn pass_through_addresses(&self) -> &Vec<PassThroughAddressConfig> {
+    pub fn pass_through_addresses(&self) -> &[HostAddressAssignment] {
         &self.pass_through_addresses
     }
 
     /// Returns guest address ranges reserved from default passthrough mapping.
-    pub fn reserved_address_ranges(&self) -> &Vec<ReservedAddressConfig> {
+    pub fn reserved_address_ranges(&self) -> &[ReservedAddressConfig] {
         &self.reserved_address_ranges
     }
 
@@ -216,7 +259,7 @@ impl AxVMConfig {
     }
 
     /// Returns the list of passthrough host I/O port configurations.
-    pub fn pass_through_ports(&self) -> &Vec<PassThroughPortConfig> {
+    pub fn pass_through_ports(&self) -> &[HostPortAssignment] {
         &self.pass_through_ports
     }
 
@@ -245,23 +288,18 @@ impl AxVMConfig {
         self.boot_policy = boot_policy;
     }
 
-    /// Returns configurations related to VM emulated devices.
-    pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
-        &self.emu_devices
-    }
-
     /// Returns configurations related to VM passthrough devices.
-    pub fn pass_through_devices(&self) -> &Vec<PassThroughDeviceConfig> {
+    pub fn pass_through_devices(&self) -> &[HostDeviceAssignment] {
         &self.pass_through_devices
     }
 
     /// Adds a new passthrough device to the VM configuration.
-    pub fn add_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
+    pub fn add_pass_through_device(&mut self, device: HostDeviceAssignment) {
         self.pass_through_devices.push(device);
     }
 
     /// Removes passthrough device from the VM configuration.
-    pub fn remove_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
+    pub fn remove_pass_through_device(&mut self, device: HostDeviceAssignment) {
         self.pass_through_devices.retain(|d| d != &device);
     }
 
@@ -270,31 +308,115 @@ impl AxVMConfig {
         self.pass_through_devices.clear();
     }
 
-    /// Adds a passthrough SPI to the VM configuration.
-    pub fn add_pass_through_spi(&mut self, spi: u32) {
-        self.add_pass_through_irq(spi);
-    }
-
     /// Adds a physical interrupt source forwarded to the guest.
-    pub fn add_pass_through_irq(&mut self, irq: u32) {
-        if !self.passthrough_irq_list.contains(&irq) {
-            self.passthrough_irq_list.push(irq);
+    pub fn add_pass_through_irq(&mut self, source: u32, trigger: InterruptTriggerMode) {
+        let route = PassthroughInterrupt { source, trigger };
+        if let Some(existing) = self
+            .passthrough_irq_list
+            .iter_mut()
+            .find(|existing| existing.source == source)
+        {
+            *existing = route;
+        } else {
+            self.passthrough_irq_list.push(route);
         }
     }
 
-    /// Returns the list of passthrough SPIs.
-    pub fn pass_through_spis(&self) -> &Vec<u32> {
-        &self.passthrough_irq_list
-    }
-
     /// Returns the physical interrupt sources forwarded to the guest.
-    pub fn pass_through_irqs(&self) -> &Vec<u32> {
+    pub fn pass_through_irqs(&self) -> &[PassthroughInterrupt] {
         &self.passthrough_irq_list
     }
 
-    /// Returns the interrupt mode of the VM.
-    pub fn interrupt_mode(&self) -> VMInterruptMode {
-        self.interrupt_mode
+    /// Returns whether the guest address space starts from host identity mappings.
+    pub fn uses_passthrough_address_space(&self) -> bool {
+        self.address_space_policy == AddressSpacePolicy::Passthrough
+    }
+
+    /// Returns the machine-owned virtual serial resources.
+    pub(crate) const fn serial_profile(&self) -> GuestSerialProfile {
+        self.serial_profile
+    }
+
+    /// Replaces the machine serial resources and firmware identity atomically.
+    pub fn replace_machine_serial(
+        &mut self,
+        profile: GuestSerialProfile,
+        identity: Option<GuestSerialFirmwareIdentity>,
+    ) -> crate::AxVmResult {
+        self.serial_profile = profile;
+        self.serial_firmware_identity = identity;
+        Ok(())
+    }
+
+    /// Returns firmware identity retained for the virtual serial node.
+    pub fn serial_firmware_identity(&self) -> Option<&GuestSerialFirmwareIdentity> {
+        self.serial_firmware_identity.as_ref()
+    }
+
+    /// Replaces the virtual GIC windows with host firmware resources.
+    pub fn replace_machine_gic(&mut self, profile: GuestGicProfile) -> crate::AxVmResult {
+        if self.gic_profile.is_none() {
+            return Err(crate::AxVmError::invalid_config(
+                "the selected machine has no AArch64 GIC",
+            ));
+        }
+        let cpu_num = self.phys_cpu_ls.cpu_num().max(1);
+        self.gic_profile = Some(profile.normalized_for_vcpus(cpu_num)?);
+        Ok(())
+    }
+
+    /// Returns host firmware resources retained by the virtual GIC.
+    pub fn gic_profile(&self) -> Option<&GuestGicProfile> {
+        self.gic_profile.as_ref()
+    }
+
+    /// Replaces the AArch64 architectural timer resources with validated host firmware data.
+    pub fn replace_machine_timer(&mut self, profile: GuestTimerProfile) -> crate::AxVmResult {
+        if self.timer_profile.is_none() {
+            return Err(crate::AxVmError::invalid_config(
+                "the selected machine has no AArch64 architectural timer",
+            ));
+        }
+        profile
+            .validated_intids()
+            .map_err(crate::AxVmError::invalid_config)?;
+        self.timer_profile = Some(profile);
+        Ok(())
+    }
+
+    /// Returns the machine-owned AArch64 architectural timer resources.
+    pub fn timer_profile(&self) -> Option<&GuestTimerProfile> {
+        self.timer_profile.as_ref()
+    }
+
+    /// Replaces the virtual PLIC window with host firmware resources.
+    pub fn replace_machine_plic(&mut self, profile: GuestPlicProfile) -> crate::AxVmResult {
+        if self.plic_profile.is_none() {
+            return Err(crate::AxVmError::invalid_config(
+                "the selected machine has no RISC-V PLIC",
+            ));
+        }
+        profile.validate_for_vcpus(self.phys_cpu_ls.cpu_num())?;
+        self.plic_profile = Some(profile);
+        Ok(())
+    }
+
+    /// Returns host firmware resources retained by the virtual PLIC.
+    pub fn plic_profile(&self) -> Option<&GuestPlicProfile> {
+        self.plic_profile.as_ref()
+    }
+
+    /// Returns the factory that creates a backend for each virtual UART graph.
+    pub fn serial_backend_factory(&self) -> Arc<dyn SerialBackendFactory> {
+        self.serial_backend_factory.clone()
+    }
+
+    pub(crate) fn virtual_device_requests(&self) -> &[VirtualDeviceRequest] {
+        &self.virtual_device_requests
+    }
+
+    pub(crate) fn virtual_device_catalog(&self) -> &crate::ConfiguredDeviceCatalog {
+        &self.virtual_device_catalog
     }
 
     /// Relocate the guest kernel image while preserving the configured
@@ -319,6 +441,12 @@ impl AxVMConfig {
         self.image_config.kernel_load_gpa = kernel_load_gpa;
         self.cpu_config.bsp_entry = GuestPhysAddr::from(new_load + bsp_offset);
         self.cpu_config.ap_entry = GuestPhysAddr::from(new_load + ap_offset);
+    }
+}
+
+impl Default for AxVMConfig {
+    fn default() -> Self {
+        Self::new(AxVMConfigParams::default())
     }
 }
 
@@ -396,7 +524,7 @@ impl PhysCpuList {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use super::*;
 
@@ -425,5 +553,45 @@ mod tests {
         assert_eq!(regions[1].gpa, 0x110000);
         assert_eq!(regions[1].size, 0x10000);
         assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn controller_replacements_require_machine_capabilities() {
+        let mut config = AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            ..Default::default()
+        });
+        let gic = GuestGicProfile {
+            compatible: "arm,gic-400".into(),
+            node_path: "/interrupt-controller".into(),
+            node_phandle: None,
+            distributor: crate::machine::GuestMmioRegion {
+                base: 0x1000,
+                length: 0x1000,
+            },
+            cpu_region: crate::machine::GuestGicCpuRegion::CpuInterface(
+                crate::machine::GuestMmioRegion {
+                    base: 0x2000,
+                    length: 0x2000,
+                },
+            ),
+            its: Vec::new(),
+        };
+        let plic = GuestPlicProfile {
+            node_path: "/plic".into(),
+            node_phandle: None,
+            base: 0x0c00_0000,
+            length: 0x60_0000,
+        };
+
+        assert!(matches!(
+            config.replace_machine_gic(gic),
+            Err(crate::AxVmError::InvalidConfig { .. })
+        ));
+        assert!(matches!(
+            config.replace_machine_plic(plic),
+            Err(crate::AxVmError::InvalidConfig { .. })
+        ));
     }
 }

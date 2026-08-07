@@ -77,7 +77,7 @@ QEMU rootfs 路径的选择顺序为：
 cargo xtask axvisor qemu \
   --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
 
-# x86 UEFI/VMX case 使用它自己的启动契约
+# x86 UEFI/VMX case 验证宿主启动与宿主 NVMe 文件读写
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 
 # LoongArch LVZ

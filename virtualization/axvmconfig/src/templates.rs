@@ -16,7 +16,7 @@
 //!
 //! This module provides functionality to generate VM configuration templates
 //! with sensible defaults based on user-provided parameters.
-use crate::{AxVMCrateConfig, VMBaseConfig, VMDevicesConfig, VMKernelConfig};
+use crate::*;
 
 /// Configuration parameters for generating a VM template.
 ///
@@ -27,8 +27,8 @@ pub struct VmTemplateParams {
     pub id: usize,
     /// Human-readable name for the VM
     pub name: String,
-    /// Type of VM (0=HostVM, 1=RTOS, 2=Linux)
-    pub vm_type: usize,
+    /// Physical-device assignment model.
+    pub guest_type: GuestType,
     /// Number of virtual CPUs to allocate
     pub cpu_num: usize,
     /// VM entry point address
@@ -53,14 +53,14 @@ pub struct VmTemplateParams {
 /// * `params` - Template parameters containing all VM configuration settings
 ///
 /// # Returns
-/// * `AxVMCrateConfig` - Complete VM configuration structure
-pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
-    AxVMCrateConfig {
+/// * `GuestConfig` - Complete VM configuration structure
+pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
+    GuestConfig {
         // Basic VM configuration
         base: VMBaseConfig {
             id: params.id,
             name: params.name,
-            vm_type: params.vm_type,
+            guest_type: params.guest_type,
             cpu_num: params.cpu_num,
             // Assign sequential CPU IDs starting from 0
             phys_cpu_ids: Some((0..params.cpu_num).collect()),
@@ -82,19 +82,11 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
             ramdisk_load_addr: None,
             image_location: Some(params.image_location),
             cmdline: params.cmdline, // Optional kernel command line
-            disk_path: None,         // No disk image by default
             memory_regions: vec![],  // Memory regions to be defined per architecture
             configured_memory_region_count: 0,
         },
-        // Device configuration - starts empty, can be customized
-        devices: VMDevicesConfig {
-            address_space_policy: Default::default(), // Virtualized address space by default
-            emu_devices: vec![],                      // No emulated devices by default
-            passthrough_devices: vec![],              // No passthrough devices by default
-            interrupt_mode: Default::default(),       // Use default interrupt mode
-            excluded_devices: vec![],                 // No excluded devices by default
-            passthrough_addresses: vec![],            // No passthrough addresses by default
-            passthrough_ports: vec![],                // No passthrough ports by default
-        },
+        // Machine-profile devices, including the virtual serial port, are
+        // intentionally absent from the user configuration.
+        devices: GuestDevices::default(),
     }
 }

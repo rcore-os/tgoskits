@@ -13,14 +13,20 @@ use linux_raw_sys::general::{
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
-    file::{File, FileLike, resolve_at},
+    file::{Directory, File, get_file_like, memfd::Memfd, resolve_at},
     mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
 const FILE_HANDLE_TYPE_DEV_INO: i32 = 1;
-
+const MS_NOSUID: u32 = 1 << 1;
+const MS_NODEV: u32 = 1 << 2;
+const MS_NOEXEC: u32 = 1 << 3;
+const MS_NOATIME: u32 = 1 << 10;
+const MS_RELATIME: u32 = 1 << 21;
+const ST_RDONLY: u32 = 1;
+const ST_RELATIME: u32 = 1 << 12;
 #[repr(C)]
 pub struct FileHandleHeader {
     handle_bytes: u32,
@@ -223,10 +229,22 @@ fn statfs(loc: &Location) -> AxResult<statfs> {
     };
     result.f_namelen = stat.name_length as _;
     result.f_frsize = stat.fragment_size as _;
-    result.f_flags = stat.mount_flags as _;
+    result.f_flags = (stat.mount_flags | statfs_mount_flags(loc)) as _;
     Ok(result)
 }
 
+fn statfs_mount_flags(loc: &Location) -> u32 {
+    let mountpoint = loc.mountpoint();
+    let mount_flags = mountpoint.mount_flags();
+    let mut statfs_flags = mount_flags & (MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME);
+    if mountpoint.is_readonly() {
+        statfs_flags |= ST_RDONLY;
+    }
+    if mount_flags & MS_RELATIME != 0 {
+        statfs_flags |= ST_RELATIME;
+    }
+    statfs_flags
+}
 pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_statfs <= path: {path:?}");
@@ -244,7 +262,17 @@ pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> AxResult<isize> {
 pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> AxResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
-    buf.vm_write(statfs(File::from_fd(fd)?.inner().location())?)?;
+    let file_like = get_file_like(fd)?;
+    let location = if let Some(directory) = file_like.downcast_ref::<Directory>() {
+        directory.inner()
+    } else if let Some(file) = file_like.downcast_ref::<File>() {
+        file.inner().location()
+    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+        memfd.inner().inner().location()
+    } else {
+        return Err(AxError::InvalidInput);
+    };
+    buf.vm_write(statfs(location)?)?;
     Ok(0)
 }
 

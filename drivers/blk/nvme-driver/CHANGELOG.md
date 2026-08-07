@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.3...nvme-driver-v0.7.4) - 2026-08-03
+
+### Other
+
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+
+### Fixed
+
+- Wait for `CSTS.RDY` to clear before queue DMA memory is released during shutdown.
+- Treat invalid or duplicate completion IDs as fatal queue corruption after publishing the consumed CQ head.
+
+### Changed
+
+- Move controller enable, Identify, queue creation, and namespace discovery to an IRQ-driven admin state machine.
+- Give each I/O queue one task owner and one fixed MSI-X vector; retain only explicit single-queue INTx fallback.
+- Stage each accepted I/O batch into the SQ and publish it with one tail doorbell; drain each IRQ batch before publishing one CQ head update.
+
+### Removed
+
+- Remove synchronous admin helpers, CQ polling, polling configuration, and unbounded register spins.
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.2...nvme-driver-v0.7.3) - 2026-07-23
 
 ### Other

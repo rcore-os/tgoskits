@@ -19,6 +19,7 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_hal::mem::virt_to_phys;
+use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use ax_task::IrqNotify;
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -40,16 +41,59 @@ use crate::{
 /// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
 /// Each JIT-compiled eBPF program fits within this space; the allocation
 /// is sized generously (16 KiB) since programs are typically < 1 page.
+#[cfg(target_arch = "x86_64")]
 const BPF_JIT_MEM_PAGES: usize = 4;
 
-/// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with kernel state: a poll
-/// set so readers can wait for new records, and a weak handle to the
-/// backing pages produced by `device_mmap` (Some after the first
-/// `mmap(perf_fd)`; None before).
+struct BpfPerfEventState {
+    inner: BpfPerfEvent,
+    /// Weak handle to the contiguous pages backing the ringbuf. The strong
+    /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
+    /// mapping still exists.
+    pages: Option<Weak<GlobalPage>>,
+}
+
+impl BpfPerfEventState {
+    fn is_mapped(&self) -> bool {
+        self.pages
+            .as_ref()
+            .is_some_and(|pages| pages.strong_count() > 0)
+    }
+}
+
+/// Non-sleeping output capability used by `bpf_perf_event_output`.
+///
+/// The task control plane owns allocation and mapping. This endpoint only
+/// enters the bounded ring write, observes the already-published page anchor,
+/// and emits an IRQ-safe worker notification.
+#[derive(Clone)]
+pub(super) struct BpfPerfOutput {
+    state: Arc<SpinNoIrq<BpfPerfEventState>>,
+    poll_notify: Arc<IrqNotify>,
+}
+
+impl BpfPerfOutput {
+    pub(super) fn write_event(&self, data: &[u8]) -> AxResult<()> {
+        let notify = {
+            let mut state = self.state.lock();
+            if !state.is_mapped() {
+                return Ok(());
+            }
+            state.inner.write_event(data).into_ax_result()?;
+            state.inner.enabled()
+        };
+        if notify {
+            self.poll_notify.notify_irq();
+        }
+        Ok(())
+    }
+}
+
+/// Wraps `kbpf_basic::perf::bpf::BpfPerfEvent` with separate task-control and
+/// non-sleeping output state plus a poll set so readers can wait for records.
 ///
 /// Ownership model: the user VMA owns the ringbuf pages via the strong
 /// `Arc<GlobalPage>` threaded into `DeviceMmap::Physical`'s retainer slot;
-/// this wrapper keeps only a `Weak`. Consequences:
+/// the shared output state keeps only a `Weak`. Consequences:
 ///
 /// * UAF safety — the pages outlive `close(perf_fd)` (which drops this
 ///   wrapper) for as long as a mapping is live, because the VMA holds the
@@ -63,20 +107,15 @@ const BPF_JIT_MEM_PAGES: usize = 4;
 ///   normal `munmap` the same thing happens, matching Linux's allowance to
 ///   re-`mmap` a perf fd.
 ///
-/// `inner` holds a raw pointer into the page buffer; `RingPage` has no
+/// The inner perf event holds a raw pointer into the page buffer; `RingPage` has no
 /// destructor and is never dereferenced once the pages are gone (every
-/// access through `inner` is gated on [`Self::is_mapped`]), so a dangling
-/// pointer left after the pages free is harmless.
+/// access is gated on [`BpfPerfEventState::is_mapped`]), so a dangling pointer
+/// left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
-    inner: BpfPerfEvent,
+    state: Arc<SpinNoIrq<BpfPerfEventState>>,
     poll_ready: Arc<PollSet>,
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
-    /// Weak handle to the contiguous pages backing the ringbuf. The strong
-    /// ref(s) live in the user VMA(s); `strong_count() > 0` means a live
-    /// mapping still exists. See the type-level docs for the ownership
-    /// rationale.
-    pages: Option<Weak<GlobalPage>>,
 }
 
 impl BpfPerfEventWrapper {
@@ -87,36 +126,18 @@ impl BpfPerfEventWrapper {
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
         Self {
-            inner,
+            state: Arc::new(SpinNoIrq::new(BpfPerfEventState { inner, pages: None })),
             poll_ready,
             poll_notify,
             poll_alive,
-            pages: None,
         }
     }
 
-    /// Whether a live user mapping of the ringbuf currently exists. The
-    /// wrapper only holds a `Weak` to the backing pages, so this is true
-    /// exactly while some VMA still pins them; once every mapping is gone
-    /// (munmap / exit) — or an in-progress mmap was abandoned before a VMA
-    /// adopted the pages — the strong refs drop and this returns false.
-    fn is_mapped(&self) -> bool {
-        self.pages.as_ref().is_some_and(|w| w.strong_count() > 0)
-    }
-
-    /// Write a record into the ringbuf and wake any readers. Calls before a
-    /// mapping exists (or after it is gone) are accepted as no-ops: the
-    /// `kbpf_basic::RingPage` pointer is either still `empty()` or now
-    /// dangling, so dereferencing it would be UB.
-    pub fn write_event(&mut self, data: &[u8]) -> AxResult<()> {
-        if !self.is_mapped() {
-            return Ok(());
+    pub(super) fn output_handle(&self) -> BpfPerfOutput {
+        BpfPerfOutput {
+            state: Arc::clone(&self.state),
+            poll_notify: Arc::clone(&self.poll_notify),
         }
-        self.inner.write_event(data).into_ax_result()?;
-        if self.inner.enabled() {
-            self.poll_notify.notify_irq();
-        }
-        Ok(())
     }
 }
 
@@ -153,12 +174,12 @@ impl Debug for BpfPerfEventWrapper {
 
 impl PerfEventOps for BpfPerfEventWrapper {
     fn enable(&mut self) -> AxResult<()> {
-        self.inner.enable().into_ax_result()?;
+        self.state.lock().inner.enable().into_ax_result()?;
         Ok(())
     }
 
     fn disable(&mut self) -> AxResult<()> {
-        self.inner.disable().into_ax_result()?;
+        self.state.lock().inner.disable().into_ax_result()?;
         Ok(())
     }
 
@@ -167,7 +188,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
     }
 
     fn device_mmap(&mut self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        if self.is_mapped() {
+        if self.state.lock().is_mapped() {
             // Linux allows only one live mmap per perf event fd; a second
             // mapping while the first is alive would orphan it. A stale
             // `Weak` from an abandoned or munmap'd previous attempt does not
@@ -188,7 +209,14 @@ impl PerfEventOps for BpfPerfEventWrapper {
         pages.zero();
         let kvirt = pages.start_vaddr();
         let paddr = virt_to_phys(kvirt);
-        self.inner
+        let pages = Arc::new(pages);
+
+        let mut state = self.state.lock();
+        if state.is_mapped() {
+            return Err(AxError::ResourceBusy);
+        }
+        state
+            .inner
             .do_mmap(kvirt.as_usize(), len, 0)
             .map_err(|_| AxError::InvalidInput)?;
         // kbpf_basic::RingPage::init sets the data-region geometry but leaves
@@ -200,7 +228,6 @@ impl PerfEventOps for BpfPerfEventWrapper {
             core::ptr::addr_of_mut!((*header).version).write(1);
             core::ptr::addr_of_mut!((*header).compat_version).write(0);
         }
-        let pages = Arc::new(pages);
         // Keep only a `Weak`; hand the sole strong ref to the caller, which
         // threads it into `DeviceMmap::Physical`'s retainer so the user VMA
         // pins these frames until `munmap`/exit even if the perf fd (and this
@@ -209,7 +236,8 @@ impl PerfEventOps for BpfPerfEventWrapper {
         // the anchor simply frees the pages and leaves the fd mmap-able again
         // (see the type-level docs). Without the anchor the pages would free
         // under a live mapping.
-        self.pages = Some(Arc::downgrade(&pages));
+        state.pages = Some(Arc::downgrade(&pages));
+        drop(state);
         let anchor: Arc<dyn Any + Send + Sync> = pages;
         Ok((paddr, anchor))
     }
@@ -217,7 +245,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
 
 impl Pollable for BpfPerfEventWrapper {
     fn poll(&self) -> axpoll::IoEvents {
-        if self.inner.readable() {
+        if self.state.lock().inner.readable() {
             IoEvents::IN
         } else {
             IoEvents::empty()

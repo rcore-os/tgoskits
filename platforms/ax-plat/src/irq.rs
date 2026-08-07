@@ -6,8 +6,8 @@ use ax_kernel_guard::BaseGuard;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
-    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, Registry,
-    ShareMode, TrapVector,
+    IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
+    Registry, ShareMode, TrapVector,
 };
 use spin::Once;
 
@@ -15,6 +15,10 @@ use spin::Once;
 pub mod loongarch64_hv;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64_hv::LoongArchHvIrqIf;
+#[cfg(target_arch = "riscv64")]
+pub mod riscv64_hv;
+#[cfg(target_arch = "riscv64")]
+pub use riscv64_hv::RiscvHvIrqIf;
 
 /// Compatibility IRQ domain used while non-domainized platforms migrate.
 pub const LEGACY_IRQ_DOMAIN: IrqDomainId = IrqDomainId(0);
@@ -103,12 +107,11 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn cpu_online(&self, cpu: CpuId) -> bool {
-        cpu.0 < usize::BITS as usize
-            && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu.0)) != 0
+        is_cpu_online(cpu.0)
     }
 
     fn in_irq_context(&self) -> bool {
-        in_irq_context_on(self.current_cpu())
+        crate::irq::in_irq_context()
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
@@ -174,7 +177,17 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    in_irq_context_on(PlatIrqOps.current_cpu())
+    let _guard = ax_kernel_guard::NoPreempt::new();
+    // SAFETY: the guard prevents migration across both CPU identity resolution
+    // and the matching context-bit read. Releasing an inner guard between these
+    // operations could resume this thread on another CPU with a stale ID.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            let cpu = CpuId(crate::percpu::this_cpu_id_pinned(pin));
+            in_irq_context_on(cpu)
+        })
+    }
+    .expect("the current CPU-local area must remain bound")
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -244,6 +257,11 @@ pub fn cpu_online(cpu: usize) -> Result<(), IrqError> {
     registry().cpu_online(CpuId(cpu))
 }
 
+/// Returns whether a CPU has entered the platform IRQ runtime.
+pub fn is_cpu_online(cpu: usize) -> bool {
+    cpu < usize::BITS as usize && (ONLINE_CPUS.load(Ordering::Acquire) & (1usize << cpu)) != 0
+}
+
 /// Prepares CPU-local runtime state before the common IRQ guard is entered.
 pub fn prepare_irq_context(vector: TrapVector) {
     ax_crate_interface::call_interface!(IrqIf::prepare, vector)
@@ -290,25 +308,13 @@ pub fn resolve_percpu_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     resolve_percpu(hwirq)
 }
 
-/// Target specification for inter-processor interrupts (IPIs).
+/// Target specification for one inter-processor interrupt (IPI) delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IpiTarget {
     /// Send to the current CPU.
-    Current {
-        /// The CPU ID of the current CPU.
-        cpu_id: usize,
-    },
+    Current,
     /// Send to a specific CPU.
-    Other {
-        /// The CPU ID of the target CPU.
-        cpu_id: usize,
-    },
-    /// Send to all other CPUs.
-    AllExceptCurrent {
-        /// The CPU ID of the current CPU.
-        cpu_id: usize,
-        /// The total number of CPUs.
-        cpu_num: usize,
-    },
+    Cpu(CpuId),
 }
 
 /// IRQ management interface.
@@ -329,6 +335,9 @@ pub trait IrqIf {
     /// Enables or disables the given IRQ.
     fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError>;
 
+    /// Configures the trigger mode of the given IRQ.
+    fn set_trigger(irq: IrqId, trigger: IrqTrigger) -> Result<(), IrqError>;
+
     /// Routes a global IRQ to a fixed CPU when supported.
     fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError>;
 
@@ -344,8 +353,11 @@ pub trait IrqIf {
     /// `None` if the IRQ is spurious.
     fn handle(vector: TrapVector) -> Option<IrqId>;
 
-    /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-    fn send_ipi(irq_num: IrqId, target: IpiTarget);
+    /// Sends an inter-processor interrupt (IPI) to one target CPU.
+    ///
+    /// The platform backend must order earlier Normal-memory publications on
+    /// the calling CPU before the target can observe the interrupt.
+    fn send_ipi(irq_num: IrqId, target: IpiTarget) -> Result<(), IrqError>;
 
     /// Returns the platform IRQ id used for runtime IPIs.
     fn ipi_irq() -> IrqId;
@@ -366,6 +378,7 @@ mod tests {
 
     static ENABLE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static FAIL_ENABLE: AtomicUsize = AtomicUsize::new(0);
+    static FAIL_SEND_IPI: AtomicUsize = AtomicUsize::new(0);
 
     struct TestIrqIf;
 
@@ -390,6 +403,10 @@ mod tests {
             Ok(())
         }
 
+        fn set_trigger(_irq: IrqId, _trigger: IrqTrigger) -> Result<(), IrqError> {
+            Ok(())
+        }
+
         fn set_affinity(_irq: IrqId, _affinity: IrqAffinity) -> Result<(), IrqError> {
             Err(IrqError::Unsupported)
         }
@@ -398,7 +415,12 @@ mod tests {
             None
         }
 
-        fn send_ipi(_irq_num: IrqId, _target: IpiTarget) {}
+        fn send_ipi(_irq_num: IrqId, _target: IpiTarget) -> Result<(), IrqError> {
+            if FAIL_SEND_IPI.load(Ordering::Relaxed) != 0 {
+                return Err(IrqError::Controller);
+            }
+            Ok(())
+        }
 
         fn ipi_irq() -> IrqId {
             IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))
@@ -411,6 +433,21 @@ mod tests {
         fn resolve_percpu(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
             Err(IrqError::Unsupported)
         }
+    }
+
+    #[test]
+    fn send_ipi_propagates_platform_delivery_error() {
+        FAIL_SEND_IPI.store(1, Ordering::Relaxed);
+
+        assert_eq!(
+            send_ipi(
+                IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0)),
+                IpiTarget::Current,
+            ),
+            Err(IrqError::Controller),
+        );
+
+        FAIL_SEND_IPI.store(0, Ordering::Relaxed);
     }
 
     #[test]

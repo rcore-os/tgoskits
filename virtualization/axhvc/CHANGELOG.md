@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axhvc-v0.4.11...axhvc-v0.4.12) - 2026-08-03
+
+### Fixed
+
+- *(axhvc)* handle PSCI_VERSION hypercall ([#1692](https://github.com/rcore-os/tgoskits/pull/1692))
+
 ## [0.4.11](https://github.com/rcore-os/tgoskits/compare/axhvc-v0.4.10...axhvc-v0.4.11) - 2026-07-23
 
 ### Other

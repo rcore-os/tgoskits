@@ -24,6 +24,7 @@ use core::{
     fmt::{self, Debug},
     net::SocketAddr,
     task::Context,
+    time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -35,7 +36,7 @@ use enum_dispatch::enum_dispatch;
 #[cfg(feature = "vsock")]
 use crate::vsock::{VsockAddr, VsockSocket};
 use crate::{
-    options::{Configurable, GetSocketOption, SetSocketOption},
+    options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
     raw::RawSocket,
     tcp::TcpSocket,
     udp::UdpSocket,
@@ -127,14 +128,44 @@ bitflags! {
         /// the real size of the datagram, even when it is larger than the
         /// buffer.
         const TRUNCATE = 0x02;
+        /// Requests out-of-band data (`MSG_OOB`). Only stream sockets that
+        /// support urgent data honor it; others reject it with `EOPNOTSUPP`.
+        const OOB = 0x04;
         /// Per-call non-blocking override (`MSG_DONTWAIT`). Does NOT
         /// change the socket's own `O_NONBLOCK` state.
         const DONTWAIT = 0x40;
     }
 }
 
+/// Ancillary control message payload, carried opaquely so the socket layer
+/// stays protocol-independent. Cloneable so `recvmsg(MSG_PEEK)` can duplicate
+/// the ancillary data without consuming the record: SCM_RIGHTS fds are cloned
+/// (sharing the open file description), matching Linux `unix_peek_fds` /
+/// `scm_fp_dup`.
+pub trait CMsgPayload: Any + Send + Sync {
+    /// Duplicate into a fresh payload for peek delivery.
+    fn clone_box(&self) -> Box<dyn CMsgPayload>;
+    /// Recover a `Box<dyn Any>` for owned downcast at the syscall layer.
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync>;
+}
+impl<T: Any + Send + Sync + Clone> CMsgPayload for T {
+    fn clone_box(&self) -> Box<dyn CMsgPayload> {
+        Box::new(self.clone())
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync> {
+        self
+    }
+}
+// Opaque payload; mirror the std `dyn Any` Debug impl so containers deriving
+// Debug still compile.
+impl core::fmt::Debug for dyn CMsgPayload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CMsgPayload { .. }")
+    }
+}
+
 /// Type alias for ancillary control message data.
-pub type CMsgData = Box<dyn Any + Send + Sync>;
+pub type CMsgData = Box<dyn CMsgPayload>;
 
 /// IP ancillary data reported through `recvmsg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +174,16 @@ pub enum IpCmsg {
     Ipv4Tos(u8),
     /// IPv6 traffic-class byte for `IPV6_RECVTCLASS`.
     Ipv6TrafficClass(u8),
+}
+
+/// Transport-independent socket-level ancillary data reported through
+/// `recvmsg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketCmsg {
+    /// Sender credentials requested with `SO_PASSCRED`.
+    Credentials(UnixCredentials),
+    /// Wall-clock receive timestamp requested with `SO_TIMESTAMP`.
+    Timestamp(Duration),
 }
 
 /// Options for sending data to a socket.
@@ -156,6 +197,8 @@ pub struct SendOptions {
     pub flags: SendFlags,
     /// Ancillary control messages.
     pub cmsg: Vec<CMsgData>,
+    /// Real credentials of the task performing this send operation.
+    pub sender_credentials: Option<UnixCredentials>,
 }
 
 /// Options for receiving data from a socket.
@@ -215,6 +258,10 @@ pub trait SocketOps: Configurable {
     fn listen(&self, _backlog: usize) -> AxResult {
         Err(AxError::OperationNotSupported)
     }
+    /// Returns whether this socket currently accepts incoming connections.
+    fn is_listening(&self) -> bool {
+        false
+    }
     /// Accepts a connection on a listening socket, returning a new socket.
     fn accept(&self) -> AxResult<Socket> {
         Err(AxError::OperationNotSupported)
@@ -249,6 +296,10 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
 
     fn listen(&self, backlog: usize) -> AxResult {
         (**self).listen(backlog)
+    }
+
+    fn is_listening(&self) -> bool {
+        (**self).is_listening()
     }
 
     fn accept(&self) -> AxResult<Socket> {

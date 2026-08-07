@@ -84,7 +84,7 @@
 
 当前进展：
 
-- `components/axfs-ng-vfs` 已将 VFS 内部 `Mutex` / `MutexGuard` 别名从
+- `fs/axfs-ng-vfs` 已将 VFS 内部 `Mutex` / `MutexGuard` 别名从
   `spin::Mutex` 切换为 `ax_kspin::SpinNoPreempt`，保持非睡眠自旋语义，
   同时可通过 `axfs-ng-vfs/lockdep` 接入 `ax-kspin` lockdep。
 - `ax-fs-ng/lockdep` 和 `ax-runtime/lockdep` 已向下传播 `axfs-ng-vfs/lockdep`，

@@ -36,7 +36,7 @@
 #     FILE SYS (/proc/mounts + statfs). glances paints a section ONLY when its plugin has non-empty
 #     stats, so the section label appearing in the reconstructed screen is itself proof the psutil
 #     plugin read live data: NETWORK carries the loopback interface, DISK I/O carries the root
-#     virtio-blk disk "vda", and FILE SYS carries the ext4 root mount. These are asserted as HARD
+#     NVMe disk "nvme0n1", and FILE SYS carries the ext4 root mount. These are asserted as HARD
 #     gates (not best-effort) -- the same three sections the headless carpet proves numerically.
 #     The pyte-soak stability anchors use the always-present CORE process-table header (the sidebar
 #     rows churn as stats update, so they are not used as positional anchors).
@@ -176,10 +176,10 @@ def main():
     sf, smiss = pa.tokens_present(final_disp, sidebar_sections)
     check(not smiss, "left-sidebar procfs sections rendered %s (missing=%s)" % (sidebar_sections, smiss))
     # concrete per-source data tokens inside those sections (glances only prints them with real stats):
-    #   'vda'  -> the root virtio-blk disk name, shown by BOTH DISK I/O and the FILE SYS root row
-    #             "/ (vda)"; its presence proves /proc/diskstats + /proc/mounts data reached the render.
+    #   'nvme0n1'  -> the root NVMe disk name, shown by BOTH DISK I/O and the FILE SYS root row
+    #             "/ (nvme0n1)"; its presence proves /proc/diskstats + /proc/mounts data reached the render.
     #   'eth0' -> the ethernet interface row in NETWORK, proving /proc/net/dev data reached the render.
-    data_tokens = ["vda", "eth0"]
+    data_tokens = ["nvme0n1", "eth0"]
     df, dmiss = pa.tokens_present(final_disp, data_tokens)
     check(not dmiss, "sidebar sections carry live procfs data %s (missing=%s)" % (data_tokens, dmiss))
 

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.22...axvisor-v0.5.23) - 2026-08-03
+
+### Added
+
+- *(ahci-driver)* add portable multi-disk AHCI support ([#1795](https://github.com/rcore-os/tgoskits/pull/1795))
+- *(axvisor)* add optional panic backtrace via axbacktrace + std::panic::set_hook ([#1653](https://github.com/rcore-os/tgoskits/pull/1653))
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
+### Fixed
+
+- *(axhvc)* handle PSCI_VERSION hypercall ([#1692](https://github.com/rcore-os/tgoskits/pull/1692))
+- *(axvisor)* standalone xtask CLI compatibility ([#1651](https://github.com/rcore-os/tgoskits/pull/1651))
+
+### Other
+
+- virtualize AArch64 physical timer state ([#1770](https://github.com/rcore-os/tgoskits/pull/1770))
+- *(block)* adopt IRQ-driven multi-queue runtime ([#1768](https://github.com/rcore-os/tgoskits/pull/1768))
+- *(qemu)* migrate block devices to NVMe ([#1784](https://github.com/rcore-os/tgoskits/pull/1784))
+- *(axvisor)* implement unified emulated device framework ([#1722](https://github.com/rcore-os/tgoskits/pull/1722))
+
 ## [0.5.22](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.5.21...axvisor-v0.5.22) - 2026-07-23
 
 ### Added

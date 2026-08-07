@@ -131,6 +131,8 @@ pub trait ArchTrait {
     fn systimer_freq() -> usize;
     /// Get the current timer tick count
     fn systimer_tick() -> usize;
+    /// Reports whether the timer counter is a synchronized system counter.
+    fn systimer_stability() -> timer::CounterStability;
 
     fn irq_all_is_enabled() -> bool;
     fn irq_all_set_enable(enable: bool);

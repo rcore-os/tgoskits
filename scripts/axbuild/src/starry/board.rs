@@ -211,7 +211,7 @@ log = "Warn"
             "qemu-riscv64",
             r#"
 target = "riscv64gc-unknown-none-elf"
-features = ["ax-driver/serial", "ax-driver/virtio-blk"]
+features = ["ax-driver/serial", "ax-driver/nvme"]
 log = "Warn"
 "#,
         );
@@ -219,5 +219,29 @@ log = "Warn"
         let board =
             default_board_for_target(root.path(), "aarch64-unknown-none-softfloat").unwrap();
         assert_eq!(board.unwrap().name, "qemu-aarch64");
+    }
+
+    #[test]
+    fn default_qemu_boards_enable_nvme_root_device() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+
+        for board in board_default_list(workspace_root)
+            .unwrap()
+            .into_iter()
+            .filter(|board| board.name.starts_with("qemu-"))
+        {
+            assert!(
+                board
+                    .build_info
+                    .features
+                    .iter()
+                    .any(|feature| feature == "ax-driver/nvme"),
+                "default QEMU board `{}` must enable the NVMe root device driver",
+                board.name
+            );
+        }
     }
 }

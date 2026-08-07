@@ -31,11 +31,11 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn len(&self) -> usize {
-        len_from_bytes::<T>(self.data.handle.size())
+        len_from_bytes::<T>(self.data.handle().size())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -43,7 +43,7 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn bytes_len(&self) -> usize {
-        self.data.handle.size()
+        self.data.handle().size()
     }
 
     pub fn read_cpu(&self, index: usize) -> Option<T> {
@@ -79,7 +79,7 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     pub fn as_slice_cpu(&self) -> &[T] {
@@ -92,6 +92,10 @@ impl<T: DmaPod> CoherentArray<T> {
     /// memory in a way that races with CPU writes.
     pub unsafe fn as_mut_slice_cpu(&mut self) -> &mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.as_ptr().as_ptr(), self.len()) }
+    }
+
+    pub fn try_release(mut self) -> Result<(), DmaError> {
+        self.data.try_release()
     }
 }
 
@@ -126,11 +130,11 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn len(&self) -> usize {
-        len_from_bytes::<T>(self.data.handle.size())
+        len_from_bytes::<T>(self.data.handle().size())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -138,7 +142,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn bytes_len(&self) -> usize {
-        self.data.handle.size()
+        self.data.handle().size()
     }
 
     pub fn domain_id(&self) -> DmaDomainId {
@@ -242,7 +246,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     pub fn as_slice_cpu(&self) -> &[T] {

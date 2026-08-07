@@ -59,7 +59,7 @@ case "$ARCH" in
         QEMU_MACHINE="virt"
         QEMU_CPU="rv64"
         QEMU_EXTRA=""  # extra flags appended after -cpu
-        QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     x86_64)
@@ -74,7 +74,7 @@ case "$ARCH" in
             QEMU_EXTRA=""
             info "KVM not available — using TCG emulation (will be slow)"
         fi
-        QEMU_BLK_DEV="virtio-blk-pci,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-pci,netdev=net0"
         ;;
     aarch64)
@@ -83,7 +83,7 @@ case "$ARCH" in
         QEMU_MACHINE="virt"
         QEMU_CPU="cortex-a72"
         QEMU_EXTRA=""
-        QEMU_BLK_DEV="virtio-blk-device,drive=disk0"
+        QEMU_BLK_DEV="nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65"
         QEMU_NET_DEV="virtio-net-device,netdev=net0"
         ;;
     *)
@@ -159,12 +159,6 @@ echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JO
 	echo "[self-compile] Filtering workspace for ${ARCH}..."
 	/usr/bin/filter-workspace.sh "${ARCH}" Cargo.toml
 
-# Patch axalloc to 64G capacity
-echo "[self-compile] Patching page allocator to 64G..."
-if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc/Cargo.toml ]; then
-    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' os/arceos/modules/axalloc/Cargo.toml
-fi
-
 export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Cincremental=false -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
 echo "[self-compile] Rustc version: \$(rustc --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unknown')"
@@ -179,7 +173,7 @@ echo "BUILD_START"
 		# Direct output to serial console (TTY = line-buffered cargo)
 		cargo build --ignore-rust-version -p starryos \
 		            --target ${TARGET} \
-		            --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
+		            --features qemu,ax-driver/nvme,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
 		            --offline
 		BUILD_RC=\$?
 		kill \$HEARTBEAT_PID 2>/dev/null || true
@@ -219,9 +213,9 @@ if [ -n "$LINKER_X" ] && [ -f "$LINKER_X" ]; then
 fi
 
 # Inject axalloc Cargo.toml (may have been removed by e2fsck on prior runs)
-HOST_AXALLOC_CARGO="$REPO_ROOT/os/arceos/modules/axalloc/Cargo.toml"
+HOST_AXALLOC_CARGO="$REPO_ROOT/memory/ax-alloc/Cargo.toml"
 if [ -f "$HOST_AXALLOC_CARGO" ]; then
-    sudo cp "$HOST_AXALLOC_CARGO" "$MNT_DIR/opt/starryos/os/arceos/modules/axalloc/Cargo.toml"
+    sudo cp "$HOST_AXALLOC_CARGO" "$MNT_DIR/opt/starryos/memory/ax-alloc/Cargo.toml"
     info "axalloc Cargo.toml injected"
 fi
 

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.4...arm_vgic-v0.5.5) - 2026-08-03
+
+### Added
+
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
+### Fixed
+
+- *(virtualization)* avoid privileged IRQ ops in host tests ([#1776](https://github.com/rcore-os/tgoskits/pull/1776))
+
+### Other
+
+- virtualize AArch64 physical timer state ([#1770](https://github.com/rcore-os/tgoskits/pull/1770))
+- *(axvisor)* implement unified emulated device framework ([#1722](https://github.com/rcore-os/tgoskits/pull/1722))
+
 ## [0.5.4](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.3...arm_vgic-v0.5.4) - 2026-07-23
 
 ### Other

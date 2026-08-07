@@ -1,4 +1,4 @@
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId};
 
@@ -283,6 +283,7 @@ fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResu
         serial,
         prop_u32("clock-frequency", platform.serial.clock_hz),
     )?;
+    set_prop(fdt, serial, prop_u32("current-speed", platform.serial.baud))?;
     set_prop(fdt, serial, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;
     set_prop(
         fdt,
@@ -352,5 +353,51 @@ mod tests {
 
         assert!(fdt.get_by_path_id("/chosen").is_some());
         assert!(fdt.get_by_path_id("/cpus/cpu@0").is_some());
+        let serial_path = format!("/serial@{:x}", platform.serial.mmio.base);
+        let serial = fdt.get_by_path(&serial_path).unwrap();
+        let regs = serial.regs();
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].address, platform.serial.mmio.base);
+        assert_eq!(regs[0].size, Some(platform.serial.mmio.size));
+        assert!(
+            serial
+                .as_node()
+                .compatibles()
+                .any(|compatible| compatible == "ns16550a")
+        );
+        assert_eq!(
+            serial
+                .as_node()
+                .get_property("clock-frequency")
+                .unwrap()
+                .get_u32(),
+            Some(platform.serial.clock_hz)
+        );
+        assert_eq!(
+            serial
+                .as_node()
+                .get_property("current-speed")
+                .unwrap()
+                .get_u32(),
+            Some(platform.serial.baud)
+        );
+        assert_eq!(
+            serial
+                .as_node()
+                .get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            [platform.serial.irq, 4]
+        );
+        assert_eq!(
+            fdt.get_by_path("/chosen")
+                .unwrap()
+                .as_node()
+                .get_property("stdout-path")
+                .unwrap()
+                .as_str(),
+            Some(serial_path.as_str())
+        );
     }
 }

@@ -357,9 +357,9 @@ kernel_path = "{}"
         let mut qemu = QemuConfig {
             args: vec![
                 "-device".to_string(),
-                "virtio-blk-device,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-append".to_string(),
-                "root=/dev/vda rw init=/bin/sh".to_string(),
+                "root=/dev/nvme0n1 rw init=/bin/sh".to_string(),
             ],
             ..Default::default()
         };
@@ -370,11 +370,11 @@ kernel_path = "{}"
             qemu.args,
             vec![
                 "-device".to_string(),
-                "virtio-blk-device,drive=disk0".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-drive".to_string(),
                 format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
                 "-append".to_string(),
-                "root=/dev/vda rw init=/bin/sh".to_string(),
+                "root=/dev/nvme0n1 rw init=/bin/sh".to_string(),
             ]
         );
     }
@@ -453,5 +453,30 @@ kernel_path = "{}"
         };
 
         assert!(qemu_to_bin_requested(&qemu).is_err());
+    }
+
+    #[test]
+    fn axvisor_host_rootfs_configs_use_nvme_device_names() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let configs = [
+            "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml",
+            "test-suit/axvisor/normal/qemu/smoke/qemu-riscv64.toml",
+            "test-suit/axvisor/normal/qemu/build-loongarch64-unknown-none-softfloat.toml",
+            "os/axvisor/configs/qemu/qemu-aarch64.toml",
+            "os/axvisor/configs/qemu/qemu-riscv64.toml",
+            "os/axvisor/configs/board/qemu-loongarch64.toml",
+        ];
+
+        for relative in configs {
+            let config = fs::read_to_string(workspace_root.join(relative)).unwrap();
+            assert!(
+                !config.contains("root=/dev/vda"),
+                "{relative} still names the removed VirtIO block root device"
+            );
+            assert!(
+                config.contains("ax-driver/nvme") || config.contains("\"nvme,drive=disk0"),
+                "{relative} does not enable or attach NVMe"
+            );
+        }
     }
 }

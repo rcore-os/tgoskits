@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.6.5"
+version = "0.6.6"
 
 [features]
 default = []
@@ -78,7 +78,7 @@ ax-timer-list = {workspace = true, optional = true}
 axtest = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
 cfg-if.workspace = true
-extern-trait = {version = "0.4", optional = true}
+extern-trait = { workspace = true, optional = true }
 futures-util = {version = "0.3", default-features = false, optional = true, features = [
   "alloc",
   "async-await-macro",
@@ -90,4 +90,4 @@ spin = {workspace = true, optional = true}
 ax-hal = { workspace = true, features = ["fp-simd"] }
 
 [build-dependencies]
-quote = "1.0"
+quote = { workspace = true }

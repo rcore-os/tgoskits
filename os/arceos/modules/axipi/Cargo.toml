@@ -1,6 +1,6 @@
 [package]
 name = "ax-ipi"
-version = "0.5.28"
+version = "0.5.29"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 default = []
+host-test = ["ax-hal/host-test", "ax-kspin/host-test", "ax-percpu/host-test"]
 
 [dependencies]
 ax-hal = { workspace = true, features = ["ipi"] }
@@ -16,6 +17,3 @@ ax-kspin.workspace = true
 ax-lazyinit.workspace = true
 log.workspace = true
 ax-percpu.workspace = true
-
-[build-dependencies]
-quote = "1.0"

@@ -5,13 +5,20 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.10.5"
+version = "0.10.6"
 
 [features]
 default = []
 
 ext-ld = []
 std-compat = []
+host-test = [
+  "ax-hal/host-test",
+  "ax-ipi?/host-test",
+  "ax-kspin?/host-test",
+  "ax-percpu?/host-test",
+  "ax-task?/host-test",
+]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task?/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
@@ -45,7 +52,6 @@ fs = [
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:spin",
-  "dep:dma-api",
   "dep:rdif-block",
   "ax-driver/block",
 ]
@@ -109,7 +115,7 @@ axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
 chrono = {version = "0.4", default-features = false}
-dma-api = { workspace = true, optional = true }
+dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
@@ -120,4 +126,4 @@ rdrive.workspace = true
 spin = {workspace = true, optional = true}
 
 [build-dependencies]
-quote = "1.0"
+quote = { workspace = true }

@@ -6,7 +6,7 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.21"
+version = "0.4.22"
 description = "An OS build lib toolkit used by arceos"
 
 [lints.rust]
@@ -28,6 +28,7 @@ log = "0.4"
 object = "0.38"
 ostool = { workspace = true }
 regex = { version = "1.12" }
+regex-automata = "0.4.16"
 reqwest = { version = "0.13", features = ["stream"] }
 addr2line = "0.26"
 rustc-demangle = "0.1"
@@ -44,9 +45,9 @@ tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
 xz2 = "0.1"
 raw-cpuid = "11.0"
-proc-macro2 = { version = "1", features = ["span-locations"] }
-quote = "1"
-syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { workspace = true, features = ["span-locations"] }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full", "visit"] }
 walkdir = "2"
 
 [target.'cfg(windows)'.dependencies]

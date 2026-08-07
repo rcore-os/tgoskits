@@ -176,9 +176,21 @@ pub(crate) fn copy_to_guest(src: &[u8], gpa: RiscvGuestPhysAddr) -> usize {
 #[inline(always)]
 pub(crate) fn fetch_guest_instruction(
     gva: RiscvGuestVirtAddr,
+    supervisor: bool,
 ) -> Result<u32, GuestInstructionFetchFault> {
     let mut inst = 0u32;
     let mut fault = GuestInstructionFetchFaultRaw::default();
+    let interrupts_enabled = riscv::register::sstatus::read().sie();
+    let host_hstatus = riscv_h::register::hstatus::read();
+    let mut guest_access_hstatus = host_hstatus;
+    guest_access_hstatus.set_spvp(supervisor);
+    unsafe {
+        // HLVX interprets the guest virtual address at the privilege selected
+        // by HSTATUS.SPVP. Keep interrupts disabled until the host HSTATUS is
+        // restored so a host trap cannot observe guest access privilege.
+        riscv::register::sstatus::clear_sie();
+        guest_access_hstatus.write();
+    }
     let ret = unsafe {
         _fetch_guest_instruction(
             gva.as_usize(),
@@ -186,6 +198,12 @@ pub(crate) fn fetch_guest_instruction(
             &mut fault as *mut GuestInstructionFetchFaultRaw,
         )
     };
+    unsafe {
+        host_hstatus.write();
+        if interrupts_enabled {
+            riscv::register::sstatus::set_sie();
+        }
+    }
     if ret == 0 {
         Ok(inst)
     } else {

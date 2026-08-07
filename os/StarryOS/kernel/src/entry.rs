@@ -6,7 +6,7 @@ use alloc::{
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
-use ax_task::{AxTaskExt, spawn_task};
+use ax_task::{AxTaskExt, spawn_task_with};
 use starry_process::{Pid, Process};
 
 use crate::{
@@ -30,6 +30,14 @@ pub fn init(args: &[String], envs: &[String]) {
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
+    // DVFS: a one-shot OPP-calibration boot runs the sweep and skips the governor;
+    // otherwise start the ondemand governor. Both run here (early init, before the
+    // console tty handoff) so their kernel logs reach the serial console.
+    if ax_driver::cpufreq::calibrate_wanted() {
+        run_opp_calibration();
+    } else {
+        spawn_cpufreq_governor();
+    }
     pseudofs::usbfs::start_event_pump();
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
@@ -103,8 +111,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let task = {
         let _guard = NoPreemptIrqSave::new();
-        let task = spawn_task(task);
-        add_task_to_table(&task);
+        let task = spawn_task_with(task, add_task_to_table);
         tty::arm_console_irq();
         task
     };
@@ -115,18 +122,81 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let cx = fs_context.lock();
-    // Best-effort teardown. Like Linux shutdown, a busy/invalid unmount at
-    // shutdown is logged, never a kernel panic: after `test-pivot-root`
-    // reorganizes the shared mount namespace (`propagate_pivot_root` rewrites
-    // every registered `FsContext`'s root, including init's), init's `root_dir`
-    // can transiently not be a mount root, so `unmount_all` returns
-    // `InvalidInput`. Panicking there turned a benign shutdown-time cleanup race
-    // into a hard failure. Always flush the rootfs even if unmount could not
-    // complete, so data stays durable.
+    // Best-effort teardown, matching Linux's shutdown path. A process that exited while
+    // holding a mount namespace (bind mounts, pivot_root) can leave the mount tree in a
+    // state `unmount_all` rejects; at shutdown that must be logged, not turned into a
+    // kernel panic that fails an otherwise clean run. The rootfs flush below is what
+    // matters for on-disk integrity.
     if let Err(err) = cx.root_dir().unmount_all() {
-        warn!("Failed to unmount all filesystems at shutdown: {err:?}");
+        warn!("shutdown: unmount_all failed (best-effort): {err:?}");
     }
-    if let Err(err) = cx.root_dir().filesystem().flush() {
-        warn!("Failed to flush rootfs at shutdown: {err:?}");
+    cx.root_dir()
+        .filesystem()
+        .flush()
+        .expect("Failed to flush rootfs");
+}
+
+/// Run the one-shot DVFS OPP calibration sweep (gated by the driver's `CALIBRATE`
+/// const). Each cluster's (voltage x ring) sweep must execute ON a core of that
+/// cluster to read that core's own PMU cycle counter, so we pin a task per cluster
+/// (cpu0=A55, cpu4=A76 big0, cpu6=A76 big1) via `set_current_affinity` and run
+/// them sequentially (the two A76 rails share one I2C bus). Synchronous: it blocks
+/// init briefly so the `CAL` log lines land before the console tty handoff.
+fn run_opp_calibration() {
+    info!("cpufreq: running OPP calibration sweep (governor disabled this boot)");
+    for &(cluster_idx, cpu) in &[(0usize, 0usize), (1, 4), (2, 6)] {
+        let task = ax_task::spawn_raw(
+            move || {
+                ax_task::set_current_affinity(ax_task::AxCpuMask::one_shot(cpu));
+                ax_driver::cpufreq::calibrate_cluster(cluster_idx, cpu);
+            },
+            String::from("cpufreq-cal"),
+            ax_task::default_task_stack_size(),
+        );
+        task.join();
+    }
+    info!("cpufreq: OPP calibration sweep complete");
+}
+
+/// Start the CPU DVFS ondemand governor.
+///
+/// The frequency/voltage policy and the SCMI+PMIC apply live in the cpufreq
+/// driver (`ax_driver::cpufreq`); this kernel task is only the driver's periodic
+/// *loop*. The loop must live here, not in the driver, because ax-driver sits
+/// below ax-task/ax-hal in the dependency graph (they pull ax-driver back in via
+/// axplat-dyn), so spawning a task inside the driver would be a cyclic dep. Each
+/// period we snapshot the per-CPU busy counters the scheduler tick maintains and
+/// hand them to `governor_poll`, which decides and applies any OPP change.
+///
+/// No-op unless the driver armed the governor (feature on and both CPU-rail PMIC
+/// buses up); otherwise every cluster stays on its boot OPP.
+fn spawn_cpufreq_governor() {
+    if !ax_driver::cpufreq::governor_wanted() {
+        return;
+    }
+    info!("Initialize cpufreq ondemand governor...");
+    ax_task::spawn_raw(
+        cpufreq_governor_loop,
+        String::from("cpufreq-gov"),
+        ax_task::default_task_stack_size(),
+    );
+}
+
+/// Periodic body of the DVFS governor task: sleep, sample every CPU's cumulative
+/// busy-tick counter, and let the driver scale each cluster to match load. The
+/// slow work (SCMI SMC + PMIC I2C/SPI voltage ramp) happens inside
+/// `governor_poll`, which is why this runs in a sleepable task rather than the
+/// scheduler tick.
+fn cpufreq_governor_loop() {
+    let period = core::time::Duration::from_millis(ax_driver::cpufreq::governor_period_ms());
+    loop {
+        ax_task::sleep(period);
+        // RK3588 has 8 CPUs; an offline core's counter never advances, so it
+        // simply reads as idle (conservative — never over-scales).
+        let mut busy = [0u64; 8];
+        for (cpu, slot) in busy.iter_mut().enumerate() {
+            *slot = ax_task::cpu_busy_ticks(cpu);
+        }
+        ax_driver::cpufreq::governor_poll(&busy);
     }
 }

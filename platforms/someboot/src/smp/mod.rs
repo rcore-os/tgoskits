@@ -225,9 +225,18 @@ pub fn cpu_meta(idx: usize) -> Option<PerCpuMeta> {
     if idx >= runtime_cpu_count() {
         return None;
     }
+    cpu_meta_slot(idx)
+}
+
+fn cpu_meta_slot(idx: usize) -> Option<PerCpuMeta> {
     let meta_start = cpu_meta_addr(idx)?;
     let meta_va = phys_to_virt(meta_start);
     debug_assert_eq!((meta_va as usize) % meta_align(), 0);
+    // SAFETY: callers reach this publication-independent reader only after an
+    // Acquire load observed a nonzero runtime count and bound `idx` by that
+    // count. The matching Release store happens after every aligned metadata
+    // slot is initialized and cache-maintained. CPU identity fields remain
+    // immutable after publication.
     Some(unsafe { *(meta_va as *const PerCpuMeta) })
 }
 
@@ -336,21 +345,76 @@ pub fn try_early_cpu_idx() -> Option<usize> {
     cpu_id_to_idx(early_current_hart_id())
 }
 
-pub fn cpu_id_to_idx(hart_id: usize) -> Option<usize> {
-    for (idx, id) in __cpu_id_list().enumerate() {
-        if id == hart_id {
-            return Some(idx);
+fn cpu_id_to_idx_from_sources<I>(
+    hardware_id: usize,
+    runtime_count: usize,
+    mut meta_at: impl FnMut(usize) -> Option<PerCpuMeta>,
+    early_ids: impl FnOnce() -> I,
+) -> Option<usize>
+where
+    I: Iterator<Item = usize>,
+{
+    if runtime_count == 0 {
+        return early_ids().position(|id| id == hardware_id);
+    }
+
+    let mut matching_index = None;
+    for cpu_index in 0..runtime_count {
+        let meta = meta_at(cpu_index)?;
+        if meta.cpu_idx != cpu_index {
+            return None;
+        }
+        if meta.cpu_id == hardware_id {
+            matching_index = Some(cpu_index);
         }
     }
-    None
+    matching_index
 }
 
-pub fn cpu_idx_to_id(idx: usize) -> Option<usize> {
-    __cpu_id_list().nth(idx)
+fn cpu_idx_to_id_from_sources<I>(
+    cpu_index: usize,
+    runtime_count: usize,
+    meta_at: impl FnOnce(usize) -> Option<PerCpuMeta>,
+    early_ids: impl FnOnce() -> I,
+) -> Option<usize>
+where
+    I: Iterator<Item = usize>,
+{
+    if runtime_count == 0 {
+        return early_ids().nth(cpu_index);
+    }
+    if cpu_index >= runtime_count {
+        return None;
+    }
+
+    let meta = meta_at(cpu_index)?;
+    (meta.cpu_idx == cpu_index).then_some(meta.cpu_id)
+}
+
+fn cpu_count_from_sources<I>(runtime_count: usize, early_ids: impl FnOnce() -> I) -> usize
+where
+    I: Iterator<Item = usize>,
+{
+    if runtime_count == 0 {
+        early_ids().count()
+    } else {
+        runtime_count
+    }
+}
+
+pub fn cpu_id_to_idx(hardware_id: usize) -> Option<usize> {
+    let runtime_count = runtime_cpu_count();
+    cpu_id_to_idx_from_sources(hardware_id, runtime_count, cpu_meta_slot, __cpu_id_list)
+}
+
+pub fn cpu_idx_to_id(cpu_index: usize) -> Option<usize> {
+    let runtime_count = runtime_cpu_count();
+    cpu_idx_to_id_from_sources(cpu_index, runtime_count, cpu_meta_slot, __cpu_id_list)
 }
 
 pub fn cpu_count() -> usize {
-    __cpu_id_list().count()
+    let runtime_count = runtime_cpu_count();
+    cpu_count_from_sources(runtime_count, __cpu_id_list)
 }
 
 struct CpuMetaIter {
@@ -480,11 +544,164 @@ fn allocate_cpu_area_region(layout: Layout) -> usize {
 mod tests {
     use super::*;
 
+    fn runtime_metadata<const N: usize>(hardware_ids: [usize; N]) -> [PerCpuMeta; N] {
+        core::array::from_fn(|cpu_index| PerCpuMeta {
+            stack_top: 0,
+            cpu_id: hardware_ids[cpu_index],
+            cpu_idx: cpu_index,
+            stack_top_virt: 0,
+            entry_virt: 0,
+            boot_table_paddr: 0,
+            primary_table_paddr: 0,
+        })
+    }
+
     #[test]
     fn extreme_alignment_input_does_not_wrap_or_panic() {
         assert_eq!(
             checked_align_up_pow2(usize::MAX, 4096),
             Err(PerCpuLayoutError::AddressOverflow)
+        );
+    }
+
+    #[test]
+    fn unpublished_cpu_count_uses_early_ids() {
+        assert_eq!(cpu_count_from_sources(0, || [2, 0, 1, 3].into_iter()), 4);
+    }
+
+    #[test]
+    fn published_cpu_count_does_not_query_early_ids() {
+        assert_eq!(
+            cpu_count_from_sources(4, || -> core::array::IntoIter<usize, 0> {
+                panic!("early CPU IDs queried after publication")
+            }),
+            4
+        );
+    }
+
+    #[test]
+    fn unpublished_hardware_id_lookup_uses_early_ids() {
+        assert_eq!(
+            cpu_id_to_idx_from_sources(
+                1,
+                0,
+                |_| panic!("runtime metadata queried before publication"),
+                || [2, 0, 1, 3].into_iter(),
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn published_hardware_id_lookup_does_not_query_early_ids() {
+        let metadata = runtime_metadata([2, 0, 1, 3]);
+
+        assert_eq!(
+            cpu_id_to_idx_from_sources(
+                1,
+                metadata.len(),
+                |slot| metadata.get(slot).copied(),
+                || -> core::array::IntoIter<usize, 0> {
+                    panic!("early CPU IDs queried after publication")
+                },
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn published_hardware_id_lookup_rejects_missing_or_inconsistent_metadata() {
+        let metadata = runtime_metadata([2, 0, 1, 3]);
+        assert_eq!(
+            cpu_id_to_idx_from_sources(
+                7,
+                metadata.len(),
+                |slot| metadata.get(slot).copied(),
+                || -> core::array::IntoIter<usize, 0> {
+                    panic!("early CPU IDs queried after publication")
+                },
+            ),
+            None
+        );
+
+        let mut inconsistent = metadata;
+        inconsistent[1].cpu_idx = 2;
+        assert_eq!(
+            cpu_id_to_idx_from_sources(
+                3,
+                inconsistent.len(),
+                |slot| inconsistent.get(slot).copied(),
+                || -> core::array::IntoIter<usize, 0> {
+                    panic!("early CPU IDs queried after publication")
+                },
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn published_hardware_id_lookup_validates_slots_after_the_match() {
+        let mut metadata = runtime_metadata([2, 0, 1, 3]);
+        metadata[3].cpu_idx = 2;
+
+        assert_eq!(
+            cpu_id_to_idx_from_sources(
+                2,
+                metadata.len(),
+                |slot| metadata.get(slot).copied(),
+                || -> core::array::IntoIter<usize, 0> {
+                    panic!("early CPU IDs queried after publication")
+                },
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn unpublished_logical_index_lookup_uses_early_ids() {
+        assert_eq!(
+            cpu_idx_to_id_from_sources(
+                2,
+                0,
+                |_| panic!("runtime metadata queried before publication"),
+                || [2, 0, 1, 3].into_iter(),
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn published_logical_index_lookup_does_not_query_early_ids() {
+        let metadata = runtime_metadata([2, 0, 1, 3]);
+
+        assert_eq!(
+            cpu_idx_to_id_from_sources(
+                2,
+                metadata.len(),
+                |slot| metadata.get(slot).copied(),
+                || -> core::array::IntoIter<usize, 0> {
+                    panic!("early CPU IDs queried after publication")
+                },
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn published_logical_index_lookup_rejects_inconsistent_metadata() {
+        let mut metadata = runtime_metadata([2, 0, 1, 3]);
+        metadata[2].cpu_idx = 1;
+
+        assert_eq!(
+            cpu_idx_to_id_from_sources(
+                2,
+                metadata.len(),
+                |slot| metadata.get(slot).copied(),
+                || -> core::array::IntoIter<usize, 0> {
+                    panic!("early CPU IDs queried after publication")
+                },
+            ),
+            None
         );
     }
 }

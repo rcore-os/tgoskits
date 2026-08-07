@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-serial"
 repository.workspace = true
-version = "0.9.1"
+version = "0.9.2"
 
 [dependencies]
 axtest = { workspace = true, optional = true }

@@ -4,6 +4,7 @@ use rdif_intc::{Intc, Interface};
 use rdrive::Device;
 
 mod its;
+mod trigger;
 mod v2;
 mod v3;
 
@@ -38,13 +39,13 @@ pub fn init_current_cpu() {
 
 pub fn init_cpu(cpu_idx: usize) {
     match backend() {
-        GicBackend::V2 => v2::init_cpu(),
+        GicBackend::V2 => v2::init_cpu(cpu_idx),
         GicBackend::V3 => v3::init_cpu(cpu_idx),
         GicBackend::None => {
             if v3::is_support_icc() {
                 v3::init_cpu(cpu_idx);
             } else {
-                v2::init_cpu();
+                v2::init_cpu(cpu_idx);
             }
         }
     }
@@ -82,11 +83,34 @@ pub fn with_primary_gic<T: Interface, R>(
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
-    match backend() {
+    let result = match backend() {
         GicBackend::V2 => v2::irq_set_enable(irq, enable),
         GicBackend::V3 => v3::irq_set_enable(irq, enable),
         GicBackend::None => Err(crate::irq::IrqError::Unsupported),
+    };
+    if result.is_ok() {
+        controller_sync_barrier();
     }
+    result
+}
+
+pub fn irq_set_trigger(
+    irq: IrqId,
+    trigger: crate::irq::IrqTrigger,
+) -> Result<(), crate::irq::IrqError> {
+    let trigger = match trigger {
+        crate::irq::IrqTrigger::Edge => arm_gic_driver::v3::Trigger::Edge,
+        crate::irq::IrqTrigger::Level => arm_gic_driver::v3::Trigger::Level,
+    };
+    let result = match backend() {
+        GicBackend::V2 => v2::irq_set_trigger(irq, trigger),
+        GicBackend::V3 => v3::irq_set_trigger(irq, trigger),
+        GicBackend::None => Err(crate::irq::IrqError::Unsupported),
+    };
+    if result.is_ok() {
+        controller_sync_barrier();
+    }
+    result
 }
 
 pub fn irq_set_affinity(
@@ -117,23 +141,34 @@ pub fn setup_irq_by_fdt(cells: &[u32]) -> Result<rdif_intc::IrqTranslation, crat
     Ok(translation)
 }
 
-pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+pub fn send_ipi(
+    irq: rdrive::IrqId,
+    target: crate::irq::IpiTarget,
+) -> Result<(), crate::irq::IrqError> {
     let raw = irq.into();
     match backend() {
         GicBackend::V2 => v2::send_ipi(raw, target),
         GicBackend::V3 => v3::send_ipi(raw, target),
         GicBackend::None => {
             if v3::is_support_icc() {
-                v3::send_ipi(raw, target);
+                v3::send_ipi(raw, target)
             } else {
-                v2::send_ipi(raw, target);
+                v2::send_ipi(raw, target)
             }
         }
     }
 }
 
-fn hardware_cpu_id(cpu_idx: usize) -> usize {
-    someboot::smp::cpu_idx_to_id(cpu_idx).unwrap_or(cpu_idx)
+fn controller_sync_barrier() {
+    // SAFETY: this only orders prior GIC MMIO/system-register writes before
+    // subsequent interrupt delivery on the current CPU.
+    unsafe {
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
+    }
+}
+
+fn hardware_cpu_id(cpu_idx: usize) -> Result<usize, crate::irq::IrqError> {
+    someboot::smp::cpu_idx_to_id(cpu_idx).ok_or(crate::irq::IrqError::InvalidCpu)
 }
 
 pub enum ActiveIrq {

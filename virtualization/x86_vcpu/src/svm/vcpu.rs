@@ -15,29 +15,19 @@ use x86_64::registers::{
 use x86_vlapic::EmulatedLocalApic;
 
 use super::{
-    definitions::{SvmExitCode, SvmIntercept},
-    flags::{InterruptType, VmcbIntInfo},
-    structs::{IOPm, MSRPm, VmcbFrame},
-    vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
+    definitions::*,
+    flags::*,
+    structs::*,
+    vmcb::{VmcbTlbControl, *},
 };
-use crate::{
-    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps,
-    X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port,
-    X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
-    msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
-    xstate::XState,
-};
+use crate::{msr::*, port_io::*, regs::*, xstate::*, *};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const X86_PIT_PORT_BASE: u16 = 0x40;
 const X86_PIT_PORT_COUNT: u32 = 4;
 const X86_PIT_SPEAKER_PORT: u16 = 0x61;
-const X86_COM1_PORT_BASE: u16 = 0x3f8;
-const X86_COM1_PORT_COUNT: u32 = 8;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
-const X86_LOCAL_APIC_BASE: usize = 0xfee0_0000;
-const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 
 const APIC_BASE_MSR: u32 = 0x1b;
@@ -134,6 +124,16 @@ pub enum VmCpuMode {
     Protected,
     Compatibility,
     Mode64,
+}
+
+struct SvmIoExitInfo {
+    is_in: bool,
+    is_string: bool,
+    is_repeat: bool,
+    width: X86AccessWidth,
+    address_size: Option<X86AddressSize>,
+    segment: u8,
+    port: X86Port,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,7 +286,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             npt_root: None,
             vmcb: VmcbFrame::<H>::new()?,
             load_save_states,
-            iopm: IOPm::<H>::passthrough_all()?,
+            iopm: IOPm::<H>::guest_owned()?,
             msrpm: MSRPm::<H>::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             injecting_event: None,
@@ -437,11 +437,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
         self.iopm
             .set_intercept_of_range(X86_PIT_PORT_BASE as u32, X86_PIT_PORT_COUNT, true);
         self.iopm.set_intercept(X86_PIT_SPEAKER_PORT as u32, true);
-        if config.emulate_com1 {
-            self.iopm
-                .set_intercept_of_range(X86_COM1_PORT_BASE as u32, X86_COM1_PORT_COUNT, true);
-        }
-        for range in config.passthrough_port_ranges() {
+        for range in config.intercepted_port_ranges() {
             self.iopm
                 .set_intercept_of_range(range.base as u32, range.length as u32, true);
         }
@@ -977,7 +973,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
     fn svm_io_exit_info(
         &self,
         exit_info: &super::vmcb::SvmExitInfo,
-    ) -> X86VcpuResult<(bool, bool, bool, X86AccessWidth, X86Port)> {
+    ) -> X86VcpuResult<SvmIoExitInfo> {
         let info = exit_info.exit_info_1;
         // SVM packs IO direction, string/repeat attributes, width, and port
         // into EXITINFO1 for IOIO exits.
@@ -986,8 +982,130 @@ impl<H: X86HostOps> SvmVcpu<H> {
         let is_repeat = info.get_bit(3);
         let width = X86AccessWidth::try_from(info.get_bits(4..7) as usize)
             .map_err(|_| x86_err_type!(InvalidData, "invalid SVM IOIO access width"))?;
+        let address_size = if is_string {
+            Some(X86AddressSize::from_bytes(
+                info.get_bits(7..10) as usize * 2,
+            )?)
+        } else {
+            None
+        };
         let port = X86Port::new(info.get_bits(16..32) as u16);
-        Ok((is_in, is_string, is_repeat, width, port))
+        Ok(SvmIoExitInfo {
+            is_in,
+            is_string,
+            is_repeat,
+            width,
+            address_size,
+            segment: info.get_bits(10..13) as u8,
+            port,
+        })
+    }
+
+    fn handle_port_io_exit(
+        &mut self,
+        exit_info: &super::vmcb::SvmExitInfo,
+    ) -> X86VcpuResult<X86VmExit> {
+        let io = self.svm_io_exit_info(exit_info)?;
+        if !io.is_string {
+            self.set_rip(exit_info.exit_info_2);
+            return Ok(if io.is_in {
+                X86VmExit::PortIoRead {
+                    port: io.port,
+                    width: io.width,
+                }
+            } else {
+                X86VmExit::PortIoWrite {
+                    port: io.port,
+                    width: io.width,
+                    data: self.regs().rax.get_bits(io.width.bits_range()),
+                }
+            });
+        }
+
+        let address_size = io.address_size.ok_or(X86VcpuError::InvalidData)?;
+        if io.is_repeat && address_size.low(self.regs().rcx) == 0 {
+            self.set_rip(exit_info.exit_info_2);
+            return Ok(X86VmExit::Nothing);
+        }
+        let direction = if io.is_in {
+            X86PortIoDirection::In
+        } else {
+            X86PortIoDirection::Out
+        };
+        let index = match direction {
+            X86PortIoDirection::In => self.regs().rdi,
+            X86PortIoDirection::Out => self.regs().rsi,
+        };
+        let guest_linear = self.string_io_linear_address(io.segment, address_size, index)?;
+        let guest_paddr = self.translate_guest_linear(guest_linear)?;
+        let decrement = unsafe { self.vmcb.as_vmcb_ref().state.rflags.get() }
+            & RFlags::DIRECTION_FLAG.bits()
+            != 0;
+
+        Ok(X86VmExit::PortIoString(X86PortIoStringExit::new(
+            X86PortIoAccess {
+                port: io.port,
+                width: io.width,
+                direction,
+                guest_paddr,
+            },
+            X86PortIoIteration {
+                address_size,
+                index,
+                count: self.regs().rcx,
+                repeat: io.is_repeat,
+                decrement,
+                next_rip: exit_info.exit_info_2,
+            },
+        )))
+    }
+
+    fn string_io_linear_address(
+        &self,
+        segment: u8,
+        address_size: X86AddressSize,
+        index: u64,
+    ) -> X86VcpuResult<X86GuestVirtAddr> {
+        let state = unsafe { &self.vmcb.as_vmcb_ref().state };
+        let base = if self.get_cpu_mode() == VmCpuMode::Mode64 {
+            match segment {
+                4 => state.fs.base.get(),
+                5 => state.gs.base.get(),
+                _ => 0,
+            }
+        } else {
+            match segment {
+                0 => state.es.base.get(),
+                1 => state.cs.base.get(),
+                2 => state.ss.base.get(),
+                3 => state.ds.base.get(),
+                4 => state.fs.base.get(),
+                5 => state.gs.base.get(),
+                _ => return x86_err!(InvalidData, "invalid SVM string-I/O segment"),
+            }
+        };
+        let linear = base
+            .checked_add(address_size.low(index))
+            .ok_or(X86VcpuError::InvalidData)?;
+        usize::try_from(linear)
+            .map(X86GuestVirtAddr::from_usize)
+            .map_err(|_| X86VcpuError::InvalidData)
+    }
+
+    /// Commits one successfully emulated string-I/O element.
+    pub fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> X86VcpuResult {
+        if exit.instruction_complete() {
+            self.set_rip(exit.next_rip());
+        }
+        let regs = self.regs_mut();
+        match exit.direction() {
+            X86PortIoDirection::In => regs.rdi = exit.updated_index(),
+            X86PortIoDirection::Out => regs.rsi = exit.updated_index(),
+        }
+        if let Some(count) = exit.updated_count() {
+            regs.rcx = count;
+        }
+        Ok(())
     }
 
     fn read_edx_eax(&self) -> u64 {
@@ -1120,7 +1238,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
     ) -> X86VcpuResult<Option<(X86VmExit, u8)>> {
         let addr_usize = addr.as_usize();
         let local_apic =
-            (X86_LOCAL_APIC_BASE..X86_LOCAL_APIC_BASE + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
+            (X86_LOCAL_APIC_GPA..X86_LOCAL_APIC_GPA + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
         let ioapic = (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr_usize);
         if !local_apic && !ioapic {
             return Ok(None);
@@ -1209,7 +1327,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             });
         }
 
-        let offset = addr.as_usize() - X86_LOCAL_APIC_BASE;
+        let offset = addr.as_usize() - X86_LOCAL_APIC_GPA;
         if offset == X86_LOCAL_APIC_EOI_OFFSET {
             return Ok(X86VmExit::InterruptEnd {
                 vector: self.handle_local_apic_eoi(),
@@ -1566,26 +1684,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
                     self.handle_rdtsc()?;
                     X86VmExit::PreemptionTimer
                 }
-                SvmExitCode::IOIO => {
-                    let (is_in, is_string, is_repeat, width, port) =
-                        self.svm_io_exit_info(&exit_info)?;
-                    // IOIO exits provide the decoded next RIP in EXITINFO2.
-                    self.set_rip(exit_info.exit_info_2);
-
-                    if is_string || is_repeat {
-                        warn!("SVM unsupported IOIO exit: {exit_info:#x?}");
-                        warn!("VCpu {self:#x?}");
-                        X86VmExit::Halt
-                    } else if is_in {
-                        X86VmExit::PortIoRead { port, width }
-                    } else {
-                        X86VmExit::PortIoWrite {
-                            port,
-                            width,
-                            data: self.regs().rax.get_bits(width.bits_range()),
-                        }
-                    }
-                }
+                SvmExitCode::IOIO => self.handle_port_io_exit(&exit_info)?,
                 SvmExitCode::MSR => {
                     let msr = self.regs().rcx as u32;
                     if (X2APIC_MSR_BASE..=X2APIC_MSR_END).contains(&msr) {

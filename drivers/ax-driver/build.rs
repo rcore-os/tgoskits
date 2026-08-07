@@ -1,10 +1,4 @@
-const VIRTIO_DEV_FEATURES: &[&str] = &[
-    "virtio-blk",
-    "virtio-gpu",
-    "virtio-input",
-    "virtio-net",
-    "virtio-socket",
-];
+const VIRTIO_DEV_FEATURES: &[&str] = &["virtio-gpu", "virtio-input", "virtio-net", "virtio-socket"];
 
 fn has_feature(feature: &str) -> bool {
     std::env::var(format!(
@@ -28,10 +22,5 @@ fn main() {
     if has_virtio_core || has_virtio_dev {
         enable_cfg_flag("virtio_dev");
     }
-    if has_any_feature(&["ahci", "ls2k1000-ahci", "bcm2835-sdhci"]) {
-        enable_cfg_flag("sync_block_dev");
-    }
-
     println!("cargo::rustc-check-cfg=cfg(virtio_dev)");
-    println!("cargo::rustc-check-cfg=cfg(sync_block_dev)");
 }

@@ -46,7 +46,6 @@ AxVisor 支持多种操作系统作为客户机运行，从轻量级微内核到
 |-----------|---------|---------|---------|
 | [ArceOS](https://github.com/arceos-org/arceos) | Unikernel | ARM64, x86_64, RISC-V | 基于Rust的组件化操作系统，轻量级、高性能 |
 | [Starry-OS](https://github.com/Starry-OS) | 宏内核操作系统 | ARM64, x86_64 | 面向嵌入式场景的实时操作系统 |
-| [NimbOS](https://github.com/equation314/nimbos) | RTOS 系统 | ARM64, x86_64, RISC-V | 简洁的类Unix系统，支持POSIX接口 |
 | Linux | 宏内核操作系统 | ARM64, x86_64, RISC-V | 成熟稳定的通用操作系统，丰富的软件生态 |
 
 # 构建
@@ -55,7 +54,7 @@ AxVisor 基于 Rust 生态系统构建，通过扩展的 xtask 工具链提供�
 
 ## 构建环境
 
-> **快速开始**：如果你只想在 QEMU 上快速跑起来，请直接参见 [QEMU 快速上手指南](doc/qemu-quickstart_cn.md)，其中包含了从环境搭建到运行客户机的完整步骤。
+> **快速开始**：在工作区根目录运行 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke`。
 
 首先，在 Linux 环境下，需要安装 `libssl-dev gcc libudev-dev pkg-config` 等基本开发工具包。
 
@@ -79,25 +78,23 @@ Board 运行配置位于 `configs/board/` 目录下，每个配置文件都对�
 
 客户机配置按平台优先组织。QEMU 配置位于 `configs/vms/qemu/<arch>/`，实体板卡配置位于 `configs/vms/<board>/`。文件名只保留客户机系统和变体，例如 `configs/vms/qemu/aarch64/arceos-smp1.toml` 或 `configs/vms/roc-rk3568-pc/linux-smp1.toml`。
 
+## 管理 Shell 语法
+
+AxVisor 管理 Shell 使用 `shlex` 的 POSIX 风格规则拆分命令行。单双引号可以组合参数，反斜杠按 `shlex` 规则转义，`""` 或 `''` 会产生空参数。未闭合引号和末尾孤立反斜杠属于语法错误。只有 ASCII shell 空白字符用于分隔参数。
+
+分词不提供变量展开、glob、管道、通用重定向或 job control。命令查找、选项校验和 handler 行为仍由 AxVisor 自身实现。
+
 ## 编译
 
 AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配置选项。快速构建及运行 AxVisor，请参见配置套文档中的[快速上手](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart)章节。
 
-1. **查看可用板级配置**：使用 `cargo xtask config ls` 查看 `configs/board/` 目录下可用的板级配置名。
+1. **查看可用板级配置**：使用 `cargo xtask axvisor config ls` 查看 `configs/board/` 目录下可用的板级配置名。
 
-2. **生成配置**：使用 `cargo xtask defconfig <board_name>` 选择目标硬件平台配置。此命令会将对应板级配置复制为 `.build.toml`。
+2. **生成配置**：使用 `cargo xtask axvisor defconfig <board_name>` 选择目标硬件平台配置。此命令会将对应板级配置复制为 `.build.toml`。
 
-3. **执行构建**：使用 `cargo xtask build` 根据 `.build.toml` 编译 AxVisor。若不想依赖 `.build.toml`，也可以直接指定配置文件，例如：`cargo xtask build --config configs/board/<board_name>.toml`。
+3. **执行构建**：使用 `cargo xtask axvisor build` 根据 `.build.toml` 编译 AxVisor。若不想依赖 `.build.toml`，也可以直接指定配置文件，例如：`cargo xtask axvisor build --config configs/board/<board_name>.toml`。
 
-4. **运行 QEMU 或开发板**：
-   - QEMU：`cargo xtask qemu --config configs/board/qemu-aarch64.toml --qemu-config .github/workflows/qemu-aarch64.toml --vmconfigs configs/vms/qemu/aarch64/arceos-smp1.toml`
-   - U-Boot 开发板流程：`cargo xtask uboot --config configs/board/roc-rk3568-pc.toml --uboot-config .github/workflows/uboot.toml --vmconfigs configs/vms/roc-rk3568-pc/arceos-smp1.toml`
-
-如果是本地快速验证，也可以直接使用 `./scripts/quick-start.sh` 启动当前脚本支持的 QEMU 和开发板平台。具体示例见 [QEMU 快速上手指南](doc/qemu-quickstart_cn.md)。
-
-## QEMU 快速运行
-
-如需在 QEMU 上快速运行 AxVisor 并启动客户机系统（ArceOS / Linux / NimbOS），请参见 [QEMU 快速上手指南](doc/qemu-quickstart_cn.md)。
+4. **运行 QEMU**：在工作区根目录使用 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` 运行维护中的 smoke 用例。
 
 # 贡献
 

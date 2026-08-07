@@ -448,12 +448,6 @@ mod tests {
 
         fn cancel_timer(_token: usize) {}
 
-        fn write_bytes(_bytes: &[u8]) {}
-
-        fn read_bytes(_bytes: &mut [u8]) -> usize {
-            0
-        }
-
         fn current_vm_id() -> X86VmId {
             0
         }

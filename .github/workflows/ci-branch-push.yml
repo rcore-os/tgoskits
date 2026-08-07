@@ -1,0 +1,79 @@
+name: CI Branch Push Router
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - dev
+    paths-ignore:
+      - "**/*.md"
+      - "**/*.rst"
+      - "**/*.adoc"
+      - "docs/**"
+      - "**/docs/**"
+      - "**/doc/**"
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  route:
+    name: Route branch push CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Route branch push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE_SHA: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          open_pr_count=0
+          if [ "$GITHUB_REPOSITORY" = "rcore-os/tgoskits" ]; then
+            open_pr_count="$(
+              gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --head "$REF_NAME" \
+                --state open \
+                --json number,headRefName,headRepositoryOwner \
+                --jq '[.[] | select(.headRepositoryOwner.login == env.REPOSITORY_OWNER and .headRefName == env.REF_NAME)] | length'
+            )"
+          fi
+
+          if [ "$open_pr_count" != "0" ]; then
+            open_prs="$(
+              gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --head "$REF_NAME" \
+                --state open \
+                --json number,url,headRefName,headRepositoryOwner \
+                --jq '.[] | select(.headRepositoryOwner.login == env.REPOSITORY_OWNER and .headRefName == env.REF_NAME) | "- #\(.number): \(.url)"'
+            )"
+            {
+              echo "## Duplicate push CI skipped"
+              echo ""
+              echo "This branch already has an open pull request, so the duplicate push CI was not dispatched."
+              echo "The pull_request CI run validates the same commit."
+              echo ""
+              echo "$open_prs"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          gh workflow run ci.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$REF_NAME" \
+            -f run_target=ci \
+            -f container_target=both \
+            -f since_sha="$BEFORE_SHA"
+
+          {
+            echo "## Branch CI dispatched"
+            echo ""
+            echo "No open pull request was found for this branch, so the full CI workflow was dispatched for \`${REF_NAME}\`."
+            echo "Diff-based checks will use \`${BEFORE_SHA}\` as their base commit."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, vec::Vec};
+use alloc::vec::Vec;
 use core::{ptr::NonNull, time::Duration};
 
 use log::{info, warn};
@@ -23,26 +23,18 @@ use rdrive::{
     },
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
+use sdhci_host::{HostClock, HostResetHook, HostTimer, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
-    Error, OperationPoll,
+    Error,
     error::{ErrorContext, Phase},
-    sdio::{
-        card::{CardInfo, SdioSdmmc},
-        host2::SdioHost2Adapter,
-        init::{CardInitPreference, SdioInitScratch},
-    },
+    sdio::{card::SdioSdmmc, init::CardInitPreference},
 };
 
 use super::clock::enable_node_clocks;
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
-// RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
-// status is acknowledged in the hard IRQ and task context advances the RDIF
-// submit/poll queue.
-const ROCKCHIP_SDHCI_IRQ_DRIVEN: bool = true;
-const SDMMC_INIT_POLL_DELAY: Duration = Duration::from_micros(1);
-const SDMMC_INIT_RETRY_DELAY: Duration = Duration::from_millis(10);
+// RK3588 DWCMSHC follows Linux's normal SDHCI completion path: hard IRQ only
+// acknowledges and caches status; the bound hctx advances command/data state.
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
 const DWCMSHC_HOST_CTRL3: usize = 0x08;
@@ -88,7 +80,16 @@ const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
 const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
-type RockchipSdhci = SdioSdmmc<SdioHost2Adapter<Sdhci>>;
+
+struct AxKlibHostTimer;
+
+static HOST_TIMER: AxKlibHostTimer = AxKlibHostTimer;
+
+impl HostTimer for AxKlibHostTimer {
+    fn now_ms(&self) -> u64 {
+        axklib::time::monotonic_nanos() / 1_000_000
+    }
+}
 
 struct RockchipSdhciClock {
     clock: ClockLine,
@@ -173,8 +174,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
     // A previous owner (for example the hypervisor host) may leave completion
-    // IRQ signaling enabled. Card discovery runs before this driver's IRQ
-    // handler is registered, so always begin the handoff in polling mode.
+    // IRQ signaling enabled. Keep signal delivery masked until the runtime
+    // owns the boxed handler; command/data initialization cannot advance until
+    // that IRQ endpoint is registered and enabled.
     host.disable_completion_irq();
     if let Some(clock) = sdhci_core_clock(info)? {
         info!("rockchip-sdhci: using external CRU clock");
@@ -183,31 +185,18 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
     host.set_reset_hook(RockchipSdhciResetHook { resets });
+    host.set_timer(&HOST_TIMER);
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
-    host.set_dma(dma.clone());
+    let config = rockchip_sdhci_rdif_config(0, &dma);
+    host.configure_dma(dma).map_err(|err| {
+        OnProbeError::other(alloc::format!(
+            "rockchip-sdhci ADMA2 configuration failed: {err:?}"
+        ))
+    })?;
 
-    info!("rockchip-sdhci: initialize card through native host2 bus ops");
-    let mut card = SdioSdmmc::new_host2(host);
-    let card_info = poll_card_init_mmc(&mut card)
-        .map_err(|e| card_init_error(base_reg.address, mmio_size, e))?;
-    card.host_mut()
-        .with_host_mut(|host| host.clear_external_clock());
-    info!(
-        "SDHCI card: kind={:?} high_capacity={} rca={} ocr={:#010x} capacity_blocks={:?} cid={} \
-         ext_csd={}",
-        card_info.kind,
-        card_info.high_capacity,
-        card_info.rca,
-        card_info.ocr,
-        card_info.capacity_blocks,
-        card_info.cid.is_some(),
-        card_info.ext_csd.is_some()
-    );
-
-    let dev = sdhci_rdif::device(
-        card,
-        rockchip_sdhci_rdif_config(card_info.capacity_blocks.unwrap_or(0), dma),
-    );
+    info!("rockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx");
+    let card = SdioSdmmc::new(host);
+    let dev = sdhci_rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);
     Ok(())
@@ -351,67 +340,9 @@ fn write_u8(base: NonNull<u8>, off: usize, val: u8) {
 
 fn rockchip_sdhci_rdif_config(
     capacity_blocks: u64,
-    dma: dma_api::DeviceDma,
+    dma: &dma_api::DeviceDma,
 ) -> sdhci_rdif::BlockConfig {
-    sdhci_rdif::dma_config(
-        "rockchip-sdhci",
-        capacity_blocks,
-        ROCKCHIP_SDHCI_IRQ_DRIVEN,
-        dma,
-    )
-}
-
-fn poll_card_init_mmc(card: &mut RockchipSdhci) -> Result<CardInfo, Error> {
-    let mut scratch = SdioInitScratch::new();
-    let mut request =
-        card.submit_init_with_preference(CardInitPreference::MmcFirst, &mut scratch)?;
-    loop {
-        match card.poll_init_request(&mut request)? {
-            OperationPoll::Pending => {
-                if request.take_needs_pace() {
-                    axklib::time::busy_wait(SDMMC_INIT_RETRY_DELAY);
-                } else {
-                    axklib::time::busy_wait(SDMMC_INIT_POLL_DELAY);
-                }
-            }
-            OperationPoll::Complete(info) => return Ok(info),
-            _ => return Err(Error::UnsupportedCommand),
-        }
-    }
-}
-
-fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    OnProbeError::other(format!(
-        "failed to initialize SDHCI device at [PA:{:?}, SZ:0x{:x}): {err:?}",
-        address, size
-    ))
-}
-
-fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    if is_absent_card_init_error(err) {
-        warn!(
-            "rockchip-sdhci: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping controller: \
-             {err:?}",
-            address, size
-        );
-        return OnProbeError::NotMatch;
-    }
-
-    init_error(address, size, err)
-}
-
-fn is_absent_card_init_error(err: Error) -> bool {
-    match err {
-        Error::NoCard => true,
-        Error::Timeout(ctx) | Error::Crc(ctx) | Error::BadResponse(ctx) => {
-            ctx.cmd.is_some()
-                && matches!(
-                    ctx.phase,
-                    Phase::CommandSend | Phase::ResponseWait | Phase::Init
-                )
-        }
-        _ => false,
-    }
+    sdhci_rdif::dma_config("rockchip-sdhci", capacity_blocks, dma)
 }
 
 fn sdhci_core_clock(info: &FdtInfo<'_>) -> Result<Option<ClockLine>, OnProbeError> {
@@ -428,21 +359,26 @@ mod tests {
 
     #[test]
     fn rk3588_block_io_uses_adma_config_with_irq_completion() {
-        let config = rockchip_sdhci_rdif_config(8, test_dma());
+        let dma = test_dma();
+        let config = rockchip_sdhci_rdif_config(8, &dma);
 
-        assert_eq!(config.name, "rockchip-sdhci");
-        assert_eq!(config.capacity_blocks, 8);
+        assert_eq!(config.name(), "rockchip-sdhci");
+        assert_eq!(config.capacity_blocks(), 8);
         assert!(config.uses_dma());
-        assert!(config.irq_driven);
     }
 
     #[test]
     fn rk3588_adma_queue_limits_expose_sdhci_window() {
-        let config = rockchip_sdhci_rdif_config(8, test_dma());
-        let limits = sdmmc_protocol::rdif::config::queue_limits(&config, config.dma_mask);
+        let dma = test_dma();
+        let config = rockchip_sdhci_rdif_config(8, &dma);
+        let limits = sdmmc_protocol::rdif::config::queue_limits(&config);
 
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);
+        assert_eq!(
+            limits.segment_boundary,
+            Some(sdhci_host::DWC_MSHC_ADMA_BOUNDARY)
+        );
         assert_eq!(limits.max_segments, 1);
     }
 
@@ -581,7 +517,12 @@ mod tests {
             None
         }
 
-        unsafe fn dealloc_coherent(&self, _handle: dma_api::DmaAllocHandle) {}
+        unsafe fn dealloc_coherent(
+            &self,
+            _handle: dma_api::DmaAllocHandle,
+        ) -> Result<(), dma_api::DmaError> {
+            Ok(())
+        }
 
         unsafe fn map_streaming(
             &self,

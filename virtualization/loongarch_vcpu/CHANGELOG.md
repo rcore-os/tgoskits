@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.13...loongarch_vcpu-v0.5.14) - 2026-08-03
+
+### Other
+
+- updated the following local packages: cpu-local
+
 ## [0.5.13](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.12...loongarch_vcpu-v0.5.13) - 2026-07-23
 
 ### Other

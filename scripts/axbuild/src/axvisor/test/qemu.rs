@@ -14,6 +14,7 @@ use super::{
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
     },
+    initramfs::prepare_configured_busybox_initramfs,
     parse_target,
     types::PreparedAxvisorQemuCase,
 };
@@ -123,6 +124,11 @@ impl Axvisor {
             rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
             build_group.cargo = build::load_cargo_config(&build_group.request)?;
+            prepare_configured_busybox_initramfs(
+                &build_group.request,
+                &build_group.cargo,
+                self.app.workspace_root(),
+            )?;
             self.app
                 .build(
                     build_group.cargo.clone(),

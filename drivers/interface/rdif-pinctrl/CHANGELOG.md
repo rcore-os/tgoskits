@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/rdif-pinctrl-v0.1.2...rdif-pinctrl-v0.1.3) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/rdif-pinctrl-v0.1.1...rdif-pinctrl-v0.1.2) - 2026-07-07
 
 ### Added

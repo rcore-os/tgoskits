@@ -97,6 +97,14 @@ pub(super) fn exit_status_code(status: &ExitStatus) -> i32 {
         .unwrap_or_else(|| if status.success() { 0 } else { 1 })
 }
 
+pub(super) fn report_returncode(returncode: i32, timed_out: bool) -> i32 {
+    if timed_out && returncode == 124 {
+        0
+    } else {
+        returncode
+    }
+}
+
 fn nonnegative_delta(after: i128, before: i128) -> i128 {
     after.saturating_sub(before).max(0)
 }
@@ -128,4 +136,16 @@ fn timeval_micros(value: libc::timeval) -> i128 {
 #[cfg(not(unix))]
 pub(super) fn child_resource_usage() -> Option<ChildResourceUsage> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::report_returncode;
+
+    #[test]
+    fn expected_profile_timeout_is_a_successful_report() {
+        assert_eq!(report_returncode(124, true), 0);
+        assert_eq!(report_returncode(124, false), 124);
+        assert_eq!(report_returncode(1, true), 1);
+    }
 }

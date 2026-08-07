@@ -20,10 +20,9 @@ use crate::mmio::iomap;
 
 mod rdif_glue;
 
-use rdif_glue::ROCKCHIP_PIN_CONFIG_DRIVE_RAW;
 pub use rdif_glue::RockchipFdtPinctrlParser;
+use rdif_glue::{ROCKCHIP_PIN_CONFIG_DRIVE_RAW, gpio_bank_index};
 
-const DRIVER_NAME: &str = "rk3588-pinctrl";
 const GPIO_BANK_COUNT: usize = 5;
 const GPIO_LINES_PER_BANK: u32 = 32;
 const ROCKCHIP_GPIO_RANGES: [GpioRange; GPIO_BANK_COUNT] = [
@@ -34,13 +33,43 @@ const ROCKCHIP_GPIO_RANGES: [GpioRange; GPIO_BANK_COUNT] = [
     GpioRange::new(GpioBankId::new(4), 128, 0, GPIO_LINES_PER_BANK),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RockchipPinctrlVariant {
+    Rk3576,
+    Rk3588,
+}
+
+impl RockchipPinctrlVariant {
+    fn from_compatible(compatible: &str) -> Option<Self> {
+        match compatible {
+            "rockchip,rk3576-pinctrl" => Some(Self::Rk3576),
+            "rockchip,rk3588-pinctrl" => Some(Self::Rk3588),
+            _ => None,
+        }
+    }
+
+    const fn driver_name(self) -> &'static str {
+        match self {
+            Self::Rk3576 => "rk3576-pinctrl",
+            Self::Rk3588 => "rk3588-pinctrl",
+        }
+    }
+
+    const fn display_name(self) -> &'static str {
+        match self {
+            Self::Rk3576 => "RK3576",
+            Self::Rk3588 => "RK3588",
+        }
+    }
+}
+
 crate::model_register!(
     name: "Rockchip PinCtrl",
     level: ProbeLevel::PostKernel,
     priority: ProbePriority::CLK,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["rockchip,rk3588-pinctrl"],
+            compatibles: &["rockchip,rk3576-pinctrl", "rockchip,rk3588-pinctrl"],
             on_probe: probe
         }
     ],
@@ -48,13 +77,14 @@ crate::model_register!(
 
 pub struct RockchipPinCtrl {
     inner: PinCtrl,
+    driver_name: &'static str,
 }
 
 unsafe impl Send for RockchipPinCtrl {}
 
 impl RockchipPinCtrl {
-    fn new(inner: PinCtrl) -> Self {
-        Self { inner }
+    fn new(inner: PinCtrl, driver_name: &'static str) -> Self {
+        Self { inner, driver_name }
     }
 
     pub fn enable_fixed_regulator(&mut self, phandle: Phandle) -> Result<(), OnProbeError> {
@@ -94,7 +124,7 @@ impl RockchipPinCtrl {
 
 impl DriverGeneric for RockchipPinCtrl {
     fn name(&self) -> &str {
-        DRIVER_NAME
+        self.driver_name
     }
 
     fn raw_any(&self) -> Option<&dyn core::any::Any> {
@@ -204,6 +234,12 @@ impl RdifPinctrl for RockchipPinCtrl {
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, plat_dev) = probe.into_parts();
+    let variant = info
+        .node
+        .as_node()
+        .compatibles()
+        .find_map(RockchipPinctrlVariant::from_compatible)
+        .ok_or(OnProbeError::NotMatch)?;
     let fdt = live_fdt()?;
 
     let grf_phandle = info
@@ -217,26 +253,55 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         })?;
     let ioc = map_phandle_reg(&fdt, grf_phandle, "pinctrl rockchip,grf")?;
 
-    let mut gpio_banks = Vec::new();
+    let mut gpio_banks = [None; GPIO_BANK_COUNT];
     for node in fdt.find_compatible(&["rockchip,gpio-bank"]) {
-        if gpio_banks.len() == GPIO_BANK_COUNT {
-            break;
+        let Some(bank) = gpio_bank_index(node.as_node()) else {
+            continue;
+        };
+        let bank = bank as usize;
+        if gpio_banks[bank].is_some() {
+            return Err(OnProbeError::other(format!(
+                "{} pinctrl has duplicate GPIO bank {bank}",
+                variant.display_name()
+            )));
         }
-        gpio_banks.push(map_node_reg(node, "rockchip,gpio-bank")?);
+        gpio_banks[bank] = Some(map_node_reg(node, "rockchip,gpio-bank")?);
     }
-    if gpio_banks.len() != GPIO_BANK_COUNT {
-        return Err(OnProbeError::other(format!(
-            "RK3588 pinctrl requires {GPIO_BANK_COUNT} GPIO banks, found {}",
-            gpio_banks.len()
-        )));
-    }
+    let gpio_banks = gpio_banks
+        .into_iter()
+        .enumerate()
+        .map(|(bank, mapped)| {
+            mapped.ok_or_else(|| {
+                OnProbeError::other(format!(
+                    "{} pinctrl is missing GPIO bank {bank}",
+                    variant.display_name()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let pinctrl = PinCtrl::new(SocType::Rk3588, ioc, &gpio_banks);
+    let pinctrl = match variant {
+        RockchipPinctrlVariant::Rk3576 => {
+            let sys_grf = info
+                .node
+                .as_node()
+                .get_property("rockchip,sys-grf")
+                .and_then(|prop| prop.get_u32())
+                .map(Phandle::from)
+                .map(|phandle| map_phandle_reg(&fdt, phandle, "pinctrl rockchip,sys-grf"))
+                .transpose()?;
+            PinCtrl::new_rk3576(ioc, sys_grf, &gpio_banks)
+        }
+        RockchipPinctrlVariant::Rk3588 => PinCtrl::new(SocType::Rk3588, ioc, &gpio_banks),
+    };
     plat_dev.register(PinctrlDevice::with_fdt_parser(
-        RockchipPinCtrl::new(pinctrl),
+        RockchipPinCtrl::new(pinctrl, variant.driver_name()),
         RockchipFdtPinctrlParser,
     ));
-    info!("Rockchip RK3588 pinctrl registered successfully");
+    info!(
+        "Rockchip {} pinctrl registered successfully",
+        variant.display_name()
+    );
     Ok(())
 }
 
@@ -284,4 +349,207 @@ fn rockchip_pull_from_rdif_bias(bias: Bias) -> Pull {
 fn align_up_4k(size: usize) -> usize {
     const MASK: usize = 0xfff;
     (size + MASK) & !MASK
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{vec, vec::Vec};
+
+    use fdt_edit::{Node, Property};
+
+    use super::*;
+
+    fn mmio(words: &mut [u32]) -> NonNull<u8> {
+        NonNull::new(words.as_mut_ptr().cast()).unwrap()
+    }
+
+    fn prop_u32s(name: &str, values: &[u32]) -> Property {
+        Property::new(
+            name,
+            values
+                .iter()
+                .flat_map(|value| value.to_be_bytes())
+                .collect(),
+        )
+    }
+
+    fn prop_strs(name: &str, values: &[&str]) -> Property {
+        let mut bytes = Vec::new();
+        for value in values {
+            bytes.extend_from_slice(value.as_bytes());
+            bytes.push(0);
+        }
+        Property::new(name, bytes)
+    }
+
+    fn node_with_props(name: &str, properties: &[Property]) -> Node {
+        let mut node = Node::new(name);
+        for property in properties {
+            node.add_property(property.clone());
+        }
+        node
+    }
+
+    #[test]
+    fn selects_rk3576_pinctrl_from_fdt_compatible() {
+        let variant = RockchipPinctrlVariant::from_compatible("rockchip,rk3576-pinctrl").unwrap();
+
+        assert_eq!(variant, RockchipPinctrlVariant::Rk3576);
+        assert_eq!(variant.driver_name(), "rk3576-pinctrl");
+        assert_eq!(variant.display_name(), "RK3576");
+    }
+
+    #[test]
+    fn preserves_rk3588_pinctrl_selection() {
+        let variant = RockchipPinctrlVariant::from_compatible("rockchip,rk3588-pinctrl").unwrap();
+
+        assert_eq!(variant, RockchipPinctrlVariant::Rk3588);
+        assert_eq!(variant.driver_name(), "rk3588-pinctrl");
+    }
+
+    #[test]
+    fn rejects_unknown_rockchip_pinctrl_compatible() {
+        assert!(RockchipPinctrlVariant::from_compatible("rockchip,rk3568-pinctrl").is_none());
+    }
+
+    #[test]
+    fn rock_4d_sdmmc_default_state_programs_rk3576_ioc() {
+        let mut ioc_memory = vec![0_u32; (0xb398 + 4) / 4];
+        let mut gpio_memory: Vec<Vec<u32>> = (0..5).map(|_| vec![0_u32; 0x200 / 4]).collect();
+        let gpio_banks = gpio_memory
+            .iter_mut()
+            .map(|bank| mmio(bank))
+            .collect::<Vec<_>>();
+        let pinctrl = PinCtrl::new_rk3576(mmio(&mut ioc_memory), None, &gpio_banks);
+        let mut controller = RockchipPinCtrl::new(pinctrl, "rk3576-pinctrl");
+
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props(
+                "pcfg-pull-up-drv-level-3",
+                &[
+                    prop_u32s("phandle", &[1]),
+                    Property::new("bias-pull-up", Vec::new()),
+                    prop_u32s("drive-strength", &[3]),
+                ],
+            ),
+        );
+        fdt.add_node(
+            root,
+            node_with_props(
+                "sdmmc0-pins",
+                &[
+                    prop_u32s("phandle", &[2]),
+                    prop_u32s(
+                        "rockchip,pins",
+                        &[
+                            2, 0, 1, 1, // GPIO2_A0: data
+                            2, 5, 1, 1, // GPIO2_A5: clock
+                            0, 7, 1, 1, // GPIO0_A7: card detect
+                            0, 14, 1, 1, // GPIO0_B6: power enable
+                        ],
+                    ),
+                ],
+            ),
+        );
+        let consumer = fdt.add_node(
+            root,
+            node_with_props(
+                "mmc@2a310000",
+                &[
+                    prop_strs("pinctrl-names", &["default"]),
+                    prop_u32s("pinctrl-0", &[2]),
+                ],
+            ),
+        );
+
+        FdtPinctrl::apply_state_from_consumer(
+            &mut controller,
+            &fdt,
+            fdt.node(consumer).unwrap(),
+            0,
+            &RockchipFdtPinctrlParser,
+        )
+        .unwrap();
+
+        assert_eq!(ioc_memory[0x4040 / 4], 0x000f_0001);
+        assert_eq!(ioc_memory[0x4044 / 4], 0x00f0_0010);
+        assert_eq!(ioc_memory[0x0004 / 4], 0xf000_1000);
+        assert_eq!(ioc_memory[0x2000 / 4], 0x0f00_0100);
+        assert_eq!(ioc_memory[0x6120 / 4], 0x0c00_0c00);
+        assert_eq!(ioc_memory[0x6044 / 4], 0x00f0_0060);
+    }
+
+    #[test]
+    fn rk3576_fixed_gpio_regulator_applies_pinctrl_and_drives_enable() {
+        let mut ioc_memory = vec![0_u32; (0xb398 + 4) / 4];
+        let mut gpio_memory: Vec<Vec<u32>> = (0..5).map(|_| vec![0_u32; 0x200 / 4]).collect();
+        let gpio_banks = gpio_memory
+            .iter_mut()
+            .map(|bank| mmio(bank))
+            .collect::<Vec<_>>();
+        let pinctrl = PinCtrl::new_rk3576(mmio(&mut ioc_memory), None, &gpio_banks);
+        let mut controller = RockchipPinCtrl::new(pinctrl, "rk3576-pinctrl");
+
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.add_node(
+            root,
+            node_with_props(
+                "gpio@2ae20000",
+                &[
+                    prop_u32s("phandle", &[30]),
+                    prop_strs("compatible", &["rockchip,gpio-bank"]),
+                    prop_u32s("gpio-ranges", &[40, 0, 64, 32]),
+                ],
+            ),
+        );
+        fdt.add_node(
+            root,
+            node_with_props(
+                "pcfg-pull-none",
+                &[
+                    prop_u32s("phandle", &[31]),
+                    Property::new("bias-disable", Vec::new()),
+                ],
+            ),
+        );
+        fdt.add_node(
+            root,
+            node_with_props(
+                "sd-enable-pin",
+                &[
+                    prop_u32s("phandle", &[32]),
+                    prop_u32s("rockchip,pins", &[2, 7, 0, 31]),
+                ],
+            ),
+        );
+        let regulator = fdt.add_node(
+            root,
+            node_with_props(
+                "vcc3v3-sd",
+                &[
+                    prop_strs("compatible", &["regulator-fixed"]),
+                    prop_strs("pinctrl-names", &["default"]),
+                    prop_u32s("pinctrl-0", &[32]),
+                    prop_u32s("gpios", &[30, 7, 0]),
+                ],
+            ),
+        );
+
+        FdtPinctrl::apply_fixed_regulator(
+            &mut controller,
+            &fdt,
+            fdt.node(regulator).unwrap(),
+            &RockchipFdtPinctrlParser,
+            "test-sd-regulator",
+        )
+        .unwrap();
+
+        assert_eq!(ioc_memory[0x4044 / 4], 0xf000_0000);
+        assert_eq!(gpio_memory[2][0x00 / 4], 0xffff_0080);
+        assert_eq!(gpio_memory[2][0x08 / 4], 0xffff_0080);
+    }
 }

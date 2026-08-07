@@ -12,7 +12,7 @@ Axvisor 是运行在 ArceOS 基础能力之上的 Type-1 Hypervisor。与 ArceOS
 
 ### 1.1 工具链
 
-Axvisor 共享 TGOSKits 工作区统一工具链（`nightly-2026-07-15`）。Axvisor 的交叉编译配置位于 `os/axvisor/.cargo/config.toml`，包含各架构的链接器标志和 runner 配置。
+Axvisor 共享 TGOSKits 工作区统一工具链（`nightly-2026-07-15`）。维护中的构建路径由工作区级 Cargo 配置和 `cargo xtask axvisor` 统一管理；`os/axvisor/.cargo/config.toml` 保留从 Axvisor 目录直接执行 Cargo 时所需的 release、链接和 runner 配置。
 
 ### 1.2 QEMU
 
@@ -29,21 +29,14 @@ Axvisor 开发依赖 QEMU 的硬件虚拟化支持：
 
 ### 1.3 Guest 镜像准备
 
-Axvisor 支持加载多种 Guest OS 镜像。首次运行前需要通过 `setup_qemu.sh` 准备：
+Axvisor 的维护用例由 `cargo xtask axvisor test` 根据 `test-suit/axvisor/` 中的配置准备 Guest 镜像、rootfs、VM 配置和运行参数。可先列出或直接运行 smoke 用例：
 
 ```bash
-cargo xtask axvisor defconfig qemu-aarch64
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
+cargo xtask axvisor test qemu --list --arch aarch64
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke
 ```
 
-该脚本完成以下操作：
-
-1. 从 `axvisor-guest` GitHub 仓库下载 Guest 镜像到 `/tmp/.axvisor-images/qemu_aarch64_arceos`
-2. 从 `configs/vms/qemu/aarch64/arceos-smp1.toml` 生成 `os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml`
-3. 自动修正 VM 配置中的 `kernel_path`
-4. 复制 `rootfs.img` 到 `os/axvisor/tmp/rootfs.img`
-
-支持的 Guest 镜像类型：`arceos`, `arceos-riscv64`, `linux`, `nimbos`。
+维护中的 Guest 类型包括 ArceOS 和 Linux；具体组合以测试套件中的用例为准。
 
 ---
 
@@ -88,11 +81,8 @@ os/axvisor/
 │       ├── linux-*-*.toml
 │       ├── arceos-*-*.toml
 │       ├── freertos-*-*.toml
-│       ├── nimbos-*-*.toml
 │       ├── rt-thread-*-*.toml
 │       └── zephyr-*-*.toml
-└── scripts/
-    └── setup_qemu.sh       # QEMU Guest 镜像准备脚本
 ```
 
 核心组件（位于 `components/`）：
@@ -158,35 +148,37 @@ main()
 
 ### 4.1 设备模型
 
-Axvisor 的虚拟设备框架（`virtualization/axdevice/`）支持三种设备模式：
+Axvisor 把用户物理设备策略与 machine 固有虚拟设备分开：
 
-| 模式 | 配置字段 | 说明 |
-|------|---------|------|
-| **Passthrough** | `passthrough_devices` | Guest 直接访问物理硬件 |
-| **Emulated** | `emu_devices` | Hypervisor 软件模拟设备 |
-| **Excluded** | `excluded_devices` | 从 passthrough 中排除的设备 |
+| 层次 | 配置/实现 | 说明 |
+|------|-----------|------|
+| **物理设备选择** | `devices.passthrough` | `virtualized` 客户机只直通显式选择的设备 |
+| **默认直通排除** | `devices.disabled` | 从 `passthrough` 客户机的默认可分配设备集中移除 |
+| **虚拟平台设备** | `axvm::machine` | 固定创建串口、中断控制器、定时器和固件接口，不进入用户配置 |
 
 ### 4.2 设备配置
 
 在 VM 配置文件中的设备配置示例：
 
 ```toml
+[base]
+guest_type = "passthrough"
+
 [devices]
-interrupt_mode = "passthrough"
-passthrough_devices = [["/"]]           # 直通所有设备
-# 或精细控制：
-# passthrough_devices = [["/dev/uart@fe201000"]]
-# excluded_devices = [["/dev/gpio"]]
+passthrough = [{ path = "/soc/ethernet@1000" }]
+disabled = [{ path = "/soc/gpio@2000" }]
 ```
+
+`guest_type = "passthrough"` 已表示默认选择全部 guest-assignable 物理设备，不需要也不允许 `"/"` 通配选择器。宿主物理 UART 始终不可分配；客户机串口始终是 machine 创建的虚拟设备。
 
 ### 4.3 添加模拟设备
 
 要添加一个新的虚拟设备（如虚拟串口、虚拟块设备），需要：
 
 1. 在 `virtualization/axdevice/` 中实现设备模拟逻辑
-2. 在 VM 配置的 `emu_devices` 中注册
-3. 在 `vmm` 中处理对应的 VM Exit 事件
-4. 通过 Guest 驱动验证
+2. 在 `virtualization/axvm/src/machine.rs` 的对应架构 profile 中注册固定资源
+3. 通过 `IrqLine` 接入对应虚拟中断控制器，并在 VM Exit 路径分发设备访问
+4. 同步生成 FDT/ACPI/MP table 描述并通过 Guest 驱动验证
 
 ---
 
@@ -243,7 +235,7 @@ VM 配置文件位于 `os/axvisor/configs/vms/`，TOML 格式：
 [base]
 id = 1                    # VM ID
 name = "linux-qemu"       # VM 名称
-vm_type = 1               # VM 类型
+guest_type = "virtualized" # "virtualized" 或 "passthrough"
 cpu_num = 1               # vCPU 数量
 phys_cpu_ids = [0]        # 绑定的物理 CPU
 
@@ -260,8 +252,8 @@ memory_regions = [
 ]
 
 [devices]
-interrupt_mode = "passthrough"
-passthrough_devices = [["/"]]
+passthrough = [{ path = "/soc/ethernet@1000" }]
+disabled = [{ path = "/soc/gpio@2000" }]
 ```
 
 ### 6.2 关键字段说明
@@ -269,12 +261,15 @@ passthrough_devices = [["/"]]
 | 字段 | 说明 | 常见值 |
 |------|------|--------|
 | `id` | VM 唯一标识 | 正整数 |
+| `guest_type` | 物理设备赋予策略 | `"virtualized"` 或 `"passthrough"` |
 | `cpu_num` | 分配的 vCPU 数 | 1-16 |
 | `phys_cpu_ids` | 绑定的物理 CPU 列表 | `[0]`, `[0, 1, 2, 3]` |
 | `entry_point` | Guest 入口地址 | 架构相关 |
 | `image_location` | 镜像加载方式 | `"fs"` 或 `"memory"` |
 | `kernel_path` | 内核文件路径 | Guest 类型相关 |
 | `memory_regions` | 内存区域 | `[[base, size, flags, map_type]]` |
+
+配置使用 `deny_unknown_fields`；普通虚拟设备使用 `[[devices.virtual]]` 的 `id + model + options`，地址与中断由解析后设备图分配。默认串口 ID 为 `console0`，可按同 ID 覆盖型号和语义参数，或用新 ID 增加串口；顶层 `serial`、裸地址/IRQ 和 `enabled = false` 仍会失败。旧 `vm_type`、`emu_devices`、`interrupt_mode` 与 `kernel.disk_path` 同样不兼容。完整语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
 
 ### 6.3 支持的 Guest 类型
 
@@ -283,7 +278,6 @@ passthrough_devices = [["/"]]
 | **Linux** | `linux-` | aarch64 (qemu, e2000, orangepi5p, rk3568, rk3588, s100, tac_e400), riscv64-qemu |
 | **ArceOS** | `arceos-` | aarch64 (qemu, e2000, orangepi5p, rk3568, s100, tac_e400), riscv64-qemu |
 | **FreeRTOS** | `freertos-` | aarch64 (e2000, orangepi5p, qemu, tac_e400) |
-| **NimbOS** | `nimbos-` | aarch64-qemu, riscv64-qemu, x86_64-qemu |
 | **RT-Thread** | `rtthread-` | aarch64-e2000 |
 | **Zephyr** | `zephyr-` | aarch64 (e2000, orangepi5p, qemu, tac_e400) |
 
@@ -300,7 +294,7 @@ passthrough_devices = [["/"]]
 env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = ["ax-std/bus-mmio", "fs"]
 log = "Info"
-vm_configs = []   # 注意：默认为空，需手动指定或通过 setup_qemu.sh 生成
+vm_configs = []   # 注意：默认为空，需由测试用例或命令行显式指定
 ```
 
 ### 7.2 已支持的板级配置
@@ -342,31 +336,24 @@ cargo xtask axvisor build --config os/axvisor/.build.toml
 
 第一次上手强烈建议从 `qemu-aarch64` 开始。
 
-### 8.1 使用 `setup_qemu.sh`
+### 8.1 使用维护中的测试入口
 
-**不要**直接从 `defconfig → build → qemu` 开始——默认配置中的 `vm_configs` 为空，且 `rootfs.img` 不会自动生成。
+测试入口会根据用例声明准备构建配置、Guest 镜像、rootfs、VM 配置和 QEMU 参数：
 
 ```bash
-# 步骤 1：生成板级配置
-cargo xtask axvisor defconfig qemu-aarch64
-
-# 步骤 2：准备 Guest 镜像和 rootfs
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-
-# 步骤 3：启动
-cargo xtask axvisor qemu \
-  --config os/axvisor/.build.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+cargo xtask axvisor test qemu \
+  --arch aarch64 \
+  --test-group normal \
+  --test-case smoke
 ```
 
-### 8.2 为什么直接跑会失败
+### 8.2 为什么手工拼接参数容易失败
 
 | 问题 | 原因 |
 |------|------|
-| `vm_configs` 为空 | 板级配置默认不包含 VM 配置，需通过 `setup_qemu.sh` 或手动指定 |
-| `rootfs.img` 不存在 | 需手动准备或通过脚本下载 |
-| `kernel_path` 错误 | 默认路径指向不存在的位置，`setup_qemu.sh` 会自动修正 |
+| `vm_configs` 为空 | 板级配置默认不包含 VM 配置，应由测试用例或显式参数指定 |
+| `rootfs.img` 不存在 | 需通过镜像管理命令或测试入口准备 |
+| `kernel_path` 错误 | VM 配置中的镜像路径必须与本地镜像存储一致 |
 
 ---
 
@@ -449,14 +436,9 @@ cargo xtask axvisor config ls
 # 只做构建，排除编译问题
 cargo xtask axvisor build --config os/axvisor/.build.toml
 
-# 使用脚本准备镜像和 rootfs
-(cd os/axvisor && ./scripts/setup_qemu.sh arceos)
-
-# 明确指定 VM 配置运行
-cargo xtask axvisor qemu \
-  --config os/axvisor/.build.toml \
-  --qemu-config .github/workflows/qemu-aarch64.toml \
-  --vmconfigs os/axvisor/tmp/vmconfigs/arceos-aarch64-qemu-smp1.generated.toml
+# 列出并运行维护中的 QEMU 用例
+cargo xtask axvisor test qemu --list --arch aarch64
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke
 ```
 
 ### 10.3 GDB 调试 Hypervisor
@@ -514,7 +496,7 @@ log = "Debug"   # "Error" | "Warn" | "Info" | "Debug" | "Trace"
 | 内存布局 | 简单连续 | 可能有保留区域 |
 | 启动方式 | QEMU 直接加载 | U-Boot 引导 |
 | 时钟/电源 | 无需配置 | 需初始化 PMU/Clock |
-| 存储设备 | virtio-blk | 真实 eMMC/SD/NVMe |
+| 宿主根存储 | NVMe | RK3588 DWCMSHC eMMC |
 
 ### 11.2 物理板测试
 

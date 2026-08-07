@@ -176,6 +176,27 @@ mod tests {
             Ok(NonNull::from(second_boot)),
         );
     }
+
+    #[test]
+    fn scheduler_current_thread_rejects_an_uninstalled_host_area() {
+        #[cfg(feature = "tls")]
+        let expected_error = CpuLocalError::AreaNotInstalled;
+        #[cfg(not(feature = "tls"))]
+        let expected_error = CpuLocalError::CurrentThreadMismatch;
+
+        let rejected = std::thread::spawn(move || {
+            // SAFETY: the fresh host thread has no installed CPU area, so no
+            // scheduler-owned pointer can be returned.
+            matches!(
+                unsafe { scheduler_current_thread() },
+                Err(error) if error == expected_error
+            )
+        })
+        .join()
+        .expect("host current-thread probe panicked");
+
+        assert!(rejected);
+    }
 }
 
 /// Binds and publishes the first scheduler task on an offline CPU.

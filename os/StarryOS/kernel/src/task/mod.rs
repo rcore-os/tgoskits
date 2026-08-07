@@ -4,11 +4,15 @@ mod cred;
 pub mod futex;
 mod ops;
 pub mod posix_timer;
+mod process_identity;
 mod resources;
 mod seccomp;
 mod signal;
+mod signal_publication;
 mod stat;
 mod timer;
+#[cfg(target_arch = "loongarch64")]
+mod unaligned;
 mod user;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
@@ -36,6 +40,7 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
+pub(crate) use self::process_identity::*;
 pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
     stat::*, timer::*, user::*,
@@ -57,11 +62,21 @@ pub enum SyscallTraceState {
     Exit,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PtraceAttachMode {
+    #[default]
+    None,
+    Attach,
+    Seize,
+}
+
 struct PtraceStopRecord {
     signo: Option<Signo>,
     uctx: UserContext,
     siginfo: Option<SignalInfo>,
     is_syscall: bool,
+    syscall_no: Option<usize>,
     reported: bool,
     event: u32,
     event_msg: usize,
@@ -153,6 +168,9 @@ pub struct Thread {
 
     /// Ready to exit
     pub exit: Arc<AtomicBool>,
+
+    /// Claims the one thread-exit cleanup transaction.
+    exit_started: AtomicBool,
 
     /// Woken when a signal arrives at this thread, so signalfd/epoll pollers
     /// can observe newly-pending signals even when the signal is blocked.
@@ -248,6 +266,7 @@ impl Thread {
             robust_list_head: AtomicUsize::new(0),
             time: AssumeSync(RefCell::new(TimeManager::new())),
             exit: Arc::new(AtomicBool::new(false)),
+            exit_started: AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(200),
             accessing_user_memory: AtomicBool::new(false),
             block_next_signal_check: NextSignalCheckBlock::new(),
@@ -342,6 +361,16 @@ impl Thread {
     /// Check if the thread is ready to exit.
     pub fn pending_exit(&self) -> bool {
         self.exit.load(Ordering::Acquire)
+    }
+
+    /// Claims this thread's exit transaction.
+    ///
+    /// Returns `true` exactly once. The completion flag used by pidfd polling
+    /// remains false until cleanup and process-state publication finish.
+    pub fn begin_exit(&self) -> bool {
+        self.exit_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Set the thread to exit.
@@ -657,6 +686,10 @@ struct JobControl {
     /// (e.g. busybox `killall5 -STOP` then `-CONT`) without having to scrub the
     /// pending-signal queue.
     continue_generation: u64,
+    /// TID of the thread currently parked in `do_job_stop`. The implementation
+    /// currently parks only the thread that dequeues the stop signal, so ptrace
+    /// must distinguish that waiter from running or syscall-blocked siblings.
+    waiter_tid: Option<Pid>,
 }
 
 /// [`Process`]-shared data.
@@ -692,6 +725,8 @@ impl ProcessImage {
 pub struct ProcessData {
     /// The process.
     pub proc: Arc<Process>,
+    /// Stable generation identity shared by the registry and pidfds.
+    identity: Arc<ProcessIdentity>,
     /// The executable path
     pub exe_path: RwLock<String>,
     /// The command line arguments
@@ -808,8 +843,8 @@ pub struct ProcessData {
     /// Cleared after the exec-stop is delivered in the user-return loop.
     ptrace_exec_stop_pending: AtomicBool,
 
-    /// Set by `PTRACE_ATTACH` / `PTRACE_SEIZE`.
-    ptrace_attached: AtomicBool,
+    /// Attachment mode established by `PTRACE_ATTACH` or `PTRACE_SEIZE`.
+    ptrace_attach_mode: AtomicU8,
 
     /// TID selected by `PTRACE_SINGLESTEP`; causes a temporary EBREAK insertion.
     ptrace_singlestep_tid: AtomicU32,
@@ -907,73 +942,78 @@ impl ProcessData {
         wait_parent_tid: Pid,
         vm_aspace_shared: bool,
     ) -> Arc<Self> {
-        let this = Arc::new(Self {
-            proc,
-            exe_path: RwLock::new(image.exe_path),
-            cmdline: RwLock::new(image.cmdline),
-            envp: RwLock::new(image.envp),
-            auxv: RwLock::new(image.auxv),
-            root_path: RwLock::new(image.root_path),
-            cwd_path: RwLock::new(image.cwd_path),
-            aspace: SpinNoIrq::new(aspace),
-            uprobe_manager: crate::kprobe::KprobeManager::new(),
-            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
-            heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
+        let this = Arc::new_cyclic(|weak| {
+            let exit_event: Arc<PollSet> = Arc::default();
+            let identity = ProcessIdentity::new(proc.clone(), exit_event.clone(), weak.clone());
+            Self {
+                proc,
+                identity,
+                exe_path: RwLock::new(image.exe_path),
+                cmdline: RwLock::new(image.cmdline),
+                envp: RwLock::new(image.envp),
+                auxv: RwLock::new(image.auxv),
+                root_path: RwLock::new(image.root_path),
+                cwd_path: RwLock::new(image.cwd_path),
+                aspace: SpinNoIrq::new(aspace),
+                uprobe_manager: crate::kprobe::KprobeManager::new(),
+                uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
+                heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
-            rlim: RwLock::default(),
+                rlim: RwLock::default(),
 
-            child_exit_event: Arc::default(),
-            exit_event: Arc::default(),
-            thread_exit_event: Arc::default(),
-            exec_lock: Mutex::new(()),
-            exit_signal,
-            wait_parent_tid,
+                child_exit_event: Arc::default(),
+                exit_event,
+                thread_exit_event: Arc::default(),
+                exec_lock: Mutex::new(()),
+                exit_signal,
+                wait_parent_tid,
 
-            signal: Arc::new(ProcessSignalManager::new(
-                signal_actions,
-                crate::config::SIGNAL_TRAMPOLINE,
-            )),
+                signal: Arc::new(ProcessSignalManager::new(
+                    signal_actions,
+                    crate::config::SIGNAL_TRAMPOLINE,
+                )),
 
-            futex_table: Arc::new(FutexTable::new()),
+                futex_table: Arc::new(FutexTable::new()),
 
-            nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
-            cgroup: RwLock::new(crate::cgroup::root()),
+                nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
+                cgroup: RwLock::new(crate::cgroup::root()),
 
-            vfork_done: SpinNoIrq::new(None),
+                vfork_done: SpinNoIrq::new(None),
 
-            umask: AtomicU32::new(0o022),
-            nice: AtomicI32::new(0),
-            membarrier_state: AtomicU32::new(0),
-            dumpable: AtomicI32::new(1),
-            thp_disable: AtomicU32::new(0),
+                umask: AtomicU32::new(0o022),
+                nice: AtomicI32::new(0),
+                membarrier_state: AtomicU32::new(0),
+                dumpable: AtomicI32::new(1),
+                thp_disable: AtomicU32::new(0),
 
-            children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+                children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
 
-            ptrace_tracer_pid: AtomicU32::new(0),
-            ptrace_traceme: AtomicBool::new(false),
-            ptrace_stop: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_stop_tid: AtomicU32::new(0),
-            ptrace_stop_event: Arc::default(),
-            ptrace_resume_signo: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_exec_stop_pending: AtomicBool::new(false),
-            ptrace_attached: AtomicBool::new(false),
-            ptrace_singlestep_tid: AtomicU32::new(0),
-            ptrace_syscall_trace: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_options: AtomicUsize::new(0),
-            ptrace_pending_event: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_ss_saved_insn: SpinNoIrq::new(BTreeMap::new()),
-            ptrace_stop_fp_data: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_tracer_pid: AtomicU32::new(0),
+                ptrace_traceme: AtomicBool::new(false),
+                ptrace_stop: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_stop_tid: AtomicU32::new(0),
+                ptrace_stop_event: Arc::default(),
+                ptrace_resume_signo: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_exec_stop_pending: AtomicBool::new(false),
+                ptrace_attach_mode: AtomicU8::new(PtraceAttachMode::None as u8),
+                ptrace_singlestep_tid: AtomicU32::new(0),
+                ptrace_syscall_trace: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_options: AtomicUsize::new(0),
+                ptrace_pending_event: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_ss_saved_insn: SpinNoIrq::new(BTreeMap::new()),
+                ptrace_stop_fp_data: SpinNoIrq::new(BTreeMap::new()),
 
-            personality: AtomicUsize::new(0),
+                personality: AtomicUsize::new(0),
 
-            posix_timers: Arc::new(PosixTimerTable::default()),
+                posix_timers: Arc::new(PosixTimerTable::default()),
 
-            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
-            aspace_slot_released: AtomicBool::new(false),
+                vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
+                aspace_slot_released: AtomicBool::new(false),
 
-            job_control: SpinNoIrq::new(JobControl::default()),
-            cont_event: Arc::default(),
+                job_control: SpinNoIrq::new(JobControl::default()),
+                cont_event: Arc::default(),
+            }
         });
         // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
         // from `lock()` lives until the end of the statement, so calling
@@ -982,6 +1022,11 @@ impl ProcessData {
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
         this
+    }
+
+    /// Returns this process generation's stable PID identity.
+    pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
+        self.identity.clone()
     }
 
     /// Whether this process shares its VM address space (`CLONE_VM`).
@@ -1098,7 +1143,12 @@ impl ProcessData {
     /// [`Self::set_job_continued`] / `continue_generation`. Closing this race at
     /// the stop site lets us avoid scrubbing the pending-signal queue (which
     /// would require modifying `starry-signal`).
-    pub fn set_job_stopped(&self, signo: Signo, continue_gen_snapshot: u64) -> bool {
+    pub fn set_job_stopped(
+        &self,
+        signo: Signo,
+        continue_gen_snapshot: u64,
+        waiter_tid: Pid,
+    ) -> bool {
         let mut jc = self.job_control.lock();
         if jc.continue_generation != continue_gen_snapshot {
             // A continue raced in after we observed `continue_gen_snapshot`;
@@ -1107,7 +1157,14 @@ impl ProcessData {
         }
         jc.stopped = Some(signo);
         jc.status = Some(JobStatus::Stopped(signo));
+        jc.waiter_tid = Some(waiter_tid);
         true
+    }
+
+    /// Returns true when `tid` is the thread parked for the active job stop.
+    pub fn is_job_stop_waiter(&self, tid: Pid) -> bool {
+        let jc = self.job_control.lock();
+        jc.stopped.is_some() && jc.waiter_tid == Some(tid)
     }
 
     /// Snapshot the continue generation. Taken right after a stop signal is
@@ -1127,6 +1184,7 @@ impl ProcessData {
         let mut jc = self.job_control.lock();
         jc.continue_generation = jc.continue_generation.wrapping_add(1);
         let was_stopped = jc.stopped.take().is_some();
+        jc.waiter_tid = None;
         if was_stopped {
             jc.status = Some(JobStatus::Continued);
             drop(jc);
@@ -1141,11 +1199,22 @@ impl ProcessData {
     /// Force-clear the stop (for `SIGKILL`) so a parked thread re-checks and
     /// proceeds to terminate. Does not queue a `Continued` report.
     pub fn clear_job_stop_for_kill(&self) {
-        let was_stopped = self.job_control.lock().stopped.take().is_some();
+        let mut jc = self.job_control.lock();
+        let was_stopped = jc.stopped.take().is_some();
+        jc.waiter_tid = None;
+        drop(jc);
         if was_stopped {
             // Stop state is cleared before waking stopped threads.
             unsafe { self.cont_event.wake(IoEvents::IN) };
         }
+    }
+
+    /// Wake a job-stopped thread so it can publish a pending ptrace event.
+    ///
+    /// This does not alter the job-control state.  Only `SIGCONT` or `SIGKILL`
+    /// may release a job stop.
+    pub fn wake_job_stop_waiter(&self) {
+        unsafe { self.cont_event.wake(IoEvents::IN) };
     }
 
     /// The wait queue woken when the process is continued or killed.
@@ -1237,6 +1306,7 @@ impl ProcessData {
                 uctx: *uctx,
                 siginfo: Some(SignalInfo::new_kernel(signo)),
                 is_syscall: false,
+                syscall_no: None,
                 reported: false,
                 event: pending_event.as_ref().map_or(0, |event| event.event),
                 event_msg: pending_event.as_ref().map_or(0, |event| event.msg),
@@ -1246,10 +1316,17 @@ impl ProcessData {
     }
 
     /// Record that this tracee is stopped at a syscall entry or exit boundary.
-    pub fn set_ptrace_syscall_stop(&self, tid: u32, signo: Signo, uctx: &UserContext) {
+    pub fn set_ptrace_syscall_stop(
+        &self,
+        tid: u32,
+        signo: Signo,
+        uctx: &UserContext,
+        syscall_no: usize,
+    ) {
         self.set_ptrace_stop(tid, signo, uctx);
         if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
             stop.is_syscall = true;
+            stop.syscall_no = Some(syscall_no);
         }
     }
 
@@ -1295,6 +1372,19 @@ impl ProcessData {
             .lock()
             .get(&tid)
             .and_then(|stop| stop.signo)
+    }
+
+    /// Return whether the selected stop was produced at a syscall boundary.
+    pub fn ptrace_stop_is_syscall_for(&self, tid: u32) -> bool {
+        self.ptrace_stop
+            .lock()
+            .get(&tid)
+            .is_some_and(|stop| stop.is_syscall)
+    }
+
+    /// Return the original syscall number associated with a syscall stop.
+    pub fn ptrace_stop_syscall_number_for(&self, tid: u32) -> Option<usize> {
+        self.ptrace_stop.lock().get(&tid)?.syscall_no
     }
 
     pub fn ptrace_unreported_stop(&self, preferred_tid: Option<u32>) -> Option<(u32, Signo)> {
@@ -1444,6 +1534,19 @@ impl ProcessData {
         true
     }
 
+    /// Replace the original syscall number held for a stopped tracee.
+    pub fn set_ptrace_stop_syscall_number_for(&self, tid: u32, syscall_no: usize) -> bool {
+        let mut stops = self.ptrace_stop.lock();
+        let Some(stop) = stops.get_mut(&tid) else {
+            return false;
+        };
+        if !stop.is_syscall {
+            return false;
+        }
+        stop.syscall_no = Some(syscall_no);
+        true
+    }
+
     /// Resume the stopped task, optionally injecting a signal.
     pub fn resume_ptrace_stop_with_signal(&self, signo: u32) {
         if let Some(tid) = self.selected_ptrace_stop_tid() {
@@ -1537,16 +1640,28 @@ impl ProcessData {
         unsafe { self.ptrace_stop_event.register(waker, IoEvents::IN) };
     }
 
-    pub fn set_ptrace_attached(&self) {
-        self.ptrace_attached.store(true, Ordering::Release);
+    pub(crate) fn set_ptrace_attach_mode(&self, mode: PtraceAttachMode) {
+        self.ptrace_attach_mode.store(mode as u8, Ordering::Release);
     }
 
     pub fn clear_ptrace_attached(&self) {
-        self.ptrace_attached.store(false, Ordering::Release);
+        self.set_ptrace_attach_mode(PtraceAttachMode::None);
+    }
+
+    pub(crate) fn ptrace_attach_mode(&self) -> PtraceAttachMode {
+        match self.ptrace_attach_mode.load(Ordering::Acquire) {
+            value if value == PtraceAttachMode::Attach as u8 => PtraceAttachMode::Attach,
+            value if value == PtraceAttachMode::Seize as u8 => PtraceAttachMode::Seize,
+            _ => PtraceAttachMode::None,
+        }
     }
 
     pub fn is_ptrace_attached(&self) -> bool {
-        self.ptrace_attached.load(Ordering::Acquire)
+        self.ptrace_attach_mode() != PtraceAttachMode::None
+    }
+
+    pub fn is_ptrace_seized(&self) -> bool {
+        self.ptrace_attach_mode() == PtraceAttachMode::Seize
     }
 
     pub fn set_ptrace_singlestep(&self, val: bool) {
@@ -1594,6 +1709,30 @@ impl ProcessData {
         } else {
             traces.insert(tid, state);
         }
+    }
+
+    /// Return the next syscall boundary that a `PTRACE_SYSCALL` tracee stops at.
+    pub fn ptrace_syscall_trace_state_for(&self, tid: u32) -> SyscallTraceState {
+        self.ptrace_syscall_trace
+            .lock()
+            .get(&tid)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Continue syscall tracing from the opposite boundary.
+    ///
+    /// This is used only when `PTRACE_SYSCALL` resumes a syscall stop. Resuming
+    /// an event, group, or signal-delivery stop begins with the next entry.
+    pub fn advance_ptrace_syscall_trace_for(&self, tid: u32) {
+        let mut traces = self.ptrace_syscall_trace.lock();
+        let next = match traces.get(&tid).copied() {
+            Some(SyscallTraceState::Entry) => SyscallTraceState::Exit,
+            Some(SyscallTraceState::Exit) | Some(SyscallTraceState::None) | None => {
+                SyscallTraceState::Entry
+            }
+        };
+        traces.insert(tid, next);
     }
 
     pub fn take_ptrace_syscall_trace_for(&self, tid: u32) -> SyscallTraceState {

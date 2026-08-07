@@ -1,0 +1,24 @@
+args = [
+  "-machine",
+  "q35",
+  "-nographic",
+  "-m",
+  "512M",
+  "-smp",
+  "4",
+  "-drive",
+  "if=ide,index=0,id=disk0,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img,snapshot=on",
+]
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo 'AHCI_SINGLE_DISK_BOOT_PASSED'"
+success_regex = [
+  "(?m)^AHCI_SINGLE_DISK_BOOT_PASSED\\s*$",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?m)^AHCI_SINGLE_DISK_BOOT_FAILED\\s*$",
+]
+timeout = 300

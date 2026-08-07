@@ -9,16 +9,24 @@ impl InitIf for InitIfImpl {
     /// This function should be called immediately after the kernel has booted,
     /// and performed earliest platform configuration and initialization (e.g.,
     /// early console, clocking).
-    fn init_early(_cpu_id: usize, _dtb: usize) {
+    fn init_early(cpu_id: usize, _dtb: usize) {
         enable_fp_simd();
         somehal::timer::enable();
+        // SAFETY: platform entry binds this CPU-local area before ax-runtime
+        // calls init_early, and the scheduler and local IRQs are still offline.
+        unsafe { ax_plat::time::init_scheduler_clock(cpu_id) }
+            .unwrap_or_else(|error| panic!("failed to initialize scheduler clock: {error}"));
     }
 
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
-    fn init_early_secondary(_cpu_id: usize) {
+    fn init_early_secondary(cpu_id: usize) {
         enable_fp_simd();
         somehal::timer::enable();
+        // SAFETY: secondary early initialization precedes scheduler
+        // publication and local IRQ enablement on this bound CPU.
+        unsafe { ax_plat::time::init_scheduler_clock(cpu_id) }
+            .unwrap_or_else(|error| panic!("failed to initialize scheduler clock: {error}"));
     }
 
     /// Initializes the platform at the later stage for the primary core.

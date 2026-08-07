@@ -1,4 +1,6 @@
 use std::{collections::BTreeSet, ffi::OsStr, fs, path::PathBuf, process::Command, time::Duration};
+#[cfg(unix)]
+use std::{env, os::unix::fs::PermissionsExt, path::Path};
 
 use tempfile::tempdir;
 
@@ -365,6 +367,85 @@ fn grouped_c_root_configure_command_passes_selected_subcase_list() {
     let args = command_args(&command);
 
     assert!(args.contains(&"-DSTARRY_GROUPED_C_SUBCASES=beta-dir".to_string()));
+}
+
+#[test]
+fn grouped_c_root_prebuild_env_exposes_selected_subcase_list() {
+    let root = tempdir().unwrap();
+    let case = fake_case(root.path(), "system");
+    let alpha = fake_c_subcase(root.path(), &case, "alpha", &["alpha"]);
+    let beta = fake_c_subcase(root.path(), &case, "beta-dir", &["beta"]);
+    let subcases = [&alpha, &beta];
+
+    let env = grouped_c_root_prebuild_env(
+        vec![("SUITE_PACKAGE_REGION".to_string(), "us".to_string())],
+        &subcases,
+    );
+
+    assert!(env.contains(&(
+        "STARRY_GROUPED_C_SUBCASES".to_string(),
+        "alpha,beta-dir".to_string(),
+    )));
+}
+
+#[cfg(unix)]
+#[test]
+fn starry_system_prebuild_retries_transient_apk_failures() {
+    let root = tempdir().unwrap();
+    let fake_bin = root.path().join("bin");
+    let staging_root = root.path().join("staging-root");
+    let attempts_file = root.path().join("apk-attempts");
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::create_dir_all(staging_root.join("usr/bin")).unwrap();
+
+    let fake_apk = fake_bin.join("apk");
+    fs::write(
+        &fake_apk,
+        r#"#!/bin/sh
+attempt=0
+if [ -f "$APK_ATTEMPTS_FILE" ]; then
+    attempt="$(cat "$APK_ATTEMPTS_FILE")"
+fi
+attempt="$((attempt + 1))"
+printf '%s\n' "$attempt" > "$APK_ATTEMPTS_FILE"
+if [ "$attempt" -lt 3 ]; then
+    exit 1
+fi
+printf '#!/bin/sh\nexit 0\n' > "$STARRY_STAGING_ROOT/usr/bin/curl"
+chmod +x "$STARRY_STAGING_ROOT/usr/bin/curl"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&fake_apk, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .unwrap();
+    let prebuild_script = workspace_root.join("test-suit/starryos/qemu/system/prebuild.sh");
+    let original_path = env::var_os("PATH").unwrap_or_default();
+    let mut command_paths = vec![fake_bin];
+    command_paths.extend(env::split_paths(&original_path));
+    let command_path = env::join_paths(command_paths).unwrap();
+
+    let output = Command::new("sh")
+        .arg(prebuild_script)
+        .env("PATH", command_path)
+        .env("APK_ATTEMPTS_FILE", &attempts_file)
+        .env("STARRY_APK_RETRY_DELAY_SECONDS", "0")
+        .env("STARRY_GROUPED_C_SUBCASES", "apk-curl-equivalence")
+        .env("STARRY_STAGING_ROOT", &staging_root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "prebuild failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(fs::read_to_string(attempts_file).unwrap().trim(), "3");
+    assert!(staging_root.join("usr/bin/curl").is_file());
 }
 
 #[test]

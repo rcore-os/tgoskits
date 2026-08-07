@@ -1,6 +1,6 @@
 [package]
 name = "rdif-reset"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors = ["周睿 <zrufo747@outlook.com>"]
 repository.workspace = true

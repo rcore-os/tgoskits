@@ -13,6 +13,8 @@
 // limitations under the License.
 
 mod base;
+#[cfg(feature = "fs")]
+mod fs;
 mod history;
 mod vm;
 
@@ -27,12 +29,18 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     string::ToString,
 };
-use std::{print, println};
-
-use spin::LazyLock;
+use std::{print, println, sync::LazyLock};
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
+
+pub(super) fn shutdown(exit_code: i32) -> ! {
+    #[cfg(feature = "fs")]
+    if let Err(error) = axvm::shutdown_host_filesystems() {
+        println!("Warning: failed to shut down host filesystems: {error}");
+    }
+    std::process::exit(exit_code);
+}
 
 #[derive(Debug, Clone)]
 pub struct CommandNode {
@@ -71,6 +79,7 @@ pub struct ParsedCommand {
 
 #[derive(Debug)]
 pub enum ParseError {
+    InvalidSyntax,
     UnknownCommand(String),
     UnknownOption(String),
     MissingValue(String),
@@ -171,7 +180,7 @@ pub struct CommandParser;
 
 impl CommandParser {
     pub fn parse(input: &str) -> Result<ParsedCommand, ParseError> {
-        let tokens = Self::tokenize(input);
+        let tokens = Self::tokenize(input)?;
         if tokens.is_empty() {
             return Err(ParseError::UnknownCommand("empty command".to_string()));
         }
@@ -193,35 +202,8 @@ impl CommandParser {
         })
     }
 
-    fn tokenize(input: &str) -> Vec<String> {
-        let mut tokens = Vec::new();
-        let mut current_token = String::new();
-        let mut in_quotes = false;
-        let mut escape_next = false;
-
-        for ch in input.chars() {
-            if escape_next {
-                current_token.push(ch);
-                escape_next = false;
-            } else if ch == '\\' {
-                escape_next = true;
-            } else if ch == '"' {
-                in_quotes = !in_quotes;
-            } else if ch.is_whitespace() && !in_quotes {
-                if !current_token.is_empty() {
-                    tokens.push(current_token.clone());
-                    current_token.clear();
-                }
-            } else {
-                current_token.push(ch);
-            }
-        }
-
-        if !current_token.is_empty() {
-            tokens.push(current_token);
-        }
-
-        tokens
+    fn tokenize(input: &str) -> Result<Vec<String>, ParseError> {
+        shlex::split(input).ok_or(ParseError::InvalidSyntax)
     }
 
     fn find_command(
@@ -492,31 +474,12 @@ pub fn prompt_string() -> String {
 pub fn run_cmd_bytes(cmd_bytes: &[u8]) {
     match str::from_utf8(cmd_bytes) {
         Ok(cmd_str) => {
-            let trimmed = cmd_str.trim();
-            if trimmed.is_empty() {
+            if matches!(CommandParser::tokenize(cmd_str), Ok(tokens) if tokens.is_empty()) {
                 return;
             }
 
-            match execute_command(trimmed) {
-                Ok(_) => {
-                    // Command executed successfully
-                }
-                Err(ParseError::UnknownCommand(cmd)) => {
-                    println!("Error: Unknown command '{}'", cmd);
-                    println!("Type 'help' to see available commands");
-                }
-                Err(ParseError::UnknownOption(opt)) => {
-                    println!("Error: Unknown option '{}'", opt);
-                }
-                Err(ParseError::MissingValue(opt)) => {
-                    println!("Error: Option '{}' is missing a value", opt);
-                }
-                Err(ParseError::MissingRequiredOption(opt)) => {
-                    println!("Error: Missing required option '{}'", opt);
-                }
-                Err(ParseError::NoHandler(cmd)) => {
-                    println!("Error: Command '{}' has no handler function", cmd);
-                }
+            if let Err(error) = execute_command(cmd_str) {
+                print_parse_error(error);
             }
         }
         Err(_) => {
@@ -525,29 +488,53 @@ pub fn run_cmd_bytes(cmd_bytes: &[u8]) {
     }
 }
 
+fn print_parse_error(error: ParseError) {
+    match error {
+        ParseError::InvalidSyntax => {
+            println!("Error: Invalid command syntax");
+        }
+        ParseError::UnknownCommand(cmd) => {
+            println!("Error: Unknown command '{}'", cmd);
+            println!("Type 'help' to see available commands");
+        }
+        ParseError::UnknownOption(opt) => {
+            println!("Error: Unknown option '{}'", opt);
+        }
+        ParseError::MissingValue(opt) => {
+            println!("Error: Option '{}' is missing a value", opt);
+        }
+        ParseError::MissingRequiredOption(opt) => {
+            println!("Error: Missing required option '{}'", opt);
+        }
+        ParseError::NoHandler(cmd) => {
+            println!("Error: Command '{}' has no handler function", cmd);
+        }
+    }
+}
+
 // Built-in command handler
 pub fn handle_builtin_commands(input: &str) -> bool {
-    match input.trim() {
-        "help" => {
+    let Ok(tokens) = CommandParser::tokenize(input) else {
+        return false;
+    };
+
+    match tokens.as_slice() {
+        [command] if command == "help" => {
             show_available_commands();
             true
         }
-        "exit" | "quit" => {
+        [command] if command == "exit" || command == "quit" => {
             println!("Goodbye!");
-            std::process::exit(0);
+            shutdown(0);
         }
-        "clear" => {
+        [command] if command == "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
             std::io::stdout().flush().ok();
             true
         }
-        _ if input.starts_with("help ") => {
-            let cmd_parts: Vec<String> = input[5..]
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-            if let Err(e) = show_help(&cmd_parts) {
-                println!("Error: {:?}", e);
+        [command, command_path @ ..] if command == "help" => {
+            if let Err(error) = show_help(command_path) {
+                print_parse_error(error);
             }
             true
         }
@@ -579,4 +566,83 @@ pub fn show_available_commands() {
     println!("  exit/quit       Exit the shell");
     println!();
     println!("Tip: Use 'help <command>' to see detailed usage of a command");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CommandParser, ParseError};
+
+    #[test]
+    fn shlex_tokenizes_shell_words() {
+        let tokens =
+            CommandParser::tokenize(r#"echo plain 'single quoted' "double quoted" escaped\ space"#)
+                .unwrap();
+
+        assert_eq!(
+            tokens,
+            [
+                "echo",
+                "plain",
+                "single quoted",
+                "double quoted",
+                "escaped space"
+            ]
+        );
+    }
+
+    #[test]
+    fn shlex_preserves_empty_and_adjacent_quoted_words() {
+        let tokens = CommandParser::tokenize(r#"echo "" '' pre"middle"'post'"#).unwrap();
+
+        assert_eq!(tokens, ["echo", "", "", "premiddlepost"]);
+    }
+
+    #[test]
+    fn shlex_uses_posix_backslash_rules_inside_double_quotes() {
+        let tokens = CommandParser::tokenize(r#"echo "a\qb" "a\\b""#).unwrap();
+
+        assert_eq!(tokens, ["echo", r"a\qb", r"a\b"]);
+    }
+
+    #[test]
+    fn shlex_uses_ascii_whitespace_separators() {
+        let tokens = CommandParser::tokenize("echo\u{2003}value").unwrap();
+
+        assert_eq!(tokens, ["echo\u{2003}value"]);
+    }
+
+    #[test]
+    fn shlex_preserves_an_escaped_trailing_space() {
+        let tokens = CommandParser::tokenize("echo value\\ ").unwrap();
+
+        assert_eq!(tokens, ["echo", "value "]);
+    }
+
+    #[test]
+    fn shlex_treats_hash_at_word_start_as_a_comment() {
+        let tokens = CommandParser::tokenize("echo value#kept # ignored").unwrap();
+
+        assert_eq!(tokens, ["echo", "value#kept"]);
+    }
+
+    #[test]
+    fn shlex_rejects_unclosed_quotes_and_trailing_backslash() {
+        for input in [
+            r#"echo 'unterminated"#,
+            r#"echo "unterminated"#,
+            "echo trailing\\",
+        ] {
+            assert!(matches!(
+                CommandParser::tokenize(input),
+                Err(ParseError::InvalidSyntax)
+            ));
+        }
+    }
+
+    #[test]
+    fn help_command_uses_shlex_tokenization() {
+        let tokens = CommandParser::tokenize("help\t'vm' start").unwrap();
+
+        assert_eq!(tokens, ["help", "vm", "start"]);
+    }
 }

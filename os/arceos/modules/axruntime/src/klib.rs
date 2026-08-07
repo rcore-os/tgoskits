@@ -15,8 +15,8 @@ use core::time::Duration;
 #[cfg(feature = "paging")]
 use ax_memory_addr::MemoryAddr;
 use axklib::{
-    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuId, IrqCpuMask, IrqError,
-    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
+    AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, DmaCoherentMappingOutcome,
+    IrqCpuId, IrqCpuMask, IrqError, IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
 };
 
 struct KlibImpl;
@@ -30,6 +30,14 @@ fn dma_coherent_range(addr: VirtAddr, size: usize) -> Option<(VirtAddr, usize)> 
     let start = addr.align_down_4k();
     let end = (addr + size).align_up_4k();
     Some((start, end - start))
+}
+
+#[cfg(feature = "paging")]
+fn coherent_mapping_outcome(result: AxResult) -> DmaCoherentMappingOutcome {
+    match result {
+        Ok(()) => DmaCoherentMappingOutcome::Updated,
+        Err(err) => DmaCoherentMappingOutcome::StateUncertain(err),
+    }
 }
 
 #[cfg(feature = "irq")]
@@ -84,29 +92,34 @@ impl_trait! {
             dma_cache_range(ax_hal::mem::DCacheOp::CleanInvalidate, addr, size);
         }
 
-        fn mem_make_dma_coherent_uncached(addr: VirtAddr, size: usize) -> AxResult {
+        fn mem_make_dma_coherent_uncached(
+            addr: VirtAddr,
+            size: usize,
+        ) -> DmaCoherentMappingOutcome {
             #[cfg(feature = "paging")]
             {
                 let Some((start, size)) = dma_coherent_range(addr, size) else {
-                    return Ok(());
+                    return DmaCoherentMappingOutcome::Updated;
                 };
 
                 ax_hal::mem::dma_coherent_before_make_uncached(start, size);
-                ax_mm::kernel_aspace().lock().protect(
+                let outcome = coherent_mapping_outcome(crate::kernel_mapping::protect_kernel_range(
                     start,
                     size,
                     ax_hal::paging::MappingFlags::READ
                         | ax_hal::paging::MappingFlags::WRITE
                         | ax_hal::paging::MappingFlags::UNCACHED,
-                )?;
-                ax_hal::asm::flush_tlb(None);
+                ));
+                if outcome != DmaCoherentMappingOutcome::Updated {
+                    return outcome;
+                }
                 ax_hal::mem::dma_coherent_after_mapping_update();
-                Ok(())
+                DmaCoherentMappingOutcome::Updated
             }
             #[cfg(not(feature = "paging"))]
             {
                 let _ = (addr, size);
-                Err(AxError::Unsupported)
+                DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
             }
         }
 
@@ -118,12 +131,11 @@ impl_trait! {
                 };
 
                 ax_hal::mem::dma_coherent_before_restore_cached(start, size);
-                ax_mm::kernel_aspace().lock().protect(
+                crate::kernel_mapping::protect_kernel_range(
                     start,
                     size,
                     ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
                 )?;
-                ax_hal::asm::flush_tlb(None);
                 ax_hal::mem::dma_coherent_after_mapping_update();
                 Ok(())
             }
@@ -291,5 +303,28 @@ impl_trait! {
                 Err(IrqError::Unsupported)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(feature = "paging"))]
+    #[test]
+    fn coherent_mapping_reports_not_started_without_paging() {
+        assert_eq!(
+            KlibImpl::mem_make_dma_coherent_uncached(VirtAddr::from_usize(0x1000), 0x1000),
+            DmaCoherentMappingOutcome::NotStarted(AxError::Unsupported)
+        );
+    }
+
+    #[cfg(feature = "paging")]
+    #[test]
+    fn coherent_mapping_failure_reports_uncertain_state() {
+        assert_eq!(
+            coherent_mapping_outcome(Err(AxError::TimedOut)),
+            DmaCoherentMappingOutcome::StateUncertain(AxError::TimedOut)
+        );
     }
 }

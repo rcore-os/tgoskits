@@ -102,7 +102,7 @@ block-beta
 | --- | --- | --- | --- | --- | --- |
 | AArch64 | `aarch64-unknown-none-softfloat` | `virt` | Rust/C/axtest | system/TTY | Guest smoke |
 | RISC-V 64 | `riscv64gc-unknown-none-elf` | `virt` | Rust/C/axtest | system/TTY | Guest smoke，启用 `sstc` |
-| x86_64 | `x86_64-unknown-none` | `q35`、ACPI | Rust/C/axtest | system/TTY | VMX/SVM smoke、NimbOS UEFI 用例 |
+| x86_64 | `x86_64-unknown-none` | `q35`、ACPI | Rust/C/axtest | system/TTY | VMX/SVM smoke |
 | LoongArch64 | `loongarch64-unknown-none-softfloat` | `virt` | Rust/C/axtest | system/TTY | 动态 UEFI smoke，使用 LVZ 容器 |
 
 ### 2.2 快速验证
@@ -153,7 +153,7 @@ StarryOS 板测由 `test-suit/starryos/board-<platform>/` 自动发现。每个�
 | OrangePi-5-Plus | AArch64 / RK3588 | 启动、USB、网络、rtnetlink、PCIe、PWM、NPU | 有 |
 | AKA-00-SG2002 | RISC-V 64 / SG2002 | 启动、USB、TPU YOLO | 有 |
 | LicheeRV-Nano-SG2002 | RISC-V 64 / SG2002 | 启动 | 当前 CI 矩阵未启用 |
-| VisionFive 2 | RISC-V 64 / JH7110 | 启动与 MMC rootfs | 有 |
+| VisionFive 2 | RISC-V 64 / JH7110 | 平台源码保留；块设备公开配置待写入验证 | 无 |
 | K230 CanMV | RISC-V 64 / K230 | 有板卡构建配置，暂无板测目录 | 无 |
 | Loongson 2K1000 | LoongArch64 / LS2K1000 | 有板卡构建配置，当前采用手工 U-Boot 验证 | 无 |
 
@@ -163,7 +163,7 @@ StarryOS 板测由 `test-suit/starryos/board-<platform>/` 自动发现。每个�
 
 | 设备类别 | 代表 crate | 覆盖能力或平台 |
 | --- | --- | --- |
-| 块设备 | `sdhci-host`、`dwmmc-host`、`starfive-jh7110-dwmmc`、`nvme-driver` | SD/MMC、JH7110 MMC、NVMe |
+| 块设备 | `sdhci-host`、`dwmmc-host`、`phytium-mci-host`、`nvme-driver` | SD/MMC 与 NVMe driver core；公开注册仅覆盖已通过实机写入矩阵的控制器 |
 | 网络 | `realtek-rtl8125`、`eth-intel`、`fxmac_rs`、`rd-net` | PCIe 网卡与 SoC Ethernet |
 | 中断控制器 | `arm-gic-driver`、`riscv_plic`、`rdif-intc` | GIC、PLIC 与统一中断控制器接口 |
 | PCIe | `pcie`、`rk3588-pci`、`rdif-pcie` | 通用 PCIe 与 RK3588 Host Controller |

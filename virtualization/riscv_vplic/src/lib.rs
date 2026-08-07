@@ -26,10 +26,8 @@ extern crate alloc;
 mod consts;
 mod devops_impl;
 mod error;
-pub mod host;
-mod utils;
 mod vplic;
 
 pub use consts::*;
 pub use error::{VplicError, VplicResult};
-pub use vplic::VPlicGlobal;
+pub use vplic::{VPlicGlobal, VplicCompletion};

@@ -191,10 +191,21 @@ jobs:
         if: inputs.download_xtask_bin_artifact
         shell: bash
         run: |
-          set -eux
-          tar -xf "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" -C "${GITHUB_WORKSPACE}"
-          chmod +x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
-          test -x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          set -euo pipefail
+          artifact_path="${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar"
+          xtask_path="${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          if ! tar -xf "${artifact_path}" -C "${GITHUB_WORKSPACE}"; then
+            echo "::error::failed to extract tg-xtask artifact: ${artifact_path}"
+            exit 1
+          fi
+          if [ ! -f "${xtask_path}" ]; then
+            echo "::error::tg-xtask artifact did not contain the expected binary: ${xtask_path}"
+            exit 1
+          fi
+          if ! chmod +x "${xtask_path}" || [ ! -x "${xtask_path}" ]; then
+            echo "::error::restored tg-xtask binary could not be made executable: ${xtask_path}"
+            exit 1
+          fi
 
       - name: Show Rust version
         run: rustc --version
@@ -218,9 +229,14 @@ jobs:
 
           command_file="${RUNNER_TEMP}/reusable-command.sh"
           printf '%s\n' "${command_text}" > "${command_file}"
-          echo "Resolved command:"
-          sed 's/^/+ /' "${command_file}"
-          bash -e -o pipefail "${command_file}"
+          if bash -e -o pipefail "${command_file}"; then
+            :
+          else
+            status=$?
+            echo "Command failed; resolved command:"
+            sed 's/^/+ /' "${command_file}"
+            exit "${status}"
+          fi
 
   run_container:
     if: >-
@@ -245,7 +261,7 @@ jobs:
       - name: Show checkout state
         shell: bash
         run: |
-          set -eux
+          set -euo pipefail
           command -v git
           git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --show-toplevel
           git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --is-inside-work-tree
@@ -253,7 +269,7 @@ jobs:
       - name: Ensure qemu user emulators
         shell: bash
         run: |
-          set -eux
+          set -euo pipefail
           for emulator in \
             qemu-aarch64-static \
             qemu-riscv64-static \
@@ -269,7 +285,7 @@ jobs:
       - name: Ensure musl cross toolchains
         shell: bash
         run: |
-          set -eux
+          set -euo pipefail
           for arch in aarch64 riscv64 x86_64 loongarch64; do
             compiler="${arch}-linux-musl-cc"
             if ! command -v "${compiler}" >/dev/null 2>&1; then
@@ -296,10 +312,21 @@ jobs:
         if: inputs.download_xtask_bin_artifact
         shell: bash
         run: |
-          set -eux
-          tar -xf "${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar" -C "${GITHUB_WORKSPACE}"
-          chmod +x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
-          test -x "${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          set -euo pipefail
+          artifact_path="${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar"
+          xtask_path="${GITHUB_WORKSPACE}/target/debug/tg-xtask"
+          if ! tar -xf "${artifact_path}" -C "${GITHUB_WORKSPACE}"; then
+            echo "::error::failed to extract tg-xtask artifact: ${artifact_path}"
+            exit 1
+          fi
+          if [ ! -f "${xtask_path}" ]; then
+            echo "::error::tg-xtask artifact did not contain the expected binary: ${xtask_path}"
+            exit 1
+          fi
+          if ! chmod +x "${xtask_path}" || [ ! -x "${xtask_path}" ]; then
+            echo "::error::restored tg-xtask binary could not be made executable: ${xtask_path}"
+            exit 1
+          fi
 
       - name: Show Rust version
         run: rustc --version
@@ -323,16 +350,24 @@ jobs:
 
           command_file="${RUNNER_TEMP}/reusable-command.sh"
           printf '%s\n' "${command_text}" > "${command_file}"
-          echo "Resolved command:"
-          sed 's/^/+ /' "${command_file}"
-          bash -e -o pipefail "${command_file}"
+          if bash -e -o pipefail "${command_file}"; then
+            :
+          else
+            status=$?
+            echo "Command failed; resolved command:"
+            sed 's/^/+ /' "${command_file}"
+            exit "${status}"
+          fi
 
       - name: Package tg-xtask binary artifact
         if: success() && inputs.upload_xtask_bin_artifact
         shell: bash
         run: |
-          set -eux
-          test -x target/debug/tg-xtask
+          set -euo pipefail
+          if [ ! -x target/debug/tg-xtask ]; then
+            echo "::error::tg-xtask binary is missing or not executable: target/debug/tg-xtask"
+            exit 1
+          fi
           tar -cf "${RUNNER_TEMP}/tg-xtask-bin.tar" target/debug/tg-xtask
 
       - name: Upload tg-xtask binary artifact

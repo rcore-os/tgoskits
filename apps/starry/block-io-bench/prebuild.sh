@@ -18,6 +18,24 @@ case "$STARRY_ARCH" in
             gcc
         )
         ;;
+    aarch64)
+        compilers=(
+            aarch64-linux-musl-gcc
+            aarch64-linux-gnu-gcc
+        )
+        ;;
+    riscv64)
+        compilers=(
+            riscv64-linux-musl-gcc
+            riscv64-linux-gnu-gcc
+        )
+        ;;
+    loongarch64)
+        compilers=(
+            loongarch64-linux-musl-gcc
+            loongarch64-linux-gnu-gcc
+        )
+        ;;
     *)
         echo "ERROR: unsupported arch for block-io-bench app: $STARRY_ARCH" >&2
         exit 1

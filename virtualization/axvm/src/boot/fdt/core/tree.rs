@@ -1,4 +1,4 @@
-use alloc::{format, string::String, vec::Vec};
+use std::{format, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::{Header, RegInfo};
@@ -125,18 +125,25 @@ impl FdtTree {
         Ok(())
     }
 
-    pub(crate) fn patch_chosen(&mut self, initrd_start_size: Option<(u64, u64)>) -> AxVmResult {
+    pub(crate) fn patch_chosen(
+        &mut self,
+        initrd_start_size: Option<(u64, u64)>,
+        explicit_cmdline: Option<&str>,
+    ) -> AxVmResult {
         let chosen_id = self.ensure_path("/chosen")?;
         let chosen = self
             .fdt
             .node_mut(chosen_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
 
-        if let Some(bootargs) = chosen
-            .get_property("bootargs")
-            .and_then(|prop| prop.as_str())
-            .map(sanitize_bootargs)
-        {
+        let bootargs = explicit_cmdline
+            .or_else(|| {
+                chosen
+                    .get_property("bootargs")
+                    .and_then(|prop| prop.as_str())
+            })
+            .map(sanitize_bootargs);
+        if let Some(bootargs) = bootargs {
             chosen.set_property(prop_string("bootargs", &bootargs));
         }
 
@@ -219,7 +226,7 @@ impl FdtTree {
     }
 
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {
-        paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
+        paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
         for path in paths {
             self.fdt.remove_by_path(&path);
         }
@@ -244,11 +251,11 @@ pub(crate) fn host_fdt_bytes_from_ptr(ptr: *const u8) -> Option<&'static [u8]> {
     }
 
     let header = unsafe {
-        let bytes = core::slice::from_raw_parts(ptr, core::mem::size_of::<Header>());
+        let bytes = std::slice::from_raw_parts(ptr, std::mem::size_of::<Header>());
         Header::from_bytes(bytes).ok()?
     };
 
-    Some(unsafe { core::slice::from_raw_parts(ptr, header.totalsize as usize) })
+    Some(unsafe { std::slice::from_raw_parts(ptr, header.totalsize as usize) })
 }
 
 pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
@@ -298,7 +305,13 @@ pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
 pub(crate) fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
     matches!(
         prop_name,
-        "riscv,cbop-block-size" | "riscv,cboz-block-size" | "riscv,cbom-block-size"
+        "riscv,cbop-block-size"
+            | "riscv,cboz-block-size"
+            | "riscv,cbom-block-size"
+            | "operating-points-v2"
+            | "#cooling-cells"
+            | "dynamic-power-coefficient"
+            | "cpu-supply"
     )
 }
 

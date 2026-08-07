@@ -139,7 +139,7 @@ macro_rules! define_options {
 
 /// Corresponds to `struct ucred` in Linux.
 #[repr(C)]
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnixCredentials {
     /// Process ID.
     pub pid: u32,
@@ -172,6 +172,7 @@ define_options! {
     ReceiveTimeout(Duration),
     SendBufferForce(usize),
     PassCredentials(bool),
+    ReceiveTimestamp(bool),
     PeerCredentials(UnixCredentials),
     SocketType(i32),
     SocketProtocol(i32),

@@ -1,13 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use ostool::{
-    board::{RunBoardOptions, config::BoardRunConfig},
+    board::{BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
 };
 
 use crate::{
     context::{
-        AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, board_run_request,
+        AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
+        arch_for_target_checked, board_run_request,
     },
     test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
 };
@@ -126,6 +127,7 @@ impl Starry {
             cargo,
             board_config,
             board_config_path,
+            None,
             RunBoardOptions {
                 board_type: args.board_type,
                 server: args.server,
@@ -272,6 +274,7 @@ impl Starry {
             if qemu.uefi {
                 qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
             }
+            qemu::apply_timeout_scale(&mut qemu);
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
                 "  qemu config: {} (timeout={})",
@@ -322,6 +325,12 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        // Global snapshot mode makes the UEFI VVFAT ESP read-only. Preserve
+        // isolation on the ordinary disks while leaving the ESP writable.
+        if qemu.uefi {
+            qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
+        }
+        qemu::apply_timeout_scale(&mut qemu);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),
@@ -374,14 +383,34 @@ impl Starry {
         let (mut board_config, board_config_path) = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        if board_config.shell_init_cmd.is_none() {
-            board_config.shell_init_cmd = Some(case.init_cmd);
+        board_config.shell_init_cmd = Some(app::merge_board_init_command(
+            &case.init_cmd,
+            board_config.shell_init_cmd.as_deref(),
+        ));
+        let arch = arch_for_target_checked(&case.target)?;
+        let session_assets = app::prepare_app_board_session_assets(
+            self.app.workspace_root(),
+            arch,
+            &case.target,
+            &case,
+            &board_config.session_files,
+        )
+        .await?;
+        if args.linux_stage {
+            let assets = session_assets.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Starry app `{}` has no Rust or declared session files to stage",
+                    args.test_case
+                )
+            })?;
+            return app::stage_in_default_linux(&args, &board_config, assets).await;
         }
         self.run_board_artifact(
             &request,
             cargo,
             board_config,
             board_config_path,
+            session_assets,
             RunBoardOptions {
                 board_type: args.board_type,
                 server: args.server,
@@ -507,16 +536,27 @@ impl Starry {
         self.app.run_prepared_uboot(uboot).await
     }
 
-    pub(super) async fn run_board_artifact(
+    async fn run_board_artifact(
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: Cargo,
         board_config: BoardRunConfig,
         board_config_path: PathBuf,
+        session_assets: Option<test::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         let output = self.build_artifact(request, cargo.clone()).await?;
-        let board_request = board_run_request(&board_config_path, board_config, options)?;
+        let board_request = match session_assets {
+            Some(assets) => {
+                println!(
+                    "[axbuild] board session upload root: {}",
+                    assets.root.display()
+                );
+                BoardRunRequest::new(board_config, options)
+                    .with_session_files(&assets.root, &assets.relative_paths)?
+            }
+            None => board_run_request(&board_config_path, board_config, options)?,
+        };
         self.app
             .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),

@@ -129,6 +129,7 @@ pub(super) fn run_qemu_with_stdout_monitor(
             finalize_window_warnings(&mut window_report);
             return Ok(QemuRun {
                 status,
+                timed_out: false,
                 window: window_report,
             });
         }
@@ -248,6 +249,7 @@ pub(super) fn run_qemu_with_stdout_monitor(
     finalize_window_warnings(&mut window_report);
     Ok(QemuRun {
         status,
+        timed_out: false,
         window: window_report,
     })
 }

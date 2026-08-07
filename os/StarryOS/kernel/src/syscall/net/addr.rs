@@ -249,7 +249,10 @@ impl SocketAddrExt for UnixSocketAddr {
             UnixSocketAddr::Path(path) => 1 + path.len(),
         };
         let mut buf = Vec::with_capacity(size_of::<__kernel_sa_family_t>() + data_len);
-        buf.extend_from_slice(&AF_UNIX.to_ne_bytes());
+        // sun_family is sa_family_t (2 bytes). `AF_UNIX` from linux_raw_sys is a
+        // u32; writing it raw would emit a 4-byte family, over-reporting addrlen
+        // by 2 and shifting sun_path against the 2-byte offset the read path uses.
+        buf.extend_from_slice(&(AF_UNIX as __kernel_sa_family_t).to_ne_bytes());
         match self {
             UnixSocketAddr::Unnamed => {}
             UnixSocketAddr::Abstract(name) => {

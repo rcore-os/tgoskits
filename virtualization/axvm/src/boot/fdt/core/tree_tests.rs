@@ -1,4 +1,4 @@
-use alloc::{vec, vec::Vec};
+use std::{vec, vec::Vec};
 
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::{MemoryReservation, RegInfo};
@@ -62,7 +62,7 @@ fn tree_rebuilds_memory_nodes_from_guest_regions() {
         .iter_node_ids()
         .map(|id| reparsed.path_of(id))
         .filter(|path| path.starts_with("/memory"))
-        .collect::<alloc::vec::Vec<_>>();
+        .collect::<std::vec::Vec<_>>();
 
     assert_eq!(memory_paths, ["/memory@80000000", "/memory@90000000"]);
     let first = reparsed.get_by_path("/memory@80000000").unwrap();
@@ -74,7 +74,8 @@ fn tree_rebuilds_memory_nodes_from_guest_regions() {
 fn tree_patches_chosen_bootargs_and_initrd() {
     let mut tree = FdtTree::from_bytes(&sample_dtb()).unwrap();
 
-    tree.patch_chosen(Some((0xa000_0000, 0x1234))).unwrap();
+    tree.patch_chosen(Some((0xa000_0000, 0x1234)), None)
+        .unwrap();
     let bytes = tree.finish();
     let reparsed = Fdt::from_bytes(&bytes).unwrap();
     let chosen = reparsed.get_by_path("/chosen").unwrap();
@@ -104,7 +105,7 @@ fn tree_patches_chosen_bootargs_and_initrd() {
 fn tree_removes_stale_initrd_when_no_ramdisk_is_present() {
     let mut tree = FdtTree::from_bytes(&sample_dtb()).unwrap();
 
-    tree.patch_chosen(None).unwrap();
+    tree.patch_chosen(None, None).unwrap();
     let bytes = tree.finish();
     let reparsed = Fdt::from_bytes(&bytes).unwrap();
     let chosen = reparsed.get_by_path("/chosen").unwrap();
@@ -115,8 +116,33 @@ fn tree_removes_stale_initrd_when_no_ramdisk_is_present() {
 }
 
 #[test]
+fn explicit_cmdline_replaces_host_bootargs() {
+    let mut tree = FdtTree::from_bytes(&sample_dtb()).unwrap();
+
+    tree.patch_chosen(
+        None,
+        Some(
+            "root=/dev/mmcblk0p2 rw console=ttyAMA2,1500000 earlycon=pl011,mmio32,0xfeb50000 \
+             rootwait",
+        ),
+    )
+    .unwrap();
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    let chosen = reparsed.get_by_path("/chosen").unwrap();
+
+    assert_eq!(
+        chosen.as_node().get_property("bootargs").unwrap().as_str(),
+        Some(
+            "root=/dev/mmcblk0p2 rw console=ttyAMA2,1500000 earlycon=pl011,mmio32,0xfeb50000 \
+             rootwait fsck.repair=yes"
+        )
+    );
+}
+
+#[test]
 fn host_fdt_pointer_rejects_null() {
-    assert!(host_fdt_bytes_from_ptr(core::ptr::null()).is_none());
+    assert!(host_fdt_bytes_from_ptr(std::ptr::null()).is_none());
 }
 
 #[test]
@@ -201,4 +227,43 @@ fn clone_filtered_preserves_root_sibling_order() {
         child_names,
         ["timer", "timer@feae0000", "interrupt-controller@fe600000"]
     );
+}
+
+#[test]
+fn clone_filtered_drops_guest_cpu_power_management_props() {
+    let mut source = Fdt::new();
+    let root = source.root_id();
+
+    let cpus = source.add_node(root, Node::new("cpus"));
+    source
+        .node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#address-cells", 2));
+    source
+        .node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#size-cells", 0));
+
+    let cpu = source.add_node(cpus, Node::new("cpu@0"));
+    let cpu_node = source.node_mut(cpu).unwrap();
+    cpu_node.set_property(prop_str("device_type", "cpu"));
+    cpu_node.set_property(prop_str("enable-method", "psci"));
+    cpu_node.set_property(prop_u32("operating-points-v2", 3));
+    cpu_node.set_property(prop_u32("#cooling-cells", 2));
+    cpu_node.set_property(prop_u32("dynamic-power-coefficient", 0xbb));
+    cpu_node.set_property(prop_u32("cpu-supply", 5));
+
+    let tree = FdtTree::clone_filtered(&source, |_, _, _| true).unwrap();
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    let cpu_node = reparsed.get_by_path("/cpus/cpu@0").unwrap().as_node();
+
+    assert_eq!(
+        cpu_node.get_property("enable-method").unwrap().as_str(),
+        Some("psci")
+    );
+    assert!(cpu_node.get_property("operating-points-v2").is_none());
+    assert!(cpu_node.get_property("#cooling-cells").is_none());
+    assert!(cpu_node.get_property("dynamic-power-coefficient").is_none());
+    assert!(cpu_node.get_property("cpu-supply").is_none());
 }

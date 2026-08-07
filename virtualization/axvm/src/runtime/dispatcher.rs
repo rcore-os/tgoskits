@@ -19,9 +19,9 @@
 //! critical sections short: no wake, IPI, or external callbacks are invoked
 //! while a lock is held.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use std::{collections::BTreeMap, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 
 use super::queue::VcpuInterruptQueue;
 use crate::{AxTaskRef, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt};
@@ -67,6 +67,24 @@ impl VcpuIrqDispatcher {
     /// spawned and bound to the VM runtime.
     pub fn register_vcpu_task(&self, vcpu_id: usize, task: AxTaskRef) {
         self.vcpu_tasks.lock().insert(vcpu_id, task);
+    }
+
+    #[cfg(all(test, feature = "host-test"))]
+    pub(crate) fn register_test_vcpu(&self, vcpu_id: usize, cpu_id: usize) {
+        self.test_vcpu_cpu_ids.lock().insert(vcpu_id, cpu_id);
+    }
+
+    #[cfg(all(test, feature = "host-test"))]
+    pub(crate) fn test_lookup_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
+        self.lookup_cpu_id(vcpu_id)
+    }
+
+    /// Unregisters a vCPU task after the vCPU powers off.
+    pub fn unregister_vcpu_task(&self, vcpu_id: usize) {
+        self.vcpu_tasks.lock().remove(&vcpu_id);
+        self.queue.drain(vcpu_id);
+        #[cfg(all(test, feature = "host-test"))]
+        self.test_vcpu_cpu_ids.lock().remove(&vcpu_id);
     }
 
     /// Enqueues a pending interrupt for the given vCPU.
@@ -116,143 +134,5 @@ impl VcpuIrqDispatcher {
     /// path before entering the guest.
     pub fn drain(&self, vcpu_id: usize) -> Vec<PendingVcpuInterrupt> {
         self.queue.drain(vcpu_id)
-    }
-}
-
-/// Test-only helpers for exercising the dispatcher without a full ArceOS
-/// task infrastructure.
-#[cfg(all(test, feature = "host-test"))]
-impl VcpuIrqDispatcher {
-    /// Registers a vCPU with a known physical CPU id for unit testing.
-    ///
-    /// This bypasses the real `AxTaskRef` requirement so that round-trip
-    /// enqueue→drain tests can run on the host.
-    pub(crate) fn register_test_vcpu(&self, vcpu_id: usize, cpu_id: usize) {
-        self.test_vcpu_cpu_ids.lock().insert(vcpu_id, cpu_id);
-    }
-}
-
-#[cfg(all(test, feature = "host-test"))]
-mod tests {
-    use alloc::vec;
-
-    use super::*;
-    use crate::irq::model::VirtualInterruptId;
-
-    fn edge(id: u32) -> PendingVcpuInterrupt {
-        PendingVcpuInterrupt {
-            id: VirtualInterruptId(id),
-            trigger: crate::InterruptTriggerMode::EdgeTriggered,
-        }
-    }
-
-    fn level(id: u32) -> PendingVcpuInterrupt {
-        PendingVcpuInterrupt {
-            id: VirtualInterruptId(id),
-            trigger: crate::InterruptTriggerMode::LevelTriggered,
-        }
-    }
-
-    #[test]
-    fn enqueue_unregistered_vcpu_returns_error() {
-        let d = VcpuIrqDispatcher::new();
-        assert!(matches!(
-            d.enqueue(0, edge(1)),
-            Err(crate::AxVmError::ResourceUnavailable { .. })
-        ));
-    }
-
-    #[test]
-    fn enqueue_multiple_unregistered_vcpus_all_return_error() {
-        let d = VcpuIrqDispatcher::new();
-        for vcpu_id in [0, 1, 3, 7] {
-            assert!(d.enqueue(vcpu_id, edge(1)).is_err());
-        }
-    }
-
-    #[test]
-    fn round_trip_enqueue_drain_preserves_fifo_order() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 2);
-
-        d.enqueue(0, edge(10)).unwrap();
-        d.enqueue(0, level(20)).unwrap();
-        d.enqueue(0, edge(30)).unwrap();
-
-        let drained = d.drain(0);
-        assert_eq!(drained.len(), 3);
-        assert_eq!(drained[0], edge(10));
-        assert_eq!(drained[1], level(20));
-        assert_eq!(drained[2], edge(30));
-    }
-
-    #[test]
-    fn round_trip_enqueue_drain_isolates_vcpus() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 1);
-        d.register_test_vcpu(1, 2);
-
-        d.enqueue(0, edge(100)).unwrap();
-        d.enqueue(1, level(200)).unwrap();
-
-        assert_eq!(d.drain(0), vec![edge(100)]);
-        assert_eq!(d.drain(1), vec![level(200)]);
-    }
-
-    #[test]
-    fn round_trip_drain_empties_queue() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 0);
-
-        d.enqueue(0, edge(7)).unwrap();
-        assert_eq!(d.drain(0).len(), 1);
-        assert!(d.drain(0).is_empty());
-    }
-
-    #[test]
-    fn round_trip_double_drain_returns_empty() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 0);
-
-        d.enqueue(0, edge(7)).unwrap();
-        d.drain(0);
-        assert!(d.drain(0).is_empty());
-    }
-
-    #[test]
-    fn round_trip_trigger_mode_preserved() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 3);
-
-        d.enqueue(0, edge(42)).unwrap();
-        d.enqueue(0, level(43)).unwrap();
-
-        let drained = d.drain(0);
-        assert_eq!(
-            drained[0].trigger,
-            crate::InterruptTriggerMode::EdgeTriggered
-        );
-        assert_eq!(
-            drained[1].trigger,
-            crate::InterruptTriggerMode::LevelTriggered
-        );
-    }
-
-    #[test]
-    fn enqueue_returns_registered_cpu_id() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 5);
-
-        let cpu_id = d.enqueue(0, edge(1)).unwrap();
-        assert_eq!(cpu_id, 5);
-    }
-
-    #[test]
-    fn unregistered_vcpu_still_fails_when_others_registered() {
-        let d = VcpuIrqDispatcher::new();
-        d.register_test_vcpu(0, 0);
-
-        assert!(d.enqueue(0, edge(1)).is_ok());
-        assert!(d.enqueue(1, edge(2)).is_err());
     }
 }

@@ -174,12 +174,11 @@ flowchart LR
         arceos_api["arceos_api"]
         posix_api["arceos_posix_api"]
     end
-    subgraph mods["内核模块 (12)"]
+    subgraph mods["内核模块"]
         hal["axhal"]
         task["axtask"]
         mm["axmm"]
         fs["axfs-ng"]
-        dma["axdma"]
         sync["axsync"]
         other["..."]
     end
@@ -191,7 +190,7 @@ flowchart LR
 
 | 层次 | 内容 | 职责 |
 |------|------|------|
-| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axfs-ng`, `axdma`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、DMA、文件系统、同步原语与运行时初始化 |
+| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axfs-ng`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、文件系统、同步原语与运行时初始化；DMA 能力由 `dma-api` 与 `axklib` 提供 |
 | API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api` | 向上提供统一 API 接口与 POSIX 兼容层 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 
@@ -265,7 +264,7 @@ Axvisor Runtime 通过虚拟化组件管理 Guest 生命周期，并通过平台
 |--------|---------|
 | 虚拟化抽象 | `axvm`（VM 与 vCPU wrapper/run loop）、`axvm-types`（共享 vCPU/exit 协议）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
-| Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread、Nimbos |
+| Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread |
 | 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |
 
 ## 4. 构建与配置

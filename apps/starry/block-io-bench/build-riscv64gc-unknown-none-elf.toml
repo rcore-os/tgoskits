@@ -1,0 +1,13 @@
+target = "riscv64gc-unknown-none-elf"
+log = "Info"
+max_cpu_num = 4
+features = [
+  "ax-runtime/rtc",
+  "ax-driver/serial",
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+]

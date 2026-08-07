@@ -86,6 +86,9 @@ test-suit 中的板卡名选择平台；指定 `--board` 后，会依次运行�
 
 ```bash
 cargo xtask axvisor test board --board orangepi-5-plus-linux
+cargo xtask axvisor test board --board rock-4d-linux
 ```
 
 > Board 测试通常需要 self-hosted runner、串口服务器或物理板环境，本地普通开发机通常无法直接复现。
+>
+> ROCK 4D 的 Linux kernel 和 guest DTB 从板卡文件系统加载。首次运行、更新 BSP kernel 或修改 guest DTS 后，必须先按 [ROCK 4D Linux Guest](../build/axvisor/rock-4d) 构建并部署这两项资产。

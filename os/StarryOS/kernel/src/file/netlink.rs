@@ -238,6 +238,7 @@ struct NetlinkState {
     addr: Option<sockaddr_nl>,
     receive_buffer_size: usize,
     passcred: bool,
+    reuse_address: bool,
 }
 
 pub struct NetlinkSocket {
@@ -306,6 +307,14 @@ impl NetlinkSocket {
 
     pub fn set_passcred(&self, enabled: bool) {
         self.state.lock().passcred = enabled;
+    }
+
+    pub fn reuse_address(&self) -> bool {
+        self.state.lock().reuse_address
+    }
+
+    pub fn set_reuse_address(&self, enabled: bool) {
+        self.state.lock().reuse_address = enabled;
     }
 
     #[allow(dead_code)]
@@ -573,6 +582,15 @@ impl NetlinkSocket {
 }
 
 impl FileLike for NetlinkSocket {
+    fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        // Device ioctls (SIOCGIF*) are family-agnostic in Linux sock_ioctl, so a
+        // netlink socket answers them too rather than returning ENOTTY.
+        if let Some(result) = crate::file::net::device_ioctl(cmd, arg) {
+            return result;
+        }
+        Err(AxError::NotATty)
+    }
+
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             self.read_one(dst, false, false)

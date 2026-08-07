@@ -8,7 +8,7 @@ keywords = ["os", "nvme", "block", "driver"]
 license = "MIT"
 name = "nvme-driver"
 repository.workspace = true
-version = "0.7.3"
+version = "0.7.4"
 
 [dependencies]
 dma-api.workspace = true
@@ -18,9 +18,6 @@ mbarrier = "0.1"
 rdif-block.workspace = true
 spin.workspace = true
 tock-registers = "0.10"
-
-[lib]
-test = false
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

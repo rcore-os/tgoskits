@@ -1,4 +1,4 @@
-use alloc::string::{String, ToString};
+use std::string::{String, ToString};
 
 use super::{StopReason, VmStatus};
 use crate::{AxVmError, AxVmResult};
@@ -100,7 +100,7 @@ impl<R, H> Machine<R, H> {
             Machine::Running { runtime, .. } | Machine::Paused { runtime, .. } => Ok(runtime),
             state => Err(AxVmError::invalid_state(
                 "send vCPU interrupt",
-                alloc::format!("VM cannot accept interrupts in {:?}", state.status()),
+                std::format!("VM cannot accept interrupts in {:?}", state.status()),
             )),
         }
     }
@@ -109,7 +109,7 @@ impl<R, H> Machine<R, H> {
     where
         F: FnOnce(&mut R) -> AxVmResult<H>,
     {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Ready(mut resources) => match f(&mut resources) {
                 Ok(runtime) => {
@@ -168,7 +168,7 @@ impl<R, H> Machine<R, H> {
     }
 
     pub fn pause(&mut self) -> AxVmResult {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Running { resources, runtime } => {
                 *self = Machine::Paused { resources, runtime };
@@ -187,7 +187,7 @@ impl<R, H> Machine<R, H> {
     }
 
     pub fn resume(&mut self) -> AxVmResult {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Paused { resources, runtime } => {
                 *self = Machine::Running { resources, runtime };
@@ -209,7 +209,7 @@ impl<R, H> Machine<R, H> {
     where
         F: FnOnce(Option<&mut R>, &StopReason) -> AxVmResult,
     {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Ready(resources) => {
                 let mut resources = Some(resources);
@@ -276,7 +276,7 @@ impl<R, H> Machine<R, H> {
     where
         F: FnOnce(Option<&mut R>, &StopReason) -> AxVmResult,
     {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Ready(mut resources) => {
                 f(Some(&mut resources), &reason)?;
@@ -344,7 +344,7 @@ impl<R, H> Machine<R, H> {
     }
 
     pub fn finish_stop(&mut self) -> AxVmResult {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Stopping {
                 resources,
@@ -393,7 +393,7 @@ impl<R, H> Machine<R, H> {
     where
         F: FnOnce(&mut R) -> AxVmResult,
     {
-        let old = core::mem::replace(self, Machine::Switching);
+        let old = std::mem::replace(self, Machine::Switching);
         match old {
             Machine::Ready(mut resources) => {
                 f(&mut resources)?;
@@ -473,7 +473,7 @@ impl<R, H> Machine<R, H> {
     where
         F: FnOnce(Option<R>) -> AxVmResult,
     {
-        let old = core::mem::replace(self, Machine::Destroying);
+        let old = std::mem::replace(self, Machine::Destroying);
         match old {
             Machine::Destroyed => {
                 *self = Machine::Destroyed;

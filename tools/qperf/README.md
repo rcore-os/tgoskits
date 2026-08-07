@@ -9,8 +9,9 @@ Based on [QEMU TCG Plugins](https://www.qemu.org/docs/master/devel/tcg-plugins.h
 ## Requirements
 
 - QEMU Version 9.2.0 or later (Plugin API Version 4)
-- Code segment address mask `0x8000_0000_0000_0000`  
-  This is required to distinguish kernel code from user code. We don't want to trace user programs.
+- A kernel text address range passed through `filter_start`/`filter_end` when kernel-only sampling is
+  required. Do not infer an x86_64 low-address alias from the high-half address: UEFI and
+  identity-mapped code can occupy the same low window.
 - [DWARF debugging information](https://dwarfstd.org/)
 - Frame pointers enabled
 
@@ -83,4 +84,13 @@ There are many visualization options. Recommendations:
 ### Note for Starry OS
 
 - The default build options (`BACKTRACE=y`) should already enable all the debugging options qperf needs.
-- Use `make ... run QEMU_ARGS="-plugin libqperf.so"` to enable qperf plugin.
+- The plugin recognizes QEMU targets `riscv64`, `loongarch64`, and `x86_64`.
+- Prefer `cargo starry perf`; it builds the plugin/analyzer, prepares the matching StarryOS QEMU
+  boot flow, supplies kernel ranges, and generates the report artifacts.
+- For an x86_64 kernel boot profile, use:
+
+```bash
+cargo starry perf --arch x86_64 --kernel-filter --format folded \
+    --shell-init-cmd "echo QPERF_BOOT_DONE" \
+    --stop-marker "QPERF_BOOT_DONE" --timeout 60
+```

@@ -44,10 +44,11 @@ impl PlatOp for Plat {
         gic::irq_set_affinity(irq, affinity)
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
-        if is_gic_domain(irq.domain) {
-            gic::send_ipi((irq.hwirq.0 as usize).into(), target);
+    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) -> Result<(), IrqError> {
+        if !is_gic_domain(irq.domain) {
+            return Err(IrqError::InvalidIrq);
         }
+        gic::send_ipi((irq.hwirq.0 as usize).into(), target)
     }
 
     fn ipi_irq() -> IrqId {

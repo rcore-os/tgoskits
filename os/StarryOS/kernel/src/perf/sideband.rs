@@ -102,7 +102,7 @@ fn push_u64(b: &mut Vec<u8>, v: u64) {
 fn push_cstr_padded(b: &mut Vec<u8>, s: &[u8]) {
     b.extend_from_slice(s);
     b.push(0);
-    while b.len() % 8 != 0 {
+    while !b.len().is_multiple_of(8) {
         b.push(0);
     }
 }
@@ -138,7 +138,7 @@ fn push_trailer(b: &mut Vec<u8>, t: &SidebandTarget) {
 /// Back-patch the 8-byte header (reserved at the front of `b`) once the full
 /// record length (8-aligned) is known, then write it into the ring.
 fn finish_and_write(mut b: Vec<u8>, t: &SidebandTarget, type_: u32, misc: u16) {
-    while b.len() % 8 != 0 {
+    while !b.len().is_multiple_of(8) {
         b.push(0);
     }
     let size = b.len() as u16;

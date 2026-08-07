@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.5.2...axpoll-v0.5.3) - 2026-08-03
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.5.1...axpoll-v0.5.2) - 2026-07-23
 
 ### Other

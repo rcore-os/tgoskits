@@ -376,6 +376,12 @@ impl ArchTrait for Arch {
         ticks
     }
 
+    fn systimer_stability() -> crate::timer::CounterStability {
+        // The time CSR is a hart-local view of the platform-wide real-time
+        // counter advertised by the firmware timebase.
+        crate::timer::CounterStability::Stable
+    }
+
     fn irq_all_is_enabled() -> bool {
         let sstatus: usize;
         unsafe {

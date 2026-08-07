@@ -1,23 +1,21 @@
-//! x86_64 Linux, BIOS, UEFI, and MP-table image planning.
+//! x86_64 Linux direct boot, BIOS/UEFI firmware, and MP-table image planning.
 
-use alloc::format;
+use std::{format, sync::Arc, vec::Vec};
 
+use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion};
 use axvm_types::GuestPhysAddr;
-use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
+use axvmconfig::{VMBootProtocol, VmMemMappingType};
 
 use super::X86_64Arch;
 #[cfg(not(any(feature = "fs", feature = "host-fs")))]
 use crate::ax_err;
 use crate::{
-    AxVmError, AxVmResult,
-    architecture::BootImagePlatform,
-    ax_err_type,
-    boot::{
-        BootImageProvider, StaticVmImage,
-        images::{ImageLoaderCore, load_vm_image_from_memory},
-    },
+    architecture::*,
+    boot::{acpi::*, images::*, *},
+    *,
 };
 
+mod acpi;
 mod boot_params;
 mod linux;
 mod linux_boot;
@@ -29,7 +27,7 @@ pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
 impl<'a> ImageLoader<'a> {
     pub fn new(
         main_memory: crate::VMMemoryRegion,
-        config: axvmconfig::AxVMCrateConfig,
+        config: axvmconfig::GuestConfig,
         vm: crate::AxVMRef,
         provider: &'a dyn BootImageProvider,
     ) -> Self {
@@ -48,9 +46,7 @@ impl<'a> ImageLoader<'a> {
 }
 
 impl BootImagePlatform for X86_64Arch {
-    fn default_boot_firmware_load_gpa(
-        config: &axvmconfig::AxVMCrateConfig,
-    ) -> Option<GuestPhysAddr> {
+    fn default_boot_firmware_load_gpa(config: &axvmconfig::GuestConfig) -> Option<GuestPhysAddr> {
         const BUILT_IN_BIOS_LOAD_GPA: usize = 0x8000;
 
         (config.kernel.boot_firmware_path().is_none()
@@ -62,10 +58,18 @@ impl BootImagePlatform for X86_64Arch {
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,
     ) -> AxVmResult {
+        let fw_cfg_payload = x86_fw_cfg_payload(&loader.config, images.kernel, images.ramdisk)?;
+        let firmware = prepare_x86_firmware(loader, fw_cfg_payload)?;
         if should_direct_boot_linux(&loader.config)
             && let Some(header) = detect_linux_image(images.kernel)
         {
-            return load_linux_from_memory(loader, header, images.kernel, images.ramdisk);
+            return load_linux_from_memory(
+                loader,
+                header,
+                images.kernel,
+                images.ramdisk,
+                &firmware,
+            );
         }
 
         load_vm_image_from_memory(images.kernel, loader.kernel_load_gpa, loader.vm.clone())?;
@@ -77,6 +81,8 @@ impl BootImagePlatform for X86_64Arch {
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
+        let fw_cfg_payload = read_x86_fw_cfg_payload(loader)?;
+        let firmware = prepare_x86_firmware(loader, fw_cfg_payload)?;
         if should_direct_boot_linux(&loader.config) {
             let probe = crate::boot::images::fs::kernel_read(
                 &loader.config,
@@ -90,7 +96,7 @@ impl BootImagePlatform for X86_64Arch {
                     &loader.config.kernel.kernel_path,
                     loader.provider,
                 )?;
-                return load_linux_from_filesystem(loader, header, &kernel);
+                return load_linux_from_filesystem(loader, header, &kernel, &firmware);
             }
         }
 
@@ -108,7 +114,7 @@ impl BootImagePlatform for X86_64Arch {
     }
 
     fn is_x86_linux_image_config(
-        config: &axvmconfig::AxVMCrateConfig,
+        config: &axvmconfig::GuestConfig,
         provider: &dyn BootImageProvider,
     ) -> bool {
         if !should_direct_boot_linux(config) {
@@ -138,6 +144,7 @@ fn load_linux_from_memory(
     header: linux::X86LinuxHeader,
     kernel: &[u8],
     ramdisk: Option<&[u8]>,
+    firmware: &PreparedX86Firmware,
 ) -> AxVmResult {
     adjust_linux_dma_identity_layout(loader);
     let payload = linux_payload(&header, kernel)?;
@@ -156,7 +163,7 @@ fn load_linux_from_memory(
     )
     .map_err(linux_layout_error)?;
 
-    load_linux_layout(loader, header, layout, kernel)?;
+    load_linux_layout(loader, header, layout, kernel, firmware)?;
     load_vm_image_from_memory(payload, loader.kernel_load_gpa, loader.vm.clone())?;
     if let Some(ramdisk) = ramdisk {
         loader.load_ramdisk_from_memory(ramdisk)?;
@@ -169,6 +176,7 @@ fn load_linux_from_filesystem(
     loader: &mut ImageLoaderCore<'_>,
     header: linux::X86LinuxHeader,
     kernel: &[u8],
+    firmware: &PreparedX86Firmware,
 ) -> AxVmResult {
     adjust_linux_dma_identity_layout(loader);
     let payload = linux_payload(&header, kernel)?;
@@ -193,7 +201,7 @@ fn load_linux_from_filesystem(
     )
     .map_err(linux_layout_error)?;
 
-    load_linux_layout(loader, header, layout, kernel)?;
+    load_linux_layout(loader, header, layout, kernel, firmware)?;
     load_vm_image_from_memory(payload, loader.kernel_load_gpa, loader.vm.clone())?;
     if let Some(path) = &loader.config.kernel.ramdisk_path {
         loader.load_ramdisk_from_filesystem(path)?;
@@ -301,13 +309,170 @@ fn adjust_linux_dma_identity_layout(loader: &mut ImageLoaderCore<'_>) {
     });
 }
 
+struct PreparedX86Firmware {
+    plan: acpi::X86FirmwarePlan,
+    direct_acpi: AcpiImage,
+}
+
+struct X86FwCfgPayload {
+    kernel: FwCfgKernelPayload,
+    initrd: Option<Arc<[u8]>>,
+}
+
+impl X86FwCfgPayload {
+    fn empty() -> Self {
+        Self {
+            kernel: FwCfgKernelPayload::empty(),
+            initrd: None,
+        }
+    }
+}
+
+fn x86_fw_cfg_payload(
+    config: &axvmconfig::GuestConfig,
+    kernel: &[u8],
+    initrd: Option<&[u8]>,
+) -> AxVmResult<X86FwCfgPayload> {
+    if config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+        Ok(X86FwCfgPayload {
+            kernel: x86_fw_cfg_kernel(kernel)?,
+            initrd: initrd.map(Arc::from),
+        })
+    } else {
+        Ok(X86FwCfgPayload::empty())
+    }
+}
+
+fn x86_fw_cfg_kernel(image: &[u8]) -> AxVmResult<FwCfgKernelPayload> {
+    let Some(header) = detect_linux_image(image) else {
+        return Ok(FwCfgKernelPayload::unsplit(Arc::from(image)));
+    };
+    let split = header.payload_offset();
+    let (setup, kernel) = image.split_at_checked(split).ok_or_else(|| {
+        AxVmError::invalid_config(format!(
+            "x86 bzImage setup size {split:#x} exceeds image size {:#x}",
+            image.len()
+        ))
+    })?;
+    if kernel.is_empty() {
+        return Err(AxVmError::invalid_config(
+            "x86 bzImage has an empty protected-mode kernel payload",
+        ));
+    }
+    Ok(FwCfgKernelPayload::split(
+        Arc::from(setup),
+        Arc::from(kernel),
+    ))
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+fn read_x86_fw_cfg_payload(loader: &ImageLoaderCore<'_>) -> AxVmResult<X86FwCfgPayload> {
+    if loader.config.kernel.effective_boot_protocol() != VMBootProtocol::Uefi {
+        return Ok(X86FwCfgPayload::empty());
+    }
+    let kernel = crate::boot::images::fs::read_full_image(
+        &loader.config.kernel.kernel_path,
+        loader.provider,
+    )?;
+    let initrd = loader
+        .config
+        .kernel
+        .ramdisk_path
+        .as_deref()
+        .map(|path| crate::boot::images::fs::read_full_image(path, loader.provider))
+        .transpose()?;
+    Ok(X86FwCfgPayload {
+        kernel: x86_fw_cfg_kernel(&kernel)?,
+        initrd: initrd.map(Arc::from),
+    })
+}
+
+fn prepare_x86_firmware(
+    loader: &ImageLoaderCore<'_>,
+    payload: X86FwCfgPayload,
+) -> AxVmResult<PreparedX86Firmware> {
+    let plan = loader.vm.with_planned_device_graph(|graph| {
+        acpi::X86FirmwarePlan::from_graph(graph, loader.config.base.cpu_num).map_err(|error| {
+            AxVmError::invalid_config(format!(
+                "failed to derive x86 firmware resources from the device graph: {error}"
+            ))
+        })
+    })?;
+    let direct_acpi = acpi::build_direct_image(&plan).map_err(acpi_build_error)?;
+    debug!(
+        "VM[{}] planned {} x86 ACPI tables at {:#x}",
+        loader.config.base.id,
+        direct_acpi.tables().iter().count(),
+        direct_acpi.load_gpa()
+    );
+    let acpi = acpi::build_fw_cfg_blobs(&plan).map_err(acpi_build_error)?;
+    let (fw_cfg_base, fw_cfg_size) = plan.fw_cfg_range().map_err(|error| {
+        AxVmError::invalid_config(format!("invalid resolved x86 fw_cfg resources: {error}"))
+    })?;
+    let ram_regions = fw_cfg_ram_regions(loader);
+    loader.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
+        base: GuestPhysAddr::from(fw_cfg_base),
+        size: fw_cfg_size,
+        kernel: payload.kernel,
+        initrd: payload.initrd,
+        cmdline: loader.config.kernel.cmdline.clone(),
+        cpu_num: u16::try_from(loader.config.base.cpu_num)
+            .map_err(|_| AxVmError::invalid_config("x86 fw_cfg CPU count exceeds 16 bits"))?,
+        platform: FwCfgPlatformConfig {
+            ram_regions: ram_regions.clone(),
+            srat_regions: ram_regions,
+            acpi,
+        },
+    })?;
+    Ok(PreparedX86Firmware { plan, direct_acpi })
+}
+
+fn fw_cfg_ram_regions(loader: &ImageLoaderCore<'_>) -> Arc<[FwCfgRamRegion]> {
+    let mut regions = loader
+        .config
+        .kernel
+        .memory_regions
+        .iter()
+        .filter(|region| region.map_type == VmMemMappingType::MapAlloc && region.size != 0)
+        .map(|region| FwCfgRamRegion {
+            base: region.gpa as u64,
+            size: region.size as u64,
+        })
+        .collect::<Vec<_>>();
+    if !regions
+        .iter()
+        .any(|region| region.base == loader.main_memory.gpa.as_usize() as u64)
+    {
+        regions.push(FwCfgRamRegion {
+            base: loader.main_memory.gpa.as_usize() as u64,
+            size: loader.main_memory.size() as u64,
+        });
+    }
+    regions.sort_by_key(|region| region.base);
+    regions.into()
+}
+
+fn acpi_build_error(error: crate::boot::acpi::AcpiBuildError) -> AxVmError {
+    AxVmError::invalid_config(format!("failed to build x86 guest ACPI: {error}"))
+}
+
 fn load_linux_layout(
     loader: &ImageLoaderCore<'_>,
     header: linux::X86LinuxHeader,
     layout: linux::X86LinuxLoadLayout,
     kernel: &[u8],
+    firmware: &PreparedX86Firmware,
 ) -> AxVmResult {
-    let boot_params = build_boot_params(loader, header, layout, kernel)?;
+    loader.vm.set_guest_acpi_tables(
+        GuestPhysAddr::from(firmware.direct_acpi.rsdp_gpa() as usize),
+        firmware.direct_acpi.bytes().to_vec(),
+    )?;
+    load_vm_image_from_memory(
+        firmware.direct_acpi.bytes(),
+        GuestPhysAddr::from(firmware.direct_acpi.load_gpa() as usize),
+        loader.vm.clone(),
+    )?;
+    let boot_params = build_boot_params(loader, header, layout, kernel, firmware)?;
     let boot_stub = linux_boot::build_boot_image(&layout).map_err(|err| {
         ax_err_type!(
             InvalidInput,
@@ -321,7 +486,11 @@ fn load_linux_layout(
     )?;
     load_vm_image_from_memory(&boot_stub, layout.boot_stub.start.into(), loader.vm.clone())?;
     load_vm_image_from_memory(
-        &mptable::build(),
+        &mptable::build(
+            firmware.plan.apic_ids(),
+            firmware.plan.local_apic_base(),
+            firmware.plan.io_apic_base(),
+        ),
         mptable::MP_TABLE_GPA.into(),
         loader.vm.clone(),
     )?;
@@ -338,6 +507,7 @@ fn build_boot_params(
     header: linux::X86LinuxHeader,
     layout: linux::X86LinuxLoadLayout,
     kernel: &[u8],
+    firmware: &PreparedX86Firmware,
 ) -> AxVmResult<[u8; linux::BOOT_PARAMS_SIZE]> {
     let mut builder = boot_params::BootParamsBuilder::new(
         kernel,
@@ -357,22 +527,20 @@ fn build_boot_params(
             format!("invalid x86 Linux command line: {err:?}")
         )
     })?;
+    builder.set_acpi_rsdp_addr(firmware.direct_acpi.rsdp_gpa());
+    builder.add_reserved_range(linux::X86LinuxRange::new(
+        firmware.direct_acpi.load_gpa() as usize,
+        firmware.direct_acpi.bytes().len(),
+    ));
     for memory in &loader.config.kernel.memory_regions {
         if memory.map_type == VmMemMappingType::MapAlloc {
             builder.add_ram_range(linux::X86LinuxRange::new(memory.gpa, memory.size));
         }
     }
-    for device in &loader.config.devices.passthrough_devices {
-        builder.add_reserved_range(linux::X86LinuxRange::new(device.base_gpa, device.length));
-    }
-    for address in &loader.config.devices.passthrough_addresses {
-        builder.add_reserved_range(linux::X86LinuxRange::new(address.base_gpa, address.length));
-    }
-    for device in &loader.config.devices.emu_devices {
-        if matches!(device.emu_type, EmulatedDeviceType::X86IoApic) {
-            builder.add_reserved_range(linux::X86LinuxRange::new(device.base_gpa, device.length));
-        }
-    }
+    builder.add_reserved_range(linux::X86LinuxRange::new(
+        firmware.plan.io_apic_base() as usize,
+        0x1000,
+    ));
     builder.add_reserved_range(mptable::reserved_range());
     builder.build().map_err(|err| {
         ax_err_type!(
@@ -416,11 +584,11 @@ fn load_multiboot_info(
     )
 }
 
-fn should_direct_boot_linux(config: &axvmconfig::AxVMCrateConfig) -> bool {
+fn should_direct_boot_linux(config: &axvmconfig::GuestConfig) -> bool {
     !config.kernel.enable_bios && config.kernel.effective_boot_protocol() == VMBootProtocol::Direct
 }
 
-fn should_patch_multiboot_info(config: &axvmconfig::AxVMCrateConfig) -> bool {
+fn should_patch_multiboot_info(config: &axvmconfig::GuestConfig) -> bool {
     config.kernel.effective_boot_protocol() == VMBootProtocol::Multiboot
 }
 
@@ -471,7 +639,7 @@ fn builtin_bios_load_gpa(configured: Option<GuestPhysAddr>) -> AxVmResult<GuestP
 }
 
 fn validate_bios_patch_region(bios: &[u8]) -> AxVmResult {
-    let patch_end = multiboot::AXVM_BIOS_EBX_IMM_OFFSET + core::mem::size_of::<u32>();
+    let patch_end = multiboot::AXVM_BIOS_EBX_IMM_OFFSET + std::mem::size_of::<u32>();
     if bios.len() < patch_end
         || bios[multiboot::AXVM_BIOS_EBX_IMM_OFFSET - 1] != multiboot::MOV_EBX_IMM32_OPCODE
     {
@@ -517,14 +685,14 @@ mod tests {
 
     #[test]
     fn legacy_bios_config_uses_multiboot_patch() {
-        let mut config = axvmconfig::AxVMCrateConfig::default();
+        let mut config = axvmconfig::GuestConfig::default();
         config.kernel.enable_bios = true;
         assert!(should_patch_multiboot_info(&config));
     }
 
     #[test]
     fn uefi_config_skips_multiboot_patch() {
-        let mut config = axvmconfig::AxVMCrateConfig::default();
+        let mut config = axvmconfig::GuestConfig::default();
         config.kernel.enable_bios = true;
         config.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
         assert!(!should_patch_multiboot_info(&config));
@@ -532,7 +700,7 @@ mod tests {
 
     #[test]
     fn linux_direct_boot_requires_direct_protocol_without_bios() {
-        let mut config = axvmconfig::AxVMCrateConfig::default();
+        let mut config = axvmconfig::GuestConfig::default();
         assert!(should_direct_boot_linux(&config));
 
         config.kernel.enable_bios = true;

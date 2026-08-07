@@ -1,12 +1,11 @@
 //! Ion 驱动数据结构定义
 
 use core::{
-    alloc::Layout,
+    ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use ax_dma::DMAInfo;
-use ax_memory_addr::PAGE_SIZE_4K;
+use dma_api::{CoherentArray, DmaAddr};
 
 /// Ion 堆类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,48 +55,32 @@ impl IonHandle {
 }
 
 /// Ion 缓冲区信息
-#[derive(Debug)]
 pub struct IonBuffer {
     /// 缓冲区句柄
     pub handle: IonHandle,
-    /// DMA 信息（包含虚拟地址和总线地址）
-    pub dma_info: DMAInfo,
+    /// Owned DMA-coherent storage.
+    dma: CoherentArray<u8>,
     /// 缓冲区大小
     pub size: usize,
 }
 
 impl IonBuffer {
-    pub fn new(dma_info: DMAInfo, size: usize) -> Self {
+    pub fn new(dma: CoherentArray<u8>, size: usize) -> Self {
         Self {
             handle: IonHandle::new(),
-            dma_info,
+            dma,
             size,
         }
     }
-}
 
-impl Drop for IonBuffer {
-    fn drop(&mut self) {
-        // 最后一个 `Arc<IonBuffer>` 被释放时，物理页才交还给 DMA 分配器，
-        // 以避免 fd / mmap 还存活时交还后被另一路 DMA 者重复占用。
-        match Layout::from_size_align(self.size, PAGE_SIZE_4K) {
-            Ok(layout) => unsafe {
-                ax_dma::dealloc_coherent_pages(self.dma_info, layout);
-            },
-            Err(err) => {
-                error!(
-                    "IonBuffer drop: invalid layout (size={}, align={}): {:?}",
-                    self.size, PAGE_SIZE_4K, err
-                );
-            }
-        }
+    pub fn dma_addr(&self) -> DmaAddr {
+        self.dma.dma_addr()
+    }
+
+    pub fn cpu_ptr(&self) -> NonNull<u8> {
+        self.dma.as_ptr()
     }
 }
-
-// 手动实现 Send 和 Sync，因为 DMAInfo 中的 NonNull<u8> 默认不实现 Sync
-// 但是在我们的使用场景中，DMA 内存地址是安全的，可以在线程间共享
-unsafe impl Send for IonBuffer {}
-unsafe impl Sync for IonBuffer {}
 
 /// Ion 分配请求
 #[derive(Debug, Clone, Copy)]
@@ -216,3 +199,91 @@ macro_rules! ioctl_ior {
 
 pub(crate) use ioctl_iow;
 pub(crate) use ioctl_iowr;
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::sync::Arc;
+    use core::{
+        alloc::Layout,
+        num::NonZeroUsize,
+        ptr::NonNull,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    };
+
+    use self::std::alloc::{alloc_zeroed, dealloc};
+    use super::*;
+
+    struct TestDma;
+
+    static TEST_DMA: TestDma = TestDma;
+    static RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            Some(unsafe { DmaAllocHandle::new(ptr, 0x4000_u64.into(), layout) })
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+            RELEASES.fetch_add(1, Ordering::SeqCst);
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            Err(DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    #[test]
+    fn ion_buffer_preserves_size_address_and_last_arc_release() {
+        RELEASES.store(0, Ordering::SeqCst);
+        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA)
+            .coherent_array_zero_with_align::<u8>(123, 8)
+            .unwrap();
+        let cpu_ptr = dma.as_ptr();
+        let buffer = Arc::new(IonBuffer::new(dma, 123));
+
+        assert_eq!(buffer.size, 123);
+        assert_eq!(buffer.dma_addr().as_u64(), 0x4000);
+        assert_eq!(buffer.cpu_ptr(), cpu_ptr);
+
+        let mmap_owner = buffer.clone();
+        drop(buffer);
+        assert_eq!(RELEASES.load(Ordering::SeqCst), 0);
+        drop(mmap_owner);
+        assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
+    }
+}

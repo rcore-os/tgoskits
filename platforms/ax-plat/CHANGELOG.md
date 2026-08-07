@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.12.1...ax-plat-v0.12.2) - 2026-08-03
+
+### Fixed
+
+- *(dma-api)* retire legacy axdma release paths ([#1796](https://github.com/rcore-os/tgoskits/pull/1796))
+- *(ax-plat)* pin IRQ context CPU lookup ([#1721](https://github.com/rcore-os/tgoskits/pull/1721))
+- *(someboot)* establish runtime CPU topology mapping ([#1710](https://github.com/rcore-os/tgoskits/pull/1710))
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-plat-v0.12.0...ax-plat-v0.12.1) - 2026-07-23
 
 ### Other

@@ -2,23 +2,26 @@
 
 use core::num::NonZeroU16;
 
+use dma_api::{CompletedDma, CpuDmaBuffer};
 use log::warn;
+use sdio_host2::ProgressCause;
 
 use super::{
-    host::{BusWidth, SdioHost},
+    host::{BusWidth, SdioIrqHost},
+    host2::{DmaSubmitError, ProtocolDataRequest, ProtocolHost},
     init::{MmcSwitchRequest, MmcSwitchRequestState, mmc_switch_deadline_passed},
     nonzero_block_size,
 };
 use crate::{
-    block::{CommandResponsePoll, DataCommandPoll, OperationPoll},
+    block::{CommandResponseProgress, DataCommandProgress, OperationProgress},
     cmd::Command,
     common::block_addr_of,
     error::{Error, ErrorContext, Phase},
     response::{CardState, CidResponse, Response},
 };
 
-pub struct SdioSdmmc<H: SdioHost> {
-    pub(super) host: H,
+pub struct SdioSdmmc<H: SdioIrqHost + 'static> {
+    pub(super) host: ProtocolHost<H>,
     pub(super) rca: u16,
     pub(super) high_capacity: bool,
     pub(super) bus_width: BusWidth,
@@ -27,8 +30,14 @@ pub struct SdioSdmmc<H: SdioHost> {
     pub(super) sd_uhs_selection_enabled: bool,
 }
 
-pub struct SdioDataRequest<'a, H: SdioHost + 'a> {
-    pub(super) inner: H::DataRequest<'a>,
+pub struct SdioDataRequest<'a, H: SdioIrqHost + 'static> {
+    pub(super) inner: ProtocolDataRequest<'a, H>,
+}
+
+impl<H: SdioIrqHost + 'static> SdioDataRequest<'static, H> {
+    pub(super) fn take_completed_dma(&mut self) -> Option<CompletedDma> {
+        self.inner.take_completed_dma()
+    }
 }
 
 /// Submitted SDIO command transaction.
@@ -40,19 +49,19 @@ pub struct SdioStatusRequest {
 }
 
 /// Submitted MMC `CMD8 SEND_EXT_CSD` data transaction.
-pub struct ExtCsdRequest<'a, H: SdioHost + 'a> {
+pub struct ExtCsdRequest<'a, H: SdioIrqHost + 'static> {
     pub(super) inner: SdioDataRequest<'a, H>,
 }
 
 /// Submitted SD `CMD6 SWITCH_FUNC` data transaction.
-pub struct SwitchFunctionRequest<'a, H: SdioHost + 'a> {
+pub struct SwitchFunctionRequest<'a, H: SdioIrqHost + 'static> {
     pub(super) inner: SdioDataRequest<'a, H>,
 }
 
-impl<H: SdioHost> SdioSdmmc<H> {
+impl<H: SdioIrqHost + 'static> SdioSdmmc<H> {
     pub fn new(host: H) -> Self {
         Self {
-            host,
+            host: ProtocolHost::new(host),
             rca: 0,
             high_capacity: false,
             bus_width: BusWidth::Bit1,
@@ -64,12 +73,22 @@ impl<H: SdioHost> SdioSdmmc<H> {
 
     /// Returns mutable access to the underlying SDIO host controller.
     pub fn host_mut(&mut self) -> &mut H {
-        &mut self.host
+        self.host.inner_mut()
     }
 
     /// Returns shared access to the underlying SDIO host controller.
     pub fn host(&self) -> &H {
-        &self.host
+        self.host.inner()
+    }
+
+    #[cfg(any(feature = "rdif", test))]
+    pub(crate) fn protocol_host_mut(&mut self) -> &mut ProtocolHost<H> {
+        &mut self.host
+    }
+
+    #[cfg(any(feature = "rdif", test))]
+    pub(crate) const fn protocol_progress_wait(&self) -> super::host::HostProgressWait {
+        self.host.progress_wait()
     }
 
     /// Returns whether the initialized card uses sector addressing.
@@ -159,14 +178,24 @@ impl<H: SdioHost> SdioSdmmc<H> {
         Ok(SdioDataRequest { inner })
     }
 
-    pub fn poll_data_request<'a>(
+    pub fn advance_data_request<'a>(
         &mut self,
         request: &mut SdioDataRequest<'a, H>,
-    ) -> Result<DataCommandPoll, Error>
+        cause: ProgressCause,
+    ) -> Result<DataCommandProgress, Error>
     where
         H: 'a,
     {
-        self.host.poll_data_request(&mut request.inner)
+        self.host.advance_data_request(&mut request.inner, cause)
+    }
+
+    pub(crate) fn abort_data_request(
+        &mut self,
+        request: &mut SdioDataRequest<'_, H>,
+    ) -> (Result<(), Error>, Option<CompletedDma>) {
+        let result = self.host.abort_data_request(&mut request.inner);
+        let completed = request.inner.take_completed_dma();
+        (result, completed)
     }
 
     pub fn submit_command_request(&mut self, cmd: &Command) -> Result<SdioCommandRequest, Error> {
@@ -174,11 +203,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
         Ok(SdioCommandRequest)
     }
 
-    pub fn poll_command_request(
+    pub fn advance_command_request(
         &mut self,
         _request: &mut SdioCommandRequest,
-    ) -> Result<CommandResponsePoll, Error> {
-        self.host.poll_command_response()
+        cause: ProgressCause,
+    ) -> Result<CommandResponseProgress, Error> {
+        self.host.advance_command_response(cause)
     }
 
     pub fn submit_status(&mut self) -> Result<SdioStatusRequest, Error> {
@@ -187,20 +217,29 @@ impl<H: SdioHost> SdioSdmmc<H> {
         Ok(SdioStatusRequest { inner })
     }
 
-    pub fn poll_status_request(
+    pub fn advance_status_request(
         &mut self,
         request: &mut SdioStatusRequest,
-    ) -> Result<OperationPoll<CardState>, Error> {
-        match self.poll_command_request(&mut request.inner)? {
-            CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
-            CommandResponsePoll::Complete(Response::R1(r1)) => {
-                Ok(OperationPoll::Complete(r1.current_state()))
+        cause: ProgressCause,
+    ) -> Result<OperationProgress<CardState>, Error> {
+        match self.advance_command_request(&mut request.inner, cause)? {
+            CommandResponseProgress::Pending => Ok(OperationProgress::Pending),
+            CommandResponseProgress::Complete(Response::R1(r1)) => {
+                Ok(OperationProgress::Complete(r1.current_state()))
             }
-            CommandResponsePoll::Complete(_) => Err(Error::BadResponse(ErrorContext::for_cmd(
+            CommandResponseProgress::Complete(_) => Err(Error::BadResponse(ErrorContext::for_cmd(
                 Phase::ResponseWait,
                 13,
             ))),
         }
+    }
+
+    #[cfg(any(feature = "rdif", test))]
+    pub(crate) fn abort_status_request(
+        &mut self,
+        _request: &mut SdioStatusRequest,
+    ) -> Result<(), Error> {
+        self.host.abort_command_request()
     }
 
     pub fn submit_read_data_command<'a>(
@@ -230,16 +269,33 @@ impl<H: SdioHost> SdioSdmmc<H> {
         Ok(ExtCsdRequest { inner })
     }
 
-    pub fn poll_ext_csd_request<'a>(
+    pub(super) fn submit_read_ext_csd_dma(
+        &mut self,
+        buffer: CpuDmaBuffer,
+    ) -> Result<ExtCsdRequest<'static, H>, DmaSubmitError> {
+        let inner = self.host.submit_dma_data(
+            &crate::cmd::CMD8_MMC,
+            sdio_host2::DataDirection::Read,
+            buffer.prepare_for_device(),
+            512,
+            1,
+        )?;
+        Ok(ExtCsdRequest {
+            inner: SdioDataRequest { inner },
+        })
+    }
+
+    pub fn advance_ext_csd_request<'a>(
         &mut self,
         request: &mut ExtCsdRequest<'a, H>,
-    ) -> Result<OperationPoll<()>, Error>
+        cause: ProgressCause,
+    ) -> Result<OperationProgress<()>, Error>
     where
         H: 'a,
     {
-        match self.poll_data_request(&mut request.inner)? {
-            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
-            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        match self.advance_data_request(&mut request.inner, cause)? {
+            DataCommandProgress::Pending => Ok(OperationProgress::Pending),
+            DataCommandProgress::Complete(_) => Ok(OperationProgress::Complete(())),
         }
     }
 
@@ -255,16 +311,34 @@ impl<H: SdioHost> SdioSdmmc<H> {
         Ok(SwitchFunctionRequest { inner })
     }
 
-    pub fn poll_switch_function_request<'a>(
+    pub(super) fn submit_switch_function_dma(
+        &mut self,
+        cmd: &Command,
+        buffer: CpuDmaBuffer,
+    ) -> Result<SwitchFunctionRequest<'static, H>, DmaSubmitError> {
+        let inner = self.host.submit_dma_data(
+            cmd,
+            sdio_host2::DataDirection::Read,
+            buffer.prepare_for_device(),
+            64,
+            1,
+        )?;
+        Ok(SwitchFunctionRequest {
+            inner: SdioDataRequest { inner },
+        })
+    }
+
+    pub fn advance_switch_function_request<'a>(
         &mut self,
         request: &mut SwitchFunctionRequest<'a, H>,
-    ) -> Result<OperationPoll<()>, Error>
+        cause: ProgressCause,
+    ) -> Result<OperationProgress<()>, Error>
     where
         H: 'a,
     {
-        match self.poll_data_request(&mut request.inner)? {
-            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
-            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        match self.advance_data_request(&mut request.inner, cause)? {
+            DataCommandProgress::Pending => Ok(OperationProgress::Pending),
+            DataCommandProgress::Complete(_) => Ok(OperationProgress::Complete(())),
         }
     }
 
@@ -287,52 +361,66 @@ impl<H: SdioHost> SdioSdmmc<H> {
         })
     }
 
-    pub fn poll_mmc_switch_request(
+    pub fn advance_mmc_switch_request(
         &mut self,
         request: &mut MmcSwitchRequest,
-    ) -> Result<OperationPoll<()>, Error> {
+        cause: ProgressCause,
+    ) -> Result<OperationProgress<()>, Error> {
         match request.state {
-            MmcSwitchRequestState::PollSwitch => match self.host.poll_command_response()? {
-                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
-                CommandResponsePoll::Complete(_) => {
-                    let cmd = crate::cmd::cmd13(request.rca);
-                    self.host.submit_command(&cmd)?;
-                    request.state = MmcSwitchRequestState::PollStatus;
-                    Ok(OperationPoll::Pending)
+            MmcSwitchRequestState::PollSwitch => {
+                match self.host.advance_command_response(cause)? {
+                    CommandResponseProgress::Pending => Ok(OperationProgress::Pending),
+                    CommandResponseProgress::Complete(_) => {
+                        let cmd = crate::cmd::cmd13(request.rca);
+                        self.host.submit_command(&cmd)?;
+                        request.state = MmcSwitchRequestState::PollStatus;
+                        Ok(OperationProgress::Pending)
+                    }
                 }
-            },
-            MmcSwitchRequestState::PollStatus => match self.host.poll_command_response()? {
-                CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
-                CommandResponsePoll::Complete(Response::R1(r1)) => {
-                    if r1.switch_error() {
-                        warn!(
-                            "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
-                            request.index, request.value
-                        );
-                        return Err(Error::CardError(crate::error::CardError::IllegalCommand));
+            }
+            MmcSwitchRequestState::PollStatus => {
+                match self.host.advance_command_response(cause)? {
+                    CommandResponseProgress::Pending => Ok(OperationProgress::Pending),
+                    CommandResponseProgress::Complete(Response::R1(r1)) => {
+                        if r1.switch_error() {
+                            warn!(
+                                "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
+                                request.index, request.value
+                            );
+                            return Err(Error::CardError(crate::error::CardError::IllegalCommand));
+                        }
+                        if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer)
+                        {
+                            return Ok(OperationProgress::Complete(()));
+                        }
+                        if mmc_switch_deadline_passed(self.host.inner(), request) {
+                            return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
+                        }
+                        request.polls = request.polls.saturating_add(1);
+                        let cmd = crate::cmd::cmd13(request.rca);
+                        self.host.submit_command(&cmd)?;
+                        Ok(OperationProgress::Pending)
                     }
-                    if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer) {
-                        return Ok(OperationPoll::Complete(()));
+                    CommandResponseProgress::Complete(_) => {
+                        if mmc_switch_deadline_passed(self.host.inner(), request) {
+                            return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
+                        }
+                        request.polls = request.polls.saturating_add(1);
+                        let cmd = crate::cmd::cmd13(request.rca);
+                        self.host.submit_command(&cmd)?;
+                        Ok(OperationProgress::Pending)
                     }
-                    if mmc_switch_deadline_passed(&self.host, request) {
-                        return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
-                    }
-                    request.polls = request.polls.saturating_add(1);
-                    let cmd = crate::cmd::cmd13(request.rca);
-                    self.host.submit_command(&cmd)?;
-                    Ok(OperationPoll::Pending)
                 }
-                CommandResponsePoll::Complete(_) => {
-                    if mmc_switch_deadline_passed(&self.host, request) {
-                        return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
-                    }
-                    request.polls = request.polls.saturating_add(1);
-                    let cmd = crate::cmd::cmd13(request.rca);
-                    self.host.submit_command(&cmd)?;
-                    Ok(OperationPoll::Pending)
-                }
-            },
+            }
         }
+    }
+
+    #[cfg(any(feature = "rdif", test))]
+    pub(crate) fn abort_mmc_switch_request(
+        &mut self,
+        _request: &mut MmcSwitchRequest,
+    ) -> Result<(), Error> {
+        self.host.abort_command_request()
     }
 }
 

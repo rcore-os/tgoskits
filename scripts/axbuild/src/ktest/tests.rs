@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use super::*;
 
 #[test]
@@ -111,6 +113,95 @@ fn starry_kernel_ktest_axstd_dev_dependency_keeps_freestanding_entry_contract() 
             .all(|feature| !matches!(feature.as_str(), Some("std-compat" | "tls"))),
         "Starry ktest targets share the bare no_std/no-TLS kernel entry contract"
     );
+}
+
+#[test]
+fn workspace_bindgen_consumers_use_minimal_host_features() {
+    let workspace_root = crate::context::workspace_root_path().unwrap();
+    let workspace_manifest: toml::Table =
+        toml::from_str(&fs::read_to_string(workspace_root.join("Cargo.toml")).unwrap()).unwrap();
+    let bindgen = workspace_manifest["workspace"]["dependencies"]["bindgen"]
+        .as_table()
+        .expect("workspace bindgen dependency must declare an explicit feature contract");
+    let features = bindgen["features"].as_array().unwrap();
+
+    assert_eq!(bindgen["default-features"].as_bool(), Some(false));
+    assert_eq!(
+        features
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        ["runtime"],
+        "workspace bindgen consumers only need runtime libclang loading"
+    );
+
+    for manifest_path in [
+        "os/arceos/api/arceos_posix_api/Cargo.toml",
+        "os/arceos/ulib/axlibc/Cargo.toml",
+    ] {
+        let manifest: toml::Table =
+            toml::from_str(&fs::read_to_string(workspace_root.join(manifest_path)).unwrap())
+                .unwrap();
+        let bindgen = manifest["build-dependencies"]["bindgen"]
+            .as_table()
+            .unwrap();
+
+        assert_eq!(bindgen["workspace"].as_bool(), Some(true));
+        assert!(
+            bindgen.get("features").is_none(),
+            "{manifest_path} must inherit the workspace bindgen feature contract"
+        );
+    }
+}
+
+#[test]
+fn starry_kernel_ktest_target_log_features_remain_no_std() {
+    let workspace_root = crate::context::workspace_root_path().unwrap();
+
+    for target in [
+        "x86_64-unknown-none",
+        "riscv64gc-unknown-none-elf",
+        "aarch64-unknown-none-softfloat",
+        "loongarch64-unknown-none-softfloat",
+    ] {
+        let output = Command::new(env!("CARGO"))
+            .current_dir(&workspace_root)
+            .args([
+                "tree",
+                "--locked",
+                "--package",
+                "starry-kernel",
+                "--target",
+                target,
+                "--features",
+                "axtest",
+                "--edges",
+                "normal,dev",
+                "--invert",
+                "log",
+                "--depth",
+                "0",
+                "--format",
+                "{p}|{f}",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "failed to resolve Starry ktest target graph for {target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let resolved_log = String::from_utf8(output.stdout).unwrap();
+        let (_, features) = resolved_log
+            .trim()
+            .split_once('|')
+            .expect("cargo tree must report the resolved log feature set");
+        assert!(
+            features.split(',').all(|feature| feature != "std"),
+            "{target} must compile log without std, resolved features: {features}"
+        );
+    }
 }
 
 #[test]

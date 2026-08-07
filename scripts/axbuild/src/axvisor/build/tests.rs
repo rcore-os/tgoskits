@@ -109,16 +109,62 @@ fn axvisor_host_xtask_is_opt_in() {
         ["host-xtask"],
         "the host build tool must not be linked as part of kernel integration tests"
     );
+}
 
-    let config_path = crate::context::workspace_root_path()
-        .unwrap()
-        .join("os/axvisor/.cargo/config.toml");
-    let config: toml::Table = toml::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
-    let alias = config["alias"]["xtask"].as_str().unwrap();
-    assert!(
-        alias.contains("--features host-xtask"),
-        "the Axvisor-local alias must explicitly enable the host-only target"
-    );
+#[test]
+fn axvisor_all_architectures_use_rust_std_musl_with_abort_panics() {
+    let cases = [
+        (
+            "x86_64",
+            "x86_64-unknown-none",
+            "x86_64-unknown-linux-musl.json",
+        ),
+        (
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            "aarch64-unknown-linux-musl.json",
+        ),
+        (
+            "riscv64",
+            "riscv64gc-unknown-none-elf",
+            "riscv64gc-unknown-linux-musl.json",
+        ),
+        (
+            "loongarch64",
+            "loongarch64-unknown-none-softfloat",
+            "loongarch64-unknown-linux-musl.json",
+        ),
+    ];
+
+    for (arch, target, std_target) in cases {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join(format!(".{arch}-build.toml"));
+        fs::write(&config_path, "features = []\nlog = \"Info\"\n").unwrap();
+
+        let cargo = load_cargo_config(&request(config_path, arch, target)).unwrap();
+        assert!(
+            cargo
+                .target
+                .ends_with(&format!("scripts/targets/std/pie/{std_target}")),
+            "{arch} Axvisor must use its RustStd/musl PIE target"
+        );
+
+        let config: toml::Table =
+            toml::from_str(&fs::read_to_string(cargo.extra_config.unwrap()).unwrap()).unwrap();
+        assert_eq!(
+            config["unstable"]["build-std"].as_array().unwrap(),
+            &vec![
+                toml::Value::String("std".to_string()),
+                toml::Value::String("panic_abort".to_string()),
+            ],
+            "{arch} Axvisor must build real Rust std and panic_abort"
+        );
+        assert_eq!(
+            config["profile"]["release"]["panic"].as_str(),
+            Some("abort"),
+            "{arch} Axvisor release profile must abort on panic"
+        );
+    }
 }
 
 #[test]
@@ -508,7 +554,7 @@ fn load_cargo_config_uses_dynamic_x86_platform_from_board_config() {
     fs::write(
         &config_path,
         r#"
-features = ["ax-driver/virtio-blk", "fs"]
+features = ["ax-driver/nvme", "fs"]
 log = "Info"
 "#,
     )
