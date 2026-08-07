@@ -27,5 +27,6 @@ ivc-publish
 ivc-subscribe
 ```
 
-`cargo xtask axvisor test qemu --arch aarch64 --test-case ivc` builds these
-payloads as part of the test and injects them into the selected Linux rootfs.
+The QEMU rootfs used by
+`cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-ivc` is built by
+tgosimages and carries `/root/axvisor.ko` together with `/root/ivc-subscribe`.
