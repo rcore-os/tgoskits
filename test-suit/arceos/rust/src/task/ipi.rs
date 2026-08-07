@@ -88,7 +88,7 @@ fn wait_for_callbacks_or_stall(expected: usize) -> bool {
 fn send_recovery_ipi(target_cpu: usize, sender_cpu: usize) {
     thread::spawn(move || {
         pin_current_to_cpu(sender_cpu);
-        ax_ipi::run_on_cpu(target_cpu, noop_callback);
+        ax_ipi::legacy::run_on_cpu(target_cpu, noop_callback).expect("failed to send recovery IPI");
     })
     .join()
     .unwrap();
@@ -129,7 +129,8 @@ pub fn run() -> crate::TestResult {
 
                 for _ in 0..CALLBACKS_PER_SENDER {
                     SENT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                    ax_ipi::run_on_cpu(target_cpu, counting_callback);
+                    ax_ipi::legacy::run_on_cpu(target_cpu, counting_callback)
+                        .expect("failed to send callback IPI");
                 }
             }));
         }
