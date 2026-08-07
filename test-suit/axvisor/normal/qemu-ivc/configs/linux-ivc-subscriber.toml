@@ -52,5 +52,5 @@ disabled = [
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 # For ivc-channel, EmuConfig[0] is an optional VM-local notify IRQ line.
 emu_devices = [
-  ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, [60]],
+  ["ivc-channel", 0xbff0_0000, 0x1_0000, 0, 0xA, [160]],
 ]
