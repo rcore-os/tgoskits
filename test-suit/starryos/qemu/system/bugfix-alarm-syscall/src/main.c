@@ -16,6 +16,8 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#if defined(SYS_alarm)
+
 static int fail(const char *operation)
 {
     fprintf(
@@ -59,11 +61,6 @@ static int timer_is_single_shot_near(unsigned int seconds)
 
 int main(void)
 {
-#ifndef SYS_alarm
-    puts("SKIP: SYS_alarm is unavailable on this architecture");
-    puts("STARRY_GROUPED_TEST_PASSED: bugfix-alarm-syscall");
-    return EXIT_SUCCESS;
-#else
     struct itimerval timer = {0};
     if (setitimer(ITIMER_REAL, &timer, NULL) < 0) {
         return fail("reset ITIMER_REAL");
@@ -114,5 +111,12 @@ int main(void)
     puts("STARRY_ALARM_SYSCALL_PASSED");
     puts("STARRY_GROUPED_TEST_PASSED: bugfix-alarm-syscall");
     return EXIT_SUCCESS;
-#endif
 }
+#else
+int main(void)
+{
+    puts("SKIP: SYS_alarm is unavailable on this architecture");
+    puts("STARRY_GROUPED_TEST_PASSED: bugfix-alarm-syscall");
+    return EXIT_SUCCESS;
+}
+#endif
