@@ -102,8 +102,7 @@ fn read_u32_le(bytes: &[u8]) -> u32 {
 
 fn posix_acl_mode(value: &[u8]) -> AxResult<NodePermission> {
     if value.len() < POSIX_ACL_XATTR_HEADER_SIZE
-        || !(value.len() - POSIX_ACL_XATTR_HEADER_SIZE)
-            .is_multiple_of(POSIX_ACL_XATTR_ENTRY_SIZE)
+        || !(value.len() - POSIX_ACL_XATTR_HEADER_SIZE).is_multiple_of(POSIX_ACL_XATTR_ENTRY_SIZE)
         || read_u32_le(&value[..POSIX_ACL_XATTR_HEADER_SIZE]) != POSIX_ACL_XATTR_VERSION
     {
         return Err(AxError::InvalidInput);
@@ -116,7 +115,13 @@ fn posix_acl_mode(value: &[u8]) -> AxResult<NodePermission> {
     let mut mask_permissions = None;
     let mut other_permissions = None;
 
-    for entry in value[POSIX_ACL_XATTR_HEADER_SIZE..].chunks_exact(POSIX_ACL_XATTR_ENTRY_SIZE) {
+    let (entries, []) =
+        value[POSIX_ACL_XATTR_HEADER_SIZE..].as_chunks::<POSIX_ACL_XATTR_ENTRY_SIZE>()
+    else {
+        return Err(AxError::InvalidInput);
+    };
+
+    for entry in entries {
         let tag = read_u16_le(&entry[..2]);
         let permissions = read_u16_le(&entry[2..4]);
         if permissions & !ACL_VALID_PERMISSIONS != 0 {
@@ -138,9 +143,7 @@ fn posix_acl_mode(value: &[u8]) -> AxResult<NodePermission> {
                 mask_permissions = Some(permissions);
                 expected_tag = ACL_OTHER;
             }
-            ACL_OTHER
-                if expected_tag == ACL_OTHER || expected_tag == ACL_GROUP && !needs_mask =>
-            {
+            ACL_OTHER if expected_tag == ACL_OTHER || expected_tag == ACL_GROUP && !needs_mask => {
                 other_permissions = Some(permissions);
                 expected_tag = 0;
             }
