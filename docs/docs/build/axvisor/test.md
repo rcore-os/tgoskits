@@ -75,7 +75,7 @@ flowchart TD
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
 | 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/`，默认 group 为 `normal` |
-| VM 配置 | `qemu_group_build_context()` | 从 `AXVISOR_VM_CONFIGS` 环境变量解析 VM 配置路径，相对路径相对于 workspace 根 |
+| VM 配置 | `qemu_group_build_context()` | 读取 axbuild 已解析并写入 `AXVISOR_VM_CONFIGS` 的 VM 配置路径 |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 每个 build group 编译前准备当前 arch 的 managed rootfs |
 | grouped 校验 | `validate_grouped_qemu_commands()` | 检查 `test_commands` 无空命令 |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |

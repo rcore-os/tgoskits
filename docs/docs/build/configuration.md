@@ -207,6 +207,7 @@ guest 内核驱动不属于该迁移。
 | `STARRY_APK_REGION` | Starry managed rootfs 的 APK 区域，支持 `china`/`cn`、`us`/`usa` |
 | `TGOS_IMAGE_LOCAL_STORAGE` | 覆盖 image storage 目录 |
 | `TGOS_IMAGE_REGISTRY_FALLBACK_URL` | 覆盖镜像注册表 fallback URL |
+| `TGOS_OVMF_DIR` | 覆盖 Ostool 格式的 OVMF 缓存根目录；不绕过版本选择和 SHA-256 校验 |
 | `AXBUILD_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
 
 `AX_LOG`、`SMP`、`AX_TARGET`、`AX_ARCH` 和 `AXVISOR_VM_CONFIGS` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。

@@ -1,12 +1,13 @@
 use std::{
-    env, fs,
+    fs,
     fs::File,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, ExitStatus},
     time::Instant,
 };
 
 use anyhow::{Context, bail};
+use ostool::ovmf::Arch;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -26,7 +27,6 @@ use super::{
 pub(super) const QPERF_QUEUE_SIZE: usize = 4096;
 pub(super) const DEFAULT_STARRY_SHELL_PREFIX: &str = "root@starry:";
 const SUPPORTED_ARCHES: &str = "riscv64, loongarch64, and x86_64";
-const OVMF_DIR_ENV: &str = "QPERF_OVMF_DIR";
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct PerfQemuConfig {
@@ -163,7 +163,7 @@ fn has_qemu_option(args: &[String], option: &str) -> bool {
     args.iter().any(|arg| arg == option)
 }
 
-pub(super) fn run_qemu_direct(
+pub(super) async fn run_qemu_direct(
     outputs: &PerfOutputs,
     args: &ArgsPerf,
     arch: &str,
@@ -177,7 +177,7 @@ pub(super) fn run_qemu_direct(
 
     let mut command_args = qemu_command_prefix(qemu, args.timeout, monitor_stdout);
     command_args.extend(qemu_args);
-    command_args.extend(prepare_boot_args(outputs, &config, arch, kernel_bin)?);
+    command_args.extend(prepare_boot_args(outputs, &config, arch, kernel_bin).await?);
 
     if args.host_perf {
         if let Some(perf) = find_executable("perf") {
@@ -251,7 +251,7 @@ fn qemu_command_prefix(qemu: &str, timeout: u64, monitor_stdout: bool) -> Vec<St
     }
 }
 
-fn prepare_boot_args(
+async fn prepare_boot_args(
     outputs: &PerfOutputs,
     config: &PerfQemuConfig,
     arch: &str,
@@ -270,57 +270,18 @@ fn prepare_boot_args(
         bail!("StarryOS x86_64 qperf requires a QEMU config with `to_bin = true`");
     }
 
-    let firmware = find_x86_64_uefi_firmware()?;
+    let firmware = crate::support::ovmf::OvmfFirmware::fetch(Arch::X64).await?;
     prepare_x86_64_uefi_boot(&outputs.dir, kernel_bin, &firmware)
-}
-
-struct UefiFirmware {
-    code: PathBuf,
-    vars: PathBuf,
-}
-
-fn find_x86_64_uefi_firmware() -> anyhow::Result<UefiFirmware> {
-    let mut candidates = Vec::new();
-    if let Some(dir) = env::var_os(OVMF_DIR_ENV) {
-        candidates.push(PathBuf::from(dir));
-    }
-    candidates.extend([
-        env::temp_dir().join("ostool/ovmf/x64"),
-        PathBuf::from("/usr/share/OVMF"),
-        PathBuf::from("/usr/share/edk2/x64"),
-        PathBuf::from("/usr/share/qemu"),
-    ]);
-
-    for dir in candidates {
-        for (code_name, vars_name) in [
-            ("code.fd", "vars.fd"),
-            ("OVMF_CODE.fd", "OVMF_VARS.fd"),
-            ("edk2-x86_64-code.fd", "edk2-i386-vars.fd"),
-        ] {
-            let firmware = UefiFirmware {
-                code: dir.join(code_name),
-                vars: dir.join(vars_name),
-            };
-            if firmware.code.is_file() && firmware.vars.is_file() {
-                return Ok(firmware);
-            }
-        }
-    }
-
-    bail!(
-        "qperf could not find x86_64 OVMF firmware; install the host OVMF package or set \
-         {OVMF_DIR_ENV} to a directory containing code.fd and vars.fd"
-    )
 }
 
 fn prepare_x86_64_uefi_boot(
     output_dir: &Path,
     kernel_bin: &Path,
-    firmware: &UefiFirmware,
+    firmware: &crate::support::ovmf::OvmfFirmware,
 ) -> anyhow::Result<Vec<String>> {
     ensure_file(kernel_bin, "StarryOS x86_64 UEFI image")?;
-    ensure_file(&firmware.code, "OVMF code image")?;
-    ensure_file(&firmware.vars, "OVMF vars template")?;
+    ensure_file(firmware.code(), "OVMF code image")?;
+    ensure_file(firmware.vars(), "OVMF vars template")?;
 
     let esp_dir = output_dir.join("starryos.esp");
     let boot_dir = esp_dir.join("EFI/BOOT");
@@ -336,10 +297,10 @@ fn prepare_x86_64_uefi_boot(
     })?;
 
     let vars = output_dir.join("starryos.vars.fd");
-    fs::copy(&firmware.vars, &vars).with_context(|| {
+    fs::copy(firmware.vars(), &vars).with_context(|| {
         format!(
             "failed to copy OVMF vars template from {} to {}",
-            firmware.vars.display(),
+            firmware.vars().display(),
             vars.display()
         )
     })?;
@@ -348,7 +309,7 @@ fn prepare_x86_64_uefi_boot(
         "-drive".to_string(),
         format!(
             "if=pflash,format=raw,unit=0,readonly=on,file={}",
-            firmware.code.display()
+            firmware.code().display()
         ),
         "-drive".to_string(),
         format!("if=pflash,format=raw,unit=1,file={}", vars.display()),
@@ -394,10 +355,13 @@ mod tests {
     use std::fs;
 
     use super::{
-        UefiFirmware, append_text_filter_params, direct_qemu_args, prepare_x86_64_uefi_boot,
-        qemu_command_prefix, validate_arch,
+        append_text_filter_params, direct_qemu_args, prepare_x86_64_uefi_boot, qemu_command_prefix,
+        validate_arch,
     };
-    use crate::starry::perf::symbols::{AddressRange, KernelTextRange};
+    use crate::{
+        starry::perf::symbols::{AddressRange, KernelTextRange},
+        support::ovmf::OvmfFirmware,
+    };
 
     #[test]
     fn direct_qemu_args_accepts_x86_64_q35_config() {
@@ -466,10 +430,7 @@ mod tests {
         let args = prepare_x86_64_uefi_boot(
             temp.path(),
             &kernel_bin,
-            &UefiFirmware {
-                code: code.clone(),
-                vars,
-            },
+            &OvmfFirmware::from_paths(code.clone(), vars),
         )
         .unwrap();
 

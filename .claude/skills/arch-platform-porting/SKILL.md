@@ -50,6 +50,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   access. Scheduler switches keep IRQs off and consume prepared/previous transaction tokens.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
+  Obtain OVMF CODE/VARS through `cargo xtask ovmf --arch <arch>`, which reuses Ostool's pinned
+  version, mirror probing, SHA-256 verification, and `$TMPDIR/ostool/ovmf` cache. Use
+  `TGOS_OVMF_DIR` only to select another Ostool-format cache root; do not add per-consumer
+  firmware variables or scan distribution-specific `/usr/share` candidates.
   QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
   `qemu-*.toml` contract; axbuild must not infer or overwrite them from the target architecture
   or host `/dev/kvm` availability.
@@ -210,7 +214,9 @@ Adjust the package list to match the crates touched.
 - Secondary CPU never prints: suspect firmware CPU ID mapping, boot args cache visibility, secondary stack, per-CPU base, page table root, or per-secondary trap setup.
 - Starry boots but interactive/system tests fail: suspect rootfs staging, input/console features, CPR/tty sizing assumptions, or success regex mismatches.
 - NVMe block/rootfs missing: suspect PCI command enable, MMIO mapping, DMA address translation, MSI-X/INTx registration, bootstrap hctx startup, or rootfs patch path. Do not mask the failure by re-enabling `virtio-blk`.
-- Axvisor only fails in LVZ container: verify container QEMU path, OVMF path, target toolchain, KVM/LVZ flags, and whether xtask was built inside the mounted workspace.
+- Axvisor only fails in LVZ container: verify container QEMU path, `cargo xtask ovmf --arch
+  loongarch64` output (and `TGOS_OVMF_DIR` when set), target toolchain, KVM/LVZ flags, and whether
+  xtask was built inside the mounted workspace.
 
 ## Completion Criteria
 

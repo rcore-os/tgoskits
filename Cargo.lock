@@ -5525,9 +5525,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.26.0"
+version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e925c3719ebd62bc412332e9b78ad994a1fcb96a02840776e8708b0cab748324"
+checksum = "83b6dcc7618bf13d75e0fa02acb0eebf3c3d00eb624468c1eef4f64d75b56752"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5566,7 +5566,6 @@ dependencies = [
  "tokio-util",
  "toml 1.1.4+spec-1.1.0",
  "uboot-shell",
- "ureq",
  "url",
 ]
 
@@ -8629,7 +8628,11 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -8874,6 +8877,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.19",
  "utf-8",
