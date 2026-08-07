@@ -66,6 +66,18 @@ pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }
 
+pub fn epoll_level_aliases_rotate_in_linux_callback_order() -> bool {
+    super::file::level_aliases_rotate_in_linux_callback_order_for_test()
+}
+
+pub fn epoll_edge_readiness_requires_a_new_notification() -> bool {
+    super::file::edge_readiness_requires_a_new_notification_for_test()
+}
+
+pub fn epoll_hup_does_not_synthesize_readable() -> bool {
+    super::file::epoll_hup_does_not_synthesize_readable_for_test()
+}
+
 pub fn process_mem_stats_formats_linux_fields() -> bool {
     use super::mm::ProcessMemStats;
 

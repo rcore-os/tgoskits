@@ -37,6 +37,21 @@ fn concurrent_epoll_reverse_add_is_serialized() {
 }
 
 #[axtest]
+fn epoll_level_aliases_rotate_in_linux_callback_order() {
+    ax_assert!(axtest_exports::epoll_level_aliases_rotate_in_linux_callback_order());
+}
+
+#[axtest]
+fn epoll_edge_readiness_requires_a_new_notification() {
+    ax_assert!(axtest_exports::epoll_edge_readiness_requires_a_new_notification());
+}
+
+#[axtest]
+fn epoll_hup_does_not_synthesize_readable() {
+    ax_assert!(axtest_exports::epoll_hup_does_not_synthesize_readable());
+}
+
+#[axtest]
 fn pipe_resize_rounding_and_state_rules_hold() {
     ax_assert!(axtest_exports::pipe_resize_rounding_and_state_rules_hold());
 }
