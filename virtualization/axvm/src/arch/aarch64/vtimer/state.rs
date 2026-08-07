@@ -1,12 +1,17 @@
 //! Connects vCPU-owned architectural timer state to VGIC PPIs and host wakeups.
 
-use alloc::{boxed::Box, sync::Arc};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::{
+    boxed::Box,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
 
 use aarch64_cpu_ext::registers::{CNTPCT_EL0, Readable};
 use arm_vcpu::{ArmTimerKind, ArmTimerSnapshot};
 use arm_vgic::{GicVcpuId, PpiId, VgicCore, VgicResult};
-use ax_kspin::SpinNoIrq;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 
 use crate::{
     arch::aarch64::gic::AxvmVgicBackend,
@@ -38,8 +43,8 @@ pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
     frequency: u64,
     registered: AtomicBool,
     wait_generation: AtomicU64,
-    scheduled: SpinNoIrq<Option<VmTimerHandle>>,
-    host_activation: SpinNoIrq<Option<HostTimerActivation>>,
+    scheduled: IrqSafeMutex<Option<VmTimerHandle>>,
+    host_activation: IrqSafeMutex<Option<HostTimerActivation>>,
 }
 
 impl Aarch64TimerBinding {
@@ -64,8 +69,8 @@ impl Aarch64TimerBinding {
             frequency,
             registered: AtomicBool::new(false),
             wait_generation: AtomicU64::new(0),
-            scheduled: SpinNoIrq::new(None),
-            host_activation: SpinNoIrq::new(None),
+            scheduled: IrqSafeMutex::new(None),
+            host_activation: IrqSafeMutex::new(None),
         });
         backend.register_timer_ppi(vcpu, virtual_ppi, Arc::downgrade(&binding))?;
         binding.registered.store(true, Ordering::Release);
@@ -246,7 +251,7 @@ impl Aarch64TimerBinding {
         )
         .map_err(|error| arm_vgic::VgicError::Backend {
             operation: "deactivate host virtual-timer PPI",
-            detail: alloc::format!(
+            detail: std::format!(
                 "cannot run completion on owner CPU {}: {error:?}",
                 activation.owner_cpu
             ),

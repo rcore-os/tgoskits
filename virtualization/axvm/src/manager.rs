@@ -1,10 +1,8 @@
 //! AxVM runtime services backed by the default ArceOS host.
 
-extern crate alloc;
+use std::{collections::BTreeMap, vec::Vec};
 
-use alloc::{collections::BTreeMap, vec::Vec};
-
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 use axvm_types::VMId;
 
 use crate::{

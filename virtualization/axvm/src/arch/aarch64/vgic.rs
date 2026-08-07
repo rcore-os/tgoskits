@@ -1,13 +1,13 @@
 //! AArch64 VM-local VGIC construction and activation lifecycle.
 
-use alloc::{sync::Arc, vec::Vec};
+use std::{sync::Arc, vec::Vec};
 
 use arm_vgic::{
     ArmVgicConfig, AssignedSpiConfig, GicAffinity, GicV3Backend, GicV3VcpuBinding, GicV3VcpuWake,
     GicVcpuId, HostGicVersion, PpiId, SpiId, TriggerMode, VgicAccessContext, VgicCore,
     VgicDeviceSet, VgicError, VgicMmioRegion, VgicResult, VgicV2Config, VgicV3Config,
 };
-use ax_kspin::SpinNoIrq;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
     DeviceManagerResult, DeviceRegistration, ServiceCardinality, ServiceKey,
@@ -56,7 +56,7 @@ pub(crate) struct Aarch64VgicRuntime {
     backend: Arc<gic::AxvmVgicBackend>,
     kick: Arc<DeferredVcpuKick>,
     host_virtual_timer_intid: u32,
-    phase: SpinNoIrq<RuntimePhase>,
+    phase: IrqSafeMutex<RuntimePhase>,
 }
 
 impl Aarch64VgicRuntime {
@@ -71,7 +71,7 @@ impl Aarch64VgicRuntime {
             backend,
             kick: DeferredVcpuKick::new(vm_id),
             host_virtual_timer_intid,
-            phase: SpinNoIrq::new(RuntimePhase::Inactive),
+            phase: IrqSafeMutex::new(RuntimePhase::Inactive),
         })
     }
 
@@ -162,7 +162,7 @@ impl Aarch64VgicRuntime {
     pub(crate) fn deactivate(&self) -> AxVmResult {
         let routes = {
             let mut phase = self.phase.lock();
-            match core::mem::replace(&mut *phase, RuntimePhase::Deactivating) {
+            match std::mem::replace(&mut *phase, RuntimePhase::Deactivating) {
                 RuntimePhase::Inactive => {
                     *phase = RuntimePhase::Inactive;
                     return Ok(());
@@ -221,7 +221,7 @@ impl GicV3VcpuWake for Aarch64VcpuWake {
             .publish_from_irq(self.vcpu_id)
             .map_err(|error| VgicError::Backend {
                 operation: "publish deferred AArch64 vCPU kick",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             })
     }
 }
@@ -333,7 +333,7 @@ pub(crate) fn register_device_factories(
     if capabilities.host_version() != guest_version {
         return Err(AxVmError::unsupported(
             "create AArch64 virtual GIC",
-            alloc::format!(
+            std::format!(
                 "machine profile requires {guest_version:?}, but the host CPU interface is {:?}",
                 capabilities.host_version()
             ),
@@ -382,7 +382,7 @@ pub(crate) fn register_device_factories(
                 ));
             };
             if *configured_vcpu_count != placements.len() {
-                return Err(AxVmError::invalid_config(alloc::format!(
+                return Err(AxVmError::invalid_config(std::format!(
                     "AArch64 redistributor descriptor names {} vCPUs, but placement has {}",
                     configured_vcpu_count,
                     placements.len()
@@ -392,7 +392,7 @@ pub(crate) fn register_device_factories(
                 VgicV3Config::new(
                     controller_id,
                     distributor_region,
-                    alloc::vec![cpu_region],
+                    std::vec![cpu_region],
                     REDISTRIBUTOR_STRIDE,
                     affinities,
                 )
@@ -463,7 +463,7 @@ fn unique_config<'a>(
     if matches.next().is_some() {
         return Err(AxVmError::resource_conflict(
             "machine device",
-            alloc::format!("more than one {resource} descriptor is configured"),
+            std::format!("more than one {resource} descriptor is configured"),
         ));
     }
     Ok(config)
@@ -472,6 +472,6 @@ fn unique_config<'a>(
 fn vgic_device_error(operation: &'static str, error: VgicError) -> DeviceManagerError {
     DeviceManagerError::InvalidConfig {
         operation,
-        detail: alloc::format!("{error}"),
+        detail: std::format!("{error}"),
     }
 }

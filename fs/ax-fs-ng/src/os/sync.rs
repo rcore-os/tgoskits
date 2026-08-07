@@ -30,6 +30,12 @@ mod tests {
         }
     }
 
+    impl<T: Default> Default for TestMutex<T> {
+        fn default() -> Self {
+            Self::new(T::default())
+        }
+    }
+
     impl<T: ?Sized> TestMutex<T> {
         pub fn lock(&self) -> TestMutexGuard<'_, T> {
             TestMutexGuard(self.0.lock().unwrap_or_else(|err| err.into_inner()))

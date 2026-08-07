@@ -47,7 +47,7 @@ impl BootImagePlan {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::String;
+    use std::string::String;
 
     use super::*;
     use crate::config::{AxVCpuConfig, AxVMConfig, AxVMConfigParams, PhysCpuList, VMImageConfig};

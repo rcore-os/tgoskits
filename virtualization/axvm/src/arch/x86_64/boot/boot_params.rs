@@ -14,7 +14,7 @@
 
 //! Linux x86 `boot_params` / zero page construction.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use super::linux::{
     BOOT_PARAMS_SIZE, X86LinuxHeader, X86LinuxLayoutError, X86LinuxLoadLayout, X86LinuxRange,
@@ -72,8 +72,8 @@ impl<'a> BootParamsBuilder<'a> {
             kernel_image,
             header,
             layout,
-            ram_ranges: alloc::vec![main_memory],
-            reserved_ranges: alloc::vec![
+            ram_ranges: std::vec![main_memory],
+            reserved_ranges: std::vec![
                 layout.boot_params,
                 layout.boot_stub,
                 X86LinuxRange::new(LEGACY_RESERVED_START, LEGACY_RESERVED_SIZE),
@@ -396,7 +396,7 @@ mod tests {
     }
 
     fn valid_image() -> Vec<u8> {
-        let mut image = alloc::vec![0u8; SETUP_HEADER_END + 0x1000];
+        let mut image = std::vec![0u8; SETUP_HEADER_END + 0x1000];
         image[SETUP_SECTS_OFFSET] = 5;
         write_header_u16(&mut image, BOOT_FLAG_OFFSET, 0xaa55);
         write_header_u32(&mut image, HEADER_OFFSET, u32::from_le_bytes(*b"HdrS"));
@@ -475,7 +475,7 @@ mod tests {
         let layout = valid_layout(&header);
         let mut builder =
             BootParamsBuilder::new(&image, header, layout, X86LinuxRange::new(0, 0x20_0000));
-        let long_command_line = alloc::string::String::from_utf8(alloc::vec![
+        let long_command_line = std::string::String::from_utf8(std::vec![
             b'a';
             BOOT_PARAMS_SIZE - COMMAND_LINE_OFFSET
         ])

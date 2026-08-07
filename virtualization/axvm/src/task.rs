@@ -1,8 +1,6 @@
 //! Host task extension data used by AxVM vCPU tasks.
 
-extern crate alloc;
-
-use alloc::sync::{Arc, Weak};
+use std::sync::{Arc, Weak};
 
 use crate::{
     host::task::{TaskExt, TaskInner},

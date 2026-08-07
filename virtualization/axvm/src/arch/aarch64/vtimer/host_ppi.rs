@@ -1,9 +1,8 @@
 //! Process-wide host virtual-timer PPI registration.
 
-use alloc::{format, vec::Vec};
+use std::{format, sync::OnceLock, vec::Vec};
 
 use ax_std::os::arceos::modules::ax_hal::irq;
-use spin::Once;
 
 use super::percpu::{PerCpuIrqControl, claim_enabled_percpu_irq};
 use crate::{
@@ -17,7 +16,7 @@ use crate::{
 /// lifetime of the hypervisor. Whichever vCPU is loaded on a pCPU owns that
 /// CPU's CNTV register state, so multiple VMs may safely time-share the same
 /// physical line.
-static HOST_TIMER_PPI: Once<HostTimerPpiClaim> = Once::new();
+static HOST_TIMER_PPI: OnceLock<HostTimerPpiClaim> = OnceLock::new();
 
 struct HostTimerPpiClaim {
     intid: u32,
@@ -25,7 +24,7 @@ struct HostTimerPpiClaim {
 }
 
 pub(in crate::arch::aarch64) fn ensure_host_timer_ppi(intid: u32) -> AxVmResult {
-    let claim = HOST_TIMER_PPI.try_call_once(|| HostTimerPpiClaim::install(intid))?;
+    let claim = HOST_TIMER_PPI.get_or_try_init(|| HostTimerPpiClaim::install(intid))?;
     if claim.intid != intid {
         return Err(AxVmError::resource_conflict(
             "host virtual-timer PPI",

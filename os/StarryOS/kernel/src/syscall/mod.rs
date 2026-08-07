@@ -470,6 +470,29 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ) as _,
         Sysno::umount2 => sys_umount2(uctx.arg0() as _, uctx.arg1() as _) as _,
         Sysno::pivot_root => sys_pivot_root(uctx.arg0() as _, uctx.arg1() as _) as _,
+        Sysno::fsopen => sys_fsopen(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::fsconfig => sys_fsconfig(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::fsmount => sys_fsmount(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::move_mount => sys_move_mount(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::mount_setattr => sys_mount_setattr(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
 
         // pipe
         Sysno::pipe2 => sys_pipe2(uctx.arg0() as _, uctx.arg1() as _),
@@ -953,13 +976,9 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
         ),
 
-        // The new mount API (fsopen/fsconfig/fsmount/move_mount, plus
-        // fspick/open_tree) is not implemented. Report ENOSYS instead of
-        // handing back a dummy fd: systemd probes this API and only falls back
-        // to the classic mount(2) — which we do support — when the entry point
-        // reports "not supported". A fake fd traps it into the new path, where
-        // the follow-up fsconfig then hard-fails and aborts the mount.
-        Sysno::fsopen | Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
+        // fspick/open_tree remain unsupported. Report ENOSYS instead of a
+        // dummy fd so callers can select their classic-mount fallback.
+        Sysno::fspick | Sysno::open_tree => Err(AxError::Unsupported),
 
         // dummy fds
         Sysno::userfaultfd | Sysno::memfd_secret => sys_dummy_fd(sysno),

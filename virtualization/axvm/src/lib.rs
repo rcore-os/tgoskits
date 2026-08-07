@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![no_std]
-
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!
 //! This crate contains:
 //! - [`AxVM`]: The main structure representing a VM.
 
-#[cfg(any(test, feature = "host-test"))]
-extern crate std;
+#![cfg_attr(any(test, target_arch = "aarch64"), feature(once_cell_try))]
 
-extern crate alloc;
 #[macro_use]
 extern crate log;
 
@@ -39,6 +35,7 @@ mod manager;
 mod npt;
 mod percpu;
 mod runtime;
+mod sync;
 mod task;
 mod timer;
 mod vcpu;

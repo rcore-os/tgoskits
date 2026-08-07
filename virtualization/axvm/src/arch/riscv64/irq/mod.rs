@@ -14,9 +14,9 @@
 
 //! RISC-V virtual PLIC interrupt backend.
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
-use ax_kspin::SpinNoIrq;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
     DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
@@ -55,7 +55,7 @@ impl ServiceKey for RiscvPlicRuntimeKey {
 pub(crate) struct RiscvPlicRuntime {
     vplic: Arc<VPlicGlobal>,
     sink: Arc<RiscvPlicWiredSink>,
-    inputs: SpinNoIrq<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
     kick: Arc<DeferredVcpuKick>,
     physical: Arc<physical::PhysicalIrqBridge>,
     vcpu_count: usize,
@@ -75,7 +75,7 @@ impl RiscvPlicRuntime {
         if vcpu_count > usize::BITS as usize {
             return ax_err!(
                 Unsupported,
-                alloc::format!(
+                std::format!(
                     "RISC-V VM has {vcpu_count} vCPUs, but deferred IRQ wake supports at most {}",
                     usize::BITS
                 )
@@ -98,7 +98,7 @@ impl RiscvPlicRuntime {
         Ok(Arc::new(Self {
             vplic,
             sink,
-            inputs: SpinNoIrq::new(BTreeMap::new()),
+            inputs: IrqSafeMutex::new(BTreeMap::new()),
             kick,
             physical,
             vcpu_count,
@@ -125,7 +125,7 @@ impl RiscvPlicRuntime {
         if vcpu_id >= self.vcpu_count {
             return ax_err!(
                 InvalidInput,
-                alloc::format!(
+                std::format!(
                     "RISC-V vCPU {vcpu_id} is outside the configured range 0..{}",
                     self.vcpu_count
                 )
@@ -171,7 +171,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
                     input,
                 },
                 operation: "open RISC-V vPLIC input",
-                detail: alloc::format!(
+                detail: std::format!(
                     "source {source} is outside the valid range 1..{PLIC_NUM_SOURCES}"
                 ),
             });
@@ -186,7 +186,7 @@ impl VirtualInterruptController for RiscvPlicRuntime {
                         input,
                     },
                     operation: "open RISC-V vPLIC input",
-                    detail: alloc::format!(
+                    detail: std::format!(
                         "source {source} is already registered as {registered_trigger:?}"
                     ),
                 });
@@ -218,12 +218,12 @@ impl RiscvPlicWiredSink {
     fn backend_error(
         input: ControllerInputId,
         operation: &'static str,
-        error: impl core::fmt::Display,
+        error: impl std::fmt::Display,
     ) -> IrqError {
         IrqError::Backend {
             endpoint: Self::endpoint(input),
             operation,
-            detail: alloc::format!("{error}"),
+            detail: std::format!("{error}"),
         }
     }
 
@@ -384,7 +384,7 @@ pub(crate) fn register_device_factory(
         .checked_mul(2)
         .ok_or_else(|| ax_err_type!(InvalidInput, "RISC-V vPLIC context count overflow"))?;
     if contexts_num != expected_contexts {
-        return Err(AxVmError::invalid_config(alloc::format!(
+        return Err(AxVmError::invalid_config(std::format!(
             "virtual PLIC declares {contexts_num} contexts for {vcpu_count} vCPUs; expected \
              {expected_contexts}"
         )));

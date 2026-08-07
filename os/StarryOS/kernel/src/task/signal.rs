@@ -17,7 +17,7 @@ use starry_vm::vm_read_slice;
 
 use super::{
     AsThread, ProcessData, Thread, do_exit, get_process_data, get_process_group, get_task,
-    is_zombie_pid, signal_publication::publish_before_release,
+    is_zombie_pid, signal_publication::publish_before_fatal_stop_release,
 };
 
 /// Information needed to restart a syscall if SA_RESTART applies.
@@ -606,14 +606,15 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
         let ptrace_stop_tid = (signo == Signo::SIGKILL)
             .then(|| proc_data.selected_ptrace_stop_tid())
             .flatten();
-        let _wake_tid = publish_before_release(
-            || publish_process_signal(&proc_data, sig, ptrace_stop_tid),
-            || {
-                if signo == Signo::SIGKILL {
-                    proc_data.clear_job_stop_for_kill();
-                }
-            },
-        );
+        if signo == Signo::SIGKILL {
+            let _wake_tid = publish_before_fatal_stop_release(
+                || publish_process_signal(&proc_data, sig, ptrace_stop_tid),
+                ptrace_stop_tid.map(|_| || proc_data.clear_ptrace_stop()),
+                || proc_data.clear_job_stop_for_kill(),
+            );
+        } else {
+            let _wake_tid = publish_process_signal(&proc_data, sig, ptrace_stop_tid);
+        }
         // Wake signalfd waiters on every thread: even blocked process-level
         // signals must be visible from signalfd in an epoll event loop.
         for tid in proc_data.proc.threads() {

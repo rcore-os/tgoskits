@@ -1,6 +1,6 @@
 //! Architecture-neutral guest image loading and source access.
 
-use alloc::format;
+use std::format;
 
 use axvmconfig::GuestConfig;
 use byte_unit::Byte;
@@ -251,7 +251,7 @@ pub fn load_vm_image_from_memory(
         // SAFETY: The destination comes from `get_image_load_region`, the source
         // contains `bytes_to_write` bytes, and guest memory cannot overlap the image.
         unsafe {
-            core::ptr::copy_nonoverlapping(
+            std::ptr::copy_nonoverlapping(
                 image_buffer[buffer_pos..].as_ptr(),
                 region.as_mut_ptr().cast(),
                 bytes_to_write,
@@ -276,7 +276,7 @@ pub fn load_vm_image_from_memory(
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub mod fs {
-    use alloc::{format, vec::Vec};
+    use std::{format, vec::Vec};
 
     use axvmconfig::GuestConfig;
 

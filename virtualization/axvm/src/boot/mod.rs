@@ -43,14 +43,14 @@ pub trait BootImageProvider {
     }
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    fn read_file(&self, file_name: &str) -> crate::AxVmResult<alloc::vec::Vec<u8>>;
+    fn read_file(&self, file_name: &str) -> crate::AxVmResult<std::vec::Vec<u8>>;
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn read_file_exact(
         &self,
         file_name: &str,
         read_size: usize,
-    ) -> crate::AxVmResult<alloc::vec::Vec<u8>> {
+    ) -> crate::AxVmResult<std::vec::Vec<u8>> {
         let buffer = self.read_file(file_name)?;
         if buffer.len() < read_size {
             return Err(ax_err_type!(

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::marker::PhantomData;
+use std::marker::PhantomData;
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};

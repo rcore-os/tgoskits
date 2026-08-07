@@ -1,7 +1,6 @@
 //! AxVM-owned error contract.
 
-use alloc::{format, string::String};
-use core::fmt::Display;
+use std::{fmt::Display, format, string::String};
 
 use axaddrspace::AddrSpaceError;
 use axdevice::DeviceManagerError;
@@ -420,7 +419,7 @@ pub(crate) use ax_err_type;
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     use super::*;
 

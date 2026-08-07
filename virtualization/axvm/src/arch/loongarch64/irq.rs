@@ -1,8 +1,8 @@
 //! LoongArch platform IRQ routing used by AxVM.
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
-use ax_kspin::SpinNoIrq;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, IrqError, IrqResult,
     VirtualInterruptController, WiredIrqInput, WiredIrqSink,
@@ -39,7 +39,7 @@ impl WiredIrqSink for LoongArchPchPicIrqSink {
             IrqError::Backend {
                 endpoint: Self::endpoint(input),
                 operation: "queue LoongArch PCH-PIC output",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             }
         })
     }
@@ -54,14 +54,14 @@ impl WiredIrqSink for LoongArchPchPicIrqSink {
 /// guest-visible PCH-PIC instance.
 pub(crate) struct LoongArchInterruptDomain {
     sink: Arc<LoongArchPchPicIrqSink>,
-    inputs: SpinNoIrq<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
+    inputs: IrqSafeMutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
 }
 
 impl LoongArchInterruptDomain {
     pub(crate) fn new(vm_id: usize, pic: Arc<axdevice::LoongArchPchPic>) -> Arc<Self> {
         Arc::new(Self {
             sink: Arc::new(LoongArchPchPicIrqSink { vm_id, pic }),
-            inputs: SpinNoIrq::new(BTreeMap::new()),
+            inputs: IrqSafeMutex::new(BTreeMap::new()),
         })
     }
 }
@@ -83,7 +83,7 @@ impl VirtualInterruptController for LoongArchInterruptDomain {
                     input,
                 },
                 operation: "open LoongArch PCH-PIC input",
-                detail: alloc::format!(
+                detail: std::format!(
                     "input {} is outside 0..{PCH_PIC_INPUT_COUNT}",
                     input.value()
                 ),
@@ -98,7 +98,7 @@ impl VirtualInterruptController for LoongArchInterruptDomain {
                         input,
                     },
                     operation: "open LoongArch PCH-PIC input",
-                    detail: alloc::format!(
+                    detail: std::format!(
                         "input {} is already registered as {registered_trigger:?}",
                         input.value()
                     ),

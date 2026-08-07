@@ -5,7 +5,7 @@
 //! default virtual UART with the host-selected UART's register model, layout,
 //! address, and firmware identity before VM construction.
 
-use alloc::{string::String, sync::Arc, vec, vec::Vec};
+use std::{string::String, sync::Arc, vec, vec::Vec};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,

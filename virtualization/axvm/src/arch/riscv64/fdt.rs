@@ -1,6 +1,6 @@
 //! RISC-V compatibility facade and target-specific guest FDT policy.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use crate::{
     AxVmResult,

@@ -34,7 +34,7 @@ pub(crate) fn claim_enabled_percpu_irq<C: PerCpuIrqControl>(
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use std::vec::Vec;
 
     use super::{PerCpuIrqControl, claim_enabled_percpu_irq};
 

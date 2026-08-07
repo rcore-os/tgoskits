@@ -67,7 +67,7 @@ fn prepare_device_bootstrap(
     vm: &AxVM,
 ) -> AxVmResult<(
     axdevice::DeviceFactoryRegistry,
-    alloc::sync::Arc<dyn axdevice_base::VirtualInterruptController>,
+    std::sync::Arc<dyn axdevice_base::VirtualInterruptController>,
 )> {
     let mut factories = default_device_factories(vm)?;
     let configs = vm.with_config(|config| config.emu_devices().clone());
@@ -78,7 +78,7 @@ fn prepare_device_bootstrap(
 fn init_vm_with(
     vm: &AxVM,
     factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_controller: alloc::sync::Arc<dyn axdevice_base::VirtualInterruptController>,
+    interrupt_controller: std::sync::Arc<dyn axdevice_base::VirtualInterruptController>,
 ) -> AxVmResult {
     complete_vm_init(
         vm,
@@ -133,7 +133,7 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDeviceConfig> {
+fn arch_extra_device_configs(config: &AxVMConfig) -> std::vec::Vec<EmulatedDeviceConfig> {
     config
         .pass_through_ports()
         .iter()
@@ -144,18 +144,18 @@ fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDev
                 port.base as u32 + port.length as u32 - 1,
             );
             EmulatedDeviceConfig {
-                name: alloc::format!("x86-port-passthrough-{:#x}", port.base),
+                name: std::format!("x86-port-passthrough-{:#x}", port.base),
                 base_gpa: port.base as usize,
                 length: port.length as usize,
                 irq_id: 0,
                 emu_type: EmulatedDeviceType::X86PortPassthrough,
-                cfg_list: alloc::vec![],
+                cfg_list: std::vec![],
             }
         })
         .collect()
 }
 
-fn append_arch_owned_regions(regions: &mut alloc::vec::Vec<GuestOwnedRegion>) {
+fn append_arch_owned_regions(regions: &mut std::vec::Vec<GuestOwnedRegion>) {
     regions.push(GuestOwnedRegion::new(
         X86_LOCAL_APIC_GPA,
         X86_LOCAL_APIC_SIZE,
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn svm_reserves_the_local_apic_trap_region() {
-        let mut regions = alloc::vec::Vec::new();
+        let mut regions = std::vec::Vec::new();
 
         append_arch_owned_regions(&mut regions);
 
@@ -232,7 +232,7 @@ mod tests {
                 .mappings()
                 .iter()
                 .map(|mapping| (mapping.gpa.as_usize(), mapping.size))
-                .collect::<alloc::vec::Vec<_>>(),
+                .collect::<std::vec::Vec<_>>(),
             [
                 (0, X86_LOCAL_APIC_GPA),
                 (

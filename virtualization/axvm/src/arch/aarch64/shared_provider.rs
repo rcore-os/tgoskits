@@ -1,6 +1,6 @@
 //! Mediation for physical MMIO providers shared with a passthrough guest.
 
-use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+use std::{format, string::String, sync::Arc, vec, vec::Vec};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,

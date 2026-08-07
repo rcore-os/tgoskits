@@ -12,9 +12,9 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
-use axfs_ng_vfs::Location;
+use axfs_ng_vfs::{Filesystem, Location};
 
 pub mod api;
 pub mod block;
@@ -26,6 +26,13 @@ mod highlevel;
 pub mod os;
 pub mod root;
 pub mod volume;
+
+static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
+    os::sync::IrqMutex::new(Vec::new());
+
+fn register_mounted_filesystem(fs: Filesystem) {
+    MOUNTED_FILESYSTEMS.lock().push(fs);
+}
 
 pub use block::{
     BlockRegion,
@@ -93,6 +100,7 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
 
     let mp = axfs_ng_vfs::Mountpoint::new_root_with_source(&fs, source);
     let root = mp.root_location();
+    register_mounted_filesystem(fs);
     highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
     root
 }
@@ -100,10 +108,14 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
 pub fn shutdown_filesystems() -> ax_errno::AxResult {
     #[cfg(feature = "vfs")]
     highlevel::sync_all_cached_files(false)?;
-    if let Some(ctx) = highlevel::ROOT_FS_CONTEXT.get() {
-        ctx.root_dir().sync(false)?;
+    let filesystems = core::mem::take(&mut *MOUNTED_FILESYSTEMS.lock());
+    let mut first_error = None;
+    for fs in filesystems.into_iter().rev() {
+        if let Err(error) = fs.shutdown() {
+            first_error.get_or_insert(error);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 pub(crate) fn detect_filesystem(

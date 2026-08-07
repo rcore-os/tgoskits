@@ -611,7 +611,7 @@ fn mount_single_partition(
             let Some(mountpoint) = ensure_mountpoint_dir(root, &mount_path) else {
                 return;
             };
-            if let Err(err) = mountpoint.mount(&fs) {
+            if let Err(err) = mount_additional_filesystem(&mountpoint, &fs) {
                 warn!(
                     "  failed to mount partition {} at {}: {err:?}",
                     description, mount_path
@@ -625,6 +625,15 @@ fn mount_single_partition(
             );
         }
     }
+}
+
+fn mount_additional_filesystem(
+    mountpoint: &Location,
+    fs: &axfs_ng_vfs::Filesystem,
+) -> axfs_ng_vfs::VfsResult<()> {
+    mountpoint.mount(fs)?;
+    crate::register_mounted_filesystem(fs.clone());
+    Ok(())
 }
 
 fn ensure_mountpoint_dir(root: &Location, path: &str) -> Option<Location> {
@@ -823,6 +832,8 @@ mod tests {
     struct ReadonlyFs {
         root: std::sync::OnceLock<DirEntry>,
         userdata_kind: Option<NodeType>,
+        shutdown_name: Option<&'static str>,
+        shutdown_log: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
     }
 
     struct ReadonlyDir {
@@ -839,9 +850,19 @@ mod tests {
 
     impl ReadonlyFs {
         fn new(userdata_kind: Option<NodeType>) -> Arc<Self> {
+            Self::new_with_options(userdata_kind, None, None)
+        }
+
+        fn new_with_options(
+            userdata_kind: Option<NodeType>,
+            shutdown_name: Option<&'static str>,
+            shutdown_log: Option<Arc<std::sync::Mutex<Vec<&'static str>>>>,
+        ) -> Arc<Self> {
             let fs = Arc::new(Self {
                 root: std::sync::OnceLock::new(),
                 userdata_kind,
+                shutdown_name,
+                shutdown_log,
             });
             let _ = fs.root.set(DirEntry::new_dir(
                 |this| {
@@ -854,6 +875,13 @@ mod tests {
                 Reference::root(),
             ));
             fs
+        }
+
+        fn new_with_shutdown_log(
+            name: &'static str,
+            shutdown_log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        ) -> Arc<Self> {
+            Self::new_with_options(None, Some(name), Some(shutdown_log))
         }
     }
 
@@ -883,6 +911,13 @@ mod tests {
                 fragment_size: 0,
                 mount_flags: 0,
             })
+        }
+
+        fn shutdown(&self) -> VfsResult<()> {
+            if let (Some(name), Some(log)) = (self.shutdown_name, &self.shutdown_log) {
+                log.lock().unwrap().push(name);
+            }
+            Ok(())
         }
     }
 
@@ -1191,7 +1226,7 @@ mod tests {
             Ok(())
         }
 
-        #[cfg(feature = "ext4")]
+        #[cfg(any(feature = "ext4", feature = "fat"))]
         fn flush(&mut self) -> AxResult {
             Ok(())
         }
@@ -1319,6 +1354,29 @@ mod tests {
         assert_eq!(
             root.lookup_no_follow("userdata").unwrap().node_type(),
             NodeType::Directory
+        );
+    }
+
+    #[test]
+    fn shutdown_closes_root_and_additional_mounts_in_reverse_order() {
+        let shutdown_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let root_fs = Filesystem::new(ReadonlyFs::new_with_shutdown_log(
+            "root",
+            shutdown_log.clone(),
+        ));
+        let additional_fs = Filesystem::new(ReadonlyFs::new_with_shutdown_log(
+            "additional",
+            shutdown_log.clone(),
+        ));
+        let root = crate::finish_filesystem_init(root_fs, "test-root");
+        let mountpoint = ensure_mountpoint_dir_result(&root, "/userdata").unwrap();
+
+        mount_additional_filesystem(&mountpoint, &additional_fs).unwrap();
+        crate::shutdown_filesystems().unwrap();
+
+        assert_eq!(
+            shutdown_log.lock().unwrap().as_slice(),
+            ["additional", "root"]
         );
     }
 

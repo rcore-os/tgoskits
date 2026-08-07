@@ -1,4 +1,4 @@
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId};
 

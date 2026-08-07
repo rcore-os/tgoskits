@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use std::{sync::Arc, vec::Vec};
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{

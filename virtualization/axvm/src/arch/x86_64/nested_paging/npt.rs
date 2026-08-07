@@ -1,6 +1,6 @@
 //! AMD Nested Page Table entry encoding.
 
-use core::fmt;
+use std::fmt;
 
 use axvm_types::{HostPhysAddr, MappingFlags};
 use page_table_generic as ptg;
