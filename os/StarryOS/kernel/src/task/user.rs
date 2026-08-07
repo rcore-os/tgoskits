@@ -158,14 +158,11 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;
                         }
-                        if thr.proc_data.take_ptrace_exec_stop_pending() {
-                            let _is_event =
-                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
-                            if let Some(_resume_sig) =
+                        if thr.proc_data.take_ptrace_exec_stop_pending()
+                            && let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
-                            {
-                                continue;
-                            }
+                        {
+                            continue;
                         }
                         if matches!(
                             thr.proc_data.ptrace_syscall_trace_state_for(tid),

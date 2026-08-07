@@ -1298,6 +1298,16 @@ impl ProcessData {
 
     /// Record that this tracee is stopped by `signo`.
     pub fn set_ptrace_stop(&self, tid: u32, signo: Signo, uctx: &UserContext) {
+        self.set_ptrace_stop_record(tid, signo, uctx, None);
+    }
+
+    fn set_ptrace_stop_record(
+        &self,
+        tid: u32,
+        signo: Signo,
+        uctx: &UserContext,
+        syscall_no: Option<usize>,
+    ) {
         let pending_event = self.ptrace_pending_event.lock().remove(&tid);
         self.ptrace_stop.lock().insert(
             tid,
@@ -1305,8 +1315,8 @@ impl ProcessData {
                 signo: Some(signo),
                 uctx: *uctx,
                 siginfo: Some(SignalInfo::new_kernel(signo)),
-                is_syscall: false,
-                syscall_no: None,
+                is_syscall: syscall_no.is_some(),
+                syscall_no,
                 reported: false,
                 event: pending_event.as_ref().map_or(0, |event| event.event),
                 event_msg: pending_event.as_ref().map_or(0, |event| event.msg),
@@ -1323,11 +1333,7 @@ impl ProcessData {
         uctx: &UserContext,
         syscall_no: usize,
     ) {
-        self.set_ptrace_stop(tid, signo, uctx);
-        if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
-            stop.is_syscall = true;
-            stop.syscall_no = Some(syscall_no);
-        }
+        self.set_ptrace_stop_record(tid, signo, uctx, Some(syscall_no));
     }
 
     pub fn ptrace_stop_tid(&self) -> Option<u32> {
@@ -2004,15 +2010,18 @@ impl ProcessData {
     /// ```
     ///
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
-    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
-    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+    /// **after** the `SpinNoIrq` guard, in normal preemptible context. The old
+    /// address space must also stay alive until the current task has switched
+    /// away from its page table.
+    pub fn replace_current_aspace(&self, current: &TaskInner, new_aspace: Arc<Mutex<AddrSpace>>) {
+        let new_page_table_root = new_aspace.lock().page_table_root();
+        crate::mm::attach_process_slot(&new_aspace);
         let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
+        current.switch_page_table(new_page_table_root);
         crate::mm::release_process_slot(&old);
-        let aspace_arc = self.aspace.lock().clone();
-        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,

@@ -314,13 +314,9 @@ fn do_execve(
     // Replace the aspace Arc so the parent's shared Arc<Mutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
     // keeps pointing at the original still-live AddrSpace.
-    let new_pt_root = new_aspace.page_table_root();
     let newaspace_arc = Arc::new(Mutex::new(new_aspace));
-    proc_data.replace_aspace(newaspace_arc);
+    proc_data.replace_current_aspace(&curr, newaspace_arc);
     proc_data.mark_vm_aspace_private_after_exec();
-
-    // Switch the hardware page table now that the new aspace is installed.
-    curr.switch_page_table(new_pt_root);
 
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
@@ -431,11 +427,12 @@ fn do_execve(
         has_ldso,
     );
 
-    // All ptrace tracees (both TRACEME and ATTACH) unconditionally
-    // stop with SIGTRAP on execve (Linux ptrace(2)). PTRACE_O_TRACEEXEC
-    // only controls whether the stop carries PTRACE_EVENT_EXEC data,
-    // not whether the stop itself occurs.
-    if proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached() {
+    // PTRACE_O_TRACEEXEC replaces the legacy exec SIGTRAP with an exec event.
+    // Publish that choice when exec commits so the user-return path cannot
+    // observe both forms of the same stop.
+    if (proc_data.is_ptrace_traceme() || proc_data.is_ptrace_attached())
+        && !crate::syscall::ptrace_notify_exec(proc_data.proc.pid())
+    {
         proc_data.set_ptrace_exec_stop_pending();
     }
 
