@@ -14,7 +14,9 @@ use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
-pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
+pub(crate) use crate::run_queue::{
+    current_run_queue, select_new_task_run_queue, select_run_queue, select_wake_run_queue,
+};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
@@ -258,7 +260,7 @@ where
     let task_ref = task.into_arc();
     initialize_task_before_schedule(&task_ref, initialize, |task_ref| {
         register_task(task_ref);
-        select_run_queue::<NoPreemptIrqSave>(task_ref).add_task(task_ref.clone());
+        select_new_task_run_queue::<NoPreemptIrqSave>(task_ref).add_task(task_ref.clone());
     });
     task_ref
 }
