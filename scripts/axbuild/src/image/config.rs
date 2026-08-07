@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.10.toml";
+    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml";
 pub const DEFAULT_FALLBACK_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.10.toml";
 pub const IMAGE_CONFIG_FILENAME: &str = ".image.toml";
