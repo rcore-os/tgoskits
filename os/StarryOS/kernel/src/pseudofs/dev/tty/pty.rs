@@ -37,6 +37,10 @@ impl TtyRead for PtyReader {
         self.0.lock().pop_slice(buf)
     }
 
+    fn discard_input(&mut self) {
+        self.0.lock().clear();
+    }
+
     fn closed(&self) -> bool {
         self.1.load(Ordering::Acquire)
     }

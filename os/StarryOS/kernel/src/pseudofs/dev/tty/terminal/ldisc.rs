@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     future::poll_fn,
-    marker::PhantomData,
     ops::Range,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::{Poll, Waker},
@@ -52,6 +51,12 @@ pub struct TtyConfig<R, W> {
 
 pub trait TtyRead: Send + Sync + 'static {
     fn read(&mut self, buf: &mut [u8]) -> usize;
+
+    /// Discards bytes already queued by the underlying input source.
+    ///
+    /// Once this returns, a later [`Self::read`] must not expose bytes that
+    /// were observable by this reader before the discard began.
+    fn discard_input(&mut self);
 
     /// Whether the writer peer has been fully closed (last fd dropped).
     /// Default: never closed. Lets a Passive reader report hangup
@@ -139,13 +144,16 @@ struct InputReader<R, W> {
     line_buf: Vec<u8>,
     line_read: Option<usize>,
     eof_ready: Arc<AtomicBool>,
-    clear_line_buf: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
+    fn discard_input(&mut self) {
+        self.reader.discard_input();
+        self.read_range = 0..0;
+        self.line_buf.clear();
+        self.line_read = None;
+    }
+
     pub fn drain_source_into_line_buffer(&mut self) -> bool {
-        if self.clear_line_buf.swap(false, Ordering::Relaxed) {
-            self.line_buf.clear();
-        }
         let mut progressed = false;
         if self.read_range.is_empty() {
             let read = self.reader.read(&mut self.read_buf);
@@ -380,6 +388,10 @@ struct SimpleReader<R> {
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
+    fn discard_input(&mut self) {
+        self.reader.discard_input();
+    }
+
     pub fn closed(&self) -> bool {
         self.reader.closed()
     }
@@ -396,8 +408,8 @@ impl<R: TtyRead> SimpleReader<R> {
     }
 }
 
-enum Processor<R> {
-    InterruptDriven,
+enum Processor<R, W> {
+    InterruptDriven(Arc<SpinNoIrq<InputReader<R, W>>>),
     Passive(Box<SimpleReader<R>>, Arc<PollSet>),
 }
 
@@ -408,13 +420,12 @@ pub struct LineDiscipline<R, W> {
     input_ready: Arc<PollSet>,
     worker_source: Arc<PollSet>,
     eof_ready: Arc<AtomicBool>,
-    clear_line_buf: Arc<AtomicBool>,
-    processor: Processor<R>,
-    _writer: PhantomData<W>,
+    processor: Processor<R, W>,
 }
 
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
-    fn drive_input(reader: &mut InputReader<R, W>, input_ready: &PollSet) -> bool {
+    fn drive_input(reader: &SpinNoIrq<InputReader<R, W>>, input_ready: &PollSet) -> bool {
+        let mut reader = reader.lock();
         let mut progressed = false;
         progressed |= reader.echo.drain_available();
         while reader.drain_source_into_line_buffer() {
@@ -428,7 +439,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     fn spawn_interrupt_driven_reader(
-        mut reader: InputReader<R, W>,
+        reader: Arc<SpinNoIrq<InputReader<R, W>>>,
         input_source: Arc<PollSet>,
         output_source: Option<Arc<PollSet>>,
         input_ready: Arc<PollSet>,
@@ -437,7 +448,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         ax_task::spawn_with_name(
             move || {
                 block_on(poll_fn(|cx| {
-                    Self::drive_input(&mut reader, input_ready.as_ref());
+                    Self::drive_input(&reader, input_ready.as_ref());
                     // The reader task registers from ordinary task context.
                     unsafe { input_source.register(cx.waker(), IoEvents::IN) };
                     if let Some(output_source) = output_source.as_ref() {
@@ -447,7 +458,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
                     // Close the check/register race. block_on's stable AxWaker
                     // remembers a concurrent source wake before it parks.
-                    Self::drive_input(&mut reader, input_ready.as_ref());
+                    Self::drive_input(&reader, input_ready.as_ref());
                     Poll::<()>::Pending
                 }))
             },
@@ -459,7 +470,6 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         let (buf_tx, buf_rx) = ReadBuf::default().split();
 
         let eof_ready = Arc::new(AtomicBool::new(false));
-        let clear_line_buf = Arc::new(AtomicBool::new(false));
         let input_ready = Arc::new(PollSet::new());
         let worker_source = Arc::new(PollSet::new());
         let echo = EchoQueue::new(config.writer, worker_source.clone());
@@ -476,19 +486,19 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: eof_ready.clone(),
-            clear_line_buf: clear_line_buf.clone(),
         };
 
         let processor = match config.process_mode {
             ProcessMode::InterruptDriven { input, output } => {
+                let reader = Arc::new(SpinNoIrq::new(reader));
                 Self::spawn_interrupt_driven_reader(
-                    reader,
+                    reader.clone(),
                     input,
                     output,
                     input_ready.clone(),
                     worker_source.clone(),
                 );
-                Processor::InterruptDriven
+                Processor::InterruptDriven(reader)
             }
             ProcessMode::Passive(poll_rx) => {
                 let InputReader { reader, buf_tx, .. } = reader;
@@ -509,17 +519,24 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
             input_ready,
             worker_source,
             eof_ready,
-            clear_line_buf,
             processor,
-            _writer: PhantomData,
         }
     }
 
     pub fn drain_input(&mut self) {
-        self.buf_rx.clear();
+        match &mut self.processor {
+            Processor::InterruptDriven(reader) => {
+                let mut reader = reader.lock();
+                reader.discard_input();
+                self.buf_rx.clear();
+            }
+            Processor::Passive(reader, _) => {
+                reader.discard_input();
+                self.buf_rx.clear();
+            }
+        }
         self.injected_input.clear();
         self.eof_ready.store(false, Ordering::Release);
-        self.clear_line_buf.store(true, Ordering::Relaxed);
     }
 
     pub fn inject_input(&mut self, input: &[u8]) {
@@ -556,7 +573,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
     pub fn register_rx_waker(&self, waker: &Waker) {
         match &self.processor {
-            Processor::InterruptDriven => {
+            Processor::InterruptDriven(_) => {
                 // Registration happens from tty read poll context.
                 unsafe { self.input_ready.register(waker, IoEvents::IN) };
             }
@@ -680,6 +697,10 @@ mod tests {
             n
         }
 
+        fn discard_input(&mut self) {
+            self.pos = self.data.len();
+        }
+
         fn closed(&self) -> bool {
             self.closed
         }
@@ -799,7 +820,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
         (reader, buf_rx)
     }
@@ -861,7 +881,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -895,7 +914,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -926,7 +944,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -959,7 +976,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
@@ -985,7 +1001,6 @@ mod tests {
             line_buf: Vec::new(),
             line_read: None,
             eof_ready: Arc::new(AtomicBool::new(false)),
-            clear_line_buf: Arc::new(AtomicBool::new(false)),
         };
 
         assert!(reader.drain_source_into_line_buffer());
