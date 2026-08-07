@@ -23,11 +23,11 @@ use std::{
 };
 
 use axvmconfig::{
-    GuestConfig, PassThroughDeviceConfig, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
+    GuestConfig, HostDeviceAssignment, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
 };
 use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
-use crate::{AxVmError, AxVmResult, MappingFlags, ax_err_type, config::AxVMConfig};
+use crate::{config::*, *};
 
 const PAGE_SIZE_4K: usize = 0x1000;
 
@@ -528,25 +528,6 @@ fn add_device_address_config(
         return;
     }
 
-    let addr_end = base_address.saturating_add(size);
-    if let Some(emu_dev) = vm_cfg.emu_devices().iter().find(|emu_dev| {
-        let emu_start = emu_dev.base_gpa;
-        let emu_end = emu_dev.base_gpa.saturating_add(emu_dev.length);
-        base_address < emu_end && emu_start < addr_end
-    }) {
-        debug!(
-            "Skipping passthrough mapping for node {} [{:#x}~{:#x}] because it overlaps emulated \
-             device {} [{:#x}~{:#x}]",
-            node_name,
-            base_address,
-            addr_end,
-            emu_dev.name,
-            emu_dev.base_gpa,
-            emu_dev.base_gpa.saturating_add(emu_dev.length),
-        );
-        return;
-    }
-
     let device_name = if index == 0 {
         match prefix {
             Some(p) => format!("{node_name}-{p}"),
@@ -559,12 +540,11 @@ fn add_device_address_config(
         }
     };
 
-    vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
+    vm_cfg.add_pass_through_device(HostDeviceAssignment {
         name: device_name,
         base_gpa: base_address,
         base_hpa: base_address,
         length: size,
-        irq_id: 0,
     });
 }
 
@@ -588,12 +568,11 @@ fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRa
         format!("{node_name}-{prefix}-region{index}")
     };
 
-    vm_cfg.add_pass_through_device(PassThroughDeviceConfig {
+    vm_cfg.add_pass_through_device(HostDeviceAssignment {
         name: device_name,
         base_gpa: base_address,
         base_hpa: base_address,
         length: size,
-        irq_id: 0,
     });
 }
 
@@ -731,7 +710,7 @@ pub fn update_provided_fdt(
 mod tests {
     use std::{string::ToString, vec, vec::Vec};
 
-    use axvm_types::{AddressSpacePolicy, PassThroughDeviceConfig, VmMemConfig, VmMemMappingType};
+    use axvm_types::{AddressSpacePolicy, HostDeviceAssignment, VmMemConfig, VmMemMappingType};
     use axvmconfig::{GuestConfig, GuestDevices, GuestType, PhysicalDeviceRef};
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
@@ -1086,7 +1065,7 @@ mod tests {
             id: 2,
             name: "virtualized".to_string(),
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            pass_through_devices: vec![PassThroughDeviceConfig {
+            pass_through_devices: vec![HostDeviceAssignment {
                 name: "/ethernet@10001000".to_string(),
                 ..Default::default()
             }],
@@ -1117,7 +1096,7 @@ mod tests {
             id: 3,
             name: "passthrough".to_string(),
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            pass_through_devices: vec![PassThroughDeviceConfig {
+            pass_through_devices: vec![HostDeviceAssignment {
                 name: "/".to_string(),
                 ..Default::default()
             }],
@@ -1151,7 +1130,7 @@ mod tests {
             id: 4,
             name: "passthrough".to_string(),
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            pass_through_devices: vec![PassThroughDeviceConfig {
+            pass_through_devices: vec![HostDeviceAssignment {
                 name: "/".to_string(),
                 ..Default::default()
             }],
@@ -1205,7 +1184,7 @@ mod tests {
             id: 1,
             name: "test".to_string(),
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            pass_through_devices: vec![PassThroughDeviceConfig {
+            pass_through_devices: vec![HostDeviceAssignment {
                 name: "/virtio_mmio@10001000".to_string(),
                 ..Default::default()
             }],

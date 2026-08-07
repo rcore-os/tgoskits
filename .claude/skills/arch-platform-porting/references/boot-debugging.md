@@ -16,6 +16,44 @@ This reference captures project-specific lessons from enabling LoongArch dynamic
 
 When a boot failure appears in a high layer, still audit lower-layer contracts. For example, a Starry rootfs failure can be caused by PCI command bits, and an Axvisor hang can be caused by a someboot post-UEFI handoff.
 
+## Axvisor Resolved Device Graph and Guest Firmware
+
+Axvisor architectures build and resolve their own device graphs before final
+guest firmware generation. The shared graph does not impose a common device
+order: AArch64 still installs VGIC before IRQ consumers, RISC-V retains PLIC
+hart/context setup, x86 retains LAPIC/IOAPIC/PIT/APIC-access ordering, and
+LoongArch retains IOCSR and EXTIOI/PCH cascading.
+
+When debugging a missing device or interrupt, follow one resource slot from
+`DeviceModel::requirements()`, through `ResolvedDeviceGraph`, into both the
+FDT/ACPI plan and `DeviceBuildContext`. Runtime devices must use the resolved
+address and `IrqLine.input()`. The exact dyn model retained by the graph performs
+the build, and the runtime seals only after every `ResourceClaimSet` slot becomes
+a lease. For `console0`, first verify whether machine fallback, host FDT/ACPI
+snapshot, or a same-ID user override supplied the final model and fixed binding.
+MMIO/PIO exits must call the runtime optional-dispatch path once; a `find_*`
+probe followed by a second dispatch indicates a stale routing path.
+
+For x86 direct Linux boot, verify all of the following before changing Linux
+command-line policy:
+
+- the ACPI image fits wholly in `0xe0000..0x100000` and the RSDP is 16-byte aligned;
+- `boot_params.acpi_rsdp_addr` contains that RSDP GPA;
+- E820 reserves the ACPI image and the legacy low-memory window;
+- RSDP/XSDT/table checksums and table pointer closure are valid;
+- the MP table uses the same APIC plan for the explicit `acpi=off` fallback.
+
+For x86 OVMF/BIOS boot, verify graph-fixed PIO windows `0x510..0x512` and
+`0x514..0x51c` are trapped and that fw_cfg publishes `etc/acpi/tables`,
+`etc/acpi/rsdp`, and `etc/table-loader`. A working selector read alone does not
+prove ACPI installation; check table-loader DMA operations and confirm Linux
+sees `DSDT`, `APIC`, `FACP`, and `XSDT` under `/sys/firmware/acpi/tables`.
+
+For AArch64 host replacement, compare every GICR region and stride in the
+immutable firmware plan with the `ArmVgicConfig` passed to the runtime. Do not
+infer configuration by downcasting a registered GIC frontend. Host GIC MMIO
+must remain trapped, and guest writes must never mutate host GICD/GICR state.
+
 ## CPU-local Register Ownership
 
 `cpu-local` is the single owner of host CPU-area, current-thread, and kernel-TLS register

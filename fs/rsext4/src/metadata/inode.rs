@@ -11,6 +11,12 @@ use crate::{
     ext4::Ext4FileSystem,
 };
 
+fn deletion_time(now_sec: i64, last_write_time: u32, inode_count: u32) -> u32 {
+    let now = now_sec.clamp(0, u32::MAX as i64) as u32;
+    let first_non_orphan_value = inode_count.saturating_add(1);
+    now.max(last_write_time).max(first_non_orphan_value)
+}
+
 impl Ext4FileSystem {
     pub(crate) fn inode_disk_size(&self) -> u16 {
         match self.superblock.s_inode_size {
@@ -150,10 +156,39 @@ impl Ext4FileSystem {
             Ext4DtimeUpdate::Clear => inode.i_dtime = 0,
             Ext4DtimeUpdate::SetNow => {
                 let now = get_now(device, &mut now_cache)?;
-                inode.i_dtime = if now.sec <= 0 { 0 } else { now.sec as u32 };
+                inode.i_dtime = deletion_time(
+                    now.sec,
+                    self.superblock.s_wtime,
+                    self.superblock.s_inodes_count,
+                );
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deletion_time;
+
+    #[test]
+    fn deletion_time_cannot_be_mistaken_for_an_orphan_inode_number() {
+        assert_eq!(deletion_time(6, 0, 131_072), 131_073);
+    }
+
+    #[test]
+    fn deletion_time_preserves_a_valid_wall_clock() {
+        assert_eq!(deletion_time(1_784_073_600, 0, 131_072), 1_784_073_600);
+    }
+
+    #[test]
+    fn deletion_time_uses_the_last_filesystem_write_when_clock_is_unset() {
+        assert_eq!(deletion_time(6, 1_783_000_000, 131_072), 1_783_000_000);
+    }
+
+    #[test]
+    fn deletion_time_does_not_treat_a_negative_clock_as_the_u32_maximum() {
+        assert_eq!(deletion_time(-1, 0, 131_072), 131_073);
     }
 }

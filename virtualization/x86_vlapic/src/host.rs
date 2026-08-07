@@ -2,10 +2,7 @@
 
 use core::marker::PhantomData;
 
-use crate::{
-    X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VcpuId,
-    X86VlapicError, X86VlapicResult, X86VmId,
-};
+use crate::*;
 
 /// Size of a 4 KiB host frame.
 pub const X86_PAGE_SIZE_4K: usize = 0x1000;
@@ -51,6 +48,11 @@ pub trait X86VlapicHostOps {
         vcpu_id: X86VcpuId,
         vector: X86InterruptVector,
     ) -> X86VlapicResult;
+
+    /// Route a PIT IRQ0 edge through the VM's selected legacy or I/O APIC path.
+    fn inject_pit_irq(_vm_id: X86VmId, _vcpu_id: X86VcpuId) -> X86VlapicResult {
+        Err(X86VlapicError::Unsupported)
+    }
 }
 
 /// RAII host frame used by x86 virtual interrupt-controller structures.

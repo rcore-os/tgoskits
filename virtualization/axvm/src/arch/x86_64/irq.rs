@@ -1,7 +1,7 @@
 use std::vec::Vec;
 
 use ax_std::os::arceos::sync::RawSpinLock as Mutex;
-use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PitServiceKey};
+use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
@@ -10,7 +10,6 @@ use crate::{
         X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
     },
-    config::VMInterruptMode,
     runtime::{VCpuRef, VMRef},
 };
 
@@ -561,7 +560,7 @@ pub fn register_ioapic_irq_forwarding_activator(
 }
 
 pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -574,6 +573,17 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         .require::<X86PitServiceKey>()
         .is_ok_and(|pit| pit.consume_irq0_if_due(now_ns))
     {
+        return;
+    }
+    if let Some(vector) = devices
+        .services()
+        .require::<X86PicServiceKey>()
+        .ok()
+        .and_then(|pic| pic.pulse_irq(PIT_TIMER_GSI as u8))
+    {
+        vcpu.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector as _, InterruptTriggerMode::EdgeTriggered)
+            .unwrap();
         return;
     }
 
@@ -600,7 +610,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -677,7 +687,7 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -743,7 +753,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn activate_ready_ioapic_forwarding_routes(vm: &VMRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
     let Some(domain) = interrupt_domain_for_vm(vm) else {
@@ -790,7 +800,7 @@ fn forward_passthrough_gsi(
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return true;
     }
 

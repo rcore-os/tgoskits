@@ -269,7 +269,7 @@ disabled = [{ path = "/soc/gpio@2000" }]
 | `kernel_path` | 内核文件路径 | Guest 类型相关 |
 | `memory_regions` | 内存区域 | `[[base, size, flags, map_type]]` |
 
-配置使用 `deny_unknown_fields`；旧 `vm_type`、`emu_devices`、`interrupt_mode`、裸地址/IRQ 和任何 `serial` 字段都会解析失败。完整语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
+配置使用 `deny_unknown_fields`；普通虚拟设备使用 `[[devices.virtual]]` 的 `id + model + options`，地址与中断由解析后设备图分配。默认串口 ID 为 `console0`，可按同 ID 覆盖型号和语义参数，或用新 ID 增加串口；顶层 `serial`、裸地址/IRQ 和 `enabled = false` 仍会失败。旧 `vm_type`、`emu_devices`、`interrupt_mode` 与 `kernel.disk_path` 同样不兼容。完整语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
 
 ### 6.3 支持的 Guest 类型
 

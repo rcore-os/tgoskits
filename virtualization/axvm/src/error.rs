@@ -3,7 +3,7 @@
 use std::{fmt::Display, format, string::String};
 
 use axaddrspace::AddrSpaceError;
-use axdevice::DeviceManagerError;
+use axdevice::{DeviceManagerError, ResourcePlanningError};
 use axdevice_base::{DeviceError, IrqError, RegistryError};
 use axhvc::HyperCallError;
 use axvmconfig::AxVmConfigError;
@@ -110,6 +110,15 @@ pub enum AxVmError {
         operation: &'static str,
         detail: String,
     },
+    /// Deterministic virtual-device resource planning failed.
+    #[error(transparent)]
+    DeviceResourcePlanning(#[from] ResourcePlanningError),
+    /// Host-derived GIC firmware geometry is invalid.
+    #[error(transparent)]
+    GuestGicProfile(#[from] crate::machine::GuestGicProfileError),
+    /// Host-derived PLIC firmware geometry is invalid.
+    #[error(transparent)]
+    GuestPlicProfile(#[from] crate::machine::GuestPlicProfileError),
 }
 
 impl AxVmError {

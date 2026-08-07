@@ -2,7 +2,9 @@
 
 use alloc::string::String;
 
-use axdevice_base::{AccessWidth, BusKind, DeviceError, IrqError, RegistryError};
+use axdevice_base::*;
+
+use crate::{DeviceGraphError, InterruptRegistrationError};
 
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
@@ -96,6 +98,15 @@ pub enum DeviceManagerError {
     /// IRQ resolution or signaling failed.
     #[error(transparent)]
     Irq(#[from] IrqError),
+    /// Interrupt-controller or endpoint registration failed.
+    #[error(transparent)]
+    InterruptRegistration(#[from] InterruptRegistrationError),
+    /// Device graph declaration or dependency validation failed.
+    #[error(transparent)]
+    DeviceGraph(#[from] DeviceGraphError),
+    /// Deterministic VM resource allocation failed.
+    #[error(transparent)]
+    ResourcePlanning(#[from] crate::ResourcePlanningError),
 }
 
 impl From<DeviceManagerError> for DeviceError {
@@ -136,6 +147,18 @@ impl From<DeviceManagerError> for DeviceError {
             },
             DeviceManagerError::Irq(error) => Self::Backend {
                 operation: "route device IRQ",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::InterruptRegistration(error) => Self::InvalidInput {
+                operation: "register interrupt capability",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::DeviceGraph(error) => Self::InvalidInput {
+                operation: "resolve device graph",
+                detail: alloc::format!("{error}"),
+            },
+            DeviceManagerError::ResourcePlanning(error) => Self::InvalidInput {
+                operation: "plan device resources",
                 detail: alloc::format!("{error}"),
             },
         }

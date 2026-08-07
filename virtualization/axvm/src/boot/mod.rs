@@ -66,3 +66,5 @@ pub trait BootImageProvider {
         self.read_file(file_name).map(|buffer| buffer.len())
     }
 }
+#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64", test))]
+pub(crate) mod acpi;

@@ -3,7 +3,7 @@ use alloc::string::{String, ToString};
 use ax_errno::AxResult;
 use axfs_ng_vfs::NodePermission;
 
-use crate::highlevel::current_fs_context;
+use crate::{fops::FileAttr, highlevel::current_fs_context};
 
 pub fn create_dir(path: &str) -> AxResult {
     current_fs_context()
@@ -41,4 +41,17 @@ pub fn set_current_dir(path: &str) -> AxResult {
     let dir = ctx.resolve(path)?;
     ctx.set_current_dir(dir)?;
     Ok(())
+}
+
+/// Returns metadata for a path after resolving its final symbolic link.
+pub fn metadata(path: &str) -> AxResult<FileAttr> {
+    current_fs_context().lock().metadata(path)
+}
+
+/// Returns metadata for a path without resolving its final symbolic link.
+pub fn symlink_metadata(path: &str) -> AxResult<FileAttr> {
+    current_fs_context()
+        .lock()
+        .resolve_no_follow(path)?
+        .metadata()
 }

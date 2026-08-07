@@ -19,20 +19,65 @@ use tempfile::NamedTempFile;
 use crate::{axvisor::rootfs, context::ResolvedAxvisorRequest, rootfs::inject::read_binary_file};
 
 const OUTPUT_ENV: &str = "AXVISOR_TEST_BUSYBOX_INITRAMFS";
+const OVMF_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
 const BUSYBOX_PATH: &str = "/bin/busybox";
 const INIT_SCRIPT: &[u8] = br#"#!/bin/busybox sh
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 /bin/busybox mount -t proc proc /proc 2>/dev/null || true
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null || true
 export HOME=/root
 export PATH=/bin
 export TERM=vt100
 export PS1='~ # '
 cd /root
 
-case "$(/bin/busybox cat /proc/cmdline)" in
-  *axvisor.timer_case=gicv2*) success_marker=AXVISOR_GICV2_TIMER_STRESS_PASSED ;;
-  *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED ;;
-  *) success_marker=TIMER_STRESS_FAILED ;;
+run_x86_acpi_check() {
+  success_marker=$1
+  failed=0
+  # Linux uses the XSDT to discover these tables but does not export the root
+  # XSDT itself through /sys/firmware/acpi/tables.
+  for table in DSDT APIC FACP SPCR; do
+    if [ ! -r "/sys/firmware/acpi/tables/$table" ]; then
+      echo "missing readable ACPI table: $table"
+      failed=1
+    fi
+  done
+  online=$(/bin/busybox cat /sys/devices/system/cpu/online 2>/dev/null)
+  if [ "$online" != "0" ]; then
+    echo "unexpected online CPU set: $online"
+    failed=1
+  fi
+  if [ ! -e /sys/class/tty/ttyS0 ]; then
+    echo "missing ttyS0"
+    failed=1
+  fi
+  if ! /bin/busybox grep -q 'IO-APIC' /proc/interrupts; then
+    echo "Linux did not initialize an IOAPIC"
+    failed=1
+  fi
+  if [ "$failed" -ne 0 ]; then
+    echo AXVISOR_X86_ACPI_FAILED
+  else
+    echo "$success_marker"
+  fi
+}
+
+cmdline=$(/bin/busybox cat /proc/cmdline)
+case "$cmdline" in
+  *axvisor.acpi_case=direct*) run_x86_acpi_check AXVISOR_X86_DIRECT_ACPI_PASSED; exec /bin/busybox sh -i ;;
+  *axvisor.acpi_case=ovmf*) run_x86_acpi_check AXVISOR_X86_OVMF_ACPI_PASSED; exec /bin/busybox sh -i ;;
+  *axvisor.acpi_case=off*)
+    if [ -d /sys/firmware/acpi/tables ]; then
+      echo AXVISOR_X86_ACPI_FAILED
+    else
+      echo AXVISOR_X86_MP_FALLBACK_PASSED
+    fi
+    exec /bin/busybox sh -i
+    ;;
+  *axvisor.timer_case=gicv3-its*) success_marker=AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED; require_its=1 ;;
+  *axvisor.timer_case=gicv2*) success_marker=AXVISOR_GICV2_TIMER_STRESS_PASSED; require_its=0 ;;
+  *axvisor.timer_case=gicv3*) success_marker=AXVISOR_GICV3_TIMER_STRESS_PASSED; require_its=0 ;;
+  *) echo AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN; exec /bin/busybox sh -i ;;
 esac
 
 start=$(/bin/busybox date +%s)
@@ -55,6 +100,9 @@ while [ "$round" -lt 8 ]; do
 done
 end=$(/bin/busybox date +%s)
 elapsed=$((end - start))
+if [ "$require_its" -eq 1 ] && ! /bin/busybox dmesg | /bin/busybox grep -q 'ITS'; then
+  failed=1
+fi
 if [ "$failed" -ne 0 ] || [ "$elapsed" -lt 20 ] || [ "$elapsed" -gt 120 ]; then
   echo TIMER_STRESS_FAILED
 else
@@ -69,27 +117,39 @@ pub(super) fn prepare_configured_busybox_initramfs(
     cargo: &Cargo,
     workspace_root: &Path,
 ) -> anyhow::Result<()> {
-    let Some(configured_output) = cargo.env.get(OUTPUT_ENV) else {
-        return Ok(());
-    };
-    let output_path = resolve_output_path(workspace_root, configured_output)?;
-    let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, None)?;
-    prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
-    println!(
-        "prepared Axvisor QEMU test initramfs: {}",
-        output_path.display()
-    );
+    if let Some(configured_output) = cargo.env.get(OUTPUT_ENV) {
+        let output_path = resolve_output_path(workspace_root, configured_output, OUTPUT_ENV)?;
+        let rootfs_path = rootfs::qemu_rootfs_path(request, workspace_root, None)?;
+        prepare_busybox_initramfs(&rootfs_path, &output_path, &request.arch)?;
+        println!(
+            "prepared Axvisor QEMU test initramfs: {}",
+            output_path.display()
+        );
+    }
+    if let Some(configured_output) = cargo.env.get(OVMF_OUTPUT_ENV) {
+        ensure!(
+            request.arch == "x86_64",
+            "{OVMF_OUTPUT_ENV} is only valid for x86_64 Axvisor tests"
+        );
+        let output_path = resolve_output_path(workspace_root, configured_output, OVMF_OUTPUT_ENV)?;
+        super::ovmf::prepare_x86_ovmf(&output_path)?;
+        println!("prepared Axvisor x86 OVMF image: {}", output_path.display());
+    }
     Ok(())
 }
 
-fn resolve_output_path(workspace_root: &Path, configured_output: &str) -> anyhow::Result<PathBuf> {
+fn resolve_output_path(
+    workspace_root: &Path,
+    configured_output: &str,
+    variable: &str,
+) -> anyhow::Result<PathBuf> {
     let configured_output = Path::new(configured_output);
     ensure!(
         !configured_output.is_absolute()
             && configured_output
                 .components()
                 .all(|component| matches!(component, Component::CurDir | Component::Normal(_))),
-        "{OUTPUT_ENV} must be a workspace-relative path without parent traversal"
+        "{variable} must be a workspace-relative path without parent traversal"
     );
     Ok(workspace_root.join(configured_output))
 }
@@ -178,7 +238,7 @@ fn build_busybox_initramfs(
         archive.append_regular("bin/busybox", busybox)?;
         archive.append_regular(loader_archive_path, loader)?;
         archive.append_regular("init", INIT_SCRIPT)?;
-        for applet in ["date", "mount", "sh", "sleep"] {
+        for applet in ["cat", "date", "dmesg", "grep", "mount", "sh", "sleep"] {
             archive.append_symlink(&format!("bin/{applet}"), "busybox")?;
         }
         archive.finish()?;
@@ -294,11 +354,11 @@ mod tests {
         let root = tempdir().unwrap();
 
         assert_eq!(
-            resolve_output_path(root.path(), "tmp/initramfs.cpio.gz").unwrap(),
+            resolve_output_path(root.path(), "tmp/initramfs.cpio.gz", OUTPUT_ENV).unwrap(),
             root.path().join("tmp/initramfs.cpio.gz")
         );
-        assert!(resolve_output_path(root.path(), "../outside").is_err());
-        assert!(resolve_output_path(root.path(), "/tmp/outside").is_err());
+        assert!(resolve_output_path(root.path(), "../outside", OUTPUT_ENV).is_err());
+        assert!(resolve_output_path(root.path(), "/tmp/outside", OUTPUT_ENV).is_err());
     }
 
     #[test]
@@ -323,7 +383,19 @@ mod tests {
             init.windows(b"AXVISOR_GICV3_TIMER_STRESS_PASSED".len())
                 .any(|window| window == b"AXVISOR_GICV3_TIMER_STRESS_PASSED")
         );
-        for applet in ["date", "mount", "sh", "sleep"] {
+        assert!(
+            init.windows(b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED".len())
+                .any(|window| window == b"AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED")
+        );
+        assert!(
+            init.windows(b"AXVISOR_X86_DIRECT_ACPI_PASSED".len())
+                .any(|window| window == b"AXVISOR_X86_DIRECT_ACPI_PASSED")
+        );
+        assert!(
+            init.windows(b"AXVISOR_X86_OVMF_ACPI_PASSED".len())
+                .any(|window| window == b"AXVISOR_X86_OVMF_ACPI_PASSED")
+        );
+        for applet in ["cat", "date", "dmesg", "grep", "mount", "sh", "sleep"] {
             assert_eq!(entries.get(&format!("bin/{applet}")).unwrap(), b"busybox");
         }
     }

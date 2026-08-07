@@ -2,6 +2,13 @@ use std::string::ToString;
 
 use super::*;
 
+fn fdt_identity(snapshot: &HostSerialSnapshot) -> &GuestSerialFdtIdentity {
+    let GuestSerialFirmwareIdentity::Fdt(identity) = &snapshot.identity else {
+        panic!("FDT serial probe returned a non-FDT identity");
+    };
+    identity
+}
+
 fn tree_with_controller(compatible: &str, name: &str) -> FdtTree {
     let mut tree = FdtTree::new();
     let root = tree.inner().root_id();
@@ -43,7 +50,14 @@ fn installs_pl011_with_gic_spi_and_stdout_path() {
         clock_hz: 24_000_000,
     };
 
-    install_mmio_serial(&mut tree, profile, GuestSerialFdtInterrupt::GicSpi, None).unwrap();
+    install_mmio_serial(
+        &mut tree,
+        profile,
+        GuestSerialFdtInterrupt::GicSpi,
+        None,
+        true,
+    )
+    .unwrap();
     let fdt = Fdt::from_bytes(&tree.finish()).unwrap();
     let serial = fdt.get_by_path("/pl011@9000000").unwrap();
     let regs = serial.regs();
@@ -160,6 +174,7 @@ fn installs_ns16550a_with_plic_source() {
         profile,
         GuestSerialFdtInterrupt::PlicSource,
         None,
+        true,
     )
     .unwrap();
     let fdt = Fdt::from_bytes(&tree.finish()).unwrap();
@@ -253,6 +268,7 @@ fn replaces_host_serial_nodes_and_console_aliases() {
         profile,
         GuestSerialFdtInterrupt::PlicSource,
         None,
+        true,
     )
     .unwrap();
 
@@ -328,7 +344,8 @@ fn installs_pl011_with_host_irq_phandle_and_stdout_identity() {
         &mut tree,
         resolved.profile,
         GuestSerialFdtInterrupt::GicSpi,
-        Some(&resolved.identity),
+        Some(fdt_identity(&resolved)),
+        true,
     )
     .unwrap();
     let fdt = Fdt::from_bytes(&tree.finish()).unwrap();
@@ -477,13 +494,14 @@ fn resolves_dw_apb_uart_as_virtual_16550() {
             clock_hz: 24_000_000,
         }
     );
-    assert_eq!(resolved.identity.node_path, "/serial@feb50000");
-    assert_eq!(resolved.identity.node_phandle, Some(0x2d1));
-    assert_eq!(resolved.identity.interrupt_parent, 1);
-    assert_eq!(resolved.identity.interrupt_specifier, [0, 0x14d, 4]);
-    assert_eq!(resolved.identity.stdout_path, "/serial@feb50000:1500000");
+    let identity = fdt_identity(&resolved);
+    assert_eq!(identity.node_path, "/serial@feb50000");
+    assert_eq!(identity.node_phandle, Some(0x2d1));
+    assert_eq!(identity.interrupt_parent, 1);
+    assert_eq!(identity.interrupt_specifier, [0, 0x14d, 4]);
+    assert_eq!(identity.stdout_path, "/serial@feb50000:1500000");
     assert_eq!(
-        resolved.identity.clock_references,
+        identity.clock_references,
         [
             GuestClockReference {
                 provider_phandle: 2,
@@ -509,7 +527,8 @@ fn resolves_dw_apb_uart_as_virtual_16550() {
         &mut tree,
         resolved.profile,
         GuestSerialFdtInterrupt::GicSpi,
-        Some(&resolved.identity),
+        Some(fdt_identity(&resolved)),
+        true,
     )
     .unwrap();
     let guest_fdt = Fdt::from_bytes(&tree.finish()).unwrap();
@@ -600,9 +619,10 @@ fn resolves_earlycon_uart_when_stdout_path_is_missing() {
             clock_hz: 24_000_000,
         }
     );
-    assert_eq!(resolved.identity.node_path, "/serial@fe660000");
-    assert_eq!(resolved.identity.interrupt_specifier, [0, 0x76, 4]);
-    assert_eq!(resolved.identity.stdout_path, "/serial@fe660000");
+    let identity = fdt_identity(&resolved);
+    assert_eq!(identity.node_path, "/serial@fe660000");
+    assert_eq!(identity.interrupt_specifier, [0, 0x76, 4]);
+    assert_eq!(identity.stdout_path, "/serial@fe660000");
 }
 
 #[test]

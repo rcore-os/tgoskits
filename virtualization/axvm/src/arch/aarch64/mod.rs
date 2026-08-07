@@ -6,35 +6,31 @@
 
 use std::sync::Arc;
 
-use arm_vcpu::{
-    ArmAccessWidth, ArmGicCpuInterfaceRegister, ArmGuestPhysAddr, ArmHostIrqGuard, ArmHostOps,
-    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError,
-    ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
-};
+use arm_vcpu::*;
 use arm_vgic::{GicV3VcpuBinding, IntId, VgicCore};
 use ax_memory_addr::VirtAddr;
-use axvm_types::{
-    AccessWidth, GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, SysRegAddr, VCpuId, VMId,
-    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
-    VmBackendResult as BackendResult,
-};
+use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::*;
 use crate::{AxVmResult, ax_err};
 
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
 pub(crate) mod fdt;
+mod firmware_plan;
 mod gic;
 mod images;
 mod npt;
+mod resource_pools;
 mod shared_mmio;
 mod shared_provider;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vgic;
 mod vm;
+mod vm_plan;
+pub(crate) use vm_plan::Aarch64VmPlan;
 mod vtimer;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};

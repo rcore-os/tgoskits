@@ -3,11 +3,7 @@
 use std::format;
 
 use super::Aarch64Arch;
-use crate::{
-    AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform},
-    ax_err_type,
-};
+use crate::{architecture::*, *};
 
 impl HostTimePlatform for Aarch64Arch {}
 
@@ -73,27 +69,33 @@ pub(super) fn patch_runtime_fdt(
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<std::vec::Vec<u8>> {
-    let (initrd, serial_profile, serial_identity, gic_profile, timer_profile) =
-        vm.with_config(|config| {
-            (
-                super::fdt::initrd_start_size_from_image_config(
-                    config.image_config.ramdisk.as_ref(),
-                ),
-                config.serial_profile(),
-                config.serial_fdt_identity().cloned(),
-                config.gic_profile().cloned(),
-                config.timer_profile().cloned(),
-            )
-        });
+    let initrd = vm.with_config(|config| {
+        super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
+    });
+    let (serial_profile, serial_identity, additional_serials, gic_profile, timer_profile) = vm
+        .with_architecture_plan(|plan| {
+            Ok((
+                plan.serial_profile(),
+                plan.serial_fdt_identity().cloned(),
+                plan.serial_devices()
+                    .iter()
+                    .filter(|serial| serial.id() != "console0")
+                    .map(crate::machine::ResolvedSerialDevice::profile)
+                    .collect::<std::vec::Vec<_>>(),
+                plan.gic_profile().clone(),
+                plan.timer_profile().clone(),
+            ))
+        })?;
     super::fdt::core::create::patch_guest_fdt_for_runtime(
         fdt_bytes,
         &vm.memory_regions(),
         crate_config,
         serial_profile,
         serial_identity.as_ref(),
-        gic_profile.as_ref(),
+        &additional_serials,
+        Some(&gic_profile),
         None,
-        timer_profile.as_ref(),
+        Some(&timer_profile),
         initrd,
         true,
     )

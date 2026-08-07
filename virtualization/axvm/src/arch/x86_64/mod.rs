@@ -15,57 +15,37 @@ use std::{
 };
 
 use ax_std::os::arceos::sync::RawSpinLock;
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerResult,
-    DeviceRegistration, ServiceCardinality, ServiceKey, VirtualInterruptControllerKey,
-    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDeviceOps, X86IoApicServiceKey,
-    X86PitDeviceOps, X86PitServiceKey, validate_device_config,
-};
-use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptEndpoint, IrqError, IrqResult,
-    VirtualInterruptController, WiredIrqInput, WiredIrqSink,
-};
-use axvm_types::{
-    AccessWidth, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode,
-    MappingFlags, NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
-};
+use axdevice::*;
+use axdevice_base::*;
+use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 use x86_vcpu::{
-    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
-    X86MsrAddr, X86NestedPagingConfig, X86PerCpuState, X86Port, X86Vcpu, X86VcpuCreateConfig,
-    X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit,
+    X86AccessWidth, X86GuestPhysAddr, X86HostPhysAddr, X86HostVirtAddr, X86MsrAddr, X86Port, *,
 };
-use x86_vlapic::{
-    X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicHostOps,
-    X86VlapicResult, X86VmId,
-};
+use x86_vlapic::*;
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
-use crate::{
-    AxVmError, AxVmResult, StopReason,
-    host::{HostMemory, default_host},
-    irq::deferred::DeferredVcpuKick,
-    manager,
-    vcpu::with_current_vcpu,
-};
+use super::*;
+use crate::{host::*, irq::deferred::*, vcpu::*};
 
+mod acpi_pm_timer;
 pub(crate) mod boot;
 mod capabilities;
+mod cmos;
 mod exit;
 pub(crate) mod fdt;
 mod host_irq;
 pub(crate) mod irq;
 mod nested_paging;
+mod pci_config;
+mod pic;
 pub(crate) mod port;
+mod resource_pools;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
-
-use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
+use exit::*;
 use sysreg::{SysRegReadExit, SysRegWriteExit};
+pub(crate) use vm::X86VmPlan;
 
-const QEMU_EXIT_PORT: u16 = 0x604;
-const QEMU_EXIT_MAGIC: u64 = 0x2000;
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
 pub(crate) struct X86_64Arch;
@@ -127,26 +107,15 @@ impl ArchOps for X86_64Arch {
                     width: x86_access_width_to_ax(width),
                 },
             ),
-            X86VmExit::PortIoWrite { port, width, data } => {
-                if x86_qemu_shutdown_port(port, width, data) {
-                    warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                    Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                        waits_for_event: false,
-                        stop_reason: Some(StopReason::SystemDown),
-                        resets_vm: false,
-                        exits_vcpu: false,
-                    }))
-                } else {
-                    exit::handle_io_write(
-                        vm,
-                        IoWriteExit {
-                            port: x86_port_to_ax(port),
-                            width: x86_access_width_to_ax(width),
-                            data,
-                        },
-                    )
-                }
-            }
+            X86VmExit::PortIoWrite { port, width, data } => exit::handle_io_write(
+                vm,
+                IoWriteExit {
+                    port: x86_port_to_ax(port),
+                    width: x86_access_width_to_ax(width),
+                    data,
+                },
+            ),
+            X86VmExit::PortIoString(exit) => exit::handle_io_string(vm, vcpu, exit),
             X86VmExit::MmioRead {
                 addr,
                 width,
@@ -210,12 +179,7 @@ impl ArchOps for X86_64Arch {
             }
             X86VmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
+                Ok(BoundVcpuExit::Complete(x86_halt_action()))
             }
             X86VmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
@@ -255,6 +219,15 @@ impl ArchOps for X86_64Arch {
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         exit::finish(vm, vcpu, work)
+    }
+}
+
+fn x86_halt_action() -> VcpuRunAction {
+    VcpuRunAction {
+        waits_for_event: true,
+        stop_reason: None,
+        resets_vm: false,
+        exits_vcpu: false,
     }
 }
 
@@ -322,6 +295,33 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     ) -> X86VlapicResult {
         manager::inject_interrupt(vm_id, vcpu_id, vector as usize).map_err(ax_error_to_vlapic)
     }
+
+    fn inject_pit_irq(vm_id: X86VmId, vcpu_id: X86VcpuId) -> X86VlapicResult {
+        manager::with_vm(vm_id, |vm| {
+            let devices = vm.get_devices().map_err(ax_error_to_vlapic)?;
+            if let Some(vector) = devices
+                .services()
+                .require::<X86PicServiceKey>()
+                .ok()
+                .and_then(|pic| pic.pulse_irq(0))
+            {
+                return manager::inject_interrupt(vm_id, vcpu_id, vector as usize)
+                    .map_err(ax_error_to_vlapic);
+            }
+
+            if let Some(interrupt) = devices
+                .services()
+                .require::<X86InterruptDomainKey>()
+                .ok()
+                .and_then(|ioapic| ioapic.assert_gsi(0))
+            {
+                return manager::inject_interrupt(vm_id, vcpu_id, interrupt.vector as usize)
+                    .map_err(ax_error_to_vlapic);
+            }
+            Ok(())
+        })
+        .unwrap_or(Err(X86VlapicError::BadState))
+    }
 }
 
 impl X86HostOps for AxvmX86HostOps {
@@ -380,6 +380,13 @@ impl X86HostOps for AxvmX86HostOps {
 }
 
 pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
+
+impl AxvmX86Vcpu {
+    fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
+        x86_result(self.0.complete_port_io_string(exit))
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error))
+    }
+}
 
 impl VmArchVcpuOps for AxvmX86Vcpu {
     type CreateConfig = X86VcpuCreateConfig;
@@ -472,81 +479,23 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
     }
 }
 
-/// Pre-creates the canonical x86 interrupt controller and registers factories
-/// that expose that same instance through the device runtime.
-pub(crate) fn register_device_factories(
+/// Provides the canonical x86 interrupt-controller device model.
+pub(crate) fn ioapic_model(vm_id: usize, base: usize, length: usize) -> Arc<dyn DeviceModel> {
+    Arc::new(X86IoApicModel {
+        vm_id,
+        base,
+        length,
+    })
+}
+
+pub(crate) fn pit_model(vm_id: usize) -> Arc<dyn DeviceModel> {
+    Arc::new(X86PitModel { vm_id })
+}
+
+struct X86IoApicModel {
     vm_id: usize,
-    configs: &[EmulatedDeviceConfig],
-    factories: &mut DeviceFactoryRegistry,
-) -> AxVmResult<Arc<X86InterruptDomain>> {
-    let machine =
-        crate::machine::machine_profile_for(crate::machine::MachineArchitecture::X86_64, 1);
-    let expected_ioapic = unique_x86_machine_device(
-        &machine.emulated_devices,
-        EmulatedDeviceType::X86IoApic,
-        "virtual IOAPIC",
-    )?;
-    let expected_pit = unique_x86_machine_device(
-        &machine.emulated_devices,
-        EmulatedDeviceType::X86Pit,
-        "virtual PIT",
-    )?;
-    let ioapic_config =
-        unique_x86_machine_device(configs, EmulatedDeviceType::X86IoApic, "virtual IOAPIC")?;
-    let pit_config = unique_x86_machine_device(configs, EmulatedDeviceType::X86Pit, "virtual PIT")?;
-    validate_device_config(
-        expected_ioapic,
-        ioapic_config,
-        "validate x86 virtual IOAPIC machine descriptor",
-    )?;
-    validate_device_config(
-        expected_pit,
-        pit_config,
-        "validate x86 virtual PIT machine descriptor",
-    )?;
-
-    let ioapic = Arc::new(axdevice::X86IoApicDevice::new(
-        x86_vlapic::X86GuestPhysAddr::from_usize(ioapic_config.base_gpa),
-        Some(ioapic_config.length),
-    ));
-    let service: Arc<dyn X86IoApicDeviceOps> = ioapic.clone();
-    let domain = Arc::new(X86InterruptDomain::new(vm_id, service));
-    factories.register(Arc::new(X86IoApicFactory {
-        expected: ioapic_config.clone(),
-        ioapic,
-        domain: domain.clone(),
-    }))?;
-    factories.register(Arc::new(X86PitFactory {
-        expected: pit_config.clone(),
-    }))?;
-    factories.register(Arc::new(port::HostPortPassthroughDeviceFactory))?;
-    Ok(domain)
-}
-
-struct X86IoApicFactory {
-    expected: EmulatedDeviceConfig,
-    ioapic: Arc<axdevice::X86IoApicDevice>,
-    domain: Arc<X86InterruptDomain>,
-}
-
-fn unique_x86_machine_device<'a>(
-    configs: &'a [EmulatedDeviceConfig],
-    device_type: EmulatedDeviceType,
-    resource: &'static str,
-) -> AxVmResult<&'a EmulatedDeviceConfig> {
-    let mut matches = configs
-        .iter()
-        .filter(|config| config.emu_type == device_type);
-    let config = matches.next().ok_or_else(|| {
-        AxVmError::resource_unavailable("x86 machine device", std::format!("missing {resource}"))
-    })?;
-    if matches.next().is_some() {
-        return Err(AxVmError::resource_conflict(
-            "x86 machine device",
-            std::format!("more than one {resource} descriptor is configured"),
-        ));
-    }
-    Ok(config)
+    base: usize,
+    length: usize,
 }
 
 /// Adapts the IOAPIC device capability to the x86 interrupt-runtime boundary.
@@ -721,49 +670,123 @@ impl WiredIrqSink for X86WiredState {
     }
 }
 
-impl DeviceFactory for X86IoApicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86IoApic
+impl DeviceModel for X86IoApicModel {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        fixed_mmio_declaration(self.base, self.length, "declare x86 virtual IOAPIC")
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build x86 virtual IOAPIC")?;
-        let service: Arc<dyn X86IoApicDeviceOps> = self.ioapic.clone();
-        let domain: Arc<dyn X86InterruptDomainOps> = self.domain.clone();
-        let controller: Arc<dyn VirtualInterruptController> = self.domain.clone();
-        let bundle =
-            DeviceBundle::from_registration(DeviceRegistration::Device(self.ioapic.clone()))
-                .with_service::<X86IoApicServiceKey>(service)?;
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let (base, length) =
+            consume_mmio_config(context, self.base, self.length, "build x86 virtual IOAPIC")?;
+        let ioapic = Arc::new(axdevice::X86IoApicDevice::new(
+            x86_vlapic::X86GuestPhysAddr::from_usize(base),
+            Some(length),
+        ));
+        let service: Arc<dyn X86IoApicDeviceOps> = ioapic.clone();
+        let runtime = Arc::new(X86InterruptDomain::new(self.vm_id, service.clone()));
+        let domain: Arc<dyn X86InterruptDomainOps> = runtime.clone();
+        let controller: Arc<dyn VirtualInterruptController> = runtime.clone();
+        let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(ioapic))
+            .with_service::<X86IoApicServiceKey>(service)?;
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(runtime.id(), controller),
+        ));
         bundle
             .with_service::<X86InterruptDomainKey>(domain)?
-            .with_service::<X86InterruptDomainRuntimeKey>(self.domain.clone())?
-            .with_service::<VirtualInterruptControllerKey>(controller)
+            .with_service::<X86InterruptDomainRuntimeKey>(runtime)
     }
 }
 
-struct X86PitFactory {
-    expected: EmulatedDeviceConfig,
+struct X86PitModel {
+    vm_id: usize,
 }
 
-impl DeviceFactory for X86PitFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86Pit
+impl DeviceModel for X86PitModel {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        let [timer, speaker] = x86_vlapic::EmulatedPit::<AxvmX86HostOps>::port_ranges();
+        let timer_size = timer.end.number() - timer.start.number() + 1;
+        let speaker_size = speaker.end.number() - speaker.start.number() + 1;
+        DeviceRequirements::new()
+            .with_pio(
+                ResourceSlot::new("timer-registers")?,
+                timer_size,
+                1,
+                ResourceRequest::Fixed(timer.start.number()),
+            )?
+            .with_pio(
+                ResourceSlot::new("speaker-control")?,
+                speaker_size,
+                1,
+                ResourceRequest::Fixed(speaker.start.number()),
+            )
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        validate_device_config(&self.expected, config, "build x86 virtual PIT")?;
-        let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let timer = context.pio(&ResourceSlot::new("timer-registers")?)?;
+        let speaker = context.pio(&ResourceSlot::new("speaker-control")?)?;
+        let [expected_timer, expected_speaker] =
+            x86_vlapic::EmulatedPit::<AxvmX86HostOps>::port_ranges();
+        if timer != pio_range_parts(expected_timer) || speaker != pio_range_parts(expected_speaker)
+        {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build x86 virtual PIT",
+                detail: "planned port ranges differ from the PIT hardware model".into(),
+            });
+        }
+        let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new_for_vcpu(
+            self.vm_id, 0,
+        ));
         let service: Arc<dyn X86PitDeviceOps> = pit.clone();
         DeviceBundle::from_registration(DeviceRegistration::Device(pit))
             .with_service::<X86PitServiceKey>(service)
+    }
+}
+
+fn pio_range_parts(range: x86_vlapic::X86PortRange) -> (u16, u16) {
+    (
+        range.start.number(),
+        range.end.number() - range.start.number() + 1,
+    )
+}
+
+fn consume_mmio_config(
+    context: &mut DeviceBuildContext<'_>,
+    expected_base: usize,
+    expected_length: usize,
+    operation: &'static str,
+) -> DeviceManagerResult<(usize, usize)> {
+    let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+    if base != expected_base as u64 || length != expected_length as u64 {
+        return Err(DeviceManagerError::InvalidConfig {
+            operation,
+            detail: "planned MMIO range differs from the machine descriptor".into(),
+        });
+    }
+    Ok((
+        usize::try_from(base).map_err(|_| declaration_range_error(operation))?,
+        usize::try_from(length).map_err(|_| declaration_range_error(operation))?,
+    ))
+}
+
+fn fixed_mmio_declaration(
+    base: usize,
+    length: usize,
+    operation: &'static str,
+) -> DeviceManagerResult<DeviceRequirements> {
+    let size = u64::try_from(length).map_err(|_| declaration_range_error(operation))?;
+    let base = u64::try_from(base).map_err(|_| declaration_range_error(operation))?;
+    DeviceRequirements::new().with_mmio(
+        ResourceSlot::new("registers")?,
+        size,
+        1,
+        ResourceRequest::Fixed(base),
+    )
+}
+
+fn declaration_range_error(operation: &'static str) -> DeviceManagerError {
+    DeviceManagerError::InvalidConfig {
+        operation,
+        detail: "configured address or length exceeds the selected bus width".into(),
     }
 }
 
@@ -788,20 +811,6 @@ fn handle_x86_nested_page_fault(
     vm: &crate::AxVMRef,
     exit: NestedPageFaultExit,
 ) -> AxVmResult<BoundVcpuExit<DeferredRunWork>> {
-    if vm.get_devices()?.find_mmio_dev(exit.addr).is_some() {
-        warn!(
-            "VM[{}] nested page fault at {:#x} maps MMIO but x86 core did not decode it",
-            vm.id(),
-            exit.addr.as_usize()
-        );
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-            resets_vm: false,
-            exits_vcpu: false,
-        }));
-    }
-
     if vm.handle_nested_page_fault(exit.addr, exit.access_flags) {
         Ok(BoundVcpuExit::Continue)
     } else {
@@ -887,10 +896,6 @@ fn x86_msr_addr_to_ax(addr: X86MsrAddr) -> SysRegAddr {
     SysRegAddr::new(addr.addr())
 }
 
-fn x86_qemu_shutdown_port(port: X86Port, width: X86AccessWidth, data: u64) -> bool {
-    port.number() == QEMU_EXIT_PORT && width == X86AccessWidth::Word && data == QEMU_EXIT_MAGIC
-}
-
 fn current_rflags() -> u64 {
     let flags: u64;
     unsafe {
@@ -918,14 +923,17 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 
 #[cfg(test)]
 mod tests {
-    use axdevice::{DeviceRuntime, X86InterruptDomainKey, X86IoApicServiceKey, X86PitServiceKey};
-
     use super::*;
     fn assert_x86_exit_type<T: VmArchVcpuOps<Exit = X86VmExit>>() {}
 
     #[test]
     fn axvm_x86_vcpu_uses_x86_exit_type() {
         assert_x86_exit_type::<AxvmX86Vcpu>();
+    }
+
+    #[test]
+    fn x86_halt_waits_until_an_interrupt_or_lifecycle_event() {
+        assert!(x86_halt_action().waits_for_event);
     }
 
     #[test]
@@ -965,80 +973,6 @@ mod tests {
         ));
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
-        ));
-    }
-
-    #[test]
-    fn qemu_shutdown_port_is_axvm_policy() {
-        assert!(x86_qemu_shutdown_port(
-            X86Port::new(QEMU_EXIT_PORT),
-            X86AccessWidth::Word,
-            QEMU_EXIT_MAGIC
-        ));
-        assert!(!x86_qemu_shutdown_port(
-            X86Port::new(QEMU_EXIT_PORT),
-            X86AccessWidth::Dword,
-            QEMU_EXIT_MAGIC
-        ));
-    }
-
-    #[test]
-    fn x86_platform_devices_are_built_by_registered_factories() {
-        let mut factories = DeviceFactoryRegistry::new();
-        let configs = std::vec![
-            EmulatedDeviceConfig {
-                name: "ioapic".into(),
-                base_gpa: 0xfec0_0000,
-                length: 0x1000,
-                emu_type: EmulatedDeviceType::X86IoApic,
-                ..Default::default()
-            },
-            EmulatedDeviceConfig {
-                name: "pit".into(),
-                base_gpa: 0x40,
-                length: 0x22,
-                emu_type: EmulatedDeviceType::X86Pit,
-                ..Default::default()
-            },
-        ];
-        let controller = register_device_factories(1, &configs, &mut factories).unwrap();
-        let context = DeviceBuildContext::new(controller.as_ref());
-        let devices = DeviceRuntime::build_with_factories(&configs, &factories, &context).unwrap();
-
-        assert_eq!(devices.devices().count(), 2);
-        assert!(devices.services().require::<X86IoApicServiceKey>().is_ok());
-        assert!(
-            devices
-                .services()
-                .require::<X86InterruptDomainKey>()
-                .is_ok()
-        );
-        assert!(devices.services().require::<X86PitServiceKey>().is_ok());
-    }
-
-    #[test]
-    fn x86_pit_factory_rejects_a_modified_machine_descriptor() {
-        let mut configs =
-            crate::machine::machine_profile_for(crate::machine::MachineArchitecture::X86_64, 1)
-                .emulated_devices;
-        configs.retain(|config| config.emu_type != EmulatedDeviceType::Console);
-
-        let mut factories = DeviceFactoryRegistry::new();
-        let controller = register_device_factories(1, &configs, &mut factories).unwrap();
-        let pit = configs
-            .iter_mut()
-            .find(|config| config.emu_type == EmulatedDeviceType::X86Pit)
-            .unwrap();
-        pit.base_gpa += 1;
-
-        let context = DeviceBuildContext::new(controller.as_ref());
-        let result = DeviceRuntime::build_with_factories(&configs, &factories, &context);
-        assert!(matches!(
-            result,
-            Err(axdevice::DeviceManagerError::InvalidConfig {
-                operation: "build x86 virtual PIT",
-                ..
-            })
         ));
     }
 }

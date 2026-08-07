@@ -1,23 +1,11 @@
 use std::{sync::Arc, vec::Vec};
 
 use ax_memory_addr::VirtAddr;
-use axvm_types::{
-    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, VCpuId,
-    VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
-    VmBackendResult as BackendResult,
-};
-use riscv_vcpu::{
-    GprIndex as RiscvGprIndex, RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr,
-    RiscvHostOps, RiscvHostPhysAddr, RiscvHostVirtAddr, RiscvNestedPagingConfig, RiscvPerCpu,
-    RiscvVCpu, RiscvVcpuCreateConfig, RiscvVcpuError, RiscvVcpuResult, RiscvVmExit,
-};
+use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
+use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
-use crate::{
-    AxVmResult, StopReason,
-    architecture::ops::default_vcpu_affinities,
-    host::{HostMemory, default_host},
-};
+use super::*;
+use crate::{AxVmResult, StopReason, architecture::ops::*, host::*};
 
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
@@ -26,11 +14,12 @@ pub(crate) mod fdt;
 mod images;
 mod irq;
 mod npt;
+mod resource_pools;
 mod vm;
-
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
 pub use images::ImageLoader;
+pub(crate) use vm::RiscvVmPlan;
 
 pub(crate) struct Riscv64Arch;
 
@@ -262,22 +251,41 @@ fn handle_riscv_nested_page_fault(
     access_flags: RiscvAccessFlags,
 ) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
     let ax_addr = riscv_guest_phys_addr_to_ax(addr);
-    if vm.get_devices()?.find_mmio_dev(ax_addr).is_some() {
-        let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) else {
-            warn!(
-                "VM[{}] VCpu[{}] nested page fault at {:#x} maps MMIO but cannot be decoded",
-                vm.id(),
-                vcpu.id(),
-                ax_addr.as_usize()
-            );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-                resets_vm: false,
-                exits_vcpu: false,
-            }));
+    if let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) {
+        let handled = match decoded {
+            RiscvVmExit::MmioRead {
+                addr,
+                width,
+                reg,
+                reg_width,
+                signed_ext,
+            } => super::try_handle_mmio_read(
+                vm,
+                vcpu,
+                MmioReadExit {
+                    addr: riscv_guest_phys_addr_to_ax(addr),
+                    width: riscv_access_width_to_ax(width),
+                    reg,
+                    reg_width: riscv_access_width_to_ax(reg_width),
+                    signed_ext,
+                },
+            )?,
+            RiscvVmExit::MmioWrite { addr, width, data } => {
+                super::try_handle_mmio_write::<Riscv64Arch>(
+                    vm,
+                    MmioWriteExit {
+                        addr: riscv_guest_phys_addr_to_ax(addr),
+                        width: riscv_access_width_to_ax(width),
+                        data,
+                    },
+                )?
+            }
+            _ => false,
         };
-        return Riscv64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
+        if handled {
+            sync_vplic_vseip(vm, vcpu)?;
+            return Ok(BoundVcpuExit::Continue);
+        }
     }
 
     let ax_flags = riscv_access_flags_to_ax(access_flags);

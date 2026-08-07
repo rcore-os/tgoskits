@@ -22,10 +22,7 @@ use std::{
 
 use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k};
 use axdevice_base::Resource;
-use axvm_types::{
-    AddressSpacePolicy, GuestPhysAddr, HostPhysAddr, MappingFlags, PassThroughAddressConfig,
-    PassThroughDeviceConfig,
-};
+use axvm_types::*;
 
 use crate::{AxVmResult, ax_err_type};
 
@@ -456,8 +453,8 @@ pub(crate) fn build_address_layout(
     policy: AddressSpacePolicy,
     guest_base: usize,
     guest_size: usize,
-    passthrough_devices: &[PassThroughDeviceConfig],
-    passthrough_addresses: &[PassThroughAddressConfig],
+    passthrough_devices: &[HostDeviceAssignment],
+    passthrough_addresses: &[HostAddressAssignment],
     owned_regions: &[GuestOwnedRegion],
     emulated_resources: &[Resource],
 ) -> AxVmResult<VmAddressLayout> {
@@ -638,7 +635,7 @@ impl VmRegionKind {
 
 #[cfg(test)]
 mod tests {
-    use axvm_types::{PassThroughAddressConfig, PassThroughDeviceConfig};
+    use axvm_types::{HostAddressAssignment, HostDeviceAssignment};
 
     use super::*;
 
@@ -659,12 +656,11 @@ mod tests {
         .unwrap();
         assert!(layout.mappings().is_empty());
 
-        let device = PassThroughDeviceConfig {
+        let device = HostDeviceAssignment {
             name: std::string::String::from("uart"),
             base_gpa: 0x2000,
             base_hpa: 0x9000,
             length: 0x1000,
-            irq_id: 0,
         };
         let layout = build_address_layout(
             AddressSpacePolicy::Virtualized,
@@ -728,12 +724,11 @@ mod tests {
 
     #[test]
     fn passthrough_identity_device_does_not_refill_emulated_mmio_hole() {
-        let provider = PassThroughDeviceConfig {
+        let provider = HostDeviceAssignment {
             name: std::string::String::from("shared-clock-provider"),
             base_gpa: 0x8000,
             base_hpa: 0x8000,
             length: 0x1000,
-            irq_id: 0,
         };
         let emulated = [Resource::MmioRange {
             base: 0x8000,
@@ -825,19 +820,17 @@ mod tests {
     #[test]
     fn passthrough_device_uses_base_hpa_and_keeps_non_contiguous_mappings_split() {
         let devices = [
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: std::string::String::from("dev0"),
                 base_gpa: 0x1000,
                 base_hpa: 0x9000,
                 length: 0x1000,
-                irq_id: 0,
             },
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: std::string::String::from("dev1"),
                 base_gpa: 0x2000,
                 base_hpa: 0xb000,
                 length: 0x1000,
-                irq_id: 0,
             },
         ];
 
@@ -860,19 +853,17 @@ mod tests {
     #[test]
     fn duplicate_explicit_passthrough_ranges_are_merged_when_linear_mapping_matches() {
         let devices = [
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: std::string::String::from("dev0"),
                 base_gpa: 0x1000,
                 base_hpa: 0x9000,
                 length: 0x2000,
-                irq_id: 0,
             },
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: std::string::String::from("dev1"),
                 base_gpa: 0x2000,
                 base_hpa: 0xa000,
                 length: 0x2000,
-                irq_id: 0,
             },
         ];
 
@@ -895,7 +886,7 @@ mod tests {
 
     #[test]
     fn passthrough_address_is_identity_and_unaligned_ranges_are_expanded() {
-        let addresses = [PassThroughAddressConfig {
+        let addresses = [HostAddressAssignment {
             base_gpa: 0x1803,
             length: 0x20,
         }];
@@ -919,7 +910,7 @@ mod tests {
 
     #[test]
     fn invalid_and_conflicting_ranges_are_rejected() {
-        let zero = [PassThroughAddressConfig {
+        let zero = [HostAddressAssignment {
             base_gpa: 0x1000,
             length: 0,
         }];
@@ -937,7 +928,7 @@ mod tests {
         );
 
         let owned = [GuestOwnedRegion::new(0x2000, 0x1000, VmRegionKind::Memory)];
-        let conflict = [PassThroughAddressConfig {
+        let conflict = [HostAddressAssignment {
             base_gpa: 0x2000,
             length: 0x1000,
         }];
@@ -955,19 +946,17 @@ mod tests {
         );
 
         let conflicting_hpa = [
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: std::string::String::from("dev0"),
                 base_gpa: 0x3000,
                 base_hpa: 0x9000,
                 length: 0x1000,
-                irq_id: 0,
             },
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: std::string::String::from("dev1"),
                 base_gpa: 0x3000,
                 base_hpa: 0xa000,
                 length: 0x1000,
-                irq_id: 0,
             },
         ];
         assert!(

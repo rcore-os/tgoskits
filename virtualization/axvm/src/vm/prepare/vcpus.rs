@@ -91,16 +91,17 @@ impl<'a> IntoIterator for &'a PreparedVcpus {
     }
 }
 
-pub(crate) fn vcpu_placements(resources: &AxVMResources) -> Vec<VcpuPlacement> {
-    resources
-        .config
-        .phys_cpu_ls
-        .get_vcpu_affinities_pcpu_ids()
-        .into_iter()
-        .map(|(id, phys_cpu_set, phys_cpu_id)| VcpuPlacement {
-            id,
-            phys_cpu_set,
-            phys_cpu_id,
-        })
-        .collect()
+impl AxVMResources {
+    pub(crate) fn vcpu_placements(&self) -> Vec<VcpuPlacement> {
+        self.config
+            .phys_cpu_ls
+            .get_vcpu_affinities_pcpu_ids()
+            .into_iter()
+            .map(|(id, phys_cpu_set, phys_cpu_id)| VcpuPlacement {
+                id,
+                phys_cpu_set,
+                phys_cpu_id,
+            })
+            .collect()
+    }
 }

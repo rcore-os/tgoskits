@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    AddressSpacePolicy, AxVmConfigError, GuestConfig, GuestDevices, GuestType, PhysicalDeviceRef,
-    VMBootProtocol, VMInterruptMode, VMKernelConfig, VmMemMappingType,
-};
+use crate::*;
 
 const MINIMAL_CONFIG: &str = r#"
 [base]
@@ -77,6 +74,65 @@ fn parses_structured_guest_config() {
 }
 
 #[test]
+fn parses_open_virtual_device_options() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "data0"
+model = "virtio-blk-like"
+capacity = "20GiB"
+backend = { type = "file", path = "/images/data.raw" }
+"#,
+    )
+    .unwrap();
+    let [request] = config.devices.virtual_devices.as_slice() else {
+        panic!("expected one virtual device request");
+    };
+    assert_eq!(request.id, "data0");
+    assert_eq!(request.model, "virtio-blk-like");
+    assert_eq!(request.options["capacity"].as_str(), Some("20GiB"));
+}
+
+#[test]
+fn rejects_duplicate_ids_and_numeric_resource_options() {
+    let duplicate = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "data0"
+model = "demo"
+[[devices.virtual]]
+id = "data0"
+model = "demo"
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        duplicate,
+        AxVmConfigError::DuplicateVirtualDeviceId { id: "data0".into() }
+    );
+
+    let raw_irq = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "data0"
+model = "demo"
+irq_id = 32
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        raw_irq,
+        AxVmConfigError::ForbiddenVirtualDeviceResourceOption {
+            id: "data0".into(),
+            option: "irq_id".into(),
+        }
+    );
+}
+
+#[test]
 fn guest_type_owns_address_space_policy() {
     assert_eq!(
         GuestType::Virtualized.address_space_policy(),
@@ -92,25 +148,14 @@ fn guest_type_owns_address_space_policy() {
             path: "/soc/net@1000".into(),
         }],
         disabled: Vec::new(),
+        virtual_devices: Vec::new(),
     };
-    let unresolved = devices.unresolved_passthrough_devices();
+    let unresolved = devices.unresolved_host_devices();
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].name, "/soc/net@1000");
     assert!(
         unresolved.iter().all(|device| device.name != "/"),
         "the config layer must not invent an unresolved root selector"
-    );
-}
-
-#[test]
-fn guest_type_owns_interrupt_delivery_policy() {
-    assert_eq!(
-        GuestType::Virtualized.interrupt_mode(),
-        VMInterruptMode::Emulated
-    );
-    assert_eq!(
-        GuestType::Passthrough.interrupt_mode(),
-        VMInterruptMode::Passthrough
     );
 }
 
@@ -125,6 +170,7 @@ fn rejects_removed_configuration_fields() {
         ("[devices]\n", "passthrough_devices = []\n"),
         ("[devices]\n", "passthrough_addresses = []\n"),
         ("[devices]\n", "passthrough_ports = []\n"),
+        ("[kernel]\n", "disk_path = \"disk.img\"\n"),
     ];
 
     for (table, field) in removed_fields {
@@ -225,9 +271,10 @@ fn menuconfig_schema_exposes_only_structured_device_selectors() {
         .get("properties")
         .and_then(|value| value.as_object())
         .unwrap();
-    assert_eq!(device_properties.len(), 2);
+    assert_eq!(device_properties.len(), 3);
     assert!(device_properties.contains_key("disabled"));
     assert!(device_properties.contains_key("passthrough"));
+    assert!(device_properties.contains_key("virtual"));
 
     let base_properties = definitions["VMBaseConfig"]
         .get("properties")

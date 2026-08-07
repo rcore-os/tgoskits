@@ -35,7 +35,7 @@ required-features = ["host-xtask"]
 name = "axtest"
 path = "tests/axtest.rs"
 harness = false
-required-features = ["axtest"]
+required-features = ["axtest", "fs"]
 
 [features]
 default = []
@@ -50,6 +50,9 @@ test-panic-no-backtrace = ["dep:axbacktrace"]
 
 [dependencies]
 shlex.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]
 anyhow.workspace = true
@@ -78,6 +81,8 @@ axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
 axtest.workspace = true
+ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
+ax-task = { workspace = true, features = ["axtest"] }
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

@@ -1,23 +1,11 @@
 use std::{boxed::Box, time::Duration};
 
 use ax_memory_addr::VirtAddr;
-use axvm_types::{
-    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, VCpuId,
-    VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
-    VmBackendResult as BackendResult,
-};
-use loongarch_vcpu::{
-    LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchHostOps,
-    LoongArchHostPhysAddr, LoongArchHostVirtAddr, LoongArchNestedPagingConfig, LoongArchPerCpu,
-    LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig, LoongArchVcpu, LoongArchVcpuError,
-    LoongArchVcpuResult, LoongArchVmExit,
-};
+use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
+use loongarch_vcpu::*;
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
-use crate::{
-    AxVmError, AxVmResult,
-    host::{HostMemory, HostTime, default_host},
-};
+use super::*;
+use crate::{AxVmError, AxVmResult, host::*};
 
 pub(crate) mod boot;
 mod capabilities;
@@ -25,9 +13,10 @@ pub(crate) mod fdt;
 mod idle;
 pub(crate) mod irq;
 mod npt;
+mod resource_pools;
 mod vm;
-
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+pub(crate) use vm::LoongArchVmPlan;
 
 pub(crate) struct LoongArch64Arch;
 
@@ -217,22 +206,40 @@ fn handle_loongarch_nested_page_fault(
     access_flags: LoongArchAccessFlags,
 ) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
     let ax_addr = loong_guest_phys_addr_to_ax(addr);
-    if vm.get_devices()?.find_mmio_dev(ax_addr).is_some() {
-        let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) else {
-            warn!(
-                "VM[{}] VCpu[{}] nested page fault at {:#x} maps MMIO but cannot be decoded",
-                vm.id(),
-                vcpu.id(),
-                ax_addr.as_usize()
-            );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-                resets_vm: false,
-                exits_vcpu: false,
-            }));
+    if let Some(decoded) = vcpu.get_arch_vcpu().decode_mmio_fault(addr, access_flags) {
+        let handled = match decoded {
+            LoongArchVmExit::MmioRead {
+                addr,
+                width,
+                reg,
+                reg_width,
+                signed_ext,
+            } => super::try_handle_mmio_read(
+                vm,
+                vcpu,
+                MmioReadExit {
+                    addr: loong_guest_phys_addr_to_ax(addr),
+                    width: loong_access_width_to_ax(width),
+                    reg,
+                    reg_width: loong_access_width_to_ax(reg_width),
+                    signed_ext,
+                },
+            )?,
+            LoongArchVmExit::MmioWrite { addr, width, data } => {
+                super::try_handle_mmio_write::<LoongArch64Arch>(
+                    vm,
+                    MmioWriteExit {
+                        addr: loong_guest_phys_addr_to_ax(addr),
+                        width: loong_access_width_to_ax(width),
+                        data,
+                    },
+                )?
+            }
+            _ => false,
         };
-        return LoongArch64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
+        if handled {
+            return Ok(BoundVcpuExit::Continue);
+        }
     }
 
     let ax_flags = loong_access_flags_to_ax(access_flags);

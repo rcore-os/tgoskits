@@ -16,9 +16,9 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use axdevice_base::{Device, DmaGrant, StopGrant, TimerGrant, WakeGrant};
+use axdevice_base::*;
 
-use crate::{DeviceManagerResult, DeviceServices, ServiceKey};
+use crate::{interrupt::*, *};
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
@@ -49,6 +49,8 @@ pub enum DeviceRegistration {
     Device(Arc<dyn Device>),
     /// A capability that requires periodic polling.
     Pollable(Arc<dyn PollableDeviceOps>),
+    /// A VM-local virtual interrupt controller capability.
+    InterruptController(ControllerRegistration),
 }
 
 /// A set of device capabilities that must be registered atomically.
@@ -69,6 +71,7 @@ pub struct DeviceBundle {
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
     pub(crate) lifecycle: Vec<Arc<dyn DeviceLifecycle>>,
     pub(crate) services: DeviceServices,
+    pub(crate) planned: PlannedBundleResources,
 }
 
 impl DeviceBundle {
@@ -83,6 +86,7 @@ impl DeviceBundle {
             pollable: Vec::new(),
             lifecycle: Vec::new(),
             services: DeviceServices::new(),
+            planned: PlannedBundleResources::new(),
         }
     }
 
@@ -98,6 +102,9 @@ impl DeviceBundle {
         match registration {
             DeviceRegistration::Device(device) => self.devices.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
+            DeviceRegistration::InterruptController(controller) => {
+                self.planned.controllers.push(controller);
+            }
         }
     }
 
@@ -250,6 +257,7 @@ impl DeviceBundle {
             && self.pollable.is_empty()
             && self.lifecycle.is_empty()
             && self.services.is_empty()
+            && self.planned.is_empty()
     }
 }
 

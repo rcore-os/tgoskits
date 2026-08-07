@@ -7,13 +7,23 @@
 use alloc::{boxed::Box, string::String};
 use core::marker::PhantomData;
 
-use axdevice_base::{AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceError, Resource};
-use x86_vlapic::{
-    EmulatedIoApic, EmulatedPit, IoApicEoi, IoApicInterrupt, X86AccessWidth, X86GuestPhysAddr,
-    X86GuestPhysAddrRange, X86Port, X86PortRange, X86VlapicHostOps,
-};
+use axdevice_base::*;
+use x86_vlapic::*;
 
 use crate::{ServiceCardinality, ServiceKey};
+
+#[path = "x86/acpi_pm_timer.rs"]
+mod acpi_pm_timer;
+pub use acpi_pm_timer::{X86AcpiPmTimerDevice, X86MonotonicNanos};
+#[path = "x86/cmos.rs"]
+mod cmos;
+pub use cmos::X86CmosDevice;
+#[path = "x86/pci_config.rs"]
+mod pci_config;
+pub use pci_config::X86PciConfigDevice;
+#[path = "x86/pic.rs"]
+mod pic;
+pub use pic::X86PicDevice;
 
 /// Type-specific IOAPIC capability used by the x86 interrupt runtime.
 pub trait X86IoApicDeviceOps: Send + Sync {
@@ -34,6 +44,12 @@ pub trait X86IoApicDeviceOps: Send + Sync {
 pub trait X86PitDeviceOps: Send + Sync {
     /// Consume a pending PIT IRQ0 tick if the deadline is due.
     fn consume_irq0_if_due(&self, now_ns: u64) -> bool;
+}
+
+/// Type-specific legacy PIC capability used by the x86 timer path.
+pub trait X86PicDeviceOps: Send + Sync {
+    /// Latch one legacy IRQ edge and return a vector when it is deliverable.
+    fn pulse_irq(&self, irq: u8) -> Option<u8>;
 }
 
 /// x86 interrupt-controller operations needed by the VM interrupt runtime.
@@ -79,6 +95,16 @@ impl ServiceKey for X86PitServiceKey {
     type Service = dyn X86PitDeviceOps;
 
     const NAME: &'static str = "x86-pit";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// Typed service key for the VM's guest-owned legacy PIC pair.
+pub struct X86PicServiceKey;
+
+impl ServiceKey for X86PicServiceKey {
+    type Service = dyn X86PicDeviceOps;
+
+    const NAME: &'static str = "x86-pic";
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
@@ -171,8 +197,16 @@ pub struct X86PitDevice<H: X86VlapicHostOps> {
 impl<H: X86VlapicHostOps> X86PitDevice<H> {
     /// Creates a PIT adapter.
     pub fn new() -> Self {
-        let inner = EmulatedPit::<H>::new();
-        let resources = port_resources(inner.address_range());
+        Self::new_for_vcpu(0, 0)
+    }
+
+    /// Creates a PIT adapter whose IRQ0 targets one VM vCPU.
+    pub fn new_for_vcpu(vm_id: usize, vcpu_id: usize) -> Self {
+        let inner = EmulatedPit::<H>::new_for_vcpu(vm_id, vcpu_id);
+        let resources = EmulatedPit::<H>::port_ranges()
+            .map(port_resource)
+            .to_vec()
+            .into_boxed_slice();
         Self {
             inner,
             name: String::from("x86-pit"),
@@ -252,12 +286,12 @@ fn mmio_resources(range: X86GuestPhysAddrRange) -> Box<[Resource]> {
     alloc::vec![Resource::MmioRange { base, size }].into_boxed_slice()
 }
 
-fn port_resources(range: X86PortRange) -> Box<[Resource]> {
+fn port_resource(range: X86PortRange) -> Resource {
     let base = range.start.number();
     let size = range
         .end
         .number()
         .saturating_sub(range.start.number())
         .saturating_add(1);
-    alloc::vec![Resource::PortRange { base, size }].into_boxed_slice()
+    Resource::PortRange { base, size }
 }

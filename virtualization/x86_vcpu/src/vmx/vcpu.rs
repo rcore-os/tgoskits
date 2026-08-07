@@ -27,25 +27,14 @@ use x86::{
     dtables::{self, DescriptorTablePointer},
     segmentation::SegmentSelector,
 };
-use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags};
+use x86_64::registers::{
+    control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags, EferFlags},
+    rflags::RFlags,
+};
 use x86_vlapic::EmulatedLocalApic;
 
-use super::{
-    VmxExitInfo, as_axerr,
-    definitions::VmxExitReason,
-    structs::{IOBitmap, MsrBitmap, VmxRegion},
-    vmcs::{
-        self, ApicAccessExitType, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16,
-        VmcsGuest32, VmcsGuest64, VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
-    },
-};
-use crate::{
-    X86_LOCAL_APIC_GPA, X86_LOCAL_APIC_SIZE, X86AccessFlags, X86AccessWidth, X86GuestMemoryRegion,
-    X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps, X86HostPhysAddr, X86MsrAddr,
-    X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port, X86VcpuCreateConfig, X86VcpuError,
-    X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host, msr::Msr, regs::GeneralRegisters,
-    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
-};
+use super::{VmxExitInfo, definitions::*, structs::*, vmcs::*, *};
+use crate::{msr::*, port_io::*, regs::*, xstate::*, *};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
 
@@ -53,8 +42,6 @@ const QEMU_EXIT_PORT: u16 = 0x604;
 const X86_PIT_PORT_BASE: u16 = 0x40;
 const X86_PIT_PORT_COUNT: u32 = 4;
 const X86_PIT_SPEAKER_PORT: u16 = 0x61;
-const X86_COM1_PORT_BASE: u16 = 0x3f8;
-const X86_COM1_PORT_COUNT: u32 = 8;
 const X2APIC_MSR_BASE: u32 = 0x800;
 const X2APIC_MSR_END: u32 = 0x8ff;
 const X2APIC_EOI_MSR: u32 = X2APIC_MSR_BASE + 0xb;
@@ -151,7 +138,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             nested_page_table_root: None,
             // is_host: false,
             vmcs: VmxRegion::<H>::new(vmcs_revision_id, false)?,
-            io_bitmap: IOBitmap::<H>::passthrough_all()?,
+            io_bitmap: IOBitmap::<H>::guest_owned()?,
             msr_bitmap: MsrBitmap::<H>::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
@@ -391,14 +378,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             .set_intercept_of_range(X86_PIT_PORT_BASE as u32, X86_PIT_PORT_COUNT, true);
         self.io_bitmap
             .set_intercept(X86_PIT_SPEAKER_PORT as u32, true);
-        if config.emulate_com1 {
-            self.io_bitmap.set_intercept_of_range(
-                X86_COM1_PORT_BASE as u32,
-                X86_COM1_PORT_COUNT,
-                true,
-            );
-        }
-        for range in config.passthrough_port_ranges() {
+        for range in config.intercepted_port_ranges() {
             self.io_bitmap
                 .set_intercept_of_range(range.base as u32, range.length as u32, true);
         }
@@ -573,6 +553,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             (CpuCtrl::USE_IO_BITMAPS
                 | CpuCtrl::USE_MSR_BITMAPS
                 | CpuCtrl::USE_TPR_SHADOW
+                | CpuCtrl::HLT_EXITING
                 | CpuCtrl::SECONDARY_CONTROLS)
                 .bits(),
             (CpuCtrl::CR3_LOAD_EXITING
@@ -1602,6 +1583,133 @@ impl<H: X86HostOps> VmxVcpu<H> {
         )
     }
 
+    fn handle_port_io_exit(
+        &mut self,
+        io_info: vmcs::VmxIoExitInfo,
+        instruction_len: u8,
+    ) -> X86VcpuResult<X86VmExit> {
+        let width = X86AccessWidth::try_from(io_info.access_size as usize)
+            .map_err(|_| x86_err_type!(InvalidData, "invalid VMX I/O access width"))?;
+        let port = X86Port::new(io_info.port);
+
+        if !io_info.is_string {
+            self.advance_rip(instruction_len)?;
+            return Ok(if io_info.is_in {
+                X86VmExit::PortIoRead { port, width }
+            } else {
+                X86VmExit::PortIoWrite {
+                    port,
+                    width,
+                    data: self.regs().rax.get_bits(width.bits_range()),
+                }
+            });
+        }
+
+        let address_size = self.string_io_address_size()?;
+        if io_info.is_repeat && address_size.low(self.regs().rcx) == 0 {
+            self.advance_rip(instruction_len)?;
+            return Ok(X86VmExit::Nothing);
+        }
+
+        let direction = if io_info.is_in {
+            X86PortIoDirection::In
+        } else {
+            X86PortIoDirection::Out
+        };
+        let index = match direction {
+            X86PortIoDirection::In => self.regs().rdi,
+            X86PortIoDirection::Out => self.regs().rsi,
+        };
+        let guest_linear = VmcsReadOnlyNW::GUEST_LINEAR_ADDR.read()?;
+        let guest_paddr =
+            self.translate_guest_linear(X86GuestVirtAddr::from_usize(guest_linear))?;
+        let next_rip = VmcsGuestNW::RIP
+            .read()?
+            .checked_add(usize::from(instruction_len))
+            .ok_or(X86VcpuError::InvalidData)? as u64;
+        let decrement = VmcsGuestNW::RFLAGS.read()? as u64 & RFlags::DIRECTION_FLAG.bits() != 0;
+
+        Ok(X86VmExit::PortIoString(X86PortIoStringExit::new(
+            X86PortIoAccess {
+                port,
+                width,
+                direction,
+                guest_paddr,
+            },
+            X86PortIoIteration {
+                address_size,
+                index,
+                count: self.regs().rcx,
+                repeat: io_info.is_repeat,
+                decrement,
+                next_rip,
+            },
+        )))
+    }
+
+    fn string_io_address_size(&self) -> X86VcpuResult<X86AddressSize> {
+        let default_bytes = match self.get_cpu_mode() {
+            VmCpuMode::Mode64 => 8,
+            VmCpuMode::Real => 2,
+            VmCpuMode::Protected | VmCpuMode::Compatibility => {
+                if VmcsGuest32::CS_ACCESS_RIGHTS.read()? & (1 << 14) != 0 {
+                    4
+                } else {
+                    2
+                }
+            }
+        };
+        let mut cursor = self.gla2gva(X86GuestVirtAddr::from_usize(VmcsGuestNW::RIP.read()?));
+        let mut address_override = false;
+
+        for _ in 0..15 {
+            match self.read_guest_u8(cursor)? {
+                0x67 => {
+                    address_override = true;
+                    cursor += 1;
+                }
+                0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x66 | 0xf0 | 0xf2 | 0xf3 => {
+                    cursor += 1;
+                }
+                0x40..=0x4f if self.get_cpu_mode() == VmCpuMode::Mode64 => cursor += 1,
+                0x6c..=0x6f => {
+                    let bytes = if address_override {
+                        match default_bytes {
+                            8 => 4,
+                            4 => 2,
+                            2 => 4,
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        default_bytes
+                    };
+                    return X86AddressSize::from_bytes(bytes);
+                }
+                _ => return x86_err!(InvalidData, "VMX string-I/O exit has an invalid opcode"),
+            }
+        }
+
+        x86_err!(InvalidData, "VMX string-I/O instruction exceeds 15 bytes")
+    }
+
+    /// Commits one successfully emulated string-I/O element.
+    pub fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> X86VcpuResult {
+        if exit.instruction_complete() {
+            let next_rip =
+                usize::try_from(exit.next_rip()).map_err(|_| X86VcpuError::InvalidData)?;
+            VmcsGuestNW::RIP.write(next_rip)?;
+        }
+        let regs = self.regs_mut();
+        match exit.direction() {
+            X86PortIoDirection::In => regs.rdi = exit.updated_index(),
+            X86PortIoDirection::Out => regs.rsi = exit.updated_index(),
+        }
+        if let Some(count) = exit.updated_count() {
+            regs.rcx = count;
+        }
+        Ok(())
+    }
+
     pub fn run(&mut self) -> X86VcpuResult<X86VmExit> {
         match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
@@ -1625,41 +1733,10 @@ impl<H: X86HostOps> VmxVcpu<H> {
                             ],
                         }
                     }
-                    VmxExitReason::IO_INSTRUCTION => {
-                        let io_info = self.io_exit_info().unwrap();
-                        self.advance_rip(exit_info.exit_instruction_length as _)?;
-
-                        let port = io_info.port;
-
-                        if io_info.is_repeat || io_info.is_string {
-                            warn!("VMX unsupported IO-Exit: {io_info:#x?} of {exit_info:#x?}");
-                            warn!("VCpu {self:#x?}");
-                            X86VmExit::Halt
-                        } else {
-                            let width = match X86AccessWidth::try_from(io_info.access_size as usize)
-                            {
-                                Ok(width) => width,
-                                Err(_) => {
-                                    warn!("VMX invalid IO-Exit: {io_info:#x?} of {exit_info:#x?}");
-                                    warn!("VCpu {self:#x?}");
-                                    return Ok(X86VmExit::Halt);
-                                }
-                            };
-
-                            if io_info.is_in {
-                                X86VmExit::PortIoRead {
-                                    port: X86Port::new(port),
-                                    width,
-                                }
-                            } else {
-                                X86VmExit::PortIoWrite {
-                                    port: X86Port::new(port),
-                                    width,
-                                    data: self.regs().rax.get_bits(width.bits_range()),
-                                }
-                            }
-                        }
-                    }
+                    VmxExitReason::IO_INSTRUCTION => self.handle_port_io_exit(
+                        self.io_exit_info()?,
+                        exit_info.exit_instruction_length as u8,
+                    )?,
                     VmxExitReason::EXTERNAL_INTERRUPT => {
                         let int_info = self.interrupt_exit_info()?;
                         assert!(int_info.valid);
@@ -1673,7 +1750,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
                     }
                     VmxExitReason::HLT => {
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
-                        X86VmExit::PreemptionTimer
+                        X86VmExit::Halt
                     }
                     VmxExitReason::VIRTUALIZED_EOI => X86VmExit::InterruptEnd {
                         vector: self.vlapic.handle_eoi(),

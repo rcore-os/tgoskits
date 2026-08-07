@@ -221,9 +221,19 @@ impl Ext4Filesystem {
         fs.sync_superblock(dev).map_err(into_vfs_err)?;
         fs.sync_group_descriptors(dev).map_err(into_vfs_err)?;
         if dev.is_use_journal() {
-            dev.umount_commit();
+            dev.umount_commit().map_err(into_vfs_err)?;
         }
         dev.cantflush().map_err(into_vfs_err)
+    }
+
+    fn shutdown_filesystem(&self) -> VfsResult<()> {
+        if self.readonly {
+            return Ok(());
+        }
+
+        let mut state = self.inner.lock();
+        let (fs, dev) = state.split();
+        fs.umount(dev).map_err(into_vfs_err)
     }
 }
 
@@ -265,5 +275,9 @@ impl FilesystemOps for Ext4Filesystem {
 
     fn flush(&self) -> VfsResult<()> {
         self.sync_to_disk()
+    }
+
+    fn shutdown(&self) -> VfsResult<()> {
+        self.shutdown_filesystem()
     }
 }

@@ -172,7 +172,7 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 | `[kernel]` | entry point、image location、kernel path、load address、memory regions |
 | `[devices]` | 结构化的 `passthrough` 与 `disabled` 物理设备选择器 |
 
-虚拟串口、中断控制器、定时器和固件接口由架构 machine profile 固定创建，不属于 VM 配置。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再为 RAM、禁用设备、宿主物理 UART 和所有虚拟平台设备打洞。配置不接受旧 `vm_type`、`emu_devices`、裸地址/IRQ 或 `interrupt_mode` 字段。
+中断控制器、定时器和固件接口由架构创建；默认串口优先由 host FDT/ACPI 派生并以 machine profile 兜底。普通虚拟设备通过 `[[devices.virtual]]` 的 `id + model + options` 交给代码 catalog 创建 dyn model，`console0` 可按 ID 覆盖型号和语义参数，但配置始终不填写地址或中断号。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再按最终解析后设备图为 RAM、禁用设备、宿主物理 UART、host replacement 和虚拟设备打洞。配置不接受旧 `vm_type`、`emu_devices`、裸地址/IRQ 或 `interrupt_mode` 字段。
 
 ## 关键执行流程
 

@@ -2,6 +2,7 @@ mod assets;
 mod board;
 mod discovery;
 mod initramfs;
+mod ovmf;
 mod qemu;
 mod types;
 
@@ -12,7 +13,7 @@ use std::path::Path;
 
 pub(crate) use types::{AxvisorQemuCase, BoardTestGroup};
 
-use super::{ArgsTest, Axvisor, TestCommand};
+use super::*;
 
 pub(crate) fn parse_target(
     arch: &Option<String>,
