@@ -65,7 +65,7 @@ impl RockchipPinctrlVariant {
 
 crate::model_register!(
     name: "Rockchip PinCtrl",
-    level: ProbeLevel::PostKernel,
+    level: ProbeLevel::PreKernel,
     priority: ProbePriority::CLK,
     probe_kinds: &[
         ProbeKind::Fdt {
