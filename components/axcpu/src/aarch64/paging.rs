@@ -1,9 +1,16 @@
 //! AArch64 page-table descriptor format.
 
-use ax_memory_addr::PhysAddr;
+use aarch64_cpu::registers::MAIR_EL1;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::PageTableEntry;
 
 use crate::paging::MappingFlags;
+
+pub(crate) const PAGE_SIZE: usize = PAGE_SIZE_4K;
+pub(crate) const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+pub(crate) const MAX_BLOCK_LEVEL: usize = 3;
+pub(super) const ADDRESS_BITS: usize =
+    PAGE_SIZE.trailing_zeros() as usize + LEVEL_BITS.len() * LEVEL_BITS[0];
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
@@ -27,6 +34,16 @@ enum A64MemAttr {
     Normal             = 1,
     NormalNonCacheable = 2,
 }
+
+#[allow(clippy::unusual_byte_groupings)]
+pub(super) const MAIR_VALUE: u64 = {
+    let device_n_gn_re = MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck.value;
+    let normal = MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc.value
+        | MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc.value;
+    let normal_non_cacheable = MAIR_EL1::Attr2_Normal_Inner::NonCacheable.value
+        + MAIR_EL1::Attr2_Normal_Outer::NonCacheable.value;
+    device_n_gn_re | normal | normal_non_cacheable
+};
 
 impl A64DescriptorAttr {
     const ATTR_INDEX_MASK: u64 = 0x1c;

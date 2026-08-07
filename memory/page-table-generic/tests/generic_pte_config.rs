@@ -1,7 +1,7 @@
 use core::{alloc::Layout, fmt};
 
 use page_table_generic::{
-    FrameAllocator, PageSize, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr,
+    FrameAllocator, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr,
 };
 
 #[derive(Clone, Copy)]
@@ -119,12 +119,7 @@ fn maps_and_protects_with_an_opaque_pte_config() {
     let paddr = PhysAddr::from_usize(0x8000);
 
     page_table
-        .map_page(
-            vaddr,
-            paddr,
-            PageSize::Size4K,
-            OpaqueConfig { domain: 0x2a },
-        )
+        .map_page(vaddr, paddr, 0x1000, OpaqueConfig { domain: 0x2a })
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().1.domain, 0x2a);
 

@@ -1,6 +1,6 @@
 use crate::{
-    FrameAllocator, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf,
-    TableMeta, VirtAddr,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf, TableMeta,
+    VirtAddr,
 };
 
 /// 页表帧，代表一个物理页面上的页表
@@ -167,20 +167,8 @@ where
         (vaddr.as_usize() >> shift) & mask
     }
 
-    pub(crate) fn page_size_from_level(level: usize) -> PagingResult<PageSize> {
-        match Self::level_size(level) {
-            0x1000 => Ok(PageSize::Size4K),
-            0x10_0000 => Ok(PageSize::Size1M),
-            0x20_0000 => Ok(PageSize::Size2M),
-            0x4000_0000 => Ok(PageSize::Size1G),
-            _ => Err(PagingError::invalid_size(
-                "Page-table level has no corresponding PageSize",
-            )),
-        }
-    }
-
-    pub(crate) fn level_for_page_size(page_size: PageSize) -> Option<usize> {
-        (1..=Self::PT_LEVEL).find(|level| Self::level_size(*level) == usize::from(page_size))
+    pub(crate) fn level_for_page_size(page_size: usize) -> Option<usize> {
+        (1..=Self::PT_LEVEL).find(|level| Self::level_size(*level) == page_size)
     }
 
     pub fn protect_recursive(
@@ -188,7 +176,7 @@ where
         vaddr: VirtAddr,
         config: PteConfigOf<T>,
         level: usize,
-    ) -> PagingResult<PageSize> {
+    ) -> PagingResult<usize> {
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
         if entry.unused() {
@@ -198,7 +186,7 @@ where
         let is_huge = entry.huge(is_dir);
         if is_huge || level == 1 {
             self.as_slice_mut()[index] = T::P::new_page(entry.paddr(is_dir), config, is_huge);
-            return Self::page_size_from_level(level);
+            return Ok(Self::level_size(level));
         }
         if !entry.present() {
             return Err(PagingError::not_mapped());
@@ -214,15 +202,17 @@ where
         paddr: PhysAddr,
         config: PteConfigOf<T>,
         level: usize,
-    ) -> PagingResult<PageSize> {
+    ) -> PagingResult<usize> {
         let index = Self::virt_to_index(vaddr, level);
         let entry = self.as_slice()[index];
+        if entry.unused() {
+            return Err(PagingError::not_mapped());
+        }
         let is_dir = level > 1;
         let is_huge = entry.huge(is_dir);
         if is_huge || level == 1 {
-            let page_size = Self::page_size_from_level(level)?;
-            let aligned_paddr =
-                PhysAddr::from_usize(paddr.as_usize() & !(usize::from(page_size) - 1));
+            let page_size = Self::level_size(level);
+            let aligned_paddr = PhysAddr::from_usize(paddr.as_usize() & !(page_size - 1));
             self.as_slice_mut()[index] = T::P::new_page(aligned_paddr, config, is_huge);
             return Ok(page_size);
         }
@@ -342,6 +332,18 @@ where
         vaddr: VirtAddr,
         level: usize,
     ) -> PagingResult<(T::P, usize)> {
+        let (pte, level) = self.find_occupied_leaf(vaddr, level)?;
+        if !pte.present() {
+            return Err(PagingError::not_mapped());
+        }
+        Ok((pte, level))
+    }
+
+    pub(crate) fn find_occupied_leaf(
+        &self,
+        vaddr: VirtAddr,
+        level: usize,
+    ) -> PagingResult<(T::P, usize)> {
         // 计算当前级别的页表索引
         let index = Self::virt_to_index(vaddr, level);
 
@@ -349,8 +351,7 @@ where
         let entries = self.as_slice();
         let pte = entries[index];
 
-        // 检查页表项是否有效
-        if !pte.present() {
+        if pte.unused() {
             return Err(PagingError::not_mapped());
         }
 
@@ -361,8 +362,13 @@ where
 
         // 否则，继续递归到下一级页表
         if level > 1 {
+            if !pte.present() {
+                return Err(PagingError::hierarchy_error(
+                    "Non-present intermediate entry is not a leaf",
+                ));
+            }
             let child_frame: Frame<T, A> = Frame::from_pte(&pte, level, self.allocator.clone());
-            return child_frame.translate_recursive_with_level(vaddr, level - 1);
+            return child_frame.find_occupied_leaf(vaddr, level - 1);
         }
 
         // 不应该到达这里
@@ -419,12 +425,17 @@ where
         }
 
         let source_entry = source.as_slice()[index];
-        if !source_entry.present() {
+        if source_entry.unused() {
             return Ok(false);
         }
         if level == 1 || source_entry.huge(true) {
             self.as_slice_mut()[index] = source_entry;
             return Ok(true);
+        }
+        if !source_entry.present() {
+            return Err(PagingError::hierarchy_error(
+                "Non-present intermediate entry is not a leaf",
+            ));
         }
 
         let source_child = Self::from_paddr(source_entry.paddr(true), source.allocator.clone());

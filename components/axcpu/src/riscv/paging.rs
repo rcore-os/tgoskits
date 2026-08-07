@@ -1,9 +1,13 @@
 //! RISC-V page-table entry format.
 
-use ax_memory_addr::PhysAddr;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::PageTableEntry;
 
 use crate::paging::MappingFlags;
+
+pub(crate) const PAGE_SIZE: usize = PAGE_SIZE_4K;
+pub(crate) const LEVEL_BITS: &[usize] = &[9, 9, 9];
+pub(crate) const MAX_BLOCK_LEVEL: usize = 3;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
@@ -16,6 +20,8 @@ bitflags::bitflags! {
         const G = 1 << 5;
         const A = 1 << 6;
         const D = 1 << 7;
+        // RSW bit 0 records the structural leaf shape while V is clear.
+        const NON_PRESENT_HUGE = 1 << 8;
         #[cfg(feature = "xuantie-c9xx")]
         const SEC = 1 << 59;
         #[cfg(feature = "xuantie-c9xx")]
@@ -79,12 +85,15 @@ impl Rv64Pte {
 impl PageTableEntry for Rv64Pte {
     type PteConfig = MappingFlags;
 
-    fn new_page(paddr: PhysAddr, config: Self::PteConfig, _is_huge: bool) -> Self {
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
         if config.is_empty() && paddr.as_usize() == 0 {
             return Self(0);
         }
         let paddr = (paddr.as_usize() as u64 >> 2) & Self::PHYS_ADDR_MASK;
-        let flags = Self::leaf_flags(config);
+        let mut flags = Self::leaf_flags(config);
+        if config.is_empty() && is_huge {
+            flags |= RvPteFlags::NON_PRESENT_HUGE;
+        }
         Self(paddr | flags.bits())
     }
 
@@ -123,7 +132,10 @@ impl PageTableEntry for Rv64Pte {
     }
 
     fn huge(&self, is_dir: bool) -> bool {
-        is_dir && self.flags().intersects(RvPteFlags::R | RvPteFlags::X)
+        is_dir
+            && self
+                .flags()
+                .intersects(RvPteFlags::R | RvPteFlags::X | RvPteFlags::NON_PRESENT_HUGE)
     }
 
     fn unused(&self) -> bool {

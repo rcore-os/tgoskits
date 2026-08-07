@@ -2,96 +2,13 @@
 
 #![cfg(not(target_os = "none"))]
 
-use std::{
-    alloc::{self, Layout},
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use page_table_generic::*;
 
-const PRESENT: usize = 1 << 0;
-const HUGE: usize = 1 << 1;
-const PHYS_ADDR_MASK: usize = 0x000f_ffff_ffff_f000;
+mod mocks;
 
-bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    struct MappingFlags: usize {
-        const READ = 1 << 0;
-        const WRITE = 1 << 1;
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TestPte(usize);
-
-impl PageTableEntry for TestPte {
-    type PteConfig = MappingFlags;
-
-    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
-        Self(
-            (paddr.as_usize() & PHYS_ADDR_MASK)
-                | if config.is_empty() { 0 } else { PRESENT }
-                | if is_huge { HUGE } else { 0 },
-        )
-    }
-
-    fn new_table(paddr: PhysAddr) -> Self {
-        Self((paddr.as_usize() & PHYS_ADDR_MASK) | PRESENT)
-    }
-
-    fn paddr(&self, _is_dir: bool) -> PhysAddr {
-        PhysAddr::from_usize(self.0 & PHYS_ADDR_MASK)
-    }
-
-    fn config(&self, _is_dir: bool) -> Self::PteConfig {
-        if self.present() {
-            MappingFlags::READ | MappingFlags::WRITE
-        } else {
-            MappingFlags::empty()
-        }
-    }
-
-    fn present(&self) -> bool {
-        self.0 & PRESENT != 0
-    }
-
-    fn huge(&self, is_dir: bool) -> bool {
-        is_dir && self.0 & HUGE != 0
-    }
-
-    fn unused(&self) -> bool {
-        self.0 == 0
-    }
-
-    fn clear(&mut self) {
-        self.0 = 0;
-    }
-}
-
-#[derive(Clone, Copy)]
-struct TestAllocator;
-
-impl FrameAllocator for TestAllocator {
-    fn alloc_frame(&self) -> Option<PhysAddr> {
-        let layout = Layout::from_size_align(CountingMeta::PAGE_SIZE, CountingMeta::PAGE_SIZE)
-            .expect("page layout must be valid");
-        // SAFETY: `layout` has a non-zero size and page alignment.
-        let ptr = unsafe { alloc::alloc(layout) };
-        (!ptr.is_null()).then_some(PhysAddr::from_usize(ptr as usize))
-    }
-
-    fn dealloc_frame(&self, frame: PhysAddr) {
-        let layout = Layout::from_size_align(CountingMeta::PAGE_SIZE, CountingMeta::PAGE_SIZE)
-            .expect("page layout must be valid");
-        // SAFETY: every frame returned by `alloc_frame` uses this exact layout
-        // and page tables release each owned frame once.
-        unsafe { alloc::dealloc(frame.as_usize() as *mut u8, layout) };
-    }
-
-    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.as_usize() as *mut u8
-    }
-}
+use mocks::{Fram4k, MappingFlags, PteImpl};
 
 static FULL_FLUSHES: AtomicUsize = AtomicUsize::new(0);
 static ADDRESS_FLUSHES: AtomicUsize = AtomicUsize::new(0);
@@ -100,7 +17,7 @@ static ADDRESS_FLUSHES: AtomicUsize = AtomicUsize::new(0);
 struct CountingMeta;
 
 impl TableMeta for CountingMeta {
-    type P = TestPte;
+    type P = PteImpl;
 
     const PAGE_SIZE: usize = 0x1000;
     const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
@@ -120,13 +37,13 @@ fn map_region_batches_tlb_flushes() {
     FULL_FLUSHES.store(0, Ordering::Relaxed);
     ADDRESS_FLUSHES.store(0, Ordering::Relaxed);
 
-    let mut page_table = PageTable::<CountingMeta, TestAllocator>::new(TestAllocator).unwrap();
+    let mut page_table = PageTable::<CountingMeta, Fram4k>::new(Fram4k).unwrap();
     page_table
         .map_region(
             VirtAddr::from_usize(0x20_0000),
             |vaddr| PhysAddr::from_usize(vaddr.as_usize() + 0x20_0000),
             2 * CountingMeta::PAGE_SIZE,
-            MappingFlags::READ | MappingFlags::WRITE,
+            (MappingFlags::READ | MappingFlags::WRITE).into(),
             false,
         )
         .unwrap();
@@ -137,13 +54,13 @@ fn map_region_batches_tlb_flushes() {
     FULL_FLUSHES.store(0, Ordering::Relaxed);
     ADDRESS_FLUSHES.store(0, Ordering::Relaxed);
 
-    let mut page_table = PageTable::<CountingMeta, TestAllocator>::new(TestAllocator).unwrap();
+    let mut page_table = PageTable::<CountingMeta, Fram4k>::new(Fram4k).unwrap();
     page_table
         .map_region(
             VirtAddr::from_usize(0x40_0000),
             |vaddr| PhysAddr::from_usize(vaddr.as_usize() + 0x20_0000),
             128 * CountingMeta::PAGE_SIZE,
-            MappingFlags::READ | MappingFlags::WRITE,
+            (MappingFlags::READ | MappingFlags::WRITE).into(),
             false,
         )
         .unwrap();

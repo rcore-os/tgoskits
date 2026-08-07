@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileFlags};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
+use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
@@ -94,7 +94,7 @@ impl FileBackendInner {
         let Some(pn) = pn.checked_sub(file_data.offset_page) else {
             return;
         };
-        let vaddr = file_data.start + pn as usize * PageSize::Size4K as usize;
+        let vaddr = file_data.start + pn as usize * PAGE_SIZE_4K;
         if !aspace.find_area(vaddr).is_some_and(
             |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
         ) {
@@ -128,7 +128,7 @@ impl FileBackendInner {
         let Some(pn) = pn.checked_sub(file_data.offset_page) else {
             return true;
         };
-        let vaddr = file_data.start + pn as usize * PageSize::Size4K as usize;
+        let vaddr = file_data.start + pn as usize * PAGE_SIZE_4K;
         if !aspace.find_area(vaddr).is_some_and(
             |it| matches!(it.backend(), Backend::File(file) if Arc::ptr_eq(&file.0, self)),
         ) {
@@ -137,7 +137,7 @@ impl FileBackendInner {
 
         let pt = aspace.page_table_mut();
         match pt.query(vaddr) {
-            Ok((paddr, flags, PageSize::Size4K)) => {
+            Ok((paddr, flags, PAGE_SIZE_4K)) => {
                 // A writable shared mapping can dirty this page concurrently with the
                 // writeback snapshot, so drop WRITE to fault the next store. A read-only
                 // shared mapping cannot dirty the page through the mapping at all (e.g.
@@ -299,8 +299,8 @@ impl FileBackend {
 }
 
 impl BackendOps for FileBackend {
-    fn page_size(&self) -> PageSize {
-        PageSize::Size4K
+    fn page_size(&self) -> usize {
+        PAGE_SIZE_4K
     }
 
     fn map(
@@ -320,7 +320,7 @@ impl BackendOps for FileBackend {
         pt: &mut PageTable,
     ) -> AxResult {
         let kind = self.rss_kind();
-        for addr in pages_in(range, PageSize::Size4K)? {
+        for addr in pages_in(range, PAGE_SIZE_4K)? {
             match pt.unmap_page(addr) {
                 Ok(_) => {
                     if let Some(acct) = acct {
@@ -368,7 +368,7 @@ impl BackendOps for FileBackend {
             .file_len()
             .unwrap_or(u64::MAX)
             .div_ceil(PAGE_SIZE_4K as u64);
-        for (i, addr) in pages_in(range, PageSize::Size4K)?.enumerate() {
+        for (i, addr) in pages_in(range, PAGE_SIZE_4K)?.enumerate() {
             let pn = start_page + i as u32;
             if (pn as u64) >= eof_page {
                 continue;
@@ -409,13 +409,8 @@ impl BackendOps for FileBackend {
                             // through the stale mapping.
                             to_be_evicted.push(evicted);
                         }
-                        pt.map_page(
-                            addr,
-                            PhysAddr::from(page.paddr()?),
-                            PageSize::Size4K,
-                            map_flags,
-                        )
-                        .map_err(paging_error_to_ax_error)?;
+                        pt.map_page(addr, PhysAddr::from(page.paddr()?), PAGE_SIZE_4K, map_flags)
+                            .map_err(paging_error_to_ax_error)?;
                         if let Some(acct) = acct {
                             acct.inc(kind, 1);
                         }

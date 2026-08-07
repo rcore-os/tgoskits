@@ -37,6 +37,6 @@ impl Backend {
         _pa_va_offset: usize,
     ) -> bool {
         debug!("unmap_linear: [{:#x}, {:#x})", start, start + size);
-        pt.unmap_region(start, size).is_ok()
+        pt.unmap(start, size).is_ok()
     }
 }

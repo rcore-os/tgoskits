@@ -13,23 +13,6 @@ use ax_memory_set::{MemoryArea, MemorySet};
 
 use crate::backend::Backend;
 
-fn mapping_flags_from_fault(access_flags: PageFaultFlags) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if access_flags.contains(PageFaultFlags::READ) {
-        flags |= MappingFlags::READ;
-    }
-    if access_flags.contains(PageFaultFlags::WRITE) {
-        flags |= MappingFlags::WRITE;
-    }
-    if access_flags.contains(PageFaultFlags::EXECUTE) {
-        flags |= MappingFlags::EXECUTE;
-    }
-    if access_flags.contains(PageFaultFlags::USER) {
-        flags |= MappingFlags::USER;
-    }
-    flags
-}
-
 /// The virtual memory address space.
 pub struct AddrSpace {
     va_range: VirtAddrRange,
@@ -341,7 +324,7 @@ impl AddrSpace {
         if !self.va_range.contains(vaddr) {
             return false;
         }
-        let access_flags = mapping_flags_from_fault(access_flags);
+        let access_flags = MappingFlags::from(access_flags);
         if let Some(area) = self.areas.find(vaddr) {
             let orig_flags = area.flags();
             if orig_flags.contains(access_flags) {

@@ -14,7 +14,7 @@
 
 use std::marker::PhantomData;
 
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};
 use axaddrspace::{AddrSpaceResult, NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
@@ -48,7 +48,7 @@ impl<H: PagingHandler + 'static> ptg::FrameAllocator for GenericFrameAllocator<H
     }
 
     fn phys_to_virt(&self, paddr: ptg::PhysAddr) -> *mut u8 {
-        H::phys_to_virt(paddr).as_usize() as *mut u8
+        H::phys_to_virt(paddr).as_mut_ptr()
     }
 
     fn alloc_frames(&self, frames: usize, align: usize) -> Option<ptg::PhysAddr> {
@@ -60,19 +60,19 @@ impl<H: PagingHandler + 'static> ptg::FrameAllocator for GenericFrameAllocator<H
     }
 }
 
-pub(crate) struct GenericNestedPageTable<M, P, H>
+pub(crate) struct GenericNestedPageTable<M, H>
 where
-    M: ptg::TableMeta<P = P>,
-    P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M: ptg::TableMeta,
+    M::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     inner: ptg::PageTable<M, GenericFrameAllocator<H>>,
 }
 
-impl<M, P, H> GenericNestedPageTable<M, P, H>
+impl<M, H> GenericNestedPageTable<M, H>
 where
-    M: ptg::TableMeta<P = P>,
-    P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M: ptg::TableMeta,
+    M::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     pub(crate) fn try_new() -> ptg::PagingResult<Self> {
@@ -92,14 +92,12 @@ where
         size: PageSize,
         flags: MappingFlags,
     ) -> ptg::PagingResult {
-        self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+        self.inner.map_page(
+            ptg::VirtAddr::from_usize(vaddr.as_usize()),
             paddr,
-            size: size.into(),
-            pte: flags,
-            allow_huge: size.is_huge(),
-            flush: true,
-        })
+            size.into(),
+            flags,
+        )
     }
 
     pub(crate) fn map_region(
@@ -110,27 +108,23 @@ where
         flags: MappingFlags,
         allow_huge: bool,
     ) -> ptg::PagingResult {
-        let paddr = get_paddr(vaddr);
-        self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
-            paddr,
+        self.inner.map_region(
+            ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            |current| get_paddr(GuestPhysAddr::from(current.as_usize())),
             size,
-            pte: flags,
+            flags,
             allow_huge,
-            flush: true,
-        })
+        )
     }
 
     pub(crate) fn unmap(
         &mut self,
         vaddr: GuestPhysAddr,
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (paddr, flags, page_size) = self.query(vaddr)?;
-        self.inner.unmap(
-            ptg::VirtAddr::from_usize(vaddr.as_usize()),
-            page_size.into(),
-        )?;
-        Ok((paddr, flags, page_size))
+        let (paddr, flags, page_size) = self
+            .inner
+            .unmap_page(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
+        Ok((paddr, flags, nested_page_size(page_size)?))
     }
 
     pub(crate) fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> ptg::PagingResult {
@@ -144,7 +138,7 @@ where
         paddr: PhysAddr,
         flags: MappingFlags,
     ) -> ptg::PagingResult {
-        let start = GuestPhysAddr::from(start.as_usize() & !(ax_memory_addr::PAGE_SIZE_4K - 1));
+        let start = GuestPhysAddr::from(start.as_usize() & !(PAGE_SIZE_4K - 1));
         let _ = self.unmap(start);
         self.map(start, paddr, PageSize::Size4K, flags)
     }
@@ -155,16 +149,16 @@ where
         size: usize,
         new_flags: MappingFlags,
     ) -> ptg::PagingResult {
-        let mut vaddr = start;
-        let end = start + size;
-        while vaddr < end {
-            let (paddr, _, page_size) = self.query(vaddr)?;
-            self.inner.unmap(
-                ptg::VirtAddr::from_usize(vaddr.as_usize()),
-                page_size.into(),
-            )?;
-            self.map(vaddr, paddr, page_size, new_flags)?;
-            vaddr += usize::from(page_size);
+        let end = start
+            .as_usize()
+            .checked_add(size)
+            .ok_or_else(|| ptg::PagingError::address_overflow("protect_region"))?;
+        let mut current = start;
+        while current.as_usize() < end {
+            let page_size = self
+                .inner
+                .protect_page(ptg::VirtAddr::from_usize(current.as_usize()), new_flags)?;
+            current += page_size;
         }
         Ok(())
     }
@@ -173,15 +167,10 @@ where
         &self,
         vaddr: GuestPhysAddr,
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (paddr, pte, level) = self
+        let (paddr, flags, page_size) = self
             .inner
-            .translate_with_level(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
-        let flags = pte.config(level > 1);
-        Ok((
-            paddr,
-            flags,
-            page_size_for_level::<M, GenericFrameAllocator<H>>(level, pte.huge(level > 1)),
-        ))
+            .query(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
+        Ok((paddr, flags, nested_page_size(page_size)?))
     }
 }
 
@@ -193,8 +182,8 @@ where
     M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
-    L3(GenericNestedPageTable<M3, M3::P, H>),
-    L4(GenericNestedPageTable<M4, M4::P, H>),
+    L3(GenericNestedPageTable<M3, H>),
+    L4(GenericNestedPageTable<M4, H>),
 }
 
 impl<M3, M4, H, const SUPPORT_L3: bool> LeveledPageTable<M3, M4, H, SUPPORT_L3>
@@ -403,19 +392,15 @@ where
     }
 }
 
-fn page_size_for_level<M, A>(level: usize, huge: bool) -> PageSize
-where
-    M: ptg::TableMeta,
-    A: ptg::FrameAllocator,
-{
-    if !huge {
-        return PageSize::Size4K;
-    }
-    match ptg::Frame::<M, A>::level_size(level) {
-        0x10_0000 => PageSize::Size1M,
-        0x20_0000 => PageSize::Size2M,
-        0x4000_0000 => PageSize::Size1G,
-        _ => PageSize::Size4K,
+fn nested_page_size(size: usize) -> ptg::PagingResult<PageSize> {
+    match size {
+        0x1000 => Ok(PageSize::Size4K),
+        0x10_0000 => Ok(PageSize::Size1M),
+        0x20_0000 => Ok(PageSize::Size2M),
+        0x4000_0000 => Ok(PageSize::Size1G),
+        _ => Err(ptg::PagingError::invalid_size(
+            "Nested page-table level has an unsupported page size",
+        )),
     }
 }
 

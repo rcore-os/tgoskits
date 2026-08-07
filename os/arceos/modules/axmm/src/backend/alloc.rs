@@ -1,7 +1,7 @@
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageSize, PageTable},
+    paging::{MappingFlags, PageTable},
 };
 use ax_memory_addr::{PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
 
@@ -50,7 +50,7 @@ impl Backend {
             // allocate all possible physical frames for populated mapping.
             for addr in PageIter4K::new(start, start + size).unwrap() {
                 if let Some(frame) = alloc_frame(true) {
-                    if pt.map_page(addr, frame, PageSize::Size4K, flags).is_err() {
+                    if pt.map_page(addr, frame, PAGE_SIZE_4K, flags).is_err() {
                         return false;
                     }
                 } else {
@@ -78,7 +78,7 @@ impl Backend {
             if let Ok((frame, _, page_size)) = pt.unmap_page(addr) {
                 // Deallocate the physical frame if there is a mapping in the
                 // page table.
-                if page_size.is_huge() {
+                if page_size > PAGE_SIZE_4K {
                     return false;
                 }
                 dealloc_frame(frame);

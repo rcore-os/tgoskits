@@ -127,13 +127,17 @@ where
             // 检查当前页表项状态并决定如何处理
             let allocator = self.allocator.clone();
             let current_pte = self.as_slice()[index];
-            let current_present = current_pte.present();
 
-            let child_frame = if current_present {
-                // 目录项（config.level > 1）可能有大页
+            let child_frame = if !current_pte.unused() {
                 if current_pte.huge(true) {
+                    return Err(PagingError::mapping_conflict(
+                        vaddr,
+                        current_pte.paddr(false),
+                    ));
+                }
+                if !current_pte.present() {
                     return Err(PagingError::hierarchy_error(
-                        "Cannot create page table under huge page",
+                        "Non-present intermediate entry is not a leaf",
                     ));
                 }
 

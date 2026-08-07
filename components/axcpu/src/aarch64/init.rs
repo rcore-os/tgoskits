@@ -3,15 +3,7 @@
 use aarch64_cpu::{asm::barrier, registers::*};
 use ax_memory_addr::PhysAddr;
 
-#[allow(clippy::unusual_byte_groupings)]
-const MAIR_VALUE: u64 = {
-    let device_n_gn_re = MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck.value;
-    let normal = MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc.value
-        | MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc.value;
-    let normal_non_cacheable = MAIR_EL1::Attr2_Normal_Inner::NonCacheable.value
-        + MAIR_EL1::Attr2_Normal_Outer::NonCacheable.value;
-    device_n_gn_re | normal | normal_non_cacheable
-};
+use super::paging::{ADDRESS_BITS, MAIR_VALUE};
 
 /// Swtich current exception level to EL1.
 ///
@@ -79,13 +71,13 @@ pub unsafe fn init_mmu(root_paddr: PhysAddr) {
         + TCR_EL1::SH0::Inner
         + TCR_EL1::ORGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
         + TCR_EL1::IRGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::T0SZ.val(16);
+        + TCR_EL1::T0SZ.val((64 - ADDRESS_BITS) as u64);
     let tcr_flags1 = TCR_EL1::EPD1::EnableTTBR1Walks
         + TCR_EL1::TG1::KiB_4
         + TCR_EL1::SH1::Inner
         + TCR_EL1::ORGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
         + TCR_EL1::IRGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::T1SZ.val(16);
+        + TCR_EL1::T1SZ.val((64 - ADDRESS_BITS) as u64);
     TCR_EL1.write(TCR_EL1::IPS::Bits_48 + tcr_flags0 + tcr_flags1);
     barrier::isb(barrier::SY);
 

@@ -11,7 +11,7 @@ use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_runtime::hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTable, PagingError},
+    paging::{MappingFlags, PageTable, PagingError},
 };
 use ax_sync::Mutex;
 
@@ -26,7 +26,7 @@ struct FrameRefCnt {
 }
 
 impl FrameRefCnt {
-    fn drop_frame(&mut self, paddr: PhysAddr, page_size: PageSize) {
+    fn drop_frame(&mut self, paddr: PhysAddr, page_size: usize) {
         assert!(self.count > 0, "dropping unreferenced frame");
         self.count -= 1;
         if self.count == 0 {
@@ -124,7 +124,7 @@ pub(crate) fn private_mmap_eof_check_for_test() -> bool {
 /// This corresponds to the `MAP_PRIVATE` flag.
 pub struct CowBackend {
     start: VirtAddr,
-    size: PageSize,
+    size: usize,
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
@@ -311,7 +311,7 @@ impl CowBackend {
             }
             return Ok(run.len());
         };
-        let ps = self.size as usize;
+        let ps = self.size;
         let v0 = run[0];
         if v0.as_usize() < file_vaddr_base.as_usize() {
             for &addr in run {
@@ -464,7 +464,7 @@ impl CowBackend {
 }
 
 impl BackendOps for CowBackend {
-    fn page_size(&self) -> PageSize {
+    fn page_size(&self) -> usize {
         self.size
     }
 
@@ -627,7 +627,7 @@ impl BackendOps for CowBackend {
 impl Backend {
     pub fn new_cow(
         start: VirtAddr,
-        size: PageSize,
+        size: usize,
         file: FileBackend,
         file_start: u64,
         file_end: Option<u64>,
@@ -643,7 +643,7 @@ impl Backend {
         })
     }
 
-    pub fn new_alloc(start: VirtAddr, size: PageSize, name: &str) -> Self {
+    pub fn new_alloc(start: VirtAddr, size: usize, name: &str) -> Self {
         Self::Cow(CowBackend {
             start: start.align_down_4k(),
             size,

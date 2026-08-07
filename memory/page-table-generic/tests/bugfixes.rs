@@ -296,7 +296,7 @@ fn unmap_preserves_address_only_sibling_directory() {
             .map_page(
                 vaddr,
                 paddr,
-                PageSize::Size4K,
+                0x1000,
                 (MappingFlags::READ | MappingFlags::WRITE).into(),
             )
             .unwrap();
@@ -316,11 +316,11 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
     let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
     let vaddr = VirtAddr::from_usize(0x40_0000);
     let paddr = PhysAddr::from_usize(0x80_0000);
-    let unmapped_vaddr = vaddr + usize::from(PageSize::Size4K);
-    let unmapped_paddr = paddr + usize::from(PageSize::Size4K);
+    let unmapped_vaddr = vaddr + 0x1000;
+    let unmapped_paddr = paddr + 0x1000;
 
     page_table
-        .map_page(vaddr, paddr, PageSize::Size4K, MappingFlags::empty().into())
+        .map_page(vaddr, paddr, 0x1000, MappingFlags::empty().into())
         .unwrap();
 
     assert!(matches!(
@@ -331,7 +331,7 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
     page_table
         .protect_region(
             vaddr,
-            usize::from(PageSize::Size4K),
+            0x1000,
             (MappingFlags::READ | MappingFlags::USER).into(),
         )
         .unwrap();
@@ -339,28 +339,59 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
     let (mapped_paddr, flags, page_size) = page_table.query(vaddr).unwrap();
     assert_eq!(mapped_paddr, paddr);
     assert_eq!(flags, MappingFlags::READ | MappingFlags::USER);
-    assert_eq!(page_size, PageSize::Size4K);
+    assert_eq!(page_size, 0x1000);
 
     page_table
         .map_page(
             unmapped_vaddr,
             unmapped_paddr,
-            PageSize::Size4K,
+            0x1000,
             MappingFlags::empty().into(),
         )
         .unwrap();
-    assert!(matches!(
-        page_table.unmap_page(unmapped_vaddr),
-        Err(PagingError::NotMapped)
-    ));
+    let (removed_paddr, removed_flags, removed_size) =
+        page_table.unmap_page(unmapped_vaddr).unwrap();
+    assert_eq!(removed_paddr, unmapped_paddr);
+    assert_eq!(removed_flags, MappingFlags::empty());
+    assert_eq!(removed_size, 0x1000);
     page_table
         .map_page(
             unmapped_vaddr,
             unmapped_paddr,
-            PageSize::Size4K,
+            0x1000,
             (MappingFlags::READ | MappingFlags::USER).into(),
         )
         .unwrap();
+}
+
+#[test]
+fn non_present_huge_mapping_rejects_child_mapping() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let huge_vaddr = VirtAddr::from_usize(0x20_0000);
+    let huge_paddr = PhysAddr::from_usize(0x40_0000);
+
+    page_table
+        .map_page(
+            huge_vaddr,
+            huge_paddr,
+            0x20_0000,
+            MappingFlags::empty().into(),
+        )
+        .unwrap();
+
+    let result = page_table.map_page(
+        huge_vaddr + 0x1000,
+        huge_paddr + 0x1000,
+        0x1000,
+        MappingFlags::READ.into(),
+    );
+    assert!(matches!(result, Err(PagingError::MappingConflict { .. })));
+
+    let (removed_paddr, removed_flags, removed_size) =
+        page_table.unmap_page(huge_vaddr + 0x1000).unwrap();
+    assert_eq!(removed_paddr, huge_paddr);
+    assert_eq!(removed_flags, MappingFlags::empty());
+    assert_eq!(removed_size, 0x20_0000);
 }
 
 /// 测试MemConfig的正确实现

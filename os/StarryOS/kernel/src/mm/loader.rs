@@ -6,10 +6,7 @@ use core::{ffi::CStr, iter, mem::size_of};
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::{
-    mem::virt_to_phys,
-    paging::{MappingFlags, PageSize},
-};
+use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
@@ -219,7 +216,7 @@ fn map_elf<'a>(
         };
         let backend = Backend::new_cow(
             seg_start,
-            PageSize::Size4K,
+            PAGE_SIZE_4K,
             FileBackend::Cached(cache.clone()),
             ph.offset,
             Some(file_end),
@@ -731,7 +728,7 @@ pub fn load_user_app(
         ustack_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         false,
-        Backend::new_alloc(ustack_start, PageSize::Size4K, "[stack]"),
+        Backend::new_alloc(ustack_start, PAGE_SIZE_4K, "[stack]"),
     )?;
 
     let stack_data = app_stack_region(args, envs, &auxv, ustack_top.into());
@@ -751,7 +748,7 @@ pub fn load_user_app(
         heap_size,
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
         true,
-        Backend::new_alloc(heap_start, PageSize::Size4K, "[heap]"),
+        Backend::new_alloc(heap_start, PAGE_SIZE_4K, "[heap]"),
     )?;
 
     Ok((entry, user_sp, auxv))

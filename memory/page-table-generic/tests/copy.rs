@@ -37,7 +37,7 @@ fn map_page<A: FrameAllocator>(page_table: &mut PageTable<T4kL4, A>, vaddr: usiz
         .map_page(
             VirtAddr::from_usize(vaddr),
             PhysAddr::from_usize(paddr),
-            PageSize::Size4K,
+            0x1000,
             (MappingFlags::READ | MappingFlags::WRITE).into(),
         )
         .unwrap();
@@ -143,7 +143,7 @@ fn walker_reports_canonical_high_addresses() {
         .map_page(
             VirtAddr::from_usize(KERNEL_PAGE),
             PhysAddr::from_usize(0x40_0000),
-            PageSize::Size4K,
+            0x1000,
             MappingFlags::READ.into(),
         )
         .unwrap();
@@ -157,4 +157,34 @@ fn walker_reports_canonical_high_addresses() {
         .collect::<Vec<_>>();
     assert_eq!(mappings.len(), 1);
     assert_eq!(mappings[0].vaddr, VirtAddr::from_usize(KERNEL_PAGE));
+}
+
+#[test]
+fn cloned_root_entries_preserve_non_present_leaves() {
+    const PAGE: usize = 0x20_0000;
+    const PHYS_PAGE: usize = 0x40_0000;
+
+    let allocator = TrackedFram4k::new();
+    let mut source = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    source
+        .map_page(
+            VirtAddr::from_usize(PAGE),
+            PhysAddr::from_usize(PHYS_PAGE),
+            0x1000,
+            MappingFlags::empty().into(),
+        )
+        .unwrap();
+
+    let mut target = PageTable::<T4kL4, TrackedFram4k>::new(allocator).unwrap();
+    target
+        .clone_missing_root_entries_from(&source, VirtAddr::from_usize(0), ROOT_ENTRY_SIZE)
+        .unwrap();
+    target
+        .protect_page(VirtAddr::from_usize(PAGE), MappingFlags::READ.into())
+        .unwrap();
+
+    assert_eq!(
+        target.query(VirtAddr::from_usize(PAGE)).unwrap().0,
+        PhysAddr::from_usize(PHYS_PAGE)
+    );
 }

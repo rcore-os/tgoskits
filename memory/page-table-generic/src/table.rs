@@ -1,8 +1,10 @@
 use core::ops::{Deref, DerefMut, Range};
 
+use ax_memory_addr::MemoryAddr;
+
 use crate::{
-    FrameAllocator, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf,
-    TableMeta, VirtAddr,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf, TableMeta,
+    VirtAddr,
     frame::Frame,
     map::{MapConfig, MapRecursiveConfig, UnmapConfig, UnmapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
@@ -27,10 +29,6 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
             #[cfg(feature = "copy-from")]
             borrowed_root_entries: None,
         })
-    }
-
-    pub fn valid_bits(&self) -> usize {
-        Frame::<T, A>::PT_VALID_BITS
     }
 
     pub const fn root_paddr(&self) -> PhysAddr {
@@ -213,7 +211,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         &mut self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
-        page_size: PageSize,
+        page_size: usize,
         config: PteConfigOf<T>,
     ) -> PagingResult {
         let Some(level) = Frame::<T, A>::level_for_page_size(page_size) else {
@@ -226,13 +224,12 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 "Page size exceeds the architecture's block-mapping level",
             ));
         }
-        let size = usize::from(page_size);
         self.map(&MapConfig {
-            vaddr: align_vaddr_down(vaddr, size),
-            paddr: align_paddr_down(paddr, size),
-            size,
+            vaddr: vaddr.align_down(page_size),
+            paddr: paddr.align_down(page_size),
+            size: page_size,
             pte: config,
-            allow_huge: page_size.is_huge(),
+            allow_huge: level > 1,
             flush: true,
         })
     }
@@ -269,13 +266,12 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             let paddr = get_paddr(vaddr);
             let remaining = size - offset;
             let page_size = largest_page_size::<T, A>(vaddr, paddr, remaining, allow_huge);
-            let page_bytes = usize::from(page_size);
             if let Err(err) = self.map(&MapConfig {
-                vaddr: align_vaddr_down(vaddr, page_bytes),
-                paddr: align_paddr_down(paddr, page_bytes),
-                size: page_bytes,
+                vaddr: vaddr.align_down(page_size),
+                paddr: paddr.align_down(page_size),
+                size: page_size,
                 pte: config,
-                allow_huge: page_size.is_huge(),
+                allow_huge: page_size > T::PAGE_SIZE,
                 flush: false,
             }) {
                 break Err(err);
@@ -284,7 +280,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 full_flush = true;
                 flush_addrs.clear();
             }
-            offset += page_bytes;
+            offset += page_size;
         };
 
         if full_flush {
@@ -301,33 +297,24 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     pub fn unmap_page(
         &mut self,
         vaddr: VirtAddr,
-    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, PageSize)> {
-        let mapped = self.query(vaddr);
-        let size = match &mapped {
-            Ok((_, _, page_size)) => usize::from(*page_size),
-            Err(PagingError::NotMapped) => T::PAGE_SIZE,
-            Err(err) => return Err(err.clone()),
-        };
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
+        let (pte, level) = self
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
+        let page_size = Frame::<T, A>::level_size(level);
+        let is_dir = level > 1;
+        let paddr = pte.paddr(is_dir);
+        let config = pte.config(is_dir);
         self.unmap_with_config(&UnmapConfig {
-            start_vaddr: align_vaddr_down(vaddr, size),
-            size,
+            start_vaddr: vaddr.align_down(page_size),
+            size: page_size,
             flush: true,
         })?;
-        let (paddr, flags, page_size) = mapped?;
-        Ok((align_paddr_down(paddr, size), flags, page_size))
-    }
-
-    /// Unmaps a virtual region.
-    pub fn unmap_region(&mut self, start_vaddr: VirtAddr, size: usize) -> PagingResult {
-        self.unmap(start_vaddr, size)
+        Ok((paddr, config, page_size))
     }
 
     /// Changes one existing mapping's flags and returns its page size.
-    pub fn protect_page(
-        &mut self,
-        vaddr: VirtAddr,
-        config: PteConfigOf<T>,
-    ) -> PagingResult<PageSize> {
+    pub fn protect_page(&mut self, vaddr: VirtAddr, config: PteConfigOf<T>) -> PagingResult<usize> {
         let page_size = self
             .root
             .protect_recursive(vaddr, config, Frame::<T, A>::PT_LEVEL)?;
@@ -349,7 +336,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         let mut vaddr = start_vaddr;
         while vaddr.as_usize() < end {
             match self.protect_page(vaddr, config) {
-                Ok(page_size) => vaddr += usize::from(page_size),
+                Ok(page_size) => vaddr += page_size,
                 Err(PagingError::NotMapped) => vaddr += T::PAGE_SIZE,
                 Err(err) => return Err(err),
             }
@@ -363,7 +350,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         vaddr: VirtAddr,
         paddr: PhysAddr,
         config: PteConfigOf<T>,
-    ) -> PagingResult<PageSize> {
+    ) -> PagingResult<usize> {
         let page_size = self
             .root
             .remap_recursive(vaddr, paddr, config, Frame::<T, A>::PT_LEVEL)?;
@@ -372,12 +359,12 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Queries one mapping and returns the translated physical address, flags, and page size.
-    pub fn query(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, PteConfigOf<T>, PageSize)> {
+    pub fn query(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
         let (paddr, pte, level) = self.translate_with_level(vaddr)?;
         Ok((
             paddr,
             pte.config(level > 1),
-            Frame::<T, A>::page_size_from_level(level)?,
+            Frame::<T, A>::level_size(level),
         ))
     }
 
@@ -719,32 +706,21 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 }
 
-fn align_vaddr_down(addr: VirtAddr, align: usize) -> VirtAddr {
-    VirtAddr::from_usize(ax_memory_addr::align_down(addr.as_usize(), align))
-}
-
-fn align_paddr_down(addr: PhysAddr, align: usize) -> PhysAddr {
-    PhysAddr::from_usize(ax_memory_addr::align_down(addr.as_usize(), align))
-}
-
 fn largest_page_size<T: TableMeta, A: FrameAllocator>(
     vaddr: VirtAddr,
     paddr: PhysAddr,
     remaining: usize,
     allow_huge: bool,
-) -> PageSize {
+) -> usize {
     if allow_huge {
-        for page_size in [PageSize::Size1G, PageSize::Size2M, PageSize::Size1M] {
-            let supported = Frame::<T, A>::level_for_page_size(page_size)
-                .is_some_and(|level| level > 1 && level <= T::MAX_BLOCK_LEVEL);
-            if supported
-                && page_size.is_aligned(vaddr.as_usize())
-                && page_size.is_aligned(paddr.as_usize())
-                && remaining >= usize::from(page_size)
+        let max_level = Frame::<T, A>::PT_LEVEL.min(T::MAX_BLOCK_LEVEL);
+        for level in (2..=max_level).rev() {
+            let page_size = Frame::<T, A>::level_size(level);
+            if vaddr.is_aligned(page_size) && paddr.is_aligned(page_size) && remaining >= page_size
             {
                 return page_size;
             }
         }
     }
-    PageSize::Size4K
+    T::PAGE_SIZE
 }

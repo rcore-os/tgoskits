@@ -39,7 +39,7 @@ fn test_high<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
 {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
     println!("table page size: {:#x}", T::PAGE_SIZE);
-    println!("valid bits: {}", pg.valid_bits());
+    println!("valid bits: {}", PageTable::<T, A>::VALID_BITS);
     println!("=== {test_name} 映前状态 - walk_all (遍历所有项) ===");
     for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
@@ -421,7 +421,7 @@ fn test_high_huge_not_align<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
     let size = 2 * MB;
 
     // 计算实际有效的虚拟地址(48位地址空间)
-    let valid_bits = pg.valid_bits();
+    let valid_bits = PageTable::<T, A>::VALID_BITS;
     let addr_mask = if valid_bits == 64 {
         usize::MAX
     } else {
@@ -1166,7 +1166,7 @@ fn map_page_rejects_page_size_missing_from_table_levels() {
         page_table.map_page(
             VirtAddr::from_usize(0x20_0000),
             PhysAddr::from_usize(0x40_0000),
-            PageSize::Size1M,
+            0x10_0000,
             MappingFlags::READ.into(),
         ),
         Err(PagingError::InvalidSize { .. })

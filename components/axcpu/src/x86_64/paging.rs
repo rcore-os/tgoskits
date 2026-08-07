@@ -1,9 +1,13 @@
 //! x86_64 page-table entry format.
 
-use ax_memory_addr::PhysAddr;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::PageTableEntry;
 
 use crate::paging::MappingFlags;
+
+pub(crate) const PAGE_SIZE: usize = PAGE_SIZE_4K;
+pub(crate) const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+pub(crate) const MAX_BLOCK_LEVEL: usize = 3;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]

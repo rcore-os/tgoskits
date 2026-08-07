@@ -3,15 +3,7 @@
 use ax_memory_addr::PhysAddr;
 use loongArch64::register::{MemoryAccessType, crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
 
-/// PWCL(Page Walk Controller for Lower Half Address Space) CSR flags.
-///
-/// <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#page-walk-controller-for-lower-half-address-space>
-const PWCL_VALUE: u32 = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 25);
-
-/// PWCH(Page Walk Controller for Higher Half Address Space) CSR flags.
-///
-/// <https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html#page-walk-controller-for-higher-half-address-space>
-const PWCH_VALUE: u32 = 39 | (9 << 6);
+use super::paging::{PWCH_VALUE, PWCL_VALUE};
 
 /// Initializes TLB and MMU related registers on the current CPU.
 ///

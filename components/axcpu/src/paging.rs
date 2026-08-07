@@ -1,6 +1,6 @@
 //! Page-table metadata for the active architecture.
 
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::VirtAddr;
 use page_table_generic::TableMeta;
 
 bitflags::bitflags! {
@@ -22,19 +22,50 @@ bitflags::bitflags! {
     }
 }
 
+impl From<crate::trap::PageFaultFlags> for MappingFlags {
+    fn from(fault: crate::trap::PageFaultFlags) -> Self {
+        let mut flags = Self::empty();
+        flags.set(
+            Self::READ,
+            fault.contains(crate::trap::PageFaultFlags::READ),
+        );
+        flags.set(
+            Self::WRITE,
+            fault.contains(crate::trap::PageFaultFlags::WRITE),
+        );
+        flags.set(
+            Self::EXECUTE,
+            fault.contains(crate::trap::PageFaultFlags::EXECUTE),
+        );
+        flags.set(
+            Self::USER,
+            fault.contains(crate::trap::PageFaultFlags::USER),
+        );
+        flags
+    }
+}
+
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
-        use crate::x86_64::paging::X64Pte as ArchPte;
-        const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+        use crate::x86_64::paging::{
+            LEVEL_BITS as ARCH_LEVEL_BITS, MAX_BLOCK_LEVEL as ARCH_MAX_BLOCK_LEVEL,
+            PAGE_SIZE as ARCH_PAGE_SIZE, X64Pte as ArchPte,
+        };
     } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
-        use crate::riscv::paging::Rv64Pte as ArchPte;
-        const LEVEL_BITS: &[usize] = &[9, 9, 9];
+        use crate::riscv::paging::{
+            LEVEL_BITS as ARCH_LEVEL_BITS, MAX_BLOCK_LEVEL as ARCH_MAX_BLOCK_LEVEL,
+            PAGE_SIZE as ARCH_PAGE_SIZE, Rv64Pte as ArchPte,
+        };
     } else if #[cfg(target_arch = "aarch64")] {
-        use crate::aarch64::paging::A64Pte as ArchPte;
-        const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+        use crate::aarch64::paging::{
+            A64Pte as ArchPte, LEVEL_BITS as ARCH_LEVEL_BITS,
+            MAX_BLOCK_LEVEL as ARCH_MAX_BLOCK_LEVEL, PAGE_SIZE as ARCH_PAGE_SIZE,
+        };
     } else if #[cfg(target_arch = "loongarch64")] {
-        use crate::loongarch64::paging::La64Pte as ArchPte;
-        const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+        use crate::loongarch64::paging::{
+            LEVEL_BITS as ARCH_LEVEL_BITS, La64Pte as ArchPte,
+            MAX_BLOCK_LEVEL as ARCH_MAX_BLOCK_LEVEL, PAGE_SIZE as ARCH_PAGE_SIZE,
+        };
     }
 }
 
@@ -45,13 +76,13 @@ pub struct ArchPagingMeta;
 impl TableMeta for ArchPagingMeta {
     type P = ArchPte;
 
-    const PAGE_SIZE: usize = PAGE_SIZE_4K;
-    const LEVEL_BITS: &'static [usize] = LEVEL_BITS;
-    const MAX_BLOCK_LEVEL: usize = 3;
+    const PAGE_SIZE: usize = ARCH_PAGE_SIZE;
+    const LEVEL_BITS: &'static [usize] = ARCH_LEVEL_BITS;
+    const MAX_BLOCK_LEVEL: usize = ARCH_MAX_BLOCK_LEVEL;
 
     fn canonicalize_vaddr(vaddr: VirtAddr) -> VirtAddr {
-        let address_bits =
-            PAGE_SIZE_4K.trailing_zeros() as usize + LEVEL_BITS.iter().copied().sum::<usize>();
+        let address_bits = ARCH_PAGE_SIZE.trailing_zeros() as usize
+            + ARCH_LEVEL_BITS.iter().copied().sum::<usize>();
         let mask = (1usize << address_bits) - 1;
         let address = vaddr.as_usize() & mask;
         if address & (1usize << (address_bits - 1)) == 0 {

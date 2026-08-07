@@ -12,7 +12,7 @@ use ax_memory_addr::{
 use ax_memory_set::{MemoryArea, MemorySet};
 use ax_runtime::hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTable, PagingAllocator},
+    paging::{MappingFlags, PageTable, PagingAllocator},
     trap::PageFaultFlags,
 };
 use ax_sync::{LockdepMutexExt, Mutex};
@@ -33,24 +33,7 @@ pub use self::{
     backend::*,
 };
 
-fn mapping_flags_from_fault(access_flags: PageFaultFlags) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if access_flags.contains(PageFaultFlags::READ) {
-        flags |= MappingFlags::READ;
-    }
-    if access_flags.contains(PageFaultFlags::WRITE) {
-        flags |= MappingFlags::WRITE;
-    }
-    if access_flags.contains(PageFaultFlags::EXECUTE) {
-        flags |= MappingFlags::EXECUTE;
-    }
-    if access_flags.contains(PageFaultFlags::USER) {
-        flags |= MappingFlags::USER;
-    }
-    flags
-}
-
-type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, PageSize, bool);
+type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, usize, bool);
 const CLONED_ADDR_SPACE_LOCK_SUBCLASS: u32 = 1;
 
 fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) {
@@ -411,7 +394,7 @@ impl AddrSpace {
             match cursor.query(src_va) {
                 Ok((paddr, flags, page_size)) => {
                     mapped_pages.push((src_va, dst + offset, paddr, flags, page_size));
-                    offset += page_size as usize;
+                    offset += page_size;
                 }
                 Err(_) => offset += PAGE_SIZE_4K,
             }
@@ -610,7 +593,7 @@ impl AddrSpace {
         if !self.va_range.contains(vaddr) {
             return false;
         }
-        let access_flags = mapping_flags_from_fault(access_flags);
+        let access_flags = MappingFlags::from(access_flags);
         if let Some(area) = self.areas.find(vaddr) {
             let flags = area.flags();
             if flags.contains(access_flags) {

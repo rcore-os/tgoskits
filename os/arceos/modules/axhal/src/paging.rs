@@ -6,7 +6,7 @@ use ax_cpu::paging::ArchPagingMeta;
 pub use ax_cpu::paging::MappingFlags;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::FrameAllocator;
-pub use page_table_generic::{PageSize, PagingError, PagingResult};
+pub use page_table_generic::{PagingError, PagingResult};
 
 use crate::mem::{phys_to_virt, virt_to_phys};
 
@@ -36,7 +36,7 @@ impl FrameAllocator for PagingAllocator {
 
     #[inline]
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        phys_to_virt(paddr).as_usize() as *mut u8
+        phys_to_virt(paddr).as_mut_ptr()
     }
 }
 

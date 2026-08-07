@@ -3,7 +3,7 @@ use core::{any::Any, ops::Deref};
 
 use ax_errno::AxResult;
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
+use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 use ax_sync::Mutex;
 
 use super::{
@@ -19,11 +19,11 @@ enum SharedPagesOwner {
 
 pub struct SharedPages {
     phys_pages: Vec<PhysAddr>,
-    pub size: PageSize,
+    pub size: usize,
     owner: SharedPagesOwner,
 }
 impl SharedPages {
-    pub fn new(size: usize, page_size: PageSize) -> AxResult<Self> {
+    pub fn new(size: usize, page_size: usize) -> AxResult<Self> {
         let num_pages = divide_page(size, page_size);
         let mut result = Self {
             phys_pages: Vec::with_capacity(num_pages),
@@ -38,7 +38,7 @@ impl SharedPages {
 
     pub fn borrowed(
         phys_pages: Vec<PhysAddr>,
-        page_size: PageSize,
+        page_size: usize,
         retain: Option<Arc<dyn Any + Send + Sync>>,
     ) -> AxResult<Self> {
         if phys_pages.is_empty() {
@@ -110,7 +110,7 @@ impl SharedBackend {
 }
 
 impl BackendOps for SharedBackend {
-    fn page_size(&self) -> PageSize {
+    fn page_size(&self) -> usize {
         self.pages.size
     }
 

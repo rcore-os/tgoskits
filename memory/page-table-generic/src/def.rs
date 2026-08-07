@@ -87,36 +87,3 @@ impl core::fmt::Debug for PagingError {
         }
     }
 }
-
-/// Page sizes supported by the page-table engine.
-#[repr(usize)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum PageSize {
-    /// Size of 4 kilobytes.
-    Size4K = 0x1000,
-    /// Size of 1 megabytes.
-    Size1M = 0x10_0000,
-    /// Size of 2 megabytes.
-    Size2M = 0x20_0000,
-    /// Size of 1 gigabytes.
-    Size1G = 0x4000_0000,
-}
-
-impl PageSize {
-    /// Whether this page size is larger than the base 4K page.
-    pub const fn is_huge(self) -> bool {
-        matches!(self, Self::Size1G | Self::Size2M | Self::Size1M)
-    }
-
-    /// Checks whether an address or length is aligned to this page size.
-    pub const fn is_aligned(self, addr_or_size: usize) -> bool {
-        ax_memory_addr::is_aligned(addr_or_size, self as usize)
-    }
-}
-
-impl From<PageSize> for usize {
-    #[inline]
-    fn from(size: PageSize) -> usize {
-        size as usize
-    }
-}

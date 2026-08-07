@@ -1,9 +1,18 @@
 //! LoongArch64 page-table entry format.
 
-use ax_memory_addr::PhysAddr;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::PageTableEntry;
 
 use crate::paging::MappingFlags;
+
+pub(crate) const PAGE_SIZE: usize = PAGE_SIZE_4K;
+pub(crate) const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+pub(crate) const MAX_BLOCK_LEVEL: usize = 3;
+
+/// PWCL fields matching the runtime page-table geometry.
+pub(super) const PWCL_VALUE: u32 = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 25);
+/// PWCH fields matching the runtime page-table geometry.
+pub(super) const PWCH_VALUE: u32 = 39 | (9 << 6);
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
