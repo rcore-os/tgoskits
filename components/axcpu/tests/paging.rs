@@ -1,5 +1,27 @@
-use ax_memory_addr::PAGE_SIZE_4K;
-use page_table_generic::TableMeta;
+mod paging {
+    pub use ax_cpu::paging::MappingFlags;
+}
+
+// Compile target-owned PTE modules in the host test harness so their entry
+// semantics can be exercised without a target-side test runner.
+#[expect(
+    dead_code,
+    reason = "the host adapter exercises PTE behavior without architecture initialization"
+)]
+#[path = "../src/loongarch64/paging.rs"]
+mod loongarch64_paging;
+#[expect(
+    dead_code,
+    reason = "the host adapter exercises PTE behavior without architecture initialization"
+)]
+#[path = "../src/riscv/paging.rs"]
+mod riscv_paging;
+
+use ax_cpu::trap::PageFaultFlags;
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
+use page_table_generic::{PageTableEntry, TableMeta};
+use paging::MappingFlags;
+use riscv_paging::Rv64Pte;
 
 #[test]
 fn paging_metadata_is_available_without_feature_gates() {
@@ -8,11 +30,20 @@ fn paging_metadata_is_available_without_feature_gates() {
 
 #[test]
 fn page_fault_access_converts_to_mapping_permissions() {
-    use ax_cpu::{paging::MappingFlags, trap::PageFaultFlags};
-
     let access = PageFaultFlags::READ | PageFaultFlags::WRITE | PageFaultFlags::USER;
     assert_eq!(
         MappingFlags::from(access),
         MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER
     );
+}
+
+#[test]
+fn non_present_riscv_huge_leaf_retains_its_structure() {
+    let paddr = PhysAddr::from_usize(0x4000_0000);
+    let pte = Rv64Pte::new_page(paddr, MappingFlags::empty(), true);
+
+    assert!(!pte.present());
+    assert!(!pte.unused());
+    assert!(pte.huge(true));
+    assert_eq!(pte.paddr(false), paddr);
 }

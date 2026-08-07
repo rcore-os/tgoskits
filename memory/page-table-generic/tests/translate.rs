@@ -2,6 +2,28 @@ use page_table_generic::*;
 mod mocks;
 use mocks::*;
 
+#[derive(Clone, Copy)]
+struct CanonicalT4kL4;
+
+impl TableMeta for CanonicalT4kL4 {
+    type P = PteImpl;
+
+    const PAGE_SIZE: usize = 0x1000;
+    const LEVEL_BITS: &'static [usize] = &[9, 9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 3;
+
+    fn canonicalize_vaddr(vaddr: VirtAddr) -> VirtAddr {
+        let address = vaddr.as_usize() & ((1usize << 48) - 1);
+        VirtAddr::from_usize(if address & (1usize << 47) == 0 {
+            address
+        } else {
+            address | !((1usize << 48) - 1)
+        })
+    }
+
+    fn flush(_vaddr: Option<VirtAddr>) {}
+}
+
 // ===== 地址翻译测试 =====
 
 #[test]
@@ -363,4 +385,29 @@ fn test_translate_performance() {
         let (_, pte) = pg.translate(vaddr.into()).unwrap();
         assert!(pte.to_config(false).valid, "页表项应该有效");
     }
+}
+
+#[test]
+fn walker_reports_canonical_high_addresses() {
+    const KERNEL_PAGE: usize = 0xffff_8000_0020_0000;
+
+    let mut page_table = PageTable::<CanonicalT4kL4, Fram4k>::new(Fram4k).unwrap();
+    page_table
+        .map_page(
+            VirtAddr::from_usize(KERNEL_PAGE),
+            PhysAddr::from_usize(0x40_0000),
+            0x1000,
+            MappingFlags::READ.into(),
+        )
+        .unwrap();
+
+    let mappings = page_table
+        .walk(
+            VirtAddr::from_usize(0xffff_8000_0000_0000),
+            VirtAddr::from_usize(usize::MAX),
+        )
+        .filter(|entry| entry.is_final_mapping)
+        .collect::<Vec<_>>();
+    assert_eq!(mappings.len(), 1);
+    assert_eq!(mappings[0].vaddr, VirtAddr::from_usize(KERNEL_PAGE));
 }

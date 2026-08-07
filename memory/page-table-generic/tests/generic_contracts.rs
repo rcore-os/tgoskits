@@ -1,36 +1,15 @@
-use core::{alloc::Layout, fmt};
+mod mocks;
 
+use core::fmt;
+use std::alloc::{self, Layout};
+
+use mocks::{Fram4k, MappingFlags, PteImpl};
 use page_table_generic::{
     FrameAllocator, PageTable, PageTableEntry, PhysAddr, TableMeta, VirtAddr,
 };
 
-#[derive(Clone, Copy)]
-struct TestAllocator;
-
-impl FrameAllocator for TestAllocator {
-    fn alloc_frame(&self) -> Option<PhysAddr> {
-        self.alloc_frames(1, 0x1000)
-    }
-
-    fn dealloc_frame(&self, frame: PhysAddr) {
-        self.dealloc_frames(frame, 1, 0x1000);
-    }
-
-    fn alloc_frames(&self, frames: usize, align: usize) -> Option<PhysAddr> {
-        let layout = Layout::from_size_align(0x1000 * frames, align).unwrap();
-        let ptr = unsafe { std::alloc::alloc(layout) };
-        (!ptr.is_null()).then(|| PhysAddr::from_usize(ptr as usize))
-    }
-
-    fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
-        let layout = Layout::from_size_align(0x1000 * frames, 0x1000 * frames).unwrap();
-        unsafe { std::alloc::dealloc(start.as_usize() as *mut u8, layout) };
-    }
-
-    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.as_usize() as *mut u8
-    }
-}
+const PAGE_SIZE_16K: usize = 0x4000;
+const BLOCK_SIZE_32M: usize = PAGE_SIZE_16K << 11;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OpaqueConfig {
@@ -112,9 +91,44 @@ impl TableMeta for OpaqueMeta {
     fn flush(_vaddr: Option<VirtAddr>) {}
 }
 
+#[derive(Clone, Copy)]
+struct T16kL4;
+
+impl TableMeta for T16kL4 {
+    type P = PteImpl;
+
+    const PAGE_SIZE: usize = PAGE_SIZE_16K;
+    const LEVEL_BITS: &[usize] = &[11, 11, 11, 11];
+    const MAX_BLOCK_LEVEL: usize = 3;
+
+    fn flush(_vaddr: Option<VirtAddr>) {}
+}
+
+#[derive(Clone, Copy)]
+struct Fram16k;
+
+impl FrameAllocator for Fram16k {
+    fn alloc_frame(&self) -> Option<PhysAddr> {
+        let layout = Layout::from_size_align(PAGE_SIZE_16K, PAGE_SIZE_16K).unwrap();
+        // SAFETY: the layout has a non-zero size and valid page alignment.
+        let ptr = unsafe { alloc::alloc(layout) };
+        (!ptr.is_null()).then(|| PhysAddr::from_usize(ptr as usize))
+    }
+
+    fn dealloc_frame(&self, frame: PhysAddr) {
+        let layout = Layout::from_size_align(PAGE_SIZE_16K, PAGE_SIZE_16K).unwrap();
+        // SAFETY: every frame was allocated with this exact layout and is released once.
+        unsafe { alloc::dealloc(frame.as_usize() as *mut u8, layout) };
+    }
+
+    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
+        paddr.as_usize() as *mut u8
+    }
+}
+
 #[test]
 fn maps_and_protects_with_an_opaque_pte_config() {
-    let mut page_table = PageTable::<OpaqueMeta, TestAllocator>::new(TestAllocator).unwrap();
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
     let vaddr = VirtAddr::from_usize(0x4000);
     let paddr = PhysAddr::from_usize(0x8000);
 
@@ -127,4 +141,40 @@ fn maps_and_protects_with_an_opaque_pte_config() {
         .protect_page(vaddr, OpaqueConfig { domain: 0x7f })
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().1.domain, 0x7f);
+}
+
+#[test]
+fn query_reports_arbitrary_base_page_size() {
+    let mut page_table = PageTable::<T16kL4, Fram16k>::new(Fram16k).unwrap();
+    let vaddr = VirtAddr::from_usize(PAGE_SIZE_16K);
+    let paddr = PhysAddr::from_usize(PAGE_SIZE_16K);
+
+    page_table
+        .map_page(vaddr, paddr, PAGE_SIZE_16K, MappingFlags::READ.into())
+        .unwrap();
+
+    let (mapped_paddr, _, page_size) = page_table.query(vaddr).unwrap();
+    assert_eq!(mapped_paddr, paddr);
+    assert_eq!(page_size, PAGE_SIZE_16K);
+}
+
+#[test]
+fn map_region_selects_page_sizes_from_table_levels() {
+    let mut page_table = PageTable::<T16kL4, Fram16k>::new(Fram16k).unwrap();
+    let vaddr = VirtAddr::from_usize(BLOCK_SIZE_32M);
+    let paddr = PhysAddr::from_usize(BLOCK_SIZE_32M);
+
+    page_table
+        .map_region(
+            vaddr,
+            |current| paddr + (current - vaddr),
+            BLOCK_SIZE_32M,
+            MappingFlags::READ.into(),
+            true,
+        )
+        .unwrap();
+
+    let (mapped_paddr, _, page_size) = page_table.query(vaddr + PAGE_SIZE_16K).unwrap();
+    assert_eq!(mapped_paddr, paddr + PAGE_SIZE_16K);
+    assert_eq!(page_size, BLOCK_SIZE_32M);
 }
