@@ -1,0 +1,27 @@
+[base]
+id = 2
+name = "zephyr-qemu-periodic"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+
+[kernel]
+entry_point = 0x4000_1044
+image_location = "memory"
+kernel_path = "/path/to/zephyr.bin"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+passthrough_devices = [
+  ["/pl011@9000000"],
+  ["/intc@8000000"],
+  ["/timer"],
+]
+passthrough_addresses = []
+excluded_devices = []
+emu_devices = []
