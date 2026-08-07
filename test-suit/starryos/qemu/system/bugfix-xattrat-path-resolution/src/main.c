@@ -23,11 +23,29 @@
 #endif
 
 #define INVALID_AT_FLAG 0x80000000u
+#define POSIX_ACL_XATTR_VERSION 2u
+#define ACL_USER_OBJ 0x01u
+#define ACL_USER 0x02u
+#define ACL_GROUP_OBJ 0x04u
+#define ACL_MASK 0x10u
+#define ACL_OTHER 0x20u
+#define ACL_UNDEFINED_ID UINT32_MAX
 
 struct xattr_args {
     uint64_t value;
     uint32_t size;
     uint32_t flags;
+};
+
+struct posix_acl_xattr_entry {
+    uint16_t tag;
+    uint16_t permissions;
+    uint32_t id;
+};
+
+struct posix_acl_xattr {
+    uint32_t version;
+    struct posix_acl_xattr_entry entries[5];
 };
 
 static int failures;
@@ -82,6 +100,20 @@ int main(void)
     static const char fixture_name[] = "file";
     static const char attr_name[] = "user.starry";
     static const char attr_value[] = "nixos";
+    static const char acl_name[] = "system.posix_acl_access";
+    static const char default_acl_name[] = "system.posix_acl_default";
+    static const struct posix_acl_xattr acl = {
+        .version = POSIX_ACL_XATTR_VERSION,
+        .entries = {
+            {ACL_USER_OBJ, 6, ACL_UNDEFINED_ID},
+            {ACL_USER, 4, 123},
+            {ACL_GROUP_OBJ, 4, ACL_UNDEFINED_ID},
+            {ACL_MASK, 4, ACL_UNDEFINED_ID},
+            {ACL_OTHER, 0, ACL_UNDEFINED_ID},
+        },
+    };
+    struct posix_acl_xattr acl_buf = {};
+    struct stat file_stat = {};
     char value_buf[sizeof(attr_value)] = {};
     struct xattr_args args = {
         .value = (uintptr_t)attr_value,
@@ -169,6 +201,74 @@ int main(void)
             sizeof(args)
         ) == (long)(sizeof(attr_value) - 1),
         "getxattrat supports AT_EMPTY_PATH on an fd"
+    );
+
+    args.value = (uintptr_t)&acl;
+    args.size = sizeof(acl);
+    errno = 0;
+    check(
+        raw_setxattrat(
+            dirfd,
+            fixture_name,
+            0,
+            acl_name,
+            &args,
+            sizeof(args)
+        ) == 0,
+        "setxattrat accepts a valid POSIX access ACL"
+    );
+
+    args.value = (uintptr_t)&acl_buf;
+    args.size = sizeof(acl_buf);
+    errno = 0;
+    check(
+        raw_getxattrat(
+            dirfd,
+            fixture_name,
+            0,
+            acl_name,
+            &args,
+            sizeof(args)
+        ) == (long)sizeof(acl) &&
+            memcmp(&acl_buf, &acl, sizeof(acl)) == 0,
+        "getxattrat returns the POSIX access ACL"
+    );
+
+    check(
+        fstat(fd, &file_stat) == 0 && (file_stat.st_mode & 0777) == 0640,
+        "POSIX access ACL updates the file permission bits"
+    );
+
+    args.value = (uintptr_t)&acl;
+    args.size = sizeof(acl);
+    errno = 0;
+    check(
+        raw_setxattrat(
+            dirfd,
+            ".",
+            0,
+            default_acl_name,
+            &args,
+            sizeof(args)
+        ) == 0,
+        "setxattrat accepts a valid POSIX default ACL"
+    );
+
+    memset(&acl_buf, 0, sizeof(acl_buf));
+    args.value = (uintptr_t)&acl_buf;
+    args.size = sizeof(acl_buf);
+    errno = 0;
+    check(
+        raw_getxattrat(
+            dirfd,
+            ".",
+            0,
+            default_acl_name,
+            &args,
+            sizeof(args)
+        ) == (long)sizeof(acl) &&
+            memcmp(&acl_buf, &acl, sizeof(acl)) == 0,
+        "getxattrat returns the POSIX default ACL"
     );
 
     errno = 0;

@@ -21,7 +21,7 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_sync::Mutex;
-use axfs_ng_vfs::Location;
+use axfs_ng_vfs::{Location, MetadataUpdate, NodePermission};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
     XATTR_REPLACE, XATTR_SIZE_MAX, xattr_args,
@@ -35,6 +35,20 @@ use crate::{
 };
 
 type XattrMap = BTreeMap<String, Vec<u8>>;
+
+const POSIX_ACL_ACCESS_XATTR: &str = "system.posix_acl_access";
+const POSIX_ACL_DEFAULT_XATTR: &str = "system.posix_acl_default";
+const POSIX_ACL_XATTR_VERSION: u32 = 2;
+const POSIX_ACL_XATTR_HEADER_SIZE: usize = size_of::<u32>();
+const POSIX_ACL_XATTR_ENTRY_SIZE: usize = size_of::<u16>() * 2 + size_of::<u32>();
+
+const ACL_USER_OBJ: u16 = 0x01;
+const ACL_USER: u16 = 0x02;
+const ACL_GROUP_OBJ: u16 = 0x04;
+const ACL_GROUP: u16 = 0x08;
+const ACL_MASK: u16 = 0x10;
+const ACL_OTHER: u16 = 0x20;
+const ACL_VALID_PERMISSIONS: u16 = 0x07;
 
 #[derive(Default)]
 struct XattrStore {
@@ -69,10 +83,79 @@ fn read_name(name: *const c_char) -> AxResult<String> {
     if bytes.is_empty() || bytes.len() > XATTR_NAME_MAX as usize {
         return Err(AxError::InvalidInput);
     }
-    if !name.starts_with("user.") {
+    if !name.starts_with("user.")
+        && name != POSIX_ACL_ACCESS_XATTR
+        && name != POSIX_ACL_DEFAULT_XATTR
+    {
         return Err(AxError::OperationNotSupported);
     }
     Ok(name)
+}
+
+fn read_u16_le(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn read_u32_le(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn posix_acl_mode(value: &[u8]) -> AxResult<NodePermission> {
+    if value.len() < POSIX_ACL_XATTR_HEADER_SIZE
+        || !(value.len() - POSIX_ACL_XATTR_HEADER_SIZE)
+            .is_multiple_of(POSIX_ACL_XATTR_ENTRY_SIZE)
+        || read_u32_le(&value[..POSIX_ACL_XATTR_HEADER_SIZE]) != POSIX_ACL_XATTR_VERSION
+    {
+        return Err(AxError::InvalidInput);
+    }
+
+    let mut expected_tag = ACL_USER_OBJ;
+    let mut needs_mask = false;
+    let mut owner_permissions = None;
+    let mut group_permissions = None;
+    let mut mask_permissions = None;
+    let mut other_permissions = None;
+
+    for entry in value[POSIX_ACL_XATTR_HEADER_SIZE..].chunks_exact(POSIX_ACL_XATTR_ENTRY_SIZE) {
+        let tag = read_u16_le(&entry[..2]);
+        let permissions = read_u16_le(&entry[2..4]);
+        if permissions & !ACL_VALID_PERMISSIONS != 0 {
+            return Err(AxError::InvalidInput);
+        }
+
+        match tag {
+            ACL_USER_OBJ if expected_tag == ACL_USER_OBJ => {
+                owner_permissions = Some(permissions);
+                expected_tag = ACL_USER;
+            }
+            ACL_USER if expected_tag == ACL_USER => needs_mask = true,
+            ACL_GROUP_OBJ if expected_tag == ACL_USER => {
+                group_permissions = Some(permissions);
+                expected_tag = ACL_GROUP;
+            }
+            ACL_GROUP if expected_tag == ACL_GROUP => needs_mask = true,
+            ACL_MASK if expected_tag == ACL_GROUP => {
+                mask_permissions = Some(permissions);
+                expected_tag = ACL_OTHER;
+            }
+            ACL_OTHER
+                if expected_tag == ACL_OTHER || expected_tag == ACL_GROUP && !needs_mask =>
+            {
+                other_permissions = Some(permissions);
+                expected_tag = 0;
+            }
+            _ => return Err(AxError::InvalidInput),
+        }
+    }
+
+    if expected_tag != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let mode = owner_permissions.unwrap() << 6
+        | mask_permissions.unwrap_or(group_permissions.unwrap()) << 3
+        | other_permissions.unwrap();
+    Ok(NodePermission::from_bits_truncate(mode))
 }
 
 /// Read an xattr value from userspace with Linux size limits.
@@ -244,6 +327,14 @@ fn set_xattr(
 
     let name = read_name(name)?;
     let value = read_value(value, size)?;
+    let acl_mode = if name == POSIX_ACL_ACCESS_XATTR {
+        Some(posix_acl_mode(&value)?)
+    } else if name == POSIX_ACL_DEFAULT_XATTR {
+        posix_acl_mode(&value)?;
+        None
+    } else {
+        None
+    };
     let old_attrs = existing_attrs(&overlay::visible_target(&loc)?);
 
     if let Some(attrs) = &old_attrs {
@@ -259,6 +350,15 @@ fn set_xattr(
     }
 
     let loc = overlay::ensure_copy_up_target(&loc)?;
+    if let Some(acl_mode) = acl_mode {
+        let metadata = loc.entry().metadata()?;
+        let special_bits = metadata.mode
+            & (NodePermission::SET_UID | NodePermission::SET_GID | NodePermission::STICKY);
+        loc.update_metadata(MetadataUpdate {
+            mode: Some(special_bits | acl_mode),
+            ..Default::default()
+        })?;
+    }
     let store = store_for_update(&loc);
     let mut attrs = store.attrs.lock();
     if attrs.is_empty()
