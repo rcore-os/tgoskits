@@ -11,7 +11,7 @@ use crate::{
     config::*,
     machine::*,
     vm::{
-        prepare::{address_space::*, devices::*, vcpus::*, *},
+        prepare::{devices::*, vcpus::*, *},
         *,
     },
 };
@@ -31,12 +31,12 @@ impl Aarch64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        complete_vm_init(vm, |resources| {
+        vm.prepare_resources_with(|resources| {
             let vcpu_mappings = resources
                 .config()
                 .phys_cpu_ls
                 .get_vcpu_affinities_pcpu_ids();
-            let placements = vcpu_placements(resources);
+            let placements = resources.vcpu_placements();
             let timer_profile = resources.config().timer_profile().cloned().ok_or_else(|| {
                 AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
             })?;
@@ -72,10 +72,10 @@ impl Aarch64Arch {
                 )?;
             }
 
-            validate_guest_dtb(resources)?;
+            resources.validate_guest_dtb()?;
 
-            let owned_regions = guest_owned_regions(resources);
-            map_guest_address_space(vm, resources, &owned_regions)?;
+            let owned_regions = resources.guest_owned_regions();
+            resources.map_guest_address_space(vm.id(), &owned_regions)?;
             vcpus.setup(resources, move |_config, _memory_regions| {
                 Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
             })?;

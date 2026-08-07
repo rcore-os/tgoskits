@@ -131,18 +131,17 @@ stateDiagram-v2
 
 ## 3. Runtime 生命周期
 
-### 3.1 runtime 由 `start_with` 的闭包**创建**，不是被取入
+### 3.1 runtime 由 `AxVM::start` 新建，再由 `start_with` 提交
 
-`start_with`（machine.rs:108-168）的签名是 `F: FnOnce(&mut R) -> AxVmResult<H>`——闭包
-**返回一个新建的 H**。在 vm 层（vm/mod.rs:779-809）这个闭包：
-- 校验 `vcpu_list`/devices/`interrupt_fabric`（vm/mod.rs:793-804）；
-- 构造 `VmRuntimeHandle::new()`（vm/mod.rs:791）；
-- `spawn_task` 建主 vCPU task（:806）、`add_vcpu_task` 注册（:807）。
+`start_with` 的签名是 `F: FnOnce(&mut R) -> AxVmResult<H>`，闭包负责返回待提交的 runtime。
+vm 层 `AxVM::start` 先创建主 vCPU task 与 `VmRuntimeHandle`，随后校验
+`vcpu_list`/devices/`interrupt_controller`，激活架构设备，再把新 runtime 交给
+`start_with` 完成状态转换；转换成功后才 spawn 并登记主 vCPU task。
 
-因此 `start_with` **只接受 `Stopped{runtime: None}`**（machine.rs:142-157）；`{runtime: Some}`
-返回 `InvalidTransition`。vm 层 `start` 在调 `start_with` 之前先 `take_stopped_runtime`
-（vm/mod.rs:781）清空旧 runtime，保证满足该前置条件。**"把旧 runtime 清掉 + 新建一个"两步
-合并成了外部视角的一次 `start()`**。
+`start_with` 接受 `Ready` 或 `Stopped{resources: Some, runtime: None}`；
+`Stopped{runtime: Some}` 返回 `InvalidTransition`。vm 层从 `Stopped` 启动时先调用
+`take_stopped_runtime()` 并 join 旧 vCPU task，再重新 prepare。**“回收旧 runtime + 重建设备资源 +
+新建 runtime”被合并成外部视角的一次 `start()`**。
 
 ### 3.2 runtime 只在运行态存活
 
@@ -215,14 +214,15 @@ vCPU 退出，不重复请求 stop。API 使用指南把这段概括为"`destroy
 （vm/mod.rs:929-940）对运行态先强制静默到 `Stopped`，再走 `reset_with` → `Ready` 内部瞬态 →
 prepare → `start`，所以外部视角 `reset()` 的终态是 `Running`（`Ready` 只是不可观测的中间态）。
 
-**start 与 reset（从 `Stopped` 出发）的实现层差别：** 两者都经 `prepare()` → `complete_vm_init`
-（prepare.rs:107-148）重建 vCPU/设备/中断结构并 `reset_transient_resources`（prepare.rs:125）。
+**start 与 reset（从 `Stopped` 出发）的实现层差别：** 两者都经 `AxVM::prepare()` →
+`AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构并执行
+`AxVMResources::reset_transient_resources()`。
 差别：`reset()` 额外多走一次 `reset_with`（→`Ready` 瞬态），其闭包显式调
-`reset_transient_resources`（vm/mod.rs:933-937）；`start()` 不经过 `Ready`，靠 `prepare()`
-内部的 `complete_vm_init` 完成同等重建（vm/mod.rs:784）。即 `reset` 路径
+`reset_transient_resources`；`start()` 不经过 `Ready`，靠 `AxVM::prepare()` 内部的架构初始化
+最终调用 `AxVM::prepare_resources_with()` 完成同等重建。即 `reset` 路径
 `reset_transient_resources` 会执行两次（幂等）。幂等性由实现保证：每次调用都是**完全重建、非
-增量**——`devices.take()` 后重置（vm/mod.rs:407-411）、`address_space.clear()` 后按 `memory_regions`
-全量重映射（:412-428）、`vcpu_list`/`interrupt_fabric`/`address_layout` 置 `None`（:429-431）；
+增量**——`devices.take()` 后重置、`address_space.clear()` 后按 `memory_regions`
+全量重映射、`vcpu_list`/`interrupt_controller`/`address_layout` 置 `None`；
 重复调用等价于单次调用，不积累状态。外部视角二者都是 warm reboot——lifecycle.md §4
 已写明 start()-from-Stopped 同样"重新初始化 vCPU/设备/中断架构"、"重映射复用同一批 backing page"，
 两份文档一致（不存在"仅重建 runtime"的旧表述）。
@@ -273,7 +273,7 @@ API 使用指南（lifecycle.md §4）只给外部操作语义；此处给出每
 | 转换 | 源码 | 语义 |
 |------|------|------|
 | `Ready → Running` | `start_with` machine.rs:108 | 同步、原子；无 "starting" 过渡态 |
-| `Stopped → Running` | 同上 :124 | 重启 runtime——vm 层 `prepare()` → `complete_vm_init`（prepare.rs:107-148）重建 vCPU/设备/中断结构并 `reset_transient_resources`（prepare.rs:125，RAM backing 保留），与 lifecycle.md §4 的 **warm reboot** 一致；vm 层先 `take_stopped_runtime`（vm/mod.rs:781）满足 `Stopped{runtime: None}` 前置 |
+| `Stopped → Running` | 同上 :124 | 重启 runtime——vm 层 `AxVM::prepare()` → `AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构并执行 `AxVMResources::reset_transient_resources()`（RAM backing 保留），与 lifecycle.md §4 的 **warm reboot** 一致；vm 层先 `take_stopped_runtime()` 满足 `Stopped{runtime: None}` 前置 |
 | `Ready → Stopped` | `request_stop_with` :281 | 同步直达；`Stopped` = runtime 未运行，不表示曾运行过（未启动的 VM 可停止） |
 | `Running/Paused → Stopping` | `request_stop_with` :290 | 异步：只置标志即返回 |
 | `Stopping → Stopped` | `finish_stop` :346 | 由 vCPU 退出路径调用（vcpus.rs:359-371）。**判定机制**：`mark_vcpu_exiting()` 用 `running_halting_vcpu_count` 原子计数（vCPU 进入运行循环 `mark_vcpu_running` +1、退出 -1，vm/mod.rs:319-330），命中判定条件（`try_update` 结果为 `1`）的那个 vCPU 调 `finish_stop`；失败仅 `warn!`（vcpus.rs:362-364），vCPU 照常退出。该路径依赖 vCPU 真正执行到 VM-exit：若 vCPU task **非正常退出**（如 runtime 缺失，vcpus.rs:301-304）或永不 VM-exit（掩中断忙循环），`finish_stop` 不被调用 → **长期停留 Stopping**（wedged） |

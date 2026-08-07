@@ -9,7 +9,7 @@ use crate::{
     AxVmError, AxVmResult, ax_err,
     config::*,
     vm::{
-        prepare::{address_space::*, device_plan::*, devices::*, vcpus::*, *},
+        prepare::{device_plan::*, devices::*, vcpus::*, *},
         *,
     },
 };
@@ -31,8 +31,8 @@ impl Riscv64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        complete_vm_init(vm, |resources| {
-            let placements = vcpu_placements(resources);
+        vm.prepare_resources_with(|resources| {
+            let placements = resources.vcpu_placements();
             let dtb_addr = resources
                 .config()
                 .image_config()
@@ -48,10 +48,10 @@ impl Riscv64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            validate_guest_dtb(resources)?;
+            resources.validate_guest_dtb()?;
 
-            let owned_regions = guest_owned_regions(resources);
-            map_guest_address_space(vm, resources, &owned_regions)?;
+            let owned_regions = resources.guest_owned_regions();
+            resources.map_guest_address_space(vm.id(), &owned_regions)?;
             vcpus.setup(resources, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))

@@ -8,7 +8,7 @@ use crate::{
     config::*,
     layout::*,
     vm::{
-        prepare::{address_space::*, device_plan::*, devices::*, vcpus::*, *},
+        prepare::{device_plan::*, devices::*, vcpus::*, *},
         *,
     },
 };
@@ -43,20 +43,20 @@ impl X86_64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        complete_vm_init(vm, |resources| {
-            let placements = vcpu_placements(resources);
+        vm.prepare_resources_with(|resources| {
+            let placements = resources.vcpu_placements();
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
             let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            validate_guest_dtb(resources)?;
+            resources.validate_guest_dtb()?;
 
-            let mut owned_regions = guest_owned_regions(resources);
+            let mut owned_regions = resources.guest_owned_regions();
             append_arch_owned_regions(&mut owned_regions);
-            map_guest_address_space(vm, resources, &owned_regions)?;
-            map_arch_address_space(resources)?;
-            let intercepted_ports = resolved_port_intercepts(resources)?;
+            resources.map_guest_address_space(vm.id(), &owned_regions)?;
+            resources.map_arch_address_space()?;
+            let intercepted_ports = resources.resolved_port_intercepts()?;
             vcpus.setup(resources, |config, memory_regions| {
                 build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
             })?;
@@ -170,20 +170,6 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn resolved_port_intercepts(resources: &AxVMResources) -> AxVmResult<alloc::vec::Vec<(u16, u16)>> {
-    let graph = resources.planned_devices().graph();
-    let mut ranges = alloc::vec::Vec::new();
-    for node in graph.nodes() {
-        ranges.extend(
-            graph
-                .resources_for(node.id())?
-                .pio_ranges()
-                .map(|(_, base, size)| (base, size)),
-        );
-    }
-    Ok(ranges)
-}
-
 fn append_arch_owned_regions(regions: &mut std::vec::Vec<GuestOwnedRegion>) {
     regions.push(GuestOwnedRegion::new(
         X86_LOCAL_APIC_GPA,
@@ -192,20 +178,35 @@ fn append_arch_owned_regions(regions: &mut std::vec::Vec<GuestOwnedRegion>) {
     ));
 }
 
-fn map_arch_address_space(resources: &mut AxVMResources) -> AxVmResult {
-    if x86_requires_apic_access_page()? {
-        let gpa = x86_apic_access_page_gpa()?;
-        resources
-            .address_space
-            .map_linear(
-                gpa,
-                x86_apic_access_page_addr()?,
-                PAGE_SIZE_4K,
-                MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
-            )
-            .map_err(|error| AxVmError::memory("map x86 APIC access page", error))?;
+impl AxVMResources {
+    fn resolved_port_intercepts(&self) -> AxVmResult<alloc::vec::Vec<(u16, u16)>> {
+        let graph = self.planned_devices().graph();
+        let mut ranges = alloc::vec::Vec::new();
+        for node in graph.nodes() {
+            ranges.extend(
+                graph
+                    .resources_for(node.id())?
+                    .pio_ranges()
+                    .map(|(_, base, size)| (base, size)),
+            );
+        }
+        Ok(ranges)
     }
-    Ok(())
+
+    fn map_arch_address_space(&mut self) -> AxVmResult {
+        if x86_requires_apic_access_page()? {
+            let gpa = x86_apic_access_page_gpa()?;
+            self.address_space
+                .map_linear(
+                    gpa,
+                    x86_apic_access_page_addr()?,
+                    PAGE_SIZE_4K,
+                    MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE,
+                )
+                .map_err(|error| AxVmError::memory("map x86 APIC access page", error))?;
+        }
+        Ok(())
+    }
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
