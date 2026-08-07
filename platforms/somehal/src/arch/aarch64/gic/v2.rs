@@ -1,5 +1,6 @@
 use alloc::format;
 
+use aarch64_cpu::asm::barrier;
 use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
 use kernutil::StaticCell;
@@ -135,7 +136,9 @@ pub fn init_cpu(cpu_idx: usize) {
             cpu.current_cpu_target()
         })
     };
-    let hardware_cpu_id = super::hardware_cpu_id(cpu_idx);
+    let hardware_cpu_id = super::hardware_cpu_id(cpu_idx).unwrap_or_else(|error| {
+        panic!("failed to resolve hardware ID for logical CPU {cpu_idx}: {error:?}")
+    });
     CPU_TARGETS
         .record(cpu_idx, hardware_cpu_id, target)
         .unwrap_or_else(|error| {
@@ -213,19 +216,24 @@ fn checked_runtime_intid(raw: u32, max_intid: u32) -> Result<IntId, crate::irq::
     checked_intid(raw, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)
 }
 
-pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
-    let sgi = IntId::sgi(raw as u32);
+pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::irq::IrqError> {
+    let raw = u32::try_from(raw).map_err(|_| crate::irq::IrqError::InvalidIrq)?;
+    if raw >= 16 {
+        return Err(crate::irq::IrqError::InvalidIrq);
+    }
+    let sgi = IntId::sgi(raw);
     let target = match target {
-        crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
-        crate::irq::IpiTarget::Other { cpu_id } => {
-            let target_cpu = cpu_target(cpu_id).unwrap_or_else(|| {
-                panic!("GICv2 target is not initialized for logical CPU {cpu_id}")
-            });
-            SGITarget::TargetList(target_cpu)
+        crate::irq::IpiTarget::Current => SGITarget::Current,
+        crate::irq::IpiTarget::Cpu(cpu) => {
+            SGITarget::TargetList(cpu_target(cpu.0).ok_or(crate::irq::IrqError::InvalidCpu)?)
         }
-        crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
     };
+    // The relaxed GICD_SGIR write is the IPI doorbell. Publish prior Normal-
+    // memory stores before ringing it so the target cannot observe the SGI
+    // before the associated payload.
+    barrier::dmb(barrier::ISHST);
     CPU_IF.send_sgi(sgi, target);
+    Ok(())
 }
 
 pub(super) fn cpu_target(cpu_idx: usize) -> Option<TargetList> {

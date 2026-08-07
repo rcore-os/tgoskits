@@ -870,7 +870,7 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
             vm.with_config(|cfg| {
                 println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
                 println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-                println!("  Interrupt Mode: {:?}", cfg.interrupt_mode());
+                println!("  Address Space:  {:?}", cfg.address_space_policy());
                 if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
                     println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
                 }
@@ -1034,7 +1034,7 @@ fn show_vm_full_details(vm_id: usize) {
         vm.with_config(|cfg| {
             println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
             println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-            println!("  Interrupt Mode: {:?}", cfg.interrupt_mode());
+            println!("  Address Space:  {:?}", cfg.address_space_policy());
 
             if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
                 println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
@@ -1090,18 +1090,6 @@ fn show_vm_full_details(vm_id: usize) {
                 if !irqs.is_empty() {
                     println!();
                     println!("  Physical IRQ Routes: {:?}", irqs);
-                }
-            }
-
-            // Show emulated devices
-            if !cfg.emu_devices().is_empty() {
-                println!();
-                println!(
-                    "  Emulated Devices: ({} device(s))",
-                    cfg.emu_devices().len()
-                );
-                for (idx, device) in cfg.emu_devices().iter().enumerate() {
-                    println!("    {}. {:?}", idx + 1, device);
                 }
             }
         });

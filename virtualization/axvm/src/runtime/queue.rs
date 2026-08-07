@@ -21,9 +21,9 @@
 //! covered by `#[test]` on the host when the `host-test` feature is
 //! enabled.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use std::{collections::BTreeMap, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 
 use crate::irq::model::PendingVcpuInterrupt;
 
@@ -59,14 +59,14 @@ impl VcpuInterruptQueue {
         self.pending
             .lock()
             .get_mut(&vcpu_id)
-            .map(core::mem::take)
+            .map(std::mem::take)
             .unwrap_or_default()
     }
 }
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use super::*;
     use crate::irq::model::VirtualInterruptId;

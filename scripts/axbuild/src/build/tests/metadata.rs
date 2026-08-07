@@ -71,3 +71,30 @@ fn unknown_ax_hal_features_are_not_platforms() {
         assert_eq!(ax_hal_platform_feature_name(feature, Some(&metadata)), None);
     }
 }
+
+#[test]
+fn axvm_os_implementation_dependencies_are_facaded_by_ax_std() {
+    let metadata = repo_metadata();
+    let axvm = workspace_package(&metadata, "axvm").unwrap();
+    let forbidden = [
+        "ax-hal",
+        "ax-kernel-guard",
+        "ax-kspin",
+        "ax-lazyinit",
+        "ax-percpu",
+        "ax-sync",
+        "spin",
+    ];
+
+    let direct_forbidden = axvm
+        .dependencies
+        .iter()
+        .filter(|dependency| forbidden.contains(&dependency.name.as_str()))
+        .map(|dependency| dependency.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        direct_forbidden.is_empty(),
+        "axvm must obtain OS implementation capabilities through ax-std: {direct_forbidden:?}"
+    );
+}

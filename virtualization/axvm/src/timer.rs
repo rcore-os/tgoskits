@@ -1,21 +1,20 @@
 //! AxVM-owned CPU-bucketed VM timer wheels.
 
-extern crate alloc;
-
-#[cfg(test)]
-use alloc::vec::Vec;
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
-use core::{
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-    time::Duration,
-};
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
+#[cfg(test)]
+use std::vec::Vec;
+use std::{
+    boxed::Box,
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use ax_kernel_guard::NoPreempt;
-use ax_kspin::SpinNoIrq;
-use ax_lazyinit::LazyInit;
-use ax_std::os::arceos::modules::ax_task::IrqNotify;
+use ax_std::os::arceos::{guard::NoPreempt, modules::ax_task::IrqNotify, sync::IrqSafeMutex};
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 #[cfg(not(test))]
@@ -198,7 +197,7 @@ impl TimerWheels {
     }
 }
 
-static TIMER_WHEELS: LazyInit<SpinNoIrq<TimerWheels>> = LazyInit::new();
+static TIMER_WHEELS: std::sync::OnceLock<IrqSafeMutex<TimerWheels>> = std::sync::OnceLock::new();
 
 pub(crate) fn register_timer(
     deadline_ns: u64,
@@ -300,7 +299,7 @@ fn rearm_remote_owner_host_timer(owner_cpu: usize) {
     let result = task::run_on_cpu_sync(
         owner_cpu,
         rearm_current_host_timer_from_wheel_thunk,
-        core::ptr::null_mut(),
+        std::ptr::null_mut(),
     );
     if let Err(error) = result {
         warn!("failed to rearm AxVM timer on owner CPU {owner_cpu}: {error:?}; sending IPI");
@@ -328,7 +327,7 @@ pub(crate) fn init_percpu() {
             worker_notify.wait();
             check_events();
         },
-        alloc::format!("axvm-timer-{cpu_id}"),
+        std::format!("axvm-timer-{cpu_id}"),
         TIMER_WORKER_STACK_SIZE,
     );
     let cpu_bit = 1usize
@@ -340,7 +339,7 @@ pub(crate) fn init_percpu() {
 }
 
 fn with_timer_wheels<R>(operation: impl FnOnce(&mut TimerWheels) -> R) -> R {
-    let timer_wheels = TIMER_WHEELS.get_or_init(|| SpinNoIrq::new(TimerWheels::new()));
+    let timer_wheels = TIMER_WHEELS.get_or_init(|| IrqSafeMutex::new(TimerWheels::new()));
     operation(&mut timer_wheels.lock())
 }
 

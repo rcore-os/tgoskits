@@ -1,6 +1,6 @@
 //! Core vCPU and nested-paging contract implemented by every target architecture.
 
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use ax_memory_addr::VirtAddr;
 use axaddrspace::NestedPageTableOps;
@@ -284,9 +284,9 @@ pub(crate) fn default_vcpu_affinities(
 
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
-    use alloc::{sync::Arc, vec};
+    use std::{sync::Arc, vec};
 
-    use ax_kspin::SpinNoIrq;
+    use ax_std::os::arceos::sync::IrqSafeMutex;
     use axvm_types::{
         GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
         VmArchVcpuOps, VmBackendError, VmBackendResult,
@@ -302,11 +302,11 @@ mod tests {
     }
 
     struct RecordingVcpu {
-        injections: Arc<SpinNoIrq<InjectionLog>>,
+        injections: Arc<IrqSafeMutex<InjectionLog>>,
     }
 
     impl VmArchVcpuOps for RecordingVcpu {
-        type CreateConfig = Arc<SpinNoIrq<InjectionLog>>;
+        type CreateConfig = Arc<IrqSafeMutex<InjectionLog>>;
         type SetupConfig = ();
         type Exit = ();
 
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn inject_vcpu_interrupt_preserves_level_trigger_at_backend_boundary() {
-        let injections = Arc::new(SpinNoIrq::new(InjectionLog::default()));
+        let injections = Arc::new(IrqSafeMutex::new(InjectionLog::default()));
         let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap());
         let interrupt = PendingVcpuInterrupt {
             id: VirtualInterruptId(0x31),
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn dispatcher_drain_injects_fifo_once_and_consumes_failed_entries() {
-        let injections = Arc::new(SpinNoIrq::new(InjectionLog {
+        let injections = Arc::new(IrqSafeMutex::new(InjectionLog {
             failing_vector: Some(0x42),
             ..Default::default()
         }));

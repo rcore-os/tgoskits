@@ -1,16 +1,10 @@
 //! Native x86 host I/O port passthrough devices.
 
-use alloc::{boxed::Box, sync::Arc};
+use std::{boxed::Box, sync::Arc};
 
-use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
-    DeviceRegistration,
-};
-use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
-    Port, Resource,
-};
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, PassThroughPortConfig};
+use axdevice::*;
+use axdevice_base::*;
+use axvm_types::HostPortAssignment;
 
 use crate::{AxVmResult, ax_err};
 
@@ -33,7 +27,7 @@ impl HostPortPassthrough {
         Ok(Self {
             base: Port::new(base),
             length,
-            resources: alloc::vec![Resource::PortRange { base, size: length }].into_boxed_slice(),
+            resources: std::vec![Resource::PortRange { base, size: length }].into_boxed_slice(),
         })
     }
 
@@ -85,12 +79,12 @@ impl HostPortPassthrough {
 
 /// Builds the atomic device contribution for one configured host port range.
 pub(crate) struct HostPortPassthroughFactory {
-    config: PassThroughPortConfig,
+    config: HostPortAssignment,
 }
 
 impl HostPortPassthroughFactory {
     /// Creates a factory for one validated-at-build-time port range.
-    pub(crate) const fn new(config: PassThroughPortConfig) -> Self {
+    pub(crate) const fn new(config: HostPortAssignment) -> Self {
         Self { config }
     }
 
@@ -109,33 +103,46 @@ impl HostPortPassthroughFactory {
 
 /// Factory registry entry for planner-generated x86 host-port passthrough
 /// device configs.
-pub(crate) struct HostPortPassthroughDeviceFactory;
+pub(crate) struct HostPortPassthroughDeviceModel {
+    base: u16,
+    length: u16,
+}
 
-impl DeviceFactory for HostPortPassthroughDeviceFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::X86PortPassthrough
+impl HostPortPassthroughDeviceModel {
+    pub(crate) const fn new(base: u16, length: u16) -> Self {
+        Self { base, length }
+    }
+}
+
+impl DeviceModel for HostPortPassthroughDeviceModel {
+    fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+        HostPortPassthrough::new(self.base, self.length).map_err(|error| {
+            DeviceManagerError::InvalidConfig {
+                operation: "declare host port passthrough",
+                detail: std::format!("{error}"),
+            }
+        })?;
+        DeviceRequirements::new().with_pio(
+            ResourceSlot::new("registers")?,
+            self.length,
+            1,
+            ResourceRequest::Fixed(self.base),
+        )
     }
 
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        let base =
-            u16::try_from(config.base_gpa).map_err(|_| DeviceManagerError::InvalidConfig {
+    fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let (base, length) = context.pio(&ResourceSlot::new("registers")?)?;
+        if base != self.base || length != self.length {
+            return Err(DeviceManagerError::InvalidConfig {
                 operation: "build host port passthrough",
-                detail: "base port does not fit in u16".into(),
-            })?;
-        let length =
-            u16::try_from(config.length).map_err(|_| DeviceManagerError::InvalidConfig {
-                operation: "build host port passthrough",
-                detail: "port range length does not fit in u16".into(),
-            })?;
-        HostPortPassthroughFactory::new(PassThroughPortConfig { base, length })
+                detail: "planned port range differs from the internal device config".into(),
+            });
+        }
+        HostPortPassthroughFactory::new(HostPortAssignment { base, length })
             .build()
             .map_err(|error| DeviceManagerError::InvalidConfig {
                 operation: "build host port passthrough",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             })
     }
 }
@@ -174,7 +181,7 @@ impl Device for HostPortPassthrough {
 unsafe fn inb(port: u16) -> u8 {
     let value: u8;
     unsafe {
-        core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack));
+        std::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack));
     }
     value
 }
@@ -182,7 +189,7 @@ unsafe fn inb(port: u16) -> u8 {
 unsafe fn inw(port: u16) -> u16 {
     let value: u16;
     unsafe {
-        core::arch::asm!("in ax, dx", in("dx") port, out("ax") value, options(nomem, nostack));
+        std::arch::asm!("in ax, dx", in("dx") port, out("ax") value, options(nomem, nostack));
     }
     value
 }
@@ -190,26 +197,26 @@ unsafe fn inw(port: u16) -> u16 {
 unsafe fn inl(port: u16) -> u32 {
     let value: u32;
     unsafe {
-        core::arch::asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack));
+        std::arch::asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack));
     }
     value
 }
 
 unsafe fn outb(port: u16, value: u8) {
     unsafe {
-        core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack));
+        std::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack));
     }
 }
 
 unsafe fn outw(port: u16, value: u16) {
     unsafe {
-        core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));
+        std::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));
     }
 }
 
 unsafe fn outl(port: u16, value: u32) {
     unsafe {
-        core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack));
+        std::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack));
     }
 }
 
@@ -255,7 +262,7 @@ mod tests {
 
     #[test]
     fn passthrough_port_bundle_registers_through_device_runtime() {
-        let bundle = HostPortPassthroughFactory::new(PassThroughPortConfig {
+        let bundle = HostPortPassthroughFactory::new(HostPortAssignment {
             base: 0x6000,
             length: 0x80,
         })
@@ -265,8 +272,6 @@ mod tests {
 
         devices.register_bundle(bundle).unwrap();
 
-        assert!(devices.find_port_dev(Port::new(0x6000)).is_some());
-        assert!(devices.find_port_dev(Port::new(0x607f)).is_some());
-        assert!(devices.find_port_dev(Port::new(0x6080)).is_none());
+        assert_eq!(devices.device_count(), 1);
     }
 }

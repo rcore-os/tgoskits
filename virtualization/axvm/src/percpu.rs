@@ -1,8 +1,8 @@
 //! AxVM-owned per-CPU virtualization state.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use ax_kernel_guard::NoPreemptIrqSave;
+use ax_std::os::arceos::{guard::NoPreemptIrqSave, percpu as ax_percpu};
 use axvm_types::VmArchPerCpuOps;
 
 use crate::{
@@ -103,8 +103,8 @@ fn with_current_percpu_mut<R>(operation: impl FnOnce(&mut AxVMPerCpu) -> R) -> R
     // SAFETY: initialization and hardware enable are serialized once per CPU;
     // the guard excludes migration, IRQ/re-entry, and conflicting access.
     unsafe {
-        ax_percpu::with_cpu_pin(|pin| {
-            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+        ax_std::os::arceos::percpu::with_cpu_pin(|pin| {
+            ax_std::os::arceos::percpu::with_exclusive_cpu(pin, |exclusive| {
                 AXVM_PER_CPU.with_current_mut(exclusive, operation)
             })
         })

@@ -97,17 +97,20 @@ impl IrqIf for IrqIfImpl {
         Some(irq)
     }
 
-    fn send_ipi(id: IrqId, target: ax_plat::irq::IpiTarget) {
+    fn send_ipi(id: IrqId, target: ax_plat::irq::IpiTarget) -> Result<(), IrqError> {
         let target = match target {
-            ax_plat::irq::IpiTarget::Current { cpu_id } => {
-                somehal::irq::IpiTarget::Current { cpu_id }
-            }
-            ax_plat::irq::IpiTarget::Other { cpu_id } => somehal::irq::IpiTarget::Other { cpu_id },
-            ax_plat::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
-                somehal::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num }
+            ax_plat::irq::IpiTarget::Current => somehal::irq::IpiTarget::Current,
+            ax_plat::irq::IpiTarget::Cpu(cpu) => {
+                if cpu.0 >= ax_plat::power::cpu_num() {
+                    return Err(IrqError::InvalidCpu);
+                }
+                if !ax_plat::irq::is_cpu_online(cpu.0) {
+                    return Err(IrqError::CpuOffline);
+                }
+                somehal::irq::IpiTarget::Cpu(somehal::irq::CpuId(cpu.0))
             }
         };
-        somehal::irq::send_ipi(id, target);
+        somehal::irq::send_ipi(id, target)
     }
 
     fn ipi_irq() -> IrqId {

@@ -93,6 +93,8 @@ cfg_if::cfg_if! {
         pub use self::api::{sleep, sleep_until, yield_now};
         #[cfg(feature = "tracepoint-hooks")]
         pub use self::sched_tracepoint::SchedTracepoint;
+        #[cfg(all(feature = "smp", feature = "ipi"))]
+        pub use self::run_queue::handle_ipi_reschedule;
     } else {
         mod api_s;
         pub use self::api_s::{sleep, sleep_until, yield_now};

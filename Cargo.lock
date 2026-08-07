@@ -64,6 +64,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "acpi_tables"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce821f856a3eb1d033287f2dcfcdf94276d7895dd5bdd8ca45ae17e7d33d4dd9"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -206,9 +215,9 @@ dependencies = [
 
 [[package]]
 name = "android_system_properties"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
 ]
@@ -280,9 +289,9 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apple-native-keyring-store"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "797f94b6a53d7d10b56dc18290e0d40a2158352f108bb4ff32350825081a9f29"
+checksum = "2b350bfd03649e07aa05c0a81b3e15934374e585c98204a57e20b9d49f49bb9a"
 dependencies = [
  "keyring-core",
  "log",
@@ -944,7 +953,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-percpu",
  "log",
- "quote",
 ]
 
 [[package]]
@@ -1236,8 +1244,10 @@ dependencies = [
  "ax-errno 0.6.2",
  "ax-hal",
  "ax-io",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-lazyinit",
+ "ax-percpu",
  "ax-posix-api",
  "ax-runtime",
  "ax-task",
@@ -1578,7 +1588,9 @@ version = "0.5.23"
 dependencies = [
  "anyhow",
  "ax-driver",
+ "ax-hal",
  "ax-std",
+ "ax-task",
  "axbacktrace",
  "axbuild",
  "axtest",
@@ -1600,19 +1612,15 @@ name = "axvm"
 version = "0.5.25"
 dependencies = [
  "aarch64-cpu-ext",
+ "acpi_tables",
  "arm-gic-driver",
  "arm_vcpu",
  "arm_vgic",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
- "ax-hal",
- "ax-kernel-guard",
- "ax-kspin",
- "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-percpu",
  "ax-plat",
  "ax-std",
  "ax-timer-list",
@@ -1626,12 +1634,10 @@ dependencies = [
  "bit_field",
  "bitflags 2.13.1",
  "byte-unit",
- "cfg-if",
  "cpu-local",
  "extern-trait",
  "fdt-edit",
  "fdt-raw",
- "hashbrown 0.14.5",
  "irq-framework",
  "log",
  "loongarch_vcpu",
@@ -1643,7 +1649,7 @@ dependencies = [
  "rdrive",
  "riscv_vcpu",
  "riscv_vplic",
- "spin",
+ "serde",
  "thiserror 2.0.19",
  "x86",
  "x86_vcpu",
@@ -2133,9 +2139,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
+checksum = "473c7e07f409a8d772161724aa8db6a765a2532a70f9667eeb7b49d3d02fbdca"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -2143,9 +2149,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.5"
+version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
+checksum = "7b48fea5a88e9ae728a2dcbedbfc0e730f7d60da42e1cb049a83c9fb8b789889"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3862,16 +3868,6 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash 0.8.12",
- "allocator-api2",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
@@ -5529,9 +5525,9 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.26.0"
+version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e925c3719ebd62bc412332e9b78ad994a1fcb96a02840776e8708b0cab748324"
+checksum = "83b6dcc7618bf13d75e0fa02acb0eebf3c3d00eb624468c1eef4f64d75b56752"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5570,7 +5566,6 @@ dependencies = [
  "tokio-util",
  "toml 1.1.4+spec-1.1.0",
  "uboot-shell",
- "ureq",
  "url",
 ]
 
@@ -6002,11 +5997,11 @@ dependencies = [
 
 [[package]]
 name = "ptr_meta"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b9a0cf95a1196af61d4f1cbdab967179516d9a4a4312af1f31948f8f6224a79"
+checksum = "743da816b98c921cdbe8628ef7381b76f25ecf4da599fc80aca90eae7ef70cc0"
 dependencies = [
- "ptr_meta_derive 0.3.1",
+ "ptr_meta_derive 0.3.2",
 ]
 
 [[package]]
@@ -6022,13 +6017,13 @@ dependencies = [
 
 [[package]]
 name = "ptr_meta_derive"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7347867d0a7e1208d93b46767be83e2b8f978c3dad35f775ac8d8847551d6fe1"
+checksum = "1c8d9ca532f185d5d4db7a7c9d51420b452168ea1c2b913953281bd6fe1fcbd0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -8633,7 +8628,11 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
@@ -8878,6 +8877,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.19",
  "utf-8",
@@ -8954,7 +8955,7 @@ dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
  "log",
- "ptr_meta 0.3.1",
+ "ptr_meta 0.3.2",
  "ucs2",
  "uefi-macros",
  "uefi-raw",
@@ -9253,7 +9254,10 @@ dependencies = [
  "axdevice_base",
  "axvm",
  "axvm-types",
+ "axvmconfig",
  "irq-framework",
+ "serde",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
@@ -10068,18 +10072,18 @@ checksum = "2fe21bcc34ca7fe6dd56cc2cb1261ea59d6b93620215aefb5ea6032265527784"
 
 [[package]]
 name = "zerocopy"
-version = "0.8.55"
+version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a105cd7b140f6eeec8acff2ea38135d3cab283ada58540f629fe51e46696eb"
+checksum = "556764e583adb45a9f8d413c2a147fa7e8d821e48e12b14fd560b607998b75eb"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.55"
+version = "0.8.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fe976fb70c78cd64cccfe3a6fc142244e8a77b70959b30faf9d0ac37ee228eb"
+checksum = "f2ab42fc20575779bd240faa45f94a74256f755c0fa9e89f0ede20d91d0cdfc1"
 dependencies = [
  "proc-macro2",
  "quote",

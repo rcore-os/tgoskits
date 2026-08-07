@@ -1,6 +1,6 @@
 //! LoongArch64 implementations of AxVM platform capability hooks.
 
-use alloc::sync::Arc;
+use std::sync::Arc;
 
 use ax_std::os::arceos::modules::ax_task::IrqNotify;
 

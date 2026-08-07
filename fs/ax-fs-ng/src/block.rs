@@ -41,7 +41,7 @@ pub(crate) trait FsBlockDevice: Send {
     fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> AxResult;
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult;
-    #[cfg(feature = "ext4")]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn flush(&mut self) -> AxResult;
 }
 
@@ -67,7 +67,7 @@ impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
         (**self).write_block(block_id, buf)
     }
 
-    #[cfg(feature = "ext4")]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn flush(&mut self) -> AxResult {
         (**self).flush()
     }
@@ -146,7 +146,7 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
         self.inner.write_block(physical, buf)
     }
 
-    #[cfg(feature = "ext4")]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn flush(&mut self) -> AxResult {
         self.inner.flush()
     }
@@ -174,7 +174,7 @@ impl FsBlockDevice for NativeHandleBlockDevice {
         self.handle.write_blocks(block_id, buf)
     }
 
-    #[cfg(feature = "ext4")]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     fn flush(&mut self) -> AxResult {
         self.handle.flush_blocks()
     }

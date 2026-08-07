@@ -1,6 +1,6 @@
 //! Architecture-neutral guest device-tree preparation.
 
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use axvmconfig::{GuestConfig, VMBootProtocol};
 

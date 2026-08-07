@@ -3,10 +3,7 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use core::alloc::Layout;
 #[cfg(feature = "smp")]
 use core::sync::atomic::AtomicPtr;
-#[cfg(any(
-    feature = "preempt",
-    all(feature = "stack-guard-page", feature = "smp", feature = "ipi")
-))]
+#[cfg(feature = "preempt")]
 use core::sync::atomic::AtomicUsize;
 use core::{
     cell::{Cell, UnsafeCell},
@@ -634,8 +631,6 @@ impl TaskInner {
             // disable preemption here, because the ax-log may cause preemption.
             let mut rq = crate::current_run_queue::<NoPreemptIrqSave>();
             if curr.take_force_resched_pending() {
-                #[cfg(all(feature = "smp", feature = "ipi"))]
-                crate::run_queue::clear_remote_reschedule_pending_for_current_cpu();
                 rq.force_resched()
             } else if curr.need_resched.load(Ordering::Acquire) {
                 rq.preempt_resched()
@@ -922,8 +917,6 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
 fn flush_stack_guard_tlb(vaddr: VirtAddr) {
     let _guard = ax_kernel_guard::NoPreempt::new();
     let current_cpu = ax_hal::percpu::this_cpu_id();
-    let ack_count = Arc::new(AtomicUsize::new(0));
-    let mut remote_cpu_count = 0;
 
     core::sync::atomic::fence(Ordering::SeqCst);
 
@@ -932,31 +925,26 @@ fn flush_stack_guard_tlb(vaddr: VirtAddr) {
             continue;
         }
 
-        remote_cpu_count += 1;
-        let ack_count = ack_count.clone();
-        ax_ipi::run_on_cpu(cpu_id, move || {
-            ax_hal::asm::flush_tlb(Some(vaddr));
-            ack_count.fetch_add(1, Ordering::Release);
+        unsafe fn flush_on_target(argument: *mut ()) {
+            let address = unsafe { &*(argument as *const VirtAddr) };
+            ax_hal::asm::flush_tlb(Some(*address));
+        }
+
+        // SAFETY: call_on_cpu is synchronous, so the stack-borrowed address
+        // remains valid until the target finishes the hard-IRQ-safe TLB flush.
+        unsafe {
+            ax_ipi::call_on_cpu(
+                ax_hal::irq::CpuId(cpu_id),
+                flush_on_target,
+                core::ptr::from_ref(&vaddr).cast_mut().cast(),
+            )
+        }
+        .unwrap_or_else(|error| {
+            panic!("failed to flush stack guard TLB on CPU {cpu_id}: {error:?}")
         });
     }
 
     ax_hal::asm::flush_tlb(Some(vaddr));
-    if remote_cpu_count == 0 {
-        return;
-    }
-
-    const MAX_WAIT_NS: u64 = 5 * ax_hal::time::NANOS_PER_SEC;
-    let start = ax_hal::time::monotonic_time_nanos();
-    while ack_count.load(Ordering::Acquire) != remote_cpu_count {
-        core::hint::spin_loop();
-        if ax_hal::time::monotonic_time_nanos() - start > MAX_WAIT_NS {
-            let acked = ack_count.load(Ordering::Acquire);
-            panic!(
-                "task stack guard page TLB shootdown timeout: CPU {current_cpu} got \
-                 {acked}/{remote_cpu_count} ack(s) for vaddr={vaddr:#x}"
-            );
-        }
-    }
 }
 
 #[cfg(feature = "stack-guard-page")]

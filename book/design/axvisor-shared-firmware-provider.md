@@ -70,7 +70,7 @@ Provider 缺少 `reg` 表示没有需要仲裁的 mutable MMIO。当前 mutable 
 
 Rockchip high-half write-mask register 允许转发无关字段，而不需要软件 read-modify-write lock。Fractional divider register 作为整体拒绝访问，因为 numerator 与 denominator 构成不可分割的 clock configuration。
 
-## Factory、资源与访问流程
+## dyn 模型、资源与访问流程
 
 Provider resolution 在架构资源构建期间的 task context 中执行：
 
@@ -78,19 +78,19 @@ Provider resolution 在架构资源构建期间的 task context 中执行：
 2. 对 `Passthrough` 客户机，通过 `rdrive` 解析 provider phandle；
 3. 通过 typed clock capability 请求 protection rule；
 4. 合并并去重同一 provider 的引用；
-5. 为每个 provider 生成一个不可变的内部 `EmulatedDeviceConfig`；
-6. 架构层注册一个持有已校验 plan 的 factory；
-7. factory 映射物理 provider 并返回 `SharedMmioDevice`；
+5. 为每个 provider 创建一个持有已校验 plan 的 `Arc<dyn DeviceModel>`；
+6. 把该模型作为 `HostReplacement` 节点加入 AArch64 设备图；
+7. 同一个模型在 `build()` 中映射物理 provider 并返回 `SharedMmioDevice`；
 8. device claim 完整 provider MMIO range；
 9. 地址 planner 把该资源视为 emulated-device hole，因此 stage-2 passthrough mapping 不与其重叠。
 
-内部 device config 包含 plan index，并把 provider phandle 作为 fingerprint。映射硬件前，factory 会比对完整 name、type、range、index 与 phandle；它不解释客户机配置。后续构建失败时，普通 `DeviceBundle` 注册会原子回滚资源。
+模型直接持有拥有所有权的 provider region 和 protection rule，不保存原始 TOML，也不依赖设备类型枚举或中心 factory lookup。`requirements()` 只声明完整 provider 固定 MMIO slot；`build()` 必须消费并核对该 slot 后才映射硬件。后续构建失败时，`DeviceBundle` 与资源 lease 会一起原子回滚。
 
 读取按原 width 转发。写入先检查 range 与 alignment，再由不可变规则过滤，最后转发或抑制。Runtime path 不执行 driver lookup、不分配、不查找 VM、不调用 callback，也不获取 provider lock。
 
 ## 并发与生命周期
 
-Factory 构建完成后，provider rule 与 mapped region 均不可变。多个 vCPU 可以并发调用 MMIO device。Rockchip masked write 仍是原子的硬件操作，被拒绝的 register 永不到达硬件；没有 shadow clock state，也没有第二条 pending queue。
+模型构建完成后，provider rule 与 mapped region 均不可变。多个 vCPU 可以并发调用 MMIO device。Rockchip masked write 仍是原子的硬件操作，被拒绝的 register 永不到达硬件；没有 shadow clock state，也没有第二条 pending queue。
 
 Host clock driver 仍可通过自身 typed operation 访问同一个物理 provider。因此，安全共享依赖不需要软件 read-modify-write transaction 的硬件操作。未来 provider 如果需要串行化，必须把该串行化能力作为 runtime capability 暴露，而不是在 AxVM 中增加全局锁。
 
@@ -104,7 +104,7 @@ Planner 会拒绝：
 - provider region/specifier layout 不受支持；
 - protection rule 无效或越界；
 - 同一 phandle 对应不一致的 region；
-- factory config 与已校验 plan 不一致；
+- resolved fixed slot 与已校验 provider region 不一致；
 - 物理 provider 映射失败。
 
 上述情况不存在 raw-passthrough fallback。安全的 fixed provider 通过缺少 mutable provider region 表达，而不是忽略错误。
@@ -118,7 +118,7 @@ cargo test -p axvm --no-default-features --features host-test \
   shared_mmio::tests::strips_rk3568_uart2_gate_disable_write -- --exact
 ```
 
-实现 filter 前，真实 RK3568 `0x0009_0009` gate-disable write 会被转发；同一个测试现在会抑制它。其他单元测试覆盖无关 bit 转发、partial/denied write、对未保护 register 的零写、资源身份，以及 MMIO read/write 转发。Rockchip 测试固定 RK3568 与 RK3588 UART2 的完整 gate、selector、mux 和 fractional-divider rule。FDT 测试覆盖 multi-clock 解析与 malformed specifier。现有 address-layout 测试证明每个 emulated MMIO resource 都会在 passthrough mapping 中打洞。
+实现 filter 前，真实 RK3568 `0x0009_0009` gate-disable write 会被转发；同一个测试现在会抑制它。其他单元测试覆盖无关 bit 转发、partial/denied write、对未保护 register 的零写、资源身份，以及 MMIO read/write 转发。Rockchip 测试固定 RK3568 与 RK3588 UART2 的完整 gate、selector、mux 和 fractional-divider rule。FDT 测试覆盖 multi-clock 解析与 malformed specifier。设备图的 replacement range 验证证明每个共享 provider 完整范围都会从 passthrough mapping 中扣除。
 
 集成验证必须包括：
 

@@ -1,4 +1,4 @@
-use alloc::{vec, vec::Vec};
+use std::{vec, vec::Vec};
 
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::{MemoryReservation, RegInfo};
@@ -62,7 +62,7 @@ fn tree_rebuilds_memory_nodes_from_guest_regions() {
         .iter_node_ids()
         .map(|id| reparsed.path_of(id))
         .filter(|path| path.starts_with("/memory"))
-        .collect::<alloc::vec::Vec<_>>();
+        .collect::<std::vec::Vec<_>>();
 
     assert_eq!(memory_paths, ["/memory@80000000", "/memory@90000000"]);
     let first = reparsed.get_by_path("/memory@80000000").unwrap();
@@ -142,7 +142,7 @@ fn explicit_cmdline_replaces_host_bootargs() {
 
 #[test]
 fn host_fdt_pointer_rejects_null() {
-    assert!(host_fdt_bytes_from_ptr(core::ptr::null()).is_none());
+    assert!(host_fdt_bytes_from_ptr(std::ptr::null()).is_none());
 }
 
 #[test]

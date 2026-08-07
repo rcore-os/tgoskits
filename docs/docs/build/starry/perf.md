@@ -8,9 +8,9 @@ sidebar_label: "性能剖析"
 `cargo xtask starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图（SVG/HTML/Folded）、Pprof 或 callchain 数据。这是 StarryOS 独有的命令，[ArceOS](../arceos/overview) 和 [Axvisor](../axvisor/overview) 没有。
 
 目前支持 `riscv64`、`loongarch64` 和 `x86_64`。x86_64 使用 StarryOS 的 q35/UEFI
-启动配置；命令会优先复用 ostool 下载的 OVMF，也可以通过 `QPERF_OVMF_DIR` 指向包含
-`code.fd` 和 `vars.fd` 的目录。建议在 x86_64 上同时使用 `--kernel-filter`，排除 UEFI
-固件和用户态地址。
+启动配置，并通过 Ostool 的固定版本和 SHA-256 校验流程复用公共 OVMF 缓存。需要隔离缓存时，
+统一设置 `TGOS_OVMF_DIR`；该目录必须使用 Ostool 的 `<arch>/code.fd`、`vars.fd` 布局。
+建议在 x86_64 上同时使用 `--kernel-filter`，排除 UEFI 固件和用户态地址。
 
 ## 剖析流程
 

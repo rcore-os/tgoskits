@@ -14,17 +14,10 @@
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
-use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-    DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
-    StopGrant, SysRegAddr, TimerGrant, WakeGrant,
-};
-use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr};
+use axdevice_base::*;
+use axvm_types::GuestPhysAddr;
 
-use crate::{
-    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle, DeviceManagerError,
-    DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey, PollableDeviceOps,
-};
+use crate::{runtime_resources::*, *};
 
 /// Runtime backend for access-scoped virtual timer requests.
 pub trait TimerAccessPort: Send + Sync {
@@ -151,14 +144,14 @@ pub struct DeviceRuntime {
     port_index: BTreeMap<u16, RangeEntry>,
     /// System register address → range entry (slot, count).
     sysreg_index: BTreeMap<u32, RangeEntry>,
-    /// Exclusive IRQ line → owning device slot.
-    irq_line_index: BTreeMap<u32, DeviceId>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// Optional lifecycle capabilities in contribution registration order.
     lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// Typed capabilities contributed during VM preparation.
     services: DeviceServices,
+    /// Planned controller, endpoint, and lease state.
+    planned: PlannedRuntimeResources,
     /// Devices explicitly granted access to guest memory during a routed access.
     ///
     /// The grant is intentionally narrow: it is supplied only by the VM's MMIO
@@ -187,6 +180,14 @@ struct RuntimeDeviceAccess<'a> {
     access_ports: &'a RuntimeAccessPorts,
 }
 
+impl RuntimeDeviceAccess<'_> {
+    fn has_grant<T>(&self, grants: &[(DeviceId, T)], matches_token: impl Fn(&T) -> bool) -> bool {
+        grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && matches_token(registered)
+        })
+    }
+}
+
 impl DeviceAccess for RuntimeDeviceAccess<'_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
@@ -197,9 +198,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
         addr: GuestPhysAddr,
         data: &mut [u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.dma_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "read guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -220,9 +219,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
         addr: GuestPhysAddr,
         data: &[u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.dma_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "write guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -239,9 +236,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn schedule_timer(&mut self, grant: &TimerGrant, deadline_ns: u64) -> Result<(), DeviceError> {
-        if !self.timer_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.timer_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "schedule timer from device access",
                 detail: "device has no timer grant".into(),
@@ -261,9 +256,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn wake_vcpu(&mut self, grant: &WakeGrant, vcpu_id: usize) -> Result<(), DeviceError> {
-        if !self.wake_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.wake_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "wake vCPU from device access",
                 detail: "device has no wake grant".into(),
@@ -282,9 +275,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn request_vm_stop(&mut self, grant: &StopGrant, reason: &str) -> Result<(), DeviceError> {
-        if !self.stop_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.stop_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "request VM stop from device access",
                 detail: "device has no stop grant".into(),
@@ -310,10 +301,10 @@ impl DeviceRuntime {
             mmio_index: BTreeMap::new(),
             port_index: BTreeMap::new(),
             sysreg_index: BTreeMap::new(),
-            irq_line_index: BTreeMap::new(),
             pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
+            planned: PlannedRuntimeResources::new(),
             dma_grants: Vec::new(),
             timer_grants: Vec::new(),
             wake_grants: Vec::new(),
@@ -323,29 +314,12 @@ impl DeviceRuntime {
         }
     }
 
-    /// Builds all configured devices through registered factories.
-    pub fn build_with_factories(
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<Self> {
-        Self::build_with_factories_and_ports(configs, factories, context, RuntimeAccessPorts::new())
+    pub(crate) fn attach_access_ports(&mut self, access_ports: RuntimeAccessPorts) {
+        self.access_ports = access_ports;
     }
 
-    /// Builds all configured devices and attaches VM runtime access ports.
-    pub fn build_with_factories_and_ports(
-        configs: &[EmulatedDeviceConfig],
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-        access_ports: RuntimeAccessPorts,
-    ) -> DeviceManagerResult<Self> {
-        let mut this = Self::empty();
-        this.access_ports = access_ports;
-        for config in configs {
-            this.register_factory_device(config, factories, context)?;
-        }
-        this.seal();
-        Ok(this)
+    pub(crate) const fn interrupt_registry(&self) -> &crate::interrupt::InterruptRegistry {
+        &self.planned.interrupts
     }
 
     /// Freezes this runtime topology after VM preparation.
@@ -363,26 +337,14 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Builds and atomically registers one factory-managed device.
-    pub(crate) fn register_factory_device(
-        &mut self,
-        config: &EmulatedDeviceConfig,
-        factories: &DeviceFactoryRegistry,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult {
-        self.ensure_unsealed("register factory device")?;
-        let bundle = factories.build(config, context)?;
-        self.register_bundle(bundle)
-    }
-
-    /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
+    /// Allocates an IVC channel from a graph-claimed guest range service.
     pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
         self.services
             .require::<GuestRangeAllocatorKey>()?
             .allocate(size)
     }
 
-    /// Releases an IVC channel at the specified address and size.
+    /// Releases a previously allocated IVC channel.
     pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
         self.services
             .require::<GuestRangeAllocatorKey>()?
@@ -445,6 +407,7 @@ impl DeviceRuntime {
             }
         }
         self.services.validate_merge(&bundle.services)?;
+        self.planned.validate_bundle(&bundle.planned)?;
 
         let saved_len = self.devices.len();
         for device in &bundle.devices {
@@ -480,6 +443,7 @@ impl DeviceRuntime {
         self.pollable_devices.extend(bundle.pollable);
         self.lifecycle_devices.extend(bundle.lifecycle);
         self.services.append(bundle.services);
+        self.planned.append(bundle.planned);
         Ok(())
     }
 
@@ -505,9 +469,7 @@ impl DeviceRuntime {
                 Resource::SysReg { addr, .. } => {
                     self.sysreg_index.remove(&addr);
                 }
-                Resource::IrqLine { line, .. } => {
-                    self.irq_line_index.remove(&line);
-                }
+                Resource::IrqLine { .. } => {}
             }
         }
     }
@@ -533,12 +495,6 @@ impl DeviceRuntime {
                         return Err(RegistryError::InvalidResource {
                             resource: Resource::IrqLine { line, trigger },
                             reason: InvalidResourceReason::DuplicateIrqLine { line },
-                        });
-                    }
-                    if let Some(&existing) = self.irq_line_index.get(&line) {
-                        return Err(RegistryError::IrqLineConflict {
-                            line,
-                            existing_device: existing,
                         });
                     }
                 }
@@ -742,7 +698,6 @@ impl DeviceRuntime {
     }
 
     fn insert_resources(&mut self, idx: usize, resources: &[Resource]) {
-        let device_id = DeviceId::new(idx as u32);
         for resource in resources {
             match *resource {
                 Resource::MmioRange { base, size } => {
@@ -766,9 +721,7 @@ impl DeviceRuntime {
                         },
                     );
                 }
-                Resource::IrqLine { line, .. } => {
-                    self.irq_line_index.insert(line, device_id);
-                }
+                Resource::IrqLine { .. } => {}
             }
         }
     }
@@ -819,6 +772,22 @@ impl DeviceRuntime {
         &self.services
     }
 
+    /// Returns a registered wired interrupt-controller capability.
+    pub fn interrupt_controller(
+        &self,
+        id: axdevice_base::InterruptControllerId,
+    ) -> DeviceManagerResult<Arc<dyn axdevice_base::VirtualInterruptController>> {
+        self.planned.interrupts.wired_controller(id)
+    }
+
+    /// Returns a registered message interrupt-controller capability.
+    pub fn message_interrupt_controller(
+        &self,
+        id: axdevice_base::InterruptControllerId,
+    ) -> DeviceManagerResult<Arc<dyn axdevice_base::MessageInterruptController>> {
+        self.planned.interrupts.message_controller(id)
+    }
+
     /// Resets lifecycle-capable devices in registration order.
     pub fn reset_lifecycle_devices(&self) -> DeviceManagerResult {
         for lifecycle in &self.lifecycle_devices {
@@ -843,44 +812,6 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    // ─── Find helpers ───────────────────────────────────────────────
-
-    /// Find specific MMIO device by ipa.
-    pub fn find_mmio_dev(&self, ipa: GuestPhysAddr) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::Mmio,
-            is_read: true,
-            addr: ipa.as_usize() as u64,
-            width: AccessWidth::Dword,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
-    /// Find specific system register device by address.
-    pub fn find_sys_reg_dev(&self, sys_reg_addr: SysRegAddr) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::SysReg,
-            is_read: true,
-            addr: sys_reg_addr.0 as u64,
-            width: AccessWidth::Qword,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
-    /// Find specific port device by port number.
-    pub fn find_port_dev(&self, port: Port) -> Option<Arc<dyn Device>> {
-        let access = BusAccess {
-            kind: BusKind::Port,
-            is_read: true,
-            addr: port.0 as u64,
-            width: AccessWidth::Byte,
-            data: 0,
-        };
-        self.lookup(&access).ok()
-    }
-
     // ─── Hot-path dispatch handlers ─────────────────────────────────
 
     /// Handle the MMIO read by GuestPhysAddr and data width.
@@ -889,6 +820,20 @@ impl DeviceRuntime {
         addr: GuestPhysAddr,
         width: AccessWidth,
     ) -> DeviceManagerResult<usize> {
+        self.try_handle_mmio_read(addr, width)?
+            .ok_or_else(|| missing_access("read", BusKind::Mmio, addr.as_usize() as u64, width))
+    }
+
+    /// Handles one MMIO read when the address belongs to this runtime.
+    ///
+    /// A missing mapping is returned as `None` so architecture fault handlers
+    /// can fall through to their stage-2 mapping policy without a second
+    /// interval lookup.
+    pub fn try_handle_mmio_read(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+    ) -> DeviceManagerResult<Option<usize>> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: true,
@@ -897,16 +842,12 @@ impl DeviceRuntime {
             data: 0,
         };
         match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+            .dispatch_optional(&access, None)
+            .map_err(|source| access_error("read", &access, source))?
+        {
+            Some(BusResponse::Read { value }) => Ok(Some(value as usize)),
+            None => Ok(None),
+            Some(BusResponse::Write) => Err(DeviceManagerError::UnexpectedResponse {
                 operation: "read MMIO device",
                 detail: "device returned a write acknowledgement".into(),
             }),
@@ -939,19 +880,6 @@ impl DeviceRuntime {
         Self::expect_write_response(response, "write MMIO device")
     }
 
-    /// Returns whether this complete MMIO write access targets a device that
-    /// declared an access-scoped guest-memory capability.
-    pub fn mmio_write_needs_guest_memory(&self, addr: GuestPhysAddr, width: AccessWidth) -> bool {
-        self.lookup_mmio(addr.as_usize() as u64, width)
-            .map(|index| {
-                let id = DeviceId::new(index as u32);
-                self.dma_grants
-                    .iter()
-                    .any(|(device_id, _)| *device_id == id)
-            })
-            .unwrap_or(false)
-    }
-
     /// Handles MMIO with a VM-provided, access-scoped guest-memory capability.
     pub fn handle_mmio_write_with_memory(
         &self,
@@ -960,6 +888,19 @@ impl DeviceRuntime {
         val: usize,
         memory: &mut dyn axdevice_base::DeviceAccess,
     ) -> DeviceManagerResult {
+        self.try_handle_mmio_write_with_memory(addr, width, val, memory)?
+            .then_some(())
+            .ok_or_else(|| missing_access("write", BusKind::Mmio, addr.as_usize() as u64, width))
+    }
+
+    /// Handles one MMIO write when the address belongs to this runtime.
+    pub fn try_handle_mmio_write_with_memory(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult<bool> {
         let access = BusAccess {
             kind: BusKind::Mmio,
             is_read: false,
@@ -967,35 +908,14 @@ impl DeviceRuntime {
             width,
             data: val as u64,
         };
-        let idx =
-            self.lookup_mmio(access.addr, access.width)
-                .ok_or(DeviceManagerError::Access {
-                    operation: "write",
-                    bus: BusKind::Mmio,
-                    addr: access.addr,
-                    width,
-                    source: DeviceError::NotFound,
-                })?;
-        let id = DeviceId::new(idx as u32);
-        let mut context = RuntimeDeviceAccess {
-            device_id: id,
-            memory: Some(memory),
-            dma_grants: &self.dma_grants,
-            timer_grants: &self.timer_grants,
-            wake_grants: &self.wake_grants,
-            stop_grants: &self.stop_grants,
-            access_ports: &self.access_ports,
+        let Some(response) = self
+            .dispatch_optional(&access, Some(memory))
+            .map_err(|source| access_error("write", &access, source))?
+        else {
+            return Ok(false);
         };
-        let response = self.devices[idx]
-            .access(&access, &mut context)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })?;
-        Self::expect_write_response(response, "write MMIO device")
+        Self::expect_write_response(response, "write MMIO device")?;
+        Ok(true)
     }
 
     fn expect_write_response(
@@ -1068,6 +988,16 @@ impl DeviceRuntime {
 
     /// Handle the port read by port number and data width.
     pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> DeviceManagerResult<usize> {
+        self.try_handle_port_read(port, width)?
+            .ok_or_else(|| missing_access("read", BusKind::Port, u64::from(port.number()), width))
+    }
+
+    /// Handles one port read when the address belongs to this runtime.
+    pub fn try_handle_port_read(
+        &self,
+        port: Port,
+        width: AccessWidth,
+    ) -> DeviceManagerResult<Option<usize>> {
         let access = BusAccess {
             kind: BusKind::Port,
             is_read: true,
@@ -1076,16 +1006,12 @@ impl DeviceRuntime {
             data: 0,
         };
         match self
-            .dispatch(&access)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "read",
-                bus: BusKind::Port,
-                addr: access.addr,
-                width,
-                source,
-            })? {
-            BusResponse::Read { value } => Ok(value as usize),
-            BusResponse::Write => Err(DeviceManagerError::UnexpectedResponse {
+            .dispatch_optional(&access, None)
+            .map_err(|source| access_error("read", &access, source))?
+        {
+            Some(BusResponse::Read { value }) => Ok(Some(value as usize)),
+            None => Ok(None),
+            Some(BusResponse::Write) => Err(DeviceManagerError::UnexpectedResponse {
                 operation: "read port device",
                 detail: "device returned a write acknowledgement".into(),
             }),
@@ -1115,6 +1041,107 @@ impl DeviceRuntime {
                 source,
             })?;
         Ok(())
+    }
+
+    /// Handles a port write with a VM-provided, access-scoped guest-memory capability.
+    pub fn handle_port_write_with_memory(
+        &self,
+        port: Port,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult {
+        self.try_handle_port_write_with_memory(port, width, val, memory)?
+            .then_some(())
+            .ok_or_else(|| missing_access("write", BusKind::Port, u64::from(port.number()), width))
+    }
+
+    /// Handles one port write when the address belongs to this runtime.
+    pub fn try_handle_port_write_with_memory(
+        &self,
+        port: Port,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult<bool> {
+        let access = BusAccess {
+            kind: BusKind::Port,
+            is_read: false,
+            addr: u64::from(port.number()),
+            width,
+            data: val as u64,
+        };
+        let Some(response) = self
+            .dispatch_optional(&access, Some(memory))
+            .map_err(|source| access_error("write", &access, source))?
+        else {
+            return Ok(false);
+        };
+        Self::expect_write_response(response, "write port device")?;
+        Ok(true)
+    }
+
+    fn dispatch_optional<'a>(
+        &'a self,
+        access: &BusAccess,
+        memory: Option<&'a mut dyn axdevice_base::DeviceAccess>,
+    ) -> Result<Option<BusResponse>, DeviceError> {
+        let index = match access.kind {
+            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
+            BusKind::Port => {
+                let port = u16::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_port(port, access.width)
+            }
+            BusKind::SysReg => {
+                let register = u32::try_from(access.addr)
+                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
+                self.lookup_sysreg(register)
+            }
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
+
+        let mut context = RuntimeDeviceAccess {
+            device_id: DeviceId::new(index as u32),
+            memory,
+            dma_grants: &self.dma_grants,
+            timer_grants: &self.timer_grants,
+            wake_grants: &self.wake_grants,
+            stop_grants: &self.stop_grants,
+            access_ports: &self.access_ports,
+        };
+        self.devices[index].access(access, &mut context).map(Some)
+    }
+}
+
+fn access_error(
+    operation: &'static str,
+    access: &BusAccess,
+    source: DeviceError,
+) -> DeviceManagerError {
+    DeviceManagerError::Access {
+        operation,
+        bus: access.kind,
+        addr: access.addr,
+        width: access.width,
+        source,
+    }
+}
+
+fn missing_access(
+    operation: &'static str,
+    bus: BusKind,
+    addr: u64,
+    width: AccessWidth,
+) -> DeviceManagerError {
+    DeviceManagerError::Access {
+        operation,
+        bus,
+        addr,
+        width,
+        source: DeviceError::NotFound,
     }
 }
 
@@ -1147,32 +1174,8 @@ impl DeviceRegistry for DeviceRuntime {
 
 impl BusRouter for DeviceRuntime {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
-        let idx = match access.kind {
-            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
-            BusKind::Port => {
-                let port = u16::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_port(port, access.width)
-            }
-            BusKind::SysReg => {
-                let reg = u32::try_from(access.addr)
-                    .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_sysreg(reg)
-            }
-        }
-        .ok_or(DeviceError::NotFound)?;
-
-        let device = &self.devices[idx];
-        let mut context = RuntimeDeviceAccess {
-            device_id: DeviceId::new(idx as u32),
-            memory: None,
-            dma_grants: &self.dma_grants,
-            timer_grants: &self.timer_grants,
-            wake_grants: &self.wake_grants,
-            stop_grants: &self.stop_grants,
-            access_ports: &self.access_ports,
-        };
-        device.access(access, &mut context)
+        self.dispatch_optional(access, None)?
+            .ok_or(DeviceError::NotFound)
     }
 
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {
@@ -1201,20 +1204,18 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use axdevice_base::{
-        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, ControllerInputId, Device,
-        DeviceAccess, DeviceError, DeviceId, DeviceRegistry, DmaGrant, InterruptControllerId,
-        InterruptTriggerMode, InvalidResourceReason, IrqResult, Port, RegistryError, Resource,
-        StopGrant, SysRegAddr, TimerGrant, VirtualInterruptController, WakeGrant, WiredIrqInput,
+        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
+        DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
+        StopGrant, SysRegAddr, TimerGrant, WakeGrant,
     };
-    use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
+    use axvm_types::GuestPhysAddr;
 
     use super::{
         DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
     };
     use crate::{
-        DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
-        DeviceManagerError, DeviceManagerResult, DeviceRegistration, ServiceCardinality,
-        ServiceKey, register_builtin_factories,
+        DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+        ServiceCardinality, ServiceKey,
     };
 
     struct D {
@@ -1451,40 +1452,6 @@ mod tests {
             _context: &mut dyn DeviceAccess,
         ) -> Result<BusResponse, DeviceError> {
             Ok(BusResponse::Read { value: 0 })
-        }
-    }
-
-    struct EmptyFactory {
-        device_type: EmulatedDeviceType,
-    }
-
-    impl DeviceFactory for EmptyFactory {
-        fn device_type(&self) -> EmulatedDeviceType {
-            self.device_type
-        }
-
-        fn build(
-            &self,
-            _config: &EmulatedDeviceConfig,
-            _context: &DeviceBuildContext<'_>,
-        ) -> DeviceManagerResult<DeviceBundle> {
-            Ok(DeviceBundle::new())
-        }
-    }
-
-    struct UnusedInterruptController;
-
-    impl VirtualInterruptController for UnusedInterruptController {
-        fn id(&self) -> InterruptControllerId {
-            InterruptControllerId::new(0)
-        }
-
-        fn wired_input(
-            &self,
-            _input: ControllerInputId,
-            _trigger: InterruptTriggerMode,
-        ) -> IrqResult<WiredIrqInput> {
-            unreachable!("empty factory never resolves an IRQ")
         }
     }
 
@@ -1766,39 +1733,6 @@ mod tests {
         assert_eq!(timer_calls.load(Ordering::Relaxed), 1);
         assert_eq!(wake_calls.load(Ordering::Relaxed), 1);
         assert_eq!(stop_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn factory_built_runtime_rejects_late_registration_after_seal() {
-        let mut factories = DeviceFactoryRegistry::new();
-        factories
-            .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::Dummy,
-            }))
-            .unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
-        let mut runtime = DeviceRuntime::build_with_factories(
-            &[EmulatedDeviceConfig {
-                name: "seal-test".into(),
-                base_gpa: 0,
-                length: 0,
-                irq_id: 0,
-                emu_type: EmulatedDeviceType::Dummy,
-                cfg_list: alloc::vec![],
-            }],
-            &factories,
-            &context,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            runtime.register_bundle(DeviceBundle::new()),
-            Err(DeviceManagerError::InvalidState { .. })
-        ));
-        assert!(matches!(
-            runtime.register(Arc::new(D::new_mmio(0x9000, 0x100, "late"))),
-            Err(RegistryError::InvalidState { .. })
-        ));
     }
 
     #[test]
@@ -2136,59 +2070,5 @@ mod tests {
         assert_eq!(lifecycle.reset_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.suspend_calls.load(Ordering::Relaxed), 1);
         assert_eq!(lifecycle.resume_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn factory_build_rejects_unregistered_device_type() {
-        let mut factories = DeviceFactoryRegistry::new();
-        factories
-            .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::FwCfg,
-            }))
-            .unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
-        let config = EmulatedDeviceConfig {
-            name: "fw-cfg".into(),
-            emu_type: EmulatedDeviceType::FwCfg,
-            ..Default::default()
-        };
-
-        assert!(DeviceRuntime::build_with_factories(&[config], &factories, &context).is_ok());
-
-        let unsupported = EmulatedDeviceConfig {
-            name: "unsupported".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
-            ..Default::default()
-        };
-        assert!(matches!(
-            DeviceRuntime::build_with_factories(&[unsupported], &factories, &context),
-            Err(crate::DeviceManagerError::Unsupported {
-                operation: "build emulated device",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn ivc_channel_factory_contributes_static_guest_range_allocator() {
-        let mut factories = DeviceFactoryRegistry::new();
-        register_builtin_factories(&mut factories).unwrap();
-        let context = DeviceBuildContext::new(&UnusedInterruptController);
-        let config = EmulatedDeviceConfig {
-            name: "ivc".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
-            base_gpa: 0x8000_0000,
-            length: 0x4000,
-            ..Default::default()
-        };
-
-        let devices = DeviceRuntime::build_with_factories(&[config], &factories, &context).unwrap();
-
-        let first = devices.alloc_ivc_channel(0x1000).unwrap();
-        let second = devices.alloc_ivc_channel(0x2000).unwrap();
-        assert_eq!(first.as_usize(), 0x8000_0000);
-        assert_eq!(second.as_usize(), 0x8000_1000);
-        devices.release_ivc_channel(first, 0x1000).unwrap();
-        assert_eq!(devices.alloc_ivc_channel(0x1000).unwrap(), first);
     }
 }

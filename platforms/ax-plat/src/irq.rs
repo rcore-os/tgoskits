@@ -308,25 +308,13 @@ pub fn resolve_percpu_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     resolve_percpu(hwirq)
 }
 
-/// Target specification for inter-processor interrupts (IPIs).
+/// Target specification for one inter-processor interrupt (IPI) delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IpiTarget {
     /// Send to the current CPU.
-    Current {
-        /// The CPU ID of the current CPU.
-        cpu_id: usize,
-    },
+    Current,
     /// Send to a specific CPU.
-    Other {
-        /// The CPU ID of the target CPU.
-        cpu_id: usize,
-    },
-    /// Send to all other CPUs.
-    AllExceptCurrent {
-        /// The CPU ID of the current CPU.
-        cpu_id: usize,
-        /// The total number of CPUs.
-        cpu_num: usize,
-    },
+    Cpu(CpuId),
 }
 
 /// IRQ management interface.
@@ -365,8 +353,11 @@ pub trait IrqIf {
     /// `None` if the IRQ is spurious.
     fn handle(vector: TrapVector) -> Option<IrqId>;
 
-    /// Sends an inter-processor interrupt (IPI) to the specified target CPU or all CPUs.
-    fn send_ipi(irq_num: IrqId, target: IpiTarget);
+    /// Sends an inter-processor interrupt (IPI) to one target CPU.
+    ///
+    /// The platform backend must order earlier Normal-memory publications on
+    /// the calling CPU before the target can observe the interrupt.
+    fn send_ipi(irq_num: IrqId, target: IpiTarget) -> Result<(), IrqError>;
 
     /// Returns the platform IRQ id used for runtime IPIs.
     fn ipi_irq() -> IrqId;
@@ -387,6 +378,7 @@ mod tests {
 
     static ENABLE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static FAIL_ENABLE: AtomicUsize = AtomicUsize::new(0);
+    static FAIL_SEND_IPI: AtomicUsize = AtomicUsize::new(0);
 
     struct TestIrqIf;
 
@@ -423,7 +415,12 @@ mod tests {
             None
         }
 
-        fn send_ipi(_irq_num: IrqId, _target: IpiTarget) {}
+        fn send_ipi(_irq_num: IrqId, _target: IpiTarget) -> Result<(), IrqError> {
+            if FAIL_SEND_IPI.load(Ordering::Relaxed) != 0 {
+                return Err(IrqError::Controller);
+            }
+            Ok(())
+        }
 
         fn ipi_irq() -> IrqId {
             IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))
@@ -436,6 +433,21 @@ mod tests {
         fn resolve_percpu(_hwirq: HwIrq) -> Result<IrqId, IrqError> {
             Err(IrqError::Unsupported)
         }
+    }
+
+    #[test]
+    fn send_ipi_propagates_platform_delivery_error() {
+        FAIL_SEND_IPI.store(1, Ordering::Relaxed);
+
+        assert_eq!(
+            send_ipi(
+                IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(0)),
+                IpiTarget::Current,
+            ),
+            Err(IrqError::Controller),
+        );
+
+        FAIL_SEND_IPI.store(0, Ordering::Relaxed);
     }
 
     #[test]

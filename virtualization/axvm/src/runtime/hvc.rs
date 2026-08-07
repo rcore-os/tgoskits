@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, string::ToString};
+use std::{format, string::ToString};
 
 use axhvc::{HyperCallCode, HyperCallError, HyperCallResult};
 
 use crate::{
-    AsVCpuTask, AxVmError, GuestPhysAddr, MappingFlags,
-    runtime::{
-        VMRef,
-        ivc::{self, IVCChannel},
-        vcpus,
-    },
+    runtime::{ivc::*, *},
+    *,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -700,6 +696,9 @@ impl HyperCall {
             | AxVmError::Boot { .. }
             | AxVmError::Memory { .. }
             | AxVmError::Device { .. }
+            | AxVmError::DeviceResourcePlanning(_)
+            | AxVmError::GuestGicProfile(_)
+            | AxVmError::GuestPlicProfile(_)
             | AxVmError::Vcpu { .. }
             | AxVmError::Interrupt { .. }
             | AxVmError::Host { .. } => HyperCallError::Internal {

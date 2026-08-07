@@ -19,7 +19,7 @@ use ax_errno::{AxError, AxResult};
 use controller::{ControllerPort, run_controller};
 use device::CpuSubmissionChannel;
 use irq_framework::IrqId;
-#[cfg(feature = "ext4")]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 use rdif_block::RequestFlags;
 use rdif_block::{
     BatchSubmitError, BlkError, BlockController, BlockControllerGroup, BlockGroupMember,
@@ -786,7 +786,7 @@ impl BlockDeviceHandle {
         io::write_blocks(self, block_id, buf)
     }
 
-    #[cfg(feature = "ext4")]
+    #[cfg(any(feature = "ext4", feature = "fat"))]
     pub(crate) fn flush_blocks(&self) -> AxResult {
         let request = OwnedRequest {
             op: RequestOp::Flush,

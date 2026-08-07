@@ -12,16 +12,23 @@
 #define O_DSYNC     010000
 #define O_SYNC      04010000
 #define O_RSYNC     04010000
-#define O_DIRECTORY 0200000
-#define O_NOFOLLOW  0400000
 #define O_CLOEXEC   02000000
 
 #define O_ASYNC     020000
+#if defined(__aarch64__)
+#define O_DIRECT    0200000
+#define O_DIRECTORY 040000
+#define O_LARGEFILE 0400000
+#define O_NOFOLLOW  0100000
+#else
 #define O_DIRECT    040000
+#define O_DIRECTORY 0200000
 #define O_LARGEFILE 0100000
+#define O_NOFOLLOW  0400000
+#endif
 #define O_NOATIME   01000000
 #define O_PATH      010000000
-#define O_TMPFILE   020200000
+#define O_TMPFILE   (020000000 | O_DIRECTORY)
 #define O_NDELAY    O_NONBLOCK
 
 #define O_SEARCH   O_PATH

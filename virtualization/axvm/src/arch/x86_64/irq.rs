@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use std::vec::Vec;
 
-use ax_kspin::SpinRaw as Mutex;
-use axdevice::{X86InterruptDomainKey, X86InterruptDomainOps, X86PitServiceKey};
+use ax_std::os::arceos::sync::RawSpinLock as Mutex;
+use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
@@ -10,7 +10,6 @@ use crate::{
         X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
     },
-    config::VMInterruptMode,
     runtime::{VCpuRef, VMRef},
 };
 
@@ -102,7 +101,7 @@ fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
     (0..IOAPIC_GSI_COUNT).filter(|gsi| should_register_ioapic_gsi_hook(*gsi))
 }
 
-fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<alloc::sync::Arc<X86InterruptDomain>> {
+fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<std::sync::Arc<X86InterruptDomain>> {
     vm.get_devices()
         .ok()?
         .services()
@@ -113,35 +112,35 @@ fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<alloc::sync::Arc<X86In
 fn require_interrupt_domain(
     vm: &crate::AxVMRef,
     operation: &'static str,
-) -> crate::AxVmResult<alloc::sync::Arc<X86InterruptDomain>> {
+) -> crate::AxVmResult<std::sync::Arc<X86InterruptDomain>> {
     interrupt_domain_for_vm(vm).ok_or_else(|| crate::AxVmError::ResourceUnavailable {
         resource: "x86 interrupt domain",
-        detail: alloc::format!("VM[{}] must be prepared before {operation}", vm.id()),
+        detail: std::format!("VM[{}] must be prepared before {operation}", vm.id()),
     })
 }
 
 fn forwarding_route_error(
     vm_id: usize,
     guest_gsi: usize,
-    host_irq: impl core::fmt::Debug,
+    host_irq: impl std::fmt::Debug,
     error: ForwardingRouteError,
 ) -> crate::AxVmError {
     let detail = match error {
         ForwardingRouteError::UnsupportedGsi => {
-            alloc::format!("guest GSI {guest_gsi} is not supported")
+            std::format!("guest GSI {guest_gsi} is not supported")
         }
-        ForwardingRouteError::AlreadyActive => alloc::format!(
+        ForwardingRouteError::AlreadyActive => std::format!(
             "VM[{vm_id}] forwarding is already active; routes must be configured before the boot \
              vCPU starts"
         ),
-        ForwardingRouteError::HostIrqConflict => alloc::format!(
+        ForwardingRouteError::HostIrqConflict => std::format!(
             "host IRQ {host_irq:?} is already mapped to a different guest GSI in VM[{vm_id}]"
         ),
         ForwardingRouteError::HostOwnedConsole => {
-            alloc::format!("host IRQ {host_irq:?} belongs to the runtime-selected physical console")
+            std::format!("host IRQ {host_irq:?} belongs to the runtime-selected physical console")
         }
         ForwardingRouteError::ResolveHostIrq(error) => {
-            alloc::format!("failed to resolve host IRQ for guest GSI {guest_gsi}: {error:?}")
+            std::format!("failed to resolve host IRQ for guest GSI {guest_gsi}: {error:?}")
         }
     };
     crate::AxVmError::Interrupt {
@@ -289,7 +288,7 @@ impl X86InterruptDomain {
         if !state.hooks_registered || state.owner_vcpu_id != Some(vcpu_id) {
             return None;
         }
-        let pending = core::mem::take(&mut state.pending);
+        let pending = std::mem::take(&mut state.pending);
         if pending == 0 {
             return None;
         }
@@ -420,7 +419,7 @@ impl X86InterruptDomain {
         state.pending_level = 0;
         state.hooks_registered = false;
         state.enabled = false;
-        let masked = core::mem::take(&mut state.masked);
+        let masked = std::mem::take(&mut state.masked);
         state
             .routes
             .iter()
@@ -496,11 +495,11 @@ pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
         domain
             .wired
             .pending
-            .fetch_or(retry, core::sync::atomic::Ordering::Release);
+            .fetch_or(retry, std::sync::atomic::Ordering::Release);
         domain
             .wired
             .pending_level
-            .fetch_or(retry_level, core::sync::atomic::Ordering::Release);
+            .fetch_or(retry_level, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -526,7 +525,7 @@ pub fn register_ioapic_irq_forwarding_route_with_trigger(
     if !should_register_ioapic_gsi_hook(guest_gsi) {
         return Err(crate::AxVmError::InvalidInput {
             operation: "register x86 IOAPIC forwarding route",
-            detail: alloc::format!("unsupported guest GSI {guest_gsi}"),
+            detail: std::format!("unsupported guest GSI {guest_gsi}"),
         });
     }
 
@@ -550,7 +549,7 @@ pub fn register_ioapic_irq_forwarding_activator(
     if !should_register_ioapic_gsi_hook(guest_gsi) {
         return Err(crate::AxVmError::InvalidInput {
             operation: "register x86 IOAPIC forwarding activator",
-            detail: alloc::format!("unsupported guest GSI {guest_gsi}"),
+            detail: std::format!("unsupported guest GSI {guest_gsi}"),
         });
     }
 
@@ -561,7 +560,7 @@ pub fn register_ioapic_irq_forwarding_activator(
 }
 
 pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -574,6 +573,17 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
         .require::<X86PitServiceKey>()
         .is_ok_and(|pit| pit.consume_irq0_if_due(now_ns))
     {
+        return;
+    }
+    if let Some(vector) = devices
+        .services()
+        .require::<X86PicServiceKey>()
+        .ok()
+        .and_then(|pic| pic.pulse_irq(PIT_TIMER_GSI as u8))
+    {
+        vcpu.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector as _, InterruptTriggerMode::EdgeTriggered)
+            .unwrap();
         return;
     }
 
@@ -600,7 +610,7 @@ pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -677,7 +687,7 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
 
@@ -743,7 +753,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn activate_ready_ioapic_forwarding_routes(vm: &VMRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return;
     }
     let Some(domain) = interrupt_domain_for_vm(vm) else {
@@ -790,7 +800,7 @@ fn forward_passthrough_gsi(
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+    if !vm.uses_passthrough_address_space() {
         return true;
     }
 
@@ -960,10 +970,12 @@ fn host_irq_forwarding_lease_count() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
-    use ax_kspin::SpinRaw as Mutex;
+    use ax_std::os::arceos::sync::RawSpinLock as Mutex;
     use axdevice::X86IoApicDeviceOps;
 
     use super::{

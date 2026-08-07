@@ -1,13 +1,9 @@
 //! AArch64 implementations of AxVM platform capability hooks.
 
-use alloc::format;
+use std::format;
 
 use super::Aarch64Arch;
-use crate::{
-    AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform},
-    ax_err_type,
-};
+use crate::{architecture::*, *};
 
 impl HostTimePlatform for Aarch64Arch {}
 
@@ -22,7 +18,7 @@ impl BootImagePlatform for Aarch64Arch {
         dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         let bytes = dtb.as_bytes();
-        let source = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
+        let source = std::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
         super::fdt::core::update_fdt(source, bytes.len(), loader.vm.clone(), &loader.config)
     }
@@ -72,28 +68,34 @@ pub(super) fn patch_runtime_fdt(
     fdt_bytes: &[u8],
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::GuestConfig,
-) -> AxVmResult<alloc::vec::Vec<u8>> {
-    let (initrd, serial_profile, serial_identity, gic_profile, timer_profile) =
-        vm.with_config(|config| {
-            (
-                super::fdt::initrd_start_size_from_image_config(
-                    config.image_config.ramdisk.as_ref(),
-                ),
-                config.serial_profile(),
-                config.serial_fdt_identity().cloned(),
-                config.gic_profile().cloned(),
-                config.timer_profile().cloned(),
-            )
-        });
+) -> AxVmResult<std::vec::Vec<u8>> {
+    let initrd = vm.with_config(|config| {
+        super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
+    });
+    let (serial_profile, serial_identity, additional_serials, gic_profile, timer_profile) = vm
+        .with_architecture_plan(|plan| {
+            Ok((
+                plan.serial_profile(),
+                plan.serial_fdt_identity().cloned(),
+                plan.serial_devices()
+                    .iter()
+                    .filter(|serial| serial.id() != "console0")
+                    .map(crate::machine::ResolvedSerialDevice::profile)
+                    .collect::<std::vec::Vec<_>>(),
+                plan.gic_profile().clone(),
+                plan.timer_profile().clone(),
+            ))
+        })?;
     super::fdt::core::create::patch_guest_fdt_for_runtime(
         fdt_bytes,
         &vm.memory_regions(),
         crate_config,
         serial_profile,
         serial_identity.as_ref(),
-        gic_profile.as_ref(),
+        &additional_serials,
+        Some(&gic_profile),
         None,
-        timer_profile.as_ref(),
+        Some(&timer_profile),
         initrd,
         true,
     )
@@ -103,7 +105,7 @@ pub(super) fn patch_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: Option<&[u8]>,
     crate_config: &axvmconfig::GuestConfig,
-) -> AxVmResult<alloc::vec::Vec<u8>> {
+) -> AxVmResult<std::vec::Vec<u8>> {
     let provided_fdt = fdt_edit::Fdt::from_bytes(provided_dtb).map_err(|err| {
         ax_err_type!(
             InvalidData,

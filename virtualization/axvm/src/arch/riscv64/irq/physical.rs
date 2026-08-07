@@ -1,14 +1,17 @@
 //! Deferred physical PLIC claims backing guest-owned vPLIC sources.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{
+use std::{
+    boxed::Box,
     hint::spin_loop,
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering},
+    },
+    vec::Vec,
 };
 
-use ax_kspin::SpinNoIrq;
-use ax_std::os::arceos::modules::ax_task::IrqNotify;
+use ax_std::os::arceos::{modules::ax_task::IrqNotify, sync::IrqSafeMutex};
 use axvm_types::InterruptTriggerMode;
 use riscv_vplic::{PLIC_NUM_SOURCES, VPlicGlobal};
 
@@ -34,8 +37,8 @@ pub(super) fn publish_physical_claim_from_irq(source: u32) -> bool {
 pub(super) struct PhysicalIrqBridge {
     shared: Arc<PhysicalBridgeShared>,
     bindings: Box<[Arc<PhysicalSourceBinding>]>,
-    registrations: SpinNoIrq<Vec<PhysicalRouteRegistration>>,
-    worker: SpinNoIrq<Option<AxTaskRef>>,
+    registrations: IrqSafeMutex<Vec<PhysicalRouteRegistration>>,
+    worker: IrqSafeMutex<Option<AxTaskRef>>,
     running: AtomicBool,
 }
 
@@ -62,7 +65,7 @@ impl PhysicalIrqBridge {
             if source == 0 || source >= PLIC_NUM_SOURCES {
                 return ax_err!(
                     InvalidInput,
-                    alloc::format!(
+                    std::format!(
                         "RISC-V physical PLIC source {} is outside 1..{PLIC_NUM_SOURCES}",
                         route.source
                     )
@@ -74,7 +77,7 @@ impl PhysicalIrqBridge {
             {
                 return ax_err!(
                     AlreadyExists,
-                    alloc::format!("RISC-V physical PLIC source {source} is configured twice")
+                    std::format!("RISC-V physical PLIC source {source} is configured twice")
                 );
             }
             bindings.push(Arc::new(PhysicalSourceBinding {
@@ -89,8 +92,8 @@ impl PhysicalIrqBridge {
         Ok(Arc::new(Self {
             shared,
             bindings: bindings.into_boxed_slice(),
-            registrations: SpinNoIrq::new(Vec::new()),
-            worker: SpinNoIrq::new(None),
+            registrations: IrqSafeMutex::new(Vec::new()),
+            worker: IrqSafeMutex::new(None),
             running: AtomicBool::new(false),
         }))
     }
@@ -123,7 +126,7 @@ impl PhysicalIrqBridge {
             {
                 first_error = Some(AxVmError::interrupt(
                     "deactivate RISC-V guest PLIC source",
-                    alloc::format!("{error:?}"),
+                    std::format!("{error:?}"),
                 ));
             }
         }
@@ -168,7 +171,7 @@ impl PhysicalIrqBridge {
         let bridge = self.clone();
         let task = TaskInner::new(
             move || bridge.run_worker(),
-            alloc::format!("VM[{}]-plic-physical", self.shared.vm_id),
+            std::format!("VM[{}]-plic-physical", self.shared.vm_id),
             PHYSICAL_IRQ_WORKER_STACK_SIZE,
         );
         *self.worker.lock() = Some(crate::host::task::spawn_task(task));
@@ -191,7 +194,7 @@ impl PhysicalIrqBridge {
                 binding.accepting.store(false, Ordering::Release);
                 return Err(AxVmError::interrupt(
                     "activate RISC-V guest PLIC source",
-                    alloc::format!("{error:?}"),
+                    std::format!("{error:?}"),
                 ));
             }
         }
@@ -418,7 +421,7 @@ impl PhysicalRouteRegistration {
             drop(unsafe { Arc::from_raw(raw) });
             return Err(AxVmError::resource_conflict(
                 "RISC-V physical PLIC route",
-                alloc::format!("source {source} is already assigned to another VM"),
+                std::format!("source {source} is already assigned to another VM"),
             ));
         }
         Ok(Self {

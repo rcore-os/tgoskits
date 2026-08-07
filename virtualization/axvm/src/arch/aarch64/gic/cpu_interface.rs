@@ -1,5 +1,7 @@
 //! Checked GICH/ICH register save and restore.
 
+use std::sync::OnceLock;
+
 use arm_gic_driver::v3::{
     ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2,
     ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
@@ -10,15 +12,14 @@ use arm_vgic::{
     CpuInterfaceState, GicV3BackendError, GicVcpuId, HostGicVersion, IntId, InterruptState,
     ListRegisterBacking, ListRegisterState, PhysicalIrqId, Priority, VgicBackendCapabilities,
 };
-use ax_kspin::SpinNoIrq;
-use spin::Once;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 
 const V2_SGI_TOKEN: usize = 1usize << (usize::BITS as usize - 1);
 const V2_SGI_SOURCE_SHIFT: usize = 24;
 
 enum HostCpuInterface {
     V2 {
-        hypervisor: SpinNoIrq<arm_gic_driver::v2::HypervisorInterface>,
+        hypervisor: IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
         trap: arm_gic_driver::v2::TrapOp,
         capabilities: VgicBackendCapabilities,
         irq_config: ArmHostIrqConfig,
@@ -43,14 +44,14 @@ impl HostCpuInterface {
     }
 }
 
-static HOST_CPU_INTERFACE: Once<HostCpuInterface> = Once::new();
+static HOST_CPU_INTERFACE: OnceLock<HostCpuInterface> = OnceLock::new();
 
 fn host_cpu_interface() -> Result<&'static HostCpuInterface, GicV3BackendError> {
     // Discovery is the only operation that takes the `rdrive` device lock.
     // The returned register capability is immutable, and every vCPU/IRQ hot
     // path below uses it directly so a hard IRQ cannot re-enter `rdrive` while
     // interrupted code already owns the same non-IRQ-safe device lock.
-    HOST_CPU_INTERFACE.try_call_once(discover_host_cpu_interface)
+    HOST_CPU_INTERFACE.get_or_try_init(discover_host_cpu_interface)
 }
 
 fn discover_host_cpu_interface() -> Result<HostCpuInterface, GicV3BackendError> {
@@ -76,7 +77,7 @@ fn discover_host_cpu_interface() -> Result<HostCpuInterface, GicV3BackendError> 
                 false,
             );
             return Ok(HostCpuInterface::V2 {
-                hypervisor: SpinNoIrq::new(interface),
+                hypervisor: IrqSafeMutex::new(interface),
                 trap: gic.cpu_interface().trap_operations(),
                 capabilities,
                 irq_config,
@@ -143,7 +144,7 @@ fn checked_host_cpu_interface(
     if discovered != capabilities {
         return Err(GicV3BackendError::new(
             operation,
-            alloc::format!(
+            std::format!(
                 "cached host capabilities {discovered:?} do not match backend capabilities \
                  {capabilities:?}"
             ),
@@ -153,7 +154,7 @@ fn checked_host_cpu_interface(
 }
 
 fn load_v2(
-    hypervisor: &SpinNoIrq<arm_gic_driver::v2::HypervisorInterface>,
+    hypervisor: &IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
     state: &CpuInterfaceState,
 ) -> Result<(), GicV3BackendError> {
     let interface = hypervisor.lock();
@@ -181,7 +182,7 @@ fn load_v2(
 }
 
 fn save_v2(
-    hypervisor: &SpinNoIrq<arm_gic_driver::v2::HypervisorInterface>,
+    hypervisor: &IrqSafeMutex<arm_gic_driver::v2::HypervisorInterface>,
     state: &mut CpuInterfaceState,
 ) -> Result<(), GicV3BackendError> {
     let interface = hypervisor.lock();
@@ -198,7 +199,7 @@ fn save_v2(
         let raw = interface.list_register_raw(index).ok_or_else(|| {
             GicV3BackendError::new(
                 "save GICv2 list register",
-                alloc::format!("GICH_LR{index} is not implemented"),
+                std::format!("GICH_LR{index} is not implemented"),
             )
         })?;
         *slot = decode_v2_list_register(index, raw, *slot)?;
@@ -261,7 +262,7 @@ pub(super) fn deactivate_host_irq(token: usize) -> Result<(), GicV3BackendError>
             let intid = arm_gic_driver::checked_intid(raw, 1020).map_err(|_| {
                 GicV3BackendError::new(
                     "deactivate acknowledged host IRQ",
-                    alloc::format!("INTID {raw} is outside the GICv2 interrupt range"),
+                    std::format!("INTID {raw} is outside the GICv2 interrupt range"),
                 )
             })?;
             let ack = if token & V2_SGI_TOKEN != 0 {
@@ -282,7 +283,7 @@ pub(super) fn deactivate_host_irq(token: usize) -> Result<(), GicV3BackendError>
             let intid = arm_gic_driver::checked_intid(raw, 1 << 24).map_err(|_| {
                 GicV3BackendError::new(
                     "deactivate acknowledged host IRQ",
-                    alloc::format!("INTID {raw} is outside the GICv3 interrupt range"),
+                    std::format!("INTID {raw} is outside the GICv3 interrupt range"),
                 )
             })?;
             arm_gic_driver::v3::dir(intid);
@@ -329,13 +330,13 @@ fn encode_v2_list_register(entry: ListRegisterState) -> Result<u32, GicV3Backend
             let physical = u32::try_from(physical.raw()).map_err(|_| {
                 GicV3BackendError::new(
                     "encode GICv2 list register",
-                    alloc::format!("physical IRQ {} does not fit GICH_LR", physical.raw()),
+                    std::format!("physical IRQ {} does not fit GICH_LR", physical.raw()),
                 )
             })?;
             if physical >= 1024 {
                 return Err(GicV3BackendError::new(
                     "encode GICv2 list register",
-                    alloc::format!("physical IRQ {physical} exceeds the 10-bit GICH_LR field"),
+                    std::format!("physical IRQ {physical} exceeds the 10-bit GICH_LR field"),
                 ));
             }
             raw |= (physical << 10) | (1 << 31);
@@ -388,7 +389,7 @@ fn load_v3(state: &CpuInterfaceState) -> Result<(), GicV3BackendError> {
     if state.apr()[apr_count..].iter().any(|value| *value != 0) {
         return Err(GicV3BackendError::new(
             "load GICv3 active priorities",
-            alloc::format!("saved state uses APR{apr_count} or above"),
+            std::format!("saved state uses APR{apr_count} or above"),
         ));
     }
 
@@ -424,7 +425,7 @@ fn save_v3(state: &mut CpuInterfaceState) -> Result<(), GicV3BackendError> {
             if !state.set_apr(index, value) {
                 return Err(GicV3BackendError::new(
                     "save GICv3 active priorities",
-                    alloc::format!("APR index {index} is outside saved state"),
+                    std::format!("APR index {index} is outside saved state"),
                 ));
             }
         }
@@ -452,7 +453,7 @@ fn hardware_v3_apr_count() -> Result<usize, GicV3BackendError> {
         7 => Ok(4),
         count => Err(GicV3BackendError::new(
             "inspect GICv3 active-priority registers",
-            alloc::format!("unsupported preemption-bit count {count}"),
+            std::format!("unsupported preemption-bit count {count}"),
         )),
     }
 }
@@ -514,7 +515,7 @@ fn write_v3_list_register(index: usize, entry: ListRegisterState) -> Result<(), 
         let pintid = u16::try_from(physical.raw()).map_err(|_| {
             GicV3BackendError::new(
                 "encode GICv3 list register",
-                alloc::format!("physical IRQ {} does not fit PINTID", physical.raw()),
+                std::format!("physical IRQ {} does not fit PINTID", physical.raw()),
             )
         })?;
         fields = fields + ICH_LR_EL2::HW::SET + ICH_LR_EL2::PINTID.val(u64::from(pintid));
@@ -536,7 +537,7 @@ fn read_v3_list_register(
         value => {
             return Err(GicV3BackendError::new(
                 "decode GICv3 list register",
-                alloc::format!("LR{index} has invalid state {value}"),
+                std::format!("LR{index} has invalid state {value}"),
             ));
         }
     };
@@ -566,7 +567,7 @@ fn decode_intid(index: usize, raw: u32, version: &'static str) -> Result<IntId, 
     IntId::new(raw).map_err(|error| {
         GicV3BackendError::new(
             "decode virtual list register",
-            alloc::format!("{version} LR{index} contains invalid INTID {raw}: {error}"),
+            std::format!("{version} LR{index} contains invalid INTID {raw}: {error}"),
         )
     })
 }
@@ -579,7 +580,7 @@ fn require_software_backing(
     if previous.is_some_and(|entry| matches!(entry.backing(), ListRegisterBacking::Physical(_))) {
         Err(GicV3BackendError::new(
             "decode virtual list register",
-            alloc::format!("{version} LR{index} lost its physical backing"),
+            std::format!("{version} LR{index} lost its physical backing"),
         ))
     } else {
         Ok(())
@@ -596,13 +597,13 @@ fn validate_physical_backing(
     let previous = previous.ok_or_else(|| {
         GicV3BackendError::new(
             "decode virtual list register",
-            alloc::format!("{version} LR{index} acquired unexpected physical backing"),
+            std::format!("{version} LR{index} acquired unexpected physical backing"),
         )
     })?;
     if previous.intid() != intid || previous.backing() != ListRegisterBacking::Physical(physical) {
         return Err(GicV3BackendError::new(
             "decode virtual list register",
-            alloc::format!(
+            std::format!(
                 "{version} LR{index} changed physical identity from {:?}/{:?} to \
                  {intid:?}/{physical:?}",
                 previous.intid(),
@@ -623,7 +624,7 @@ fn require_lr_count(
     } else {
         Err(GicV3BackendError::new(
             operation,
-            alloc::format!("saved state has {saved} LRs, hardware exposes {available}"),
+            std::format!("saved state has {saved} LRs, hardware exposes {available}"),
         ))
     }
 }
@@ -633,7 +634,7 @@ fn require_current_vcpu(vcpu: GicVcpuId, operation: &'static str) -> Result<(), 
         Some(current) if current == vcpu.raw() => Ok(()),
         Some(current) => Err(GicV3BackendError::new(
             operation,
-            alloc::format!("requested vCPU {}, current vCPU is {current}", vcpu.raw()),
+            std::format!("requested vCPU {}, current vCPU is {current}", vcpu.raw()),
         )),
         None => Err(GicV3BackendError::new(
             operation,
@@ -645,11 +646,11 @@ fn require_current_vcpu(vcpu: GicVcpuId, operation: &'static str) -> Result<(), 
 fn instruction_sync_barrier() {
     // SAFETY: `isb` only synchronizes architectural register effects on the
     // current CPU and does not access Rust memory.
-    unsafe { core::arch::asm!("isb", options(nostack, preserves_flags)) };
+    unsafe { std::arch::asm!("isb", options(nostack, preserves_flags)) };
 }
 
 fn data_sync_barrier() {
     // SAFETY: `dsb sy` only orders architectural register and memory effects
     // on the current CPU.
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+    unsafe { std::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
 }

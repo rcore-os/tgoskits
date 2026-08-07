@@ -14,7 +14,7 @@
 
 //! Device passthrough and dependency analysis for FDT processing.
 
-use alloc::{
+use std::{
     collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     vec::Vec,

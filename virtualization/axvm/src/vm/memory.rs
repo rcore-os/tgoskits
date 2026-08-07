@@ -1,7 +1,6 @@
 //! VM memory region planning.
 
-use alloc::vec::Vec;
-use core::alloc::Layout;
+use std::{alloc::Layout, vec::Vec};
 
 use axvm_types::{GuestPhysAddr, VmMemConfig, VmMemMappingType};
 
@@ -104,7 +103,7 @@ impl MemoryRegionPlan {
         let layout = Layout::from_size_align(config.size, VM_MEMORY_ALIGN).map_err(|err| {
             ax_err_type!(
                 InvalidInput,
-                alloc::format!("invalid VM memory region {config:?}: {err:?}")
+                std::format!("invalid VM memory region {config:?}: {err:?}")
             )
         })?;
         let configured_gpa = match config.map_type {
@@ -135,8 +134,10 @@ impl MemoryRegionPlan {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-    use core::cell::{Cell, RefCell};
+    use std::{
+        cell::{Cell, RefCell},
+        vec,
+    };
 
     use super::*;
 

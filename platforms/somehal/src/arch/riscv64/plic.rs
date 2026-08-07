@@ -188,14 +188,19 @@ pub fn secondary_init_intc(cpu_idx: usize) {
     enable_local_interrupts();
 }
 
-pub fn send_ipi_to_cpu(cpu_id: usize) {
-    let Some(hart_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
-        warn!("failed to resolve hart id for logical CPU {cpu_id}");
-        return;
-    };
+pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), crate::irq::IrqError> {
+    let hart_id = someboot::smp::cpu_idx_to_id(cpu_id).ok_or(crate::irq::IrqError::InvalidCpu)?;
+    // An SBI IPI is only a doorbell. Complete the shared-memory publication
+    // before entering firmware, whose later MMIO/IMSIC operation may otherwise
+    // become visible to the target hart first under RVWMO.
+    unsafe {
+        core::arch::asm!("fence rw, rw", options(nostack, preserves_flags));
+    }
     let res = sbi_rt::send_ipi(HartMask::from_mask_base(1, hart_id));
-    if !res.is_ok() {
-        warn!("send_ipi to hart {hart_id} failed: {res:?}");
+    if res.is_ok() {
+        Ok(())
+    } else {
+        Err(crate::irq::IrqError::Controller)
     }
 }
 

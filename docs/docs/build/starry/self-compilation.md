@@ -50,7 +50,8 @@ app runner 检测到成功标记后可安全结束 QEMU。来宾还会把当前�
 
 - Linux x86_64 host，并可读写 `/dev/kvm`；app runner 检测到后会自动加入 `-accel kvm`，
   上述长时间构建实际启用了 KVM；
-- `qemu-system-x86_64`、OVMF、`debugfs` 和 ext4 resize 工具；
+- `qemu-system-x86_64`、`debugfs` 和 ext4 resize 工具；OVMF 由 `cargo xtask ovmf`
+  下载并校验，首次运行需要网络；
 - host 和 QEMU guest 都可访问网络。
 
 正常流程不需要 sudo。第一次运行需要下载 Rust 官方组件、Alpine 包和 Cargo crates，后续运行
@@ -72,7 +73,8 @@ debugfs -R 'stat /opt/starryos-selfbuilt' "$ROOTFS"
 scripts/run-selfbuilt-kernel.sh --arch x86_64
 ```
 
-脚本会重新从 rootfs 提取 ELF，转换为 EFI payload，并通过 OVMF 启动。该脚本当前保留为
+脚本会重新从 rootfs 提取 ELF，转换为 EFI payload，通过 `cargo xtask ovmf --arch x86_64`
+取得与其他 QEMU 流程相同的 CODE/VARS 后启动。该脚本当前保留为
 后续烟测工具；本 PR 尚未完成产物生成和启动验证，不能据此宣称已经到达 Starry shell。
 
 ## riscv64 旧流程

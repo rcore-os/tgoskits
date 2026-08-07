@@ -2,6 +2,7 @@ mod config;
 mod features;
 mod load;
 mod metadata;
+mod vm_config;
 
 #[cfg(test)]
 mod tests;
@@ -14,7 +15,7 @@ pub(crate) use config::AxvisorBoardFile;
 pub use config::{AXVISOR_PACKAGE, AxvisorBoardConfig};
 pub(crate) use load::{
     default_build_info_path, load_board_file, load_target_from_build_config,
-    resolve_build_info_path,
+    resolve_build_info_path, workspace_root_from_axvisor_dir,
 };
 use ostool::build::config::Cargo;
 
@@ -24,10 +25,6 @@ use self::{
 };
 pub use crate::build::LogLevel;
 use crate::context::ResolvedAxvisorRequest;
-
-pub(crate) fn workspace_root_from_axvisor_dir(axvisor_dir: &Path) -> PathBuf {
-    load::workspace_root_from_axvisor_dir(axvisor_dir)
-}
 
 pub(crate) fn load_cargo_config(request: &ResolvedAxvisorRequest) -> anyhow::Result<Cargo> {
     let metadata =
@@ -65,7 +62,7 @@ fn patch_axvisor_cargo_config(
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
-    let vmconfigs = if request.vmconfigs.is_empty() {
+    let configured_vmconfigs = if request.vmconfigs.is_empty() {
         config_vmconfigs
             .iter()
             .map(|path| resolve_build_config_vmconfig_path(request, path))
@@ -73,6 +70,7 @@ fn patch_axvisor_cargo_config(
     } else {
         request.vmconfigs.clone()
     };
+    let vmconfigs = vm_config::resolve_vmconfigs(request, &configured_vmconfigs)?;
     if !vmconfigs.is_empty() {
         let joined = std::env::join_paths(&vmconfigs)
             .map_err(|e| anyhow!("failed to join vmconfig paths: {e}"))?;
@@ -85,6 +83,14 @@ fn patch_axvisor_cargo_config(
     cargo.features.sort();
     cargo.features.dedup();
     Ok(())
+}
+
+pub(crate) fn vmconfigs_from_cargo(cargo: &Cargo) -> Vec<PathBuf> {
+    cargo
+        .env
+        .get("AXVISOR_VM_CONFIGS")
+        .map(|paths| std::env::split_paths(paths).collect())
+        .unwrap_or_default()
 }
 
 fn resolve_build_config_vmconfig_path(request: &ResolvedAxvisorRequest, path: &Path) -> PathBuf {

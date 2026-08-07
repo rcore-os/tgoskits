@@ -1,6 +1,6 @@
 //! Architecture-neutral vCPU collection construction and setup.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use std::{boxed::Box, sync::Arc, vec::Vec};
 
 use axvm_types::VmArchVcpuOps;
 
@@ -84,23 +84,24 @@ impl PreparedVcpus {
 
 impl<'a> IntoIterator for &'a PreparedVcpus {
     type Item = &'a AxVCpuRef;
-    type IntoIter = core::slice::Iter<'a, AxVCpuRef>;
+    type IntoIter = std::slice::Iter<'a, AxVCpuRef>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.vcpus.iter()
     }
 }
 
-pub(crate) fn vcpu_placements(resources: &AxVMResources) -> Vec<VcpuPlacement> {
-    resources
-        .config
-        .phys_cpu_ls
-        .get_vcpu_affinities_pcpu_ids()
-        .into_iter()
-        .map(|(id, phys_cpu_set, phys_cpu_id)| VcpuPlacement {
-            id,
-            phys_cpu_set,
-            phys_cpu_id,
-        })
-        .collect()
+impl AxVMResources {
+    pub(crate) fn vcpu_placements(&self) -> Vec<VcpuPlacement> {
+        self.config
+            .phys_cpu_ls
+            .get_vcpu_affinities_pcpu_ids()
+            .into_iter()
+            .map(|(id, phys_cpu_set, phys_cpu_id)| VcpuPlacement {
+                id,
+                phys_cpu_set,
+                phys_cpu_id,
+            })
+            .collect()
+    }
 }

@@ -1,6 +1,6 @@
 //! AArch64 compatibility facade and target-specific guest FDT policy.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use fdt_edit::Fdt;
 

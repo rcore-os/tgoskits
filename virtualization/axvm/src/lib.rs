@@ -12,23 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![no_std]
-
 //! This crate provides a minimal VM monitor (VMM) for running guest VMs.
 //!
 //! This crate contains:
 //! - [`AxVM`]: The main structure representing a VM.
 
-#[cfg(any(test, feature = "host-test"))]
-extern crate std;
+#![cfg_attr(any(test, target_arch = "aarch64"), feature(once_cell_try))]
 
-extern crate alloc;
 #[macro_use]
 extern crate log;
 
 mod arch;
 mod architecture;
 pub mod boot;
+mod configured;
 mod error;
 pub mod host;
 pub mod irq;
@@ -39,6 +36,7 @@ mod manager;
 mod npt;
 mod percpu;
 mod runtime;
+mod sync;
 mod task;
 mod timer;
 mod vcpu;
@@ -61,6 +59,11 @@ pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
     AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
     VMId, VmVcpuState,
+};
+pub use configured::{
+    ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
+    ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
+    FixedDeviceBindings, FixedWiredBinding,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};

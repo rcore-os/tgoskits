@@ -31,6 +31,7 @@ mod types;
 mod utils;
 mod vioapic;
 mod vlapic;
+mod vpic;
 
 use core::{cell::UnsafeCell, marker::PhantomData};
 
@@ -60,6 +61,7 @@ pub use self::{
         X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     },
     vioapic::{EmulatedIoApic, IoApicEoi, IoApicInterrupt},
+    vpic::EmulatedPic,
 };
 
 impl<H: host::X86VlapicHostOps> EmulatedLocalApic<H> {

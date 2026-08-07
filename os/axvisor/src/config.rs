@@ -23,20 +23,10 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
-use axvm::{
-    AxVM, GuestPhysAddr,
-    boot::{
-        BootImageProvider, StaticVmImage, boot_firmware_load_gpa, get_image_header,
-        guest_boot_policy, init_guest_boot_resources, prepare_guest_boot,
-    },
-    config::{
-        AxVCpuConfig, AxVMConfig, AxVMConfigParams, GuestBootPolicy, PhysCpuList, RamdiskInfo,
-        VMImageConfig,
-    },
-};
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
-use axvmconfig::{GuestConfig, GuestType, PassThroughDeviceConfig};
+use axvm::{boot::*, config::*, *};
+use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
 #[cfg(all(
     feature = "fs",
@@ -193,13 +183,13 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
 pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
     let machine = axvm::machine::current_machine_profile(cfg.base.cpu_num);
     let serial_profile = machine.serial;
-    let mut passthrough_devices = cfg.devices.unresolved_passthrough_devices();
+    let mut passthrough_devices = cfg.devices.unresolved_host_devices();
     if cfg.base.guest_type == GuestType::Passthrough
         && let Some(path) = machine.default_passthrough_device_path
     {
         passthrough_devices.insert(
             0,
-            PassThroughDeviceConfig {
+            HostDeviceAssignment {
                 name: path.into(),
                 ..Default::default()
             },
@@ -227,7 +217,6 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
                 size: None,
             }),
         },
-        emu_devices: machine.emulated_devices,
         pass_through_devices: passthrough_devices,
         excluded_devices: cfg.devices.disabled_device_paths(),
         pass_through_addresses: Vec::new(),
@@ -236,9 +225,10 @@ pub(crate) fn build_axvm_config(cfg: &GuestConfig) -> AxVMConfig {
         address_space_policy: cfg.base.guest_type.address_space_policy(),
         memory_regions: cfg.kernel.memory_regions.clone(),
         boot_policy: GuestBootPolicy::KeepConfigured,
-        interrupt_mode: cfg.base.guest_type.interrupt_mode(),
         serial_profile: Some(serial_profile),
         serial_backend_factory: Some(crate::guest_console::serial_backend_factory(cfg.base.id)),
+        virtual_device_requests: cfg.devices.virtual_devices.clone(),
+        virtual_device_catalog: Some(alloc::sync::Arc::new(axvm::ConfiguredDeviceCatalog::new())),
     })
 }
 

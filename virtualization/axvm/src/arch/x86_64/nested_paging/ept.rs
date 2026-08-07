@@ -1,6 +1,6 @@
 //! Intel Extended Page Table entry encoding.
 
-use core::{convert::TryFrom, fmt};
+use std::{convert::TryFrom, fmt};
 
 use axvm_types::{HostPhysAddr, MappingFlags};
 use bit_field::BitField;

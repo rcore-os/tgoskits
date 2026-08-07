@@ -1,6 +1,6 @@
 //! Machine-owned AArch64 architectural timer description.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 
 use fdt_edit::{Fdt, Node, Property};
 
@@ -68,7 +68,7 @@ pub(crate) fn host_timer_profile(fdt: &Fdt) -> AxVmResult<Option<GuestTimerProfi
     if !(4..=5).contains(&interrupt_count) {
         return Err(ax_err_type!(
             InvalidData,
-            alloc::format!(
+            std::format!(
                 "host architectural timer must describe four or five interrupts, got \
                  {interrupt_count}"
             )
@@ -77,7 +77,7 @@ pub(crate) fn host_timer_profile(fdt: &Fdt) -> AxVmResult<Option<GuestTimerProfi
     let controller = fdt.get_by_phandle(interrupt_parent.into()).ok_or_else(|| {
         ax_err_type!(
             InvalidData,
-            alloc::format!(
+            std::format!(
                 "host architectural timer references missing interrupt parent \
                  {interrupt_parent:#x}"
             )
@@ -169,13 +169,13 @@ pub(crate) fn install_machine_timer(
     let (parent_path, node_name) = path.rsplit_once('/').ok_or_else(|| {
         ax_err_type!(
             InvalidData,
-            alloc::format!("architectural timer node path is not absolute: {path}")
+            std::format!("architectural timer node path is not absolute: {path}")
         )
     })?;
     if node_name.is_empty() {
         return Err(ax_err_type!(
             InvalidData,
-            alloc::format!("architectural timer node path has no node name: {path}")
+            std::format!("architectural timer node path has no node name: {path}")
         ));
     }
     let parent = if parent_path.is_empty() {
@@ -206,7 +206,7 @@ pub(crate) fn install_machine_timer(
         {
             return Err(ax_err_type!(
                 InvalidData,
-                alloc::format!("architectural timer phandle {phandle:#x} is already in use")
+                std::format!("architectural timer phandle {phandle:#x} is already in use")
             ));
         }
         tree.set_property(timer, prop_u32("phandle", phandle))?;
@@ -227,7 +227,7 @@ fn prop_u32_list(name: &str, values: &[u32]) -> Property {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use fdt_edit::{Node, Property};
 

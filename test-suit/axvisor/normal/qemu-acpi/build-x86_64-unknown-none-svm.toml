@@ -1,0 +1,7 @@
+features = []
+log = "Info"
+target = "x86_64-unknown-none"
+vm_configs = ["test-suit/axvisor/normal/qemu-acpi/x86-linux-acpi-direct.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-acpi/initramfs-x86_64.cpio.gz"

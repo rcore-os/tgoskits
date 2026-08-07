@@ -1,6 +1,6 @@
 //! Small capability boundaries implemented by the selected guest architecture.
 
-use alloc::{sync::Arc, vec::Vec};
+use std::{sync::Arc, vec::Vec};
 
 use ax_std::os::arceos::modules::ax_task::IrqNotify;
 

@@ -207,7 +207,11 @@ impl GicItsProvider {
             let cpu_count = someboot::smp::cpu_count().max(1);
             let mut targets = Vec::with_capacity(cpu_count);
             for cpu_id in 0..cpu_count {
-                let hardware_id = super::hardware_cpu_id(cpu_id);
+                let hardware_id = super::hardware_cpu_id(cpu_id).map_err(|error| {
+                    OnProbeError::other(format!(
+                        "failed to resolve hardware ID for logical CPU {cpu_id}: {error:?}"
+                    ))
+                })?;
                 let affinity = Affinity::from_mpidr(hardware_id as u64);
                 let target = gic
                     .collection_target_for_affinity(

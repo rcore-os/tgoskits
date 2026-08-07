@@ -1,4 +1,4 @@
-use alloc::{format, string::String, vec::Vec};
+use std::{format, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::{Header, RegInfo};
@@ -226,7 +226,7 @@ impl FdtTree {
     }
 
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {
-        paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
+        paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
         for path in paths {
             self.fdt.remove_by_path(&path);
         }
@@ -251,11 +251,11 @@ pub(crate) fn host_fdt_bytes_from_ptr(ptr: *const u8) -> Option<&'static [u8]> {
     }
 
     let header = unsafe {
-        let bytes = core::slice::from_raw_parts(ptr, core::mem::size_of::<Header>());
+        let bytes = std::slice::from_raw_parts(ptr, std::mem::size_of::<Header>());
         Header::from_bytes(bytes).ok()?
     };
 
-    Some(unsafe { core::slice::from_raw_parts(ptr, header.totalsize as usize) })
+    Some(unsafe { std::slice::from_raw_parts(ptr, header.totalsize as usize) })
 }
 
 pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {

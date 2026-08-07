@@ -32,10 +32,9 @@ enable_bios = false
 # probing stalls without selecting VMX or SVM in the guest configuration. The
 # x86 direct-boot protocol limits this command line to 231 bytes, so omit the
 # non-essential rootfs `noload` and terminal `dumb` options instead.
-cmdline = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty acpi=off pci=conf1 pci=nomsi irqpoll nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0"
+cmdline = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty pci=conf1 pci=nomsi irqpoll nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0"
 
 ## The path of the disk image.
-# disk_path = ""
 
 # Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
 # For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.

@@ -1,6 +1,6 @@
 //! RISC-V implementations of AxVM platform capability hooks.
 
-use alloc::{format, vec::Vec};
+use std::{format, vec::Vec};
 
 use super::Riscv64Arch;
 use crate::{
@@ -22,7 +22,7 @@ impl BootImagePlatform for Riscv64Arch {
         dtb: &crate::boot::fdt::GuestDtbImage,
     ) -> AxVmResult {
         let bytes = dtb.as_bytes();
-        let source = core::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
+        let source = std::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
         super::fdt::core::update_fdt(source, bytes.len(), loader.vm.clone(), &loader.config)
     }
@@ -76,10 +76,31 @@ pub(super) fn patch_runtime_fdt(
                 format!("Failed to parse host FDT while updating guest FDT: {err:#?}")
             )
         })?;
-    let (serial_profile, serial_identity, plic_profile) = vm.with_config(|config| {
+    let (serial_profile, serial_path, additional_serials) =
+        vm.with_planned_device_graph(|graph| {
+            let serials = crate::machine::resolved_serial_devices(graph)?;
+            let serial = serials
+                .iter()
+                .find(|serial| serial.id() == "console0")
+                .ok_or_else(|| crate::AxVmError::invalid_config("RISC-V plan has no console0"))?;
+            let path = match serial.firmware_binding() {
+                axdevice::DeviceFirmwareBinding::FdtNode(path) => Some(path.clone()),
+                _ => None,
+            };
+            let additional: Vec<_> = serials
+                .iter()
+                .filter(|serial| serial.id() != "console0")
+                .map(crate::machine::ResolvedSerialDevice::profile)
+                .collect();
+            Ok((serial.profile(), path, additional))
+        })?;
+    let (serial_identity, plic_profile) = vm.with_config(|config| {
         (
-            config.serial_profile(),
-            config.serial_fdt_identity().cloned(),
+            config
+                .serial_firmware_identity()
+                .and_then(crate::machine::GuestSerialFirmwareIdentity::fdt)
+                .filter(|identity| Some(&identity.node_path) == serial_path.as_ref())
+                .cloned(),
             config.plic_profile().cloned(),
         )
     });
@@ -89,6 +110,7 @@ pub(super) fn patch_runtime_fdt(
         crate_config,
         serial_profile,
         serial_identity.as_ref(),
+        &additional_serials,
         None,
         plic_profile.as_ref(),
         None,

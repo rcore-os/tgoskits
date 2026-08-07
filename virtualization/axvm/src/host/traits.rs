@@ -1,6 +1,6 @@
 //! Internal host capability traits used by the AxVM runtime.
 
-use core::time::Duration;
+use std::time::Duration;
 
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
