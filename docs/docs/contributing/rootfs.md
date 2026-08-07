@@ -149,7 +149,36 @@ sudo umount /mnt/rootfs
 
 如需包含额外工具或库，可基于现有镜像修改或自行构建：
 
-### 7.1 基于现有镜像修改
+
+### 7.1 StarryNixOS 的 app-owned 镜像
+
+`apps/starry/nixos/` 不使用共享 Alpine 镜像，也不会执行 APK 注入。其
+`build-rootfs.sh` 从锁定的 NixOS 声明生成独立 ext4 镜像，并原子发布到：
+
+```text
+tmp/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img
+```
+
+相邻的 `.manifest` 记录 flake lock、x86_64 closure、systemd 版本和镜像哈希。
+正常构建需要原生 Nix/Lix；已发布镜像可通过
+`STARRY_NIXOS_REUSE_ROOTFS=1` 复用，但脚本仍会重新校验 ext4、lock、closure、
+target 和镜像哈希。该模式不会回退到 Alpine，也不会接受缺失或过期的清单。
+
+在仓库的 direnv 环境中运行：
+
+```bash
+TMPDIR="$PWD/.ci-cache/tmp" \
+STARRY_NIXOS_REUSE_ROOTFS=1 \
+  direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64
+```
+
+不要执行 `nix develop`，也不要重建或切换宿主 NixOS 系统。仓库内可选工具缓存
+仅使用 `.ci-cache/cargo`、`.ci-cache/rustup` 和 `.ci-cache/tmp`。验收成功必须
+依次出现 `pid1`、`activation`、`systemd`、`marker` 四个 phase，最后出现
+`STARRY_NIXOS_SYSTEM_PASSED`；具体兼容性例外和回滚边界见
+`apps/starry/nixos/README.md` 与 `compatibility.md`。
+
+### 7.2 基于现有镜像修改
 
 ```bash
 # 挂载并 chroot（需要 qemu-user-static）
@@ -164,7 +193,8 @@ exit
 sudo umount /mnt/rootfs
 ```
 
-### 7.2 从零构建
+
+### 7.3 从零构建
 
 可参考 [tgosimages](https://github.com/rcore-os/tgosimages) 仓库中的构建脚本，基于 Alpine Linux 的 `alpine-make-rootfs` 或 `debootstrap` 工具构建自定义镜像。
 

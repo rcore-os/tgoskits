@@ -78,3 +78,9 @@
 - After adding or changing commits on a PR branch, update the PR description so it stays synchronized with the committed changes.
 - Do not insert agent-related labels, signatures, branding, or other advertisement-style wording such as `codex`, `agent`, `AI`, or similar self-promotional tags unless the user explicitly requests it.
 - When changing architecture boot logic, someboot startup order, UEFI handoff, SMP bring-up, dynamic platform contracts, target JSON assumptions, or the recommended debugging flow, update `.claude/skills/arch-platform-porting/SKILL.md` or its references in the same change.
+
+<!-- SPECKIT START -->
+## Active SpecKit Plan
+
+- Active planning artifact: `specs/004-add-starry-nixos/plan.md`
+<!-- SPECKIT END -->

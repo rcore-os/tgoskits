@@ -99,6 +99,17 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - **Firmware address shape**: if firmware tables expose CPU-visible aliases such as LoongArch DMW addresses, canonicalize them through the architecture boundary before handing them to FDT memory setup, early console, or MMIO backends. Do not hide arch masks in generic `mem`/`common` helpers or duplicate them in drivers.
 - **Runtime MMIO mapping contract**: keep `phys_to_virt` / `virt_to_phys` scoped to RAM direct-map translation. Device resource mapping must enter through `ax-mm::iomap()`, which asks `ax_hal::mem::prepare_iomap()` for an arch/platform decision before falling back to page-table-backed device mappings. Architecture-specific aliases such as LoongArch uncached DMW belong behind `someboot::ArchTrait::ioremap_device()`, not in `ax-mm` or drivers.
 - **Drivers and rootfs**: check PCI command bits, MMIO/iomap, DMA address width, NVMe MSI-X/INTx routing, block device visibility, rootfs patching, and console/input feature flags. QEMU host root disks use NVMe and must not silently fall back to `virtio-blk`; guest virtual-device ABIs that bypass the host block runtime remain a separate scope.
+- **StarryNixOS x86_64 diagnosis**: build the app-owned image natively from
+  `apps/starry/nixos/flake.lock`, then use the repository direnv environment:
+  `direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64`. Set
+  `STARRY_NIXOS_REUSE_ROOTFS=1` only for an already-published image whose
+  adjacent manifest passes lock, closure, target, ext4, and image-hash checks.
+  Do not use `nix develop`, rebuild or switch the host NixOS system, or create
+  repository-local caches outside `.ci-cache/{cargo,rustup,tmp}`. Diagnose the
+  earliest ordered phase divergence and add a focused
+  `qemu/system/<behavior>` case before changing syscall, procfs, mount, or
+  filesystem semantics; do not treat later systemd fallout as the first root
+  cause.
 - **OS configs and test cases**: update ArceOS, StarryOS, and Axvisor configs only for validated architectures. Keep `qemu-<arch>.toml` runtime config separate from `build-*.toml`.
   Starry app board cases default to the matching
   `os/StarryOS/configs/board/<board>.toml`; add an app-local
