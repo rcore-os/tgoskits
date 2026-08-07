@@ -297,8 +297,12 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 return Err(AxError::Unsupported);
             }
             TCFLSH => match arg {
-                TCIFLUSH | TCIOFLUSH => self.ldisc.lock().drain_input(),
-                TCOFLUSH => {}
+                TCIFLUSH => self.ldisc.lock().drain_input(),
+                TCOFLUSH => self.writer.discard_output()?,
+                TCIOFLUSH => {
+                    self.writer.discard_output()?;
+                    self.ldisc.lock().drain_input();
+                }
                 _ => return Err(AxError::InvalidInput),
             },
             TIOCSPTLCK => {}

@@ -92,6 +92,10 @@ pub trait TtyWrite: Send + Sync + 'static {
         Ok(())
     }
 
+    fn discard_output(&self) -> AxResult<()> {
+        Err(AxError::Unsupported)
+    }
+
     fn termios_changed(&self, _old: &Termios2, _new: &Termios2) {}
 }
 

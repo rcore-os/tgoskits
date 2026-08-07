@@ -504,6 +504,12 @@ impl TtyWrite for UsbSerialWriter {
         self.backend.try_queue_bytes(buf)
     }
 
+    fn discard_output(&self) -> AxResult<()> {
+        let _guard = self.backend.output_lock.lock();
+        self.backend.clear_tx_queue();
+        Ok(())
+    }
+
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {
         let Some(new_baud) = new.baudrate() else {
             return;
