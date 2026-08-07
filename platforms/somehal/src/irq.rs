@@ -10,8 +10,8 @@ pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
 pub use irq_framework::{
-    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, HwIrq, IrqDomainId, IrqError,
-    IrqId, IrqSource, IrqTrigger,
+    AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, CpuId, HwIrq, IrqDomainId,
+    IrqError, IrqId, IrqSource, IrqTrigger,
 };
 use rdrive::{Device, DeviceId};
 
@@ -397,26 +397,13 @@ pub fn parent_irq_for_leaf(leaf: IrqId) -> Option<IrqId> {
         .map(|route| route.parent)
 }
 
-/// Target specification for inter-processor interrupts.
-#[derive(Clone, Copy, Debug)]
+/// Target specification for one inter-processor interrupt delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IpiTarget {
     /// Send to the current CPU.
-    Current {
-        /// The logical CPU ID of the current CPU.
-        cpu_id: usize,
-    },
+    Current,
     /// Send to a specific CPU.
-    Other {
-        /// The logical CPU ID of the target CPU.
-        cpu_id: usize,
-    },
-    /// Send to all other CPUs.
-    AllExceptCurrent {
-        /// The logical CPU ID of the current CPU.
-        cpu_id: usize,
-        /// The total number of CPUs.
-        cpu_num: usize,
-    },
+    Cpu(CpuId),
 }
 
 /// Hardware routing preference for a global IRQ line.
@@ -472,8 +459,8 @@ pub fn irq_set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqErro
     Plat::irq_set_affinity(parent_irq_for_leaf(irq).unwrap_or(irq), affinity)
 }
 
-pub fn send_ipi(irq: IrqId, target: IpiTarget) {
-    Plat::send_ipi(irq, target);
+pub fn send_ipi(irq: IrqId, target: IpiTarget) -> Result<(), IrqError> {
+    Plat::send_ipi(irq, target)
 }
 
 pub fn ipi_irq() -> IrqId {
@@ -557,8 +544,8 @@ pub fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
     Plat::resolve_irq_source(source)
 }
 
-pub fn send_ipi_to_cpu(cpu_id: usize) {
-    Plat::send_ipi_to_cpu(cpu_id);
+pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
+    Plat::send_ipi_to_cpu(cpu_id)
 }
 
 #[cfg(test)]

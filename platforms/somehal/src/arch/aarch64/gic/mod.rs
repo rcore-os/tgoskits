@@ -141,16 +141,19 @@ pub fn setup_irq_by_fdt(cells: &[u32]) -> Result<rdif_intc::IrqTranslation, crat
     Ok(translation)
 }
 
-pub fn send_ipi(irq: rdrive::IrqId, target: crate::irq::IpiTarget) {
+pub fn send_ipi(
+    irq: rdrive::IrqId,
+    target: crate::irq::IpiTarget,
+) -> Result<(), crate::irq::IrqError> {
     let raw = irq.into();
     match backend() {
         GicBackend::V2 => v2::send_ipi(raw, target),
         GicBackend::V3 => v3::send_ipi(raw, target),
         GicBackend::None => {
             if v3::is_support_icc() {
-                v3::send_ipi(raw, target);
+                v3::send_ipi(raw, target)
             } else {
-                v2::send_ipi(raw, target);
+                v2::send_ipi(raw, target)
             }
         }
     }
@@ -164,8 +167,8 @@ fn controller_sync_barrier() {
     }
 }
 
-fn hardware_cpu_id(cpu_idx: usize) -> usize {
-    someboot::smp::cpu_idx_to_id(cpu_idx).unwrap_or(cpu_idx)
+fn hardware_cpu_id(cpu_idx: usize) -> Result<usize, crate::irq::IrqError> {
+    someboot::smp::cpu_idx_to_id(cpu_idx).ok_or(crate::irq::IrqError::InvalidCpu)
 }
 
 pub enum ActiveIrq {

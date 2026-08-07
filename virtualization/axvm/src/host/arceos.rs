@@ -163,8 +163,9 @@ pub(crate) fn send_ipi(cpu_id: usize) {
     }
     modules::ax_hal::irq::send_ipi(
         modules::ax_hal::irq::ipi_irq(),
-        modules::ax_hal::irq::IpiTarget::Other { cpu_id },
-    );
+        modules::ax_hal::irq::IpiTarget::Cpu(modules::ax_hal::irq::CpuId(cpu_id)),
+    )
+    .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
 }
 
 pub(crate) fn run_on_cpu_sync(
@@ -182,10 +183,18 @@ fn send_ipi_to_all_except_current(cpu_num: usize) {
         return;
     }
     let cpu_id = modules::ax_hal::percpu::this_cpu_id();
-    modules::ax_hal::irq::send_ipi(
-        modules::ax_hal::irq::ipi_irq(),
-        modules::ax_hal::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num },
-    );
+    for target_cpu in 0..cpu_num {
+        if target_cpu == cpu_id {
+            continue;
+        }
+        modules::ax_hal::irq::send_ipi(
+            modules::ax_hal::irq::ipi_irq(),
+            modules::ax_hal::irq::IpiTarget::Cpu(modules::ax_hal::irq::CpuId(target_cpu)),
+        )
+        .unwrap_or_else(|err| {
+            panic!("failed to deliver AxVM broadcast IPI to CPU {target_cpu}: {err:?}")
+        });
+    }
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]

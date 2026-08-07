@@ -9,7 +9,10 @@ extern crate alloc;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use ax_hal::{irq::IpiTarget, percpu::this_cpu_id};
+use ax_hal::{
+    irq::{CpuId, IpiTarget},
+    percpu::this_cpu_id,
+};
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 
@@ -114,10 +117,10 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
         unsafe { IPI_EVENT_QUEUE.remote_ptr(area).as_ref() }
             .lock()
             .push(this_cpu_id(), callback.into());
-        ax_hal::irq::send_ipi(
-            ax_hal::irq::ipi_irq(),
-            IpiTarget::Other { cpu_id: dest_cpu },
-        );
+        ax_hal::irq::send_ipi(ax_hal::irq::ipi_irq(), IpiTarget::Cpu(CpuId(dest_cpu)))
+            .unwrap_or_else(|err| {
+                panic!("failed to deliver legacy IPI to CPU {dest_cpu}: {err:?}")
+            });
     }
 }
 
@@ -181,7 +184,8 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
 
     // Execute callback on current CPU immediately
     callback.clone().call();
-    // Push the callback to all other CPUs' IPI event queues
+    // Push and notify each remote CPU independently so a failed delivery is
+    // reported with an unambiguous target.
     for cpu_id in 0..cpu_num {
         if cpu_id != current_cpu_id {
             let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
@@ -192,16 +196,12 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
             unsafe { IPI_EVENT_QUEUE.remote_ptr(area).as_ref() }
                 .lock()
                 .push(current_cpu_id, callback.clone().into_unicast());
+            ax_hal::irq::send_ipi(ax_hal::irq::ipi_irq(), IpiTarget::Cpu(CpuId(cpu_id)))
+                .unwrap_or_else(|err| {
+                    panic!("failed to deliver legacy broadcast IPI to CPU {cpu_id}: {err:?}")
+                });
         }
     }
-    // Send IPI to all other CPUs to trigger their callbacks
-    ax_hal::irq::send_ipi(
-        ax_hal::irq::ipi_irq(),
-        IpiTarget::AllExceptCurrent {
-            cpu_id: current_cpu_id,
-            cpu_num,
-        },
-    );
 }
 
 /// The handler for IPI events. It retrieves the events from the queue and calls the corresponding callbacks.
