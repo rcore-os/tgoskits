@@ -126,6 +126,10 @@ pub struct SwPerTaskCounter {
     /// Logical CPU id of the last slice, for `cpu-migrations`. `CPU_UNSET` until
     /// the first `sched_in`.
     last_cpu: AtomicU32,
+    /// tid of the owning task, recorded at [`attach`]. Lets `enable`/open detect
+    /// self-monitoring (the owner enabling in its own running context) so the live
+    /// slice opens immediately instead of only at the next `sched_in`.
+    owner_tid: AtomicU32,
 }
 
 impl SwPerTaskCounter {
@@ -149,12 +153,50 @@ impl SwPerTaskCounter {
             time_enabled_ns: AtomicU64::new(0),
             enabled_since_ns: AtomicU64::new(if enabled { now } else { 0 }),
             last_cpu: AtomicU32::new(CPU_UNSET),
+            owner_tid: AtomicU32::new(0),
         }
     }
 
     fn enable(&self) {
         if !self.enabled.swap(true, Ordering::AcqRel) {
             self.enabled_since_ns.store(now_ns(), Ordering::Release);
+            // Enabling from the owner's own running context (self-monitoring):
+            // open the live slice now, since `sched_in` only fires on a context
+            // switch and a no-deschedule window would otherwise not count.
+            self.arm_running_slice_if_current();
+        }
+    }
+
+    /// Open the in-flight slice for the current core: start the `task-clock`
+    /// window (only if one is not already open, so a concurrent `sched_in` is not
+    /// clobbered) and seed `cpu-migrations`' baseline CPU. Mirrors what `sched_in`
+    /// does for a freshly-enabled counter; the caller guarantees the owning task
+    /// is running on this CPU.
+    fn open_live_slice(&self, now: u64, this_cpu: u32) {
+        match self.kind {
+            SwId::TaskClock => {
+                let _ =
+                    self.run_since_ns
+                        .compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire);
+            }
+            SwId::CpuMigrations => self.last_cpu.store(this_cpu, Ordering::Release),
+            _ => {}
+        }
+    }
+
+    /// If this counter's owner is the current running task (self-monitoring, so it
+    /// is on THIS CPU), open its live slice now. A cross-task (`pid > 0`) or
+    /// off-CPU enable is left to `sched_in` when the task next runs — opening it
+    /// here would race the monitored task's on-CPU state. Preemption is held off
+    /// across the on-CPU check and the slice open so the determination stays valid.
+    fn arm_running_slice_if_current(&self) {
+        let _guard = crate::sync::PreemptGuard::new();
+        let curr = ax_task::current();
+        let is_current = curr
+            .try_as_thread()
+            .is_some_and(|t| t.tid() == self.owner_tid.load(Ordering::Acquire));
+        if is_current {
+            self.open_live_slice(now_ns(), ax_hal::percpu::this_cpu_id() as u32);
         }
     }
 
@@ -274,6 +316,7 @@ impl Pollable for SwPerfEvent {
 /// Attach `ctr` to `thr`'s software-counter list, reaping any dead entries left
 /// by closed fds, and bump the global gate.
 fn attach(thr: &Thread, ctr: Arc<SwPerTaskCounter>) {
+    ctr.owner_tid.store(thr.tid(), Ordering::Release);
     let mut list = thr.perf_sw_counters.lock();
     list.retain(|c| !c.dead.load(Ordering::Acquire));
     list.push(ctr);
@@ -301,6 +344,13 @@ pub fn perf_event_open_sw(
         attach(thr, ctr.clone());
     } else {
         return Err(AxError::Unsupported);
+    }
+
+    // If the event opened enabled (`disabled == 0`) on the calling task, open its
+    // live slice now (self-monitoring, running). No-ops for a `pid > 0` / off-CPU
+    // target, which `sched_in` opens when that task next runs.
+    if attr.disabled() == 0 {
+        ctr.arm_running_slice_if_current();
     }
 
     Ok(SwPerfEvent { ctr })
@@ -387,13 +437,10 @@ pub fn on_exec(thr: &Thread) {
         // Only counters armed for exec that are not already enabled.
         if c.enable_on_exec && !c.enabled.swap(true, Ordering::AcqRel) {
             c.enabled_since_ns.store(now, Ordering::Release);
-            // The task is running right now, so open its live slice exactly as
-            // `sched_in` would for a freshly-enabled counter.
-            match c.kind {
-                SwId::TaskClock => c.run_since_ns.store(now, Ordering::Release),
-                SwId::CpuMigrations => c.last_cpu.store(this_cpu, Ordering::Release),
-                _ => {}
-            }
+            // `thr` is the current task running on this CPU (execve is its own
+            // syscall, and the list lock holds off reschedule), so open its live
+            // slice exactly as `sched_in` would for a freshly-enabled counter.
+            c.open_live_slice(now, this_cpu);
         }
     }
 }
