@@ -82,8 +82,9 @@ STARRY_NIXOS_SYSTEM_PASSED
 ```
 
 A shell prompt, partial sequence, failed unit, panic/fatal record, explicit
-failure marker, or timeout is a failure. See `compatibility.md` for exact run
-evidence and the compatibility ledger.
+failure marker, timeout, or a guest that remains alive after the terminal
+marker is a failure. See `compatibility.md` for exact run evidence and the
+compatibility ledger.
 
 The 2026-08-07 8-vCPU acceptance run completed activation, started systemd as
 PID 1, reached `multi-user.target`, ran the declarative marker service, and

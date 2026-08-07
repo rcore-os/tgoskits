@@ -51,7 +51,7 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 ### 2026-08-07 8-vCPU Stage-2 acceptance pass
 
 - The host direnv development environment ran:
-  `TMPDIR="$PWD/.ci-cache/tmp" STARRY_NIXOS_REUSE_ROOTFS=1 direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64`.
+  `STARRY_NIXOS_REUSE_ROOTFS=1 direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64`.
   The builder reused the existing app-owned rootfs after manifest and ext4
   validation; it did not rebuild or switch the host NixOS system.
 - QEMU used `-smp 8`. The guest completed activation, journal flush, both
@@ -59,15 +59,11 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
   resolvconf, and the extra networking commands. The ACL boundary remained
   green: `setfacl` and `resolvconf-start` both exited with code 0.
 - The guest reached `Multi-User System` and emitted the complete ordered
-  contract:
-  `STARRY_NIXOS_PHASE=pid1`,
-  `STARRY_NIXOS_PHASE=activation`,
-  `STARRY_NIXOS_PHASE=systemd`,
-  `STARRY_NIXOS_PHASE=marker`, and
-  `STARRY_NIXOS_SYSTEM_PASSED`.
-- The runner keeps the successful guest alive after the terminal marker, so it
-  was manually interrupted after the complete pass evidence appeared. The
-  resulting host exit status reflects that interruption, not a guest failure.
+  contract: `STARRY_NIXOS_PHASE=pid1`,
+  `STARRY_NIXOS_PHASE=activation`, `STARRY_NIXOS_PHASE=systemd`,
+  `STARRY_NIXOS_PHASE=marker`, and `STARRY_NIXOS_SYSTEM_PASSED`.
+- The marker then requested `systemctl --force --force poweroff`; QEMU returned
+  successfully after the guest filesystem sync, with no manual interruption.
 
 ### 2026-08-06 bind-mounted executable-path acceptance rerun
 

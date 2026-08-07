@@ -116,6 +116,7 @@
       echo "STARRY_NIXOS_PHASE=systemd"
       echo "STARRY_NIXOS_PHASE=marker"
       echo "STARRY_NIXOS_SYSTEM_PASSED"
+      systemctl --force --force poweroff
     '';
   };
 
