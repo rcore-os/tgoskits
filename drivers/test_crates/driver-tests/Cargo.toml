@@ -10,7 +10,10 @@ autotests = false
 [dependencies]
 
 [dev-dependencies]
+ax-driver = { workspace = true, features = ["serial"] }
+ax-kernel-guard = { workspace = true, features = ["host-test"] }
 ax-kspin.workspace = true
+axklib.workspace = true
 eth-intel.workspace = true
 fdt-edit.workspace = true
 pcie.workspace = true
@@ -21,6 +24,10 @@ rockchip-soc.workspace = true
 some-serial.workspace = true
 spin.workspace = true
 num-align = "0.1.0"
+
+[[test]]
+name = "serial_fdt"
+path = "tests/serial_fdt.rs"
 
 # These bare-test cases stay disabled by default. To run one manually, add the
 # required bare-test dependency in this test crate and enable the matching
