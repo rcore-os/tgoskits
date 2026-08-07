@@ -119,7 +119,7 @@ impl DeviceModel for HostPortPassthroughDeviceModel {
         HostPortPassthrough::new(self.base, self.length).map_err(|error| {
             DeviceManagerError::InvalidConfig {
                 operation: "declare host port passthrough",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             }
         })?;
         DeviceRequirements::new().with_pio(

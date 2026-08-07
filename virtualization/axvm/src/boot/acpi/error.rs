@@ -1,6 +1,6 @@
 //! ACPI composition failures.
 
-use alloc::string::String;
+use std::string::String;
 
 /// Error returned while laying out or serializing guest ACPI tables.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

@@ -48,7 +48,7 @@ impl DeviceModel for X86CmosModel {
             });
         }
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            alloc::sync::Arc::new(axdevice::X86CmosDevice::new(self.low_memory_size)),
+            std::sync::Arc::new(axdevice::X86CmosDevice::new(self.low_memory_size)),
         )))
     }
 }

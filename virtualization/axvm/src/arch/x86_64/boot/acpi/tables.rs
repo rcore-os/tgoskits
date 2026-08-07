@@ -1,6 +1,6 @@
 //! Standard x86 ACPI tables and the direct-boot low-memory image.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use acpi_tables::{
     Aml,

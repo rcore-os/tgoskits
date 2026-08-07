@@ -1,4 +1,4 @@
-use alloc::vec;
+use std::vec;
 
 use axdevice_base::ItsId;
 use fdt_edit::{Fdt, Node, Property};

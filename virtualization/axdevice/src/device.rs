@@ -180,6 +180,14 @@ struct RuntimeDeviceAccess<'a> {
     access_ports: &'a RuntimeAccessPorts,
 }
 
+impl RuntimeDeviceAccess<'_> {
+    fn has_grant<T>(&self, grants: &[(DeviceId, T)], matches_token: impl Fn(&T) -> bool) -> bool {
+        grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && matches_token(registered)
+        })
+    }
+}
+
 impl DeviceAccess for RuntimeDeviceAccess<'_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
@@ -190,9 +198,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
         addr: GuestPhysAddr,
         data: &mut [u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.dma_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "read guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -213,9 +219,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
         addr: GuestPhysAddr,
         data: &[u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.dma_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "write guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -232,9 +236,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn schedule_timer(&mut self, grant: &TimerGrant, deadline_ns: u64) -> Result<(), DeviceError> {
-        if !self.timer_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.timer_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "schedule timer from device access",
                 detail: "device has no timer grant".into(),
@@ -254,9 +256,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn wake_vcpu(&mut self, grant: &WakeGrant, vcpu_id: usize) -> Result<(), DeviceError> {
-        if !self.wake_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.wake_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "wake vCPU from device access",
                 detail: "device has no wake grant".into(),
@@ -275,9 +275,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
 
     fn request_vm_stop(&mut self, grant: &StopGrant, reason: &str) -> Result<(), DeviceError> {
-        if !self.stop_grants.iter().any(|(device_id, registered)| {
-            *device_id == self.device_id && registered.same_token(grant)
-        }) {
+        if !self.has_grant(self.stop_grants, |registered| registered.same_token(grant)) {
             return Err(DeviceError::Unsupported {
                 operation: "request VM stop from device access",
                 detail: "device has no stop grant".into(),

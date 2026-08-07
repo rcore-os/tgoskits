@@ -5,7 +5,7 @@
 //! default virtual UART with the host-selected UART's register model, layout,
 //! address, and firmware identity before VM construction.
 
-use alloc::{string::String, vec, vec::Vec};
+use std::{string::String, vec, vec::Vec};
 
 use axdevice_base::AccessWidth;
 

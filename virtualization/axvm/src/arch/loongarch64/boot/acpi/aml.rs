@@ -1,6 +1,6 @@
 //! LoongArch platform AML generation.
 
-use alloc::{format, vec, vec::Vec};
+use std::{format, vec, vec::Vec};
 
 use super::config::{LoongArchFwCfgPciConfig, LoongArchFwCfgSerialConfig};
 

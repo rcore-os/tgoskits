@@ -1,7 +1,9 @@
 //! Guest-visible serial resources selected by a machine profile.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 
+#[cfg(target_arch = "loongarch64")]
+use ax_std::os::arceos::driver as ax_driver;
 use axdevice::{
     DeviceFirmwareBinding, DeviceFirmwareProperty, DeviceFirmwareSpec, ResolvedDeviceGraph,
 };
@@ -145,7 +147,7 @@ pub(crate) fn host_serial_from_acpi(
         3 => AccessWidth::Dword,
         4 => AccessWidth::Qword,
         value => {
-            return Err(AxVmError::invalid_config(alloc::format!(
+            return Err(AxVmError::invalid_config(std::format!(
                 "host SPCR serial access size {value} is invalid"
             )));
         }
@@ -298,7 +300,7 @@ fn single_slot<'a>(
     kind: &'static str,
 ) -> AxVmResult<&'a axdevice::ResourceSlot> {
     let [slot] = slots else {
-        return Err(AxVmError::invalid_config(alloc::format!(
+        return Err(AxVmError::invalid_config(std::format!(
             "serial firmware model {:?} must declare exactly one {kind} slot",
             firmware.node_name()
         )));
@@ -320,13 +322,13 @@ fn u32_property(firmware: &DeviceFirmwareSpec, name: &str) -> Option<u32> {
 }
 
 fn serial_range_error(device: &str) -> AxVmError {
-    AxVmError::invalid_config(alloc::format!(
+    AxVmError::invalid_config(std::format!(
         "resolved serial range for {device} exceeds the target address width"
     ))
 }
 
 fn serial_property_error(device: &str, property: &'static str) -> AxVmError {
-    AxVmError::invalid_config(alloc::format!(
+    AxVmError::invalid_config(std::format!(
         "resolved serial {device} has invalid {property}"
     ))
 }

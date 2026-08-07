@@ -81,7 +81,7 @@ pub(super) fn patch_runtime_fdt(
                     .iter()
                     .filter(|serial| serial.id() != "console0")
                     .map(crate::machine::ResolvedSerialDevice::profile)
-                    .collect::<alloc::vec::Vec<_>>(),
+                    .collect::<std::vec::Vec<_>>(),
                 plan.gic_profile().clone(),
                 plan.timer_profile().clone(),
             ))

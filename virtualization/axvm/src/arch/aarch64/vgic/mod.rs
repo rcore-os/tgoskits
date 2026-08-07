@@ -234,7 +234,7 @@ impl DeviceModel for Aarch64VgicFactory {
         let runtime = create_runtime(self.vm_id, &self.plan).map_err(|error| {
             DeviceManagerError::InvalidConfig {
                 operation: "create AArch64 virtual GIC runtime",
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             }
         })?;
         let access_context: Arc<dyn VgicAccessContext> =

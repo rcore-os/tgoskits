@@ -27,15 +27,14 @@ pub(super) fn create(vgic: &ArmVgicConfig) -> AxVmResult<ResourcePools> {
     )?;
 
     for assigned in vgic.assigned_spis() {
-        let owner = alloc::format!("aarch64-physical-spi-{}", assigned.intid().raw());
-        pools.reserve_controller_input(
-            owner.clone(),
+        let owner = std::format!("aarch64-physical-spi-{}", assigned.intid().raw());
+        pools.reserve_wired_host_irq(
+            owner,
             controller,
             ControllerInputId::new(assigned.intid().raw() as usize),
+            assigned.host_irq(),
             assigned.trigger(),
-            InterruptSharing::Exclusive,
         )?;
-        pools.reserve_host_irq(owner, assigned.host_irq())?;
     }
 
     if let ArmVgicConfig::V3(config) = vgic {

@@ -1,7 +1,7 @@
 //! Immutable AArch64 device, VGIC, and firmware construction plan.
 
-use alloc::vec::Vec;
 use core::ops::Range;
+use std::vec::Vec;
 
 use axdevice::{DeviceFirmwareBinding, DeviceNodeId, DeviceNodeSpec};
 
@@ -21,7 +21,7 @@ impl Aarch64VmPlan {
             .gic_profile()
             .ok_or_else(|| AxVmError::invalid_config("AArch64 machine profile has no VGIC"))?;
         let controller_id = DeviceNodeId::new("vgic")?;
-        let mut nodes = alloc::vec![
+        let mut nodes = std::vec![
             DeviceNodeSpec::host_replacement(
                 controller_id.clone(),
                 super::vgic::model(config.id(), &vgic),
@@ -86,7 +86,7 @@ impl ArchitectureVmPlan for Aarch64VmPlan {
 }
 
 fn gic_ranges(profile: &GuestGicProfile) -> AxVmResult<Vec<Range<u64>>> {
-    let mut ranges = alloc::vec![checked_range(profile.distributor, "GIC Distributor")?];
+    let mut ranges = std::vec![checked_range(profile.distributor, "GIC Distributor")?];
     match &profile.cpu_region {
         GuestGicCpuRegion::CpuInterface(region) => {
             ranges.push(checked_range(*region, "GIC CPU interface")?);
@@ -120,6 +120,6 @@ fn checked_range(region: GuestMmioRegion, owner: &'static str) -> AxVmResult<Ran
     let end = base
         .checked_add(length)
         .filter(|_| length != 0)
-        .ok_or_else(|| AxVmError::invalid_config(alloc::format!("{owner} range is invalid")))?;
+        .ok_or_else(|| AxVmError::invalid_config(std::format!("{owner} range is invalid")))?;
     Ok(base..end)
 }

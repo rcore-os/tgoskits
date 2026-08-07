@@ -74,10 +74,7 @@ impl LoongArch64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.validate_guest_dtb()?;
-
-            let owned_regions = resources.guest_owned_regions();
-            resources.map_guest_address_space(vm.id(), &owned_regions)?;
+            resources.prepare_guest_address_space(vm.id(), &[])?;
             vcpus.setup(resources, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
@@ -94,7 +91,7 @@ fn plan_devices(
     const FW_CFG_BASE: usize = 0x1e02_0000;
     const FW_CFG_SIZE: usize = 0x18;
     let controller_id = DeviceNodeId::new("pch-pic")?;
-    let mut nodes = alloc::vec![
+    let mut nodes = std::vec![
         DeviceNodeSpec::host_replacement(
             controller_id.clone(),
             Arc::new(axdevice::LoongArchPchPicFactory::new(

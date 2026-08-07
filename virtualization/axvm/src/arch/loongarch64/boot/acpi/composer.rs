@@ -1,6 +1,6 @@
 //! LoongArch ACPI composition and fw_cfg relocation plan.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axdevice::{FwCfgAcpiBlobs, FwCfgRamRegion};
 
@@ -104,7 +104,7 @@ fn build_acpi(
     if allocation.gpa() != 0 || allocation.offset() != 0 {
         return Err(AcpiBuildError::InvalidValue {
             field: "LoongArch ACPI table base",
-            value: alloc::format!("{:#x}", allocation.gpa()),
+            value: std::format!("{:#x}", allocation.gpa()),
         });
     }
     arena.write(&allocation, &tables)?;
@@ -137,7 +137,7 @@ fn add_table_checksum(
 fn u32_value(value: usize, field: &'static str) -> Result<u32, AcpiBuildError> {
     u32::try_from(value).map_err(|_| AcpiBuildError::InvalidValue {
         field,
-        value: alloc::format!("{value:#x}"),
+        value: std::format!("{value:#x}"),
     })
 }
 

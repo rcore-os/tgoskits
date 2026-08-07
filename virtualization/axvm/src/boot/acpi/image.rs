@@ -1,6 +1,6 @@
 //! Final ACPI table metadata and direct-boot image.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use super::AcpiBuildError;
 

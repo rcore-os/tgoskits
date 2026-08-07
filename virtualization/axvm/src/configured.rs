@@ -1,7 +1,7 @@
 //! Code-registered constructors for open-ended virtual-device models.
 
-use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::fmt;
+use std::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
 use axdevice::*;
 use axdevice_base::{ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger};
@@ -199,7 +199,7 @@ impl ConfiguredDeviceCatalog {
         let id = DeviceNodeId::new(request.id.clone()).map_err(|error| {
             ConfiguredDeviceError::InvalidDeviceId {
                 device: request.id.clone(),
-                detail: alloc::format!("{error}"),
+                detail: std::format!("{error}"),
             }
         })?;
         let registration = self.registrations.get(&request.model).ok_or_else(|| {

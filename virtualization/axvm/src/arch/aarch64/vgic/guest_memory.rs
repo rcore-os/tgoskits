@@ -23,6 +23,6 @@ impl GuestMemory for AxvmGuestMemory {
             GuestMemoryError::new("read ITS table", "guest VM is no longer registered")
         })?;
         vm.read_from_guest(GuestPhysAddr::from(address), destination)
-            .map_err(|error| GuestMemoryError::new("read ITS table", alloc::format!("{error}")))
+            .map_err(|error| GuestMemoryError::new("read ITS table", std::format!("{error}")))
     }
 }

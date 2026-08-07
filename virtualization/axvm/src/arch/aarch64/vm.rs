@@ -72,10 +72,7 @@ impl Aarch64Arch {
                 )?;
             }
 
-            resources.validate_guest_dtb()?;
-
-            let owned_regions = resources.guest_owned_regions();
-            resources.map_guest_address_space(vm.id(), &owned_regions)?;
+            resources.prepare_guest_address_space(vm.id(), &[])?;
             vcpus.setup(resources, move |_config, _memory_regions| {
                 Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
             })?;

@@ -1,6 +1,6 @@
 //! LoongArch-specific ACPI table encoders.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axdevice::FwCfgRamRegion;
 

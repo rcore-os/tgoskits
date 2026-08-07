@@ -1,6 +1,6 @@
 //! Host-derived guest GIC and ITS firmware identity.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 
 use axdevice_base::ItsId;
 

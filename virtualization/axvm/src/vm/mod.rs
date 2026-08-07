@@ -37,9 +37,7 @@ use axvm_types::*;
 
 use crate::{
     arch::*, boot::*, config::*, host::paging::*, irq::model::*, layout::*, lifecycle::*,
-    runtime::*,
-    sync::MutexExt,
-    vcpu::*, *,
+    runtime::*, sync::MutexExt, vcpu::*, *,
 };
 
 pub(crate) mod boot;

@@ -1,6 +1,6 @@
 //! x86 DSDT and SPCR construction.
 
-use alloc::{string::ToString, vec::Vec};
+use std::{string::ToString, vec::Vec};
 
 use acpi_tables::{
     Aml,
@@ -39,7 +39,7 @@ fn build_pci_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) {
     let bbn = Name::new("_BBN".into(), &0u8);
     let crs = Name::new(
         "_CRS".into(),
-        &ResourceTemplate::new(alloc::vec![
+        &ResourceTemplate::new(std::vec![
             &AddressSpace::new_bus_number(plan.pci.bus_range.0, plan.pci.bus_range.1),
             &AddressSpace::new_io(plan.pci.io_windows[0].0, plan.pci.io_windows[0].1, None,),
             &AddressSpace::new_io(plan.pci.io_windows[1].0, plan.pci.io_windows[1].1, None,),
@@ -64,13 +64,13 @@ fn build_pci_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) {
         for pin in 0u32..4 {
             let address = (device << 16) | 0xffff;
             let gsi = plan.pci.intx_gsis[((device + pin) & 3) as usize];
-            routes.add_element(&Package::new(alloc::vec![&address, &pin, &ZERO, &gsi]));
+            routes.add_element(&Package::new(std::vec![&address, &pin, &ZERO, &gsi]));
         }
     }
     let prt = Name::new("_PRT".into(), &routes);
     Device::new(
         "_SB_.PCI0".into(),
-        alloc::vec![&hid, &uid, &adr, &seg, &bbn, &crs, &prt],
+        std::vec![&hid, &uid, &adr, &seg, &bbn, &crs, &prt],
     )
     .to_aml_bytes(aml);
 }
@@ -91,7 +91,7 @@ fn build_serial_device(serial: &X86SerialPlan, aml: &mut Vec<u8>) -> Result<(), 
     let path = serial
         .namespace_path
         .clone()
-        .unwrap_or_else(|| alloc::format!("_SB_.{}", serial.name));
+        .unwrap_or_else(|| std::format!("_SB_.{}", serial.name));
     match serial.registers {
         X86SerialRegisters::Port { base, size } => {
             let size = u8::try_from(size).map_err(|_| AcpiBuildError::InvalidValue {
@@ -99,15 +99,15 @@ fn build_serial_device(serial: &X86SerialPlan, aml: &mut Vec<u8>) -> Result<(), 
                 value: size.to_string(),
             })?;
             let registers = IO::new(base, base, 0, size);
-            let resources = ResourceTemplate::new(alloc::vec![&interrupt, &registers]);
+            let resources = ResourceTemplate::new(std::vec![&interrupt, &registers]);
             let crs = Name::new("_CRS".into(), &resources);
-            Device::new(path.as_str().into(), alloc::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
+            Device::new(path.as_str().into(), std::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
         }
         X86SerialRegisters::Mmio { base, size } => {
             let registers = Memory32Fixed::new(true, base, size);
-            let resources = ResourceTemplate::new(alloc::vec![&interrupt, &registers]);
+            let resources = ResourceTemplate::new(std::vec![&interrupt, &registers]);
             let crs = Name::new("_CRS".into(), &resources);
-            Device::new(path.as_str().into(), alloc::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
+            Device::new(path.as_str().into(), std::vec![&hid, &uid, &crs]).to_aml_bytes(aml);
         }
     }
     Ok(())
@@ -125,11 +125,11 @@ fn build_fw_cfg_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) -> Result<(), 
             field: "fw_cfg DMA size",
             value: plan.resources.fw_cfg_dma_size.to_string(),
         })?;
-    let hid = Name::new("_HID".into(), &alloc::string::String::from("QEMU0002"));
+    let hid = Name::new("_HID".into(), &std::string::String::from("QEMU0002"));
     let sta = Name::new("_STA".into(), &0x0bu8);
     let crs = Name::new(
         "_CRS".into(),
-        &ResourceTemplate::new(alloc::vec![
+        &ResourceTemplate::new(std::vec![
             &IO::new(
                 plan.resources.fw_cfg_selector_base,
                 plan.resources.fw_cfg_selector_base,
@@ -144,7 +144,7 @@ fn build_fw_cfg_device(plan: &X86FirmwarePlan, aml: &mut Vec<u8>) -> Result<(), 
             ),
         ]),
     );
-    Device::new("_SB_.FWCF".into(), alloc::vec![&hid, &sta, &crs]).to_aml_bytes(aml);
+    Device::new("_SB_.FWCF".into(), std::vec![&hid, &sta, &crs]).to_aml_bytes(aml);
     Ok(())
 }
 

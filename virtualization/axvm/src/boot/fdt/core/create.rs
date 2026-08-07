@@ -584,12 +584,12 @@ mod tests {
         contexts.set_u32_ls(&[8, 11, 8, 9, 6, 11, 6, 9]);
         fdt.node_mut(plic).unwrap().set_property(contexts);
         let its = fdt.add_node(root, Node::new("its@8080000"));
-        let mut compatible = Property::new("compatible", alloc::vec![]);
+        let mut compatible = Property::new("compatible", std::vec![]);
         compatible.set_string("arm,gic-v3-its");
         fdt.node_mut(its).unwrap().set_property(compatible);
         fdt.node_mut(its)
             .unwrap()
-            .set_property(Property::new("msi-controller", alloc::vec![]));
+            .set_property(Property::new("msi-controller", std::vec![]));
 
         let cfg = GuestConfig {
             base: axvmconfig::VMBaseConfig {

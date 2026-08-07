@@ -3,8 +3,8 @@
 实现者视角的内部细节文档，配套 [`lifecycle.md`](lifecycle.md)（API 使用指南，面向调用公共 API 的
 VMM/控制面）。本文档回答四类实现问题：**状态到底带着什么资源跑**（§1 双维度）、**Machine 的完整
 内部转换图**（§2）、**runtime 何时创建/回收/被取走**（§3 runtime 生命周期）、**哪些状态在锁内
-不可观测**（§4）；并附**逐条对照源码的转换规则表**（§5）与**外部接口文件对照**（§6）。所有行号
-指向提交 **`31f341abc`**（dev 分支，2026-07-31）；dev 前进导致行号漂移时，需对照最新代码修正。
+不可观测**（§4）；并附**逐条对照源码的转换规则表**（§5）与**外部接口文件对照**（§6）。源码定位
+以符号名和相对路径为准；开发分支持续前进，文中行号仅用于辅助定位，不能代替对当前实现的核对。
 
 > **定位：** 本文档的读者是修改 `src/lifecycle/`、`src/runtime/`、`src/vm/` 的开发者与上层 VMM
 > 中需要深入状态内部（而非只消费 `VmStatus` 投影）的实现者。只消费公共 API 的控制面开发者读
@@ -215,7 +215,7 @@ vCPU 退出，不重复请求 stop。API 使用指南把这段概括为"`destroy
 prepare → `start`，所以外部视角 `reset()` 的终态是 `Running`（`Ready` 只是不可观测的中间态）。
 
 **start 与 reset（从 `Stopped` 出发）的实现层差别：** 两者都经 `AxVM::prepare()` →
-`AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构并执行
+crate 内部的 `AxVM::prepare_resources_with()` 重建 vCPU/设备/中断结构并执行
 `AxVMResources::reset_transient_resources()`。
 差别：`reset()` 额外多走一次 `reset_with`（→`Ready` 瞬态），其闭包显式调
 `reset_transient_resources`；`start()` 不经过 `Ready`，靠 `AxVM::prepare()` 内部的架构初始化

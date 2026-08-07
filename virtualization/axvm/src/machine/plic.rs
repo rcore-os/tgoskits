@@ -1,6 +1,6 @@
 //! Host-derived guest PLIC firmware identity.
 
-use alloc::string::String;
+use std::string::String;
 
 const CONTEXT_CONTROL_OFFSET: usize = 0x20_0000;
 const CONTEXT_STRIDE: usize = 0x1000;

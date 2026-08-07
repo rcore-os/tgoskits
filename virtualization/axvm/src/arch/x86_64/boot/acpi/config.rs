@@ -1,6 +1,6 @@
 //! Small immutable x86 plans consumed by both direct and firmware ACPI paths.
 
-use alloc::{
+use std::{
     format,
     string::{String, ToString},
     vec::Vec,
@@ -214,7 +214,7 @@ impl X86FirmwarePlan {
             .checked_sub(base)
             .ok_or_else(|| X86FirmwarePlanError::InvalidValue {
                 field: "fw_cfg PIO range",
-                value: alloc::format!("DMA end {end:#x} precedes selector base {base:#x}"),
+                value: std::format!("DMA end {end:#x} precedes selector base {base:#x}"),
             })?;
         Ok((base, size))
     }
@@ -322,7 +322,7 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             },
         },
         resources: X86FirmwareResources {
-            serials: alloc::vec![X86SerialPlan {
+            serials: std::vec![X86SerialPlan {
                 name: "COM1".into(),
                 namespace_path: None,
                 hid: "PNP0501".into(),

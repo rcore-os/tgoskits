@@ -143,7 +143,7 @@ impl GuestPlatform {
     pub fn fw_cfg_platform_config(&self, cpu_num: u16) -> AxVmResult<FwCfgPlatformConfig> {
         let ram_regions = fw_cfg_ram_regions(&self.ram_regions);
         let acpi = acpi::build(cpu_num, self, &ram_regions).map_err(|error| {
-            crate::AxVmError::invalid_config(alloc::format!(
+            crate::AxVmError::invalid_config(std::format!(
                 "failed to build LoongArch guest ACPI: {error}"
             ))
         })?;

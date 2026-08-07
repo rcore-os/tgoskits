@@ -1,6 +1,6 @@
 //! Guest-visible AArch64 architectural timer resources.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 
 /// Guest-visible AArch64 architectural timer resources.
 #[derive(Clone, Debug, PartialEq, Eq)]

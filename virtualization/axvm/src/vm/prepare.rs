@@ -83,17 +83,3 @@ impl AxVM {
         Ok(())
     }
 }
-
-impl AxVMResources {
-    pub(crate) fn validate_guest_dtb(&self) -> AxVmResult {
-        if self.config.image_config().dtb_load_gpa.is_some()
-            && self.boot_description.device_tree().is_none()
-        {
-            return ax_err!(
-                InvalidInput,
-                "DTB load GPA is configured but no guest device tree bytes are registered"
-            );
-        }
-        Ok(())
-    }
-}

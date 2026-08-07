@@ -7,7 +7,7 @@ use crate::{config::*, machine::*, *};
 pub(super) struct Aarch64FirmwarePlan {
     gic: GuestGicProfile,
     console: GuestSerialProfile,
-    serials: alloc::vec::Vec<ResolvedSerialDevice>,
+    serials: std::vec::Vec<ResolvedSerialDevice>,
     serial_identity: Option<GuestSerialFdtIdentity>,
     timer: GuestTimerProfile,
 }
@@ -73,15 +73,15 @@ fn fallback_gic_profile(config: &ArmVgicConfig) -> AxVmResult<GuestGicProfile> {
     match config {
         ArmVgicConfig::V2(v2) => Ok(GuestGicProfile {
             compatible: "arm,cortex-a15-gic".into(),
-            node_path: alloc::string::String::new(),
+            node_path: std::string::String::new(),
             node_phandle: None,
             distributor: guest_region(v2.distributor())?,
             cpu_region: GuestGicCpuRegion::CpuInterface(guest_region(v2.cpu_interface())?),
-            its: alloc::vec![],
+            its: std::vec![],
         }),
         ArmVgicConfig::V3(v3) => Ok(GuestGicProfile {
             compatible: "arm,gic-v3".into(),
-            node_path: alloc::string::String::new(),
+            node_path: std::string::String::new(),
             node_phandle: None,
             distributor: guest_region(v3.distributor())?,
             cpu_region: GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
@@ -102,7 +102,7 @@ fn fallback_gic_profile(config: &ArmVgicConfig) -> AxVmResult<GuestGicProfile> {
                     let registers = guest_region(its.registers())?;
                     Ok(GuestItsProfile {
                         id: its.id(),
-                        node_path: alloc::format!("/its@{:x}", registers.base),
+                        node_path: std::format!("/its@{:x}", registers.base),
                         node_phandle: None,
                         registers,
                     })

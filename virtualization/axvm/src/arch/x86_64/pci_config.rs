@@ -27,7 +27,7 @@ impl DeviceModel for X86PciConfigModel {
             });
         }
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            alloc::sync::Arc::new(axdevice::X86PciConfigDevice::new()),
+            std::sync::Arc::new(axdevice::X86PciConfigDevice::new()),
         )))
     }
 }

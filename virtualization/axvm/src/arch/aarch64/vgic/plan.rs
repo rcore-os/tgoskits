@@ -1,6 +1,6 @@
 //! Immutable AArch64 VGIC construction and resource requirements.
 
-use alloc::{sync::Arc, vec::Vec};
+use std::{sync::Arc, vec::Vec};
 
 use arm_vgic::*;
 use axdevice::*;
@@ -106,7 +106,7 @@ fn build_vgic_config(
     if capabilities.host_version() != guest_version {
         return Err(AxVmError::unsupported(
             "create AArch64 virtual GIC",
-            alloc::format!(
+            std::format!(
                 "guest firmware requires {guest_version:?}, but the host CPU interface is {:?}",
                 capabilities.host_version()
             ),
@@ -193,7 +193,7 @@ fn consume_region(
     if (base, size) != (expected.base(), expected.size()) {
         return Err(DeviceManagerError::InvalidConfig {
             operation: "build AArch64 virtual GIC",
-            detail: alloc::format!(
+            detail: std::format!(
                 "planned MMIO range {base:#x}..+{size:#x} differs from {:#x}..+{:#x}",
                 expected.base(),
                 expected.size()
@@ -234,9 +234,9 @@ fn registers_slot() -> DeviceManagerResult<ResourceSlot> {
 }
 
 fn cpu_region_slot(index: usize) -> DeviceManagerResult<ResourceSlot> {
-    ResourceSlot::new(alloc::format!("cpu-region-{index}"))
+    ResourceSlot::new(std::format!("cpu-region-{index}"))
 }
 
 fn its_slot(id: axdevice_base::ItsId) -> DeviceManagerResult<ResourceSlot> {
-    ResourceSlot::new(alloc::format!("its-{}", id.value()))
+    ResourceSlot::new(std::format!("its-{}", id.value()))
 }

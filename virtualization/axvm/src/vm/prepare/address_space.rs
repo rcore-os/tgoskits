@@ -9,7 +9,30 @@ use axvm_types::HostDeviceAssignment;
 use super::super::*;
 
 impl AxVMResources {
-    pub(crate) fn map_guest_address_space(
+    pub(crate) fn prepare_guest_address_space(
+        &mut self,
+        vm_id: usize,
+        architecture_regions: &[GuestOwnedRegion],
+    ) -> AxVmResult {
+        self.validate_guest_dtb()?;
+        let mut owned_regions = self.guest_owned_regions();
+        owned_regions.extend_from_slice(architecture_regions);
+        self.map_guest_address_space(vm_id, &owned_regions)
+    }
+
+    fn validate_guest_dtb(&self) -> AxVmResult {
+        if self.config.image_config().dtb_load_gpa.is_some()
+            && self.boot_description.device_tree().is_none()
+        {
+            return ax_err!(
+                InvalidInput,
+                "DTB load GPA is configured but no guest device tree bytes are registered"
+            );
+        }
+        Ok(())
+    }
+
+    fn map_guest_address_space(
         &mut self,
         vm_id: usize,
         owned_regions: &[GuestOwnedRegion],
@@ -36,7 +59,7 @@ impl AxVMResources {
             .host_mappings()
             .map(|mapping| {
                 Ok(HostDeviceAssignment {
-                    name: alloc::string::String::new(),
+                    name: std::string::String::new(),
                     base_gpa: usize::try_from(mapping.guest_base()).map_err(|_| {
                         AxVmError::invalid_config("planned passthrough GPA does not fit usize")
                     })?,
@@ -78,7 +101,7 @@ impl AxVMResources {
         Ok(())
     }
 
-    pub(crate) fn guest_owned_regions(&self) -> Vec<GuestOwnedRegion> {
+    fn guest_owned_regions(&self) -> Vec<GuestOwnedRegion> {
         let mut regions = self
             .memory_regions
             .iter()

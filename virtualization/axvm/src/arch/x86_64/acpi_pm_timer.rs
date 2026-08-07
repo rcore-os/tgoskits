@@ -37,7 +37,7 @@ impl DeviceModel for X86AcpiPmTimerModel {
         }
         let sci = context.irq(&ResourceSlot::new("sci")?)?;
         let stop = StopGrant::new();
-        let device: alloc::sync::Arc<dyn Device> = alloc::sync::Arc::new(
+        let device: std::sync::Arc<dyn Device> = std::sync::Arc::new(
             axdevice::X86AcpiPmTimerDevice::new(monotonic_time_nanos, sci, stop.clone())?,
         );
         Ok(DeviceBundle::new().with_stop_device_grant(device, stop))

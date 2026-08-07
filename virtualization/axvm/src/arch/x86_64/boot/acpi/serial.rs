@@ -1,6 +1,6 @@
 //! Serial-device facts derived from the resolved x86 device graph.
 
-use alloc::{
+use std::{
     format,
     string::{String, ToString},
     vec::Vec,

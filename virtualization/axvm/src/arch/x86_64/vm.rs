@@ -15,10 +15,16 @@ use crate::{
 
 pub(crate) type X86VmPlan = SimpleVmPlan;
 
+const ARCH_OWNED_REGIONS: [GuestOwnedRegion; 1] = [GuestOwnedRegion::new(
+    X86_LOCAL_APIC_GPA,
+    X86_LOCAL_APIC_SIZE,
+    crate::layout::VmRegionKind::Reserved,
+)];
+
 impl X86_64Arch {
     pub(crate) fn create_vm_resources(
         config: AxVMConfig,
-        fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
+        fw_cfg_payload: std::sync::Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
         #[cfg(feature = "host-fs")]
         let config = {
@@ -50,11 +56,7 @@ impl X86_64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.validate_guest_dtb()?;
-
-            let mut owned_regions = resources.guest_owned_regions();
-            append_arch_owned_regions(&mut owned_regions);
-            resources.map_guest_address_space(vm.id(), &owned_regions)?;
+            resources.prepare_guest_address_space(vm.id(), &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
             vcpus.setup(resources, |config, memory_regions| {
@@ -72,7 +74,7 @@ fn apply_host_serial(config: &mut AxVMConfig) -> AxVmResult {
         return Ok(());
     };
     let Some(serial) = serial.map_err(|error| {
-        AxVmError::invalid_config(alloc::format!(
+        AxVmError::invalid_config(std::format!(
             "failed to parse host ACPI serial console: {error}"
         ))
     })?
@@ -85,11 +87,11 @@ fn apply_host_serial(config: &mut AxVMConfig) -> AxVmResult {
 
 fn plan_devices(
     config: &AxVMConfig,
-    fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
+    fw_cfg_payload: std::sync::Arc<axdevice::FwCfgPayloadSlot>,
 ) -> AxVmResult<X86VmPlan> {
     let low_memory_size = super::cmos::guest_low_memory_size(config)?;
     let controller_id = DeviceNodeId::new("ioapic")?;
-    let mut nodes = alloc::vec![
+    let mut nodes = std::vec![
         DeviceNodeSpec::virtual_device(
             controller_id.clone(),
             super::ioapic_model(config.id(), 0xfec0_0000, 0x1000),
@@ -97,7 +99,7 @@ fn plan_devices(
         .with_firmware_binding(DeviceFirmwareBinding::AcpiDevice("IOAPIC".into())),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("fw-cfg")?,
-            alloc::sync::Arc::new(axdevice::FwCfgPayloadFactory::deferred_pio(
+            std::sync::Arc::new(axdevice::FwCfgPayloadFactory::deferred_pio(
                 GuestPhysAddr::from(0x510),
                 0x0c,
                 fw_cfg_payload,
@@ -107,27 +109,27 @@ fn plan_devices(
         DeviceNodeSpec::virtual_device(DeviceNodeId::new("pit")?, super::pit_model(config.id()),),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("pic")?,
-            alloc::sync::Arc::new(super::pic::X86PicModel),
+            std::sync::Arc::new(super::pic::X86PicModel),
         ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("cmos")?,
-            alloc::sync::Arc::new(super::cmos::X86CmosModel::new(low_memory_size)),
+            std::sync::Arc::new(super::cmos::X86CmosModel::new(low_memory_size)),
         ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("pci-config")?,
-            alloc::sync::Arc::new(super::pci_config::X86PciConfigModel),
+            std::sync::Arc::new(super::pci_config::X86PciConfigModel),
         ),
         DeviceNodeSpec::virtual_device(
             DeviceNodeId::new("acpi-pm-timer")?,
-            alloc::sync::Arc::new(super::acpi_pm_timer::X86AcpiPmTimerModel),
+            std::sync::Arc::new(super::acpi_pm_timer::X86AcpiPmTimerModel),
         )
         .with_dependency(controller_id.clone()),
     ];
     for port in config.pass_through_ports() {
-        let id = DeviceNodeId::new(alloc::format!("host-port-{:x}", port.base))?;
+        let id = DeviceNodeId::new(std::format!("host-port-{:x}", port.base))?;
         nodes.push(DeviceNodeSpec::virtual_device(
             id,
-            alloc::sync::Arc::new(super::port::HostPortPassthroughDeviceModel::new(
+            std::sync::Arc::new(super::port::HostPortPassthroughDeviceModel::new(
                 port.base,
                 port.length,
             )),
@@ -170,18 +172,10 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn append_arch_owned_regions(regions: &mut std::vec::Vec<GuestOwnedRegion>) {
-    regions.push(GuestOwnedRegion::new(
-        X86_LOCAL_APIC_GPA,
-        X86_LOCAL_APIC_SIZE,
-        crate::layout::VmRegionKind::Reserved,
-    ));
-}
-
 impl AxVMResources {
-    fn resolved_port_intercepts(&self) -> AxVmResult<alloc::vec::Vec<(u16, u16)>> {
+    fn resolved_port_intercepts(&self) -> AxVmResult<std::vec::Vec<(u16, u16)>> {
         let graph = self.planned_devices().graph();
-        let mut ranges = alloc::vec::Vec::new();
+        let mut ranges = std::vec::Vec::new();
         for node in graph.nodes() {
             ranges.extend(
                 graph
@@ -234,26 +228,13 @@ mod tests {
 
     #[test]
     fn svm_reserves_the_local_apic_trap_region() {
-        let mut regions = std::vec::Vec::new();
-
-        append_arch_owned_regions(&mut regions);
-
-        assert_eq!(
-            regions,
-            [GuestOwnedRegion::new(
-                X86_LOCAL_APIC_GPA,
-                X86_LOCAL_APIC_SIZE,
-                crate::layout::VmRegionKind::Reserved,
-            )]
-        );
-
         let layout = crate::layout::build_address_layout(
             axvm_types::AddressSpacePolicy::Passthrough,
             0,
             0x1_0000_0000,
             &[],
             &[],
-            &regions,
+            &ARCH_OWNED_REGIONS,
             &[],
         )
         .unwrap();

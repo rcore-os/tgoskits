@@ -1,6 +1,6 @@
 //! Checked ACPI GPA allocation and byte placement.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 
 use super::AcpiBuildError;
 

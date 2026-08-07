@@ -19,7 +19,7 @@ pub(crate) type RiscvVmPlan = SimpleVmPlan;
 impl Riscv64Arch {
     pub(crate) fn create_vm_resources(
         config: AxVMConfig,
-        _fw_cfg_payload: alloc::sync::Arc<axdevice::FwCfgPayloadSlot>,
+        _fw_cfg_payload: std::sync::Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
         let device_plan = plan_devices(&config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
@@ -48,10 +48,7 @@ impl Riscv64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.validate_guest_dtb()?;
-
-            let owned_regions = resources.guest_owned_regions();
-            resources.map_guest_address_space(vm.id(), &owned_regions)?;
+            resources.prepare_guest_address_space(vm.id(), &[])?;
             vcpus.setup(resources, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
@@ -82,8 +79,8 @@ fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {
     )
     .with_firmware_binding(DeviceFirmwareBinding::FdtNode(profile.node_path.clone()));
     let replacement_ranges =
-        alloc::vec![profile.base as u64..profile.base as u64 + profile.length as u64,];
-    let mut nodes = alloc::vec![controller];
+        std::vec![profile.base as u64..profile.base as u64 + profile.length as u64,];
+    let mut nodes = std::vec![controller];
     crate::configured::append_configured_devices(
         config,
         &mut nodes,

@@ -17,15 +17,14 @@ pub(super) fn create(config: &AxVMConfig) -> AxVmResult<ResourcePools> {
 
     for route in config.pass_through_irqs() {
         let input = ControllerInputId::new(route.source as usize);
-        let owner = alloc::format!("riscv-physical-irq-{}", route.source);
-        pools.reserve_controller_input(
-            owner.clone(),
+        let owner = std::format!("riscv-physical-irq-{}", route.source);
+        pools.reserve_wired_host_irq(
+            owner,
             controller,
             input,
+            HostIrqId::new(route.source as usize),
             route.trigger,
-            InterruptSharing::Exclusive,
         )?;
-        pools.reserve_host_irq(owner, HostIrqId::new(route.source as usize))?;
     }
     Ok(pools)
 }

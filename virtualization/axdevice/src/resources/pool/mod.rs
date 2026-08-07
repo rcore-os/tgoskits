@@ -139,4 +139,27 @@ impl ResourcePools {
             },
         }
     }
+
+    /// Atomically reserves one physical wired interrupt at both boundaries.
+    pub fn reserve_wired_host_irq(
+        &mut self,
+        owner: impl Into<String>,
+        controller: InterruptControllerId,
+        input: ControllerInputId,
+        host_irq: HostIrqId,
+        trigger: InterruptTrigger,
+    ) -> crate::DeviceManagerResult {
+        let owner = owner.into();
+        let mut updated = self.clone();
+        updated.reserve_controller_input(
+            owner.clone(),
+            controller,
+            input,
+            trigger,
+            InterruptSharing::Exclusive,
+        )?;
+        updated.reserve_host_irq(owner, host_irq)?;
+        *self = updated;
+        Ok(())
+    }
 }

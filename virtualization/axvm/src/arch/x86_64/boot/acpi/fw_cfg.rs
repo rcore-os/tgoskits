@@ -140,7 +140,7 @@ fn add_table_checksum(
 fn u32_len(value: usize, field: &'static str) -> Result<u32, AcpiBuildError> {
     u32::try_from(value).map_err(|_| AcpiBuildError::InvalidValue {
         field,
-        value: alloc::format!("{value:#x}"),
+        value: std::format!("{value:#x}"),
     })
 }
 

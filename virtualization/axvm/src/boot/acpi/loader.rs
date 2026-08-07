@@ -1,6 +1,6 @@
 //! QEMU-compatible ACPI table-loader command generation.
 
-use alloc::{string::String, vec::Vec};
+use std::{string::String, vec::Vec};
 
 use super::AcpiBuildError;
 
@@ -82,7 +82,7 @@ impl AcpiLoaderPlan {
         if !matches!(pointer_size, 1 | 2 | 4 | 8) {
             return Err(AcpiBuildError::InvalidValue {
                 field: "table-loader pointer size",
-                value: alloc::format!("{pointer_size}"),
+                value: std::format!("{pointer_size}"),
             });
         }
         self.commands.push(LoaderCommand::AddPointer {

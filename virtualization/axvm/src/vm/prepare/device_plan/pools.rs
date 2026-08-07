@@ -1,6 +1,6 @@
 //! VM address-space reservations and fixed internal ABI allowlists.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use axdevice::*;
 use axdevice_base::*;
@@ -29,7 +29,7 @@ pub(super) fn reserve_guest_memory(
         merged.push(range);
     }
     for (index, range) in merged.into_iter().enumerate() {
-        pools.reserve_mmio(alloc::format!("guest-memory-{index}"), range)?;
+        pools.reserve_mmio(std::format!("guest-memory-{index}"), range)?;
     }
     Ok(())
 }
@@ -59,7 +59,7 @@ pub(super) fn allow_fixed_requirements(
                     ..
                 } => {
                     let end = input.value().checked_add(1).ok_or_else(|| {
-                        AxVmError::invalid_config(alloc::format!(
+                        AxVmError::invalid_config(std::format!(
                             "device {} fixed IRQ input overflows",
                             request.id()
                         ))
@@ -74,7 +74,7 @@ pub(super) fn allow_fixed_requirements(
                     ..
                 } => {
                     let end = irq.value().checked_add(1).ok_or_else(|| {
-                        AxVmError::invalid_config(alloc::format!(
+                        AxVmError::invalid_config(std::format!(
                             "device {} fixed host IRQ overflows",
                             request.id()
                         ))
@@ -108,15 +108,15 @@ fn allow_fixed_msi(
         return Ok(());
     };
     let device_end = device.value().checked_add(1).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!("device {device_id} MSI DeviceID overflows"))
+        AxVmError::invalid_config(std::format!("device {device_id} MSI DeviceID overflows"))
     })?;
     let event_end = event.value().checked_add(request.count()).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
+        AxVmError::invalid_config(std::format!(
             "device {device_id} MSI EventID range overflows"
         ))
     })?;
     let lpi_end = lpi.value().checked_add(request.count()).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!("device {device_id} LPI range overflows"))
+        AxVmError::invalid_config(std::format!("device {device_id} LPI range overflows"))
     })?;
     pools.allow_fixed_msi_domain(
         request.controller(),
@@ -135,7 +135,7 @@ fn fixed_u64_range(
     kind: &'static str,
 ) -> AxVmResult<core::ops::Range<u64>> {
     let end = base.checked_add(size).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
+        AxVmError::invalid_config(std::format!(
             "device {device_id} fixed {kind} range overflows"
         ))
     })?;
@@ -149,7 +149,7 @@ fn fixed_u16_range(
     kind: &'static str,
 ) -> AxVmResult<core::ops::Range<u16>> {
     let end = base.checked_add(size).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
+        AxVmError::invalid_config(std::format!(
             "device {device_id} fixed {kind} range overflows"
         ))
     })?;
@@ -162,16 +162,16 @@ fn checked_u64_range(
     kind: &'static str,
 ) -> AxVmResult<core::ops::Range<u64>> {
     let base = u64::try_from(base)
-        .map_err(|_| AxVmError::invalid_config(alloc::format!("{kind} base does not fit u64")))?;
+        .map_err(|_| AxVmError::invalid_config(std::format!("{kind} base does not fit u64")))?;
     let size = u64::try_from(size)
-        .map_err(|_| AxVmError::invalid_config(alloc::format!("{kind} size does not fit u64")))?;
+        .map_err(|_| AxVmError::invalid_config(std::format!("{kind} size does not fit u64")))?;
     if size == 0 {
-        return Err(AxVmError::invalid_config(alloc::format!(
+        return Err(AxVmError::invalid_config(std::format!(
             "{kind} range is empty"
         )));
     }
     let end = base.checked_add(size).ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!("{kind} range overflows the address space"))
+        AxVmError::invalid_config(std::format!("{kind} range overflows the address space"))
     })?;
     Ok(base..end)
 }

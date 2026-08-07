@@ -16,7 +16,7 @@ pub(super) fn install(
     {
         return Err(ax_err_type!(
             InvalidData,
-            alloc::format!(
+            std::format!(
                 "host {controller_name} phandle {phandle:#x} conflicts with another guest node"
             )
         ));
@@ -40,7 +40,7 @@ pub(super) fn install(
                     })
                 })
             })
-            .collect::<alloc::vec::Vec<_>>();
+            .collect::<std::vec::Vec<_>>();
         for node_id in references {
             for name in ["interrupt-parent", "msi-parent"] {
                 let matches = tree
@@ -60,19 +60,19 @@ pub(super) fn install(
 }
 
 pub(super) fn prop_u32(name: &str, value: u32) -> Property {
-    let mut property = Property::new(name, alloc::vec![]);
+    let mut property = Property::new(name, std::vec![]);
     property.set_u32_ls(&[value]);
     property
 }
 
 pub(super) fn prop_u64(name: &str, value: u64) -> Property {
-    let mut property = Property::new(name, alloc::vec![]);
+    let mut property = Property::new(name, std::vec![]);
     property.set_u64(value);
     property
 }
 
 pub(super) fn prop_string(name: &str, value: &str) -> Property {
-    let mut property = Property::new(name, alloc::vec![]);
+    let mut property = Property::new(name, std::vec![]);
     property.set_string(value);
     property
 }

@@ -132,7 +132,7 @@ fn serial_uses_host_console(request: &VirtualDeviceRequest, default: bool) -> Ax
         return Ok(default);
     };
     let backend = backend.as_table().ok_or_else(|| {
-        AxVmError::invalid_config(alloc::format!(
+        AxVmError::invalid_config(std::format!(
             "virtual serial '{}' backend must be a table",
             request.id
         ))
@@ -141,7 +141,7 @@ fn serial_uses_host_console(request: &VirtualDeviceRequest, default: bool) -> Ax
         .get("type")
         .and_then(|value| value.as_str())
         .ok_or_else(|| {
-            AxVmError::invalid_config(alloc::format!(
+            AxVmError::invalid_config(std::format!(
                 "virtual serial '{}' backend requires string field 'type'",
                 request.id
             ))
@@ -150,12 +150,12 @@ fn serial_uses_host_console(request: &VirtualDeviceRequest, default: bool) -> Ax
 }
 
 fn configured_error(error: ConfiguredDeviceError) -> AxVmError {
-    AxVmError::invalid_config(alloc::format!("{error}"))
+    AxVmError::invalid_config(std::format!("{error}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use std::vec;
 
     use super::*;
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};

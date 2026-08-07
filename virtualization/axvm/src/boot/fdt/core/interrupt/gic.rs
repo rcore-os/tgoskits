@@ -21,7 +21,7 @@ pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>>
         }
         node.compatibles()
             .find(|compatible| is_supported(compatible))
-            .map(|compatible| (node_id, alloc::string::String::from(compatible)))
+            .map(|compatible| (node_id, std::string::String::from(compatible)))
     }) else {
         return Ok(None);
     };
@@ -56,7 +56,7 @@ pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>>
         if region_count == 0 || region_count >= regs.len() {
             return Err(ax_err_type!(
                 InvalidData,
-                alloc::format!(
+                std::format!(
                     "host GIC declares {region_count} Redistributor regions but provides {} \
                      per-CPU register ranges",
                     regs.len() - 1
@@ -69,7 +69,7 @@ pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>>
                 checked_reg(reg, "redistributor")
                     .map(|(base, length)| GuestMmioRegion { base, length })
             })
-            .collect::<Result<alloc::vec::Vec<_>, _>>()?;
+            .collect::<Result<std::vec::Vec<_>, _>>()?;
         let stride = node
             .get_property("redistributor-stride")
             .and_then(Property::get_u64)
@@ -90,7 +90,7 @@ pub(crate) fn host_gic_profile(fdt: &Fdt) -> AxVmResult<Option<GuestGicProfile>>
     let its = if is_v3 {
         its::host_profiles(fdt)?
     } else {
-        alloc::vec![]
+        std::vec![]
     };
 
     Ok(Some(GuestGicProfile {
@@ -154,7 +154,7 @@ pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
     if interrupt_type != 1 || source >= 16 {
         return Err(ax_err_type!(
             Unsupported,
-            alloc::format!(
+            std::format!(
                 "host GIC maintenance interrupt must be a PPI, got type {interrupt_type} source \
                  {source}"
             )
@@ -167,7 +167,7 @@ pub(super) fn checked_reg(reg: &fdt_edit::RegFixed, name: &str) -> AxVmResult<(u
     let base = usize::try_from(reg.address).map_err(|_| {
         ax_err_type!(
             InvalidData,
-            alloc::format!("host GIC {name} address does not fit usize")
+            std::format!("host GIC {name} address does not fit usize")
         )
     })?;
     let length = reg
@@ -175,21 +175,21 @@ pub(super) fn checked_reg(reg: &fdt_edit::RegFixed, name: &str) -> AxVmResult<(u
         .ok_or_else(|| {
             ax_err_type!(
                 InvalidData,
-                alloc::format!("host GIC {name} range has no size")
+                std::format!("host GIC {name} range has no size")
             )
         })
         .and_then(|length| {
             usize::try_from(length).map_err(|_| {
                 ax_err_type!(
                     InvalidData,
-                    alloc::format!("host GIC {name} range size does not fit usize")
+                    std::format!("host GIC {name} range size does not fit usize")
                 )
             })
         })?;
     if length == 0 {
         return Err(ax_err_type!(
             InvalidData,
-            alloc::format!("host GIC {name} range is empty")
+            std::format!("host GIC {name} range is empty")
         ));
     }
     Ok((base, length))
@@ -216,7 +216,7 @@ pub(super) fn install_registers(tree: &mut FdtTree, profile: &GuestGicProfile) -
                 "guest FDT has no GIC interrupt-controller node"
             )
         })?;
-    let mut registers = alloc::vec![RegInfo::new(
+    let mut registers = std::vec![RegInfo::new(
         profile.distributor.base as u64,
         Some(profile.distributor.length as u64),
     )];

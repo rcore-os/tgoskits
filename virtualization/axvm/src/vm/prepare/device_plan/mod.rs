@@ -3,8 +3,8 @@
 mod passthrough;
 mod pools;
 
-use alloc::vec::Vec;
 use core::ops::Range;
+use std::vec::Vec;
 
 use axdevice::*;
 

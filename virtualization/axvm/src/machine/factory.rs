@@ -1,6 +1,6 @@
 //! Configured constructors and runtime model for virtual serial devices.
 
-use alloc::{string::ToString, sync::Arc};
+use std::{string::ToString, sync::Arc};
 
 use axdevice::*;
 use axdevice_base::*;
@@ -8,6 +8,9 @@ use axvmconfig::VirtualDeviceRequest;
 
 use super::*;
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
+
+const REGISTERS_SLOT: &str = "registers";
+const IRQ_SLOT: &str = "irq";
 
 pub(crate) const SERIAL_REGISTRATIONS: &[ConfiguredModelRegistration] = &[
     ConfiguredModelRegistration {
@@ -176,8 +179,8 @@ struct SerialDeviceModel {
 
 impl DeviceModel for SerialDeviceModel {
     fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
-        let registers = ResourceSlot::new("registers")?;
-        let irq = ResourceSlot::new("irq")?;
+        let registers = ResourceSlot::new(REGISTERS_SLOT)?;
+        let irq = ResourceSlot::new(IRQ_SLOT)?;
         let mut requirements = match self.profile.transport {
             GuestSerialTransport::Port { length, .. } => DeviceRequirements::new().with_pio(
                 registers.clone(),
@@ -222,8 +225,8 @@ impl DeviceModel for SerialDeviceModel {
                 .with_compatible("ns16550a")
                 .with_acpi_hid("PNP0501"),
         }
-        .with_register(ResourceSlot::new("registers").expect("static serial slot is valid"))
-        .with_interrupt(ResourceSlot::new("irq").expect("static serial slot is valid"))
+        .with_register(ResourceSlot::new(REGISTERS_SLOT).expect("static serial slot is valid"))
+        .with_interrupt(ResourceSlot::new(IRQ_SLOT).expect("static serial slot is valid"))
         .with_u32_property("clock-frequency", self.profile.clock_hz);
         if let GuestSerialTransport::Mmio {
             register_shift,
@@ -243,15 +246,15 @@ impl DeviceModel for SerialDeviceModel {
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
-        let irq = context.irq(&ResourceSlot::new("irq")?)?;
+        let irq = context.irq(IRQ_SLOT)?;
         let irq_id = irq.input().value();
         let bundle = match (self.profile.model, self.profile.transport) {
             (GuestSerialModel::Uart16550, GuestSerialTransport::Port { .. }) => {
-                let (base, length) = context.pio(&ResourceSlot::new("registers")?)?;
+                let (base, length) = context.pio(REGISTERS_SLOT)?;
                 build_16550_port(base, length, irq_id, self.backend.clone(), irq)
             }
             (GuestSerialModel::Uart16550, GuestSerialTransport::Mmio { register_shift, .. }) => {
-                let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+                let (base, length) = context.mmio(REGISTERS_SLOT)?;
                 build_16550_mmio(
                     usize::try_from(base).map_err(serial_range_conversion_error)?,
                     usize::try_from(length).map_err(serial_range_conversion_error)?,
@@ -262,7 +265,7 @@ impl DeviceModel for SerialDeviceModel {
                 )
             }
             (GuestSerialModel::Pl011, GuestSerialTransport::Mmio { .. }) => {
-                let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
+                let (base, length) = context.mmio(REGISTERS_SLOT)?;
                 build_pl011_mmio(
                     usize::try_from(base).map_err(serial_range_conversion_error)?,
                     usize::try_from(length).map_err(serial_range_conversion_error)?,

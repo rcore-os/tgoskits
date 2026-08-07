@@ -126,6 +126,7 @@ impl DeviceModel for DemoModel {
             self.options.clone(),
             control_base,
             queue_base,
+            queue_size,
             completion,
         ));
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(device)))

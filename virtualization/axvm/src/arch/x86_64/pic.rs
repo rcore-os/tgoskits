@@ -30,8 +30,8 @@ impl DeviceModel for X86PicModel {
                 detail: "planned PIC ranges must be 0x20..=0x21 and 0xa0..=0xa1".into(),
             });
         }
-        let pic = alloc::sync::Arc::new(axdevice::X86PicDevice::new());
-        let service: alloc::sync::Arc<dyn X86PicDeviceOps> = pic.clone();
+        let pic = std::sync::Arc::new(axdevice::X86PicDevice::new());
+        let service: std::sync::Arc<dyn X86PicDeviceOps> = pic.clone();
         DeviceBundle::from_registration(DeviceRegistration::Device(pic))
             .with_service::<X86PicServiceKey>(service)
     }

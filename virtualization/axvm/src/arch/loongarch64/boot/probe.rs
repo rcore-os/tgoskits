@@ -23,7 +23,7 @@ pub(crate) fn apply_host_serial(config: &mut crate::config::AxVMConfig) -> crate
         return Ok(());
     };
     let Some(serial) = serial.map_err(|error| {
-        crate::AxVmError::invalid_config(alloc::format!(
+        crate::AxVmError::invalid_config(std::format!(
             "failed to parse host ACPI serial console: {error}"
         ))
     })?

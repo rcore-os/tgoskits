@@ -1,10 +1,10 @@
 //! Normalized host mappings represented as non-runtime graph nodes.
 
-use alloc::{collections::BTreeSet, string::String, vec::Vec};
 use core::{
     cmp::{max, min},
     ops::Range,
 };
+use std::{collections::BTreeSet, string::String, vec::Vec};
 
 use axdevice::*;
 
@@ -18,7 +18,7 @@ pub(super) fn add_host_nodes(
     let mut mappings = Vec::new();
     for device in config.pass_through_devices() {
         if device.length == 0 {
-            return Err(AxVmError::invalid_config(alloc::format!(
+            return Err(AxVmError::invalid_config(std::format!(
                 "host passthrough device '{}' has no resolved address range",
                 device.name
             )));
@@ -35,7 +35,7 @@ pub(super) fn add_host_nodes(
         let mapping = checked_mapping(address.base_gpa, address.base_gpa, address.length)?;
         insert_host_mapping(
             &mut mappings,
-            HostMappingNode::new(mapping, alloc::format!("identity-{index}"), None),
+            HostMappingNode::new(mapping, std::format!("identity-{index}"), None),
         )?;
     }
     subtract_replacement_ranges(&mut mappings, replacement_ranges.to_vec())?;
@@ -67,10 +67,7 @@ fn add_host_mapping_node(
     mapping_node: HostMappingNode,
 ) -> AxVmResult {
     let mapping = mapping_node.mapping;
-    let id = DeviceNodeId::new(alloc::format!(
-        "host-mmio-{index}@{:x}",
-        mapping.guest_base()
-    ))?;
+    let id = DeviceNodeId::new(std::format!("host-mmio-{index}@{:x}", mapping.guest_base()))?;
     let mut firmware_paths = mapping_node.firmware_paths.into_iter();
     let first_firmware_path = firmware_paths.next();
     let requirements = fixed_mmio(mapping)?;
@@ -84,7 +81,7 @@ fn add_host_mapping_node(
         .map_err(axdevice::DeviceManagerError::from)?;
 
     for (binding_index, path) in firmware_paths.enumerate() {
-        let firmware_id = DeviceNodeId::new(alloc::format!(
+        let firmware_id = DeviceNodeId::new(std::format!(
             "host-firmware-{index}-{binding_index}@{:x}",
             mapping.guest_base()
         ))?;
@@ -128,7 +125,7 @@ impl HostMappingNode {
         let same_linear_mapping = mapping_delta(self.mapping) == mapping_delta(other.mapping);
 
         if overlaps && !same_linear_mapping {
-            return Err(AxVmError::invalid_config(alloc::format!(
+            return Err(AxVmError::invalid_config(std::format!(
                 "host passthrough GPA range {:#x}..{self_end:#x} owned by {:?} conflicts with \
                  {:#x}..{other_end:#x} owned by {:?}: host mappings have different offsets",
                 self.mapping.guest_base(),
@@ -160,7 +157,7 @@ impl HostMappingNode {
         let mapping_start = self.mapping.guest_base();
         let mapping_end = mapping_end(self.mapping);
         if mapping_start >= removed.end || removed.start >= mapping_end {
-            return Ok(alloc::vec![self]);
+            return Ok(std::vec![self]);
         }
 
         let mut fragments = Vec::with_capacity(2);
@@ -270,7 +267,7 @@ mod tests {
         let graph = declared.resolve(pools).unwrap();
 
         assert_eq!(
-            graph.host_mappings().collect::<alloc::vec::Vec<_>>(),
+            graph.host_mappings().collect::<std::vec::Vec<_>>(),
             [HostPassthroughMapping::new(0xfdcb_0000, 0xfdcb_0000, 0x7f00).unwrap()]
         );
         assert_eq!(graph.fixed_lease_count(), 1);
@@ -280,7 +277,7 @@ mod tests {
     fn host_replacement_range_is_not_reserved_as_passthrough() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
-            pass_through_devices: alloc::vec![HostDeviceAssignment {
+            pass_through_devices: std::vec![HostDeviceAssignment {
                 name: "clock-controller@fd7c0000".into(),
                 base_gpa: 0xfd7c_0000,
                 base_hpa: 0xfd7c_0000,
