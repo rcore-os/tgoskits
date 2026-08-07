@@ -15,20 +15,19 @@
 use std::{ptr::NonNull, string::String, vec::Vec};
 
 use ax_memory_addr::MemoryAddr;
-use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType, GuestConfig};
+use axvmconfig::GuestConfig;
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::RegInfo;
 
 use super::tree::{FdtTree, GuestMemorySpec, prop_string, prop_u32_list};
 use crate::{
     AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
-    boot::images::load_vm_image_from_memory,
+    boot::images::load_vm_image_from_memory, machine::GuestIvcChannel,
 };
 
 pub fn create_guest_fdt(
     fdt: &Fdt,
     passthrough_device_names: &[String],
-    emulated_devices: &[EmulatedDeviceConfig],
     crate_config: &GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
     let phys_cpu_ids = crate_config
@@ -56,7 +55,6 @@ pub fn create_guest_fdt(
         )
     })?;
     prune_dangling_interrupts_extended(fdt, &mut guest_tree)?;
-    guest_tree.add_ivc_channel_nodes(emulated_devices)?;
     Ok(guest_tree.finish())
 }
 
@@ -335,7 +333,7 @@ fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
 pub(crate) fn patch_guest_fdt_for_runtime(
     fdt_bytes: &[u8],
     memory_regions: &[VMMemoryRegion],
-    emulated_devices: &[EmulatedDeviceConfig],
+    ivc_channels: &[GuestIvcChannel],
     crate_config: &GuestConfig,
     serial_profile: crate::machine::GuestSerialProfile,
     serial_identity: Option<&crate::machine::GuestSerialFdtIdentity>,
@@ -349,7 +347,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     let mut tree = FdtTree::from_bytes(fdt_bytes)?;
     let memory_specs = guest_memory_specs(memory_regions, crate_config);
     tree.rebuild_memory_nodes(&memory_specs)?;
-    tree.add_ivc_channel_nodes(emulated_devices)?;
+    tree.add_ivc_channel_nodes(ivc_channels)?;
     if create_chosen
         || initrd_start_size.is_some()
         || crate_config.kernel.cmdline.is_some()
@@ -510,31 +508,24 @@ fn u32_list_property(name: &str, values: &[u32]) -> Property {
 }
 
 impl FdtTree {
-    fn add_ivc_channel_nodes(&mut self, devices: &[EmulatedDeviceConfig]) -> AxVmResult {
-        for device in devices
-            .iter()
-            .filter(|device| device.emu_type == EmulatedDeviceType::IVCChannel)
-        {
-            self.add_ivc_channel_node(device)?;
+    fn add_ivc_channel_nodes(&mut self, channels: &[GuestIvcChannel]) -> AxVmResult {
+        for channel in channels {
+            self.add_ivc_channel_node(channel)?;
         }
         Ok(())
     }
 
-    fn add_ivc_channel_node(&mut self, device: &EmulatedDeviceConfig) -> AxVmResult {
-        let node_id = self.ensure_path(&format!("/ivc-channel@{:x}", device.base_gpa))?;
+    fn add_ivc_channel_node(&mut self, channel: &GuestIvcChannel) -> AxVmResult {
+        let node_id = self.ensure_path(&format!("/ivc-channel@{:x}", channel.base_gpa))?;
         info!(
             "Adding guest IVC channel FDT node /ivc-channel@{:x}",
-            device.base_gpa
+            channel.base_gpa
         );
         self.set_property(node_id, prop_string("compatible", "axvisor,ivc-channel"))?;
         self.set_property(node_id, prop_string("status", "okay"))?;
         self.set_property(node_id, prop_u32_list("axvisor,ivc-version", &[1]))?;
 
-        if let Some(notify_irq) = device
-            .cfg_list
-            .first()
-            .and_then(|irq| u32::try_from(*irq).ok())
-        {
+        if let Some(notify_irq) = channel.notify_irq {
             self.set_property(node_id, prop_u32_list("axvisor,notify-irq", &[notify_irq]))?;
         }
 
@@ -542,8 +533,8 @@ impl FdtTree {
             .view_typed_mut(node_id)
             .ok_or_else(|| ax_err_type!(InvalidData, "new IVC channel node is missing"))?
             .set_regs(&[RegInfo::new(
-                device.base_gpa as u64,
-                Some(device.length as u64),
+                channel.base_gpa as u64,
+                Some(channel.length as u64),
             )]);
         Ok(())
     }
@@ -901,23 +892,21 @@ mod tests {
         let fdt = Fdt::new();
         let dtb = fdt.encode().as_ref().to_vec();
         let cfg = GuestConfig::default();
-        let emulated_devices = std::vec![axvmconfig::EmulatedDeviceConfig {
-            name: "ivc-channel".into(),
+        let ivc_channels = std::vec![crate::machine::GuestIvcChannel {
             base_gpa: 0xbff0_0000,
             length: 0x1_0000,
-            irq_id: 0,
-            emu_type: axvmconfig::EmulatedDeviceType::IVCChannel,
-            cfg_list: std::vec![60],
+            notify_irq: Some(60),
         }];
         let serial = crate::machine::current_machine_profile(1).serial;
 
         let patched = super::patch_guest_fdt_for_runtime(
             &dtb,
             &[],
-            &emulated_devices,
+            &ivc_channels,
             &cfg,
             serial,
             None,
+            &[],
             None,
             None,
             None,
@@ -952,7 +941,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
@@ -1027,7 +1016,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let dtb = super::create_guest_fdt(&fdt, &[], &[], &cfg).unwrap();
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
         let plic = reparsed.get_by_path("/soc/plic@c000000").unwrap();
         assert!(reparsed.get_by_path_id("/its@8080000").is_some());

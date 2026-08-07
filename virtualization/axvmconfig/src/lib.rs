@@ -143,7 +143,8 @@ mod guest_type_serde {
     {
         match GuestTypeInput::deserialize(deserializer)? {
             GuestTypeInput::Named(guest_type) => Ok(guest_type),
-            GuestTypeInput::LegacyVmType(0..=2) => Ok(GuestType::Virtualized),
+            GuestTypeInput::LegacyVmType(0 | 1) => Ok(GuestType::Passthrough),
+            GuestTypeInput::LegacyVmType(2) => Ok(GuestType::Virtualized),
             GuestTypeInput::LegacyVmType(value) => Err(de::Error::custom(alloc::format!(
                 "unsupported legacy vm_type {value}"
             ))),
@@ -153,13 +154,16 @@ mod guest_type_serde {
 
 mod emulated_device_config_vec_serde {
     use serde::{Deserialize, Deserializer, de};
+    use toml::Value;
 
     use super::*;
+
+    const LEGACY_IVC_CHANNEL_TYPE: u8 = 0xA;
 
     #[derive(serde::Deserialize)]
     struct EmulatedDeviceTuple(String, usize, usize, usize, u8, Vec<usize>);
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<EmulatedDeviceConfig>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<VirtualDeviceRequest>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -171,41 +175,39 @@ mod emulated_device_config_vec_serde {
 
     fn emulated_device_from_tuple<E>(
         EmulatedDeviceTuple(name, base_gpa, length, irq_id, raw_type, cfg_list): EmulatedDeviceTuple,
-    ) -> Result<EmulatedDeviceConfig, E>
+    ) -> Result<VirtualDeviceRequest, E>
     where
         E: de::Error,
     {
-        let emu_type = match raw_type {
-            0x0 => EmulatedDeviceType::Dummy,
-            0x1 => EmulatedDeviceType::InterruptController,
-            0x2 => EmulatedDeviceType::Console,
-            0x3 => EmulatedDeviceType::FwCfg,
-            0x4 => EmulatedDeviceType::SharedMmio,
-            0xA => EmulatedDeviceType::IVCChannel,
-            0x20 => EmulatedDeviceType::GicCpuRegion,
-            0x21 => EmulatedDeviceType::GPPTDistributor,
-            0x22 => EmulatedDeviceType::GPPTITS,
-            0x23 => EmulatedDeviceType::X86IoApic,
-            0x24 => EmulatedDeviceType::X86Pit,
-            0x25 => EmulatedDeviceType::LoongArchPchPic,
-            0x26 => EmulatedDeviceType::X86PortPassthrough,
-            0x30 => EmulatedDeviceType::PPPTGlobal,
-            0xE1 => EmulatedDeviceType::VirtioBlk,
-            0xE2 => EmulatedDeviceType::VirtioNet,
-            0xE3 => EmulatedDeviceType::VirtioConsole,
-            value => {
-                return Err(E::custom(alloc::format!(
-                    "unsupported emulated device type {value:#x}"
-                )));
-            }
-        };
-        Ok(EmulatedDeviceConfig {
-            name,
-            base_gpa,
-            length,
-            irq_id,
-            emu_type,
-            cfg_list,
+        if raw_type != LEGACY_IVC_CHANNEL_TYPE {
+            return Err(E::custom(alloc::format!(
+                "unsupported legacy emulated device type {raw_type:#x}"
+            )));
+        }
+        if irq_id != 0 {
+            return Err(E::custom(
+                "legacy IVC channel irq_id must be 0; use EmuConfig[0] for notify IRQ",
+            ));
+        }
+
+        let base_gpa = i64::try_from(base_gpa)
+            .map_err(|_| E::custom("legacy IVC channel base GPA does not fit TOML integer"))?;
+        let length = i64::try_from(length)
+            .map_err(|_| E::custom("legacy IVC channel length does not fit TOML integer"))?;
+
+        let mut options = toml::Table::new();
+        options.insert("legacy_base_gpa".into(), Value::Integer(base_gpa));
+        options.insert("legacy_length".into(), Value::Integer(length));
+        if let Some(notify_irq) = cfg_list.first().copied() {
+            let notify_irq = i64::try_from(notify_irq).map_err(|_| {
+                E::custom("legacy IVC channel notify IRQ does not fit TOML integer")
+            })?;
+            options.insert("notify_irq".into(), Value::Integer(notify_irq));
+        }
+        Ok(VirtualDeviceRequest {
+            id: alloc::format!("{name}@{base_gpa:x}"),
+            model: "ivc-channel".into(),
+            options,
         })
     }
 }
@@ -582,14 +584,16 @@ pub struct GuestDevices {
         schemars(with = "Vec<VirtualDeviceRequestSchema>")
     )]
     pub virtual_devices: Vec<VirtualDeviceRequest>,
-    /// Extra emulated devices requested by the VM configuration.
+    /// Legacy emulated devices converted to code-registered virtual-device requests.
     #[serde(
+        rename = "emu_devices",
         default,
         deserialize_with = "emulated_device_config_vec_serde::deserialize",
         skip_serializing
     )]
     #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(skip))]
-    pub emu_devices: Vec<EmulatedDeviceConfig>,
+    #[doc(hidden)]
+    pub legacy_virtual_devices: Vec<VirtualDeviceRequest>,
 }
 
 impl GuestDevices {
@@ -616,6 +620,13 @@ impl GuestDevices {
                 });
             }
         }
+        for request in &self.legacy_virtual_devices {
+            if !ids.insert(request.id.clone()) {
+                return Err(AxVmConfigError::DuplicateVirtualDeviceId {
+                    id: request.id.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -633,6 +644,13 @@ impl GuestDevices {
             .iter()
             .map(|device| vec![device.path.clone()])
             .collect()
+    }
+
+    /// Returns virtual device requests from the current format and legacy adapters.
+    pub fn virtual_device_requests(&self) -> Vec<VirtualDeviceRequest> {
+        let mut requests = self.virtual_devices.clone();
+        requests.extend(self.legacy_virtual_devices.clone());
+        requests
     }
 }
 
@@ -704,6 +722,8 @@ impl VirtualDeviceRequest {
             "irq_id",
             "base_gpa",
             "base_hpa",
+            "legacy_base_gpa",
+            "legacy_length",
             "mmio_base",
             "pio_base",
             "msi_device_id",

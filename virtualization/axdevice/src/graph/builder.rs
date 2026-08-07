@@ -35,23 +35,43 @@ impl DeviceGraphBuilder {
         Ok(())
     }
 
+    /// Returns the planning requests declared by the current unsealed graph.
+    pub fn requests(&self) -> Result<Vec<DevicePlanRequest>, DeviceGraphError> {
+        declared_nodes(&self.nodes).and_then(|nodes| {
+            nodes
+                .iter()
+                .map(|node| DevicePlanRequest::new(node.id.as_str(), node.requirements.clone()))
+                .collect::<DeviceManagerResult<Vec<_>>>()
+                .map_err(|error| DeviceGraphError::Declaration {
+                    node: "graph".into(),
+                    detail: error.to_string(),
+                })
+        })
+    }
+
     /// Runs every runtime factory's pure declaration phase and seals topology.
     pub fn declare(self) -> Result<DeclaredDeviceGraph, DeviceGraphError> {
-        validate_edges(&self.nodes)?;
-        let order = topological_order(&self.nodes)?;
-        let mut nodes = Vec::with_capacity(order.len());
-        for id in order {
-            let mut node = self
-                .nodes
-                .get(&id)
-                .expect("topological IDs originate from the graph")
-                .to_declared()?;
-            node.dependencies.sort();
-            node.dependencies.dedup();
-            nodes.push(node);
-        }
+        let nodes = declared_nodes(&self.nodes)?;
         Ok(DeclaredDeviceGraph { nodes })
     }
+}
+
+fn declared_nodes(
+    nodes_by_id: &BTreeMap<DeviceNodeId, DeviceNodeSpec>,
+) -> Result<Vec<DeclaredDeviceNode>, DeviceGraphError> {
+    validate_edges(nodes_by_id)?;
+    let order = topological_order(nodes_by_id)?;
+    let mut nodes = Vec::with_capacity(order.len());
+    for id in order {
+        let mut node = nodes_by_id
+            .get(&id)
+            .expect("topological IDs originate from the graph")
+            .to_declared()?;
+        node.dependencies.sort();
+        node.dependencies.dedup();
+        nodes.push(node);
+    }
+    Ok(nodes)
 }
 
 pub(crate) struct DeclaredDeviceNode {

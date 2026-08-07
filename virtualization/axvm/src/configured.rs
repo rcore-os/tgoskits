@@ -10,6 +10,7 @@ use axvmconfig::VirtualDeviceRequest;
 use crate::{machine::GuestSerialFirmwareIdentity, *};
 
 mod append;
+mod ivc;
 
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
@@ -181,6 +182,12 @@ impl ConfiguredDeviceCatalog {
             registrations: BTreeMap::new(),
         };
         for registration in crate::machine::SERIAL_REGISTRATIONS {
+            let previous = catalog
+                .registrations
+                .insert(registration.model.into(), *registration);
+            debug_assert!(previous.is_none());
+        }
+        for registration in ivc::IVC_REGISTRATIONS {
             let previous = catalog
                 .registrations
                 .insert(registration.model.into(), *registration);

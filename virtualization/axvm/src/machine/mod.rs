@@ -13,6 +13,7 @@ use crate::{arch::CurrentArch, architecture::MachinePlatform};
 
 mod factory;
 mod gic;
+mod ivc;
 mod plic;
 mod serial;
 mod timer;
@@ -26,6 +27,9 @@ pub use gic::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicProfileError, GuestGicRedistributorProfile,
     GuestItsProfile,
 };
+pub use ivc::GuestIvcChannel;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) use ivc::resolved_ivc_channels;
 pub use plic::{GuestPlicProfile, GuestPlicProfileError};
 #[cfg(any(
     target_arch = "aarch64",

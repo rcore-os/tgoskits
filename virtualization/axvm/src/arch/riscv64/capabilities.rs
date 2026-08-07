@@ -76,10 +76,10 @@ pub(super) fn patch_runtime_fdt(
                 format!("Failed to parse host FDT while updating guest FDT: {err:#?}")
             )
         })?;
-    let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-    let (serial_profile, serial_path, additional_serials) =
-        vm.with_planned_device_graph(|graph| {
+    let (serial_profile, serial_path, additional_serials, ivc_channels) = vm
+        .with_planned_device_graph(|graph| {
             let serials = crate::machine::resolved_serial_devices(graph)?;
+            let ivc_channels = crate::machine::resolved_ivc_channels(graph)?;
             let serial = serials
                 .iter()
                 .find(|serial| serial.id() == "console0")
@@ -93,7 +93,7 @@ pub(super) fn patch_runtime_fdt(
                 .filter(|serial| serial.id() != "console0")
                 .map(crate::machine::ResolvedSerialDevice::profile)
                 .collect();
-            Ok((serial.profile(), path, additional))
+            Ok((serial.profile(), path, additional, ivc_channels))
         })?;
     let (serial_identity, plic_profile) = vm.with_config(|config| {
         (
@@ -108,7 +108,7 @@ pub(super) fn patch_runtime_fdt(
     let guest_fdt = super::fdt::core::create::patch_guest_fdt_for_runtime(
         fdt_bytes,
         &vm.memory_regions(),
-        &emulated_devices,
+        &ivc_channels,
         crate_config,
         serial_profile,
         serial_identity.as_ref(),

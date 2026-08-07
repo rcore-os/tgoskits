@@ -10,12 +10,16 @@ use crate::{AxVmError, AxVmResult};
 pub(super) fn reserve_guest_memory(
     config: &crate::config::AxVMConfig,
     pools: &mut ResourcePools,
+    fixed_internal_ranges: &[core::ops::Range<u64>],
 ) -> AxVmResult {
     let mut ranges = config
         .memory_regions()
         .iter()
         .map(|region| checked_u64_range(region.gpa, region.size, "guest memory"))
         .collect::<AxVmResult<Vec<_>>>()?;
+    for device_range in fixed_internal_ranges {
+        ranges = subtract_ranges(ranges, device_range);
+    }
     ranges.sort_by_key(|range| range.start);
 
     let mut merged: Vec<core::ops::Range<u64>> = Vec::new();
@@ -32,6 +36,53 @@ pub(super) fn reserve_guest_memory(
         pools.reserve_mmio(std::format!("guest-memory-{index}"), range)?;
     }
     Ok(())
+}
+
+pub(super) fn fixed_mmio_ranges(
+    requests: &[DevicePlanRequest],
+) -> AxVmResult<Vec<core::ops::Range<u64>>> {
+    let mut ranges = Vec::new();
+    for request in requests {
+        for requirement in request.requirements().entries() {
+            if let DeviceRequirement::Mmio {
+                size,
+                request: ResourceRequest::Fixed(base),
+                ..
+            } = requirement
+            {
+                ranges.push(fixed_u64_range(*base, *size, request.id(), "MMIO")?);
+            }
+        }
+    }
+    Ok(ranges)
+}
+
+fn subtract_ranges(
+    ranges: Vec<core::ops::Range<u64>>,
+    removed: &core::ops::Range<u64>,
+) -> Vec<core::ops::Range<u64>> {
+    ranges
+        .into_iter()
+        .flat_map(|range| subtract_range(range, removed))
+        .collect()
+}
+
+fn subtract_range(
+    range: core::ops::Range<u64>,
+    removed: &core::ops::Range<u64>,
+) -> Vec<core::ops::Range<u64>> {
+    if range.start >= removed.end || removed.start >= range.end {
+        return std::vec![range];
+    }
+
+    let mut remaining = Vec::new();
+    if range.start < removed.start {
+        remaining.push(range.start..removed.start.min(range.end));
+    }
+    if removed.end < range.end {
+        remaining.push(removed.end.max(range.start)..range.end);
+    }
+    remaining
 }
 
 pub(super) fn allow_fixed_requirements(
@@ -156,7 +207,7 @@ fn fixed_u16_range(
     Ok(base..end)
 }
 
-fn checked_u64_range(
+pub(super) fn checked_u64_range(
     base: usize,
     size: usize,
     kind: &'static str,

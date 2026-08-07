@@ -149,7 +149,7 @@ fn guest_type_owns_address_space_policy() {
         }],
         disabled: Vec::new(),
         virtual_devices: Vec::new(),
-        emu_devices: Vec::new(),
+        legacy_virtual_devices: Vec::new(),
     };
     let unresolved = devices.unresolved_host_devices();
     assert_eq!(unresolved.len(), 1);
@@ -197,15 +197,23 @@ emu_devices = [
     )
     .unwrap();
 
-    assert_eq!(config.base.guest_type, GuestType::Virtualized);
-    assert_eq!(config.devices.emu_devices.len(), 1);
+    assert_eq!(config.base.guest_type, GuestType::Passthrough);
+    assert!(config.devices.virtual_devices.is_empty());
 
-    let device = &config.devices.emu_devices[0];
-    assert_eq!(device.name, "ivc-channel");
-    assert_eq!(device.base_gpa, 0xbff0_0000);
-    assert_eq!(device.length, 0x1_0000);
-    assert_eq!(device.emu_type, EmulatedDeviceType::IVCChannel);
-    assert_eq!(device.cfg_list, vec![60]);
+    let [request] = config.devices.legacy_virtual_devices.as_slice() else {
+        panic!("expected one legacy virtual device request");
+    };
+    assert_eq!(request.id, "ivc-channel@bff00000");
+    assert_eq!(request.model, "ivc-channel");
+    assert_eq!(
+        request.options["legacy_base_gpa"].as_integer(),
+        Some(0xbff0_0000)
+    );
+    assert_eq!(
+        request.options["legacy_length"].as_integer(),
+        Some(0x1_0000)
+    );
+    assert_eq!(request.options["notify_irq"].as_integer(), Some(60));
 }
 
 #[test]

@@ -22,7 +22,6 @@ impl VmDevicePlan {
         replacement_ranges: &[Range<u64>],
         mut pools: ResourcePools,
     ) -> AxVmResult<Self> {
-        pools::reserve_guest_memory(config, &mut pools)?;
         Self::build(config, nodes, replacement_ranges, &mut pools)
     }
 
@@ -37,7 +36,13 @@ impl VmDevicePlan {
             builder.add(node).map_err(DeviceManagerError::from)?;
         }
 
-        passthrough::add_host_nodes(config, replacement_ranges, &mut builder)?;
+        let configured_requests = builder.requests().map_err(DeviceManagerError::from)?;
+        let fixed_internal_ranges = pools::fixed_mmio_ranges(&configured_requests)?;
+        pools::reserve_guest_memory(config, pools, &fixed_internal_ranges)?;
+
+        let mut replacement_ranges = replacement_ranges.to_vec();
+        replacement_ranges.extend(fixed_internal_ranges);
+        passthrough::add_host_nodes(config, &replacement_ranges, &mut builder)?;
 
         let declared = builder.declare().map_err(DeviceManagerError::from)?;
         let requests = declared.requests()?;

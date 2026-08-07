@@ -19,9 +19,8 @@ use std::{string::String, sync::Arc, vec::Vec};
 use axdevice::{NullSerialBackendFactory, SerialBackendFactory};
 use axvm_types::InterruptTriggerMode;
 pub use axvm_types::{
-    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, HostAddressAssignment,
-    HostDeviceAssignment, HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig,
-    VmMemMappingType,
+    AddressSpacePolicy, GuestPhysAddr, HostAddressAssignment, HostDeviceAssignment,
+    HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
 use axvmconfig::VirtualDeviceRequest;
 
@@ -90,7 +89,6 @@ pub struct AxVMConfig {
     pub cpu_config: AxVCpuConfig,
     /// VM image configuration.
     pub image_config: VMImageConfig,
-    emu_devices: Vec<EmulatedDeviceConfig>,
     pass_through_devices: Vec<HostDeviceAssignment>,
     excluded_devices: Vec<Vec<String>>,
     pass_through_addresses: Vec<HostAddressAssignment>,
@@ -101,6 +99,7 @@ pub struct AxVMConfig {
     boot_policy: GuestBootPolicy,
     // Physical interrupt sources forwarded to the guest in passthrough mode.
     passthrough_irq_list: Vec<PassthroughInterrupt>,
+    excluded_passthrough_irq_sources: Vec<u32>,
     serial_profile: GuestSerialProfile,
     serial_firmware_identity: Option<GuestSerialFirmwareIdentity>,
     gic_profile: Option<GuestGicProfile>,
@@ -119,7 +118,6 @@ pub struct AxVMConfigParams {
     pub phys_cpu_ls: PhysCpuList,
     pub cpu_config: AxVCpuConfig,
     pub image_config: VMImageConfig,
-    pub emu_devices: Vec<EmulatedDeviceConfig>,
     pub pass_through_devices: Vec<HostDeviceAssignment>,
     pub excluded_devices: Vec<Vec<String>>,
     pub pass_through_addresses: Vec<HostAddressAssignment>,
@@ -148,7 +146,6 @@ impl AxVMConfig {
             phys_cpu_ls: params.phys_cpu_ls,
             cpu_config: params.cpu_config,
             image_config: params.image_config,
-            emu_devices: params.emu_devices,
             pass_through_devices: params.pass_through_devices,
             excluded_devices: params.excluded_devices,
             pass_through_addresses: params.pass_through_addresses,
@@ -158,6 +155,7 @@ impl AxVMConfig {
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
             passthrough_irq_list: Vec::new(),
+            excluded_passthrough_irq_sources: Vec::new(),
             serial_profile,
             serial_firmware_identity: None,
             gic_profile: machine.gic,
@@ -292,11 +290,6 @@ impl AxVMConfig {
         self.boot_policy = boot_policy;
     }
 
-    /// Returns configurations related to VM emulated devices.
-    pub fn emu_devices(&self) -> &[EmulatedDeviceConfig] {
-        &self.emu_devices
-    }
-
     /// Returns configurations related to VM passthrough devices.
     pub fn pass_through_devices(&self) -> &[HostDeviceAssignment] {
         &self.pass_through_devices
@@ -319,6 +312,9 @@ impl AxVMConfig {
 
     /// Adds a physical interrupt source forwarded to the guest.
     pub fn add_pass_through_irq(&mut self, source: u32, trigger: InterruptTriggerMode) {
+        if self.excluded_passthrough_irq_sources.contains(&source) {
+            return;
+        }
         let route = PassthroughInterrupt { source, trigger };
         if let Some(existing) = self
             .passthrough_irq_list
@@ -334,6 +330,20 @@ impl AxVMConfig {
     /// Returns the physical interrupt sources forwarded to the guest.
     pub fn pass_through_irqs(&self) -> &[PassthroughInterrupt] {
         &self.passthrough_irq_list
+    }
+
+    /// Removes a physical interrupt source from passthrough assignment.
+    pub fn exclude_pass_through_irq_source(&mut self, source: u32) {
+        if !self.excluded_passthrough_irq_sources.contains(&source) {
+            self.excluded_passthrough_irq_sources.push(source);
+        }
+        self.passthrough_irq_list
+            .retain(|interrupt| interrupt.source != source);
+    }
+
+    /// Returns physical interrupt sources removed from passthrough assignment.
+    pub fn excluded_passthrough_irq_sources(&self) -> &[u32] {
+        &self.excluded_passthrough_irq_sources
     }
 
     /// Returns whether the guest address space starts from host identity mappings.
