@@ -39,10 +39,61 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 | Journald polls Starry's write-only `/dev/kmsg` fd | Linux v6.12 `kernel/printk/printk.c::devkmsg_poll()` reports `EPOLLIN | EPOLLRDNORM` only when a log record is available and does not report unconditional write readiness | Starry's `/dev/kmsg` read side returns EOF, but the generic device fallback advertised `POLLIN | POLLOUT`; journald therefore observed a readiness event it could not consume | Resolved by making `Kmsg` explicitly pollable with empty readiness until read-history support exists; no synthetic record, wakeup, or journald special case was added | The kernel axtest changed from `AXTEST_SUMMARY pass=397 fail=1` to `pass=398 fail=0`; the 4-vCPU NixOS rerun registered fd 8 but never delivered it, completed journal flush, and moved the strict failure to `systemd-udevd.service` | Re-run when `/dev/kmsg` gains read-history support, log-record wakeups, or its poll contract changes |
 | `epoll_wait(2)` rotates more ready level-triggered fds than fit in `maxevents` | [`epoll_wait(2)`](https://man7.org/linux/man-pages/man2/epoll_wait.2.html) requires successive calls to round-robin through more ready fds than fit in the output buffer; Linux v6.12 `fs/eventpoll.c::ep_send_events()` moves the current ready list aside and appends still-ready reported entries after entries that were not reported | Journald repeatedly received the same persistent ready descriptors while its Varlink listener remained behind them; `journalctl --flush` connected and sent its 47-byte request, but the listener was accepted only after PID 1 timed out and terminated the client | Focused kernel correction in the epoll ready-list requeue order: preserve unreported ready entries before level-triggered entries already returned by the current call; no journald or AF_UNIX special case | `test-suit/starryos/qemu/system/bugfix-epoll-lt-fairness/` passes on Linux after one distractor event, changed from eight consecutive distractor events on Starry to pass after one, and the 4-vCPU NixOS rerun completed journal flush, udevd, journal catalog, and UTMP before the later `nix-channel-init.service` failure | Re-run when epoll ready-list ordering, LT requeue, `maxevents`, or partial user-copy handling changes |
 | An epoll interest becomes ready between consuming a stale wakeup and registering its replacement waker | Linux poll wait paths register interest before their readiness recheck so a transition in that window cannot be lost; the recheck must use only the subscribed mask rather than unrelated persistent readiness | The NixOS udevd path repeatedly added, modified, waited on, and deleted epoll interests; a readiness transition during rearm could otherwise remain invisible until an unrelated wakeup | Register the replacement waker first, then recheck only events matching that interest and enqueue through the normal interest waker; persistent `EPOLLOUT` cannot create phantom `EPOLLIN` | The deterministic kernel axtest changed from `AXTEST_SUMMARY pass=396 fail=1` to `pass=398 fail=0`; the same 4-vCPU NixOS rerun reached `Started Rule-based Manager for Device Events and Files.` and continued through UTMP | Re-run when `Pollable::register`, epoll spurious-wakeup handling, interest masks, or consume-to-register ordering changes |
+| `systemd-udevd.service` creates mount/UTS namespace sandbox state | systemd 260.2 maps status 226 to `EXIT_NAMESPACE`; its upstream unit declares `PrivateMounts=yes` and `ProtectHostname=yes` | After journal flush and static `/dev` nodes, udevd exited with `226 << 8` | Initial no-sandbox profile exception: only this unit overrides `PrivateMounts=false` and `ProtectHostname=false`; no global systemd sandbox setting is changed | Generated drop-in inspection and the later real QEMU run reached `Started Rule-based Manager for Device Events and Files.` | Restore each upstream directive after its exact Starry mount/UTS sandbox operation has a Linux oracle and a focused red/green regression |
+| `systemd-machine-id-commit.service` persists the boot machine ID | systemd 260.2 documents this unit as committing a transient machine ID to persistent storage; NixOS container instances may use a transient identity | On the immutable generated artifact, `systemd-machine-id-setup` exited 1 while saving the transient ID | Initial Stage-2 profile exception: precisely mask `systemd-machine-id-commit.service`; transient identity remains available and persistent per-instance identity remains out of scope | Generated unit is `/dev/null`; subsequent QEMU run no longer reported this unit failure | Revisit when the image has a supported per-instance writable identity-store design; do not replace the exception with a shared baked-in machine ID |
+| `/proc/<pid>/exe` after `execve` resolves a program opened through a bind mount | [`proc_pid_exe(5)`](https://man7.org/linux/man-pages/man5/proc_pid_exe.5.html) exposes the pathname of the executed command. The path is rooted at the mount through which the executable was resolved, not its bind source's parent chain. | NixOS stage 2 executed PID 1 through a bind-mounted `/nix/store` path. The prior VFS walk recorded `/nix/store/nix/store/...`; `readlink -f /proc/1/exe` then exited `256`. | Resolved in `Location::absolute_path()`: collect names only up to each mount root, then resume from that mount's attachment location. No procfs special case or NixOS workaround was added. | `absolute_path_rebases_bind_mount_source_at_mountpoint` changed from `/nix/store/nix/store/systemd` to `/nix/store/systemd` and passed in `axfs-ng-vfs`. `test-suit/starryos/qemu/system/bugfix-proc-pid-exe-readlink/` compiles and covers direct procfs readlink, canonicalization, and exec through a bind-mounted pathname; its grouped QEMU execution remains pending because the read-only source mount cannot satisfy Axbuild's create/delete Alpine-rootfs lock protocol. The 8-vCPU app run crossed stage-2 `readlink -f /proc/1/exe` with exit code 0 and reached the marker service. | Re-run when `Location::absolute_path`, bind/move mount attachment, execve path capture, or procfs executable-link behavior changes. |
+| `register-nix-paths.service` and `systemd-tmpfiles-setup.service` after local-fs startup | Nix registration loads the actual 144,084-byte `/nix-path-registration` then updates the system profile; the exact same Nix 2.34.8 commands in an isolated Linux state completed in 0.30 seconds and 0.10 seconds respectively. Its trace uses only SQLite `F_SETLK`/`F_GETLK` record locks, not `kcmp`, `keyctl`, or `fcntl(1027)`. The artifact's full systemd 260.2 tmpfiles rules, passwd/group data, and `--create --remove --boot --exclude-prefix=/dev` completed with status 0 in a root-capable Linux `--root` baseline (0.00 seconds at 0.01-second display precision) | The run with the two exceptions crossed sysctl, journal flush, static `/dev`, and udevd, then left `Register Nix Store Paths` and `Create System Files and Directories` active until the 600-second outer timeout | Open diagnostic finding; task 99 is register-nix-paths and task 100 is systemd-tmpfiles. The offline Linux baseline excludes inherent tmpfiles rule/account-data slowness, but does not recreate the guest's live `/run`/`/proc` state. Read-only file-time diagnostics and PID-1 `kcmp`/`fcntl(1027)` remain uncorrelated with the two actual execs | No focused regression yet; strict matcher did not emit the pass marker | Reduce one task 99/100 VFS operation to a Linux/Starry deterministic red/green regression, then repair only its owning subsystem |
 | `systemd-journald` appends an entry and obtains the current boot ID | systemd 260.2 [`sd_id128_get_boot()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-id128/sd-id128.c#L169-L193) reads `/proc/sys/kernel/random/boot_id` as a non-null canonical UUID; [`journal_file_append_entry()`](https://github.com/systemd/systemd/blob/v260.2/src/libsystemd/sd-journal/journal-file.c#L2527-L2573) returns that read error before appending. The same direct `open`/`fstat`/`read`/`lseek` C probe passed 9/9 in the project Linux container. | The journal file open returned its expected initial `ENOENT`, then the boot-ID read returned `ENOENT`; journald reported its generic journal-write error immediately afterwards. | Resolved in procfs with one immutable per-kernel-boot UUIDv4 value, exposed as read-only `/proc/sys/kernel/random/boot_id`; no machine-ID derivation, journal mask, or service override was added. | `test-suit/starryos/qemu/system/bugfix-proc-sys-kernel-random-boot-id/` changed from `open` `ENOENT` to 9/9 pass, including `0444`, exact 37-byte format, EOF, seek/re-read, and two-reader stability. The 2026-08-05 NixOS rerun then reached `Started Journal Service.` and received the flush request without another boot-ID error. | Re-run when procfs initialization, wall-clock entropy, pseudo-file permissions, or boot-identity lifecycle changes. |
 | systemd observes mount-table changes through `/proc/<pid>/{mountinfo,mounts}` polling | Linux 6.6 `fs/proc_namespace.c::mounts_poll()` stores one observed mount-namespace event value per open file description and reports `POLLPRI | POLLERR` when `fs/namespace.c::touch_mnt_namespace()` advances that namespace's event counter and wakes poll waiters | The util-linux mount helper completed the `move_mount(2)` operation for `/run/wrappers`, but systemd PID 1 did not receive a mountinfo change event, did not observe the published mount, and reported the mount unit protocol failure | Resolved with namespace-scoped mount-table generations, per-open consumed change events, and notifications after successful mount, bind, move, remount, propagation, `mount_setattr`, unmount, and `pivot_root` publication; no systemd workaround or host-side mount was added | The Linux oracle printed `STARRY_MOUNTINFO_POLL_NOTIFY_PASSED`. The focused Starry regression changed from `ready=0 revents=0` to `POLLPRI | POLLERR`, verified that a repeated poll consumes the event, and passed through the grouped QEMU runner. The real NixOS rerun printed `[  OK  ] Mounted /run/wrappers.`, reached `Local File Systems`, and started `Register Nix Store Paths` without the former mount-unit failure. | Re-run when mount-namespace cloning, proc mount-table generation, poll wakeup, or any mount-tree mutation path changes. |
 
 ## Run evidence
+
+### 2026-08-07 8-vCPU Stage-2 acceptance pass
+
+- The host direnv development environment ran:
+  `TMPDIR="$PWD/.ci-cache/tmp" STARRY_NIXOS_REUSE_ROOTFS=1 direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64`.
+  The builder reused the existing app-owned rootfs after manifest and ext4
+  validation; it did not rebuild or switch the host NixOS system.
+- QEMU used `-smp 8`. The guest completed activation, journal flush, both
+  `/dev` tmpfiles phases, udevd, Nix store registration, SUID wrapper creation,
+  resolvconf, and the extra networking commands. The ACL boundary remained
+  green: `setfacl` and `resolvconf-start` both exited with code 0.
+- The guest reached `Multi-User System` and emitted the complete ordered
+  contract:
+  `STARRY_NIXOS_PHASE=pid1`,
+  `STARRY_NIXOS_PHASE=activation`,
+  `STARRY_NIXOS_PHASE=systemd`,
+  `STARRY_NIXOS_PHASE=marker`, and
+  `STARRY_NIXOS_SYSTEM_PASSED`.
+- The runner keeps the successful guest alive after the terminal marker, so it
+  was manually interrupted after the complete pass evidence appeared. The
+  resulting host exit status reflects that interruption, not a guest failure.
+
+### 2026-08-06 bind-mounted executable-path acceptance rerun
+
+- The independent VFS regression
+  `cargo test -p axfs-ng-vfs absolute_path_rebases_bind_mount_source_at_mountpoint --lib`
+  passed in the rootless Podman validation container. It directly checks that a
+  bind of `/nix/store` onto itself reports `/nix/store/systemd`, rather than the
+  former `/nix/store/nix/store/systemd`.
+- The full CI-like command reused the validated app-owned artifact without
+  building a rootfs or invoking host Nix:
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`.
+  QEMU used the configured `-smp 8`; the manifest identified
+  `/nix/store/xzfda0azx2fh54hl61gfdbs2rkc1cz35-nixos-system-starrynixos-starry-nixos-stage2`
+  and image SHA-256
+  `fb1da6aa0cc59c3e6977450c975ba823396943552dcd2f9e4fec711c3801c4fc`.
+- Stage 2 completed the former blocker: its `readlink` process exited 0 before
+  systemd 260.2 started. The run then completed tmpfiles, udevd, Nix store path
+  registration, SUID wrapper creation, and reached
+  `starry-nixos-marker.service`.
+- The strict terminal result was now
+  `hello: command not found` in that marker service. `pkgs.hello` is part of
+  `environment.systemPackages`, but not of this service's explicit `path`;
+  this is a declarative service PATH configuration issue, not a recurrence of
+  the VFS or procfs executable-path behavior.
+- No `STARRY_NIXOS_SYSTEM_PASSED` marker was emitted, so T028 remains
+  incomplete. The run is valid crossing evidence for the bind-mount path fix.
 
 ### 2026-08-06 epoll readiness progress acceptance rerun
 
@@ -121,7 +172,7 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
   `.ci-cache/{axbuild-tmp,cargo,rustup,target,tmp}` writable. The run did not
   invoke host Nix, mutate `/nix/store`, or rebuild the NixOS rootfs.
 - The reused generated system identified itself as
-  `/nix/store/q2j5y05w2l4nhvsgzd3b7g49rn92lpkn-nixos-system-starry-nixos-stage2`;
+  `/nix/store/q2j5y05w2l4nhvsgzd3b7g49rn92lpkn-nixos-system-starrynixos-starry-nixos-stage2`;
   systemd was `260.2`.
 - Journald printed `Collecting audit messages is disabled.`, reached
   `Started Journal Service.`, and later logged `Received client request to flush
@@ -132,6 +183,26 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
   Later `fcntl(1027)` and `kcmp` diagnostics are recorded only as observations;
   this run does not attribute those later failures to a new kernel subsystem.
   No `STARRY_NIXOS_SYSTEM_PASSED` marker was emitted.
+
+### 2026-08-05 fresh-rootfs acceptance rerun
+
+- Host construction used the existing direnv environment directly:
+  `bash apps/starry/nixos/build-rootfs.sh`; no `nix develop` was used.
+- The rebuilt artifact manifest records system closure
+  `/nix/store/2kf72bk9h4gkw2g10h9392iqy9mwjyy7-nixos-system-starrynixos-starry-nixos-stage2`,
+  systemd `260.2`, and image SHA-256
+  `890bdf2de5921d470403fc6eac25355bcb657803b1f18a3fb167ebfcaaad8e74`.
+- CI-like execution used
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`
+  in `ghcr.io/rcore-os/tgoskits-container:latest`, mounting
+  `.ci-cache/{cargo,rustup,tmp}` only for disposable tool and temporary state.
+- `systemd-sysctl.service` completed with exit code 0 after the profile removed
+  the unenforceable `kernel.pid_max` and `vm.max_map_count` writes. The static
+  `/dev` node job also completed successfully.
+- Journald then reported repeated `ENOENT` writes to
+  `/run/log/journal/<machine-id>/system.journal`. The strict matcher stopped on
+  `Failed to start Flush Journal to Persistent Storage.` No pass marker was
+  emitted. This is the current bounded finding, not a support claim.
 
 ### 2026-08-05 mountinfo notification rerun
 
@@ -151,6 +222,35 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
   had entered the later Nix registration phase. It did not emit
   `STARRY_NIXOS_SYSTEM_PASSED`, so T028 and the final acceptance claim remain
   incomplete.
+
+### 2026-08-03 machine-id exception acceptance rerun
+
+- The first container attempt mounted the repository at a different absolute
+  path and therefore failed before QEMU because the published manifest records
+  `/workspace/...`; this is an artifact-path validation failure, not guest
+  evidence.
+- The rerun mounted the repository at `/workspace` and used:
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`
+  in `ghcr.io/rcore-os/tgoskits-container:latest`, with
+  `.ci-cache/{cargo,rustup,tmp}` only as tool and temporary-data caches.
+- Artifact identity:
+  `/nix/store/211p2xi0fbxi7fq6dq3zjryl46wk3dmz-nixos-system-starrynixos-starry-nixos-stage2`;
+  systemd `260.2`; image SHA-256
+  `0afa089a2950c990842cb5e8a2d66eae4086a8ef519cc19458b870d92ec2e641`.
+- Generated configuration retained only the documented udevd unit-local
+  sandbox override and precisely masked
+  `systemd-machine-id-commit.service`; no global systemd sandbox setting was
+  disabled.
+- Crossing evidence included successful `systemd-sysctl`, journal flush,
+  static device-node creation, and `Rule-based Manager for Device Events and
+  Files`. The machine-id commit failure did not recur.
+- `/run/wrappers` still failed and `nix-suid-wrappers.service` consequently
+  failed, but systemd continued; this was not the terminal acceptance result.
+- The runner timed out after 600 seconds with `Register Nix Store Paths` and
+  `Create System Files and Directories` still active. No
+  `STARRY_NIXOS_SYSTEM_PASSED` marker was emitted. Repeated read-only
+  file-time diagnostics are recorded as a hypothesis only, pending exact unit
+  commands, a Linux oracle, and a deterministic Starry regression.
 
 ### 2026-08-01 initial unmasked run
 
