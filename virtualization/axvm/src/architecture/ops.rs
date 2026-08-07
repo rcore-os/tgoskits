@@ -10,33 +10,6 @@ use super::{BoundVcpuExit, VcpuRunAction};
 use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
-    #[cfg(target_arch = "riscv64")]
-    fn ipi_targets(
-        vm: &crate::AxVMRef,
-        current_vcpu_id: usize,
-        target_cpu: u64,
-        target_cpu_aux: u64,
-        send_to_all: bool,
-        send_to_self: bool,
-    ) -> crate::CpuMask<64> {
-        let mut targets = crate::CpuMask::new();
-
-        if send_to_all {
-            for vcpu in vm.vcpu_list() {
-                if vcpu.id() != current_vcpu_id {
-                    targets.set(vcpu.id(), true);
-                }
-            }
-        } else if send_to_self {
-            targets.set(current_vcpu_id, true);
-        } else {
-            let _ = target_cpu_aux;
-            targets.set(target_cpu as usize, true);
-        }
-
-        targets
-    }
-
     type VCpu: VmArchVcpuOps;
     type PerCpu: VmArchPerCpuOps;
     type DeferredRunWork;

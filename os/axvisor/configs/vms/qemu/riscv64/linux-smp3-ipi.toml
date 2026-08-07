@@ -1,0 +1,26 @@
+# VM base information.
+[base]
+id = 1
+name = "linux-qemu-smp3-ipi"
+guest_type = "passthrough"
+cpu_num = 3
+phys_cpu_ids = [0, 1, 2]
+phys_cpu_sets = [1, 2, 4]
+
+# VM kernel configuration.
+[kernel]
+cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw"
+entry_point = 0x9020_0000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x9020_0000
+dtb_load_addr = 0x9300_0000
+
+# System RAM, identity-mapped for DMA-capable passthrough.
+memory_regions = [
+    [0x9000_0000, 0x0800_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = []
+disabled = []

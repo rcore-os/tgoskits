@@ -1,37 +1,38 @@
-extern crate alloc;
+//! SBI IPI decoding owned by the RISC-V vCPU boundary.
 
-#[cfg(test)]
-use alloc::vec::Vec;
+use rustsbi::Ipi;
+use sbi_spec::binary::{HartMask, SbiRet};
 
-pub const VSSIP_HVIP_BIT: usize = 2;
-#[cfg(test)]
-pub const VSTIP_HVIP_BIT: usize = 6;
-#[cfg(test)]
-pub const VSEIP_HVIP_BIT: usize = 10;
+use crate::types::{RiscvIpiAbi, RiscvIpiRequest};
 
-pub const SUPERVISOR_SOFT_CAUSE: usize = 1;
-pub const SUPERVISOR_TIMER_CAUSE: usize = 5;
-pub const SUPERVISOR_EXTERNAL_CAUSE: usize = 9;
+/// IPI provider used to advertise the SBI extension through BASE probing.
+///
+/// Actual delivery is deferred to AxVM because only the VMM owns the guest
+/// hart topology and target-vCPU runtime queues.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VirtualSbiIpi;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HartMaskReadError {
+impl Ipi for VirtualSbiIpi {
+    fn send_ipi(&self, _hart_mask: HartMask) -> SbiRet {
+        SbiRet::not_supported()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HartMaskReadError {
     ShortRead { expected: usize, copied: usize },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SupervisorInterruptAction {
-    ConsumeHostSoft,
-    InjectGuestTimer,
-    InjectGuestExternal,
+pub(crate) fn decode_standard_request(hart_mask: usize, hart_mask_base: usize) -> RiscvIpiRequest {
+    RiscvIpiRequest::new(hart_mask, hart_mask_base, RiscvIpiAbi::SbiV02)
 }
 
-pub fn read_hart_mask(
-    guest_va: usize,
+pub(crate) fn decode_legacy_request(
+    hart_mask_ptr: usize,
     mut copy_from_guest_va: impl FnMut(usize, &mut [u8]) -> usize,
-) -> Result<usize, HartMaskReadError> {
+) -> Result<RiscvIpiRequest, HartMaskReadError> {
     let mut mask_bytes = [0u8; core::mem::size_of::<usize>()];
-    let copied = copy_from_guest_va(guest_va, &mut mask_bytes);
-
+    let copied = copy_from_guest_va(hart_mask_ptr, &mut mask_bytes);
     if copied != mask_bytes.len() {
         return Err(HartMaskReadError::ShortRead {
             expected: mask_bytes.len(),
@@ -39,28 +40,11 @@ pub fn read_hart_mask(
         });
     }
 
-    Ok(usize::from_ne_bytes(mask_bytes))
-}
-
-#[cfg(test)]
-pub fn select_targets(hart_mask: usize, vcpu_ids: impl IntoIterator<Item = usize>) -> Vec<usize> {
-    vcpu_ids
-        .into_iter()
-        .filter(|&vcpu_id| vcpu_id < usize::BITS as usize && ((hart_mask >> vcpu_id) & 1) != 0)
-        .collect()
-}
-
-pub fn clear_virtual_soft_pending(hvip: usize) -> usize {
-    hvip & !(1usize << VSSIP_HVIP_BIT)
-}
-
-pub fn classify_supervisor_interrupt(cause: usize) -> Option<SupervisorInterruptAction> {
-    match cause {
-        SUPERVISOR_SOFT_CAUSE => Some(SupervisorInterruptAction::ConsumeHostSoft),
-        SUPERVISOR_TIMER_CAUSE => Some(SupervisorInterruptAction::InjectGuestTimer),
-        SUPERVISOR_EXTERNAL_CAUSE => Some(SupervisorInterruptAction::InjectGuestExternal),
-        _ => None,
-    }
+    Ok(RiscvIpiRequest::new(
+        usize::from_ne_bytes(mask_bytes),
+        0,
+        RiscvIpiAbi::Legacy,
+    ))
 }
 
 #[cfg(test)]
@@ -68,127 +52,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_mask_is_empty_and_not_broadcast() {
-        assert_eq!(select_targets(0, [0, 1, 2, 3]), Vec::<usize>::new());
+    fn standard_request_preserves_mask_and_base() {
+        let request = decode_standard_request(0b1010, 4);
+
+        assert_eq!(request.hart_mask(), 0b1010);
+        assert_eq!(request.hart_mask_base(), 4);
+        assert_eq!(request.abi(), RiscvIpiAbi::SbiV02);
     }
 
     #[test]
-    fn selected_mask_routes_only_selected_harts() {
-        assert_eq!(select_targets(0b1010, [0, 1, 2, 3]), alloc::vec![1, 3]);
-    }
-
-    #[test]
-    fn unreadable_guest_mask_is_rejected() {
-        let err = read_hart_mask(0x1000, |_guest_va, _bytes| 0).unwrap_err();
-        assert_eq!(
-            err,
-            HartMaskReadError::ShortRead {
-                expected: core::mem::size_of::<usize>(),
-                copied: 0,
-            }
-        );
-    }
-}
-
-#[cfg(test)]
-mod contract_tests {
-    use super::*;
-
-    #[test]
-    fn guest_memory_word_routes_only_masked_harts() {
-        let mask = 0b1010usize;
-        let mask_bytes = mask.to_ne_bytes();
-
-        let hart_mask = read_hart_mask(0x4000, |guest_va, bytes| {
+    fn legacy_request_reads_one_rv64_mask_word() {
+        let expected = 0b101usize;
+        let request = decode_legacy_request(0x4000, |guest_va, bytes| {
             assert_eq!(guest_va, 0x4000);
-            bytes.copy_from_slice(&mask_bytes);
+            bytes.copy_from_slice(&expected.to_ne_bytes());
             bytes.len()
         })
         .unwrap();
 
-        assert_eq!(select_targets(hart_mask, [0, 1, 2, 3]), alloc::vec![1, 3]);
+        assert_eq!(request.hart_mask(), expected);
+        assert_eq!(request.hart_mask_base(), 0);
+        assert_eq!(request.abi(), RiscvIpiAbi::Legacy);
     }
 
     #[test]
-    fn mask_bit_one_selects_only_vcpu_one() {
-        assert_eq!(select_targets(1 << 1, [0, 1, 2, 3]), alloc::vec![1]);
-    }
-
-    #[test]
-    fn mask_bits_zero_and_two_select_only_vcpus_zero_and_two() {
+    fn legacy_request_rejects_short_guest_reads() {
         assert_eq!(
-            select_targets((1 << 0) | (1 << 2), [0, 1, 2, 3]),
-            alloc::vec![0, 2]
-        );
-    }
-
-    #[test]
-    fn sparse_guest_hart_mask_selects_hart_id_not_local_index() {
-        assert_eq!(
-            select_targets(1usize << 5, [4usize, 5usize, 9usize]),
-            alloc::vec![5]
-        );
-    }
-
-    #[test]
-    fn clear_ipi_updates_only_current_hart_hvip_snapshot() {
-        let current_hvip = (1usize << VSSIP_HVIP_BIT) | (1usize << VSTIP_HVIP_BIT);
-        let remote_hvip = current_hvip;
-
-        let current_after = clear_virtual_soft_pending(current_hvip);
-
-        assert_eq!(current_after & (1usize << VSSIP_HVIP_BIT), 0);
-        assert_ne!(remote_hvip & (1usize << VSSIP_HVIP_BIT), 0);
-    }
-
-    #[test]
-    fn invalid_guest_mask_pointer_rejects_before_routing() {
-        let err = read_hart_mask(0, |_guest_va, _bytes| 0).unwrap_err();
-
-        assert_eq!(
-            err,
-            HartMaskReadError::ShortRead {
+            decode_legacy_request(0x4000, |_guest_va, _bytes| 0),
+            Err(HartMaskReadError::ShortRead {
                 expected: core::mem::size_of::<usize>(),
                 copied: 0,
-            }
-        );
-    }
-
-    #[test]
-    fn clear_ipi_clears_only_vssip() {
-        let hvip = 1usize << VSSIP_HVIP_BIT;
-        assert_eq!(clear_virtual_soft_pending(hvip), 0);
-    }
-
-    #[test]
-    fn clear_ipi_preserves_timer_and_external_pending() {
-        let hvip =
-            (1usize << VSSIP_HVIP_BIT) | (1usize << VSTIP_HVIP_BIT) | (1usize << VSEIP_HVIP_BIT);
-
-        let cleared = clear_virtual_soft_pending(hvip);
-
-        assert_eq!(cleared & (1usize << VSSIP_HVIP_BIT), 0);
-        assert_ne!(cleared & (1usize << VSTIP_HVIP_BIT), 0);
-        assert_ne!(cleared & (1usize << VSEIP_HVIP_BIT), 0);
-    }
-
-    #[test]
-    fn host_supervisor_soft_is_consumed_by_host() {
-        assert_eq!(
-            classify_supervisor_interrupt(SUPERVISOR_SOFT_CAUSE),
-            Some(SupervisorInterruptAction::ConsumeHostSoft)
-        );
-    }
-
-    #[test]
-    fn timer_and_external_are_guest_interrupts() {
-        assert_eq!(
-            classify_supervisor_interrupt(SUPERVISOR_TIMER_CAUSE),
-            Some(SupervisorInterruptAction::InjectGuestTimer)
-        );
-        assert_eq!(
-            classify_supervisor_interrupt(SUPERVISOR_EXTERNAL_CAUSE),
-            Some(SupervisorInterruptAction::InjectGuestExternal)
+            })
         );
     }
 }
