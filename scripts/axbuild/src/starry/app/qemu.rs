@@ -4,13 +4,17 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
+use serde::Deserialize;
 
 use super::{
     StarryAppQemuCase,
     build_config::{collect_prefixed_toml_files, discover_optional_build_config},
     discovery::resolve_case_relative_path,
     rootfs::prepare_qemu_app_rootfs,
-    types::{StarryAppCase, StarryAppKind},
+    types::{
+        AppOwnedRootfsPreparation, RootfsPreparation, RootfsPreparationConfig,
+        RootfsPreparationMode, StarryAppCase, StarryAppKind,
+    },
 };
 use crate::{
     context::{DEFAULT_STARRY_ARCH, starry_target_for_arch_checked},
@@ -24,7 +28,14 @@ use crate::{
 struct LoadedQemuAppCaseFields {
     test_case: TestQemuCase,
     rootfs_path: Option<PathBuf>,
+    rootfs_preparation: RootfsPreparation,
     snapshot: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct QemuAppConfig {
+    #[serde(default)]
+    rootfs_preparation: RootfsPreparationConfig,
 }
 
 pub(crate) async fn prepare_qemu_app_case(
@@ -62,6 +73,10 @@ pub(crate) async fn prepare_qemu_app_case(
         fields
             .as_ref()
             .and_then(|fields| fields.rootfs_path.as_deref()),
+        fields
+            .as_ref()
+            .map(|fields| &fields.rootfs_preparation)
+            .unwrap_or(&RootfsPreparation::Default),
     )
     .await?;
 
@@ -122,6 +137,7 @@ fn load_qemu_app_case_fields(
         true,
     )?;
     let rootfs_path = qemu_app_config_rootfs_path(workspace_root, qemu_config_path)?;
+    let rootfs_preparation = qemu_app_rootfs_preparation(app, qemu_config_path)?;
     let snapshot = qemu_test::load_qemu_case_extra_config(qemu_config_path)?
         .snapshot
         .unwrap_or(true);
@@ -129,8 +145,67 @@ fn load_qemu_app_case_fields(
     Ok(LoadedQemuAppCaseFields {
         test_case,
         rootfs_path,
+        rootfs_preparation,
         snapshot,
     })
+}
+
+fn qemu_app_rootfs_preparation(
+    app: &StarryAppCase,
+    qemu_config_path: &Path,
+) -> anyhow::Result<RootfsPreparation> {
+    let content = fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    let config = toml::from_str::<QemuAppConfig>(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?
+        .rootfs_preparation;
+
+    match config.mode {
+        RootfsPreparationMode::Default => {
+            ensure!(
+                config.builder.is_none() && config.target_arch.is_none(),
+                "default rootfs preparation in {} must not declare a builder or target_arch",
+                qemu_config_path.display()
+            );
+            Ok(RootfsPreparation::Default)
+        }
+        RootfsPreparationMode::AppOwned => {
+            let builder = config.builder.with_context(|| {
+                format!(
+                    "app-owned rootfs preparation in {} requires `builder`",
+                    qemu_config_path.display()
+                )
+            })?;
+            ensure!(
+                !builder.is_absolute()
+                    && builder
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_))),
+                "app-owned rootfs builder `{}` must be relative to the app directory",
+                builder.display()
+            );
+            let builder_path = app.case_dir.join(&builder);
+            ensure!(
+                builder_path.is_file(),
+                "app-owned rootfs builder `{}` does not exist",
+                builder_path.display()
+            );
+            let target_arch = config.target_arch.with_context(|| {
+                format!(
+                    "app-owned rootfs preparation in {} requires `target_arch`",
+                    qemu_config_path.display()
+                )
+            })?;
+            ensure!(
+                !target_arch.trim().is_empty() && target_arch == target_arch.trim(),
+                "app-owned rootfs target_arch must be non-empty and trimmed"
+            );
+            Ok(RootfsPreparation::AppOwned(AppOwnedRootfsPreparation {
+                builder_path,
+                target_arch,
+            }))
+        }
+    }
 }
 
 fn qemu_app_config_rootfs_path(

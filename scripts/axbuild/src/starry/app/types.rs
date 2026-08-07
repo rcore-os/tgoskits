@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::ValueEnum;
+use serde::Deserialize;
 
 use crate::test::case::{HostHttpServerConfig, TestQemuSubcase};
 
@@ -43,4 +44,33 @@ pub(crate) struct StarryAppQemuCase {
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum RootfsPreparation {
+    #[default]
+    Default,
+    AppOwned(AppOwnedRootfsPreparation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppOwnedRootfsPreparation {
+    pub(crate) builder_path: PathBuf,
+    pub(crate) target_arch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub(crate) struct RootfsPreparationConfig {
+    #[serde(default)]
+    pub(crate) mode: RootfsPreparationMode,
+    pub(crate) builder: Option<PathBuf>,
+    pub(crate) target_arch: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RootfsPreparationMode {
+    #[default]
+    Default,
+    AppOwned,
 }
