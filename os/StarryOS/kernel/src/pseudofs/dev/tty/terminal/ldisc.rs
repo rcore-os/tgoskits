@@ -343,6 +343,11 @@ impl<W: TtyWrite> EchoQueue<W> {
         }
     }
 
+    fn discard_pending(&self) {
+        self.queue.lock().clear();
+        self.dropped.store(0, Ordering::Release);
+    }
+
     fn drain_available(&self) -> bool {
         let mut progressed = false;
         loop {
@@ -537,6 +542,15 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
         self.injected_input.clear();
         self.eof_ready.store(false, Ordering::Release);
+    }
+
+    pub fn discard_output(&self, writer: &W) -> AxResult<()> {
+        if let Processor::InterruptDriven(reader) = &self.processor {
+            // Synchronize with the input worker so echo generated before this
+            // flush is either pending here or already queued in the backend.
+            reader.lock().echo.discard_pending();
+        }
+        writer.discard_output()
     }
 
     pub fn inject_input(&mut self, input: &[u8]) {

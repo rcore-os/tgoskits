@@ -201,6 +201,38 @@ static void check_input_source_flush(struct pty_pair *pty)
         fail("TCIFLUSH discards source and staged input");
 }
 
+static void check_deferred_echo_flush(void)
+{
+    struct pty_pair pty = {.master = -1, .slave = -1};
+    unsigned char fill[4096];
+    static const unsigned char stale = 'S';
+    static const unsigned char fresh = 'F';
+    struct termios term;
+
+    memset(fill, 'x', sizeof(fill));
+    if (open_raw_pty(&pty) != 0 || tcgetattr(pty.slave, &term) != 0) {
+        fail("open PTY for deferred echo flush");
+        goto out;
+    }
+    term.c_lflag |= ECHO;
+    if (tcsetattr(pty.slave, TCSANOW, &term) != 0
+        || write_all(pty.slave, fill, sizeof(fill)) != 0
+        || write_all(pty.master, &stale, sizeof(stale)) != 0
+        || !wait_readable(pty.slave, 2000)) {
+        fail("queue echo behind full PTY output");
+        goto out;
+    }
+
+    if (ioctl(pty.slave, TCFLSH, TCOFLUSH) != 0
+        || write_all(pty.master, &fresh, sizeof(fresh)) != 0
+        || read_exact(pty.master, &fresh, sizeof(fresh)) != 0
+        || expect_empty(pty.master) != 0)
+        fail("TCOFLUSH discards deferred echo");
+
+out:
+    close_pty(&pty);
+}
+
 static void check_reader_wakeup_after_flush(struct pty_pair *pty)
 {
     enum { ROUNDS = 64 };
@@ -285,6 +317,7 @@ int main(void)
         check_input_source_flush(&pty);
     }
     close_pty(&pty);
+    check_deferred_echo_flush();
 
     if (failures != 0) {
         fprintf(stderr, "test-tty-flush: %d failure(s)\n", failures);

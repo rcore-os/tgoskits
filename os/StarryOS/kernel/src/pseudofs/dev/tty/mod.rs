@@ -298,10 +298,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
             }
             TCFLSH => match arg {
                 TCIFLUSH => self.ldisc.lock().drain_input(),
-                TCOFLUSH => self.writer.discard_output()?,
+                TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
                 TCIOFLUSH => {
-                    self.writer.discard_output()?;
-                    self.ldisc.lock().drain_input();
+                    let mut ldisc = self.ldisc.lock();
+                    ldisc.discard_output(&self.writer)?;
+                    ldisc.drain_input();
                 }
                 _ => return Err(AxError::InvalidInput),
             },
