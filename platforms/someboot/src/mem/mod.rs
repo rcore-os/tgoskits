@@ -10,6 +10,7 @@ pub mod mmu;
 pub(crate) mod ram;
 pub(crate) mod region;
 
+pub use mmu::{MemAttributes, PteConfig};
 pub use page_table_generic::*;
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};

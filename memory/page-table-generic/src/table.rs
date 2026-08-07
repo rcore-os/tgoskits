@@ -1,8 +1,8 @@
 use core::ops::{Deref, DerefMut, Range};
 
 use crate::{
-    FrameAllocator, MappingFlags, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr,
-    PteConfig, TableMeta, VirtAddr,
+    FrameAllocator, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf,
+    TableMeta, VirtAddr,
     frame::Frame,
     map::{MapConfig, MapRecursiveConfig, UnmapConfig, UnmapRecursiveConfig},
     walk::{PageTableWalker, WalkConfig},
@@ -140,7 +140,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTable<T, A> {
             return;
         };
         for index in entries {
-            self.inner.root.as_slice_mut()[index] = T::P::from_config(PteConfig::default());
+            self.inner.root.as_slice_mut()[index].clear();
         }
     }
 }
@@ -214,7 +214,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         vaddr: VirtAddr,
         paddr: PhysAddr,
         page_size: PageSize,
-        flags: MappingFlags,
+        config: PteConfigOf<T>,
     ) -> PagingResult {
         let Some(level) = Frame::<T, A>::level_for_page_size(page_size) else {
             return Err(PagingError::invalid_size(
@@ -231,7 +231,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             vaddr: align_vaddr_down(vaddr, size),
             paddr: align_paddr_down(paddr, size),
             size,
-            pte: PteConfig::page(align_paddr_down(paddr, size), flags, page_size.is_huge()),
+            pte: config,
             allow_huge: page_size.is_huge(),
             flush: true,
         })
@@ -244,7 +244,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         start_vaddr: VirtAddr,
         get_paddr: impl Fn(VirtAddr) -> PhysAddr,
         size: usize,
-        flags: MappingFlags,
+        config: PteConfigOf<T>,
         allow_huge: bool,
     ) -> PagingResult {
         if size == 0 {
@@ -274,11 +274,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
                 vaddr: align_vaddr_down(vaddr, page_bytes),
                 paddr: align_paddr_down(paddr, page_bytes),
                 size: page_bytes,
-                pte: PteConfig::page(
-                    align_paddr_down(paddr, page_bytes),
-                    flags,
-                    page_size.is_huge(),
-                ),
+                pte: config,
                 allow_huge: page_size.is_huge(),
                 flush: false,
             }) {
@@ -305,7 +301,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     pub fn unmap_page(
         &mut self,
         vaddr: VirtAddr,
-    ) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, PageSize)> {
         let mapped = self.query(vaddr);
         let size = match &mapped {
             Ok((_, _, page_size)) => usize::from(*page_size),
@@ -327,10 +323,14 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
     }
 
     /// Changes one existing mapping's flags and returns its page size.
-    pub fn protect_page(&mut self, vaddr: VirtAddr, flags: MappingFlags) -> PagingResult<PageSize> {
+    pub fn protect_page(
+        &mut self,
+        vaddr: VirtAddr,
+        config: PteConfigOf<T>,
+    ) -> PagingResult<PageSize> {
         let page_size = self
             .root
-            .protect_recursive(vaddr, flags, Frame::<T, A>::PT_LEVEL)?;
+            .protect_recursive(vaddr, config, Frame::<T, A>::PT_LEVEL)?;
         T::flush(Some(vaddr));
         Ok(page_size)
     }
@@ -340,7 +340,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         &mut self,
         start_vaddr: VirtAddr,
         size: usize,
-        flags: MappingFlags,
+        config: PteConfigOf<T>,
     ) -> PagingResult {
         let end = start_vaddr
             .as_usize()
@@ -348,7 +348,7 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             .ok_or_else(|| PagingError::address_overflow("protect_region"))?;
         let mut vaddr = start_vaddr;
         while vaddr.as_usize() < end {
-            match self.protect_page(vaddr, flags) {
+            match self.protect_page(vaddr, config) {
                 Ok(page_size) => vaddr += usize::from(page_size),
                 Err(PagingError::NotMapped) => vaddr += T::PAGE_SIZE,
                 Err(err) => return Err(err),
@@ -362,28 +362,27 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         &mut self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
-        flags: MappingFlags,
+        config: PteConfigOf<T>,
     ) -> PagingResult<PageSize> {
         let page_size = self
             .root
-            .remap_recursive(vaddr, paddr, flags, Frame::<T, A>::PT_LEVEL)?;
+            .remap_recursive(vaddr, paddr, config, Frame::<T, A>::PT_LEVEL)?;
         T::flush(Some(vaddr));
         Ok(page_size)
     }
 
     /// Queries one mapping and returns the translated physical address, flags, and page size.
-    pub fn query(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, MappingFlags, PageSize)> {
+    pub fn query(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, PteConfigOf<T>, PageSize)> {
         let (paddr, pte, level) = self.translate_with_level(vaddr)?;
-        let config = pte.to_config(level > 1);
         Ok((
             paddr,
-            MappingFlags::from(config),
+            pte.config(level > 1),
             Frame::<T, A>::page_size_from_level(level)?,
         ))
     }
 
     /// 映射虚拟地址范围到物理地址范围
-    pub fn map(&mut self, config: &MapConfig) -> PagingResult {
+    pub fn map(&mut self, config: &MapConfig<PteConfigOf<T>>) -> PagingResult {
         // 验证输入参数
         self.validate_map_config(config)?;
 
@@ -511,19 +510,17 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             start_vaddr,
             end_vaddr,
         };
-        PageTableWalker::new(self, config).filter(|p| p.pte.to_config(false).valid)
+        PageTableWalker::new(self, config).filter(|p| p.pte.present())
     }
 
     /// 遍历所有有效的最终映射页表项（过滤掉无效项和中间级别的页表指针）
     pub fn walk_valid(&self) -> impl Iterator<Item = crate::walk::PteInfo<T::P>> + '_ {
-        self.walk(0.into(), usize::MAX.into()).filter(|p| {
-            let config = p.pte.to_config(false);
-            config.valid && p.is_final_mapping
-        })
+        self.walk(0.into(), usize::MAX.into())
+            .filter(|p| p.pte.present() && p.is_final_mapping)
     }
 
     /// 验证映射配置的有效性
-    fn validate_map_config(&self, config: &MapConfig) -> PagingResult {
+    fn validate_map_config(&self, config: &MapConfig<PteConfigOf<T>>) -> PagingResult {
         if config.size == 0 {
             return Err(PagingError::invalid_size("Size cannot be zero"));
         }
@@ -665,22 +662,23 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             .root
             .translate_recursive_with_level(vaddr, Frame::<T, A>::PT_LEVEL)?;
 
-        let pte_config = pte.to_config(level > 1);
+        let is_huge = pte.huge(level > 1);
+        let pte_paddr = pte.paddr(level > 1);
 
         // 根据页表项类型计算正确的偏移
-        let (phys_addr, _) = if pte_config.huge {
+        let (phys_addr, _) = if is_huge {
             // 大页映射：需要使用实际级别的大小来计算偏移
             let level_size = Frame::<T, A>::level_size(level);
             let offset_in_page = vaddr.as_usize() % level_size;
             (
-                PhysAddr::from_usize(pte_config.paddr.as_usize() + offset_in_page),
+                PhysAddr::from_usize(pte_paddr.as_usize() + offset_in_page),
                 level_size,
             )
         } else {
             // 普通页面映射：使用页面大小
             let offset_in_page = vaddr.as_usize() % T::PAGE_SIZE;
             (
-                PhysAddr::from_usize(pte_config.paddr.as_usize() + offset_in_page),
+                PhysAddr::from_usize(pte_paddr.as_usize() + offset_in_page),
                 T::PAGE_SIZE,
             )
         };

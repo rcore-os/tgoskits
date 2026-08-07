@@ -160,33 +160,6 @@ impl<H: crate::host::PagingHandler + 'static> NestedPageTableOps for NestedPageT
     }
 }
 
-/// Convert generic page-table permissions to the subset shared by EPT and NPT.
-///
-/// The architecture-specific entry modules retain ownership of memory-type and
-/// reserved-bit encoding; this conversion deliberately carries only the common
-/// access semantics.
-pub(super) fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if config.read {
-        flags |= MappingFlags::READ;
-    }
-    if config.writable {
-        flags |= MappingFlags::WRITE;
-    }
-    if config.executable {
-        flags |= MappingFlags::EXECUTE;
-    }
-    if config.lower {
-        flags |= MappingFlags::USER;
-    }
-    match config.mem_attr {
-        ptg::MemAttributes::Device => flags |= MappingFlags::DEVICE,
-        ptg::MemAttributes::Uncached => flags |= MappingFlags::UNCACHED,
-        _ => {}
-    }
-    flags
-}
-
 #[cfg(target_os = "none")]
 /// Invalidate host translations after page-table-generic changes an entry.
 ///

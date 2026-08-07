@@ -13,41 +13,58 @@ const PRESENT: usize = 1 << 0;
 const HUGE: usize = 1 << 1;
 const PHYS_ADDR_MASK: usize = 0x000f_ffff_ffff_f000;
 
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct MappingFlags: usize {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TestPte(usize);
 
 impl PageTableEntry for TestPte {
-    fn from_config(config: PteConfig) -> Self {
-        if !config.valid {
-            return Self(0);
-        }
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
         Self(
-            (config.paddr.as_usize() & PHYS_ADDR_MASK)
-                | PRESENT
-                | if config.huge { HUGE } else { 0 },
+            (paddr.as_usize() & PHYS_ADDR_MASK)
+                | if config.is_empty() { 0 } else { PRESENT }
+                | if is_huge { HUGE } else { 0 },
         )
     }
 
-    fn to_config(&self, is_dir: bool) -> PteConfig {
-        let valid = self.valid();
-        let huge = is_dir && self.0 & HUGE != 0;
-        PteConfig {
-            paddr: PhysAddr::from_usize(self.0 & PHYS_ADDR_MASK),
-            valid,
-            read: valid,
-            writable: valid,
-            is_dir: is_dir && valid && !huge,
-            huge,
-            ..Default::default()
+    fn new_table(paddr: PhysAddr) -> Self {
+        Self((paddr.as_usize() & PHYS_ADDR_MASK) | PRESENT)
+    }
+
+    fn paddr(&self, _is_dir: bool) -> PhysAddr {
+        PhysAddr::from_usize(self.0 & PHYS_ADDR_MASK)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        if self.present() {
+            MappingFlags::READ | MappingFlags::WRITE
+        } else {
+            MappingFlags::empty()
         }
     }
 
-    fn valid(&self) -> bool {
+    fn present(&self) -> bool {
         self.0 & PRESENT != 0
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && self.0 & HUGE != 0
     }
 
     fn unused(&self) -> bool {
         self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 

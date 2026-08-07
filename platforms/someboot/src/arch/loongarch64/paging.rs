@@ -7,7 +7,7 @@ use core::arch::naked_asm;
 
 use loongArch64::register::{MemoryAccessType, crmd, pgdh, pgdl, pwch::*, pwcl::*, stlbps};
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
+use page_table_generic::{MapConfig, TableMeta, VirtAddr};
 
 // 导入 tock-registers 风格的页表项
 pub use super::pte::Entry;
@@ -15,7 +15,7 @@ use crate::{
     arch::addrspace::to_phys,
     console::print_mapping,
     consts::PAGE_SIZE,
-    mem::{__kimage_va, __va, MB, PageTableInfo},
+    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig},
     smp::PerCpuMeta,
 };
 
@@ -142,7 +142,6 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     let mut table = crate::mem::mmu::new_boot_table();
 
     let pte = PteConfig {
-        valid: true,
         read: true,
         writable: true,
         executable: true,

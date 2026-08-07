@@ -1,7 +1,9 @@
 //! LoongArch64 page-table entry format.
 
 use ax_memory_addr::PhysAddr;
-use page_table_generic::{MemAttributes, PageTableEntry, PteConfig};
+use page_table_generic::PageTableEntry;
+
+use crate::paging::MappingFlags;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
@@ -37,38 +39,39 @@ impl La64Pte {
         PhysAddr::from_usize((self.0 & Self::PHYS_ADDR_MASK) as usize)
     }
 
-    fn leaf_flags(config: PteConfig) -> LaPteFlags {
-        if !config.valid {
-            return if config.huge {
+    fn leaf_flags(config: MappingFlags, is_huge: bool) -> LaPteFlags {
+        if config.is_empty() {
+            return if is_huge {
                 LaPteFlags::GH
             } else {
                 LaPteFlags::empty()
             };
         }
         let mut flags = LaPteFlags::V | LaPteFlags::P;
-        if !config.read {
+        if !config.contains(MappingFlags::READ) {
             flags |= LaPteFlags::NR;
         }
-        if config.writable {
+        if config.contains(MappingFlags::WRITE) {
             flags |= LaPteFlags::W | LaPteFlags::D;
         }
-        if !config.executable {
+        if !config.contains(MappingFlags::EXECUTE) {
             flags |= LaPteFlags::NX;
         }
-        if config.lower {
+        if config.contains(MappingFlags::USER) {
             flags |= LaPteFlags::PLVL | LaPteFlags::PLVH;
         }
-        match config.mem_attr {
-            MemAttributes::Device => {}
-            MemAttributes::Uncached => flags |= LaPteFlags::MATH,
-            _ => flags |= LaPteFlags::MATL,
+        if config.contains(MappingFlags::UNCACHED) {
+            flags |= LaPteFlags::MATH;
+        } else if !config.contains(MappingFlags::DEVICE) {
+            flags |= LaPteFlags::MATL;
         }
-        if config.huge {
+        let global = !config.contains(MappingFlags::USER);
+        if is_huge {
             flags |= LaPteFlags::GH;
-            if config.global {
+            if global {
                 flags |= LaPteFlags::G;
             }
-        } else if config.global {
+        } else if global {
             flags |= LaPteFlags::GH;
         }
         flags
@@ -80,60 +83,69 @@ impl La64Pte {
 }
 
 impl PageTableEntry for La64Pte {
-    fn from_config(config: PteConfig) -> Self {
-        if !config.valid && config.paddr.as_usize() == 0 {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() && paddr.as_usize() == 0 {
             return Self(0);
         }
-        let paddr = config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK;
-        if config.is_dir && !config.huge {
-            return Self(paddr);
-        }
-        Self(paddr | Self::leaf_flags(config).bits())
+        let paddr = paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK;
+        Self(paddr | Self::leaf_flags(config, is_huge).bits())
     }
 
-    fn to_config(&self, is_dir: bool) -> PteConfig {
+    fn new_table(paddr: PhysAddr) -> Self {
+        Self(paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK)
+    }
+
+    fn paddr(&self, is_dir: bool) -> PhysAddr {
         let flags = self.flags();
-        let table = is_dir && self.is_table();
-        let valid = flags.contains(LaPteFlags::V) || table;
         let huge = is_dir && flags.contains(LaPteFlags::GH);
-        let paddr = if huge {
-            PhysAddr::from_usize(self.paddr().as_usize() & !(LaPteFlags::G.bits() as usize))
+        if huge {
+            PhysAddr::from_usize(
+                La64Pte::paddr(*self).as_usize() & !(LaPteFlags::G.bits() as usize),
+            )
         } else {
-            self.paddr()
-        };
-        PteConfig {
-            paddr,
-            valid,
-            read: valid && !flags.contains(LaPteFlags::NR),
-            writable: flags.contains(LaPteFlags::W),
-            executable: valid && !flags.contains(LaPteFlags::NX),
-            lower: flags.contains(LaPteFlags::PLVL | LaPteFlags::PLVH),
-            dirty: flags.contains(LaPteFlags::D),
-            global: if huge {
-                flags.contains(LaPteFlags::G)
-            } else {
-                flags.contains(LaPteFlags::GH)
-            },
-            is_dir: table,
-            huge,
-            mem_attr: if !flags.contains(LaPteFlags::MATL) {
-                if flags.contains(LaPteFlags::MATH) {
-                    MemAttributes::Uncached
-                } else {
-                    MemAttributes::Device
-                }
-            } else {
-                MemAttributes::Normal
-            },
+            La64Pte::paddr(*self)
         }
     }
 
-    fn valid(&self) -> bool {
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        let flags = self.flags();
+        if !flags.contains(LaPteFlags::V) {
+            return MappingFlags::empty();
+        }
+        let mut config = MappingFlags::empty();
+        config.set(MappingFlags::READ, !flags.contains(LaPteFlags::NR));
+        config.set(MappingFlags::WRITE, flags.contains(LaPteFlags::W));
+        config.set(MappingFlags::EXECUTE, !flags.contains(LaPteFlags::NX));
+        config.set(
+            MappingFlags::USER,
+            flags.contains(LaPteFlags::PLVL | LaPteFlags::PLVH),
+        );
+        if !flags.contains(LaPteFlags::MATL) {
+            config |= if flags.contains(LaPteFlags::MATH) {
+                MappingFlags::UNCACHED
+            } else {
+                MappingFlags::DEVICE
+            };
+        }
+        config
+    }
+
+    fn present(&self) -> bool {
         self.flags().contains(LaPteFlags::V) || self.is_table()
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && self.flags().contains(LaPteFlags::GH)
     }
 
     fn unused(&self) -> bool {
         self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -141,55 +153,49 @@ impl core::fmt::Debug for La64Pte {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("La64Pte")
             .field("raw", &self.0)
-            .field("config", &self.to_config(false))
+            .field("config", &self.config(false))
             .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use page_table_generic::{MappingFlags, PteConfig};
-
     use super::*;
 
     #[test]
     fn leaf_entries_follow_loongarch_flag_layout() {
-        let pte = La64Pte::from_config(PteConfig::page(
+        let pte = La64Pte::new_page(
             PhysAddr::from_usize(0x1234_5000),
             MappingFlags::READ | MappingFlags::WRITE,
             false,
-        ));
+        );
 
         assert!(pte.flags().contains(LaPteFlags::V | LaPteFlags::P));
         assert!(pte.flags().contains(LaPteFlags::GH));
-        assert!(pte.to_config(false).global);
+        assert!(!pte.config(false).contains(MappingFlags::USER));
 
         let missing_valid = La64Pte(pte.0 & !LaPteFlags::V.bits());
-        assert!(!missing_valid.to_config(false).valid);
-        assert!(!missing_valid.valid());
+        assert!(missing_valid.config(false).is_empty());
+        assert!(!missing_valid.present());
 
-        let non_present = La64Pte::from_config(PteConfig::page(
+        let non_present = La64Pte::new_page(
             PhysAddr::from_usize(0x2345_6000),
             MappingFlags::empty(),
             false,
-        ));
-        assert!(!non_present.to_config(false).valid);
+        );
+        assert!(non_present.config(false).is_empty());
         assert!(!non_present.unused());
         assert_eq!(
-            non_present.to_config(false).paddr,
+            PageTableEntry::paddr(&non_present, false),
             PhysAddr::from_usize(0x2345_6000)
         );
 
-        let huge = La64Pte::from_config(PteConfig::page(
-            PhysAddr::from_usize(0x4000_0000),
-            MappingFlags::READ,
-            true,
-        ));
+        let huge = La64Pte::new_page(PhysAddr::from_usize(0x4000_0000), MappingFlags::READ, true);
         assert!(huge.flags().contains(LaPteFlags::GH | LaPteFlags::G));
-        assert!(huge.to_config(true).huge);
-        assert!(huge.to_config(true).global);
+        assert!(huge.huge(true));
+        assert!(!huge.config(true).contains(MappingFlags::USER));
         assert_eq!(
-            huge.to_config(true).paddr,
+            PageTableEntry::paddr(&huge, true),
             PhysAddr::from_usize(0x4000_0000)
         );
     }

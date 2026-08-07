@@ -1,7 +1,9 @@
 //! RISC-V page-table entry format.
 
 use ax_memory_addr::PhysAddr;
-use page_table_generic::{MemAttributes, PageTableEntry, PteConfig};
+use page_table_generic::PageTableEntry;
+
+use crate::paging::MappingFlags;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
@@ -43,28 +45,28 @@ impl Rv64Pte {
         PhysAddr::from_usize(((self.0 & Self::PHYS_ADDR_MASK) << 2) as usize)
     }
 
-    fn leaf_flags(config: PteConfig) -> RvPteFlags {
+    fn leaf_flags(config: MappingFlags) -> RvPteFlags {
         let mut flags = RvPteFlags::A | RvPteFlags::D;
-        if config.valid {
+        if !config.is_empty() {
             flags |= RvPteFlags::V;
         }
-        if config.read || config.writable {
+        if config.intersects(MappingFlags::READ | MappingFlags::WRITE) {
             flags |= RvPteFlags::R;
         }
-        if config.writable {
+        if config.contains(MappingFlags::WRITE) {
             flags |= RvPteFlags::W;
         }
-        if config.executable {
+        if config.contains(MappingFlags::EXECUTE) {
             flags |= RvPteFlags::X;
         }
-        if config.lower {
+        if config.contains(MappingFlags::USER) {
             flags |= RvPteFlags::U;
         }
         #[cfg(feature = "xuantie-c9xx")]
         {
-            if matches!(config.mem_attr, MemAttributes::Device) {
+            if config.contains(MappingFlags::DEVICE) {
                 flags |= RvPteFlags::SH | RvPteFlags::SO;
-            } else if matches!(config.mem_attr, MemAttributes::Uncached) {
+            } else if config.contains(MappingFlags::UNCACHED) {
                 flags |= RvPteFlags::SH | RvPteFlags::B;
             } else {
                 flags |= RvPteFlags::SH | RvPteFlags::B | RvPteFlags::C;
@@ -75,44 +77,61 @@ impl Rv64Pte {
 }
 
 impl PageTableEntry for Rv64Pte {
-    fn from_config(config: PteConfig) -> Self {
-        if !config.valid && config.paddr.as_usize() == 0 {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, _is_huge: bool) -> Self {
+        if config.is_empty() && paddr.as_usize() == 0 {
             return Self(0);
         }
-        let paddr = (config.paddr.as_usize() as u64 >> 2) & Self::PHYS_ADDR_MASK;
-        let flags = if config.is_dir && !config.huge {
-            RvPteFlags::V
-        } else {
-            Self::leaf_flags(config)
-        };
+        let paddr = (paddr.as_usize() as u64 >> 2) & Self::PHYS_ADDR_MASK;
+        let flags = Self::leaf_flags(config);
         Self(paddr | flags.bits())
     }
 
-    fn to_config(&self, is_dir: bool) -> PteConfig {
-        let flags = self.flags();
-        let valid = flags.contains(RvPteFlags::V);
-        let huge = is_dir && flags.intersects(RvPteFlags::R | RvPteFlags::X);
-        PteConfig {
-            paddr: self.paddr(),
-            valid,
-            read: flags.contains(RvPteFlags::R),
-            writable: flags.contains(RvPteFlags::W),
-            executable: flags.contains(RvPteFlags::X),
-            lower: flags.contains(RvPteFlags::U),
-            dirty: flags.contains(RvPteFlags::D),
-            global: flags.contains(RvPteFlags::G),
-            is_dir: is_dir && valid && !huge,
-            huge,
-            mem_attr: MemAttributes::Normal,
-        }
+    fn new_table(paddr: PhysAddr) -> Self {
+        let paddr = (paddr.as_usize() as u64 >> 2) & Self::PHYS_ADDR_MASK;
+        Self(paddr | RvPteFlags::V.bits())
     }
 
-    fn valid(&self) -> bool {
+    fn paddr(&self, _is_dir: bool) -> PhysAddr {
+        Rv64Pte::paddr(*self)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        let flags = self.flags();
+        if !flags.contains(RvPteFlags::V) {
+            return MappingFlags::empty();
+        }
+        let mut config = MappingFlags::empty();
+        config.set(MappingFlags::READ, flags.contains(RvPteFlags::R));
+        config.set(MappingFlags::WRITE, flags.contains(RvPteFlags::W));
+        config.set(MappingFlags::EXECUTE, flags.contains(RvPteFlags::X));
+        config.set(MappingFlags::USER, flags.contains(RvPteFlags::U));
+        #[cfg(feature = "xuantie-c9xx")]
+        {
+            if flags.contains(RvPteFlags::SO) {
+                config |= MappingFlags::DEVICE;
+            } else if !flags.contains(RvPteFlags::C) {
+                config |= MappingFlags::UNCACHED;
+            }
+        }
+        config
+    }
+
+    fn present(&self) -> bool {
         self.flags().contains(RvPteFlags::V)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && self.flags().intersects(RvPteFlags::R | RvPteFlags::X)
     }
 
     fn unused(&self) -> bool {
         self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -120,7 +139,7 @@ impl core::fmt::Debug for Rv64Pte {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Rv64Pte")
             .field("raw", &self.0)
-            .field("config", &self.to_config(false))
+            .field("config", &self.config(false))
             .finish()
     }
 }

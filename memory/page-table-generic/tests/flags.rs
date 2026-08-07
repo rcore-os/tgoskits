@@ -200,7 +200,7 @@ fn print_pte_flags(pte: &PteImpl, test_name: &str) {
 }
 
 /// 带有flag验证的高级测试函数
-fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
+fn test_high_with_flags<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
     pte: PteConfig,
     alloc: A,
     test_vaddr: VirtAddr,

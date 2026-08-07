@@ -10,17 +10,25 @@ use mocks::*;
 struct AddressOnlyDirectoryPte(PteImpl);
 
 impl PageTableEntry for AddressOnlyDirectoryPte {
-    fn from_config(config: PteConfig) -> Self {
+    type PteConfig = PteConfig;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        Self(PteImpl::new_page(paddr, config, is_huge))
+    }
+
+    fn new_table(paddr: PhysAddr) -> Self {
         const LEAF_VALID_BIT: u64 = 1 << 63;
 
-        let mut pte = PteImpl::from_config(config);
-        if config.is_dir && !config.huge {
-            pte.0 &= !LEAF_VALID_BIT;
-        }
+        let mut pte = PteImpl::new_table(paddr);
+        pte.0 &= !LEAF_VALID_BIT;
         Self(pte)
     }
 
-    fn to_config(&self, is_dir: bool) -> PteConfig {
+    fn paddr(&self, is_dir: bool) -> PhysAddr {
+        self.0.paddr(is_dir)
+    }
+
+    fn config(&self, is_dir: bool) -> Self::PteConfig {
         let mut config = self.0.to_config(is_dir);
         if is_dir && !config.huge && config.paddr.as_usize() != 0 {
             config.valid = true;
@@ -29,12 +37,20 @@ impl PageTableEntry for AddressOnlyDirectoryPte {
         config
     }
 
-    fn valid(&self) -> bool {
-        self.0.valid() || self.0.to_config(false).paddr.as_usize() != 0
+    fn present(&self) -> bool {
+        self.0.present() || self.0.paddr(false).as_usize() != 0
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        self.0.huge(is_dir)
     }
 
     fn unused(&self) -> bool {
         self.0.unused()
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
     }
 }
 
@@ -281,7 +297,7 @@ fn unmap_preserves_address_only_sibling_directory() {
                 vaddr,
                 paddr,
                 PageSize::Size4K,
-                MappingFlags::READ | MappingFlags::WRITE,
+                (MappingFlags::READ | MappingFlags::WRITE).into(),
             )
             .unwrap();
     }
@@ -304,7 +320,7 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
     let unmapped_paddr = paddr + usize::from(PageSize::Size4K);
 
     page_table
-        .map_page(vaddr, paddr, PageSize::Size4K, MappingFlags::empty())
+        .map_page(vaddr, paddr, PageSize::Size4K, MappingFlags::empty().into())
         .unwrap();
 
     assert!(matches!(
@@ -316,7 +332,7 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
         .protect_region(
             vaddr,
             usize::from(PageSize::Size4K),
-            MappingFlags::READ | MappingFlags::USER,
+            (MappingFlags::READ | MappingFlags::USER).into(),
         )
         .unwrap();
 
@@ -330,7 +346,7 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
             unmapped_vaddr,
             unmapped_paddr,
             PageSize::Size4K,
-            MappingFlags::empty(),
+            MappingFlags::empty().into(),
         )
         .unwrap();
     assert!(matches!(
@@ -342,7 +358,7 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
             unmapped_vaddr,
             unmapped_paddr,
             PageSize::Size4K,
-            MappingFlags::READ | MappingFlags::USER,
+            (MappingFlags::READ | MappingFlags::USER).into(),
         )
         .unwrap();
 }

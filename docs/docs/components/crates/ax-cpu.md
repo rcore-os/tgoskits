@@ -85,7 +85,7 @@
 
 #### `PageFaultFlags`
 
-`PageFaultFlags` 只表达 CPU trap 报告的读、写、执行和用户态来源。它与 `page-table-generic::MappingFlags` 分离；地址空间层显式转换两者，避免把设备内存、uncached 等映射属性混入 fault 来源。
+`PageFaultFlags` 只表达 CPU trap 报告的读、写、执行和用户态来源。它与 `ax_cpu::paging::MappingFlags` 分离；地址空间层显式转换两者，避免把设备内存、uncached 等映射属性混入 fault 来源。
 
 ### 1.6 典型架构差异
 
@@ -156,8 +156,8 @@
 
 最常见的一条主线是：
 
-1. `page-table-generic` 定义通用权限、错误和页表执行器
-2. `ax-cpu::paging` 提供当前架构的 stage-1 PTE 与 TLB 语义
+1. `page-table-generic` 定义通用页表结构操作、错误和映射执行器，并将页表项配置视为调用方提供的不透明类型
+2. `ax-cpu::paging` 定义运行时映射权限，并提供当前架构的 stage-1 PTE 与 TLB 语义
 3. `ax-mm` / `axaddrspace` 组织地址空间
 4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
 
@@ -170,7 +170,7 @@
 | 依赖 | 作用 |
 | --- | --- |
 | `memory_addr` | 地址类型基础 |
-| `page-table-generic` | 通用页表 trait、权限、错误和映射执行器 |
+| `page-table-generic` | 通用页表 trait、结构操作、错误和映射执行器 |
 | `axbacktrace` | 回溯支持 |
 | `linkme` | trap handler 分布式注册 |
 | 各架构专用依赖 | `x86`、`x86_64`、`aarch64-cpu`、`riscv`、`loongArch64` 等 |

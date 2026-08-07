@@ -3,6 +3,25 @@
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use page_table_generic::TableMeta;
 
+bitflags::bitflags! {
+    /// Runtime stage-1 mapping permissions and memory attributes.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct MappingFlags: usize {
+        /// The memory is readable.
+        const READ = 1 << 0;
+        /// The memory is writable.
+        const WRITE = 1 << 1;
+        /// The memory is executable.
+        const EXECUTE = 1 << 2;
+        /// The memory is accessible from a lower-privileged context.
+        const USER = 1 << 3;
+        /// The memory is device memory.
+        const DEVICE = 1 << 4;
+        /// The memory is uncached.
+        const UNCACHED = 1 << 5;
+    }
+}
+
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         use crate::x86_64::paging::X64Pte as ArchPte;

@@ -28,7 +28,7 @@ fn test_pte() {
     assert_eq!(want.to_config(false).paddr, addr);
 }
 
-fn test_high<T: TableMeta, A: FrameAllocator>(
+fn test_high<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
     pte: PteConfig,
     alloc: A,
     test_vaddr: VirtAddr,
@@ -224,7 +224,7 @@ fn test_new_l5() {
     );
 }
 
-fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_huge<T: TableMeta<P = PteImpl>, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     pg.map(&MapConfig {
@@ -306,7 +306,7 @@ fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     assert!(has_full_coverage, "映射应该覆盖到地址{:#x}", end_vaddr);
 }
 
-fn test_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_huge_not_align<T: TableMeta<P = PteImpl>, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     let addr = 2 * MB - 0x1000usize;
@@ -409,7 +409,10 @@ fn test_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A
     );
 }
 
-fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_high_huge_not_align<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
+    pte: PteConfig,
+    alloc: A,
+) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     // 注意:在48位虚拟地址空间中,0xffffffff80000000 会被截断为 0x0000ffff80000000
@@ -668,7 +671,7 @@ fn test_huge_not_align_l4() {
     test_huge_not_align::<T4kL4, Fram4k>(PteImpl::user_mode_config(), Fram4k);
 }
 
-fn test_huge_big<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_huge_big<T: TableMeta<P = PteImpl>, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     pg.map(&MapConfig {
@@ -801,7 +804,7 @@ fn test_v_p_not_align_l3() {
     test_v_p_not_align::<T4kL3, Fram4k>(PteImpl::user_mode_config(), Fram4k);
 }
 
-fn test_v_p_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_v_p_not_align<T: TableMeta<P = PteImpl>, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     let _ = env_logger::builder()
         .is_test(true)
         .filter_level(log::LevelFilter::Trace)
@@ -1134,7 +1137,7 @@ fn map_region_rejects_unaligned_range_before_mapping() {
             unaligned_start,
             |_| PhysAddr::from_usize(0x40_0000),
             0x1000,
-            MappingFlags::READ,
+            MappingFlags::READ.into(),
             false,
         ),
         Err(PagingError::AlignmentError { .. })
@@ -1147,7 +1150,7 @@ fn map_region_rejects_unaligned_range_before_mapping() {
             aligned_start,
             |_| PhysAddr::from_usize(0x50_0000),
             0x1001,
-            MappingFlags::READ,
+            MappingFlags::READ.into(),
             false,
         ),
         Err(PagingError::AlignmentError { .. })
@@ -1164,7 +1167,7 @@ fn map_page_rejects_page_size_missing_from_table_levels() {
             VirtAddr::from_usize(0x20_0000),
             PhysAddr::from_usize(0x40_0000),
             PageSize::Size1M,
-            MappingFlags::READ,
+            MappingFlags::READ.into(),
         ),
         Err(PagingError::InvalidSize { .. })
     ));

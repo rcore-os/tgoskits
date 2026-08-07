@@ -2,10 +2,11 @@
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_cpu::paging::ArchPagingMeta;
+#[doc(no_inline)]
+pub use ax_cpu::paging::MappingFlags;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
 use page_table_generic::FrameAllocator;
-#[doc(no_inline)]
-pub use page_table_generic::{MappingFlags, PageSize, PagingError, PagingResult};
+pub use page_table_generic::{PageSize, PagingError, PagingResult};
 
 use crate::mem::{phys_to_virt, virt_to_phys};
 

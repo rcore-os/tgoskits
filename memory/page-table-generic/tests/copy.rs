@@ -38,7 +38,7 @@ fn map_page<A: FrameAllocator>(page_table: &mut PageTable<T4kL4, A>, vaddr: usiz
             VirtAddr::from_usize(vaddr),
             PhysAddr::from_usize(paddr),
             PageSize::Size4K,
-            MappingFlags::READ | MappingFlags::WRITE,
+            (MappingFlags::READ | MappingFlags::WRITE).into(),
         )
         .unwrap();
 }
@@ -144,7 +144,7 @@ fn walker_reports_canonical_high_addresses() {
             VirtAddr::from_usize(KERNEL_PAGE),
             PhysAddr::from_usize(0x40_0000),
             PageSize::Size4K,
-            MappingFlags::READ,
+            MappingFlags::READ.into(),
         )
         .unwrap();
 

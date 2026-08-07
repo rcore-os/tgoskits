@@ -2,14 +2,17 @@ use core::arch::asm;
 
 use aarch64_cpu::asm::barrier::{self, dsb, isb};
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, MemAttributes, PteConfig, VirtAddr};
+use page_table_generic::{MapConfig, VirtAddr};
 
 #[cfg(not(feature = "hv"))]
 use crate::arch::elx::set_user_table;
 use crate::{
     arch::elx::{flush_tlb, set_kernal_table, setup_sctlr, setup_table_regs},
     console::print_mapping,
-    mem::{__kimage_va, __va, MB, PageTableInfo, cpu_area_phys_to_virt, page_size},
+    mem::{
+        __kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt,
+        page_size,
+    },
     smp::PerCpuMeta,
 };
 
@@ -82,7 +85,6 @@ fn setup_page_table() -> anyhow::Result<()> {
     let mut table = crate::mem::mmu::new_boot_table();
 
     let pte = PteConfig {
-        valid: true,
         read: true,
         writable: true,
         executable: true,
@@ -136,7 +138,6 @@ fn setup_page_table() -> anyhow::Result<()> {
             paddr: cpu_area_region.start.into(),
             size: cpu_area_region.len(),
             pte: PteConfig {
-                valid: true,
                 read: true,
                 writable: true,
                 executable: true,
@@ -153,7 +154,6 @@ fn setup_page_table() -> anyhow::Result<()> {
         let start = debug_base.align_down(page_size());
         let size = page_size();
         let pte = PteConfig {
-            valid: true,
             read: true,
             writable: true,
             executable: false,

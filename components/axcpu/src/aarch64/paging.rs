@@ -1,7 +1,9 @@
 //! AArch64 page-table descriptor format.
 
 use ax_memory_addr::PhysAddr;
-use page_table_generic::{MemAttributes, PageTableEntry, PteConfig};
+use page_table_generic::PageTableEntry;
+
+use crate::paging::MappingFlags;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug)]
@@ -13,7 +15,6 @@ bitflags::bitflags! {
         const INNER = 1 << 8;
         const SHAREABLE = 1 << 9;
         const AF = 1 << 10;
-        const NG = 1 << 11;
         const PXN = 1 << 53;
         const UXN = 1 << 54;
     }
@@ -61,36 +62,38 @@ impl A64Pte {
         A64DescriptorAttr::from_bits_truncate(self.0)
     }
 
-    fn leaf_attr(config: PteConfig) -> A64DescriptorAttr {
-        let mem_attr = match config.mem_attr {
-            MemAttributes::Device => A64MemAttr::Device,
-            MemAttributes::Uncached => A64MemAttr::NormalNonCacheable,
-            _ => A64MemAttr::Normal,
+    fn leaf_attr(config: MappingFlags) -> A64DescriptorAttr {
+        let mem_attr = if config.contains(MappingFlags::DEVICE) {
+            A64MemAttr::Device
+        } else if config.contains(MappingFlags::UNCACHED) {
+            A64MemAttr::NormalNonCacheable
+        } else {
+            A64MemAttr::Normal
         };
         let mut attr = A64DescriptorAttr::from_mem_attr(mem_attr) | A64DescriptorAttr::AF;
-        if config.read {
+        if config.contains(MappingFlags::READ) {
             attr |= A64DescriptorAttr::VALID;
         }
-        if !config.writable {
+        if !config.contains(MappingFlags::WRITE) {
             attr |= A64DescriptorAttr::AP_RO;
         }
         #[cfg(not(feature = "arm-el2"))]
         {
-            if config.lower {
+            if config.contains(MappingFlags::USER) {
                 attr |= A64DescriptorAttr::AP_EL0 | A64DescriptorAttr::PXN;
-                if !config.executable {
+                if !config.contains(MappingFlags::EXECUTE) {
                     attr |= A64DescriptorAttr::UXN;
                 }
             } else {
                 attr |= A64DescriptorAttr::UXN;
-                if !config.executable {
+                if !config.contains(MappingFlags::EXECUTE) {
                     attr |= A64DescriptorAttr::PXN;
                 }
             }
         }
         #[cfg(feature = "arm-el2")]
         {
-            if !config.executable {
+            if !config.contains(MappingFlags::EXECUTE) {
                 attr |= A64DescriptorAttr::UXN;
             }
         }
@@ -99,72 +102,86 @@ impl A64Pte {
 }
 
 impl PageTableEntry for A64Pte {
-    fn from_config(config: PteConfig) -> Self {
-        if !config.valid && config.paddr.as_usize() == 0 {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() && paddr.as_usize() == 0 {
             return Self(0);
         }
-        if config.is_dir && !config.huge {
-            let attr = A64DescriptorAttr::NON_BLOCK | A64DescriptorAttr::VALID;
-            return Self((config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits());
-        }
-
-        if !config.valid {
+        if config.is_empty() {
             let mut attr = A64DescriptorAttr::AF;
-            if !config.huge {
+            if !is_huge {
                 attr |= A64DescriptorAttr::NON_BLOCK;
             }
-            return Self((config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits());
+            return Self((paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits());
         }
 
         let mut attr = Self::leaf_attr(config);
-        if !config.huge {
+        if !is_huge {
             attr |= A64DescriptorAttr::NON_BLOCK;
         }
-        Self((config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits())
+        Self((paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits())
     }
 
-    fn to_config(&self, is_dir: bool) -> PteConfig {
+    fn new_table(paddr: PhysAddr) -> Self {
+        let attr = A64DescriptorAttr::NON_BLOCK | A64DescriptorAttr::VALID;
+        Self((paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK) | attr.bits())
+    }
+
+    fn paddr(&self, _is_dir: bool) -> PhysAddr {
+        PhysAddr::from_usize((self.0 & Self::PHYS_ADDR_MASK) as usize)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
         let attr = self.attr();
-        let valid = attr.contains(A64DescriptorAttr::VALID);
-        let huge = is_dir && !attr.contains(A64DescriptorAttr::NON_BLOCK);
-        let mut config = PteConfig {
-            paddr: PhysAddr::from_usize((self.0 & Self::PHYS_ADDR_MASK) as usize),
-            valid,
-            read: valid,
-            writable: !attr.contains(A64DescriptorAttr::AP_RO),
-            dirty: true,
-            global: !attr.contains(A64DescriptorAttr::NG),
-            is_dir: is_dir && valid && !huge,
-            huge,
-            mem_attr: match attr.mem_attr() {
-                Some(A64MemAttr::Device) => MemAttributes::Device,
-                Some(A64MemAttr::NormalNonCacheable) => MemAttributes::Uncached,
-                _ => MemAttributes::Normal,
-            },
-            ..Default::default()
-        };
+        if !attr.contains(A64DescriptorAttr::VALID) {
+            return MappingFlags::empty();
+        }
+        let mut config = MappingFlags::READ;
+        config.set(
+            MappingFlags::WRITE,
+            !attr.contains(A64DescriptorAttr::AP_RO),
+        );
+        match attr.mem_attr() {
+            Some(A64MemAttr::Device) => config |= MappingFlags::DEVICE,
+            Some(A64MemAttr::NormalNonCacheable) => config |= MappingFlags::UNCACHED,
+            _ => {}
+        }
         #[cfg(not(feature = "arm-el2"))]
         {
-            config.lower = attr.contains(A64DescriptorAttr::AP_EL0);
-            config.executable = if config.lower {
+            let lower = attr.contains(A64DescriptorAttr::AP_EL0);
+            config.set(MappingFlags::USER, lower);
+            let executable = if lower {
                 !attr.contains(A64DescriptorAttr::UXN)
             } else {
                 !attr.contains(A64DescriptorAttr::PXN)
             };
+            config.set(MappingFlags::EXECUTE, executable);
         }
         #[cfg(feature = "arm-el2")]
         {
-            config.executable = !attr.contains(A64DescriptorAttr::UXN);
+            config.set(
+                MappingFlags::EXECUTE,
+                !attr.contains(A64DescriptorAttr::UXN),
+            );
         }
         config
     }
 
-    fn valid(&self) -> bool {
+    fn present(&self) -> bool {
         self.attr().contains(A64DescriptorAttr::VALID)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && !self.attr().contains(A64DescriptorAttr::NON_BLOCK)
     }
 
     fn unused(&self) -> bool {
         self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -172,7 +189,7 @@ impl core::fmt::Debug for A64Pte {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("A64Pte")
             .field("raw", &self.0)
-            .field("config", &self.to_config(false))
+            .field("config", &self.config(false))
             .finish()
     }
 }

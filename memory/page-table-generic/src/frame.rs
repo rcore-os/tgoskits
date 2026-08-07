@@ -1,6 +1,6 @@
 use crate::{
-    FrameAllocator, MappingFlags, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr,
-    PteConfig, TableMeta, VirtAddr,
+    FrameAllocator, PageSize, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf,
+    TableMeta, VirtAddr,
 };
 
 /// 页表帧，代表一个物理页面上的页表
@@ -91,8 +91,7 @@ where
 
     /// 从PTE创建子Frame（用于遍历子页表）
     pub fn from_pte(pte: &T::P, level: usize, allocator: A) -> Self {
-        let config = pte.to_config(level > 1);
-        Self::from_paddr(config.paddr, allocator)
+        Self::from_paddr(pte.paddr(level > 1), allocator)
     }
 
     /// 获取页表项的可变切片
@@ -187,7 +186,7 @@ where
     pub fn protect_recursive(
         &mut self,
         vaddr: VirtAddr,
-        flags: MappingFlags,
+        config: PteConfigOf<T>,
         level: usize,
     ) -> PagingResult<PageSize> {
         let index = Self::virt_to_index(vaddr, level);
@@ -195,43 +194,44 @@ where
         if entry.unused() {
             return Err(PagingError::not_mapped());
         }
-        let config = entry.to_config(level > 1);
-        if config.huge || level == 1 {
-            self.as_slice_mut()[index] =
-                T::P::from_config(PteConfig::page(config.paddr, flags, config.huge));
+        let is_dir = level > 1;
+        let is_huge = entry.huge(is_dir);
+        if is_huge || level == 1 {
+            self.as_slice_mut()[index] = T::P::new_page(entry.paddr(is_dir), config, is_huge);
             return Self::page_size_from_level(level);
         }
-        if !config.valid {
+        if !entry.present() {
             return Err(PagingError::not_mapped());
         }
 
-        let mut child = Self::from_paddr(config.paddr, self.allocator.clone());
-        child.protect_recursive(vaddr, flags, level - 1)
+        let mut child = Self::from_paddr(entry.paddr(is_dir), self.allocator.clone());
+        child.protect_recursive(vaddr, config, level - 1)
     }
 
     pub fn remap_recursive(
         &mut self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
-        flags: MappingFlags,
+        config: PteConfigOf<T>,
         level: usize,
     ) -> PagingResult<PageSize> {
         let index = Self::virt_to_index(vaddr, level);
-        let config = self.as_slice()[index].to_config(level > 1);
-        if config.huge || level == 1 {
+        let entry = self.as_slice()[index];
+        let is_dir = level > 1;
+        let is_huge = entry.huge(is_dir);
+        if is_huge || level == 1 {
             let page_size = Self::page_size_from_level(level)?;
             let aligned_paddr =
                 PhysAddr::from_usize(paddr.as_usize() & !(usize::from(page_size) - 1));
-            self.as_slice_mut()[index] =
-                T::P::from_config(PteConfig::page(aligned_paddr, flags, config.huge));
+            self.as_slice_mut()[index] = T::P::new_page(aligned_paddr, config, is_huge);
             return Ok(page_size);
         }
-        if !config.valid {
+        if !entry.present() {
             return Err(PagingError::not_mapped());
         }
 
-        let mut child = Self::from_paddr(config.paddr, self.allocator.clone());
-        child.remap_recursive(vaddr, paddr, flags, level - 1)
+        let mut child = Self::from_paddr(entry.paddr(is_dir), self.allocator.clone());
+        child.remap_recursive(vaddr, paddr, config, level - 1)
     }
 
     /// 重建完整的虚拟地址
@@ -281,8 +281,12 @@ where
             let entry_info = {
                 let entries = self.as_slice();
                 if i < entries.len() {
-                    let config = entries[i].to_config(level > 1);
-                    (config.valid, config.huge, config.paddr)
+                    let entry = entries[i];
+                    (
+                        entry.present(),
+                        entry.huge(level > 1),
+                        entry.paddr(level > 1),
+                    )
                 } else {
                     (false, false, crate::PhysAddr::from_usize(0))
                 }
@@ -305,11 +309,7 @@ where
 
                 // 子页表帧已释放，清除PTE
                 let entries_mut = self.as_slice_mut();
-                let invalid_config = PteConfig {
-                    valid: false,
-                    ..Default::default()
-                };
-                entries_mut[i] = T::P::from_config(invalid_config);
+                entries_mut[i].clear();
             }
         }
     }
@@ -350,13 +350,12 @@ where
         let pte = entries[index];
 
         // 检查页表项是否有效
-        let config = pte.to_config(level > 1);
-        if !config.valid {
+        if !pte.present() {
             return Err(PagingError::not_mapped());
         }
 
         // 如果是大页映射或叶子级别，直接返回页表项及其级别
-        if config.huge || level == 1 {
+        if pte.huge(level > 1) || level == 1 {
             return Ok((pte, level));
         }
 
@@ -389,20 +388,14 @@ where
 
         let entries = self.as_slice();
         let entry = &entries[index];
-        let config = entry.to_config(level > 1);
-
-        if config.valid && !config.huge {
+        if entry.present() && !entry.huge(true) {
             // 递归释放子帧（子帧的级别是 level - 1）
             let mut child_frame = Frame::<T, A>::from_pte(entry, level, self.allocator.clone());
             child_frame.deallocate_recursive(level - 1);
 
             // 将当前PTE设为invalid
             let entries_mut = self.as_slice_mut();
-            let invalid_config = PteConfig {
-                valid: false,
-                ..Default::default()
-            };
-            entries_mut[index] = T::P::from_config(invalid_config);
+            entries_mut[index].clear();
 
             true
         } else {
@@ -426,25 +419,22 @@ where
         }
 
         let source_entry = source.as_slice()[index];
-        let source_config = source_entry.to_config(level > 1);
-        if !source_config.valid {
+        if !source_entry.present() {
             return Ok(false);
         }
-        if level == 1 || source_config.huge {
+        if level == 1 || source_entry.huge(true) {
             self.as_slice_mut()[index] = source_entry;
             return Ok(true);
         }
 
-        let source_child = Self::from_paddr(source_config.paddr, source.allocator.clone());
+        let source_child = Self::from_paddr(source_entry.paddr(true), source.allocator.clone());
         let mut target_child = Self::new(self.allocator.clone())?;
         if let Err(err) = target_child.clone_children_from(&source_child, level - 1) {
             target_child.deallocate_recursive(level - 1);
             return Err(err);
         }
 
-        let mut target_config = source_config;
-        target_config.paddr = target_child.paddr;
-        self.as_slice_mut()[index] = T::P::from_config(target_config);
+        self.as_slice_mut()[index] = T::P::new_table(target_child.paddr);
         Ok(true)
     }
 

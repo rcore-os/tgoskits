@@ -63,7 +63,7 @@ impl<H: PagingHandler + 'static> ptg::FrameAllocator for GenericFrameAllocator<H
 pub(crate) struct GenericNestedPageTable<M, P, H>
 where
     M: ptg::TableMeta<P = P>,
-    P: ptg::PageTableEntry,
+    P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     inner: ptg::PageTable<M, GenericFrameAllocator<H>>,
@@ -72,7 +72,7 @@ where
 impl<M, P, H> GenericNestedPageTable<M, P, H>
 where
     M: ptg::TableMeta<P = P>,
-    P: ptg::PageTableEntry,
+    P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     pub(crate) fn try_new() -> ptg::PagingResult<Self> {
@@ -96,7 +96,7 @@ where
             vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
             paddr,
             size: size.into(),
-            pte: flags_to_config(flags),
+            pte: flags,
             allow_huge: size.is_huge(),
             flush: true,
         })
@@ -115,7 +115,7 @@ where
             vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
             paddr,
             size,
-            pte: flags_to_config(flags),
+            pte: flags,
             allow_huge,
             flush: true,
         })
@@ -176,11 +176,11 @@ where
         let (paddr, pte, level) = self
             .inner
             .translate_with_level(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
-        let config = pte.to_config(level > 1);
+        let flags = pte.config(level > 1);
         Ok((
             paddr,
-            config_to_flags(config),
-            page_size_for_level::<M, GenericFrameAllocator<H>>(level, config.huge),
+            flags,
+            page_size_for_level::<M, GenericFrameAllocator<H>>(level, pte.huge(level > 1)),
         ))
     }
 }
@@ -189,6 +189,8 @@ pub(crate) enum LeveledPageTable<M3, M4, H, const SUPPORT_L3: bool>
 where
     M3: ptg::TableMeta,
     M4: ptg::TableMeta,
+    M3::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     L3(GenericNestedPageTable<M3, M3::P, H>),
@@ -199,6 +201,8 @@ impl<M3, M4, H, const SUPPORT_L3: bool> LeveledPageTable<M3, M4, H, SUPPORT_L3>
 where
     M3: ptg::TableMeta,
     M4: ptg::TableMeta,
+    M3::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     pub(crate) fn new(level: usize) -> AxVmResult<Self> {
@@ -323,6 +327,8 @@ impl<M3, M4, H, const SUPPORT_L3: bool> NestedPageTableOps
 where
     M3: ptg::TableMeta,
     M4: ptg::TableMeta,
+    M3::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     fn root_paddr(&self) -> PhysAddr {
@@ -395,46 +401,6 @@ where
     fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
         Ok(LeveledPageTable::query(self, vaddr)?)
     }
-}
-
-fn flags_to_config(flags: MappingFlags) -> ptg::PteConfig {
-    ptg::PteConfig {
-        valid: !flags.is_empty(),
-        read: flags.contains(MappingFlags::READ),
-        writable: flags.contains(MappingFlags::WRITE),
-        executable: flags.contains(MappingFlags::EXECUTE),
-        lower: flags.contains(MappingFlags::USER),
-        mem_attr: if flags.contains(MappingFlags::DEVICE) {
-            ptg::MemAttributes::Device
-        } else if flags.contains(MappingFlags::UNCACHED) {
-            ptg::MemAttributes::Uncached
-        } else {
-            ptg::MemAttributes::Normal
-        },
-        ..Default::default()
-    }
-}
-
-fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if config.read {
-        flags |= MappingFlags::READ;
-    }
-    if config.writable {
-        flags |= MappingFlags::WRITE;
-    }
-    if config.executable {
-        flags |= MappingFlags::EXECUTE;
-    }
-    if config.lower {
-        flags |= MappingFlags::USER;
-    }
-    match config.mem_attr {
-        ptg::MemAttributes::Device => flags |= MappingFlags::DEVICE,
-        ptg::MemAttributes::Uncached => flags |= MappingFlags::UNCACHED,
-        _ => {}
-    }
-    flags
 }
 
 fn page_size_for_level<M, A>(level: usize, huge: bool) -> PageSize

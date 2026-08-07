@@ -1,33 +1,33 @@
 use crate::{
-    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfig, TableMeta,
+    FrameAllocator, PageTableEntry, PagingError, PagingResult, PhysAddr, PteConfigOf, TableMeta,
     VirtAddr, frame::Frame,
 };
 
 /// 页表映射配置
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct MapConfig {
+pub struct MapConfig<C> {
     pub vaddr: VirtAddr,
     pub paddr: PhysAddr,
     pub size: usize,
     /// Page Table Entry 配置模板
     ///
     /// 所有页表项将使用此配置创建（除了物理地址位）
-    pub pte: PteConfig,
+    pub pte: C,
     pub allow_huge: bool,
     pub flush: bool,
 }
 
 /// 内部映射递归配置
 #[derive(Clone, Copy)]
-pub struct MapRecursiveConfig {
+pub struct MapRecursiveConfig<C> {
     pub start_vaddr: VirtAddr,
     pub start_paddr: PhysAddr,
     pub end_vaddr: VirtAddr,
     pub level: usize,
     pub allow_huge: bool,
     pub flush: bool,
-    pub pte_template: PteConfig,
+    pub pte_template: C,
 }
 
 /// 取消映射配置
@@ -47,7 +47,7 @@ pub struct UnmapRecursiveConfig {
     pub flush: bool,
 }
 
-impl core::fmt::Debug for MapConfig {
+impl<C> core::fmt::Debug for MapConfig<C> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MapConfig")
             .field("vaddr", &format_args!("{:#x}", self.vaddr.as_usize()))
@@ -65,7 +65,10 @@ where
     A: FrameAllocator,
 {
     /// 递归映射的核心实现
-    pub fn map_range_recursive(&mut self, config: MapRecursiveConfig) -> PagingResult<()> {
+    pub fn map_range_recursive(
+        &mut self,
+        config: MapRecursiveConfig<PteConfigOf<T>>,
+    ) -> PagingResult<()> {
         let mut vaddr = config.start_vaddr;
         let mut paddr = config.start_paddr;
 
@@ -88,12 +91,7 @@ where
                 if !pte_ref.unused() {
                     return Err(PagingError::mapping_conflict(vaddr, paddr));
                 }
-                let mut pte_config = config.pte_template;
-                pte_config.paddr = paddr;
-                pte_config.huge = true;
-                pte_config.is_dir = true;
-
-                *pte_ref = T::P::from_config(pte_config);
+                *pte_ref = T::P::new_page(paddr, config.pte_template, true);
 
                 // 如果需要刷新TLB，立即执行
                 if config.flush {
@@ -114,12 +112,7 @@ where
                     return Err(PagingError::mapping_conflict(vaddr, paddr));
                 }
 
-                let mut pte_config = config.pte_template;
-                pte_config.paddr = paddr;
-                pte_config.huge = false;
-                pte_config.is_dir = false;
-
-                *pte_ref = T::P::from_config(pte_config);
+                *pte_ref = T::P::new_page(paddr, config.pte_template, false);
 
                 // 如果需要刷新TLB，立即执行
                 if config.flush {
@@ -134,18 +127,18 @@ where
             // 检查当前页表项状态并决定如何处理
             let allocator = self.allocator.clone();
             let current_pte = self.as_slice()[index];
-            let current_config = current_pte.to_config(true);
+            let current_present = current_pte.present();
 
-            let child_frame = if current_config.valid {
+            let child_frame = if current_present {
                 // 目录项（config.level > 1）可能有大页
-                if current_config.huge {
+                if current_pte.huge(true) {
                     return Err(PagingError::hierarchy_error(
                         "Cannot create page table under huge page",
                     ));
                 }
 
                 // 子页表已存在，获取它
-                Frame::from_paddr(current_config.paddr, allocator)
+                Frame::from_paddr(current_pte.paddr(true), allocator)
             } else {
                 // 需要创建新的子页表
                 let new_frame = Frame::<T, A>::new(allocator)?;
@@ -154,14 +147,7 @@ where
                 // 链接子页表 - 子页表指针必须是 NON_BLOCK（不是大页）
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
-                let pte_config = PteConfig {
-                    paddr: new_frame_paddr,
-                    valid: true,
-                    huge: false,
-                    is_dir: true,
-                    ..config.pte_template
-                };
-                *pte_ref = T::P::from_config(pte_config);
+                *pte_ref = T::P::new_table(new_frame_paddr);
 
                 new_frame
             };
@@ -212,14 +198,13 @@ where
 
             // An invalid leaf can still retain its physical address. Treat it
             // as occupied state and clear it instead of skipping it.
-            let pte_config = pte_ref.to_config(config.level > 1);
             if pte_ref.unused() {
                 vaddr += level_size.min(remaining_size);
                 continue;
             }
 
-            if !pte_config.valid {
-                *pte_ref = T::P::from_config(PteConfig::default());
+            if !pte_ref.present() {
+                pte_ref.clear();
                 if config.flush {
                     T::flush(Some(vaddr));
                 }
@@ -228,30 +213,23 @@ where
             }
 
             // 如果是叶子级别或者是大页，直接清除
-            if config.level == 1 || pte_config.huge {
+            let is_huge = pte_ref.huge(config.level > 1);
+            if config.level == 1 || is_huge {
                 // 清除页表项
-                let invalid_config = PteConfig {
-                    valid: false,
-                    ..Default::default()
-                };
-                *pte_ref = T::P::from_config(invalid_config);
+                pte_ref.clear();
 
                 // 刷新TLB
                 if config.flush {
                     T::flush(Some(vaddr));
                 }
 
-                vaddr += if pte_config.huge {
-                    level_size
-                } else {
-                    T::PAGE_SIZE
-                };
+                vaddr += if is_huge { level_size } else { T::PAGE_SIZE };
                 continue;
             }
 
             // 中间级别：递归处理子页表
             // 需要在修改pte_ref之前获取所需信息
-            let child_paddr = pte_config.paddr;
+            let child_paddr = pte_ref.paddr(true);
 
             // 计算当前页表条目对应的范围结束地址
             let current_entry_end = ((vaddr.as_usize() / level_size) + 1) * level_size;
@@ -274,11 +252,7 @@ where
                 if child_can_reclaim {
                     // 子页表完全为空，可以回收
                     // 清除指向子页表的PTE
-                    let invalid_config = PteConfig {
-                        valid: false,
-                        ..Default::default()
-                    };
-                    *pte_ref = T::P::from_config(invalid_config);
+                    pte_ref.clear();
                     allocator.dealloc_frame(child_paddr);
                 } else {
                     // 子页表仍有有效映射，不能回收
