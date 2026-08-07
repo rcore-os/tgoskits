@@ -50,7 +50,7 @@
 | `asm.rs` | 中断开关、页表根寄存器读写、TLB 操作、线程指针等汇编原语 |
 | `context.rs` | `TrapFrame`、`TaskContext`、可选 TLS/FP 状态 |
 | `init.rs` | 早期 CPU 初始化，如 trap 基址、MMU、EL 切换 |
-| `paging.rs` | 运行时 stage-1 PTE 位布局和架构页表元数据（启用 `paging` 时） |
+| `paging.rs` | 运行时 stage-1 PTE 位布局和架构页表元数据 |
 | `trap.rs` / `trap.S` | 异常/中断入口与 Rust 分发 |
 | `uspace.rs` | 用户态相关 trap 语义和返回原因 |
 
@@ -125,8 +125,8 @@
 
 它不管：
 
-- 多级页表遍历
-- 页表项格式定义
+- 通用多级页表遍历与映射执行
+- 启动页表和虚拟化 stage-2 页表项格式
 - 物理页分配
 - 地址空间区间组织
 
@@ -161,7 +161,7 @@
 3. `ax-mm` / `axaddrspace` 组织地址空间
 4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
 
-这正好体现了它在内存子系统中的位置：不是页表内容层，而是页表生效层。
+这正好体现了它在内存子系统中的位置：负责架构相关的 stage-1 页表定义与生效，不负责通用遍历和地址空间策略。
 
 ## 依赖关系
 
@@ -170,7 +170,7 @@
 | 依赖 | 作用 |
 | --- | --- |
 | `memory_addr` | 地址类型基础 |
-| `page-table-generic`（可选） | 通用页表 trait、权限、错误和映射执行器 |
+| `page-table-generic` | 通用页表 trait、权限、错误和映射执行器 |
 | `axbacktrace` | 回溯支持 |
 | `linkme` | trap handler 分布式注册 |
 | 各架构专用依赖 | `x86`、`x86_64`、`aarch64-cpu`、`riscv`、`loongArch64` 等 |
@@ -206,7 +206,7 @@ graph TD
 3. 实现 `context.rs`
 4. 实现 `init.rs`
 5. 实现 trap 入口与 Rust 分发
-6. 若支持运行时分页，在架构目录实现 `paging.rs` 的 PTE 格式
+6. 在架构目录实现 `paging.rs` 的运行时 stage-1 PTE 格式
 7. 在 `lib.rs` 的 `cfg_if!` 中挂接
 
 ### 4.2 修改现有架构实现时的注意点

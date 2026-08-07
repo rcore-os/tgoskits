@@ -23,7 +23,6 @@ pub use task_local::TaskLocalState;
 
 pub mod cap;
 
-#[cfg(feature = "paging")]
 pub mod paging;
 
 /// Kernel task-local storage base owned by one execution context.

@@ -24,7 +24,6 @@ fp-simd = [
 xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
 rtc = ["axplat-dyn/rtc"]
 paging = [
-    "ax-cpu/paging",
     "dep:ax-alloc",
     "dep:page-table-generic",
     "page-table-generic/ax-errno",
