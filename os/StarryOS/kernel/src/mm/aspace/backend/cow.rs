@@ -19,6 +19,7 @@ use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
 };
+use crate::mm::paging_error_to_ax_error;
 
 struct FrameRefCnt {
     count: u8,
@@ -286,7 +287,7 @@ impl CowBackend {
         let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
         if let Err(err) = pt.map_page(vaddr, frame, self.size, pte_flags) {
             self.deinit_frame(frame);
-            return Err(err.into());
+            return Err(paging_error_to_ax_error(err));
         }
         if let Some(acct) = acct {
             acct.record_charge(vaddr, kind)?;
@@ -334,7 +335,7 @@ impl CowBackend {
             let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
             if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
                 self.deinit_frame(frame);
-                return Err(err.into());
+                return Err(paging_error_to_ax_error(err));
             }
             if let Some(acct) = acct {
                 acct.record_charge(addr, kind)?;
@@ -362,7 +363,8 @@ impl CowBackend {
         debug_assert!(frame.count < u8::MAX, "frame reference count near overflow");
         match frame.count {
             1 => {
-                pt.protect_page(vaddr, vma_flags)?;
+                pt.protect_page(vaddr, vma_flags)
+                    .map_err(paging_error_to_ax_error)?;
                 let defer_write =
                     self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
                 if defer_write && let Some(acct) = acct {
@@ -381,7 +383,7 @@ impl CowBackend {
                 }
                 if let Err(err) = pt.remap_page(vaddr, new_frame, vma_flags) {
                     self.deinit_frame(new_frame);
-                    return Err(err.into());
+                    return Err(paging_error_to_ax_error(err));
                 }
                 if self.file.is_some()
                     && let Some(acct) = acct
@@ -585,8 +587,12 @@ impl BackendOps for CowBackend {
                         warn!("frame reference count overflow");
                         return Err(AxError::BadAddress);
                     }
-                    old_pt.protect_page(vaddr, cow_flags)?;
-                    new_pt.map_page(vaddr, paddr, self.size, cow_flags)?;
+                    old_pt
+                        .protect_page(vaddr, cow_flags)
+                        .map_err(paging_error_to_ax_error)?;
+                    new_pt
+                        .map_page(vaddr, paddr, self.size, cow_flags)
+                        .map_err(paging_error_to_ax_error)?;
                     if let (Some(parent), Some(child)) = (acct.parent, acct.child)
                         && let Some(_kind) = parent.charge_kind(vaddr)
                     {

@@ -26,7 +26,6 @@ rtc = ["axplat-dyn/rtc"]
 paging = [
     "dep:ax-alloc",
     "dep:page-table-generic",
-    "page-table-generic/ax-errno",
 ]
 tls = ["ax-cpu/tls", "cpu-local/tls", "axplat-dyn/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]

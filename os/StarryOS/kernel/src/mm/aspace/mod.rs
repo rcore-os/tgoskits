@@ -17,7 +17,7 @@ use ax_runtime::hal::{
 };
 use ax_sync::{LockdepMutexExt, Mutex};
 
-use crate::mm::ProcessVmStat;
+use crate::mm::{ProcessVmStat, paging_error_to_ax_error};
 
 mod accounting;
 mod backend;
@@ -423,7 +423,7 @@ impl AddrSpace {
             if cursor.query(dst_va).is_err() {
                 if let Err(err) = cursor.map_page(dst_va, paddr, page_size, flags) {
                     rollback_moved_pages(cursor, &moved_pages);
-                    return Err(err.into());
+                    return Err(paging_error_to_ax_error(err));
                 }
                 dst_newly_mapped = true;
             }
@@ -432,7 +432,7 @@ impl AddrSpace {
                     let _ = cursor.unmap_page(dst_va);
                 }
                 rollback_moved_pages(cursor, &moved_pages);
-                return Err(err.into());
+                return Err(paging_error_to_ax_error(err));
             }
             self.rss.move_charge(src_va, dst_va)?;
             moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));

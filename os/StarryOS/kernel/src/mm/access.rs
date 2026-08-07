@@ -24,6 +24,7 @@ use starry_vm::{VmError, VmIo, VmResult, vm_load_until_nul, vm_read_slice, vm_wr
 
 use crate::{
     config::{USER_SPACE_BASE, USER_SPACE_SIZE},
+    mm::paging_error_to_ax_error,
     task::AsThread,
 };
 
@@ -509,7 +510,10 @@ where
         move || -> AxResult<()> {
             let mut guard = ax_mm::kernel_aspace().lock();
             if guard.contains_range(aligned_addr, aligned_length) {
-                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+                let (_, original_flags, _) = guard
+                    .page_table()
+                    .query(aligned_addr)
+                    .map_err(paging_error_to_ax_error)?;
 
                 guard.protect(
                     aligned_addr,

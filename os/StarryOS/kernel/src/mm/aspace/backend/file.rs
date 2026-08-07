@@ -18,7 +18,7 @@ use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, pages_in,
 };
-use crate::mm::flush_tlb_range_sync;
+use crate::mm::{flush_tlb_range_sync, paging_error_to_ax_error};
 
 #[doc(hidden)]
 pub struct FileBackendInner {
@@ -330,7 +330,7 @@ impl BackendOps for FileBackend {
                 Err(PagingError::NotMapped) => {}
                 Err(err) => {
                     warn!("Failed to unmap page {:?}: {:?}", addr, err);
-                    return Err(err.into());
+                    return Err(paging_error_to_ax_error(err));
                 }
             }
         }
@@ -379,7 +379,8 @@ impl BackendOps for FileBackend {
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
                         self.0.cache.mark_mmap_dirty_page(pn)?;
-                        pt.remap_page(addr, paddr, flags)?;
+                        pt.remap_page(addr, paddr, flags)
+                            .map_err(paging_error_to_ax_error)?;
                         pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
@@ -413,7 +414,8 @@ impl BackendOps for FileBackend {
                             PhysAddr::from(page.paddr()?),
                             PageSize::Size4K,
                             map_flags,
-                        )?;
+                        )
+                        .map_err(paging_error_to_ax_error)?;
                         if let Some(acct) = acct {
                             acct.inc(kind, 1);
                         }

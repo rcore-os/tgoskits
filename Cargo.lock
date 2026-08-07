@@ -5602,7 +5602,6 @@ dependencies = [
 name = "page-table-generic"
 version = "0.7.4"
 dependencies = [
- "ax-errno 0.6.2",
  "ax-memory-addr",
  "bitflags 2.13.1",
  "env_logger",

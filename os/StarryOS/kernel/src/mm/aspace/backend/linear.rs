@@ -6,6 +6,7 @@ use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
 use ax_sync::Mutex;
 
 use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
+use crate::mm::paging_error_to_ax_error;
 
 /// Linear mapping backend.
 ///
@@ -62,7 +63,8 @@ impl BackendOps for LinearBackend {
         let pa_range =
             ax_memory_addr::PhysAddrRange::from_start_size(self.pa(range.start), range.size());
         debug!("Linear::map: {range:?} -> {pa_range:?} {flags:?}");
-        pt.map_region(range.start, |va| self.pa(va), range.size(), flags, false)?;
+        pt.map_region(range.start, |va| self.pa(va), range.size(), flags, false)
+            .map_err(paging_error_to_ax_error)?;
         Ok(())
     }
 
@@ -79,7 +81,7 @@ impl BackendOps for LinearBackend {
             match pt.unmap_page(vaddr) {
                 Ok((_, _, page_size)) => debug_assert_eq!(page_size, PageSize::Size4K),
                 Err(PagingError::NotMapped) => {}
-                Err(err) => return Err(err.into()),
+                Err(err) => return Err(paging_error_to_ax_error(err)),
             }
         }
         Ok(())

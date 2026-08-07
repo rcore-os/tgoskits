@@ -11,11 +11,9 @@ version = "0.7.4"
 
 [features]
 default = []
-ax-errno = ["dep:ax-errno"]
 copy-from = []
 
 [dependencies]
-ax-errno = { workspace = true, optional = true }
 ax-memory-addr.workspace = true
 heapless = "0.9"
 log = "0.4"

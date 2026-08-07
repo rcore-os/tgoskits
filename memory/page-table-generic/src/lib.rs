@@ -19,16 +19,6 @@ pub type PagingResult<T = ()> = Result<T, PagingError>;
 /// The opaque leaf-entry configuration used by a page-table metadata type.
 pub type PteConfigOf<T> = <<T as TableMeta>::P as PageTableEntry>::PteConfig;
 
-#[cfg(feature = "ax-errno")]
-impl From<PagingError> for ax_errno::AxErrorKind {
-    fn from(value: PagingError) -> Self {
-        match value {
-            PagingError::NoMemory => ax_errno::AxErrorKind::NoMemory,
-            _ => ax_errno::AxErrorKind::InvalidInput,
-        }
-    }
-}
-
 pub trait FrameAllocator: Clone + Sync + Send + 'static {
     fn alloc_frame(&self) -> Option<PhysAddr>;
 

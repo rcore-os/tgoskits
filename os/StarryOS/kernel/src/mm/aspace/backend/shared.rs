@@ -10,6 +10,7 @@ use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
+use crate::mm::paging_error_to_ax_error;
 
 enum SharedPagesOwner {
     Allocated,
@@ -125,7 +126,8 @@ impl BackendOps for SharedBackend {
             pages_in(range, self.pages.size)?.zip(self.pages_starting_from(range.start))
         {
             let newly_mapped = pt.query(vaddr).is_err();
-            pt.map_page(vaddr, *paddr, self.pages.size, flags)?;
+            pt.map_page(vaddr, *paddr, self.pages.size, flags)
+                .map_err(paging_error_to_ax_error)?;
             if newly_mapped && let Some(acct) = acct {
                 acct.inc(RssKind::Shmem, 1);
             }
@@ -149,7 +151,7 @@ impl BackendOps for SharedBackend {
                     }
                 }
                 Err(PagingError::NotMapped) => {}
-                Err(err) => return Err(err.into()),
+                Err(err) => return Err(paging_error_to_ax_error(err)),
             }
         }
         Ok(())

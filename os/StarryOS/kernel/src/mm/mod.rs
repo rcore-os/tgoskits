@@ -1,5 +1,8 @@
 //! User address space management and user-space memory access.
 
+use ax_errno::AxError;
+use ax_runtime::hal::paging::PagingError;
+
 mod access;
 mod aspace;
 mod io;
@@ -8,6 +11,14 @@ mod stats;
 mod vm_stat;
 
 pub use self::{access::*, aspace::*, io::*, loader::*, stats::*, vm_stat::*};
+
+pub(crate) fn paging_error_to_ax_error(error: PagingError) -> AxError {
+    match error {
+        PagingError::NoMemory => AxError::NoMemory,
+        _ => AxError::InvalidInput,
+    }
+}
+
 #[cfg(axtest)]
 pub(crate) use self::{
     aspace::accounting_edge_cases_and_snapshot_rules_hold_for_test,
