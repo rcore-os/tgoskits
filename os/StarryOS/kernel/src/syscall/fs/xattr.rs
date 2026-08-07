@@ -12,14 +12,19 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::ffi::c_char;
+use core::{
+    ffi::c_char,
+    mem::{MaybeUninit, size_of},
+    slice,
+};
 
 use ax_errno::{AxError, AxResult, LinuxError};
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_sync::Mutex;
 use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
-    XATTR_REPLACE, XATTR_SIZE_MAX,
+    XATTR_REPLACE, XATTR_SIZE_MAX, xattr_args,
 };
 use starry_vm::{vm_read_slice, vm_write_slice};
 
@@ -95,6 +100,18 @@ fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
         .ok_or(AxError::BadFileDescriptor)
 }
 
+fn resolve_xattrat(dirfd: i32, path: *const c_char, at_flags: u32) -> AxResult<Location> {
+    const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+
+    if at_flags & !VALID_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let path = vm_load_path_string(path)?;
+    resolve_at(dirfd, Some(&path), at_flags)?
+        .into_file()
+        .ok_or(AxError::BadFileDescriptor)
+}
+
 /// Resolve an fd argument used by fd-based xattr syscalls.
 fn resolve_fd(fd: i32) -> AxResult<Location> {
     if fd_is_path(fd) {
@@ -103,6 +120,35 @@ fn resolve_fd(fd: i32) -> AxResult<Location> {
     resolve_at(fd, None, AT_EMPTY_PATH)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)
+}
+
+fn read_xattr_args(args: *const xattr_args, args_size: usize) -> AxResult<xattr_args> {
+    let known_size = size_of::<xattr_args>();
+    if args_size < known_size {
+        return Err(AxError::InvalidInput);
+    }
+    if args_size > PAGE_SIZE_4K {
+        return Err(AxError::ArgumentListTooLong);
+    }
+
+    let mut raw_args = MaybeUninit::<xattr_args>::uninit();
+    vm_read_slice(args, slice::from_mut(&mut raw_args))?;
+    if args_size > known_size {
+        let tail_size = args_size - known_size;
+        let mut tail = Vec::<u8>::with_capacity(tail_size);
+        vm_read_slice(
+            args.cast::<u8>().wrapping_add(known_size),
+            &mut tail.spare_capacity_mut()[..tail_size],
+        )?;
+        // SAFETY: vm_read_slice initialized the whole requested tail.
+        unsafe { tail.set_len(tail_size) };
+        if tail.iter().any(|byte| *byte != 0) {
+            return Err(AxError::ArgumentListTooLong);
+        }
+    }
+
+    // SAFETY: vm_read_slice initialized the complete v0 structure.
+    Ok(unsafe { raw_args.assume_init() })
 }
 
 /// Copy a single xattr value to userspace, or return its required size.
@@ -290,6 +336,26 @@ pub fn sys_fgetxattr(fd: i32, name: *const c_char, value: *mut u8, size: usize) 
     get_xattr(resolve_fd(fd)?, name, value, size)
 }
 
+pub fn sys_getxattrat(
+    dirfd: i32,
+    path: *const c_char,
+    at_flags: u32,
+    name: *const c_char,
+    args: *const xattr_args,
+    args_size: usize,
+) -> AxResult<isize> {
+    let args = read_xattr_args(args, args_size)?;
+    if args.flags != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    get_xattr(
+        resolve_xattrat(dirfd, path, at_flags)?,
+        name,
+        args.value as *mut u8,
+        args.size as usize,
+    )
+}
+
 pub fn sys_setxattr(
     path: *const c_char,
     name: *const c_char,
@@ -298,6 +364,24 @@ pub fn sys_setxattr(
     flags: i32,
 ) -> AxResult<isize> {
     set_xattr(resolve_path(path, false)?, name, value, size, flags)
+}
+
+pub fn sys_setxattrat(
+    dirfd: i32,
+    path: *const c_char,
+    at_flags: u32,
+    name: *const c_char,
+    args: *const xattr_args,
+    args_size: usize,
+) -> AxResult<isize> {
+    let args = read_xattr_args(args, args_size)?;
+    set_xattr(
+        resolve_xattrat(dirfd, path, at_flags)?,
+        name,
+        args.value as *const u8,
+        args.size as usize,
+        args.flags as i32,
+    )
 }
 
 pub fn sys_lsetxattr(
