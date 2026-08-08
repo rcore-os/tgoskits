@@ -722,6 +722,17 @@ impl UartPort for Pl011 {
         Pl011::read_rx(self)
     }
 
+    fn discard_rx(&mut self) {
+        while !self.registers().uartfr.is_set(UARTFR::RXFE) {
+            let _ = self.registers().uartdr.get();
+        }
+        self.saved_rx_status = Pl011RxStatus::empty();
+        self.registers().uartrsr_ecr.set(0);
+        self.registers()
+            .uarticr
+            .set(imsc_for_events(SerialEventSet::RX));
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         let mut written = 0;
         for &byte in bytes {
@@ -1053,6 +1064,23 @@ mod tests {
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
         assert_eq!(parts.port.write_tx(b"x"), 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
+    }
+
+    #[test]
+    fn discard_rx_clears_saved_status_without_touching_tx_data() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        uart.saved_rx_status = Pl011RxStatus::PARITY;
+        regs.uartdr.set(UARTDR::DATA.val(b'x' as u32).into());
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+
+        UartPort::discard_rx(&mut uart);
+
+        assert!(uart.saved_rx_status.is_empty());
+        assert_eq!(regs.uartdr.get() as u8, b'x');
+        assert_eq!(
+            read_test_reg(&regs, 0x044) & imsc_for_events(SerialEventSet::RX),
+            imsc_for_events(SerialEventSet::RX),
+        );
     }
 
     #[test]

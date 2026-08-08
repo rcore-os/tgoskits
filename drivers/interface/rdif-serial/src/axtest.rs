@@ -99,6 +99,10 @@ impl UartPort for MockPort {
         self.rx.take()
     }
 
+    fn discard_rx(&mut self) {
+        self.rx = None;
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         let count = bytes.len().min(self.tx.len());
         self.tx[..count].copy_from_slice(&bytes[..count]);

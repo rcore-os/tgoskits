@@ -46,6 +46,9 @@ pub trait UartPort: Send + 'static {
     /// Reads one normalized hardware sample without consulting IRQ state.
     fn read_rx(&mut self) -> Option<RxSample>;
 
+    /// Discards bytes and error state pending in the hardware receiver.
+    fn discard_rx(&mut self);
+
     /// Writes as much of `bytes` as the hardware can currently accept.
     fn write_tx(&mut self, bytes: &[u8]) -> usize;
 

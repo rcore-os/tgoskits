@@ -8,6 +8,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
+use ax_sync::Mutex;
 use ax_task::future::block_on;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
@@ -56,7 +57,7 @@ pub trait TtyRead: Send + Sync + 'static {
     ///
     /// Once this returns, a later [`Self::read`] must not expose bytes that
     /// were observable by this reader before the discard began.
-    fn discard_input(&mut self);
+    fn discard_input(&mut self) -> AxResult<()>;
 
     /// Whether the writer peer has been fully closed (last fd dropped).
     /// Default: never closed. Lets a Passive reader report hangup
@@ -146,11 +147,12 @@ struct InputReader<R, W> {
     eof_ready: Arc<AtomicBool>,
 }
 impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
-    fn discard_input(&mut self) {
-        self.reader.discard_input();
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.reader.discard_input()?;
         self.read_range = 0..0;
         self.line_buf.clear();
         self.line_read = None;
+        Ok(())
     }
 
     pub fn drain_source_into_line_buffer(&mut self) -> bool {
@@ -393,8 +395,8 @@ struct SimpleReader<R> {
     buf_tx: CachingProd<ReadBuf>,
 }
 impl<R: TtyRead> SimpleReader<R> {
-    fn discard_input(&mut self) {
-        self.reader.discard_input();
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.reader.discard_input()
     }
 
     pub fn closed(&self) -> bool {
@@ -414,7 +416,7 @@ impl<R: TtyRead> SimpleReader<R> {
 }
 
 enum Processor<R, W> {
-    InterruptDriven(Arc<SpinNoIrq<InputReader<R, W>>>),
+    InterruptDriven(Arc<Mutex<InputReader<R, W>>>),
     Passive(Box<SimpleReader<R>>, Arc<PollSet>),
 }
 
@@ -429,7 +431,7 @@ pub struct LineDiscipline<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
-    fn drive_input(reader: &SpinNoIrq<InputReader<R, W>>, input_ready: &PollSet) -> bool {
+    fn drive_input(reader: &Mutex<InputReader<R, W>>, input_ready: &PollSet) -> bool {
         let mut reader = reader.lock();
         let mut progressed = false;
         progressed |= reader.echo.drain_available();
@@ -444,7 +446,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 
     fn spawn_interrupt_driven_reader(
-        reader: Arc<SpinNoIrq<InputReader<R, W>>>,
+        reader: Arc<Mutex<InputReader<R, W>>>,
         input_source: Arc<PollSet>,
         output_source: Option<Arc<PollSet>>,
         input_ready: Arc<PollSet>,
@@ -495,7 +497,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
 
         let processor = match config.process_mode {
             ProcessMode::InterruptDriven { input, output } => {
-                let reader = Arc::new(SpinNoIrq::new(reader));
+                let reader = Arc::new(Mutex::new(reader));
                 Self::spawn_interrupt_driven_reader(
                     reader.clone(),
                     input,
@@ -528,20 +530,21 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         }
     }
 
-    pub fn drain_input(&mut self) {
+    pub fn drain_input(&mut self) -> AxResult<()> {
         match &mut self.processor {
             Processor::InterruptDriven(reader) => {
                 let mut reader = reader.lock();
-                reader.discard_input();
+                reader.discard_input()?;
                 self.buf_rx.clear();
             }
             Processor::Passive(reader, _) => {
-                reader.discard_input();
+                reader.discard_input()?;
                 self.buf_rx.clear();
             }
         }
         self.injected_input.clear();
         self.eof_ready.store(false, Ordering::Release);
+        Ok(())
     }
 
     pub fn discard_output(&self, writer: &W) -> AxResult<()> {
@@ -711,8 +714,9 @@ mod tests {
             n
         }
 
-        fn discard_input(&mut self) {
+        fn discard_input(&mut self) -> AxResult<()> {
             self.pos = self.data.len();
+            Ok(())
         }
 
         fn closed(&self) -> bool {

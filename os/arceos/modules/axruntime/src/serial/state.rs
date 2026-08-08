@@ -28,6 +28,13 @@ impl SerialIrqLatch {
     pub(super) fn has_pending(&self) -> bool {
         self.packed.load(Ordering::Acquire) != 0
     }
+
+    pub(super) fn discard_rx(&self) {
+        let rx = SerialEventSet::RX.bits()
+            | (RxErrorFlags::all().bits() << ERROR_SHIFT)
+            | (SerialEventSet::RX.bits() << REARM_SHIFT);
+        self.packed.fetch_and(!rx, Ordering::AcqRel);
+    }
 }
 
 const fn pack(event: SerialIrqEvent) -> u32 {
@@ -207,5 +214,22 @@ mod tests {
         assert_eq!(events, SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE);
         assert_eq!(errors, RxErrorFlags::PARITY);
         assert_eq!(rearm, SerialEventSet::TX_SPACE);
+    }
+
+    #[test]
+    fn discard_rx_preserves_unrelated_irq_state() {
+        let latch = SerialIrqLatch::new();
+        latch.publish(SerialIrqEvent {
+            events: SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE,
+            rx_errors: RxErrorFlags::PARITY,
+            rearm: SerialEventSet::RX | SerialEventSet::TX_SPACE,
+        });
+
+        latch.discard_rx();
+
+        let event = latch.take().unwrap();
+        assert_eq!(event.events, SerialEventSet::TX_SPACE);
+        assert!(event.rx_errors.is_empty());
+        assert_eq!(event.rearm, SerialEventSet::TX_SPACE);
     }
 }

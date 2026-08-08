@@ -255,6 +255,16 @@ impl<T: Kind> UartPort for Ns16550<T> {
         Ns16550::read_rx(self)
     }
 
+    fn discard_rx(&mut self) {
+        self.saved_lsr = LineStatusFlags::empty();
+        self.write_flags(
+            UART_FCR,
+            FifoControlFlags::ENABLE_FIFO
+                | FifoControlFlags::CLEAR_RECEIVER_FIFO
+                | FifoControlFlags::TRIGGER_8_BYTES,
+        );
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         self.try_write(bytes)
     }
@@ -791,6 +801,15 @@ mod tests {
             REGS[reg as usize].store(val, Ordering::SeqCst);
             if reg == UART_FCR {
                 LAST_FCR_WRITE.store(val, Ordering::SeqCst);
+                if val & FifoControlFlags::CLEAR_RECEIVER_FIFO.bits() != 0 {
+                    REGS[UART_LSR as usize].fetch_and(
+                        !(LineStatusFlags::DATA_READY
+                            | LineStatusFlags::ERROR_MASK
+                            | LineStatusFlags::FIFO_ERROR)
+                            .bits(),
+                        Ordering::SeqCst,
+                    );
+                }
                 if val & FifoControlFlags::ENABLE_FIFO.bits() != 0 {
                     REGS[UART_IIR as usize].fetch_or(
                         InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
@@ -1009,6 +1028,28 @@ mod tests {
             fcr & FifoControlFlags::TRIGGER_LEVEL_MASK,
             FifoControlFlags::TRIGGER_8_BYTES,
         );
+    }
+
+    #[test]
+    fn discard_rx_clears_only_the_receiver_fifo_and_saved_status() {
+        let (_guard, mut uart) = serial();
+        uart.saved_lsr = LineStatusFlags::PARITY_ERROR;
+        REGS[UART_RBR as usize].store(b'x', Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+
+        UartPort::discard_rx(&mut uart);
+
+        let fcr = FifoControlFlags::from_bits_retain(LAST_FCR_WRITE.load(Ordering::SeqCst));
+        assert!(fcr.contains(FifoControlFlags::ENABLE_FIFO));
+        assert!(fcr.contains(FifoControlFlags::CLEAR_RECEIVER_FIFO));
+        assert!(!fcr.contains(FifoControlFlags::CLEAR_TRANSMITTER_FIFO));
+        assert_eq!(
+            fcr & FifoControlFlags::TRIGGER_LEVEL_MASK,
+            FifoControlFlags::TRIGGER_8_BYTES,
+        );
+        assert!(uart.saved_lsr.is_empty());
+        assert!(uart.read_rx().is_none());
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -576,6 +576,10 @@ impl UartPort for RockchipFiqSerial {
         UartPort::read_rx(&mut self.serial)
     }
 
+    fn discard_rx(&mut self) {
+        UartPort::discard_rx(&mut self.serial)
+    }
+
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
         UartPort::write_tx(&mut self.serial, bytes)
     }

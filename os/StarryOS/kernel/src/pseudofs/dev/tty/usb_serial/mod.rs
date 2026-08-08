@@ -485,8 +485,9 @@ impl TtyRead for UsbSerialReader {
         self.backend.drain_rx(buf)
     }
 
-    fn discard_input(&mut self) {
+    fn discard_input(&mut self) -> AxResult<()> {
         self.backend.rx_queue.lock().clear();
+        Ok(())
     }
 }
 

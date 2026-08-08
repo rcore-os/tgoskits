@@ -231,7 +231,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF {
-                    self.ldisc.lock().drain_input();
+                    self.ldisc.lock().drain_input()?;
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
@@ -247,7 +247,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 };
                 self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF2 {
-                    self.ldisc.lock().drain_input();
+                    self.ldisc.lock().drain_input()?;
                 }
             }
             TIOCGPGRP => {
@@ -297,12 +297,12 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 return Err(AxError::Unsupported);
             }
             TCFLSH => match arg {
-                TCIFLUSH => self.ldisc.lock().drain_input(),
+                TCIFLUSH => self.ldisc.lock().drain_input()?,
                 TCOFLUSH => self.ldisc.lock().discard_output(&self.writer)?,
                 TCIOFLUSH => {
                     let mut ldisc = self.ldisc.lock();
                     ldisc.discard_output(&self.writer)?;
-                    ldisc.drain_input();
+                    ldisc.drain_input()?;
                 }
                 _ => return Err(AxError::InvalidInput),
             },

@@ -362,9 +362,8 @@ impl TtyRead for SerialReader {
         total
     }
 
-    fn discard_input(&mut self) {
-        let mut temp = [RxItem::default(); SERIAL_RX_DRAIN_CHUNK];
-        while self.backend.drain_rx(&mut temp) != 0 {}
+    fn discard_input(&mut self) -> AxResult<()> {
+        self.backend.rx.discard_pending()
     }
 }
 

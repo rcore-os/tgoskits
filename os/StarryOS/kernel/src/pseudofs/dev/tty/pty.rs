@@ -37,8 +37,9 @@ impl TtyRead for PtyReader {
         self.0.lock().pop_slice(buf)
     }
 
-    fn discard_input(&mut self) {
+    fn discard_input(&mut self) -> ax_errno::AxResult<()> {
         self.0.lock().clear();
+        Ok(())
     }
 
     fn closed(&self) -> bool {
