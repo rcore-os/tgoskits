@@ -18,6 +18,41 @@
 //! runtime CPU belongs to the host scheduler unless `AX_RT_CPU` is set at build
 //! time. Later phases will replace the parking entry with a realtime executor.
 
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+const HEARTBEAT_INTERVAL_NANOS: u64 = 10_000_000;
+
+static RT_CPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static RT_STATE: AtomicUsize = AtomicUsize::new(RtState::Offline as usize);
+static RT_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
+static RT_ENTRY_NANOS: AtomicU64 = AtomicU64::new(0);
+static RT_LAST_HEARTBEAT_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of the realtime CPU runtime state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RtStatus {
+    /// Reserved realtime CPU ID, or `None` before the RT entry runs.
+    pub cpu_id: Option<usize>,
+    /// Current runtime state.
+    pub state: RtState,
+    /// Number of heartbeat periods observed by the RT loop.
+    pub heartbeats: u64,
+    /// Monotonic timestamp when the RT entry started.
+    pub entry_nanos: u64,
+    /// Monotonic timestamp of the latest heartbeat.
+    pub last_heartbeat_nanos: u64,
+}
+
+/// Realtime CPU entry state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub enum RtState {
+    /// The realtime CPU has not entered Axvisor yet.
+    Offline = 0,
+    /// The realtime CPU is executing the temporary heartbeat loop.
+    Heartbeat = 1,
+}
+
 /// Axvisor realtime secondary CPU entry.
 ///
 /// This symbol is called by `ax-runtime` after the reserved CPU has completed
@@ -25,10 +60,50 @@
 /// host scheduler path.
 #[unsafe(no_mangle)]
 pub extern "Rust" fn ax_realtime_secondary_main(cpu_id: usize) -> ! {
-    info!("Realtime CPU {cpu_id} entered Axvisor RT entry; parking until executor is installed.");
+    let entry_nanos = monotonic_time_nanos();
+    RT_CPU_ID.store(cpu_id, Ordering::Release);
+    RT_ENTRY_NANOS.store(entry_nanos, Ordering::Release);
+    RT_LAST_HEARTBEAT_NANOS.store(entry_nanos, Ordering::Release);
+    RT_STATE.store(RtState::Heartbeat as usize, Ordering::Release);
+
+    info!("Realtime CPU {cpu_id} entered Axvisor RT entry; running heartbeat loop.");
+    let mut next_heartbeat = entry_nanos.saturating_add(HEARTBEAT_INTERVAL_NANOS);
     loop {
-        ax_std::os::arceos::modules::ax_hal::asm::wait_for_irqs();
+        let now = monotonic_time_nanos();
+        if now >= next_heartbeat {
+            RT_HEARTBEATS.fetch_add(1, Ordering::Relaxed);
+            RT_LAST_HEARTBEAT_NANOS.store(now, Ordering::Release);
+            next_heartbeat = now.saturating_add(HEARTBEAT_INTERVAL_NANOS);
+        }
+        core::hint::spin_loop();
     }
+}
+
+/// Returns the latest realtime CPU status snapshot.
+pub fn status() -> RtStatus {
+    let cpu_id = match RT_CPU_ID.load(Ordering::Acquire) {
+        usize::MAX => None,
+        cpu_id => Some(cpu_id),
+    };
+
+    RtStatus {
+        cpu_id,
+        state: rt_state_from_usize(RT_STATE.load(Ordering::Acquire)),
+        heartbeats: RT_HEARTBEATS.load(Ordering::Relaxed),
+        entry_nanos: RT_ENTRY_NANOS.load(Ordering::Acquire),
+        last_heartbeat_nanos: RT_LAST_HEARTBEAT_NANOS.load(Ordering::Acquire),
+    }
+}
+
+fn rt_state_from_usize(value: usize) -> RtState {
+    match value {
+        value if value == RtState::Heartbeat as usize => RtState::Heartbeat,
+        _ => RtState::Offline,
+    }
+}
+
+fn monotonic_time_nanos() -> u64 {
+    ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos()
 }
 
 /// Runtime owner of a physical CPU.

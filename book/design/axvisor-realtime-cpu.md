@@ -97,7 +97,7 @@ RT runtime 是一个单核、静态、无普通任务调度的执行环境。它
 
 RT 核的应用层入口是 `os/axvisor/src/realtime.rs` 中的 `ax_realtime_secondary_main(cpu_id) -> !`。`axruntime` 在完成最小 secondary CPU-local 初始化并判定该 CPU 属于 `SecondaryCpuOwner::Realtime` 后，通过这个符号跳入 Axvisor；因此后续 RT timer、mailbox 和 executor 都应从这个入口向下展开，而不是继续塞在 `axruntime` 内部。
 
-当前入口只执行 park loop，用于证明 core3 已经离开普通 host scheduler 域。第三阶段会在这个函数中调用 RT timer 初始化和静态 executor 主循环。
+当前入口执行一个临时 heartbeat loop，用于证明 core3 已经离开普通 host scheduler 域，并且持续在 Axvisor RT 入口内运行。`rt status` shell 命令读取 `RtStatus` 快照，显示 RT CPU、入口状态、heartbeat 次数和最近 heartbeat 时间；后续阶段会把 heartbeat loop 替换为 RT timer 初始化和静态 executor 主循环。
 
 ### 3.2 静态执行器
 
