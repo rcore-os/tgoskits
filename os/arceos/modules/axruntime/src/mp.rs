@@ -78,6 +78,10 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
     info!("Secondary CPU {cpu_id} started.");
 
+    if super::secondary_cpu_owner(cpu_id) == super::SecondaryCpuOwner::Realtime {
+        super::run_realtime_secondary(cpu_id);
+    }
+
     #[cfg(feature = "paging")]
     ax_mm::init_memory_management_secondary();
 

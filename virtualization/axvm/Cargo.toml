@@ -8,6 +8,7 @@ description = "Virtual Machine resource management crate for ArceOS's hypervisor
 repository = "https://github.com/arceos-hypervisor/axvm"
 keywords = ["vm", "hypervisor", "arceos"]
 license = "Apache-2.0"
+build = "build.rs"
 
 [features]
 fs = ["ax-std/fs"]
