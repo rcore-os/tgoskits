@@ -335,12 +335,20 @@ impl Wake for InterestWaker {
             return;
         }
 
-        // Linux keeps epoll's target-file callback linked after it fires. A
-        // Starry PollSet consumes matching wakers, so install the successor
-        // before publishing this edge. This ordering leaves no gap in which
-        // a later source notification could be lost.
         if interest.is_edge_triggered() {
-            epoll.register_waker_only(&interest);
+            // A target may invoke its waker while holding an internal lock.
+            // The callback must therefore only publish epoll-owned state; in
+            // particular, calling file.poll() or file.register() here could
+            // re-enter that target lock on the same thread. The epoll waiter
+            // rearms the consumed PollSet entry from task context.
+            if interest.is_enabled() && interest.try_mark_in_queue() {
+                epoll.enqueue_marked_ready(&interest);
+                trace!(
+                    "Epoll: fd={} added to ready queue, events={:?}",
+                    interest.key.fd, interest.event.events
+                );
+            }
+            return;
         }
         epoll.publish_ready_for_file(&interest);
     }
@@ -905,6 +913,7 @@ impl Epoll {
                         level_ready.push_back(Arc::downgrade(&interest));
                     } else {
                         interest.mark_not_in_queue();
+                        self.register_waker_only(&interest);
                     }
                 }
                 ConsumeResult::NoEvent => {
@@ -919,9 +928,7 @@ impl Epoll {
                     // satisfies on every iteration, producing a tight loop
                     // that fills the ready_queue with phantom events.
                     interest.mark_not_in_queue();
-                    if !interest.is_edge_triggered() {
-                        self.register_waker_only(&interest);
-                    }
+                    self.register_waker_only(&interest);
                 }
             }
         }

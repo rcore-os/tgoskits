@@ -104,6 +104,63 @@ impl Pollable for ReadyFile {
     }
 }
 
+struct CallbackBoundaryFile {
+    ready: AtomicBool,
+    waking: AtomicBool,
+    callback_reentered_file: AtomicBool,
+    poll_waiters: PollSet,
+}
+
+impl CallbackBoundaryFile {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            ready: AtomicBool::new(false),
+            waking: AtomicBool::new(false),
+            callback_reentered_file: AtomicBool::new(false),
+            poll_waiters: PollSet::new(),
+        })
+    }
+
+    fn make_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+        self.waking.store(true, Ordering::Release);
+        unsafe { self.poll_waiters.wake(IoEvents::IN) };
+        self.waking.store(false, Ordering::Release);
+    }
+
+    fn callback_reentered_file(&self) -> bool {
+        self.callback_reentered_file.load(Ordering::Acquire)
+    }
+
+    fn record_callback_reentry(&self) {
+        if self.waking.load(Ordering::Acquire) {
+            self.callback_reentered_file.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl FileLike for CallbackBoundaryFile {
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-callback-boundary-file]".into()
+    }
+}
+
+impl Pollable for CallbackBoundaryFile {
+    fn poll(&self) -> IoEvents {
+        self.record_callback_reentry();
+        if self.ready.load(Ordering::Acquire) {
+            IoEvents::IN
+        } else {
+            IoEvents::empty()
+        }
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        self.record_callback_reentry();
+        unsafe { self.poll_waiters.register(context.waker(), events) };
+    }
+}
+
 struct EpollWaiter {
     epoll: Arc<Epoll>,
     result_index: usize,
@@ -179,6 +236,20 @@ pub(crate) fn edge_readiness_requires_a_new_notification_for_test() -> bool {
     first == Ok((1, Some(0x33)))
         && without_new_notification == Err(AxError::WouldBlock)
         && after_new_notification == Ok((1, Some(0x33)))
+}
+
+pub(crate) fn edge_callback_does_not_reenter_target_for_test() -> bool {
+    let epoll = Epoll::new();
+    let target = CallbackBoundaryFile::new();
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file, 0x44, EpollFlags::EDGE_TRIGGER)
+        .expect("edge-triggered test interest must be added");
+
+    target.make_ready();
+
+    !target.callback_reentered_file()
 }
 
 fn collect_one_event(epoll: &Epoll) -> Result<(usize, Option<u64>), AxError> {

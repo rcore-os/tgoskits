@@ -47,6 +47,11 @@ fn epoll_edge_readiness_requires_a_new_notification() {
 }
 
 #[axtest]
+fn epoll_edge_callback_does_not_reenter_target() {
+    ax_assert!(axtest_exports::epoll_edge_callback_does_not_reenter_target());
+}
+
+#[axtest]
 fn epoll_hup_does_not_synthesize_readable() {
     ax_assert!(axtest_exports::epoll_hup_does_not_synthesize_readable());
 }

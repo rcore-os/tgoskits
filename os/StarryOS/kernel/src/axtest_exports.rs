@@ -74,6 +74,10 @@ pub fn epoll_edge_readiness_requires_a_new_notification() -> bool {
     super::file::edge_readiness_requires_a_new_notification_for_test()
 }
 
+pub fn epoll_edge_callback_does_not_reenter_target() -> bool {
+    super::file::edge_callback_does_not_reenter_target_for_test()
+}
+
 pub fn epoll_hup_does_not_synthesize_readable() -> bool {
     super::file::epoll_hup_does_not_synthesize_readable_for_test()
 }
