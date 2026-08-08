@@ -136,6 +136,14 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
         }
     }
 
+    // A task is commonly created from the current CPU while secondary
+    // schedulers are still publishing their queues. Preserve its affinity
+    // without selecting an unpublished remote queue.
+    let current_cpu = this_cpu_id();
+    if cpumask.get(current_cpu) && RUN_QUEUE_READY[current_cpu].load(Ordering::Acquire) {
+        return current_cpu;
+    }
+
     panic!("No initialized run queue matches task CPU affinity");
 }
 
@@ -553,10 +561,13 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
         // When SMP is enabled, prefer the current CPU to keep the task's
         // cache warm. Fall back to round-robin only when affinity forbids it.
         let current_cpu = this_cpu_id();
-        let index = if task.cpumask().get(current_cpu) {
+        let cpumask = task.cpumask();
+        let index = if cpumask.get(current_cpu)
+            && RUN_QUEUE_READY[current_cpu].load(core::sync::atomic::Ordering::Acquire)
+        {
             current_cpu
         } else {
-            select_run_queue_index(task.cpumask())
+            select_run_queue_index(cpumask)
         };
         AxRunQueueRef {
             inner: get_run_queue(index),
@@ -616,9 +627,14 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         let current_cpu = this_cpu_id();
         let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
-        let index = if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
+        let index = if last_cpu < crate::build_info::CPU_CAPACITY
+            && cpumask.get(last_cpu)
+            && RUN_QUEUE_READY[last_cpu].load(core::sync::atomic::Ordering::Acquire)
+        {
             last_cpu
-        } else if cpumask.get(current_cpu) {
+        } else if cpumask.get(current_cpu)
+            && RUN_QUEUE_READY[current_cpu].load(core::sync::atomic::Ordering::Acquire)
+        {
             current_cpu
         } else {
             select_run_queue_index(cpumask)
