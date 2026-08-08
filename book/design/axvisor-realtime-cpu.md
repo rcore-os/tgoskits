@@ -97,11 +97,15 @@ RT runtime 是一个单核、静态、无普通任务调度的执行环境。它
 
 RT 核的应用层入口是 `os/axvisor/src/realtime.rs` 中的 `ax_realtime_secondary_main(cpu_id) -> !`。`axruntime` 在完成最小 secondary CPU-local 初始化并判定该 CPU 属于 `SecondaryCpuOwner::Realtime` 后，通过这个符号跳入 Axvisor；因此后续 RT timer、mailbox 和 executor 都应从这个入口向下展开，而不是继续塞在 `axruntime` 内部。
 
-当前入口执行一个临时 heartbeat loop，用于证明 core3 已经离开普通 host scheduler 域，并且持续在 Axvisor RT 入口内运行。`rt status` shell 命令读取 `RtStatus` 快照，显示 RT CPU、入口状态、heartbeat 次数和最近 heartbeat 时间；后续阶段会把 heartbeat loop 替换为 RT timer 初始化和静态 executor 主循环。
+当前入口执行一个独立的静态 cooperative executor，用于证明 core3 已经离开普通 host scheduler 域，并且持续在 Axvisor RT 入口内运行。executor 为每个 RT task 准备独立栈、`TaskContext` 和 RT 私有 current-thread header，使用 `cpu-local` 的线程切换事务完成上下文切换，但不注册到普通 `axtask` run queue。`rt status` shell 命令读取 `RtStatus` 快照，显示 RT CPU、入口状态、executor 迭代次数、heartbeat/watchdog 时间和每个静态任务的运行统计；后续阶段会把 busy-spin yield 替换为真正的 RT timer 唤醒和事件队列。
 
 ### 3.2 静态执行器
 
-第一版 RT executor 只支持启动时静态注册的周期任务和事件任务。周期任务由 RT local timer 驱动，事件任务由 host 到 RT 的 mailbox 触发；任务 callback 运行在 RT CPU 上，不能阻塞在普通 mutex 上，也不能调用可能睡眠的 host API。
+第一版 RT executor 只支持启动时静态注册的 cooperative 周期任务。当前 prototype 使用固定任务表和 busy-spin yield 扫描 ready/delayed/blocked 状态，到期后切换到对应 RT task 的独立上下文。RT task 是长生命周期 `fn() -> !` 入口，任务函数自己在合适位置调用 RT 私有 `rt_yield_now()`、`rt_delay_until(deadline_nanos)` 或 `rt_sleep(duration_nanos)` 切回 executor。不调用普通 `ax_task` 的 run queue、sleep 或 wake 路径；后续事件任务由 host 到 RT 的 mailbox 触发。任务函数运行在 RT CPU 上，不能阻塞在普通 mutex 上，也不能调用可能睡眠的 host API。
+
+RT runtime 内部提供 `RtMutex` 作为第一版 cooperative sleepable mutex。拿锁失败时，当前 RT task 被标记为 `Blocked` 并主动 yield 回 executor；unlock 只唤醒一个 waiter，把它改回 `Ready`。`RtMutex` 不使用普通 sleepable lock，不进入 `axtask`，也不在持锁路径里调用 host scheduler。第一版暂不支持 recursive locking、priority inheritance、跨 CPU owner 和 IRQ context lock/unlock；这些都需要在接入 RT timer IRQ 和真实 RT 设备前单独设计。
+
+RT console 第一版不重构 Axvisor guest console mux。RT task 只写入一个固定容量的 RT output buffer，host 侧通过 `rt console` / `rt shell` 命令拉取并打印输出。这个临时形态避免 RT CPU 直接抢 host UART 或持有普通 console lock，也避免把 `guest_console` 当前的 `attached VM` 模型立即扩展成多目标 mux。后续如果需要完整交互式 RT shell，再把 mux 的 attachment 状态提升为 `Shell`、`Guest(VMId)`、`Realtime` 三态。
 
 | RT 任务字段 | 语义 | 第一版约束 |
 | --- | --- | --- |
@@ -178,13 +182,13 @@ RT-owned IRQ 不能进入普通 host IRQ dispatch。后续接入真实设备时�
 
 ### 5.3 阶段三
 
-阶段三增加 RT local timer 和只读统计。RT CPU 的 timer IRQ 只更新 RT 统计，不调用普通 scheduler tick；host 侧通过 shell 或日志读取 `timer_irqs`、`max_dispatch_latency`、`missed_deadlines` 等字段。
+阶段三增加 RT 侧只读统计和一个临时 cooperative executor。RT CPU 维护 heartbeat、watchdog、executor 迭代次数和每个静态任务的运行时间；每个静态任务拥有独立栈和上下文，并通过 `Ready`、`Running`、`Delayed`、`Blocked` 状态和 deadline 由单核 cooperative scheduler 串行运行。host 侧通过 shell 或日志读取这些字段。真正的 RT local timer IRQ 后续只更新 RT 统计和 executor deadline，不调用普通 scheduler tick。
 
-验收方式是 RT timer 计数递增，普通 host sleep、VM wait 和 guest timer 行为不回退。AArch64 路径还必须核对 `book/design/axvisor-aarch64-generic-timer.md` 中的 host/guest timer ownership 没有被破坏。
+验收方式是 RT heartbeat/watchdog 计数递增，普通 host sleep、VM wait 和 guest timer 行为不回退。AArch64 路径接入真正 timer IRQ 时还必须核对 `book/design/axvisor-aarch64-generic-timer.md` 中的 host/guest timer ownership 没有被破坏。
 
 ### 5.4 阶段四
 
-阶段四增加静态 RT executor 和 host/RT mailbox。executor 支持固定周期 callback 和事件 callback，mailbox 使用有界预分配队列，队列满时返回错误或计入 drop 统计。
+阶段四把临时 cooperative executor 扩展为 timer 驱动的静态 RT executor，并增加 host/RT mailbox。executor 支持固定周期 callback 和事件 callback，mailbox 使用有界预分配队列，队列满时返回错误或计入 drop 统计。
 
 验收方式是一个确定的周期任务能在 RT CPU 上运行并发布统计，host 能提交事件并收到 completion。RT callback 路径不得出现动态分配、普通 sleepable lock 或 `ax_task` API 调用。
 

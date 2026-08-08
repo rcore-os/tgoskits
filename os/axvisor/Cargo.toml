@@ -83,6 +83,7 @@ axdevice_base.workspace = true
 axvirtio-common.workspace = true
 axvirtio-net.workspace = true
 toml.workspace = true
+ax-memory-addr.workspace = true
 ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 
