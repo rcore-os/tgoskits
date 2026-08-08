@@ -12,15 +12,29 @@ use crate::{
 pub struct RtTask {
     pub(crate) name: &'static str,
     pub(crate) period_nanos: u64,
+    pub(crate) priority: u8,
     pub(crate) run: fn() -> !,
 }
 
 impl RtTask {
     /// Creates a static RT task descriptor.
     pub const fn new(name: &'static str, period_nanos: u64, run: fn() -> !) -> Self {
+        Self::with_priority(name, period_nanos, 0, run)
+    }
+
+    /// Creates a static RT task descriptor with an explicit priority.
+    ///
+    /// Larger priority values run before smaller values when both tasks are ready.
+    pub const fn with_priority(
+        name: &'static str,
+        period_nanos: u64,
+        priority: u8,
+        run: fn() -> !,
+    ) -> Self {
         Self {
             name,
             period_nanos,
+            priority,
             run,
         }
     }
@@ -50,6 +64,10 @@ pub struct RtTaskStatus {
     pub name: &'static str,
     /// Task period in nanoseconds.
     pub period_nanos: u64,
+    /// Static base task priority. Larger values run first.
+    pub base_priority: u8,
+    /// Runtime priority after priority inheritance donations.
+    pub effective_priority: u8,
     /// Number of times the task yielded or blocked back to the executor.
     pub runs: u64,
     /// Current task scheduler state.
@@ -67,6 +85,8 @@ impl RtTaskStatus {
         Self {
             name: "",
             period_nanos: 0,
+            base_priority: 0,
+            effective_priority: 0,
             runs: 0,
             state: RtTaskState::Exited,
             deadline_nanos: 0,
@@ -79,6 +99,8 @@ impl RtTaskStatus {
 pub(crate) struct RtTaskStats {
     pub(crate) runs: AtomicU64,
     pub(crate) state: AtomicUsize,
+    pub(crate) base_priority: AtomicUsize,
+    pub(crate) effective_priority: AtomicUsize,
     pub(crate) deadline_nanos: AtomicU64,
     pub(crate) last_start_nanos: AtomicU64,
     pub(crate) last_finish_nanos: AtomicU64,
@@ -89,6 +111,8 @@ impl RtTaskStats {
         Self {
             runs: AtomicU64::new(0),
             state: AtomicUsize::new(RtTaskState::Ready as usize),
+            base_priority: AtomicUsize::new(0),
+            effective_priority: AtomicUsize::new(0),
             deadline_nanos: AtomicU64::new(0),
             last_start_nanos: AtomicU64::new(0),
             last_finish_nanos: AtomicU64::new(0),
@@ -99,6 +123,8 @@ impl RtTaskStats {
         RtTaskStatus {
             name: task.name,
             period_nanos: task.period_nanos,
+            base_priority: self.base_priority.load(Ordering::Acquire) as u8,
+            effective_priority: self.effective_priority.load(Ordering::Acquire) as u8,
             runs: self.runs.load(Ordering::Relaxed),
             state: rt_task_state_from_usize(self.state.load(Ordering::Acquire)),
             deadline_nanos: self.deadline_nanos.load(Ordering::Acquire),
@@ -109,5 +135,9 @@ impl RtTaskStats {
 
     pub(crate) fn is_ready(&self) -> bool {
         self.state.load(Ordering::Acquire) == RtTaskState::Ready as usize
+    }
+
+    pub(crate) fn effective_priority(&self) -> u8 {
+        self.effective_priority.load(Ordering::Acquire) as u8
     }
 }

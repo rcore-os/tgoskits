@@ -23,16 +23,36 @@ const HEARTBEAT_INTERVAL_NANOS: u64 = 1_000_000;
 const WATCHDOG_INTERVAL_NANOS: u64 = 100_000_000;
 const HELLO_INTERVAL_NANOS: u64 = 1_000_000_000;
 const HELLO_RUNS: u64 = 5;
+const PRIORITY_TEST_LOW_READY: u64 = 1;
+const PRIORITY_TEST_HIGH_BLOCKED: u64 = 2;
+const PRIORITY_TEST_LOW_RELEASED: u64 = 3;
+const PRIORITY_TEST_MEDIUM_RAN: u64 = 4;
+const PRIORITY_TEST_HIGH_ACQUIRED: u64 = 5;
+const RECURSIVE_TEST_OWNER_READY: u64 = 1;
+const RECURSIVE_TEST_WAITER_BLOCKING: u64 = 2;
+const RECURSIVE_TEST_INNER_DROPPED: u64 = 3;
+const RECURSIVE_TEST_WAITER_ACQUIRED: u64 = 4;
 
 static RT_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
 static RT_WATCHDOG_RUNS: AtomicU64 = AtomicU64::new(0);
 static RT_LAST_HEARTBEAT_NANOS: AtomicU64 = AtomicU64::new(0);
 static RT_LAST_WATCHDOG_NANOS: AtomicU64 = AtomicU64::new(0);
 static RT_SAMPLE_MUTEX: RtMutex = RtMutex::new();
-static RT_TASKS: [RtTask; 3] = [
-    RtTask::new("heartbeat", HEARTBEAT_INTERVAL_NANOS, heartbeat_task),
-    RtTask::new("watchdog", WATCHDOG_INTERVAL_NANOS, watchdog_task),
-    RtTask::new("hello", HELLO_INTERVAL_NANOS, hello_task),
+static RT_PRIORITY_TEST_MUTEX: RtMutex = RtMutex::new();
+static RT_PRIORITY_TEST_STEP: AtomicU64 = AtomicU64::new(0);
+static RT_PRIORITY_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
+static RT_RECURSIVE_TEST_MUTEX: RtMutex = RtMutex::new();
+static RT_RECURSIVE_TEST_STEP: AtomicU64 = AtomicU64::new(0);
+static RT_RECURSIVE_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
+static RT_TASKS: [RtTask; 8] = [
+    RtTask::with_priority("heartbeat", HEARTBEAT_INTERVAL_NANOS, 10, heartbeat_task),
+    RtTask::with_priority("watchdog", WATCHDOG_INTERVAL_NANOS, 5, watchdog_task),
+    RtTask::with_priority("hello", HELLO_INTERVAL_NANOS, 1, hello_task),
+    RtTask::with_priority("prio-low", 0, 20, priority_test_low_task),
+    RtTask::with_priority("prio-high", 0, 40, priority_test_high_task),
+    RtTask::with_priority("prio-mid", 0, 30, priority_test_medium_task),
+    RtTask::with_priority("recur-own", 0, 25, recursive_test_owner_task),
+    RtTask::with_priority("recur-wait", 0, 15, recursive_test_waiter_task),
 ];
 
 /// Axvisor realtime secondary CPU entry.
@@ -88,6 +108,138 @@ fn hello_task() -> ! {
         rt_sleep(HELLO_INTERVAL_NANOS);
     }
     rt_exit_current_task();
+}
+
+fn priority_test_low_task() -> ! {
+    {
+        let _guard = RT_PRIORITY_TEST_MUTEX.lock();
+        RT_PRIORITY_TEST_STEP.store(PRIORITY_TEST_LOW_READY, Ordering::Release);
+        while RT_PRIORITY_TEST_STEP.load(Ordering::Acquire) != PRIORITY_TEST_HIGH_BLOCKED {
+            ax_rt::rt_yield_now();
+        }
+        RT_PRIORITY_TEST_STEP.store(PRIORITY_TEST_LOW_RELEASED, Ordering::Release);
+    }
+    rt_exit_current_task();
+}
+
+fn priority_test_high_task() -> ! {
+    rt_sleep(1_000_000);
+    while RT_PRIORITY_TEST_STEP.load(Ordering::Acquire) != PRIORITY_TEST_LOW_READY {
+        ax_rt::rt_yield_now();
+    }
+    RT_PRIORITY_TEST_STEP.store(PRIORITY_TEST_HIGH_BLOCKED, Ordering::Release);
+    {
+        let _guard = RT_PRIORITY_TEST_MUTEX.lock();
+        if RT_PRIORITY_TEST_STEP.load(Ordering::Acquire) == PRIORITY_TEST_MEDIUM_RAN {
+            RT_PRIORITY_TEST_RESULT.store(2, Ordering::Release);
+        } else {
+            RT_PRIORITY_TEST_STEP.store(PRIORITY_TEST_HIGH_ACQUIRED, Ordering::Release);
+            RT_PRIORITY_TEST_RESULT.store(1, Ordering::Release);
+        }
+    }
+    rt_exit_current_task();
+}
+
+fn priority_test_medium_task() -> ! {
+    rt_sleep(1_000_000);
+    while RT_PRIORITY_TEST_STEP.load(Ordering::Acquire) < PRIORITY_TEST_HIGH_BLOCKED {
+        ax_rt::rt_yield_now();
+    }
+    if RT_PRIORITY_TEST_STEP.load(Ordering::Acquire) == PRIORITY_TEST_HIGH_BLOCKED {
+        RT_PRIORITY_TEST_STEP.store(PRIORITY_TEST_MEDIUM_RAN, Ordering::Release);
+    }
+    rt_exit_current_task();
+}
+
+fn recursive_test_owner_task() -> ! {
+    rt_sleep(2_000_000);
+    {
+        let _outer = RT_RECURSIVE_TEST_MUTEX.lock();
+        {
+            let _inner = RT_RECURSIVE_TEST_MUTEX.lock();
+            RT_RECURSIVE_TEST_STEP.store(RECURSIVE_TEST_OWNER_READY, Ordering::Release);
+            rt_sleep(1_000_000);
+            if RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire) == RECURSIVE_TEST_WAITER_ACQUIRED {
+                RT_RECURSIVE_TEST_RESULT.store(2, Ordering::Release);
+            }
+            while RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire) != RECURSIVE_TEST_WAITER_BLOCKING {
+                rt_sleep(100_000);
+            }
+        }
+        RT_RECURSIVE_TEST_STEP.store(RECURSIVE_TEST_INNER_DROPPED, Ordering::Release);
+        rt_sleep(1_000_000);
+        if RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire) == RECURSIVE_TEST_WAITER_ACQUIRED {
+            RT_RECURSIVE_TEST_RESULT.store(2, Ordering::Release);
+        }
+    }
+    while RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire) != RECURSIVE_TEST_WAITER_ACQUIRED {
+        rt_sleep(100_000);
+    }
+    if RT_RECURSIVE_TEST_RESULT.load(Ordering::Acquire) == 0 {
+        RT_RECURSIVE_TEST_RESULT.store(1, Ordering::Release);
+    }
+    rt_exit_current_task();
+}
+
+fn recursive_test_waiter_task() -> ! {
+    rt_sleep(2_500_000);
+    while RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire) < RECURSIVE_TEST_OWNER_READY {
+        rt_sleep(100_000);
+    }
+    RT_RECURSIVE_TEST_STEP.store(RECURSIVE_TEST_WAITER_BLOCKING, Ordering::Release);
+    {
+        let _guard = RT_RECURSIVE_TEST_MUTEX.lock();
+        RT_RECURSIVE_TEST_STEP.store(RECURSIVE_TEST_WAITER_ACQUIRED, Ordering::Release);
+    }
+    rt_exit_current_task();
+}
+
+pub fn log_priority_test_result() {
+    let mut priority_done = false;
+    let mut recursive_done = false;
+    let deadline_nanos = monotonic_time_nanos().saturating_add(5_000_000_000);
+    while monotonic_time_nanos() < deadline_nanos {
+        if !priority_done {
+            match RT_PRIORITY_TEST_RESULT.load(Ordering::Acquire) {
+                1 => {
+                    info!("[RT priority test] priority inheritance PASS");
+                    priority_done = true;
+                }
+                2 => {
+                    error!("[RT priority test] medium task ran before inherited owner FAIL");
+                    priority_done = true;
+                }
+                _ => {}
+            }
+        }
+        if !recursive_done {
+            match RT_RECURSIVE_TEST_RESULT.load(Ordering::Acquire) {
+                1 => {
+                    info!("[RT recursive mutex test] recursive lock PASS");
+                    recursive_done = true;
+                }
+                2 => {
+                    error!("[RT recursive mutex test] waiter entered before outer unlock FAIL");
+                    recursive_done = true;
+                }
+                _ => {}
+            }
+        }
+        if priority_done && recursive_done {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    if !priority_done {
+        warn!("[RT priority test] timed out waiting for realtime task result");
+    }
+    if !recursive_done {
+        warn!(
+            "[RT recursive mutex test] timed out waiting for realtime task result: step={}, result={}",
+            RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire),
+            RT_RECURSIVE_TEST_RESULT.load(Ordering::Acquire)
+        );
+    }
 }
 
 /// Returns the number of Axvisor demo heartbeat periods observed on the RT CPU.

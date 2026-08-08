@@ -44,9 +44,11 @@ fn do_rt_status(_cmd: &ParsedCommand) {
     println!("Last watchdog ns: {}", last_watchdog_nanos());
     println!("Tasks:");
     println!(
-        "  {name:<10} {state:<8} {period:>14} {deadline:>14} {runs:>8} {start:>14} {finish:>14}",
+        "  {name:<10} {state:<8} {base:>4} {effective:>4} {period:>14} {deadline:>14} {runs:>8} {start:>14} {finish:>14}",
         name = "name",
         state = "state",
+        base = "base",
+        effective = "eff",
         period = "period(ns)",
         deadline = "deadline(ns)",
         runs = "runs",
@@ -62,9 +64,11 @@ fn do_rt_status(_cmd: &ParsedCommand) {
             RtTaskState::Exited => "exited",
         };
         println!(
-            "  {name:<10} {state:<8} {period:>14} {deadline:>14} {runs:>8} {start:>14} {finish:>14}",
+            "  {name:<10} {state:<8} {base:>4} {effective:>4} {period:>14} {deadline:>14} {runs:>8} {start:>14} {finish:>14}",
             name = task.name,
             state = task_state,
+            base = task.base_priority,
+            effective = task.effective_priority,
             period = task.period_nanos,
             deadline = task.deadline_nanos,
             runs = task.runs,

@@ -28,6 +28,7 @@ pub fn run_realtime_cpu(cpu_id: usize, tasks: &'static [RtTask], time_source: fn
     );
 
     let entry_nanos = time_source();
+    init_task_priorities(tasks);
     RT_TASKS.store(tasks.as_ptr().cast_mut(), Ordering::Release);
     RT_TASK_COUNT.store(tasks.len(), Ordering::Release);
     RT_TIME_SOURCE.store(time_source as usize, Ordering::Release);
@@ -127,8 +128,8 @@ impl RtExecutor {
             RT_EXECUTOR_ITERATIONS.fetch_add(1, Ordering::Relaxed);
             let now = monotonic_time_nanos();
             wake_expired_tasks(now);
-            if RT_TASK_STATS[next_task].is_ready() {
-                self.run_task(next_task, now);
+            if let Some(task_id) = select_ready_task(next_task) {
+                self.run_task(task_id, now);
             }
             next_task = (next_task + 1) % rt_task_count();
             core::hint::spin_loop();
@@ -144,6 +145,37 @@ impl RtExecutor {
         RT_RUNTIME.switch_to_task(task_id);
         RT_RUNTIME.finish_previous_binding(&RT_RUNTIME.tasks[task_id]);
     }
+}
+
+fn init_task_priorities(tasks: &[RtTask]) {
+    for (task_id, task) in tasks.iter().enumerate() {
+        let priority = task.priority as usize;
+        RT_TASK_STATS[task_id]
+            .base_priority
+            .store(priority, Ordering::Release);
+        RT_TASK_STATS[task_id]
+            .effective_priority
+            .store(priority, Ordering::Release);
+    }
+}
+
+fn select_ready_task(start_task: usize) -> Option<usize> {
+    let task_count = rt_task_count();
+    let mut selected = None;
+    let mut selected_priority = 0;
+    for offset in 0..task_count {
+        let task_id = (start_task + offset) % task_count;
+        let stats = &RT_TASK_STATS[task_id];
+        if !stats.is_ready() {
+            continue;
+        }
+        let priority = stats.effective_priority();
+        if selected.is_none() || priority > selected_priority {
+            selected = Some(task_id);
+            selected_priority = priority;
+        }
+    }
+    selected
 }
 
 fn wake_expired_tasks(now: u64) {
