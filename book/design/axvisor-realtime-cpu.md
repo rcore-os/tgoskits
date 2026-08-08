@@ -1,200 +1,208 @@
 # Axvisor 实时 CPU 分区设计
 
-## 1. 目标范围
+## 1. 功能定位
 
-Axvisor 的实时能力以物理 CPU 所有权分区为基础，而不是在普通 SMP 调度器里增加一个高优先级任务。设计目标是在 4 核系统上让 `pCPU0..2` 继续运行现有 Axvisor host runtime，让 `pCPU3` 进入独立的实时 runtime；普通 host runtime 仍负责 VM 管理、设备、shell、文件系统和 vCPU thread，实时 CPU 则只执行固定的内核态实时工作，不进入用户态，也不提供 syscall。
+Axvisor 的实时 CPU 支持采用物理 CPU 所有权分区，而不是把实时工作建模为普通 `ax-task` 高优先级线程。启用 `AX_RT_CPU=3` 并以 `SMP=4` 构建时，`pCPU0..2` 继续运行原有 ArceOS/Axvisor host runtime、VM manager、shell、普通设备和 vCPU thread，`pCPU3` 在完成最小 secondary CPU 初始化后跳入 Axvisor 的实时入口，并运行 `components/ax-rt` 提供的独立 cooperative executor。
 
-### 1.1 问题约束
+### 1.1 设计目标
 
-当前 Axvisor 通过 `os/axvisor/Cargo.toml` 依赖 `ax-std` 并启用 `smp`、`multitask`、`irq`、`hv` 和 `tls`。这些 feature 让 Axvisor 复用 `os/arceos/modules/axruntime/src/mp.rs` 中的 `rust_main_secondary()`，secondary CPU 会初始化 per-cpu、HAL、内存、`ax_task` run queue、IPI 和 IRQ，最后进入 `ax_task::run_idle()`。如果只在 `cpu_id == 3` 时跳到另一个循环，普通 runtime 仍会把该 CPU 视为可调度 CPU，导致启动同步、IPI readiness、IRQ affinity、block runtime 和 vCPU placement 继续依赖它。
+当前目标是在不破坏 Axvisor 默认行为的前提下，提供一个可观察、可扩展的单核实时执行域。这个执行域与普通 host scheduler 隔离，不进入 `ax_task::init_scheduler_secondary()`、`ax_task::run_idle()`、普通 sleep/wake、普通 IPI readiness 和普通 block runtime online 流程；host 侧只能通过显式状态快照和输出缓冲区观察 RT 核。
 
-这些代码锚点共同定义了第一版不能绕过的行为边界。实时 CPU 分区必须先让 host runtime 明确知道哪些 CPU 属于 host，再让 RT runtime 接管被隔离的 CPU；否则实现会在简单 QEMU 启动中看似可用，却在 VM、IPI、block I/O 或 shell 并发路径中挂死。
+RT CPU 分区的第一版成功标准是“CPU 所有权不会混淆”。启用后，普通 Axvisor host 只把 host CPU 集视为可调度资源，AxVM host 只向 host CPU 集派发虚拟化初始化与 vCPU 线程；RT CPU 只运行静态内核态实时任务，不运行 guest vCPU，也不作为普通 task migration 的目标。
 
-| 代码锚点 | 当前职责 | 实时分区影响 |
+### 1.2 默认行为
+
+不设置 `AX_RT_CPU` 时，构建脚本生成的 `build_info::REALTIME_CPU_ENABLED` 为 `false`，`secondary_cpu_owner()` 会把所有在线 logical CPU 都归类为 `SecondaryCpuOwner::Host`。这种情况下不会调用 `ax_realtime_secondary_main()`，不会启动 `ax-rt` executor，`INITED_CPUS` 仍等待全部 CPU，IPI readiness 和 block runtime SMP online 也保持原有路径。
+
+默认关闭行为对回归定位很重要。RT 支持被做成 build-time opt-in 后，普通 Axvisor QEMU、板卡和 CI 流程不需要知道 RT CPU 的存在；只有显式设置 `AX_RT_CPU` 的构建才会改变 secondary CPU 所有权和 host CPU 数。
+
+### 1.3 当前限制
+
+当前实现只支持把最后一个 logical CPU 保留给 RT runtime，例如 4 核系统中的 `AX_RT_CPU=3`。`os/arceos/modules/axruntime/build.rs` 会拒绝 primary CPU、拒绝非最后 CPU，并把 `SMP` 解析出的 CPU 容量写入 `build_info::CPU_CAPACITY`，避免启动阶段出现 primary、设备 probe、IRQ mask 或 VM manager 所有权尚未设计清楚的中间 CPU 分区。
+
+这些限制是实现边界，不是最终架构边界。当前 RT executor 也是 cooperative/yield 模型，`rt_sleep()` 和 `rt_delay_until()` 通过 executor loop 扫描 deadline 唤醒任务，还没有接入 RT 专属 timer IRQ；RT task 是启动时静态注册的 `fn() -> !`，不支持动态创建、跨 CPU 迁移、priority inheritance、RTOS guest 独占 CPU 或 RT-owned 设备直通。
+
+## 2. 启动流程
+
+实时 CPU 的启动路径从 ArceOS runtime 的 build info 开始，在 secondary CPU common init 之后分流，并在 Axvisor glue 中进入 `ax-rt`。分流点选在 `rust_main_secondary()` 内部，是因为这个位置已经完成了 CPU-local 和早期 HAL 初始化，但还没有把该 CPU 注册进普通 scheduler、IPI readiness、per-CPU IRQ 和 idle loop。
+
+### 2.1 构建配置
+
+`os/arceos/modules/axruntime/build.rs` 负责读取 `SMP` 和 `AX_RT_CPU`，并生成 `build_info.rs` 中的 `CPU_CAPACITY`、`REALTIME_CPU_ENABLED` 和 `REALTIME_CPU`。`cargo:rerun-if-env-changed=AX_RT_CPU` 确保切换 RT CPU 配置时重新生成运行时常量；`virtualization/axvm/build.rs` 也监听同一个环境变量，让 AxVM host CPU 计数随构建配置更新。
+
+| 配置项 | 代码锚点 | 当前语义 |
 | --- | --- | --- |
-| `axruntime::mp::start_secondary_cpus()` | 按 `ax_hal::cpu_num()` 启动 secondary CPU | 后续需要按 host CPU 集启动普通 secondary，并单独启动 RT CPU |
-| `axruntime::mp::rust_main_secondary()` | 所有 secondary CPU 进入普通 runtime | 后续需要在完成最小 CPU 初始化后按所有权分流 |
-| `ax_realtime_secondary_main()` | Axvisor 提供的 RT secondary 入口 | RT CPU 从 `axruntime` 跳入 Axvisor RT runtime 的固定落点 |
-| `components/ax-rt` | 可复用 RT executor crate | 承载 RT task、上下文切换、sleep、mutex、output buffer 和状态快照，避免把 scheduler core 绑定为 Axvisor 私有实现 |
-| `axruntime::INITED_CPUS` | 等待所有普通 runtime CPU 初始化完成 | 计数语义必须改为 host CPU 数，不能包含 RT CPU |
-| `ax_ipi::wait_for_all_cpus_ready()` | 等待普通 IPI 可用 | RT CPU 不应参与普通 IPI readiness |
-| `axruntime::fs::online_smp()` | 在 SMP online 后扩展 block runtime | 扩展范围必须是 host CPU 集 |
-| `config::build_axvm_config()` | 将 guest `cpu_num` 和 placement 交给 AxVM | vCPU placement 必须拒绝 RT CPU |
+| `SMP` | `RuntimeConfig::load()` | 生成 compile-time `CPU_CAPACITY`，并作为 `AX_RT_CPU` 合法性校验依据 |
+| `AX_RT_CPU` | `RuntimeConfig::load()` | 非空时启用实时 CPU 分区，并要求值等于 `SMP - 1` |
+| `REALTIME_CPU_ENABLED` | `build_info_source_from()` | `axruntime::secondary_cpu_owner()` 判断是否存在 RT CPU |
+| `REALTIME_CPU` | `build_info_source_from()` | 被保留给 RT runtime 的 logical CPU ID |
 
-第一阶段只增加设计文档和默认关闭的代码边界，不改变这些锚点的运行语义。后续阶段每次只改变一个可验证的生命周期边界，确保每个阶段都能独立编译和回滚。
+典型 QEMU 启动命令需要同时指定 4 核和 RT CPU。`--smp 4` 决定运行时可见 CPU 数，`AX_RT_CPU=3` 决定构建产物中的分区策略；两者必须匹配，否则构建脚本会拒绝当前不支持的布局。
 
-### 1.2 成功标准
-
-最小完整功能不是“有一个高优先级 thread”，而是“host CPU 和 RT CPU 的所有权不可混淆”。在默认关闭时，Axvisor 的现有 QEMU 和板卡行为必须保持不变；启用实时分区后，普通 Axvisor runtime 只能在 host CPU 集上运行，RT CPU 只能运行静态实时 executor，并且 host 侧可以观测 RT 状态。
-
-可观察成功标准按阶段递进。设计阶段只要求文档和空边界可编译；CPU 分区阶段要求 4 核启动时 `pCPU3` 不进入 `ax_task::run_idle()`，而 `pCPU0..2` 上的 Axvisor 和默认 VM 仍能启动；timer 阶段要求 RT CPU 的本地 timer 统计递增；executor 阶段要求周期任务和 deadline miss 统计可观测；设备阶段才要求某个设备 IRQ 被固定交给 RT CPU。
-
-```mermaid
-flowchart TD
-    Boot[固件发现 4 个 pCPU] --> Partition[Axvisor CPU 分区]
-    Partition --> Host[pCPU0..2 Host Runtime]
-    Partition --> Rt[pCPU3 RT Runtime]
-    Host --> Vm[VM/vCPU threads]
-    Host --> Shell[管理 shell]
-    Host --> Devices[普通设备和文件系统]
-    Rt --> Timer[RT local timer]
-    Rt --> Executor[静态实时 executor]
-    Rt --> Mailbox[Host/RT mailbox]
+```bash
+AX_RT_CPU=3 cargo xtask axvisor qemu \
+  --config os/axvisor/configs/board/qemu-aarch64.toml \
+  --smp 4
 ```
 
-图中的 `Partition` 是整个方案的核心状态源。所有后续模块，包括 secondary boot、scheduler affinity、VM placement、IRQ route 和 block runtime，都应读取同一份 CPU 所有权事实，而不是在各自模块里重复判断“最后一个 CPU”。
+### 2.2 Primary 初始化
 
-### 1.3 非目标
+Primary CPU 仍走 `axruntime::rust_main()` 的原有 Axvisor host 初始化路径。它初始化 allocator、paging、platform devices、scheduler、IPI、IRQ、filesystem、serial 和其他 runtime 模块，然后通过 `mp::start_secondary_cpus(cpu_id)` 启动 secondary CPU；这一步不把 primary CPU 让给 RT，因为当前实现明确禁止 `AX_RT_CPU=0`。
 
-第一版实时能力不承诺完整 FreeRTOS 兼容，也不让 guest vCPU 直接在 RT scheduler 上运行。RT CPU 执行的是 host 内核态静态 executor，不进入用户态，不提供 syscall，不运行 `std::thread`，也不复用普通 `ax_task` 的 sleep、mutex、timer wheel 或 workqueue 语义。
+Primary 后续等待条件从“所有物理 CPU 都完成普通 runtime 初始化”收敛为“所有 host CPU 完成普通 runtime 初始化”。`INITED_CPUS` 的完成条件由 `is_init_ok()` 比较 `host_cpu_count()`，因此 RT CPU 进入自己的 executor 后不会让 primary 永远卡在普通 SMP init barrier 上。
 
-这些非目标降低了第一版的资源所有权和调度复杂度。RT guest 独占物理 CPU、设备直通给 RTOS guest、动态创建实时任务、SCHED_DEADLINE 类调度策略、跨 CPU 迁移和普通设备驱动的实时化都应作为后续独立设计处理。
+### 2.3 Secondary 分流
 
-## 2. 架构边界
+所有 secondary CPU 首先进入 `os/arceos/modules/axruntime/src/mp.rs` 的 `rust_main_secondary(cpu_id)`。该函数先处理超过 `CPU_CAPACITY` 的 CPU park，再执行 `ax_hal::percpu::init_secondary(cpu_id)`、`ax_alloc::init_percpu_slab(cpu_id)` 和 `ax_hal::init_early_secondary(cpu_id)`；随后通过 `secondary_cpu_owner(cpu_id)` 判断 CPU 所有权。
 
-实时 CPU 分区引入三个 CPU 集合：固件发现的物理 CPU 集、普通 Axvisor host runtime 拥有的 host CPU 集、RT runtime 独占的 realtime CPU 集。`ax_hal::cpu_num()` 当前被大量代码当作普通 runtime CPU 数使用，因此后续实现不能简单把它解释为物理 CPU 数；需要在 Axvisor/ArceOS runtime 边界上显式传递 host CPU 集。
-
-### 2.1 CPU 所有权
-
-CPU 所有权由一个小而稳定的 Axvisor 边界表达，第一阶段代码锚点是 `os/axvisor/src/realtime.rs` 中的 `CpuOwner` 和 `cpu_owner()`。默认 feature 未启用时，所有 CPU 都属于 `Host`，因此现有行为完全不变；启用后，后续阶段会把配置解析、启动分流和 affinity 校验接到这个边界上。RT scheduler core 本身位于 `components/ax-rt`，与 `ax-task` 平级，Axvisor 只是第一个集成者。
-
-| CPU 所有者 | 运行内容 | 禁止内容 |
-| --- | --- | --- |
-| `Host` | Axvisor main、shell、VM manager、普通 vCPU thread、普通设备 IRQ | 无 |
-| `Realtime` | 静态 RT executor、RT timer、RT mailbox、RT-owned IRQ | `ax_task` run queue、普通 VM/vCPU、普通 block hctx |
-| `Offline` | park loop | 调度、IRQ route、RT executor |
-
-`Offline` 是预留状态，用于处理超过构建容量的 CPU 或未来配置显式禁用的 CPU。第一版不会扩大公共配置面来支持它，但状态模型保留该分支能避免后续用 magic number 或裸布尔值表达不可运行 CPU。
-
-### 2.2 启动分流
-
-后续 CPU 分流应发生在 secondary CPU 完成最小架构初始化之后、进入普通 scheduler 初始化之前。`axruntime::mp::rust_main_secondary()` 当前把所有 secondary CPU 串成一条路径；实时分区实现需要把这条路径拆成“共同最小初始化”和“所有者专属初始化”两个阶段。
+下面的状态图描述了当前实际启动路径。RT 分流发生在普通 paging secondary、late HAL、`ax_task` secondary scheduler、IPI init 和 IRQ online 之前，因此 RT CPU 不会被注册进普通 host 调度域。
 
 ```mermaid
 stateDiagram-v2
     [*] --> SecondaryEntry
-    SecondaryEntry --> MinimalCpuInit
-    MinimalCpuInit --> HostSecondary: CpuOwner::Host
-    MinimalCpuInit --> RtSecondary: CpuOwner::Realtime
-    MinimalCpuInit --> Parked: CpuOwner::Offline
-    HostSecondary --> HostIdle: ax_task::run_idle
-    RtSecondary --> RtLoop: static executor
+    SecondaryEntry --> Parked: cpu_id >= CPU_CAPACITY
+    SecondaryEntry --> MinimalCpuInit: cpu_id < CPU_CAPACITY
+    MinimalCpuInit --> RtEntry: SecondaryCpuOwner::Realtime
+    MinimalCpuInit --> HostSecondary: SecondaryCpuOwner::Host
+    RtEntry --> RtExecutor: ax_realtime_secondary_main
+    HostSecondary --> HostScheduler: init_scheduler_secondary
+    HostScheduler --> HostReady: INITED_CPUS += 1
+    HostReady --> HostIdle: ax_task::run_idle
     Parked --> Parked: wait_for_irqs
 ```
 
-`MinimalCpuInit` 至少需要包含 per-cpu area、trap vector、MMU/page table、local interrupt controller 和必要的 allocator per-cpu 状态。`HostSecondary` 继续执行现有 `ax_task::init_scheduler_secondary()`、普通 IPI readiness 和 `INITED_CPUS` 发布；`RtSecondary` 则初始化 RT timer、mailbox 和 executor，不能发布成普通 scheduler CPU。
+`SecondaryCpuOwner::Offline` 当前只用于容量外 CPU park，不是面向用户的配置能力。后续如果需要显式 offline CPU，应补齐启动日志、IRQ mask、VM placement 和 host parallelism 语义，而不是直接把裸 CPU ID 放进多个模块分别判断。
 
-### 2.3 调度隔离
+### 2.4 RT 入口
 
-普通 scheduler 只能看到 host CPU 集，RT CPU 不参与 `ax_task` run queue、task migration、普通 `available_parallelism()`、host console reader affinity 或 VM/vCPU placement。Axvisor 的 `guest_console::host` 已经会通过 `ax_task::set_current_affinity()` 固定 console reader，类似调用在实时分区启用后必须使用 host CPU mask，而不是直接选择物理 CPU。
+RT CPU 的 Axvisor 入口是 `os/axvisor/src/realtime.rs` 中的 `#[unsafe(no_mangle)] pub extern "Rust" fn ax_realtime_secondary_main(cpu_id: usize) -> !`。`axruntime::run_realtime_secondary(cpu_id)` 通过外部符号调用这个入口，使通用 runtime 只负责 CPU 分流，Axvisor glue 负责选择 RT task、时间源和状态发布。
 
-调度隔离的维护规则是：任何接受 CPU ID 或 CPU mask 的 host-facing API，都必须说明它使用的是 host CPU 命名空间还是物理 CPU 命名空间。VM 配置中的 `phys_cpu_ids` 和 `phys_cpu_sets` 当前通过 `config::build_axvm_config()` 传给 `PhysCpuList::new()`；启用实时分区后，这里必须拒绝包含 RT CPU 的 guest placement，而不是静默重映射。
+入口函数记录初始 heartbeat/watchdog 时间戳，打印 `Realtime CPU {cpu_id} entered Axvisor RT entry; running isolated executor.`，然后调用 `ax_rt::run_realtime_cpu(cpu_id, &RT_TASKS, monotonic_time_nanos)`。从这一点开始，RT CPU 不返回 `axruntime`，也不会继续执行普通 secondary 的 paging、late HAL、scheduler、IPI 或 IRQ online 代码。
 
-## 3. 实时运行时
+## 3. 侵入点
 
-RT runtime 是一个单核、静态、无普通任务调度的执行环境。它可以复用底层 HAL 的 CPU-local、trap、timer 和 IRQ 原语，但不能依赖普通 `ax_task` 的 run queue、sleepable lock、动态 task 创建或线程局部调度语义。
+实时 CPU 支持尽量把侵入限制在 CPU 所有权、启动同步、IRQ/IPI 范围、AxVM host CPU 计数和 Axvisor shell glue。核心原则是：通用 ArceOS runtime 只知道某个 secondary CPU 是否属于 host，`ax-rt` 不依赖 Axvisor，Axvisor 只作为第一个集成者提供 RT 入口和 demo tasks。
 
-### 3.1 入口函数
+### 3.1 ArceOS Runtime
 
-RT 核的应用层入口是 `os/axvisor/src/realtime.rs` 中的 `ax_realtime_secondary_main(cpu_id) -> !`。`axruntime` 在完成最小 secondary CPU-local 初始化并判定该 CPU 属于 `SecondaryCpuOwner::Realtime` 后，通过这个符号跳入 Axvisor；因此后续 RT timer、mailbox 和 executor 都应从这个入口向下展开，而不是继续塞在 `axruntime` 内部。
+`axruntime` 的修改集中在 build info、secondary ownership、host CPU count 和普通 SMP barrier 上。`secondary_cpu_owner(cpu_id)` 读取 `build_info::REALTIME_CPU_ENABLED` 与 `build_info::REALTIME_CPU`，将保留 CPU 归类为 `Realtime`；`host_cpu_count()` 遍历 `ax_hal::cpu_num()` 并只统计 `Host` CPU。
 
-当前入口执行 `components/ax-rt` 提供的静态 cooperative executor，用于证明 core3 已经离开普通 host scheduler 域，并且持续在 Axvisor RT 入口内运行。executor 为每个 RT task 准备独立栈、`TaskContext` 和 RT 私有 current-thread header，使用 `cpu-local` 的线程切换事务完成上下文切换，但不注册到普通 `axtask` run queue。`rt status` shell 命令读取 `RtStatus` 快照，显示 RT CPU、入口状态、executor 迭代次数、heartbeat/watchdog 时间和每个静态任务的运行统计；后续阶段会把 busy-spin yield 替换为真正的 RT timer 唤醒和事件队列。
-
-### 3.2 静态执行器
-
-第一版 RT executor 只支持启动时静态注册的 cooperative 周期任务。`ax-rt` 使用固定容量任务表和 busy-spin yield 扫描 ready/delayed/blocked 状态，到期后切换到对应 RT task 的独立上下文。RT task 是长生命周期 `fn() -> !` 入口，任务函数自己在合适位置调用 RT 私有 `rt_yield_now()`、`rt_delay_until(deadline_nanos)` 或 `rt_sleep(duration_nanos)` 切回 executor。不调用普通 `ax_task` 的 run queue、sleep 或 wake 路径；后续事件任务由 host 到 RT 的 mailbox 触发。任务函数运行在 RT CPU 上，不能阻塞在普通 mutex 上，也不能调用可能睡眠的 host API。
-
-`ax-rt` 内部提供 `RtMutex` 作为第一版 cooperative sleepable mutex。拿锁失败时，当前 RT task 被标记为 `Blocked` 并主动 yield 回 executor；unlock 只唤醒一个 waiter，把它改回 `Ready`。`RtMutex` 不使用普通 sleepable lock，不进入 `axtask`，也不在持锁路径里调用 host scheduler。第一版暂不支持 recursive locking、priority inheritance、跨 CPU owner 和 IRQ context lock/unlock；这些都需要在接入 RT timer IRQ 和真实 RT 设备前单独设计。
-
-RT console 第一版不重构 Axvisor guest console mux。RT task 只写入 `ax-rt` 中一个固定容量的 RT output buffer，host 侧通过 `rt console` / `rt shell` 命令拉取并打印输出。这个临时形态避免 RT CPU 直接抢 host UART 或持有普通 console lock，也避免把 `guest_console` 当前的 `attached VM` 模型立即扩展成多目标 mux。后续如果需要完整交互式 RT shell，再把 mux 的 attachment 状态提升为 `Shell`、`Guest(VMId)`、`Realtime` 三态。
-
-| RT 任务字段 | 语义 | 第一版约束 |
+| 位置 | 代码锚点 | 侵入原因 |
 | --- | --- | --- |
-| `name` | 诊断名称 | 静态字符串 |
-| `period` | 周期任务触发间隔 | 固定配置，不动态修改 |
-| `deadline` | deadline miss 统计阈值 | 只统计，不做复杂抢占 |
-| `callback` | RT CPU 上执行的函数 | 不分配、不睡眠、不迁移 |
+| `axruntime/build.rs` | `RuntimeConfig::load()` | 把 `AX_RT_CPU` 固化为构建常量，并校验当前只支持最后一个 CPU |
+| `axruntime/src/lib.rs` | `SecondaryCpuOwner` | 给 secondary CPU 分流提供单一所有权事实 |
+| `axruntime/src/lib.rs` | `host_cpu_count()` | 让 `INITED_CPUS` 等待 host CPU，而不是等待 RT CPU |
+| `axruntime/src/lib.rs` | `run_realtime_secondary()` | 通过外部符号跳入 Axvisor RT 入口 |
+| `axruntime/src/mp.rs` | `rust_main_secondary()` | 在普通 scheduler 初始化前把 RT CPU 分出去 |
 
-第一版不需要引入复杂 trait object 层级。可以先用固定表和函数指针完成最小闭环，等出现多个真实 RT 任务来源后再抽象注册接口。
+这些点是必须侵入 ArceOS runtime 的部分，因为只有 runtime 能在 secondary CPU 进入普通调度器前做出所有权决策。如果把判断放在 Axvisor main 或 shell 层，RT CPU 已经被普通 scheduler、IPI 和 IRQ 框架注册，隔离就无法成立。
 
-### 3.3 Timer 模型
+### 3.2 IRQ 与 IPI 范围
 
-RT timer 必须与普通 host scheduler timer 分离。普通 host timer 继续服务 `ax_task`、sleep、timeout 和 VM wait；RT timer 只更新 RT executor 的 deadline 和统计，不调用普通 scheduler tick，也不唤醒普通 task。
+普通 timer IRQ 和 IPI handler 的 per-CPU 注册范围改为 host CPU 集。`init_percpu_irq()` 在 BSP 上使用 `ax_hal::irq::CpuMask::first_n(host_cpu_count())` 请求 timer IRQ 和 IPI IRQ，避免把保留的 RT CPU 纳入普通 scheduler tick 或普通 IPI handler。
 
-AArch64 上尤其需要保持与 `book/design/axvisor-aarch64-generic-timer.md` 的 guest timer 契约一致。RT CPU 如果运行在 EL2 host 侧，必须明确使用哪个物理或虚拟 timer，不能破坏 Axvisor 的 guest CNTV/CNTP world switch、host CNTV PPI ownership 或 VGIC level 语义。
+当 host CPU 数少于 `ax_hal::cpu_num()` 时，primary 会跳过 `ax_ipi::wait_for_all_cpus_ready()` 和 `fs::online_smp()`，并打印 `Skip block runtime SMP online while Axvisor realtime CPU split is active.`。这是保守处理：当前 block runtime 的 SMP online 语义仍默认所有 CPU 都属于普通 host，如果把 RT CPU 包进去会重新引入等待或 affinity 风险。
 
-### 3.4 通信队列
+### 3.3 AxVM Host
 
-Host 和 RT 的通信应通过有界队列和显式 IPI/flag 完成，不能让 RT hot path 获取普通 sleepable lock。第一版可使用启动时预分配的 bounded queue；队列满时返回确定错误或增加 drop 统计，不能在 RT CPU 上无限 spin 等待 host 消费。
+AxVM 通过 `virtualization/axvm/src/host/arceos.rs` 的 `ArceOsHost` 适配 ArceOS runtime。`HostCpu::cpu_count()` 返回 `host_cpu_count()`，该函数在 `AX_RT_CPU` 等于最后一个 CPU 时返回 `cpu_num - 1`；因此 AxVM host virtualization enable、vCPU placement 和相关 host-side CPU 枚举只看到 host CPU 集。
 
-```mermaid
-sequenceDiagram
-    participant Host as Host CPU
-    participant H2R as HostToRtQueue
-    participant RT as RT CPU
-    participant R2H as RtToHostQueue
-    Host->>H2R: push command
-    Host->>RT: send RT IPI or set flag
-    RT->>H2R: drain commands
-    RT->>RT: run event callback
-    RT->>R2H: push completion
-    Host->>R2H: poll or consume completion
+这个修改解决了早期原型中 host 卡在 `Enabling hardware virtualization support on all cores...` 的问题。卡住原因是 AxVM 仍等待 core3 执行普通 host virtualization 初始化，而 core3 已经进入 RT executor；把 AxVM host CPU count 收敛到 host CPU 集后，core0..2 完成初始化即可继续进入 Axvisor shell 和 VM 管理路径。
+
+### 3.4 Axvisor Glue
+
+Axvisor 的侵入点在 `os/axvisor/src/realtime.rs` 和 shell 命令。`realtime.rs` 提供 `ax_realtime_secondary_main()`、Axvisor demo task 表、heartbeat/watchdog 统计、RT 输出读取 re-export，以及 `CpuOwner`/`cpu_owner()` 等 Axvisor 侧查询函数；shell 侧的 `os/axvisor/src/shell/command/rt.rs` 提供 `rt status`、`rt console` 和 `rt shell`。
+
+Axvisor glue 不实现通用 scheduler core。通用 RT executor 已经抽到 `components/ax-rt`，所以 Axvisor 只传入静态任务数组和 `monotonic_time_nanos` 时间源；后续其他内核或子系统如果需要同类单核 cooperative RT executor，可以依赖 `ax-rt` 而不依赖 Axvisor。
+
+## 4. 实时执行域
+
+`components/ax-rt` 是与 `ax-task` 平级的 `#![no_std]` crate，承载 RT task 描述、上下文切换、cooperative yield/sleep、状态快照、RT mutex 和固定容量输出缓冲区。它有意不依赖 `axvisor`、`axvm` 或 `ax-std`，只要求集成者在入口处提供静态任务表和单调时间源。
+
+### 4.1 任务模型
+
+RT task 使用 `RtTask::new(name, period_nanos, run)` 静态声明，`run` 是不会返回的 `fn() -> !`。`ax-rt` 当前最多支持 `MAX_RT_TASKS = 8` 个任务；`run_realtime_cpu()` 会记录 CPU ID、entry timestamp、任务表指针和时间源，然后进入 executor loop。
+
+| API 或类型 | 代码锚点 | 当前功能 |
+| --- | --- | --- |
+| `RtTask` | `components/ax-rt/src/task.rs` | 静态任务描述，包含名称、周期和入口函数 |
+| `run_realtime_cpu()` | `components/ax-rt/src/executor.rs` | 初始化全局 RT 状态并在当前 CPU 上运行 executor |
+| `rt_yield_now()` | `components/ax-rt/src/executor.rs` | 把当前 task 标记为 `Ready` 并切回 executor |
+| `rt_delay_until()` | `components/ax-rt/src/executor.rs` | 把当前 task 标记为 `Delayed`，直到指定 deadline |
+| `rt_sleep()` | `components/ax-rt/src/executor.rs` | 基于当前时间计算 deadline 并 delay |
+| `rt_exit_current_task()` | `components/ax-rt/src/executor.rs` | 把当前 task 标记为 `Exited`，不再调度 |
+
+executor loop 以 round-robin 方式扫描任务，先调用 `wake_expired_tasks(now)` 把到期的 `Delayed` task 改回 `Ready`，再把 ready task 切到独立上下文运行。当前没有抢占，任务必须主动调用 RT API 切回 executor；因此任务函数不能执行不可控长时间 busy loop，也不能调用普通 host sleepable API。
+
+### 4.2 上下文隔离
+
+`components/ax-rt/src/context.rs` 为 executor 和每个 RT task 准备独立 stack、`axcpu::TaskContext` 和 RT 私有 current-thread header，并通过 CPU-local current-thread switch transaction 完成上下文切换。这里复用的是底层 CPU context 和 CPU-local 机制，而不是复用 `ax-task` 的 run queue、`CurrentTask`、wait queue 或 timer wheel。
+
+这种分层是隔离性的关键。RT CPU 上不存在普通 task migration，RT task 的 `runs` 计数表示任务主动 yield、delay、block 或 exit 的次数；host 只能通过 `status()` 的原子快照观察状态，不能直接把普通 `AxTaskRef` 放进 RT executor。
+
+### 4.3 同步原语
+
+`RtMutex` 是第一版 cooperative sleepable mutex，内部使用 `owner: AtomicUsize` 和 `waiters: AtomicUsize` bitmask。拿锁失败时，当前 RT task 被标记为 `Blocked` 并 yield 回 executor；unlock 时只唤醒一个 waiter，把它改回 `Ready`。
+
+这个 mutex 只适合 RT task 之间的 cooperative 同步。它不支持 recursive locking、priority inheritance、IRQ context lock/unlock、跨 CPU owner 或与普通 host mutex 混用；如果后续接入真实 RT IRQ 或设备 hot path，需要重新设计 IRQ-safe 原语和优先级语义。
+
+### 4.4 输出通道
+
+RT task 不直接写 host UART，也不拿普通 console lock。`components/ax-rt/src/output.rs` 提供固定容量 1024 字节 ring buffer，RT 侧用 `rt_output_write()` 和 `rt_output_write_decimal()` 写入，host shell 用 `rt_read_output()` 拉取。
+
+这个输出通道是临时但安全的观测面。`rt console` 和 `rt shell` 当前只是 drain RT output buffer，并不改变 Axvisor guest console mux 的 attached VM 模型；如果未来需要交互式 RT shell，应把 console attachment 显式扩展为 Host shell、Guest console 和 Realtime console 三态。
+
+## 5. 已实现功能
+
+当前实现已经完成从构建配置到 RT CPU 启动、独立 executor、状态观测和 Linux guest 共存的最小闭环。它还没有实现真实 RT timer IRQ、mailbox、RT-owned device 或 deadline scheduler，所以文档和运行日志都应把它称为 isolated cooperative realtime executor。
+
+### 5.1 Axvisor Demo Tasks
+
+`os/axvisor/src/realtime.rs` 注册了三个静态 demo task，用来证明 RT CPU 能长期独立运行并提供可观察状态。`heartbeat` 以 1ms 周期更新 heartbeat 计数和时间戳，`watchdog` 以 100ms 周期更新时间戳，`hello` 每 1s 向 RT output buffer 写一次消息，输出 5 次后调用 `rt_exit_current_task()` 进入 `Exited` 状态。
+
+| 任务名 | 周期 | 代码锚点 | 行为 |
+| --- | --- | --- | --- |
+| `heartbeat` | 1,000,000 ns | `heartbeat_task()` | 更新 `RT_HEARTBEATS` 和 `RT_LAST_HEARTBEAT_NANOS` |
+| `watchdog` | 100,000,000 ns | `watchdog_task()` | 更新 `RT_WATCHDOG_RUNS` 和 `RT_LAST_WATCHDOG_NANOS` |
+| `hello` | 1,000,000,000 ns | `hello_task()` | 输出 `hello from RT task N/5`，第 5 次后退出 |
+
+`heartbeat` 和 `watchdog` 共享 `RT_SAMPLE_MUTEX`，用于覆盖 `RtMutex` 的基本 lock/yield/wake 路径。这个 demo mutex 不是跨 CPU 通信手段，只验证 RT executor 内部 cooperative blocking 状态能被调度器重新唤醒。
+
+### 5.2 Shell 观测
+
+Axvisor shell 注册了 `rt` 命令树。`rt status` 调用 `ax_rt::status()` 并打印 RT CPU、运行状态、task context 数、heartbeat、executor iterations、entry timestamp、last heartbeat/watchdog timestamp 和每个 task 的表格；`rt console` 与 `rt shell` 轮询 `rt_read_output()`，把 RT output buffer 中的文本打印到 host shell。
+
+`rt status` 在未设置 `AX_RT_CPU` 或 RT 入口尚未执行时显示 `RT CPU: none` 和 `State: offline`。这不是错误，而是默认关闭或尚未进入 RT executor 的可诊断状态；只有启用并成功分流后，状态才会变成 `running` 并出现任务统计递增。
+
+### 5.3 Guest 共存
+
+已验证在 `AX_RT_CPU=3 --smp 4` 下，Linux guest 可以在 host CPU 集上启动，RT core3 不被 vCPU 占用。关键条件是 VM 配置必须存在；如果不传 `--vmconfigs` 且 rootfs 中 `/guest/vm_default` 为空，`vm list` 输出 `No virtual machines found.` 是 Axvisor 当前配置加载行为，不是 RT CPU 分区导致的失败。
+
+临时 memory-mode Linux VM config 可用于验证 host/RT 共存。host 侧只看到 core0..2，RT 侧持续执行 executor；日志应包含 host virtualization 初始化完成、Axvisor shell 出现，以及 RT CPU 进入 isolated executor 的提示。
+
+## 6. 验证与后续
+
+验证应覆盖默认关闭和显式启用两条路径。默认关闭用于证明改动没有回归普通 Axvisor；显式启用用于证明 core3 没有进入普通 scheduler，并且 host CPU 集上的 Axvisor shell、VM 管理和 guest 启动仍可用。
+
+### 6.1 本地验证
+
+已完成的基础验证包括 `cargo fmt`、`cargo xtask clippy --package ax-rt`、4 核 Axvisor build，以及 `AX_RT_CPU=3` 的 QEMU smoke。Axvisor crate 的显式 clippy 曾被既有无关 warning 阻塞，位置是 `platforms/somehal/src/arch/aarch64/gic/v3.rs` 的 `clippy::unnecessary_cast`。
+
+推荐的快速验证命令是先构建，再运行 QEMU smoke。只改文档时不需要重新跑这些命令；改 `axruntime`、`ax-rt`、AxVM host adapter 或 Axvisor RT glue 时应至少跑 `cargo fmt`、目标 crate clippy 和一次 RT QEMU 启动。
+
+```bash
+cargo fmt
+cargo xtask clippy --package ax-rt
+AX_RT_CPU=3 cargo xtask axvisor build \
+  --config os/axvisor/configs/board/qemu-aarch64.toml \
+  --smp 4
+AX_RT_CPU=3 cargo xtask axvisor qemu \
+  --config os/axvisor/configs/board/qemu-aarch64.toml \
+  --smp 4
 ```
 
-这个通信模型把跨 CPU 共享限制在两个队列和少量原子状态中。RT callback 可以读取命令和发布结果，但不能直接调用 `AxvmManager`、shell 输出、文件系统或普通驱动管理接口。
+### 6.2 后续工作
 
-## 4. 资源所有权
+后续扩展应继续保持 CPU 所有权事实单一，避免在 VM、IRQ、scheduler 或 shell 中复制“最后一个 CPU 是 RT CPU”的判断。优先事项是把 busy polling sleep 改成 RT 专属 timer IRQ，把 host/RT 通信用 bounded mailbox 表达，并在接入任何 RT-owned IRQ 或设备前补齐设备所有权配置和 probe 排除规则。
 
-实时分区只有在资源所有权同样被分区后才有稳定实时性。CPU 隔离是第一步，后续还必须明确内存、IRQ 和设备是否属于 host 或 RT。
-
-### 4.1 内存池
-
-RT runtime 应使用启动时预分配的静态内存池，进入实时循环后默认不调用全局 allocator。队列、任务表、统计区和 RT stack 都应在 primary CPU 启动阶段或 RT CPU early 阶段完成分配，并在进入 RT loop 前冻结。
-
-共享统计区需要考虑 cache line 对齐和 memory ordering。host 读取 RT 统计时应使用 Acquire，RT 写入发布状态时应使用 Release；只做计数且不承载同步含义的字段可以使用 Relaxed，但必须通过状态发布路径解释可见性。
-
-### 4.2 IRQ 路由
-
-RT-owned IRQ 不能进入普通 host IRQ dispatch。后续接入真实设备时，平台层需要把该 IRQ 的 affinity 固定到 RT CPU，并让 `ax_hal::irq` 或更底层的 controller route 知道该 IRQ 属于 RT owner；普通设备 probe 不应同时绑定同一 MMIO range 或 IRQ line。
-
-第一版设备非目标下，只有 RT local timer 和可能的 RT IPI 需要处理。真实设备接入前必须先定义设备所有权配置、probe 排除规则、IRQ enable/disable 语义和 teardown 行为。
-
-### 4.3 VM 放置
-
-普通 VM 和 vCPU thread 默认只能使用 host CPU 集。Axvisor 的 VM TOML 中 `cpu_num`、`phys_cpu_ids` 和 `phys_cpu_sets` 表达 guest placement；启用实时分区后，配置解析或 `build_axvm_config()` 必须在创建 `PhysCpuList` 前校验这些字段，发现 RT CPU 时返回可诊断错误。
-
-未来如果要让 RTOS guest 独占 RT CPU，应作为“dedicated pCPU guest”单独设计。那条路径涉及 guest vCPU 与物理 CPU 绑定、虚拟中断、timer、设备直通和 host teardown，不应混入第一版 host RT executor。
-
-## 5. 交付阶段
-
-每个阶段必须保持可编译，并且默认行为不变，除非该阶段明确打开实时分区配置。实现 PR 应尽量按纵向切片提交：先建立边界和验证，再接入启动分流，最后扩展 timer、executor 和设备所有权。
-
-### 5.1 阶段一
-
-阶段一只增加设计文档和默认关闭的代码边界。`os/axvisor/src/realtime.rs` 提供 `CpuOwner`、`cpu_owner()` 和 `host_cpu_count()` 这类无副作用查询，默认返回所有 CPU 都属于 host；`os/axvisor/Cargo.toml` 增加 `realtime` feature，但不启用它，不改变任何启动路径。
-
-验收方式是普通 Axvisor crate 继续编译，且启用 `realtime` feature 时这些边界也能通过 clippy。这个阶段不要求 QEMU 行为变化。
-
-### 5.2 阶段二
-
-阶段二把 CPU 分区接入 secondary 启动。目标是在 4 核环境中让 host runtime 只等待 host CPU，RT CPU 进入一个只 park 或统计心跳的 `rt_secondary_main()`，并且普通 Axvisor VM 和 shell 仍能工作。这个阶段只支持最后一个非 0 logical CPU 作为 RT CPU，也就是 4 核系统中的 core3；primary CPU 或中间 CPU 分区涉及 primary boot、日志、设备 probe、IRQ mask 和 VM manager 的所有权迁移，应作为后续独立设计处理。
-
-验收方式应包含一个 4 核 QEMU Axvisor case。通过条件是 host secondary CPU 初始化完成、RT CPU 打印一次初始化成功、默认 VM 启动成功，并且系统不会卡在 `INITED_CPUS` 或 IPI readiness 等待。
-
-### 5.3 阶段三
-
-阶段三增加 RT 侧只读统计和一个临时 cooperative executor。RT CPU 维护 heartbeat、watchdog、executor 迭代次数和每个静态任务的运行时间；每个静态任务拥有独立栈和上下文，并通过 `Ready`、`Running`、`Delayed`、`Blocked` 状态和 deadline 由单核 cooperative scheduler 串行运行。host 侧通过 shell 或日志读取这些字段。真正的 RT local timer IRQ 后续只更新 RT 统计和 executor deadline，不调用普通 scheduler tick。
-
-验收方式是 RT heartbeat/watchdog 计数递增，普通 host sleep、VM wait 和 guest timer 行为不回退。AArch64 路径接入真正 timer IRQ 时还必须核对 `book/design/axvisor-aarch64-generic-timer.md` 中的 host/guest timer ownership 没有被破坏。
-
-### 5.4 阶段四
-
-阶段四把临时 cooperative executor 扩展为 timer 驱动的静态 RT executor，并增加 host/RT mailbox。executor 支持固定周期 callback 和事件 callback，mailbox 使用有界预分配队列，队列满时返回错误或计入 drop 统计。
-
-验收方式是一个确定的周期任务能在 RT CPU 上运行并发布统计，host 能提交事件并收到 completion。RT callback 路径不得出现动态分配、普通 sleepable lock 或 `ax_task` API 调用。
-
-### 5.5 阶段五
-
-阶段五才接入 RT-owned 设备或 IRQ。该阶段需要设备所有权配置，普通 probe 排除同一设备，IRQ route 固定到 RT CPU，并提供 teardown 或禁用语义。
-
-验收方式应针对一个简单设备或模拟 IRQ 建立端到端 case。通过条件是设备 IRQ 只由 RT CPU 处理，host VM、shell 和普通设备路径仍稳定，RT latency 和 drop 统计能定位异常。
+未来如果要支持 RTOS guest 独占物理 CPU，应作为新的 dedicated pCPU guest 设计处理。那条路径涉及 guest vCPU 与物理 CPU 绑定、虚拟中断、timer、设备直通和 teardown，不能直接复用当前 host 内核态 `ax-rt` executor 的任务模型。
