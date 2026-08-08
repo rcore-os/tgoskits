@@ -40,6 +40,7 @@ mod guest_console;
 #[cfg(feature = "http-axum")]
 mod http;
 mod manager;
+mod realtime;
 mod shell;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
@@ -96,6 +97,8 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
 
     guest_console::submit_host_bytes(banner::STARTUP);
+    #[cfg(feature = "realtime")]
+    realtime::log_cpu_partition();
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()

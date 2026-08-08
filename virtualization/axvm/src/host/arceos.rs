@@ -104,7 +104,7 @@ impl HostCpu for ArceOsHost {
     type CpuMask = api::task::AxCpuMask;
 
     fn cpu_count(&self) -> usize {
-        modules::ax_hal::cpu_num()
+        host_cpu_count()
     }
 
     fn this_cpu_id(&self) -> usize {
@@ -114,6 +114,28 @@ impl HostCpu for ArceOsHost {
 
 pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> api::task::AxCpuMask {
     api::task::AxCpuMask::from_raw_bits(bits)
+}
+
+pub(crate) fn host_cpu_count() -> usize {
+    let cpu_num = modules::ax_hal::cpu_num();
+    if configured_realtime_cpu() == cpu_num.checked_sub(1) {
+        cpu_num - 1
+    } else {
+        cpu_num
+    }
+}
+
+fn configured_realtime_cpu() -> Option<usize> {
+    option_env!("AX_RT_CPU").and_then(parse_cpu_id)
+}
+
+fn parse_cpu_id(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if let Some(hex) = value.strip_prefix("0x") {
+        usize::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse().ok()
+    }
 }
 
 pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;

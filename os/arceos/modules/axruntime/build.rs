@@ -20,6 +20,7 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed={LINKER_TEMPLATE_NAME}");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_EXT_LD");
     println!("cargo:rerun-if-env-changed=SMP");
+    println!("cargo:rerun-if-env-changed=AX_RT_CPU");
     println!("cargo:rerun-if-env-changed=DWARF");
     println!("cargo:rerun-if-env-changed=AXTEST_COVERAGE");
 
@@ -108,6 +109,8 @@ fn build_info_source() -> Result<String> {
 
 fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeConfig) -> String {
     let cpu_capacity = config.cpu_capacity;
+    let realtime_cpu_enabled = config.realtime_cpu.is_some();
+    let realtime_cpu = config.realtime_cpu.unwrap_or(0);
     let task_stack_size = config.task_stack_size;
     let ticks_per_sec = config.ticks_per_sec;
 
@@ -118,6 +121,12 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
 
         #[cfg(feature = "smp")]
         pub const CPU_CAPACITY: usize = #cpu_capacity;
+
+        #[cfg(feature = "smp")]
+        pub const REALTIME_CPU_ENABLED: bool = #realtime_cpu_enabled;
+
+        #[cfg(feature = "smp")]
+        pub const REALTIME_CPU: usize = #realtime_cpu;
 
         #[cfg(feature = "fs")]
         pub const TASK_STACK_SIZE: usize = #task_stack_size;
@@ -131,6 +140,7 @@ fn build_info_source_from(arch: &str, target: &str, mode: &str, config: RuntimeC
 #[derive(Clone, Copy)]
 struct RuntimeConfig {
     cpu_capacity: usize,
+    realtime_cpu: Option<usize>,
     task_stack_size: usize,
     ticks_per_sec: usize,
 }
@@ -139,6 +149,7 @@ impl RuntimeConfig {
     fn load() -> Result<Self> {
         let mut config = Self {
             cpu_capacity: DEFAULT_CPU_CAPACITY,
+            realtime_cpu: None,
             task_stack_size: DEFAULT_TASK_STACK_SIZE,
             ticks_per_sec: DEFAULT_TICKS_PER_SEC,
         };
@@ -146,6 +157,22 @@ impl RuntimeConfig {
         if let Ok(smp) = env::var("SMP") {
             config.cpu_capacity = parse_usize(&smp)
                 .map_err(|err| invalid_data(format!("failed to parse SMP value `{smp}`: {err}")))?;
+        }
+
+        if let Ok(realtime_cpu) = env::var("AX_RT_CPU") {
+            config.realtime_cpu = Some(parse_usize(&realtime_cpu).map_err(|err| {
+                invalid_data(format!(
+                    "failed to parse AX_RT_CPU value `{realtime_cpu}`: {err}"
+                ))
+            })?);
+            if config.realtime_cpu == Some(0) {
+                return Err(invalid_data("AX_RT_CPU must not reserve the primary CPU"));
+            }
+            if config.realtime_cpu != config.cpu_capacity.checked_sub(1) {
+                return Err(invalid_data(
+                    "AX_RT_CPU currently must reserve the last logical CPU",
+                ));
+            }
         }
 
         Ok(config)
@@ -211,6 +238,7 @@ mod tests {
                 "release",
                 RuntimeConfig {
                     cpu_capacity: DEFAULT_CPU_CAPACITY,
+                    realtime_cpu: None,
                     task_stack_size: DEFAULT_TASK_STACK_SIZE,
                     ticks_per_sec: DEFAULT_TICKS_PER_SEC,
                 },
@@ -221,6 +249,10 @@ mod tests {
                 "pub const MODE: &str = \"release\";\n",
                 "#[cfg(feature = \"smp\")]\n",
                 "pub const CPU_CAPACITY: usize = 16usize;\n",
+                "#[cfg(feature = \"smp\")]\n",
+                "pub const REALTIME_CPU_ENABLED: bool = false;\n",
+                "#[cfg(feature = \"smp\")]\n",
+                "pub const REALTIME_CPU: usize = 0usize;\n",
                 "#[cfg(feature = \"fs\")]\n",
                 "pub const TASK_STACK_SIZE: usize = 262144usize;\n",
                 "#[cfg(feature = \"irq\")]\n",

@@ -207,7 +207,48 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 static INITED_CPUS: AtomicUsize = AtomicUsize::new(0);
 
 fn is_init_ok() -> bool {
-    INITED_CPUS.load(Ordering::Acquire) == ax_hal::cpu_num()
+    INITED_CPUS.load(Ordering::Acquire) == host_cpu_count()
+}
+
+#[cfg(feature = "smp")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SecondaryCpuOwner {
+    Host,
+    Realtime,
+    Offline,
+}
+
+#[cfg(feature = "smp")]
+pub(crate) fn secondary_cpu_owner(cpu_id: usize) -> SecondaryCpuOwner {
+    if cpu_id >= build_info::CPU_CAPACITY {
+        return SecondaryCpuOwner::Offline;
+    }
+    if build_info::REALTIME_CPU_ENABLED && cpu_id == build_info::REALTIME_CPU {
+        return SecondaryCpuOwner::Realtime;
+    }
+
+    SecondaryCpuOwner::Host
+}
+
+#[cfg(feature = "smp")]
+fn host_cpu_count() -> usize {
+    (0..ax_hal::cpu_num())
+        .filter(|&cpu_id| secondary_cpu_owner(cpu_id) == SecondaryCpuOwner::Host)
+        .count()
+}
+
+#[cfg(not(feature = "smp"))]
+fn host_cpu_count() -> usize {
+    1
+}
+
+#[cfg(feature = "smp")]
+pub(crate) fn run_realtime_secondary(cpu_id: usize) -> ! {
+    unsafe extern "Rust" {
+        safe fn ax_realtime_secondary_main(cpu_id: usize) -> !;
+    }
+
+    ax_realtime_secondary_main(cpu_id)
 }
 
 /// The main entry point of the ArceOS runtime.
@@ -402,10 +443,16 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     #[cfg(all(feature = "irq", feature = "ipi"))]
-    ax_ipi::wait_for_all_cpus_ready();
+    if host_cpu_count() == ax_hal::cpu_num() {
+        ax_ipi::wait_for_all_cpus_ready();
+    }
 
     #[cfg(all(feature = "smp", feature = "ipi"))]
-    fs::online_smp();
+    if host_cpu_count() == ax_hal::cpu_num() {
+        fs::online_smp();
+    } else {
+        warn!("Skip block runtime SMP online while Axvisor realtime CPU split is active.");
+    }
 
     ax_app_entry();
     terminate();
@@ -478,7 +525,7 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
     ax_hal::irq::init_common_irq_handler();
 
     if ax_hal::percpu::this_cpu_is_bsp() {
-        let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
+        let cpus = ax_hal::irq::CpuMask::first_n(host_cpu_count());
         ax_hal::irq::request_percpu_irq(ax_hal::time::irq_num(), cpus, timer_irq_handler)
             .expect("failed to register timer IRQ handler");
 
