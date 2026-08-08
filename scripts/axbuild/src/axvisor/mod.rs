@@ -160,8 +160,9 @@ pub struct ArgsTestQemu {
     #[arg(
         long,
         value_name = "PATH",
-        help = "Path to a verified OVMF firmware bundle directory (must contain manifest.toml) or \
-                an unverified local firmware file (requires --allow-unverified-firmware)"
+        help = "Path to an upstream OVMF firmware directory holding code.fd and vars.fd (the \
+                ostool cache) or an unverified local firmware file (requires \
+                --allow-unverified-firmware)"
     )]
     pub firmware_bundle_path: Option<PathBuf>,
     #[arg(

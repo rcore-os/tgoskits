@@ -23,7 +23,7 @@ args = [
   # The nvme disk is load-bearing for the HOST: the Axvisor host enables
   # `features = ["fs"]` (axvm/host-fs) and mounts its rootfs at boot, so
   # without a block device the host panics in init_root. The nested OVMF
-  # guest never touches the disk (it only needs the UEFI SEC marker); the
+  # guest never touches the disk (it only needs to reach the fw_cfg access marker); the
   # wrapper therefore needs no ax-driver/nvme feature for the guest.
   "-device",
   "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65,addr=03.0",
@@ -42,13 +42,14 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)failed to initialize guest vm",
 ]
-# The fixed OVMF SEC marker printed by the NESTED firmware on guest COM1.
-# The `(?s)VCpu[0] running...` prefix anchors the match to the nested VM:
-# the QEMU-layer host OVMF (injected as pflash to boot the axvisor host
-# binary) prints the same SEC line while booting, so a bare
-# `SecCoreStartupWithStack\(` would match the host firmware instead.
+# The nested OVMF firmware accesses fw_cfg while booting inside the Axvisor
+# guest; every such access is routed through the axvisor device model, which
+# prints the `Nested OVMF fw_cfg accessed` marker at Info level. The marker is
+# naturally scoped to the nested guest: the QEMU-layer host OVMF (injected as
+# pflash to boot the axvisor host binary) drives fw_cfg inside QEMU itself,
+# which never reaches the axvisor device model, so no VM anchor is needed.
 success_regex = [
-  "(?s)VCpu\\[0\\] running\\.\\.\\..*SecCoreStartupWithStack",
+  "(?m)^.*Nested OVMF fw_cfg accessed",
 ]
 to_bin = true
 uefi = false

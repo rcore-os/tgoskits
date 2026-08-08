@@ -7,11 +7,11 @@
 #
 # When `--firmware-bundle-path` is passed, the axbuild runner rewrites this
 # template into a per-run VM config with `image_location = "memory"` and
-# `kernel_path`/`uefi_firmware_path` pointing at the manifest-verified CODE
-# file, which `os/axvisor/build.rs` embeds with `include_bytes!`. The same
-# verified CODE is injected as the QEMU-layer pflash (unit 0) so the host
-# Axvisor binary can be loaded by QEMU `-kernel` at all; both firmware layers
-# use the identical verified file.
+# `kernel_path`/`uefi_firmware_path` pointing at the verified upstream firmware
+# (the ostool cache `code.fd`), which `os/axvisor/build.rs` embeds with
+# `include_bytes!`. The same verified CODE is injected as the QEMU-layer pflash
+# (unit 0) so the host Axvisor binary can be loaded by QEMU `-kernel` at all;
+# both firmware layers use the identical verified file.
 #
 # The layout below is the fixed `qemu_x86_64_axvisor_ovmf_debug` profile:
 # CODE at 0xffc8_4000 (size 0x37c000, reset vector 0xffff_fff0), VARS window

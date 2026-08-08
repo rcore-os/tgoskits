@@ -363,20 +363,20 @@ const OVMF_ENTRY_CASE_DIR: &str = "ovmf-entry";
 /// [`ensure_ovmf_entry_case_dir`]), which is the same directory the checked-in
 /// VM config template `OVMF_ENTRY_VM_CONFIG_FILE` lives in. A future
 /// non-ovmf-entry case whose name merely starts with the same prefix is
-/// rejected instead of being silently wired to the fixed bundle. A future
-/// ovmf-entry variant that must NOT use the manifest-verified fixed CODE
-/// bundle must re-evaluate this match so it cannot wire the wrong case.
+/// rejected instead of being silently wired to the verified firmware. A future
+/// ovmf-entry variant that must NOT use the verified upstream firmware must
+/// re-evaluate this match so it cannot wire the wrong case.
 const OVMF_ENTRY_QEMU_CASE_PREFIX: &str = "ovmf-entry-";
 
-/// Wires the ovmf-entry QEMU case to the manifest-verified firmware bundle.
+/// Wires the ovmf-entry QEMU case to the verified upstream firmware.
 ///
 /// The QEMU layer boots the Axvisor host with `-kernel <axvisor.bin>`, where
 /// the binary is a PE32+ UEFI image. QEMU can only load such an image through
 /// its OVMF firmware, so without explicit pflash drives the run falls through
 /// to SeaBIOS and hangs at `Booting from ROM..` (see the `ktest`
 /// `patch_system_x86_64_uefi_kernel_loader` precedent, which documents the
-/// same requirement). This function injects the verified bundle CODE as the
-/// read-only pflash unit 0 and a writable copy of the bundle VARS as unit 1.
+/// same requirement). This function injects the verified firmware CODE as the
+/// read-only pflash unit 0 and a writable copy of the firmware VARS as unit 1.
 ///
 /// The injected CODE is the same file that `verify_firmware` accepted and that
 /// the generated VM config embeds via `include_bytes!`, so the QEMU-layer
@@ -389,7 +389,7 @@ const OVMF_ENTRY_QEMU_CASE_PREFIX: &str = "ovmf-entry-";
 /// Only cases whose directory is exactly `OVMF_ENTRY_CASE_DIR` are wired (see
 /// [`ensure_ovmf_entry_case_dir`]); other cases are never touched.
 ///
-/// The unit 1 VARS file is a fresh copy created from the verified bundle
+/// The unit 1 VARS file is a fresh copy created from the verified firmware
 /// template on every run, so it never carries state between runs. It does not
 /// rely on the `-snapshot` isolation that `qemu.uefi` cases get through
 /// [`test_qemu::apply_drive_snapshot_without_global_snapshot`] (ovmf-entry
@@ -411,25 +411,16 @@ fn wire_ovmf_entry_qemu_firmware(
         // continuations whose whitespace is stripped at runtime.
         anyhow!(
             concat!(
-                "case `{name}` needs a verified OVMF firmware bundle:\n",
-                "- pass `--firmware-bundle-path <bundle-dir>` for a managed bundle with ",
-                "manifest.toml\n",
+                "case `{name}` needs verified OVMF firmware:\n",
+                "- pass `--firmware-bundle-path <dir>` pointing at an upstream firmware ",
+                "directory holding code.fd and vars.fd\n",
                 "- `--allow-unverified-firmware` is only for a local CODE file and must not ",
                 "determine UEFI test results",
             ),
             name = case.name,
         )
     })?;
-    let vars_template = bundle
-        .code_path
-        .parent()
-        .ok_or_else(|| {
-            anyhow!(
-                "verified OVMF CODE path {} has no parent directory",
-                bundle.code_path.display()
-            )
-        })?
-        .join(ovmf::VARS_FILE);
+    let vars_template = &bundle.vars_path;
     if !vars_template.is_file() {
         anyhow::bail!(
             "missing {} next to the CODE file {} (required for the QEMU-layer pflash unit 1)",
@@ -438,7 +429,7 @@ fn wire_ovmf_entry_qemu_firmware(
         );
     }
     let vars = vars_template.with_extension("ovmf-entry.vars.fd");
-    fs::copy(&vars_template, &vars).with_context(|| {
+    fs::copy(vars_template, &vars).with_context(|| {
         format!(
             "failed to copy OVMF vars from {} to {}",
             vars_template.display(),
@@ -463,15 +454,15 @@ fn wire_ovmf_entry_qemu_firmware(
 }
 
 /// Verifies that a prefix-matched case really lives in the ovmf-entry case
-/// directory before the fixed firmware bundle is wired to it.
+/// directory before the verified firmware is wired to it.
 ///
 /// The case name (`ovmf-entry-<variant>`) alone is a weak selector: discovery
 /// names every case after its build wrapper, so any future case whose
 /// directory starts with the same prefix would be caught by the match. The
 /// case directory is the second, exact selector: only a case whose directory
 /// is named exactly `OVMF_ENTRY_CASE_DIR` (the directory that also holds the
-/// `OVMF_ENTRY_VM_CONFIG_FILE` template) may use the manifest-verified fixed
-/// CODE bundle.
+/// `OVMF_ENTRY_VM_CONFIG_FILE` template) may use the verified upstream
+/// firmware.
 fn ensure_ovmf_entry_case_dir(case: &TestQemuCase) -> anyhow::Result<()> {
     let dir_name = case
         .case_dir
@@ -484,13 +475,13 @@ fn ensure_ovmf_entry_case_dir(case: &TestQemuCase) -> anyhow::Result<()> {
     anyhow::bail!(
         "case `{}` matches the ovmf-entry prefix but is not in the ovmf-entry case directory \
          (directory `{}` is not `{OVMF_ENTRY_CASE_DIR}`); add the case to the fixed ovmf-entry \
-         bundle or rename it so it does not use the prefix",
+         firmware or rename it so it does not use the prefix",
         case.name,
         case.case_dir.display()
     )
 }
 
-/// Rewires the ovmf-entry VM config to the manifest-verified firmware bundle.
+/// Rewires the ovmf-entry VM config to the verified upstream firmware.
 ///
 /// When `--firmware-bundle-path` is supplied, every build group whose VM
 /// configs include the checked-in `ovmf-entry.toml` template gets a generated
@@ -617,12 +608,12 @@ fn ovmf_entry_generated_config_path(workspace_root: &Path, target: &str) -> Path
         .join(format!("{OVMF_ENTRY_VM_CONFIG_FILE}.vmconfig.toml"))
 }
 
-/// Verifies the CLI-selected firmware bundle, if any.
+/// Verifies the CLI-selected firmware, if any.
 ///
 /// Without `--firmware-bundle-path` no firmware is resolved and `None` is
 /// returned; existing test runs keep their exact previous behavior. With a
-/// bundle path the source is resolved and fully verified, and any failure
-/// aborts the run with a clear error before any build or QEMU work starts.
+/// path the source is resolved and fully verified, and any failure aborts the
+/// run with a clear error before any build or QEMU work starts.
 fn verify_cli_firmware_bundle(
     args: &ArgsTestQemu,
 ) -> anyhow::Result<Option<ovmf::VerifiedOvmfBundle>> {
@@ -643,17 +634,17 @@ fn verify_cli_firmware_bundle(
     if !bundle.verified {
         // `--allow-unverified-firmware` is a diagnostic-only escape hatch: an
         // unverified local CODE file must not drive the ovmf-entry test
-        // conclusion, or the "fixed, manifest-verified firmware" guarantee of
-        // the case is bypassed. Reject it before any QEMU wiring.
+        // conclusion, or the verified-upstream-firmware guarantee of the case
+        // is bypassed. Reject it before any QEMU wiring.
         anyhow::bail!(
             "firmware `{}` is UNVERIFIED (--allow-unverified-firmware); it cannot drive the \
-             ovmf-entry test result — pass a managed bundle directory containing manifest.toml \
-             instead",
+             ovmf-entry test result — pass an upstream firmware directory containing code.fd and \
+             vars.fd instead",
             path.display()
         );
     }
     println!(
-        "verified OVMF firmware bundle for ovmf-entry cases: {} (sha256={})",
+        "verified OVMF firmware for ovmf-entry cases: {} (sha256={})",
         bundle.code_path.display(),
         bundle.code_sha256
     );
@@ -717,14 +708,15 @@ disabled = []
 
     fn fixture_bundle(code_path: &Path) -> ovmf::VerifiedOvmfBundle {
         ovmf::VerifiedOvmfBundle {
-            profile: ovmf::OVMF_PROFILE_NAME.to_string(),
             code_base: ovmf::OVMF_CODE_BASE,
             code_size: ovmf::OVMF_CODE_SIZE,
             vars_base: ovmf::OVMF_VARS_BASE,
             vars_size: ovmf::OVMF_VARS_SIZE,
             combined_size: ovmf::OVMF_COMBINED_SIZE,
             code_path: code_path.to_path_buf(),
+            vars_path: code_path.with_file_name(ovmf::UPSTREAM_VARS_FILE),
             code_sha256: "ab".repeat(32),
+            vars_sha256: "cd".repeat(32),
             verified: true,
         }
     }
@@ -931,9 +923,9 @@ disabled = []
         let root = tempdir().unwrap();
         let bundle_dir = root.path().join("bundle");
         fs::create_dir_all(&bundle_dir).unwrap();
-        let code = bundle_dir.join("OVMF_CODE.fd");
+        let code = bundle_dir.join(ovmf::UPSTREAM_CODE_FILE);
         fs::write(&code, vec![0xa5; ovmf::OVMF_CODE_SIZE as usize]).unwrap();
-        let vars = bundle_dir.join(ovmf::VARS_FILE);
+        let vars = bundle_dir.join(ovmf::UPSTREAM_VARS_FILE);
         fs::write(&vars, vec![0x5a; ovmf::OVMF_VARS_SIZE as usize]).unwrap();
         let bundle = fixture_bundle(&code);
 
@@ -967,12 +959,12 @@ disabled = []
                 "-drive".to_string(),
                 format!(
                     "if=pflash,format=raw,unit=1,file={}",
-                    bundle_dir.join("OVMF_VARS.ovmf-entry.vars.fd").display()
+                    bundle_dir.join("vars.ovmf-entry.vars.fd").display()
                 ),
             ]
         );
         // The writable VARS copy must exist next to the template.
-        assert!(bundle_dir.join("OVMF_VARS.ovmf-entry.vars.fd").is_file());
+        assert!(bundle_dir.join("vars.ovmf-entry.vars.fd").is_file());
     }
 
     #[test]
@@ -1025,7 +1017,7 @@ disabled = []
         let root = tempdir().unwrap();
         let bundle_dir = root.path().join("bundle");
         fs::create_dir_all(&bundle_dir).unwrap();
-        let code = bundle_dir.join("OVMF_CODE.fd");
+        let code = bundle_dir.join(ovmf::UPSTREAM_CODE_FILE);
         fs::write(&code, vec![0xa5; ovmf::OVMF_CODE_SIZE as usize]).unwrap();
         let bundle = fixture_bundle(&code);
 
@@ -1046,10 +1038,7 @@ disabled = []
         )
         .unwrap_err();
         let rendered = format!("{err:#}");
-        assert!(
-            rendered.contains("OVMF_VARS.fd"),
-            "unexpected error: {rendered}"
-        );
+        assert!(rendered.contains("vars.fd"), "unexpected error: {rendered}");
     }
 
     #[test]

@@ -108,6 +108,7 @@ impl FwCfgPioDevice {
     }
 }
 
+#[derive(Debug)]
 enum PortWindow {
     SelectorData,
     Dma,
@@ -128,6 +129,17 @@ impl Device for FwCfgPioDevice {
         context: &mut dyn DeviceAccess,
     ) -> Result<BusResponse, DeviceError> {
         let (window, offset) = self.port_offset(access)?;
+        // Nested-guest fw_cfg access marker: the host OVMF drives fw_cfg inside
+        // QEMU itself, so every access routed through this device belongs to
+        // the nested guest firmware. Info level so the marker is visible at
+        // the default log level and can be matched by test success regexes.
+        info!(
+            "Nested OVMF fw_cfg accessed (port={:#x}, dir={}, sel={:#x}, window={:?})",
+            access.addr,
+            if access.is_read { "read" } else { "write" },
+            self.inner.read_selector(),
+            window,
+        );
         match (window, access.is_read, offset) {
             (PortWindow::SelectorData, true, 0) => Ok(BusResponse::Read {
                 value: u64::from(self.inner.read_selector()),

@@ -140,13 +140,14 @@ cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
   --test-case ovmf-entry-vmx --firmware-bundle-path <bundle 目录>
 ```
 
-接线要点（与任务 1/2/4 实现一致）：
+接线要点（与替换实现一致）：
 
-- **固定 profile**：`scripts/axbuild/src/axvisor/ovmf.rs` 定义 profile 名 `qemu_x86_64_axvisor_ovmf_debug`（EDK2 tag `edk2-stable202605`）及固定布局：CODE `0xffc84000`（size `0x37c000`，reset vector `0xfffffff0`）、VARS `0xffc00000`（size `0x84000`）、combined `0x400000`。bundle 目录含 `OVMF_CODE.fd`、`OVMF_VARS.fd`、`OVMF.fd` 与 `manifest.toml`，全部按 manifest 校验，不联网下载。
-- **`--firmware-bundle-path <dir>`**：指定已验证 bundle 目录（含 `manifest.toml`）。`--allow-unverified-firmware` 允许本地未验证的 `OVMF_CODE.fd`（仅打印 SHA-256 供参考，不参与结果判定）。不带 bundle 时 ovmf-entry 用例在 prepare 阶段 fail-fast 报错，不会在 `Booting from ROM..` 挂起，也不会静默使用发行版 OVMF；`--list` 不需要 bundle。
-- **QEMU 层 `uefi = false`**：避免 ostool 下载自带 OVMF（`edk2-stable202508-r1`）。runner 注入 pflash unit 0（只读 CODE，已验证文件）与 unit 1（每次运行新建的 VARS 副本），`-kernel` 启动 Axvisor 宿主。
-- **嵌套 OVMF**：VM 配置 `os/axvisor/configs/vms/qemu/x86_64/ovmf-entry.toml` 声明 `guest_type = "passthrough"`、`boot_protocol = "uefi"`、`bios_load_addr = 0xffc84000`、`firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"`。默认 `image_location = "fs"` + `kernel_path = "/guest/ovmf/OVMF_CODE.fd"`（文件不存在时报错，是显式 fallback）；有 bundle 时 runner 改写为 `image_location = "memory"` 并经 `include_bytes!` 嵌入已验证 CODE，与 QEMU 层 pflash 的 CODE 逐字节一致。
+- **固定 profile**：`scripts/axbuild/src/axvisor/ovmf.rs` 定义 profile 名 `qemu_x86_64_axvisor_ovmf_debug` 及固定布局：CODE `0xffc84000`（size `0x37c000`，reset vector `0xfffffff0`）、VARS `0xffc00000`（size `0x84000`）、combined `0x400000`。固件目录（ostool cache）含 `code.fd` 与 `vars.fd`，布局按固定常量校验，SHA-256 由 ostool 校验，不联网下载。
+- **`--firmware-bundle-path <dir>`**：指定上游固件目录（ostool cache，含 `code.fd`/`vars.fd`）。`--allow-unverified-firmware` 允许本地未验证的 `code.fd`（仅打印 SHA-256 供参考，不参与结果判定）。不带固件目录时 ovmf-entry 用例在 prepare 阶段 fail-fast 报错，不会在 `Booting from ROM..` 挂起，也不会静默使用发行版 OVMF；`--list` 不需要固件。
+- **QEMU 层 `uefi = false`**：避免 ostool 注入自带 FAT ESP。runner 注入 pflash unit 0（只读 CODE，已验证文件）与 unit 1（每次运行新建的 VARS 副本），`-kernel` 启动 Axvisor 宿主。
+- **嵌套 OVMF**：VM 配置 `os/axvisor/configs/vms/qemu/x86_64/ovmf-entry.toml` 声明 `guest_type = "passthrough"`、`boot_protocol = "uefi"`、`bios_load_addr = 0xffc84000`、`firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"`。默认 `image_location = "fs"` + `kernel_path = "/guest/ovmf/OVMF_CODE.fd"`（文件不存在时报错，是显式 fallback）；有固件目录时 runner 改写为 `image_location = "memory"` 并经 `include_bytes!` 嵌入已验证 CODE，与 QEMU 层 pflash 的 CODE 逐字节一致。
 - **loader 强制校验**：`firmware_profile` 启用时，x86 loader（`virtualization/axvm/src/arch/x86_64/boot/mod.rs`）强制 `code_size = 0x37c000`、`bios_load_addr = 0xffc84000`、reset `0xfffffff0`；`axvmconfig` 拒绝非 UEFI boot 协议声明 profile。
+- **成功判据**：`success_regex = ["(?m)^.*Nested OVMF fw_cfg accessed"]`。嵌套 OVMF 固件启动早期访问 fw_cfg（PIO 0x510/0x511/0x514），经 axvisor 设备模型打印 `Nested OVMF fw_cfg accessed` marker（Info 级）。marker 天然只属嵌套 guest（宿主 OVMF 的 fw_cfg 访问在 QEMU 层，不经过 axvisor 设备模型），无需 VM 锚定，不受 2048 字节匹配窗口限制。
 - **non-gating**：`uefi` 分组天然不纳入 CI gating。CI 的 x86_64 行只运行 `smoke-svm`/`smoke-vmx`（`normal` 组），`ovmf-entry-*` 需在本地显式用 `--test-group uefi` 验证。
 
 ### 3.4 板卡测试

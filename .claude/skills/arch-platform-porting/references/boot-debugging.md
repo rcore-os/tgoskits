@@ -139,39 +139,44 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
 - For std/musl targets, derive the initial JSON from a known Rust target where possible, then minimally adjust ABI, linker, relocation model, and soft-float. A `none-softfloat` target passing does not prove musl/std ABI correctness.
 - Prefer runtime memory map data over board constants. Any early helper such as `phys_to_virt` must be valid for the phase where it is called.
 
-## x86_64 Guest OVMF / Fixed OVMF Bundle
+## x86_64 Guest OVMF / Verified Upstream Firmware
 
 Axvisor x86_64 boots a nested OVMF as the *guest* firmware through the axvm UEFI
-path. The guest firmware is a fixed, manifest-verified OVMF build ("the bundle"),
-not whatever OVMF `ostool` happens to have downloaded. The fixed profile is
-defined twice and the two copies must stay identical:
+path. The guest firmware is the upstream RELEASE OVMF built by Ostool
+(`edk2-stable202508-r1`, fetched through `cargo xtask ovmf --arch x86_64` into
+the `Source::LATEST` cache); its SHA-256 verification is done by Ostool itself.
+The fixed profile is defined twice and the two copies must stay identical:
 
 | Constant | Value | Defined in |
 | --- | --- | --- |
 | Profile name | `qemu_x86_64_axvisor_ovmf_debug` | `scripts/axbuild/src/axvisor/ovmf.rs::OVMF_PROFILE_NAME`, `virtualization/axvm/src/arch/x86_64/boot/mod.rs::FIXED_OVMF_PROFILE` |
-| EDK2 tag | `edk2-stable202605` | `scripts/axbuild/src/axvisor/ovmf.rs::OVMF_EDK2_TAG` |
 | CODE GPA / size | `0xffc8_4000` / `0x37_c000` | `OVMF_CODE_BASE` / `OVMF_CODE_SIZE` |
 | VARS GPA / size | `0xffc0_0000` / `0x8_4000` | `OVMF_VARS_BASE` / `OVMF_VARS_SIZE` |
-| Combined `OVMF.fd` size | `0x40_0000` (VARS followed by CODE) | `OVMF_COMBINED_SIZE` |
+| Combined size | `0x40_0000` (VARS followed by CODE) | `OVMF_COMBINED_SIZE` |
 | Reset vector | `0xffff_fff0` | `OVMF_RESET_VECTOR` / `FIXED_OVMF_RESET_VECTOR` |
 
-A bundle directory holds `OVMF_CODE.fd`, `OVMF_VARS.fd`, `OVMF.fd` and a flat
-`manifest.toml` (GPA layout, per-file sizes, SHA-256 digests). The verifier in
-`scripts/axbuild/src/axvisor/ovmf.rs` (replacing the deleted
-`os/axvisor/scripts/ovmf-profile.sh`) parses the manifest and verifies every
-value and file against the fixed constants; it never downloads anything. A
-local unverified `OVMF_CODE.fd` is accepted only through the explicit
+The upstream RELEASE layout matches this profile exactly (`code.fd` =
+0x37c000, `vars.fd` = 0x84000, combined 4 MiB, reset vector at 0xfffffff0).
+The verifier in `scripts/axbuild/src/axvisor/ovmf.rs` checks the firmware
+directory layout (both `code.fd` and `vars.fd` present, correct sizes, reset
+vector inside the CODE window); it never downloads anything. A local
+unverified `code.fd` is accepted only through the explicit
 `--allow-unverified-firmware` opt-in, must still match the fixed CODE size, and
 has its SHA-256 printed for reference.
 
 Debug commands (KVM hosts; SVM on AMD, VMX on Intel — pick the matching host):
 
 ```bash
+# prepare the upstream firmware cache first
+cargo xtask ovmf --arch x86_64
 cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
-  --test-case ovmf-entry-svm --firmware-bundle-path <bundle-dir>
+  --test-case ovmf-entry-svm --firmware-bundle-path <ostool-cache-dir>
 cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
-  --test-case ovmf-entry-vmx --firmware-bundle-path <bundle-dir>
+  --test-case ovmf-entry-vmx --firmware-bundle-path <ostool-cache-dir>
 ```
+
+The ostool cache dir is `$TMPDIR/ostool/ovmf/<arch>` (or overridden via
+`TGOS_OVMF_DIR`), holding `code.fd` and `vars.fd`.
 
 Wiring points to keep aligned:
 
@@ -182,44 +187,49 @@ Wiring points to keep aligned:
   case-directory check), so the variant suffix is load-bearing in both layers;
   a bare `ovmf-entry` is not a valid case name.
 - The QEMU TOML sets `uefi = false`: `-kernel` still boots the Axvisor host
-  (a PE32+ UEFI image), but `uefi = false` keeps `ostool` from downloading its
-  own `edk2-stable202508-r1` OVMF and lets the runner inject the verified
-  bundle instead.
-- The runner injects `-drive if=pflash,format=raw,unit=0,readonly=on,file=<bundle CODE>` and
-  `-drive if=pflash,format=raw,unit=1,file=<bundle VARS copy>` (fresh per run).
+  (a PE32+ UEFI image), but `uefi = false` keeps `ostool` from injecting its
+  own FAT ESP and lets the runner inject the verified upstream firmware
+  instead.
+- The runner injects `-drive if=pflash,format=raw,unit=0,readonly=on,file=<code.fd>` and
+  `-drive if=pflash,format=raw,unit=1,file=<vars copy>` (fresh per run).
   Without these, QEMU falls through to SeaBIOS and hangs at `Booting from ROM..`.
 - The nested OVMF is loaded by Axvisor itself from the VM config
   `os/axvisor/configs/vms/qemu/x86_64/ovmf-entry.toml`: `boot_protocol = "uefi"`,
   `firmware_profile = "qemu_x86_64_axvisor_ovmf_debug"`,
   `bios_load_addr = 0xffc8_4000`, `image_location = "fs"` /
   `kernel_path = "/guest/ovmf/OVMF_CODE.fd"` as the checked-in fallback (fails
-  with a clear error, never silently uses a distro OVMF). With a bundle, the
-  runner rewrites the generated VM config to `image_location = "memory"` and
-  `kernel_path`/`uefi_firmware_path` pointing at the verified CODE, which
+  with a clear error, never silently uses a distro OVMF). With a firmware dir,
+  the runner rewrites the generated VM config to `image_location = "memory"` and
+  `kernel_path`/`uefi_firmware_path` pointing at the verified `code.fd`, which
   `os/axvisor/build.rs` embeds via `include_bytes!` — byte-identical to the
   QEMU-layer pflash CODE.
 - The x86 loader (`virtualization/axvm/src/arch/x86_64/boot/mod.rs`) enforces
   `code_size = 0x37c000`, `load_gpa = 0xffc84000`, `reset = 0xfffffff0` only
   when `firmware_profile` is set; `axvmconfig` rejects any profile declared
   with a non-UEFI boot protocol (`FirmwareProfileRequiresUefi`).
-- Guest SEC marker on COM1: `success_regex = ["(?s)VCpu\\[0\\] running\\.\\.\\..*SecCoreStartupWithStack"]`.
-  The `VCpu[0] running...` prefix is required: the QEMU-layer host OVMF
-  (injected as pflash to boot the axvisor host binary) prints the same SEC
-  line, so a bare `SecCoreStartupWithStack\(` would match the host firmware
-  instead of the nested guest. Reaching the SEC phase proves the nested OVMF
-  executed; it intentionally stops there (stage-1 diagnostics, not a full
-  guest boot).
+- Guest fw_cfg access marker: `success_regex = ["(?m)^.*Nested OVMF fw_cfg accessed"]`.
+  The nested OVMF firmware accesses fw_cfg (PIO 0x510/0x511/0x514) while
+  booting inside the Axvisor guest; every such access is routed through the
+  axvisor device model (`axdevice::fw_cfg::pio::FwCfgPioDevice`), which prints
+  the `Nested OVMF fw_cfg accessed` marker at Info level. The marker is
+  naturally scoped to the nested guest: the QEMU-layer host OVMF (injected as
+  pflash to boot the axvisor host binary) drives fw_cfg inside QEMU itself,
+  which never reaches the axvisor device model, so no VM anchor is needed and
+  the regex is not subject to the 2048-byte streaming-DFA match window. The
+  marker appears early (SEC/PEI), proving the nested OVMF executed; reaching
+  BDS is a stage-2 concern (see the p2 milestone).
 
 Common failures:
 
-- No SEC output at all: wrong CODE layout (GPA/size mismatch, or
+- No fw_cfg marker at all: wrong CODE layout (GPA/size mismatch, or
   `bios_load_addr` different from `0xffc84000`), or the run did not get the
-  bundle — pass `--firmware-bundle-path`; without it the case fails fast with
-  an error naming the flag.
-- `uefi = true` trap: the case boots an `ostool`-managed OVMF
-  (`edk2-stable202508-r1`) instead of the verified bundle, so the pinned
-  `edk2-stable202605` layout is not what runs. Keep `uefi = false` and let the
-  runner inject the pflash drives.
+  firmware — pass `--firmware-bundle-path` pointing at the ostool cache
+  (`$TMPDIR/ostool/ovmf/x64`); without it the case fails fast with an error
+  naming the flag.
+- `uefi = true` trap: the case boots an `ostool`-managed OVMF with a FAT ESP
+  instead of the runner-injected verified firmware, so the pinned layout is
+  not what runs. Keep `uefi = false` and let the runner inject the pflash
+  drives.
 - VM config rejected at load: `bios_load_addr` not `0xffc8_4000`, CODE size
   mismatch, or `firmware_profile` on a non-UEFI boot protocol — the loader or
   `axvmconfig` validation errors name the expected value verbatim.
