@@ -110,8 +110,9 @@ impl UartPort for MockPort {
         count
     }
 
-    fn discard_tx(&mut self) {
+    fn discard_tx(&mut self) -> bool {
         self.tx_len = 0;
+        true
     }
 
     fn tx_idle(&mut self) -> bool {

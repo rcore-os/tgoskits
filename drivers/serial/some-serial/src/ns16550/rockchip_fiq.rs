@@ -584,7 +584,7 @@ impl UartPort for RockchipFiqSerial {
         UartPort::write_tx(&mut self.serial, bytes)
     }
 
-    fn discard_tx(&mut self) {
+    fn discard_tx(&mut self) -> bool {
         UartPort::discard_tx(&mut self.serial)
     }
 

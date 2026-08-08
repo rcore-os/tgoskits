@@ -54,7 +54,8 @@ pub trait UartPort: Send + 'static {
 
     /// Discards bytes queued in the hardware transmitter. A byte already in
     /// the shift register may still complete.
-    fn discard_tx(&mut self);
+    /// Returns whether the hardware supports an independent TX-only discard.
+    fn discard_tx(&mut self) -> bool;
 
     /// Returns whether both the FIFO and transmitter shift register are empty.
     fn tx_idle(&mut self) -> bool;

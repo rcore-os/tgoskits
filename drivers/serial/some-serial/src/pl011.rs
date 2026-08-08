@@ -745,12 +745,8 @@ impl UartPort for Pl011 {
         written
     }
 
-    fn discard_tx(&mut self) {
-        let fifo_enabled = self.registers().uartlcr_h.is_set(UARTLCR_H::FEN);
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
-        if fifo_enabled {
-            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
-        }
+    fn discard_tx(&mut self) -> bool {
+        false
     }
 
     fn tx_idle(&mut self) -> bool {
@@ -1081,6 +1077,19 @@ mod tests {
             read_test_reg(&regs, 0x044) & imsc_for_events(SerialEventSet::RX),
             imsc_for_events(SerialEventSet::RX),
         );
+    }
+
+    #[test]
+    fn discard_tx_reports_unsupported_without_touching_rx_data() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        regs.uartlcr_h.modify(UARTLCR_H::FEN::SET);
+        regs.uartdr.set(UARTDR::DATA.val(b'r' as u32).into());
+        write_test_reg(&mut regs, 0x018, 0);
+        let lcr_h = regs.uartlcr_h.get();
+
+        assert!(!UartPort::discard_tx(&mut uart));
+        assert_eq!(regs.uartlcr_h.get(), lcr_h);
+        assert_eq!(uart.read_rx().unwrap().byte, Some(b'r'));
     }
 
     #[test]

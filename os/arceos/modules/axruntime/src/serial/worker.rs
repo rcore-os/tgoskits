@@ -166,10 +166,7 @@ impl SerialWorker {
                     self.discard_rx();
                     Ok(())
                 }
-                ControlOp::DiscardTx => {
-                    self.discard_tx();
-                    Ok(())
-                }
+                ControlOp::DiscardTx => self.discard_tx(),
             };
             command.complete(result);
         }
@@ -242,16 +239,18 @@ impl SerialWorker {
         self.shared.tx_progress.notify_all(true);
     }
 
-    fn discard_tx(&mut self) {
+    fn discard_tx(&mut self) -> AxResult {
+        let hardware_idle = {
+            let mut port = self.shared.port.lock();
+            if !port.discard_tx() {
+                return Err(AxError::Unsupported);
+            }
+            port.tx_idle()
+        };
         self.shared.ingress.discard_pending();
         self.pending_frame = None;
         self.pending_rearm.remove(SerialEventSet::TX_SPACE);
         self.immediate_events.remove(SerialEventSet::TX_SPACE);
-        let hardware_idle = {
-            let mut port = self.shared.port.lock();
-            port.discard_tx();
-            port.tx_idle()
-        };
         if !hardware_idle && !self.shared.polling {
             self.pending_rearm.insert(SerialEventSet::TX_SPACE);
         }
@@ -260,6 +259,7 @@ impl SerialWorker {
         if self.shared.ingress.mark_idle_if_empty(true, hardware_idle) {
             self.shared.publish_tx_idle();
         }
+        Ok(())
     }
 
     fn discard_rx(&mut self) {
@@ -605,7 +605,9 @@ mod tests {
             0
         }
 
-        fn discard_tx(&mut self) {}
+        fn discard_tx(&mut self) -> bool {
+            true
+        }
 
         fn tx_idle(&mut self) -> bool {
             true

@@ -269,13 +269,14 @@ impl<T: Kind> UartPort for Ns16550<T> {
         self.try_write(bytes)
     }
 
-    fn discard_tx(&mut self) {
+    fn discard_tx(&mut self) -> bool {
         self.write_flags(
             UART_FCR,
             FifoControlFlags::ENABLE_FIFO
                 | FifoControlFlags::CLEAR_TRANSMITTER_FIFO
                 | FifoControlFlags::TRIGGER_8_BYTES,
         );
+        true
     }
 
     fn tx_idle(&mut self) -> bool {
@@ -1018,7 +1019,7 @@ mod tests {
     fn discard_tx_clears_only_the_transmitter_fifo() {
         let (_guard, mut uart) = serial();
 
-        UartPort::discard_tx(&mut uart);
+        assert!(UartPort::discard_tx(&mut uart));
 
         let fcr = FifoControlFlags::from_bits_retain(LAST_FCR_WRITE.load(Ordering::SeqCst));
         assert!(fcr.contains(FifoControlFlags::ENABLE_FIFO));
