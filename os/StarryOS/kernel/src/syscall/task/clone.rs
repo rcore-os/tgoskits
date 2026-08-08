@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{AxTaskExt, current, spawn_task_with};
+use ax_task::{AxTaskExt, current, spawn_task_with_balanced};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
@@ -468,7 +468,7 @@ impl CloneArgs {
             guard.commit();
         }
 
-        spawn_task_with(new_task, add_task_to_table);
+        spawn_task_with_balanced(new_task, add_task_to_table);
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(

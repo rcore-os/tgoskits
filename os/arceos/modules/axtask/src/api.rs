@@ -249,11 +249,33 @@ pub fn spawn_task(task: TaskInner) -> AxTaskRef {
 /// becomes runnable. Use it to publish runtime-specific task metadata that the
 /// task must be able to observe on its first instruction. The callback must not
 /// wait for the new task to run because it has not been registered or queued.
+/// On SMP, initial placement prefers the current CPU when affinity permits it.
 ///
 /// # Panics
 ///
 /// Panics if `initialize` panics.
 pub fn spawn_task_with<F>(task: TaskInner, initialize: F) -> AxTaskRef
+where
+    F: FnOnce(&AxTaskRef),
+{
+    let task_ref = task.into_arc();
+    initialize_task_before_schedule(&task_ref, initialize, |task_ref| {
+        register_task(task_ref);
+        select_run_queue::<NoPreemptIrqSave>(task_ref).add_task(task_ref.clone());
+    });
+    task_ref
+}
+
+/// Initializes a new task and rotates its initial placement across ready CPUs.
+///
+/// This is intended for workloads that create independent peer tasks. Placement
+/// uses only initialized run queues allowed by the task's CPU affinity.
+///
+/// # Panics
+///
+/// Panics if `initialize` panics or no initialized run queue matches the task's
+/// CPU affinity.
+pub fn spawn_task_with_balanced<F>(task: TaskInner, initialize: F) -> AxTaskRef
 where
     F: FnOnce(&AxTaskRef),
 {
