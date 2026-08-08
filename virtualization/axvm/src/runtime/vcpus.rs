@@ -126,15 +126,8 @@ fn run_periodic_virq_injector(vm: VMRef, config: crate::PeriodicVirqConfig) {
         failed,
     );
     // Let the final interrupt reach and be timestamped by the guest before
-    // the trace dump starts emitting a large amount of serial output.
+    // the injector task exits.
     ax_std::thread::sleep(config.period);
-    #[cfg(feature = "realtime-trace")]
-    vm.dump_realtime_trace().unwrap_or_else(|err| {
-        warn!(
-            "VM[{}] failed to dump realtime vIRQ trace: {err:?}",
-            vm.id()
-        );
-    });
 }
 
 /// Blocks the current thread until it is explicitly woken up, using the wait queue

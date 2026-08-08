@@ -149,11 +149,44 @@ guest ISR 样本。四轮均满足 `VIRQ_INJECT_COMPLETE ... errors=0` 和
 可以确认的是 B 已经可靠完成注入闭环，且本实验中没有丢中断或队列溢出。尾部指标方向
 对 B 有利，但还需要更多重复轮次或长稳实验才能作为强性能结论。
 
-## 5. 实验完成后的后续 TODO
+## 5. 双流最小压力场景（2 ms 双注入器）结果
 
-1. 若要把性能差异作为强结论，增加独立重复轮次并做长稳（至少 30 分钟初验）。
-2. 继续保留每轮完整日志和统计结果，避免只保存汇总数字。
-3. 将最终 A/B 命令和日志路径同步到提交/复现说明。
+在单 vCPU guest 上同时监听 vector 48/49，两个 host injector 分别固定在
+CPU 0/1，各发送 300 次、周期 2 ms；使用 emulated GIC 配置（passthrough 下
+vCPU 连续运行不退出，无法 drain）。每个分支 3 轮，全部 600/600 闭环、0 丢失、
+0 注入错误、0 溢出。
+
+| 轮次 | 闭环 | mean (ns) | p99 (ns) | max (ns) | lost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A3 | 600/600 | 334,864 | 834,080 | 1,378,384 | 0 |
+| A4 | 600/600 | 273,217 | 634,960 | 1,228,816 | 0 |
+| A5 | 600/600 | 363,952 | 765,904 | 1,274,400 | 0 |
+| B3 | 600/600 | 322,066 | 926,688 | 1,709,824 | 0 |
+| B4 | 600/600 | 300,482 | 927,616 | 1,404,704 | 0 |
+| B5 | 600/600 | 229,452 | 452,288 | 853,216 | 0 |
+
+三轮平均：A mean 324,011 / p99 744,981 / max 1,293,867；B mean 284,000 /
+p99 768,864 / max 1,322,581。B 的 mean 低约 12.3%，但 p99/max 跨轮波动大且
+平均略差。因此本场景只能说明：B 在并发双注入下可靠完成闭环、无溢出无丢失；
+性能方向对 B 的 mean 有利，但还不能作为强结论。
+
+### 5.1 本轮修掉的实验链路问题
+
+1. 用 Zephyr SDK 1.0.1 重新构建 guest 后 ELF 入口从 `0x40001044` 变为
+   `0x400010b4`，旧 VM 配置导致启动失败和 PPI26 风暴，已同步修正 A/B 配置。
+2. passthrough GIC 下 vCPU 在 guest 内连续运行、没有 guest_exit，队列只进
+   不出直到溢出；成功链路必须使用 `axvisor-qemu-aarch64-emulated.toml`。
+3. 注入器完成时调用 `dump_realtime_trace()` 会一次性输出数万行串口日志，
+   让 QEMU 停顿约 1 s，同 vector 的待处理中断恢复后背靠背注入并被 GIC 合并；
+   已移除注入器内部的 trace dump（溢出仍可通过 `inject_errors` 观测）。
+4. guest 的 10 s 等待窗在平台停顿下太紧，放宽到 30 s。
+5. 统计脚本需要剥离 ANSI 转义，否则串口交错会让 CSV 首行漏读。
+
+### 5.2 仍不能证明的部分
+
+单 vCPU 下 A 的 `notify_all` 没有额外 vCPU 需要唤醒，因此本场景不能证明 B 的
+targeted notify 端到端收益。要证明这一点，仍需解决双 vCPU guest 启动链路；
+当前数据只支持“并发生产者下的队列稳定性”这一范围。
 
 ## 6. 证据与复现入口
 
@@ -167,3 +200,9 @@ guest ISR 样本。四轮均满足 `VIRQ_INJECT_COMPLETE ... errors=0` 和
 - 最终 B1：`/tmp/openrace-ab-grace-B1.log`
 - 最终 A2：`/tmp/openrace-ab-grace-A2.log`
 - 最终 B2：`/tmp/openrace-ab-grace-B2.log`
+- 双流 A3/A4/A5：`/tmp/openrace-dualstream-emulated-A3.log` /
+  `/tmp/openrace-dualstream-emulated-A4.log` /
+  `/tmp/openrace-dualstream-emulated-A5.log`
+- 双流 B3/B4/B5：`/tmp/openrace-dualstream-emulated-B3.log` /
+  `/tmp/openrace-dualstream-emulated-B4.log` /
+  `/tmp/openrace-dualstream-emulated-B5.log`

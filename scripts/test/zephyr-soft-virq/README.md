@@ -1,8 +1,9 @@
 # Zephyr software-vIRQ consumer
 
 This is the common guest workload for the OpenRace A/B experiment. It runs
-with one vCPU, installs an ISR for virtual interrupt 48, and records the
-guest-side timestamp of each interrupt. The host injector is deliberately
+with one vCPU, installs ISRs for virtual interrupts 48 and 49, and records
+the guest-side timestamp of each interrupt. Two host injectors drive the two
+vectors concurrently from different host CPUs; the injector is deliberately
 outside this directory and is identical for A and B.
 
 Build the raw image with the same Zephyr revision/toolchain as
@@ -26,7 +27,7 @@ FEATURES=openrace-realtime cargo xtask axvisor qemu \
 The run is valid only when the log contains both:
 
 ```text
-SOFTWARE VIRQ COMPLETE samples=300
+SOFTWARE VIRQ COMPLETE streams=2 samples_each=300 total=600
 VIRQ_INJECT_COMPLETE ... errors=0
 ```
 
@@ -36,5 +37,6 @@ part of the injection-to-ISR latency samples; it prevents boot-time interrupts
 from preceding the guest's `SOFTWARE VIRQ READY` marker.
 
 Save the complete serial log. `VIRQ_INJECT` lines are the host-side request
-timestamps; the CSV lines are guest ISR timestamps. `VIRQ_TRACE` lines are
-the bounded per-host-CPU delivery trace.
+timestamps; the CSV lines are guest ISR timestamps in
+`vector,sequence,timestamp_ns` form. `VIRQ_TRACE` lines are the bounded
+per-host-CPU delivery trace.

@@ -11,11 +11,17 @@ from pathlib import Path
 
 
 INJECT_RE = re.compile(
-    r"VIRQ_INJECT sequence=(?P<sequence>\d+) .*?requested_ns=(?P<requested>\d+) "
+    r"VIRQ_INJECT sequence=(?P<sequence>\d+) .*?vector=(?P<vector>\d+) "
+    r".*?requested_ns=(?P<requested>\d+) "
     r"completed_ns=(?P<completed>\d+) status=(?P<status>\w+)"
 )
-GUEST_RE = re.compile(r"^(?P<sequence>\d+),(?P<timestamp>\d+)$")
-TRACE_OVERFLOW_RE = re.compile(r"VIRQ_TRACE .*event=queue_overflow")
+GUEST_RE = re.compile(
+    r"^(?:(?P<vector>\d+),)?(?P<sequence>\d+),(?P<timestamp>\d+)$"
+)
+TRACE_OVERFLOW_RE = re.compile(
+    r"VIRQ_TRACE seq=(?P<sequence>\d+) .*event=queue_overflow"
+)
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def percentile(values: list[int], fraction: float) -> int:
@@ -27,9 +33,9 @@ def percentile(values: list[int], fraction: float) -> int:
 
 
 def match_guest_samples(
-    injections: dict[int, tuple[int, int, str]],
-    guests: dict[int, int],
-) -> list[tuple[int, int]]:
+    injections: dict[tuple[int, int], tuple[int, int, str]],
+    guests: dict[tuple[int, int], int],
+) -> list[tuple[tuple[int, int], int]]:
     """Match guest ISR timestamps to the latest preceding host request.
 
     The guest sequence counts received interrupts, so it no longer identifies
@@ -37,50 +43,59 @@ def match_guest_samples(
     and guest timestamps let us skip the missing request without shifting every
     later sample by one or more periods.
     """
-    successful = [
-        (sequence, requested)
-        for sequence, (requested, _, status) in sorted(injections.items())
-        if status == "ok"
-    ]
-    matched: list[tuple[int, int]] = []
-    injection_index = 0
-    for guest_sequence, guest_timestamp in sorted(guests.items()):
-        if guest_sequence >= len(successful):
-            continue
-        while (
-            injection_index + 1 < len(successful)
-            and successful[injection_index + 1][1] <= guest_timestamp
-        ):
+    matched: list[tuple[tuple[int, int], int]] = []
+    vectors = {vector for vector, _ in injections} | {vector for vector, _ in guests}
+    for vector in sorted(vectors):
+        successful = [
+            ((vector, sequence), requested)
+            for (injection_vector, sequence), (requested, _, status) in sorted(
+                injections.items()
+            )
+            if injection_vector == vector and status == "ok"
+        ]
+        injection_index = 0
+        vector_guests = sorted(
+            (key, timestamp)
+            for key, timestamp in guests.items()
+            if key[0] == vector
+        )
+        for _, guest_timestamp in vector_guests:
+            if injection_index >= len(successful):
+                continue
+            while (
+                injection_index + 1 < len(successful)
+                and successful[injection_index + 1][1] <= guest_timestamp
+            ):
+                injection_index += 1
+            if successful[injection_index][1] > guest_timestamp:
+                continue
+            key, requested = successful[injection_index]
+            matched.append((key, guest_timestamp - requested))
             injection_index += 1
-        if (
-            injection_index >= len(successful)
-            or successful[injection_index][1] > guest_timestamp
-        ):
-            continue
-        sequence, requested = successful[injection_index]
-        matched.append((sequence, guest_timestamp - requested))
-        injection_index += 1
     return matched
 
 
 def summarize(path: Path, period_ns: int) -> dict[str, int | float]:
-    injections: dict[int, tuple[int, int, str]] = {}
-    guests: dict[int, int] = {}
-    queue_overflow = 0
+    injections: dict[tuple[int, int], tuple[int, int, str]] = {}
+    guests: dict[tuple[int, int], int] = {}
+    overflow_sequences: set[int] = set()
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = ANSI_RE.sub("", line)
         if match := INJECT_RE.search(line):
             sequence = int(match["sequence"])
-            injections[sequence] = (
+            vector = int(match["vector"])
+            injections[(vector, sequence)] = (
                 int(match["requested"]),
                 int(match["completed"]),
                 match["status"],
             )
             continue
-        if TRACE_OVERFLOW_RE.search(line):
-            queue_overflow += 1
+        if match := TRACE_OVERFLOW_RE.search(line):
+            overflow_sequences.add(int(match["sequence"]))
             continue
         if match := GUEST_RE.match(line.strip()):
-            guests[int(match["sequence"])] = int(match["timestamp"])
+            vector = int(match["vector"] or 48)
+            guests[(vector, int(match["sequence"]))] = int(match["timestamp"])
 
     matched_samples = match_guest_samples(injections, guests)
     response_ns = [latency for _, latency in matched_samples]
@@ -95,7 +110,7 @@ def summarize(path: Path, period_ns: int) -> dict[str, int | float]:
         "matched": matched,
         "lost_irq": lost_irq,
         "inject_errors": errors,
-        "queue_overflow": queue_overflow,
+        "queue_overflow": len(overflow_sequences),
         "mean_ns": round(statistics.mean(response_ns)) if response_ns else 0,
         "p99_ns": percentile(response_ns, 0.99),
         "p99_9_ns": percentile(response_ns, 0.999),
@@ -107,13 +122,15 @@ def summarize(path: Path, period_ns: int) -> dict[str, int | float]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("log", type=Path)
-    parser.add_argument("--period-ns", type=int, default=10_000_000)
+    parser.add_argument("--period-ns", type=int, default=2_000_000)
     args = parser.parse_args()
     result = summarize(args.log, args.period_ns)
     print(json.dumps(result, sort_keys=True))
     print(
         "p99={p99_ns}ns p99.9={p99_9_ns}ns max={max_ns}ns "
-        "overrun_max={overrun_max_ns}ns lost={lost_irq} overflow={queue_overflow}".format(**result)
+        "overrun_max={overrun_max_ns}ns lost={lost_irq} overflow={queue_overflow}".format(
+            **result
+        )
     )
 
 

@@ -6,7 +6,7 @@ cpu_num = 1
 phys_cpu_ids = [3]
 
 [kernel]
-entry_point = 0x4000_1044
+entry_point = 0x4000_10b4
 image_location = "memory"
 kernel_path = "/tmp/zephyr-soft-virq-build/zephyr/zephyr.bin"
 kernel_load_addr = 0x4000_0000
