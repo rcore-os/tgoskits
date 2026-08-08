@@ -29,6 +29,7 @@ members = [
     "components/axklib",
     "components/axpanic",
     "components/axpoll",
+    "components/ax-rt",
     "components/axsched",
     "components/cpumask",
     "components/crate_interface",
@@ -189,6 +190,7 @@ axhvc = { version = "0.4.13", path = "virtualization/axhvc" }
 axklib = { version = "0.7.8", path = "components/axklib" }
 axplat-dyn = { version = "0.7.15", path = "platforms/axplat-dyn", default-features = false }
 axpoll = { version = "0.5.4", path = "components/axpoll" }
+ax-rt = { version = "0.1.0", path = "components/ax-rt" }
 axvisor = { version = "0.5.24", path = "os/axvisor" }
 axvirtio-common = { version = "0.1.0", path = "virtualization/axvirtio-common" }
 axvirtio-net = { version = "0.1.0", path = "virtualization/axvirtio-net" }

@@ -15,6 +15,7 @@ Axvisor 的实时能力以物理 CPU 所有权分区为基础，而不是在普�
 | `axruntime::mp::start_secondary_cpus()` | 按 `ax_hal::cpu_num()` 启动 secondary CPU | 后续需要按 host CPU 集启动普通 secondary，并单独启动 RT CPU |
 | `axruntime::mp::rust_main_secondary()` | 所有 secondary CPU 进入普通 runtime | 后续需要在完成最小 CPU 初始化后按所有权分流 |
 | `ax_realtime_secondary_main()` | Axvisor 提供的 RT secondary 入口 | RT CPU 从 `axruntime` 跳入 Axvisor RT runtime 的固定落点 |
+| `components/ax-rt` | 可复用 RT executor crate | 承载 RT task、上下文切换、sleep、mutex、output buffer 和状态快照，避免把 scheduler core 绑定为 Axvisor 私有实现 |
 | `axruntime::INITED_CPUS` | 等待所有普通 runtime CPU 初始化完成 | 计数语义必须改为 host CPU 数，不能包含 RT CPU |
 | `ax_ipi::wait_for_all_cpus_ready()` | 等待普通 IPI 可用 | RT CPU 不应参与普通 IPI readiness |
 | `axruntime::fs::online_smp()` | 在 SMP online 后扩展 block runtime | 扩展范围必须是 host CPU 集 |
@@ -55,7 +56,7 @@ flowchart TD
 
 ### 2.1 CPU 所有权
 
-CPU 所有权由一个小而稳定的 Axvisor 边界表达，第一阶段代码锚点是 `os/axvisor/src/realtime.rs` 中的 `CpuOwner` 和 `cpu_owner()`。默认 feature 未启用时，所有 CPU 都属于 `Host`，因此现有行为完全不变；启用后，后续阶段会把配置解析、启动分流和 affinity 校验接到这个边界上。
+CPU 所有权由一个小而稳定的 Axvisor 边界表达，第一阶段代码锚点是 `os/axvisor/src/realtime.rs` 中的 `CpuOwner` 和 `cpu_owner()`。默认 feature 未启用时，所有 CPU 都属于 `Host`，因此现有行为完全不变；启用后，后续阶段会把配置解析、启动分流和 affinity 校验接到这个边界上。RT scheduler core 本身位于 `components/ax-rt`，与 `ax-task` 平级，Axvisor 只是第一个集成者。
 
 | CPU 所有者 | 运行内容 | 禁止内容 |
 | --- | --- | --- |
@@ -97,15 +98,15 @@ RT runtime 是一个单核、静态、无普通任务调度的执行环境。它
 
 RT 核的应用层入口是 `os/axvisor/src/realtime.rs` 中的 `ax_realtime_secondary_main(cpu_id) -> !`。`axruntime` 在完成最小 secondary CPU-local 初始化并判定该 CPU 属于 `SecondaryCpuOwner::Realtime` 后，通过这个符号跳入 Axvisor；因此后续 RT timer、mailbox 和 executor 都应从这个入口向下展开，而不是继续塞在 `axruntime` 内部。
 
-当前入口执行一个独立的静态 cooperative executor，用于证明 core3 已经离开普通 host scheduler 域，并且持续在 Axvisor RT 入口内运行。executor 为每个 RT task 准备独立栈、`TaskContext` 和 RT 私有 current-thread header，使用 `cpu-local` 的线程切换事务完成上下文切换，但不注册到普通 `axtask` run queue。`rt status` shell 命令读取 `RtStatus` 快照，显示 RT CPU、入口状态、executor 迭代次数、heartbeat/watchdog 时间和每个静态任务的运行统计；后续阶段会把 busy-spin yield 替换为真正的 RT timer 唤醒和事件队列。
+当前入口执行 `components/ax-rt` 提供的静态 cooperative executor，用于证明 core3 已经离开普通 host scheduler 域，并且持续在 Axvisor RT 入口内运行。executor 为每个 RT task 准备独立栈、`TaskContext` 和 RT 私有 current-thread header，使用 `cpu-local` 的线程切换事务完成上下文切换，但不注册到普通 `axtask` run queue。`rt status` shell 命令读取 `RtStatus` 快照，显示 RT CPU、入口状态、executor 迭代次数、heartbeat/watchdog 时间和每个静态任务的运行统计；后续阶段会把 busy-spin yield 替换为真正的 RT timer 唤醒和事件队列。
 
 ### 3.2 静态执行器
 
-第一版 RT executor 只支持启动时静态注册的 cooperative 周期任务。当前 prototype 使用固定任务表和 busy-spin yield 扫描 ready/delayed/blocked 状态，到期后切换到对应 RT task 的独立上下文。RT task 是长生命周期 `fn() -> !` 入口，任务函数自己在合适位置调用 RT 私有 `rt_yield_now()`、`rt_delay_until(deadline_nanos)` 或 `rt_sleep(duration_nanos)` 切回 executor。不调用普通 `ax_task` 的 run queue、sleep 或 wake 路径；后续事件任务由 host 到 RT 的 mailbox 触发。任务函数运行在 RT CPU 上，不能阻塞在普通 mutex 上，也不能调用可能睡眠的 host API。
+第一版 RT executor 只支持启动时静态注册的 cooperative 周期任务。`ax-rt` 使用固定容量任务表和 busy-spin yield 扫描 ready/delayed/blocked 状态，到期后切换到对应 RT task 的独立上下文。RT task 是长生命周期 `fn() -> !` 入口，任务函数自己在合适位置调用 RT 私有 `rt_yield_now()`、`rt_delay_until(deadline_nanos)` 或 `rt_sleep(duration_nanos)` 切回 executor。不调用普通 `ax_task` 的 run queue、sleep 或 wake 路径；后续事件任务由 host 到 RT 的 mailbox 触发。任务函数运行在 RT CPU 上，不能阻塞在普通 mutex 上，也不能调用可能睡眠的 host API。
 
-RT runtime 内部提供 `RtMutex` 作为第一版 cooperative sleepable mutex。拿锁失败时，当前 RT task 被标记为 `Blocked` 并主动 yield 回 executor；unlock 只唤醒一个 waiter，把它改回 `Ready`。`RtMutex` 不使用普通 sleepable lock，不进入 `axtask`，也不在持锁路径里调用 host scheduler。第一版暂不支持 recursive locking、priority inheritance、跨 CPU owner 和 IRQ context lock/unlock；这些都需要在接入 RT timer IRQ 和真实 RT 设备前单独设计。
+`ax-rt` 内部提供 `RtMutex` 作为第一版 cooperative sleepable mutex。拿锁失败时，当前 RT task 被标记为 `Blocked` 并主动 yield 回 executor；unlock 只唤醒一个 waiter，把它改回 `Ready`。`RtMutex` 不使用普通 sleepable lock，不进入 `axtask`，也不在持锁路径里调用 host scheduler。第一版暂不支持 recursive locking、priority inheritance、跨 CPU owner 和 IRQ context lock/unlock；这些都需要在接入 RT timer IRQ 和真实 RT 设备前单独设计。
 
-RT console 第一版不重构 Axvisor guest console mux。RT task 只写入一个固定容量的 RT output buffer，host 侧通过 `rt console` / `rt shell` 命令拉取并打印输出。这个临时形态避免 RT CPU 直接抢 host UART 或持有普通 console lock，也避免把 `guest_console` 当前的 `attached VM` 模型立即扩展成多目标 mux。后续如果需要完整交互式 RT shell，再把 mux 的 attachment 状态提升为 `Shell`、`Guest(VMId)`、`Realtime` 三态。
+RT console 第一版不重构 Axvisor guest console mux。RT task 只写入 `ax-rt` 中一个固定容量的 RT output buffer，host 侧通过 `rt console` / `rt shell` 命令拉取并打印输出。这个临时形态避免 RT CPU 直接抢 host UART 或持有普通 console lock，也避免把 `guest_console` 当前的 `attached VM` 模型立即扩展成多目标 mux。后续如果需要完整交互式 RT shell，再把 mux 的 attachment 状态提升为 `Shell`、`Guest(VMId)`、`Realtime` 三态。
 
 | RT 任务字段 | 语义 | 第一版约束 |
 | --- | --- | --- |

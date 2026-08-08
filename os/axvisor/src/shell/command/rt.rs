@@ -16,7 +16,10 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::{print, println};
 
-use crate::realtime::{RtState, RtTaskState, rt_read_output, status};
+use crate::realtime::{
+    RtState, RtTaskState, heartbeats, last_heartbeat_nanos, last_watchdog_nanos, rt_read_output,
+    status,
+};
 use crate::shell::command::{CommandNode, ParsedCommand};
 
 fn do_rt_status(_cmd: &ParsedCommand) {
@@ -34,11 +37,11 @@ fn do_rt_status(_cmd: &ParsedCommand) {
     println!("State: {state}");
     println!("Scheduler: cooperative-context-switch");
     println!("Task contexts: {}", status.task_count);
-    println!("Heartbeats: {}", status.heartbeats);
+    println!("Heartbeats: {}", heartbeats());
     println!("Executor iterations: {}", status.executor_iterations);
     println!("Entry ns: {}", status.entry_nanos);
-    println!("Last heartbeat ns: {}", status.last_heartbeat_nanos);
-    println!("Last watchdog ns: {}", status.last_watchdog_nanos);
+    println!("Last heartbeat ns: {}", last_heartbeat_nanos());
+    println!("Last watchdog ns: {}", last_watchdog_nanos());
     println!("Tasks:");
     println!(
         "  {name:<10} {state:<8} {period:>14} {deadline:>14} {runs:>8} {start:>14} {finish:>14}",
@@ -50,7 +53,7 @@ fn do_rt_status(_cmd: &ParsedCommand) {
         start = "last_start(ns)",
         finish = "last_finish(ns)",
     );
-    for task in status.tasks {
+    for task in status.tasks.into_iter().take(status.task_count) {
         let task_state = match task.state {
             RtTaskState::Ready => "ready",
             RtTaskState::Running => "running",

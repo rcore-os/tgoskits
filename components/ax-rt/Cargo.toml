@@ -1,0 +1,16 @@
+[package]
+name = "ax-rt"
+version = "0.1.0"
+repository.workspace = true
+edition.workspace = true
+authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
+description = "Isolated cooperative realtime executor for ArceOS-family kernels"
+license.workspace = true
+
+[dependencies]
+ax-cpu.workspace = true
+ax-memory-addr.workspace = true
+cpu-local.workspace = true
+
+[lints.clippy]
+new_without_default = "allow"
