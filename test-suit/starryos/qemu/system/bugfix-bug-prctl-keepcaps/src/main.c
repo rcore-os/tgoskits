@@ -272,6 +272,19 @@ static int verify_sibling_thread_isolation(const char *unused)
         return 1;
     }
 
+    struct capability_data controlling_before[2];
+    if (read_capabilities(controlling_before) != 0) {
+        perror("controlling thread capget before sibling setuid");
+        return 1;
+    }
+    uint64_t controlling_permitted_before =
+        capability_mask(controlling_before, 1);
+    if (controlling_permitted_before == 0) {
+        fprintf(stderr,
+                "controlling thread unexpectedly has no permitted capabilities\n");
+        return 1;
+    }
+
     struct sibling_keepcaps_state state = {0};
     atomic_init(&state.ready, 0);
     atomic_init(&state.start, 0);
@@ -329,6 +342,41 @@ static int verify_sibling_thread_isolation(const char *unused)
                 state.capget_after_result, state.capget_after_errno,
                 strerror(state.capget_after_errno),
                 (unsigned long long)state.permitted_after);
+        return 1;
+    }
+
+    errno = 0;
+    long controlling_keepcaps = prctl_raw(PR_GET_KEEPCAPS, 0);
+    if (controlling_keepcaps != 1) {
+        fprintf(stderr,
+                "sibling setuid changed controlling keepcaps=%ld errno=%d "
+                "(%s), expected 1\n",
+                controlling_keepcaps, errno, strerror(errno));
+        return 1;
+    }
+
+    struct capability_data controlling_after[2];
+    if (read_capabilities(controlling_after) != 0) {
+        perror("controlling thread capget after sibling setuid");
+        return 1;
+    }
+    uint64_t controlling_permitted_after =
+        capability_mask(controlling_after, 1);
+    uint64_t controlling_effective_after =
+        capability_mask(controlling_after, 0);
+    if (controlling_permitted_after != controlling_permitted_before) {
+        fprintf(stderr,
+                "sibling setuid changed controlling permitted capabilities: "
+                "before=%#llx after=%#llx\n",
+                (unsigned long long)controlling_permitted_before,
+                (unsigned long long)controlling_permitted_after);
+        return 1;
+    }
+    if (controlling_effective_after != 0) {
+        fprintf(stderr,
+                "sibling setuid did not clear controlling effective "
+                "capabilities: %#llx\n",
+                (unsigned long long)controlling_effective_after);
         return 1;
     }
     return 0;

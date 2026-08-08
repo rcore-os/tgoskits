@@ -502,6 +502,29 @@ impl Thread {
         }
     }
 
+    /// Update every thread's credentials from its own current snapshot.
+    ///
+    /// Use this when a process-wide credential operation depends on
+    /// thread-local state. In particular, setxid capability transitions must
+    /// evaluate each thread's `PR_SET_KEEPCAPS` flag independently.
+    pub(crate) fn update_process_creds(&self, update: impl Fn(&Cred) -> Cred) {
+        let old_cred = self.cred();
+        self.set_cred_single(Arc::new(update(&old_cred)));
+
+        let mut tids = self.proc_data.proc.threads();
+        tids.sort_unstable();
+
+        for tid in &tids {
+            if let Ok(task) = ops::get_task(*tid)
+                && let Some(thread) = task.try_as_thread()
+                && !core::ptr::eq(thread, self)
+            {
+                let old_cred = thread.cred();
+                thread.set_cred_single(Arc::new(update(&old_cred)));
+            }
+        }
+    }
+
     /// Get the registered rseq area pointer.
     pub fn rseq_area(&self) -> usize {
         self.rseq_area.load(Ordering::SeqCst)
