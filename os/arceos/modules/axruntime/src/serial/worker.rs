@@ -162,6 +162,10 @@ impl SerialWorker {
                     force_service |= result.is_ok();
                     result
                 }
+                ControlOp::DiscardTx => {
+                    self.discard_tx();
+                    Ok(())
+                }
             };
             command.complete(result);
         }
@@ -232,6 +236,26 @@ impl SerialWorker {
             self.shared.tx_source.wake(IoEvents::ERR | IoEvents::HUP);
         }
         self.shared.tx_progress.notify_all(true);
+    }
+
+    fn discard_tx(&mut self) {
+        self.shared.ingress.discard_pending();
+        self.pending_frame = None;
+        self.pending_rearm.remove(SerialEventSet::TX_SPACE);
+        self.immediate_events.remove(SerialEventSet::TX_SPACE);
+        let hardware_idle = {
+            let mut port = self.shared.port.lock();
+            port.discard_tx();
+            port.tx_idle()
+        };
+        if !hardware_idle && !self.shared.polling {
+            self.pending_rearm.insert(SerialEventSet::TX_SPACE);
+        }
+
+        self.shared.publish_tx_space();
+        if self.shared.ingress.mark_idle_if_empty(true, hardware_idle) {
+            self.shared.publish_tx_idle();
+        }
     }
 
     fn service_rx(&mut self, path: RxPath) -> RxServiceOutcome {

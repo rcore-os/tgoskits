@@ -580,6 +580,10 @@ impl UartPort for RockchipFiqSerial {
         UartPort::write_tx(&mut self.serial, bytes)
     }
 
+    fn discard_tx(&mut self) {
+        UartPort::discard_tx(&mut self.serial)
+    }
+
     fn tx_idle(&mut self) -> bool {
         self.serial.tx_idle()
     }

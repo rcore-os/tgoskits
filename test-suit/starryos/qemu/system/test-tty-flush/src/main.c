@@ -233,6 +233,19 @@ out:
     close_pty(&pty);
 }
 
+static void check_serial_output_flush(void)
+{
+    int fd = open("/dev/ttyS0", O_RDWR | O_NOCTTY | O_NONBLOCK);
+
+    if (fd < 0) {
+        fail("open serial TTY for output flush");
+        return;
+    }
+    if (ioctl(fd, TCFLSH, TCOFLUSH) != 0)
+        fail("TCOFLUSH discards serial output");
+    close(fd);
+}
+
 static void check_reader_wakeup_after_flush(struct pty_pair *pty)
 {
     enum { ROUNDS = 64 };
@@ -318,6 +331,7 @@ int main(void)
     }
     close_pty(&pty);
     check_deferred_echo_flush();
+    check_serial_output_flush();
 
     if (failures != 0) {
         fprintf(stderr, "test-tty-flush: %d failure(s)\n", failures);

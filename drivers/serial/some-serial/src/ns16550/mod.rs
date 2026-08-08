@@ -259,6 +259,15 @@ impl<T: Kind> UartPort for Ns16550<T> {
         self.try_write(bytes)
     }
 
+    fn discard_tx(&mut self) {
+        self.write_flags(
+            UART_FCR,
+            FifoControlFlags::ENABLE_FIFO
+                | FifoControlFlags::CLEAR_TRANSMITTER_FIFO
+                | FifoControlFlags::TRIGGER_8_BYTES,
+        );
+    }
+
     fn tx_idle(&mut self) -> bool {
         let lsr: LineStatusFlags = self.read_flags(UART_LSR);
         lsr.contains(
@@ -983,6 +992,22 @@ mod tests {
             fcr & FifoControlFlags::TRIGGER_LEVEL_MASK,
             FifoControlFlags::TRIGGER_8_BYTES,
             "deferred RX service must amortize IRQ wakeups at the Linux 16550A default trigger",
+        );
+    }
+
+    #[test]
+    fn discard_tx_clears_only_the_transmitter_fifo() {
+        let (_guard, mut uart) = serial();
+
+        UartPort::discard_tx(&mut uart);
+
+        let fcr = FifoControlFlags::from_bits_retain(LAST_FCR_WRITE.load(Ordering::SeqCst));
+        assert!(fcr.contains(FifoControlFlags::ENABLE_FIFO));
+        assert!(fcr.contains(FifoControlFlags::CLEAR_TRANSMITTER_FIFO));
+        assert!(!fcr.contains(FifoControlFlags::CLEAR_RECEIVER_FIFO));
+        assert_eq!(
+            fcr & FifoControlFlags::TRIGGER_LEVEL_MASK,
+            FifoControlFlags::TRIGGER_8_BYTES,
         );
     }
 

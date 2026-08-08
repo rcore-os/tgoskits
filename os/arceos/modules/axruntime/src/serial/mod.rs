@@ -291,6 +291,13 @@ impl SerialTxSender {
         }
     }
 
+    pub fn discard_pending(&self) -> AxResult {
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit(ControlOp::DiscardTx, &self.shared.bridge.notify)
+    }
+
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
     }

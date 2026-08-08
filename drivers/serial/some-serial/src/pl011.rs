@@ -734,6 +734,14 @@ impl UartPort for Pl011 {
         written
     }
 
+    fn discard_tx(&mut self) {
+        let fifo_enabled = self.registers().uartlcr_h.is_set(UARTLCR_H::FEN);
+        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+        if fifo_enabled {
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+        }
+    }
+
     fn tx_idle(&mut self) -> bool {
         let fr = self.registers().uartfr.extract();
         !fr.is_set(UARTFR::BUSY) && !fr.is_set(UARTFR::TXFF)

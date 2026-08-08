@@ -420,6 +420,12 @@ impl TtyWrite for SerialWriter {
         self.backend.drain_tx()
     }
 
+    fn discard_output(&self) -> AxResult<()> {
+        self.backend.ensure_started()?;
+        let _guard = self.backend.output_lock.lock();
+        self.backend.tx.discard_pending()
+    }
+
     fn termios_changed(&self, old: &Termios2, new: &Termios2) {
         if old.baudrate() == new.baudrate()
             && old.data_bits() == new.data_bits()

@@ -49,6 +49,10 @@ pub trait UartPort: Send + 'static {
     /// Writes as much of `bytes` as the hardware can currently accept.
     fn write_tx(&mut self, bytes: &[u8]) -> usize;
 
+    /// Discards bytes queued in the hardware transmitter. A byte already in
+    /// the shift register may still complete.
+    fn discard_tx(&mut self);
+
     /// Returns whether both the FIFO and transmitter shift register are empty.
     fn tx_idle(&mut self) -> bool;
 
