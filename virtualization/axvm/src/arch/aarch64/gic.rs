@@ -140,7 +140,22 @@ pub(crate) fn handle_current_irq() -> Option<usize> {
     // AArch64 ArceOS platform IRQ handlers acknowledge the current IRQ
     // internally. The raw vector argument is ignored by current GIC-backed
     // platforms, so keep the ack/EOI ownership inside the platform handler.
-    ax_std::os::arceos::modules::ax_hal::irq::handle_irq(0).then_some(0)
+    let handled = ax_std::os::arceos::modules::ax_hal::irq::handle_irq(0);
+    if handled
+        && let (Some(vm_id), Some(vcpu_id)) = (crate::current_vm_id(), crate::current_vcpu_id())
+        && let Some(vm) = crate::get_vm_by_id(vm_id)
+    {
+        let _ = vm.with_runtime(|runtime| {
+            runtime.trace_virq_event(
+                vm_id,
+                crate::runtime::VirqTraceKind::HostIrqReceived,
+                vcpu_id,
+                0,
+            );
+            Ok(())
+        });
+    }
+    handled.then_some(0)
 }
 
 pub(crate) fn fetch_irq() -> usize {

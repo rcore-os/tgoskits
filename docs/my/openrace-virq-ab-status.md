@@ -1,0 +1,169 @@
+# vIRQ A/B 实验总结与结果
+
+> 实验日期：2026-08-09  
+> 当前状态：正式 A/B 实验已完成；四轮均形成 300/300 guest 闭环，可进行延迟比较。
+
+## 1. 实验目标与固定条件
+
+本实验比较两条 software vIRQ 注入路径：
+
+- **A（旧路径）**：host injector 将事件写入 VM 级的无界 pending queue，执行
+  `notify_all → IPI(task.cpu_id())`，再由 vCPU run loop drain 并调用 backend 的
+  `inject_interrupt`。
+- **B（目标路径）**：host injector 将事件写入 per-vCPU 有界 dispatcher queue，使用
+  vCPU affinity 选择目标 CPU，经定向 notify 和 IPI 进入 vCPU run loop，再执行
+  `drain → inject`。
+
+因此，当前 A/B 实际比较的是“旧的无界 VM pending queue/全局唤醒路径”和“新的有界
+per-vCPU dispatcher/定向唤醒路径”，不是“直接 backend 注入”和“队列化注入”的对比。
+
+固定输入如下：
+
+| 项目 | 配置 |
+| --- | --- |
+| 实验顺序 | `A1 → B1 → A2 → B2` |
+| injector 周期/次数 | 10 ms / 300 次 |
+| VM/vCPU | VM 2 / vCPU 0 |
+| software vIRQ | vector 48 |
+| injector host CPU | CPU 0 |
+| workload | `scripts/test/zephyr-soft-virq` |
+| 观测事件 | `enqueue`、`notify`、`ipi`、`running`、`drain`、`inject`；B 另有 `queue_overflow` |
+| guest warm-up | VM running 后 2 s，A/B 共用，不计入样本 |
+| final grace | 最后一次注入后等待 1 个 10 ms 周期，再 dump trace |
+
+代码所在工作树：
+
+- B：`openrace/realtime-virq-ab`（`/home/huhu/tgoskits`）
+- A：`contest/openrace-2026`（`/home/huhu/tgoskits-2026`）
+
+## 2. 已完成且有效的部分
+
+### 2.1 公共实验组件
+
+- host injector 参数已固定，便于 A/B 使用同一输入。
+- 已增加 per-host-CPU bounded trace，能够记录注入链路各阶段。
+- Zephyr workload 能报告 `received/expected`，统计脚本位于
+  `scripts/test/virq_latency_stats.py`。
+
+### 2.2 B 代码侧改动
+
+- 实现 per-vCPU 有界中断队列和定向 vCPU wait queue。
+- 实现 `enqueue → notify → IPI → drain → inject` 路径。
+- vCPU affinity 使用 vCPU 配置的物理 CPU mask，不再依赖 task 创建瞬间的 `task.cpu_id()`。
+- 修复 enqueue 后 vCPU 入睡造成的 pending 丢唤醒。
+- 修复 vCPU task 创建与私有 wait queue 发布之间的启动竞态。
+- 首轮启动时出现的 `ESR_EL2=0x8a000000` / PPI26 风暴已不再阻塞后续 B 启动。
+
+### 2.3 静态验证
+
+以下检查通过：
+
+```text
+cargo fmt --all -- --check
+cargo clippy -p axvm --features 'host-test realtime-trace' --lib -- -D warnings
+cargo test -p axvm --features 'host-test realtime-trace'
+```
+
+测试结果：177 个 axvm 单元测试、19 个架构边界测试、4 个错误契约测试通过。测试编译过程中的 6 个 dead-code warning 是仓库已有 warning。
+
+## 3. 失败与局部成功
+
+### 3.1 A1：旧队列链路有发送记录，但没有 guest vIRQ
+
+证据日志：`/tmp/ab-A1.log`
+
+```text
+enqueue=300
+notify=300
+ipi=300
+running=1
+drain=0
+inject=0
+guest: SOFTWARE VIRQ FAIL received=0 expected=300
+```
+
+A1 中可以看到 vCPU 的 `running` 事件发生在 host CPU 3，而 injector 的 `enqueue`、`notify`、`ipi` 记录发生在 CPU 0。但 trace 的 `cpu` 字段表示记录事件时的当前 CPU；`ipi` 事件没有记录目标 CPU，不能据此证明 IPI 发错 CPU。A 的实际路径是无界 pending queue 加 `task.cpu_id()` 目标选择，而不是从 CPU 0 直接调用 backend 注入。
+
+本轮真正能确认的是：300 次 enqueue/notify/IPI 都有发送端记录，但没有任何 `drain` 或 `inject`。因此 pending interrupt 没有形成可观测的 host-side 注入闭环；究竟是 IPI 未送达、未触发 guest exit，还是退出后未进入 drain，现有 trace 还不能区分。该轮不能产生 latency 样本，也不能作为有效的 A/B p99 对比基线。
+
+统计脚本结果：`injected=300`、`matched=0`、`lost_irq=300`，`p99/p99.9/max` 均为 0（表示没有样本，不是延迟为 0）。
+
+### 3.2 B 首轮：启动竞态导致 vCPU 永久等待
+
+证据日志：`/tmp/ab-B1.log`
+
+vCPU task 在 per-vCPU wait queue 发布之前先睡到了旧的全局队列；之后 startup 通知只唤醒了新队列，task 因此永久等待。同时出现 `ESR_EL2=0x8a000000` 和 PPI26 unhandled IRQ 风暴。本轮没有有效实验数据，不能纳入结果。
+
+### 3.3 B 修复后的 passthrough smoke：队列运行但无法 drain/inject
+
+证据日志：`/tmp/ab-B1-target.log`
+
+```text
+enqueue=64
+notify=64
+ipi=64
+running=1
+drain=0
+inject=0
+queue_overflow=236
+guest: received=0 expected=300
+```
+
+该轮已经可以启动，但在 `interrupt_mode = "passthrough"` 下，发送端虽然记录了 64 次 IPI，却没有观察到 `drain` 或 `inject`。现有 trace 没有 IPI 接收端和 guest exit 原因，因此只能确认 vCPU 没有可靠回到 AxVM host-side drain/inject 路径，不能进一步断言 IPI 是未送达还是未造成 guest exit。队列累积到容量 64 后，后续 236 次 enqueue 报错并记录为 overflow。
+
+### 3.4 B 临时 emulated smoke：dispatcher 局部跑通，guest 闭环仍失败
+
+证据日志：`/tmp/ab-B1-emu.log`
+
+本轮临时将配置改为 `interrupt_mode = "emulated"`，实验后已恢复为 `passthrough` 以保持 A/B 输入一致。
+
+```text
+enqueue=65
+notify=65
+ipi=65
+running=31
+drain=1
+inject=1
+queue_overflow=235
+guest: SOFTWARE VIRQ FAIL received=0 expected=300
+```
+
+这证明 B 的 dispatcher 至少能够执行一次 `running → drain → inject`，但 emulated GIC 路径仍未形成 guest 可观察的 software vIRQ 闭环。`running=31` 只能说明 host run loop 进入了 31 次，现有事件没有记录每次对应的 guest exit 原因，不能把这 31 次全部解释为启动阶段 WFI 退出。统计脚本报告 `injected=300`、`inject_errors=235`、`matched=0`，因此仍不能做延迟比较。
+
+## 4. 正式 A/B 最终结果
+
+最后一次注入后增加一个完整采样周期的 grace，避免大量串口 trace 输出污染最后一个
+guest ISR 样本。四轮均满足 `VIRQ_INJECT_COMPLETE ... errors=0` 和
+`SOFTWARE VIRQ COMPLETE samples=300`。
+
+| 轮次 | guest 收到 | 注入错误 | 丢失 | overflow | mean (ns) | p99 (ns) | p99.9/max (ns) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A1 | 300/300 | 0 | 0 | 0 | 449,638 | 1,051,552 | 1,599,552 |
+| B1 | 300/300 | 0 | 0 | 0 | 392,565 | 1,138,720 | 1,370,992 |
+| A2 | 300/300 | 0 | 0 | 0 | 452,003 | 1,163,136 | 1,272,896 |
+| B2 | 300/300 | 0 | 0 | 0 | 470,652 | 1,077,840 | 1,163,168 |
+| 两轮平均 | — | — | — | — | **A 450,820 / B 431,608** | **A 1,107,344 / B 1,108,280** | **A 1,436,224 / B 1,267,080** |
+
+两轮平均相对 A：B 的 mean 低 4.26%，p99 高 0.08%（基本持平），p99.9/max 低
+11.78%。样本只有两轮，且单轮波动明显，因此不能把 mean 或 p99 宣称为稳定收益；
+可以确认的是 B 已经可靠完成注入闭环，且本实验中没有丢中断或队列溢出。尾部指标方向
+对 B 有利，但还需要更多重复轮次或长稳实验才能作为强性能结论。
+
+## 5. 实验完成后的后续 TODO
+
+1. 若要把性能差异作为强结论，增加独立重复轮次并做长稳（至少 30 分钟初验）。
+2. 继续保留每轮完整日志和统计结果，避免只保存汇总数字。
+3. 将最终 A/B 命令和日志路径同步到提交/复现说明。
+
+## 6. 证据与复现入口
+
+- A1：`/tmp/ab-A1.log`
+- B 首轮：`/tmp/ab-B1.log`
+- B passthrough smoke：`/tmp/ab-B1-target.log`
+- B emulated smoke：`/tmp/ab-B1-emu.log`
+- 统计：`python3 scripts/test/virq_latency_stats.py <log>`
+- workload：`scripts/test/zephyr-soft-virq`
+- 最终 A1：`/tmp/openrace-ab-grace-A1.log`
+- 最终 B1：`/tmp/openrace-ab-grace-B1.log`
+- 最终 A2：`/tmp/openrace-ab-grace-A2.log`
+- 最终 B2：`/tmp/openrace-ab-grace-B2.log`

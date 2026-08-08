@@ -68,7 +68,7 @@ pub(crate) use host::{
 pub use irq::InterruptFabric;
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
-    AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
+    AxvmRuntime, PeriodicVirqConfig, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};

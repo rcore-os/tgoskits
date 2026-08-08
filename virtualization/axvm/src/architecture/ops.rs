@@ -191,9 +191,34 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
             return;
         }
     };
-    inject_drained_interrupts::<A>(runtime.irq_dispatcher(), vm.id(), vcpu_id, vcpu);
+    runtime.trace_virq_event(vm.id(), crate::runtime::VirqTraceKind::Running, vcpu_id, 0);
+    let interrupts = runtime.irq_dispatcher().drain(vcpu_id);
+    if !interrupts.is_empty() {
+        runtime.trace_virq_event(
+            vm.id(),
+            crate::runtime::VirqTraceKind::Drain,
+            vcpu_id,
+            interrupts[0].id.0,
+        );
+    }
+    for interrupt in interrupts {
+        runtime.trace_virq_event(
+            vm.id(),
+            crate::runtime::VirqTraceKind::Inject,
+            vcpu_id,
+            interrupt.id.0,
+        );
+        if let Err(err) = A::inject_vcpu_interrupt(vcpu, interrupt) {
+            warn!(
+                "VM[{}] VCpu[{}] failed to inject interrupt {interrupt:?}: {err:?}",
+                vm.id(),
+                vcpu_id
+            );
+        }
+    }
 }
 
+#[cfg(test)]
 fn inject_drained_interrupts<A: ArchOps>(
     dispatcher: &crate::runtime::VcpuIrqDispatcher,
     vm_id: usize,

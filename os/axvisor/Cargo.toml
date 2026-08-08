@@ -59,6 +59,7 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
+openrace-realtime = ["axvm/realtime-trace"]
 
 [dependencies]
 spin = { workspace = true }

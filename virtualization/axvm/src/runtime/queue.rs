@@ -44,13 +44,17 @@ impl VcpuInterruptQueue {
         }
     }
 
-    /// Pushes a pending interrupt onto the queue for the given vCPU.
-    pub fn push(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) {
-        self.pending
-            .lock()
+    /// Pushes a pending interrupt, rejecting it when the per-vCPU bound is full.
+    pub fn try_push(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> Result<(), ()> {
+        let mut pending = self.pending.lock();
+        let queue = pending
             .entry(vcpu_id)
-            .or_default()
-            .push(interrupt);
+            .or_insert_with(|| Vec::with_capacity(crate::runtime::VCPU_INTERRUPT_QUEUE_CAPACITY));
+        if queue.len() >= crate::runtime::VCPU_INTERRUPT_QUEUE_CAPACITY {
+            return Err(());
+        }
+        queue.push(interrupt);
+        Ok(())
     }
 
     /// Drains all pending interrupts for the given vCPU, leaving its
@@ -61,6 +65,14 @@ impl VcpuInterruptQueue {
             .get_mut(&vcpu_id)
             .map(core::mem::take)
             .unwrap_or_default()
+    }
+
+    /// Returns whether a vCPU has an interrupt waiting to be drained.
+    pub fn has_pending(&self, vcpu_id: usize) -> bool {
+        self.pending
+            .lock()
+            .get(&vcpu_id)
+            .is_some_and(|queue| !queue.is_empty())
     }
 }
 
@@ -88,9 +100,9 @@ mod tests {
     #[test]
     fn push_preserves_fifo_order() {
         let q = VcpuInterruptQueue::new();
-        q.push(0, edge(10));
-        q.push(0, level(20));
-        q.push(0, edge(30));
+        q.try_push(0, edge(10)).unwrap();
+        q.try_push(0, level(20)).unwrap();
+        q.try_push(0, edge(30)).unwrap();
 
         let drained = q.drain(0);
         assert_eq!(drained.len(), 3);
@@ -102,8 +114,8 @@ mod tests {
     #[test]
     fn isolates_vcpus() {
         let q = VcpuInterruptQueue::new();
-        q.push(0, edge(1));
-        q.push(1, edge(2));
+        q.try_push(0, edge(1)).unwrap();
+        q.try_push(1, edge(2)).unwrap();
 
         assert_eq!(q.drain(0), vec![edge(1)]);
         assert_eq!(q.drain(1), vec![edge(2)]);
@@ -112,7 +124,7 @@ mod tests {
     #[test]
     fn drain_empties_queue() {
         let q = VcpuInterruptQueue::new();
-        q.push(0, edge(7));
+        q.try_push(0, edge(7)).unwrap();
         assert_eq!(q.drain(0).len(), 1);
         assert!(q.drain(0).is_empty());
     }
@@ -120,7 +132,7 @@ mod tests {
     #[test]
     fn double_drain_returns_empty() {
         let q = VcpuInterruptQueue::new();
-        q.push(0, edge(7));
+        q.try_push(0, edge(7)).unwrap();
         q.drain(0);
         assert!(q.drain(0).is_empty());
     }
@@ -128,8 +140,8 @@ mod tests {
     #[test]
     fn trigger_mode_round_trips() {
         let q = VcpuInterruptQueue::new();
-        q.push(0, edge(42));
-        q.push(0, level(43));
+        q.try_push(0, edge(42)).unwrap();
+        q.try_push(0, level(43)).unwrap();
 
         let drained = q.drain(0);
         assert_eq!(drained.len(), 2);
@@ -141,5 +153,31 @@ mod tests {
             drained[1].trigger,
             crate::InterruptTriggerMode::LevelTriggered
         );
+    }
+
+    #[test]
+    fn rejects_interrupt_when_capacity_is_reached() {
+        let q = VcpuInterruptQueue::new();
+
+        for id in 0..crate::runtime::VCPU_INTERRUPT_QUEUE_CAPACITY {
+            q.try_push(0, edge(id as u32)).unwrap();
+        }
+
+        assert!(q.try_push(0, edge(999)).is_err());
+        assert_eq!(
+            q.drain(0).len(),
+            crate::runtime::VCPU_INTERRUPT_QUEUE_CAPACITY
+        );
+    }
+
+    #[test]
+    fn pending_state_clears_after_drain() {
+        let q = VcpuInterruptQueue::new();
+
+        assert!(!q.has_pending(0));
+        q.try_push(0, edge(7)).unwrap();
+        assert!(q.has_pending(0));
+        q.drain(0);
+        assert!(!q.has_pending(0));
     }
 }

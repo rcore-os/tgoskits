@@ -13,25 +13,143 @@
 // limitations under the License.
 
 use alloc::{format, sync::Arc};
+use core::time::Duration;
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
     arch::{ArchOps, CurrentArch, VcpuRunAction},
     ax_err_type,
+    host::HostTime,
+    irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::VmRuntimeHandle,
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
+const PERIODIC_VIRQ_STACK_SIZE: usize = 0x10000;
+// `vm.running()` becomes true before the guest installs its ISR. Keep the
+// warm-up identical for every A/B variant so startup is excluded from samples.
+const PERIODIC_VIRQ_GUEST_WARMUP: Duration = Duration::from_secs(2);
+
+/// Spawn the common host-side periodic injector used by both A and B.
+pub(crate) fn spawn_periodic_virq_injector(
+    vm: VMRef,
+    config: crate::PeriodicVirqConfig,
+) -> AxVmResult {
+    if config.samples == 0 {
+        return Err(ax_err_type!(
+            BadState,
+            "periodic vIRQ samples must be non-zero"
+        ));
+    }
+    if config.period.is_zero() {
+        return Err(ax_err_type!(
+            BadState,
+            "periodic vIRQ period must be non-zero"
+        ));
+    }
+    if vm.vcpu(config.vcpu_id).is_none() {
+        return Err(ax_err_type!(
+            NotFound,
+            format!("vCPU {} not found", config.vcpu_id)
+        ));
+    }
+
+    let task = crate::TaskInner::new(
+        move || run_periodic_virq_injector(vm, config),
+        format!("openrace-virq-injector-vcpu-{}", config.vcpu_id),
+        PERIODIC_VIRQ_STACK_SIZE,
+    );
+    if let Some(cpu_id) = config.injector_cpu_id {
+        let bits = 1usize.checked_shl(cpu_id as u32).ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!("injector CPU {cpu_id} is not representable")
+            )
+        })?;
+        task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(bits));
+    }
+    crate::host::task::spawn_task(task);
+    Ok(())
+}
+
+fn run_periodic_virq_injector(vm: VMRef, config: crate::PeriodicVirqConfig) {
+    let wait_started = ax_std::time::Instant::now();
+    while !vm.running() {
+        if vm.stopped() || wait_started.elapsed() >= Duration::from_secs(5) {
+            warn!(
+                "OpenRace vIRQ injector did not observe VM[{}] running before timeout",
+                vm.id()
+            );
+            return;
+        }
+        ax_std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let targets = crate::CpuMask::<64>::one_shot(config.vcpu_id);
+    let mut deadline = ax_std::time::Instant::now() + PERIODIC_VIRQ_GUEST_WARMUP + config.period;
+    let mut failed = 0usize;
+    for sequence in 0..config.samples {
+        let now = ax_std::time::Instant::now();
+        let remaining = deadline.duration_since(now);
+        if !remaining.is_zero() {
+            ax_std::thread::sleep(remaining);
+        }
+        let requested_ns = crate::host::default_host().monotonic_time().as_nanos() as u64;
+        let result = vm.inject_interrupt_to_vcpu(targets, config.vector);
+        let completed_ns = crate::host::default_host().monotonic_time().as_nanos() as u64;
+        if result.is_err() {
+            failed += 1;
+        }
+        info!(
+            "VIRQ_INJECT sequence={} vm={} vcpu={} vector={} requested_ns={} completed_ns={} \
+             status={}",
+            sequence,
+            vm.id(),
+            config.vcpu_id,
+            config.vector,
+            requested_ns,
+            completed_ns,
+            if result.is_ok() { "ok" } else { "error" },
+        );
+        deadline += config.period;
+        if !vm.running() {
+            break;
+        }
+    }
+    info!(
+        "VIRQ_INJECT_COMPLETE vm={} vcpu={} vector={} samples={} errors={}",
+        vm.id(),
+        config.vcpu_id,
+        config.vector,
+        config.samples,
+        failed,
+    );
+    // Let the final interrupt reach and be timestamped by the guest before
+    // the trace dump starts emitting a large amount of serial output.
+    ax_std::thread::sleep(config.period);
+    #[cfg(feature = "realtime-trace")]
+    vm.dump_realtime_trace().unwrap_or_else(|err| {
+        warn!(
+            "VM[{}] failed to dump realtime vIRQ trace: {err:?}",
+            vm.id()
+        );
+    });
+}
 
 /// Blocks the current thread until it is explicitly woken up, using the wait queue
 /// associated with the VCpus of the specified VM.
 ///
 /// # Arguments
 ///
-/// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
-fn wait(vm_vcpus: &VmRuntimeHandle) {
-    vm_vcpus.wait();
+/// * `vcpu_id` - The vCPU whose wait queue is used to block the current thread.
+fn wait(vm: &VMRef, vm_vcpus: &VmRuntimeHandle, vcpu_id: usize) {
+    vm_vcpus.wait_vcpu_until(vcpu_id, || {
+        vm_vcpus.has_pending_vcpu_interrupt(vcpu_id)
+            || !vm.running()
+            || vm.suspending()
+            || vm.stopping()
+    });
 }
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
@@ -39,13 +157,13 @@ fn wait(vm_vcpus: &VmRuntimeHandle) {
 ///
 /// # Arguments
 ///
-/// * `vm_id` - The ID of the VM whose VCpu wait queue is used to block the current thread.
+/// * `vcpu_id` - The vCPU whose wait queue is used for the wait.
 /// * `condition` - A closure that returns a boolean value indicating whether the condition is met.
-fn wait_for<F>(vm_vcpus: &VmRuntimeHandle, condition: F)
+fn wait_for<F>(vm_vcpus: &VmRuntimeHandle, vcpu_id: usize, condition: F)
 where
     F: Fn() -> bool,
 {
-    vm_vcpus.wait_until(condition);
+    vm_vcpus.wait_vcpu_until(vcpu_id, condition);
 }
 
 /// Notifies the primary VCpu task associated with the specified VM to wake up and resume execution.
@@ -61,7 +179,7 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
         return;
     };
     if let Err(err) = vm.with_runtime(|runtime| {
-        runtime.notify_one();
+        runtime.notify_vcpu_startup(0);
         Ok(())
     }) {
         warn!("VM[{vm_id}] vCPU runtime not found: {err:?}");
@@ -93,13 +211,18 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
         ));
     }
 
-    let cpu_id = vm.with_runtime(|runtime| runtime.queue_interrupt(vcpu_id, vector))?;
     vm.with_runtime(|runtime| {
-        runtime.notify_all();
-        Ok(())
-    })?;
-    crate::host::task::send_ipi(cpu_id);
-    Ok(())
+        // Preserve the vector-only API as an edge-triggered pulse while
+        // routing it through the same enqueue/notify/IPI path as modelled
+        // virtual interrupt senders.
+        runtime.dispatch_vcpu_interrupt(
+            vcpu_id,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(vector as u32),
+                trigger: crate::InterruptTriggerMode::EdgeTriggered,
+            },
+        )
+    })
 }
 
 #[expect(
@@ -313,8 +436,13 @@ pub(crate) fn vcpu_on(
             .insert_cpu_on_start_ack(vcpu_id, ack.clone())
             .map_err(|_| VcpuOnError::StartFailed)?;
 
-        let vcpu_task = alloc_vcpu_task(&vm, vcpu.clone());
-        if runtime.add_vcpu_task(vcpu_id, vcpu_task).is_err() {
+        runtime.prepare_vcpu_wait_queue(vcpu_id);
+        let vcpu_task = crate::host::task::spawn_task(build_vcpu_task(&vm, vcpu.clone()));
+        let cpu_id = vcpu
+            .phys_cpu_set()
+            .and_then(|mask| (mask != 0).then(|| mask.trailing_zeros() as usize))
+            .unwrap_or_else(|| vcpu_task.cpu_id() as usize);
+        if runtime.add_vcpu_task(vcpu_id, vcpu_task, cpu_id).is_err() {
             runtime.remove_cpu_on_start_ack(vcpu_id);
             return Err(VcpuOnError::StartFailed);
         }
@@ -451,12 +579,14 @@ fn vcpu_run() {
 
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     let cpu_on_start_ack = runtime.cpu_on_start_ack(vcpu_id);
-    wait_for(&runtime, || {
-        vm.running()
-            || cpu_on_start_ack
-                .as_ref()
-                .is_some_and(|ack| ack.is_cancelled())
-    });
+    if cpu_on_start_ack.is_some() || !vm.running() {
+        wait_for(&runtime, vcpu_id, || {
+            vm.running()
+                || cpu_on_start_ack
+                    .as_ref()
+                    .is_some_and(|ack| ack.is_cancelled())
+        });
+    }
 
     if let Some(ack) = &cpu_on_start_ack {
         if !ack.begin_startup() {
@@ -538,7 +668,7 @@ fn vcpu_run() {
             Ok(VcpuRunAction {
                 waits_for_event: true,
                 ..
-            }) => wait(&runtime),
+            }) => wait(&vm, &runtime, vcpu_id),
             Ok(VcpuRunAction { .. }) => {}
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
@@ -556,7 +686,7 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
-            wait_for(&runtime, || !vm.suspending());
+            wait_for(&runtime, vcpu_id, || !vm.suspending());
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }

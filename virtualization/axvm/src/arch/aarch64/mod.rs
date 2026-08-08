@@ -125,6 +125,15 @@ impl ArchOps for Aarch64Arch {
                 },
             ),
             ArmVmExit::ExternalInterrupt { vector } => {
+                vm.with_runtime(|runtime| {
+                    runtime.trace_virq_event(
+                        vm.id(),
+                        crate::runtime::VirqTraceKind::GuestExit,
+                        vcpu.id(),
+                        vector as u32,
+                    );
+                    Ok(())
+                })?;
                 debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Defer(
                     Aarch64DeferredRunWork::ExternalInterrupt {

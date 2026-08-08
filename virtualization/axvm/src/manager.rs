@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::{collections::BTreeMap, vec::Vec};
+use core::time::Duration;
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::VMId;
@@ -22,6 +23,20 @@ use crate::{
 /// orchestration belongs to the top-level hypervisor program.
 pub struct AxvmRuntime {
     _private: (),
+}
+
+/// Fixed-period host software-vIRQ injector used by the realtime experiment.
+///
+/// The injector is deliberately independent of the queue implementation: A
+/// and B receive the same sequence of calls and differ only in how the VM
+/// runtime delivers each call to the guest.
+#[derive(Clone, Copy, Debug)]
+pub struct PeriodicVirqConfig {
+    pub vcpu_id: usize,
+    pub vector: usize,
+    pub period: Duration,
+    pub samples: usize,
+    pub injector_cpu_id: Option<usize>,
 }
 
 static VM_REGISTRY: Mutex<BTreeMap<VMId, AxVMRef>> = Mutex::new(BTreeMap::new());
@@ -163,6 +178,12 @@ impl AxvmRuntime {
     /// Reset a VM selected from the runtime registry.
     pub fn reset_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::reset_vm(vm_id)
+    }
+
+    /// Start a detached, bounded host software-vIRQ injector for one VM.
+    pub fn start_periodic_virq_injector(vm_id: VMId, config: PeriodicVirqConfig) -> AxVmResult {
+        let vm = crate::get_vm_by_id(vm_id).ok_or(AxVmError::VmNotFound { vm_id })?;
+        crate::runtime::vcpus::spawn_periodic_virq_injector(vm, config)
     }
 
     /// Remove a VM selected from the runtime registry.

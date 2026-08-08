@@ -33,6 +33,17 @@ use crate::host;
 /// Default size per GICR region.
 pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then 64K for LPI
 
+const HOST_IPI_SGI: usize = 0;
+// ArceOS AArch64's host systick is wired to PPI26 on the supported platforms.
+const HOST_TIMER_PPI: usize = 26;
+const HOST_PRIVATE_INTERRUPT_MASK: usize =
+    (1 << HOST_IPI_SGI) | (1 << MAINTENACE_INTERRUPT) | (1 << HOST_TIMER_PPI);
+
+/// Removes host-owned SGI/PPI lines from a guest write-one-to-clear mask.
+fn mask_host_private_interrupts(value: usize) -> usize {
+    value & !HOST_PRIVATE_INTERRUPT_MASK
+}
+
 /// Virtual GICR registers.
 pub struct VGicRRegs {
     /// LPI configuration table base address.
@@ -222,12 +233,14 @@ impl VGicR {
                 || GICR_IPRIORITYR_RANGE.contains(&reg)
                 || GICR_ICFGR_RANGE.contains(&reg) =>
             {
-                let mut value = value;
-                // avoid linux disable maintenance interrupt
-                if reg == GICR_ICENABLER {
-                    value &= !(1 << MAINTENACE_INTERRUPT);
-                    // value &= !(1 << SGI_IPI_ID);
-                }
+                // Guest CPU-interface initialization clears every private
+                // interrupt. Keep host kick, maintenance, and timer lines
+                // enabled on the physical redistributor backing this vGICR.
+                let value = if reg == GICR_ICENABLER {
+                    mask_host_private_interrupts(value)
+                } else {
+                    value
+                };
                 perform_mmio_write(gicr_base + reg, width, value)
             }
             _ => {
@@ -265,6 +278,23 @@ impl Device for VGicR {
             self.write_register(addr, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HOST_IPI_SGI, HOST_TIMER_PPI, mask_host_private_interrupts};
+
+    #[test]
+    fn guest_disable_write_preserves_host_private_interrupts() {
+        let guest_disable_mask = u32::MAX as usize;
+        let filtered = mask_host_private_interrupts(guest_disable_mask);
+
+        assert_eq!(
+            filtered & ((1 << HOST_IPI_SGI) | (1 << 25) | (1 << HOST_TIMER_PPI)),
+            0,
+        );
+        assert_ne!(filtered & (1 << 30), 0);
     }
 }
 

@@ -40,6 +40,7 @@ use crate::{AxTaskRef, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt
 pub struct VcpuIrqDispatcher {
     queue: VcpuInterruptQueue,
     vcpu_tasks: Mutex<BTreeMap<usize, AxTaskRef>>,
+    vcpu_cpu_ids: Mutex<BTreeMap<usize, usize>>,
     /// Test-only cpu_id registry so that round-trip tests can exercise
     /// enqueue / drain without a full ArceOS task infrastructure.
     #[cfg(all(test, feature = "host-test"))]
@@ -55,6 +56,7 @@ impl VcpuIrqDispatcher {
         Self {
             queue: VcpuInterruptQueue::new(),
             vcpu_tasks: Mutex::new(BTreeMap::new()),
+            vcpu_cpu_ids: Mutex::new(BTreeMap::new()),
             #[cfg(all(test, feature = "host-test"))]
             test_vcpu_cpu_ids: Mutex::new(BTreeMap::new()),
         }
@@ -65,8 +67,9 @@ impl VcpuIrqDispatcher {
     ///
     /// Called from `VmRuntimeHandle::add_vcpu_task` when a vCPU task is
     /// spawned and bound to the VM runtime.
-    pub fn register_vcpu_task(&self, vcpu_id: usize, task: AxTaskRef) {
+    pub fn register_vcpu_task(&self, vcpu_id: usize, task: AxTaskRef, cpu_id: usize) {
         self.vcpu_tasks.lock().insert(vcpu_id, task);
+        self.vcpu_cpu_ids.lock().insert(vcpu_id, cpu_id);
     }
 
     #[cfg(all(test, feature = "host-test"))]
@@ -82,6 +85,7 @@ impl VcpuIrqDispatcher {
     /// Unregisters a vCPU task after the vCPU powers off.
     pub fn unregister_vcpu_task(&self, vcpu_id: usize) {
         self.vcpu_tasks.lock().remove(&vcpu_id);
+        self.vcpu_cpu_ids.lock().remove(&vcpu_id);
         self.queue.drain(vcpu_id);
         #[cfg(all(test, feature = "host-test"))]
         self.test_vcpu_cpu_ids.lock().remove(&vcpu_id);
@@ -96,8 +100,9 @@ impl VcpuIrqDispatcher {
     /// 2. Lock `queue`, push the interrupt, release.
     ///
     /// A task migration window exists between steps 1 and 2 (the pCPU may
-    /// change), but `notify_all()` + `send_ipi` in the caller guarantee
-    /// eventual delivery regardless of the race.
+    /// change). vCPU tasks are affinity-bound in the realtime workload; a
+    /// future migratable-vCPU caller must refresh the returned pCPU before
+    /// issuing its IPI.
     ///
     /// # Errors
     ///
@@ -108,7 +113,12 @@ impl VcpuIrqDispatcher {
     /// architecture interrupt router requests delivery to a vCPU.
     pub fn enqueue(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> AxVmResult<usize> {
         let cpu_id = self.lookup_cpu_id(vcpu_id)?;
-        self.queue.push(vcpu_id, interrupt);
+        self.queue.try_push(vcpu_id, interrupt).map_err(|_| {
+            crate::AxVmError::resource_unavailable(
+                "vCPU interrupt queue",
+                format_args!("vCPU {vcpu_id} queue capacity reached"),
+            )
+        })?;
         Ok(cpu_id)
     }
 
@@ -119,10 +129,10 @@ impl VcpuIrqDispatcher {
                 return Ok(cpu_id);
             }
         }
-        let tasks = self.vcpu_tasks.lock();
-        tasks
+        let cpu_ids = self.vcpu_cpu_ids.lock();
+        cpu_ids
             .get(&vcpu_id)
-            .map(|t| t.cpu_id() as usize)
+            .copied()
             .ok_or_else(|| ax_err_type!(NotFound, format_args!("vCPU {vcpu_id} task not found")))
     }
 
@@ -134,5 +144,11 @@ impl VcpuIrqDispatcher {
     /// path before entering the guest.
     pub fn drain(&self, vcpu_id: usize) -> Vec<PendingVcpuInterrupt> {
         self.queue.drain(vcpu_id)
+    }
+
+    /// Returns whether a vCPU has a queued interrupt that should prevent it
+    /// from sleeping through a notify race.
+    pub fn has_pending(&self, vcpu_id: usize) -> bool {
+        self.queue.has_pending(vcpu_id)
     }
 }

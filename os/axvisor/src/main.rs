@@ -34,6 +34,8 @@ mod config;
 mod manager;
 #[cfg(target_arch = "riscv64")]
 mod platform_irq;
+#[cfg(feature = "openrace-realtime")]
+mod realtime_probe;
 mod shell;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
@@ -75,6 +77,8 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
+    #[cfg(feature = "openrace-realtime")]
+    realtime_probe::start();
     manager.start_default_vms();
 
     info!("[OK] Default guest initialized");
