@@ -414,7 +414,7 @@ pub fn sys_prctl(
             let thread = thread_ref.as_thread();
             let mut new = (*thread.cred()).clone();
             new.set_keep_capabilities(arg2 != 0);
-            thread.set_cred(new);
+            thread.set_thread_cred(new);
         }
         PR_CAPBSET_READ => {
             // Query whether a capability is still present in the bounding set.

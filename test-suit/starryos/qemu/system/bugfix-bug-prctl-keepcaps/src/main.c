@@ -1,6 +1,9 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,6 +215,125 @@ static int setuid_child_adapter(const char *unused)
     return verify_setuid_transition();
 }
 
+struct sibling_keepcaps_state {
+    atomic_int ready;
+    atomic_int start;
+    long keepcaps;
+    int keepcaps_errno;
+    long setuid_result;
+    int setuid_errno;
+    int capget_before_result;
+    int capget_before_errno;
+    int capget_after_result;
+    int capget_after_errno;
+    uint64_t permitted_before;
+    uint64_t permitted_after;
+};
+
+static void *sibling_keepcaps_worker(void *argument)
+{
+    struct sibling_keepcaps_state *state = argument;
+    atomic_store_explicit(&state->ready, 1, memory_order_release);
+    while (atomic_load_explicit(&state->start, memory_order_acquire) == 0) {
+        sched_yield();
+    }
+
+    errno = 0;
+    state->keepcaps = prctl_raw(PR_GET_KEEPCAPS, 0);
+    state->keepcaps_errno = errno;
+
+    struct capability_data before[2];
+    errno = 0;
+    state->capget_before_result = read_capabilities(before);
+    state->capget_before_errno = errno;
+    if (state->capget_before_result == 0) {
+        state->permitted_before = capability_mask(before, 1);
+    }
+
+    errno = 0;
+    state->setuid_result = syscall(SYS_setuid, 65534);
+    state->setuid_errno = errno;
+
+    struct capability_data after[2];
+    errno = 0;
+    state->capget_after_result = read_capabilities(after);
+    state->capget_after_errno = errno;
+    if (state->capget_after_result == 0) {
+        state->permitted_after = capability_mask(after, 1);
+    }
+    return NULL;
+}
+
+static int verify_sibling_thread_isolation(const char *unused)
+{
+    (void)unused;
+    if (geteuid() != 0) {
+        fprintf(stderr, "thread-local keepcaps test requires euid 0\n");
+        return 1;
+    }
+
+    struct sibling_keepcaps_state state = {0};
+    atomic_init(&state.ready, 0);
+    atomic_init(&state.start, 0);
+
+    pthread_t sibling;
+    int create_result =
+        pthread_create(&sibling, NULL, sibling_keepcaps_worker, &state);
+    if (create_result != 0) {
+        fprintf(stderr, "pthread_create failed: %s\n", strerror(create_result));
+        return 1;
+    }
+    while (atomic_load_explicit(&state.ready, memory_order_acquire) == 0) {
+        sched_yield();
+    }
+
+    if (prctl_raw(PR_SET_KEEPCAPS, 1) != 0) {
+        perror("PR_SET_KEEPCAPS in controlling thread");
+        atomic_store_explicit(&state.start, 1, memory_order_release);
+        pthread_join(sibling, NULL);
+        return 1;
+    }
+    atomic_store_explicit(&state.start, 1, memory_order_release);
+
+    int join_result = pthread_join(sibling, NULL);
+    if (join_result != 0) {
+        fprintf(stderr, "pthread_join failed: %s\n", strerror(join_result));
+        return 1;
+    }
+    if (state.keepcaps != 0) {
+        fprintf(stderr,
+                "sibling observed keepcaps=%ld errno=%d (%s), expected 0\n",
+                state.keepcaps, state.keepcaps_errno,
+                strerror(state.keepcaps_errno));
+        return 1;
+    }
+    if (state.capget_before_result != 0 || state.permitted_before == 0) {
+        fprintf(stderr,
+                "sibling capget before setuid failed: ret=%d errno=%d (%s) "
+                "permitted=%#llx\n",
+                state.capget_before_result, state.capget_before_errno,
+                strerror(state.capget_before_errno),
+                (unsigned long long)state.permitted_before);
+        return 1;
+    }
+    if (state.setuid_result != 0) {
+        fprintf(stderr, "sibling setuid failed: ret=%ld errno=%d (%s)\n",
+                state.setuid_result, state.setuid_errno,
+                strerror(state.setuid_errno));
+        return 1;
+    }
+    if (state.capget_after_result != 0 || state.permitted_after != 0) {
+        fprintf(stderr,
+                "sibling retained permitted capabilities after setuid: "
+                "ret=%d errno=%d (%s) permitted=%#llx\n",
+                state.capget_after_result, state.capget_after_errno,
+                strerror(state.capget_after_errno),
+                (unsigned long long)state.permitted_after);
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--verify-exec-reset") == 0) {
@@ -233,6 +355,9 @@ int main(int argc, char **argv)
     expect_child_success(
         "keepcaps preserves permitted and clears effective caps across setuid",
         setuid_child_adapter, NULL);
+    expect_child_success(
+        "PR_SET_KEEPCAPS stays local to the calling thread",
+        verify_sibling_thread_isolation, NULL);
     expect_child_success("exec resets the keepcaps flag", verify_exec_reset,
                          argv[0]);
 

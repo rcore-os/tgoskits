@@ -461,6 +461,15 @@ impl Thread {
         *self.cred.lock() = new_cred;
     }
 
+    /// Replace only this thread's credentials.
+    ///
+    /// Use this for Linux ABI operations whose credential state is explicitly
+    /// thread-local. Process-wide credential-changing syscalls must use
+    /// [`Self::set_cred`] instead.
+    pub(crate) fn set_thread_cred(&self, new_cred: Cred) {
+        self.set_cred_single(Arc::new(new_cred));
+    }
+
     /// Replace the credentials for ALL threads in the same process.
     ///
     /// POSIX requires that credential changes (setuid, setresuid, etc.)
