@@ -640,4 +640,56 @@ mod tests {
         assert!(dispatcher.pop_if(0, |_| false).is_some());
         assert!(!dispatcher.has_pending(0));
     }
+
+    #[test]
+    fn retained_blocked_edge_is_retried_after_backend_releases() {
+        let injections = Arc::new(SpinNoIrq::new(InjectionLog::default()));
+        let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap());
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        dispatcher
+            .enqueue(
+                0,
+                PendingVcpuInterrupt {
+                    id: VirtualInterruptId(0x51),
+                    trigger: InterruptTriggerMode::EdgeTriggered,
+                },
+            )
+            .unwrap();
+
+        let backend_busy = Arc::new(SpinNoIrq::new(true));
+
+        // Round 1: the last enqueued edge finds the LR busy and stays queued;
+        // has_pending stays true so the vCPU cannot park.
+        let busy = Arc::clone(&backend_busy);
+        pop_and_inject(
+            &dispatcher,
+            0,
+            move |vector| *busy.lock() && vector == 0x51,
+            |interrupt| {
+                vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+                    .map_err(|_| ())
+            },
+        );
+        assert!(injections.lock().attempts.is_empty());
+        assert!(dispatcher.has_pending(0));
+
+        // Round 2: the LR is released; the retained edge is drained and
+        // injected instead of being stranded.
+        *backend_busy.lock() = false;
+        pop_and_inject(
+            &dispatcher,
+            0,
+            |_| false,
+            |interrupt| {
+                vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+                    .map_err(|_| ())
+            },
+        );
+        assert_eq!(
+            injections.lock().attempts,
+            vec![(0x51, InterruptTriggerMode::EdgeTriggered)]
+        );
+        assert!(!dispatcher.has_pending(0));
+    }
 }
