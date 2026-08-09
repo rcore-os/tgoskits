@@ -236,13 +236,19 @@ out:
 static void check_serial_output_flush(void)
 {
     int fd = open("/dev/ttyS0", O_RDWR | O_NOCTTY | O_NONBLOCK);
+    int rc;
 
     if (fd < 0) {
         fail("open serial TTY for output flush");
         return;
     }
-    if (ioctl(fd, TCFLSH, TCOFLUSH) != 0)
-        fail("TCOFLUSH discards serial output");
+    rc = ioctl(fd, TCFLSH, TCOFLUSH);
+    if (rc != 0) {
+        if (errno == EOPNOTSUPP)
+            puts("SKIP: serial hardware has no TX-only discard");
+        else
+            fail("TCOFLUSH discards serial output");
+    }
     close(fd);
 }
 

@@ -243,7 +243,7 @@ impl SerialWorker {
         let hardware_idle = {
             let mut port = self.shared.port.lock();
             if !port.discard_tx() {
-                return Err(AxError::Unsupported);
+                return Err(AxError::OperationNotSupported);
             }
             port.tx_idle()
         };
