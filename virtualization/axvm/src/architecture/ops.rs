@@ -7,7 +7,7 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
 use super::{BoundVcpuExit, VcpuRunAction};
-use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
+use crate::{AxVmError, AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -211,13 +211,7 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
                 vcpu_id,
                 interrupt.id.0,
             );
-            A::inject_vcpu_interrupt(vcpu, interrupt).map_err(|err| {
-                warn!(
-                    "VM[{}] VCpu[{}] failed to inject interrupt: {err:?}",
-                    vm.id(),
-                    vcpu_id
-                );
-            })
+            A::inject_vcpu_interrupt(vcpu, interrupt)
         },
     );
 }
@@ -236,18 +230,41 @@ fn pop_and_inject<F, G>(
     mut inject: G,
 ) where
     F: Fn(usize) -> bool,
-    G: FnMut(PendingVcpuInterrupt) -> Result<(), ()>,
+    G: FnMut(PendingVcpuInterrupt) -> AxVmResult,
 {
     while let Some(interrupt) =
         dispatcher.pop_if(vcpu_id, |interrupt| is_busy(interrupt.id.0 as usize))
     {
-        if inject(interrupt).is_err() {
-            if !dispatcher.requeue_retry(vcpu_id, interrupt) {
-                warn!("vCPU {vcpu_id} retry slot already occupied; dropping retry edge");
+        let vector = interrupt.id.0 as usize;
+        match inject(interrupt) {
+            Ok(()) => {}
+            Err(error) if is_retryable_injection_error(&error) => {
+                if !dispatcher.requeue_retry(vcpu_id, interrupt) {
+                    warn!(
+                        "vCPU {vcpu_id} retry slot already occupied; dropping retry edge \
+                         vector={vector:#x}"
+                    );
+                }
+                break;
             }
-            break;
+            Err(error) => {
+                warn!(
+                    "vCPU {vcpu_id} dropped interrupt after terminal injection failure \
+                     vector={vector:#x}: {error:?}"
+                );
+            }
         }
     }
+}
+
+fn is_retryable_injection_error(error: &AxVmError) -> bool {
+    matches!(
+        error,
+        AxVmError::ResourceConflict {
+            resource: "interrupt backend",
+            ..
+        }
+    )
 }
 
 #[cfg(test)]
@@ -538,7 +555,6 @@ mod tests {
             |_| false,
             |interrupt| {
                 vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
-                    .map_err(|_| ())
             },
         );
 
@@ -668,7 +684,6 @@ mod tests {
             move |vector| *busy.lock() && vector == 0x51,
             |interrupt| {
                 vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
-                    .map_err(|_| ())
             },
         );
         assert!(injections.lock().attempts.is_empty());
@@ -683,13 +698,41 @@ mod tests {
             |_| false,
             |interrupt| {
                 vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
-                    .map_err(|_| ())
             },
         );
         assert_eq!(
             injections.lock().attempts,
             vec![(0x51, InterruptTriggerMode::EdgeTriggered)]
         );
+        assert!(!dispatcher.has_pending(0));
+    }
+
+    #[test]
+    fn terminal_backend_failure_does_not_keep_vcpu_pending() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        dispatcher
+            .enqueue(
+                0,
+                PendingVcpuInterrupt {
+                    id: VirtualInterruptId(0x61),
+                    trigger: InterruptTriggerMode::EdgeTriggered,
+                },
+            )
+            .unwrap();
+
+        pop_and_inject(
+            &dispatcher,
+            0,
+            |_| false,
+            |_| {
+                Err(AxVmError::invalid_input(
+                    "inject vCPU interrupt",
+                    "invalid vector",
+                ))
+            },
+        );
+
         assert!(!dispatcher.has_pending(0));
     }
 }

@@ -230,7 +230,9 @@ struct AxvmArmHostOps;
 
 impl ArmHostOps for AxvmArmHostOps {
     fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult {
-        gic::inject_interrupt(vector as usize).map_err(|_| ArmVcpuError::BadState)
+        gic::inject_interrupt(vector as usize).map_err(|error| match error {
+            gic::VirtualInterruptError::ResourceBusy => ArmVcpuError::ResourceBusy,
+        })
     }
 
     fn fetch_pending_host_irq() -> Option<usize> {
@@ -348,6 +350,7 @@ fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
         ArmVcpuError::InvalidInput => BackendError::InvalidInput,
         ArmVcpuError::Unsupported => BackendError::Unsupported,
         ArmVcpuError::BadState => BackendError::InvalidState,
+        ArmVcpuError::ResourceBusy => BackendError::ResourceBusy,
     }
 }
 
@@ -398,6 +401,10 @@ mod tests {
         assert_eq!(
             arm_error_to_backend(ArmVcpuError::BadState),
             BackendError::InvalidState
+        );
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::ResourceBusy),
+            BackendError::ResourceBusy
         );
     }
 

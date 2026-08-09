@@ -18,7 +18,12 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     f(&mut gic)
 }
 
-pub(crate) fn inject_interrupt(irq: usize) -> Result<(), ()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VirtualInterruptError {
+    ResourceBusy,
+}
+
+pub(crate) fn inject_interrupt(irq: usize) -> Result<(), VirtualInterruptError> {
     debug!("Injecting virtual interrupt: {irq}");
 
     with_gic(|gic| {
@@ -36,7 +41,7 @@ pub(crate) fn inject_interrupt(irq: usize) -> Result<(), ()> {
                 // edge instead of overwriting an in-flight interrupt.
                 crate::runtime::vcpus::LR_SKIP_COUNT
                     .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                return Err(());
+                return Err(VirtualInterruptError::ResourceBusy);
             }
             gich.set_virtual_interrupt(
                 0,
@@ -60,7 +65,7 @@ pub(crate) fn inject_interrupt(irq: usize) -> Result<(), ()> {
     })
 }
 
-fn inject_interrupt_gic_v3(vector: usize) -> Result<(), ()> {
+fn inject_interrupt_gic_v3(vector: usize) -> Result<(), VirtualInterruptError> {
     debug!("Injecting virtual interrupt: vector={vector}");
     let elsr = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS);
     let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
@@ -68,7 +73,7 @@ fn inject_interrupt_gic_v3(vector: usize) -> Result<(), ()> {
     if virtual_interrupt_busy(vector) {
         debug!("Virtual interrupt {vector} already pending/active in an LR, skipping");
         crate::runtime::vcpus::LR_SKIP_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        return Err(());
+        return Err(VirtualInterruptError::ResourceBusy);
     }
 
     let mut free_lr = None;
@@ -89,7 +94,7 @@ fn inject_interrupt_gic_v3(vector: usize) -> Result<(), ()> {
         // losing it.
         debug!("Virtual interrupt {vector} deferred: no free list register");
         crate::runtime::vcpus::LR_SKIP_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        return Err(());
+        return Err(VirtualInterruptError::ResourceBusy);
     };
 
     ich_lr_el2_write(

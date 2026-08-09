@@ -26,6 +26,8 @@ pub enum ArmVcpuError {
     Unsupported,
     /// Hardware or software state is inconsistent with the requested transition.
     BadState,
+    /// A virtual interrupt resource is temporarily unavailable.
+    ResourceBusy,
 }
 
 /// Guest physical address.
