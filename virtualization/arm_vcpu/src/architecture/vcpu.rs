@@ -66,6 +66,8 @@ pub struct ArmVcpu<H: ArmHostOps> {
     timer: ArmVcpuTimer,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
+    /// See [`ArmVcpuCreateConfig::advance_hvc_smc_pc`].
+    advance_hvc_smc_pc: bool,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -153,7 +155,7 @@ const _: () = {
 };
 
 /// Configuration for creating a new [`ArmVcpu`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ArmVcpuCreateConfig {
     /// The MPIDR_EL1 value for the new vCPU,
     /// which is used to identify the CPU in a multiprocessor system.
@@ -162,6 +164,31 @@ pub struct ArmVcpuCreateConfig {
     pub mpidr_el1: u64,
     /// The address of the device tree blob.
     pub dtb_addr: usize,
+    /// Whether the trap layer must advance the exception PC past the
+    /// trapping `hvc`/`smc` instruction.
+    ///
+    /// ARM DDI 0487 defines the preferred exception return address for HVC
+    /// as the instruction after the `hvc`, so QEMU and spec-conforming
+    /// implementations report ELR_EL2 already pointing past the trap and
+    /// this flag must be `false`. Some physical platforms report the trapping
+    /// instruction itself and require the advance (`true`). Set it from the
+    /// platform capability; keep it `true` when the platform is unknown so
+    /// physical-board behavior stays the legacy default.
+    #[cfg_attr(
+        feature = "std",
+        doc = "Defaults to `true` so existing platforms keep the legacy advance."
+    )]
+    pub advance_hvc_smc_pc: bool,
+}
+
+impl Default for ArmVcpuCreateConfig {
+    fn default() -> Self {
+        Self {
+            mpidr_el1: 0,
+            dtb_addr: 0,
+            advance_hvc_smc_pc: true,
+        }
+    }
 }
 
 /// Fixed EL2 setup policy for a new [`ArmVcpu`].
@@ -207,6 +234,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             guest_system_regs: GuestSystemRegisters::default(),
             timer: ArmVcpuTimer::unconfigured(),
             mpidr: config.mpidr_el1,
+            advance_hvc_smc_pc: config.advance_hvc_smc_pc,
             _host: PhantomData,
         })
     }
@@ -447,7 +475,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         }
 
         let result = match exit_reason {
-            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
+            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx, self.advance_hvc_smc_pc),
             TrapKind::Irq => {
                 let raw_ack = core::mem::replace(&mut self.host.pending_irq_ack, u32::MAX);
                 Ok(ArmVmExit::ExternalInterrupt {

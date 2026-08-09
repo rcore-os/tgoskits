@@ -52,6 +52,7 @@ impl Aarch64Arch {
                 Ok(ArmVcpuCreateConfig {
                     mpidr_el1: placement.phys_cpu_id as _,
                     dtb_addr: dtb_addr.as_usize(),
+                    advance_hvc_smc_pc: resources.config().advance_hvc_smc_pc(),
                 })
             })?;
             let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;

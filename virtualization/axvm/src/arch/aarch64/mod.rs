@@ -735,6 +735,7 @@ mod tests {
         let config = ArmVcpuCreateConfig {
             mpidr_el1: 0x100,
             dtb_addr: 0x4000_0000,
+            advance_hvc_smc_pc: true,
         };
 
         assert_eq!(
