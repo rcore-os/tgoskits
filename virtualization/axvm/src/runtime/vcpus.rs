@@ -48,18 +48,7 @@ pub(crate) fn spawn_periodic_virq_injector(
     vm: VMRef,
     config: crate::PeriodicVirqConfig,
 ) -> AxVmResult {
-    if config.samples == 0 {
-        return Err(ax_err_type!(
-            BadState,
-            "periodic vIRQ samples must be non-zero"
-        ));
-    }
-    if config.period.is_zero() {
-        return Err(ax_err_type!(
-            BadState,
-            "periodic vIRQ period must be non-zero"
-        ));
-    }
+    validate_periodic_virq_config(&config)?;
     if vm.vcpu(config.vcpu_id).is_none() {
         return Err(ax_err_type!(
             NotFound,
@@ -82,6 +71,33 @@ pub(crate) fn spawn_periodic_virq_injector(
         task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(bits));
     }
     crate::host::task::spawn_task(task);
+    Ok(())
+}
+
+fn validate_periodic_virq_config(config: &crate::PeriodicVirqConfig) -> AxVmResult {
+    if config.samples == 0 {
+        return Err(ax_err_type!(
+            BadState,
+            "periodic vIRQ samples must be non-zero"
+        ));
+    }
+    if config.period.is_zero() {
+        return Err(ax_err_type!(
+            BadState,
+            "periodic vIRQ period must be non-zero"
+        ));
+    }
+    // The injector targets a vCPU with a fixed 64-bit host mask; reject larger
+    // IDs explicitly instead of panicking inside CpuMask::one_shot.
+    if config.vcpu_id >= 64 {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "vCPU {} exceeds the 64-bit injector target mask",
+                config.vcpu_id
+            )
+        ));
+    }
     Ok(())
 }
 
@@ -817,5 +833,23 @@ mod cpu_on_start_ack_tests {
         VCPU_WAKE_COUNTS
             .get(usize::MAX)
             .map(|count| count.fetch_add(1, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn periodic_injector_rejects_vcpu_beyond_64bit_mask() {
+        let config = crate::PeriodicVirqConfig {
+            vcpu_id: 64,
+            vector: 48,
+            period: Duration::from_millis(2),
+            samples: 300,
+            injector_cpu_id: None,
+        };
+        assert!(validate_periodic_virq_config(&config).is_err());
+
+        let valid = crate::PeriodicVirqConfig {
+            vcpu_id: 63,
+            ..config
+        };
+        assert!(validate_periodic_virq_config(&valid).is_ok());
     }
 }
