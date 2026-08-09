@@ -23,14 +23,60 @@
 //! A host kernel provides an [`RtConfig`] (its RT task table and time source)
 //! from its own `ax_realtime_secondary_main` entry symbol and calls [`run`];
 //! the boot CPU calls [`setup_host_side`]. Everything architecture-specific is
-//! confined to the doorbell notification plane, so adding an architecture only
-//! touches this crate, not the consuming kernels.
+//! confined to the doorbell notification plane behind the [`DoorbellArch`]
+//! capability, so adding an architecture only touches one `imp_<arch>` module.
 
 #![no_std]
 
-use core::sync::atomic::Ordering;
+/// Architecture backend for the host↔RT mailbox doorbell notification plane.
+///
+/// The mailbox data plane and executor ([`ax_rt`]) are architecture-free; the
+/// only per-architecture concern is how the two cores signal each other. A
+/// doorbell is a cross-core interrupt in each direction:
+///
+/// - **host→RT**: after `host_mailbox_send`, the host rings the reserved core so
+///   it drains the `to_rt` ring without busy-polling.
+/// - **RT→host**: after `rt_mailbox_send`, the RT core rings the host consumer
+///   core so it drains the `to_host` ring.
+///
+/// A backend registers the receive-side interrupt handlers on each core (each
+/// handler does nothing but set the mailbox pending flag) and installs the
+/// send-side [`ax_rt::MailboxDoorbell`] objects. Backends are stateless unit
+/// types; any per-core state lives in the backend module's statics. When an
+/// architecture has no doorbell yet, [`imp_fallback`] leaves both directions on
+/// the executor's poll fallback.
+trait DoorbellArch {
+    /// Arms the RT core's incoming (host→RT) doorbell and installs the sender
+    /// used by `host_mailbox_send`. Runs once on the reserved RT core, from
+    /// [`run`], before the executor loop starts.
+    fn setup_rt_side(cpu_id: usize);
 
-use log::{info, warn};
+    /// Arms the host core's incoming (RT→host) doorbell and installs the sender
+    /// used by `rt_mailbox_send`. Runs once on the host consumer core, from
+    /// [`setup_host_side`].
+    fn setup_host_side();
+
+    /// Logs whether the host observed the RT→host doorbell interrupt. A nonzero
+    /// count means the reverse path delivered a real interrupt; zero means it
+    /// silently fell back to polling. Called from the host self-test after a
+    /// round-trip completes.
+    fn report_reverse_doorbell(host_notifications: u64);
+}
+
+#[cfg(target_arch = "aarch64")]
+mod imp_aarch64;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+mod imp_fallback;
+#[cfg(target_arch = "riscv64")]
+mod imp_riscv64;
+
+/// The doorbell backend selected for this build's target architecture.
+#[cfg(target_arch = "aarch64")]
+use imp_aarch64::Doorbell as ActiveDoorbell;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
+use imp_fallback::Doorbell as ActiveDoorbell;
+#[cfg(target_arch = "riscv64")]
+use imp_riscv64::Doorbell as ActiveDoorbell;
 
 /// Configuration a host kernel supplies to run its reserved realtime core.
 pub struct RtConfig {
@@ -46,7 +92,7 @@ pub struct RtConfig {
 /// Call this from the kernel's `ax_realtime_secondary_main` symbol, which
 /// `ax-runtime` invokes on the reserved core after minimal secondary init.
 pub fn run(cpu_id: usize, config: &RtConfig) -> ! {
-    setup_rt_mailbox_doorbell(cpu_id);
+    ActiveDoorbell::setup_rt_side(cpu_id);
     ax_rt::run_realtime_cpu(cpu_id, config.tasks, config.time_fn)
 }
 
@@ -55,198 +101,14 @@ pub fn run(cpu_id: usize, config: &RtConfig) -> ! {
 /// Call this once from the host boot CPU, which is also the core that drains the
 /// RT→host ring (`host_mailbox_recv`).
 pub fn setup_host_side() {
-    setup_host_mailbox_doorbell();
+    ActiveDoorbell::setup_host_side();
 }
 
-/// GIC SGI used for the host→RT mailbox doorbell. SGI 0 is the scheduler IPI,
-/// so the mailbox uses a dedicated line the host runtime never targets.
-#[cfg(target_arch = "aarch64")]
-const MAILBOX_DOORBELL_SGI_TO_RT: u32 = 1;
-
-#[cfg(target_arch = "aarch64")]
-static RT_MAILBOX_CPU: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(usize::MAX);
-
-/// Resolves the GIC `IrqId` of the mailbox doorbell SGI at runtime.
+/// Logs whether the host observed the RT core's reverse doorbell interrupt.
 ///
-/// The GIC IRQ domain id is assigned dynamically during boot, so the doorbell
-/// must borrow the same domain the runtime IPI already uses. The
-/// `AARCH64_GIC_DOMAIN` compatibility constant is not the registered id: the
-/// platform's `is_gic_domain` check rejects it, which makes both
-/// `request_percpu_irq` (registration) and `send_ipi` (delivery) fail with
-/// `InvalidIrq` and silently fall back to polling.
-#[cfg(target_arch = "aarch64")]
-fn mailbox_doorbell_irq() -> ax_hal::irq::IrqId {
-    use ax_hal::irq;
-    let gic_domain = irq::ipi_irq().domain;
-    irq::IrqId::new(gic_domain, irq::HwIrq(MAILBOX_DOORBELL_SGI_TO_RT))
-}
-
-/// Doorbell that rings the reserved RT core after a host→RT send.
-#[cfg(target_arch = "aarch64")]
-struct RtCoreDoorbell;
-
-#[cfg(target_arch = "aarch64")]
-impl ax_rt::MailboxDoorbell for RtCoreDoorbell {
-    fn ring(&self) {
-        use ax_hal::{irq, percpu};
-        let cpu = RT_MAILBOX_CPU.load(Ordering::Acquire);
-        if cpu == usize::MAX {
-            return;
-        }
-        info!(
-            "[RT mailbox] doorbell IPI: host CPU{} -> RT CPU{cpu} (SGI \
-             {MAILBOX_DOORBELL_SGI_TO_RT})",
-            percpu::this_cpu_id()
-        );
-        irq::send_ipi(
-            mailbox_doorbell_irq(),
-            irq::IpiTarget::Other { cpu_id: cpu },
-        );
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static RT_CORE_DOORBELL: RtCoreDoorbell = RtCoreDoorbell;
-
-/// Enables interrupt-driven mailbox notification on the reserved RT core.
-///
-/// The RT core deliberately skips the ordinary secondary IRQ-online path, so it
-/// enables only this one dedicated doorbell SGI here: the scheduler timer and
-/// IPI stay registered on host CPUs only, keeping the RT core's interrupt
-/// surface minimal. The handler runs in interrupt context and does nothing but
-/// set the mailbox pending flag.
-#[cfg(target_arch = "aarch64")]
-fn setup_rt_mailbox_doorbell(cpu_id: usize) {
-    use ax_hal::irq;
-
-    RT_MAILBOX_CPU.store(cpu_id, Ordering::Release);
-    irq::init_common_irq_handler();
-    if let Err(err) = irq::cpu_online(cpu_id) {
-        warn!("RT mailbox doorbell: cpu_online({cpu_id}) failed: {err:?}");
-        return;
-    }
-    let doorbell_irq = mailbox_doorbell_irq();
-    let doorbell_cpus = irq::CpuMask::from_cpu(irq::CpuId(cpu_id));
-    let result = irq::request_percpu_irq(doorbell_irq, doorbell_cpus, |_ctx| {
-        ax_rt::rt_mailbox_on_doorbell();
-        irq::IrqReturn::Handled
-    });
-    if let Err(err) = result {
-        warn!("RT mailbox doorbell: request_percpu_irq failed: {err:?}");
-        return;
-    }
-    // From now on host_mailbox_send() rings this core instead of relying on the
-    // RT task's fallback poll.
-    ax_rt::set_rt_doorbell(&RT_CORE_DOORBELL);
-    ax_hal::asm::enable_irqs();
-    info!("RT mailbox doorbell armed on CPU {cpu_id} (SGI {MAILBOX_DOORBELL_SGI_TO_RT}).");
-}
-
-/// Non-aarch64 fallback: mailbox notification stays poll-based.
-#[cfg(not(target_arch = "aarch64"))]
-fn setup_rt_mailbox_doorbell(_cpu_id: usize) {}
-
-/// GIC SGI used for the RT→host mailbox doorbell. SGI 0 is the scheduler IPI and
-/// SGI 1 is the host→RT doorbell, so the reverse direction takes a third line.
-#[cfg(target_arch = "aarch64")]
-const MAILBOX_DOORBELL_SGI_TO_HOST: u32 = 2;
-
-/// Host core that drains the RT→host ring, i.e. the target of the reverse
-/// doorbell. Set once when the host arms its doorbell.
-#[cfg(target_arch = "aarch64")]
-static RT_MAILBOX_HOST_CPU: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(usize::MAX);
-
-/// Resolves the GIC `IrqId` of the RT→host mailbox doorbell SGI at runtime.
-///
-/// Uses the dynamically registered GIC domain for the same reason as
-/// [`mailbox_doorbell_irq`].
-#[cfg(target_arch = "aarch64")]
-fn host_mailbox_doorbell_irq() -> ax_hal::irq::IrqId {
-    use ax_hal::irq;
-    let gic_domain = irq::ipi_irq().domain;
-    irq::IrqId::new(gic_domain, irq::HwIrq(MAILBOX_DOORBELL_SGI_TO_HOST))
-}
-
-/// Doorbell that rings the host consumer core after an RT→host send.
-#[cfg(target_arch = "aarch64")]
-struct HostCoreDoorbell;
-
-#[cfg(target_arch = "aarch64")]
-impl ax_rt::MailboxDoorbell for HostCoreDoorbell {
-    fn ring(&self) {
-        use ax_hal::irq;
-        let target = RT_MAILBOX_HOST_CPU.load(Ordering::Acquire);
-        if target == usize::MAX {
-            return;
-        }
-        // Runs on the isolated RT core: keep it to the raw SGI and do not touch
-        // the shared console lock here. The host logs the reverse IPI when it
-        // observes the doorbell, so both directions stay visible without the RT
-        // core contending on host-owned logging state.
-        irq::send_ipi(
-            host_mailbox_doorbell_irq(),
-            irq::IpiTarget::Other { cpu_id: target },
-        );
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static HOST_CORE_DOORBELL: HostCoreDoorbell = HostCoreDoorbell;
-
-/// Arms interrupt-driven RT→host mailbox notification on the current host core.
-///
-/// Runs on the host boot CPU, which is also the core that drains the RT→host
-/// ring (`host_mailbox_recv`) from the boot self-test and the shell. Registering
-/// the reverse doorbell here lets the RT core signal the host with a real SGI
-/// rather than relying on the host to poll, so a host→RT command and its RT→host
-/// reply become a symmetric exchange of doorbell IPIs between the two cores.
-#[cfg(target_arch = "aarch64")]
-fn setup_host_mailbox_doorbell() {
-    use ax_hal::{irq, percpu};
-
-    // The host CPU is already online in the IRQ framework and running with IRQs
-    // enabled, so unlike the RT core this path only registers the extra line.
-    let cpu_id = percpu::this_cpu_id();
-    RT_MAILBOX_HOST_CPU.store(cpu_id, Ordering::Release);
-    let doorbell_irq = host_mailbox_doorbell_irq();
-    let doorbell_cpus = irq::CpuMask::from_cpu(irq::CpuId(cpu_id));
-    let result = irq::request_percpu_irq(doorbell_irq, doorbell_cpus, |_ctx| {
-        ax_rt::host_mailbox_on_doorbell();
-        irq::IrqReturn::Handled
-    });
-    if let Err(err) = result {
-        warn!("host mailbox doorbell: request_percpu_irq failed: {err:?}");
-        return;
-    }
-    ax_rt::set_host_doorbell(&HOST_CORE_DOORBELL);
-    info!("Host mailbox doorbell armed on CPU {cpu_id} (SGI {MAILBOX_DOORBELL_SGI_TO_HOST}).");
-}
-
-/// Non-aarch64 fallback: RT→host notification stays poll-based.
-#[cfg(not(target_arch = "aarch64"))]
-fn setup_host_mailbox_doorbell() {}
-
-/// Logs whether the host observed the RT core's reverse doorbell IPI.
-///
-/// Call from the host self-test after the round-trip completes. On aarch64 a
-/// nonzero notification count means the RT core signalled the host with a real
-/// SGI; zero means the reverse path silently fell back to polling.
-#[cfg(target_arch = "aarch64")]
+/// Call from the host self-test after the round-trip completes. Delegates to the
+/// active [`DoorbellArch`] backend, which knows the architecture-specific
+/// interrupt line; on architectures without a doorbell this is a no-op.
 pub fn report_reverse_doorbell(host_notifications: u64) {
-    use ax_hal::percpu;
-    if host_notifications > 0 {
-        info!(
-            "[RT mailbox] doorbell IPI: RT core -> host CPU{} received (SGI \
-             {MAILBOX_DOORBELL_SGI_TO_HOST})",
-            percpu::this_cpu_id()
-        );
-    } else {
-        warn!("[RT mailbox] reverse doorbell IPI not observed; RT->host fell back to polling");
-    }
+    ActiveDoorbell::report_reverse_doorbell(host_notifications);
 }
-
-/// Non-aarch64 fallback: RT→host notification is poll-based, nothing to report.
-#[cfg(not(target_arch = "aarch64"))]
-pub fn report_reverse_doorbell(_host_notifications: u64) {}

@@ -96,7 +96,8 @@ pub fn host_mailbox_on_doorbell();   // host 核 doorbell ISR 调用：置 host_
 ## 6. 已实现（QEMU aarch64）
 
 - `components/ax-rt/src/mailbox.rs`：数据面（两条 SPSC 环 + `RtMessage` + `#[repr(C)]` header）+ 通知接口（`MailboxDoorbell` + `*_on_doorbell` + `*_take_pending` + doorbell 注册）+ `rt_mailbox_stats()`。
-- Axvisor glue（`os/axvisor/src/realtime.rs`）：`mbox-echo` RT 服务任务（drain host→RT 命令并回显为 RT→host 事件）；host 侧 round-trip 自检并入 `log_priority_test_result`。
+- RT 原语自检套件（优先级继承、递归互斥、信号量、host↔RT round-trip）：`components/ax-rt/src/selftest.rs`，`selftest` feature 开启。`SELFTEST_TASKS` 是纯 RT 任务（只碰原子与 RT 原语、从不打印），host 由 `run_host_checks(&SelftestConfig{...})` 驱动并打印 PASS/FAIL；`SelftestConfig` 注入 HAL 相关的时钟与反向 doorbell 上报，使该 crate 保持 HAL-free，可被各 host（Axvisor/StarryOS）共用。
+- Axvisor glue（`os/axvisor/src/realtime.rs`）：CPU 分区、保留核入口、demo 服务任务（heartbeat/watchdog/hello）与 shell mailbox 帮助函数。开启 `rt-selftest`（= `ax-rt/selftest`，QEMU aarch64 config 默认开）时把 `ax_rt::selftest::SELFTEST_TASKS` 追加到 RT 任务表，并由 `run_rt_selftests()` 注入 Axvisor 时钟与反向 doorbell 上报后调用 `run_host_checks`。
 - Shell（`rt.rs`）：`rt status` 增加 mailbox 行；`rt send <text>` / `rt recv`。
 - 通知面已从纯轮询升级为 **GIC SGI 双向 doorbell**（模型 A），详见 §6.2；消费侧仍保留轮询循环作为兜底，doorbell 是叠加的低延迟唤醒。
 
@@ -117,19 +118,39 @@ pub fn host_mailbox_on_doorbell();   // host 核 doorbell ISR 调用：置 host_
 1. **GIC 域号必须运行时取，不能用 `AARCH64_GIC_DOMAIN` 兼容常量**：GIC IRQ 域号在启动时动态注册，兼容常量（`IrqDomainId(3)`）通常不等于真实域号，`is_gic_domain()` 会拒绝它，导致 `request_percpu_irq` / `send_ipi` 返回 `InvalidIrq` 而静默退回轮询。正确做法是借用运行时 IPI 的域：`ipi_irq().domain`。
 2. **RT 核绝不碰共享 console 锁**：doorbell 的日志/观测一律放在 host 侧。被隔离的 RT 核若在发送路径里 `info!`（去抢 host 持有的 console 自旋锁）会把整机卡死。RT 侧 `ring()` 只发 SGI，反向 IPI 由 host 收到后打印。
 
+### 6.1.1 `DoorbellArch` 后端抽象
+
+通知面按架构拆到 `ax-realtime` 的 `imp_<arch>` 模块后端，由 crate 内私有 trait `DoorbellArch` 统一契约：
+
+- `setup_rt_side(cpu_id)`：在保留 RT 核上装配 host→RT 收侧中断，并安装 `host_mailbox_send` 用的发侧 doorbell。
+- `setup_host_side()`：在 host 消费核上装配 RT→host 收侧中断，并安装 `rt_mailbox_send` 用的发侧 doorbell。
+- `report_reverse_doorbell(host_notifications)`：host 侧观测反向 doorbell 是否真实送达并打印。
+
+`lib.rs` 按 `target_arch` 选定唯一后端类型 `ActiveDoorbell`，`run()` / `setup_host_side()` / `report_reverse_doorbell()` 只做转发；executor 与数据面（`ax_rt`）保持架构无关。当前后端：
+
+| 模块 | 目标 | 机制 |
+|---|---|---|
+| `imp_aarch64` | aarch64 | 上表两条 GIC SGI（模型 A，双向 doorbell）|
+| `imp_riscv64` | riscv64 | 单条 per-hart S 态软中断（SSWI，ACLINT/CLINT）：host→RT doorbell；RT→host 因软中断线唯一且已被 host 调度器 IPI 占用，退回轮询兜底 |
+| `imp_fallback` | 其它架构 | 不注册中断，两向退回 executor 轮询兜底 |
+
+新增架构只写一个 `imp_<arch>` 后端实现 `DoorbellArch`，不改 executor、数据面或消费内核（Axvisor/StarryOS）。
+
 ### 6.2 验证
 
 | 声明 | 层级 | 通过条件 | 状态 |
 |---|---|---|---|
 | host↔RT 双向 round-trip 内容一致 | QEMU `AX_RT_CPU=3 --smp 4` | `[RT mailbox test] host->RT->host round-trip PASS` | ✅ 已通过 |
-| 双向 doorbell IPI 真实送达（非轮询兜底） | 同上 | round-trip 日志 `rt_notifications=1, host_notifications=1`；两行 `doorbell IPI` 分别记录 host→RT 与 RT→host | ✅ 已通过 |
+| 双向 doorbell IPI 真实送达（aarch64，非轮询兜底） | QEMU aarch64 同上 | round-trip 日志 `rt_notifications=1, host_notifications=1`；两行 `doorbell IPI` 分别记录 host→RT 与 RT→host | ✅ 已通过 |
+| host→RT SSWI doorbell 真实送达（riscv64，非轮询兜底） | QEMU riscv64 同上 | round-trip PASS 且 `rt_notifications=1`（`host_notifications=0` 属预期：反向轮询）；日志含 `RT mailbox doorbell armed on CPU 3 (SSWI)` 与 `doorbell IPI: host CPU0 -> RT CPU3 (SSWI)` | ✅ 已通过 |
 | 默认关闭无回归 | build/QEMU | 不设 `AX_RT_CPU` 行为不变 | ✅ |
 | 环满背压 | 后续 | `Full` 且不丢已入队 | 待补 |
 
 ## 7. 后续（SG2002 / 背压 / WFI）
 
 - **模型 A IPI 已落地**（见 §6.1）：RT 核专用 SGI 1、host 核专用 SGI 2、双向送达已在 QEMU 验证。注意这放宽了 RT 核"不进普通 IRQ" 的隔离不变量——RT 核仅使能这一条 doorbell SGI，调度器 timer/IPI 仍只登记在 host 核集。
-- **模型 B SG2002**：`Sg2002MailboxDoorbell` backend + carveout 映射 + 与 Starry 侧 `cvi_mailbox` 对齐 `#[repr(C)]` ABI；真机验证 `notify==消息数` 1:1。
+- **riscv64 SSWI 已落地（QEMU）**：`imp_riscv64` 后端用保留 RT hart 的 S 态软中断（`ipi_irq()`，ACLINT/CLINT SSWI）承载 host→RT doorbell。可行性依据：`axruntime` 在 `init_percpu_irq` 之前就把保留 hart 分流进隔离 executor，而调度器 IPI 只登记在 host CPU 集，故该 hart 的软中断线空闲，后端以仅含该 hart 的 per-CPU handler 认领之，与 host 集不相交。RISC-V 每 hart 只有一条软中断线且 host 侧已被调度器 IPI 占用，故 RT→host 反向 doorbell 保持轮询兜底（`host_notifications=0` 属预期，round-trip 仍靠 host 轮询 `to_host` 环通过）。
+- **模型 B SG2002（真机）**：在 SSWI host→RT 基础上补 RT→host 方向——新增独立 carveout 映射 + 与 Starry 侧 `cvi_mailbox` 对齐 `#[repr(C)]` ABI 的专用 mailbox 中断；真机验证 `notify==消息数` 1:1。
 - **背压测试** 与 **executor WFI 空闲**（当前消费侧仍轮询，doorbell 只做低延迟叠加，尚未据其进入 WFI）。
 
 ## 8. 非目标（v1）

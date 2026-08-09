@@ -485,8 +485,22 @@ pub(crate) fn init_percpu_irq(cpu_id: usize) {
             .expect("failed to register timer IRQ handler");
 
         #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
-        ax_hal::irq::request_percpu_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler)
-            .expect("failed to register IPI IRQ handler");
+        {
+            // On riscv64 there is exactly one supervisor software interrupt per
+            // hart, so a reserved realtime core's mailbox doorbell must share
+            // this same line as a separate per-CPU action (the scheduler IPI
+            // fires only on the host CPUs, the doorbell only on the reserved
+            // core). Register the line as shared so that second action can
+            // attach. Other architectures keep the exclusive line: they either
+            // run no reserved-core doorbell or route it through a dedicated line
+            // (e.g. aarch64 uses a separate GIC SGI).
+            #[cfg(target_arch = "riscv64")]
+            ax_hal::irq::request_percpu_shared_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler)
+                .expect("failed to register IPI IRQ handler");
+            #[cfg(not(target_arch = "riscv64"))]
+            ax_hal::irq::request_percpu_irq(ax_hal::irq::ipi_irq(), cpus, ipi_irq_handler)
+                .expect("failed to register IPI IRQ handler");
+        }
     }
 
     init_timer();

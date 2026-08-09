@@ -65,16 +65,16 @@ static RT_TASKS: [RtTask; DEMO_TASK_COUNT + ax_rt::selftest::SELFTEST_TASKS.len(
 #[cfg(feature = "rt-selftest")]
 const fn rt_tasks_with_selftest()
 -> [RtTask; DEMO_TASK_COUNT + ax_rt::selftest::SELFTEST_TASKS.len()] {
-    const selftest: [RtTask; 8] = ax_rt::selftest::SELFTEST_TASKS;
-    let mut out = [DEMO_TASKS[0]; DEMO_TASK_COUNT + selftest.len()];
+    const SELFTEST: [RtTask; 8] = ax_rt::selftest::SELFTEST_TASKS;
+    let mut out = [DEMO_TASKS[0]; DEMO_TASK_COUNT + SELFTEST.len()];
     let mut i = 0;
     while i < DEMO_TASK_COUNT {
         out[i] = DEMO_TASKS[i];
         i += 1;
     }
     let mut j = 0;
-    while j < selftest.len() {
-        out[DEMO_TASK_COUNT + j] = selftest[j];
+    while j < SELFTEST.len() {
+        out[DEMO_TASK_COUNT + j] = SELFTEST[j];
         j += 1;
     }
     out

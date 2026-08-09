@@ -223,6 +223,30 @@ pub fn request_percpu_irq(
     )
 }
 
+/// Requests a per-CPU IRQ action that shares its IRQ id with other per-CPU
+/// actions.
+///
+/// Unlike [`request_percpu_irq`], the descriptor is created in
+/// [`ShareMode::Shared`], so several per-CPU actions with disjoint CPU masks can
+/// coexist on one IRQ id, each firing only on the CPUs in its own mask. This is
+/// required where a single hardware line must carry more than one logical use:
+/// on RISC-V there is exactly one supervisor software interrupt per hart, so a
+/// reserved realtime core's mailbox doorbell has to share that line with the
+/// scheduler IPI (the doorbell fires only on the reserved core, the scheduler
+/// IPI only on the host cores). All actions on the id must likewise be shared.
+pub fn request_percpu_shared_irq(
+    irq: IrqId,
+    cpus: CpuMask,
+    handler: impl Fn(IrqContext) -> IrqReturn + Send + Sync + 'static,
+) -> Result<IrqHandle, IrqError> {
+    request_irq(
+        irq,
+        IrqRequest::new_concurrent(handler)
+            .scope(IrqScope::PerCpu { cpus })
+            .share_mode(ShareMode::Shared),
+    )
+}
+
 /// Frees an IRQ action.
 pub fn free_irq(handle: IrqHandle) -> Result<(), IrqError> {
     registry().free(handle)

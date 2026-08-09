@@ -11,5 +11,5 @@ default = []
 
 [dependencies]
 ax-rt.workspace = true
-ax-hal = { workspace = true, features = ["irq"] }
+ax-hal = { workspace = true, features = ["irq", "ipi"] }
 log.workspace = true

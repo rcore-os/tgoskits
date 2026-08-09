@@ -1026,6 +1026,89 @@ fn per_cpu_action_dispatches_only_on_matching_cpu() {
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
+/// Regression for the RISC-V single-SSWI mailbox doorbell.
+///
+/// RISC-V exposes exactly one per-hart supervisor software interrupt, so a
+/// reserved realtime core's mailbox doorbell must share that one line with the
+/// scheduler IPI as a *second* per-CPU action. Two shared per-CPU actions with
+/// disjoint masks (host CPUs {0,1,2} for the scheduler IPI, the reserved core
+/// {3} for the doorbell) must both register and each fire only on the CPUs in
+/// its own mask. The buggy path used `request_percpu_irq`, which builds an
+/// *exclusive* per-CPU descriptor: the second such action on the line is refused
+/// with `Busy` even with a disjoint mask, silently dropping the doorbell to
+/// polling. The two arms below pin both facts.
+#[test]
+fn shared_per_cpu_doorbell_coexists_but_exclusive_peer_is_rejected() {
+    fn concurrent_count(counter: &AtomicUsize) -> IrqRequest {
+        let counter = counter as *const AtomicUsize as usize;
+        IrqRequest::new_concurrent(move |_| {
+            let counter = unsafe { &*(counter as *const AtomicUsize) };
+            counter.fetch_add(1, Ordering::SeqCst);
+            IrqReturn::Handled
+        })
+    }
+    fn host_mask() -> CpuMask {
+        let mut mask = CpuMask::empty();
+        mask.insert(CpuId(0));
+        mask.insert(CpuId(1));
+        mask.insert(CpuId(2));
+        mask
+    }
+
+    // Fixed path: both actions are shared per-CPU, so they coexist on one line.
+    let registry = Registry::new(MockOps::with_cpus(4));
+    let sched_ipi = AtomicUsize::new(0);
+    let doorbell = AtomicUsize::new(0);
+    registry
+        .request(
+            irq(9),
+            concurrent_count(&sched_ipi)
+                .scope(IrqScope::PerCpu { cpus: host_mask() })
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+    registry
+        .request(
+            irq(9),
+            concurrent_count(&doorbell)
+                .scope(IrqScope::PerCpu {
+                    cpus: CpuMask::from_cpu(CpuId(3)),
+                })
+                .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    // The doorbell fires only on the reserved core {3}.
+    assert_eq!(registry.dispatch(irq(9), CpuId(3)).called, 1);
+    assert_eq!(doorbell.load(Ordering::SeqCst), 1);
+    assert_eq!(sched_ipi.load(Ordering::SeqCst), 0);
+    // The scheduler IPI fires only on the host CPUs {0,1,2}.
+    assert_eq!(registry.dispatch(irq(9), CpuId(0)).called, 1);
+    assert_eq!(sched_ipi.load(Ordering::SeqCst), 1);
+    assert_eq!(doorbell.load(Ordering::SeqCst), 1);
+
+    // Buggy path: two *exclusive* per-CPU actions (what `request_percpu_irq`
+    // builds) cannot coexist even with disjoint masks; the second is `Busy`.
+    let exclusive_registry = Registry::new(MockOps::with_cpus(4));
+    let a = AtomicUsize::new(0);
+    let b = AtomicUsize::new(0);
+    exclusive_registry
+        .request(
+            irq(10),
+            concurrent_count(&a).scope(IrqScope::PerCpu { cpus: host_mask() }),
+        )
+        .unwrap();
+    let err = exclusive_registry
+        .request(
+            irq(10),
+            concurrent_count(&b).scope(IrqScope::PerCpu {
+                cpus: CpuMask::from_cpu(CpuId(3)),
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err, IrqError::Busy);
+}
+
 #[test]
 fn per_cpu_concurrent_action_allows_parallel_dispatch_on_different_cpus() {
     struct Blocker {
