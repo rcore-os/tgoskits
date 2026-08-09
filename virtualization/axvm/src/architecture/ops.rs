@@ -242,10 +242,8 @@ fn pop_and_inject<F, G>(
         dispatcher.pop_if(vcpu_id, |interrupt| is_busy(interrupt.id.0 as usize))
     {
         if inject(interrupt).is_err() {
-            if dispatcher.enqueue(vcpu_id, interrupt).is_err() {
-                // Only reachable if concurrent producers filled the freed
-                // slot; treat as backpressure rather than a silent drop.
-                warn!("vCPU {vcpu_id} interrupt queue full after retryable inject failure");
+            if !dispatcher.requeue_retry(vcpu_id, interrupt) {
+                warn!("vCPU {vcpu_id} retry slot already occupied; dropping retry edge");
             }
             break;
         }
@@ -544,8 +542,8 @@ mod tests {
             },
         );
 
-        // 0x41 injected; 0x42 was attempted and failed (recorded, then
-        // re-queued rather than dropped); the loop stops before 0x43.
+        // 0x41 injected; 0x42 was attempted and failed (recorded, then kept in
+        // the retry slot rather than dropped); the loop stops before 0x43.
         assert_eq!(
             injections.lock().attempts,
             vec![
@@ -554,8 +552,70 @@ mod tests {
             ]
         );
         let remaining = dispatcher.drain(0);
-        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id.0, 0x43);
-        assert_eq!(remaining[1].id.0, 0x42);
+        // The failed edge survives in the retry slot.
+        let retried = dispatcher.pop_if(0, |_| false).unwrap();
+        assert_eq!(retried.id.0, 0x42);
+    }
+
+    #[test]
+    fn retry_slot_holds_edge_outside_bounded_queue() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        for id in 0..crate::runtime::VCPU_INTERRUPT_QUEUE_CAPACITY as u32 {
+            dispatcher
+                .enqueue(
+                    0,
+                    PendingVcpuInterrupt {
+                        id: VirtualInterruptId(id),
+                        trigger: InterruptTriggerMode::EdgeTriggered,
+                    },
+                )
+                .unwrap();
+        }
+
+        assert!(dispatcher.requeue_retry(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(999),
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            }
+        ));
+
+        // The retry edge is served first and does not depend on queue
+        // capacity, while the full queue still rejects new producers.
+        assert_eq!(dispatcher.pop_if(0, |_| false).unwrap().id.0, 999);
+        assert!(
+            dispatcher
+                .enqueue(
+                    0,
+                    PendingVcpuInterrupt {
+                        id: VirtualInterruptId(1000),
+                        trigger: InterruptTriggerMode::EdgeTriggered,
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retry_slot_keeps_blocked_edge() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        dispatcher.requeue_retry(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(7),
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            },
+        );
+
+        assert!(
+            dispatcher
+                .pop_if(0, |interrupt| interrupt.id.0 == 7)
+                .is_none()
+        );
+        assert_eq!(dispatcher.pop_if(0, |_| false).unwrap().id.0, 7);
     }
 }

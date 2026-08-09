@@ -39,6 +39,11 @@ use crate::{AxTaskRef, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt
 /// architecture-specific injection path.
 pub struct VcpuIrqDispatcher {
     queue: VcpuInterruptQueue,
+    /// Per-vCPU retry slot for an edge that was popped but could not be
+    /// injected (for example the backend ran out of list registers). Kept
+    /// outside the bounded queue so re-queuing can never race a concurrent
+    /// producer filling the queue.
+    retry_slots: Mutex<BTreeMap<usize, Option<PendingVcpuInterrupt>>>,
     vcpu_tasks: Mutex<BTreeMap<usize, AxTaskRef>>,
     vcpu_cpu_ids: Mutex<BTreeMap<usize, usize>>,
     /// Test-only cpu_id registry so that round-trip tests can exercise
@@ -55,6 +60,7 @@ impl VcpuIrqDispatcher {
     pub fn new() -> Self {
         Self {
             queue: VcpuInterruptQueue::new(),
+            retry_slots: Mutex::new(BTreeMap::new()),
             vcpu_tasks: Mutex::new(BTreeMap::new()),
             vcpu_cpu_ids: Mutex::new(BTreeMap::new()),
             #[cfg(all(test, feature = "host-test"))]
@@ -86,6 +92,7 @@ impl VcpuIrqDispatcher {
     pub fn unregister_vcpu_task(&self, vcpu_id: usize) {
         self.vcpu_tasks.lock().remove(&vcpu_id);
         self.vcpu_cpu_ids.lock().remove(&vcpu_id);
+        self.retry_slots.lock().remove(&vcpu_id);
         self.queue.drain(vcpu_id);
         #[cfg(all(test, feature = "host-test"))]
         self.test_vcpu_cpu_ids.lock().remove(&vcpu_id);
@@ -156,7 +163,41 @@ impl VcpuIrqDispatcher {
     where
         F: Fn(&PendingVcpuInterrupt) -> bool,
     {
+        // A previously failed edge lives in the retry slot, outside the
+        // bounded queue, so it cannot be lost to concurrent producers.
+        let retry = self
+            .retry_slots
+            .lock()
+            .get_mut(&vcpu_id)
+            .and_then(|slot| slot.take());
+        if let Some(edge) = retry {
+            if keep(&edge) {
+                self.retry_slots
+                    .lock()
+                    .get_mut(&vcpu_id)
+                    .expect("retry slot was just populated")
+                    .replace(edge);
+                return None;
+            }
+            return Some(edge);
+        }
         self.queue.pop_if(vcpu_id, keep)
+    }
+
+    /// Stores an edge that could not be injected in the per-vCPU retry slot.
+    ///
+    /// The slot is outside the bounded queue, so storing it cannot fail due to
+    /// a concurrent producer filling the queue. Returns `false` only if the
+    /// slot is already occupied, which cannot happen with the single-edge
+    /// pop-and-inject loop.
+    pub fn requeue_retry(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> bool {
+        let mut slots = self.retry_slots.lock();
+        let slot = slots.entry(vcpu_id).or_insert(None);
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(interrupt);
+        true
     }
 
     /// Returns whether a vCPU has a queued interrupt that should prevent it

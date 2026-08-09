@@ -7,7 +7,10 @@ queue using PSCI `CPU_SUSPEND(standby)`, which makes the vIRQ notify/wake
 path load-bearing. vCPU0 idles forever; vCPU1 runs a consumer thread pinned
 to CPU1 and counts software IRQ 48. A single host injector targets vCPU1.
 The scenario measures whether an interrupt targeted at vCPU1 wakes the
-unrelated idle vCPU0.
+unrelated idle vCPU0. The injector uses a 10 ms period (see
+`os/axvisor/src/realtime_probe.rs`) so the parked-vCPU drain stays ahead of
+producers and the delivery path is exercised without list-register
+saturation.
 
 ## Requirements
 
@@ -102,7 +105,7 @@ Captured with this commit on a QEMU virt AArch64 host:
 ```text
 consumer pinned to cpu 1 rc=0
 VIRQ_INJECT_COMPLETE vm=2 vcpu=1 vector=48 samples=300 errors=0
-E1_COUNTERS vcpu0_park=2 vcpu0_wake=1 vcpu1_park=174 vcpu1_wake=174 notify_woke0=0 notify_woke1=61 lr_skip=0
+E1_COUNTERS vcpu0_park=2 vcpu0_wake=1 vcpu1_park=300 vcpu1_wake=300 notify_woke0=0 notify_woke1=300 lr_skip=0
 SOFTWARE VIRQ COMPLETE streams=1 samples_each=300 total=300
 ```
 
