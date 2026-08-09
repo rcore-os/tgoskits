@@ -192,6 +192,7 @@ define_options! {
     // ---- IP level options (IP_*) ----
     Ttl(u8),
     IpTos(u8),
+    RecvTtl(bool),
     RecvTos(bool),
     RecvTrafficClass(bool),
     RecvErr(bool),

@@ -146,3 +146,28 @@ Axvisor 测试的六种 pipeline 类型与 StarryOS 完全一致，因为两者�
 | Plain | 以上均不满足 | 最常见，纯 QEMU 启动验证 |
 
 pipeline 类型、检测优先级、资产准备、rootfs 缓存和 grouped runner 协议的完整说明见 [测试基础设施](../test_infra)。Axvisor 的 `prepare_staging_root` 钩子为空操作（`|_| Ok(())`），不做 StarryOS 那样的 DNS 注入和 APK 区域配置。
+
+### 4.1 x86 嵌套 OVMF/ACPI 验证
+
+`normal` 组提供两条对称的 x86 嵌套 OVMF 用例：
+
+```bash
+cargo xtask axvisor test qemu --arch x86_64 --test-group normal \
+  --test-case ovmf-acpi-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-group normal \
+  --test-case ovmf-acpi-svm
+```
+
+两者共用 `test-suit/axvisor/normal/qemu-acpi-ovmf/x86-linux-acpi-ovmf.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。本组用例在稳定性阶段完成前保持 non-gating。
+
+资产准备复用 Ostool 的 x86_64 OVMF 缓存，可先用以下命令确认来源路径：
+
+```bash
+cargo xtask ovmf --arch x86_64
+```
+
+Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和最终 guest image 的路径、字节数及 SHA-256，同时说明布局是 `split CODE/VARS` 还是 `monolithic CODE`。对于 monolithic CODE，VARS 仍会记录来源证据，但明确标记为 `unused`；这些运行时摘要不固化到仓库。
+
+成功条件 `AXVISOR_X86_OVMF_ACPI_PASSED` 来自嵌套 Linux initramfs，而不是 QEMU 外层 OVMF。该 marker 只有在 OVMF 完成 kernel handoff、Linux 进入早期用户态，并且 Linux 能读取 DSDT、APIC、FACP、SPCR、发现 `ttyS0`、初始化 IOAPIC 且 online CPU 集合为 `0` 时才会输出。因此它同时证明当前 firmware handoff 和 guest-side ACPI 接受路径。
+
+当前用例仍由 fw_cfg 提供 Linux kernel、initramfs 和命令行。它不证明 OVMF 已枚举 Axvisor guest PCI 启动盘，也不证明 Linux 经 guest ESP 或 EFI stub 启动；这些属于后续独立功能阶段，不能从本 marker 推导。

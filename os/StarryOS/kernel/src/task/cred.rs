@@ -58,7 +58,9 @@ pub struct Cred {
     /// Ambient Linux capabilities.
     pub cap_ambient: u64,
     /// Linux securebits flags controlled through `prctl(2)`.
+    /// Preserve permitted capabilities when all root UIDs become nonzero.
     pub securebits: u32,
+    keep_capabilities: bool,
 }
 
 impl Cred {
@@ -85,6 +87,7 @@ impl Cred {
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
             securebits: 0,
+            keep_capabilities: false,
         }
     }
 
@@ -110,6 +113,7 @@ impl Cred {
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
             securebits: 0,
+            keep_capabilities: false,
         }
     }
 
@@ -133,7 +137,7 @@ impl Cred {
         let new_all_nonroot = self.uid != 0 && self.euid != 0 && self.suid != 0;
 
         if old_all_root && new_all_nonroot {
-            if old.securebits & SECBIT_KEEP_CAPS == 0 {
+            if old.securebits & SECBIT_KEEP_CAPS == 0 && !old.keep_capabilities {
                 self.cap_permitted = 0;
             }
             self.cap_effective = 0;
@@ -254,6 +258,16 @@ impl Cred {
     pub fn in_group(&self, gid: u32) -> bool {
         self.fsgid == gid || self.groups.contains(&gid)
     }
+
+    /// Return the per-credential `PR_SET_KEEPCAPS` state.
+    pub fn keep_capabilities(&self) -> bool {
+        self.keep_capabilities
+    }
+
+    /// Update the per-credential `PR_SET_KEEPCAPS` state.
+    pub fn set_keep_capabilities(&mut self, enabled: bool) {
+        self.keep_capabilities = enabled;
+    }
 }
 
 impl Default for Cred {
@@ -274,6 +288,15 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
     dropped.cap_inheritable = Cred::cap_mask();
     dropped.cap_ambient = Cred::cap_mask();
     dropped.apply_id_change_capability_rules(&old_root);
+
+    let mut keepcaps_root = root.clone();
+    keepcaps_root.set_keep_capabilities(true);
+    let mut kept = keepcaps_root.clone();
+    kept.uid = 1000;
+    kept.euid = 1000;
+    kept.suid = 1000;
+    kept.cap_ambient = Cred::cap_mask();
+    kept.apply_id_change_capability_rules(&keepcaps_root);
 
     let old_user = Cred::unprivileged(1000, 100);
     let mut regained_effective = old_user.clone();
@@ -335,6 +358,10 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
         && dropped.cap_permitted == 0
         && dropped.cap_effective == 0
         && dropped.cap_ambient == 0
+        && kept.cap_permitted == Cred::cap_mask()
+        && kept.cap_effective == 0
+        && kept.cap_ambient == 0
+        && kept.keep_capabilities()
         && regained_effective.cap_effective == regained_effective.cap_permitted
         && unprivileged.cap_effective == cap_bit(CAP_SETUID)
         && unprivileged.cap_ambient == unprivileged.cap_permitted & unprivileged.cap_inheritable

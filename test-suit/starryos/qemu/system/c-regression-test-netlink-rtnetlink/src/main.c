@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 //
 // AF_NETLINK / NETLINK_ROUTE smoke test.  Verifies the basic socket
-// shape and that RTM_GETLINK returns a multipart dump response instead
-// of silently accepting the request and leaving the receive queue empty.
+// shape and that RTM_GETLINK / RTM_GETROUTE return multipart dump responses
+// instead of silently accepting requests without reporting kernel state.
 //
 // We inline the netlink uapi structs because musl does not ship
 // <linux/netlink.h> / <linux/rtnetlink.h>.
@@ -46,6 +46,18 @@ struct ifinfomsg_inl {
     unsigned int ifi_change;
 };
 
+struct rtmsg_inl {
+    unsigned char rtm_family;
+    unsigned char rtm_dst_len;
+    unsigned char rtm_src_len;
+    unsigned char rtm_tos;
+    unsigned char rtm_table;
+    unsigned char rtm_protocol;
+    unsigned char rtm_scope;
+    unsigned char rtm_type;
+    unsigned int rtm_flags;
+};
+
 struct rtattr_inl {
     unsigned short rta_len;
     unsigned short rta_type;
@@ -56,7 +68,17 @@ struct rtattr_inl {
 #define NLMSG_DONE    3
 #define RTM_GETLINK   18
 #define RTM_NEWLINK   16
+#define RTM_NEWROUTE  24
+#define RTM_GETROUTE  26
 #define IFLA_IFNAME   3
+
+#define AF_INET_INL   2
+#define RT_TABLE_MAIN 254
+#define RTN_UNICAST   1
+
+#define RTA_GATEWAY   5
+#define RTA_OIF       4
+#define RTA_PRIORITY  6
 
 #define NLMSG_ALIGNTO 4U
 #define NLMSG_ALIGN(len) (((len) + NLMSG_ALIGNTO - 1) & ~(NLMSG_ALIGNTO - 1))
@@ -82,6 +104,75 @@ struct rtattr_inl {
     ((len) >= (int)sizeof(struct rtattr_inl) && (rta)->rta_len >= sizeof(struct rtattr_inl) &&    \
      (rta)->rta_len <= (unsigned int)(len))
 #define IFLA_RTA(r) ((struct rtattr_inl *)(((char *)(r)) + NLMSG_ALIGN(sizeof(struct ifinfomsg_inl))))
+#define RTM_RTA(r) ((struct rtattr_inl *)(((char *)(r)) + NLMSG_ALIGN(sizeof(struct rtmsg_inl))))
+
+static void check_getroute_dump(int fd) {
+    struct {
+        struct nlmsghdr_inl nh;
+        struct rtmsg_inl rtm;
+    } req = {0};
+    req.nh.nlmsg_len = sizeof(req);
+    req.nh.nlmsg_type = RTM_GETROUTE;
+    req.nh.nlmsg_flags = NLMSG_REQUEST | NLMSG_DUMP;
+    req.nh.nlmsg_seq = 2;
+    req.rtm.rtm_family = AF_INET_INL;
+
+    ssize_t sent = send(fd, &req, sizeof(req), 0);
+    CHECK(sent == (ssize_t)sizeof(req), "send(RTM_GETROUTE) drained by kernel");
+
+    char buf[4096];
+    int saw_default = 0;
+    int saw_gateway = 0;
+    int saw_oif = 0;
+    int saw_priority = 0;
+    int saw_done = 0;
+    while (!saw_done) {
+        errno = 0;
+        ssize_t n = read(fd, buf, sizeof(buf));
+        CHECK(n > 0, "read(RTM_GETROUTE response) returns data");
+        if (n <= 0) {
+            break;
+        }
+        int remaining = (int)n;
+        for (struct nlmsghdr_inl *nh = (struct nlmsghdr_inl *)buf; NLMSG_OK(nh, remaining);
+             nh = NLMSG_NEXT(nh, remaining)) {
+            if (nh->nlmsg_type == NLMSG_DONE) {
+                saw_done = 1;
+                break;
+            }
+            if (nh->nlmsg_type != RTM_NEWROUTE) {
+                continue;
+            }
+
+            struct rtmsg_inl *rtm = NLMSG_DATA(nh);
+            if (rtm->rtm_family != AF_INET_INL || rtm->rtm_dst_len != 0 ||
+                rtm->rtm_table != RT_TABLE_MAIN || rtm->rtm_type != RTN_UNICAST) {
+                continue;
+            }
+            saw_default = 1;
+            int len = (int)nh->nlmsg_len - NLMSG_LENGTH(sizeof(*rtm));
+            for (struct rtattr_inl *attr = RTM_RTA(rtm); RTA_OK(attr, len);
+                 attr = RTA_NEXT(attr, len)) {
+                unsigned int value = 0;
+                if (attr->rta_len >= RTA_LENGTH(sizeof(value))) {
+                    memcpy(&value, RTA_DATA(attr), sizeof(value));
+                }
+                if (attr->rta_type == RTA_GATEWAY && value != 0) {
+                    saw_gateway = 1;
+                } else if (attr->rta_type == RTA_OIF && value != 0) {
+                    saw_oif = 1;
+                } else if (attr->rta_type == RTA_PRIORITY) {
+                    saw_priority = 1;
+                }
+            }
+        }
+    }
+    CHECK(saw_default, "RTM_GETROUTE reports an IPv4 main-table default route");
+    CHECK(saw_gateway, "default route includes RTA_GATEWAY");
+    CHECK(saw_oif, "default route includes RTA_OIF");
+    CHECK(saw_priority, "default route includes RTA_PRIORITY");
+    CHECK(saw_done, "RTM_GETROUTE dump ends with NLMSG_DONE");
+}
 
 int main(void) {
     TEST_START("netlink rtnetlink");
@@ -121,17 +212,17 @@ int main(void) {
     ssize_t sent = send(fd, &req, sizeof(req), 0);
     CHECK(sent == (ssize_t)sizeof(req), "send(RTM_GETLINK) drained by kernel");
 
-    int fl = fcntl(fd, F_GETFL, 0);
-    CHECK_RET(fcntl(fd, F_SETFL, fl | O_NONBLOCK), 0, "F_SETFL O_NONBLOCK");
-
     char buf[4096];
     int saw_link = 0;
     int saw_lo = 0;
     int saw_done = 0;
-    errno = 0;
-    ssize_t n = read(fd, buf, sizeof(buf));
-    CHECK(n > 0, "read(RTM_GETLINK response) returns data");
-    if (n > 0) {
+    while (!saw_done) {
+        errno = 0;
+        ssize_t n = read(fd, buf, sizeof(buf));
+        CHECK(n > 0, "read(RTM_GETLINK response) returns data");
+        if (n <= 0) {
+            break;
+        }
         int remaining = (int)n;
         for (struct nlmsghdr_inl *nh = (struct nlmsghdr_inl *)buf; NLMSG_OK(nh, remaining);
              nh = NLMSG_NEXT(nh, remaining)) {
@@ -158,6 +249,11 @@ int main(void) {
     CHECK(saw_link, "RTM_GETLINK returns at least one RTM_NEWLINK");
     CHECK(saw_lo, "RTM_GETLINK includes loopback ifname");
     CHECK(saw_done, "RTM_GETLINK dump ends with NLMSG_DONE");
+
+    check_getroute_dump(fd);
+
+    int fl = fcntl(fd, F_GETFL, 0);
+    CHECK_RET(fcntl(fd, F_SETFL, fl | O_NONBLOCK), 0, "F_SETFL O_NONBLOCK");
 
     // Regression: sending another netlink request must not clear
     // responses still sitting in the receive queue. Earlier

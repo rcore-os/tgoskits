@@ -461,6 +461,15 @@ impl Thread {
         *self.cred.lock() = new_cred;
     }
 
+    /// Replace only this thread's credentials.
+    ///
+    /// Use this for Linux ABI operations whose credential state is explicitly
+    /// thread-local. Process-wide credential-changing syscalls must use
+    /// [`Self::set_cred`] instead.
+    pub(crate) fn set_thread_cred(&self, new_cred: Cred) {
+        self.set_cred_single(Arc::new(new_cred));
+    }
+
     /// Replace the credentials for ALL threads in the same process.
     ///
     /// POSIX requires that credential changes (setuid, setresuid, etc.)
@@ -489,6 +498,29 @@ impl Thread {
                 && let Some(thr) = task.try_as_thread()
             {
                 thr.set_cred_single(new_arc.clone());
+            }
+        }
+    }
+
+    /// Update every thread's credentials from its own current snapshot.
+    ///
+    /// Use this when a process-wide credential operation depends on
+    /// thread-local state. In particular, setxid capability transitions must
+    /// evaluate each thread's `PR_SET_KEEPCAPS` flag independently.
+    pub(crate) fn update_process_creds(&self, update: impl Fn(&Cred) -> Cred) {
+        let old_cred = self.cred();
+        self.set_cred_single(Arc::new(update(&old_cred)));
+
+        let mut tids = self.proc_data.proc.threads();
+        tids.sort_unstable();
+
+        for tid in &tids {
+            if let Ok(task) = ops::get_task(*tid)
+                && let Some(thread) = task.try_as_thread()
+                && !core::ptr::eq(thread, self)
+            {
+                let old_cred = thread.cred();
+                thread.set_cred_single(Arc::new(update(&old_cred)));
             }
         }
     }
@@ -930,7 +962,40 @@ pub struct PtraceStopFpData;
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
-
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u64; 32],
+    pub fcsr: usize,
+}
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u128; 32],
+    pub fpcr: u32,
+    pub fpsr: u32,
+}
+#[cfg(target_arch = "loongarch64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData {
+    pub regs: [u64; 32],
+    pub fp_high: [u64; 32],
+    pub fp_lasx_hi0: [u64; 32],
+    pub fp_lasx_hi1: [u64; 32],
+    pub fcc: [u8; 8],
+    pub fcsr: u32,
+}
+#[cfg(not(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64",
+    target_arch = "x86_64"
+)))]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData;
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
 impl ProcessData {
     /// Create a new [`ProcessData`].
     pub fn new(

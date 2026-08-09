@@ -6,8 +6,8 @@
 //! - `NETLINK_KOBJECT_UEVENT` (15): subscribe to kernel uevent broadcasts;
 //!   listener side only — kernel emitters call [`broadcast`].
 //! - `NETLINK_ROUTE` (0): rtnetlink socket; `bind` + `read`/`recv` work,
-//!   actual RTM_GETLINK / RTM_GETADDR responder lives elsewhere (the socket
-//!   here just provides the byte transport).
+//!   supports RTM_GETLINK / RTM_GETADDR plus IPv4 default-route dumps through
+//!   RTM_GETROUTE.
 //! - `NETLINK_GENERIC` (16): same shape as NETLINK_ROUTE — a queued byte
 //!   transport that genl userspace can drive.
 //!
@@ -83,7 +83,8 @@ const RTM_NEWLINK: u16 = 16;
 const RTM_GETADDR: u16 = 22;
 const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
-
+const RTM_NEWROUTE: u16 = 24;
+const RTM_GETROUTE: u16 = 26;
 const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
 const ARPHRD_ETHER: u16 = 1;
@@ -108,13 +109,19 @@ const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
 const IFA_LABEL: u16 = 3;
 const IFA_BROADCAST: u16 = 4;
-
+const RTA_OIF: u16 = 4;
+const RTA_GATEWAY: u16 = 5;
+const RTA_PRIORITY: u16 = 6;
+const RTA_PREFSRC: u16 = 7;
 const IF_OPER_UNKNOWN: u8 = 0;
 const IF_OPER_UP: u8 = 6;
 
 const RT_SCOPE_UNIVERSE: u8 = 0;
 const RT_SCOPE_HOST: u8 = 254;
-
+const RT_TABLE_UNSPEC: u8 = 0;
+const RT_TABLE_MAIN: u8 = 254;
+const RTPROT_BOOT: u8 = 3;
+const RTN_UNICAST: u8 = 1;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NlMsgHdr {
@@ -169,6 +176,19 @@ struct IfAddrMsg {
     index: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RtMsg {
+    family: u8,
+    dst_len: u8,
+    src_len: u8,
+    tos: u8,
+    table: u8,
+    protocol: u8,
+    scope: u8,
+    ty: u8,
+    flags: u32,
+}
 struct LinkInfo {
     index: i32,
     name: String,
@@ -279,8 +299,6 @@ impl NetlinkSocket {
             }
             state.addr = Some(addr);
         }
-        // Register self in the global broadcast registry so kernel-side
-        // `broadcast()` calls can reach this socket.
         NETLINK_SOCKETS.lock().push(Arc::downgrade(self));
         Ok(())
     }
@@ -306,39 +324,28 @@ impl NetlinkSocket {
     pub fn set_receive_buffer_size(&self, size: usize) {
         self.state.lock().receive_buffer_size = size;
     }
-
     pub fn set_passcred(&self, enabled: bool) {
         self.state.lock().passcred = enabled;
     }
-
     pub fn reuse_address(&self) -> bool {
         self.state.lock().reuse_address
     }
-
     pub fn set_reuse_address(&self, enabled: bool) {
         self.state.lock().reuse_address = enabled;
     }
-
     pub fn protocol(&self) -> u32 {
         self.protocol
     }
-
     pub fn socket_type(&self) -> u32 {
         self.socket_type
     }
 
-    /// Enqueue a kernel-originated datagram into this socket's receive queue
-    /// and wake readers, exactly as [`broadcast`] does for a single socket.
-    /// Drops silently when the queue is full (Linux `netlink_unicast` under
-    /// buffer pressure). Used by `mq_notify(SIGEV_THREAD)` to hand the
-    /// notification cookie to the glibc/musl helper thread that reads this
-    /// netlink socket (`netlink_sendskb` in ipc/mqueue.c `__do_notify`).
+    /// Enqueue a kernel-originated datagram and wake readers.
     pub fn deliver_datagram(&self, payload: Vec<u8>) {
         let mut queue = self.queue.lock();
         if queue.len() < MAX_QUEUED {
             queue.push_back(payload);
             drop(queue);
-            // Datagram is queued before readers are woken.
             unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
     }
@@ -360,15 +367,7 @@ impl NetlinkSocket {
         }
     }
 
-    /// Minimal NETLINK_GENERIC controller responder. Recognizes
-    /// `CTRL_CMD_GETFAMILY` on the controller family (`GENL_ID_CTRL`)
-    /// and either reports the controller itself (for a `nlctrl` name
-    /// query or a `NLM_F_DUMP`) or returns `NLMSG_ERROR(-ENOENT)`
-    /// for any other family name. Any request whose `nlmsg_type` is
-    /// not `GENL_ID_CTRL` — i.e. addressed to an unregistered family
-    /// — also returns `-ENOENT`. This matches what libnl-genl and
-    /// `genl-ctrl-list` need to enumerate the controller and report
-    /// "no other families" cleanly.
+    /// Minimal NETLINK_GENERIC controller responder.
     fn build_genl_response(&self, request: &[u8]) -> AxResult<Vec<u8>> {
         if request.len() < size_of::<NlMsgHdr>() + size_of::<GenlMsgHdr>() {
             return Err(AxError::InvalidInput);
@@ -383,35 +382,20 @@ impl NetlinkSocket {
         };
         let pid = self.local_pid();
         let mut response = Vec::new();
-
-        // Unknown family (anything not the controller) → ENOENT.
         if header.ty != GENL_ID_CTRL {
             push_nlmsg_error(&mut response, request, pid, -libc_ENOENT);
             return Ok(response);
         }
-
         if genl.cmd != CTRL_CMD_GETFAMILY {
-            // Other controller commands are unimplemented.
             push_nlmsg_error(&mut response, request, pid, -libc_EOPNOTSUPP);
             return Ok(response);
         }
-
-        // Parse attributes to see whether the caller asked for a
-        // specific family by name. NLM_F_DUMP omits the name and
-        // expects all families back — we only have the controller.
         let attrs_start = size_of::<NlMsgHdr>() + size_of::<GenlMsgHdr>();
         let want_name = parse_genl_family_name(&request[attrs_start..]);
-
-        let target_is_ctrl = match want_name.as_deref() {
-            None => true, // dump
-            Some(name) => name == "nlctrl",
-        };
-
-        if !target_is_ctrl {
+        if !matches!(want_name.as_deref(), None | Some("nlctrl")) {
             push_nlmsg_error(&mut response, request, pid, -libc_ENOENT);
             return Ok(response);
         }
-
         let is_dump = want_name.is_none();
         push_ctrl_family(&mut response, header.seq, pid, is_dump);
         if is_dump {
@@ -424,7 +408,6 @@ impl NetlinkSocket {
         if request.len() < size_of::<NlMsgHdr>() {
             return Err(AxError::InvalidInput);
         }
-
         let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
         let pid = self.local_pid();
         let in_root = in_root_net_ns();
@@ -466,13 +449,33 @@ impl NetlinkSocket {
                     return Ok(response);
                 }
             }
+            RTM_GETROUTE => {
+                if !is_dump_request(header.flags) {
+                    push_nlmsg_error(&mut response, request, pid, -libc_EOPNOTSUPP);
+                    return Ok(response);
+                }
+                let route = match parse_route_request(request) {
+                    Ok(route) => route,
+                    Err(err) => {
+                        push_nlmsg_error_from_ax(&mut response, request, pid, err);
+                        return Ok(response);
+                    }
+                };
+                if matches!(route.family, AF_UNSPEC | AF_INET)
+                    && matches!(route.table, RT_TABLE_UNSPEC | RT_TABLE_MAIN)
+                {
+                    for route in ax_net::default_routes() {
+                        if !in_root && route.interface_id != InterfaceId::LOOPBACK {
+                            continue;
+                        }
+                        push_default_route_message(&mut response, header.seq, pid, &route);
+                    }
+                }
+            }
             RTM_NEWADDR => {
                 let error = match handle_newaddr_request(request) {
                     Ok(()) => 0,
-                    Err(err) => {
-                        let linux_err = LinuxError::from(err);
-                        -linux_err.code()
-                    }
+                    Err(err) => -LinuxError::from(err).code(),
                 };
                 push_nlmsg_error(&mut response, request, pid, error);
                 return Ok(response);
@@ -480,14 +483,8 @@ impl NetlinkSocket {
             RTM_DELADDR => {
                 let error = match handle_deladdr_request(request) {
                     Ok(()) => 0,
-                    // Linux reports EADDRNOTAVAIL when the requested address
-                    // is not assigned; ax-net uses NotFound for that internal
-                    // state so translate it explicitly for iproute2.
                     Err(AxError::NotFound) => -LinuxError::EADDRNOTAVAIL.code(),
-                    Err(err) => {
-                        let linux_err = LinuxError::from(err);
-                        -linux_err.code()
-                    }
+                    Err(err) => -LinuxError::from(err).code(),
                 };
                 push_nlmsg_error(&mut response, request, pid, error);
                 return Ok(response);
@@ -818,6 +815,40 @@ fn push_addr_message(out: &mut Vec<u8>, seq: u32, pid: u32, addr: &AddrInfo) {
     out.extend_from_slice(&body);
 }
 
+fn push_default_route_message(out: &mut Vec<u8>, seq: u32, pid: u32, route: &ax_net::RouteInfo) {
+    let Some(gateway) = route.via else {
+        return;
+    };
+    let core::net::IpAddr::V4(gateway) = gateway.into() else {
+        return;
+    };
+    let core::net::IpAddr::V4(source) = route.source.into() else {
+        return;
+    };
+
+    let mut body = Vec::new();
+    push_struct(
+        &mut body,
+        &RtMsg {
+            family: AF_INET,
+            dst_len: 0,
+            src_len: 0,
+            tos: 0,
+            table: RT_TABLE_MAIN,
+            protocol: RTPROT_BOOT,
+            scope: RT_SCOPE_UNIVERSE,
+            ty: RTN_UNICAST,
+            flags: 0,
+        },
+    );
+    push_attr(&mut body, RTA_GATEWAY, &gateway.octets());
+    push_attr(&mut body, RTA_OIF, &route.interface_id.get().to_ne_bytes());
+    push_attr(&mut body, RTA_PRIORITY, &route.metric.to_ne_bytes());
+    push_attr(&mut body, RTA_PREFSRC, &source.octets());
+
+    push_nl_header(out, RTM_NEWROUTE, NLM_F_MULTI, seq, pid, body.len());
+    out.extend_from_slice(&body);
+}
 fn push_ctrl_family(out: &mut Vec<u8>, seq: u32, pid: u32, multi: bool) {
     let mut payload = Vec::new();
     push_struct(
@@ -976,6 +1007,27 @@ fn parse_addr_filter(request: &[u8]) -> AddrFilter {
     }
 }
 
+fn parse_route_request(request: &[u8]) -> AxResult<RtMsg> {
+    if request.len() < size_of::<NlMsgHdr>() + size_of::<RtMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    // SAFETY: The length check above covers a complete header, and
+    // `read_unaligned` accepts the byte alignment of the request buffer.
+    let header = unsafe { request.as_ptr().cast::<NlMsgHdr>().read_unaligned() };
+    let msg_len = (header.len as usize).min(request.len());
+    if msg_len < size_of::<NlMsgHdr>() + size_of::<RtMsg>() {
+        return Err(AxError::InvalidInput);
+    }
+    // SAFETY: `msg_len` proves that the request contains a complete `RtMsg`
+    // after the header, and `read_unaligned` accepts the buffer alignment.
+    Ok(unsafe {
+        request
+            .as_ptr()
+            .add(size_of::<NlMsgHdr>())
+            .cast::<RtMsg>()
+            .read_unaligned()
+    })
+}
 fn parse_link_filter(request: &[u8]) -> LinkFilter {
     if request.len() < size_of::<NlMsgHdr>() + size_of::<IfInfoMsg>() {
         return LinkFilter::default();
