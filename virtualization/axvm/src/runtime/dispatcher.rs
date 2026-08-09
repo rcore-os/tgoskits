@@ -142,8 +142,21 @@ impl VcpuIrqDispatcher {
     /// The caller (vCPU run loop) runs on the target pCPU and injects each
     /// returned interrupt through the architecture-specific vCPU injection
     /// path before entering the guest.
+    #[expect(
+        dead_code,
+        reason = "used by host tests; production uses drain_if to keep blocked edges queued"
+    )]
     pub fn drain(&self, vcpu_id: usize) -> Vec<PendingVcpuInterrupt> {
         self.queue.drain(vcpu_id)
+    }
+
+    /// Pops the head interrupt when it can be injected, leaving blocked edges
+    /// queued so they cannot be lost during a lock-free drain window.
+    pub fn pop_if<F>(&self, vcpu_id: usize, keep: F) -> Option<PendingVcpuInterrupt>
+    where
+        F: Fn(&PendingVcpuInterrupt) -> bool,
+    {
+        self.queue.pop_if(vcpu_id, keep)
     }
 
     /// Returns whether a vCPU has a queued interrupt that should prevent it

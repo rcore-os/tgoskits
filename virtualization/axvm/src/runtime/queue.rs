@@ -67,6 +67,31 @@ impl VcpuInterruptQueue {
             .unwrap_or_default()
     }
 
+    /// Pops the head interrupt for `vcpu_id` when it does not satisfy `keep`.
+    ///
+    /// `keep == true` means the head edge must stay queued (for example the
+    /// backend cannot inject it right now); the queue is left untouched and
+    /// `None` is returned. Popping one edge at a time under the queue lock
+    /// removes the lock-free window between "is it injectable?" and "inject",
+    /// so a batch of same-vector edges cannot be drained and then dropped on a
+    /// busy list register.
+    pub fn pop_if<F>(&self, vcpu_id: usize, keep: F) -> Option<PendingVcpuInterrupt>
+    where
+        F: Fn(&PendingVcpuInterrupt) -> bool,
+    {
+        let mut pending = self.pending.lock();
+        let queue = pending.get_mut(&vcpu_id)?;
+        let head = queue.first()?;
+        if keep(head) {
+            return None;
+        }
+        let interrupt = queue.remove(0);
+        if queue.is_empty() {
+            pending.remove(&vcpu_id);
+        }
+        Some(interrupt)
+    }
+
     /// Returns whether a vCPU has an interrupt waiting to be drained.
     pub fn has_pending(&self, vcpu_id: usize) -> bool {
         self.pending
@@ -127,6 +152,31 @@ mod tests {
         q.try_push(0, edge(7)).unwrap();
         assert_eq!(q.drain(0).len(), 1);
         assert!(q.drain(0).is_empty());
+    }
+
+    #[test]
+    fn pop_if_skips_blocked_head_edge() {
+        let q = VcpuInterruptQueue::new();
+        q.try_push(0, edge(1)).unwrap();
+        q.try_push(0, edge(2)).unwrap();
+        q.try_push(0, edge(3)).unwrap();
+
+        // Keep the head edge (simulating a busy backend): nothing is popped.
+        assert!(q.pop_if(0, |interrupt| interrupt.id.0 == 1).is_none());
+        // Head is injectable now: pop only the head.
+        assert_eq!(q.pop_if(0, |interrupt| interrupt.id.0 == 2), Some(edge(1)));
+        assert_eq!(q.drain(0), vec![edge(2), edge(3)]);
+    }
+
+    #[test]
+    fn pop_if_pops_only_one_edge_per_call() {
+        let q = VcpuInterruptQueue::new();
+        q.try_push(0, edge(1)).unwrap();
+        q.try_push(0, edge(2)).unwrap();
+
+        assert_eq!(q.pop_if(0, |_| false), Some(edge(1)));
+        assert_eq!(q.pop_if(0, |_| false), Some(edge(2)));
+        assert!(q.pop_if(0, |_| false).is_none());
     }
 
     #[test]

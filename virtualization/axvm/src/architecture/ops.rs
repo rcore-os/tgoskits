@@ -200,23 +200,22 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
         }
     };
     runtime.trace_virq_event(vm.id(), crate::runtime::VirqTraceKind::Running, vcpu_id, 0);
-    let interrupts = runtime.irq_dispatcher().drain(vcpu_id);
-    if !interrupts.is_empty() {
-        runtime.trace_virq_event(
-            vm.id(),
-            crate::runtime::VirqTraceKind::Drain,
-            vcpu_id,
-            interrupts[0].id.0,
-        );
-    }
-    let mut requeue: alloc::vec::Vec<_> = alloc::vec::Vec::new();
-    for interrupt in interrupts {
-        if A::is_virtual_interrupt_busy(interrupt.id.0 as usize) {
-            // The backend still holds this vector pending/active; keep the
-            // edge in the queue so it is delivered once the guest completes
-            // the current one instead of being silently dropped.
-            requeue.push(interrupt);
-            continue;
+    // Pop one injectable edge at a time under the queue lock. A blocked head
+    // edge stays queued, so same-vector batches cannot be drained and then
+    // dropped on a busy list register, and a re-enqueue cannot fail silently
+    // against concurrent producers.
+    let mut first = true;
+    while let Some(interrupt) = runtime.irq_dispatcher().pop_if(vcpu_id, |interrupt| {
+        A::is_virtual_interrupt_busy(interrupt.id.0 as usize)
+    }) {
+        if first {
+            runtime.trace_virq_event(
+                vm.id(),
+                crate::runtime::VirqTraceKind::Drain,
+                vcpu_id,
+                interrupt.id.0,
+            );
+            first = false;
         }
         runtime.trace_virq_event(
             vm.id(),
@@ -227,15 +226,6 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
         if let Err(err) = A::inject_vcpu_interrupt(vcpu, interrupt) {
             warn!(
                 "VM[{}] VCpu[{}] failed to inject interrupt {interrupt:?}: {err:?}",
-                vm.id(),
-                vcpu_id
-            );
-        }
-    }
-    for interrupt in requeue {
-        if let Err(err) = runtime.irq_dispatcher().enqueue(vcpu_id, interrupt) {
-            warn!(
-                "VM[{}] VCpu[{}] failed to re-queue busy interrupt {interrupt:?}: {err:?}",
                 vm.id(),
                 vcpu_id
             );
