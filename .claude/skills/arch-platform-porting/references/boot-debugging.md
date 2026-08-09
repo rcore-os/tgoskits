@@ -47,7 +47,34 @@ For x86 OVMF/BIOS boot, verify graph-fixed PIO windows `0x510..0x512` and
 `0x514..0x51c` are trapped and that fw_cfg publishes `etc/acpi/tables`,
 `etc/acpi/rsdp`, and `etc/table-loader`. A working selector read alone does not
 prove ACPI installation; check table-loader DMA operations and confirm Linux
-sees `DSDT`, `APIC`, `FACP`, and `XSDT` under `/sys/firmware/acpi/tables`.
+uses the XSDT to discover `DSDT`, `APIC`, `FACP`, and `SPCR` under
+`/sys/firmware/acpi/tables` (Linux does not export the root XSDT there).
+
+For the Axvisor x86 nested OVMF validation cases, troubleshoot in this order:
+
+1. List the `normal` group and confirm both `ovmf-acpi-vmx` and
+   `ovmf-acpi-svm` are discovered. Run VMX only on an Intel/VMX KVM host and
+   SVM only on an AMD/SVM KVM host; neither build config may select a backend
+   Cargo feature.
+2. Read the asset-preparation evidence before interpreting firmware output.
+   It records the actual Ostool CODE and VARS paths, byte sizes, SHA-256
+   digests, the split or monolithic layout, and the final 4 MiB guest image.
+   A monolithic CODE image must report the recorded VARS as unused.
+3. Confirm the final guest-image path is the same path selected by
+   `uefi_firmware_path` in the shared guest TOML. Do not confuse this nested
+   firmware with the outer QEMU pflash used to boot the Axvisor host.
+4. Verify fw_cfg publishes the three ACPI files above, then inspect the
+   table-loader allocation, pointer, checksum, and DMA error tests. A selector
+   read or firmware banner is only an intermediate checkpoint.
+5. Require the guest initramfs marker `AXVISOR_X86_OVMF_ACPI_PASSED`. It means
+   OVMF handed off to Linux and Linux accepted DSDT, APIC, FACP, SPCR, ttyS0,
+   and IOAPIC. Preserve the full command, firmware evidence, last reliable
+   state, and first definite error if the marker is absent.
+
+The current nested OVMF cases still receive their Linux kernel, initramfs, and
+command line through fw_cfg. They do not prove a guest PCI boot disk, ESP, or
+Linux EFI-stub boot path, and a failure in those later capabilities must not be
+fixed by changing these validation-only cases.
 
 For AArch64 host replacement, compare every GICR region and stride in the
 immutable firmware plan with the `ArmVgicConfig` passed to the runtime. Do not
