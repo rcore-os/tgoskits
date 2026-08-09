@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.16...ax-percpu-v0.4.17) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-percpu-macros, ax-lazyinit
+
 ## [0.4.16](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.15...ax-percpu-v0.4.16) - 2026-08-03
 
 ### Other

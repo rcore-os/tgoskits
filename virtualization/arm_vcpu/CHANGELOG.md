@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.18...arm_vcpu-v0.5.19) - 2026-08-09
+
+### Other
+
+- *(axvisor)* remove NimbOS guest, legacy CI, and standalone scripts ([#1866](https://github.com/rcore-os/tgoskits/pull/1866))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.5.18](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.17...arm_vcpu-v0.5.18) - 2026-08-03
 
 ### Fixed

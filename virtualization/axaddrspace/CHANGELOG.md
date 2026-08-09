@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.18...axaddrspace-v0.5.19) - 2026-08-09
+
+### Other
+
+- *(memory)* unify page-table execution on page-table-generic ([#1911](https://github.com/rcore-os/tgoskits/pull/1911))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.5.18](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.17...axaddrspace-v0.5.18) - 2026-08-03
 
 ### Other

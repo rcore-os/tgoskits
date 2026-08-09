@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.8](https://github.com/rcore-os/tgoskits/compare/ax-crate-interface-v0.5.7...ax-crate-interface-v0.5.8) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.3.0] - 2026-01-28
 
 ### Changed

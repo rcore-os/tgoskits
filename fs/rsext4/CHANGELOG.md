@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.7...rsext4-v0.7.8) - 2026-08-09
+
+### Fixed
+
+- *(axvisor)* correct shell filesystem command handling ([#1616](https://github.com/rcore-os/tgoskits/pull/1616))
+- *(rsext4)* fix misspelled public API names in rsext4 ([#1881](https://github.com/rcore-os/tgoskits/pull/1881))
+
+### Other
+
+- *(repo)* move filesystem crates to fs/ directory ([#1867](https://github.com/rcore-os/tgoskits/pull/1867))
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.6...rsext4-v0.7.7) - 2026-08-03
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.12...starry-vm-v0.5.13) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/starry-vm-v0.5.11...starry-vm-v0.5.12) - 2026-08-03
 
 ### Other

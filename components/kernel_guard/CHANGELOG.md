@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.13](https://github.com/rcore-os/tgoskits/compare/ax-kernel-guard-v0.3.12...ax-kernel-guard-v0.3.13) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-crate-interface, axtest
+
 ## [0.3.12](https://github.com/rcore-os/tgoskits/compare/ax-kernel-guard-v0.3.11...ax-kernel-guard-v0.3.12) - 2026-08-03
 
 ### Other
