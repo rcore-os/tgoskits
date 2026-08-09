@@ -5,7 +5,10 @@ use core::time::Duration;
 use axvm::{AxvmRuntime, PeriodicVirqConfig};
 
 const VM_ID: usize = 2;
-const VCPU_ID: usize = 0;
+/// E1 mode: single injector targeting vCPU1 (cross-vCPU spurious-wake test).
+/// Standard mode keeps the dual-stream vCPU0 A/B scenario.
+const E1_MODE: bool = true;
+const VCPU_ID: usize = if E1_MODE { 1 } else { 0 };
 const SOFTWARE_VIRQS: [usize; 2] = [48, 49];
 const PERIOD: Duration = Duration::from_millis(2);
 const SAMPLES: usize = 300;
@@ -13,9 +16,11 @@ const INJECTOR_CPU_IDS: [usize; 2] = [0, 1];
 
 /// Start the same two-stream injector in A and B.
 pub(crate) fn start() {
+    let stream_count = if E1_MODE { 1 } else { 2 };
     for (stream, (&vector, &injector_cpu_id)) in SOFTWARE_VIRQS
         .iter()
         .zip(INJECTOR_CPU_IDS.iter())
+        .take(stream_count)
         .enumerate()
     {
         let config = PeriodicVirqConfig {
