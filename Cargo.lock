@@ -1554,19 +1554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axvirtio-blk"
-version = "0.1.0"
-dependencies = [
- "ax-kspin",
- "ax-memory-addr",
- "axaddrspace",
- "axdevice_base",
- "axvirtio-common",
- "axvm-types",
- "log",
-]
-
-[[package]]
 name = "axvirtio-common"
 version = "0.1.0"
 dependencies = [

@@ -12,9 +12,10 @@ multi-queue VirtIO, offloads, live migration, and passthrough are non-goals.
 
 ## Existing code and rejected reuse
 
-`debin/virtio-net-2` contains reusable `axvirtio-common`, `axvirtio-blk`, and
-`axvirtio-net` crates plus an older AxVisor adapter. The reusable crates and
-their tests are retained. The adapter is not copied unchanged because current
+`debin/virtio-net-2` contains reusable `axvirtio-common` and `axvirtio-net`
+crates plus an older AxVisor adapter. Those network-related crates and their
+tests are retained; `axvirtio-blk` is deferred to a separate change with a real
+block-device consumer. The adapter is not copied unchanged because current
 `axdevice` grants guest-memory DMA only through a scoped `DeviceAccess` port.
 The old adapter retained a VM-wide guest-memory accessor in a background
 worker, bypassing that capability boundary.
