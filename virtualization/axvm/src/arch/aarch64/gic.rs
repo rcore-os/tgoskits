@@ -58,7 +58,7 @@ fn inject_interrupt_gic_v3(vector: usize) {
 
     if virtual_interrupt_busy(vector) {
         debug!("Virtual interrupt {vector} already pending/active in an LR, skipping");
-        crate::runtime::vcpus::lr_skip_count().fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        crate::runtime::vcpus::LR_SKIP_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         return;
     }
 

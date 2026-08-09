@@ -37,14 +37,10 @@ const PERIODIC_VIRQ_GUEST_WARMUP: Duration = Duration::from_secs(2);
 static VCPU_PARK_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
 static VCPU_WAKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
 static NOTIFY_WOKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
-static LR_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static LR_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn notify_woke_count(vcpu_id: usize) -> &'static AtomicUsize {
     &NOTIFY_WOKE_COUNTS[vcpu_id]
-}
-
-pub(crate) fn lr_skip_count() -> &'static AtomicUsize {
-    &LR_SKIP_COUNT
 }
 
 /// Spawn the common host-side periodic injector used by both A and B.
@@ -249,10 +245,10 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
 ///
 /// * `vm_id` - The ID of the VM whose VCpus should be notified.
 pub(crate) fn notify_all_vcpus(vm_id: usize) {
-    if let Some(vm) = crate::get_vm_by_id(vm_id) {
-        if let Ok(runtime) = vm.with_runtime(|runtime| Ok(runtime.clone())) {
-            runtime.notify_all();
-        }
+    if let Some(vm) = crate::get_vm_by_id(vm_id)
+        && let Ok(runtime) = vm.with_runtime(|runtime| Ok(runtime.clone()))
+    {
+        runtime.notify_all();
     }
 }
 
@@ -272,14 +268,13 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
     // so notifying under the machine lock is an ABBA deadlock (observed once
     // vCPUs actually park via PSCI CPU_SUSPEND standby).
     let runtime = vm.with_runtime(|runtime| Ok(runtime.clone()))?;
-    let result = runtime.dispatch_vcpu_interrupt(
+    runtime.dispatch_vcpu_interrupt(
         vcpu_id,
         PendingVcpuInterrupt {
             id: VirtualInterruptId(vector as u32),
             trigger: crate::InterruptTriggerMode::EdgeTriggered,
         },
-    );
-    result
+    )
 }
 
 #[expect(
