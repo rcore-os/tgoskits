@@ -337,3 +337,6 @@ bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"
 kmod-tools = "0.3"
 kprobe = "0.6"
+
+[patch.crates-io]
+ax-errno = { path = "components/axerrno" }
