@@ -1,0 +1,406 @@
+//! Shared VirtIO MMIO transport state machine.
+//!
+//! Device implementations (block, net, ...) own only their device-specific
+//! config space and data paths; the standard MMIO register set — magic,
+//! version, feature selectors, driver features, queue selector/size/ready,
+//! queue address LOW/HIGH, status, interrupt status/ack, config generation —
+//! is handled here so it is not duplicated per device.
+
+use alloc::vec::Vec;
+
+use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
+use axaddrspace::GuestMemoryAccessor;
+use axvm_types::{AccessWidth, GuestPhysAddr};
+
+use crate::{VirtioQueue, VirtioResult, constants as vc, error::VirtioError, mmio::transport};
+
+/// Result of a standard-register MMIO read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioReadOutcome {
+    /// A standard register value.
+    Standard(u32),
+    /// A read inside the device-specific config region; the device interprets it.
+    DeviceConfig { offset: u64, width: AccessWidth },
+}
+
+/// Side effect an MMIO write asks the device driver (block/net) to perform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioWriteAction {
+    /// Nothing for the device to do.
+    None,
+    /// The guest kicked a queue; the device runs its data path.
+    QueueNotified(u16),
+    /// The guest wrote status 0; the device is fully reset.
+    Reset,
+    /// An acknowledged interrupt bit was raised again after the guest's last
+    /// interrupt-status read and must be signalled again.
+    InterruptPending,
+}
+
+#[derive(Default)]
+struct InterruptState {
+    pending: u32,
+    raised_after_read: u32,
+}
+
+/// Shared VirtIO MMIO transport state plus the device's queues.
+///
+/// `device_id`, `vendor_id` and `device_features` are fixed at construction.
+/// Feature negotiation is validated here (`driver_features` must be a subset of
+/// `device_features` when the driver seals `FEATURES_OK`).
+pub struct VirtioMmioState<T: GuestMemoryAccessor + Clone> {
+    base_ipa: GuestPhysAddr,
+    length: usize,
+    device_id: u32,
+    vendor_id: u32,
+    device_features: u64,
+    status: Mutex<u32>,
+    driver_features: Mutex<u64>,
+    device_features_sel: Mutex<u32>,
+    driver_features_sel: Mutex<u32>,
+    queue_sel: Mutex<u16>,
+    queues: Mutex<Vec<VirtioQueue<T>>>,
+    interrupt_status: Mutex<InterruptState>,
+    config_generation: Mutex<u32>,
+}
+
+impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
+    /// Construct the transport state with the given device identity, advertised
+    /// features and pre-created queues.
+    pub fn new(
+        base_ipa: GuestPhysAddr,
+        length: usize,
+        device_id: u32,
+        vendor_id: u32,
+        device_features: u64,
+        queues: Vec<VirtioQueue<T>>,
+    ) -> Self {
+        Self {
+            base_ipa,
+            length,
+            device_id,
+            vendor_id,
+            device_features,
+            status: Mutex::new(0),
+            driver_features: Mutex::new(0),
+            device_features_sel: Mutex::new(0),
+            driver_features_sel: Mutex::new(0),
+            queue_sel: Mutex::new(0),
+            queues: Mutex::new(queues),
+            interrupt_status: Mutex::new(InterruptState::default()),
+            config_generation: Mutex::new(0),
+        }
+    }
+
+    /// Base IPA of the MMIO region.
+    pub fn base_ipa(&self) -> GuestPhysAddr {
+        self.base_ipa
+    }
+
+    /// Number of queues.
+    pub fn num_queues(&self) -> usize {
+        self.queues.lock().len()
+    }
+
+    /// Lock the queue vector for a device data path.
+    pub fn queues_lock(&self) -> MutexGuard<'_, Vec<VirtioQueue<T>>> {
+        self.queues.lock()
+    }
+
+    /// Whether the driver has set `DRIVER_OK`.
+    pub fn is_driver_ok(&self) -> bool {
+        (*self.status.lock() & vc::VIRTIO_STATUS_DRIVER_OK) != 0
+    }
+
+    /// Raw status register value.
+    pub fn status(&self) -> u32 {
+        *self.status.lock()
+    }
+
+    /// Set the status register directly, bypassing validation.
+    ///
+    /// Intended only for device bring-up helpers that emulate the full driver
+    /// sequence; normal status transitions must go through [`mmio_write`](Self::mmio_write).
+    pub fn set_status(&self, status: u32) {
+        *self.status.lock() = status;
+    }
+
+    /// The currently selected queue index, if it is in range.
+    pub fn selected_queue_index(&self) -> Option<u16> {
+        let sel = *self.queue_sel.lock();
+        if (sel as usize) < self.queues.lock().len() {
+            Some(sel)
+        } else {
+            None
+        }
+    }
+
+    /// Currently negotiated driver features.
+    pub fn driver_features(&self) -> u64 {
+        *self.driver_features.lock()
+    }
+
+    /// Advertised device features.
+    pub fn device_features(&self) -> u64 {
+        self.device_features
+    }
+
+    /// Current interrupt status bits.
+    pub fn interrupt_status(&self) -> u32 {
+        self.interrupt_status.lock().pending
+    }
+
+    /// OR interrupt bits in (used-ring or config-change notification).
+    pub fn set_interrupt(&self, bits: u32) {
+        let mut interrupt = self.interrupt_status.lock();
+        interrupt.pending |= bits;
+        interrupt.raised_after_read |= bits;
+    }
+
+    /// Increment the config-space generation (call after changing config).
+    pub fn bump_config_generation(&self) {
+        let mut g = self.config_generation.lock();
+        *g = g.wrapping_add(1);
+    }
+
+    /// Full transport reset: clears driver features, selectors, interrupt
+    /// status, status and every queue. Device identity and features are kept.
+    pub fn reset(&self) {
+        *self.driver_features.lock() = 0;
+        *self.driver_features_sel.lock() = 0;
+        *self.device_features_sel.lock() = 0;
+        *self.queue_sel.lock() = 0;
+        *self.interrupt_status.lock() = InterruptState::default();
+        *self.status.lock() = 0;
+        for q in self.queues.lock().iter_mut() {
+            q.reset();
+        }
+    }
+
+    /// Handle a standard MMIO read. Out-of-range reads yield `Standard(0)`;
+    /// reads inside the config region yield [`MmioReadOutcome::DeviceConfig`].
+    pub fn mmio_read(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+    ) -> VirtioResult<MmioReadOutcome> {
+        if !transport::is_address_in_range(addr, self.base_ipa, self.length) {
+            return Ok(MmioReadOutcome::Standard(0));
+        }
+        let offset = transport::calculate_offset(addr, self.base_ipa);
+        if offset < vc::VIRTIO_MMIO_CONFIG_OFFSET {
+            transport::validate_access_width(width)?;
+        }
+
+        let value = match offset {
+            vc::VIRTIO_MMIO_MAGIC_VALUE => vc::MMIO_MAGIC_VALUE,
+            vc::VIRTIO_MMIO_VERSION => vc::MMIO_VERSION,
+            vc::VIRTIO_MMIO_DEVICE_ID => self.device_id,
+            vc::VIRTIO_MMIO_VENDOR_ID => self.vendor_id,
+            vc::VIRTIO_MMIO_DEVICE_FEATURES => {
+                let sel = *self.device_features_sel.lock();
+                if sel >= 2 {
+                    0
+                } else {
+                    (self.device_features >> ((sel as u64) * 32)) as u32
+                }
+            }
+            vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock(),
+            vc::VIRTIO_MMIO_DRIVER_FEATURES => {
+                let sel = *self.driver_features_sel.lock();
+                if sel >= 2 {
+                    0
+                } else {
+                    (*self.driver_features.lock() >> ((sel as u64) * 32)) as u32
+                }
+            }
+            vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock(),
+            vc::VIRTIO_MMIO_QUEUE_SEL => *self.queue_sel.lock() as u32,
+            vc::VIRTIO_MMIO_QUEUE_NUM_MAX => vc::DEFAULT_QUEUE_SIZE as u32,
+            vc::VIRTIO_MMIO_QUEUE_NUM => {
+                let sel = *self.queue_sel.lock();
+                self.queues
+                    .lock()
+                    .get(sel as usize)
+                    .map_or(0, |q| q.size as u32)
+            }
+            vc::VIRTIO_MMIO_QUEUE_READY => {
+                let sel = *self.queue_sel.lock();
+                self.queues
+                    .lock()
+                    .get(sel as usize)
+                    .map_or(0, |q| if q.ready { 1 } else { 0 })
+            }
+            vc::VIRTIO_MMIO_INTERRUPT_STATUS => {
+                let mut interrupt = self.interrupt_status.lock();
+                let pending = interrupt.pending;
+                interrupt.raised_after_read = 0;
+                pending
+            }
+            vc::VIRTIO_MMIO_STATUS => *self.status.lock(),
+            vc::VIRTIO_MMIO_CONFIG_GENERATION => *self.config_generation.lock(),
+            _ => {
+                if offset >= vc::VIRTIO_MMIO_CONFIG_OFFSET {
+                    return Ok(MmioReadOutcome::DeviceConfig {
+                        offset: (offset - vc::VIRTIO_MMIO_CONFIG_OFFSET) as u64,
+                        width,
+                    });
+                }
+                return Err(VirtioError::InvalidRegister);
+            }
+        };
+        Ok(MmioReadOutcome::Standard(value))
+    }
+
+    /// Handle a standard MMIO write and report any action the device must take.
+    pub fn mmio_write(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+    ) -> VirtioResult<MmioWriteAction> {
+        if !transport::is_address_in_range(addr, self.base_ipa, self.length) {
+            return Ok(MmioWriteAction::None);
+        }
+        let offset = transport::calculate_offset(addr, self.base_ipa);
+        if offset < vc::VIRTIO_MMIO_CONFIG_OFFSET {
+            transport::validate_access_width(width)?;
+        }
+        let val = val as u32;
+
+        match offset {
+            vc::VIRTIO_MMIO_DEVICE_FEATURES_SEL => *self.device_features_sel.lock() = val,
+            vc::VIRTIO_MMIO_DRIVER_FEATURES_SEL => *self.driver_features_sel.lock() = val,
+            vc::VIRTIO_MMIO_DRIVER_FEATURES => {
+                let sel = *self.driver_features_sel.lock() as u64;
+                if sel < 2 {
+                    let mask: u64 = (val as u64) << (sel * 32);
+                    let clear: u64 = !(((1u64) << 32) - 1).wrapping_shl((sel * 32) as u32);
+                    let mut f = self.driver_features.lock();
+                    *f = (*f & clear) | mask;
+                }
+            }
+            vc::VIRTIO_MMIO_QUEUE_SEL => {
+                let sel = val as u16;
+                if (sel as usize) < self.queues.lock().len() {
+                    *self.queue_sel.lock() = sel;
+                }
+            }
+            vc::VIRTIO_MMIO_QUEUE_NUM => {
+                let sel = *self.queue_sel.lock();
+                if let Some(q) = self.queues.lock().get_mut(sel as usize) {
+                    let _ = q.set_size(val as u16);
+                }
+            }
+            vc::VIRTIO_MMIO_QUEUE_READY => {
+                let sel = *self.queue_sel.lock();
+                if let Some(q) = self.queues.lock().get_mut(sel as usize) {
+                    q.set_ready(val != 0);
+                }
+            }
+            vc::VIRTIO_MMIO_QUEUE_NOTIFY => return Ok(MmioWriteAction::QueueNotified(val as u16)),
+            vc::VIRTIO_MMIO_INTERRUPT_ACK => {
+                let mut interrupt = self.interrupt_status.lock();
+                let raised_after_read = interrupt.raised_after_read & val;
+                interrupt.pending &= !(val & !raised_after_read);
+                if raised_after_read != 0 {
+                    return Ok(MmioWriteAction::InterruptPending);
+                }
+            }
+            vc::VIRTIO_MMIO_STATUS => return self.handle_status_write(val),
+            reg @ (vc::VIRTIO_MMIO_QUEUE_DESC_LOW
+            | vc::VIRTIO_MMIO_QUEUE_DESC_HIGH
+            | vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW
+            | vc::VIRTIO_MMIO_QUEUE_AVAIL_HIGH
+            | vc::VIRTIO_MMIO_QUEUE_USED_LOW
+            | vc::VIRTIO_MMIO_QUEUE_USED_HIGH) => self.write_queue_address(reg, val),
+            _ => return Err(VirtioError::InvalidRegister),
+        }
+        Ok(MmioWriteAction::None)
+    }
+
+    /// Validate a status write. Writing 0 resets; sealing `FEATURES_OK` is
+    /// rejected unless driver features are a subset of device features.
+    fn handle_status_write(&self, val: u32) -> VirtioResult<MmioWriteAction> {
+        if val == 0 {
+            self.reset();
+            return Ok(MmioWriteAction::Reset);
+        }
+        let mut new_status = val;
+        if (new_status & vc::VIRTIO_STATUS_FEATURES_OK) != 0 {
+            let driver_feats = *self.driver_features.lock();
+            if (driver_feats & !self.device_features) != 0 {
+                new_status &= !vc::VIRTIO_STATUS_FEATURES_OK;
+                new_status |= vc::VIRTIO_STATUS_FAILED;
+            }
+        }
+        *self.status.lock() = new_status;
+        Ok(MmioWriteAction::None)
+    }
+
+    /// Combine a 32-bit LOW/HIGH half into a queue address (overwrite semantics).
+    fn write_queue_address(&self, reg: usize, val: u32) {
+        let sel = *self.queue_sel.lock();
+        let mut queues = self.queues.lock();
+        let Some(q) = queues.get_mut(sel as usize) else {
+            return;
+        };
+        match reg {
+            vc::VIRTIO_MMIO_QUEUE_DESC_LOW => {
+                let _ = q.set_desc_table_addr(GuestPhysAddr::from(combine_addr(
+                    q.desc_table_addr.as_usize(),
+                    val,
+                    true,
+                )));
+            }
+            vc::VIRTIO_MMIO_QUEUE_DESC_HIGH => {
+                let _ = q.set_desc_table_addr(GuestPhysAddr::from(combine_addr(
+                    q.desc_table_addr.as_usize(),
+                    val,
+                    false,
+                )));
+            }
+            vc::VIRTIO_MMIO_QUEUE_AVAIL_LOW => {
+                let _ = q.set_avail_ring_addr(GuestPhysAddr::from(combine_addr(
+                    q.avail_ring_addr.as_usize(),
+                    val,
+                    true,
+                )));
+            }
+            vc::VIRTIO_MMIO_QUEUE_AVAIL_HIGH => {
+                let _ = q.set_avail_ring_addr(GuestPhysAddr::from(combine_addr(
+                    q.avail_ring_addr.as_usize(),
+                    val,
+                    false,
+                )));
+            }
+            vc::VIRTIO_MMIO_QUEUE_USED_LOW => {
+                let _ = q.set_used_ring_addr(GuestPhysAddr::from(combine_addr(
+                    q.used_ring_addr.as_usize(),
+                    val,
+                    true,
+                )));
+            }
+            vc::VIRTIO_MMIO_QUEUE_USED_HIGH => {
+                let _ = q.set_used_ring_addr(GuestPhysAddr::from(combine_addr(
+                    q.used_ring_addr.as_usize(),
+                    val,
+                    false,
+                )));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Combine a 32-bit LOW/HIGH half with the current address into a 64-bit value.
+fn combine_addr(current: usize, half: u32, low: bool) -> usize {
+    let cur = current as u64;
+    let h = half as u64;
+    let combined = if low {
+        (cur & 0xffff_ffff_0000_0000) | h
+    } else {
+        (cur & 0x0000_0000_ffff_ffff) | (h << 32)
+    };
+    combined as usize
+}

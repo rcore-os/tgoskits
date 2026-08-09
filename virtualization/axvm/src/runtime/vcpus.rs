@@ -593,6 +593,12 @@ pub(super) fn poll_vm_devices(vm: &VMRef) {
             warn!("VM[{}] failed to poll virtual device: {error}", vm.id());
         }
     }
+    let mut memory = crate::vm::VmDmaAccess::new(vm);
+    devices.poll_dma_devices(now_ns, &mut memory, |result| {
+        if let Err(error) = result {
+            warn!("VM[{}] failed to poll DMA virtual device: {error}", vm.id());
+        }
+    });
 }
 
 #[cfg(test)]

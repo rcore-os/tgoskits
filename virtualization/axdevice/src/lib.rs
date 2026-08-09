@@ -78,7 +78,9 @@ pub use loongarch_pch_pic::{
 };
 pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
 pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey, GuestRangePool};
-pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
+pub use registration::{
+    DeviceBundle, DeviceLifecycle, DeviceRegistration, DmaPollableDeviceOps, PollableDeviceOps,
+};
 pub use resources::{
     DevicePlanRequest, DeviceRequirement, DeviceRequirements, MsiResourceRequest,
     ResolvedDeviceResources, ResolvedMsi, ResolvedWiredIrq, ResourceClaimSet, ResourceLease,

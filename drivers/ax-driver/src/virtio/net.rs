@@ -21,6 +21,7 @@ use virtio_drivers::{
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 use crate::{
+    binding_info_from_fdt,
     net::PlatformDeviceNet,
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
 };
@@ -378,6 +379,18 @@ pub fn register_transport<T: Transport + 'static>(
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
     let irq = plat_dev.register_net("virtio-net", net);
+    log::info!("registered virtio network device irq={irq:?}");
+    Ok(())
+}
+
+pub fn register_fdt_transport<T: Transport + 'static>(
+    info: &rdrive::register::FdtInfo<'_>,
+    plat_dev: PlatformDevice,
+    transport: T,
+) -> Result<(), OnProbeError> {
+    let net = make_net(transport)?;
+    let binding = binding_info_from_fdt(info)?;
+    let irq = plat_dev.register_net_with_info("virtio-net", net, binding);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
 }
