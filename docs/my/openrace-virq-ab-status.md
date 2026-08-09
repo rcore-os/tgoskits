@@ -206,3 +206,81 @@ targeted notify 端到端收益。要证明这一点，仍需解决双 vCPU gues
 - 双流 B3/B4/B5：`/tmp/openrace-dualstream-emulated-B3.log` /
   `/tmp/openrace-dualstream-emulated-B4.log` /
   `/tmp/openrace-dualstream-emulated-B5.log`
+
+## 7. 双 vCPU 启动修复后的 A/B 复测（2026-08-09）
+
+### 7.1 根因与修复
+
+NEXT.md 3.1 的双 vCPU 启动故障根因是 **HVC 返回地址被重复 +4**：
+QEMU/ARM 对 HVC 的 preferred return address 本来就是 `hvc` 的下一条指令，
+而 `handle_hvc64_exception()` 又调用 `advance_aarch64_exception_pc()`
+再 +4。Zephyr SMP 的 PSCI CPU_ON 路径 `hvc`（0x40004554）返回后应执行
+`ldr x9,[sp]`（0x40004558），被跳过后在 0x4000455c 的 `stp x0,x1,[x9]`
+因 x9=0 触发 FAR=0 的 data abort，guest 卡死。
+
+修复（B `f837d3ad0` / A `418fa8be3`）：
+
+- HVC64 / SMC64 不再二次 +4（它们的 ELR 已指向下一条指令）。
+- DataAbort / SysReg 保留 +4：这两类异常的 ELR 指向被模拟的故障指令本身，
+  模拟后必须跳到下一条。
+- 两个单测从断言 `TEST_PC + 4` 改为断言 `TEST_PC`，先在旧实现上验证失败，
+  再在修复后验证通过（qemu-aarch64 user 模式跑 `cargo test -p arm_vcpu`）。
+
+### 7.2 双 vCPU 启动验收（A/B 均通过）
+
+配置：`tmp/vmconfigs/zephyr-soft-virq-smp2.toml`（双 vCPU、emulated GIC、
+SMP Zephyr guest，入口 0x400010e4）。验收输出：
+
+```text
+PSCI_CPU_ON target=0x1
+VM[2] VCpu[1] running...
+Secondary CPU core 1 (MPID:0x1) is up
+SOFTWARE VIRQ READY streams=2 vector_base=48 samples=300
+```
+
+不再出现 `ELR_ELn / FAR_ELn` panic。A/B 各 1 次通过。
+
+### 7.3 修复后标准双流 vIRQ 复测
+
+与第 5 节相同的 emulated GIC 双注入器场景，guest 使用仓库源码重新构建的
+`zephyr.bin`（旧二进制等待窗只有 9999 ticks，且 guest tick 前进偏快，
+会在样本尾部提前超时）。A/B 各 3 轮，全部 600/600 闭环、0 丢失、
+0 注入错误、0 溢出。
+
+| 轮次 | 闭环 | mean (ns) | p99 (ns) | max (ns) | lost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A1 | 600/600 | 362,146 | 727,760 | 902,464 | 0 |
+| A2 | 600/600 | 297,280 | 748,048 | 1,000,304 | 0 |
+| A3 | 600/600 | 274,591 | 766,736 | 1,025,280 | 0 |
+| B1 | 600/600 | 275,498 | 499,888 | 644,368 | 0 |
+| B2 | 600/600 | 320,912 | 1,013,840 | 1,524,544 | 0 |
+| B3 | 600/600 | 307,376 | 733,200 | 1,283,840 | 0 |
+
+三轮平均：A mean 311,339 / p99 747,515 / max 976,016；B mean 301,262 /
+p99 748,976 / max 1,151,917。B 的 mean 低约 3.2%，p99 基本持平，max 仍受
+单轮长尾波动影响，与修复前结论方向一致；本轮主要价值是确认 HVC 修复没有
+改变单 vCPU 双流注入的闭环质量。
+
+### 7.4 新发现的限制：双 vCPU 上的软件 vIRQ 注入
+
+双 vCPU guest 完整启动后，标准注入器（固定在 host CPU 0/1）在
+`phys_cpu_ids=[0,1]` 配置下 **0 个 vIRQ 到达 guest**：
+
+- guest 的 `k_sleep` 只执行 `wfi`（HCR_EL2 未设 TWI），guest 睡眠期间没有
+  VM exit；vCPU task 在 host CPU 0/1 上连续占用 CPU 且 host IRQ 屏蔽，
+  同核上被 pin 的 injector task 无法被调度（探针显示 injector 连
+  `before-inject` 都打不出）。
+- 把 vCPU 移到 `phys_cpu_ids=[2,3]` 后 injector 恢复运行，但 guest MPIDR
+  与 `phys_cpu_ids` 绑定（`mpidr_el1 = placement.phys_cpu_id`），主核变成
+  MPIDR=2，SMP guest 不再走 primary boot 路径，guest 完全不输出。
+
+结论：双 vCPU 的“跨核定向唤醒 + 注入”实验还需要（任选其一）HCR_EL2.TWI
+trap WFI、把 injector 与 vCPU 的 host CPU 分离且保持 MPIDR 0/1、或为
+MPIDR 与 host affinity 提供独立配置。当前数据不覆盖该场景。
+
+### 7.5 本轮日志
+
+- A 双核启动：`/tmp/ab-A-dual-boot.log`
+- B 双核启动：`/tmp/ab-B-dual-boot.log`
+- 双流 A1/A2/A3：`/tmp/ab-A-standard-1.log` / `-2.log` / `-3.log`
+- 双流 B1/B2/B3：`/tmp/ab-B-standard-1.log` / `-2.log` / `-3.log`
