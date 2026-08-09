@@ -155,11 +155,11 @@ impl ArchOps for Aarch64Arch {
                         vm.id(),
                         crate::runtime::VirqTraceKind::GuestExit,
                         vcpu.id(),
-                        token as u32,
+                        token.unwrap_or(0) as u32,
                     );
                     Ok(())
                 })?;
-                debug!("VM[{}] run VCpu[{}] get irq {token}", vm.id(), vcpu.id());
+                debug!("VM[{}] run VCpu[{}] get irq {token:?}", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Defer(
                     Aarch64DeferredRunWork::ExternalInterrupt { token },
                 ))
