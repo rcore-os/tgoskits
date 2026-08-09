@@ -618,4 +618,26 @@ mod tests {
         );
         assert_eq!(dispatcher.pop_if(0, |_| false).unwrap().id.0, 7);
     }
+
+    #[test]
+    fn retry_slot_counts_as_pending_for_wait_condition() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        assert!(!dispatcher.has_pending(0));
+
+        dispatcher.requeue_retry(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(7),
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            },
+        );
+
+        // A retry edge is pending work: the vCPU must not park until it is
+        // delivered, otherwise the edge is stranded when producers stop.
+        assert!(dispatcher.has_pending(0));
+
+        assert!(dispatcher.pop_if(0, |_| false).is_some());
+        assert!(!dispatcher.has_pending(0));
+    }
 }

@@ -204,5 +204,10 @@ impl VcpuIrqDispatcher {
     /// from sleeping through a notify race.
     pub fn has_pending(&self, vcpu_id: usize) -> bool {
         self.queue.has_pending(vcpu_id)
+            || self
+                .retry_slots
+                .lock()
+                .get(&vcpu_id)
+                .is_some_and(Option::is_some)
     }
 }
