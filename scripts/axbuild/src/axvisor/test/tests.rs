@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -26,6 +27,25 @@ struct TestVmKernelConfig {
 struct TestVmKernel {
     #[serde(default)]
     cmdline: String,
+}
+
+#[derive(Debug, Eq, PartialEq, serde::Deserialize)]
+struct TestOvmfBuildConfig {
+    #[serde(default)]
+    features: Vec<String>,
+    vm_configs: Vec<PathBuf>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfGuestConfig {
+    kernel: TestOvmfGuestKernel,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfGuestKernel {
+    uefi_firmware_path: PathBuf,
 }
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
@@ -287,6 +307,89 @@ fn x86_hypervisor_backend_cases_request_raw_bin_artifacts() {
             );
         }
     }
+}
+
+#[test]
+fn x86_ovmf_acpi_cases_share_one_backend_neutral_guest_contract() {
+    const BUILD_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cases = discover_qemu_cases(
+        &workspace_root,
+        "normal",
+        "x86_64",
+        "x86_64-unknown-none",
+        None,
+    )
+    .unwrap();
+    let vmx_case = cases
+        .iter()
+        .find(|case| case.case.name == "ovmf-acpi-vmx")
+        .expect("runner should discover the VMX OVMF ACPI case");
+    let svm_case = cases
+        .iter()
+        .find(|case| case.case.name == "ovmf-acpi-svm")
+        .expect("runner should discover the SVM OVMF ACPI case");
+
+    let vmx_build = load_ovmf_build_config(&vmx_case.build_config_path);
+    let svm_build = load_ovmf_build_config(&svm_case.build_config_path);
+    assert_eq!(vmx_build, svm_build);
+    assert_eq!(vmx_build.vm_configs.len(), 1);
+    assert!(
+        vmx_build
+            .features
+            .iter()
+            .all(|feature| feature != "vmx" && feature != "svm"),
+        "OVMF ACPI build configs must leave backend selection to runtime CPUID"
+    );
+
+    let guest_path = workspace_root.join(&vmx_build.vm_configs[0]);
+    let guest: TestOvmfGuestConfig =
+        toml::from_str(&fs::read_to_string(&guest_path).unwrap()).unwrap();
+    let build_output = vmx_build
+        .env
+        .get(BUILD_OUTPUT_ENV)
+        .expect("OVMF build config should prepare the guest firmware image");
+    assert_eq!(
+        guest.kernel.uefi_firmware_path,
+        PathBuf::from(format!("${{workspace}}/{build_output}")),
+        "the prepared image must be the image loaded by the guest configuration"
+    );
+
+    let mut vmx_qemu = load_qemu_config(&vmx_case.case.qemu_config_path);
+    let mut svm_qemu = load_qemu_config(&svm_case.case.qemu_config_path);
+    assert_eq!(
+        replace_qemu_argument(&mut vmx_qemu.args, "-cpu", "<backend>"),
+        "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority"
+    );
+    assert_eq!(
+        replace_qemu_argument(&mut svm_qemu.args, "-cpu", "<backend>"),
+        "host,-la57,+svm,+npt,+nrip-save"
+    );
+    assert_eq!(
+        vmx_qemu, svm_qemu,
+        "VMX and SVM OVMF ACPI cases may differ only in outer QEMU CPU capabilities"
+    );
+}
+
+fn load_ovmf_build_config(path: &Path) -> TestOvmfBuildConfig {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn load_qemu_config(path: &Path) -> QemuConfig {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn replace_qemu_argument(args: &mut [String], option: &str, replacement: &str) -> String {
+    let index = args
+        .iter()
+        .position(|argument| argument == option)
+        .unwrap_or_else(|| panic!("missing QEMU option {option}"));
+    std::mem::replace(
+        args.get_mut(index + 1)
+            .unwrap_or_else(|| panic!("missing value for QEMU option {option}")),
+        replacement.to_string(),
+    )
 }
 
 fn qemu_argument_value<'a>(args: &'a [String], option: &str) -> &'a str {
