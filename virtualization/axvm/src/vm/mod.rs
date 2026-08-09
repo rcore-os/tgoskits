@@ -296,12 +296,21 @@ impl VmRuntimeHandle {
             .get(&vcpu_id)
             .cloned()
             .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        self.queue_pending_interrupt_for_cpu(vcpu_id, task.cpu_id() as usize, interrupt)
+    }
+
+    pub(crate) fn queue_pending_interrupt_for_cpu(
+        &self,
+        vcpu_id: usize,
+        cpu_id: usize,
+        interrupt: PendingInterrupt,
+    ) -> AxVmResult<usize> {
         self.pending_interrupts
             .lock()
             .entry(vcpu_id)
             .or_default()
             .push(interrupt);
-        Ok(task.cpu_id() as usize)
+        Ok(cpu_id)
     }
 
     pub(crate) fn vcpu_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
@@ -1810,6 +1819,43 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    fn drain_normal_vectors(runtime: &VmRuntimeHandle, vcpu_id: usize) -> Vec<usize> {
+        runtime
+            .drain_pending_interrupts(vcpu_id)
+            .into_iter()
+            .map(|interrupt| match interrupt {
+                PendingInterrupt::Normal(vector) => vector,
+                PendingInterrupt::External { .. } => {
+                    panic!("unexpected external interrupt in normal queue test")
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runtime_pending_interrupts_are_per_vcpu_and_drained_once() {
+        let runtime = VmRuntimeHandle::new();
+
+        assert_eq!(
+            runtime
+                .queue_pending_interrupt_for_cpu(0, 3, PendingInterrupt::Normal(2))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            runtime
+                .queue_pending_interrupt_for_cpu(1, 5, PendingInterrupt::Normal(9))
+                .unwrap(),
+            5
+        );
+
+        assert_eq!(drain_normal_vectors(&runtime, 0), std::vec![2]);
+        assert_eq!(drain_normal_vectors(&runtime, 1), std::vec![9]);
+
+        assert!(drain_normal_vectors(&runtime, 0).is_empty());
+        assert!(drain_normal_vectors(&runtime, 1).is_empty());
     }
 
     #[test]

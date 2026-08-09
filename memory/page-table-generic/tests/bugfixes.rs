@@ -6,6 +6,83 @@ use page_table_generic::*;
 mod mocks;
 use mocks::*;
 
+#[derive(Clone, Copy, Debug)]
+struct AddressOnlyDirectoryPte(PteImpl);
+
+impl AddressOnlyDirectoryPte {
+    // Simulate a huge-page flag that overlaps the normal physical-address mask.
+    const HUGE_ADDRESS_FLAG: usize = 0x1000;
+}
+
+impl PageTableEntry for AddressOnlyDirectoryPte {
+    type PteConfig = PteConfig;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        let encoded_paddr = if is_huge {
+            paddr + Self::HUGE_ADDRESS_FLAG
+        } else {
+            paddr
+        };
+        Self(PteImpl::new_page(encoded_paddr, config, is_huge))
+    }
+
+    fn new_table(paddr: PhysAddr) -> Self {
+        const LEAF_VALID_BIT: u64 = 1 << 63;
+
+        let mut pte = PteImpl::new_table(paddr);
+        pte.0 &= !LEAF_VALID_BIT;
+        Self(pte)
+    }
+
+    fn paddr(&self, is_dir: bool) -> PhysAddr {
+        let paddr = self.0.paddr(is_dir);
+        if is_dir && self.0.huge(true) {
+            PhysAddr::from_usize(paddr.as_usize() & !Self::HUGE_ADDRESS_FLAG)
+        } else {
+            paddr
+        }
+    }
+
+    fn config(&self, is_dir: bool) -> Self::PteConfig {
+        let mut config = self.0.to_config(is_dir);
+        config.paddr = self.paddr(is_dir);
+        if is_dir && !config.huge && config.paddr.as_usize() != 0 {
+            config.valid = true;
+            config.is_dir = true;
+        }
+        config
+    }
+
+    fn present(&self) -> bool {
+        self.0.present() || self.0.paddr(false).as_usize() != 0
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        self.0.huge(is_dir)
+    }
+
+    fn unused(&self) -> bool {
+        self.0.unused()
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AddressOnlyDirectoryMeta;
+
+impl TableMeta for AddressOnlyDirectoryMeta {
+    type P = AddressOnlyDirectoryPte;
+
+    const PAGE_SIZE: usize = 0x1000;
+    const LEVEL_BITS: &[usize] = &[9, 9, 9, 9];
+    const MAX_BLOCK_LEVEL: usize = 3;
+
+    fn flush(_vaddr: Option<VirtAddr>) {}
+}
+
 /// 测试大页偏移计算
 ///
 /// Bug描述：translate方法在计算大页偏移时总是使用MAX_BLOCK_LEVEL，
@@ -43,12 +120,12 @@ fn test_huge_page_offset_calculation() {
 
         assert!(pte.to_config(false).huge, "应该是大页映射");
         assert_eq!(
-            translated_paddr.raw(),
+            translated_paddr.as_usize(),
             expected_paddr,
             "大页偏移计算错误: vaddr={:#x}, expected={:#x}, got={:#x}",
             test_vaddr,
             expected_paddr,
-            translated_paddr.raw()
+            translated_paddr.as_usize()
         );
     }
 
@@ -91,13 +168,21 @@ fn test_multi_level_huge_pages() {
     // 测试Level 2大页的翻译
     let (paddr, pte) = pg.translate((vaddr1 + 0x80000).into()).unwrap();
     if pte.to_config(false).huge {
-        assert_eq!(paddr.raw(), paddr1 + 0x80000, "Level 2大页偏移计算错误");
+        assert_eq!(
+            paddr.as_usize(),
+            paddr1 + 0x80000,
+            "Level 2大页偏移计算错误"
+        );
     }
 
     // 测试Level 3大页的翻译
     let (paddr, pte) = pg.translate((vaddr2 + 16 * MB).into()).unwrap();
     if pte.to_config(false).huge {
-        assert_eq!(paddr.raw(), paddr2 + 16 * MB, "Level 3大页偏移计算错误");
+        assert_eq!(
+            paddr.as_usize(),
+            paddr2 + 16 * MB,
+            "Level 3大页偏移计算错误"
+        );
     }
 
     println!("✅ 多级别大页测试通过！");
@@ -112,8 +197,8 @@ fn test_walk_address_comparison() {
     let pg = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
 
     // 测试空页表遍历
-    let start = VirtAddr::new(0x1000);
-    let end = VirtAddr::new(0x2000);
+    let start = VirtAddr::from_usize(0x1000);
+    let end = VirtAddr::from_usize(0x2000);
 
     // 正常范围
     let count1 = pg.walk(start, end).count();
@@ -212,6 +297,203 @@ fn test_unmap_mixed_entries() {
     println!("✅ 混合条目取消映射测试通过！");
 }
 
+#[test]
+fn unmap_preserves_address_only_sibling_directory() {
+    let mut page_table = PageTable::<AddressOnlyDirectoryMeta, Fram4k>::new(Fram4k).unwrap();
+    let first_vaddr = VirtAddr::from_usize(0x1000);
+    let sibling_vaddr = VirtAddr::from_usize(0x20_0000);
+    let sibling_paddr = PhysAddr::from_usize(0x30_0000);
+
+    for (vaddr, paddr) in [
+        (first_vaddr, PhysAddr::from_usize(0x10_0000)),
+        (sibling_vaddr, sibling_paddr),
+    ] {
+        page_table
+            .map_page(
+                vaddr,
+                paddr,
+                0x1000,
+                (MappingFlags::READ | MappingFlags::WRITE).into(),
+            )
+            .unwrap();
+    }
+
+    page_table.unmap_page(first_vaddr).unwrap();
+
+    assert!(matches!(
+        page_table.query(first_vaddr),
+        Err(PagingError::NotMapped)
+    ));
+    assert_eq!(page_table.query(sibling_vaddr).unwrap().0, sibling_paddr);
+}
+
+#[test]
+fn empty_flags_keep_leaf_non_present_until_protected() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(0x40_0000);
+    let paddr = PhysAddr::from_usize(0x80_0000);
+    let unmapped_vaddr = vaddr + 0x1000;
+    let unmapped_paddr = paddr + 0x1000;
+
+    page_table
+        .map_page(vaddr, paddr, 0x1000, MappingFlags::empty().into())
+        .unwrap();
+
+    assert!(matches!(
+        page_table.query(vaddr),
+        Err(PagingError::NotMapped)
+    ));
+
+    page_table
+        .protect_region(
+            vaddr,
+            0x1000,
+            (MappingFlags::READ | MappingFlags::USER).into(),
+        )
+        .unwrap();
+
+    let (mapped_paddr, flags, page_size) = page_table.query(vaddr).unwrap();
+    assert_eq!(mapped_paddr, paddr);
+    assert_eq!(flags, MappingFlags::READ | MappingFlags::USER);
+    assert_eq!(page_size, 0x1000);
+
+    page_table
+        .map_page(
+            unmapped_vaddr,
+            unmapped_paddr,
+            0x1000,
+            MappingFlags::empty().into(),
+        )
+        .unwrap();
+    let (removed_paddr, removed_flags, removed_size) =
+        page_table.unmap_page(unmapped_vaddr).unwrap();
+    assert_eq!(removed_paddr, unmapped_paddr);
+    assert_eq!(removed_flags, MappingFlags::empty());
+    assert_eq!(removed_size, 0x1000);
+    page_table
+        .map_page(
+            unmapped_vaddr,
+            unmapped_paddr,
+            0x1000,
+            (MappingFlags::READ | MappingFlags::USER).into(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn non_present_huge_mapping_rejects_child_mapping() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let huge_vaddr = VirtAddr::from_usize(0x20_0000);
+    let huge_paddr = PhysAddr::from_usize(0x40_0000);
+
+    page_table
+        .map_page(
+            huge_vaddr,
+            huge_paddr,
+            0x20_0000,
+            MappingFlags::empty().into(),
+        )
+        .unwrap();
+
+    let result = page_table.map_page(
+        huge_vaddr + 0x1000,
+        huge_paddr + 0x1000,
+        0x1000,
+        MappingFlags::READ.into(),
+    );
+    assert!(matches!(result, Err(PagingError::MappingConflict { .. })));
+
+    let (removed_paddr, removed_flags, removed_size) =
+        page_table.unmap_page(huge_vaddr + 0x1000).unwrap();
+    assert_eq!(removed_paddr, huge_paddr);
+    assert_eq!(removed_flags, MappingFlags::empty());
+    assert_eq!(removed_size, 0x20_0000);
+}
+
+#[test]
+fn huge_mapping_conflict_reports_level_decoded_paddr() {
+    let mut page_table = PageTable::<AddressOnlyDirectoryMeta, Fram4k>::new(Fram4k).unwrap();
+    let huge_vaddr = VirtAddr::from_usize(0x20_0000);
+    let huge_paddr = PhysAddr::from_usize(0x40_0000);
+
+    page_table
+        .map_page(huge_vaddr, huge_paddr, 0x20_0000, MappingFlags::READ.into())
+        .unwrap();
+
+    let conflict_vaddr = huge_vaddr + 0x1000;
+    let result = page_table.map_page(
+        conflict_vaddr,
+        PhysAddr::from_usize(0x80_0000),
+        0x1000,
+        MappingFlags::READ.into(),
+    );
+
+    assert_eq!(
+        result,
+        Err(PagingError::MappingConflict {
+            vaddr: conflict_vaddr,
+            existing_paddr: huge_paddr,
+        })
+    );
+}
+
+#[test]
+fn map_region_rejects_virtual_overflow_before_mapping() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let max_aligned = usize::MAX & !0xfff;
+    let start_vaddr = VirtAddr::from_usize(max_aligned - 0x1000);
+
+    let result = page_table.map_region(
+        start_vaddr,
+        |_| PhysAddr::from_usize(0x10_0000),
+        0x3000,
+        MappingFlags::READ.into(),
+        false,
+    );
+
+    assert!(matches!(result, Err(PagingError::AddressOverflow { .. })));
+    assert!(matches!(
+        page_table.query(start_vaddr),
+        Err(PagingError::NotMapped)
+    ));
+}
+
+#[test]
+fn map_region_rolls_back_prefix_after_late_conflict() {
+    let mut page_table = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
+    let start_vaddr = VirtAddr::from_usize(0x20_0000);
+    let conflicting_vaddr = start_vaddr + 0x1000;
+    let existing_paddr = PhysAddr::from_usize(0x90_0000);
+    let requested_paddr = PhysAddr::from_usize(0x40_0000);
+
+    page_table
+        .map_page(
+            conflicting_vaddr,
+            existing_paddr,
+            0x1000,
+            MappingFlags::READ.into(),
+        )
+        .unwrap();
+
+    let result = page_table.map_region(
+        start_vaddr,
+        |vaddr| requested_paddr + (vaddr - start_vaddr),
+        0x2000,
+        MappingFlags::READ.into(),
+        false,
+    );
+
+    assert!(matches!(result, Err(PagingError::MappingConflict { .. })));
+    assert!(matches!(
+        page_table.query(start_vaddr),
+        Err(PagingError::NotMapped)
+    ));
+    assert_eq!(
+        page_table.query(conflicting_vaddr).unwrap().0,
+        existing_paddr
+    );
+}
+
 /// 测试MemConfig的正确实现
 ///
 /// Bug描述：PteImpl没有实现set_mem_config和mem_config方法
@@ -307,10 +589,10 @@ fn test_deep_hierarchy() {
 
     // 测试翻译
     let (paddr, _) = pg.translate(deep_vaddr.into()).unwrap();
-    assert_eq!(paddr.raw(), 0x1000, "深层地址翻译应该正确");
+    assert_eq!(paddr.as_usize(), 0x1000, "深层地址翻译应该正确");
 
     let (paddr2, _) = pg.translate((deep_vaddr + 0x1000).into()).unwrap();
-    assert_eq!(paddr2.raw(), 0x2000, "深层地址偏移翻译应该正确");
+    assert_eq!(paddr2.as_usize(), 0x2000, "深层地址偏移翻译应该正确");
 
     // 测试取消映射
     pg.unmap(deep_vaddr.into(), 0x2000).unwrap();
@@ -351,7 +633,7 @@ fn test_mixed_huge_and_normal_pages() {
     // 验证大页翻译
     let (paddr1, pte1) = pg.translate(0x100000.into()).unwrap();
     if pte1.to_config(false).huge {
-        assert_eq!(paddr1.raw(), 0x100000, "大页偏移应该正确");
+        assert_eq!(paddr1.as_usize(), 0x100000, "大页偏移应该正确");
     }
 
     // 验证普通页翻译
@@ -360,7 +642,7 @@ fn test_mixed_huge_and_normal_pages() {
         !pte2.to_config(false).huge || pte2.to_config(false).huge,
         "可能是大页或普通页"
     );
-    assert_eq!(paddr2.raw(), 2 * MB + 0x1000, "普通页偏移应该正确");
+    assert_eq!(paddr2.as_usize(), 2 * MB + 0x1000, "普通页偏移应该正确");
 
     println!("✅ 混合大页和普通页测试通过！");
 }

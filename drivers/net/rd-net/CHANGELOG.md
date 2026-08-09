@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.3...rd-net-v0.2.4) - 2026-08-09
+
+### Other
+
+- updated the following local packages: dma-api, rdif-eth
+
 ## [0.2.3](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.2...rd-net-v0.2.3) - 2026-08-03
 
 ### Fixed

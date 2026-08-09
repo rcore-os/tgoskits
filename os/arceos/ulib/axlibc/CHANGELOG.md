@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.30...ax-libc-v0.5.31) - 2026-08-09
+
+### Added
+
+- *(posix)* implement eventfd and bridge epoll for std async ([#1887](https://github.com/rcore-os/tgoskits/pull/1887))
+
+### Fixed
+
+- *(axvisor)* correct shell filesystem command handling ([#1616](https://github.com/rcore-os/tgoskits/pull/1616))
+
 ## [0.5.30](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.29...ax-libc-v0.5.30) - 2026-08-03
 
 ### Other

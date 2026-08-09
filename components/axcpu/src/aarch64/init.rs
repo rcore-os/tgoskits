@@ -3,6 +3,8 @@
 use aarch64_cpu::{asm::barrier, registers::*};
 use ax_memory_addr::PhysAddr;
 
+use super::paging::{ADDRESS_BITS, MAIR_VALUE};
+
 /// Swtich current exception level to EL1.
 ///
 /// It usually used in the system booting process, where the startup code is
@@ -61,9 +63,7 @@ pub unsafe fn switch_to_el1() {
 ///
 /// This function is unsafe as it changes the address translation configuration.
 pub unsafe fn init_mmu(root_paddr: PhysAddr) {
-    use ax_page_table_entry::aarch64::MemAttr;
-
-    MAIR_EL1.set(MemAttr::MAIR_VALUE);
+    MAIR_EL1.set(MAIR_VALUE);
 
     // Enable TTBR0 and TTBR1 walks, page size = 4K, vaddr size = 48 bits, paddr size = 48 bits.
     let tcr_flags0 = TCR_EL1::EPD0::EnableTTBR0Walks
@@ -71,13 +71,13 @@ pub unsafe fn init_mmu(root_paddr: PhysAddr) {
         + TCR_EL1::SH0::Inner
         + TCR_EL1::ORGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
         + TCR_EL1::IRGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::T0SZ.val(16);
+        + TCR_EL1::T0SZ.val((64 - ADDRESS_BITS) as u64);
     let tcr_flags1 = TCR_EL1::EPD1::EnableTTBR1Walks
         + TCR_EL1::TG1::KiB_4
         + TCR_EL1::SH1::Inner
         + TCR_EL1::ORGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
         + TCR_EL1::IRGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-        + TCR_EL1::T1SZ.val(16);
+        + TCR_EL1::T1SZ.val((64 - ADDRESS_BITS) as u64);
     TCR_EL1.write(TCR_EL1::IPS::Bits_48 + tcr_flags0 + tcr_flags1);
     barrier::isb(barrier::SY);
 

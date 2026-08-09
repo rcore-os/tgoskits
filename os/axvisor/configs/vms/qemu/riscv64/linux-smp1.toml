@@ -8,14 +8,15 @@ name = "linux-qemu"
 # Virtualization type.
 guest_type = "passthrough"
 # The number of virtual CPUs.
-cpu_num = 1
+cpu_num = 3
 # Guest vm physical cpu sets.
-phys_cpu_ids = [0]
-
+phys_cpu_ids = [0, 1, 2]
+phys_cpu_sets = [1, 2, 4]
 #
 # Vm kernel configs
 #
 [kernel]
+cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw"
 # The entry point of the kernel image.
 entry_point = 0x9020_0000
 # The location of image: "memory" | "fs".

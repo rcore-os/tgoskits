@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.23](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.22...axbuild-v0.4.23) - 2026-08-09
+
+### Added
+
+- *(axvisor)* build VMs from a resolved device graph ([#1718](https://github.com/rcore-os/tgoskits/pull/1718))
+- *(axvm)* migrate to real Rust std ([#1910](https://github.com/rcore-os/tgoskits/pull/1910))
+- *(posix)* implement eventfd and bridge epoll for std async ([#1887](https://github.com/rcore-os/tgoskits/pull/1887))
+- *(axvisor)* support ROCK 4D guest boot ([#1880](https://github.com/rcore-os/tgoskits/pull/1880))
+- *(axvisor)* adopt shlex command tokenization ([#1862](https://github.com/rcore-os/tgoskits/pull/1862))
+
+### Fixed
+
+- *(axdevice)* correct fw_cfg DMA fault handling ([#1918](https://github.com/rcore-os/tgoskits/pull/1918))
+- *(riscv-vcpu)* handle virtual interrupt injection for SMP guests ([#1681](https://github.com/rcore-os/tgoskits/pull/1681))
+- *(ci)* restore and stabilize QEMU smoke tests ([#1907](https://github.com/rcore-os/tgoskits/pull/1907))
+- *(axloader)* tighten HTTP boot kernel URL validation ([#1882](https://github.com/rcore-os/tgoskits/pull/1882))
+- *(axbuild)* scope grouped prebuild to selected tests ([#1841](https://github.com/rcore-os/tgoskits/pull/1841))
+
+### Other
+
+- *(axbuild)* reuse ostool OVMF assets and paths ([#1917](https://github.com/rcore-os/tgoskits/pull/1917))
+- *(repo)* move filesystem crates to fs/ directory ([#1867](https://github.com/rcore-os/tgoskits/pull/1867))
+- *(axvisor)* remove NimbOS guest, legacy CI, and standalone scripts ([#1866](https://github.com/rcore-os/tgoskits/pull/1866))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.4.22](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.21...axbuild-v0.4.22) - 2026-08-03
 
 ### Added

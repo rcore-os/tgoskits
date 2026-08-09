@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/ax-errno-v0.6.2...ax-errno-v0.6.3) - 2026-08-09
+
+### Other
+
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-errno-v0.6.1...ax-errno-v0.6.2) - 2026-08-03
 
 ### Other

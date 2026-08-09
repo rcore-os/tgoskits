@@ -200,7 +200,7 @@ fn print_pte_flags(pte: &PteImpl, test_name: &str) {
 }
 
 /// 带有flag验证的高级测试函数
-fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
+fn test_high_with_flags<T: TableMeta<P = PteImpl>, A: FrameAllocator>(
     pte: PteConfig,
     alloc: A,
     test_vaddr: VirtAddr,
@@ -225,7 +225,7 @@ fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
     print_pte_flags(&pte_impl, &format!("{} - 输入PTE", test_name));
 
     println!("\n=== {test_name} 映前状态 - walk_all (遍历所有项) ===");
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, pte: {:?}, final: {}",
             p.level, p.vaddr, p.pte, p.is_final_mapping
@@ -257,7 +257,7 @@ fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
         "\n=== {} 映后状态 - 显示完整层次（所有有效项） ===",
         test_name
     );
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, c: PTE PA: {:?} Block: {}, Final: {}",
             p.level,
@@ -273,7 +273,10 @@ fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
     // === 验证地址映射（复用现有逻辑） ===
 
     // 验证虚拟地址：映射从指定地址开始的0x2000字节（2个4KB页面）
-    let expected_vaddrs = [test_vaddr, VirtAddr::new(test_vaddr.raw() + 0x1000)];
+    let expected_vaddrs = [
+        test_vaddr,
+        VirtAddr::from_usize(test_vaddr.as_usize() + 0x1000),
+    ];
 
     // 验证虚拟地址映射正确
     for (i, (vaddr, pte, level)) in valid_entries.iter().enumerate() {
@@ -306,7 +309,7 @@ fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
 
         // 物理地址偏移验证
         let actual_paddr = pte.to_config(false).paddr;
-        let actual_offset = actual_paddr.raw() % 0x1000; // 页内偏移
+        let actual_offset = actual_paddr.as_usize() % 0x1000; // 页内偏移
         assert_eq!(
             actual_offset, 0,
             "{} 页内偏移应该是0，实际是 {actual_offset:?}",
@@ -317,7 +320,9 @@ fn test_high_with_flags<T: TableMeta, A: FrameAllocator>(
         if i > 0 {
             let prev_pte = &valid_entries[i - 1].1;
             let prev_paddr = prev_pte.to_config(false).paddr;
-            let addr_diff = actual_paddr.raw().saturating_sub(prev_paddr.raw());
+            let addr_diff = actual_paddr
+                .as_usize()
+                .saturating_sub(prev_paddr.as_usize());
             assert_eq!(
                 addr_diff, 0x1000,
                 "{} 相邻页面物理地址应该相差0x1000，实际相差 {addr_diff:?}",

@@ -40,6 +40,35 @@ impl ArchOps for Riscv64Arch {
     type DeferredRunWork = RiscvDeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
 
+    fn ipi_targets(
+        vm: &crate::AxVMRef,
+        current_vcpu_id: usize,
+        target_cpu: u64,
+        target_cpu_aux: u64,
+        send_to_all: bool,
+        send_to_self: bool,
+    ) -> crate::CpuMask<64> {
+        let mut targets = crate::CpuMask::new();
+
+        if send_to_all {
+            for vcpu in vm.vcpu_list() {
+                if vcpu.id() != current_vcpu_id {
+                    targets.set(vcpu.id(), true);
+                }
+            }
+        } else if send_to_self {
+            targets.set(current_vcpu_id, true);
+        } else {
+            targets = super::riscv_hart_mask_targets(
+                target_cpu as usize,
+                target_cpu_aux as usize,
+                vm.get_vcpu_affinities_pcpu_ids(),
+            );
+        }
+
+        targets
+    }
+
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(RiscvGprIndex::A0 as usize, vcpu_id);
         vcpu.set_gpr(RiscvGprIndex::A1 as usize, arg);
@@ -149,6 +178,50 @@ impl ArchOps for Riscv64Arch {
                     arg,
                 },
             ),
+            RiscvVmExit::SendIPI {
+                target_cpu,
+                target_cpu_aux,
+                send_to_all,
+                send_to_self,
+                vector,
+            } => {
+                let targets = <Riscv64Arch as ArchOps>::ipi_targets(
+                    vm,
+                    vcpu.id(),
+                    target_cpu,
+                    target_cpu_aux,
+                    send_to_all,
+                    send_to_self,
+                );
+
+                if targets.is_empty() {
+                    warn!(
+                        "VM[{}] SendIPI has no target: target_cpu={target_cpu:#x}",
+                        vm.id()
+                    );
+                    return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                        waits_for_event: false,
+                        stop_reason: None,
+                        resets_vm: false,
+                        exits_vcpu: false,
+                    }));
+                }
+
+                super::deliver_riscv_ipi_targets(
+                    targets,
+                    vcpu.id(),
+                    vector as _,
+                    |vector| crate::inject_current_vcpu_interrupt(vector),
+                    |remote_targets, vector| vm.inject_interrupt_to_vcpu(remote_targets, vector),
+                )?;
+
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: false,
+                    stop_reason: None,
+                    resets_vm: false,
+                    exits_vcpu: false,
+                }))
+            }
             RiscvVmExit::CpuDown { state } => {
                 warn!(
                     "VM[{}] run VCpu[{}] CpuDown state {state:#x}",

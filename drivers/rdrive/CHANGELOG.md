@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.9](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.8...rdrive-v0.23.9) - 2026-08-09
+
+### Added
+
+- *(axvisor)* build VMs from a resolved device graph ([#1718](https://github.com/rcore-os/tgoskits/pull/1718))
+
+### Fixed
+
+- *(dwmmc)* restore RK3588 SD card boot ([#1830](https://github.com/rcore-os/tgoskits/pull/1830))
+
 ## [0.23.8](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.7...rdrive-v0.23.8) - 2026-08-03
 
 ### Other

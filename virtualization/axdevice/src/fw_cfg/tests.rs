@@ -44,6 +44,39 @@ fn dma_rejects_buffer_address_overflow() {
     assert!(validate_dma_buffer(GuestPhysAddr::from_usize(usize::MAX), 2).is_err());
 }
 
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn dma_address_register_preserves_high_half_and_resets_after_commit() {
+    let fw_cfg = FwCfg::new(
+        GuestPhysAddr::from_usize(0),
+        0x20,
+        FwCfgKernelPayload::unsplit(Arc::from(&b"kernel"[..])),
+        None,
+        None,
+        1,
+        FwCfgPlatformConfig::default(),
+    );
+
+    assert_eq!(
+        fw_cfg
+            .write_dma_port(0, AccessWidth::Dword, 0xdead_beefu32.swap_bytes() as usize)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fw_cfg
+            .write_dma_port(4, AccessWidth::Dword, 0x8000u32.swap_bytes() as usize)
+            .unwrap(),
+        Some(GuestPhysAddr::from_usize(0xdead_beef_0000_8000))
+    );
+    assert_eq!(
+        fw_cfg
+            .write_dma_port(4, AccessWidth::Dword, 0x80u32.swap_bytes() as usize)
+            .unwrap(),
+        Some(GuestPhysAddr::from_usize(0x80))
+    );
+}
+
 #[cfg(feature = "host-test")]
 struct TestGuestMemory {
     bytes: Vec<u8>,
@@ -232,5 +265,66 @@ fn pio_selector_data_and_dma_share_one_fw_cfg_state() {
             &mut memory,
         )
         .unwrap();
+    assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
+}
+
+#[cfg(feature = "host-test")]
+#[test]
+fn pio_dma_fault_does_not_poison_the_next_32_bit_transfer() {
+    const DESCRIPTOR: usize = 0x80;
+    const BUFFER: usize = 0x100;
+    let bundle = FwCfgDeviceFactory::new()
+        .build_pio(
+            0x510,
+            2,
+            0x514,
+            8,
+            FwCfgBuildConfig {
+                base: GuestPhysAddr::from_usize(0x510),
+                size: 0x0c,
+                kernel: FwCfgKernelPayload::unsplit(Arc::from(&b"kernel"[..])),
+                initrd: None,
+                cmdline: None,
+                cpu_num: 1,
+                platform: FwCfgPlatformConfig::default(),
+            },
+        )
+        .unwrap();
+    let mut runtime = crate::DeviceRuntime::empty();
+    runtime.register_bundle(bundle).unwrap();
+    let mut memory = TestGuestMemory {
+        bytes: alloc::vec![0; 0x200],
+    };
+
+    runtime
+        .handle_port_write_with_memory(
+            axdevice_base::Port::new(0x514),
+            AccessWidth::Dword,
+            0xdead_beefu32.swap_bytes() as usize,
+            &mut memory,
+        )
+        .unwrap();
+    runtime
+        .handle_port_write_with_memory(
+            axdevice_base::Port::new(0x518),
+            AccessWidth::Dword,
+            0x8000u32.swap_bytes() as usize,
+            &mut memory,
+        )
+        .unwrap();
+
+    let control = FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_READ;
+    memory.bytes[DESCRIPTOR..DESCRIPTOR + 4].copy_from_slice(&control.to_be_bytes());
+    memory.bytes[DESCRIPTOR + 4..DESCRIPTOR + 8].copy_from_slice(&4u32.to_be_bytes());
+    memory.bytes[DESCRIPTOR + 8..DESCRIPTOR + 16].copy_from_slice(&(BUFFER as u64).to_be_bytes());
+    runtime
+        .handle_port_write_with_memory(
+            axdevice_base::Port::new(0x518),
+            AccessWidth::Dword,
+            (DESCRIPTOR as u32).swap_bytes() as usize,
+            &mut memory,
+        )
+        .unwrap();
+
     assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
 }

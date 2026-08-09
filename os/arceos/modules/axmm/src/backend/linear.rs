@@ -26,9 +26,7 @@ impl Backend {
             va_to_pa(start + size),
             flags
         );
-        pt.cursor()
-            .map_region(start, va_to_pa, size, flags, false)
-            .is_ok()
+        pt.map_region(start, va_to_pa, size, flags, false).is_ok()
     }
 
     pub(crate) fn unmap_linear(
@@ -39,6 +37,6 @@ impl Backend {
         _pa_va_offset: usize,
     ) -> bool {
         debug!("unmap_linear: [{:#x}, {:#x})", start, start + size);
-        pt.cursor().unmap_region(start, size).is_ok()
+        pt.unmap(start, size).is_ok()
     }
 }

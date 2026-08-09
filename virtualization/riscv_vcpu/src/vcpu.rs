@@ -32,12 +32,12 @@ use riscv_h::register::{
     vstval,
     vstvec::{self, Vstvec},
 };
-use rustsbi::{Forward, RustSBI};
-use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
+use rustsbi::{Forward, Ipi, RustSBI, SbiRet};
+use sbi_spec::{binary::HartMask, hsm, legacy, pmu, rfnc, srst};
 
 use crate::{
     EID_HVC, RiscvVcpuCreateConfig,
-    consts::traps::irq::{S_EXT, S_SOFT, is_supervisor_external},
+    consts::traps::irq::{S_EXT, S_SOFT, S_TIMER, is_supervisor_external},
     guest_mem,
     host::RiscvHostOps,
     registers::hgatp_value,
@@ -50,13 +50,14 @@ use crate::{
     },
     vpmu::VirtualPmu,
 };
-
 unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
 }
 
 const TINST_PSEUDO_STORE: u32 = 0x3020;
 const TINST_PSEUDO_LOAD: u32 = 0x3000;
+const EID_IPI: usize = 0x0073_5049;
+const FID_SEND_IPI: usize = 0;
 const EID_TIME: usize = 0x5449_4D45;
 const FID_SET_TIMER: usize = 0;
 #[cfg(feature = "sstc")]
@@ -83,10 +84,22 @@ pub type RiscvVCpu<H> = RiscvVcpu<H>;
 /// Backward-compatible upper-case vCPU alias.
 pub type RISCVVCpu<H> = RiscvVcpu<H>;
 
+#[derive(Clone, Copy, Default)]
+struct VirtualSbiIpi;
+
+impl Ipi for VirtualSbiIpi {
+    fn send_ipi(&self, _hart_mask: HartMask) -> SbiRet {
+        // Real SEND_IPI is handled by the production EID_IPI path below.
+        SbiRet::not_supported()
+    }
+}
+
 #[derive(RustSBI)]
 struct RISCVVCpuSbi {
     #[rustsbi(pmu)]
     pmu: VirtualPmu,
+    #[rustsbi(ipi)]
+    ipi: VirtualSbiIpi,
     #[rustsbi(console, fence, reset, info, hsm, timer)]
     forward: Forward,
 }
@@ -109,6 +122,7 @@ impl Default for RISCVVCpuSbi {
     fn default() -> Self {
         Self {
             pmu: VirtualPmu::default(),
+            ipi: VirtualSbiIpi,
             forward: Forward,
         }
     }
@@ -122,6 +136,23 @@ impl<H: RiscvHostOps> Default for RiscvVcpu<H> {
             bound: false,
             _host: PhantomData,
         }
+    }
+}
+
+fn decode_legacy_send_ipi_exit(
+    hart_mask_ptr: usize,
+    copy_from_guest_va: impl FnMut(usize, &mut [u8]) -> usize,
+) -> Result<RiscvVmExit, crate::sbi_ipi::HartMaskReadError> {
+    crate::legacy_ipi::decode_legacy_send_ipi_exit(hart_mask_ptr, copy_from_guest_va)
+}
+
+fn decode_standard_send_ipi_exit(hart_mask: usize, hart_mask_base: usize) -> RiscvVmExit {
+    RiscvVmExit::SendIPI {
+        target_cpu: hart_mask as u64,
+        target_cpu_aux: hart_mask_base as u64,
+        send_to_all: false,
+        send_to_self: false,
+        vector: S_SOFT as u64,
     }
 }
 
@@ -339,14 +370,30 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Injects a virtual interrupt into the guest.
     pub fn inject_interrupt(&mut self, vector: usize) -> RiscvVcpuResult {
-        if !is_supervisor_external(vector) {
-            return Err(RiscvVcpuError::Unsupported);
+        match vector {
+            S_SOFT => {
+                self.regs.virtual_hs_csrs.hvip |= 1 << 2;
+                unsafe {
+                    hvip::set_vssip();
+                }
+                Ok(())
+            }
+            S_TIMER => {
+                self.regs.virtual_hs_csrs.hvip |= 1 << 6;
+                unsafe {
+                    hvip::set_vstip();
+                }
+                Ok(())
+            }
+            vector if is_supervisor_external(vector) => {
+                self.regs.virtual_hs_csrs.hvip |= 1 << 10;
+                unsafe {
+                    hvip::set_vseip();
+                }
+                Ok(())
+            }
+            _ => Err(RiscvVcpuError::Unsupported),
         }
-        unsafe {
-            hvip::set_vseip();
-        }
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
-        Ok(())
     }
 
     /// Synchronizes controller-derived VSEIP state for the bound vCPU.
@@ -382,7 +429,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     /// last `unbind()` so the next `bind()` does not overwrite them with stale
     /// saved state.
     pub fn latch_hvip_from_hw(&mut self) {
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
+        let hw_hvip = hvip::read().bits();
+        self.regs.virtual_hs_csrs.hvip |= hw_hvip;
     }
 
     /// Attempts to decode the current guest-page-fault trap as an MMIO access.
@@ -560,6 +608,25 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                             let c = sbi_call_legacy_0(legacy::LEGACY_CONSOLE_GETCHAR);
                             self.set_gpr_from_gpr_index(GprIndex::A0, c);
                         }
+                        legacy::LEGACY_SEND_IPI => {
+                            return self.handle_legacy_send_ipi(param[0], |guest_va, bytes| {
+                                guest_mem::copy_from_guest_va(
+                                    bytes,
+                                    RiscvGuestVirtAddr::from(guest_va),
+                                    true,
+                                )
+                            });
+                        }
+                        legacy::LEGACY_CLEAR_IPI => {
+                            self.regs.virtual_hs_csrs.hvip =
+                                crate::sbi_ipi::clear_virtual_soft_pending(
+                                    self.regs.virtual_hs_csrs.hvip,
+                                );
+                            unsafe {
+                                hvip::clear_vssip();
+                            }
+                            self.set_gpr_from_gpr_index(GprIndex::A0, 0);
+                        }
                         legacy::LEGACY_SHUTDOWN => {
                             // sbi_call_legacy_0(LEGACY_SHUTDOWN)
                             return Ok(RiscvVmExit::SystemDown);
@@ -569,6 +636,17 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                                 "Unsupported SBI legacy extension id {extension_id:#x} function \
                                  id {function_id:#x}"
                             );
+                        }
+                    },
+                    EID_IPI => match function_id {
+                        FID_SEND_IPI => {
+                            let send_ipi = decode_standard_send_ipi_exit(param[0], param[1]);
+                            self.sbi_return(RET_SUCCESS, 0);
+                            return Ok(send_ipi);
+                        }
+                        _ => {
+                            self.sbi_return(RET_ERR_NOT_SUPPORTED, 0);
+                            return Ok(RiscvVmExit::Nothing);
                         }
                     },
                     EID_TIME => match function_id {
@@ -757,23 +835,32 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Ok(RiscvVmExit::Nothing)
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
-            Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                // Forward the elapsed timer to VS and stop taking the same HS
-                // timer interrupt repeatedly until software programs a new one.
-                unsafe {
-                    hvip::set_vstip();
-                    sie::clear_stimer();
-                }
-
-                Ok(RiscvVmExit::Nothing)
-            }
             Trap::Interrupt(Interrupt::SupervisorSoft) => {
-                // Host IPIs and scheduler wakeups use SSIP. Route them through
-                // the host IRQ path so it can acknowledge SSIP before the vCPU
-                // resumes instead of treating the interrupt as a guest trap.
+                debug_assert_eq!(
+                    crate::sbi_ipi::classify_supervisor_interrupt(
+                        crate::sbi_ipi::SUPERVISOR_SOFT_CAUSE,
+                    ),
+                    Some(crate::sbi_ipi::SupervisorInterruptAction::ConsumeHostSoft),
+                );
+
+                // Host SSIP must be consumed by the host IRQ path.
                 Ok(RiscvVmExit::ExternalInterrupt {
                     vector: S_SOFT as _,
                 })
+            }
+            Trap::Interrupt(Interrupt::SupervisorTimer) => {
+                debug_assert_eq!(
+                    crate::sbi_ipi::classify_supervisor_interrupt(
+                        crate::sbi_ipi::SUPERVISOR_TIMER_CAUSE,
+                    ),
+                    Some(crate::sbi_ipi::SupervisorInterruptAction::InjectGuestTimer),
+                );
+
+                unsafe {
+                    sie::clear_stimer();
+                }
+                self.inject_interrupt(S_TIMER)?;
+                Ok(RiscvVmExit::Nothing)
             }
             Trap::Interrupt(Interrupt::SupervisorExternal) => {
                 // 9 == Interrupt::SupervisorExternal
@@ -808,6 +895,26 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Err(RiscvVcpuError::Unsupported)
             }
         }
+    }
+
+    fn handle_legacy_send_ipi(
+        &mut self,
+        hart_mask_ptr: usize,
+        copy_from_guest_va: impl FnMut(usize, &mut [u8]) -> usize,
+    ) -> RiscvVcpuResult<RiscvVmExit> {
+        let exit = match decode_legacy_send_ipi_exit(hart_mask_ptr, copy_from_guest_va) {
+            Ok(exit) => exit,
+            Err(err) => {
+                warn!("failed to read legacy SBI IPI hart mask at {hart_mask_ptr:#x}: {err:?}");
+                self.set_gpr_from_gpr_index(GprIndex::A0, RET_ERR_FAILED);
+                self.advance_pc(4);
+                return Ok(RiscvVmExit::Nothing);
+            }
+        };
+
+        self.set_gpr_from_gpr_index(GprIndex::A0, RET_SUCCESS);
+        self.advance_pc(4);
+        Ok(exit)
     }
 
     #[inline]
@@ -1137,4 +1244,99 @@ fn sbi_call_legacy_1(eid: usize, arg0: usize) -> usize {
         );
     }
     error
+}
+
+#[cfg(test)]
+mod legacy_ipi_tests {
+    use super::*;
+
+    struct TestHost;
+
+    impl RiscvHostOps for TestHost {
+        fn virt_to_phys(vaddr: RiscvHostVirtAddr) -> RiscvHostPhysAddr {
+            RiscvHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+    }
+
+    #[test]
+    fn legacy_send_ipi_handler_reads_guest_mask_and_returns_real_exit() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+        let guest_mask_addr = 0x4000usize;
+        let guest_hart_mask = 1usize << 5;
+        let mask_bytes = guest_hart_mask.to_ne_bytes();
+        let mut reads = 0;
+
+        let exit = vcpu
+            .handle_legacy_send_ipi(guest_mask_addr, |guest_va, bytes| {
+                reads += 1;
+                assert_eq!(guest_va, guest_mask_addr);
+                bytes.copy_from_slice(&mask_bytes);
+                bytes.len()
+            })
+            .unwrap();
+
+        assert_eq!(reads, 1);
+        assert_eq!(vcpu.get_gpr(GprIndex::A0), RET_SUCCESS);
+
+        match exit {
+            RiscvVmExit::SendIPI {
+                target_cpu,
+                target_cpu_aux,
+                send_to_all,
+                send_to_self,
+                vector,
+            } => {
+                assert_eq!(target_cpu, guest_hart_mask as u64);
+                assert_eq!(target_cpu_aux, 0);
+                assert!(!send_to_all);
+                assert!(!send_to_self);
+                assert_eq!(vector, S_SOFT as u64);
+            }
+            _ => panic!("legacy SEND_IPI must return SendIPI"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod standard_ipi_tests {
+    use super::*;
+
+    #[test]
+    fn standard_send_ipi_uses_mask_value_and_non_zero_base() {
+        let exit = decode_standard_send_ipi_exit(1usize << 1, 4);
+
+        match exit {
+            RiscvVmExit::SendIPI {
+                target_cpu,
+                target_cpu_aux,
+                send_to_all,
+                send_to_self,
+                vector,
+            } => {
+                assert_eq!(target_cpu, (1usize << 1) as u64);
+                assert_eq!(target_cpu_aux, 4);
+                assert!(!send_to_all);
+                assert!(!send_to_self);
+                assert_eq!(vector, S_SOFT as u64);
+            }
+            _ => panic!("standard SBI IPI must return SendIPI"),
+        }
+    }
+
+    #[test]
+    fn standard_send_ipi_preserves_all_harts_base() {
+        let exit = decode_standard_send_ipi_exit(0, usize::MAX);
+
+        match exit {
+            RiscvVmExit::SendIPI {
+                target_cpu,
+                target_cpu_aux,
+                ..
+            } => {
+                assert_eq!(target_cpu, 0);
+                assert_eq!(target_cpu_aux, usize::MAX as u64);
+            }
+            _ => panic!("standard SBI IPI must return SendIPI"),
+        }
+    }
 }

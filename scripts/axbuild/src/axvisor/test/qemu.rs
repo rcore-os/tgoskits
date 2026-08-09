@@ -24,6 +24,8 @@ use crate::{
     test::{case as test_case, qemu as test_qemu},
 };
 
+const VCPU_RUNTIME_ERROR: &str = r"VM\[\d+\] run VCpu\[\d+\] get error";
+
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
@@ -258,6 +260,13 @@ impl Axvisor {
             &asset_config.grouped_runner,
         );
         test_qemu::apply_timeout_scale(&mut qemu);
+        if !qemu
+            .fail_regex
+            .iter()
+            .any(|pattern| pattern == VCPU_RUNTIME_ERROR)
+        {
+            qemu.fail_regex.push(VCPU_RUNTIME_ERROR.to_string());
+        }
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
         let prepared_assets = test_case::prepare_case_assets(

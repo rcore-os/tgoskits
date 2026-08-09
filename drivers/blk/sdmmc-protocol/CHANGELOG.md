@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.3...sdmmc-protocol-v0.4.4) - 2026-08-09
+
+### Fixed
+
+- *(dwmmc)* restore RK3588 SD card boot ([#1830](https://github.com/rcore-os/tgoskits/pull/1830))
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.2...sdmmc-protocol-v0.4.3) - 2026-08-03
 
 ### Fixed

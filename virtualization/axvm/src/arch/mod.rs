@@ -136,3 +136,225 @@ pub(crate) fn default_boot_firmware_load_gpa(
 ) -> Option<axvm_types::GuestPhysAddr> {
     CurrentArch::default_boot_firmware_load_gpa(config)
 }
+
+#[cfg(any(target_arch = "riscv64", test))]
+pub(crate) fn riscv_hart_mask_targets(
+    hart_mask: usize,
+    hart_mask_base: usize,
+    vcpu_mappings: impl IntoIterator<Item = (usize, Option<usize>, usize)>,
+) -> crate::CpuMask<64> {
+    let mut targets = crate::CpuMask::new();
+
+    for (vcpu_id, _, phys_id) in vcpu_mappings {
+        // CpuMask<64> cannot represent a local vCPU ID >= 64.
+        if vcpu_id >= 64 {
+            continue;
+        }
+
+        // SBI uses ULONG_MAX as the all-harts selector.
+        if hart_mask_base == usize::MAX {
+            targets.set(vcpu_id, true);
+            continue;
+        }
+
+        // A hart below the requested base is not selected.
+        let Some(bit) = phys_id.checked_sub(hart_mask_base) else {
+            continue;
+        };
+
+        // Ignore mask bits that cannot exist on this host.
+        if bit >= usize::BITS as usize {
+            continue;
+        }
+
+        if ((hart_mask >> bit) & 1) != 0 {
+            targets.set(vcpu_id, true);
+        }
+    }
+
+    targets
+}
+
+/// Delivers a computed IPI target mask to the current and remote vCPUs.
+///
+/// This helper is shared by the production RISC-V SEND_IPI path and tests,
+/// so tests cover the same split between local HVIP injection and remote queueing.
+#[cfg(any(target_arch = "riscv64", test))]
+pub(crate) fn deliver_riscv_ipi_targets<E>(
+    targets: crate::CpuMask<64>,
+    current_vcpu_id: usize,
+    vector: usize,
+    mut inject_current: impl FnMut(usize) -> Result<(), E>,
+    mut inject_remote: impl FnMut(crate::CpuMask<64>, usize) -> Result<(), E>,
+) -> Result<(), E> {
+    if current_vcpu_id < 64 && targets.get(current_vcpu_id) {
+        inject_current(vector)?;
+    }
+
+    let mut remote_targets = targets;
+    if current_vcpu_id < 64 {
+        remote_targets.set(current_vcpu_id, false);
+    }
+
+    if !remote_targets.is_empty() {
+        inject_remote(remote_targets, vector)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod riscv_hart_mask_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_hart_mask_routes_sparse_guest_hart_to_local_vcpu() {
+        let mappings = [
+            (0usize, None, 4usize),
+            (1usize, None, 9usize),
+            (2usize, None, 5usize),
+        ];
+
+        let targets = riscv_hart_mask_targets(1usize << 5, 0, mappings);
+
+        assert!(targets.get(2));
+        assert!(!targets.get(0));
+        assert!(!targets.get(1));
+    }
+
+    #[test]
+    fn standard_hart_mask_uses_non_zero_base_before_mapping_to_local_vcpu() {
+        let mappings = [
+            (0usize, None, 4usize),
+            (1usize, None, 9usize),
+            (2usize, None, 5usize),
+        ];
+
+        let targets = riscv_hart_mask_targets(1usize << 1, 4, mappings);
+
+        assert!(targets.get(2));
+        assert!(!targets.get(0));
+        assert!(!targets.get(1));
+    }
+
+    #[test]
+    fn standard_hart_mask_base_max_targets_all_vcpus() {
+        let mappings = [
+            (0usize, None, 4usize),
+            (1usize, None, 9usize),
+            (2usize, None, 5usize),
+        ];
+
+        let targets = riscv_hart_mask_targets(0, usize::MAX, mappings);
+
+        assert!(targets.get(0));
+        assert!(targets.get(1));
+        assert!(targets.get(2));
+    }
+}
+
+#[cfg(test)]
+mod standard_hart_mask_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn standard_hart_mask_base_maps_guest_hart_to_local_vcpu() {
+        // local vCPU 0/1/2 correspond to guest hart IDs 4/5/9.
+        let mappings = std::vec![
+            (0usize, None, 4usize),
+            (1usize, None, 5usize),
+            (2usize, None, 9usize),
+        ];
+
+        // base=4, bit 1 selects guest hart 5 only.
+        let targets = riscv_hart_mask_targets(1usize << 1, 4, mappings);
+
+        assert!(!targets.get(0));
+        assert!(targets.get(1));
+        assert!(!targets.get(2));
+    }
+}
+
+#[cfg(test)]
+mod riscv_ipi_delivery_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn out_of_range_vcpu_id_is_ignored() {
+        let mappings = [(0usize, None, 5usize), (64usize, None, 5usize)];
+
+        let targets = riscv_hart_mask_targets(1usize << 5, 0, mappings);
+
+        assert!(targets.get(0));
+        assert!(!targets.get(1));
+    }
+
+    #[test]
+    fn hart_below_base_is_ignored() {
+        let mappings = [(0usize, None, 3usize), (1usize, None, 5usize)];
+
+        let targets = riscv_hart_mask_targets(1usize << 1, 4, mappings);
+
+        assert!(!targets.get(0));
+        assert!(targets.get(1));
+    }
+
+    #[test]
+    fn send_ipi_routes_only_selected_remote_vcpu() {
+        let mut targets = crate::CpuMask::<64>::new();
+        targets.set(2, true);
+
+        let mut current_count = 0usize;
+        let mut remote_mask = crate::CpuMask::<64>::new();
+
+        deliver_riscv_ipi_targets(
+            targets,
+            0,
+            1,
+            |_| -> Result<(), ()> {
+                current_count += 1;
+                Ok(())
+            },
+            |mask, vector| -> Result<(), ()> {
+                assert_eq!(vector, 1);
+                remote_mask = mask;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(current_count, 0);
+        assert!(remote_mask.get(2));
+        assert!(!remote_mask.get(0));
+        assert!(!remote_mask.get(1));
+    }
+
+    #[test]
+    fn send_ipi_injects_current_vcpu_only_when_selected() {
+        let mut targets = crate::CpuMask::<64>::new();
+        targets.set(0, true);
+        targets.set(2, true);
+
+        let mut current_count = 0usize;
+        let mut remote_mask = crate::CpuMask::<64>::new();
+
+        deliver_riscv_ipi_targets(
+            targets,
+            0,
+            1,
+            |_| -> Result<(), ()> {
+                current_count += 1;
+                Ok(())
+            },
+            |mask, _| -> Result<(), ()> {
+                remote_mask = mask;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(current_count, 1);
+        assert!(remote_mask.get(2));
+        assert!(!remote_mask.get(0));
+    }
+}

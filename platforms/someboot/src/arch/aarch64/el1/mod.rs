@@ -125,7 +125,7 @@ pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     match vaddr {
         Some(addr) => {
-            tlbi(VAAE1IS::new(addr.raw()));
+            tlbi(VAAE1IS::new(addr.as_usize()));
         }
         None => {
             tlbi(VMALLE1);

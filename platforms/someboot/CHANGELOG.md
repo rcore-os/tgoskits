@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.7...someboot-v0.3.8) - 2026-08-09
+
+### Fixed
+
+- *(ax-plat)* add corrected scheduler clock source ([#1900](https://github.com/rcore-os/tgoskits/pull/1900))
+
+### Other
+
+- *(memory)* unify page-table execution on page-table-generic ([#1911](https://github.com/rcore-os/tgoskits/pull/1911))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+
 ## [0.3.7](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.6...someboot-v0.3.7) - 2026-08-03
 
 ### Fixed

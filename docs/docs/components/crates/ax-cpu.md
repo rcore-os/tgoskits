@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.8`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、各架构 `mod.rs`/`asm.rs`/`context.rs`/`init.rs`/`trap.rs`
 
-`ax-cpu` 是 ArceOS 系栈中位于 `ax-hal` 之下、位于原始 CPU 指令之上的一层 ISA 抽象库。它负责把不同架构下的特权寄存器、异常现场、任务上下文切换、页表根寄存器、TLB 刷新和部分早期 CPU 初始化统一成可供内核/HAL 调用的接口。它不是页表库，也不是板级支持包，而是“面向 CPU 本身”的底层抽象层。
+`ax-cpu` 是 ArceOS 系栈中位于 `ax-hal` 之下、位于原始 CPU 指令之上的一层 ISA 抽象库。它负责把不同架构下的特权寄存器、异常现场、任务上下文切换、运行时 stage-1 页表项格式、页表根寄存器、TLB 刷新和部分早期 CPU 初始化统一成可供内核/HAL 调用的接口。它不负责通用页表遍历或板级支持，而是“面向 CPU 本身”的底层抽象层。
 
 ## 架构设计
 
@@ -23,8 +23,8 @@
 它与相邻层的边界应明确区分：
 
 - `axplat`：负责“在什么时机调用这些 CPU 原语”
-- `ax-page-table-entry` / `ax-page-table-multiarch`：负责“页表内容是什么”
-- `ax-cpu`：负责“CPU 如何装载页表根、如何刷 TLB、如何响应 trap”
+- `page-table-generic`：负责架构无关的页表遍历、映射和页表页生命周期
+- `ax-cpu`：负责“当前 CPU 的 stage-1 页表项是什么、如何装载页表根、如何刷 TLB、如何响应 trap”
 
 ### 模块结构
 
@@ -50,6 +50,7 @@
 | `asm.rs` | 中断开关、页表根寄存器读写、TLB 操作、线程指针等汇编原语 |
 | `context.rs` | `TrapFrame`、`TaskContext`、可选 TLS/FP 状态 |
 | `init.rs` | 早期 CPU 初始化，如 trap 基址、MMU、EL 切换 |
+| `paging.rs` | 运行时 stage-1 PTE 位布局和架构页表元数据 |
 | `trap.rs` / `trap.S` | 异常/中断入口与 Rust 分发 |
 | `uspace.rs` | 用户态相关 trap 语义和返回原因 |
 
@@ -84,7 +85,7 @@
 
 #### `PageFaultFlags`
 
-这类页错误语义最终来自 `ax_page_table_entry::MappingFlags`，说明 `ax-cpu` 并不自己重新定义一套访问权限语言，而是复用整个页表栈的公共位语义。
+`PageFaultFlags` 只表达 CPU trap 报告的读、写、执行和用户态来源。它与 `ax_cpu::paging::MappingFlags` 分离；地址空间层显式转换两者，避免把设备内存、uncached 等映射属性混入 fault 来源。
 
 ### 1.6 典型架构差异
 
@@ -110,12 +111,13 @@
 #### LoongArch64
 
 - 负责页表根与 TLB refill 入口等专用初始化
-- 与 `ax-page-table-multiarch` 的 LoongArch 元数据路径直接耦合
+- 在本架构目录中定义 LoongArch stage-1 PTE 格式；通用遍历仍由 `page-table-generic` 提供
 
 ### 1.7 一个必须写清的边界
 
 `ax-cpu` 管的是：
 
+- 运行时 stage-1 页表项格式和当前架构元数据
 - 页表根寄存器
 - TLB
 - trap
@@ -123,8 +125,8 @@
 
 它不管：
 
-- 多级页表遍历
-- 页表项格式定义
+- 通用多级页表遍历与映射执行
+- 启动页表和虚拟化 stage-2 页表项格式
 - 物理页分配
 - 地址空间区间组织
 
@@ -154,12 +156,12 @@
 
 最常见的一条主线是：
 
-1. `ax-page-table-entry` 定义页权限语义
-2. `ax-page-table-multiarch` 维护页表内容
+1. `page-table-generic` 定义通用页表结构操作、错误和映射执行器，并将页表项配置视为调用方提供的不透明类型
+2. `ax-cpu::paging` 定义运行时映射权限，并提供当前架构的 stage-1 PTE 与 TLB 语义
 3. `ax-mm` / `axaddrspace` 组织地址空间
 4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
 
-这正好体现了它在内存子系统中的位置：不是页表内容层，而是页表生效层。
+这正好体现了它在内存子系统中的位置：负责架构相关的 stage-1 页表定义与生效，不负责通用遍历和地址空间策略。
 
 ## 依赖关系
 
@@ -168,7 +170,7 @@
 | 依赖 | 作用 |
 | --- | --- |
 | `memory_addr` | 地址类型基础 |
-| `ax-page-table-entry` | 页错误与页属性公共语义 |
+| `page-table-generic` | 通用页表 trait、结构操作、错误和映射执行器 |
 | `axbacktrace` | 回溯支持 |
 | `linkme` | trap handler 分布式注册 |
 | 各架构专用依赖 | `x86`、`x86_64`、`aarch64-cpu`、`riscv`、`loongArch64` 等 |
@@ -186,13 +188,13 @@
 
 ```mermaid
 graph TD
-    A[ax-page-table-entry] --> B[ax-cpu]
+    A[page-table-generic] --> B[ax-cpu]
     C[memory_addr] --> B
     B --> D[ax-hal]
     D --> E[axplat-*]
     D --> F[ArceOS]
     D --> G[StarryOS]
-    H[ax-page-table-multiarch / ax-mm / axaddrspace] --> D
+    H[ax-mm / axaddrspace] --> D
 ```
 
 ## 开发指南
@@ -204,7 +206,8 @@ graph TD
 3. 实现 `context.rs`
 4. 实现 `init.rs`
 5. 实现 trap 入口与 Rust 分发
-6. 在 `lib.rs` 的 `cfg_if!` 中挂接
+6. 在架构目录实现 `paging.rs` 的运行时 stage-1 PTE 格式
+7. 在 `lib.rs` 的 `cfg_if!` 中挂接
 
 ### 4.2 修改现有架构实现时的注意点
 
@@ -255,4 +258,4 @@ graph TD
 
 ## 总结
 
-`ax-cpu` 的核心价值在于把“必须懂 CPU 才能写”的那一层能力系统化了。它不去管理页表内容，也不去管理板级设备，而是把 trap、上下文、页表根和特权寄存器这些真正属于 CPU 的责任集中起来，为 `ax-hal`、平台包和上层 OS/Hypervisor 代码提供了稳定的 ISA 接口面。
+`ax-cpu` 的核心价值在于把“必须懂 CPU 才能写”的那一层能力系统化了。它不实现通用页表遍历，也不管理板级设备，而是把 trap、上下文、stage-1 PTE 格式、页表根和特权寄存器这些真正属于 CPU 的责任集中起来，为 `ax-hal`、平台包和上层 OS/Hypervisor 代码提供了稳定的 ISA 接口面。

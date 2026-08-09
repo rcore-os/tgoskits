@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.15](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.14...ax-alloc-v0.8.15) - 2026-08-09
+
+### Other
+
+- *(memory)* remove ax-allocator and bitmap-allocator crates ([#1878](https://github.com/rcore-os/tgoskits/pull/1878))
+
 ## [0.8.14](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.13...ax-alloc-v0.8.14) - 2026-08-03
 
 ### Other

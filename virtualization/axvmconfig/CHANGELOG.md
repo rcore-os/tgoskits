@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.3...axvmconfig-v0.8.4) - 2026-08-09
+
+### Added
+
+- *(axvisor)* build VMs from a resolved device graph ([#1718](https://github.com/rcore-os/tgoskits/pull/1718))
+
+### Other
+
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.2...axvmconfig-v0.8.3) - 2026-08-03
 
 ### Other

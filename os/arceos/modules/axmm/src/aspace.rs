@@ -3,7 +3,7 @@ use core::fmt;
 use ax_errno::{AxError, AxResult, ax_err};
 use ax_hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageTable},
+    paging::{MappingFlags, PageTable, PagingAllocator},
     trap::PageFaultFlags,
 };
 use ax_memory_addr::{
@@ -41,6 +41,10 @@ impl AddrSpace {
         &self.pt
     }
 
+    pub(crate) const fn page_table_mut(&mut self) -> &mut PageTable {
+        &mut self.pt
+    }
+
     /// Returns the root physical address of the inner page table.
     pub const fn page_table_root(&self) -> PhysAddr {
         self.pt.root_paddr()
@@ -57,25 +61,31 @@ impl AddrSpace {
         Ok(Self {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            pt: PageTable::new(PagingAllocator).map_err(|_| AxError::NoMemory)?,
         })
     }
 
-    /// Copies page table mappings from another address space.
+    #[cfg(feature = "copy")]
+    /// Shares page table mappings from another address space.
     ///
-    /// It copies the page table entries only rather than the memory regions,
-    /// usually used to copy a portion of the kernel space mapping to the
-    /// user space.
+    /// It shares root page table entries rather than the memory regions,
+    /// usually used to expose kernel mappings in a user address space.
     ///
     /// Returns an error if the two address spaces overlap.
-    #[cfg(feature = "copy")]
-    pub fn copy_mappings_from(&mut self, other: &AddrSpace) -> AxResult {
+    ///
+    /// # Safety
+    ///
+    /// `other` must outlive `self`, and `self` must not modify or unmap the
+    /// shared virtual-address range.
+    pub unsafe fn share_mappings_from(&mut self, other: &AddrSpace) -> AxResult {
         if self.va_range.overlaps(other.va_range) {
             return ax_err!(InvalidInput, "address space overlap");
         }
-        self.pt
-            .cursor()
-            .copy_from(&other.pt, other.base(), other.size());
+        unsafe {
+            self.pt
+                .share_root_entries_from(&other.pt, other.base(), other.size())
+        }
+        .map_err(|_| AxError::BadState)?;
         Ok(())
     }
 
@@ -261,7 +271,6 @@ impl AddrSpace {
 
         // TODO
         self.pt
-            .cursor()
             .protect_region(start, size, flags)
             .map_err(|_| AxError::BadState)?;
         Ok(())
@@ -315,6 +324,7 @@ impl AddrSpace {
         if !self.va_range.contains(vaddr) {
             return false;
         }
+        let access_flags = MappingFlags::from(access_flags);
         if let Some(area) = self.areas.find(vaddr) {
             let orig_flags = area.flags();
             if orig_flags.contains(access_flags) {

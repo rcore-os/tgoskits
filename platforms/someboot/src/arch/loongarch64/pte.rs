@@ -5,8 +5,10 @@
 
 use core::fmt::Debug;
 
-use page_table_generic::{MemAttributes, PageTableEntry};
+use page_table_generic::PageTableEntry;
 use tock_registers::{interfaces::*, register_bitfields, registers::*};
+
+use crate::mem::{MemAttributes, PteConfig};
 
 // LoongArch64 页表项寄存器位域定义
 
@@ -117,6 +119,8 @@ type PteRegister = ReadWrite<u64, PTE::Register>;
 pub struct Entry(u64);
 
 impl Entry {
+    const PHYS_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
+
     #[inline(always)]
     fn as_base(&self) -> &PteRegister {
         unsafe { &*(self as *const Self as *const PteRegister) }
@@ -145,11 +149,8 @@ impl Entry {
         }
     }
 
-    fn from_huge(config: page_table_generic::PteConfig) -> u64 {
-        let mut val = PTE_DIR::H::SET;
-        if config.valid {
-            val = val + PTE_DIR::VALID::SET + PTE_DIR::PRESENT::SET;
-        }
+    fn from_huge(paddr: page_table_generic::PhysAddr, config: PteConfig) -> u64 {
+        let mut val = PTE_DIR::H::SET + PTE_DIR::VALID::SET + PTE_DIR::PRESENT::SET;
 
         if !config.read {
             val += PTE_DIR::NO_READ::SET;
@@ -173,7 +174,7 @@ impl Entry {
         };
 
         // 设置物理地址
-        let ppn = (config.paddr.raw() as u64) >> 12;
+        let ppn = (paddr.as_usize() as u64) >> 12;
         val += PTE_DIR::PHYS_ADDR.val(ppn);
 
         if config.global {
@@ -190,18 +191,13 @@ impl Entry {
         val.value
     }
 
-    fn from_dir(config: page_table_generic::PteConfig) -> u64 {
-        let paddr = config.paddr.raw();
+    fn from_dir(paddr: page_table_generic::PhysAddr) -> u64 {
+        let paddr = paddr.as_usize();
         PTE_DIR::PHYS_ADDR.val((paddr >> 12) as u64).value
     }
 
-    fn from_base(config: page_table_generic::PteConfig) -> u64 {
-        let mut val = PTE::VALID::CLEAR;
-
-        // 设置有效位和存在位
-        if config.valid {
-            val = PTE::VALID::SET + PTE::PRESENT::SET;
-        }
+    fn from_base(paddr: page_table_generic::PhysAddr, config: PteConfig) -> u64 {
+        let mut val = PTE::VALID::SET + PTE::PRESENT::SET;
         if !config.read {
             val += PTE::NO_READ::SET;
         }
@@ -224,7 +220,7 @@ impl Entry {
         };
 
         // 设置物理地址
-        let ppn = (config.paddr.raw() as u64) >> 12;
+        let ppn = (paddr.as_usize() as u64) >> 12;
         val += PTE::PHYS_ADDR.val(ppn);
 
         // 设置全局标志（页表项使用 G 位，bit 6）
@@ -241,6 +237,10 @@ impl Entry {
 
         val.value
     }
+
+    fn is_table(&self) -> bool {
+        self.0 != 0 && self.0 & !Self::PHYS_ADDR_MASK == 0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -254,35 +254,35 @@ impl Debug for EntryDebug {
 }
 
 impl PageTableEntry for Entry {
-    fn from_config(config: page_table_generic::PteConfig) -> Self {
-        let val = if config.is_dir {
-            if config.huge {
-                Self::from_huge(config)
-            } else {
-                Self::from_dir(config)
-            }
+    type PteConfig = PteConfig;
+
+    fn new_page(
+        paddr: page_table_generic::PhysAddr,
+        config: Self::PteConfig,
+        is_huge: bool,
+    ) -> Self {
+        let val = if is_huge {
+            Self::from_huge(paddr, config)
         } else {
-            Self::from_base(config)
+            Self::from_base(paddr, config)
         };
         Self(val)
     }
 
-    fn to_config(&self, is_dir: bool) -> page_table_generic::PteConfig {
-        let valid = self.as_base().is_set(PTE::VALID);
+    fn new_table(paddr: page_table_generic::PhysAddr) -> Self {
+        Self(Self::from_dir(paddr))
+    }
+
+    fn paddr(&self, is_dir: bool) -> page_table_generic::PhysAddr {
         let mut paddr = self.as_base().read(PTE::PHYS_ADDR) << 12;
-
-        // 检查是否为大页（仅目录项）
-        let huge = if is_dir {
-            self.as_dir().is_set(PTE_DIR::H)
-        } else {
-            false
-        };
-
-        if huge {
+        if self.huge(is_dir) {
             paddr &= !0x1FFF;
         }
+        page_table_generic::PhysAddr::from_usize(paddr as usize)
+    }
 
-        let global = if huge {
+    fn config(&self, is_dir: bool) -> Self::PteConfig {
+        let global = if self.huge(is_dir) {
             self.as_dir().is_set(PTE_DIR::G)
         } else {
             self.as_base().is_set(PTE::G)
@@ -296,10 +296,8 @@ impl PageTableEntry for Entry {
             _ => MemAttributes::Normal,
         };
 
-        page_table_generic::PteConfig {
-            paddr: paddr.into(),
-            valid,
-            read: valid, // LoongArch64: 假设有效项可读
+        PteConfig {
+            read: self.present(), // LoongArch64: 假设有效项可读
             writable: self.as_base().is_set(PTE::WRITE),
             executable: !self.as_base().is_set(PTE::NO_EXEC),
             lower: matches!(
@@ -308,14 +306,24 @@ impl PageTableEntry for Entry {
             ),
             dirty: self.as_base().is_set(PTE::DIRTY),
             global,
-            is_dir,
-            huge,
             mem_attr,
         }
     }
 
-    fn valid(&self) -> bool {
-        self.as_base().is_set(PTE::VALID)
+    fn present(&self) -> bool {
+        self.as_base().is_set(PTE::VALID) || self.is_table()
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && self.as_dir().is_set(PTE_DIR::H)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 

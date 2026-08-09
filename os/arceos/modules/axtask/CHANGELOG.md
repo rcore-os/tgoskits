@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.6...ax-task-v0.6.7) - 2026-08-09
+
+### Fixed
+
+- *(ax-task)* preserve concurrent signal wakeups ([#1857](https://github.com/rcore-os/tgoskits/pull/1857))
+
+### Other
+
+- *(ax-ipi)* establish typed IPI publication transport ([#1916](https://github.com/rcore-os/tgoskits/pull/1916))
+- *(repo)* unify workspace dependencies ([#1860](https://github.com/rcore-os/tgoskits/pull/1860))
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.5...ax-task-v0.6.6) - 2026-08-03
 
 ### Added

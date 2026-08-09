@@ -1,6 +1,6 @@
 use ax_cpu::{UnalignedAccess, UnalignedAccessType, UnalignedError};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::paging::MappingFlags;
+use ax_runtime::hal::{cpu::trap::PageFaultFlags, paging::MappingFlags};
 
 use super::Thread;
 use crate::mm::AddrSpace;
@@ -9,7 +9,7 @@ pub(super) enum UnalignedEmulationResult {
     Complete,
     PageFault {
         address: VirtAddr,
-        flags: MappingFlags,
+        flags: PageFaultFlags,
     },
 }
 
@@ -46,12 +46,12 @@ pub(super) fn emulate_user_unaligned(
     }
 }
 
-fn page_fault_flags(access_type: UnalignedAccessType) -> MappingFlags {
+fn page_fault_flags(access_type: UnalignedAccessType) -> PageFaultFlags {
     let access = match access_type {
-        UnalignedAccessType::Read => MappingFlags::READ,
-        UnalignedAccessType::Write => MappingFlags::WRITE,
+        UnalignedAccessType::Read => PageFaultFlags::READ,
+        UnalignedAccessType::Write => PageFaultFlags::WRITE,
     };
-    access | MappingFlags::USER
+    access | PageFaultFlags::USER
 }
 
 fn prepare_write_range(aspace: &mut AddrSpace, access: &UnalignedAccess) -> Result<(), VirtAddr> {

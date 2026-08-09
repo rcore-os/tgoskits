@@ -12,12 +12,12 @@ use ax_memory_addr::{
 use ax_memory_set::{MemoryArea, MemorySet};
 use ax_runtime::hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
+    paging::{MappingFlags, PageTable, PagingAllocator},
     trap::PageFaultFlags,
 };
 use ax_sync::{LockdepMutexExt, Mutex};
 
-use crate::mm::ProcessVmStat;
+use crate::mm::{ProcessVmStat, paging_error_to_ax_error};
 
 mod accounting;
 mod backend;
@@ -33,16 +33,16 @@ pub use self::{
     backend::*,
 };
 
-type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, PageSize, bool);
+type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, usize, bool);
 const CLONED_ADDR_SPACE_LOCK_SUBCLASS: u32 = 1;
 
-fn rollback_moved_pages(cursor: &mut PageTableCursor, moved_pages: &[MovedPage]) {
+fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) {
     for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
         if dst_newly_mapped {
-            let _ = cursor.unmap(dst_va);
+            let _ = cursor.unmap_page(dst_va);
         }
         if cursor.query(src_va).is_err() {
-            let _ = cursor.map(src_va, paddr, page_size, flags);
+            let _ = cursor.map_page(src_va, paddr, page_size, flags);
         }
     }
 }
@@ -107,7 +107,7 @@ impl AddrSpace {
         Ok(Self {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            pt: PageTable::new(PagingAllocator).map_err(|_| AxError::NoMemory)?,
             process_slots: AtomicUsize::new(0),
             vm_stat: ProcessVmStat::new(),
             rss: MemoryAccounting::new(),
@@ -242,7 +242,7 @@ impl AddrSpace {
                     flags,
                     access_flags,
                     Some(&self.rss),
-                    &mut self.pt.cursor(),
+                    &mut self.pt,
                 )?;
                 (area.end(), callback)
             };
@@ -298,8 +298,7 @@ impl AddrSpace {
 
         let _rss = RssAccountingGuard::enter(&self.rss);
         for (range, backend) in frags {
-            let mut cursor = self.pt.cursor();
-            BackendOps::unmap(&backend, range, Some(&self.rss), &mut cursor)?;
+            BackendOps::unmap(&backend, range, Some(&self.rss), &mut self.pt)?;
         }
 
         Ok(())
@@ -387,7 +386,7 @@ impl AddrSpace {
     /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) so Cow RSS charges
     /// migrate via [`MemoryAccounting::move_charge`] instead of remove+record.
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> AxResult {
-        let mut cursor = self.pt.cursor();
+        let cursor = &mut self.pt;
         let mut mapped_pages = alloc::vec::Vec::new();
         let mut offset = 0;
         while offset < size {
@@ -395,7 +394,7 @@ impl AddrSpace {
             match cursor.query(src_va) {
                 Ok((paddr, flags, page_size)) => {
                     mapped_pages.push((src_va, dst + offset, paddr, flags, page_size));
-                    offset += page_size as usize;
+                    offset += page_size;
                 }
                 Err(_) => offset += PAGE_SIZE_4K,
             }
@@ -405,18 +404,18 @@ impl AddrSpace {
         for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
             let mut dst_newly_mapped = false;
             if cursor.query(dst_va).is_err() {
-                if let Err(err) = cursor.map(dst_va, paddr, page_size, flags) {
-                    rollback_moved_pages(&mut cursor, &moved_pages);
-                    return Err(err.into());
+                if let Err(err) = cursor.map_page(dst_va, paddr, page_size, flags) {
+                    rollback_moved_pages(cursor, &moved_pages);
+                    return Err(paging_error_to_ax_error(err));
                 }
                 dst_newly_mapped = true;
             }
-            if let Err(err) = cursor.unmap(src_va) {
+            if let Err(err) = cursor.unmap_page(src_va) {
                 if dst_newly_mapped {
-                    let _ = cursor.unmap(dst_va);
+                    let _ = cursor.unmap_page(dst_va);
                 }
-                rollback_moved_pages(&mut cursor, &moved_pages);
-                return Err(err.into());
+                rollback_moved_pages(cursor, &moved_pages);
+                return Err(paging_error_to_ax_error(err));
             }
             self.rss.move_charge(src_va, dst_va)?;
             moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));
@@ -594,6 +593,7 @@ impl AddrSpace {
         if !self.va_range.contains(vaddr) {
             return false;
         }
+        let access_flags = MappingFlags::from(access_flags);
         if let Some(area) = self.areas.find(vaddr) {
             let flags = area.flags();
             if flags.contains(access_flags) {
@@ -603,7 +603,7 @@ impl AddrSpace {
                     flags,
                     access_flags,
                     Some(&self.rss),
-                    &mut self.pt.cursor(),
+                    &mut self.pt,
                 );
                 return match populate_result {
                     Ok((n, callback)) => {
@@ -648,13 +648,13 @@ impl AddrSpace {
         let child_acct = unsafe { &*child_rss };
         let parent_acct = &self.rss;
 
-        let mut self_modify = self.pt.cursor();
+        let self_modify = &mut self.pt;
         for area in self.areas.iter() {
             let new_backend = area.backend().clone_map(
                 area.va_range(),
                 area.flags(),
-                &mut self_modify,
-                &mut guard.pt.cursor(),
+                self_modify,
+                &mut guard.pt,
                 &new_aspace_clone,
                 CloneMapAccounting {
                     parent: Some(parent_acct),
@@ -687,7 +687,7 @@ impl AddrSpace {
         MemoryAccounting::reconcile_fork_charges_from_parent(
             child_acct,
             parent_acct,
-            &mut guard.pt.cursor(),
+            &mut guard.pt,
         )?;
         drop(guard);
 

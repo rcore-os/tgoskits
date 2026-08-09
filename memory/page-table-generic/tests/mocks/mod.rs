@@ -37,6 +37,115 @@ register_bitfields! [
     ],
 ];
 
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct MappingFlags: usize {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+        const EXECUTE = 1 << 2;
+        const USER = 1 << 3;
+        const DEVICE = 1 << 4;
+        const UNCACHED = 1 << 5;
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct AccessFlags: usize {
+        const READ = 1 << 0;
+        const WRITE = 1 << 1;
+        const EXECUTE = 1 << 2;
+        const LOWER = 1 << 3;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemAttributes {
+    #[default]
+    Normal,
+    PerCpu,
+    Device,
+    Uncached,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemConfig {
+    pub access: AccessFlags,
+    pub attrs: MemAttributes,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PteConfig {
+    pub paddr: PhysAddr,
+    pub valid: bool,
+    pub read: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub lower: bool,
+    pub dirty: bool,
+    pub global: bool,
+    pub is_dir: bool,
+    pub huge: bool,
+    pub mem_attr: MemAttributes,
+}
+
+impl PteConfig {
+    pub fn page(paddr: PhysAddr, flags: MappingFlags, is_huge: bool) -> Self {
+        Self {
+            paddr,
+            huge: is_huge,
+            ..flags.into()
+        }
+    }
+}
+
+impl From<MappingFlags> for PteConfig {
+    fn from(flags: MappingFlags) -> Self {
+        Self {
+            valid: !flags.is_empty(),
+            read: flags.contains(MappingFlags::READ),
+            writable: flags.contains(MappingFlags::WRITE),
+            executable: flags.contains(MappingFlags::EXECUTE),
+            lower: flags.contains(MappingFlags::USER),
+            dirty: flags.contains(MappingFlags::WRITE),
+            global: !flags.contains(MappingFlags::USER),
+            mem_attr: if flags.contains(MappingFlags::DEVICE) {
+                MemAttributes::Device
+            } else if flags.contains(MappingFlags::UNCACHED) {
+                MemAttributes::Uncached
+            } else {
+                MemAttributes::Normal
+            },
+            ..Default::default()
+        }
+    }
+}
+
+impl From<PteConfig> for MappingFlags {
+    fn from(config: PteConfig) -> Self {
+        if !config.valid {
+            return Self::empty();
+        }
+        let mut flags = Self::empty();
+        flags.set(Self::READ, config.read);
+        flags.set(Self::WRITE, config.writable);
+        flags.set(Self::EXECUTE, config.executable);
+        flags.set(Self::USER, config.lower);
+        match config.mem_attr {
+            MemAttributes::Device => flags |= Self::DEVICE,
+            MemAttributes::Uncached => flags |= Self::UNCACHED,
+            MemAttributes::Normal | MemAttributes::PerCpu => {}
+        }
+        flags
+    }
+}
+
+impl PartialEq<MappingFlags> for PteConfig {
+    fn eq(&self, other: &MappingFlags) -> bool {
+        MappingFlags::from(*self) == *other
+    }
+}
+
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct PteImpl(pub u64);
@@ -58,12 +167,15 @@ impl Debug for PteImpl {
     }
 }
 
-impl PageTableEntry for PteImpl {
-    fn from_config(config: PteConfig) -> Self {
+impl PteImpl {
+    pub fn from_config(config: PteConfig) -> Self {
+        if !config.valid && config.paddr.as_usize() == 0 {
+            return Self(0);
+        }
         let pte = Self(0);
 
         // 设置物理地址
-        let paddr = config.paddr.raw() >> 12;
+        let paddr = config.paddr.as_usize() >> 12;
         pte.reg().modify(PTE64::PA.val(paddr as _));
 
         // 设置标志位
@@ -99,7 +211,7 @@ impl PageTableEntry for PteImpl {
         pte
     }
 
-    fn to_config(&self, _is_dir: bool) -> PteConfig {
+    pub fn to_config(&self, is_dir: bool) -> PteConfig {
         PteConfig {
             paddr: ((self.reg().read(PTE64::PA) << 12) as usize).into(),
             valid: self.reg().is_set(PTE64::VALID),
@@ -109,7 +221,7 @@ impl PageTableEntry for PteImpl {
             lower: self.reg().is_set(PTE64::USER_ACCESS),
             dirty: false,  // Mock 不支持
             global: false, // Mock 不支持
-            is_dir: _is_dir,
+            is_dir,
             huge: self.reg().is_set(PTE64::BLOCK),
             mem_attr: match self.reg().read(PTE64::CACHE) {
                 1 => MemAttributes::Normal,
@@ -118,9 +230,51 @@ impl PageTableEntry for PteImpl {
             },
         }
     }
+}
 
-    fn valid(&self) -> bool {
+impl PageTableEntry for PteImpl {
+    type PteConfig = PteConfig;
+
+    fn new_page(paddr: PhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        Self::from_config(PteConfig {
+            paddr,
+            is_dir: false,
+            huge: is_huge,
+            ..config
+        })
+    }
+
+    fn new_table(paddr: PhysAddr) -> Self {
+        Self::from_config(PteConfig {
+            paddr,
+            valid: true,
+            is_dir: true,
+            ..Default::default()
+        })
+    }
+
+    fn paddr(&self, is_dir: bool) -> PhysAddr {
+        self.to_config(is_dir).paddr
+    }
+
+    fn config(&self, is_dir: bool) -> Self::PteConfig {
+        self.to_config(is_dir)
+    }
+
+    fn present(&self) -> bool {
         self.reg().is_set(PTE64::VALID)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && self.reg().is_set(PTE64::BLOCK)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -571,14 +725,14 @@ impl FrameAllocator for Fram4k {
         if ptr.is_null() {
             None
         } else {
-            Some(PhysAddr::new(ptr as usize))
+            Some(PhysAddr::from_usize(ptr as usize))
         }
     }
 
     fn dealloc_frame(&self, frame: PhysAddr) {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         unsafe {
-            alloc::dealloc(frame.raw() as *mut u8, layout);
+            alloc::dealloc(frame.as_usize() as *mut u8, layout);
         }
     }
 
@@ -588,19 +742,19 @@ impl FrameAllocator for Fram4k {
         if ptr.is_null() {
             None
         } else {
-            Some(PhysAddr::new(ptr as usize))
+            Some(PhysAddr::from_usize(ptr as usize))
         }
     }
 
     fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
         let layout = Layout::from_size_align(4096 * frames, 4096 * frames).unwrap();
         unsafe {
-            alloc::dealloc(start.raw() as *mut u8, layout);
+            alloc::dealloc(start.as_usize() as *mut u8, layout);
         }
     }
 
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.raw() as *mut u8
+        paddr.as_usize() as *mut u8
     }
 }
 
@@ -683,12 +837,12 @@ impl FrameAllocator for TrackedFram4k {
                 let frames = &*self.allocated_frames;
                 frames.lock().unwrap().insert(addr);
             }
-            Some(PhysAddr::new(addr))
+            Some(PhysAddr::from_usize(addr))
         }
     }
 
     fn dealloc_frame(&self, frame: PhysAddr) {
-        let addr = frame.raw();
+        let addr = frame.as_usize();
 
         // 从跟踪记录中移除
         unsafe {
@@ -719,11 +873,11 @@ impl FrameAllocator for TrackedFram4k {
                 tracked_frames.insert(addr + i * 4096);
             }
         }
-        Some(PhysAddr::new(addr))
+        Some(PhysAddr::from_usize(addr))
     }
 
     fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
-        let addr = start.raw();
+        let addr = start.as_usize();
         unsafe {
             let tracked_frames = &*self.allocated_frames;
             let mut tracked_frames = tracked_frames.lock().unwrap();
@@ -743,6 +897,6 @@ impl FrameAllocator for TrackedFram4k {
     }
 
     fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.raw() as *mut u8
+        paddr.as_usize() as *mut u8
     }
 }

@@ -85,6 +85,13 @@ fn should_keep_generated_node(
         return true;
     }
 
+    if node
+        .compatibles()
+        .any(|compatible| matches!(compatible, "arm,psci" | "arm,psci-0.2" | "arm,psci-1.0"))
+    {
+        return true;
+    }
+
     passthrough_device_names
         .iter()
         .any(|device_path| device_path == node_path)
@@ -356,7 +363,11 @@ pub(crate) fn patch_guest_fdt_for_runtime(
     for serial in additional_serials {
         super::serial::install_additional_serial(&mut tree, *serial)?;
     }
-    Ok(tree.finish())
+    let bytes = tree.finish();
+    Fdt::from_bytes(&bytes).map_err(|error| {
+        ax_err_type!(InvalidData, std::format!("invalid patched FDT: {error:?}"))
+    })?;
+    Ok(bytes)
 }
 
 pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResult<GuestPhysAddr> {
@@ -550,6 +561,27 @@ mod tests {
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
         assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
         assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_none());
+    }
+
+    #[test]
+    fn generated_fdt_keeps_psci_firmware_node() {
+        let mut fdt = test_fdt("cpu@0=0");
+        let psci = fdt.add_node(fdt.root_id(), Node::new("psci"));
+        let mut compatible = Property::new("compatible", std::vec![]);
+        compatible.set_string("arm,psci-0.2");
+        fdt.node_mut(psci).unwrap().set_property(compatible);
+
+        let cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(std::vec![0]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(reparsed.get_by_path_id("/psci").is_some());
     }
 
     #[test]

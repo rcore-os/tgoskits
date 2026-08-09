@@ -63,7 +63,7 @@ impl<'a, T: TableMeta, A: FrameAllocator> PageTableWalker<'a, T, A> {
                 frame: page_table.root.clone(),
                 level: Frame::<T, A>::PT_LEVEL,
                 index: 0,
-                base_vaddr: VirtAddr::new(0),
+                base_vaddr: VirtAddr::from_usize(0),
             };
             walker.stack.push(root_state).ok(); // 栈容量足够时一定成功
         } else {
@@ -99,8 +99,11 @@ impl<'a, T: TableMeta, A: FrameAllocator> PageTableWalker<'a, T, A> {
             state.index += 1;
 
             // 获取当前条目的虚拟地址 - 重建完整的虚拟地址
-            let current_vaddr =
-                Frame::<T, A>::reconstruct_vaddr(state.index - 1, state.level, state.base_vaddr);
+            let current_vaddr = T::canonicalize_vaddr(Frame::<T, A>::reconstruct_vaddr(
+                state.index - 1,
+                state.level,
+                state.base_vaddr,
+            ));
 
             // 跳过不在范围内的地址
             if current_vaddr < self.config.start_vaddr {
@@ -117,13 +120,13 @@ impl<'a, T: TableMeta, A: FrameAllocator> PageTableWalker<'a, T, A> {
             // - 有效且是大页：是最终映射
             // - 有效且在叶子级别（level == 1）：是最终映射
             // - 有效但在中间级别且不是大页：不是最终映射（页表指针）
-            let pte_config = pte.to_config(state.level > 1);
-            let is_final_mapping = pte_config.valid && (pte_config.huge || state.level == 1);
+            let is_dir = state.level > 1;
+            let is_huge = pte.huge(is_dir);
+            let is_final_mapping = pte.present() && (is_huge || state.level == 1);
 
             // 如果是有效的子页表项（中间级别的页表指针），需要深入下一级
-            if pte_config.valid && !pte_config.huge && state.level > 1 {
-                let child_frame =
-                    Frame::from_paddr(pte_config.paddr, state.frame.allocator.clone());
+            if pte.present() && !is_huge && state.level > 1 {
+                let child_frame = Frame::from_paddr(pte.paddr(true), state.frame.allocator.clone());
 
                 // 计算子页表的基地址：当前条目的虚拟地址就是子页表覆盖的地址范围起点
                 let child_base_vaddr = current_vaddr;
