@@ -17,10 +17,12 @@ saturation.
 - Python 3 with `pip`, plus `west`:
 
   ```bash
-  # If pip is missing (e.g. a minimal container image):
-  python3 -m ensurepip --upgrade || sudo apt-get install -y python3-pip
-  python3 -m pip install --user west
-  export PATH="$HOME/.local/bin:$PATH"
+  # Install into a virtualenv: PEP 668 managed Python environments reject
+  # --user installs. If pip is missing, first run
+  #   sudo apt-get install -y python3-pip python3-venv
+  python3 -m venv /tmp/west-venv
+  /tmp/west-venv/bin/pip install west
+  export PATH="/tmp/west-venv/bin:$PATH"
   ```
 
 - A Zephyr workspace pinned to revision
