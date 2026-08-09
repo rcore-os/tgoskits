@@ -39,3 +39,55 @@ pub struct PendingVcpuInterrupt {
     pub id: VirtualInterruptId,
     pub trigger: InterruptTriggerMode,
 }
+
+/// GICv3 list-register injection policy (architecture-independent decision).
+///
+/// A slot is free when its state is `Invalid` (0); a slot occupied by `vector`
+/// blocks another edge for the same vector while Pending (1) or Active (2/3).
+/// When no slot is free, the backend must defer instead of failing, so the
+/// drained edge can be re-queued and retried.
+#[expect(
+    dead_code,
+    reason = "consumed by the AArch64 GIC backend, which is not compiled on the host"
+)]
+pub(crate) fn lr_blocked(slots: &[(u64, u64)], vector: usize) -> bool {
+    let mut has_free_slot = false;
+    for &(vintid, state) in slots {
+        if vintid == vector as u64 && (state & 0b11) != 0 {
+            return true;
+        }
+        if state == 0 {
+            has_free_slot = true;
+        }
+    }
+    !has_free_slot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_vector_pending_blocks_injection() {
+        let slots = [(48, 0b01), (0, 0), (0, 0), (0, 0)];
+        assert!(lr_blocked(&slots, 48));
+    }
+
+    #[test]
+    fn same_vector_active_blocks_injection() {
+        let slots = [(48, 0b10), (0, 0), (0, 0), (0, 0)];
+        assert!(lr_blocked(&slots, 48));
+    }
+
+    #[test]
+    fn free_slot_allows_injection() {
+        let slots = [(30, 0b01), (0, 0b10), (49, 0b10), (0, 0)];
+        assert!(!lr_blocked(&slots, 48));
+    }
+
+    #[test]
+    fn all_slots_occupied_by_other_vectors_defers() {
+        let slots = [(30, 0b01), (31, 0b10), (49, 0b10), (50, 0b01)];
+        assert!(lr_blocked(&slots, 48));
+    }
+}

@@ -11,9 +11,31 @@ unrelated idle vCPU0.
 
 ## Requirements
 
-- A Zephyr workspace with `west` and the Zephyr SDK. The build uses the
-  `qemu_cortex_a53/qemu_cortex_a53/smp` board variant and the
-  `CONFIG_SMP` / `CONFIG_SCHED_CPU_MASK` settings in `prj.conf`.
+- Python 3 with `pip`, plus `west`:
+
+  ```bash
+  python3 -m pip install --user west
+  export PATH="$HOME/.local/bin:$PATH"
+  ```
+
+- A Zephyr workspace pinned to revision
+  `aa37fa1ebc925c1f58c7d345c724433c89368ed2`:
+
+  ```bash
+  west init -m https://github.com/zephyrproject-rtos/zephyr.git /tmp/zephyrproject
+  cd /tmp/zephyrproject && west update
+  git -C /tmp/zephyrproject/zephyr checkout aa37fa1ebc925c1f58c7d345c724433c89368ed2
+  export ZEPHYR_BASE=/tmp/zephyrproject/zephyr
+  ```
+
+- The Zephyr SDK 1.0.1, extracted to a writable location:
+
+  ```bash
+  export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk
+  ```
+
+  The build uses the `qemu_cortex_a53/qemu_cortex_a53/smp` board variant and
+  the `CONFIG_SMP` / `CONFIG_SCHED_CPU_MASK` settings in `prj.conf`.
 - The AxVisor host build (see the repository's axvisor QEMU instructions).
 - A QEMU virt rootfs image that contains the built `zephyr.bin` at the path
   referenced by `axvisor-qemu-aarch64-suspend-smp2.toml`.
@@ -21,6 +43,8 @@ unrelated idle vCPU0.
 ## Build the guest
 
 ```bash
+ZEPHYR_BASE=/tmp/zephyrproject/zephyr \
+ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk \
 west build -p always \
   -b qemu_cortex_a53/qemu_cortex_a53/smp \
   scripts/test/zephyr-soft-virq-suspend \
@@ -29,7 +53,9 @@ west build -p always \
 
 Copy the raw image into the rootfs image at
 `/tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin` (for example with
-`debugfs -w -R 'write <host path> <guest path>' <rootfs.img>`).
+`debugfs -w -R 'write /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' <rootfs.img>`),
+then use the committed `axvisor-qemu-aarch64-suspend-smp2.toml` as the VM
+configuration.
 
 ## Run
 
@@ -50,6 +76,17 @@ FEATURES=openrace-realtime cargo xtask axvisor qemu \
 - The host injector reports `VIRQ_INJECT_COMPLETE ... errors=0`.
 - The `E1_COUNTERS` line shows `vcpu0_wake=1` (the idle vCPU is not woken by
   vCPU1-targeted notifications) and `lr_skip=0` (no dropped edges).
+
+## Example run (current head)
+
+Captured with this commit on a QEMU virt AArch64 host:
+
+```text
+consumer pinned to cpu 1 rc=0
+VIRQ_INJECT_COMPLETE vm=2 vcpu=1 vector=48 samples=300 errors=0
+E1_COUNTERS vcpu0_park=2 vcpu0_wake=1 vcpu1_park=172 vcpu1_wake=172 notify_woke0=0 notify_woke1=61 lr_skip=0
+SOFTWARE VIRQ COMPLETE streams=1 samples_each=300 total=300
+```
 
 ## Log analysis
 

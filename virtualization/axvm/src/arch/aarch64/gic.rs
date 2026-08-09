@@ -1,5 +1,7 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
+use alloc::vec::Vec;
+
 use arm_gic_driver::v3::{
     ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VTR_EL2, ReadWriteable, Readable, ich_lr_el2_get,
     ich_lr_el2_write,
@@ -70,11 +72,18 @@ fn inject_interrupt_gic_v3(vector: usize) {
         }
     }
 
-    let free_lr = free_lr
-        .or_else(|| {
-            (0..lr_num).find(|&i| ich_lr_el2_get(i).matches_all(ICH_LR_EL2::STATE::Invalid))
-        })
-        .unwrap_or_else(|| panic!("no free list register to inject IRQ {vector}"));
+    let free_lr = free_lr.or_else(|| {
+        (0..lr_num).find(|&i| ich_lr_el2_get(i).matches_all(ICH_LR_EL2::STATE::Invalid))
+    });
+    let Some(free_lr) = free_lr else {
+        // The busy check above already defers this vector when the list
+        // registers are full; this branch is only reachable through a race.
+        // Defer instead of panicking so the drained edge is re-queued and
+        // retried on the next drain.
+        debug!("Virtual interrupt {vector} deferred: no free list register");
+        crate::runtime::vcpus::LR_SKIP_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        return;
+    };
 
     ich_lr_el2_write(
         free_lr,
@@ -89,19 +98,21 @@ fn inject_interrupt_gic_v3(vector: usize) {
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
 }
 
-/// Returns true when `vector` is already pending or active in a GICv3 list
-/// register, meaning the backend cannot accept another edge for it right now.
+/// Returns true when `vector` cannot be injected right now: either it is
+/// already pending/active in a GICv3 list register, or every list register is
+/// occupied by a different vector (no free slot).
 pub(crate) fn virtual_interrupt_busy(vector: usize) -> bool {
     let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
-    for i in 0..lr_num {
-        let lr_val = ich_lr_el2_get(i);
-        if lr_val.read(ICH_LR_EL2::VINTID) == vector as u64
-            && lr_val.matches_any(&[ICH_LR_EL2::STATE::Pending, ICH_LR_EL2::STATE::Active])
-        {
-            return true;
-        }
-    }
-    false
+    let slots = (0..lr_num)
+        .map(|i| {
+            let lr_val = ich_lr_el2_get(i);
+            (
+                lr_val.read(ICH_LR_EL2::VINTID),
+                lr_val.read(ICH_LR_EL2::STATE),
+            )
+        })
+        .collect::<Vec<_>>();
+    crate::irq::model::lr_blocked(&slots, vector)
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {
