@@ -47,8 +47,14 @@ saturation.
   The build uses the `qemu_cortex_a53/qemu_cortex_a53/smp` board variant and
   the `CONFIG_SMP` / `CONFIG_SCHED_CPU_MASK` settings in `prj.conf`.
 - The AxVisor host build (see the repository's axvisor QEMU instructions).
-- A QEMU virt rootfs image (for example one produced by the repository's
-  axbuild flow) that can boot aarch64 Linux.
+- An aarch64 Linux rootfs image for the QEMU virt machine, pulled and
+  verified with the repository's image tooling:
+
+  ```bash
+  cargo xtask image pull rootfs-aarch64-alpine.img
+  ROOTFS="$PWD/.tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img"
+  test -s "$ROOTFS" && echo "rootfs ready"
+  ```
 
 ## Build the guest
 
