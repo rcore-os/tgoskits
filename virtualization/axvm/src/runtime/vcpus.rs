@@ -39,8 +39,8 @@ static VCPU_WAKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
 static NOTIFY_WOKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
 pub(crate) static LR_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn notify_woke_count(vcpu_id: usize) -> &'static AtomicUsize {
-    &NOTIFY_WOKE_COUNTS[vcpu_id]
+pub(crate) fn notify_woke_count(vcpu_id: usize) -> Option<&'static AtomicUsize> {
+    NOTIFY_WOKE_COUNTS.get(vcpu_id)
 }
 
 /// Spawn the common host-side periodic injector used by both A and B.
@@ -194,14 +194,18 @@ fn sleep_until(deadline: ax_std::time::Instant) {
 ///
 /// * `vcpu_id` - The vCPU whose wait queue is used to block the current thread.
 fn wait(vm: &VMRef, vm_vcpus: &VmRuntimeHandle, vcpu_id: usize) {
-    VCPU_PARK_COUNTS[vcpu_id].fetch_add(1, Ordering::Relaxed);
+    VCPU_PARK_COUNTS
+        .get(vcpu_id)
+        .map(|count| count.fetch_add(1, Ordering::Relaxed));
     vm_vcpus.wait_vcpu_until(vcpu_id, || {
         vm_vcpus.has_pending_vcpu_interrupt(vcpu_id)
             || !vm.running()
             || vm.suspending()
             || vm.stopping()
     });
-    VCPU_WAKE_COUNTS[vcpu_id].fetch_add(1, Ordering::Relaxed);
+    VCPU_WAKE_COUNTS
+        .get(vcpu_id)
+        .map(|count| count.fetch_add(1, Ordering::Relaxed));
 }
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
@@ -801,5 +805,17 @@ mod cpu_on_start_ack_tests {
 
         assert!(ack.is_complete());
         assert!(ack.take_result().unwrap().is_err());
+    }
+
+    #[test]
+    fn out_of_range_vcpu_counter_ids_are_ignored() {
+        assert!(notify_woke_count(8).is_none());
+        assert!(notify_woke_count(usize::MAX).is_none());
+        VCPU_PARK_COUNTS
+            .get(8)
+            .map(|count| count.fetch_add(1, Ordering::Relaxed));
+        VCPU_WAKE_COUNTS
+            .get(usize::MAX)
+            .map(|count| count.fetch_add(1, Ordering::Relaxed));
     }
 }

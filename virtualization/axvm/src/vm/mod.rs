@@ -498,18 +498,18 @@ impl VmRuntimeHandle {
         let wait_queue = self.vcpu_wait_queues.lock().get(&vcpu_id).cloned();
         if let Some(wait_queue) = wait_queue {
             let woke = wait_queue.notify_one(false);
-            if woke {
-                crate::runtime::vcpus::notify_woke_count(vcpu_id)
-                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if woke && let Some(count) = crate::runtime::vcpus::notify_woke_count(vcpu_id) {
+                count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             }
         } else {
             // A vCPU task can run immediately after spawn and reach the
             // startup wait before `add_vcpu_task` publishes its private
             // queue. Wake the legacy queue for that short publication
             // window; steady-state vIRQ delivery always has a private queue.
-            if self.wait_queue.notify_one(false) {
-                crate::runtime::vcpus::notify_woke_count(vcpu_id)
-                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if self.wait_queue.notify_one(false)
+                && let Some(count) = crate::runtime::vcpus::notify_woke_count(vcpu_id)
+            {
+                count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             }
         }
     }

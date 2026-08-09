@@ -14,6 +14,8 @@ unrelated idle vCPU0.
 - Python 3 with `pip`, plus `west`:
 
   ```bash
+  # If pip is missing (e.g. a minimal container image):
+  python3 -m ensurepip --upgrade || sudo apt-get install -y python3-pip
   python3 -m pip install --user west
   export PATH="$HOME/.local/bin:$PATH"
   ```
@@ -23,8 +25,9 @@ unrelated idle vCPU0.
 
   ```bash
   west init -m https://github.com/zephyrproject-rtos/zephyr.git /tmp/zephyrproject
-  cd /tmp/zephyrproject && west update
+  cd /tmp/zephyrproject
   git -C /tmp/zephyrproject/zephyr checkout aa37fa1ebc925c1f58c7d345c724433c89368ed2
+  west update
   export ZEPHYR_BASE=/tmp/zephyrproject/zephyr
   ```
 
