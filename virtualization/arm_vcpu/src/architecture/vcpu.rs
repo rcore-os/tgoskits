@@ -174,10 +174,6 @@ pub struct ArmVcpuCreateConfig {
     /// instruction itself and require the advance (`true`). Set it from the
     /// platform capability; keep it `true` when the platform is unknown so
     /// physical-board behavior stays the legacy default.
-    #[cfg_attr(
-        feature = "std",
-        doc = "Defaults to `true` so existing platforms keep the legacy advance."
-    )]
     pub advance_hvc_smc_pc: bool,
 }
 
