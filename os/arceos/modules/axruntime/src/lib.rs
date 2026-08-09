@@ -421,7 +421,10 @@ fn init_interrupt() {
     ax_hal::asm::enable_irqs();
 
     #[cfg(feature = "ipi")]
-    ax_ipi::mark_current_cpu_ready();
+    {
+        ax_hal::asm::flush_tlb(None);
+        ax_ipi::mark_current_cpu_ready();
+    }
 }
 
 #[cfg(feature = "irq")]
@@ -448,7 +451,7 @@ unsafe fn ax_ipi_run_on_cpu_sync(
     f: unsafe fn(*mut ()),
     arg: *mut (),
 ) -> Result<(), ax_hal::irq::IrqError> {
-    unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, f, arg) }
+    unsafe { ax_ipi::call_on_cpu(ax_hal::irq::CpuId(cpu), f, arg) }
 }
 
 #[cfg(feature = "irq")]
@@ -515,7 +518,9 @@ fn program_next_timer() {
         with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, deadline));
     }
     #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = ax_task::next_timer_deadline_nanos() {
+    let task_deadline = ax_task::next_timer_deadline_nanos();
+    #[cfg(feature = "multitask")]
+    if let Some(task_deadline) = task_deadline {
         deadline = core::cmp::min(deadline, task_deadline);
     }
 
@@ -527,6 +532,10 @@ fn program_next_timer() {
 #[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
+    // SAFETY: the local timer IRQ excludes migration and nested local
+    // scheduler-clock publication for this complete stamp.
+    unsafe { ax_hal::time::scheduler_clock_tick() }
+        .expect("current CPU scheduler clock must be online before timer IRQs");
     #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(not(feature = "multitask"))]
@@ -539,7 +548,12 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
 
 #[cfg(all(feature = "irq", feature = "ipi"))]
 fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
-    ax_ipi::ipi_handler();
+    ax_ipi::claim_current_delivery();
+    #[cfg(all(feature = "multitask", feature = "smp"))]
+    ax_task::handle_ipi_reschedule();
+    ax_ipi::drain_hard_calls()
+        .unwrap_or_else(|error| panic!("failed to continue hard-call draining: {error:?}"));
+    ax_ipi::legacy::drain_current_callbacks();
     ax_hal::irq::IrqReturn::Handled
 }
 

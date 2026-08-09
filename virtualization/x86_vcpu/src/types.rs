@@ -322,6 +322,8 @@ pub enum X86VmExit {
         /// Value written by the guest.
         data: u64,
     },
+    /// The guest performed one element of a string port-I/O instruction.
+    PortIoString(crate::X86PortIoStringExit),
     /// The guest performed an MMIO read.
     MmioRead {
         /// Guest physical address.

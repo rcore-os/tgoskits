@@ -50,7 +50,10 @@ vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
 
 ### 2.2 VM 选择
 
-CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则使用 Build Config 中的列表。相对 VM 路径相对于 workspace 根解析后写入 `AXVISOR_VM_CONFIGS`，以平台路径分隔符连接。
+CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则使用 Build Config 中的列表。
+相对 VM config 路径相对于 workspace 根解析；其中五个 `[kernel]` 镜像路径字段支持 Ostool
+变量，并按原 VM config 目录解析相对路径。最终解析后的配置写入 `AXVISOR_VM_CONFIGS`，以
+平台路径分隔符连接。
 
 ## 3. 虚拟化后端
 

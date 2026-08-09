@@ -1,0 +1,24 @@
+[base]
+id = 1
+name = "linux-x86-acpi-off"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-x86_64/linux/linux-qemu"
+kernel_load_addr = 0x20_0000
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-acpi-off/initramfs-x86_64.cpio.gz"
+ramdisk_load_addr = 0x0800_0000
+enable_bios = false
+boot_protocol = "direct"
+cmdline = "console=ttyS0 rdinit=/init devtmpfs.mount=1 loglevel=7 nox2apic no_timer_check initcall_blacklist=ahci_pci_driver_init acpi=off axvisor.acpi_case=off"
+memory_regions = [
+  [0x0000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []

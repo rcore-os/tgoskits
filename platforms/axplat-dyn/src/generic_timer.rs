@@ -72,6 +72,17 @@ impl ax_plat::time::TimeIf for GenericTimer {
         nanos_to_ticks(nanos)
     }
 
+    fn scheduler_clock_stability() -> ax_plat::time::SchedulerClockStability {
+        match somehal::timer::scheduler_clock_stability() {
+            somehal::timer::CounterStability::Stable => {
+                ax_plat::time::SchedulerClockStability::Stable
+            }
+            somehal::timer::CounterStability::Unstable => {
+                ax_plat::time::SchedulerClockStability::Unstable
+            }
+        }
+    }
+
     /// Return epoch offset in nanoseconds (wall time offset to monotonic
     /// clock start).
     fn epochoffset_nanos() -> u64 {

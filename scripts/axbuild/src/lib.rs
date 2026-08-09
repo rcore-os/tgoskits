@@ -78,6 +78,8 @@ enum Commands {
     },
     /// TGOS image management
     Image(image::ImageArgs),
+    /// Fetch verified OVMF firmware and print its paths as JSON
+    Ovmf(support::ovmf::OvmfArgs),
     /// Axvisor host-side commands
     Axvisor {
         #[command(subcommand)]
@@ -128,6 +130,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Board { command } => board::execute(command).await,
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
+        Commands::Ovmf(args) => support::ovmf::execute(args).await,
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Axloader { command } => Axloader::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,

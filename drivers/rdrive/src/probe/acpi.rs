@@ -385,7 +385,7 @@ mod tests {
         System {
             ecam_regions: Vec::new(),
             routing,
-            interpreter: interpreter_with_devices(handler.clone()),
+            interpreter: Some(interpreter_with_devices(handler.clone())),
             handler,
             pci: None,
             probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
@@ -738,6 +738,33 @@ pub struct AcpiPciIrqRoute {
 pub struct AcpiResourceRange {
     pub base: u64,
     pub size: u64,
+}
+
+/// Register model selected by the host SPCR table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiSerialInterface {
+    Uart16550,
+    Pl011,
+}
+
+/// Address-space kind selected by the host SPCR table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiSerialAddressSpace {
+    Memory,
+    Io,
+}
+
+/// Owned, parser-independent host serial-console description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpiSerialConsole {
+    pub interface: AcpiSerialInterface,
+    pub address_space: AcpiSerialAddressSpace,
+    pub registers: AcpiResourceRange,
+    pub access_size: u8,
+    pub irq: Option<u32>,
+    pub baud_rate: Option<u32>,
+    pub clock_hz: Option<u32>,
+    pub namespace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1250,18 +1277,50 @@ impl System {
         })
     }
 
-    pub fn serial_console_memory_range(&self) -> Option<AcpiResourceRange> {
-        let tables = self.handler.root.tables().ok()?;
-        let spcr = tables.find_table::<acpi::sdt::spcr::Spcr>()?;
-        let address = spcr.base_address()?.ok()?;
-        if address.address_space != acpi::address::AddressSpace::SystemMemory {
-            return None;
-        }
-
-        Some(AcpiResourceRange {
-            base: address.address,
-            size: spcr_uart_register_size(address.access_size),
-        })
+    /// Returns the SPCR-selected serial console as an owned descriptor.
+    pub fn serial_console(&self) -> Result<Option<AcpiSerialConsole>, DriverError> {
+        let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
+            .map_err(acpi_error)?;
+        let Some(spcr) = tables.find_tables::<Spcr>().next() else {
+            return Ok(None);
+        };
+        let interface = match spcr.interface_type() {
+            SpcrInterfaceType::Full16550
+            | SpcrInterfaceType::Full16450
+            | SpcrInterfaceType::Generic16550 => AcpiSerialInterface::Uart16550,
+            SpcrInterfaceType::ArmPL011 => AcpiSerialInterface::Pl011,
+            _ => return Err(DriverError::Unsupported("host SPCR serial interface")),
+        };
+        let address = spcr
+            .base_address()
+            .ok_or_else(|| DriverError::Unknown("host SPCR has no serial register address".into()))?
+            .map_err(acpi_error)?;
+        let address_space = match address.address_space {
+            AddressSpace::SystemMemory => AcpiSerialAddressSpace::Memory,
+            AddressSpace::SystemIo => AcpiSerialAddressSpace::Io,
+            _ => return Err(DriverError::Unsupported("host SPCR serial address space")),
+        };
+        let namespace_path = spcr
+            .namespace_string()
+            .map_err(|error| DriverError::Unknown(format!("invalid host SPCR namespace: {error}")))?
+            .trim_end_matches('\0')
+            .to_string();
+        Ok(Some(AcpiSerialConsole {
+            interface,
+            address_space,
+            registers: AcpiResourceRange {
+                base: address.address,
+                size: spcr_uart_register_size(address.access_size),
+            },
+            access_size: address.access_size,
+            irq: spcr
+                .global_system_interrupt()
+                .or_else(|| spcr.irq().map(u32::from)),
+            baud_rate: spcr.baud_rate().map(|value| value.get()),
+            clock_hz: spcr.uart_clock_frequency().map(|value| value.get()),
+            namespace_path: (!namespace_path.is_empty() && namespace_path != ".")
+                .then_some(namespace_path),
+        }))
     }
 
     pub fn pci_irq_for_endpoint(
@@ -1464,6 +1523,7 @@ impl System {
                         name: register.name,
                         device_id: DeviceId::new(),
                         irq_parent: None,
+                        fdt_node: None,
                     };
                     let device_id = desc.device_id();
                     let info = AcpiInfo {
@@ -1486,6 +1546,7 @@ impl System {
                 name: register.name,
                 device_id: DeviceId::new(),
                 irq_parent: None,
+                fdt_node: None,
             };
             let info = AcpiInfo {
                 root: self,

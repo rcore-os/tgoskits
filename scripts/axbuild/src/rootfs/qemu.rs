@@ -70,7 +70,7 @@ impl RootfsQemuWiring {
 /// Controls how aggressively rootfs-related QEMU arguments should be patched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RootfsPatchMode {
-    /// Only replace or insert the `disk0` drive argument.
+    /// Replace or insert `disk0` and update drives that alias its configured image.
     ReplaceDriveOnly,
     /// Ensure a complete disk + NVMe device + user network baseline.
     EnsureDiskBootNet,
@@ -178,13 +178,37 @@ fn replace_drive_arg(args: &mut Vec<String>, rootfs_path: &Path) {
     let wiring = DEFAULT_ROOTFS_WIRING;
     let replacement = wiring.drive_arg(rootfs_path);
     let drive_prefix = wiring.drive_prefix();
-    let mut replaced = false;
-
-    for arg in args.iter_mut() {
-        if arg.starts_with(&drive_prefix) {
-            *arg = replacement.clone();
-            replaced = true;
+    let configured_rootfs = args.windows(2).find_map(|pair| {
+        if pair[0] == "-drive" && pair[1].starts_with(&drive_prefix) {
+            drive_file_value(&pair[1]).map(PathBuf::from)
+        } else {
+            None
         }
+    });
+    let mut replaced = false;
+    let mut index = 0;
+
+    while index + 1 < args.len() {
+        if args[index] != "-drive" {
+            index += 1;
+            continue;
+        }
+
+        let drive_arg = args[index + 1].clone();
+        if drive_arg.starts_with(&drive_prefix) {
+            args[index + 1] = replacement.clone();
+            replaced = true;
+        } else {
+            let aliases_rootfs = match (configured_rootfs.as_deref(), drive_file_value(&drive_arg))
+            {
+                (Some(configured), Some(file)) => Path::new(file) == configured,
+                _ => false,
+            };
+            if aliases_rootfs {
+                args[index + 1] = replace_drive_file_arg(&drive_arg, rootfs_path);
+            }
+        }
+        index += 2;
     }
 
     if replaced {
@@ -376,6 +400,50 @@ mod tests {
                 "id=usbdisk,if=none,format=raw,snapshot=on,file=/cache/rootfs.img".to_string(),
                 "-netdev".to_string(),
                 "user,id=net0,file=/tmp/not-a-drive.img".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn replace_drive_only_rewrites_only_rootfs_aliases() {
+        let rootfs = Path::new("/cache/rootfs.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-device".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/tmp/managed-rootfs.img".to_string(),
+                "-device".to_string(),
+                "virtio-blk-device,drive=disk1".to_string(),
+                "-drive".to_string(),
+                "id=disk1,if=none,format=raw,file=/tmp/managed-rootfs.img,readonly=on,snapshot=on"
+                    .to_string(),
+                "-device".to_string(),
+                "virtio-blk-device,drive=disk2".to_string(),
+                "-drive".to_string(),
+                "id=disk2,if=none,format=raw,file=/tmp/unrelated.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::ReplaceDriveOnly);
+
+        assert_eq!(
+            qemu.args,
+            vec![
+                "-device".to_string(),
+                "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/cache/rootfs.img".to_string(),
+                "-device".to_string(),
+                "virtio-blk-device,drive=disk1".to_string(),
+                "-drive".to_string(),
+                "id=disk1,if=none,format=raw,file=/cache/rootfs.img,readonly=on,snapshot=on"
+                    .to_string(),
+                "-device".to_string(),
+                "virtio-blk-device,drive=disk2".to_string(),
+                "-drive".to_string(),
+                "id=disk2,if=none,format=raw,file=/tmp/unrelated.img".to_string(),
             ]
         );
     }

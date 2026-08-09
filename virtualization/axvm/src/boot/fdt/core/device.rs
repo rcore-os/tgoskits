@@ -14,7 +14,7 @@
 
 //! Device passthrough and dependency analysis for FDT processing.
 
-use alloc::{
+use std::{
     collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     vec::Vec,
@@ -28,7 +28,7 @@ type NodeCache = BTreeMap<String, Vec<NodeId>>;
 type PhandleMap = BTreeMap<u32, (String, BTreeMap<String, u32>)>;
 
 /// Return all passthrough device paths, including descendants and phandle dependencies.
-pub fn find_all_passthrough_devices(vm_cfg: &mut AxVMConfig, fdt: &Fdt) -> Vec<String> {
+pub fn find_all_passthrough_devices(vm_cfg: &AxVMConfig, fdt: &Fdt) -> Vec<String> {
     let initial_device_count = vm_cfg.pass_through_devices().len();
     let node_cache = build_optimized_node_cache(fdt);
     let initial_device_names: Vec<String> = vm_cfg

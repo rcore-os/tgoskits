@@ -20,6 +20,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
+use ax_task::current;
 use axpoll::{IoEvents, PollSet};
 use bitflags::bitflags;
 use hashbrown::HashMap;
@@ -31,7 +32,10 @@ use super::epoll_topology::{
     EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
     prepare_nested_link, reserve_nested_link,
 };
-use crate::file::{FileLike, get_file_like};
+use crate::{
+    file::{FileLike, get_file_like, signalfd::Signalfd},
+    task::{AsThread, ProcessData},
+};
 
 pub struct EpollEvent {
     pub events: IoEvents,
@@ -171,6 +175,11 @@ struct EpollInterest {
     key: EntryKey,
     event: EpollEvent,
     nested_link: Option<EpollTopologyLink>,
+    // Linux keeps inherited signalfd descriptors readable after fork, but an
+    // inherited epoll interest must not observe signals directed to the child.
+    // A weak owner preserves same-process waiter refreshes without extending
+    // the originating process lifetime.
+    signalfd_registration_owner: Option<Weak<ProcessData>>,
     mode: SpinNoIrq<TriggerMode>,
     exclusive: bool,
     in_ready_queue: AtomicBool,
@@ -184,6 +193,10 @@ impl EpollInterest {
         nested_link: Option<EpollTopologyLink>,
     ) -> Self {
         Self {
+            signalfd_registration_owner: key
+                .get_file()
+                .filter(|file| file.is::<Signalfd>())
+                .map(|_| Arc::downgrade(&current().as_thread().proc_data)),
             key,
             event,
             nested_link,
@@ -257,6 +270,16 @@ impl EpollInterest {
 
     fn restore_mode(&self, mode: TriggerMode) {
         *self.mode.lock() = mode;
+    }
+
+    fn can_refresh_waker_from_current_process(&self) -> bool {
+        self.signalfd_registration_owner
+            .as_ref()
+            .is_none_or(|owner| {
+                owner
+                    .upgrade()
+                    .is_some_and(|owner| Arc::ptr_eq(&owner, &current().as_thread().proc_data))
+            })
     }
 }
 
@@ -474,6 +497,10 @@ impl Epoll {
 
     // only register waker, not add to ready queue
     fn register_waker_only(&self, interest: &Arc<EpollInterest>) {
+        if !interest.can_refresh_waker_from_current_process() {
+            return;
+        }
+
         let Some(file) = interest.key.get_file() else {
             return;
         };
@@ -489,6 +516,15 @@ impl Epoll {
 
         let mut context = Context::from_waker(&waker);
         file.register(&mut context, register_events(interest.event.events));
+    }
+
+    /// Registers enabled interests with the thread currently waiting in epoll.
+    pub fn register_waiter_wakers(&self) -> AxResult {
+        let interests = self.inner.snapshot_interests()?;
+        for interest in &interests {
+            self.register_waker_only(interest);
+        }
+        Ok(())
     }
 
     // for add/modify

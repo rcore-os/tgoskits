@@ -15,34 +15,62 @@ use std::{
 
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
+use ostool::ovmf::Arch;
 
-use crate::support::process::ProcessExt;
+use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
 
 const AXLOADER_PACKAGE: &str = "axloader";
 const AXLOADER_BIN: &str = "axloader";
 const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
-const HTTP_SMOKE_TIMEOUT: Duration = Duration::from_secs(120);
+const HTTP_SMOKE_BOOT_TIMEOUT: Duration = Duration::from_secs(240);
+const HTTP_SMOKE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP_SMOKE_MAX_ATTEMPTS: usize = 2;
 const QEMU_HOST_GATEWAY: &str = "10.0.2.2";
-const LEGACY_X86_64_UEFI_FIRMWARE_ENV: &str = "AXVISOR_X86_64_UEFI_FIRMWARE";
 
 #[derive(Clone, Copy)]
 struct LoaderSmokeTarget {
-    cargo_target: &'static str,
     arch: &'static str,
+    ovmf_arch: Arch,
     efi_output_file: &'static str,
-    firmware_env: &'static str,
-    firmware_candidates: &'static [&'static str],
     qemu_program: &'static str,
     qemu_args: fn(&Path, &Path) -> Vec<String>,
     kernel_elf: fn() -> Vec<u8>,
 }
 
-const X86_64_UEFI_FIRMWARE_CANDIDATES: &[&str] = &[
-    "/usr/share/OVMF/OVMF_CODE_4M.fd",
-    "/usr/share/OVMF/OVMF_CODE.fd",
-    "/usr/share/ovmf/OVMF.fd",
-    "/usr/share/qemu/OVMF.fd",
-];
+struct SmokeAttemptContext<'a> {
+    workspace_root: &'a Path,
+    target: &'a str,
+    smoke_target: LoaderSmokeTarget,
+    firmware: &'a Path,
+    kernel: &'a [u8],
+}
+
+struct SmokeAttemptProgress {
+    deadline: Instant,
+    boot_sent: bool,
+}
+
+impl SmokeAttemptProgress {
+    fn waiting_for_ready(started: Instant) -> Self {
+        Self {
+            deadline: started + HTTP_SMOKE_BOOT_TIMEOUT,
+            boot_sent: false,
+        }
+    }
+
+    fn mark_boot_sent(&mut self, sent_at: Instant) {
+        self.boot_sent = true;
+        self.deadline = sent_at + HTTP_SMOKE_TRANSFER_TIMEOUT;
+    }
+
+    fn boot_sent(&self) -> bool {
+        self.boot_sent
+    }
+
+    fn expired_at(&self, now: Instant) -> bool {
+        now >= self.deadline
+    }
+}
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct ArgsBuild {
@@ -97,7 +125,7 @@ impl Axloader {
     pub async fn execute(&mut self, command: Command) -> anyhow::Result<()> {
         match command {
             Command::Build(args) => build(&self.workspace_root, args),
-            Command::Test(args) => test(&self.workspace_root, args),
+            Command::Test(args) => test(&self.workspace_root, args).await,
         }
     }
 }
@@ -106,13 +134,13 @@ pub fn build(workspace_root: &Path, args: ArgsBuild) -> anyhow::Result<()> {
     run_loader_build(workspace_root, &args.target, args.release || !args.debug)
 }
 
-pub fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
+pub async fn test(workspace_root: &Path, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {
-        TestCommand::Qemu(args) => test_qemu(workspace_root, args),
+        TestCommand::Qemu(args) => test_qemu(workspace_root, args).await,
     }
 }
 
-fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
+async fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
     run_cargo(
         workspace_root,
         ["test", "-p", AXLOADER_PACKAGE, "--all-targets"],
@@ -131,7 +159,7 @@ fn test_qemu(workspace_root: &Path, args: ArgsTestQemu) -> anyhow::Result<()> {
     );
     result?;
 
-    run_http_smoke_test(workspace_root, &args.target)
+    run_http_smoke_test(workspace_root, &args.target).await
 }
 
 fn run_loader_build(workspace_root: &Path, target: &str, release: bool) -> anyhow::Result<()> {
@@ -159,48 +187,88 @@ fn run_cargo<'a>(
     command.exec()
 }
 
-fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
+async fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()> {
     let smoke_target = smoke_target(target)?;
 
     println!("axloader http smoke: building UEFI loader ...");
     run_loader_build(workspace_root, target, true)?;
 
-    let firmware = find_uefi_firmware(smoke_target)?;
+    let firmware = OvmfFirmware::fetch(smoke_target.ovmf_arch).await?;
+    println!(
+        "axloader http smoke: using UEFI firmware {}",
+        firmware.code().display()
+    );
+    let kernel = (smoke_target.kernel_elf)();
+    let attempt_context = SmokeAttemptContext {
+        workspace_root,
+        target,
+        smoke_target,
+        firmware: firmware.code(),
+        kernel: &kernel,
+    };
+    let mut attempt = 1;
+    let mut failures = Vec::new();
+
+    loop {
+        println!(
+            "axloader http smoke: running QEMU attempt {attempt}/{HTTP_SMOKE_MAX_ATTEMPTS} ..."
+        );
+        let failure = match run_http_smoke_attempt(&attempt_context) {
+            Ok(()) => {
+                println!("axloader http smoke: kernel transferred and ELF loaded");
+                return Ok(());
+            }
+            Err(error) => format!("attempt {attempt}: {error:#}"),
+        };
+
+        let Some(next_attempt) = next_smoke_attempt(attempt) else {
+            failures.push(failure);
+            bail!(
+                "axloader HTTP smoke failed after {attempt} attempt(s):\n{}",
+                failures.join("\n")
+            );
+        };
+        eprintln!("axloader http smoke: {failure}; retrying with a fresh QEMU instance");
+        failures.push(failure);
+        attempt = next_attempt;
+    }
+}
+
+fn run_http_smoke_attempt(context: &SmokeAttemptContext<'_>) -> anyhow::Result<()> {
     let temp = tempfile::tempdir().context("failed to create axloader HTTP smoke temp dir")?;
     let efi_boot_dir = temp.path().join("esp/EFI/BOOT");
     fs::create_dir_all(&efi_boot_dir)
         .with_context(|| format!("failed to create {}", efi_boot_dir.display()))?;
     fs::copy(
-        axloader_efi_path(workspace_root, target),
-        efi_boot_dir.join(smoke_target.efi_output_file),
+        axloader_efi_path(context.workspace_root, context.target),
+        efi_boot_dir.join(context.smoke_target.efi_output_file),
     )
     .context("failed to stage axloader EFI binary")?;
 
-    let kernel = (smoke_target.kernel_elf)();
-    let http_server = SmokeHttpServer::start(kernel.clone())?;
-    let kernel_url = format!(
-        "http://{QEMU_HOST_GATEWAY}:{}/kernel.elf",
-        http_server.port()
-    );
-    let boot_line = format!(
-        concat!(
-            "AXLOADER BOOT {{",
-            "\"protocol_version\":1,",
-            "\"boot_id\":\"ci-http-smoke\",",
-            "\"kernel_url\":\"{}\",",
-            "\"kernel_size\":{},",
-            "\"image_format\":\"elf64\",",
-            "\"arch\":\"{}\",",
-            "\"entry_symbol\":null",
-            "}}\n"
-        ),
-        kernel_url,
-        kernel.len(),
-        smoke_target.arch,
+    let http_server = SmokeHttpServer::start(context.kernel.to_vec())?;
+    let boot_line = format_boot_line(
+        context.smoke_target.arch,
+        context.kernel.len(),
+        http_server.port(),
     );
 
-    println!("axloader http smoke: running QEMU ...");
-    let mut child = spawn_axloader_qemu(smoke_target, &firmware, &temp.path().join("esp"))?;
+    let mut child = spawn_axloader_qemu(
+        context.smoke_target,
+        context.firmware,
+        &temp.path().join("esp"),
+    )?;
+    let smoke_result = drive_http_smoke_session(&mut child, &boot_line);
+    stop_child(&mut child);
+    smoke_result?;
+
+    if !http_server.was_requested() {
+        bail!("axloader HTTP smoke reached elf_loaded without observing /kernel.elf request");
+    }
+
+    Ok(())
+}
+
+fn drive_http_smoke_session(child: &mut Child, boot_line: &str) -> anyhow::Result<()> {
     let mut stdin = child
         .stdin
         .take()
@@ -217,47 +285,71 @@ fn run_http_smoke_test(workspace_root: &Path, target: &str) -> anyhow::Result<()
     spawn_output_reader(stdout, output_tx.clone());
     spawn_output_reader(stderr, output_tx);
 
-    let started = Instant::now();
+    let mut progress = SmokeAttemptProgress::waiting_for_ready(Instant::now());
     let mut transcript = String::new();
-    let mut boot_sent = false;
-    let mut loaded = false;
-    while started.elapsed() < HTTP_SMOKE_TIMEOUT {
+    while !progress.expired_at(Instant::now()) {
         match output_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(chunk) => {
                 print!("{chunk}");
                 transcript.push_str(&chunk);
-                if !boot_sent && transcript.contains("AXLOADER READY") {
+                if !progress.boot_sent() && transcript.contains("AXLOADER READY") {
                     stdin
                         .write_all(boot_line.as_bytes())
                         .context("failed to send AXLOADER BOOT over QEMU serial")?;
                     stdin.flush().ok();
-                    boot_sent = true;
+                    progress.mark_boot_sent(Instant::now());
                 }
                 if transcript.contains("elf_loaded:") {
-                    loaded = true;
-                    break;
+                    return Ok(());
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if child.try_wait()?.is_some() {
-                    break;
+                if let Some(status) = child.try_wait()? {
+                    bail!(
+                        "QEMU exited before elf_loaded with status {status}; \
+                         transcript:\n{transcript}"
+                    );
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let status = child
+                    .try_wait()?
+                    .map_or_else(|| "unknown".to_owned(), |status| status.to_string());
+                bail!(
+                    "QEMU output closed before elf_loaded with status {status}; \
+                     transcript:\n{transcript}"
+                );
+            }
         }
     }
 
-    stop_child(&mut child);
+    let phase = if progress.boot_sent() {
+        "kernel transfer"
+    } else {
+        "UEFI startup"
+    };
+    bail!("axloader HTTP smoke timed out during {phase}; transcript:\n{transcript}")
+}
 
-    if !loaded {
-        bail!("axloader HTTP smoke did not reach elf_loaded; transcript:\n{transcript}");
-    }
-    if !http_server.was_requested() {
-        bail!("axloader HTTP smoke reached elf_loaded without observing /kernel.elf request");
-    }
+fn next_smoke_attempt(current_attempt: usize) -> Option<usize> {
+    (current_attempt < HTTP_SMOKE_MAX_ATTEMPTS).then_some(current_attempt + 1)
+}
 
-    println!("axloader http smoke: kernel transferred and ELF loaded");
-    Ok(())
+fn format_boot_line(arch: &str, kernel_size: usize, http_port: u16) -> String {
+    format!(
+        concat!(
+            "AXLOADER BOOT {{",
+            "\"protocol_version\":1,",
+            "\"boot_id\":\"ci-http-smoke\",",
+            "\"kernel_url\":\"http://{}:{}/kernel.elf\",",
+            "\"kernel_size\":{},",
+            "\"image_format\":\"elf64\",",
+            "\"arch\":\"{}\",",
+            "\"entry_symbol\":null",
+            "}}\n"
+        ),
+        QEMU_HOST_GATEWAY, http_port, kernel_size, arch,
+    )
 }
 
 fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
@@ -271,47 +363,15 @@ fn axloader_efi_path(workspace_root: &Path, target: &str) -> PathBuf {
 fn smoke_target(target: &str) -> anyhow::Result<LoaderSmokeTarget> {
     match target {
         "x86_64-unknown-uefi" => Ok(LoaderSmokeTarget {
-            cargo_target: "x86_64-unknown-uefi",
             arch: "x86_64",
+            ovmf_arch: Arch::X64,
             efi_output_file: "BOOTX64.EFI",
-            firmware_env: "AXLOADER_X86_64_UEFI_FIRMWARE",
-            firmware_candidates: X86_64_UEFI_FIRMWARE_CANDIDATES,
             qemu_program: "qemu-system-x86_64",
             qemu_args: x86_64_qemu_args,
             kernel_elf: minimal_x86_64_kernel_elf,
         }),
         _ => bail!("axloader HTTP smoke does not support target `{target}`"),
     }
-}
-
-fn find_uefi_firmware(target: LoaderSmokeTarget) -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os(target.firmware_env) {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-    if target.firmware_env == "AXLOADER_X86_64_UEFI_FIRMWARE"
-        && let Some(path) = std::env::var_os(LEGACY_X86_64_UEFI_FIRMWARE_ENV)
-    {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-
-    for candidate in target.firmware_candidates {
-        let path = PathBuf::from(candidate);
-        if path.is_file() {
-            return Ok(path);
-        }
-    }
-
-    bail!(
-        "UEFI firmware not found for {}; set {} or install ovmf",
-        target.cargo_target,
-        target.firmware_env
-    )
 }
 
 fn spawn_axloader_qemu(
@@ -341,6 +401,12 @@ fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
         "1".into(),
         "-machine".into(),
         "q35".into(),
+        "-accel".into(),
+        "kvm".into(),
+        "-cpu".into(),
+        // The pinned OVMF build does not publish its network protocols with
+        // QEMU's restricted default CPU. This smoke runs on KVM-labelled hosts.
+        "host".into(),
         "-display".into(),
         "none".into(),
         "-monitor".into(),
@@ -350,7 +416,9 @@ fn x86_64_qemu_args(firmware: &Path, esp_dir: &Path) -> Vec<String> {
         "-netdev".into(),
         "user,id=net0".into(),
         "-device".into(),
-        "e1000,netdev=net0".into(),
+        // ostool's OVMF prebuilt always includes VirtioNetDxe, while its E1000
+        // driver is optional and absent from the pinned firmware build.
+        "virtio-net-pci,netdev=net0".into(),
         "-drive".into(),
         format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -568,5 +636,60 @@ mod tests {
             },
             _ => panic!("expected test command"),
         }
+    }
+
+    #[test]
+    fn boot_line_includes_qemu_reachable_kernel_url() {
+        let boot_line = format_boot_line("x86_64", 4096, 18380);
+
+        assert!(boot_line.starts_with("AXLOADER BOOT "));
+        assert!(boot_line.contains("\"kernel_url\":\"http://10.0.2.2:18380/kernel.elf\""));
+        assert!(boot_line.contains("\"kernel_size\":4096"));
+        assert!(boot_line.contains("\"arch\":\"x86_64\""));
+        assert!(boot_line.ends_with('\n'));
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_network_device_supported_by_ostool_ovmf() {
+        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"));
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-device", "virtio-net-pci,netdev=net0"])
+        );
+    }
+
+    #[test]
+    fn x86_64_qemu_uses_kvm_host_cpu_for_ovmf_network_stack() {
+        let args = x86_64_qemu_args(Path::new("/firmware.fd"), Path::new("/esp"));
+
+        assert!(args.windows(2).any(|pair| pair == ["-accel", "kvm"]));
+        assert!(args.windows(2).any(|pair| pair == ["-cpu", "host"]));
+    }
+
+    #[test]
+    fn ready_near_startup_deadline_gets_a_transfer_window() {
+        let started = Instant::now();
+        let ready_at = started + HTTP_SMOKE_BOOT_TIMEOUT - Duration::from_millis(1);
+        let mut progress = SmokeAttemptProgress::waiting_for_ready(started);
+
+        progress.mark_boot_sent(ready_at);
+
+        assert_eq!(progress.deadline, ready_at + HTTP_SMOKE_TRANSFER_TIMEOUT);
+        assert!(!progress.expired_at(ready_at + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn slow_ovmf_boot_keeps_a_thirty_second_startup_margin() {
+        let started = Instant::now();
+        let progress = SmokeAttemptProgress::waiting_for_ready(started);
+
+        assert!(!progress.expired_at(started + Duration::from_secs(195)));
+    }
+
+    #[test]
+    fn first_failed_qemu_attempt_is_retried() {
+        assert_eq!(next_smoke_attempt(1), Some(2));
+        assert_eq!(next_smoke_attempt(2), None);
     }
 }

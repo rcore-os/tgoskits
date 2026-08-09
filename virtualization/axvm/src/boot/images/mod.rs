@@ -1,8 +1,8 @@
 //! Architecture-neutral guest image loading and source access.
 
-use alloc::format;
+use std::format;
 
-use axvmconfig::AxVMCrateConfig;
+use axvmconfig::GuestConfig;
 use byte_unit::Byte;
 
 use super::{BootImageProvider, StaticVmImage};
@@ -15,10 +15,7 @@ pub use crate::arch::ImageLoader;
 /// Return whether an x86 configuration selects direct Linux bzImage boot.
 ///
 /// This returns `false` on non-x86 targets.
-pub fn is_x86_linux_image_config(
-    config: &AxVMCrateConfig,
-    provider: &dyn BootImageProvider,
-) -> bool {
+pub fn is_x86_linux_image_config(config: &GuestConfig, provider: &dyn BootImageProvider) -> bool {
     crate::arch::is_x86_linux_image_config(config, provider)
 }
 
@@ -28,7 +25,7 @@ pub const fn x86_qemu_passthrough_block_intx() -> (u8, u8, u8, usize) {
 }
 
 pub fn get_image_header(
-    config: &AxVMCrateConfig,
+    config: &GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> Option<linux::Header> {
     match config.kernel.image_location.as_deref() {
@@ -46,7 +43,7 @@ pub(crate) struct ImageLoaderCore<'a> {
     pub(crate) provider: &'a dyn BootImageProvider,
     pub(crate) main_memory: VMMemoryRegion,
     pub(crate) vm: AxVMRef,
-    pub(crate) config: AxVMCrateConfig,
+    pub(crate) config: GuestConfig,
     guest_dtb: Option<crate::boot::fdt::GuestDtbImage>,
     pub(crate) kernel_load_gpa: GuestPhysAddr,
     pub(crate) bios_load_gpa: Option<GuestPhysAddr>,
@@ -56,7 +53,7 @@ pub(crate) struct ImageLoaderCore<'a> {
 impl<'a> ImageLoaderCore<'a> {
     pub(crate) fn new(
         main_memory: VMMemoryRegion,
-        config: AxVMCrateConfig,
+        config: GuestConfig,
         vm: AxVMRef,
         provider: &'a dyn BootImageProvider,
         guest_dtb: Option<crate::boot::fdt::GuestDtbImage>,
@@ -209,7 +206,7 @@ impl<'a> ImageLoaderCore<'a> {
 }
 
 fn with_memory_image<F, R>(
-    config: &AxVMCrateConfig,
+    config: &GuestConfig,
     provider: &dyn BootImageProvider,
     func: F,
 ) -> Option<R>
@@ -224,7 +221,7 @@ where
 }
 
 fn memory_images_for_vm(
-    config: &AxVMCrateConfig,
+    config: &GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<StaticVmImage> {
     provider
@@ -254,7 +251,7 @@ pub fn load_vm_image_from_memory(
         // SAFETY: The destination comes from `get_image_load_region`, the source
         // contains `bytes_to_write` bytes, and guest memory cannot overlap the image.
         unsafe {
-            core::ptr::copy_nonoverlapping(
+            std::ptr::copy_nonoverlapping(
                 image_buffer[buffer_pos..].as_ptr(),
                 region.as_mut_ptr().cast(),
                 bytes_to_write,
@@ -279,14 +276,14 @@ pub fn load_vm_image_from_memory(
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub mod fs {
-    use alloc::{format, vec::Vec};
+    use std::{format, vec::Vec};
 
-    use axvmconfig::AxVMCrateConfig;
+    use axvmconfig::GuestConfig;
 
     use crate::{AxVMRef, AxVmResult, GuestPhysAddr, ax_err_type, boot::BootImageProvider};
 
     pub fn kernel_read(
-        config: &AxVMCrateConfig,
+        config: &GuestConfig,
         provider: &dyn BootImageProvider,
         read_size: usize,
     ) -> AxVmResult<Vec<u8>> {

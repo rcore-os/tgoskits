@@ -1,0 +1,114 @@
+/dts-v1/;
+
+/ {
+	compatible = "radxa,rock-4d-spi", "radxa,rock-4d", "rockchip,rk3576";
+	model = "Radxa ROCK 4D SPI (Axvisor guest)";
+	#address-cells = <2>;
+	#size-cells = <2>;
+	interrupt-parent = <&gic>;
+
+	aliases {
+		mmc1 = &sdmmc;
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:1500000n8";
+		bootargs = "root=/dev/mmcblk1p3 rootfstype=ext4 rootwait rw console=ttyS0,1500000n8 earlycon=uart8250,mmio32,0x2ad40000 8250_core.skip_txen_test=1 fsck.repair=yes systemd.unit=multi-user.target systemd.mask=plymouth-quit-wait.service";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x40000000>;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@102 {
+			compatible = "arm,cortex-a72";
+			device_type = "cpu";
+			enable-method = "psci";
+			reg = <0x102>;
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <1 13 8>, <1 14 8>;
+	};
+
+	gic: interrupt-controller@8000000 {
+		compatible = "arm,gic-400";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		#interrupt-cells = <3>;
+		interrupt-controller;
+		interrupts = <1 9 0xff08>;
+		ranges;
+		reg = <0x0 0x08000000 0x0 0x10000>,
+		      <0x0 0x2a706000 0x0 0x10000>;
+	};
+
+    mmc_biu: clock-mmc-biu {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <50000000>;
+    };
+
+    mmc_ciu: clock-mmc-ciu {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <100000000>;
+    };
+
+	rng_clock: clock-rng {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <100000000>;
+	};
+
+	uart0: serial@2ad40000 {
+		compatible = "ns16550a";
+		reg = <0x0 0x2ad40000 0x0 0x100>;
+		interrupts = <0 76 4>;
+		clock-frequency = <24000000>;
+		current-speed = <1500000>;
+		reg-io-width = <4>;
+		reg-shift = <2>;
+		status = "okay";
+	};
+
+	sdmmc: mmc@2a310000 {
+		compatible = "rockchip,rk3576-dw-mshc", "rockchip,rk3288-dw-mshc";
+		reg = <0x0 0x2a310000 0x0 0x4000>;
+		interrupts = <0 251 4>;
+        clocks = <&mmc_biu>, <&mmc_ciu>;
+        clock-names = "biu", "ciu";
+        clock-frequency = <100000000>;
+        bus-width = <4>;
+        cap-sd-highspeed;
+        disable-wp;
+        non-removable;
+        fifo-depth = <256>;
+		max-frequency = <50000000>;
+		no-mmc;
+		no-sdio;
+		rockchip,use-v2-tuning;
+		status = "okay";
+	};
+
+	rng@2a410000 {
+		compatible = "rockchip,rkrng";
+		reg = <0x0 0x2a410000 0x0 0x200>;
+		clocks = <&rng_clock>;
+		clock-names = "hclk_trng";
+		status = "okay";
+	};
+};

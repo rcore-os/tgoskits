@@ -26,14 +26,19 @@ mod consts;
 mod detect;
 mod guest_mem;
 pub mod host;
+mod legacy_ipi;
 mod percpu;
 mod registers;
 mod regs;
 mod sbi_console;
+mod sbi_ipi;
 mod trap;
 pub mod types;
 mod vcpu;
 mod vpmu;
+
+#[cfg(test)]
+mod world_switch_tests;
 
 pub use detect::{detect_h_extension as has_hardware_support, max_guest_page_table_levels};
 pub use regs::GprIndex;

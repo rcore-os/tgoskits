@@ -5,9 +5,7 @@ fail_regex = [
   "(?i)login incorrect",
   "(?i)permission denied",
 ]
-shell_prefix = "~ #"
-shell_init_cmd = "echo 'hello'"
 success_regex = [
-  "(?m)^hello\\s*$",
+  "(?m)^test pass!\\s*$",
 ]
 timeout = 300

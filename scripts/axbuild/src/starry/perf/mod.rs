@@ -72,7 +72,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
     qemu::write_qemu_config(&outputs, &tools, &args, &arch, &qemu, text_range)?;
 
     let kernel_bin = symbols::kernel_bin_path(starry.app.workspace_root(), &target, args.debug);
-    let qemu_run = qemu::run_qemu_direct(&outputs, &args, &arch, &kernel_bin)?;
+    let qemu_run = qemu::run_qemu_direct(&outputs, &args, &arch, &kernel_bin).await?;
     if !qemu_run.status.success() {
         if !outputs::file_nonempty(&outputs.raw) {
             bail!(

@@ -184,6 +184,7 @@ jobs:
               - "bootloader/**"
               - "components/**"
               - "drivers/**"
+              - "fs/**"
               - "memory/**"
               - "net/**"
               - "os/**"
@@ -441,11 +442,13 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
-          - name: Test axvisor aarch64 qemu (smoke)
+          - name: Test axvisor aarch64 qemu (smoke + axtest)
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
-            command: cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+            command: |
+              cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+              cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
             cache_key: ""
             container_image: base
             limit_to_owner: ""
@@ -464,6 +467,19 @@ jobs:
             runs_on: '["self-hosted","linux","qcs"]'
             self_hosted_owner: rcore-os
             command: cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
+            cache_key: ""
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
+          - name: Test axvisor aarch64 qemu (timer stress)
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
+            timeout_minutes: 30
+            command: |
+              cargo xtask image pull qemu-aarch64 --output-dir tmp/axbuild/images
+              cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+              cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
             cache_key: ""
             container_image: base
             limit_to_owner: ""
@@ -682,85 +698,40 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          # - name: Test axvisor self-hosted x86_64(vmx) UEFI
-          #   use_container: false
-          #   runs_on: '["self-hosted","linux","intel","kvm"]'
-          #   require_kvm: true
-          #   timeout_minutes: 20
-          #   command: |
-          #     sudo apt-get update
-          #     sudo apt-get install -y --no-install-recommends ovmf
-          #     UEFI_FIRMWARE=""
-          #     for candidate in \
-          #       /usr/share/OVMF/OVMF_CODE_4M.fd \
-          #       /usr/share/OVMF/OVMF_CODE.fd \
-          #       /usr/share/ovmf/OVMF.fd \
-          #       /usr/share/qemu/OVMF.fd; do
-          #       if [ -f "${candidate}" ]; then
-          #         UEFI_FIRMWARE="${candidate}"
-          #         break
-          #       fi
-          #     done
-          #     if [ -z "${UEFI_FIRMWARE}" ]; then
-          #       echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
-          #       exit 1
-          #     fi
-          #     export AXVISOR_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
-          #     cd os/axvisor
-          #     ./scripts/setup_qemu.sh nimbos-uefi
-          #     grep -q 'boot_protocol = "uefi"' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
-          #     grep -q 'uefi_firmware_path = "' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
-          #     cd ../..
-          #     cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
-          #   cache_key: ""
-          #   container_image: ""
-          #   limit_to_owner: rcore-os
-          #   main_pr_only: false
           - name: Test axloader HTTP smoke
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             require_kvm: true
-            timeout_minutes: 20
+            timeout_minutes: 25
             command: |
               rustup target add x86_64-unknown-uefi
-              find_uefi_firmware() {
-                for candidate in \
-                  /usr/share/OVMF/OVMF_CODE_4M.fd \
-                  /usr/share/OVMF/OVMF_CODE.fd \
-                  /usr/share/ovmf/OVMF.fd \
-                  /usr/share/qemu/OVMF.fd; do
-                  if [ -f "${candidate}" ]; then
-                    printf '%s\n' "${candidate}"
-                    return 0
-                  fi
-                done
-                return 1
-              }
-              UEFI_FIRMWARE="$(find_uefi_firmware || true)"
-              if [ -z "${UEFI_FIRMWARE}" ]; then
-                # apt against the runner mirrors fails transiently with exit 100
-                # (mirror hiccup / lock); a bare invocation lets a flaky mirror
-                # abort the whole smoke, so retry with backoff before giving up.
-                for attempt in 1 2 3; do
-                  if sudo apt-get update -o Acquire::Retries=3 \
-                    && sudo apt-get install -y --no-install-recommends \
-                         -o Acquire::Retries=3 ovmf; then
-                    break
-                  fi
-                  if [ "${attempt}" -eq 3 ]; then
-                    echo "ERROR: apt-get failed to install OVMF after 3 attempts." >&2
-                    exit 1
-                  fi
-                  sleep "$((attempt * 10))"
-                done
-                UEFI_FIRMWARE="$(find_uefi_firmware || true)"
-              fi
-              if [ -z "${UEFI_FIRMWARE}" ]; then
-                echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
-                exit 1
-              fi
-              export AXLOADER_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
-              cargo axloader test qemu --target x86_64-unknown-uefi
+              cargo xtask axloader test qemu --target x86_64-unknown-uefi
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor x86_64 ACPI direct boot (svm)
+            use_container: false
+            runs_on: '["self-hosted","linux","amd","kvm"]'
+            require_kvm: true
+            timeout_minutes: 30
+            command: |
+              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+              cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor x86_64 ACPI direct and OVMF boot (vmx)
+            use_container: false
+            runs_on: '["self-hosted","linux","intel","kvm"]'
+            require_kvm: true
+            timeout_minutes: 45
+            command: |
+              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+              cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+              cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+              cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

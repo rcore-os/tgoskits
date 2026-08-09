@@ -6,10 +6,7 @@ use alloc::{
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::{
-    paging::{MappingFlags, PageSize},
-    time::monotonic_time_nanos,
-};
+use ax_runtime::hal::{paging::MappingFlags, time::monotonic_time_nanos};
 use ax_sync::Mutex;
 use ax_task::current;
 use bytemuck::AnyBitPattern;
@@ -634,7 +631,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         aspace.map(start_addr, length, mapping_flags, false, backend)?;
     } else {
         // This is the first process to attach the shared memory
-        let pages = Arc::new(SharedPages::new(length, PageSize::Size4K)?);
+        let pages = Arc::new(SharedPages::new(length, PAGE_SIZE_4K)?);
         let backend = Backend::new_shared(start_addr, pages.clone());
         aspace.map(start_addr, length, mapping_flags, false, backend)?;
 

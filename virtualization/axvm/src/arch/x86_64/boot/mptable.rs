@@ -1,6 +1,6 @@
 //! Minimal Intel MultiProcessor table for x86 Linux direct boot.
 
-use alloc::{vec, vec::Vec};
+use std::vec::Vec;
 
 use super::linux::X86LinuxRange;
 
@@ -11,10 +11,6 @@ const MP_CONFIG_GPA: usize = MP_TABLE_GPA;
 const MP_FLOATING_POINTER_GPA: usize = 0x9fc00;
 const MP_FLOATING_POINTER_OFFSET: usize = MP_FLOATING_POINTER_GPA - MP_TABLE_GPA;
 
-const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;
-const IO_APIC_ADDR: u32 = 0xfec0_0000;
-
-const BSP_APIC_ID: u8 = 0;
 const IO_APIC_ID: u8 = 1;
 const APIC_VERSION: u8 = 0x14;
 const IO_APIC_VERSION: u8 = 0x11;
@@ -33,9 +29,13 @@ pub const fn reserved_range() -> X86LinuxRange {
 }
 
 /// Builds a minimal MP floating pointer and MP config table.
-pub fn build() -> [u8; MP_TABLE_SIZE] {
+pub fn build(
+    apic_ids: &[u8],
+    local_apic_address: u32,
+    io_apic_address: u32,
+) -> [u8; MP_TABLE_SIZE] {
     let mut image = [0u8; MP_TABLE_SIZE];
-    let config = build_config_table();
+    let config = build_config_table(apic_ids, local_apic_address, io_apic_address);
     image[..config.len()].copy_from_slice(&config);
 
     let floating = build_floating_pointer();
@@ -55,8 +55,8 @@ fn build_floating_pointer() -> [u8; 16] {
     data
 }
 
-fn build_config_table() -> Vec<u8> {
-    let entries = config_entries();
+fn build_config_table(apic_ids: &[u8], local_apic_address: u32, io_apic_address: u32) -> Vec<u8> {
+    let entries = config_entries(apic_ids, io_apic_address);
     let entries_len: usize = entries.iter().map(Vec::len).sum();
 
     let mut table = Vec::with_capacity(44 + entries_len);
@@ -69,7 +69,7 @@ fn build_config_table() -> Vec<u8> {
     table.extend_from_slice(&0u32.to_le_bytes());
     table.extend_from_slice(&0u16.to_le_bytes());
     table.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-    table.extend_from_slice(&LOCAL_APIC_ADDR.to_le_bytes());
+    table.extend_from_slice(&local_apic_address.to_le_bytes());
     table.extend_from_slice(&0u16.to_le_bytes());
     table.push(0);
     table.push(0);
@@ -83,24 +83,29 @@ fn build_config_table() -> Vec<u8> {
     table
 }
 
-fn config_entries() -> Vec<Vec<u8>> {
-    let mut entries = vec![
-        processor_entry(),
+fn config_entries(apic_ids: &[u8], io_apic_address: u32) -> Vec<Vec<u8>> {
+    let mut entries = apic_ids
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, apic_id)| processor_entry(apic_id, index == 0))
+        .collect::<Vec<_>>();
+    entries.extend([
         bus_entry(BUS_ID_PCI, b"PCI   "),
         bus_entry(BUS_ID_ISA, b"ISA   "),
-        io_apic_entry(),
-    ];
+        io_apic_entry(io_apic_address),
+    ]);
     push_isa_interrupt_entries(&mut entries);
     push_pci_interrupt_entries(&mut entries);
     entries
 }
 
-fn processor_entry() -> Vec<u8> {
+fn processor_entry(apic_id: u8, bsp: bool) -> Vec<u8> {
     let mut entry = Vec::with_capacity(20);
     entry.push(0);
-    entry.push(BSP_APIC_ID);
+    entry.push(apic_id);
     entry.push(APIC_VERSION);
-    entry.push(0x03); // enabled + BSP
+    entry.push(0x01 | u8::from(bsp) << 1); // enabled, plus BSP on vCPU 0.
     entry.extend_from_slice(&0x0000_0600u32.to_le_bytes());
     entry.extend_from_slice(&0x0000_0201u32.to_le_bytes());
     entry.extend_from_slice(&[0; 8]);
@@ -115,13 +120,13 @@ fn bus_entry(bus_id: u8, bus_type: &[u8; 6]) -> Vec<u8> {
     entry
 }
 
-fn io_apic_entry() -> Vec<u8> {
+fn io_apic_entry(io_apic_address: u32) -> Vec<u8> {
     let mut entry = Vec::with_capacity(8);
     entry.push(2);
     entry.push(IO_APIC_ID);
     entry.push(IO_APIC_VERSION);
     entry.push(0x01); // enabled
-    entry.extend_from_slice(&IO_APIC_ADDR.to_le_bytes());
+    entry.extend_from_slice(&io_apic_address.to_le_bytes());
     entry
 }
 
@@ -193,7 +198,7 @@ mod tests {
 
     #[test]
     fn builds_valid_mp_table_checksums() {
-        let image = build();
+        let image = build(&[0, 1], 0xfee0_0000, 0xfec0_0000);
         let config_len = u16::from_le_bytes([image[4], image[5]]) as usize;
         assert_eq!(&image[..4], b"PCMP");
         assert_eq!(
@@ -231,7 +236,38 @@ mod tests {
     }
 
     #[test]
+    fn com1_is_identity_routed_to_ioapic_gsi4() {
+        let entry = config_entries(&[0], 0xfec0_0000)
+            .into_iter()
+            .find(|entry| {
+                entry.len() == 8 && entry[0] == 3 && entry[4] == BUS_ID_ISA && entry[5] == 4
+            })
+            .expect("MP table must describe the machine-owned COM1 interrupt");
+
+        assert_eq!(
+            u16::from_le_bytes([entry[2], entry[3]]),
+            MP_IRQ_FLAGS_CONFORMING
+        );
+        assert_eq!(entry[6], IO_APIC_ID);
+        assert_eq!(entry[7], 4);
+    }
+
+    #[test]
     fn q35_dev3_inta_uses_swizzled_gsi19() {
         assert_eq!(pci_intx_gsi(3, 0), 19);
+    }
+
+    #[test]
+    fn io_apic_entry_uses_the_selected_machine_address() {
+        let selected_address = 0xfed0_0000;
+        let image = build(&[0], 0xfee0_0000, selected_address);
+        let io_apic_offset = 44 + 20 + 8 + 8;
+        let io_apic = &image[io_apic_offset..io_apic_offset + 8];
+
+        assert_eq!(io_apic[0], 2);
+        assert_eq!(
+            u32::from_le_bytes(io_apic[4..8].try_into().unwrap()),
+            selected_address
+        );
     }
 }

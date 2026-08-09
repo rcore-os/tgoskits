@@ -17,7 +17,7 @@ use starry_vm::vm_read_slice;
 
 use super::{
     AsThread, ProcessData, Thread, do_exit, get_process_data, get_process_group, get_task,
-    is_zombie_pid, signal_publication::publish_before_release,
+    is_zombie_pid, signal_publication::publish_before_fatal_stop_release,
 };
 
 /// Information needed to restart a syscall if SA_RESTART applies.
@@ -186,15 +186,16 @@ pub fn ptrace_stop_current(
     signo: Signo,
     uctx: &mut UserContext,
 ) -> Option<Option<Signo>> {
-    ptrace_stop_current_impl(thr, signo, uctx, false)
+    ptrace_stop_current_impl(thr, signo, uctx, None)
 }
 
 pub fn ptrace_syscall_stop_current(
     thr: &Thread,
     signo: Signo,
     uctx: &mut UserContext,
+    syscall_no: usize,
 ) -> Option<Option<Signo>> {
-    ptrace_stop_current_impl(thr, signo, uctx, true)
+    ptrace_stop_current_impl(thr, signo, uctx, Some(syscall_no))
 }
 
 pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
@@ -206,7 +207,8 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 }
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
-    current().clear_interrupt();
+    let stale_interrupts = current().interrupt_snapshot();
+    current().acknowledge_interrupt(stale_interrupts);
     let wait_result = block_on(interruptible(poll_fn(|cx| {
         if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
             Poll::Ready(())
@@ -232,7 +234,7 @@ fn ptrace_stop_current_impl(
     thr: &Thread,
     signo: Signo,
     uctx: &mut UserContext,
-    is_syscall_stop: bool,
+    syscall_no: Option<usize>,
 ) -> Option<Option<Signo>> {
     if !thr.proc_data.is_ptrace_traceme() && !thr.proc_data.is_ptrace_attached() {
         return None;
@@ -263,8 +265,9 @@ fn ptrace_stop_current_impl(
     {
         thr.proc_data.save_current_fp_for_ptrace(tid);
     }
-    if is_syscall_stop {
-        thr.proc_data.set_ptrace_syscall_stop(tid, signo, uctx);
+    if let Some(syscall_no) = syscall_no {
+        thr.proc_data
+            .set_ptrace_syscall_stop(tid, signo, uctx, syscall_no);
     } else {
         thr.proc_data.set_ptrace_stop(tid, signo, uctx);
     }
@@ -395,7 +398,7 @@ pub fn check_signals(
             }
             do_exit(128 + signo as i32, true);
         }
-        SignalOSAction::Stop => do_job_stop(thr, signo),
+        SignalOSAction::Stop => do_job_stop(thr, signo, uctx),
         SignalOSAction::Continue => {}
         SignalOSAction::NoFurtherAction => {}
     }
@@ -426,7 +429,8 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
 
 /// Enter a job-control stop: record the stop, notify the parent, then park the
 /// current thread until `SIGCONT` clears the stop (or `SIGKILL` force-resumes it
-/// so the kill can proceed).
+/// so the kill can proceed). A seized tracer may wake this loop solely to
+/// publish `PTRACE_EVENT_STOP`; that wake does not release the job stop.
 ///
 /// Uses a plain block — not [`interruptible`](ax_task::future::interruptible) —
 /// because an ordinary signal must **not** wake a stopped process; only
@@ -444,31 +448,62 @@ fn notify_parent_job_change(proc_data: &ProcessData, code: i32, status: i32) {
 /// - Only the thread that dequeues the stop signal parks; sibling threads of a
 ///   multi-threaded process keep running until they next hit a stop signal.
 ///   Linux stops every thread in the group.
-fn do_job_stop(thr: &Thread, signo: Signo) {
+fn do_job_stop(thr: &Thread, signo: Signo, uctx: &mut UserContext) {
     let proc_data = &thr.proc_data;
     // Snapshot before recording the stop so a racing SIGCONT (which advances the
     // generation) cancels this stop.
     let continue_gen = proc_data.continue_generation();
-    if !proc_data.set_job_stopped(signo, continue_gen) {
+    let tid = thr.tid();
+    if !proc_data.set_job_stopped(signo, continue_gen, tid) {
         return;
     }
     notify_parent_job_change(proc_data, CLD_STOPPED as i32, signo as i32);
 
     let cont_event = proc_data.cont_event();
-    block_on(poll_fn(|cx| {
-        if !proc_data.is_job_stopped() {
-            return Poll::Ready(());
+    while proc_data.is_job_stopped() {
+        if proc_data.has_ptrace_pending_event_for(tid) {
+            let resume_signo = ptrace_stop_current(thr, signo, uctx).flatten();
+            match resume_signo {
+                // Linux re-reports a seized group stop after a tracer supplies
+                // SIGCONT to resume its PTRACE_EVENT_STOP. The signal is not a
+                // signal-delivery stop, so it must not release the job stop yet.
+                Some(Signo::SIGCONT) => {
+                    proc_data.set_ptrace_pending_event(
+                        tid,
+                        crate::syscall::ptrace::PTRACE_EVENT_STOP,
+                        0,
+                    );
+                }
+                // A subsequent zero-signal ptrace resume leaves the group stop
+                // and resumes user execution. There is no user-visible SIGCONT
+                // delivery to enqueue on this path.
+                None if proc_data.set_job_continued() => {
+                    notify_parent_job_change(
+                        proc_data,
+                        CLD_CONTINUED as i32,
+                        Signo::SIGCONT as i32,
+                    );
+                }
+                _ => {}
+            }
+            continue;
         }
-        // Registration happens from the stopped task context.
-        unsafe { cont_event.register(cx.waker(), axpoll::IoEvents::IN) };
-        // Re-check after registering to avoid a lost wakeup if the continue
-        // landed between the check above and registration.
-        if proc_data.is_job_stopped() {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    }));
+
+        block_on(poll_fn(|cx| {
+            if !proc_data.is_job_stopped() || proc_data.has_ptrace_pending_event_for(tid) {
+                return Poll::Ready(());
+            }
+            // Registration happens from the stopped task context.
+            unsafe { cont_event.register(cx.waker(), axpoll::IoEvents::IN) };
+            // Re-check after registering to avoid a lost wakeup if the continue
+            // or ptrace interrupt landed between the checks and registration.
+            if proc_data.is_job_stopped() && !proc_data.has_ptrace_pending_event_for(tid) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }));
+    }
 }
 
 pub fn block_next_signal() {
@@ -571,14 +606,15 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
         let ptrace_stop_tid = (signo == Signo::SIGKILL)
             .then(|| proc_data.selected_ptrace_stop_tid())
             .flatten();
-        let _wake_tid = publish_before_release(
-            || publish_process_signal(&proc_data, sig, ptrace_stop_tid),
-            || {
-                if signo == Signo::SIGKILL {
-                    proc_data.clear_job_stop_for_kill();
-                }
-            },
-        );
+        if signo == Signo::SIGKILL {
+            let _wake_tid = publish_before_fatal_stop_release(
+                || publish_process_signal(&proc_data, sig, ptrace_stop_tid),
+                ptrace_stop_tid.map(|_| || proc_data.clear_ptrace_stop()),
+                || proc_data.clear_job_stop_for_kill(),
+            );
+        } else {
+            let _wake_tid = publish_process_signal(&proc_data, sig, ptrace_stop_tid);
+        }
         // Wake signalfd waiters on every thread: even blocked process-level
         // signals must be visible from signalfd in an epoll event loop.
         for tid in proc_data.proc.threads() {

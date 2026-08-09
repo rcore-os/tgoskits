@@ -1,11 +1,11 @@
 //! AMD Nested Page Table entry encoding.
 
-use core::fmt;
+use std::fmt;
 
 use axvm_types::{HostPhysAddr, MappingFlags};
 use page_table_generic as ptg;
 
-use super::runtime::{config_to_flags, flush_nested_page_table};
+use super::runtime::flush_nested_page_table;
 
 bitflags::bitflags! {
     /// AMD SVM nested page table entry flags.
@@ -89,48 +89,46 @@ impl NptEntry {
 }
 
 impl ptg::PageTableEntry for NptEntry {
-    fn from_config(config: ptg::PteConfig) -> Self {
-        if !config.valid {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: HostPhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() {
             return Self(0);
         }
-        let mut flags = if config.is_dir && !config.huge {
-            // Intermediate NPT entries must remain present, writable, and
-            // user-accessible so the guest walk reaches the leaf permission.
-            NptFlags::PRESENT | NptFlags::WRITE | NptFlags::USER
-        } else {
-            NptFlags::from(config_to_flags(config))
-        };
-        if config.huge {
+        let mut flags = NptFlags::from(config);
+        if is_huge {
             flags |= NptFlags::HUGE_PAGE;
         }
-        Self(flags.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
-        let flags = NptFlags::from_bits_truncate(self.0);
-        let valid = self.valid();
-        let huge = is_dir && flags.contains(NptFlags::HUGE_PAGE);
-        let mapping_flags = MappingFlags::from(flags);
-        ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
-            valid,
-            read: mapping_flags.contains(MappingFlags::READ),
-            writable: mapping_flags.contains(MappingFlags::WRITE),
-            executable: mapping_flags.contains(MappingFlags::EXECUTE),
-            lower: mapping_flags.contains(MappingFlags::USER),
-            is_dir: is_dir && valid && !huge,
-            huge,
-            mem_attr: if mapping_flags.contains(MappingFlags::DEVICE) {
-                ptg::MemAttributes::Device
-            } else {
-                ptg::MemAttributes::Normal
-            },
-            ..Default::default()
-        }
+    fn new_table(paddr: HostPhysAddr) -> Self {
+        let flags = NptFlags::PRESENT | NptFlags::WRITE | NptFlags::USER;
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn valid(&self) -> bool {
+    fn paddr(&self, _is_dir: bool) -> HostPhysAddr {
+        NptEntry::paddr(*self)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        self.flags()
+    }
+
+    fn present(&self) -> bool {
         NptFlags::from_bits_truncate(self.0).contains(NptFlags::PRESENT)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && NptFlags::from_bits_truncate(self.0).contains(NptFlags::HUGE_PAGE)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 

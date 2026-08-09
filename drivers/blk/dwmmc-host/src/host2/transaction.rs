@@ -1,5 +1,5 @@
 use super::{
-    request::{TransactionRequestKind, should_try_dma},
+    request::{TransactionRequestKind, dma_transfer_for_protocol},
     *,
 };
 
@@ -121,29 +121,30 @@ impl sdio_host2::SdioHost for DwMmc {
         let sdio_host2::DataBuffer::Dma(buffer) = phase.buffer else {
             unreachable!("checked for DMA data buffer above")
         };
-        if !should_try_dma(
+        let protocol_direction = match phase.direction {
+            sdio_host2::DataDirection::Read => DataDirection::Read,
+            sdio_host2::DataDirection::Write => DataDirection::Write,
+            _ => {
+                self.finish_host2_request(host2_id);
+                let data = sdio_host2::DataPhase {
+                    direction: phase.direction,
+                    block_size: phase.block_size,
+                    block_count: phase.block_count,
+                    buffer: sdio_host2::DataBuffer::Dma(buffer),
+                };
+                return Err(sdio_host2::SubmitTransactionError::new(
+                    sdio_host2::Error::Unsupported,
+                    sdio_host2::Transaction::with_data(transaction.command, data),
+                ));
+            }
+        };
+        let Some(transfer) = dma_transfer_for_protocol(
             &transaction.command,
             block_size,
             block_count,
             buffer.len().get(),
-            match phase.direction {
-                sdio_host2::DataDirection::Read => DataDirection::Read,
-                sdio_host2::DataDirection::Write => DataDirection::Write,
-                _ => {
-                    self.finish_host2_request(host2_id);
-                    let data = sdio_host2::DataPhase {
-                        direction: phase.direction,
-                        block_size: phase.block_size,
-                        block_count: phase.block_count,
-                        buffer: sdio_host2::DataBuffer::Dma(buffer),
-                    };
-                    return Err(sdio_host2::SubmitTransactionError::new(
-                        sdio_host2::Error::Unsupported,
-                        sdio_host2::Transaction::with_data(transaction.command, data),
-                    ));
-                }
-            },
-        ) {
+            protocol_direction,
+        ) else {
             self.finish_host2_request(host2_id);
             let data = sdio_host2::DataPhase {
                 direction: phase.direction,
@@ -155,7 +156,7 @@ impl sdio_host2::SdioHost for DwMmc {
                 sdio_host2::Error::Unsupported,
                 sdio_host2::Transaction::with_data(transaction.command, data),
             ));
-        }
+        };
         let Some(dma) = self.dma.take() else {
             self.finish_host2_request(host2_id);
             let data = sdio_host2::DataPhase {
@@ -170,21 +171,7 @@ impl sdio_host2::SdioHost for DwMmc {
             ));
         };
         let mut slot = BlockRequestSlot::default();
-        let submit = match phase.direction {
-            sdio_host2::DataDirection::Read => self.submit_prepared_read_blocks(
-                transaction.command.argument,
-                buffer,
-                &dma,
-                &mut slot,
-            ),
-            sdio_host2::DataDirection::Write => self.submit_prepared_write_blocks(
-                transaction.command.argument,
-                buffer,
-                &dma,
-                &mut slot,
-            ),
-            _ => unreachable!("unsupported direction returned before submit"),
-        };
+        let submit = self.submit_prepared_data(transfer, buffer, &dma, &mut slot);
         self.dma = Some(dma);
         match submit {
             Ok(request) => {

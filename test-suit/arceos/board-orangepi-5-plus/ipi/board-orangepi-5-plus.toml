@@ -1,0 +1,10 @@
+board_type = "OrangePi-5-Plus"
+success_regex = ["(?m)^ArceOS test suite run OK!\\s*$"]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?m)^ARCEOS_TEST_END .* status=fail(?: |$)",
+    "(?i)segmentation fault",
+    "(?i)SIGSEGV",
+    "exit with code: 139",
+]
+timeout = 300

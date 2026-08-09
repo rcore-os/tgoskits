@@ -123,6 +123,10 @@ impl TimeIf for DummyTime {
         nanos
     }
 
+    fn scheduler_clock_stability() -> crate::time::SchedulerClockStability {
+        crate::time::SchedulerClockStability::Stable
+    }
+
     fn epochoffset_nanos() -> u64 {
         0
     }
@@ -172,6 +176,13 @@ impl IrqIf for DummyIrq {
         Ok(())
     }
 
+    fn set_trigger(
+        _irq: IrqId,
+        _trigger: ax_plat::irq::IrqTrigger,
+    ) -> Result<(), ax_plat::irq::IrqError> {
+        Err(ax_plat::irq::IrqError::Unsupported)
+    }
+
     fn set_affinity(
         _irq: IrqId,
         _affinity: ax_plat::irq::IrqAffinity,
@@ -183,7 +194,9 @@ impl IrqIf for DummyIrq {
         None
     }
 
-    fn send_ipi(_irq: IrqId, _target: IpiTarget) {}
+    fn send_ipi(_irq: IrqId, _target: IpiTarget) -> Result<(), IrqError> {
+        Ok(())
+    }
 
     fn ipi_irq() -> IrqId {
         IrqId::new(ax_plat::irq::CPU_LOCAL_IRQ_DOMAIN, HwIrq(0))

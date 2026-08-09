@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::marker::PhantomData;
+use std::marker::PhantomData;
 
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};
 use axaddrspace::{AddrSpaceResult, NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
@@ -40,39 +40,39 @@ impl<H> Copy for GenericFrameAllocator<H> {}
 
 impl<H: PagingHandler + 'static> ptg::FrameAllocator for GenericFrameAllocator<H> {
     fn alloc_frame(&self) -> Option<ptg::PhysAddr> {
-        H::alloc_frame().map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        H::alloc_frame()
     }
 
     fn dealloc_frame(&self, frame: ptg::PhysAddr) {
-        H::dealloc_frame(PhysAddr::from(frame.raw()));
+        H::dealloc_frame(frame);
     }
 
     fn phys_to_virt(&self, paddr: ptg::PhysAddr) -> *mut u8 {
-        H::phys_to_virt(PhysAddr::from(paddr.raw())).as_usize() as *mut u8
+        H::phys_to_virt(paddr).as_mut_ptr()
     }
 
     fn alloc_frames(&self, frames: usize, align: usize) -> Option<ptg::PhysAddr> {
-        H::alloc_frames(frames, align).map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        H::alloc_frames(frames, align)
     }
 
     fn dealloc_frames(&self, start: ptg::PhysAddr, frames: usize, _frame_size: usize) {
-        H::dealloc_frames(PhysAddr::from(start.raw()), frames);
+        H::dealloc_frames(start, frames);
     }
 }
 
-pub(crate) struct GenericNestedPageTable<M, P, H>
+pub(crate) struct GenericNestedPageTable<M, H>
 where
-    M: ptg::TableMeta<P = P>,
-    P: ptg::PageTableEntry,
+    M: ptg::TableMeta,
+    M::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     inner: ptg::PageTable<M, GenericFrameAllocator<H>>,
 }
 
-impl<M, P, H> GenericNestedPageTable<M, P, H>
+impl<M, H> GenericNestedPageTable<M, H>
 where
-    M: ptg::TableMeta<P = P>,
-    P: ptg::PageTableEntry,
+    M: ptg::TableMeta,
+    M::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     pub(crate) fn try_new() -> ptg::PagingResult<Self> {
@@ -82,7 +82,7 @@ where
     }
 
     pub(crate) fn root_paddr(&self) -> PhysAddr {
-        PhysAddr::from(self.inner.root_paddr().raw())
+        self.inner.root_paddr()
     }
 
     pub(crate) fn map(
@@ -92,14 +92,12 @@ where
         size: PageSize,
         flags: MappingFlags,
     ) -> ptg::PagingResult {
-        self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-            paddr: ptg::PhysAddr::new(paddr.as_usize()),
-            size: size.into(),
-            pte: flags_to_config(flags),
-            allow_huge: size.is_huge(),
-            flush: true,
-        })
+        self.inner.map_page(
+            ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            paddr,
+            size.into(),
+            flags,
+        )
     }
 
     pub(crate) fn map_region(
@@ -110,29 +108,28 @@ where
         flags: MappingFlags,
         allow_huge: bool,
     ) -> ptg::PagingResult {
-        let paddr = get_paddr(vaddr);
-        self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-            paddr: ptg::PhysAddr::new(paddr.as_usize()),
+        self.inner.map_region(
+            ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            |current| get_paddr(GuestPhysAddr::from(current.as_usize())),
             size,
-            pte: flags_to_config(flags),
+            flags,
             allow_huge,
-            flush: true,
-        })
+        )
     }
 
     pub(crate) fn unmap(
         &mut self,
         vaddr: GuestPhysAddr,
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (paddr, flags, page_size) = self.query(vaddr)?;
-        self.inner
-            .unmap(ptg::VirtAddr::new(vaddr.as_usize()), page_size.into())?;
-        Ok((paddr, flags, page_size))
+        let (paddr, flags, page_size) = self
+            .inner
+            .unmap_page(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
+        Ok((paddr, flags, nested_page_size(page_size)?))
     }
 
     pub(crate) fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> ptg::PagingResult {
-        self.inner.unmap(ptg::VirtAddr::new(start.as_usize()), size)
+        self.inner
+            .unmap(ptg::VirtAddr::from_usize(start.as_usize()), size)
     }
 
     pub(crate) fn remap(
@@ -141,7 +138,7 @@ where
         paddr: PhysAddr,
         flags: MappingFlags,
     ) -> ptg::PagingResult {
-        let start = GuestPhysAddr::from(start.as_usize() & !(ax_memory_addr::PAGE_SIZE_4K - 1));
+        let start = GuestPhysAddr::from(start.as_usize() & !(PAGE_SIZE_4K - 1));
         let _ = self.unmap(start);
         self.map(start, paddr, PageSize::Size4K, flags)
     }
@@ -152,14 +149,16 @@ where
         size: usize,
         new_flags: MappingFlags,
     ) -> ptg::PagingResult {
-        let mut vaddr = start;
-        let end = start + size;
-        while vaddr < end {
-            let (paddr, _, page_size) = self.query(vaddr)?;
-            self.inner
-                .unmap(ptg::VirtAddr::new(vaddr.as_usize()), page_size.into())?;
-            self.map(vaddr, paddr, page_size, new_flags)?;
-            vaddr += usize::from(page_size);
+        let end = start
+            .as_usize()
+            .checked_add(size)
+            .ok_or_else(|| ptg::PagingError::address_overflow("protect_region"))?;
+        let mut current = start;
+        while current.as_usize() < end {
+            let page_size = self
+                .inner
+                .protect_page(ptg::VirtAddr::from_usize(current.as_usize()), new_flags)?;
+            current += page_size;
         }
         Ok(())
     }
@@ -168,15 +167,10 @@ where
         &self,
         vaddr: GuestPhysAddr,
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (paddr, pte, level) = self
+        let (paddr, flags, page_size) = self
             .inner
-            .translate_with_level(ptg::VirtAddr::new(vaddr.as_usize()))?;
-        let config = pte.to_config(level > 1);
-        Ok((
-            PhysAddr::from(paddr.raw()),
-            config_to_flags(config),
-            page_size_for_level::<M, GenericFrameAllocator<H>>(level, config.huge),
-        ))
+            .query(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
+        Ok((paddr, flags, nested_page_size(page_size)?))
     }
 }
 
@@ -184,16 +178,20 @@ pub(crate) enum LeveledPageTable<M3, M4, H, const SUPPORT_L3: bool>
 where
     M3: ptg::TableMeta,
     M4: ptg::TableMeta,
+    M3::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
-    L3(GenericNestedPageTable<M3, M3::P, H>),
-    L4(GenericNestedPageTable<M4, M4::P, H>),
+    L3(GenericNestedPageTable<M3, H>),
+    L4(GenericNestedPageTable<M4, H>),
 }
 
 impl<M3, M4, H, const SUPPORT_L3: bool> LeveledPageTable<M3, M4, H, SUPPORT_L3>
 where
     M3: ptg::TableMeta,
     M4: ptg::TableMeta,
+    M3::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     pub(crate) fn new(level: usize) -> AxVmResult<Self> {
@@ -318,6 +316,8 @@ impl<M3, M4, H, const SUPPORT_L3: bool> NestedPageTableOps
 where
     M3: ptg::TableMeta,
     M4: ptg::TableMeta,
+    M3::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
+    M4::P: ptg::PageTableEntry<PteConfig = MappingFlags>,
     H: PagingHandler + 'static,
 {
     fn root_paddr(&self) -> PhysAddr {
@@ -392,59 +392,15 @@ where
     }
 }
 
-fn flags_to_config(flags: MappingFlags) -> ptg::PteConfig {
-    ptg::PteConfig {
-        valid: !flags.is_empty(),
-        read: flags.contains(MappingFlags::READ),
-        writable: flags.contains(MappingFlags::WRITE),
-        executable: flags.contains(MappingFlags::EXECUTE),
-        lower: flags.contains(MappingFlags::USER),
-        mem_attr: if flags.contains(MappingFlags::DEVICE) {
-            ptg::MemAttributes::Device
-        } else if flags.contains(MappingFlags::UNCACHED) {
-            ptg::MemAttributes::Uncached
-        } else {
-            ptg::MemAttributes::Normal
-        },
-        ..Default::default()
-    }
-}
-
-fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if config.read {
-        flags |= MappingFlags::READ;
-    }
-    if config.writable {
-        flags |= MappingFlags::WRITE;
-    }
-    if config.executable {
-        flags |= MappingFlags::EXECUTE;
-    }
-    if config.lower {
-        flags |= MappingFlags::USER;
-    }
-    match config.mem_attr {
-        ptg::MemAttributes::Device => flags |= MappingFlags::DEVICE,
-        ptg::MemAttributes::Uncached => flags |= MappingFlags::UNCACHED,
-        _ => {}
-    }
-    flags
-}
-
-fn page_size_for_level<M, A>(level: usize, huge: bool) -> PageSize
-where
-    M: ptg::TableMeta,
-    A: ptg::FrameAllocator,
-{
-    if !huge {
-        return PageSize::Size4K;
-    }
-    match ptg::Frame::<M, A>::level_size(level) {
-        0x10_0000 => PageSize::Size1M,
-        0x20_0000 => PageSize::Size2M,
-        0x4000_0000 => PageSize::Size1G,
-        _ => PageSize::Size4K,
+fn nested_page_size(size: usize) -> ptg::PagingResult<PageSize> {
+    match size {
+        0x1000 => Ok(PageSize::Size4K),
+        0x10_0000 => Ok(PageSize::Size1M),
+        0x20_0000 => Ok(PageSize::Size2M),
+        0x4000_0000 => Ok(PageSize::Size1G),
+        _ => Err(ptg::PagingError::invalid_size(
+            "Nested page-table level has an unsupported page size",
+        )),
     }
 }
 

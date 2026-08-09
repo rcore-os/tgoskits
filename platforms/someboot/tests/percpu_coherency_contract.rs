@@ -27,7 +27,7 @@ fn function_body<'source>(source: &'source str, signature: &str) -> &'source str
 
 #[test]
 fn aarch64_percpu_alias_is_normal_shareable_memory() {
-    let encode = function_body(AARCH64_PTE, "fn from_config(");
+    let encode = function_body(AARCH64_PTE, "fn new_page(");
     let normal = encode
         .split("MemAttributes::Normal | MemAttributes::PerCpu =>")
         .nth(1)

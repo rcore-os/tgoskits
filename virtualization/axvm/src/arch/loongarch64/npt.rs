@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-use core::{arch::asm, fmt};
+use std::{arch::asm, fmt};
 
 use axvm_types::{HostPhysAddr, MappingFlags};
 use page_table_generic as ptg;
@@ -104,48 +104,46 @@ impl LoongArchPTE {
 }
 
 impl ptg::PageTableEntry for LoongArchPTE {
-    fn from_config(config: ptg::PteConfig) -> Self {
-        if !config.valid {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: HostPhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() {
             return Self(0);
         }
-        let mut flags = if config.is_dir && !config.huge {
-            PTEFlags::V | PTEFlags::P | PTEFlags::MATL
-        } else {
-            PTEFlags::from(config_to_flags(config))
-        };
-        if config.huge {
+        let mut flags = PTEFlags::from(config);
+        if is_huge {
             flags |= PTEFlags::GH;
         }
-        Self(flags.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
-        let flags = PTEFlags::from_bits_truncate(self.0);
-        let valid = self.valid();
-        let huge = is_dir && flags.contains(PTEFlags::GH);
-        let mapping_flags = MappingFlags::from(flags);
-        ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
-            valid,
-            read: mapping_flags.contains(MappingFlags::READ),
-            writable: mapping_flags.contains(MappingFlags::WRITE),
-            executable: mapping_flags.contains(MappingFlags::EXECUTE),
-            lower: mapping_flags.contains(MappingFlags::USER),
-            is_dir: is_dir && valid && !huge,
-            huge,
-            mem_attr: if mapping_flags.contains(MappingFlags::DEVICE) {
-                ptg::MemAttributes::Device
-            } else if mapping_flags.contains(MappingFlags::UNCACHED) {
-                ptg::MemAttributes::Uncached
-            } else {
-                ptg::MemAttributes::Normal
-            },
-            ..Default::default()
-        }
+    fn new_table(paddr: HostPhysAddr) -> Self {
+        let flags = PTEFlags::V | PTEFlags::P | PTEFlags::MATL;
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn valid(&self) -> bool {
+    fn paddr(&self, _is_dir: bool) -> HostPhysAddr {
+        LoongArchPTE::paddr(self)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        self.flags()
+    }
+
+    fn present(&self) -> bool {
         PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::V)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && PTEFlags::from_bits_truncate(self.0).contains(PTEFlags::GH)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -199,25 +197,3 @@ impl ptg::TableMeta for LoongArchPagingMetaDataL4 {
 
 pub(crate) type NestedPageTable<H> =
     crate::npt::LeveledPageTable<LoongArchPagingMetaDataL3, LoongArchPagingMetaDataL4, H, true>;
-
-fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if config.read {
-        flags |= MappingFlags::READ;
-    }
-    if config.writable {
-        flags |= MappingFlags::WRITE;
-    }
-    if config.executable {
-        flags |= MappingFlags::EXECUTE;
-    }
-    if config.lower {
-        flags |= MappingFlags::USER;
-    }
-    match config.mem_attr {
-        ptg::MemAttributes::Device => flags |= MappingFlags::DEVICE,
-        ptg::MemAttributes::Uncached => flags |= MappingFlags::UNCACHED,
-        _ => {}
-    }
-    flags
-}

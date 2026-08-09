@@ -68,7 +68,7 @@ pub fn entry(args: TokenStream, input: TokenStream, name: &str) -> TokenStream {
 
     // XXX should we blacklist other attributes?
     let attrs = f.attrs;
-    let unsafety = f.sig.unsafety;
+    let safety = f.sig.safety;
     let args = f.sig.inputs;
     let stmts = f.block.stmts;
     let name = format_ident!("{}", name);
@@ -79,7 +79,7 @@ pub fn entry(args: TokenStream, input: TokenStream, name: &str) -> TokenStream {
         #[allow(non_snake_case)]
         #[unsafe(no_mangle)]
         #(#attrs)*
-        pub #unsafety extern "C" fn #name(#args) {
+        pub #safety extern "C" fn #name(#args) {
             somehal::init(&#kernel_type);
             #(#stmts)*
         }
@@ -121,7 +121,7 @@ pub fn entry_secondary(_args: TokenStream, input: TokenStream, is_someboot: bool
 
     // XXX should we blacklist other attributes?
     let attrs = f.attrs;
-    let unsafety = f.sig.unsafety;
+    let safety = f.sig.safety;
     // let args = f.sig.inputs;
     let stmts = f.block.stmts;
     let name = format_ident!("{}", name);
@@ -131,7 +131,7 @@ pub fn entry_secondary(_args: TokenStream, input: TokenStream, is_someboot: bool
         #[allow(unused_variables)]
         #[unsafe(no_mangle)]
         #(#attrs)*
-        pub #unsafety extern "C" fn #name(meta: &#crate_name::smp::PerCpuMeta) {
+        pub #safety extern "C" fn #name(meta: &#crate_name::smp::PerCpuMeta) {
             #(#stmts)*
         }
     )

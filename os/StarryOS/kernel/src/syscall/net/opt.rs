@@ -2,7 +2,7 @@ use alloc::vec;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_net::{
-    InterfaceId,
+    InterfaceId, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption, TcpInfo, TcpInfoOptions, TcpState},
 };
 use linux_raw_sys::net::{
@@ -262,6 +262,7 @@ macro_rules! call_dispatch {
             (SOL_SOCKET, SO_RCVTIMEO) => ReceiveTimeout as Duration,
             (SOL_SOCKET, SO_SNDTIMEO) => SendTimeout as Duration,
             (SOL_SOCKET, SO_PASSCRED) => PassCredentials as IntBool, // TODO: set accepted but no-op for non-unix
+            (SOL_SOCKET, SO_TIMESTAMP) => ReceiveTimestamp as IntBool,
             (SOL_SOCKET, SO_PEERCRED) => PeerCredentials as Ucred,
             (SOL_SOCKET, SO_TYPE) => SocketType as Int<i32>,       // read-only
             (SOL_SOCKET, SO_PROTOCOL) => SocketProtocol as Int<i32>,// read-only
@@ -276,6 +277,7 @@ macro_rules! call_dispatch {
             (PROTO_TCP, TCP_USER_TIMEOUT) => TcpUserTimeout as Int<u32>,
 
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
+            (PROTO_IP, IP_RECVTTL) => RecvTtl as IntBool,
             (PROTO_IP, linux_raw_sys::net::IP_RECVTOS) => RecvTos as IntBool,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
             // Path-MTU discovery mode is stored for ABI compatibility (dnsmasq TFTP sets
@@ -335,16 +337,30 @@ pub fn sys_getsockopt(
         val.cast().get_as_mut()
     }
 
+    if let Ok(socket) = NetlinkSocket::from_fd(fd) {
+        use linux_raw_sys::net::{SO_REUSEADDR, SOL_SOCKET};
+
+        if (level, optname) == (SOL_SOCKET, SO_REUSEADDR) {
+            *get::<i32>(optval, optlen)? = i32::from(socket.reuse_address());
+            return Ok(0);
+        }
+    }
+
     let socket = Socket::from_fd(fd)?;
 
-    // SO_TYPE is handled at the kernel level because the socket type is
-    // known from the Socket enum variant, not from a per-protocol option.
+    // SO_TYPE is normally implied by the kernel socket variant. Raw and Unix
+    // transports have multiple Linux-visible socket types, so query their
+    // per-socket options instead.
     {
         use ax_net::Socket as SocketInner;
         use linux_raw_sys::net::{
-            SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET,
+            SO_ACCEPTCONN, SO_BINDTODEVICE, SO_TYPE, SOCK_DGRAM, SOCK_STREAM, SOL_SOCKET,
         };
 
+        if level == SOL_SOCKET && optname == SO_ACCEPTCONN {
+            *get::<i32>(optval, optlen)? = socket.is_listening() as i32;
+            return Ok(0);
+        }
         if level == SOL_SOCKET && optname == SO_TYPE {
             if *optlen == 0 {
                 return Ok(0);
@@ -352,10 +368,7 @@ pub fn sys_getsockopt(
             let so_type: i32 = match &**socket {
                 SocketInner::Tcp(_) => SOCK_STREAM as i32,
                 SocketInner::Udp(_) => SOCK_DGRAM as i32,
-                SocketInner::Raw(_) => SOCK_RAW as i32,
-                // Unix sockets carry stream/dgram/seqpacket; the concrete type
-                // lives in the transport's socket options, not the enum variant.
-                SocketInner::Unix(_) => {
+                SocketInner::Raw(_) | SocketInner::Unix(_) => {
                     let mut t = 0i32;
                     socket.get_option(GetSocketOption::SocketType(&mut t))?;
                     t
@@ -456,8 +469,8 @@ pub fn sys_setsockopt(
 
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         use linux_raw_sys::net::{
-            SO_ATTACH_FILTER, SO_LOCK_FILTER, SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SO_SNDBUF,
-            SO_SNDBUFFORCE, SOL_SOCKET,
+            SO_ATTACH_FILTER, SO_LOCK_FILTER, SO_PASSCRED, SO_RCVBUF, SO_RCVBUFFORCE, SO_REUSEADDR,
+            SO_SNDBUF, SO_SNDBUFFORCE, SOL_SOCKET,
         };
 
         match (level, optname) {
@@ -480,6 +493,13 @@ pub fn sys_setsockopt(
             (SOL_SOCKET, SO_PASSCRED) => {
                 let value = read_int_sockopt(optval, optlen)?;
                 socket.set_passcred(value != 0);
+                return Ok(0);
+            }
+            (SOL_SOCKET, SO_REUSEADDR) => {
+                // Linux accepts this generic socket option before netlink
+                // bind. Netlink port and multicast-group binding in Starry
+                // does not use local-address reuse to resolve conflicts.
+                socket.set_reuse_address(read_int_sockopt(optval, optlen)? != 0);
                 return Ok(0);
             }
             _ => return Err(AxError::from(LinuxError::ENOPROTOOPT)),

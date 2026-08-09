@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
+use axvm_types::MappingFlags;
 use page_table_generic as ptg;
 
 #[derive(Clone, Copy)]
@@ -20,7 +21,7 @@ impl ptg::TableMeta for Sv39x4MetaData {
         // SAFETY: `hfence.gvma` only orders guest-stage translations. It does
         // not access memory directly and is required after G-stage PTE updates.
         unsafe {
-            core::arch::asm!("hfence.gvma", options(nostack, preserves_flags));
+            std::arch::asm!("hfence.gvma", options(nostack, preserves_flags));
         }
     }
 }
@@ -57,51 +58,63 @@ impl RiscvPte {
 }
 
 impl ptg::PageTableEntry for RiscvPte {
-    fn from_config(config: ptg::PteConfig) -> Self {
-        if !config.valid {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: ptg::PhysAddr, config: Self::PteConfig, _is_huge: bool) -> Self {
+        if config.is_empty() {
             return Self(0);
         }
 
-        let mut bits = (config.paddr.raw() >> 2) & Self::PPN_MASK;
+        let mut bits = (paddr.as_usize() >> 2) & Self::PPN_MASK;
         bits |= Self::V;
-        if !config.is_dir || config.huge {
-            if config.read {
-                bits |= Self::R;
-            }
-            if config.writable {
-                bits |= Self::W | Self::R;
-            }
-            if config.executable {
-                bits |= Self::X;
-            }
-            if config.lower {
-                bits |= Self::U;
-            }
-            bits |= Self::A | Self::D;
+        if config.contains(MappingFlags::READ) {
+            bits |= Self::R;
         }
+        if config.contains(MappingFlags::WRITE) {
+            bits |= Self::W | Self::R;
+        }
+        if config.contains(MappingFlags::EXECUTE) {
+            bits |= Self::X;
+        }
+        if config.contains(MappingFlags::USER) {
+            bits |= Self::U;
+        }
+        bits |= Self::A | Self::D;
         Self(bits)
     }
 
-    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
-        let flags = self.0;
-        let leaf = flags & (Self::R | Self::W | Self::X) != 0;
-        ptg::PteConfig {
-            paddr: ptg::PhysAddr::new((flags & Self::PPN_MASK) << 2),
-            valid: flags & Self::V != 0,
-            read: flags & Self::R != 0,
-            writable: flags & Self::W != 0,
-            executable: flags & Self::X != 0,
-            lower: flags & Self::U != 0,
-            dirty: flags & Self::D != 0,
-            is_dir: is_dir && !leaf,
-            huge: is_dir && leaf,
-            mem_attr: ptg::MemAttributes::Normal,
-            ..Default::default()
-        }
+    fn new_table(paddr: ptg::PhysAddr) -> Self {
+        Self(((paddr.as_usize() >> 2) & Self::PPN_MASK) | Self::V)
     }
 
-    fn valid(&self) -> bool {
+    fn paddr(&self, _is_dir: bool) -> ptg::PhysAddr {
+        ptg::PhysAddr::from_usize((self.0 & Self::PPN_MASK) << 2)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        let flags = self.0;
+        let mut config = MappingFlags::empty();
+        config.set(MappingFlags::READ, flags & Self::R != 0);
+        config.set(MappingFlags::WRITE, flags & Self::W != 0);
+        config.set(MappingFlags::EXECUTE, flags & Self::X != 0);
+        config.set(MappingFlags::USER, flags & Self::U != 0);
+        config
+    }
+
+    fn present(&self) -> bool {
         self.0 & Self::V != 0
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && self.0 & (Self::R | Self::W | Self::X) != 0
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 

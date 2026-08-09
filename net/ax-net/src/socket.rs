@@ -24,6 +24,7 @@ use core::{
     fmt::{self, Debug},
     net::SocketAddr,
     task::Context,
+    time::Duration,
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
@@ -35,7 +36,7 @@ use enum_dispatch::enum_dispatch;
 #[cfg(feature = "vsock")]
 use crate::vsock::{VsockAddr, VsockSocket};
 use crate::{
-    options::{Configurable, GetSocketOption, SetSocketOption},
+    options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
     raw::RawSocket,
     tcp::TcpSocket,
     udp::UdpSocket,
@@ -169,10 +170,22 @@ pub type CMsgData = Box<dyn CMsgPayload>;
 /// IP ancillary data reported through `recvmsg`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpCmsg {
+    /// IPv4 hop limit for `IP_RECVTTL`.
+    Ipv4Ttl(u8),
     /// IPv4 TOS byte for `IP_RECVTOS`.
     Ipv4Tos(u8),
     /// IPv6 traffic-class byte for `IPV6_RECVTCLASS`.
     Ipv6TrafficClass(u8),
+}
+
+/// Transport-independent socket-level ancillary data reported through
+/// `recvmsg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketCmsg {
+    /// Sender credentials requested with `SO_PASSCRED`.
+    Credentials(UnixCredentials),
+    /// Wall-clock receive timestamp requested with `SO_TIMESTAMP`.
+    Timestamp(Duration),
 }
 
 /// Options for sending data to a socket.
@@ -186,6 +199,8 @@ pub struct SendOptions {
     pub flags: SendFlags,
     /// Ancillary control messages.
     pub cmsg: Vec<CMsgData>,
+    /// Real credentials of the task performing this send operation.
+    pub sender_credentials: Option<UnixCredentials>,
 }
 
 /// Options for receiving data from a socket.
@@ -245,6 +260,10 @@ pub trait SocketOps: Configurable {
     fn listen(&self, _backlog: usize) -> AxResult {
         Err(AxError::OperationNotSupported)
     }
+    /// Returns whether this socket currently accepts incoming connections.
+    fn is_listening(&self) -> bool {
+        false
+    }
     /// Accepts a connection on a listening socket, returning a new socket.
     fn accept(&self) -> AxResult<Socket> {
         Err(AxError::OperationNotSupported)
@@ -279,6 +298,10 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
 
     fn listen(&self, backlog: usize) -> AxResult {
         (**self).listen(backlog)
+    }
+
+    fn is_listening(&self) -> bool {
+        (**self).is_listening()
     }
 
     fn accept(&self) -> AxResult<Socket> {

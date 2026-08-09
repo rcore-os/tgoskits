@@ -1,6 +1,6 @@
 use alloc::format;
-use core::sync::atomic::{AtomicU8, Ordering};
 
+use aarch64_cpu::asm::barrier;
 use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
 use kernutil::StaticCell;
@@ -10,10 +10,7 @@ use crate::common::ioremap;
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
-// GICv2 represents CPU interfaces with one bit in an 8-bit target mask.
-const MAX_GIC_V2_CPU_INTERFACES: usize = 8;
-static CPU_TARGETS: [AtomicU8; MAX_GIC_V2_CPU_INTERFACES] =
-    [const { AtomicU8::new(0) }; MAX_GIC_V2_CPU_INTERFACES];
+static CPU_TARGETS: CpuTargetMap = CpuTargetMap::new();
 
 module_driver!(
     name: "GICv2",
@@ -70,6 +67,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into(), hyper) };
+    gic.set_cpu_target_map(&CPU_TARGETS);
     gic.init();
     let cpu = gic.cpu_interface();
     let trap = cpu.trap_operations();
@@ -138,7 +136,18 @@ pub fn init_cpu(cpu_idx: usize) {
             cpu.current_cpu_target()
         })
     };
-    record_cpu_target(cpu_idx, target);
+    let hardware_cpu_id = super::hardware_cpu_id(cpu_idx).unwrap_or_else(|error| {
+        panic!("failed to resolve hardware ID for logical CPU {cpu_idx}: {error:?}")
+    });
+    CPU_TARGETS
+        .record(cpu_idx, hardware_cpu_id, target)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to record GICv2 route for logical CPU {cpu_idx}, hardware CPU \
+                 {hardware_cpu_id:#x}, target {:#04x}: {error:?}",
+                target.as_u8()
+            )
+        });
 
     debug!(
         "GICCv2 initialized for logical CPU {cpu_idx}, target mask {:#04x}",
@@ -158,6 +167,26 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
         gic.set_irq_enable(intid, enable);
         Ok(())
     })?
+}
+
+pub fn irq_set_trigger(irq: IrqId, trigger: Trigger) -> Result<(), crate::irq::IrqError> {
+    super::trigger::dispatch_trigger_configuration(
+        irq.hwirq.0,
+        None,
+        |raw| {
+            let intid = checked_private_intid(raw)?;
+            CPU_IF.set_cfg(intid, trigger);
+            Ok(())
+        },
+        |raw| {
+            super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
+                let intid = checked_runtime_intid(raw, gic.max_intid())?;
+                gic.set_cfg(intid, trigger);
+                Ok(())
+            })?
+        },
+        || crate::irq::IrqError::Unsupported,
+    )
 }
 
 pub fn irq_set_affinity(
@@ -187,34 +216,26 @@ fn checked_runtime_intid(raw: u32, max_intid: u32) -> Result<IntId, crate::irq::
     checked_intid(raw, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)
 }
 
-pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
-    let sgi = IntId::sgi(raw as u32);
+pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) -> Result<(), crate::irq::IrqError> {
+    let raw = u32::try_from(raw).map_err(|_| crate::irq::IrqError::InvalidIrq)?;
+    if raw >= 16 {
+        return Err(crate::irq::IrqError::InvalidIrq);
+    }
+    let sgi = IntId::sgi(raw);
     let target = match target {
-        crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
-        crate::irq::IpiTarget::Other { cpu_id } => {
-            let target_cpu = cpu_target(cpu_id).unwrap_or_else(|| {
-                panic!("GICv2 target is not initialized for logical CPU {cpu_id}")
-            });
-            SGITarget::TargetList(target_cpu)
+        crate::irq::IpiTarget::Current => SGITarget::Current,
+        crate::irq::IpiTarget::Cpu(cpu) => {
+            SGITarget::TargetList(cpu_target(cpu.0).ok_or(crate::irq::IrqError::InvalidCpu)?)
         }
-        crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
     };
+    // The relaxed GICD_SGIR write is the IPI doorbell. Publish prior Normal-
+    // memory stores before ringing it so the target cannot observe the SGI
+    // before the associated payload.
+    barrier::dmb(barrier::ISHST);
     CPU_IF.send_sgi(sgi, target);
+    Ok(())
 }
 
-fn record_cpu_target(cpu_idx: usize, target: TargetList) {
-    let target_mask = target.as_u8();
-    assert!(
-        target_mask.is_power_of_two(),
-        "invalid GICv2 target mask {target_mask:#04x} for logical CPU {cpu_idx}"
-    );
-    let slot = CPU_TARGETS
-        .get(cpu_idx)
-        .unwrap_or_else(|| panic!("GICv2 logical CPU index out of range: {cpu_idx}"));
-    slot.store(target_mask, Ordering::Release);
-}
-
-fn cpu_target(cpu_idx: usize) -> Option<TargetList> {
-    let target_mask = CPU_TARGETS.get(cpu_idx)?.load(Ordering::Acquire);
-    (target_mask != 0).then(|| TargetList::from_raw(target_mask))
+pub(super) fn cpu_target(cpu_idx: usize) -> Option<TargetList> {
+    CPU_TARGETS.for_logical_cpu(cpu_idx)
 }

@@ -20,9 +20,12 @@ pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wa
 pub use crate::task::{AxTaskExt, TaskExt};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "irq"))))]
 #[cfg(feature = "irq")]
-pub use crate::timers::register_timer_callback;
+pub use crate::timers::{
+    register_timer_callback, register_timer_deadline_source, register_timer_irq_callback,
+};
 #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use crate::{
+    interrupt::InterruptSnapshot,
     task::{CurrentTask, TaskId, TaskInner, TaskState},
     wait_queue::WaitQueue,
 };
@@ -188,6 +191,7 @@ pub fn on_timer_tick() {
 #[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
+    crate::timers::begin_hardware_timer_irq();
     crate::timers::check_events(scheduler_tick);
     if scheduler_tick {
         // Since irq and preemption are both disabled here,
@@ -200,6 +204,17 @@ pub fn on_timer_irq(scheduler_tick: bool) {
 #[doc(hidden)]
 pub fn next_timer_deadline_nanos() -> Option<u64> {
     crate::timers::next_deadline_nanos()
+}
+
+/// Requests that the per-CPU hardware timer observe an external deadline.
+///
+/// The caller must publish the same deadline through a source registered with
+/// [`register_timer_deadline_source`] before calling this function. The timer
+/// is only moved earlier here; the common timer IRQ path recomputes the full
+/// minimum after every interrupt.
+#[cfg(feature = "irq")]
+pub fn request_timer_deadline_nanos(deadline_nanos: u64) {
+    crate::timers::request_deadline_nanos(deadline_nanos);
 }
 
 /// Scheduler ticks CPU `cpu` has spent running a non-idle task since boot.

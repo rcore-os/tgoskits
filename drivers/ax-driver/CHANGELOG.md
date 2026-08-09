@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.2...ax-driver-v0.12.3) - 2026-08-09
+
+### Fixed
+
+- *(rknpu)* set RK3588 NPU clock to 800 MHz ([#1908](https://github.com/rcore-os/tgoskits/pull/1908))
+- *(dwmmc)* restore RK3588 SD card boot ([#1830](https://github.com/rcore-os/tgoskits/pull/1830))
+
+### Other
+
+- *(axvm)* unify guest devices and AArch64 timer ownership ([#1717](https://github.com/rcore-os/tgoskits/pull/1717))
+
 ## [0.12.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.1...ax-driver-v0.12.2) - 2026-08-03
 
 ### Added

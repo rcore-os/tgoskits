@@ -12,6 +12,16 @@ use crate::irq_routing::{
 
 pub struct Plat;
 
+pub(crate) fn take_plic_claim(
+    active: &mut plic::ActiveIrq,
+) -> Option<(usize, core::num::NonZeroU32)> {
+    active.take_plic_claim().map(plic::PlicClaim::into_parts)
+}
+
+pub(crate) fn complete_deferred_plic_claim(context: usize, source: core::num::NonZeroU32) -> bool {
+    plic::complete_deferred_claim(context, source)
+}
+
 fn plic_irq_id_from_claimed_source(source: usize) -> Result<IrqId, IrqError> {
     let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvPlic)
         .ok_or(IrqError::Unsupported)?;
@@ -101,22 +111,16 @@ impl PlatOp for Plat {
         }
     }
 
-    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) {
+    fn send_ipi(irq: IrqId, target: crate::irq::IpiTarget) -> Result<(), IrqError> {
         if irq != Self::ipi_irq() {
-            warn!("refuse to send non-runtime RISC-V IPI IRQ {irq:?}");
-            return;
+            return Err(IrqError::InvalidIrq);
         }
         match target {
-            crate::irq::IpiTarget::Current { cpu_id } | crate::irq::IpiTarget::Other { cpu_id } => {
-                plic::send_ipi_to_cpu(cpu_id);
+            crate::irq::IpiTarget::Current => {
+                let cpu = crate::cpu::current_cpu_idx().ok_or(IrqError::InvalidCpu)?;
+                plic::send_ipi_to_cpu(cpu)
             }
-            crate::irq::IpiTarget::AllExceptCurrent { cpu_id, cpu_num } => {
-                for target_cpu in 0..cpu_num {
-                    if target_cpu != cpu_id {
-                        plic::send_ipi_to_cpu(target_cpu);
-                    }
-                }
-            }
+            crate::irq::IpiTarget::Cpu(cpu) => plic::send_ipi_to_cpu(cpu.0),
         }
     }
 
@@ -124,7 +128,7 @@ impl PlatOp for Plat {
         IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(RISCV_S_SOFT_CAUSE as u32))
     }
 
-    fn send_ipi_to_cpu(cpu_id: usize) {
-        plic::send_ipi_to_cpu(cpu_id);
+    fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
+        plic::send_ipi_to_cpu(cpu_id)
     }
 }

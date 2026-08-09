@@ -19,15 +19,12 @@
 //! VM execution does not pay for event storage or timestamp reads.
 
 #[cfg(feature = "realtime-trace")]
-use alloc::{
+use std::{
     collections::{BTreeMap, VecDeque},
+    sync::Mutex,
+    sync::atomic::{AtomicU64, Ordering},
     vec::Vec,
 };
-#[cfg(feature = "realtime-trace")]
-use core::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(feature = "realtime-trace")]
-use ax_kspin::SpinNoIrq as Mutex;
 
 #[cfg(feature = "realtime-trace")]
 use crate::host::{HostCpu, HostTime, default_host};
@@ -157,7 +154,7 @@ impl VirqTraceRing {
             kind,
         };
 
-        let mut rings = self.rings.lock();
+        let mut rings = self.rings.lock().unwrap_or_else(|error| error.into_inner());
         let ring = rings.entry(event.cpu_id).or_default();
         if ring.len() == CAPACITY_PER_CPU {
             ring.pop_front();
@@ -166,7 +163,7 @@ impl VirqTraceRing {
     }
 
     pub(crate) fn snapshot(&self) -> Vec<VirqTraceEvent> {
-        let rings = self.rings.lock();
+        let rings = self.rings.lock().unwrap_or_else(|error| error.into_inner());
         let mut events = rings
             .values()
             .flat_map(|ring| ring.iter().copied())

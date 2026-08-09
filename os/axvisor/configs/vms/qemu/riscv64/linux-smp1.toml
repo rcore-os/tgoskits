@@ -6,16 +6,17 @@ id = 1
 # Guest vm name.
 name = "linux-qemu"
 # Virtualization type.
-vm_type = 1
+guest_type = "passthrough"
 # The number of virtual CPUs.
-cpu_num = 1
+cpu_num = 3
 # Guest vm physical cpu sets.
-phys_cpu_ids = [0]
-
+phys_cpu_ids = [0, 1, 2]
+phys_cpu_sets = [1, 2, 4]
 #
 # Vm kernel configs
 #
 [kernel]
+cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw"
 # The entry point of the kernel image.
 entry_point = 0x9020_0000
 # The location of image: "memory" | "fs".
@@ -39,37 +40,8 @@ memory_regions = [
 #
 # Device specifications
 #
+
+# Physical-device selection. Virtual platform devices are machine-owned.
 [devices]
-# The interrupt mode.
-interrupt_mode = "passthrough"
-
-# Pass-through devices.
-# Name Base-Ipa Base-Pa Length Alloc-Irq.
-passthrough_devices = [
-    ["/soc/serial@10000000"],
-    ["/soc/virtio_mmio@10001000"],
-    ["/soc/virtio_mmio@10002000"],
-    ["/soc/virtio_mmio@10003000"],
-    ["/soc/virtio_mmio@10004000"],
-    ["/soc/virtio_mmio@10005000"],
-    ["/soc/virtio_mmio@10006000"],
-    ["/soc/virtio_mmio@10007000"],
-    ["/soc/virtio_mmio@10008000"],
-]
-
-# Passthrough addresses.
-# Base-GPA  Length.
-passthrough_addresses = [
-    [0x1000_0000, 0x1000],     # uart
-    [0x1000_1000, 0x8000],     # virtio-mmio
-]
-
-# Devices that are not desired to be passed through to the guest
-excluded_devices = [
-]
-
-# Emu_devices.
-# Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
-emu_devices = [
-    ["plic", 0x0c00_0000, 0x60_0000, 0, 0x30, [2]],     # [context_num]
-]
+passthrough = []
+disabled = []

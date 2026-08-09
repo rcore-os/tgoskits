@@ -47,6 +47,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 | `cargo xtask board` | 远程板卡管理（ls/connect/config） | [板卡管理](./board) |
 | `cargo xtask backtrace` | host 端 backtrace 符号化 | [Backtrace 符号化](./backtrace) |
 | `cargo xtask image` | TGOS rootfs/guest 镜像管理 | [镜像管理](./image) |
+| `cargo xtask ovmf` | 获取经校验的 OVMF CODE/VARS 路径 | 本节 |
 | `cargo xtask axloader` | UEFI bootloader 构建与 HTTP smoke 测试 | [Axloader](./axloader) |
 | `cargo xtask agent-review-bench` | 历史 PR 快照的离线 review benchmark | [Review Benchmark](./agent-review-bench) |
 | **OS 子系统** | | |
@@ -177,7 +178,20 @@ TGOS rootfs/guest 镜像管理。**全局选项**（所有子命令可用）：`
 
 详见 [镜像管理](./image)。
 
-### 4.4 UEFI 引导
+### 4.4 OVMF 固件
+
+通过 Ostool 的固定版本、镜像探测和 SHA-256 校验流程准备 OVMF，并在 stdout 输出一个
+仅包含 `code`、`vars` 路径的 JSON 对象：
+
+```bash
+cargo xtask ovmf --arch x86_64
+TGOS_OVMF_DIR=/path/to/cache cargo xtask ovmf --arch aarch64
+```
+
+`--arch` 支持 `x86_64`、`aarch64`、`riscv64`、`loongarch64` 和 `ia32`。默认缓存根目录为
+`$TMPDIR/ostool/ovmf`；`TGOS_OVMF_DIR` 只覆盖缓存根目录，不绕过版本选择和校验。
+
+### 4.5 UEFI 引导
 
 UEFI bootloader（axloader）构建与 HTTP smoke 测试。
 
@@ -188,7 +202,7 @@ UEFI bootloader（axloader）构建与 HTTP smoke 测试。
 
 详见 [Axloader](./axloader)。
 
-### 4.5 Review Benchmark
+### 4.6 Review Benchmark
 
 离线回放 `scripts/agent-review-bench/cases/*.toml` 中登记的历史 PR 快照，并对 review findings 评分。该命令面向维护 benchmark，而非日常构建：
 

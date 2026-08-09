@@ -1,4 +1,9 @@
-use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    borrow::ToOwned,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
     borrow::Borrow,
@@ -18,6 +23,11 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
+
+const TMPFS_MAGIC: u32 = 0x0102_1994;
+const RAMFS_MAGIC: u32 = 0x8584_58f6;
+const STATFS_BLOCK_SIZE: u64 = 4096;
+const DEFAULT_TMPFS_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
 
@@ -68,6 +78,10 @@ impl Borrow<str> for FileName {
 
 /// A simple in-memory filesystem that supports basic file operations.
 pub struct MemoryFs {
+    name: &'static str,
+    fs_type: u32,
+    size_limit: Option<u64>,
+    used_bytes: AtomicU64,
     // Inodes may be released from atomic cleanup paths, so the slab and
     // metadata locks must not sleep.
     inodes: SpinNoIrq<Slab<Arc<Inode>>>,
@@ -80,7 +94,21 @@ impl MemoryFs {
     /// Creates a new empty memory filesystem.
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> Filesystem {
-        let (fs, handle) = Self::new_with_handle();
+        let (fs, handle) = Self::new_with_handle_and_limit(None);
+        drop(handle);
+        fs
+    }
+
+    /// Creates an empty tmpfs instance with a logical size limit.
+    pub fn new_with_size_limit(size_limit: u64) -> Filesystem {
+        let (fs, handle) = Self::new_with_handle_and_limit(Some(size_limit));
+        drop(handle);
+        fs
+    }
+
+    /// Creates an empty ramfs instance with the Linux-visible ramfs identity.
+    pub fn new_ramfs() -> Filesystem {
+        let (fs, handle) = Self::new_named_with_handle("ramfs", RAMFS_MAGIC, None);
         drop(handle);
         fs
     }
@@ -88,7 +116,23 @@ impl MemoryFs {
     /// Creates a new empty memory filesystem and returns a handle to the
     /// underlying `MemoryFs` so callers can create anonymous (unlinked) nodes.
     pub fn new_with_handle() -> (Filesystem, Arc<Self>) {
+        Self::new_with_handle_and_limit(None)
+    }
+
+    fn new_with_handle_and_limit(size_limit: Option<u64>) -> (Filesystem, Arc<Self>) {
+        Self::new_named_with_handle("tmpfs", TMPFS_MAGIC, size_limit)
+    }
+
+    fn new_named_with_handle(
+        name: &'static str,
+        fs_type: u32,
+        size_limit: Option<u64>,
+    ) -> (Filesystem, Arc<Self>) {
         let handle = Arc::new(Self {
+            name,
+            fs_type,
+            size_limit,
+            used_bytes: AtomicU64::new(0),
             inodes: SpinNoIrq::new(Slab::new()),
             root: SpinNoIrq::new(None),
         });
@@ -110,6 +154,32 @@ impl MemoryFs {
 
     fn get(&self, ino: u64) -> Arc<Inode> {
         self.inodes.lock()[ino as usize - 1].clone()
+    }
+
+    fn resize_usage(&self, old_len: u64, new_len: u64) -> VfsResult<()> {
+        if new_len <= old_len {
+            self.used_bytes
+                .fetch_sub(old_len - new_len, AtomicOrdering::AcqRel);
+            return Ok(());
+        }
+
+        let growth = new_len - old_len;
+        let mut used = self.used_bytes.load(AtomicOrdering::Acquire);
+        loop {
+            let new_used = used.checked_add(growth).ok_or(VfsError::StorageFull)?;
+            if self.size_limit.is_some_and(|limit| new_used > limit) {
+                return Err(VfsError::StorageFull);
+            }
+            match self.used_bytes.compare_exchange_weak(
+                used,
+                new_used,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(observed) => used = observed,
+            }
+        }
     }
 
     /// Creates an anonymous (unlinked) regular file inode within this tmpfs.
@@ -134,7 +204,7 @@ impl MemoryFs {
 
 impl FilesystemOps for MemoryFs {
     fn name(&self) -> &str {
-        "tmpfs"
+        self.name
     }
 
     fn root_dir(&self) -> DirEntry {
@@ -151,12 +221,18 @@ impl FilesystemOps for MemoryFs {
         // accounting layer, so advertise 4 GiB / 4 GiB free with realistic block
         // size, which is enough to unblock every Java server we've hit and remains
         // accurate when the guest VM has >= 2 GiB.
+        let size_limit = self.size_limit.unwrap_or(DEFAULT_TMPFS_SIZE);
+        let blocks = size_limit.div_ceil(STATFS_BLOCK_SIZE);
+        let used_blocks = self
+            .used_bytes
+            .load(AtomicOrdering::Acquire)
+            .div_ceil(STATFS_BLOCK_SIZE);
         Ok(StatFs {
-            fs_type: 0x01021994,
-            block_size: 4096,
-            blocks: 1 << 20,
-            blocks_free: 1 << 20,
-            blocks_available: 1 << 20,
+            fs_type: self.fs_type,
+            block_size: STATFS_BLOCK_SIZE as u32,
+            blocks,
+            blocks_free: blocks.saturating_sub(used_blocks),
+            blocks_available: blocks.saturating_sub(used_blocks),
             file_count: 0,
             free_file_count: 1 << 16,
             name_length: axfs_ng_vfs::path::MAX_NAME_LEN as _,
@@ -181,7 +257,7 @@ struct FileContent {
     ///
     /// We only need to store the length here because we delegate the actual
     /// content management to page cache.
-    length: Mutex<u64>,
+    length: AtomicU64,
     symlink: Mutex<Option<String>>,
 }
 
@@ -208,6 +284,7 @@ enum NodeContent {
 }
 
 struct Inode {
+    fs: Weak<MemoryFs>,
     ino: u64,
     metadata: SpinNoIrq<Metadata>,
     content: NodeContent,
@@ -249,6 +326,7 @@ impl Inode {
             _ => NodeContent::File(FileContent::default()),
         };
         let result = Arc::new(Self {
+            fs: Arc::downgrade(fs),
             ino,
             metadata: SpinNoIrq::new(metadata),
             content,
@@ -281,6 +359,19 @@ impl Inode {
             NodeContent::Dir(ref content) => Ok(content),
             _ => Err(VfsError::NotADirectory),
         }
+    }
+}
+
+impl Drop for Inode {
+    fn drop(&mut self) {
+        let NodeContent::File(content) = &self.content else {
+            return;
+        };
+        let Some(fs) = self.fs.upgrade() else {
+            return;
+        };
+        let length = content.length.load(AtomicOrdering::Acquire);
+        fs.used_bytes.fetch_sub(length, AtomicOrdering::AcqRel);
     }
 }
 
@@ -367,7 +458,7 @@ impl NodeOps for MemoryNode {
         let mut metadata = self.inode.metadata.lock().clone();
         match &self.inode.content {
             NodeContent::File(content) => {
-                metadata.size = *content.length.lock();
+                metadata.size = content.length.load(AtomicOrdering::Acquire);
             }
             NodeContent::Dir(dir) => {
                 metadata.size = dir.entries.lock().len() as u64;
@@ -435,13 +526,19 @@ impl FileNodeOps for MemoryNode {
     }
 
     fn set_len(&self, len: u64) -> VfsResult<()> {
-        *self.inode.as_file()?.length.lock() = len;
+        let file = self.inode.as_file()?;
+        let old_len = file.length.load(AtomicOrdering::Acquire);
+        self.fs.resize_usage(old_len, len)?;
+        file.length.store(len, AtomicOrdering::Release);
         Ok(())
     }
 
     fn set_symlink(&self, target: &str) -> VfsResult<()> {
         let file = self.inode.as_file()?;
-        *file.length.lock() = target.len() as u64;
+        let old_len = file.length.load(AtomicOrdering::Acquire);
+        let new_len = target.len() as u64;
+        self.fs.resize_usage(old_len, new_len)?;
+        file.length.store(new_len, AtomicOrdering::Release);
         *file.symlink.lock() = Some(target.to_owned());
         Ok(())
     }

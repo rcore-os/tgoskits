@@ -1,10 +1,9 @@
 //! AxVM-owned error contract.
 
-use alloc::{format, string::String};
-use core::fmt::Display;
+use std::{fmt::Display, format, string::String};
 
 use axaddrspace::AddrSpaceError;
-use axdevice::DeviceManagerError;
+use axdevice::{DeviceManagerError, ResourcePlanningError};
 use axdevice_base::{DeviceError, IrqError, RegistryError};
 use axhvc::HyperCallError;
 use axvmconfig::AxVmConfigError;
@@ -39,6 +38,15 @@ pub enum AxVmError {
         to: VmStatus,
         operation: &'static str,
     },
+    /// A lifecycle operation failed and its compensating cleanup also failed.
+    #[error(
+        "VM lifecycle operation {operation} failed: {primary}; rollback also failed: {rollback}"
+    )]
+    LifecycleRollback {
+        operation: &'static str,
+        primary: String,
+        rollback: String,
+    },
     /// No registered VM has the requested identifier.
     #[error("VM {vm_id} was not found")]
     VmNotFound { vm_id: VMId },
@@ -54,6 +62,9 @@ pub enum AxVmError {
         resource: &'static str,
         detail: String,
     },
+    /// A physical device is permanently owned by the host.
+    #[error("physical device {path} is a host-owned device")]
+    HostOwnedDevice { path: String },
     /// The requested operation is not implemented by this host or backend.
     #[error("unsupported VM operation {operation}: {detail}")]
     Unsupported {
@@ -99,6 +110,15 @@ pub enum AxVmError {
         operation: &'static str,
         detail: String,
     },
+    /// Deterministic virtual-device resource planning failed.
+    #[error(transparent)]
+    DeviceResourcePlanning(#[from] ResourcePlanningError),
+    /// Host-derived GIC firmware geometry is invalid.
+    #[error(transparent)]
+    GuestGicProfile(#[from] crate::machine::GuestGicProfileError),
+    /// Host-derived PLIC firmware geometry is invalid.
+    #[error(transparent)]
+    GuestPlicProfile(#[from] crate::machine::GuestPlicProfileError),
 }
 
 impl AxVmError {
@@ -111,6 +131,18 @@ impl AxVmError {
             from,
             to,
             operation,
+        }
+    }
+
+    pub(crate) fn lifecycle_rollback(
+        operation: &'static str,
+        primary: impl Display,
+        rollback: impl Display,
+    ) -> Self {
+        Self::LifecycleRollback {
+            operation,
+            primary: format!("{primary}"),
+            rollback: format!("{rollback}"),
         }
     }
 
@@ -396,7 +428,7 @@ pub(crate) use ax_err_type;
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
+    use std::string::ToString;
 
     use super::*;
 

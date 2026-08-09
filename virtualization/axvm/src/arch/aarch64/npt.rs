@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-use core::{arch::asm, fmt};
+use std::{arch::asm, fmt};
 
 use axvm_types::{HostPhysAddr, MappingFlags};
 use page_table_generic as ptg;
@@ -133,49 +133,48 @@ impl A64PTEHV {
 }
 
 impl ptg::PageTableEntry for A64PTEHV {
-    fn from_config(config: ptg::PteConfig) -> Self {
-        if !config.valid {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: HostPhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() {
             return Self(0);
         }
-        let mut attr = if config.is_dir && !config.huge {
-            DescriptorAttr::NON_BLOCK | DescriptorAttr::VALID
-        } else {
-            DescriptorAttr::from(config_to_flags(config)) | DescriptorAttr::AF
-        };
-        if !config.is_dir || !config.huge {
+        let mut attr = DescriptorAttr::from(config) | DescriptorAttr::AF;
+        if !is_huge {
             attr |= DescriptorAttr::NON_BLOCK;
         }
-        Self(attr.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
+        Self(attr.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
-        let attr = DescriptorAttr::from_bits_truncate(self.0);
-        let valid = self.valid();
-        let non_block = attr.contains(DescriptorAttr::NON_BLOCK);
-        let huge = is_dir && valid && !non_block;
-        let mapping_flags = MappingFlags::from(attr);
-        ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
-            valid,
-            read: mapping_flags.contains(MappingFlags::READ),
-            writable: mapping_flags.contains(MappingFlags::WRITE),
-            executable: mapping_flags.contains(MappingFlags::EXECUTE),
-            lower: mapping_flags.contains(MappingFlags::USER),
-            is_dir: is_dir && valid && non_block,
-            huge,
-            mem_attr: if mapping_flags.contains(MappingFlags::DEVICE) {
-                ptg::MemAttributes::Device
-            } else if mapping_flags.contains(MappingFlags::UNCACHED) {
-                ptg::MemAttributes::Uncached
-            } else {
-                ptg::MemAttributes::Normal
-            },
-            ..Default::default()
-        }
+    fn new_table(paddr: HostPhysAddr) -> Self {
+        let attr = DescriptorAttr::NON_BLOCK | DescriptorAttr::VALID;
+        Self(attr.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn valid(&self) -> bool {
+    fn paddr(&self, _is_dir: bool) -> HostPhysAddr {
+        A64PTEHV::paddr(self)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        self.flags()
+    }
+
+    fn present(&self) -> bool {
         DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::VALID)
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir
+            && self.present()
+            && !DescriptorAttr::from_bits_truncate(self.0).contains(DescriptorAttr::NON_BLOCK)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -206,7 +205,7 @@ impl ptg::TableMeta for A64HVPagingMetaDataL3 {
         // current EL2 context; they do not dereference memory.
         unsafe {
             if let Some(vaddr) = vaddr {
-                asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.raw())
+                asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
             } else {
                 asm!("tlbi alle2is; dsb sy; isb")
             }
@@ -232,22 +231,3 @@ impl ptg::TableMeta for A64HVPagingMetaDataL4 {
 
 pub(crate) type NestedPageTable<H> =
     crate::npt::LeveledPageTable<A64HVPagingMetaDataL3, A64HVPagingMetaDataL4, H, true>;
-
-fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
-    let mut flags = MappingFlags::empty();
-    if config.read {
-        flags |= MappingFlags::READ;
-    }
-    if config.writable {
-        flags |= MappingFlags::WRITE;
-    }
-    if config.executable {
-        flags |= MappingFlags::EXECUTE;
-    }
-    match config.mem_attr {
-        ptg::MemAttributes::Device => flags |= MappingFlags::DEVICE,
-        ptg::MemAttributes::Uncached => flags |= MappingFlags::UNCACHED,
-        _ => {}
-    }
-    flags
-}

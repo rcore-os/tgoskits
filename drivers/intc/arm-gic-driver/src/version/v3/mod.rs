@@ -257,6 +257,33 @@ pub struct Gic {
 
 unsafe impl Send for Gic {}
 
+/// Lock-free access to GICv3 Distributor state used by IRQ completion paths.
+#[derive(Clone, Copy)]
+pub struct DistributorOperations {
+    gicd: *mut DistributorReg,
+}
+
+// SAFETY: the pointer names the immutable, permanently mapped GICD register
+// block. Individual Distributor registers provide the required MMIO
+// synchronization; this capability does not expose ordinary Rust memory.
+unsafe impl Send for DistributorOperations {}
+// SAFETY: see the `Send` implementation. Concurrent reads of GICD_ISPENDR are
+// architecturally supported and do not create Rust aliases to mutable memory.
+unsafe impl Sync for DistributorOperations {}
+
+impl DistributorOperations {
+    fn gicd(&self) -> &DistributorReg {
+        // SAFETY: `Gic::distributor_operations` only constructs this capability
+        // from the live GICD mapping established during platform discovery.
+        unsafe { &*self.gicd }
+    }
+
+    /// Returns the Distributor pending state for one interrupt.
+    pub fn is_pending(&self, intid: IntId) -> bool {
+        self.gicd().ISPENDR.get_irq_bit(intid.into())
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct CpuInterfaceInit {
     gicr: VirtAddr,
@@ -307,6 +334,16 @@ impl Gic {
 
     pub fn gicd_addr(&self) -> VirtAddr {
         self.gicd
+    }
+
+    /// Returns an IRQ-safe view of stable Distributor state.
+    ///
+    /// The returned capability does not own the register mapping. It remains
+    /// valid for the lifetime of the initialized GIC driver.
+    pub fn distributor_operations(&self) -> DistributorOperations {
+        DistributorOperations {
+            gicd: self.gicd.as_ptr(),
+        }
     }
 
     pub fn cpu_interface_init(&self) -> CpuInterfaceInit {

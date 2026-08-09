@@ -1,44 +1,25 @@
 //! Device construction for VM preparation.
 
-use alloc::vec::Vec;
-
-use axdevice::{DeviceBuildContext, DeviceFactoryRegistry, DeviceRuntime, RuntimeAccessPorts};
-use axvm_types::EmulatedDeviceConfig;
+use axdevice::{DeviceRuntime, DeviceRuntimeBuilder, RuntimeAccessPorts};
 
 use super::super::AxVMResources;
-use crate::{AxVmResult, irq::InterruptFabric};
+use crate::AxVmResult;
 
 pub(crate) struct PreparedDevices {
     pub(crate) devices: DeviceRuntime,
 }
 
 impl PreparedDevices {
-    #[allow(dead_code)]
-    pub(crate) fn build_common(
+    pub(crate) fn build_planned(
         resources: &AxVMResources,
-        factories: &DeviceFactoryRegistry,
-        interrupt_fabric: &InterruptFabric,
         access_ports: RuntimeAccessPorts,
     ) -> AxVmResult<Self> {
-        Self::build_common_with_extra(resources, factories, interrupt_fabric, &[], access_ports)
-    }
-
-    pub(crate) fn build_common_with_extra(
-        resources: &AxVMResources,
-        factories: &DeviceFactoryRegistry,
-        interrupt_fabric: &InterruptFabric,
-        extra_configs: &[EmulatedDeviceConfig],
-        access_ports: RuntimeAccessPorts,
-    ) -> AxVmResult<Self> {
-        let build_context = DeviceBuildContext::new(interrupt_fabric);
-        let mut configs: Vec<EmulatedDeviceConfig> = resources.config.emu_devices().to_vec();
-        configs.extend_from_slice(extra_configs);
-        let devices = DeviceRuntime::build_with_factories_and_ports(
-            &configs,
-            factories,
-            &build_context,
-            access_ports,
-        )?;
+        let planned = resources.planned_devices();
+        let mut builder = DeviceRuntimeBuilder::new(access_ports);
+        for node in planned.graph().nodes() {
+            builder.build_graph_node(node, planned.graph().resource_plan())?;
+        }
+        let devices = builder.finish(planned.graph().resource_plan())?;
 
         Ok(Self { devices })
     }

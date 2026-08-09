@@ -1,0 +1,21 @@
+#ifndef _SYS_EVENTFD_H
+#define _SYS_EVENTFD_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <fcntl.h>
+#include <stdint.h>
+
+#define EFD_SEMAPHORE 1
+#define EFD_CLOEXEC   O_CLOEXEC
+#define EFD_NONBLOCK  O_NONBLOCK
+
+int eventfd(unsigned int __count, int __flags);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif //_SYS_EVENTFD_H

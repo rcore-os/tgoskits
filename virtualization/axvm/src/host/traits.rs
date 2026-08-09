@@ -1,6 +1,6 @@
 //! Internal host capability traits used by the AxVM runtime.
 
-use core::time::Duration;
+use std::time::Duration;
 
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
@@ -36,8 +36,8 @@ pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
 
-    /// Program the host one-shot timer.
-    fn set_oneshot_timer(&self, deadline_ns: u64);
+    /// Publish an earlier deadline to the host's shared timer arbiter.
+    fn request_timer_deadline(&self, deadline_ns: u64);
 }
 
 /// Host CPU topology and affinity operations.

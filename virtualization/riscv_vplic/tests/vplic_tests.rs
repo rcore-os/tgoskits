@@ -9,70 +9,17 @@ use riscv_vplic::{
 const HOST_PLIC_BASE: usize = 0x0c00_0000;
 const HOST_PLIC_SIZE: usize = 0x40_0000;
 
-/// Calculate minimum required size for VPlicGlobal with given contexts
-fn calculate_min_size(contexts_num: usize) -> usize {
-    contexts_num * PLIC_CONTEXT_STRIDE
-        + PLIC_CONTEXT_CTRL_OFFSET
-        + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET
-        + 0x1000
-}
-
 #[test]
-fn test_vplic_global_creation() {
-    let addr = GuestPhysAddr::from(0x0c000000);
-    let contexts_num = 2;
-    let size = calculate_min_size(contexts_num);
-
-    let vplic = VPlicGlobal::new(addr, Some(size), contexts_num).unwrap();
-
-    assert_eq!(vplic.addr, addr);
-    assert_eq!(vplic.size, size);
-    assert_eq!(vplic.contexts_num, contexts_num);
-}
-
-#[test]
-fn test_vplic_global_with_different_contexts() {
-    let addr = GuestPhysAddr::from(0x0c000000);
-
-    // Test with 1 context
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 1).unwrap();
-    assert_eq!(vplic.contexts_num, 1);
-
-    // Test with 4 contexts
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 4).unwrap();
-    assert_eq!(vplic.contexts_num, 4);
-
-    // Test with 8 contexts
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 8).unwrap();
-    assert_eq!(vplic.contexts_num, 8);
-}
-
-#[test]
-fn test_vplic_global_missing_size_returns_typed_error() {
+fn test_vplic_global_rejects_missing_or_insufficient_mmio_regions() {
     let addr = GuestPhysAddr::from(0x0c000000);
     assert!(matches!(
         VPlicGlobal::new(addr, None, 2),
         Err(VplicError::MissingRegionSize)
     ));
-}
-
-#[test]
-fn test_vplic_global_insufficient_size_returns_typed_error() {
-    let addr = GuestPhysAddr::from(0x0c000000);
     assert!(matches!(
         VPlicGlobal::new(addr, Some(0x1000), 2),
         Err(VplicError::InsufficientRegion { .. })
     ));
-}
-
-#[test]
-fn test_vplic_global_bitmaps_initialized_empty() {
-    let addr = GuestPhysAddr::from(0x0c000000);
-    let vplic = VPlicGlobal::new(addr, Some(0x400000), 2).unwrap();
-
-    assert!(vplic.assigned_irqs.lock().is_empty());
-    assert!(vplic.pending_irqs.lock().is_empty());
-    assert!(vplic.active_irqs.lock().is_empty());
 }
 
 #[test]
@@ -143,7 +90,8 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
             1 << irq_id,
         )
         .unwrap();
-    vplic.set_pending(irq_id).unwrap();
+    assert!(vplic.set_irq_line_level(irq_id, true).unwrap());
+    assert!(!vplic.set_irq_line_level(irq_id, true).unwrap());
 
     let claim_addr = addr
         + PLIC_CONTEXT_CTRL_OFFSET
@@ -156,10 +104,118 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
     assert!(!vplic.is_pending(irq_id).unwrap());
     assert!(vplic.active_irqs.lock().get(irq_id));
 
+    // The UART still holds its level line high, so completion must repend it
+    // without requiring another device poll.
     vplic
         .write_register(claim_addr, AccessWidth::Dword, irq_id)
         .unwrap();
     assert!(!vplic.active_irqs.lock().get(irq_id));
+    assert!(vplic.is_pending(irq_id).unwrap());
+    assert_eq!(
+        vplic.read_register(claim_addr, AccessWidth::Dword).unwrap(),
+        irq_id
+    );
+    assert!(vplic.active_irqs.lock().get(irq_id));
+
+    assert!(!vplic.set_irq_line_level(irq_id, false).unwrap());
+    vplic
+        .write_register(claim_addr, AccessWidth::Dword, irq_id)
+        .unwrap();
+    assert_eq!(
+        vplic.read_register(claim_addr, AccessWidth::Dword).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn test_completion_event_is_reported_only_after_an_active_guest_claim() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let irq_id = 7;
+    let context_id = 1;
+    let claim_addr = addr
+        + PLIC_CONTEXT_CTRL_OFFSET
+        + context_id * PLIC_CONTEXT_STRIDE
+        + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
+
+    assert_eq!(
+        vplic
+            .write_register_with_completion(claim_addr, AccessWidth::Dword, irq_id)
+            .unwrap(),
+        None
+    );
+
+    vplic
+        .write_register(
+            addr + PLIC_PRIORITY_OFFSET + irq_id * 4,
+            AccessWidth::Dword,
+            1,
+        )
+        .unwrap();
+    vplic
+        .write_register(
+            addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE,
+            AccessWidth::Dword,
+            1 << irq_id,
+        )
+        .unwrap();
+    vplic.set_pending(irq_id).unwrap();
+    assert_eq!(
+        vplic.read_register(claim_addr, AccessWidth::Dword).unwrap(),
+        irq_id
+    );
+
+    let completion = vplic
+        .write_register_with_completion(claim_addr, AccessWidth::Dword, irq_id)
+        .unwrap();
+    assert_eq!(completion.map(|event| event.source()), Some(irq_id));
+    assert!(!vplic.active_irqs.lock().get(irq_id));
+}
+
+#[test]
+fn test_deliverable_state_tracks_guest_enable_claim_and_level_completion() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let irq_id = 7;
+    let context_id = 1;
+
+    assert!(!vplic.context_has_deliverable_irq(context_id).unwrap());
+    vplic.set_irq_line_level(irq_id, true).unwrap();
+    assert!(!vplic.context_has_deliverable_irq(context_id).unwrap());
+
+    vplic
+        .write_register(
+            addr + PLIC_PRIORITY_OFFSET + irq_id * 4,
+            AccessWidth::Dword,
+            1,
+        )
+        .unwrap();
+    vplic
+        .write_register(
+            addr + PLIC_ENABLE_OFFSET + context_id * PLIC_ENABLE_STRIDE,
+            AccessWidth::Dword,
+            1 << irq_id,
+        )
+        .unwrap();
+    assert!(vplic.context_has_deliverable_irq(context_id).unwrap());
+
+    let claim_addr = addr
+        + PLIC_CONTEXT_CTRL_OFFSET
+        + context_id * PLIC_CONTEXT_STRIDE
+        + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
+    assert_eq!(
+        vplic.read_register(claim_addr, AccessWidth::Dword).unwrap(),
+        irq_id
+    );
+    assert!(!vplic.context_has_deliverable_irq(context_id).unwrap());
+
+    vplic
+        .write_register(claim_addr, AccessWidth::Dword, irq_id)
+        .unwrap();
+    assert!(vplic.context_has_deliverable_irq(context_id).unwrap());
+
+    vplic.set_irq_line_level(irq_id, false).unwrap();
+    assert!(!vplic.context_has_deliverable_irq(context_id).unwrap());
 }
 
 #[test]

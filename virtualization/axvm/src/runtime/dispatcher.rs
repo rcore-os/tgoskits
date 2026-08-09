@@ -19,9 +19,9 @@
 //! critical sections short: no wake, IPI, or external callbacks are invoked
 //! while a lock is held.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use std::{collections::BTreeMap, vec::Vec};
 
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 
 use super::queue::VcpuInterruptQueue;
 use crate::{AxTaskRef, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt};

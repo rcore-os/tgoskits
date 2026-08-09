@@ -349,7 +349,10 @@ pub(super) fn prepare_grouped_c_subcases_sync(
                 ("phase", "prebuild".to_string()),
             ],
         );
-        let extra_script_envs = prepare_guest_package_env(config, &layout.staging_root)?;
+        let extra_script_envs = grouped_c_root_prebuild_env(
+            prepare_guest_package_env(config, &layout.staging_root)?,
+            subcases,
+        );
         let prebuild_env =
             prepare_guest_prebuild_env(arch, case, layout, extra_script_envs, config)?;
         let mut command = build_prebuild_command_with_work_dir(
@@ -525,6 +528,19 @@ pub(super) fn prepare_grouped_c_subcases_sync(
     print_slowest_grouped_c_subcases(case, subcase_timings);
 
     Ok(())
+}
+
+pub(super) fn grouped_c_root_prebuild_env(
+    mut env: Vec<(String, String)>,
+    subcases: &[&TestQemuSubcase],
+) -> Vec<(String, String)> {
+    let selected_subcases = subcases
+        .iter()
+        .map(|subcase| subcase.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    env.push(("STARRY_GROUPED_C_SUBCASES".to_string(), selected_subcases));
+    env
 }
 
 pub(super) fn prepare_grouped_c_root_project_sync(

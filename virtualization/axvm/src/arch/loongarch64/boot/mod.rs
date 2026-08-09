@@ -1,25 +1,21 @@
 mod acpi;
 mod fdt;
-mod probe;
+pub(super) mod probe;
 mod resources;
 
-use alloc::{boxed::Box, format, vec::Vec};
+use std::{format, sync::Arc, vec::Vec};
 
-use axdevice::{FwCfgPlatformConfig, FwCfgRamRegion};
-use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol};
+use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion, ResourceSlot};
+use axvmconfig::{GuestConfig, VMBootProtocol};
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
     prepare_uefi_runtime_config,
 };
 
 use crate::{
-    AxVMRef, AxVmResult, GuestPhysAddr,
-    architecture::BootImagePlatform,
-    ax_err, ax_err_type,
-    boot::{
-        BootImageProvider, StaticVmImage,
-        images::{ImageLoaderCore, load_vm_image_from_memory},
-    },
+    architecture::*,
+    boot::{images::*, *},
+    *,
 };
 
 pub const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
@@ -29,7 +25,7 @@ pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
 impl<'a> ImageLoader<'a> {
     pub fn new(
         main_memory: crate::VMMemoryRegion,
-        config: AxVMCrateConfig,
+        config: GuestConfig,
         vm: AxVMRef,
         provider: &'a dyn BootImageProvider,
     ) -> Self {
@@ -133,24 +129,62 @@ pub struct GedDevice {
 }
 
 impl GuestPlatform {
-    pub fn discover(vm: &AxVMRef, config: &AxVMCrateConfig) -> Self {
-        probe::GuestPlatformBuilder::new(ram_regions(vm), config)
-            .apply_host_acpi()
-            .build()
+    pub fn discover(vm: &AxVMRef, _config: &GuestConfig) -> AxVmResult<Self> {
+        let fw_cfg = resolved_fw_cfg(vm)?;
+        let serial = resolved_serial(vm)?;
+        Ok(
+            probe::GuestPlatformBuilder::new(ram_regions(vm), Some(fw_cfg))
+                .with_serial(serial)
+                .apply_host_acpi()
+                .build(),
+        )
     }
 
-    pub fn fw_cfg_platform_config(&self, cpu_num: u16) -> FwCfgPlatformConfig {
-        let ram_regions = leak_fw_cfg_ram_regions(&self.ram_regions);
-        FwCfgPlatformConfig {
-            ram_regions,
+    pub fn fw_cfg_platform_config(&self, cpu_num: u16) -> AxVmResult<FwCfgPlatformConfig> {
+        let ram_regions = fw_cfg_ram_regions(&self.ram_regions);
+        let acpi = acpi::build(cpu_num, self, &ram_regions).map_err(|error| {
+            crate::AxVmError::invalid_config(std::format!(
+                "failed to build LoongArch guest ACPI: {error}"
+            ))
+        })?;
+        Ok(FwCfgPlatformConfig {
+            ram_regions: ram_regions.clone(),
             srat_regions: ram_regions,
-            acpi: acpi::build(cpu_num, self, ram_regions),
-        }
+            acpi,
+        })
     }
 }
 
-pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxVmResult {
-    let platform = GuestPlatform::discover(vm, config);
+fn resolved_serial(vm: &AxVMRef) -> AxVmResult<SerialDevice> {
+    vm.with_planned_device_graph(|graph| {
+        let serials = crate::machine::resolved_serial_devices(graph)?;
+        let serial = serials
+            .iter()
+            .find(|serial| serial.id() == "console0")
+            .ok_or_else(|| AxVmError::invalid_config("LoongArch plan has no console0"))?
+            .profile();
+        let crate::machine::GuestSerialTransport::Mmio { base, length, .. } = serial.transport
+        else {
+            return Err(AxVmError::unsupported(
+                "build LoongArch guest firmware",
+                "LoongArch console0 must use MMIO",
+            ));
+        };
+        Ok(SerialDevice {
+            mmio: MmioRegion {
+                base: base as u64,
+                size: length as u64,
+            },
+            irq: u32::try_from(serial.irq)
+                .map_err(|_| AxVmError::invalid_config("LoongArch console IRQ exceeds u32"))?,
+            clock_hz: serial.clock_hz,
+            baud: 115_200,
+        })
+    })
+}
+
+pub fn load_firmware_fdt(vm: &AxVMRef, config: &GuestConfig) -> AxVmResult {
+    let platform = GuestPlatform::discover(vm, config)?;
     let fdt = fdt::guest_firmware_dtb::build(&platform)?;
     debug!(
         "VM[{}] loading LoongArch UEFI firmware FDT: {} bytes at {:#x}",
@@ -169,28 +203,38 @@ pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxVmResult {
     vm.set_guest_device_tree(GuestPhysAddr::from(UEFI_FIRMWARE_FDT_BASE), fdt)
 }
 
-pub fn fw_cfg_platform_config(vm: &AxVMRef, config: &AxVMCrateConfig) -> FwCfgPlatformConfig {
-    GuestPlatform::discover(vm, config).fw_cfg_platform_config(config.base.cpu_num as u16)
+pub fn fw_cfg_platform_config(
+    vm: &AxVMRef,
+    config: &GuestConfig,
+) -> AxVmResult<FwCfgPlatformConfig> {
+    GuestPlatform::discover(vm, config)?.fw_cfg_platform_config(config.base.cpu_num as u16)
 }
 
-pub fn guest_irq_routes(vm: &AxVMRef, config: &AxVMCrateConfig) -> Vec<LoongArchGuestIrqRoute> {
-    GuestPlatform::discover(vm, config)
+pub fn guest_irq_routes(
+    vm: &AxVMRef,
+    config: &GuestConfig,
+) -> AxVmResult<Vec<LoongArchGuestIrqRoute>> {
+    Ok(GuestPlatform::discover(vm, config)?
         .irq_routes
         .into_iter()
         .map(|route| LoongArchGuestIrqRoute {
             physical_irq: route.physical_irq,
             guest_vector: route.guest_vector,
         })
-        .collect()
+        .collect())
 }
 
-pub fn emulated_fw_cfg(config: &AxVMCrateConfig) -> AxVmResult<&axvmconfig::EmulatedDeviceConfig> {
-    config
-        .devices
-        .emu_devices
-        .iter()
-        .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
-        .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI boot requires a fw_cfg device"))
+fn resolved_fw_cfg(vm: &AxVMRef) -> AxVmResult<MmioRegion> {
+    vm.with_planned_device_graph(|graph| {
+        let node = graph
+            .nodes()
+            .find(|node| node.id().as_str() == "fw-cfg")
+            .ok_or_else(|| ax_err_type!(NotFound, "LoongArch UEFI boot requires an fw_cfg node"))?;
+        let (base, size) = graph
+            .resources_for(node.id())?
+            .mmio(&ResourceSlot::new("registers")?)?;
+        Ok(MmioRegion { base, size })
+    })
 }
 
 impl BootImagePlatform for super::LoongArch64Arch {
@@ -200,7 +244,11 @@ impl BootImagePlatform for super::LoongArch64Arch {
     ) -> AxVmResult {
         ensure_uefi_boot(loader)?;
         load_uefi_firmware_dtb(loader)?;
-        add_uefi_fw_cfg(loader, images.kernel, images.ramdisk)?;
+        add_uefi_fw_cfg(
+            loader,
+            Arc::from(images.kernel),
+            images.ramdisk.map(Arc::from),
+        )?;
         let firmware = images
             .bios
             .or_else(|| provider_firmware_image(loader))
@@ -222,10 +270,10 @@ impl BootImagePlatform for super::LoongArch64Arch {
             &loader.config.kernel.kernel_path,
             loader.provider,
         )?;
-        let kernel: &'static [u8] = Box::leak(kernel.into_boxed_slice());
+        let kernel = Arc::from(kernel);
         let ramdisk = if let Some(path) = &loader.config.kernel.ramdisk_path {
             let ramdisk = crate::boot::images::fs::read_full_image(path, loader.provider)?;
-            Some(Box::leak(ramdisk.into_boxed_slice()) as &'static [u8])
+            Some(Arc::from(ramdisk))
         } else {
             None
         };
@@ -250,24 +298,28 @@ fn ensure_uefi_boot(loader: &ImageLoaderCore<'_>) -> AxVmResult {
 }
 
 fn load_uefi_firmware_dtb(loader: &ImageLoaderCore<'_>) -> AxVmResult {
-    prepare_uefi_runtime_config(&loader.vm, &loader.config);
+    prepare_uefi_runtime_config(&loader.vm, &loader.config)?;
     load_firmware_fdt(&loader.vm, &loader.config)
 }
 
 fn add_uefi_fw_cfg(
     loader: &ImageLoaderCore<'_>,
-    kernel: &'static [u8],
-    ramdisk: Option<&'static [u8]>,
+    kernel: Arc<[u8]>,
+    ramdisk: Option<Arc<[u8]>>,
 ) -> AxVmResult {
-    let fw_cfg = emulated_fw_cfg(&loader.config)?;
+    let fw_cfg = resolved_fw_cfg(&loader.vm)?;
     loader.vm.add_fw_cfg_device(crate::FwCfgDeviceConfig {
-        base: GuestPhysAddr::from(fw_cfg.base_gpa),
-        size: fw_cfg.length,
-        kernel,
+        base: GuestPhysAddr::from(
+            usize::try_from(fw_cfg.base)
+                .map_err(|_| crate::AxVmError::invalid_config("fw_cfg GPA does not fit usize"))?,
+        ),
+        size: usize::try_from(fw_cfg.size)
+            .map_err(|_| crate::AxVmError::invalid_config("fw_cfg size does not fit usize"))?,
+        kernel: FwCfgKernelPayload::unsplit(kernel),
         initrd: ramdisk,
         cmdline: loader.config.kernel.cmdline.clone(),
         cpu_num: loader.config.base.cpu_num as u16,
-        platform: fw_cfg_platform_config(&loader.vm, &loader.config),
+        platform: fw_cfg_platform_config(&loader.vm, &loader.config)?,
     })
 }
 
@@ -301,7 +353,7 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
     for region in regions {
         // SAFETY: AxVM returned this writable guest-memory region and the fill
         // is bounded by its length.
-        unsafe { core::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
+        unsafe { std::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
         crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
         filled_size += region.len();
     }
@@ -344,7 +396,7 @@ fn ram_regions(vm: &AxVMRef) -> Vec<MemoryRegion> {
     regions
 }
 
-fn leak_fw_cfg_ram_regions(regions: &[MemoryRegion]) -> &'static [FwCfgRamRegion] {
+fn fw_cfg_ram_regions(regions: &[MemoryRegion]) -> Arc<[FwCfgRamRegion]> {
     let regions = regions
         .iter()
         .map(|region| FwCfgRamRegion {
@@ -352,5 +404,5 @@ fn leak_fw_cfg_ram_regions(regions: &[MemoryRegion]) -> &'static [FwCfgRamRegion
             size: region.size,
         })
         .collect::<Vec<_>>();
-    Box::leak(regions.into_boxed_slice())
+    regions.into()
 }

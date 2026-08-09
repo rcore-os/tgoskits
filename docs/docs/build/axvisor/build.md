@@ -18,9 +18,10 @@ flowchart TD
     C --> D["加载或生成 Axvisor Build Config"]
     D --> E["合并 FEATURES 与 CLI --smp"]
     E --> F["验证平台 feature 边界"]
-    F --> G["BuildInfo → std PIE Cargo"]
-    G --> H["AXVISOR_VM_CONFIGS / AX_ARCH / AX_TARGET"]
-    H --> I["ostool cargo_build → ELF"]
+    F --> G["解析 VM 镜像路径变量"]
+    G --> H["BuildInfo → std PIE Cargo"]
+    H --> I["AXVISOR_VM_CONFIGS / AX_ARCH / AX_TARGET"]
+    I --> J["ostool cargo_build → ELF"]
 ```
 
 ### 1.1 配置装载
@@ -57,10 +58,18 @@ tmp/axbuild/config/axvisor/build-<target>.toml
 - 固定 Cargo package 和 binary 为 `axvisor`；
 - 写入 `AX_ARCH` 与原始裸机 `AX_TARGET`；
 - 选择 CLI `--vmconfigs`，或在 CLI 为空时选择 Build Config 的 `vm_configs`；
+- 仅在 `[kernel]` 的 `kernel_path`、`dtb_path`、`bios_path`、`uefi_firmware_path`、
+  `ramdisk_path` 中展开 Ostool 变量；相对路径仍以原 VM config 所在目录为基准；
+- 含变量的配置原子写入 `tmp/axbuild/axvisor/resolved-vm-configs/`，文件名由源路径
+  SHA-256 生成；
 - 非空 VM 列表以平台路径分隔符写入 `AXVISOR_VM_CONFIGS`；
 - 对 feature 排序去重。
 
 基础 Cargo 的 `to_bin` 固定为 `false`。`axvisor build` 因而只保证 ELF；QEMU 路径在读取 TOML 后再明确设置其 `to_bin`。
+
+支持的变量为 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}` 和
+`${env:NAME}`。解析后的同一组配置同时供 rootfs 推断、`AXVISOR_VM_CONFIGS` 和
+`os/axvisor/build.rs` 使用，避免三处分别解释镜像路径。
 
 ## 2. 虚拟化后端
 

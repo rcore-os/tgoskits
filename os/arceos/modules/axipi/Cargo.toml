@@ -1,6 +1,6 @@
 [package]
 name = "ax-ipi"
-version = "0.5.29"
+version = "0.5.30"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Keyang Hu <keyang.hu@qq.com>"]
@@ -17,6 +17,3 @@ ax-kspin.workspace = true
 ax-lazyinit.workspace = true
 log.workspace = true
 ax-percpu.workspace = true
-
-[build-dependencies]
-quote = "1.0"

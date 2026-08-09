@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/rdif-def-v0.3.1...rdif-def-v0.3.2) - 2026-08-09
+
+### Other
+
+- updated the following local packages: axtest
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/rdif-def-v0.3.0...rdif-def-v0.3.1) - 2026-08-03
 
 ### Other

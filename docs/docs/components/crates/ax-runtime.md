@@ -63,7 +63,6 @@ graph LR
 ### 间接依赖
 - `ax-arm-pl031`
 - `axaddrspace`
-- `ax-allocator`
 - `ax-cpu`
 - `dma-api`
 - `rdrive`

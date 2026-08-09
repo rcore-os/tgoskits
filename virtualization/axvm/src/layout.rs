@@ -14,15 +14,15 @@
 
 //! Guest physical address layout planning.
 
-use alloc::{format, vec::Vec};
-use core::cmp::{max, min};
+use std::{
+    cmp::{max, min},
+    format,
+    vec::Vec,
+};
 
 use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k};
 use axdevice_base::Resource;
-use axvm_types::{
-    AddressSpacePolicy, GuestPhysAddr, HostPhysAddr, MappingFlags, PassThroughAddressConfig,
-    PassThroughDeviceConfig,
-};
+use axvm_types::*;
 
 use crate::{AxVmResult, ax_err_type};
 
@@ -226,7 +226,7 @@ impl GuestRegionPlanner {
         let guest_end = checked_end("guest address space", guest_base, guest_size)?;
         let windows = match policy {
             AddressSpacePolicy::Virtualized => Vec::new(),
-            AddressSpacePolicy::Passthrough => alloc::vec![PassthroughWindow {
+            AddressSpacePolicy::Passthrough => std::vec![PassthroughWindow {
                 base: guest_base,
                 size: guest_size,
             }],
@@ -295,6 +295,14 @@ impl GuestRegionPlanner {
         let (base_gpa, base_hpa, size) =
             normalize_linear_range("passthrough", base_gpa, base_hpa, length)?;
         self.ensure_guest_range("passthrough", base_gpa, size)?;
+
+        // A passthrough address space already contains every identity mapping.
+        // Keep VM-owned holes authoritative instead of re-inserting an
+        // explicitly discovered physical-device range over an emulated or
+        // reserved resource.
+        if self.policy == AddressSpacePolicy::Passthrough && base_gpa == base_hpa {
+            return Ok(());
+        }
 
         for region in &self.owned_regions {
             if ranges_overlap(base_gpa, size, region.base, region.size) {
@@ -445,8 +453,8 @@ pub(crate) fn build_address_layout(
     policy: AddressSpacePolicy,
     guest_base: usize,
     guest_size: usize,
-    passthrough_devices: &[PassThroughDeviceConfig],
-    passthrough_addresses: &[PassThroughAddressConfig],
+    passthrough_devices: &[HostDeviceAssignment],
+    passthrough_addresses: &[HostAddressAssignment],
     owned_regions: &[GuestOwnedRegion],
     emulated_resources: &[Resource],
 ) -> AxVmResult<VmAddressLayout> {
@@ -608,6 +616,8 @@ fn owned_overlap_allowed(existing: &PlannedRegion, new: &PlannedRegion) -> bool 
         (existing.kind, new.kind),
         (VmRegionKind::Memory, VmRegionKind::BootDescription)
             | (VmRegionKind::BootDescription, VmRegionKind::Memory)
+            | (VmRegionKind::Reserved, VmRegionKind::EmulatedDevice)
+            | (VmRegionKind::EmulatedDevice, VmRegionKind::Reserved)
     ) && (existing.contains(new) || new.contains(existing))
 }
 
@@ -625,7 +635,7 @@ impl VmRegionKind {
 
 #[cfg(test)]
 mod tests {
-    use axvm_types::{PassThroughAddressConfig, PassThroughDeviceConfig};
+    use axvm_types::{HostAddressAssignment, HostDeviceAssignment};
 
     use super::*;
 
@@ -646,12 +656,11 @@ mod tests {
         .unwrap();
         assert!(layout.mappings().is_empty());
 
-        let device = PassThroughDeviceConfig {
-            name: alloc::string::String::from("uart"),
+        let device = HostDeviceAssignment {
+            name: std::string::String::from("uart"),
             base_gpa: 0x2000,
             base_hpa: 0x9000,
             length: 0x1000,
-            irq_id: 0,
         };
         let layout = build_address_layout(
             AddressSpacePolicy::Virtualized,
@@ -714,6 +723,35 @@ mod tests {
     }
 
     #[test]
+    fn passthrough_identity_device_does_not_refill_emulated_mmio_hole() {
+        let provider = HostDeviceAssignment {
+            name: std::string::String::from("shared-clock-provider"),
+            base_gpa: 0x8000,
+            base_hpa: 0x8000,
+            length: 0x1000,
+        };
+        let emulated = [Resource::MmioRange {
+            base: 0x8000,
+            size: 0x1000,
+        }];
+
+        let layout = build_address_layout(
+            AddressSpacePolicy::Passthrough,
+            GUEST_BASE,
+            GUEST_SIZE,
+            &[provider],
+            &[],
+            &[],
+            &emulated,
+        )
+        .unwrap();
+
+        assert!(layout.mappings().iter().all(|mapping| {
+            !ranges_overlap(mapping.gpa.as_usize(), mapping.size, 0x8000, 0x1000)
+        }));
+    }
+
+    #[test]
     fn passthrough_policy_punches_reserved_regions() {
         let owned = [GuestOwnedRegion::new(
             0x3000,
@@ -748,21 +786,51 @@ mod tests {
     }
 
     #[test]
+    fn reserved_host_device_range_can_contain_an_emulated_device() {
+        let owned = [GuestOwnedRegion::new(
+            0x8000,
+            0x1000,
+            VmRegionKind::Reserved,
+        )];
+        let emulated = [Resource::MmioRange {
+            base: 0x8080,
+            size: 0x100,
+        }];
+
+        let layout = build_address_layout(
+            AddressSpacePolicy::Passthrough,
+            GUEST_BASE,
+            GUEST_SIZE,
+            &[],
+            &[],
+            &owned,
+            &emulated,
+        )
+        .unwrap();
+
+        assert!(layout.mappings().iter().all(|mapping| {
+            !ranges_overlap(mapping.gpa.as_usize(), mapping.size, 0x8000, 0x1000)
+        }));
+        let owned_regions = layout.owned_regions().collect::<Vec<_>>();
+        assert_eq!(owned_regions.len(), 2);
+        assert_eq!(owned_regions[0].kind, VmRegionKind::Reserved);
+        assert_eq!(owned_regions[1].kind, VmRegionKind::EmulatedDevice);
+    }
+
+    #[test]
     fn passthrough_device_uses_base_hpa_and_keeps_non_contiguous_mappings_split() {
         let devices = [
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev0"),
+            HostDeviceAssignment {
+                name: std::string::String::from("dev0"),
                 base_gpa: 0x1000,
                 base_hpa: 0x9000,
                 length: 0x1000,
-                irq_id: 0,
             },
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev1"),
+            HostDeviceAssignment {
+                name: std::string::String::from("dev1"),
                 base_gpa: 0x2000,
                 base_hpa: 0xb000,
                 length: 0x1000,
-                irq_id: 0,
             },
         ];
 
@@ -785,19 +853,17 @@ mod tests {
     #[test]
     fn duplicate_explicit_passthrough_ranges_are_merged_when_linear_mapping_matches() {
         let devices = [
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev0"),
+            HostDeviceAssignment {
+                name: std::string::String::from("dev0"),
                 base_gpa: 0x1000,
                 base_hpa: 0x9000,
                 length: 0x2000,
-                irq_id: 0,
             },
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev1"),
+            HostDeviceAssignment {
+                name: std::string::String::from("dev1"),
                 base_gpa: 0x2000,
                 base_hpa: 0xa000,
                 length: 0x2000,
-                irq_id: 0,
             },
         ];
 
@@ -820,7 +886,7 @@ mod tests {
 
     #[test]
     fn passthrough_address_is_identity_and_unaligned_ranges_are_expanded() {
-        let addresses = [PassThroughAddressConfig {
+        let addresses = [HostAddressAssignment {
             base_gpa: 0x1803,
             length: 0x20,
         }];
@@ -844,7 +910,7 @@ mod tests {
 
     #[test]
     fn invalid_and_conflicting_ranges_are_rejected() {
-        let zero = [PassThroughAddressConfig {
+        let zero = [HostAddressAssignment {
             base_gpa: 0x1000,
             length: 0,
         }];
@@ -862,7 +928,7 @@ mod tests {
         );
 
         let owned = [GuestOwnedRegion::new(0x2000, 0x1000, VmRegionKind::Memory)];
-        let conflict = [PassThroughAddressConfig {
+        let conflict = [HostAddressAssignment {
             base_gpa: 0x2000,
             length: 0x1000,
         }];
@@ -880,19 +946,17 @@ mod tests {
         );
 
         let conflicting_hpa = [
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev0"),
+            HostDeviceAssignment {
+                name: std::string::String::from("dev0"),
                 base_gpa: 0x3000,
                 base_hpa: 0x9000,
                 length: 0x1000,
-                irq_id: 0,
             },
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev1"),
+            HostDeviceAssignment {
+                name: std::string::String::from("dev1"),
                 base_gpa: 0x3000,
                 base_hpa: 0xa000,
                 length: 0x1000,
-                irq_id: 0,
             },
         ];
         assert!(

@@ -34,6 +34,160 @@ const BMOD_FB: u32 = 1 << 1;
 const BMOD_DE: u32 = 1 << 7;
 pub(super) const BLOCK_SIZE: usize = 512;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DmaTransferDirection {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DmaDataTransfer {
+    command: Command,
+    direction: DmaTransferDirection,
+    block_size: u32,
+    block_count: u32,
+    byte_count: NonZeroUsize,
+}
+
+impl DmaDataTransfer {
+    pub(crate) fn for_protocol(
+        command: &Command,
+        block_size: u32,
+        block_count: u32,
+        byte_count: usize,
+        direction: DataDirection,
+    ) -> Option<Self> {
+        let expected_byte_count =
+            NonZeroUsize::new(usize::try_from(block_size.checked_mul(block_count)?).ok()?)?;
+        if expected_byte_count.get() != byte_count {
+            return None;
+        }
+        let direction = match direction {
+            DataDirection::Read => DmaTransferDirection::Read,
+            DataDirection::Write => DmaTransferDirection::Write,
+            _ => return None,
+        };
+        let supported = match (direction, command.index) {
+            (DmaTransferDirection::Read, 17) => block_size == 512 && block_count == 1,
+            (DmaTransferDirection::Read, 18) => block_size == 512 && block_count > 1,
+            (DmaTransferDirection::Write, 24) => block_size == 512 && block_count == 1,
+            (DmaTransferDirection::Write, 25) => block_size == 512 && block_count > 1,
+            (DmaTransferDirection::Read, 6) => {
+                block_size == 64
+                    && block_count == 1
+                    && command.response == sdmmc_protocol::response::ResponseType::R1
+            }
+            (DmaTransferDirection::Read, 8) => {
+                block_size == 512
+                    && block_count == 1
+                    && command.response == sdmmc_protocol::response::ResponseType::R1
+            }
+            _ => false,
+        };
+        supported.then_some(Self {
+            command: *command,
+            direction,
+            block_size,
+            block_count,
+            byte_count: expected_byte_count,
+        })
+    }
+
+    fn read_blocks(start_block: u32, size: NonZeroUsize) -> Result<Self, Error> {
+        let block_count = dma_read_block_count(size)?;
+        let command = if block_count == 1 {
+            cmd17(start_block)
+        } else {
+            cmd18(start_block)
+        };
+        Self::for_protocol(
+            &command,
+            BLOCK_SIZE as u32,
+            block_count,
+            size.get(),
+            DataDirection::Read,
+        )
+        .ok_or(Error::InvalidArgument)
+    }
+
+    fn write_blocks(start_block: u32, size: NonZeroUsize) -> Result<Self, Error> {
+        let block_count = dma_write_block_count(size)?;
+        let command = if block_count == 1 {
+            cmd24(start_block)
+        } else {
+            cmd25(start_block)
+        };
+        Self::for_protocol(
+            &command,
+            BLOCK_SIZE as u32,
+            block_count,
+            size.get(),
+            DataDirection::Write,
+        )
+        .ok_or(Error::InvalidArgument)
+    }
+
+    fn phase(self) -> Phase {
+        match self.direction {
+            DmaTransferDirection::Read => Phase::DataRead,
+            DmaTransferDirection::Write => Phase::DataWrite,
+        }
+    }
+
+    fn dma_direction(self) -> DmaDirection {
+        match self.direction {
+            DmaTransferDirection::Read => DmaDirection::FromDevice,
+            DmaTransferDirection::Write => DmaDirection::ToDevice,
+        }
+    }
+
+    fn block_direction(self) -> BlockTransferDirection {
+        match self.direction {
+            DmaTransferDirection::Read => BlockTransferDirection::Read,
+            DmaTransferDirection::Write => BlockTransferDirection::Write,
+        }
+    }
+
+    fn protocol_direction(self) -> DataDirection {
+        match self.direction {
+            DmaTransferDirection::Read => DataDirection::Read,
+            DmaTransferDirection::Write => DataDirection::Write,
+        }
+    }
+
+    fn needs_stop(self) -> bool {
+        self.block_count > 1 && matches!(self.command.index, 18 | 25)
+    }
+}
+
+fn data_request(
+    transfer: DmaDataTransfer,
+    id: RequestId,
+    buffer: DmaRequestBuffer,
+) -> BlockRequest {
+    let request = match transfer.direction {
+        DmaTransferDirection::Read => BlockRequestKind::Read {
+            id,
+            buffer,
+            cmd_index: transfer.command.index,
+            phase: transfer.phase(),
+            stage: BlockRequestStage::Command,
+            stop_after_complete: transfer.needs_stop(),
+            response: None,
+        },
+        DmaTransferDirection::Write => BlockRequestKind::Write {
+            id,
+            buffer,
+            cmd_index: transfer.command.index,
+            phase: transfer.phase(),
+            stage: BlockRequestStage::Command,
+            stop_after_complete: transfer.needs_stop(),
+            response: None,
+        },
+    };
+    BlockRequest { inner: request }
+}
+
 impl DwMmc {
     /// Submit one block read through the controller-lifetime IDMAC ring.
     pub fn submit_read_blocks(
@@ -44,16 +198,8 @@ impl DwMmc {
         dma: &DeviceDma,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
-        self.check_not_poisoned()?;
-        let id = slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read)?;
-        let result = self.build_dma_read_request(start_block, buffer, size, dma, id);
-        match result {
-            Ok(request) => Ok(request),
-            Err(err) => {
-                let _ = slot.complete(id);
-                Err(err)
-            }
-        }
+        let transfer = DmaDataTransfer::read_blocks(start_block, size)?;
+        self.submit_dma_data(transfer, buffer, dma, slot)
     }
 
     /// Submit one block write through the controller-lifetime IDMAC ring.
@@ -65,16 +211,8 @@ impl DwMmc {
         dma: &DeviceDma,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
-        self.check_not_poisoned()?;
-        let id = slot.start(BlockTransferMode::Dma, BlockTransferDirection::Write)?;
-        let result = self.build_dma_write_request(start_block, buffer, size, dma, id);
-        match result {
-            Ok(request) => Ok(request),
-            Err(err) => {
-                let _ = slot.complete(id);
-                Err(err)
-            }
-        }
+        let transfer = DmaDataTransfer::write_blocks(start_block, size)?;
+        self.submit_dma_data(transfer, buffer, dma, slot)
     }
 
     pub fn submit_prepared_read_blocks(
@@ -84,20 +222,12 @@ impl DwMmc {
         dma: &DeviceDma,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
-        if let Err(err) = self.check_not_poisoned() {
-            return Err(PreparedDmaSubmitError::new(err, buffer));
-        }
-        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read) {
-            Ok(id) => id,
-            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        let size = buffer.len();
+        let transfer = match DmaDataTransfer::read_blocks(start_block, size) {
+            Ok(transfer) => transfer,
+            Err(error) => return Err(PreparedDmaSubmitError::new(error, buffer)),
         };
-        match self.build_prepared_dma_read_request(start_block, buffer, dma, id) {
-            Ok(request) => Ok(request),
-            Err(err) => {
-                let _ = slot.complete(id);
-                Err(err)
-            }
-        }
+        self.submit_prepared_data(transfer, buffer, dma, slot)
     }
 
     pub fn submit_prepared_write_blocks(
@@ -107,20 +237,12 @@ impl DwMmc {
         dma: &DeviceDma,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
-        if let Err(err) = self.check_not_poisoned() {
-            return Err(PreparedDmaSubmitError::new(err, buffer));
-        }
-        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Write) {
-            Ok(id) => id,
-            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        let size = buffer.len();
+        let transfer = match DmaDataTransfer::write_blocks(start_block, size) {
+            Ok(transfer) => transfer,
+            Err(error) => return Err(PreparedDmaSubmitError::new(error, buffer)),
         };
-        match self.build_prepared_dma_write_request(start_block, buffer, dma, id) {
-            Ok(request) => Ok(request),
-            Err(err) => {
-                let _ = slot.complete(id);
-                Err(err)
-            }
-        }
+        self.submit_prepared_data(transfer, buffer, dma, slot)
     }
 
     /// Advance one submitted request for an acknowledged IRQ or register retry.
@@ -221,174 +343,115 @@ impl DwMmc {
         self.abort_block_request(request, id, slot, Phase::DataRead)
     }
 
-    fn build_dma_read_request(
+    pub(crate) fn submit_dma_data(
         &mut self,
-        start_block: u32,
+        transfer: DmaDataTransfer,
         buffer: NonNull<u8>,
-        size: NonZeroUsize,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
+        let id = slot.start(BlockTransferMode::Dma, transfer.block_direction())?;
+        match self.build_dma_data_request(transfer, buffer, dma, id) {
+            Ok(request) => Ok(request),
+            Err(error) => {
+                let _ = slot.complete(id);
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn submit_prepared_data(
+        &mut self,
+        transfer: DmaDataTransfer,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(error) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(error, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, transfer.block_direction()) {
+            Ok(id) => id,
+            Err(error) => return Err(PreparedDmaSubmitError::new(error, buffer)),
+        };
+        match self.build_prepared_dma_data_request(transfer, buffer, dma, id) {
+            Ok(request) => Ok(request),
+            Err(error) => {
+                let _ = slot.complete(id);
+                Err(error)
+            }
+        }
+    }
+
+    fn build_dma_data_request(
+        &mut self,
+        transfer: DmaDataTransfer,
+        buffer: NonNull<u8>,
         dma: &DeviceDma,
         id: RequestId,
     ) -> Result<BlockRequest, Error> {
-        let block_count = dma_read_block_count(size)?;
-        let backing = CpuDmaBuffer::new_zero(dma, size, BLOCK_SIZE, DmaDirection::FromDevice)
-            .map_err(|err| map_dma_error(err, Phase::DataRead))?;
+        let mut backing = CpuDmaBuffer::new_zero(
+            dma,
+            transfer.byte_count,
+            transfer.block_size as usize,
+            transfer.dma_direction(),
+        )
+        .map_err(|error| map_dma_error(error, transfer.phase()))?;
+        let readback = match transfer.direction {
+            DmaTransferDirection::Read => Some((buffer, transfer.byte_count.get())),
+            DmaTransferDirection::Write => {
+                // SAFETY: The caller keeps the borrowed source alive until the
+                // returned request completes, and `byte_count` was validated
+                // against the submitted data phase.
+                backing.copy_to_device_from_slice(unsafe {
+                    core::slice::from_raw_parts(buffer.as_ptr(), transfer.byte_count.get())
+                });
+                None
+            }
+        };
         let dma_addr = backing.dma_addr().as_u64();
         let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
-        let cmd = if block_count == 1 {
-            cmd17(start_block)
-        } else {
-            cmd18(start_block)
-        };
-        self.submit_idmac_transfer_mapped(&cmd, block_count, dma_addr)?;
-        Ok(BlockRequest {
-            inner: BlockRequestKind::Read {
-                id,
-                buffer: DmaRequestBuffer::Bounce {
-                    buffer: in_flight,
-                    readback: Some((buffer, size.get())),
-                },
-                cmd_index: cmd.index,
-                phase: Phase::DataRead,
-                stage: BlockRequestStage::Command,
-                stop_after_complete: block_count > 1,
-                response: None,
+        self.submit_idmac_transfer_mapped(transfer, dma_addr)?;
+        Ok(data_request(
+            transfer,
+            id,
+            DmaRequestBuffer::Bounce {
+                buffer: in_flight,
+                readback,
             },
-        })
+        ))
     }
 
-    fn build_dma_write_request(
+    fn build_prepared_dma_data_request(
         &mut self,
-        start_block: u32,
-        buffer: NonNull<u8>,
-        size: NonZeroUsize,
-        dma: &DeviceDma,
-        id: RequestId,
-    ) -> Result<BlockRequest, Error> {
-        let block_count = dma_write_block_count(size)?;
-        let mut backing = CpuDmaBuffer::new_zero(dma, size, BLOCK_SIZE, DmaDirection::ToDevice)
-            .map_err(|err| map_dma_error(err, Phase::DataWrite))?;
-        backing.copy_to_device_from_slice(unsafe {
-            core::slice::from_raw_parts(buffer.as_ptr(), size.get())
-        });
-        let dma_addr = backing.dma_addr().as_u64();
-        let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
-        let cmd = if block_count == 1 {
-            cmd24(start_block)
-        } else {
-            cmd25(start_block)
-        };
-        self.submit_idmac_transfer_mapped(&cmd, block_count, dma_addr)?;
-        Ok(BlockRequest {
-            inner: BlockRequestKind::Write {
-                id,
-                buffer: DmaRequestBuffer::Bounce {
-                    buffer: in_flight,
-                    readback: None,
-                },
-                cmd_index: cmd.index,
-                phase: Phase::DataWrite,
-                stage: BlockRequestStage::Command,
-                stop_after_complete: block_count > 1,
-                response: None,
-            },
-        })
-    }
-
-    fn build_prepared_dma_read_request(
-        &mut self,
-        start_block: u32,
+        transfer: DmaDataTransfer,
         buffer: PreparedDma,
         dma: &DeviceDma,
         id: RequestId,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
-        if buffer.direction() != DmaDirection::FromDevice || buffer.domain_id() != dma.domain_id() {
+        if buffer.direction() != transfer.dma_direction()
+            || buffer.domain_id() != dma.domain_id()
+            || buffer.len() != transfer.byte_count
+        {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
         }
-        let block_count = match dma_read_block_count(buffer.len()) {
-            Ok(block_count) => block_count,
-            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
-        };
-        let cmd = if block_count == 1 {
-            cmd17(start_block)
-        } else {
-            cmd18(start_block)
-        };
-        match self.submit_idmac_transfer_mapped(&cmd, block_count, buffer.dma_addr().as_u64()) {
+        match self.submit_idmac_transfer_mapped(transfer, buffer.dma_addr().as_u64()) {
             Ok(()) => {}
-            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+            Err(error) => return Err(PreparedDmaSubmitError::new(error, buffer)),
         }
         let buffer = unsafe { buffer.into_in_flight() };
-        Ok(BlockRequest {
-            inner: BlockRequestKind::Read {
-                id,
-                buffer: DmaRequestBuffer::Owned(buffer),
-                cmd_index: cmd.index,
-                phase: Phase::DataRead,
-                stage: BlockRequestStage::Command,
-                stop_after_complete: block_count > 1,
-                response: None,
-            },
-        })
-    }
-
-    fn build_prepared_dma_write_request(
-        &mut self,
-        start_block: u32,
-        buffer: PreparedDma,
-        dma: &DeviceDma,
-        id: RequestId,
-    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
-        if buffer.direction() != DmaDirection::ToDevice || buffer.domain_id() != dma.domain_id() {
-            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
-        }
-        let block_count = match dma_write_block_count(buffer.len()) {
-            Ok(block_count) => block_count,
-            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
-        };
-        let cmd = if block_count == 1 {
-            cmd24(start_block)
-        } else {
-            cmd25(start_block)
-        };
-        match self.submit_idmac_transfer_mapped(&cmd, block_count, buffer.dma_addr().as_u64()) {
-            Ok(()) => {}
-            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
-        }
-        let buffer = unsafe { buffer.into_in_flight() };
-        Ok(BlockRequest {
-            inner: BlockRequestKind::Write {
-                id,
-                buffer: DmaRequestBuffer::Owned(buffer),
-                cmd_index: cmd.index,
-                phase: Phase::DataWrite,
-                stage: BlockRequestStage::Command,
-                stop_after_complete: block_count > 1,
-                response: None,
-            },
-        })
+        Ok(data_request(transfer, id, DmaRequestBuffer::Owned(buffer)))
     }
 
     fn submit_idmac_transfer_mapped(
         &mut self,
-        cmd: &Command,
-        block_count: u32,
+        transfer: DmaDataTransfer,
         buffer_dma: u64,
     ) -> Result<(), Error> {
-        if block_count == 0 {
-            return Err(Error::InvalidArgument);
-        }
-        let (direction, phase) = match cmd.data_direction() {
-            Some(sdio_host2::DataDirection::Read) => (DataDirection::Read, Phase::DataRead),
-            Some(sdio_host2::DataDirection::Write) => (DataDirection::Write, Phase::DataWrite),
-            None => return Err(Error::InvalidArgument),
-            // Future DataDirection variants are not supported by this engine.
-            Some(_) => return Err(Error::InvalidArgument),
-        };
-        let byte_count = block_count
-            .checked_mul(BLOCK_SIZE as u32)
-            .ok_or(Error::InvalidArgument)?;
+        let phase = transfer.phase();
         let mut ring = self.idmac_ring.take().ok_or(Error::UnsupportedCommand)?;
-        let desc_dma = match ring.prepare(buffer_dma, byte_count as usize) {
+        let desc_dma = match ring.prepare(buffer_dma, transfer.byte_count.get()) {
             Ok(desc_dma) => desc_dma,
             Err(err) => {
                 self.idmac_ring = Some(ring);
@@ -400,7 +463,7 @@ impl DwMmc {
         self.clear_all_int_status();
         self.regs.idsts().write(IDMAC_INT_CLR);
         self.irq.state.clear(u32::MAX);
-        self.program_data_phase(BLOCK_SIZE as u32, block_count);
+        self.program_data_phase(transfer.block_size, transfer.block_count);
         if let Err(err) = self.reset_dma_engine(phase) {
             self.poison_dma();
             return Err(err);
@@ -418,14 +481,14 @@ impl DwMmc {
         self.regs.pldmnd().write(1);
 
         self.pending_data = Some(PendingData {
-            direction,
-            block_size: BLOCK_SIZE as u32,
-            block_count,
+            direction: transfer.protocol_direction(),
+            block_size: transfer.block_size,
+            block_count: transfer.block_count,
         });
-        self.data_blocks_remaining = block_count;
+        self.data_blocks_remaining = transfer.block_count;
         self.controller_data_complete = false;
         self.idmac_data_complete = false;
-        match self.submit_command(cmd) {
+        match self.submit_command(&transfer.command) {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.disable_idmac();

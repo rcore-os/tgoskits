@@ -15,12 +15,7 @@
 use bit_field::BitField;
 use bitflags::bitflags;
 
-use crate::{
-    X86HostOps, X86HostPhysAddr, X86VcpuResult,
-    host::PhysFrame,
-    msr::{Msr, MsrReadWrite},
-    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
-};
+use crate::{host::*, msr::*, types::X86_PAGE_SIZE_4K as PAGE_SIZE, *};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]
@@ -61,6 +56,12 @@ pub struct IOBitmap<H: X86HostOps> {
 }
 
 impl<H: X86HostOps> IOBitmap<H> {
+    /// Creates the I/O bitmap used for a guest-owned port namespace.
+    pub fn guest_owned() -> X86VcpuResult<Self> {
+        Self::intercept_all()
+    }
+
+    #[cfg(test)]
     pub fn passthrough_all() -> X86VcpuResult<Self> {
         Ok(Self {
             io_bitmap_a_frame: PhysFrame::<H>::alloc_zero()?,
@@ -68,7 +69,6 @@ impl<H: X86HostOps> IOBitmap<H> {
         })
     }
 
-    #[allow(unused)]
     pub fn intercept_all() -> X86VcpuResult<Self> {
         let mut io_bitmap_a_frame = PhysFrame::<H>::alloc()?;
         io_bitmap_a_frame.fill(u8::MAX);
@@ -387,6 +387,19 @@ mod tests {
                 core::slice::from_raw_parts(bitmap.io_bitmap_a_frame.as_mut_ptr(), PAGE_SIZE)
             };
             assert_eq!(bitmap_a[byte] & bit, 0);
+        });
+    }
+
+    #[test]
+    fn guest_owned_io_bitmap_intercepts_unregistered_ports() {
+        MockMmHal::run_test(|| {
+            let bitmap = TestIOBitmap::guest_owned().unwrap();
+            let port = 0xcf8usize;
+            let bitmap_a = unsafe {
+                core::slice::from_raw_parts(bitmap.io_bitmap_a_frame.as_mut_ptr(), PAGE_SIZE)
+            };
+
+            assert_ne!(bitmap_a[port / 8] & (1 << (port % 8)), 0);
         });
     }
 

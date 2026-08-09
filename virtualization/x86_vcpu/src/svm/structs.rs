@@ -1,8 +1,7 @@
 use super::frame::ContiguousPhysFrames;
-use crate::{
-    X86HostOps, X86HostPhysAddr, X86VcpuResult, host::PhysFrame, svm::vmcb::VmcbStruct,
-    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
-};
+#[cfg(test)]
+use crate::types::X86_PAGE_SIZE_4K as PAGE_SIZE;
+use crate::{host::*, svm::vmcb::*, *};
 
 /// Virtual-machine control block backing page.
 #[derive(Debug)]
@@ -47,6 +46,12 @@ pub struct IOPm<H: X86HostOps> {
 }
 
 impl<H: X86HostOps> IOPm<H> {
+    /// Creates the I/O permission map used for a guest-owned port namespace.
+    pub fn guest_owned() -> X86VcpuResult<Self> {
+        Self::intercept_all()
+    }
+
+    #[cfg(test)]
     pub fn passthrough_all() -> X86VcpuResult<Self> {
         let frames = ContiguousPhysFrames::<H>::alloc_zero(3)?;
         let third_frame_start = frames.as_mut_ptr() as usize + 2 * PAGE_SIZE;
@@ -56,7 +61,6 @@ impl<H: X86HostOps> IOPm<H> {
         Ok(Self { frames })
     }
 
-    #[allow(unused)]
     pub fn intercept_all() -> X86VcpuResult<Self> {
         let mut frames = ContiguousPhysFrames::<H>::alloc(3)?;
         frames.fill(0xff);
@@ -171,6 +175,17 @@ mod tests {
             }
 
             assert_eq!(MockMmHal::allocated_count(), 0);
+        });
+    }
+
+    #[test]
+    fn guest_owned_iopm_intercepts_unregistered_ports() {
+        MockMmHal::run_test(|| {
+            let iopm = TestIOPm::guest_owned().unwrap();
+            let port = 0xcf8usize;
+            let byte = unsafe { core::ptr::read_volatile(iopm.frames.as_mut_ptr().add(port / 8)) };
+
+            assert_ne!(byte & (1 << (port % 8)), 0);
         });
     }
 }

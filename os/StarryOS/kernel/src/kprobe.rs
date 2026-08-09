@@ -23,7 +23,7 @@ use ax_kspin::{RawSpinNoIrq, SpinNoIrq};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
     cpu::{KernelTrapFrame, UserRegisters},
-    paging::{MappingFlags, PageSize},
+    paging::MappingFlags,
 };
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
@@ -162,7 +162,7 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
         let vaddr = mm
             .find_free_area(mm.base(), PAGE_SIZE_4K, range, PAGE_SIZE_4K)
             .expect("uprobe: no free user va for exec memory");
-        let backend = crate::mm::Backend::new_alloc(vaddr, PageSize::Size4K, "uprobe-ols");
+        let backend = crate::mm::Backend::new_alloc(vaddr, PAGE_SIZE_4K, "uprobe-ols");
         mm.map(
             vaddr,
             PAGE_SIZE_4K,

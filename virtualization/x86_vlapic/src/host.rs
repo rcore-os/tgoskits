@@ -2,15 +2,12 @@
 
 use core::marker::PhantomData;
 
-use crate::{
-    X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VcpuId,
-    X86VlapicError, X86VlapicResult, X86VmId,
-};
+use crate::*;
 
 /// Size of a 4 KiB host frame.
 pub const X86_PAGE_SIZE_4K: usize = 0x1000;
 
-/// Host operations required by x86 vLAPIC, PIT, and serial emulation.
+/// Host operations required by x86 vLAPIC and PIT emulation.
 pub trait X86VlapicHostOps {
     /// Allocate one host frame.
     fn alloc_frame() -> Option<X86HostPhysAddr>;
@@ -33,12 +30,6 @@ pub trait X86VlapicHostOps {
     /// Cancel a timer callback.
     fn cancel_timer(token: usize);
 
-    /// Write bytes to the host console.
-    fn write_bytes(bytes: &[u8]);
-
-    /// Read bytes from the host console.
-    fn read_bytes(bytes: &mut [u8]) -> usize;
-
     /// Return the current VM ID.
     fn current_vm_id() -> X86VmId;
 
@@ -57,6 +48,11 @@ pub trait X86VlapicHostOps {
         vcpu_id: X86VcpuId,
         vector: X86InterruptVector,
     ) -> X86VlapicResult;
+
+    /// Route a PIT IRQ0 edge through the VM's selected legacy or I/O APIC path.
+    fn inject_pit_irq(_vm_id: X86VmId, _vcpu_id: X86VcpuId) -> X86VlapicResult {
+        Err(X86VlapicError::Unsupported)
+    }
 }
 
 /// RAII host frame used by x86 virtual interrupt-controller structures.
@@ -121,14 +117,6 @@ pub(crate) fn register_timer<H: X86VlapicHostOps>(
 
 pub(crate) fn cancel_timer<H: X86VlapicHostOps>(token: usize) {
     H::cancel_timer(token);
-}
-
-pub(crate) fn write_bytes<H: X86VlapicHostOps>(bytes: &[u8]) {
-    H::write_bytes(bytes);
-}
-
-pub(crate) fn read_bytes<H: X86VlapicHostOps>(bytes: &mut [u8]) -> usize {
-    H::read_bytes(bytes)
 }
 
 pub(crate) fn current_vm_vcpu_num<H: X86VlapicHostOps>() -> usize {

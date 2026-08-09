@@ -11,7 +11,7 @@ version = "0.1.1"
 crab-usb = {workspace = true}
 log = "0.4"
 usb-if = {workspace = true}
-anyhow = { version = "1", default-features = false}
+anyhow = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 env_logger = "0.11"

@@ -13,8 +13,8 @@ pub trait PlatOp {
         Err(IrqError::Unsupported)
     }
 
-    fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) {
-        panic!("IPI is not implemented for this dynamic platform");
+    fn send_ipi(_irq: IrqId, _target: crate::irq::IpiTarget) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
     }
 
     fn ipi_irq() -> IrqId;
@@ -40,8 +40,9 @@ pub trait PlatOp {
         Self::init_boot_irq_cpu(cpu_idx, crate::irq::CpuBootRole::Secondary);
     }
 
-    fn send_ipi_to_cpu(cpu_id: usize) {
+    fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
         let _ = cpu_id;
+        Err(IrqError::Unsupported)
     }
 }
 

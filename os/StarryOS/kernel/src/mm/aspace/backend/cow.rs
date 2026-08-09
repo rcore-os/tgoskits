@@ -11,7 +11,7 @@ use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
 use ax_runtime::hal::{
     mem::phys_to_virt,
-    paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
+    paging::{MappingFlags, PageTable, PagingError},
 };
 use ax_sync::Mutex;
 
@@ -19,13 +19,14 @@ use super::{
     AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
     PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
 };
+use crate::mm::paging_error_to_ax_error;
 
 struct FrameRefCnt {
     count: u8,
 }
 
 impl FrameRefCnt {
-    fn drop_frame(&mut self, paddr: PhysAddr, page_size: PageSize) {
+    fn drop_frame(&mut self, paddr: PhysAddr, page_size: usize) {
         assert!(self.count > 0, "dropping unreferenced frame");
         self.count -= 1;
         if self.count == 0 {
@@ -123,7 +124,7 @@ pub(crate) fn private_mmap_eof_check_for_test() -> bool {
 /// This corresponds to the `MAP_PRIVATE` flag.
 pub struct CowBackend {
     start: VirtAddr,
-    size: PageSize,
+    size: usize,
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
@@ -242,7 +243,7 @@ impl CowBackend {
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         let kind = self.rss_kind_for_fault(access_flags);
         let frame = self.alloc_new_frame(true)?;
@@ -284,9 +285,9 @@ impl CowBackend {
             }
         }
         let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
-        if let Err(err) = pt.map(vaddr, frame, self.size, pte_flags) {
+        if let Err(err) = pt.map_page(vaddr, frame, self.size, pte_flags) {
             self.deinit_frame(frame);
-            return Err(err.into());
+            return Err(paging_error_to_ax_error(err));
         }
         if let Some(acct) = acct {
             acct.record_charge(vaddr, kind)?;
@@ -302,7 +303,7 @@ impl CowBackend {
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult<usize> {
         let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
             for &addr in run {
@@ -310,7 +311,7 @@ impl CowBackend {
             }
             return Ok(run.len());
         };
-        let ps = self.size as usize;
+        let ps = self.size;
         let v0 = run[0];
         if v0.as_usize() < file_vaddr_base.as_usize() {
             for &addr in run {
@@ -332,9 +333,9 @@ impl CowBackend {
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
             let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
-            if let Err(err) = pt.map(addr, frame, self.size, pte_flags) {
+            if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
                 self.deinit_frame(frame);
-                return Err(err.into());
+                return Err(paging_error_to_ax_error(err));
             }
             if let Some(acct) = acct {
                 acct.record_charge(addr, kind)?;
@@ -350,7 +351,7 @@ impl CowBackend {
         vma_flags: MappingFlags,
         pte_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         let mut frame_table = FRAME_TABLE.lock();
         let frame = frame_table
@@ -362,7 +363,8 @@ impl CowBackend {
         debug_assert!(frame.count < u8::MAX, "frame reference count near overflow");
         match frame.count {
             1 => {
-                pt.protect(vaddr, vma_flags)?;
+                pt.protect_page(vaddr, vma_flags)
+                    .map_err(paging_error_to_ax_error)?;
                 let defer_write =
                     self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
                 if defer_write && let Some(acct) = acct {
@@ -379,9 +381,9 @@ impl CowBackend {
                         self.size as _,
                     );
                 }
-                if let Err(err) = pt.remap(vaddr, new_frame, vma_flags) {
+                if let Err(err) = pt.remap_page(vaddr, new_frame, vma_flags) {
                     self.deinit_frame(new_frame);
-                    return Err(err.into());
+                    return Err(paging_error_to_ax_error(err));
                 }
                 if self.file.is_some()
                     && let Some(acct) = acct
@@ -403,9 +405,9 @@ impl CowBackend {
         &self,
         addr: VirtAddr,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
-        if let Ok((frame, _flags, page_size)) = pt.unmap(addr) {
+        if let Ok((frame, _flags, page_size)) = pt.unmap_page(addr) {
             assert_eq!(page_size, self.size);
             if let Some(acct) = acct {
                 acct.remove_charge(addr);
@@ -462,7 +464,7 @@ impl CowBackend {
 }
 
 impl BackendOps for CowBackend {
-    fn page_size(&self) -> PageSize {
+    fn page_size(&self) -> usize {
         self.size
     }
 
@@ -471,7 +473,7 @@ impl BackendOps for CowBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
-        _pt: &mut PageTableCursor,
+        _pt: &mut PageTable,
     ) -> AxResult {
         debug!("Cow::map: {range:?} {flags:?}",);
         if self.file.is_some() && flags.contains(MappingFlags::WRITE) {
@@ -484,7 +486,7 @@ impl BackendOps for CowBackend {
         &self,
         _range: VirtAddrRange,
         new_flags: MappingFlags,
-        _pt: &mut PageTableCursor,
+        _pt: &mut PageTable,
     ) -> AxResult {
         if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
             self.write_upgraded.set(true);
@@ -496,7 +498,7 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult {
         debug!("Cow::unmap: {range:?}");
         for addr in pages_in(range, self.size)? {
@@ -511,7 +513,7 @@ impl BackendOps for CowBackend {
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        pt: &mut PageTableCursor,
+        pt: &mut PageTable,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
         // Batch consecutive not-mapped FILE-backed pages into one readahead read.
@@ -563,8 +565,8 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
-        old_pt: &mut PageTableCursor,
-        new_pt: &mut PageTableCursor,
+        old_pt: &mut PageTable,
+        new_pt: &mut PageTable,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend> {
@@ -585,8 +587,12 @@ impl BackendOps for CowBackend {
                         warn!("frame reference count overflow");
                         return Err(AxError::BadAddress);
                     }
-                    old_pt.protect(vaddr, cow_flags)?;
-                    new_pt.map(vaddr, paddr, self.size, cow_flags)?;
+                    old_pt
+                        .protect_page(vaddr, cow_flags)
+                        .map_err(paging_error_to_ax_error)?;
+                    new_pt
+                        .map_page(vaddr, paddr, self.size, cow_flags)
+                        .map_err(paging_error_to_ax_error)?;
                     if let (Some(parent), Some(child)) = (acct.parent, acct.child)
                         && let Some(_kind) = parent.charge_kind(vaddr)
                     {
@@ -621,7 +627,7 @@ impl BackendOps for CowBackend {
 impl Backend {
     pub fn new_cow(
         start: VirtAddr,
-        size: PageSize,
+        size: usize,
         file: FileBackend,
         file_start: u64,
         file_end: Option<u64>,
@@ -637,7 +643,7 @@ impl Backend {
         })
     }
 
-    pub fn new_alloc(start: VirtAddr, size: PageSize, name: &str) -> Self {
+    pub fn new_alloc(start: VirtAddr, size: usize, name: &str) -> Self {
         Self::Cow(CowBackend {
             start: start.align_down_4k(),
             size,

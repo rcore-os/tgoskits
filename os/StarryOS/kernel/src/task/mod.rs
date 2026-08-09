@@ -11,6 +11,8 @@ mod signal;
 mod signal_publication;
 mod stat;
 mod timer;
+#[cfg(target_arch = "loongarch64")]
+mod unaligned;
 mod user;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
@@ -60,11 +62,21 @@ pub enum SyscallTraceState {
     Exit,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PtraceAttachMode {
+    #[default]
+    None,
+    Attach,
+    Seize,
+}
+
 struct PtraceStopRecord {
     signo: Option<Signo>,
     uctx: UserContext,
     siginfo: Option<SignalInfo>,
     is_syscall: bool,
+    syscall_no: Option<usize>,
     reported: bool,
     event: u32,
     event_msg: usize,
@@ -449,6 +461,15 @@ impl Thread {
         *self.cred.lock() = new_cred;
     }
 
+    /// Replace only this thread's credentials.
+    ///
+    /// Use this for Linux ABI operations whose credential state is explicitly
+    /// thread-local. Process-wide credential-changing syscalls must use
+    /// [`Self::set_cred`] instead.
+    pub(crate) fn set_thread_cred(&self, new_cred: Cred) {
+        self.set_cred_single(Arc::new(new_cred));
+    }
+
     /// Replace the credentials for ALL threads in the same process.
     ///
     /// POSIX requires that credential changes (setuid, setresuid, etc.)
@@ -477,6 +498,29 @@ impl Thread {
                 && let Some(thr) = task.try_as_thread()
             {
                 thr.set_cred_single(new_arc.clone());
+            }
+        }
+    }
+
+    /// Update every thread's credentials from its own current snapshot.
+    ///
+    /// Use this when a process-wide credential operation depends on
+    /// thread-local state. In particular, setxid capability transitions must
+    /// evaluate each thread's `PR_SET_KEEPCAPS` flag independently.
+    pub(crate) fn update_process_creds(&self, update: impl Fn(&Cred) -> Cred) {
+        let old_cred = self.cred();
+        self.set_cred_single(Arc::new(update(&old_cred)));
+
+        let mut tids = self.proc_data.proc.threads();
+        tids.sort_unstable();
+
+        for tid in &tids {
+            if let Ok(task) = ops::get_task(*tid)
+                && let Some(thread) = task.try_as_thread()
+                && !core::ptr::eq(thread, self)
+            {
+                let old_cred = thread.cred();
+                thread.set_cred_single(Arc::new(update(&old_cred)));
             }
         }
     }
@@ -674,6 +718,10 @@ struct JobControl {
     /// (e.g. busybox `killall5 -STOP` then `-CONT`) without having to scrub the
     /// pending-signal queue.
     continue_generation: u64,
+    /// TID of the thread currently parked in `do_job_stop`. The implementation
+    /// currently parks only the thread that dequeues the stop signal, so ptrace
+    /// must distinguish that waiter from running or syscall-blocked siblings.
+    waiter_tid: Option<Pid>,
 }
 
 /// [`Process`]-shared data.
@@ -827,8 +875,8 @@ pub struct ProcessData {
     /// Cleared after the exec-stop is delivered in the user-return loop.
     ptrace_exec_stop_pending: AtomicBool,
 
-    /// Set by `PTRACE_ATTACH` / `PTRACE_SEIZE`.
-    ptrace_attached: AtomicBool,
+    /// Attachment mode established by `PTRACE_ATTACH` or `PTRACE_SEIZE`.
+    ptrace_attach_mode: AtomicU8,
 
     /// TID selected by `PTRACE_SINGLESTEP`; causes a temporary EBREAK insertion.
     ptrace_singlestep_tid: AtomicU32,
@@ -980,7 +1028,7 @@ impl ProcessData {
                 ptrace_resume_signo: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_resume_signal_bypass: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_exec_stop_pending: AtomicBool::new(false),
-                ptrace_attached: AtomicBool::new(false),
+                ptrace_attach_mode: AtomicU8::new(PtraceAttachMode::None as u8),
                 ptrace_singlestep_tid: AtomicU32::new(0),
                 ptrace_syscall_trace: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_options: AtomicUsize::new(0),
@@ -1127,7 +1175,12 @@ impl ProcessData {
     /// [`Self::set_job_continued`] / `continue_generation`. Closing this race at
     /// the stop site lets us avoid scrubbing the pending-signal queue (which
     /// would require modifying `starry-signal`).
-    pub fn set_job_stopped(&self, signo: Signo, continue_gen_snapshot: u64) -> bool {
+    pub fn set_job_stopped(
+        &self,
+        signo: Signo,
+        continue_gen_snapshot: u64,
+        waiter_tid: Pid,
+    ) -> bool {
         let mut jc = self.job_control.lock();
         if jc.continue_generation != continue_gen_snapshot {
             // A continue raced in after we observed `continue_gen_snapshot`;
@@ -1136,7 +1189,14 @@ impl ProcessData {
         }
         jc.stopped = Some(signo);
         jc.status = Some(JobStatus::Stopped(signo));
+        jc.waiter_tid = Some(waiter_tid);
         true
+    }
+
+    /// Returns true when `tid` is the thread parked for the active job stop.
+    pub fn is_job_stop_waiter(&self, tid: Pid) -> bool {
+        let jc = self.job_control.lock();
+        jc.stopped.is_some() && jc.waiter_tid == Some(tid)
     }
 
     /// Snapshot the continue generation. Taken right after a stop signal is
@@ -1156,6 +1216,7 @@ impl ProcessData {
         let mut jc = self.job_control.lock();
         jc.continue_generation = jc.continue_generation.wrapping_add(1);
         let was_stopped = jc.stopped.take().is_some();
+        jc.waiter_tid = None;
         if was_stopped {
             jc.status = Some(JobStatus::Continued);
             drop(jc);
@@ -1170,11 +1231,22 @@ impl ProcessData {
     /// Force-clear the stop (for `SIGKILL`) so a parked thread re-checks and
     /// proceeds to terminate. Does not queue a `Continued` report.
     pub fn clear_job_stop_for_kill(&self) {
-        let was_stopped = self.job_control.lock().stopped.take().is_some();
+        let mut jc = self.job_control.lock();
+        let was_stopped = jc.stopped.take().is_some();
+        jc.waiter_tid = None;
+        drop(jc);
         if was_stopped {
             // Stop state is cleared before waking stopped threads.
             unsafe { self.cont_event.wake(IoEvents::IN) };
         }
+    }
+
+    /// Wake a job-stopped thread so it can publish a pending ptrace event.
+    ///
+    /// This does not alter the job-control state.  Only `SIGCONT` or `SIGKILL`
+    /// may release a job stop.
+    pub fn wake_job_stop_waiter(&self) {
+        unsafe { self.cont_event.wake(IoEvents::IN) };
     }
 
     /// The wait queue woken when the process is continued or killed.
@@ -1266,6 +1338,7 @@ impl ProcessData {
                 uctx: *uctx,
                 siginfo: Some(SignalInfo::new_kernel(signo)),
                 is_syscall: false,
+                syscall_no: None,
                 reported: false,
                 event: pending_event.as_ref().map_or(0, |event| event.event),
                 event_msg: pending_event.as_ref().map_or(0, |event| event.msg),
@@ -1275,10 +1348,17 @@ impl ProcessData {
     }
 
     /// Record that this tracee is stopped at a syscall entry or exit boundary.
-    pub fn set_ptrace_syscall_stop(&self, tid: u32, signo: Signo, uctx: &UserContext) {
+    pub fn set_ptrace_syscall_stop(
+        &self,
+        tid: u32,
+        signo: Signo,
+        uctx: &UserContext,
+        syscall_no: usize,
+    ) {
         self.set_ptrace_stop(tid, signo, uctx);
         if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
             stop.is_syscall = true;
+            stop.syscall_no = Some(syscall_no);
         }
     }
 
@@ -1324,6 +1404,19 @@ impl ProcessData {
             .lock()
             .get(&tid)
             .and_then(|stop| stop.signo)
+    }
+
+    /// Return whether the selected stop was produced at a syscall boundary.
+    pub fn ptrace_stop_is_syscall_for(&self, tid: u32) -> bool {
+        self.ptrace_stop
+            .lock()
+            .get(&tid)
+            .is_some_and(|stop| stop.is_syscall)
+    }
+
+    /// Return the original syscall number associated with a syscall stop.
+    pub fn ptrace_stop_syscall_number_for(&self, tid: u32) -> Option<usize> {
+        self.ptrace_stop.lock().get(&tid)?.syscall_no
     }
 
     pub fn ptrace_unreported_stop(&self, preferred_tid: Option<u32>) -> Option<(u32, Signo)> {
@@ -1473,6 +1566,19 @@ impl ProcessData {
         true
     }
 
+    /// Replace the original syscall number held for a stopped tracee.
+    pub fn set_ptrace_stop_syscall_number_for(&self, tid: u32, syscall_no: usize) -> bool {
+        let mut stops = self.ptrace_stop.lock();
+        let Some(stop) = stops.get_mut(&tid) else {
+            return false;
+        };
+        if !stop.is_syscall {
+            return false;
+        }
+        stop.syscall_no = Some(syscall_no);
+        true
+    }
+
     /// Resume the stopped task, optionally injecting a signal.
     pub fn resume_ptrace_stop_with_signal(&self, signo: u32) {
         if let Some(tid) = self.selected_ptrace_stop_tid() {
@@ -1566,16 +1672,28 @@ impl ProcessData {
         unsafe { self.ptrace_stop_event.register(waker, IoEvents::IN) };
     }
 
-    pub fn set_ptrace_attached(&self) {
-        self.ptrace_attached.store(true, Ordering::Release);
+    pub(crate) fn set_ptrace_attach_mode(&self, mode: PtraceAttachMode) {
+        self.ptrace_attach_mode.store(mode as u8, Ordering::Release);
     }
 
     pub fn clear_ptrace_attached(&self) {
-        self.ptrace_attached.store(false, Ordering::Release);
+        self.set_ptrace_attach_mode(PtraceAttachMode::None);
+    }
+
+    pub(crate) fn ptrace_attach_mode(&self) -> PtraceAttachMode {
+        match self.ptrace_attach_mode.load(Ordering::Acquire) {
+            value if value == PtraceAttachMode::Attach as u8 => PtraceAttachMode::Attach,
+            value if value == PtraceAttachMode::Seize as u8 => PtraceAttachMode::Seize,
+            _ => PtraceAttachMode::None,
+        }
     }
 
     pub fn is_ptrace_attached(&self) -> bool {
-        self.ptrace_attached.load(Ordering::Acquire)
+        self.ptrace_attach_mode() != PtraceAttachMode::None
+    }
+
+    pub fn is_ptrace_seized(&self) -> bool {
+        self.ptrace_attach_mode() == PtraceAttachMode::Seize
     }
 
     pub fn set_ptrace_singlestep(&self, val: bool) {
@@ -1623,6 +1741,30 @@ impl ProcessData {
         } else {
             traces.insert(tid, state);
         }
+    }
+
+    /// Return the next syscall boundary that a `PTRACE_SYSCALL` tracee stops at.
+    pub fn ptrace_syscall_trace_state_for(&self, tid: u32) -> SyscallTraceState {
+        self.ptrace_syscall_trace
+            .lock()
+            .get(&tid)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Continue syscall tracing from the opposite boundary.
+    ///
+    /// This is used only when `PTRACE_SYSCALL` resumes a syscall stop. Resuming
+    /// an event, group, or signal-delivery stop begins with the next entry.
+    pub fn advance_ptrace_syscall_trace_for(&self, tid: u32) {
+        let mut traces = self.ptrace_syscall_trace.lock();
+        let next = match traces.get(&tid).copied() {
+            Some(SyscallTraceState::Entry) => SyscallTraceState::Exit,
+            Some(SyscallTraceState::Exit) | Some(SyscallTraceState::None) | None => {
+                SyscallTraceState::Entry
+            }
+        };
+        traces.insert(tid, next);
     }
 
     pub fn take_ptrace_syscall_trace_for(&self, tid: u32) -> SyscallTraceState {
@@ -1894,15 +2036,18 @@ impl ProcessData {
     /// ```
     ///
     /// `mem::replace` moves the old Arc out of the guard so it is dropped
-    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
-    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
+    /// **after** the `SpinNoIrq` guard, in normal preemptible context. The old
+    /// address space must also stay alive until the current task has switched
+    /// away from its page table.
+    pub fn replace_current_aspace(&self, current: &TaskInner, new_aspace: Arc<Mutex<AddrSpace>>) {
+        let new_page_table_root = new_aspace.lock().page_table_root();
+        crate::mm::attach_process_slot(&new_aspace);
         let old = {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
         };
+        current.switch_page_table(new_page_table_root);
         crate::mm::release_process_slot(&old);
-        let aspace_arc = self.aspace.lock().clone();
-        crate::mm::attach_process_slot(&aspace_arc);
     }
 
     /// Set the vfork completion (called on the child after a vfork,

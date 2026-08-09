@@ -28,6 +28,7 @@ struct IoApicState {
     selector: u32,
     redirection_table: [u64; REDIRECTION_ENTRY_COUNT],
     pending_level: [bool; REDIRECTION_ENTRY_COUNT],
+    input_level: [bool; REDIRECTION_ENTRY_COUNT],
 }
 
 impl IoApicState {
@@ -36,6 +37,7 @@ impl IoApicState {
             selector: 0,
             redirection_table: [REDIRECTION_ENTRY_MASKED; REDIRECTION_ENTRY_COUNT],
             pending_level: [false; REDIRECTION_ENTRY_COUNT],
+            input_level: [false; REDIRECTION_ENTRY_COUNT],
         }
     }
 
@@ -88,7 +90,7 @@ impl IoApicState {
                 continue;
             }
 
-            let pending = core::mem::take(&mut self.pending_level[gsi])
+            let pending = (self.input_level[gsi] || core::mem::take(&mut self.pending_level[gsi]))
                 .then(|| self.interrupt_for_entry(gsi))
                 .flatten();
             return Some(IoApicEoi { gsi, pending });
@@ -162,6 +164,28 @@ impl EmulatedIoApic {
     /// Assert an IO APIC input line and return the interrupt to inject.
     pub fn assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
         let mut state = self.state.lock();
+        state.interrupt_for_entry(gsi)
+    }
+
+    /// Updates one IO APIC input line and returns a newly routable interrupt.
+    ///
+    /// Level-triggered inputs remain asserted across guest EOI. Deasserting a
+    /// line before EOI cancels any deferred redelivery.
+    pub fn set_gsi_level(&self, gsi: usize, asserted: bool) -> Option<IoApicInterrupt> {
+        let mut state = self.state.lock();
+        let input = state.input_level.get_mut(gsi)?;
+        let was_asserted = core::mem::replace(input, asserted);
+        if !asserted {
+            state.pending_level[gsi] = false;
+            return None;
+        }
+        if was_asserted {
+            if state.redirection_table[gsi] & REDIRECTION_ENTRY_REMOTE_IRR != 0 {
+                state.pending_level[gsi] = true;
+                return None;
+            }
+            return state.interrupt_for_entry(gsi);
+        }
         state.interrupt_for_entry(gsi)
     }
 
@@ -276,6 +300,36 @@ mod tests {
                     level_triggered: true,
                 }),
             })
+        );
+    }
+
+    #[test]
+    fn asserted_level_is_redelivered_after_eoi_until_lowered() {
+        let ioapic = EmulatedIoApic::default();
+        {
+            let mut state = ioapic.state.lock();
+            program_level_gsi(&mut state, 4, 0x34);
+        }
+
+        assert_eq!(
+            ioapic.set_gsi_level(4, true),
+            Some(IoApicInterrupt {
+                vector: 0x34,
+                level_triggered: true,
+            })
+        );
+        assert_eq!(
+            ioapic.end_of_interrupt(0x34).and_then(|eoi| eoi.pending),
+            Some(IoApicInterrupt {
+                vector: 0x34,
+                level_triggered: true,
+            })
+        );
+
+        ioapic.set_gsi_level(4, false);
+        assert_eq!(
+            ioapic.end_of_interrupt(0x34).and_then(|eoi| eoi.pending),
+            None
         );
     }
 }

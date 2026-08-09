@@ -75,12 +75,12 @@ fn test_loongarch64_kernel_code_mapping() {
     println!(
         "起始地址翻译: VA={:#x} -> PA={:#x}, Huge={}",
         kernel_virt_start,
-        translated_paddr.raw(),
+        translated_paddr.as_usize(),
         pte.to_config(false).huge
     );
 
     assert_eq!(
-        translated_paddr.raw(),
+        translated_paddr.as_usize(),
         kernel_phys_start,
         "物理地址应该匹配"
     );

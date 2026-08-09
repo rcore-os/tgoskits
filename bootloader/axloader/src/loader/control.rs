@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::{format, string::String, vec::Vec};
 use core::str;
 
+use axloader::boot_offer::valid_kernel_url;
 use httpboot_protocol::{SERIAL_BOOT_PREFIX, SERIAL_PROTOCOL_VERSION, SERIAL_READY_PREFIX};
 
 use crate::console;
@@ -142,25 +143,6 @@ fn parse_boot_offer(input: &str) -> Result<BootOffer, ControlError> {
         arch: arch.into(),
         entry_symbol: json_nullable_string_field(input, "entry_symbol").map(String::from),
     })
-}
-
-fn valid_kernel_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    if rest
-        .bytes()
-        .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n' | b' ' | b'\t'))
-    {
-        return false;
-    }
-
-    let Some(path_start) = rest.find('/') else {
-        return false;
-    };
-    let authority = &rest[..path_start];
-    let path = &rest[path_start..];
-    !authority.is_empty() && path.ends_with("/kernel.elf")
 }
 
 fn json_string_field<'a>(input: &'a str, key: &str) -> Option<&'a str> {

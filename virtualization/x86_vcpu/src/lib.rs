@@ -26,10 +26,14 @@ use alloc::vec::Vec;
 
 #[cfg(test)]
 mod test_utils;
+#[cfg(test)]
+mod world_switch_tests;
 
+mod port_io;
 mod runtime;
 mod types;
 
+pub use port_io::{X86PortIoDirection, X86PortIoStringExit};
 pub use runtime::{
     X86NestedPagingFormat, X86PerCpuState, X86Vcpu, apic_access_page_addr, apic_access_page_gpa,
     has_hardware_support, initialize_hardware_support, requires_apic_access_page,
@@ -61,16 +65,22 @@ macro_rules! x86_err_type {
     }};
 }
 
-/// Maximum number of x86 host I/O port ranges configured for one vCPU.
-pub const X86_MAX_PASSTHROUGH_PORT_RANGES: usize = 16;
+/// Maximum number of guest I/O port ranges trapped for one vCPU.
+pub const X86_MAX_INTERCEPTED_PORT_RANGES: usize = 16;
+
+/// Guest physical base address of the architectural local APIC window.
+pub const X86_LOCAL_APIC_GPA: usize = 0xfee0_0000;
+
+/// Size of the architectural local APIC window.
+pub const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 
 /// x86 vCPU creation configuration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct X86VcpuCreateConfig;
 
-/// x86 host I/O port range that should trap and be handled by the VMM.
+/// Guest I/O port range that should trap and be handled by the VMM.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct X86PassthroughPortRange {
+pub struct X86InterceptedPortRange {
     /// First port in the range.
     pub base: u16,
     /// Number of ports in the range.
@@ -91,10 +101,8 @@ pub struct X86GuestMemoryRegion {
 /// x86 vCPU setup configuration.
 #[derive(Clone, Debug)]
 pub struct X86VcpuSetupConfig {
-    /// Intercept COM1 PIO ports and route them to an emulated serial device.
-    pub emulate_com1: bool,
-    /// Host I/O port ranges routed through AxVM passthrough port devices.
-    pub passthrough_ports: [Option<X86PassthroughPortRange>; X86_MAX_PASSTHROUGH_PORT_RANGES],
+    /// I/O port ranges routed through the VM's resolved device runtime.
+    pub intercepted_ports: [Option<X86InterceptedPortRange>; X86_MAX_INTERCEPTED_PORT_RANGES],
     /// Guest RAM regions used by the VMX instruction decoder to read guest bytes.
     pub guest_memory_regions: Vec<X86GuestMemoryRegion>,
 }
@@ -102,16 +110,15 @@ pub struct X86VcpuSetupConfig {
 impl Default for X86VcpuSetupConfig {
     fn default() -> Self {
         Self {
-            emulate_com1: false,
-            passthrough_ports: [None; X86_MAX_PASSTHROUGH_PORT_RANGES],
+            intercepted_ports: [None; X86_MAX_INTERCEPTED_PORT_RANGES],
             guest_memory_regions: Vec::new(),
         }
     }
 }
 
 impl X86VcpuSetupConfig {
-    /// Adds one host I/O port range to the vCPU I/O intercept list.
-    pub fn add_passthrough_port_range(&mut self, base: u16, length: u16) -> X86VcpuResult {
+    /// Adds one device-owned I/O port range to the vCPU intercept list.
+    pub fn add_intercepted_port_range(&mut self, base: u16, length: u16) -> X86VcpuResult {
         if length == 0 {
             return Err(X86VcpuError::InvalidInput);
         }
@@ -119,13 +126,13 @@ impl X86VcpuSetupConfig {
             return Err(X86VcpuError::InvalidInput);
         }
 
-        let range = X86PassthroughPortRange { base, length };
-        if self.passthrough_ports.contains(&Some(range)) {
+        let range = X86InterceptedPortRange { base, length };
+        if self.intercepted_ports.contains(&Some(range)) {
             return Ok(());
         }
 
         if let Some(slot) = self
-            .passthrough_ports
+            .intercepted_ports
             .iter_mut()
             .find(|slot| slot.is_none())
         {
@@ -136,9 +143,9 @@ impl X86VcpuSetupConfig {
         Err(X86VcpuError::NoMemory)
     }
 
-    /// Iterates over configured host I/O port ranges.
-    pub fn passthrough_port_ranges(&self) -> impl Iterator<Item = X86PassthroughPortRange> + '_ {
-        self.passthrough_ports.iter().filter_map(|range| *range)
+    /// Iterates over device-owned I/O port ranges.
+    pub fn intercepted_port_ranges(&self) -> impl Iterator<Item = X86InterceptedPortRange> + '_ {
+        self.intercepted_ports.iter().filter_map(|range| *range)
     }
 }
 
@@ -226,18 +233,18 @@ mod tests {
     }
 
     #[test]
-    fn setup_config_records_passthrough_port_ranges() {
+    fn setup_config_records_intercepted_port_ranges() {
         let mut config = X86VcpuSetupConfig::default();
 
-        config.add_passthrough_port_range(0x6000, 0x80).unwrap();
-        config.add_passthrough_port_range(0x6000, 0x80).unwrap();
+        config.add_intercepted_port_range(0x6000, 0x80).unwrap();
+        config.add_intercepted_port_range(0x6000, 0x80).unwrap();
 
         let ranges = config
-            .passthrough_port_ranges()
+            .intercepted_port_ranges()
             .collect::<std::vec::Vec<_>>();
         assert_eq!(
             ranges,
-            std::vec![X86PassthroughPortRange {
+            std::vec![X86InterceptedPortRange {
                 base: 0x6000,
                 length: 0x80
             }]
@@ -245,17 +252,17 @@ mod tests {
     }
 
     #[test]
-    fn setup_config_rejects_invalid_or_excess_passthrough_port_ranges() {
+    fn setup_config_rejects_invalid_or_excess_intercepted_port_ranges() {
         let mut config = X86VcpuSetupConfig::default();
 
-        assert!(config.add_passthrough_port_range(0x6000, 0).is_err());
-        assert!(config.add_passthrough_port_range(0xfff0, 0x20).is_err());
+        assert!(config.add_intercepted_port_range(0x6000, 0).is_err());
+        assert!(config.add_intercepted_port_range(0xfff0, 0x20).is_err());
 
-        for index in 0..X86_MAX_PASSTHROUGH_PORT_RANGES {
+        for index in 0..X86_MAX_INTERCEPTED_PORT_RANGES {
             config
-                .add_passthrough_port_range((0x1000 + index * 0x10) as u16, 1)
+                .add_intercepted_port_range((0x1000 + index * 0x10) as u16, 1)
                 .unwrap();
         }
-        assert!(config.add_passthrough_port_range(0x3000, 1).is_err());
+        assert!(config.add_intercepted_port_range(0x3000, 1).is_err());
     }
 }

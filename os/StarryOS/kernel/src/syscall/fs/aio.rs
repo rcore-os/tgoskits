@@ -16,11 +16,8 @@ use core::{
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::FileFlags;
 use ax_kspin::SpinRwLock as RwLock;
-use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange, align_up_4k};
-use ax_runtime::hal::{
-    paging::{MappingFlags, PageSize},
-    time::wall_time,
-};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
+use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
 use ax_sync::Mutex;
 use ax_task::{
     WaitQueue,
@@ -284,11 +281,11 @@ fn allocate_aio_ring(aspace: &mut AddrSpace, ring_size: usize) -> AxResult<VirtA
             aspace.base(),
             ring_size,
             VirtAddrRange::new(aspace.base(), aspace.end()),
-            PageSize::Size4K as usize,
+            PAGE_SIZE_4K,
         )
         .ok_or(AxError::NoMemory)?;
 
-    let backend = Backend::new_alloc(ring_vaddr, PageSize::Size4K, "aio_ring");
+    let backend = Backend::new_alloc(ring_vaddr, PAGE_SIZE_4K, "aio_ring");
     let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
     aspace.map(ring_vaddr, ring_size, flags, true, backend)?;
     Ok(ring_vaddr)

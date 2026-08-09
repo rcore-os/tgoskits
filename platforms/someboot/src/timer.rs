@@ -4,6 +4,15 @@ use crate::ArchTrait;
 
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
+/// Hardware counter contract exposed to the platform scheduler clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CounterStability {
+    /// Every runtime CPU observes one synchronized system counter.
+    Stable,
+    /// The counter is CPU-local and requires per-CPU correction.
+    Unstable,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum ArchTimerMode {
@@ -158,6 +167,12 @@ pub fn freq() -> usize {
 #[inline]
 pub fn ticks() -> usize {
     crate::arch::Arch::systimer_tick()
+}
+
+/// Reports whether scheduler users may sample the raw counter on any CPU.
+#[inline]
+pub fn scheduler_clock_stability() -> CounterStability {
+    crate::arch::Arch::systimer_stability()
 }
 
 /// Convert ticks to Duration.

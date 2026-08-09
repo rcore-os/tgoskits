@@ -40,7 +40,7 @@
 | `axalloc/src/lib.rs` | 注册 `page_cache_reclaim` 回调，分配失败时尝试回收 |
 | `axalloc/src/buddy_slab.rs` | 分配重试逻辑（最多 4 次），每次失败后触发回收 |
 | `axalloc/src/default_impl.rs` | 同上 |
-| `axfs-ng/src/highlevel/file.rs` | LRU 页面缓存驱逐：回收干净的文件支持页面 |
+| `fs/ax-fs-ng/src/highlevel/file.rs` | LRU 页面缓存驱逐：回收干净的文件支持页面 |
 | `axsync/src/mutex.rs` | 移除 `try_lock` 路径中的 `might_sleep()`（try_lock 是单次 CAS，永不应阻塞） |
 | `entry.rs` | 启动时注册回收回调 |
 
@@ -56,23 +56,17 @@
 
 **修复**: RISC-V QEMU 默认构建改走 `axplat-dyn`，`axplat-dyn/src/mem.rs` 的 `phys_ram_ranges()` 从 `somehal::mem::memory_map()` 动态读取 Free 区域。
 
-### 2. Bitmap 容量溢出
+### 2. 旧位图页分配器容量溢出
 
-**现象**: 修改 axconfig 为 8G 后，内核 panic:
+**现象**: 旧版 `ax-allocator` 位图页分配路径中，修改 axconfig 为 8G 后，内核 panic:
 
 ```
 bitmap capacity exceeded: need 3145728 pages but CAP is 1048576
 ```
 
-**根因**: 默认 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。8GB 需要 2M pages > 1M CAP。
+**根因**: 旧默认 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。8GB 需要 2M pages > 1M CAP。
 
-**修复** (`os/arceos/modules/axalloc/Cargo.toml`):
-```toml
-# Before
-default = ["tlsf", "ax-allocator/page-alloc-4g"]
-# After
-default = ["tlsf", "ax-allocator/page-alloc-64g"]  # 16M bits = 64GB
-```
+**当前状态**: `ax-alloc` 已不再依赖 `ax-allocator` / `bitmap-allocator`，主线改用 `tlsf` 或 `buddy-slab-allocator` 后端，因此不再通过 `page-alloc-*` feature 调整容量。
 
 ### 3. TMPFS 挂载失败
 
@@ -295,7 +289,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉
 | 文件 | 变更 |
 |------|------|
 | 旧 `axconfig.toml` | phys-memory-size: 512M → 8G |
-| `axalloc/Cargo.toml` | page-alloc-4g → page-alloc-64g |
+| `axalloc/Cargo.toml` | 旧位图页分配容量调整，当前已由 `ax-alloc` 后端清理替代 |
 | `syscall/mod.rs` | fsopen/fspick/open_tree → ENOSYS |
 | `linker.ld` | PROVIDE _ex_table_start/end |
 | `axplat-dyn/src/mem.rs` | phys_ram_ranges 从 memory_map 动态读取 |
@@ -305,7 +299,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉
 
 基于 PR #804 的初始实现，对页面缓存回收机制进行了增强：
 
-**修改文件**: `os/arceos/modules/axfs-ng/src/highlevel/file.rs`
+**修改文件**: `fs/ax-fs-ng/src/highlevel/file.rs`
 
 **改进项**:
 
@@ -328,7 +322,7 @@ sudo ./scripts/prepare-selfhost-rootfs.sh --arch aarch64       # aarch64 (交叉
   └─ StarryOS 自编译使用只读 ext4 挂载，脏页极少见
 ```
 
-**代码位置**: `os/arceos/modules/axfs-ng/src/highlevel/file.rs:492-540`
+**代码位置**: `fs/ax-fs-ng/src/highlevel/file.rs:492-540`
 
 ## 已知限制
 
@@ -560,7 +554,7 @@ I/O future（如 block read）有自己的 waker 回调（由设备驱动挂载�
 ### Bug #7: SMP 并发导致 `SpinNoPreempt` mutex 死锁（阻塞写入）
 
 - **现象**: SMP=4 + KVM 时，内部脚本在 `cat > linker.ld`（ext4 写入）后冻结；SMP=1 时正常完成
-- **根因**: `axfs-ng/src/fs/ext4/rsext4/fs.rs:29` — `inner: Mutex<Ext4State>`，其中 `Mutex = SpinNoPreempt`（自旋锁）
+- **根因**: `fs/ax-fs-ng/src/fs/ext4/rsext4/fs.rs:29` — `inner: Mutex<Ext4State>`，其中 `Mutex = SpinNoPreempt`（自旋锁）
 - **机制**: 多 vCPU 并发访问文件系统时发生锁顺序死锁。线程 A 持有锁等待 I/O 完成，线程 B 自旋等待锁释放。若 I/O 完成路径需要获取同一把锁，则形成死锁
 - **证据**: 
   - SMP=1 简单 `cat >` 测试 → ✅ 通过

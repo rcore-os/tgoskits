@@ -171,3 +171,17 @@ fn sd_speed_selection_can_be_disabled_for_default_speed_bringup() {
     );
     assert_eq!(driver.host().last_tuning, None);
 }
+
+#[test]
+fn sd_init_keeps_default_speed_when_switch_function_is_unsupported() {
+    let replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
+    let host = MockHost::with_results(replies);
+    let mut driver = SdioSdmmc::new(host);
+
+    poll_init_to_completion(&mut driver)
+        .expect("optional CMD6 rejection must not fail SD initialization");
+
+    assert_eq!(driver.host().bus_width, Some(BusWidth::Bit4));
+    assert_eq!(driver.host().last_clock, Some(ClockSpeed::Default));
+    assert_eq!(driver.host().last_tuning, None);
+}

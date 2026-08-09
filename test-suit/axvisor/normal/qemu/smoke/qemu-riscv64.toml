@@ -15,7 +15,7 @@ args = [
   "-append",
   "root=/dev/nvme0n1 rw init=/bin/sh",
   "-m",
-  "4g",
+  "4G",
 ]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
@@ -25,15 +25,15 @@ fail_regex = [
   "(?m)^(?:echo|cat|rm):",
 ]
 success_regex = [
-  "(?m)^AXVISOR_NVME_RW_PAYLOAD\\s*$",
-  "(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\\s*$",
+  '(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$',
+  '(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$',
 ]
 shell_prefix = "axvisor:/$"
-shell_init_cmd = """
+shell_init_cmd = '''
 echo AXVISOR_NVME_RW_PAYLOAD > /tmp/axvisor-nvme-rw
 cat /tmp/axvisor-nvme-rw
 rm -f /tmp/axvisor-nvme-rw
 echo AXVISOR_NVME_ROOTFS_RW_PASSED
-"""
+'''
 to_bin = true
 uefi = false

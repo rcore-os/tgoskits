@@ -95,7 +95,7 @@ const iconLibrary = {
 /* ── Component Workspace Diagram ─────────────────────────── */
 function ComponentWorkspaceDiagram() {
   const repos = [
-    { name: 'axallocator', path: 'memory/axallocator', tone: 'memory' },
+    { name: 'buddy-slab-allocator', path: 'memory/buddy-slab-allocator', tone: 'memory' },
     { name: 'arm_vcpu', path: 'virtualization/arm_vcpu', tone: 'virtualization' },
     { name: 'rockchip-npu', path: 'drivers/npu/rockchip-npu', tone: 'driver' },
   ];

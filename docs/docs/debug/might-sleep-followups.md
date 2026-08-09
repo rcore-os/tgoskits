@@ -213,9 +213,9 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 建议先只覆盖“可能进入复杂 reclaim 的页分配”：
 
-- `os/arceos/modules/axalloc/src/buddy_slab.rs`
-- `os/arceos/modules/axalloc/src/tlsf_impl.rs`
-- `os/arceos/modules/axfs-ng/src/file/page.rs`
+- `memory/ax-alloc/src/buddy_slab.rs`
+- `memory/ax-alloc/src/tlsf_impl.rs`
+- `fs/ax-fs-ng/src/file/page.rs`
 
 已确认方向：
 

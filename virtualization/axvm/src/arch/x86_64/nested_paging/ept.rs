@@ -1,12 +1,12 @@
 //! Intel Extended Page Table entry encoding.
 
-use core::{convert::TryFrom, fmt};
+use std::{convert::TryFrom, fmt};
 
 use axvm_types::{HostPhysAddr, MappingFlags};
 use bit_field::BitField;
 use page_table_generic as ptg;
 
-use super::runtime::{config_to_flags, flush_nested_page_table};
+use super::runtime::flush_nested_page_table;
 
 bitflags::bitflags! {
     /// EPT entry flags. (Intel SDM Vol. 3C, Section 28.3.2)
@@ -115,49 +115,46 @@ impl EptEntry {
 }
 
 impl ptg::PageTableEntry for EptEntry {
-    fn from_config(config: ptg::PteConfig) -> Self {
-        if !config.valid {
+    type PteConfig = MappingFlags;
+
+    fn new_page(paddr: HostPhysAddr, config: Self::PteConfig, is_huge: bool) -> Self {
+        if config.is_empty() {
             return Self(0);
         }
-        let flags = if config.is_dir && !config.huge {
-            // Non-leaf EPT entries must permit the walk itself; leaf mapping
-            // permissions are applied only at the final or huge-page entry.
-            EptFlags::READ | EptFlags::WRITE | EptFlags::EXECUTE
-        } else {
-            let mut flags = EptFlags::from(config_to_flags(config));
-            if config.huge {
-                flags |= EptFlags::HUGE_PAGE;
-            }
-            flags
-        };
-        Self(flags.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
-    }
-
-    fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
-        let flags = EptFlags::from_bits_truncate(self.0);
-        let valid = self.valid();
-        let huge = is_dir && flags.contains(EptFlags::HUGE_PAGE);
-        let mapping_flags = MappingFlags::from(flags);
-        ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
-            valid,
-            read: mapping_flags.contains(MappingFlags::READ),
-            writable: mapping_flags.contains(MappingFlags::WRITE),
-            executable: mapping_flags.contains(MappingFlags::EXECUTE),
-            lower: mapping_flags.contains(MappingFlags::USER),
-            is_dir: is_dir && valid && !huge,
-            huge,
-            mem_attr: if mapping_flags.contains(MappingFlags::DEVICE) {
-                ptg::MemAttributes::Device
-            } else {
-                ptg::MemAttributes::Normal
-            },
-            ..Default::default()
+        let mut flags = EptFlags::from(config);
+        if is_huge {
+            flags |= EptFlags::HUGE_PAGE;
         }
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
-    fn valid(&self) -> bool {
+    fn new_table(paddr: HostPhysAddr) -> Self {
+        let flags = EptFlags::READ | EptFlags::WRITE | EptFlags::EXECUTE;
+        Self(flags.bits() | (paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
+    }
+
+    fn paddr(&self, _is_dir: bool) -> HostPhysAddr {
+        EptEntry::paddr(*self)
+    }
+
+    fn config(&self, _is_dir: bool) -> Self::PteConfig {
+        self.flags()
+    }
+
+    fn present(&self) -> bool {
         self.0 & 0x7 != 0
+    }
+
+    fn huge(&self, is_dir: bool) -> bool {
+        is_dir && EptFlags::from_bits_truncate(self.0).contains(EptFlags::HUGE_PAGE)
+    }
+
+    fn unused(&self) -> bool {
+        self.0 == 0
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
     }
 }
 

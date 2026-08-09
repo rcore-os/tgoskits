@@ -1,6 +1,6 @@
 //! AArch64 compatibility facade and target-specific guest FDT policy.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use fdt_edit::Fdt;
 
@@ -18,6 +18,10 @@ pub use core::{
     reserve_excluded_device_ranges, set_phys_cpu_sets, setup_guest_fdt_from_vmm, try_get_host_fdt,
     update_fdt, update_provided_fdt,
 };
+
+pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
+    core::interrupt::host_gic_maintenance_intid(fdt)
+}
 
 pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
@@ -47,7 +51,7 @@ pub(super) fn initrd_start_size_from_image_config(
 pub(super) fn update_cpu_node(
     fdt: &Fdt,
     host_fdt: Option<&Fdt>,
-    crate_config: &axvmconfig::AxVMCrateConfig,
+    crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
     let Some(host_fdt) = host_fdt else {
         return Ok(fdt.encode().as_ref().to_vec());
@@ -92,7 +96,7 @@ pub(super) fn update_cpu_node(
 
 pub fn handle_fdt_operations(
     vm_config: &mut AxVMConfig,
-    vm_create_config: &mut axvmconfig::AxVMCrateConfig,
+    vm_create_config: &mut axvmconfig::GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> AxVmResult<Option<GuestDtbImage>> {
     core::prepare_dtb_guest(vm_config, vm_create_config, provider)

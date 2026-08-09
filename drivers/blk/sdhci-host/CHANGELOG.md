@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.3...sdhci-host-v0.4.4) - 2026-08-09
+
+### Other
+
+- updated the following local packages: sdmmc-protocol, dma-api, mmio-api, sdio-host2, rdif-block
+
 ## [0.4.3](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.2...sdhci-host-v0.4.3) - 2026-08-03
 
 ### Fixed

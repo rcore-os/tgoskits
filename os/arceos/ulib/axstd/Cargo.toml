@@ -1,6 +1,6 @@
 [package]
 name = "ax-std"
-version = "0.5.30"
+version = "0.5.31"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -24,6 +24,16 @@ default = ["alloc", "tls", "fd"]
 # Baseline required by every ArceOS Rust application. Applications enable this
 # through their own `arceos` feature instead of axbuild completing it at runtime.
 arceos = ["irq", "paging", "std-compat", "smp"]
+
+# Host-side implementations for OS-specific ArceOS capabilities.
+host-test = [
+    "ax-api/host-test",
+    "ax-hal/host-test",
+    "ax-kernel-guard/host-test",
+    "ax-kspin/host-test",
+    "ax-percpu/host-test",
+    "ax-task/host-test",
+]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
@@ -86,7 +96,12 @@ aic8800-wifi = ["ax-runtime/aic8800-wifi"]
 dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
+fd = [
+  "ax-posix-api/fd",
+  "ax-posix-api/poll",
+  "ax-posix-api/epoll",
+  "ax-posix-api/eventfd",
+]
 
 # Driver feature forwards used by std-aware apps that depend on `axstd` directly.
 nvme = ["ax-driver/nvme"]
@@ -106,6 +121,7 @@ usb = ["irq", "ax-driver/usb"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-runtime/rtc"]
+serial = ["ax-api/serial", "ax-posix-api/serial", "ax-runtime/serial"]
 
 # Backtrace
 backtrace = ["axbacktrace/alloc"]
@@ -119,8 +135,10 @@ ax-driver.workspace = true
 ax-errno.workspace = true
 ax-hal.workspace = true
 ax-io.workspace = true
+ax-kernel-guard.workspace = true
 ax-kspin.workspace = true
 ax-lazyinit.workspace = true
+ax-percpu.workspace = true
 ax-posix-api.workspace = true
 ax-runtime.workspace = true
 ax-task.workspace = true

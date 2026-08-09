@@ -1,6 +1,6 @@
 //! Guest device-tree artifact and selected architecture compatibility facade.
 
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 pub use crate::arch::fdt::*;
 
@@ -31,7 +31,15 @@ fn guest_fdt_policy() -> test_core::GuestFdtPolicy {
     test_core::GuestFdtPolicy {
         patch_runtime: test_runtime_patch,
         patch_provided: test_provided_patch,
-        decode_interrupt: |specifier| specifier.first().copied(),
+        decode_interrupt: |specifier| {
+            specifier
+                .first()
+                .copied()
+                .map(|source| test_core::DecodedInterrupt {
+                    source,
+                    trigger: axdevice_base::InterruptTriggerMode::LevelTriggered,
+                })
+        },
         resolve_cpu_index: Some,
         host_cpu_count: || usize::BITS as usize,
     }
@@ -51,7 +59,7 @@ fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAdd
 fn test_runtime_patch(
     fdt: &[u8],
     _vm: &crate::AxVMRef,
-    _config: &axvmconfig::AxVMCrateConfig,
+    _config: &axvmconfig::GuestConfig,
 ) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())
 }
@@ -60,7 +68,7 @@ fn test_runtime_patch(
 fn test_provided_patch(
     fdt: &[u8],
     _host_fdt: Option<&[u8]>,
-    _config: &axvmconfig::AxVMCrateConfig,
+    _config: &axvmconfig::GuestConfig,
 ) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())
 }

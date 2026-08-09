@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -24,7 +25,27 @@ struct TestVmKernelConfig {
 
 #[derive(serde::Deserialize)]
 struct TestVmKernel {
+    #[serde(default)]
     cmdline: String,
+}
+
+#[derive(Debug, Eq, PartialEq, serde::Deserialize)]
+struct TestOvmfBuildConfig {
+    #[serde(default)]
+    features: Vec<String>,
+    vm_configs: Vec<PathBuf>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfGuestConfig {
+    kernel: TestOvmfGuestKernel,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfGuestKernel {
+    uefi_firmware_path: PathBuf,
 }
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
@@ -191,13 +212,55 @@ fn orangepi_guest_board_cases_use_matching_vm_configs() {
 }
 
 #[test]
-fn nimbos_uefi_case_uses_uefi_host_boot() {
+fn rock4d_board_build_selects_linux_guest() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = workspace_root.join("test-suit/axvisor/uefi/qemu-nimbos/qemu-x86_64.toml");
-    let config: QemuConfig = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let build_path = "os/axvisor/configs/board/rock-4d.toml";
+    let build_config = fs::read_to_string(workspace_root.join(build_path)).unwrap();
+    let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
 
-    assert!(config.uefi);
-    assert!(config.to_bin);
+    assert_eq!(
+        build_config.vm_configs,
+        [PathBuf::from(
+            "os/axvisor/configs/vms/rock-4d/linux-smp1.toml"
+        )],
+        "{build_path} should embed the default ROCK 4D Linux guest config"
+    );
+}
+
+#[test]
+fn orangepi_linux_guest_does_not_use_uart_clock_workaround() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    // The Rockchip assignment and AxVM shared-MMIO tests pin the protection itself. This
+    // board-level contract prevents the guest config from silently bypassing that path.
+    assert!(
+        !config.kernel.cmdline.contains("clk_ignore_unused"),
+        "{path} must protect the host-owned UART clock through shared-provider mediation"
+    );
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the guest console through the machine-owned virtual UART"
+    );
+}
+
+#[test]
+fn rk3568_linux_guest_uses_the_virtual_16550_console() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/roc-rk3568-pc/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+
+    assert!(
+        config.kernel.cmdline.contains("console=ttyS2,1500000"),
+        "{path} must route the login console through the machine-owned virtual 16550"
+    );
+    assert!(
+        !config.kernel.cmdline.contains("console=ttyFIQ0"),
+        "{path} must not route the login console through the removed physical FIQ debugger"
+    );
 }
 
 #[test]
@@ -244,6 +307,89 @@ fn x86_hypervisor_backend_cases_request_raw_bin_artifacts() {
             );
         }
     }
+}
+
+#[test]
+fn x86_ovmf_acpi_cases_share_one_backend_neutral_guest_contract() {
+    const BUILD_OUTPUT_ENV: &str = "AXVISOR_TEST_X86_OVMF_OUTPUT";
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cases = discover_qemu_cases(
+        &workspace_root,
+        "normal",
+        "x86_64",
+        "x86_64-unknown-none",
+        None,
+    )
+    .unwrap();
+    let vmx_case = cases
+        .iter()
+        .find(|case| case.case.name == "ovmf-acpi-vmx")
+        .expect("runner should discover the VMX OVMF ACPI case");
+    let svm_case = cases
+        .iter()
+        .find(|case| case.case.name == "ovmf-acpi-svm")
+        .expect("runner should discover the SVM OVMF ACPI case");
+
+    let vmx_build = load_ovmf_build_config(&vmx_case.build_config_path);
+    let svm_build = load_ovmf_build_config(&svm_case.build_config_path);
+    assert_eq!(vmx_build, svm_build);
+    assert_eq!(vmx_build.vm_configs.len(), 1);
+    assert!(
+        vmx_build
+            .features
+            .iter()
+            .all(|feature| feature != "vmx" && feature != "svm"),
+        "OVMF ACPI build configs must leave backend selection to runtime CPUID"
+    );
+
+    let guest_path = workspace_root.join(&vmx_build.vm_configs[0]);
+    let guest: TestOvmfGuestConfig =
+        toml::from_str(&fs::read_to_string(&guest_path).unwrap()).unwrap();
+    let build_output = vmx_build
+        .env
+        .get(BUILD_OUTPUT_ENV)
+        .expect("OVMF build config should prepare the guest firmware image");
+    assert_eq!(
+        guest.kernel.uefi_firmware_path,
+        PathBuf::from(format!("${{workspace}}/{build_output}")),
+        "the prepared image must be the image loaded by the guest configuration"
+    );
+
+    let mut vmx_qemu = load_qemu_config(&vmx_case.case.qemu_config_path);
+    let mut svm_qemu = load_qemu_config(&svm_case.case.qemu_config_path);
+    assert_eq!(
+        replace_qemu_argument(&mut vmx_qemu.args, "-cpu", "<backend>"),
+        "host,-la57,+vmx-ept,+vmx-unrestricted-guest,+vmx-flexpriority"
+    );
+    assert_eq!(
+        replace_qemu_argument(&mut svm_qemu.args, "-cpu", "<backend>"),
+        "host,-la57,+svm,+npt,+nrip-save"
+    );
+    assert_eq!(
+        vmx_qemu, svm_qemu,
+        "VMX and SVM OVMF ACPI cases may differ only in outer QEMU CPU capabilities"
+    );
+}
+
+fn load_ovmf_build_config(path: &Path) -> TestOvmfBuildConfig {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn load_qemu_config(path: &Path) -> QemuConfig {
+    toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn replace_qemu_argument(args: &mut [String], option: &str, replacement: &str) -> String {
+    let index = args
+        .iter()
+        .position(|argument| argument == option)
+        .unwrap_or_else(|| panic!("missing QEMU option {option}"));
+    std::mem::replace(
+        args.get_mut(index + 1)
+            .unwrap_or_else(|| panic!("missing value for QEMU option {option}")),
+        replacement.to_string(),
+    )
 }
 
 fn qemu_argument_value<'a>(args: &'a [String], option: &str) -> &'a str {
@@ -537,7 +683,7 @@ fn discovers_qemu_cases_from_selected_group() {
 }
 
 #[test]
-fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
+fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
     let root = tempdir().unwrap();
     write_qemu_build_config(root.path(), "normal", "default", "x86_64-unknown-none");
     write_qemu_config_in_group(
@@ -549,11 +695,11 @@ fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
         "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
          = []\n",
     );
-    write_qemu_build_config(root.path(), "uefi", "qemu-nimbos", "x86_64-unknown-none");
+    write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
     write_qemu_config_in_group(
         root.path(),
-        "uefi",
-        "qemu-nimbos",
+        "custom",
+        "firmware",
         "smoke",
         "x86_64",
         "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
@@ -565,11 +711,11 @@ fn discovers_qemu_cases_from_uefi_group_without_polluting_normal_group() {
     assert_eq!(normal_cases.len(), 1);
     assert_eq!(normal_cases[0].case.name, "baseline");
 
-    let uefi_cases =
-        discover_qemu_cases(root.path(), "uefi", "x86_64", "x86_64-unknown-none", None).unwrap();
-    assert_eq!(uefi_cases.len(), 1);
-    assert_eq!(uefi_cases[0].case.name, "smoke");
-    assert_eq!(uefi_cases[0].build_group, "qemu-nimbos");
+    let custom_cases =
+        discover_qemu_cases(root.path(), "custom", "x86_64", "x86_64-unknown-none", None).unwrap();
+    assert_eq!(custom_cases.len(), 1);
+    assert_eq!(custom_cases[0].case.name, "smoke");
+    assert_eq!(custom_cases[0].build_group, "firmware");
 }
 
 #[test]
@@ -786,6 +932,27 @@ fn x86_linux_direct_boot_config_keeps_shared_safety_options() {
         cmdline.contains("-- -n -l /bin/sh -L 115200 ttyS0"),
         "{path} should keep complete getty arguments after `--` so init does not exit"
     );
+    assert!(
+        !cmdline
+            .split_ascii_whitespace()
+            .any(|arg| arg == "acpi=off"),
+        "{path} should exercise the default ACPI boot path; the MP-table fallback has a dedicated \
+         test"
+    );
+}
+
+#[test]
+fn asus_nuc15crh_linux_limits_legacy_serial_probe() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/asus-nuc15crh/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmKernelConfig = toml::from_str(&content).unwrap();
+    let cmdline = config.kernel.cmdline;
+
+    assert!(
+        cmdline.contains("8250.nr_uarts=1"),
+        "{path} should only probe the machine-owned COM1 UART on the ASUS NUC HTTP Boot board path"
+    );
 }
 
 #[test]
@@ -849,13 +1016,23 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             Some("axvisor:/$"),
             "{qemu_path} should wait for the Axvisor host shell"
         );
-        assert_eq!(
-            qemu.success_regex,
+        let expected_success_regex = if name == "aarch64" {
+            vec![
+                r"(?m)^AXVISOR SHLEX  EMPTY\s*$",
+                r"(?m)^Command: vm start\s*$",
+                r"(?m)^Error: Invalid command syntax\s*$",
+                r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
+                r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
+            ]
+        } else {
             vec![
                 r"(?m)^AXVISOR_NVME_RW_PAYLOAD\s*$",
                 r"(?m)^AXVISOR_NVME_ROOTFS_RW_PASSED\s*$",
-            ],
-            "{qemu_path} should require the read-back payload and final file-I/O marker"
+            ]
+        };
+        assert_eq!(
+            qemu.success_regex, expected_success_regex,
+            "{qemu_path} should require all architecture-specific shell markers"
         );
     }
 }

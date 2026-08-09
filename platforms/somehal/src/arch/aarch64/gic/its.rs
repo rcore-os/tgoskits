@@ -57,7 +57,7 @@ fn probe_its(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let size = reg.size.unwrap_or((GITS_TRANSLATER_OFFSET + 8) as u64) as usize;
+    let size = reg.size.unwrap_or(GITS_TRANSLATER_OFFSET + 8) as usize;
     let mmio = ioremap(reg.address, size)
         .map_err(|err| OnProbeError::other(format!("failed to map ITS: {err:?}")))?;
     let its = unsafe { Its::new(mmio.as_ptr().into(), reg.address) };
@@ -207,7 +207,11 @@ impl GicItsProvider {
             let cpu_count = someboot::smp::cpu_count().max(1);
             let mut targets = Vec::with_capacity(cpu_count);
             for cpu_id in 0..cpu_count {
-                let hardware_id = super::hardware_cpu_id(cpu_id);
+                let hardware_id = super::hardware_cpu_id(cpu_id).map_err(|error| {
+                    OnProbeError::other(format!(
+                        "failed to resolve hardware ID for logical CPU {cpu_id}: {error:?}"
+                    ))
+                })?;
                 let affinity = Affinity::from_mpidr(hardware_id as u64);
                 let target = gic
                     .collection_target_for_affinity(

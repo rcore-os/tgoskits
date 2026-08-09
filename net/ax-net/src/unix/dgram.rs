@@ -19,18 +19,23 @@
 //! global smoltcp socket set.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::task::Context;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    task::Context,
+    time::Duration,
+};
 
 use async_channel::TryRecvError;
 use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
+use ax_hal::time::wall_time;
 use ax_io::{Read, Write};
 use ax_kspin::SpinRwLock as RwLock;
 use ax_sync::Mutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 
 use crate::{
-    CMsgData, RecvFlags, RecvOptions, SendOptions, SocketAddrEx,
+    CMsgData, RecvFlags, RecvOptions, SendOptions, SocketAddrEx, SocketCmsg,
     general::GeneralOptions,
     options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
     unix::{Transport, TransportOps, UnixSocketAddr, with_slot},
@@ -43,6 +48,9 @@ struct Packet {
     cmsg: Vec<CMsgData>,
     /// Sender address reported by recvmsg.
     sender: UnixSocketAddr,
+    /// Wall-clock time captured immediately before this packet entered the
+    /// receiver queue while `SO_TIMESTAMP` was enabled.
+    received_at: Option<Duration>,
 }
 
 /// Receiver plus its poll set: the half a socket reads incoming packets from.
@@ -53,6 +61,10 @@ struct Channel {
     data_tx: async_channel::Sender<Packet>,
     /// Poll set woken when data is queued.
     poll_update: Arc<PollSet>,
+    /// Target receiver's `SO_TIMESTAMP` state.
+    receive_timestamp: Arc<AtomicBool>,
+    /// Target receiver's `SO_PASSCRED` state.
+    receive_credentials: Arc<AtomicBool>,
 }
 
 pub struct Bind {
@@ -60,6 +72,10 @@ pub struct Bind {
     data_tx: async_channel::Sender<Packet>,
     /// Poll set associated with the receiver bound at this address.
     poll_update: Arc<PollSet>,
+    /// Bound receiver's `SO_TIMESTAMP` state.
+    receive_timestamp: Arc<AtomicBool>,
+    /// Bound receiver's `SO_PASSCRED` state.
+    receive_credentials: Arc<AtomicBool>,
 }
 impl Bind {
     fn connect(&self) -> Channel {
@@ -67,6 +83,8 @@ impl Bind {
         Channel {
             data_tx: tx,
             poll_update: self.poll_update.clone(),
+            receive_timestamp: self.receive_timestamp.clone(),
+            receive_credentials: self.receive_credentials.clone(),
         }
     }
 }
@@ -81,6 +99,10 @@ struct SeqConnRequest {
     addr: UnixSocketAddr,
     /// Client pid used for peer credentials.
     pid: u32,
+    /// Timestamp state owned by the accepted server socket.
+    receive_timestamp: Arc<AtomicBool>,
+    /// Passcred state owned by the accepted server socket.
+    receive_credentials: Arc<AtomicBool>,
 }
 
 /// Seqpacket listener published in the Unix namespace.
@@ -92,24 +114,44 @@ struct SeqConnRequest {
 pub struct SeqBind {
     conn_tx: async_channel::Sender<SeqConnRequest>,
     poll_new_conn: Arc<PollSet>,
+    listening: Arc<AtomicBool>,
+    /// Passcred state inherited by accepted transports.
+    receive_credentials: Arc<AtomicBool>,
 }
 impl SeqBind {
     /// Establish a connection: build a packet channel pair, hand the
     /// server side to the listener, and return the client side.
-    fn connect(&self, addr: UnixSocketAddr, pid: u32) -> AxResult<(PacketRx, Channel)> {
+    fn connect(
+        &self,
+        addr: UnixSocketAddr,
+        pid: u32,
+        client_receive_timestamp: Arc<AtomicBool>,
+        client_receive_credentials: Arc<AtomicBool>,
+    ) -> AxResult<(PacketRx, Channel)> {
+        if !self.listening.load(Ordering::Acquire) {
+            return Err(AxError::ConnectionRefused);
+        }
         let (tx1, rx1) = async_channel::unbounded();
         let (tx2, rx2) = async_channel::unbounded();
         let poll1 = Arc::new(PollSet::new());
         let poll2 = Arc::new(PollSet::new());
+        let server_receive_timestamp = Arc::new(AtomicBool::new(false));
+        let server_receive_credentials = Arc::new(AtomicBool::new(
+            self.receive_credentials.load(Ordering::Acquire),
+        ));
         self.conn_tx
             .try_send(SeqConnRequest {
                 data_rx: (rx2, poll2.clone()),
                 connected: Channel {
                     data_tx: tx1,
                     poll_update: poll1.clone(),
+                    receive_timestamp: client_receive_timestamp,
+                    receive_credentials: client_receive_credentials,
                 },
                 addr,
                 pid,
+                receive_timestamp: server_receive_timestamp.clone(),
+                receive_credentials: server_receive_credentials.clone(),
             })
             .map_err(|_| AxError::ConnectionRefused)?;
         // The connection request is queued before waking accept waiters.
@@ -119,6 +161,8 @@ impl SeqBind {
             Channel {
                 data_tx: tx2,
                 poll_update: poll2,
+                receive_timestamp: server_receive_timestamp,
+                receive_credentials: server_receive_credentials,
             },
         ))
     }
@@ -143,10 +187,18 @@ pub struct DgramTransport {
     is_seqpacket: bool,
     /// Connection-request queue installed by a seqpacket listener's bind.
     conn_rx: Mutex<Option<(async_channel::Receiver<SeqConnRequest>, Arc<PollSet>)>>,
+    /// True after a bound seqpacket socket enters listening state.
+    listening: Arc<AtomicBool>,
     /// Poll set for local state changes.
     poll_state: Arc<PollSet>,
     /// Shared socket options.
     general: GeneralOptions,
+    /// Per-receiver `SO_TIMESTAMP` state shared with channels targeting this
+    /// socket.
+    receive_timestamp: Arc<AtomicBool>,
+    /// Per-receiver `SO_PASSCRED` state shared with channels targeting this
+    /// socket.
+    receive_credentials: Arc<AtomicBool>,
     /// Creator pid used for SO_PEERCRED-style reporting.
     pid: u32,
 }
@@ -173,8 +225,11 @@ impl DgramTransport {
             peeked: Mutex::new(None),
             is_seqpacket: socket_type == 5,
             conn_rx: Mutex::new(None),
+            listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
+            receive_timestamp: Arc::new(AtomicBool::new(false)),
+            receive_credentials: Arc::new(AtomicBool::new(false)),
             pid,
         }
     }
@@ -184,6 +239,8 @@ impl DgramTransport {
         connected: Channel,
         pid: u32,
         socket_type: i32,
+        receive_timestamp: Arc<AtomicBool>,
+        receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         DgramTransport {
             data_rx: Mutex::new(Some(data_rx)),
@@ -192,8 +249,11 @@ impl DgramTransport {
             peeked: Mutex::new(None),
             is_seqpacket: socket_type == 5,
             conn_rx: Mutex::new(None),
+            listening: Arc::new(AtomicBool::new(false)),
             poll_state: Arc::default(),
             general: GeneralOptions::new(socket_type, 1, 0),
+            receive_timestamp,
+            receive_credentials,
             pid,
         }
     }
@@ -213,23 +273,35 @@ impl DgramTransport {
         let (tx2, rx2) = async_channel::unbounded();
         let poll1 = Arc::new(PollSet::new());
         let poll2 = Arc::new(PollSet::new());
+        let timestamp1 = Arc::new(AtomicBool::new(false));
+        let timestamp2 = Arc::new(AtomicBool::new(false));
+        let credentials1 = Arc::new(AtomicBool::new(false));
+        let credentials2 = Arc::new(AtomicBool::new(false));
         let transport1 = DgramTransport::new_connected(
             (rx1, poll1.clone()),
             Channel {
                 data_tx: tx2,
                 poll_update: poll2.clone(),
+                receive_timestamp: timestamp2.clone(),
+                receive_credentials: credentials2.clone(),
             },
             pid,
             socket_type,
+            timestamp1.clone(),
+            credentials1.clone(),
         );
         let transport2 = DgramTransport::new_connected(
             (rx2, poll2.clone()),
             Channel {
                 data_tx: tx1,
                 poll_update: poll1.clone(),
+                receive_timestamp: timestamp1,
+                receive_credentials: credentials1,
             },
             pid,
             socket_type,
+            timestamp2,
+            credentials2,
         );
         (transport1, transport2)
     }
@@ -244,7 +316,12 @@ impl Configurable for DgramTransport {
         }
 
         match opt {
-            O::PassCredentials(_) => {}
+            O::PassCredentials(enabled) => {
+                **enabled = self.receive_credentials.load(Ordering::Acquire);
+            }
+            O::ReceiveTimestamp(enabled) => {
+                **enabled = self.receive_timestamp.load(Ordering::Acquire);
+            }
             O::PeerCredentials(cred) => {
                 // Datagram sockets are stateless and do not have a peer, so we
                 // return the credentials of the process that created the
@@ -264,7 +341,12 @@ impl Configurable for DgramTransport {
         }
 
         match opt {
-            O::PassCredentials(_) => {}
+            O::PassCredentials(enabled) => {
+                self.receive_credentials.store(*enabled, Ordering::Release);
+            }
+            O::ReceiveTimestamp(enabled) => {
+                self.receive_timestamp.store(*enabled, Ordering::Release);
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -288,6 +370,8 @@ impl TransportOps for DgramTransport {
             *slot = Some(SeqBind {
                 conn_tx: tx,
                 poll_new_conn: poll.clone(),
+                listening: self.listening.clone(),
+                receive_credentials: self.receive_credentials.clone(),
             });
             *guard = Some((rx, poll));
             self.local_addr.write().clone_from(local_addr);
@@ -309,6 +393,8 @@ impl TransportOps for DgramTransport {
         *slot = Some(Bind {
             data_tx: tx,
             poll_update: poll_update.clone(),
+            receive_timestamp: self.receive_timestamp.clone(),
+            receive_credentials: self.receive_credentials.clone(),
         });
         *guard = Some((rx, poll_update));
         self.local_addr.write().clone_from(local_addr);
@@ -317,6 +403,21 @@ impl TransportOps for DgramTransport {
         // Datagram bind state is published before waking pollers.
         unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
         Ok(())
+    }
+
+    fn listen(&self) -> AxResult {
+        if !self.is_seqpacket {
+            return Err(AxError::OperationNotSupported);
+        }
+        if self.conn_rx.lock().is_none() {
+            return Err(AxError::InvalidInput);
+        }
+        self.listening.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn is_listening(&self) -> bool {
+        self.is_seqpacket && self.listening.load(Ordering::Acquire)
     }
 
     fn connect(&self, slot: &super::BindSlot, _local_addr: &UnixSocketAddr) -> AxResult {
@@ -332,7 +433,12 @@ impl TransportOps for DgramTransport {
                 .lock()
                 .as_ref()
                 .ok_or(AxError::ConnectionRefused)?
-                .connect(client_addr, self.pid)?;
+                .connect(
+                    client_addr,
+                    self.pid,
+                    self.receive_timestamp.clone(),
+                    self.receive_credentials.clone(),
+                )?;
             *self.data_rx.lock() = Some(client_rx);
             *self.connected.write() = Some(client_chan);
             unsafe { self.poll_state.wake(IoEvents::IN | IoEvents::OUT) };
@@ -361,13 +467,23 @@ impl TransportOps for DgramTransport {
             // `unix_dgram_ops.accept = sock_no_accept` returns -EOPNOTSUPP.
             return Err(AxError::OperationNotSupported);
         }
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
             // Not a listening seqpacket socket: accept requires listen(). Linux
             // returns EINVAL for accept on a non-listening socket.
             return Err(AxError::InvalidInput);
         };
         let req = rx.recv().await.map_err(|_| AxError::ConnectionReset)?;
-        let transport = DgramTransport::new_connected(req.data_rx, req.connected, req.pid, 5);
+        let transport = DgramTransport::new_connected(
+            req.data_rx,
+            req.connected,
+            req.pid,
+            5,
+            req.receive_timestamp,
+            req.receive_credentials,
+        );
         Ok((Transport::Dgram(transport), req.addr))
     }
 
@@ -378,6 +494,9 @@ impl TransportOps for DgramTransport {
             // Must not return WouldBlock, or the accept poll loop hangs forever.
             return Err(AxError::OperationNotSupported);
         }
+        if !self.is_listening() {
+            return Err(AxError::InvalidInput);
+        }
         let Some((rx, _)) = self.conn_rx.lock().clone() else {
             // Not a listening seqpacket socket: accept requires listen(). Linux
             // returns EINVAL for accept on a non-listening socket.
@@ -385,8 +504,14 @@ impl TransportOps for DgramTransport {
         };
         match rx.try_recv() {
             Ok(req) => {
-                let transport =
-                    DgramTransport::new_connected(req.data_rx, req.connected, req.pid, 5);
+                let transport = DgramTransport::new_connected(
+                    req.data_rx,
+                    req.connected,
+                    req.pid,
+                    5,
+                    req.receive_timestamp,
+                    req.receive_credentials,
+                );
                 Ok((Transport::Dgram(transport), req.addr))
             }
             Err(TryRecvError::Empty) => Err(AxError::WouldBlock),
@@ -410,16 +535,28 @@ impl TransportOps for DgramTransport {
             }
         }
         let len = message.len();
-        let packet = Packet {
-            data: message,
-            cmsg: options.cmsg,
-            sender: self.local_addr.read().clone(),
-        };
+        let sender = self.local_addr.read().clone();
+        let mut cmsg = options.cmsg;
+        let sender_credentials = options.sender_credentials;
 
         let wake_poll = if let Some(addr) = options.to {
             let addr = addr.into_unix()?;
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
+                    if bind.receive_credentials.load(Ordering::Acquire)
+                        && let Some(credentials) = sender_credentials
+                    {
+                        cmsg.push(Box::new(SocketCmsg::Credentials(credentials)));
+                    }
+                    let packet = Packet {
+                        data: message,
+                        cmsg,
+                        sender,
+                        received_at: bind
+                            .receive_timestamp
+                            .load(Ordering::Acquire)
+                            .then(wall_time),
+                    };
                     bind.data_tx
                         .try_send(packet)
                         .map_err(|_| AxError::BrokenPipe)?;
@@ -429,6 +566,20 @@ impl TransportOps for DgramTransport {
                 }
             })?
         } else if let Some(chan) = self.connected.read().as_ref() {
+            if chan.receive_credentials.load(Ordering::Acquire)
+                && let Some(credentials) = sender_credentials
+            {
+                cmsg.push(Box::new(SocketCmsg::Credentials(credentials)));
+            }
+            let packet = Packet {
+                data: message,
+                cmsg,
+                sender,
+                received_at: chan
+                    .receive_timestamp
+                    .load(Ordering::Acquire)
+                    .then(wall_time),
+            };
             chan.data_tx
                 .try_send(packet)
                 .map_err(|_| AxError::BrokenPipe)?;
@@ -453,7 +604,7 @@ impl TransportOps for DgramTransport {
             // Drain a packet parked by a previous MSG_PEEK before the channel,
             // preserving record order.
             let mut peeked = self.peeked.lock();
-            let packet = if let Some(p) = peeked.take() {
+            let mut packet = if let Some(p) = peeked.take() {
                 p
             } else {
                 let mut guard = self.data_rx.lock();
@@ -478,6 +629,14 @@ impl TransportOps for DgramTransport {
             if let Some(from) = options.from.as_mut() {
                 **from = SocketAddrEx::Unix(packet.sender.clone());
             }
+            let receive_timestamp = self.receive_timestamp.load(Ordering::Acquire);
+            if receive_timestamp && packet.received_at.is_none() {
+                // Linux fills the current time when SO_TIMESTAMP was enabled
+                // after this datagram entered the receive queue. Persist the
+                // fallback on the packet so MSG_PEEK and the consuming recv
+                // observe the same timestamp.
+                packet.received_at = Some(wall_time());
+            }
             if peek {
                 // MSG_PEEK does not consume the record: deliver a duplicate of
                 // the ancillary data (SCM_RIGHTS fds are cloned via Arc, sharing
@@ -486,10 +645,16 @@ impl TransportOps for DgramTransport {
                 // the rights again.
                 if let Some(dst) = options.cmsg.as_mut() {
                     dst.extend(packet.cmsg.iter().map(|c| c.clone_box()));
+                    if receive_timestamp && let Some(timestamp) = packet.received_at {
+                        dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+                    }
                 }
                 *peeked = Some(packet);
             } else if let Some(dst) = options.cmsg.as_mut() {
                 dst.extend(packet.cmsg);
+                if receive_timestamp && let Some(timestamp) = packet.received_at {
+                    dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+                }
             }
 
             Ok(if options.flags.contains(RecvFlags::TRUNCATE) {

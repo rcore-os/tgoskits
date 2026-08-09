@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.4...scope-local-v0.4.5) - 2026-08-09
+
+### Other
+
+- updated the following local packages: ax-crate-interface, axtest, ax-kernel-guard, ax-kernel-guard, ax-percpu, ax-percpu
+
 ## [0.4.4](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.3...scope-local-v0.4.4) - 2026-08-03
 
 ### Fixed

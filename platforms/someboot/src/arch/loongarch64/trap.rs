@@ -118,10 +118,11 @@ impl IrqId {
 
     /// 获取中断类型及硬件中断号
     pub fn kind(&self) -> IrqKind {
-        if self.raw() < EXCCODE_INT_NUM {
-            IrqKind::Private(self.raw())
+        let raw = self.raw();
+        if raw < EXCCODE_INT_NUM {
+            IrqKind::Private(raw)
         } else {
-            IrqKind::External(self.raw() - EXCCODE_INT_NUM)
+            IrqKind::External(raw - EXCCODE_INT_NUM)
         }
     }
 

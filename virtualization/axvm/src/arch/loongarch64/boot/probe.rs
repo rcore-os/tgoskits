@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
+use std::vec::Vec;
 
-use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
+use ax_std::os::arceos::driver as ax_driver;
 
 use super::{
     FirmwareDevices, FlashDevice, GedDevice, GuestPlatform, InterruptTopology, IrqMmioDevice,
@@ -10,12 +10,37 @@ use super::{
 
 pub struct GuestPlatformBuilder {
     ram_regions: Vec<MemoryRegion>,
-    fw_cfg: MmioRegion,
+    fw_cfg: Option<MmioRegion>,
     serial: Option<SerialDevice>,
     pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
     firmware_devices: Option<FirmwareDevices>,
     irq_routes: Vec<GuestIrqRoute>,
+}
+
+pub(crate) fn apply_host_serial(config: &mut crate::config::AxVMConfig) -> crate::AxVmResult {
+    let Some(serial) = ax_driver::probe::acpi::with_acpi(|acpi| acpi.serial_console()) else {
+        return Ok(());
+    };
+    let Some(serial) = serial.map_err(|error| {
+        crate::AxVmError::invalid_config(std::format!(
+            "failed to parse host ACPI serial console: {error}"
+        ))
+    })?
+    else {
+        return Ok(());
+    };
+    let snapshot = crate::machine::host_serial_from_acpi(serial, config.serial_profile())?;
+    if matches!(
+        snapshot.profile.transport,
+        crate::machine::GuestSerialTransport::Port { .. }
+    ) {
+        return Err(crate::AxVmError::unsupported(
+            "replace LoongArch host serial",
+            "LoongArch guests require an MMIO serial console",
+        ));
+    }
+    config.replace_machine_serial(snapshot.profile, Some(snapshot.identity))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,16 +50,21 @@ pub struct GuestIrqRoute {
 }
 
 impl GuestPlatformBuilder {
-    pub fn new(ram_regions: Vec<MemoryRegion>, config: &AxVMCrateConfig) -> Self {
+    pub fn new(ram_regions: Vec<MemoryRegion>, fw_cfg: Option<MmioRegion>) -> Self {
         Self {
             ram_regions,
-            fw_cfg: fw_cfg_region(config),
+            fw_cfg,
             serial: None,
             pci: None,
             interrupt: None,
             firmware_devices: None,
             irq_routes: Vec::new(),
         }
+    }
+
+    pub fn with_serial(mut self, serial: SerialDevice) -> Self {
+        self.serial = Some(serial);
+        self
     }
 
     pub fn apply_host_acpi(mut self) -> Self {
@@ -53,25 +83,23 @@ impl GuestPlatformBuilder {
         let pci = self.pci.unwrap_or(defaults.pci);
         let interrupt = self.interrupt.unwrap_or(defaults.interrupt);
 
+        let irq_routes = if self.irq_routes.is_empty() {
+            guest_irq_routes(&interrupt, &Some(serial), &Some(pci))
+        } else {
+            self.irq_routes
+        };
         GuestPlatform {
             ram_regions: self.ram_regions,
             serial,
             pci,
             interrupt,
-            fw_cfg: self.fw_cfg,
+            fw_cfg: self.fw_cfg.unwrap_or(defaults.fw_cfg),
             firmware_devices: self.firmware_devices.unwrap_or(defaults.firmware_devices),
-            irq_routes: if self.irq_routes.is_empty() {
-                defaults.irq_routes
-            } else {
-                self.irq_routes
-            },
+            irq_routes,
         }
     }
 
     fn apply_host_resources(&mut self, resources: HostResources) {
-        if let Some(serial) = resources.serial {
-            self.serial = Some(serial);
-        }
         if let Some(pci) = resources.pci {
             self.pci = Some(pci);
         }
@@ -86,7 +114,6 @@ impl GuestPlatformBuilder {
 }
 
 struct HostResources {
-    serial: Option<SerialDevice>,
     pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
     firmware_devices: Option<FirmwareDevices>,
@@ -116,18 +143,6 @@ fn host_acpi_resources(
             acpi_msi_count: defaults.interrupt.acpi_msi_count,
         });
 
-    let serial = acpi
-        .serial_console_memory_range()
-        .map(|range| SerialDevice {
-            mmio: MmioRegion {
-                base: range.base,
-                size: range.size,
-            },
-            irq: defaults.serial.irq,
-            clock_hz: defaults.serial.clock_hz,
-            baud: defaults.serial.baud,
-        });
-
     let pci = acpi.pci_ecam_regions().first().map(|ecam| PciHost {
         ecam: MmioRegion {
             base: ecam.base_address,
@@ -139,19 +154,13 @@ fn host_acpi_resources(
         intx_base: defaults.pci.intx_base,
     });
 
-    let irq_routes = guest_irq_routes(
-        interrupt.as_ref().unwrap_or(&defaults.interrupt),
-        &serial,
-        &pci,
-    );
     let firmware_devices = Some(find_firmware_devices(acpi, defaults.firmware_devices));
 
     Ok(HostResources {
-        serial,
         pci,
         interrupt,
         firmware_devices,
-        irq_routes,
+        irq_routes: Vec::new(),
     })
 }
 
@@ -220,29 +229,12 @@ fn guest_irq_routes(
     routes
 }
 
-fn fw_cfg_region(config: &AxVMCrateConfig) -> MmioRegion {
-    if let Some(fw_cfg) = config
-        .devices
-        .emu_devices
-        .iter()
-        .find(|device| device.emu_type == EmulatedDeviceType::FwCfg)
-    {
-        return MmioRegion {
-            base: fw_cfg.base_gpa as u64,
-            size: fw_cfg.length as u64,
-        };
-    }
-
-    QemuVirtDefaults::new().fw_cfg
-}
-
 struct QemuVirtDefaults {
     serial: SerialDevice,
     pci: PciHost,
     interrupt: InterruptTopology,
     fw_cfg: MmioRegion,
     firmware_devices: FirmwareDevices,
-    irq_routes: Vec<GuestIrqRoute>,
 }
 
 impl QemuVirtDefaults {
@@ -286,28 +278,6 @@ impl QemuVirtDefaults {
             acpi_msi_start: LoongArchFwCfgInterruptConfig::default().pch_msi_start,
             acpi_msi_count: LoongArchFwCfgInterruptConfig::default().pch_msi_count,
         };
-        let irq_routes = Vec::from([
-            GuestIrqRoute {
-                physical_irq: serial.irq as usize,
-                guest_vector: serial.irq as usize,
-            },
-            GuestIrqRoute {
-                physical_irq: pci.intx_base as usize,
-                guest_vector: pci.intx_base as usize,
-            },
-            GuestIrqRoute {
-                physical_irq: pci.intx_base as usize + 1,
-                guest_vector: pci.intx_base as usize + 1,
-            },
-            GuestIrqRoute {
-                physical_irq: pci.intx_base as usize + 2,
-                guest_vector: pci.intx_base as usize + 2,
-            },
-            GuestIrqRoute {
-                physical_irq: pci.intx_base as usize + 3,
-                guest_vector: pci.intx_base as usize + 3,
-            },
-        ]);
         Self {
             serial,
             pci,
@@ -348,7 +318,6 @@ impl QemuVirtDefaults {
                     reboot_value: 0x42,
                 },
             },
-            irq_routes,
         }
     }
 }

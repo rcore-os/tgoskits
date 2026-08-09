@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.7.6"
+version = "0.7.7"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -120,7 +120,7 @@ ax-hal = { workspace = true, features = ["fp-simd", "uspace"] }
 ax-input = { workspace = true, optional = true }
 ax-lazyinit.workspace = true
 ax-log.workspace = true
-ax-mm.workspace = true
+ax-mm = { workspace = true, features = ["copy"] }
 ax-net = { workspace = true }
 ax-driver = { workspace = true, features = ["usb"] }
 axklib.workspace = true
@@ -167,7 +167,7 @@ chrono = { version = "0.4", default-features = false }
 downcast-rs = { version = "2.0", default-features = false, features = ["sync"] }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
-extern-trait = "0.4"
+extern-trait = { workspace = true }
 flatten_objects = "0.2.4"
 hashbrown = "0.16"
 indoc = "2"
@@ -271,8 +271,8 @@ ranges-ext.workspace = true
 rdrive = { workspace = true, features = ["axtest"] }
 rsext4 = { workspace = true, features = ["axtest"] }
 scope-local = { workspace = true, features = ["axtest"] }
-ax-page-table-entry = { workspace = true, features = ["axtest"] }
 buddy-slab-allocator = { workspace = true, features = ["axtest"] }
+page-table-generic = { workspace = true }
 
 [[test]]
 name = "axtest_kernel"
@@ -285,6 +285,3 @@ x86 = "0.52"
 
 [target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
 riscv.workspace = true
-
-[target.'cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))'.dependencies]
-ax-page-table-multiarch = { workspace = true, features = ["copy-from"] }

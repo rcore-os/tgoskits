@@ -1,10 +1,21 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
-use core::ffi::{c_char, c_void};
+use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
+use core::{
+    ffi::{c_char, c_void},
+    task::Context,
+};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
+use ax_sync::Mutex;
 use ax_task::current;
-use axfs_ng_vfs::NodePermission;
+use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
+use axpoll::{IoEvents, Pollable};
+use linux_raw_sys::general::{
+    AT_EMPTY_PATH, FSMOUNT_CLOEXEC, FSOPEN_CLOEXEC, MOUNT_ATTR__ATIME, MOUNT_ATTR_NOATIME,
+    MOUNT_ATTR_NODEV, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY,
+    MOUNT_ATTR_STRICTATIME, MOVE_MOUNT_F_EMPTY_PATH, O_PATH, fsconfig_command,
+};
+use starry_vm::VmPtr;
 
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
@@ -47,6 +58,24 @@ const MOUNT_OPTION_FLAGS: i32 =
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+const SUPPORTED_FSMOUNT_ATTRIBUTES: u32 =
+    MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC;
+const MOUNT_ATTR_SIZE_VER0: usize = core::mem::size_of::<MountAttr>();
+const SUPPORTED_MOUNT_SETATTR_ATTRIBUTES: u64 = (MOUNT_ATTR_RDONLY
+    | MOUNT_ATTR_NOSUID
+    | MOUNT_ATTR_NODEV
+    | MOUNT_ATTR_NOEXEC
+    | MOUNT_ATTR__ATIME) as u64;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
+pub struct MountAttr {
+    attr_set: u64,
+    attr_clr: u64,
+    propagation: u64,
+    userns_fd: u64,
+}
 
 fn parse_devpts_mode(value: &str) -> AxResult<NodePermission> {
     let mode = u16::from_str_radix(value, 8).map_err(|_| AxError::InvalidInput)?;
@@ -167,6 +196,387 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
     false
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MountContextKind {
+    Tmpfs,
+    Ramfs,
+    DevPts,
+}
+
+struct MountContextState {
+    filesystem: Option<Filesystem>,
+    source: Option<String>,
+    root_mode: NodePermission,
+    devpts_options: DevPtsOptions,
+    tmpfs_size_limit: Option<u64>,
+    unsupported_tmpfs_limits: bool,
+    readonly_reconfigure: bool,
+    mounts: Vec<Arc<Mountpoint>>,
+}
+
+struct MountContext {
+    kind: MountContextKind,
+    state: Mutex<MountContextState>,
+}
+
+impl MountContext {
+    fn new(kind: MountContextKind) -> Self {
+        Self {
+            kind,
+            state: Mutex::new(MountContextState {
+                filesystem: None,
+                source: None,
+                root_mode: NodePermission::from_bits_truncate(0o755),
+                devpts_options: DevPtsOptions::mounted(),
+                tmpfs_size_limit: None,
+                unsupported_tmpfs_limits: false,
+                readonly_reconfigure: false,
+                mounts: Vec::new(),
+            }),
+        }
+    }
+}
+
+impl FileLike for MountContext {
+    fn path(&self) -> Cow<'_, str> {
+        "anon_inode:[fscontext]".into()
+    }
+}
+
+impl Pollable for MountContext {
+    fn poll(&self) -> IoEvents {
+        IoEvents::empty()
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+}
+
+fn parse_tmpfs_size(value: &str) -> AxResult<u64> {
+    const PAGE_SIZE: u64 = 4096;
+
+    let bytes = if let Some(percent) = value.strip_suffix('%') {
+        let percent = percent.parse::<u64>().map_err(|_| AxError::InvalidInput)?;
+        if percent == 0 || percent > 100 {
+            return Err(AxError::InvalidInput);
+        }
+        let total_pages = (ax_runtime::hal::mem::total_ram_size() as u64).div_ceil(PAGE_SIZE);
+        total_pages
+            .checked_mul(percent)
+            .ok_or(AxError::InvalidInput)?
+            .div_ceil(100)
+            .checked_mul(PAGE_SIZE)
+            .ok_or(AxError::InvalidInput)?
+    } else {
+        let (number, multiplier) = match value.as_bytes().last().copied() {
+            Some(b'k' | b'K') => (&value[..value.len() - 1], 1_u64 << 10),
+            Some(b'm' | b'M') => (&value[..value.len() - 1], 1_u64 << 20),
+            Some(b'g' | b'G') => (&value[..value.len() - 1], 1_u64 << 30),
+            Some(b't' | b'T') => (&value[..value.len() - 1], 1_u64 << 40),
+            Some(b'p' | b'P') => (&value[..value.len() - 1], 1_u64 << 50),
+            Some(b'e' | b'E') => (&value[..value.len() - 1], 1_u64 << 60),
+            _ => (value, 1),
+        };
+        number
+            .parse::<u64>()
+            .map_err(|_| AxError::InvalidInput)?
+            .checked_mul(multiplier)
+            .ok_or(AxError::InvalidInput)?
+    };
+
+    if bytes == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    bytes
+        .checked_add(PAGE_SIZE - 1)
+        .map(|size| size / PAGE_SIZE * PAGE_SIZE)
+        .ok_or(AxError::InvalidInput)
+}
+
+pub fn sys_fsopen(fs_name: *const c_char, flags: u32) -> AxResult<isize> {
+    if flags & !FSOPEN_CLOEXEC != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
+    let kind = match vm_load_string(fs_name)?.as_str() {
+        "tmpfs" => MountContextKind::Tmpfs,
+        "ramfs" => MountContextKind::Ramfs,
+        "devpts" => MountContextKind::DevPts,
+        _ => return Err(AxError::NoSuchDevice),
+    };
+    MountContext::new(kind)
+        .add_to_fd_table(flags & FSOPEN_CLOEXEC != 0)
+        .map(|fd| fd as isize)
+}
+
+pub fn sys_fsconfig(
+    fs_fd: i32,
+    command: u32,
+    key: *const c_char,
+    value: *const c_void,
+    aux: i32,
+) -> AxResult<isize> {
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+    let context = MountContext::from_fd(fs_fd)?;
+    let mut state = context.state.lock();
+
+    match command {
+        command if command == fsconfig_command::FSCONFIG_SET_STRING as u32 => {
+            if key.is_null() || value.is_null() || aux != 0 || state.filesystem.is_some() {
+                return Err(AxError::InvalidInput);
+            }
+            let key = vm_load_string(key)?;
+            let value = vm_load_string(value.cast())?;
+            match (context.kind, key.as_str()) {
+                (_, "source") if state.filesystem.is_none() && !value.is_empty() => {
+                    state.source = Some(value);
+                }
+                (MountContextKind::Tmpfs, "size") if !value.is_empty() => {
+                    state.tmpfs_size_limit = Some(parse_tmpfs_size(&value)?);
+                }
+                (MountContextKind::Tmpfs, "nr_inodes") if !value.is_empty() => {
+                    state.unsupported_tmpfs_limits = true;
+                }
+                (MountContextKind::Tmpfs | MountContextKind::Ramfs, "mode") => {
+                    state.root_mode = parse_devpts_mode(&value)?;
+                }
+                (MountContextKind::DevPts, "mode") => {
+                    state.devpts_options.slave_mode = parse_devpts_mode(&value)?;
+                }
+                (MountContextKind::DevPts, "gid") => {
+                    state.devpts_options.slave_gid =
+                        value.parse().map_err(|_| AxError::InvalidInput)?;
+                }
+                (MountContextKind::DevPts, "ptmxmode") => {
+                    state.devpts_options.ptmx_mode = parse_devpts_mode(&value)?;
+                }
+                _ => return Err(AxError::InvalidInput),
+            }
+        }
+        command if command == fsconfig_command::FSCONFIG_SET_FLAG as u32 => {
+            if key.is_null() || !value.is_null() || aux != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            match vm_load_string(key)?.as_str() {
+                // Linux systemd deliberately falls back from tmpfs to ramfs
+                // when the kernel cannot configure tmpfs with `noswap`.
+                "noswap"
+                    if context.kind == MountContextKind::Tmpfs && state.filesystem.is_none() =>
+                {
+                    return Err(AxError::InvalidInput);
+                }
+                // A devpts filesystem context already denotes a fresh instance;
+                // retain Linux's accepted option spelling without adding a
+                // second instance-selection state.
+                "newinstance"
+                    if context.kind == MountContextKind::DevPts && state.filesystem.is_none() => {}
+                "ro" if state.filesystem.is_some() => state.readonly_reconfigure = true,
+                _ => return Err(AxError::InvalidInput),
+            }
+        }
+        command if command == fsconfig_command::FSCONFIG_CMD_CREATE as u32 => {
+            if !key.is_null() || !value.is_null() || aux != 0 || state.filesystem.is_some() {
+                return Err(AxError::InvalidInput);
+            }
+            if context.kind == MountContextKind::Tmpfs && state.unsupported_tmpfs_limits {
+                return Err(AxError::OperationNotSupported);
+            }
+            state.filesystem = Some(match context.kind {
+                MountContextKind::Tmpfs => state
+                    .tmpfs_size_limit
+                    .map_or_else(MemoryFs::new, MemoryFs::new_with_size_limit),
+                MountContextKind::Ramfs => MemoryFs::new_ramfs(),
+                MountContextKind::DevPts => {
+                    new_devptsfs(DevPtsMount::NewInstance(state.devpts_options))
+                }
+            });
+        }
+        command if command == fsconfig_command::FSCONFIG_CMD_RECONFIGURE as u32 => {
+            if !key.is_null()
+                || !value.is_null()
+                || aux != 0
+                || state.filesystem.is_none()
+                || !state.readonly_reconfigure
+            {
+                return Err(AxError::InvalidInput);
+            }
+            for mountpoint in &state.mounts {
+                mountpoint.set_readonly(true);
+            }
+            state.readonly_reconfigure = false;
+        }
+        _ => return Err(AxError::OperationNotSupported),
+    }
+    Ok(0)
+}
+
+pub fn sys_fsmount(fs_fd: i32, flags: u32, mount_attributes: u32) -> AxResult<isize> {
+    if flags & !FSMOUNT_CLOEXEC != 0 || mount_attributes & !SUPPORTED_FSMOUNT_ATTRIBUTES != 0 {
+        // systemd retries without MOUNT_ATTR_NOSYMFOLLOW on EINVAL.
+        return Err(AxError::InvalidInput);
+    }
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
+    let context = MountContext::from_fd(fs_fd)?;
+    let mut state = context.state.lock();
+    let filesystem = state
+        .filesystem
+        .as_ref()
+        .ok_or(AxError::InvalidInput)?
+        .clone();
+    let mountpoint =
+        Mountpoint::new_root_with_source(&filesystem, state.source.as_deref().unwrap_or("none"));
+    let root = mountpoint.root_location();
+    if context.kind != MountContextKind::DevPts {
+        root.update_metadata(MetadataUpdate {
+            mode: Some(state.root_mode),
+            ..Default::default()
+        })?;
+    }
+    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0);
+    mountpoint.set_mount_flags(
+        mount_attributes & (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC),
+    );
+    state.mounts.push(mountpoint);
+
+    Directory::new_detached_mount(root, O_PATH)
+        .add_to_fd_table(flags & FSMOUNT_CLOEXEC != 0)
+        .map(|fd| fd as isize)
+}
+
+pub fn sys_move_mount(
+    from_dirfd: i32,
+    from_path: *const c_char,
+    to_dirfd: i32,
+    to_path: *const c_char,
+    flags: u32,
+) -> AxResult<isize> {
+    if flags != MOVE_MOUNT_F_EMPTY_PATH || !vm_load_string(from_path)?.is_empty() {
+        return Err(AxError::InvalidInput);
+    }
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
+    let source = Directory::from_fd(from_dirfd)?;
+    if !source.is_detached_mount_handle() {
+        return Err(AxError::InvalidInput);
+    }
+    let path = vm_load_string(to_path)?;
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let target = if path.starts_with('/') {
+        fs_context.lock().resolve(&path)?
+    } else {
+        crate::file::with_fs(to_dirfd, |fs| fs.resolve(&path))?
+    };
+    source.inner().mountpoint().attach_detached(&target)?;
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
+    Ok(0)
+}
+
+/// Apply the Linux VFS attributes currently required by util-linux mounts.
+///
+/// The supported boundary is an existing mount root referenced by a directory
+/// fd and an empty path. Mount propagation, idmapped mounts, recursive changes,
+/// and `MOUNT_ATTR_NOSYMFOLLOW` remain explicit `EINVAL` paths.
+pub fn sys_mount_setattr(
+    dirfd: i32,
+    path: *const c_char,
+    flags: u32,
+    attributes: *const MountAttr,
+    size: usize,
+) -> AxResult<isize> {
+    // Linux reserves the all-zero request as a side-effect-free syscall
+    // availability probe. util-linux uses it before choosing the new mount API.
+    if flags == 0 && size == 0 {
+        return Ok(0);
+    }
+    if size != MOUNT_ATTR_SIZE_VER0 || flags != AT_EMPTY_PATH {
+        return Err(AxError::InvalidInput);
+    }
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+    if !vm_load_string(path)?.is_empty() {
+        return Err(AxError::InvalidInput);
+    }
+
+    let attributes = attributes.vm_read()?;
+    validate_mount_attributes(&attributes)?;
+
+    let directory = Directory::from_fd(dirfd)?;
+    if !directory.inner().is_root_of_mount() {
+        return Err(AxError::InvalidInput);
+    }
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let is_visible = mount_namespace
+        .walk_tree()
+        .into_iter()
+        .any(|(_, _, mountpoint)| Arc::ptr_eq(&mountpoint, directory.inner().mountpoint()));
+    apply_mount_attributes(directory.inner().mountpoint(), &attributes);
+    if is_visible {
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
+    }
+    Ok(0)
+}
+
+fn validate_mount_attributes(attributes: &MountAttr) -> AxResult<()> {
+    if attributes.propagation != 0
+        || attributes.userns_fd != 0
+        || attributes.attr_set & !SUPPORTED_MOUNT_SETATTR_ATTRIBUTES != 0
+        || attributes.attr_clr & !SUPPORTED_MOUNT_SETATTR_ATTRIBUTES != 0
+    {
+        return Err(AxError::InvalidInput);
+    }
+
+    let non_atime_attributes = !(MOUNT_ATTR__ATIME as u64);
+    if attributes.attr_set & attributes.attr_clr & non_atime_attributes != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    let requested_atime = attributes.attr_set & MOUNT_ATTR__ATIME as u64;
+    if requested_atime != 0
+        && requested_atime != MOUNT_ATTR_NOATIME as u64
+        && requested_atime != MOUNT_ATTR_STRICTATIME as u64
+    {
+        return Err(AxError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) {
+    if attributes.attr_set & MOUNT_ATTR_RDONLY as u64 != 0 {
+        mountpoint.set_readonly(true);
+    } else if attributes.attr_clr & MOUNT_ATTR_RDONLY as u64 != 0 {
+        mountpoint.set_readonly(false);
+    }
+
+    let basic_attributes = (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC) as u64;
+    let mut mount_flags = mountpoint.mount_flags();
+    mount_flags |= (attributes.attr_set & basic_attributes) as u32;
+    mount_flags &= !(attributes.attr_clr & basic_attributes) as u32;
+
+    if (attributes.attr_set | attributes.attr_clr) & MOUNT_ATTR__ATIME as u64 != 0 {
+        mount_flags &= !(MS_NOATIME | MS_RELATIME | MS_STRICTATIME) as u32;
+        match attributes.attr_set & MOUNT_ATTR__ATIME as u64 {
+            value if value == MOUNT_ATTR_NOATIME as u64 => mount_flags |= MS_NOATIME as u32,
+            value if value == MOUNT_ATTR_STRICTATIME as u64 => {
+                mount_flags |= MS_STRICTATIME as u32;
+            }
+            _ => mount_flags |= MS_RELATIME as u32,
+        }
+    }
+    mountpoint.set_mount_flags(mount_flags);
+}
+
 pub fn sys_mount(
     source: *const c_char,
     target: *const c_char,
@@ -191,6 +601,8 @@ pub fn sys_mount(
         return Err(AxError::OperationNotPermitted);
     }
 
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
     let propagation = flags & PROPAGATION_FLAGS;
 
     if propagation.count_ones() > 1 {
@@ -225,6 +637,7 @@ pub fn sys_mount(
                 _ => {}
             }
         }
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
@@ -236,30 +649,45 @@ pub fn sys_mount(
         let mp = target.mountpoint();
         mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_MOVE) != 0 {
-        let fs_context = ax_fs_ng::vfs::current_fs_context();
         let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         source.move_mount(&target)?;
+        drop(ctx);
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_BIND) != 0 {
-        let fs_context = ax_fs_ng::vfs::current_fs_context();
         let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         target.bind_mount(&source, (flags & MS_REC) != 0)?;
+        drop(ctx);
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     match fs_type.as_str() {
         "proc" | "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        }
+        "ramfs" => {
+            // Linux registers ramfs as a separate nodev filesystem and exposes
+            // RAMFS_MAGIC through statfs. It shares the in-memory inode/data
+            // machinery here, but must not inherit tmpfs's visible identity.
+            let fs = MemoryFs::new_ramfs();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
@@ -322,6 +750,7 @@ pub fn sys_mount(
         _ => return Err(AxError::NoSuchDevice),
     }
 
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
     Ok(0)
 }
 
@@ -361,12 +790,12 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::NotFound);
     }
 
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mount_namespace = fs_context.lock().mount_namespace().clone();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
-        ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve_no_follow(target)?
+        fs_context.lock().resolve_no_follow(target)?
     } else {
-        ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?
+        fs_context.lock().resolve(target)?
     };
 
     if !current().as_thread().cred().has_cap_sys_admin() {
@@ -384,6 +813,7 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
 
     if (flags & MNT_DETACH) != 0 {
         target.detach_mount()?;
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
@@ -413,6 +843,7 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::from(LinuxError::EBUSY));
     }
     target.commit_unmount(plan)?;
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     // After unmount, filesystem block I/O has stopped; it is safe to do VFS
     // writeback here. Propagate writeback errors so userspace sees EIO when
@@ -486,6 +917,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // exactly matches the old root Location — mirroring Linux
     // chroot_fs_refs() in fs/namespace.c.
     ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     Ok(0)
 }

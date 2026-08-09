@@ -1,0 +1,36 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "rv64",
+  "-machine",
+  "virt",
+  "-bios",
+  "default",
+  "-smp",
+  "4",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img",
+  "-device",
+  "virtio-blk-device,drive=disk1",
+  "-drive",
+  "id=disk1,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-riscv64-alpine.img,readonly=on,snapshot=on",
+  "-append",
+  "root=/dev/nvme0n1 rw init=/bin/sh",
+  "-m",
+  "4G",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+  "(?m)^(?:echo|cat|rm):",
+  "(?i)IPI extension is not available",
+]
+success_regex = ['(?m)^guest smp ipi pass!\s*$']
+shell_prefix = "~ #"
+shell_init_cmd = "mount -t proc proc /proc 2>/dev/null || true; [ \"$(nproc)\" -ge 3 ] && dmesg | grep -q 'SBI IPI extension detected' && grep -Eq 'IPI[^:]*:.*[1-9]' /proc/interrupts && echo 'guest smp ipi pass!' || exit 1"
+to_bin = true
+uefi = false
