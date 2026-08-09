@@ -77,6 +77,7 @@ impl FixedDeviceBindings {
 
 #[derive(Clone)]
 pub struct DeviceInstantiationContext {
+    vm_id: Option<usize>,
     default_wired_controller: Option<(DeviceNodeId, InterruptControllerId)>,
     fixed: FixedDeviceBindings,
     firmware_binding: DeviceFirmwareBinding,
@@ -88,6 +89,7 @@ pub struct DeviceInstantiationContext {
 impl DeviceInstantiationContext {
     pub fn new() -> Self {
         Self {
+            vm_id: None,
             default_wired_controller: None,
             fixed: FixedDeviceBindings::default(),
             firmware_binding: DeviceFirmwareBinding::None,
@@ -95,6 +97,15 @@ impl DeviceInstantiationContext {
             serial_backend_factory: Arc::new(NullSerialBackendFactory),
             host_console_by_default: false,
         }
+    }
+
+    pub(crate) fn with_vm_id(mut self, vm_id: usize) -> Self {
+        self.vm_id = Some(vm_id);
+        self
+    }
+
+    pub fn vm_id(&self) -> Option<usize> {
+        self.vm_id
     }
 
     pub fn with_default_wired_controller(

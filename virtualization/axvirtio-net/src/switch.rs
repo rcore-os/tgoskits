@@ -51,6 +51,11 @@ pub trait SwitchPort: Send + Sync {
     /// no longer active, so the caller can count the drop without aborting the
     /// rest of a broadcast fan-out (design §5.3).
     fn deliver_ingress(&self, frame: &[u8]) -> bool;
+    /// Schedules the consumer after a frame was accepted by its ingress queue.
+    ///
+    /// The switch invokes this only after releasing its registry lock. The
+    /// concrete runtime may use it to wake a blocked VM and poll its RX queue.
+    fn notify_ingress(&self);
 }
 
 /// Why a frame left the switch without being delivered or uplinked.
@@ -214,6 +219,7 @@ impl VirtualSwitch {
 
         for target in decision.local_targets.iter() {
             if target.deliver_ingress(frame) {
+                target.notify_ingress();
                 match header.class() {
                     DestinationClass::Broadcast => {
                         self.stats.inc(&self.stats.broadcast_copies);
@@ -271,6 +277,7 @@ impl VirtualSwitch {
 
         for target in targets {
             if target.deliver_ingress(frame) {
+                target.notify_ingress();
                 match header.class() {
                     DestinationClass::Broadcast => {
                         self.stats.inc(&self.stats.broadcast_copies);
@@ -459,6 +466,7 @@ mod tests {
         active: AtomicBool,
         delivered: Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>>,
         accept: AtomicUsize,
+        notifications: AtomicUsize,
     }
 
     impl FakePort {
@@ -469,6 +477,7 @@ mod tests {
                 active: AtomicBool::new(true),
                 delivered: Mutex::new(alloc::vec::Vec::new()),
                 accept: AtomicUsize::new(usize::MAX),
+                notifications: AtomicUsize::new(0),
             })
         }
 
@@ -482,6 +491,10 @@ mod tests {
 
         fn delivered(&self) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
             self.delivered.lock().clone()
+        }
+
+        fn notifications(&self) -> usize {
+            self.notifications.load(Ordering::Acquire)
         }
     }
 
@@ -505,6 +518,9 @@ mod tests {
             }
             delivered.push(frame.to_vec());
             true
+        }
+        fn notify_ingress(&self) {
+            self.notifications.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -576,6 +592,8 @@ mod tests {
         assert_eq!(outcome, EgressOutcome::Forwarded { uplink: false });
         assert!(a.delivered().is_empty());
         assert_eq!(b.delivered().len(), 1);
+        assert_eq!(a.notifications(), 0);
+        assert_eq!(b.notifications(), 1);
     }
 
     #[test]

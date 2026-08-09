@@ -52,6 +52,13 @@ fn create_device_node(
     let model: Arc<dyn DeviceModel> = Arc::new(VirtioNetModel {
         guest_mac,
         controller,
+        vm_id: context
+            .vm_id()
+            .ok_or_else(|| ConfiguredDeviceError::Instantiation {
+                device: request.id.clone(),
+                model: request.model.clone(),
+                detail: "virtio-net requires a VM identity".into(),
+            })?,
     });
     let mut node = DeviceNodeSpec::virtual_device(id, model);
     if let Some(controller_node) = context.default_wired_controller_node() {
@@ -99,6 +106,7 @@ fn invalid_options(request: &VirtualDeviceRequest, detail: String) -> Configured
 struct VirtioNetModel {
     guest_mac: [u8; 6],
     controller: axdevice_base::InterruptControllerId,
+    vm_id: usize,
 }
 
 impl DeviceModel for VirtioNetModel {
@@ -132,7 +140,12 @@ impl DeviceModel for VirtioNetModel {
         let irq_id = irq.input().value() as u32;
         let switch = internal_switch();
         let port_id = SwitchPortId::new(NEXT_PORT_ID.fetch_add(1, Ordering::Relaxed), 0, 0);
-        let endpoint = PortEndpoint::new(port_id, self.guest_mac, switch.clone());
+        let endpoint = PortEndpoint::new(
+            port_id,
+            self.guest_mac,
+            switch.clone(),
+            Arc::new(AxvmWakeTarget { vm_id: self.vm_id }),
+        );
         let registration = switch.register_owned(endpoint.clone()).map_err(|error| {
             DeviceManagerError::InvalidConfig {
                 operation: "register virtio-net switch port",
@@ -203,16 +216,45 @@ struct PortEndpoint {
     mac: [u8; 6],
     ingress: SpinNoIrq<VecDeque<alloc::vec::Vec<u8>>>,
     active: AtomicBool,
+    wake_target: Arc<dyn WakeTarget>,
     _switch: Arc<VirtualSwitch>,
 }
 
+trait WakeTarget: Send + Sync {
+    fn notify(&self);
+}
+
+struct AxvmWakeTarget {
+    vm_id: usize,
+}
+
+impl WakeTarget for AxvmWakeTarget {
+    fn notify(&self) {
+        // Wake only; vCPU0 polls DMA devices at the top of its next run-loop
+        // iteration. Polling synchronously from the sender's device access
+        // would let two VM device runtimes re-enter each other.
+        if let Err(error) = axvm::notify_vm_vcpu(self.vm_id, 0) {
+            warn!(
+                "failed to notify VM[{}] for virtio-net RX: {error:#}",
+                self.vm_id
+            );
+        }
+    }
+}
+
 impl PortEndpoint {
-    fn new(id: SwitchPortId, mac: [u8; 6], switch: Arc<VirtualSwitch>) -> Arc<Self> {
+    fn new(
+        id: SwitchPortId,
+        mac: [u8; 6],
+        switch: Arc<VirtualSwitch>,
+        wake_target: Arc<dyn WakeTarget>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             id,
             mac,
             ingress: SpinNoIrq::new(VecDeque::new()),
             active: AtomicBool::new(false),
+            wake_target,
             _switch: switch,
         })
     }
@@ -250,6 +292,10 @@ impl SwitchPort for PortEndpoint {
         }
         ingress.push_back(frame.into());
         true
+    }
+
+    fn notify_ingress(&self) {
+        self.wake_target.notify();
     }
 }
 

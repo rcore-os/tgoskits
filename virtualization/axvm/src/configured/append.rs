@@ -17,6 +17,7 @@ pub(crate) fn append_configured_devices(
     default_controller: InterruptControllerId,
 ) -> AxVmResult {
     let base_context = DeviceInstantiationContext::new()
+        .with_vm_id(config.id())
         .with_default_wired_controller(default_controller_node.clone(), default_controller);
     let default = default_serial_intent(config, default_controller)?;
     let request = config
