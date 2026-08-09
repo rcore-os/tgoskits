@@ -962,40 +962,6 @@ pub struct PtraceStopFpData;
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
-#[cfg(target_arch = "riscv64")]
-#[derive(Clone, Copy)]
-pub struct PtraceStopFpData {
-    pub regs: [u64; 32],
-    pub fcsr: usize,
-}
-#[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy)]
-pub struct PtraceStopFpData {
-    pub regs: [u128; 32],
-    pub fpcr: u32,
-    pub fpsr: u32,
-}
-#[cfg(target_arch = "loongarch64")]
-#[derive(Clone, Copy)]
-pub struct PtraceStopFpData {
-    pub regs: [u64; 32],
-    pub fp_high: [u64; 32],
-    pub fp_lasx_hi0: [u64; 32],
-    pub fp_lasx_hi1: [u64; 32],
-    pub fcc: [u8; 8],
-    pub fcsr: u32,
-}
-#[cfg(not(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "x86_64"
-)))]
-#[derive(Clone, Copy)]
-pub struct PtraceStopFpData;
-#[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-pub struct PtraceStopFpData(pub ax_cpu::FxsaveArea);
 impl ProcessData {
     /// Create a new [`ProcessData`].
     pub fn new(
