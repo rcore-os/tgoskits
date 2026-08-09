@@ -88,10 +88,14 @@ The host injector runs in E1 mode by default (single stream targeting vCPU1,
 `E1_MODE = true` in `os/axvisor/src/realtime_probe.rs`). Run with:
 
 ```bash
-FEATURES=openrace-realtime cargo xtask axvisor qemu \
+# The guest powers the VM off via PSCI SYSTEM_OFF after printing its result;
+# AxVisor then drops to its shell, so wrap the run in a timeout and judge the
+# result from the captured log.
+timeout 120 bash -c 'FEATURES=openrace-realtime cargo xtask axvisor qemu \
   --config os/axvisor/configs/board/qemu-aarch64.toml \
   --qemu-config os/axvisor/configs/qemu/qemu-aarch64.toml \
-  --vmconfigs scripts/test/zephyr-soft-virq-suspend/axvisor-qemu-aarch64-suspend-smp2.toml
+  --vmconfigs scripts/test/zephyr-soft-virq-suspend/axvisor-qemu-aarch64-suspend-smp2.toml \
+  < /dev/null' > e1.log 2>&1 || true
 ```
 
 ## Success criteria

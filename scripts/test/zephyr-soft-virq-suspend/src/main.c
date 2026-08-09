@@ -17,6 +17,7 @@
  */
 #define PSCI_CPU_SUSPEND_64 0xC4000001UL
 #define PSCI_POWER_STATE_STANDBY 0UL
+#define PSCI_SYSTEM_OFF_32 0x84000008UL
 
 static volatile uint32_t virq_count;
 static volatile uint64_t virq_cycles[SAMPLE_COUNT];
@@ -27,6 +28,13 @@ static void suspend_cpu(void)
 
 	arm_smccc_hvc(PSCI_CPU_SUSPEND_64, PSCI_POWER_STATE_STANDBY, 0,
 		      0, 0, 0, 0, 0, &res);
+}
+
+static void psci_system_off(void)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_hvc(PSCI_SYSTEM_OFF_32, 0, 0, 0, 0, 0, 0, 0, &res);
 }
 
 static void software_virq_isr(const void *arg)
@@ -86,6 +94,7 @@ static void consumer_entry(void *arg1, void *arg2, void *arg3)
 		printk("SOFTWARE VIRQ FAIL received=%u expected=%d\n", received,
 		       SAMPLE_COUNT);
 	}
+	psci_system_off();
 }
 
 int main(void)
