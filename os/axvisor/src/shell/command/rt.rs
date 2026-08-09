@@ -17,8 +17,8 @@ use std::io::{self, Write};
 use std::{print, println};
 
 use crate::realtime::{
-    RtState, RtTaskState, heartbeats, last_heartbeat_nanos, last_watchdog_nanos, rt_read_output,
-    status,
+    RtState, RtTaskState, heartbeats, last_heartbeat_nanos, last_watchdog_nanos, mailbox_recv_into,
+    mailbox_send_command, rt_mailbox_stats, rt_read_output, status,
 };
 use crate::shell::command::{CommandNode, ParsedCommand};
 
@@ -42,6 +42,16 @@ fn do_rt_status(_cmd: &ParsedCommand) {
     println!("Entry ns: {}", status.entry_nanos);
     println!("Last heartbeat ns: {}", last_heartbeat_nanos());
     println!("Last watchdog ns: {}", last_watchdog_nanos());
+    let mbox = rt_mailbox_stats();
+    println!(
+        "Mailbox: to_rt depth={} dropped={}, to_host depth={} dropped={}, notify rt={} host={}",
+        mbox.to_rt_depth,
+        mbox.to_rt_dropped,
+        mbox.to_host_depth,
+        mbox.to_host_dropped,
+        mbox.rt_notifications,
+        mbox.host_notifications,
+    );
     println!("Tasks:");
     println!(
         "  {name:<10} {state:<8} {base:>4} {effective:>4} {period:>14} {deadline:>14} {runs:>8} {start:>14} {finish:>14}",
@@ -80,9 +90,38 @@ fn do_rt_status(_cmd: &ParsedCommand) {
 
 fn do_rt_help(_cmd: &ParsedCommand) {
     println!("RT commands:");
-    println!("  rt status     Show realtime CPU status");
-    println!("  rt console    Drain realtime console output");
-    println!("  rt shell      Alias of rt console");
+    println!("  rt status         Show realtime CPU status");
+    println!("  rt console        Drain realtime console output");
+    println!("  rt shell          Alias of rt console");
+    println!("  rt send <text>    Send a command to the RT core; it echoes back");
+    println!("  rt recv           Drain RT->host mailbox events");
+}
+
+fn do_rt_send(cmd: &ParsedCommand) {
+    if cmd.positional_args.is_empty() {
+        println!("usage: rt send <text>");
+        return;
+    }
+    let text = cmd.positional_args.join(" ");
+    match mailbox_send_command(text.as_bytes()) {
+        Ok(()) => println!("[RT] sent {} byte(s) to RT core", text.len()),
+        Err(err) => println!("[RT] send failed: {err:?}"),
+    }
+}
+
+fn do_rt_recv(_cmd: &ParsedCommand) {
+    let mut payload = [0u8; 128];
+    let mut received = 0;
+    // Give the RT echo task a moment to turn commands around before draining.
+    ax_std::thread::sleep(core::time::Duration::from_millis(50));
+    while let Some((tag, len)) = mailbox_recv_into(&mut payload) {
+        let text = core::str::from_utf8(&payload[..len]).unwrap_or("<non-utf8>");
+        println!("[RT] event tag={tag:#04x} len={len} payload=\"{text}\"");
+        received += 1;
+    }
+    if received == 0 {
+        println!("[RT] no mailbox events pending");
+    }
 }
 
 fn do_rt_console(_cmd: &ParsedCommand) {
@@ -133,6 +172,18 @@ pub fn build_rt_cmd(tree: &mut BTreeMap<String, CommandNode>) {
             CommandNode::new("Drain realtime console output")
                 .with_handler(do_rt_console)
                 .with_usage("rt shell"),
+        )
+        .add_subcommand(
+            "send",
+            CommandNode::new("Send a command to the RT core (echoed back)")
+                .with_handler(do_rt_send)
+                .with_usage("rt send <text>"),
+        )
+        .add_subcommand(
+            "recv",
+            CommandNode::new("Drain RT->host mailbox events")
+                .with_handler(do_rt_recv)
+                .with_usage("rt recv"),
         );
 
     tree.insert("rt".to_string(), rt_node);

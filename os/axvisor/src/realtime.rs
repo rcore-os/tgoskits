@@ -17,9 +17,13 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_rt::{
-    RtMutex, RtSemaphore, RtTask, rt_delay_until, rt_exit_current_task, rt_output_write, rt_sleep,
+    RtMessage, RtMutex, RtSemaphore, RtTask, rt_delay_until, rt_exit_current_task, rt_mailbox_recv,
+    rt_mailbox_send, rt_output_write, rt_sleep,
 };
-pub use ax_rt::{RtState, RtTaskState, rt_read_output, status};
+pub use ax_rt::{
+    RtState, RtTaskState, host_mailbox_recv, host_mailbox_send, rt_mailbox_stats, rt_read_output,
+    status,
+};
 
 const HEARTBEAT_INTERVAL_NANOS: u64 = 1_000_000;
 const WATCHDOG_INTERVAL_NANOS: u64 = 100_000_000;
@@ -36,6 +40,12 @@ const RECURSIVE_TEST_INNER_DROPPED: u64 = 3;
 const RECURSIVE_TEST_WAITER_ACQUIRED: u64 = 4;
 const SEMAPHORE_TEST_WAITER_BLOCKING: u64 = 1;
 const SEMAPHORE_TEST_WAITER_ACQUIRED: u64 = 2;
+/// host→RT command tag: echo the payload back as an event.
+const MAILBOX_CMD_ECHO: u32 = 0x01;
+/// RT→host event tag reported by the echo task (command tag | 0x80).
+const MAILBOX_EVT_ECHO: u32 = MAILBOX_CMD_ECHO | 0x80;
+/// Payload the host round-trip test sends and expects echoed back.
+const MAILBOX_TEST_PAYLOAD: &[u8] = b"rt-mailbox-ping";
 
 static RT_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
 static RT_WATCHDOG_RUNS: AtomicU64 = AtomicU64::new(0);
@@ -51,7 +61,8 @@ static RT_RECURSIVE_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
 static RT_SEMAPHORE_TEST_SEM: RtSemaphore = RtSemaphore::new(0);
 static RT_SEMAPHORE_TEST_STEP: AtomicU64 = AtomicU64::new(0);
 static RT_SEMAPHORE_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
-static RT_TASKS: [RtTask; 10] = [
+static RT_MAILBOX_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
+static RT_TASKS: [RtTask; 11] = [
     RtTask::with_priority("heartbeat", HEARTBEAT_INTERVAL_NANOS, 10, heartbeat_task),
     RtTask::with_priority("watchdog", WATCHDOG_INTERVAL_NANOS, 5, watchdog_task),
     RtTask::with_priority("hello", HELLO_INTERVAL_NANOS, 1, hello_task),
@@ -62,6 +73,7 @@ static RT_TASKS: [RtTask; 10] = [
     RtTask::with_priority("recur-wait", 0, 15, recursive_test_waiter_task),
     RtTask::with_priority("sem-wait", 0, 35, semaphore_test_waiter_task),
     RtTask::with_priority("sem-post", 0, 12, semaphore_test_poster_task),
+    RtTask::with_priority("mbox-echo", 0, 8, mailbox_echo_task),
 ];
 
 /// Axvisor realtime secondary CPU entry.
@@ -74,6 +86,8 @@ pub extern "Rust" fn ax_realtime_secondary_main(cpu_id: usize) -> ! {
     let entry_nanos = monotonic_time_nanos();
     RT_LAST_HEARTBEAT_NANOS.store(entry_nanos, Ordering::Release);
     RT_LAST_WATCHDOG_NANOS.store(entry_nanos, Ordering::Release);
+
+    setup_rt_mailbox_doorbell(cpu_id);
 
     info!("Realtime CPU {cpu_id} entered Axvisor RT entry; running isolated executor.");
     ax_rt::run_realtime_cpu(cpu_id, &RT_TASKS, monotonic_time_nanos)
@@ -247,10 +261,33 @@ fn semaphore_test_poster_task() -> ! {
     rt_exit_current_task();
 }
 
+/// Long-running RT service task: drains host→RT commands and echoes each one
+/// back to the host as an RT→host event (`tag | 0x80`, same payload).
+///
+/// Consuming the mailbox pending flag makes the poll loop cheap once IPI-driven
+/// notification is wired; today it also polls on a short period as a fallback.
+fn mailbox_echo_task() -> ! {
+    loop {
+        let _woken = ax_rt::rt_mailbox_take_pending();
+        while let Some(command) = rt_mailbox_recv() {
+            if let Ok(reply) = RtMessage::new(command.tag() | 0x80, command.payload()) {
+                // Best-effort: if the RT→host ring is full the host will observe
+                // the drop counter; the RT task must not block.
+                let _ = rt_mailbox_send(&reply);
+            }
+        }
+        rt_sleep(500_000);
+    }
+}
+
 pub fn log_priority_test_result() {
     let mut priority_done = false;
     let mut recursive_done = false;
     let mut semaphore_done = false;
+    let mut mailbox_done = false;
+    let mailbox_ping =
+        RtMessage::new(MAILBOX_CMD_ECHO, MAILBOX_TEST_PAYLOAD).expect("mailbox test payload fits");
+    let mut mailbox_sent = host_mailbox_send(&mailbox_ping).is_ok();
     let deadline_nanos = monotonic_time_nanos().saturating_add(5_000_000_000);
     while monotonic_time_nanos() < deadline_nanos {
         if !priority_done {
@@ -296,7 +333,41 @@ pub fn log_priority_test_result() {
                 _ => {}
             }
         }
-        if priority_done && recursive_done && semaphore_done {
+        if !mailbox_done {
+            if !mailbox_sent {
+                mailbox_sent = host_mailbox_send(&mailbox_ping).is_ok();
+            }
+            if let Some(reply) = host_mailbox_recv() {
+                if reply.tag() == MAILBOX_EVT_ECHO && reply.payload() == MAILBOX_TEST_PAYLOAD {
+                    // The RT→host reply is enqueued just before the reverse
+                    // doorbell fires, so the host can pop it before that SGI is
+                    // delivered here. Wait briefly for the notification counter
+                    // to catch up so the logged count reflects the real IPI.
+                    let mut stats = rt_mailbox_stats();
+                    let ipi_deadline_nanos = monotonic_time_nanos().saturating_add(10_000_000);
+                    while stats.host_notifications == 0
+                        && monotonic_time_nanos() < ipi_deadline_nanos
+                    {
+                        core::hint::spin_loop();
+                        stats = rt_mailbox_stats();
+                    }
+                    // Report the reverse IPI from the host side (the RT core is
+                    // the only sender of this doorbell SGI) so both directions
+                    // are visible without logging from the isolated RT core.
+                    report_reverse_doorbell(stats.host_notifications);
+                    info!(
+                        "[RT mailbox test] host->RT->host round-trip PASS (rt_notifications={}, host_notifications={})",
+                        stats.rt_notifications, stats.host_notifications
+                    );
+                    RT_MAILBOX_TEST_RESULT.store(1, Ordering::Release);
+                } else {
+                    error!("[RT mailbox test] echoed message mismatch FAIL");
+                    RT_MAILBOX_TEST_RESULT.store(2, Ordering::Release);
+                }
+                mailbox_done = true;
+            }
+        }
+        if priority_done && recursive_done && semaphore_done && mailbox_done {
             return;
         }
         core::hint::spin_loop();
@@ -318,13 +389,35 @@ pub fn log_priority_test_result() {
             RT_SEMAPHORE_TEST_RESULT.load(Ordering::Acquire)
         );
     }
+    if !mailbox_done {
+        let stats = rt_mailbox_stats();
+        warn!(
+            "[RT mailbox test] timed out waiting for echo: sent={mailbox_sent}, \
+             to_rt_depth={}, to_host_depth={}, to_rt_dropped={}, to_host_dropped={}",
+            stats.to_rt_depth, stats.to_host_depth, stats.to_rt_dropped, stats.to_host_dropped
+        );
+    }
+}
+
+/// Shell helper: send `text` to the RT core as an echo command (host→RT).
+pub fn mailbox_send_command(text: &[u8]) -> Result<(), ax_rt::RtMailboxError> {
+    let msg = RtMessage::new(MAILBOX_CMD_ECHO, text)?;
+    host_mailbox_send(&msg)
+}
+
+/// Shell helper: drain one RT→host event, copying its payload into `out`.
+/// Returns `(tag, copied_len)`, or `None` when no event is queued.
+pub fn mailbox_recv_into(out: &mut [u8]) -> Option<(u32, usize)> {
+    let msg = host_mailbox_recv()?;
+    let copied = msg.payload().len().min(out.len());
+    out[..copied].copy_from_slice(&msg.payload()[..copied]);
+    Some((msg.tag(), copied))
 }
 
 /// Returns the number of Axvisor demo heartbeat periods observed on the RT CPU.
 pub fn heartbeats() -> u64 {
     RT_HEARTBEATS.load(Ordering::Relaxed)
 }
-
 /// Returns the latest Axvisor demo heartbeat timestamp.
 pub fn last_heartbeat_nanos() -> u64 {
     RT_LAST_HEARTBEAT_NANOS.load(Ordering::Acquire)
@@ -338,6 +431,198 @@ pub fn last_watchdog_nanos() -> u64 {
 fn monotonic_time_nanos() -> u64 {
     ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos()
 }
+
+/// GIC SGI used for the host→RT mailbox doorbell. SGI 0 is the scheduler IPI,
+/// so the mailbox uses a dedicated line the host runtime never targets.
+#[cfg(target_arch = "aarch64")]
+const MAILBOX_DOORBELL_SGI_TO_RT: u32 = 1;
+
+#[cfg(target_arch = "aarch64")]
+static RT_MAILBOX_CPU: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Resolves the GIC `IrqId` of the mailbox doorbell SGI at runtime.
+///
+/// The GIC IRQ domain id is assigned dynamically during boot, so the doorbell
+/// must borrow the same domain the runtime IPI already uses. The
+/// `AARCH64_GIC_DOMAIN` compatibility constant is not the registered id: the
+/// platform's `is_gic_domain` check rejects it, which makes both
+/// `request_percpu_irq` (registration) and `send_ipi` (delivery) fail with
+/// `InvalidIrq` and silently fall back to polling.
+#[cfg(target_arch = "aarch64")]
+fn mailbox_doorbell_irq() -> ax_std::os::arceos::modules::ax_hal::irq::IrqId {
+    use ax_std::os::arceos::modules::ax_hal::irq;
+    let gic_domain = irq::ipi_irq().domain;
+    irq::IrqId::new(gic_domain, irq::HwIrq(MAILBOX_DOORBELL_SGI_TO_RT))
+}
+
+/// Doorbell that rings the reserved RT core after a host→RT send.
+#[cfg(target_arch = "aarch64")]
+struct RtCoreDoorbell;
+
+#[cfg(target_arch = "aarch64")]
+impl ax_rt::MailboxDoorbell for RtCoreDoorbell {
+    fn ring(&self) {
+        use ax_std::os::arceos::modules::ax_hal::{irq, percpu};
+        let cpu = RT_MAILBOX_CPU.load(Ordering::Acquire);
+        if cpu == usize::MAX {
+            return;
+        }
+        info!(
+            "[RT mailbox] doorbell IPI: host CPU{} -> RT CPU{cpu} (SGI {MAILBOX_DOORBELL_SGI_TO_RT})",
+            percpu::this_cpu_id()
+        );
+        irq::send_ipi(
+            mailbox_doorbell_irq(),
+            irq::IpiTarget::Other { cpu_id: cpu },
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static RT_CORE_DOORBELL: RtCoreDoorbell = RtCoreDoorbell;
+
+/// Enables interrupt-driven mailbox notification on the reserved RT core.
+///
+/// The RT core deliberately skips the ordinary secondary IRQ-online path, so it
+/// enables only this one dedicated doorbell SGI here: the scheduler timer and
+/// IPI stay registered on host CPUs only, keeping the RT core's interrupt
+/// surface minimal. The handler runs in interrupt context and does nothing but
+/// set the mailbox pending flag.
+#[cfg(target_arch = "aarch64")]
+fn setup_rt_mailbox_doorbell(cpu_id: usize) {
+    use ax_hal::irq;
+    use ax_std::os::arceos::modules::ax_hal;
+
+    RT_MAILBOX_CPU.store(cpu_id, Ordering::Release);
+    irq::init_common_irq_handler();
+    if let Err(err) = irq::cpu_online(cpu_id) {
+        warn!("RT mailbox doorbell: cpu_online({cpu_id}) failed: {err:?}");
+        return;
+    }
+    let doorbell_irq = mailbox_doorbell_irq();
+    let doorbell_cpus = irq::CpuMask::from_cpu(irq::CpuId(cpu_id));
+    let result = irq::request_percpu_irq(doorbell_irq, doorbell_cpus, |_ctx| {
+        ax_rt::rt_mailbox_on_doorbell();
+        irq::IrqReturn::Handled
+    });
+    if let Err(err) = result {
+        warn!("RT mailbox doorbell: request_percpu_irq failed: {err:?}");
+        return;
+    }
+    // From now on host_mailbox_send() rings this core instead of relying on the
+    // RT task's fallback poll.
+    ax_rt::set_rt_doorbell(&RT_CORE_DOORBELL);
+    ax_hal::asm::enable_irqs();
+    info!("RT mailbox doorbell armed on CPU {cpu_id} (SGI {MAILBOX_DOORBELL_SGI_TO_RT}).");
+}
+
+/// Non-aarch64 fallback: mailbox notification stays poll-based.
+#[cfg(not(target_arch = "aarch64"))]
+fn setup_rt_mailbox_doorbell(_cpu_id: usize) {}
+
+/// GIC SGI used for the RT→host mailbox doorbell. SGI 0 is the scheduler IPI and
+/// SGI 1 is the host→RT doorbell, so the reverse direction takes a third line.
+#[cfg(target_arch = "aarch64")]
+const MAILBOX_DOORBELL_SGI_TO_HOST: u32 = 2;
+
+/// Host core that drains the RT→host ring, i.e. the target of the reverse
+/// doorbell. Set once when the host arms its doorbell.
+#[cfg(target_arch = "aarch64")]
+static RT_MAILBOX_HOST_CPU: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Resolves the GIC `IrqId` of the RT→host mailbox doorbell SGI at runtime.
+///
+/// Uses the dynamically registered GIC domain for the same reason as
+/// [`mailbox_doorbell_irq`].
+#[cfg(target_arch = "aarch64")]
+fn host_mailbox_doorbell_irq() -> ax_std::os::arceos::modules::ax_hal::irq::IrqId {
+    use ax_std::os::arceos::modules::ax_hal::irq;
+    let gic_domain = irq::ipi_irq().domain;
+    irq::IrqId::new(gic_domain, irq::HwIrq(MAILBOX_DOORBELL_SGI_TO_HOST))
+}
+
+/// Doorbell that rings the host consumer core after an RT→host send.
+#[cfg(target_arch = "aarch64")]
+struct HostCoreDoorbell;
+
+#[cfg(target_arch = "aarch64")]
+impl ax_rt::MailboxDoorbell for HostCoreDoorbell {
+    fn ring(&self) {
+        use ax_std::os::arceos::modules::ax_hal::irq;
+        let target = RT_MAILBOX_HOST_CPU.load(Ordering::Acquire);
+        if target == usize::MAX {
+            return;
+        }
+        // Runs on the isolated RT core: keep it to the raw SGI and do not touch
+        // the shared console lock here. The host logs the reverse IPI when it
+        // observes the doorbell, so both directions stay visible without the RT
+        // core contending on host-owned logging state.
+        irq::send_ipi(
+            host_mailbox_doorbell_irq(),
+            irq::IpiTarget::Other { cpu_id: target },
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static HOST_CORE_DOORBELL: HostCoreDoorbell = HostCoreDoorbell;
+
+/// Arms interrupt-driven RT→host mailbox notification on the current host core.
+///
+/// Runs on the host boot CPU, which is also the core that drains the RT→host
+/// ring (`host_mailbox_recv`) from the boot self-test and the shell. Registering
+/// the reverse doorbell here lets the RT core signal the host with a real SGI
+/// rather than relying on the host to poll, so a host→RT command and its RT→host
+/// reply become a symmetric exchange of doorbell IPIs between the two cores.
+#[cfg(target_arch = "aarch64")]
+pub fn setup_host_mailbox_doorbell() {
+    use ax_std::os::arceos::modules::ax_hal::{irq, percpu};
+
+    // The host CPU is already online in the IRQ framework and running with IRQs
+    // enabled, so unlike the RT core this path only registers the extra line.
+    let cpu_id = percpu::this_cpu_id();
+    RT_MAILBOX_HOST_CPU.store(cpu_id, Ordering::Release);
+    let doorbell_irq = host_mailbox_doorbell_irq();
+    let doorbell_cpus = irq::CpuMask::from_cpu(irq::CpuId(cpu_id));
+    let result = irq::request_percpu_irq(doorbell_irq, doorbell_cpus, |_ctx| {
+        ax_rt::host_mailbox_on_doorbell();
+        irq::IrqReturn::Handled
+    });
+    if let Err(err) = result {
+        warn!("host mailbox doorbell: request_percpu_irq failed: {err:?}");
+        return;
+    }
+    ax_rt::set_host_doorbell(&HOST_CORE_DOORBELL);
+    info!("Host mailbox doorbell armed on CPU {cpu_id} (SGI {MAILBOX_DOORBELL_SGI_TO_HOST}).");
+}
+
+/// Non-aarch64 fallback: RT→host notification stays poll-based.
+#[cfg(not(target_arch = "aarch64"))]
+pub fn setup_host_mailbox_doorbell() {}
+
+/// Logs whether the host observed the RT core's reverse doorbell IPI.
+///
+/// Called from the host self-test after the round-trip completes. On aarch64 a
+/// nonzero notification count means the RT core signalled the host with a real
+/// SGI; zero means the reverse path silently fell back to polling.
+#[cfg(target_arch = "aarch64")]
+fn report_reverse_doorbell(host_notifications: u64) {
+    use ax_std::os::arceos::modules::ax_hal::percpu;
+    if host_notifications > 0 {
+        info!(
+            "[RT mailbox] doorbell IPI: RT core -> host CPU{} received (SGI {MAILBOX_DOORBELL_SGI_TO_HOST})",
+            percpu::this_cpu_id()
+        );
+    } else {
+        warn!("[RT mailbox] reverse doorbell IPI not observed; RT->host fell back to polling");
+    }
+}
+
+/// Non-aarch64 fallback: RT→host notification is poll-based, nothing to report.
+#[cfg(not(target_arch = "aarch64"))]
+fn report_reverse_doorbell(_host_notifications: u64) {}
 
 /// Runtime owner of a physical CPU.
 #[cfg(feature = "realtime")]

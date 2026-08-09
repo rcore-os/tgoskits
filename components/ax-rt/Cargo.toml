@@ -11,6 +11,7 @@ license.workspace = true
 ax-cpu.workspace = true
 ax-memory-addr.workspace = true
 cpu-local.workspace = true
+spin.workspace = true
 
 [lints.clippy]
 new_without_default = "allow"

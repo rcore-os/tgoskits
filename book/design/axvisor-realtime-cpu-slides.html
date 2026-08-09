@@ -480,7 +480,7 @@
   <span style="font-size:20px;color:var(--dim)">隔离做扎实了，但“实时”还停留在协作式 + 轮询唤醒</span></p>
   <div class="grid3" style="max-width:1080px;margin-top:34px;text-align:left">
     <div class="card"><h3 class="warn">时间/唤醒</h3><p class="dim">sleep 靠执行器 loop 扫描 deadline，<b>无 RT 专属 timer IRQ</b></p></div>
-    <div class="card"><h3 class="warn">通信</h3><p class="dim">host↔RT 仅有只读状态 + 输出缓冲，<b>无双向 mailbox</b></p></div>
+    <div class="card"><h3 style="color:var(--ok)">通信 ✓</h3><p class="dim">双向 bounded mailbox + <b>GIC SGI doorbell</b> 已打通：host↔RT 互发 IPI（SGI 1 / SGI 2）</p></div>
     <div class="card"><h3 class="warn">设备/中断</h3><p class="dim"><b>无 RT-owned IRQ / 设备直通</b>，无设备所有权与 probe 排除规则</p></div>
   </div>
   <p class="dim" style="margin-top:26px">→ 下一步的主线，正是把“协作式轮询”演进为<b class="accent">真正的中断驱动实时</b>。</p>
@@ -509,11 +509,11 @@
       </div>
     </div>
     <div class="col">
-      <div class="card">
-        <h3 class="accent">阶段三 · host ↔ RT bounded mailbox</h3>
+      <div class="card hl" style="border-color:var(--ok)">
+        <h3 style="color:var(--ok)">✓ 阶段三 · host ↔ RT bounded mailbox（已落地）</h3>
         <ul>
-          <li>用<b>定容 mailbox</b> 表达双向通信（替代只读观测）</li>
-          <li>host 投递请求 / RT 回报事件，可选 IPI 通知唤醒</li>
+          <li><b>定容双向 mailbox</b> 表达 host↔RT 通信（替代只读观测）</li>
+          <li><b>GIC SGI doorbell</b> 双向通知：host→RT 走 SGI 1、RT→host 走 SGI 2，QEMU 验证 <code>rt_notifications=1, host_notifications=1</code></li>
         </ul>
       </div>
       <div class="card">
@@ -535,13 +535,13 @@
   <div class="sub">每一步都保持“CPU 所有权单一事实”，避免在多模块复制判断</div>
   <div class="card" style="margin-bottom:14px">
     <div class="flow" style="justify-content:space-between">
-      <div class="node" style="border-color:var(--ok);background:rgba(34,197,94,.12)"><b>✓ 已完成</b><br><span class="dim" style="font-size:12px">分区 + 隔离执行器<br>优先级 / 继承 / 递归锁<br>观测 + guest 共存</span></div>
+      <div class="node" style="border-color:var(--ok);background:rgba(34,197,94,.12)"><b>✓ 已完成</b><br><span class="dim" style="font-size:12px">分区 + 隔离执行器<br>优先级 / 继承 / 递归锁<br>观测 + guest 共存<br>双向 mailbox + SGI doorbell</span></div>
       <span class="arr">→</span>
       <div class="node rt"><b>阶段一</b><br><span style="font-size:12px">RT timer IRQ<br>中断驱动唤醒</span></div>
       <span class="arr">→</span>
       <div class="node"><b>阶段二</b><br><span class="dim" style="font-size:12px">IRQ-safe 原语</span></div>
       <span class="arr">→</span>
-      <div class="node"><b>阶段三</b><br><span class="dim" style="font-size:12px">bounded mailbox</span></div>
+      <div class="node" style="border-color:var(--ok);background:rgba(34,197,94,.12)"><b>✓ 阶段三</b><br><span class="dim" style="font-size:12px">bounded mailbox<br>+ SGI doorbell</span></div>
       <span class="arr">→</span>
       <div class="node"><b>阶段四</b><br><span class="dim" style="font-size:12px">RT 设备中断直通</span></div>
     </div>
@@ -574,7 +574,7 @@
     <div class="card"><h3 class="accent">能力在 ax-rt</h3><p class="dim">独立执行器 / 优先级继承 / 递归锁，不依赖 Axvisor 或 Starry</p></div>
     <div class="card"><h3 class="accent">Axvisor 与 Starry 共用</h3><p class="dim">各自填“入口 + 任务表 + 时间源”即可接入同一套能力</p></div>
   </div>
-  <p class="lead" style="margin-top:32px">下一步主线：<b class="accent">中断接入</b> —— RT 专属 timer IRQ → IRQ-safe 原语 → bounded mailbox → RT 设备中断直通。</p>
+  <p class="lead" style="margin-top:32px">已落地 <b class="accent">双向 mailbox + SGI doorbell</b>；下一步主线：<b class="accent">中断接入</b> —— RT 专属 timer IRQ → IRQ-safe 原语 → RT 设备中断直通。</p>
 </section>
 
 <div class="progress" id="progress"></div>

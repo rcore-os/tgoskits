@@ -90,6 +90,7 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to start VM completion waiter: {error}"));
 
     info!("[OK] Default guest initialized");
+    realtime::setup_host_mailbox_doorbell();
     realtime::log_priority_test_result();
 
     shell::console_init();
