@@ -87,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- release ([#1859](https://github.com/rcore-os/tgoskits/pull/1859))
+
+## [0.4.8](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.7...buddy-slab-allocator-v0.4.8) - 2026-08-09
+
+### Other
+
 - updated the following local packages: axtest, ax-kspin
 
 ## [0.4.7](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.4.6...buddy-slab-allocator-v0.4.7) - 2026-08-03
