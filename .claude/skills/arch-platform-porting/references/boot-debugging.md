@@ -145,7 +145,8 @@ Axvisor x86_64 boots a nested OVMF as the *guest* firmware through the axvm UEFI
 path. The guest firmware is the upstream RELEASE OVMF built by Ostool
 (`edk2-stable202508-r1`, fetched through `cargo xtask ovmf --arch x86_64` into
 the `Source::LATEST` cache); its SHA-256 verification is done by Ostool itself.
-The fixed profile is defined twice and the two copies must stay identical:
+The fixed profile name is defined authoritatively in the axbuild verifier and
+mirrored by the axvm loader; the two copies must stay identical:
 
 | Constant | Value | Defined in |
 | --- | --- | --- |
@@ -217,7 +218,7 @@ Wiring points to keep aligned:
   which never reaches the axvisor device model, so no VM anchor is needed and
   the regex is not subject to the 2048-byte streaming-DFA match window. The
   marker appears early (SEC/PEI), proving the nested OVMF executed; reaching
-  BDS is a stage-2 concern (see the p2 milestone).
+  BDS is not covered by this case.
 
 Common failures:
 

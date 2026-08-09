@@ -104,7 +104,7 @@ fn main() {
 
 ### 架构适配
 
-`hal/arch/` 提供四套架构适配，每套实现各自架构的虚拟化启用、中断注入和上下文切换。aarch64 和 riscv64 是当前最成熟的两条路径，loongarch64 处于可用状态，x86_64 已从 stub 占位推进为可用的 VMX/SVM 路径：虚拟机扩展在运行时按宿主 CPUID 选择（Intel 走 VMX，AMD 走 SVM），并支持以固定 OVMF bundle 作为 UEFI guest 固件，第一阶段 SEC 启动诊断已落地（`ovmf-entry` 用例）。
+`hal/arch/` 提供四套架构适配，每套实现各自架构的虚拟化启用、中断注入和上下文切换。aarch64 和 riscv64 是当前最成熟的两条路径，loongarch64 处于可用状态，x86_64 已从 stub 占位推进为可用的 VMX/SVM 路径：虚拟机扩展在运行时按宿主 CPUID 选择（Intel 走 VMX，AMD 走 SVM），并支持以上游 RELEASE OVMF（ostool 缓存）作为 UEFI guest 固件，嵌套固件启动诊断已落地（`ovmf-entry` 用例，以 fw_cfg 访问 marker 判定）。
 
 | 架构 | 虚拟化方式 | 中断注入 |
 | --- | --- | --- |

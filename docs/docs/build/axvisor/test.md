@@ -129,15 +129,16 @@ flowchart TD
 
 该模式验证完整的"U-Boot → Axvisor → Guest"引导链路，覆盖真实硬件上 U-Boot 加载 Axvisor ELF、Axvisor 初始化硬件虚拟化扩展、再启动 Guest 的全流程。
 
-### 3.3 UEFI 分组与固定 OVMF bundle
+### 3.3 UEFI 分组与上游 RELEASE OVMF
 
-`test-suit/axvisor/uefi/ovmf-entry/` 承载 x86_64 的固定 OVMF 固件诊断用例（两个变体 `ovmf-entry-vmx` 与 `ovmf-entry-svm`，按宿主 CPU 的 VMX/SVM 能力分别选择）。该用例以 `-kernel` 启动 Axvisor 宿主，再由 Axvisor 把嵌套 OVMF 作为 UEFI guest 固件加载；`success_regex` 以 `(?s)VCpu[0] running...` 锚定嵌套 VM 后匹配 `SecCoreStartupWithStack`（guest COM1 输出），表示嵌套固件已进入 SEC 阶段。前缀锚定是必需的：QEMU 层为引导 Axvisor 宿主而注入的 pflash OVMF 会输出相同的 SEC 行，裸 `SecCoreStartupWithStack\(` 会误匹配宿主固件。该用例是阶段 1 的 SEC 启动诊断，而非完整 guest boot。
+`test-suit/axvisor/uefi/ovmf-entry/` 承载 x86_64 的上游 RELEASE OVMF 固件诊断用例（两个变体 `ovmf-entry-vmx` 与 `ovmf-entry-svm`，按宿主 CPU 的 VMX/SVM 能力分别选择）。该用例以 `-kernel` 启动 Axvisor 宿主，再由 Axvisor 把嵌套 OVMF 作为 UEFI guest 固件加载；`success_regex` 匹配设备模型打印的 `Nested OVMF fw_cfg accessed` marker（Info 级，见下方接线要点），表示嵌套固件已启动并访问 fw_cfg。该 marker 天然只属嵌套 guest：QEMU 层为引导 Axvisor 宿主而注入的 pflash OVMF 的 fw_cfg 访问发生在 QEMU 内部，不经过 axvisor 设备模型，因此无需 VM 前缀锚定。该用例是嵌套固件启动诊断，而非完整 guest boot。
 
 ```bash
+cargo xtask ovmf --arch x86_64   # 先准备上游 RELEASE 固件缓存($TMPDIR/ostool/ovmf/x64)
 cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
-  --test-case ovmf-entry-svm --firmware-bundle-path <bundle 目录>
+  --test-case ovmf-entry-svm --firmware-bundle-path $TMPDIR/ostool/ovmf/x64
 cargo xtask axvisor test qemu --arch x86_64 --test-group uefi \
-  --test-case ovmf-entry-vmx --firmware-bundle-path <bundle 目录>
+  --test-case ovmf-entry-vmx --firmware-bundle-path $TMPDIR/ostool/ovmf/x64
 ```
 
 接线要点（与替换实现一致）：
