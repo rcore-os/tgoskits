@@ -76,10 +76,27 @@ path. Write it and verify with:
 
 ```bash
 ROOTFS=</path/to/rootfs.img>
-debugfs -w -R \
-  'write /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' \
-  "$ROOTFS"
-debugfs -R 'stat /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' "$ROOTFS"
+GUEST_KERNEL=/tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin
+test -s "$GUEST_KERNEL"
+
+# debugfs returns status 0 even when `write` cannot resolve a parent
+# directory, so create and verify every component before copying the guest.
+for GUEST_DIR in \
+  /tmp \
+  /tmp/zephyr-soft-virq-suspend-build \
+  /tmp/zephyr-soft-virq-suspend-build/zephyr; do
+  debugfs -w -R "mkdir $GUEST_DIR" "$ROOTFS"
+  if ! debugfs -R "stat $GUEST_DIR" "$ROOTFS" | grep -q 'Type: directory'; then
+    echo "guest rootfs directory is not ready: $GUEST_DIR" >&2
+    exit 1
+  fi
+done
+
+debugfs -w -R "write $GUEST_KERNEL $GUEST_KERNEL" "$ROOTFS"
+if ! debugfs -R "stat $GUEST_KERNEL" "$ROOTFS" | grep -q 'Type: regular'; then
+  echo "guest kernel was not written to the rootfs: $GUEST_KERNEL" >&2
+  exit 1
+fi
 ```
 
 ## Run
