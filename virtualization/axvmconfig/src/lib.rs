@@ -252,6 +252,21 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// Whether the AArch64 trap layer must advance the exception PC past the
+    /// trapping `hvc`/`smc` instruction before resuming the guest.
+    ///
+    /// ARM DDI 0487 defines the preferred exception return address for HVC as
+    /// the following instruction, so QEMU (and spec-conforming emulators)
+    /// report ELR_EL2 already past the trap and must set this to `false`.
+    /// Some physical platforms report the trapping instruction itself and
+    /// need `true`. Defaults to `true` so existing physical-board configs
+    /// keep the legacy behavior.
+    #[serde(default = "default_true")]
+    pub advance_hvc_smc_pc: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The configuration structure for the guest VM kernel.

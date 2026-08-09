@@ -33,6 +33,8 @@ mod banner;
 mod config;
 mod guest_console;
 mod manager;
+#[cfg(feature = "openrace-realtime")]
+mod realtime_probe;
 mod shell;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
@@ -79,6 +81,8 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
     let started_vms = manager.launch_default_vms();
     guest_console::attach_default(started_vms);
+    #[cfg(feature = "openrace-realtime")]
+    realtime_probe::start();
 
     std::thread::Builder::new()
         .name("axvisor-vm-wait".into())

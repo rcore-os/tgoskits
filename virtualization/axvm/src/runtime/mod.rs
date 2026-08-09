@@ -18,12 +18,20 @@ pub(crate) mod vcpus;
 
 mod dispatcher;
 mod queue;
+mod trace;
+
+/// Maximum number of pending software interrupts retained per vCPU.
+pub(crate) const VCPU_INTERRUPT_QUEUE_CAPACITY: usize = 64;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
 // embed the dispatcher as a field and expose it to the vCPU run loop.
 #[allow(unused_imports)]
 pub(crate) use dispatcher::VcpuIrqDispatcher;
+pub(crate) use trace::VirqTraceKind;
+#[cfg(feature = "realtime-trace")]
+pub(crate) use trace::VirqTraceRing;
 
 use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 

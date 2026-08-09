@@ -18,6 +18,7 @@ host-test = [
 ]
 sstc = ["riscv_vcpu/sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
+realtime-trace = []
 
 [dependencies]
 log = "0.4"

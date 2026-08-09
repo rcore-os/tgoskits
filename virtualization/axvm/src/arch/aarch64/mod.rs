@@ -149,9 +149,21 @@ impl ArchOps for Aarch64Arch {
                 vcpu.get_arch_vcpu().write_icc(register, value)?;
                 Ok(BoundVcpuExit::Continue)
             }
-            ArmVmExit::ExternalInterrupt { token } => Ok(BoundVcpuExit::Defer(
-                Aarch64DeferredRunWork::ExternalInterrupt { token },
-            )),
+            ArmVmExit::ExternalInterrupt { token } => {
+                vm.with_runtime(|runtime| {
+                    runtime.trace_virq_event(
+                        vm.id(),
+                        crate::runtime::VirqTraceKind::GuestExit,
+                        vcpu.id(),
+                        token.unwrap_or(0) as u32,
+                    );
+                    Ok(())
+                })?;
+                debug!("VM[{}] run VCpu[{}] get irq {token:?}", vm.id(), vcpu.id());
+                Ok(BoundVcpuExit::Defer(
+                    Aarch64DeferredRunWork::ExternalInterrupt { token },
+                ))
+            }
             ArmVmExit::WaitForInterrupt => {
                 vcpu.get_arch_vcpu().arm_timer_wait()?;
                 Ok(BoundVcpuExit::Complete(VcpuRunAction {
@@ -244,8 +256,14 @@ impl ArchOps for Aarch64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
+        crate::runtime::vcpus::note_vcpu_park(vcpu.id());
         runtime.wait_until(|| {
             if !vm.running() {
+                return true;
+            }
+            // A dispatcher edge (including a retry-slot edge) is pending work:
+            // the vCPU must not sleep while it remains undelivered.
+            if runtime.irq_dispatcher().has_pending(vcpu.id()) {
                 return true;
             }
             match vcpu.get_arch_vcpu().has_pending_interrupt() {
@@ -283,6 +301,7 @@ impl ArchOps for Aarch64Arch {
                 }
             }
         });
+        crate::runtime::vcpus::note_vcpu_wake(vcpu.id());
     }
 }
 
@@ -626,6 +645,7 @@ fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
         ArmVcpuError::InvalidInput => BackendError::InvalidInput,
         ArmVcpuError::Unsupported => BackendError::Unsupported,
         ArmVcpuError::BadState => BackendError::InvalidState,
+        ArmVcpuError::ResourceBusy => BackendError::ResourceBusy,
     }
 }
 
@@ -677,6 +697,10 @@ mod tests {
             arm_error_to_backend(ArmVcpuError::BadState),
             BackendError::InvalidState
         );
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::ResourceBusy),
+            BackendError::ResourceBusy
+        );
     }
 
     fn assert_arm_exit_type<T: VmArchVcpuOps<Exit = ArmVmExit>>() {}
@@ -711,6 +735,7 @@ mod tests {
         let config = ArmVcpuCreateConfig {
             mpidr_el1: 0x100,
             dtb_addr: 0x4000_0000,
+            advance_hvc_smc_pc: true,
         };
 
         assert_eq!(

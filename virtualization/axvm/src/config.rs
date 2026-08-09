@@ -107,6 +107,10 @@ pub struct AxVMConfig {
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
     virtual_device_requests: Vec<VirtualDeviceRequest>,
     virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
+    /// Whether the AArch64 trap layer must advance the exception PC past a
+    /// trapping `hvc`/`smc` before resuming the guest. See
+    /// [`AxVMConfigParams::advance_hvc_smc_pc`].
+    advance_hvc_smc_pc: bool,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -133,6 +137,15 @@ pub struct AxVMConfigParams {
     pub virtual_device_requests: Vec<VirtualDeviceRequest>,
     /// Code-registered factories available to this VM.
     pub virtual_device_catalog: Option<Arc<crate::ConfiguredDeviceCatalog>>,
+    /// Whether the AArch64 trap layer must advance the exception PC past a
+    /// trapping `hvc`/`smc` before resuming the guest.
+    ///
+    /// ARM DDI 0487 defines the preferred exception return address for HVC as
+    /// the following instruction, so QEMU (and spec-conforming emulators)
+    /// report ELR_EL2 already past the trap and need `false`. Some physical
+    /// platforms report the trapping instruction itself and need `true`.
+    /// Defaults to `true` so physical-board configs keep the legacy behavior.
+    pub advance_hvc_smc_pc: bool,
 }
 
 impl AxVMConfig {
@@ -166,6 +179,7 @@ impl AxVMConfig {
             virtual_device_catalog: params
                 .virtual_device_catalog
                 .unwrap_or_else(|| Arc::new(crate::ConfiguredDeviceCatalog::new())),
+            advance_hvc_smc_pc: params.advance_hvc_smc_pc,
         }
     }
 
@@ -399,6 +413,12 @@ impl AxVMConfig {
         profile.validate_for_vcpus(self.phys_cpu_ls.cpu_num())?;
         self.plic_profile = Some(profile);
         Ok(())
+    }
+
+    /// Whether the AArch64 trap layer must advance the exception PC past a
+    /// trapping `hvc`/`smc` before resuming the guest.
+    pub fn advance_hvc_smc_pc(&self) -> bool {
+        self.advance_hvc_smc_pc
     }
 
     /// Returns host firmware resources retained by the virtual PLIC.
