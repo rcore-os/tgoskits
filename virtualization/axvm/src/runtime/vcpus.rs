@@ -573,7 +573,13 @@ fn vcpu_run() {
     info!("VM[{}] VCpu[{}] waiting for running", vm.id(), vcpu.id());
     let cpu_on_start_ack = runtime.cpu_on_start_ack(vcpu_id);
     if cpu_on_start_ack.is_some() || !vm.running() {
-        wait_for(&runtime, vcpu_id, || {
+        // The per-vCPU wait queue is not safe to block on before the vCPU has
+        // completed its startup handshake: the run loop may hold the per-CPU
+        // run queue / current-vCPU publication, and a wake can deadlock or
+        // corrupt host task state (observed on dual-vCPU PSCI_CPU_ON). Use the
+        // VM-wide queue for the one-shot startup barrier, matching the primary
+        // vCPU boot path; steady-state WFI still uses the per-vCPU queue.
+        runtime.wait_until(|| {
             vm.running()
                 || cpu_on_start_ack
                     .as_ref()
@@ -609,7 +615,6 @@ fn vcpu_run() {
         CurrentArch::before_first_run(&vm, &vcpu);
         mark_vcpu_running(&vm);
     }
-
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
 
     loop {
