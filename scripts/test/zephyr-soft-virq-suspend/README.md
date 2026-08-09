@@ -59,8 +59,12 @@ west build -p always \
   -d /tmp/zephyr-soft-virq-suspend-build
 ```
 
-Copy the raw image into the rootfs image and verify it is readable by the
-guest at the path referenced by the committed VM configuration:
+The committed VM configuration loads the guest kernel with
+`image_location = "memory"` from the AxVisor host filesystem path
+`kernel_path = /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin`. The
+AxVisor host is the aarch64 Linux running inside QEMU, so the image must be
+placed inside that host's filesystem (the QEMU virt rootfs image) at the same
+path. Write it and verify with:
 
 ```bash
 ROOTFS=</path/to/rootfs.img>
@@ -72,8 +76,8 @@ debugfs -R 'stat /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' "$ROOTFS
 
 ## Run
 
-The host injector must be in E1 mode (single stream targeting vCPU1). Set
-`E1_MODE = true` in `os/axvisor/src/realtime_probe.rs`, then:
+The host injector runs in E1 mode by default (single stream targeting vCPU1,
+`E1_MODE = true` in `os/axvisor/src/realtime_probe.rs`). Run with:
 
 ```bash
 FEATURES=openrace-realtime cargo xtask axvisor qemu \
