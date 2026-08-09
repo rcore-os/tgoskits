@@ -132,8 +132,8 @@ pub(super) async fn prepare_configured_busybox_initramfs(
             "{OVMF_OUTPUT_ENV} is only valid for x86_64 Axvisor tests"
         );
         let output_path = resolve_output_path(workspace_root, configured_output, OVMF_OUTPUT_ENV)?;
-        super::ovmf::prepare_x86_ovmf(&output_path).await?;
-        println!("prepared Axvisor x86 OVMF image: {}", output_path.display());
+        let evidence = super::ovmf::prepare_x86_ovmf(&output_path).await?;
+        println!("{evidence}");
     }
     Ok(())
 }
