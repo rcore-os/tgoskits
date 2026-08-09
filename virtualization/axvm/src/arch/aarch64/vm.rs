@@ -251,6 +251,7 @@ impl DeviceFactory for Aarch64GicRedistributorFactory {
                 base.into(),
                 Some(config.length),
                 pcpu_id + index,
+                index + 1 == *cpu_num,
             ));
             bundle.push(DeviceRegistration::Device(device));
         }
