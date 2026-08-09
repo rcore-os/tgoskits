@@ -142,9 +142,13 @@ executor loop 以 round-robin 方式扫描任务，先调用 `wake_expired_tasks
 
 ### 4.3 同步原语
 
-`RtMutex` 是第一版 cooperative sleepable mutex，内部使用 `owner: AtomicUsize` 和 `waiters: AtomicUsize` bitmask。拿锁失败时，当前 RT task 被标记为 `Blocked` 并 yield 回 executor；unlock 时只唤醒一个 waiter，把它改回 `Ready`。
+`components/ax-rt/src/sync.rs` 提供两种面向 RT task 的 cooperative 同步原语，二者共享同一套 `waiters: AtomicUsize` bitmask 阻塞/唤醒实现：阻塞时把当前 RT task 标记为 `Blocked` 并 yield 回 executor，唤醒时按 effective priority 选出优先级最高的 waiter 改回 `Ready`。
 
-这个 mutex 只适合 RT task 之间的 cooperative 同步。它不支持 recursive locking、priority inheritance、IRQ context lock/unlock、跨 CPU owner 或与普通 host mutex 混用；如果后续接入真实 RT IRQ 或设备 hot path，需要重新设计 IRQ-safe 原语和优先级语义。
+`RtMutex` 是带所有权的 cooperative sleepable mutex，内部用 `owner: AtomicUsize` 记录持有者。它支持 recursive locking（`recursion_depth` 计数，同一 task 重入加锁、逐层 unlock 释放）与 priority inheritance（waiter 阻塞时把自身 effective priority 捐给 owner，owner 完全释放时恢复 base priority），用来约束 RT task 之间的优先级反转。
+
+`RtSemaphore` 是 counting semaphore，用 `permits: AtomicUsize` 记录可用许可。`acquire()` 取一个许可，无许可时阻塞当前 task；`try_acquire()` 非阻塞尝试；`release()` 归还一个许可并唤醒优先级最高的 waiter。与 mutex 不同，semaphore 没有单一 owner：任何 task 都可以 `release`，因此它**不做 priority inheritance**，定位是信号量式的“唤醒”和有界资源计数（producer/consumer、资源池），而不是互斥。
+
+这两种原语都只适合单核 cooperative RT 域内部使用。它们都**不是 IRQ-safe**，不支持 IRQ context lock/unlock、跨 CPU owner 或与普通 host mutex 混用；后续接入真实 RT IRQ 或设备 hot path（尤其是从 ISR 里 `release` 一个 semaphore 去唤醒 RT worker task）时，需要重新设计 IRQ-safe 的阻塞/唤醒路径和优先级语义。
 
 ### 4.4 输出通道
 

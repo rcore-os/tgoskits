@@ -56,12 +56,11 @@ impl RtMutex {
     }
 
     fn block_current_task(&self, task_id: usize) {
+        // A mutex has a single owner, so a blocking waiter donates its priority
+        // to that owner to bound priority inversion. Semaphores skip this step
+        // because they have no owning task.
         self.donate_priority_to_owner(task_id);
-        self.waiters.fetch_or(task_bit(task_id), Ordering::AcqRel);
-        RT_TASK_STATS[task_id]
-            .state
-            .store(RtTaskState::Blocked as usize, Ordering::Release);
-        yield_current_task_with_state(task_id);
+        block_current_task_on(&self.waiters, task_id);
     }
 
     fn unlock(&self) {
@@ -82,7 +81,7 @@ impl RtMutex {
             .compare_exchange(task_id, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
             .expect("RT mutex unlock must be called by the owner task");
         self.restore_owner_priority(task_id);
-        self.wake_one_waiter();
+        wake_highest_priority_waiter(&self.waiters);
     }
 
     fn donate_priority_to_owner(&self, waiter_task_id: usize) {
@@ -114,32 +113,6 @@ impl RtMutex {
             .effective_priority
             .store(base_priority, Ordering::Release);
     }
-
-    fn wake_one_waiter(&self) {
-        loop {
-            let waiters = self.waiters.load(Ordering::Acquire);
-            if waiters == 0 {
-                return;
-            }
-            let task_id = highest_priority_waiter(waiters);
-            let task_mask = task_bit(task_id);
-            if self
-                .waiters
-                .compare_exchange(
-                    waiters,
-                    waiters & !task_mask,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                RT_TASK_STATS[task_id]
-                    .state
-                    .store(RtTaskState::Ready as usize, Ordering::Release);
-                return;
-            }
-        }
-    }
 }
 
 /// Guard returned by [`RtMutex::lock`].
@@ -150,6 +123,128 @@ pub struct RtMutexGuard<'mutex> {
 impl Drop for RtMutexGuard<'_> {
     fn drop(&mut self) {
         self.mutex.unlock();
+    }
+}
+
+/// A cooperative counting semaphore for the isolated RT runtime.
+///
+/// A semaphore tracks a count of available permits. [`acquire`] takes one
+/// permit, cooperatively blocking the current RT task while none are available;
+/// [`release`] returns one permit and wakes the highest-priority waiter.
+///
+/// Unlike [`RtMutex`], a semaphore has no owning task: any RT task may
+/// [`release`] a permit regardless of who [`acquire`]d it, and permits are not
+/// tied to a lock/unlock pairing. Because there is no single owner to boost,
+/// the semaphore deliberately does **not** perform priority inheritance. It is
+/// meant for signaling (for example, one task releasing to wake another) and
+/// bounded resource counting, not mutual exclusion — use [`RtMutex`] when a
+/// resource has a clear owner.
+///
+/// Like the rest of this crate, the semaphore assumes the cooperative,
+/// single-CPU RT executor and is **not** safe to use from an interrupt context.
+///
+/// [`acquire`]: RtSemaphore::acquire
+/// [`release`]: RtSemaphore::release
+pub struct RtSemaphore {
+    permits: AtomicUsize,
+    waiters: AtomicUsize,
+}
+
+impl RtSemaphore {
+    /// Creates a semaphore that starts with `permits` available permits.
+    ///
+    /// A `permits` of `0` is the common signaling case: every [`acquire`] blocks
+    /// until another task calls [`release`].
+    ///
+    /// [`acquire`]: RtSemaphore::acquire
+    /// [`release`]: RtSemaphore::release
+    pub const fn new(permits: usize) -> Self {
+        Self {
+            permits: AtomicUsize::new(permits),
+            waiters: AtomicUsize::new(0),
+        }
+    }
+
+    /// Acquires one permit, cooperatively blocking the current RT task until a
+    /// permit becomes available.
+    pub fn acquire(&self) {
+        let task_id = current_running_task();
+        while !self.try_acquire() {
+            block_current_task_on(&self.waiters, task_id);
+        }
+    }
+
+    /// Attempts to acquire one permit without blocking.
+    ///
+    /// Returns `true` if a permit was taken, or `false` if none were available.
+    pub fn try_acquire(&self) -> bool {
+        let mut permits = self.permits.load(Ordering::Acquire);
+        loop {
+            if permits == 0 {
+                return false;
+            }
+            match self.permits.compare_exchange(
+                permits,
+                permits - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(current) => permits = current,
+            }
+        }
+    }
+
+    /// Releases one permit and wakes the highest-priority waiting RT task, if
+    /// any. The woken task re-checks availability, so a permit released here may
+    /// legitimately be taken by a different task that acquires first.
+    pub fn release(&self) {
+        self.permits.fetch_add(1, Ordering::AcqRel);
+        wake_highest_priority_waiter(&self.waiters);
+    }
+
+    /// Returns the number of permits currently available.
+    pub fn available_permits(&self) -> usize {
+        self.permits.load(Ordering::Acquire)
+    }
+}
+
+/// Marks the current RT task as [`Blocked`](RtTaskState::Blocked), records it in
+/// `waiters`, and yields back to the executor. The task resumes here once a
+/// waker clears its bit and returns it to [`Ready`](RtTaskState::Ready).
+fn block_current_task_on(waiters: &AtomicUsize, task_id: usize) {
+    waiters.fetch_or(task_bit(task_id), Ordering::AcqRel);
+    RT_TASK_STATS[task_id]
+        .state
+        .store(RtTaskState::Blocked as usize, Ordering::Release);
+    yield_current_task_with_state(task_id);
+}
+
+/// Wakes the highest-priority task recorded in `waiters`, clearing its bit and
+/// returning it to [`Ready`](RtTaskState::Ready). Does nothing when no task is
+/// waiting.
+fn wake_highest_priority_waiter(waiters: &AtomicUsize) {
+    loop {
+        let current = waiters.load(Ordering::Acquire);
+        if current == 0 {
+            return;
+        }
+        let task_id = highest_priority_waiter(current);
+        let task_mask = task_bit(task_id);
+        if waiters
+            .compare_exchange(
+                current,
+                current & !task_mask,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            RT_TASK_STATS[task_id]
+                .state
+                .store(RtTaskState::Ready as usize, Ordering::Release);
+            return;
+        }
     }
 }
 

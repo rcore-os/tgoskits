@@ -16,7 +16,9 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use ax_rt::{RtMutex, RtTask, rt_delay_until, rt_exit_current_task, rt_output_write, rt_sleep};
+use ax_rt::{
+    RtMutex, RtSemaphore, RtTask, rt_delay_until, rt_exit_current_task, rt_output_write, rt_sleep,
+};
 pub use ax_rt::{RtState, RtTaskState, rt_read_output, status};
 
 const HEARTBEAT_INTERVAL_NANOS: u64 = 1_000_000;
@@ -32,6 +34,8 @@ const RECURSIVE_TEST_OWNER_READY: u64 = 1;
 const RECURSIVE_TEST_WAITER_BLOCKING: u64 = 2;
 const RECURSIVE_TEST_INNER_DROPPED: u64 = 3;
 const RECURSIVE_TEST_WAITER_ACQUIRED: u64 = 4;
+const SEMAPHORE_TEST_WAITER_BLOCKING: u64 = 1;
+const SEMAPHORE_TEST_WAITER_ACQUIRED: u64 = 2;
 
 static RT_HEARTBEATS: AtomicU64 = AtomicU64::new(0);
 static RT_WATCHDOG_RUNS: AtomicU64 = AtomicU64::new(0);
@@ -44,7 +48,10 @@ static RT_PRIORITY_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
 static RT_RECURSIVE_TEST_MUTEX: RtMutex = RtMutex::new();
 static RT_RECURSIVE_TEST_STEP: AtomicU64 = AtomicU64::new(0);
 static RT_RECURSIVE_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
-static RT_TASKS: [RtTask; 8] = [
+static RT_SEMAPHORE_TEST_SEM: RtSemaphore = RtSemaphore::new(0);
+static RT_SEMAPHORE_TEST_STEP: AtomicU64 = AtomicU64::new(0);
+static RT_SEMAPHORE_TEST_RESULT: AtomicU64 = AtomicU64::new(0);
+static RT_TASKS: [RtTask; 10] = [
     RtTask::with_priority("heartbeat", HEARTBEAT_INTERVAL_NANOS, 10, heartbeat_task),
     RtTask::with_priority("watchdog", WATCHDOG_INTERVAL_NANOS, 5, watchdog_task),
     RtTask::with_priority("hello", HELLO_INTERVAL_NANOS, 1, hello_task),
@@ -53,6 +60,8 @@ static RT_TASKS: [RtTask; 8] = [
     RtTask::with_priority("prio-mid", 0, 30, priority_test_medium_task),
     RtTask::with_priority("recur-own", 0, 25, recursive_test_owner_task),
     RtTask::with_priority("recur-wait", 0, 15, recursive_test_waiter_task),
+    RtTask::with_priority("sem-wait", 0, 35, semaphore_test_waiter_task),
+    RtTask::with_priority("sem-post", 0, 12, semaphore_test_poster_task),
 ];
 
 /// Axvisor realtime secondary CPU entry.
@@ -194,9 +203,54 @@ fn recursive_test_waiter_task() -> ! {
     rt_exit_current_task();
 }
 
+/// Blocks on an empty semaphore, then records that it was woken by a later
+/// [`RtSemaphore::release`] from the poster task.
+///
+/// The store to `RT_SEMAPHORE_TEST_STEP` happens immediately before the
+/// blocking `acquire()`. Because the RT executor is cooperative and single-CPU,
+/// no other RT task runs between the store and the block, so a poster that
+/// observes `SEMAPHORE_TEST_WAITER_BLOCKING` knows this task is already parked
+/// on the semaphore.
+fn semaphore_test_waiter_task() -> ! {
+    rt_sleep(2_000_000);
+    RT_SEMAPHORE_TEST_STEP.store(SEMAPHORE_TEST_WAITER_BLOCKING, Ordering::Release);
+    RT_SEMAPHORE_TEST_SEM.acquire();
+    RT_SEMAPHORE_TEST_STEP.store(SEMAPHORE_TEST_WAITER_ACQUIRED, Ordering::Release);
+    rt_exit_current_task();
+}
+
+/// Waits until the waiter has blocked on the empty semaphore, verifies it did
+/// not acquire a permit that was never released, then releases one permit and
+/// confirms the blocked waiter is woken.
+///
+/// Result codes: `1` PASS, `2` FAIL (acquired without a permit), `3` FAIL
+/// (release did not wake the blocked waiter).
+fn semaphore_test_poster_task() -> ! {
+    rt_sleep(2_500_000);
+    while RT_SEMAPHORE_TEST_STEP.load(Ordering::Acquire) < SEMAPHORE_TEST_WAITER_BLOCKING {
+        rt_sleep(100_000);
+    }
+    if RT_SEMAPHORE_TEST_STEP.load(Ordering::Acquire) == SEMAPHORE_TEST_WAITER_ACQUIRED {
+        RT_SEMAPHORE_TEST_RESULT.store(2, Ordering::Release);
+        rt_exit_current_task();
+    }
+    RT_SEMAPHORE_TEST_SEM.release();
+    let deadline_nanos = monotonic_time_nanos().saturating_add(1_000_000_000);
+    while RT_SEMAPHORE_TEST_STEP.load(Ordering::Acquire) != SEMAPHORE_TEST_WAITER_ACQUIRED {
+        if monotonic_time_nanos() >= deadline_nanos {
+            RT_SEMAPHORE_TEST_RESULT.store(3, Ordering::Release);
+            rt_exit_current_task();
+        }
+        rt_sleep(100_000);
+    }
+    RT_SEMAPHORE_TEST_RESULT.store(1, Ordering::Release);
+    rt_exit_current_task();
+}
+
 pub fn log_priority_test_result() {
     let mut priority_done = false;
     let mut recursive_done = false;
+    let mut semaphore_done = false;
     let deadline_nanos = monotonic_time_nanos().saturating_add(5_000_000_000);
     while monotonic_time_nanos() < deadline_nanos {
         if !priority_done {
@@ -225,7 +279,24 @@ pub fn log_priority_test_result() {
                 _ => {}
             }
         }
-        if priority_done && recursive_done {
+        if !semaphore_done {
+            match RT_SEMAPHORE_TEST_RESULT.load(Ordering::Acquire) {
+                1 => {
+                    info!("[RT semaphore test] signal wakes blocked waiter PASS");
+                    semaphore_done = true;
+                }
+                2 => {
+                    error!("[RT semaphore test] acquire returned without a permit FAIL");
+                    semaphore_done = true;
+                }
+                3 => {
+                    error!("[RT semaphore test] release did not wake blocked waiter FAIL");
+                    semaphore_done = true;
+                }
+                _ => {}
+            }
+        }
+        if priority_done && recursive_done && semaphore_done {
             return;
         }
         core::hint::spin_loop();
@@ -238,6 +309,13 @@ pub fn log_priority_test_result() {
             "[RT recursive mutex test] timed out waiting for realtime task result: step={}, result={}",
             RT_RECURSIVE_TEST_STEP.load(Ordering::Acquire),
             RT_RECURSIVE_TEST_RESULT.load(Ordering::Acquire)
+        );
+    }
+    if !semaphore_done {
+        warn!(
+            "[RT semaphore test] timed out waiting for realtime task result: step={}, result={}",
+            RT_SEMAPHORE_TEST_STEP.load(Ordering::Acquire),
+            RT_SEMAPHORE_TEST_RESULT.load(Ordering::Acquire)
         );
     }
 }

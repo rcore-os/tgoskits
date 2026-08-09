@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ax-rt 实时执行域 · 设计与中断接入计划</title>
+<style>
+  :root{
+    --bg:#0e1220; --bg2:#151b2e; --panel:#1b2338; --panel2:#222c47;
+    --ink:#e8ecf6; --dim:#9aa6c3; --line:#31406a;
+    --host:#3b82f6; --rt:#f0653a; --star:#a855f7; --arceos:#22c55e;
+    --accent:#f0653a; --ok:#22c55e; --warn:#f59e0b; --code:#0a0e1a;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans CJK SC','PingFang SC','Microsoft YaHei',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  .deck{height:100vh;width:100vw;position:relative}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;
+    padding:44px 60px 64px;opacity:0;transition:opacity .25s ease;
+  }
+  .slide.active{display:flex;opacity:1}
+  h1{font-size:40px;line-height:1.18;font-weight:750;letter-spacing:.5px}
+  h2{font-size:29px;font-weight:700;margin-bottom:6px;letter-spacing:.4px}
+  h2 .k{color:var(--accent)}
+  .sub{color:var(--dim);font-size:15px;margin-bottom:20px;font-weight:500}
+  .tag{display:inline-block;font-size:12.5px;padding:3px 11px;border-radius:20px;
+    background:var(--panel2);color:var(--dim);border:1px solid var(--line);margin-right:8px}
+  p,li{font-size:16.5px;line-height:1.62;color:var(--ink)}
+  li{margin:5px 0}
+  ul{padding-left:20px}
+  .dim{color:var(--dim)}
+  .accent{color:var(--accent)}
+  code{font-family:var(--mono);font-size:.9em;background:var(--code);
+    padding:1px 6px;border-radius:5px;color:#ffd9a8;border:1px solid #2a3352}
+  .cols{display:flex;gap:26px;flex:1;min-height:0}
+  .col{flex:1;display:flex;flex-direction:column;gap:14px;min-width:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .card h3{font-size:16px;margin-bottom:8px;color:var(--ink);letter-spacing:.3px}
+  .card.hl{border-color:var(--accent);box-shadow:0 0 0 1px rgba(240,101,58,.25)}
+  .kicker{font-size:13px;letter-spacing:2px;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:10px}
+  .center{align-items:center;justify-content:center;text-align:center}
+  .footer{position:absolute;bottom:20px;left:60px;right:60px;display:flex;
+    justify-content:space-between;align-items:center;font-size:13px;color:var(--dim);
+    border-top:1px solid var(--line);padding-top:10px}
+  .pill{padding:2px 9px;border-radius:6px;font-weight:700;font-size:12.5px}
+  .b-host{background:rgba(59,130,246,.16);color:#8fb8ff;border:1px solid rgba(59,130,246,.4)}
+  .b-rt{background:rgba(240,101,58,.16);color:#ff9d7a;border:1px solid rgba(240,101,58,.45)}
+  .b-star{background:rgba(168,85,247,.16);color:#d0a8ff;border:1px solid rgba(168,85,247,.4)}
+  .b-arc{background:rgba(34,197,94,.14);color:#8ff0b0;border:1px solid rgba(34,197,94,.4)}
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:13px;letter-spacing:.3px}
+  td code{font-size:.86em}
+  .mono{font-family:var(--mono)}
+  .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:9px 13px;font-size:13.5px;text-align:center;line-height:1.35}
+  .node.rt{border-color:var(--rt);background:rgba(240,101,58,.12)}
+  .node.host{border-color:var(--host);background:rgba(59,130,246,.12)}
+  .arr{color:var(--dim);font-size:20px}
+  .big{font-size:23px;line-height:1.5;font-weight:600}
+  .quote{font-size:26px;line-height:1.5;font-weight:600;max-width:1000px}
+  .num{font-family:var(--mono);color:var(--accent);font-weight:700}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .phase{border-left:3px solid var(--accent);padding:2px 0 2px 16px;margin:10px 0}
+  .phase .t{font-weight:700;font-size:16.5px}
+  .phase .d{color:var(--dim);font-size:14.5px;margin-top:2px}
+  .stack{display:flex;flex-direction:column;gap:8px}
+  .layer{border-radius:10px;padding:11px 16px;font-size:14.5px;border:1px solid var(--line)}
+  .l-int{background:linear-gradient(90deg,rgba(240,101,58,.14),rgba(168,85,247,.14));border-color:var(--line)}
+  .l-comp{background:rgba(240,101,58,.12);border-color:var(--rt)}
+  .l-rt{background:rgba(34,197,94,.1);border-color:var(--arceos)}
+  .l-hw{background:var(--panel2)}
+  .chk{color:var(--ok);font-weight:700}
+  .no{color:var(--warn);font-weight:700}
+  .progress{position:absolute;top:0;left:0;height:3px;background:var(--accent);transition:width .25s}
+  .hint{position:absolute;bottom:20px;right:60px;font-size:12px;color:var(--dim);opacity:.6}
+  pre{background:var(--code);border:1px solid #2a3352;border-radius:10px;padding:14px 16px;
+    font-family:var(--mono);font-size:13.5px;line-height:1.6;overflow:auto;color:#cdd7f0}
+  pre .c{color:#6b7aa0}
+  pre .kw{color:#ff9d7a}
+  pre .fn{color:#8fb8ff}
+  pre .st{color:#8ff0b0}
+  .lead{font-size:18px;line-height:1.6}
+  .cover-badges{display:flex;gap:10px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+<!-- 1 COVER -->
+<section class="slide center">
+  <div class="kicker">ArceOS 家族 · 实时执行域</div>
+  <h1><span class="accent">ax-rt</span>：一个可复用的隔离式实时 CPU 执行域<br><span style="font-size:26px;font-weight:600;color:var(--dim)">设计原理 · 复用路径 · 中断接入计划</span></h1>
+  <p class="lead dim" style="margin-top:24px;max-width:860px">
+    在多核系统上保留一个物理 CPU 作为独立实时域，与普通 OS 调度器彻底隔离。<br>
+    组件化设计 —— <span class="b-rt pill">Axvisor</span> 是首个接入者，<span class="b-star pill">StarryOS</span> 可零改动复用同一套机制。
+  </p>
+  <div class="cover-badges">
+    <span class="tag">物理 CPU 所有权分区</span>
+    <span class="tag">协作式实时执行器</span>
+    <span class="tag">优先级继承 / 递归锁</span>
+    <span class="tag">面向中断接入演进</span>
+  </div>
+</section>
+
+<!-- 2 关系总览 -->
+<section class="slide">
+  <h2>一图看懂：<span class="k">ArceOS / StarryOS / Axvisor / ax-rt</span> 的关系</h2>
+  <div class="sub">ax-rt 不是 Axvisor 的私有功能，而是 ArceOS 家族共享的一层组件</div>
+  <div class="cols">
+    <div class="col" style="flex:1.15">
+      <div class="stack">
+        <div class="layer l-int">
+          <b>集成层（谁来用）</b><br>
+          <span class="b-rt pill">Axvisor</span> 已接入 &nbsp;·&nbsp;
+          <span class="b-star pill">StarryOS</span> 可接入 &nbsp;·&nbsp;
+          <span class="dim">其它 ArceOS 内核…</span><br>
+          <span class="dim" style="font-size:13px">提供 RT 入口符号 + 静态任务表 + 时间源 + 观测/Shell</span>
+        </div>
+        <div class="layer l-comp">
+          <b>components/ax-rt</b> — 隔离式协作实时执行器<br>
+          <span class="dim" style="font-size:13px">任务模型 · 上下文切换 · yield/sleep · RtMutex · 输出环形缓冲</span>
+        </div>
+        <div class="layer l-rt">
+          <b>ArceOS <code>axruntime</code></b> — 提供“机制”<br>
+          <span class="dim" style="font-size:13px">构建期 CPU 所有权分区 · secondary 分流 · host barrier 收敛 · 外部符号钩子</span>
+        </div>
+        <div class="layer l-hw">
+          <b>底层原语</b>：<code>ax-cpu</code>（上下文）· <code>cpu-local</code> · <code>ax-memory-addr</code> · 硬件 CPU
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card hl">
+        <h3>为什么能被 Starry 和 Axvisor 同时用？</h3>
+        <ul>
+          <li>StarryOS 与 Axvisor <b>都构建在同一份 ArceOS <code>axruntime</code> 之上</b>。</li>
+          <li>“保留 CPU、分流 secondary”的逻辑全部在 <code>axruntime</code> 里，<b>与具体内核无关</b>。</li>
+          <li><code>ax-rt</code> 只依赖 <code>ax-cpu / cpu-local / ax-memory-addr</code>，<b>不依赖 Axvisor、axvm、Starry</b>。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>各自定位</h3>
+        <p><span class="b-arc pill">ArceOS</span> unikernel 基座 / 运行时</p>
+        <p><span class="b-star pill">StarryOS</span> 基于 ArceOS 的 Linux 兼容内核</p>
+        <p><span class="b-rt pill">Axvisor</span> 基于 ArceOS 的 Type-1 虚拟机监控器</p>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>2 / 15</span></div>
+</section>
+
+<!-- 3 核心思想 -->
+<section class="slide center">
+  <div class="kicker">核心思想</div>
+  <p class="quote">用<span class="accent">物理 CPU 所有权分区</span>来做实时，<br>
+  而不是把实时任务建模成普通调度器里的<span class="dim">“高优先级线程”</span>。</p>
+  <div class="grid2" style="max-width:1000px;margin-top:34px;text-align:left">
+    <div class="card">
+      <h3 class="dim">❌ 传统做法：高优先级线程</h3>
+      <ul class="dim">
+        <li>仍在普通 run queue 里，受 tick、迁移、锁竞争影响</li>
+        <li>与 guest vCPU / host 线程共享一个核，抖动不可控</li>
+        <li>实时性依赖“调度器足够聪明”</li>
+      </ul>
+    </div>
+    <div class="card hl">
+      <h3 class="accent">✅ 本设计：独占物理核</h3>
+      <ul>
+        <li><code>pCPU3</code> 完成最小初始化后<b>跳出普通调度器</b></li>
+        <li>不进 run queue、不被迁移、不收普通 timer tick</li>
+        <li>运行 <code>ax-rt</code> 独立协作式执行器，host 只能只读观测</li>
+      </ul>
+    </div>
+  </div>
+  <p class="dim" style="margin-top:26px">第一版成功标准：<b class="accent">“CPU 所有权不会混淆”</b> —— host 只调度 host 核，RT 核只跑实时任务。</p>
+</section>
+
+<!-- 4 目标 / 非目标 -->
+<section class="slide">
+  <h2>设计目标与<span class="k">当前非目标</span></h2>
+  <div class="sub">第一版有意收敛边界，把“隔离”做扎实，再谈能力扩展</div>
+  <div class="cols">
+    <div class="col">
+      <div class="card">
+        <h3 class="chk">✔ 目标</h3>
+        <ul>
+          <li>提供<b>可观察、可扩展</b>的单核实时执行域</li>
+          <li>与普通 host scheduler / sleep / IPI / block runtime <b>完全隔离</b></li>
+          <li><b>构建期 opt-in</b>：不设 <code>AX_RT_CPU</code> 时行为与原版零差异</li>
+          <li>执行器抽成独立 crate，<b>可被多内核复用</b></li>
+        </ul>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3 class="no">✘ 当前非目标（实现边界，非架构终点）</h3>
+        <ul class="dim">
+          <li>只支持保留<b>最后一个</b>逻辑 CPU（如 4 核的 <code>AX_RT_CPU=3</code>）</li>
+          <li>暂无 <b>RT 专属 timer IRQ</b>：sleep 由执行器轮询 deadline 唤醒</li>
+          <li>任务为启动时<b>静态注册</b>的 <code>fn()-&gt;!</code>，不支持动态创建</li>
+          <li>暂不支持跨核迁移 / RTOS guest 独占核 / RT 设备直通</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="card hl" style="margin-top:4px">
+    <p>💡 <b>关键取舍</b>：把“最后一个 CPU 是 RT CPU”的判断<b class="accent">收敛为唯一事实</b>（在 <code>axruntime</code> 里），
+    绝不在 VM / IRQ / scheduler / shell 里各判一遍 —— 这是后续所有扩展的前提。</p>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>4 / 15</span></div>
+</section>
+
+<!-- 5 架构分区 -->
+<section class="slide">
+  <h2>系统架构：<span class="k">SMP=4, AX_RT_CPU=3</span> 的物理核分区</h2>
+  <div class="sub">host 集合与 RT 核在启动早期就被静态切开</div>
+  <div class="cols">
+    <div class="col" style="flex:1.4">
+      <div class="card" style="flex:1">
+        <div class="grid2" style="height:100%">
+          <div style="grid-column:1/3">
+            <div class="layer" style="background:rgba(59,130,246,.1);border-color:var(--host);text-align:center;font-weight:700;color:#8fb8ff">Host 域（普通 ArceOS / Axvisor 运行时）</div>
+          </div>
+          <div class="node host">pCPU0 · Primary<br><span class="dim" style="font-size:12px">allocator/paging/scheduler/IPI/IRQ/FS/shell</span></div>
+          <div class="node host">pCPU1<br><span class="dim" style="font-size:12px">host scheduler + vCPU thread</span></div>
+          <div class="node host">pCPU2<br><span class="dim" style="font-size:12px">host scheduler + vCPU thread</span></div>
+          <div class="node rt">pCPU3 · <b>Realtime</b><br><span style="font-size:12px">ax-rt 独立执行器</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3>host 侧只看到 <span class="accent">core0..2</span></h3>
+        <ul>
+          <li><code>host_cpu_count() = cpu_num − 1</code></li>
+          <li><code>INITED_CPUS</code> barrier 只等 host 核，RT 核进执行器后不卡 SMP init</li>
+          <li>AxVM <code>HostCpu::cpu_count()</code> 也只见 host 集 → vCPU 不会派到 RT 核</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>RT 侧 <span class="accent">core3</span> 独占</h3>
+        <ul>
+          <li>不注册进普通 scheduler / IPI / 普通 timer IRQ</li>
+          <li>host 通过原子状态快照 + 输出缓冲区<b>只读观测</b></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>5 / 15</span></div>
+</section>
+
+<!-- 6 启动流程 -->
+<section class="slide">
+  <h2>启动流程：<span class="k">secondary CPU 分流</span></h2>
+  <div class="sub">分流点选在 <code>rust_main_secondary()</code> —— CPU-local 已就绪，但尚未进普通调度器</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="flow">
+      <div class="node">Secondary 入口</div><span class="arr">→</span>
+      <div class="node">最小 CPU 初始化<br><span class="dim" style="font-size:12px">percpu / slab / early HAL</span></div><span class="arr">→</span>
+      <div class="node" style="border-color:var(--accent)"><b>secondary_cpu_owner(cpu_id)</b></div>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="col">
+      <div class="card" style="border-color:var(--host)">
+        <h3 style="color:#8fb8ff">Owner = Host</h3>
+        <div class="flow">
+          <div class="node host">init_scheduler_secondary</div><span class="arr">→</span>
+          <div class="node host">INITED_CPUS += 1</div><span class="arr">→</span>
+          <div class="node host">run_idle</div>
+        </div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card hl">
+        <h3 class="accent">Owner = Realtime</h3>
+        <div class="flow">
+          <div class="node rt">ax_realtime_secondary_main<br><span class="dim" style="font-size:12px">(外部符号，集成层提供)</span></div><span class="arr">→</span>
+          <div class="node rt">ax_rt::run_realtime_cpu()<br><span class="dim" style="font-size:12px">不再返回 axruntime</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="dim" style="margin-top:14px">🔑 RT 分流发生在<b> paging secondary / late HAL / scheduler / IPI / IRQ online 之前</b>，因此 RT 核从不被登记进 host 调度域。</p>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>6 / 15</span></div>
+</section>
+
+<!-- 7 复用机制 (NEW EMPHASIS) -->
+<section class="slide">
+  <h2>复用机制：<span class="k">Starry 如何零改动接入</span></h2>
+  <div class="sub">机制在 ArceOS，能力在 ax-rt，集成层只需“填三样东西”</div>
+  <div class="cols">
+    <div class="col" style="flex:1.05">
+      <div class="card hl">
+        <h3>ArceOS 提供的钩子（内核无关）</h3>
+<pre><span class="c">// axruntime/src/lib.rs —— 被 secondary 分流调用</span>
+<span class="kw">pub(crate) fn</span> <span class="fn">run_realtime_secondary</span>(cpu_id: usize) -&gt; ! {
+    <span class="kw">unsafe extern</span> <span class="st">"Rust"</span> {
+        <span class="kw">safe fn</span> <span class="fn">ax_realtime_secondary_main</span>(cpu_id: usize) -&gt; !;
+    }
+    <span class="fn">ax_realtime_secondary_main</span>(cpu_id) <span class="c">// ← 集成层实现</span>
+}</pre>
+        <p class="dim">谁提供这个符号，谁就拿到那个 RT 核。</p>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3>集成层要填的三样东西</h3>
+        <div class="phase"><div class="t">① RT 入口符号</div><div class="d"><code>#[no_mangle] ax_realtime_secondary_main</code></div></div>
+        <div class="phase"><div class="t">② 静态任务表</div><div class="d"><code>&amp;'static [RtTask]</code>（≤ 8 个）</div></div>
+        <div class="phase"><div class="t">③ 单调时间源</div><div class="d"><code>fn() -&gt; u64</code></div></div>
+      </div>
+      <div class="card">
+        <h3>两个集成者，同一套 ax-rt</h3>
+        <p><span class="b-rt pill">Axvisor（已完成）</span> heartbeat / watchdog / hello + <code>rt</code> shell</p>
+        <p><span class="b-star pill">StarryOS（可接入）</span> 提供自己的符号 + 任务表即可，<b>无需改动 ax-rt 与分流逻辑</b></p>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>7 / 15</span></div>
+</section>
+
+<!-- 8 侵入点 -->
+<section class="slide">
+  <h2>侵入点：<span class="k">改动被约束在五处</span></h2>
+  <div class="sub">通用 runtime 只知道“某 secondary 是否属于 host”，ax-rt 不依赖任何集成者</div>
+  <table>
+    <tr><th>层</th><th>位置 / 锚点</th><th>侵入原因</th></tr>
+    <tr><td><span class="b-arc pill">ArceOS</span></td><td class="mono">axruntime/build.rs · RuntimeConfig::load</td><td>把 <code>AX_RT_CPU</code> 固化为构建常量并校验布局</td></tr>
+    <tr><td><span class="b-arc pill">ArceOS</span></td><td class="mono">axruntime/src/lib.rs · secondary_cpu_owner / host_cpu_count / run_realtime_secondary</td><td>CPU 所有权单一事实 + barrier 收敛 + 外部符号钩子</td></tr>
+    <tr><td><span class="b-arc pill">ArceOS</span></td><td class="mono">init_percpu_irq · CpuMask::first_n(host_cpu_count())</td><td>普通 timer/IPI IRQ 只注册到 host 核集</td></tr>
+    <tr><td><span class="b-arc pill">AxVM</span></td><td class="mono">host/arceos.rs · HostCpu::cpu_count</td><td>虚拟化 enable / vCPU placement 只见 host 集</td></tr>
+    <tr><td><span class="b-rt pill">集成层</span></td><td class="mono">os/axvisor/src/realtime.rs · shell/command/rt.rs</td><td>RT 入口 + demo 任务 + 观测 shell（Starry 对应自己的 glue）</td></tr>
+  </table>
+  <div class="card hl" style="margin-top:16px">
+    <p>host CPU 数 &lt; 物理 CPU 数时，primary <b>跳过</b> <code>wait_for_all_cpus_ready()</code> 与 <code>fs::online_smp()</code>，
+    打印 <code>Skip block runtime SMP online …</code> —— 保守处理，避免把 RT 核卷入普通 host 的等待与 affinity 语义。</p>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>8 / 15</span></div>
+</section>
+
+<!-- 9 ax-rt 内部 -->
+<section class="slide">
+  <h2><code>components/ax-rt</code> 内部结构</h2>
+  <div class="sub"><code>#![no_std]</code>，与 <code>ax-task</code> 平级，复用底层 CPU context 而非 host run queue</div>
+  <div class="grid2" style="flex:1">
+    <div class="card">
+      <h3>① 任务模型 <span class="dim mono">task.rs</span></h3>
+      <ul>
+        <li><code>RtTask::with_priority(name, period, prio, run)</code></li>
+        <li>执行器 round-robin 扫描 + <b>按有效优先级择优</b></li>
+        <li>无抢占：任务须主动调 <code>rt_yield_now / rt_sleep / rt_delay_until / rt_exit</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>② 上下文隔离 <span class="dim mono">context.rs</span></h3>
+      <ul>
+        <li>每任务独立 64KB 栈 + <code>axcpu::TaskContext</code> + RT 私有 thread header</li>
+        <li>用 CPU-local current-thread switch 事务切换</li>
+        <li><b>不碰</b> ax-task 的 run queue / CurrentTask / wait queue / timer wheel</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>③ 同步原语 <span class="dim mono">sync.rs</span></h3>
+      <ul>
+        <li><code>RtMutex</code>：协作式可睡眠锁，拿不到 → 标 <code>Blocked</code> 并 yield</li>
+        <li>支持<b>递归加锁</b>（recursion_depth）</li>
+        <li>支持<b>优先级继承</b>（donate / restore）+ 按优先级唤醒 waiter</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>④ 输出通道 <span class="dim mono">output.rs</span></h3>
+      <ul>
+        <li>RT 侧不写 host UART、不拿 console lock</li>
+        <li>1024B 定容环形缓冲：RT 写 <code>rt_output_write</code>，host 拉 <code>rt_read_output</code></li>
+        <li>临时但安全的观测面</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>9 / 15</span></div>
+</section>
+
+<!-- 10 调度与同步细节 -->
+<section class="slide">
+  <h2>调度与同步：<span class="k">优先级 + 继承 + 递归锁</span></h2>
+  <div class="sub">最新一版新增的能力，配套自验证任务证明其正确性</div>
+  <div class="cols">
+    <div class="col">
+      <div class="card">
+        <h3>任务状态机</h3>
+        <div class="flow">
+          <div class="node">Ready</div><span class="arr">→</span>
+          <div class="node rt">Running</div><span class="arr">→</span>
+          <div class="node">Delayed</div>
+        </div>
+        <div class="flow" style="margin-top:10px">
+          <div class="node">Blocked</div><span class="arr">·</span>
+          <div class="node">Exited</div>
+          <span class="dim" style="font-size:13px">deadline 到期 / unlock 唤醒 → 回 Ready</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>优先级调度</h3>
+        <ul>
+          <li>就绪任务中选 <b>effective_priority 最大</b>者运行</li>
+          <li>值越大越先跑（demo：prio-high=40 &gt; prio-mid=30 &gt; prio-low=20）</li>
+        </ul>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card hl">
+        <h3>优先级继承（防优先级反转）</h3>
+        <ul>
+          <li>高优先级 waiter 阻塞在锁上 → 把自身优先级 <b>捐给持锁者</b></li>
+          <li>持锁者 unlock 时 <b>恢复</b> base_priority，并唤醒最高优先级 waiter</li>
+          <li>自验证 <code>prio-*</code> 任务：确认中优先级任务<b>不会插队</b>抢在被抬升的持锁者之前</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>递归锁</h3>
+        <ul>
+          <li>同一任务重入 → <code>recursion_depth += 1</code>；unlock 逐层递减</li>
+          <li>自验证 <code>recur-*</code> 任务：确认<b>内层 drop 不释放锁</b>，waiter 只在外层 unlock 后进入</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>10 / 15</span></div>
+</section>
+
+<!-- 11 已实现闭环 -->
+<section class="slide">
+  <h2>已实现：<span class="k">从构建配置到运行观测的最小闭环</span></h2>
+  <div class="sub">Axvisor 作为首个集成者的落地形态</div>
+  <div class="grid3" style="flex:0">
+    <div class="card">
+      <h3>Demo 任务（证明长期独立运行）</h3>
+      <table style="font-size:13px">
+        <tr><th>任务</th><th>周期</th></tr>
+        <tr><td><code>heartbeat</code></td><td>1 ms</td></tr>
+        <tr><td><code>watchdog</code></td><td>100 ms</td></tr>
+        <tr><td><code>hello</code></td><td>1 s ×5 后退出</td></tr>
+        <tr><td class="dim" colspan="2">+ prio-* / recur-* 自验证任务</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Shell 观测</h3>
+      <ul style="font-size:14.5px">
+        <li><code>rt status</code> — CPU/状态/迭代次数/心跳/每任务表</li>
+        <li><code>rt console</code> / <code>rt shell</code> — 拉取 RT 输出缓冲</li>
+        <li>未启用时显示 <code>State: offline</code>（可诊断而非错误）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Guest 共存</h3>
+      <ul style="font-size:14.5px">
+        <li><code>AX_RT_CPU=3 --smp 4</code> 下 Linux guest 在 host 集启动</li>
+        <li>core3 不被 vCPU 占用，持续跑执行器</li>
+        <li>解决了原型卡在 “Enabling hardware virtualization…” 的问题</li>
+      </ul>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3>本地验证</h3>
+    <p class="mono dim" style="font-size:13.5px">cargo fmt · cargo xtask clippy --package ax-rt · 4 核 Axvisor build · AX_RT_CPU=3 QEMU smoke（默认关闭 & 显式启用两条路径）</p>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>11 / 15</span></div>
+</section>
+
+<!-- 12 当前限制 -->
+<section class="slide center">
+  <div class="kicker">现状小结</div>
+  <p class="quote">当前是一个 <span class="accent">isolated cooperative realtime executor</span><br>
+  <span style="font-size:20px;color:var(--dim)">隔离做扎实了，但“实时”还停留在协作式 + 轮询唤醒</span></p>
+  <div class="grid3" style="max-width:1080px;margin-top:34px;text-align:left">
+    <div class="card"><h3 class="warn">时间/唤醒</h3><p class="dim">sleep 靠执行器 loop 扫描 deadline，<b>无 RT 专属 timer IRQ</b></p></div>
+    <div class="card"><h3 class="warn">通信</h3><p class="dim">host↔RT 仅有只读状态 + 输出缓冲，<b>无双向 mailbox</b></p></div>
+    <div class="card"><h3 class="warn">设备/中断</h3><p class="dim"><b>无 RT-owned IRQ / 设备直通</b>，无设备所有权与 probe 排除规则</p></div>
+  </div>
+  <p class="dim" style="margin-top:26px">→ 下一步的主线，正是把“协作式轮询”演进为<b class="accent">真正的中断驱动实时</b>。</p>
+</section>
+
+<!-- 13 将来计划：中断接入（重点） -->
+<section class="slide">
+  <h2>🎯 将来计划：<span class="k">中断（IRQ）接入</span></h2>
+  <div class="sub">主线目标：把 busy-polling sleep 换成 RT 专属 timer IRQ，并打通 RT-owned 设备中断</div>
+  <div class="cols">
+    <div class="col">
+      <div class="card hl">
+        <h3 class="accent">阶段一 · RT 专属 Timer IRQ</h3>
+        <ul>
+          <li>为 RT 核单独申请 timer IRQ line，<b>不并入 host <code>CpuMask</code></b></li>
+          <li>执行器从“轮询 deadline”改为 <b>timer 中断唤醒 Delayed 任务</b></li>
+          <li>降低唤醒延迟与 CPU 空转，得到确定性的时间基准</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="accent">阶段二 · IRQ-safe 同步原语</h3>
+        <ul>
+          <li>设计可在<b>中断上下文</b>安全使用的原语（当前 <code>RtMutex</code> 仅限任务间协作）</li>
+          <li>明确 IRQ 上下文下的优先级语义与临界区边界</li>
+        </ul>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h3 class="accent">阶段三 · host ↔ RT bounded mailbox</h3>
+        <ul>
+          <li>用<b>定容 mailbox</b> 表达双向通信（替代只读观测）</li>
+          <li>host 投递请求 / RT 回报事件，可选 IPI 通知唤醒</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3 class="accent">阶段四 · RT-owned 设备中断直通</h3>
+        <ul>
+          <li>接入前先补齐<b>设备所有权配置 + probe 排除规则</b></li>
+          <li>RT 核独占某设备的 IRQ，事件直达 RT 任务</li>
+          <li>把 IRQ → RT 任务唤醒建成显式<b>事件/队列契约</b></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>13 / 15</span></div>
+</section>
+
+<!-- 14 路线图 -->
+<section class="slide">
+  <h2>路线图与<span class="k">演进原则</span></h2>
+  <div class="sub">每一步都保持“CPU 所有权单一事实”，避免在多模块复制判断</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="flow" style="justify-content:space-between">
+      <div class="node" style="border-color:var(--ok);background:rgba(34,197,94,.12)"><b>✓ 已完成</b><br><span class="dim" style="font-size:12px">分区 + 隔离执行器<br>优先级 / 继承 / 递归锁<br>观测 + guest 共存</span></div>
+      <span class="arr">→</span>
+      <div class="node rt"><b>阶段一</b><br><span style="font-size:12px">RT timer IRQ<br>中断驱动唤醒</span></div>
+      <span class="arr">→</span>
+      <div class="node"><b>阶段二</b><br><span class="dim" style="font-size:12px">IRQ-safe 原语</span></div>
+      <span class="arr">→</span>
+      <div class="node"><b>阶段三</b><br><span class="dim" style="font-size:12px">bounded mailbox</span></div>
+      <span class="arr">→</span>
+      <div class="node"><b>阶段四</b><br><span class="dim" style="font-size:12px">RT 设备中断直通</span></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>多内核落地</h3>
+      <ul>
+        <li><span class="b-rt pill">Axvisor</span>：已接入，作为能力验证与参考实现</li>
+        <li><span class="b-star pill">StarryOS</span>：提供自身 RT 入口 + 任务表即可复用同一套 IRQ/mailbox 能力</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>更远期（作为独立设计处理）</h3>
+      <ul class="dim">
+        <li>动态创建 RT 任务、放宽“最后一个 CPU”限制</li>
+        <li>RTOS guest 独占物理核（涉及 vCPU 绑核 / 虚拟中断 / timer / 直通 / teardown，<b>不复用</b>当前内核态任务模型）</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer"><span>ax-rt 实时执行域</span><span>14 / 15</span></div>
+</section>
+
+<!-- 15 总结 -->
+<section class="slide center">
+  <div class="kicker">总结</div>
+  <h1 style="font-size:34px">一句话：<span class="accent">保留一个物理核，交给一个可复用的实时执行域</span></h1>
+  <div class="grid3" style="max-width:1080px;margin-top:36px;text-align:left">
+    <div class="card"><h3 class="accent">机制在 ArceOS</h3><p class="dim">构建期分区 + secondary 分流 + 外部符号钩子，内核无关</p></div>
+    <div class="card"><h3 class="accent">能力在 ax-rt</h3><p class="dim">独立执行器 / 优先级继承 / 递归锁，不依赖 Axvisor 或 Starry</p></div>
+    <div class="card"><h3 class="accent">Axvisor 与 Starry 共用</h3><p class="dim">各自填“入口 + 任务表 + 时间源”即可接入同一套能力</p></div>
+  </div>
+  <p class="lead" style="margin-top:32px">下一步主线：<b class="accent">中断接入</b> —— RT 专属 timer IRQ → IRQ-safe 原语 → bounded mailbox → RT 设备中断直通。</p>
+</section>
+
+<div class="progress" id="progress"></div>
+<div class="hint">← → 翻页 · F 全屏 · P 打印</div>
+</div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  let i=0;
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    document.getElementById('progress').style.width=((i+1)/slides.length*100)+'%';
+  }
+  document.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' ')show(i+1);
+    else if(e.key==='ArrowLeft'||e.key==='PageUp')show(i-1);
+    else if(e.key==='Home')show(0);
+    else if(e.key==='End')show(slides.length-1);
+    else if(e.key==='f'||e.key==='F'){if(!document.fullscreenElement)document.documentElement.requestFullscreen();else document.exitFullscreen();}
+    else if(e.key==='p'||e.key==='P')window.print();
+  });
+  document.addEventListener('click',e=>{if(e.clientX>window.innerWidth*0.5)show(i+1);else show(i-1);});
+  show(0);
+</script>
+</body>
+</html>

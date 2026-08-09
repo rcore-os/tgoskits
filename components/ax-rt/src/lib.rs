@@ -19,7 +19,7 @@ pub use executor::{
 };
 pub use output::{rt_output_write, rt_output_write_decimal, rt_read_output};
 pub use state::{RtState, RtTaskState};
-pub use sync::{RtMutex, RtMutexGuard};
+pub use sync::{RtMutex, RtMutexGuard, RtSemaphore};
 pub use task::{RtStatus, RtTask, RtTaskStatus};
 
-pub(crate) const MAX_RT_TASKS: usize = 8;
+pub(crate) const MAX_RT_TASKS: usize = 12;
