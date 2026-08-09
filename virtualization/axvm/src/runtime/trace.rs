@@ -35,12 +35,9 @@ pub(crate) const CAPACITY_PER_CPU: usize = 4096;
 
 /// A point in the host software-vIRQ delivery path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    feature = "host-test",
-    expect(
-        dead_code,
-        reason = "architecture-specific trace events are constructed only on target builds"
-    )
+#[expect(
+    dead_code,
+    reason = "architecture-specific trace events are constructed only on target builds"
 )]
 pub(crate) enum VirqTraceKind {
     Enqueue,
