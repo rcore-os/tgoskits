@@ -63,6 +63,16 @@ pub(crate) fn lr_blocked(slots: &[(u64, u64)], vector: usize) -> bool {
     !has_free_slot
 }
 
+/// Returns true when a single-slot backend (GICv2 list register 0 in this
+/// project) is occupied by any interrupt, so another edge must be deferred.
+#[expect(
+    dead_code,
+    reason = "consumed by the AArch64 GIC backend, which is not compiled on the host"
+)]
+pub(crate) fn lr_slot_occupied(state: u32) -> bool {
+    state != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +99,13 @@ mod tests {
     fn all_slots_occupied_by_other_vectors_defers() {
         let slots = [(30, 0b01), (31, 0b10), (49, 0b10), (50, 0b01)];
         assert!(lr_blocked(&slots, 48));
+    }
+
+    #[test]
+    fn lr_slot_occupied_treats_any_active_state_as_busy() {
+        assert!(!lr_slot_occupied(0));
+        assert!(lr_slot_occupied(1));
+        assert!(lr_slot_occupied(2));
+        assert!(lr_slot_occupied(3));
     }
 }

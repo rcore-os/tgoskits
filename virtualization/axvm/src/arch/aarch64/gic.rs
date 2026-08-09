@@ -30,6 +30,14 @@ pub(crate) fn inject_interrupt(irq: usize) -> Result<(), ()> {
 
             let gich = gic.hypervisor_interface().expect("failed to get GICH");
             gich.enable();
+            if crate::irq::model::lr_slot_occupied(gich.get_virtual_interrupt(0).state as u32) {
+                // The GICv2 path uses list register 0 only; it is occupied, so
+                // report a retryable failure and let the caller re-queue the
+                // edge instead of overwriting an in-flight interrupt.
+                crate::runtime::vcpus::LR_SKIP_COUNT
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return Err(());
+            }
             gich.set_virtual_interrupt(
                 0,
                 VirtualInterruptConfig::software(
@@ -102,17 +110,26 @@ fn inject_interrupt_gic_v3(vector: usize) -> Result<(), ()> {
 /// already pending/active in a GICv3 list register, or every list register is
 /// occupied by a different vector (no free slot).
 pub(crate) fn virtual_interrupt_busy(vector: usize) -> bool {
-    let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
-    let slots = (0..lr_num)
-        .map(|i| {
-            let lr_val = ich_lr_el2_get(i);
-            (
-                lr_val.read(ICH_LR_EL2::VINTID),
-                lr_val.read(ICH_LR_EL2::STATE),
-            )
-        })
-        .collect::<Vec<_>>();
-    crate::irq::model::lr_blocked(&slots, vector)
+    with_gic(|gic| {
+        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+            let gich = gic.hypervisor_interface().expect("failed to get GICH");
+            return crate::irq::model::lr_slot_occupied(gich.get_virtual_interrupt(0).state as u32);
+        }
+        if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
+            let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
+            let slots = (0..lr_num)
+                .map(|i| {
+                    let lr_val = ich_lr_el2_get(i);
+                    (
+                        lr_val.read(ICH_LR_EL2::VINTID),
+                        lr_val.read(ICH_LR_EL2::STATE),
+                    )
+                })
+                .collect::<Vec<_>>();
+            return crate::irq::model::lr_blocked(&slots, vector);
+        }
+        false
+    })
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {
