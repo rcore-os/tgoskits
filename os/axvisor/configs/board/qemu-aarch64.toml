@@ -1,6 +1,9 @@
 features = [
     "ax-driver/nvme",
     "fs",
+    # Runs the ax-rt RT primitive self-test suite at boot (validates priority
+    # inheritance, recursive mutex, semaphore, host<->RT mailbox round-trip).
+    "rt-selftest",
     # Capturing a backtrace is an expensive runtime operation.
     # Enable "backtrace" and [env] BACKTRACE = "y" below to
     # activate panic backtrace. Disabled by default for release.

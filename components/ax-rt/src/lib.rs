@@ -11,12 +11,15 @@ mod context;
 mod executor;
 mod mailbox;
 mod output;
+#[cfg(feature = "selftest")]
+pub mod selftest;
 mod state;
 mod sync;
 mod task;
 
 pub use executor::{
-    rt_delay_until, rt_exit_current_task, rt_sleep, rt_yield_now, run_realtime_cpu, status,
+    rt_delay_until, rt_exit_current_task, rt_monotonic_nanos, rt_sleep, rt_yield_now,
+    run_realtime_cpu, status,
 };
 pub use mailbox::{
     MailboxDoorbell, RT_MAILBOX_PAYLOAD_CAP, RtMailboxError, RtMailboxStats, RtMessage,

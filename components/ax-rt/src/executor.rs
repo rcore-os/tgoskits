@@ -77,6 +77,17 @@ pub fn rt_exit_current_task() -> ! {
     }
 }
 
+/// Returns the current monotonic time in nanoseconds from the RT executor's
+/// injected time source.
+///
+/// Callable from RT tasks running under the executor; it reads the same
+/// `time_source` passed to [`run_realtime_cpu`], so RT code needs no direct HAL
+/// access for wall-clock deadlines. Panics if called before the executor has
+/// installed its time source.
+pub fn rt_monotonic_nanos() -> u64 {
+    monotonic_time_nanos()
+}
+
 /// Returns the latest realtime CPU status snapshot.
 pub fn status() -> RtStatus {
     let cpu_id = match RT_CPU_ID.load(Ordering::Acquire) {

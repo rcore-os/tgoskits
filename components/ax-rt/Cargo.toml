@@ -7,11 +7,18 @@ authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 description = "Isolated cooperative realtime executor for ArceOS-family kernels"
 license.workspace = true
 
+[features]
+# Compiles the RT primitive self-test suite (priority inheritance, recursive
+# mutex, semaphore, mailbox round-trip) and its host-side driver. Off by default
+# so production RT images carry no test tasks; hosts opt in for validation.
+selftest = ["dep:log"]
+
 [dependencies]
 ax-cpu.workspace = true
 ax-memory-addr.workspace = true
 cpu-local.workspace = true
 spin.workspace = true
+log = { workspace = true, optional = true }
 
 [lints.clippy]
 new_without_default = "allow"

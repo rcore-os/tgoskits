@@ -1,0 +1,15 @@
+[package]
+name = "ax-realtime"
+version = "0.1.0"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+license.workspace = true
+description = "ArceOS realtime-core integration: mailbox doorbell notification and RT executor entry, shared by Axvisor and StarryOS"
+
+[features]
+default = []
+
+[dependencies]
+ax-rt.workspace = true
+ax-hal = { workspace = true, features = ["irq"] }
+log.workspace = true

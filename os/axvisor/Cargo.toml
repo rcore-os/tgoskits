@@ -43,6 +43,10 @@ host-xtask = []
 axtest = []
 fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 realtime = []
+# Compiles the ax-rt RT primitive self-test suite into the RT task table and
+# runs it from the host boot CPU. Off by default; enabled on the QEMU dev config
+# to keep validating the RT primitives.
+rt-selftest = ["ax-rt/selftest"]
 sstc = ["axvm/sstc"]
 stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
@@ -76,6 +80,7 @@ ax-std = { workspace = true, default-features = false, features = [
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 ax-rt.workspace = true
+ax-realtime.workspace = true
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
 axvm-types.workspace = true
