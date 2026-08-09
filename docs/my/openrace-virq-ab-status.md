@@ -284,3 +284,62 @@ MPIDR 与 host affinity 提供独立配置。当前数据不覆盖该场景。
 - B 双核启动：`/tmp/ab-B-dual-boot.log`
 - 双流 A1/A2/A3：`/tmp/ab-A-standard-1.log` / `-2.log` / `-3.log`
 - 双流 B1/B2/B3：`/tmp/ab-B-standard-1.log` / `-2.log` / `-3.log`
+
+## 8. 跨 vCPU 定向唤醒实验（E1）与消融
+
+### 8.1 动机与设计
+
+标准实验证明 notify 路径在 WFI 空闲的 guest 下完全不被使用（vCPU 从不 park）。
+E1 用 PSCI CPU_SUSPEND(standby) 让两个 vCPU 真正 park 到 host 等待队列，使
+notify 路径承重：vCPU0 纯空闲，vCPU1 收 vector 48；单注入器（2 ms × 300）只
+打 vCPU1；指标是空闲 vCPU0 被唤醒/重入 guest 的次数（host 侧计数）。
+
+实验资产：`scripts/test/zephyr-soft-virq-suspend/`（SMP guest、consumer 线程
+先挂起创建再 pin 到 CPU1、timeslice 关闭），配置
+`axvisor-qemu-aarch64-suspend-smp2.toml`。注入器在 `realtime_probe.rs` 用
+`E1_MODE` 开关区分 E1 与标准双流模式。
+
+### 8.2 关键修复
+
+1. guest 线程 pin 必须"先创建为挂起 → pin → start"；直接 `k_thread_create` 后
+   pin 会返回 `EINVAL`（线程已 runnable），consumer 线程可能迁移，导致 guest
+   卡死（LR 停在 Active、AP1R 不为 0）。
+2. A 的旧 `wait()` 是无条件的：park 后每次 notify 都重进 guest（虚假唤醒），且
+   注入停止后会把队列里剩余的中断"搁浅"（不再有人唤醒）。改为条件 wait
+   （`has_pending || !running || ...`）后 300/300 闭环。
+3. 注入器改用 AxVM 定时器轮盘 sleep（`sleep_until`）：guest 不 arm 任何定时器
+   时，轮盘把共享物理 CNTP 停驻到 1 s 后，`ax_std::thread::sleep` 永不醒。
+4. LR busy 时 drain 会丢中断，改为重入队（保持边沿计数）；本轮 4 轮全量运行
+   中 busy 只是瞬时 Active/Pending 交替，guest EOI 正常，无丢样本。
+
+### 8.3 消融结果（3 轮干净数据，全部 300/300、0 注入错误、0 丢失）
+
+| 变体 | vcpu0 重入 guest | vcpu0 被 notify 唤醒(host) | mean (ns) | p99 (ns) |
+| --- | ---: | ---: | ---: | ---: |
+| A 旧（无条件 wait + notify_all） | 61（并搁浅中断，无法完成） | ~124 | — | — |
+| A 条件 wait + notify_all | 1 | ~124 | 545k | 1.23M |
+| B（条件 wait + 定向 notify） | 1 | 0 | 662k | 1.34M |
+
+结论：
+
+- **条件 wait 是功能性关键**：旧 A 在 park 场景下无法完成（搁浅 + 虚假重入）；
+  加条件 wait 后 A 也能 300/300，且空闲 vCPU 不再重入 guest。
+- **定向 notify 的剩余收益是 host 侧唤醒事件**：B 对 vcpu0 的唤醒为 0 次，
+  A（即使条件 wait）仍有约 124 次 host 侧 wait-queue 唤醒事件；这些事件被条件
+  检查吸收，不产生 guest 重入，但在多 vCPU 下会随 notify_all 按 O(N) 放大。
+- 延迟无稳定差异（park 路径延迟由唤醒/排空周期主导，A/B 波动都在噪声内）。
+
+### 8.4 遗留问题
+
+- 偶发（约 1/4 轮）vGIC 投递竞态：guest 在注入收尾时可能停摆（LR 停在
+  Active、AP1R 不为 0），A/B 都会出现，属共享 GIC 注入路径的问题；需要
+  KVM 式 per-vCPU software pending + maintenance interrupt 模型彻底修复，
+  当前重入队只是缓解。
+- AxVM 定时器轮盘"停驻"共享物理定时器是真实架构 bug，`sleep_until` 只是
+  实验级绕过；正确修法是 per-CPU 单一定时器权威（CNTP = min(host, guest)）。
+
+### 8.5 E1 日志
+
+- B：`/tmp/e1-B-r1.log` / `-r3.log` / `-r4.log`
+- A（条件 wait）：`/tmp/e1-A-r1.log` / `-r3.log` / `-r4.log`
+- A 旧路径失败示例：`/tmp/e1-A-base.log`、`/tmp/e1-A-base2.log`
