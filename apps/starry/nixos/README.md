@@ -47,7 +47,7 @@ From the repository root:
 ```bash
 apps/starry/nixos/build-rootfs.sh --self-test
 TMPDIR="$PWD/.ci-cache/tmp" \
-  direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64
+  cargo xtask starry app qemu -t nixos --arch x86_64
 ```
 
 After a native Nix/Lix build has published a valid image and manifest, a CI
@@ -57,14 +57,14 @@ the ext4 image, flake-lock hash, closure identity, target, and image hash:
 ```bash
 TMPDIR="$PWD/.ci-cache/tmp" \
 STARRY_NIXOS_REUSE_ROOTFS=1 \
-  direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64
+  cargo xtask starry app qemu -t nixos --arch x86_64
 ```
 
-Use the repository direnv environment directly. Do not run `nix develop`, and
-do not rebuild or switch the host NixOS system. Keep optional repository-local
-tool state limited to `.ci-cache/cargo`, `.ci-cache/rustup`, and
-`.ci-cache/tmp`; build output remains in the repository's normal `target` and
-`tmp/axbuild` locations.
+Use the repository's pinned Rust toolchain and install the host prerequisites
+listed above. Do not rebuild or switch the host NixOS system. Keep optional
+repository-local tool state limited to `.ci-cache/cargo`,
+`.ci-cache/rustup`, and `.ci-cache/tmp`; build output remains in the
+repository's normal `target` and `tmp/axbuild` locations.
 
 Axbuild invokes the same builder automatically through the explicit
 `AppOwned` rootfs contract. Builder failure, a target mismatch, a missing or
@@ -84,7 +84,9 @@ STARRY_NIXOS_SYSTEM_PASSED
 A shell prompt, partial sequence, failed unit, panic/fatal record, explicit
 failure marker, timeout, or a guest that remains alive after the terminal
 marker is a failure. See `compatibility.md` for exact run evidence and the
-compatibility ledger.
+compatibility ledger. See the
+[StarryNixOS architecture design](../../../docs/docs/architecture/starryos/nixos-stage2.md)
+for the rootfs ownership, boot, provenance, and acceptance contracts.
 
 The 2026-08-07 8-vCPU acceptance run completed activation, started systemd as
 PID 1, reached `multi-user.target`, ran the declarative marker service, and

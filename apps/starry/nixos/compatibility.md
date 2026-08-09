@@ -50,8 +50,8 @@ activation, PID-1, multi-user target, and marker failures cannot be masked.
 
 ### 2026-08-07 8-vCPU Stage-2 acceptance pass
 
-- The host direnv development environment ran:
-  `STARRY_NIXOS_REUSE_ROOTFS=1 direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64`.
+- The prepared host environment ran the acceptance payload:
+  `STARRY_NIXOS_REUSE_ROOTFS=1 cargo xtask starry app qemu -t nixos --arch x86_64`.
   The builder reused the existing app-owned rootfs after manifest and ext4
   validation; it did not rebuild or switch the host NixOS system.
 - QEMU used `-smp 8`. The guest completed activation, journal flush, both

@@ -164,19 +164,21 @@ tmp/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img
 `STARRY_NIXOS_REUSE_ROOTFS=1` 复用，但脚本仍会重新校验 ext4、lock、closure、
 target 和镜像哈希。该模式不会回退到 Alpine，也不会接受缺失或过期的清单。
 
-在仓库的 direnv 环境中运行：
+从仓库根目录运行：
 
 ```bash
 TMPDIR="$PWD/.ci-cache/tmp" \
 STARRY_NIXOS_REUSE_ROOTFS=1 \
-  direnv exec . cargo xtask starry app qemu -t nixos --arch x86_64
+  cargo xtask starry app qemu -t nixos --arch x86_64
 ```
 
-不要执行 `nix develop`，也不要重建或切换宿主 NixOS 系统。仓库内可选工具缓存
-仅使用 `.ci-cache/cargo`、`.ci-cache/rustup` 和 `.ci-cache/tmp`。验收成功必须
+使用仓库锁定的 Rust 工具链，并确保宿主已安装 Nix/Lix、QEMU 和 ext4 检查工具；
+不要重建或切换宿主 NixOS 系统。仓库内可选工具缓存仅使用
+`.ci-cache/cargo`、`.ci-cache/rustup` 和 `.ci-cache/tmp`。验收成功必须
 依次出现 `pid1`、`activation`、`systemd`、`marker` 四个 phase，最后出现
 `STARRY_NIXOS_SYSTEM_PASSED`；具体兼容性例外和回滚边界见
-`apps/starry/nixos/README.md` 与 `compatibility.md`。
+`apps/starry/nixos/README.md` 与 `compatibility.md`，架构和验收契约见
+[StarryNixOS Stage-2 设计](/docs/architecture/starryos/nixos-stage2)。
 
 ### 7.2 基于现有镜像修改
 
