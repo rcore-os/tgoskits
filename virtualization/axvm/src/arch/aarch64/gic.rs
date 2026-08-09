@@ -56,19 +56,17 @@ fn inject_interrupt_gic_v3(vector: usize) {
     let elsr = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS);
     let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
 
+    if virtual_interrupt_busy(vector) {
+        debug!("Virtual interrupt {vector} already pending/active in an LR, skipping");
+        crate::runtime::vcpus::lr_skip_count().fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+
     let mut free_lr = None;
     for i in 0..lr_num {
         if (1 << i) & elsr > 0 {
             free_lr.get_or_insert(i);
-            continue;
-        }
-
-        let lr_val = ich_lr_el2_get(i);
-        if lr_val.read(ICH_LR_EL2::VINTID) == vector as u64
-            && lr_val.matches_any(&[ICH_LR_EL2::STATE::Pending, ICH_LR_EL2::STATE::Active])
-        {
-            debug!("Virtual interrupt {vector} already pending/active in LR{i}, skipping");
-            return;
+            break;
         }
     }
 
@@ -89,6 +87,21 @@ fn inject_interrupt_gic_v3(vector: usize) {
     }
 
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
+}
+
+/// Returns true when `vector` is already pending or active in a GICv3 list
+/// register, meaning the backend cannot accept another edge for it right now.
+pub(crate) fn virtual_interrupt_busy(vector: usize) -> bool {
+    let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
+    for i in 0..lr_num {
+        let lr_val = ich_lr_el2_get(i);
+        if lr_val.read(ICH_LR_EL2::VINTID) == vector as u64
+            && lr_val.matches_any(&[ICH_LR_EL2::STATE::Pending, ICH_LR_EL2::STATE::Active])
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {

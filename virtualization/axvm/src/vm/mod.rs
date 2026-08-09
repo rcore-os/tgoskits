@@ -464,7 +464,12 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn wait_vcpu_until(&self, vcpu_id: usize, condition: impl Fn() -> bool) {
-        if let Some(wait_queue) = self.vcpu_wait_queues.lock().get(&vcpu_id).cloned() {
+        // Bind the lock guard to a statement: an `if let` scrutinee temporary
+        // lives until the end of the whole `if let` body, which would keep the
+        // wait-queue map locked for the entire park and deadlock every
+        // subsequent notify/dispatch on that map.
+        let wait_queue = self.vcpu_wait_queues.lock().get(&vcpu_id).cloned();
+        if let Some(wait_queue) = wait_queue {
             wait_queue.wait_until(condition);
         } else {
             self.wait_until(condition);
@@ -488,14 +493,24 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn notify_vcpu_unconditional(&self, vcpu_id: usize) {
-        if let Some(wait_queue) = self.vcpu_wait_queues.lock().get(&vcpu_id).cloned() {
-            wait_queue.notify_one(false);
+        // Same temporary-lifetime rule as `wait_vcpu_until`: keep the map lock
+        // only for the lookup, never across the wake itself.
+        let wait_queue = self.vcpu_wait_queues.lock().get(&vcpu_id).cloned();
+        if let Some(wait_queue) = wait_queue {
+            let woke = wait_queue.notify_one(false);
+            if woke {
+                crate::runtime::vcpus::notify_woke_count(vcpu_id)
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
         } else {
             // A vCPU task can run immediately after spawn and reach the
             // startup wait before `add_vcpu_task` publishes its private
             // queue. Wake the legacy queue for that short publication
             // window; steady-state vIRQ delivery always has a private queue.
-            self.wait_queue.notify_one(false);
+            if self.wait_queue.notify_one(false) {
+                crate::runtime::vcpus::notify_woke_count(vcpu_id)
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 

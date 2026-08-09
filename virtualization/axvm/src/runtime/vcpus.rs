@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{format, sync::Arc};
-use core::time::Duration;
+use alloc::{boxed::Box, format, sync::Arc};
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
@@ -30,6 +33,19 @@ const PERIODIC_VIRQ_STACK_SIZE: usize = 0x10000;
 // `vm.running()` becomes true before the guest installs its ISR. Keep the
 // warm-up identical for every A/B variant so startup is excluded from samples.
 const PERIODIC_VIRQ_GUEST_WARMUP: Duration = Duration::from_secs(2);
+
+static VCPU_PARK_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VCPU_WAKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static NOTIFY_WOKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static LR_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn notify_woke_count(vcpu_id: usize) -> &'static AtomicUsize {
+    &NOTIFY_WOKE_COUNTS[vcpu_id]
+}
+
+pub(crate) fn lr_skip_count() -> &'static AtomicUsize {
+    &LR_SKIP_COUNT
+}
 
 /// Spawn the common host-side periodic injector used by both A and B.
 pub(crate) fn spawn_periodic_virq_injector(
@@ -93,7 +109,7 @@ fn run_periodic_virq_injector(vm: VMRef, config: crate::PeriodicVirqConfig) {
         let now = ax_std::time::Instant::now();
         let remaining = deadline.duration_since(now);
         if !remaining.is_zero() {
-            ax_std::thread::sleep(remaining);
+            sleep_until(deadline);
         }
         let requested_ns = crate::host::default_host().monotonic_time().as_nanos() as u64;
         let result = vm.inject_interrupt_to_vcpu(targets, config.vector);
@@ -125,9 +141,54 @@ fn run_periodic_virq_injector(vm: VMRef, config: crate::PeriodicVirqConfig) {
         config.samples,
         failed,
     );
+    info!(
+        "E1_COUNTERS vcpu0_park={} vcpu0_wake={} vcpu1_park={} vcpu1_wake={} notify_woke0={} \
+         notify_woke1={} lr_skip={}",
+        VCPU_PARK_COUNTS[0].load(Ordering::Relaxed),
+        VCPU_WAKE_COUNTS[0].load(Ordering::Relaxed),
+        VCPU_PARK_COUNTS[1].load(Ordering::Relaxed),
+        VCPU_WAKE_COUNTS[1].load(Ordering::Relaxed),
+        NOTIFY_WOKE_COUNTS[0].load(Ordering::Relaxed),
+        NOTIFY_WOKE_COUNTS[1].load(Ordering::Relaxed),
+        LR_SKIP_COUNT.load(Ordering::Relaxed),
+    );
     // Let the final interrupt reach and be timestamped by the guest before
     // the injector task exits.
-    ax_std::thread::sleep(config.period);
+    sleep_until(ax_std::time::Instant::now() + config.period);
+}
+
+/// Sleeps through the AxVM timer wheel instead of `ax_std::thread::sleep`.
+///
+/// The wheel is the only path that reprograms the shared physical timer on
+/// AArch64; a plain host-task sleep is only serviced when a guest timer event
+/// happens to fire the same IRQ. With a suspend-idle guest that arms no timer
+/// of its own, `ax_std::thread::sleep` would never wake.
+fn sleep_until(deadline: ax_std::time::Instant) {
+    struct SleepWake {
+        woke: core::sync::atomic::AtomicBool,
+        wq: crate::WaitQueue,
+    }
+    let state = Arc::new(SleepWake {
+        woke: core::sync::atomic::AtomicBool::new(false),
+        wq: crate::WaitQueue::new(),
+    });
+    let callback_state = Arc::clone(&state);
+    let remaining_ns = deadline
+        .duration_since(ax_std::time::Instant::now())
+        .as_nanos() as u64;
+    let token = crate::timer::register_timer(
+        crate::host::default_host().monotonic_time().as_nanos() as u64 + remaining_ns,
+        Box::new(move |_| {
+            callback_state
+                .woke
+                .store(true, core::sync::atomic::Ordering::Release);
+            callback_state.wq.notify_all(false);
+        }),
+    );
+    state
+        .wq
+        .wait_until(|| state.woke.load(core::sync::atomic::Ordering::Acquire));
+    crate::timer::cancel_timer(token);
 }
 
 /// Blocks the current thread until it is explicitly woken up, using the wait queue
@@ -137,12 +198,14 @@ fn run_periodic_virq_injector(vm: VMRef, config: crate::PeriodicVirqConfig) {
 ///
 /// * `vcpu_id` - The vCPU whose wait queue is used to block the current thread.
 fn wait(vm: &VMRef, vm_vcpus: &VmRuntimeHandle, vcpu_id: usize) {
+    VCPU_PARK_COUNTS[vcpu_id].fetch_add(1, Ordering::Relaxed);
     vm_vcpus.wait_vcpu_until(vcpu_id, || {
         vm_vcpus.has_pending_vcpu_interrupt(vcpu_id)
             || !vm.running()
             || vm.suspending()
             || vm.stopping()
     });
+    VCPU_WAKE_COUNTS[vcpu_id].fetch_add(1, Ordering::Relaxed);
 }
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
@@ -171,10 +234,10 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
         warn!("VM[{vm_id}] not found while notifying primary vCPU");
         return;
     };
-    if let Err(err) = vm.with_runtime(|runtime| {
-        runtime.notify_vcpu_startup(0);
-        Ok(())
-    }) {
+    if let Err(err) = vm
+        .with_runtime(|runtime| Ok(runtime.clone()))
+        .map(|runtime| runtime.notify_vcpu_startup(0))
+    {
         warn!("VM[{vm_id}] vCPU runtime not found: {err:?}");
     }
 }
@@ -187,10 +250,9 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
 /// * `vm_id` - The ID of the VM whose VCpus should be notified.
 pub(crate) fn notify_all_vcpus(vm_id: usize) {
     if let Some(vm) = crate::get_vm_by_id(vm_id) {
-        let _ = vm.with_runtime(|runtime| {
+        if let Ok(runtime) = vm.with_runtime(|runtime| Ok(runtime.clone())) {
             runtime.notify_all();
-            Ok(())
-        });
+        }
     }
 }
 
@@ -204,18 +266,20 @@ pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> Ax
         ));
     }
 
-    vm.with_runtime(|runtime| {
-        // Preserve the vector-only API as an edge-triggered pulse while
-        // routing it through the same enqueue/notify/IPI path as modelled
-        // virtual interrupt senders.
-        runtime.dispatch_vcpu_interrupt(
-            vcpu_id,
-            PendingVcpuInterrupt {
-                id: VirtualInterruptId(vector as u32),
-                trigger: crate::InterruptTriggerMode::EdgeTriggered,
-            },
-        )
-    })
+    // Take the runtime handle without holding the VM machine lock across the
+    // wake: a parked vCPU evaluates its wait condition while holding its wait
+    // queue lock and takes the machine lock inside `vm.running()`/`stopping()`,
+    // so notifying under the machine lock is an ABBA deadlock (observed once
+    // vCPUs actually park via PSCI CPU_SUSPEND standby).
+    let runtime = vm.with_runtime(|runtime| Ok(runtime.clone()))?;
+    let result = runtime.dispatch_vcpu_interrupt(
+        vcpu_id,
+        PendingVcpuInterrupt {
+            id: VirtualInterruptId(vector as u32),
+            trigger: crate::InterruptTriggerMode::EdgeTriggered,
+        },
+    );
+    result
 }
 
 #[expect(

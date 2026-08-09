@@ -64,6 +64,10 @@ impl ArchOps for Aarch64Arch {
         arm_vcpu::has_hardware_support()
     }
 
+    fn is_virtual_interrupt_busy(vector: usize) -> bool {
+        gic::virtual_interrupt_busy(vector)
+    }
+
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
         aarch64_cpu_ext::cache::dcache_range(
             aarch64_cpu_ext::cache::CacheOp::Clean,
