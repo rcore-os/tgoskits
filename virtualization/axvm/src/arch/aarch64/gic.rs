@@ -18,7 +18,7 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     f(&mut gic)
 }
 
-pub(crate) fn inject_interrupt(irq: usize) {
+pub(crate) fn inject_interrupt(irq: usize) -> Result<(), ()> {
     debug!("Injecting virtual interrupt: {irq}");
 
     with_gic(|gic| {
@@ -41,19 +41,18 @@ pub(crate) fn inject_interrupt(irq: usize) {
                     true,
                 ),
             );
-            return;
+            return Ok(());
         }
 
         if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
-            inject_interrupt_gic_v3(irq);
-            return;
+            return inject_interrupt_gic_v3(irq);
         }
 
         panic!("no GIC driver found");
-    });
+    })
 }
 
-fn inject_interrupt_gic_v3(vector: usize) {
+fn inject_interrupt_gic_v3(vector: usize) -> Result<(), ()> {
     debug!("Injecting virtual interrupt: vector={vector}");
     let elsr = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS);
     let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
@@ -61,7 +60,7 @@ fn inject_interrupt_gic_v3(vector: usize) {
     if virtual_interrupt_busy(vector) {
         debug!("Virtual interrupt {vector} already pending/active in an LR, skipping");
         crate::runtime::vcpus::LR_SKIP_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        return;
+        return Err(());
     }
 
     let mut free_lr = None;
@@ -76,13 +75,13 @@ fn inject_interrupt_gic_v3(vector: usize) {
         (0..lr_num).find(|&i| ich_lr_el2_get(i).matches_all(ICH_LR_EL2::STATE::Invalid))
     });
     let Some(free_lr) = free_lr else {
-        // The busy check above already defers this vector when the list
+        // The busy check above already keeps this vector queued when the list
         // registers are full; this branch is only reachable through a race.
-        // Defer instead of panicking so the drained edge is re-queued and
-        // retried on the next drain.
+        // Report retryable failure so the caller re-queues the edge instead of
+        // losing it.
         debug!("Virtual interrupt {vector} deferred: no free list register");
         crate::runtime::vcpus::LR_SKIP_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        return;
+        return Err(());
     };
 
     ich_lr_el2_write(
@@ -96,6 +95,7 @@ fn inject_interrupt_gic_v3(vector: usize) {
     }
 
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
+    Ok(())
 }
 
 /// Returns true when `vector` cannot be injected right now: either it is

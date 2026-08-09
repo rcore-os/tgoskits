@@ -31,34 +31,41 @@ unrelated idle vCPU0.
   export ZEPHYR_BASE=/tmp/zephyrproject/zephyr
   ```
 
-- The Zephyr SDK 1.0.1, extracted to a writable location:
+- The Zephyr SDK, installed and verified:
 
   ```bash
-  export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk
+  west sdk install -d /tmp/zephyr-sdk   # downloads the default SDK version
+  export ZEPHYR_SDK_INSTALL_DIR=/tmp/zephyr-sdk
+  test -f "$ZEPHYR_SDK_INSTALL_DIR/sdk_version" && echo "SDK ready"
   ```
 
   The build uses the `qemu_cortex_a53/qemu_cortex_a53/smp` board variant and
   the `CONFIG_SMP` / `CONFIG_SCHED_CPU_MASK` settings in `prj.conf`.
 - The AxVisor host build (see the repository's axvisor QEMU instructions).
-- A QEMU virt rootfs image that contains the built `zephyr.bin` at the path
-  referenced by `axvisor-qemu-aarch64-suspend-smp2.toml`.
+- A QEMU virt rootfs image (for example one produced by the repository's
+  axbuild flow) that can boot aarch64 Linux.
 
 ## Build the guest
 
 ```bash
 ZEPHYR_BASE=/tmp/zephyrproject/zephyr \
-ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk \
+ZEPHYR_SDK_INSTALL_DIR=/tmp/zephyr-sdk \
 west build -p always \
   -b qemu_cortex_a53/qemu_cortex_a53/smp \
   scripts/test/zephyr-soft-virq-suspend \
   -d /tmp/zephyr-soft-virq-suspend-build
 ```
 
-Copy the raw image into the rootfs image at
-`/tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin` (for example with
-`debugfs -w -R 'write /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' <rootfs.img>`),
-then use the committed `axvisor-qemu-aarch64-suspend-smp2.toml` as the VM
-configuration.
+Copy the raw image into the rootfs image and verify it is readable by the
+guest at the path referenced by the committed VM configuration:
+
+```bash
+ROOTFS=</path/to/rootfs.img>
+debugfs -w -R \
+  'write /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' \
+  "$ROOTFS"
+debugfs -R 'stat /tmp/zephyr-soft-virq-suspend-build/zephyr/zephyr.bin' "$ROOTFS"
+```
 
 ## Run
 
@@ -80,6 +87,14 @@ FEATURES=openrace-realtime cargo xtask axvisor qemu \
 - The `E1_COUNTERS` line shows `vcpu0_wake=1` (the idle vCPU is not woken by
   vCPU1-targeted notifications) and `lr_skip=0` (no dropped edges).
 
+Readiness check on the captured serial log:
+
+```bash
+rg 'SOFTWARE VIRQ COMPLETE streams=1 samples_each=300 total=300' <log>
+rg 'VIRQ_INJECT_COMPLETE .*errors=0' <log>
+rg 'E1_COUNTERS .*vcpu0_wake=1.*lr_skip=0' <log>
+```
+
 ## Example run (current head)
 
 Captured with this commit on a QEMU virt AArch64 host:
@@ -87,7 +102,7 @@ Captured with this commit on a QEMU virt AArch64 host:
 ```text
 consumer pinned to cpu 1 rc=0
 VIRQ_INJECT_COMPLETE vm=2 vcpu=1 vector=48 samples=300 errors=0
-E1_COUNTERS vcpu0_park=2 vcpu0_wake=1 vcpu1_park=172 vcpu1_wake=172 notify_woke0=0 notify_woke1=61 lr_skip=0
+E1_COUNTERS vcpu0_park=2 vcpu0_wake=1 vcpu1_park=174 vcpu1_wake=174 notify_woke0=0 notify_woke1=61 lr_skip=0
 SOFTWARE VIRQ COMPLETE streams=1 samples_each=300 total=300
 ```
 

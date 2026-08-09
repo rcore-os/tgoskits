@@ -200,35 +200,54 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
         }
     };
     runtime.trace_virq_event(vm.id(), crate::runtime::VirqTraceKind::Running, vcpu_id, 0);
-    // Pop one injectable edge at a time under the queue lock. A blocked head
-    // edge stays queued, so same-vector batches cannot be drained and then
-    // dropped on a busy list register, and a re-enqueue cannot fail silently
-    // against concurrent producers.
-    let mut first = true;
-    while let Some(interrupt) = runtime.irq_dispatcher().pop_if(vcpu_id, |interrupt| {
-        A::is_virtual_interrupt_busy(interrupt.id.0 as usize)
-    }) {
-        if first {
+    pop_and_inject(
+        runtime.irq_dispatcher(),
+        vcpu_id,
+        |vector| A::is_virtual_interrupt_busy(vector),
+        |interrupt| {
             runtime.trace_virq_event(
                 vm.id(),
-                crate::runtime::VirqTraceKind::Drain,
+                crate::runtime::VirqTraceKind::Inject,
                 vcpu_id,
                 interrupt.id.0,
             );
-            first = false;
-        }
-        runtime.trace_virq_event(
-            vm.id(),
-            crate::runtime::VirqTraceKind::Inject,
-            vcpu_id,
-            interrupt.id.0,
-        );
-        if let Err(err) = A::inject_vcpu_interrupt(vcpu, interrupt) {
-            warn!(
-                "VM[{}] VCpu[{}] failed to inject interrupt {interrupt:?}: {err:?}",
-                vm.id(),
-                vcpu_id
-            );
+            A::inject_vcpu_interrupt(vcpu, interrupt).map_err(|err| {
+                warn!(
+                    "VM[{}] VCpu[{}] failed to inject interrupt: {err:?}",
+                    vm.id(),
+                    vcpu_id
+                );
+            })
+        },
+    );
+}
+
+/// Pops one injectable edge at a time under the queue lock and injects it.
+///
+/// A blocked head edge stays queued, so same-vector batches cannot be drained
+/// and then dropped on a busy list register. When `inject` reports a retryable
+/// failure (for example the backend ran out of list registers between the busy
+/// check and the write), the edge is re-queued and the loop stops for this
+/// round instead of being lost.
+fn pop_and_inject<F, G>(
+    dispatcher: &crate::runtime::VcpuIrqDispatcher,
+    vcpu_id: usize,
+    is_busy: F,
+    mut inject: G,
+) where
+    F: Fn(usize) -> bool,
+    G: FnMut(PendingVcpuInterrupt) -> Result<(), ()>,
+{
+    while let Some(interrupt) =
+        dispatcher.pop_if(vcpu_id, |interrupt| is_busy(interrupt.id.0 as usize))
+    {
+        if inject(interrupt).is_err() {
+            if dispatcher.enqueue(vcpu_id, interrupt).is_err() {
+                // Only reachable if concurrent producers filled the freed
+                // slot; treat as backpressure rather than a silent drop.
+                warn!("vCPU {vcpu_id} interrupt queue full after retryable inject failure");
+            }
+            break;
         }
     }
 }
@@ -492,5 +511,51 @@ mod tests {
             ]
         );
         assert!(dispatcher.drain(0).is_empty());
+    }
+
+    #[test]
+    fn pop_and_inject_requeues_edge_on_retryable_backend_failure() {
+        let injections = Arc::new(SpinNoIrq::new(InjectionLog {
+            failing_vector: Some(0x42),
+            ..Default::default()
+        }));
+        let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap());
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        for id in [0x41u32, 0x42, 0x43] {
+            dispatcher
+                .enqueue(
+                    0,
+                    PendingVcpuInterrupt {
+                        id: VirtualInterruptId(id),
+                        trigger: InterruptTriggerMode::EdgeTriggered,
+                    },
+                )
+                .unwrap();
+        }
+
+        pop_and_inject(
+            &dispatcher,
+            0,
+            |_| false,
+            |interrupt| {
+                vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+                    .map_err(|_| ())
+            },
+        );
+
+        // 0x41 injected; 0x42 was attempted and failed (recorded, then
+        // re-queued rather than dropped); the loop stops before 0x43.
+        assert_eq!(
+            injections.lock().attempts,
+            vec![
+                (0x41, InterruptTriggerMode::EdgeTriggered),
+                (0x42, InterruptTriggerMode::EdgeTriggered),
+            ]
+        );
+        let remaining = dispatcher.drain(0);
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].id.0, 0x43);
+        assert_eq!(remaining[1].id.0, 0x42);
     }
 }

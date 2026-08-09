@@ -230,8 +230,7 @@ struct AxvmArmHostOps;
 
 impl ArmHostOps for AxvmArmHostOps {
     fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult {
-        gic::inject_interrupt(vector as usize);
-        Ok(())
+        gic::inject_interrupt(vector as usize).map_err(|_| ArmVcpuError::BadState)
     }
 
     fn fetch_pending_host_irq() -> Option<usize> {
