@@ -52,9 +52,9 @@ F: drivers/blk/dwmmc-host/
 F: drivers/blk/cv181x-sdhci/
 F: drivers/blk/starfive-jh7110-dwmmc/
 F: drivers/ax-driver/src/block/
-F: components/sdio-host/
-F: components/sdio-host2/
-F: components/sdhci-cv1800/
+F: drivers/blk/sdio-host/
+F: drivers/blk/sdio-host2/
+F: drivers/blk/sdhci-cv1800/
 F: os/arceos/api/arceos_posix_api/
 F: os/arceos/ulib/axlibc/
 F: virtualization/riscv_vcpu/

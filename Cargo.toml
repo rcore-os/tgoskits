@@ -17,7 +17,6 @@ members = [
 
     "bootloader/axloader",
 
-    "components/aic8800",
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
     "components/cpu-local",
@@ -41,9 +40,6 @@ members = [
     "components/linked_list_r4l",
     "components/lockdep",
     "components/scope-local",
-    "components/sdhci-cv1800",
-    "components/sdio-host",
-    "components/sdio-host2",
     "components/starry-process",
     "components/starry-signal",
     "components/starry-vm",
@@ -250,10 +246,10 @@ rdrive = { version = "0.23.9", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.3", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.7.8", path = "fs/rsext4" }
 scope-local = { version = "0.4.5", path = "components/scope-local" }
-sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "components/sdio-host" }
-sdio-host2 = { version = "0.1.6", path = "components/sdio-host2" }
-sdhci-cv1800 = { version = "0.1.1", path = "components/sdhci-cv1800" }
-aic8800 = { version = "0.2.7", path = "components/aic8800" }
+sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "drivers/blk/sdio-host" }
+sdio-host2 = { version = "0.1.6", path = "drivers/blk/sdio-host2" }
+sdhci-cv1800 = { version = "0.1.1", path = "drivers/blk/sdhci-cv1800" }
+aic8800 = { version = "0.2.7", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.10.5", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
