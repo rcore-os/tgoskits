@@ -6,6 +6,7 @@ workspace="${STARRY_WORKSPACE:-$(cd -- "$app_dir/../../.." && pwd)}"
 architecture="${STARRY_ARCH:-x86_64}"
 target="${STARRY_TARGET:-x86_64-unknown-none}"
 output="${STARRY_ROOTFS:-$workspace/tmp/axbuild/rootfs/rootfs-x86_64-nixos.img/rootfs-x86_64-nixos.img}"
+NIX=(nix --extra-experimental-features "nix-command flakes")
 
 fail() {
     echo "StarryNixOS artifact error: $*" >&2
@@ -116,7 +117,7 @@ publish_artifact() {
 
     inspect_artifact "$image" "$toplevel"
     image_hash="$(sha256sum "$image" | cut -d ' ' -f 1)"
-    systemd_version="$(nix eval --raw "path:$app_dir#systemd.version")"
+    systemd_version="$("${NIX[@]}" eval --raw "path:$app_dir#systemd.version")"
     manifest_tmp="$(mktemp)"
     trap 'rm -f -- "$manifest_tmp"' EXIT
     write_manifest "$manifest_tmp" "$toplevel" "$systemd_version" "$image_hash"
@@ -238,8 +239,8 @@ main() {
     require_command nix
 
     local image toplevel
-    toplevel="$(nix build --no-link --print-out-paths "path:$app_dir#system")"
-    image="$(nix build --no-link --print-out-paths "path:$app_dir#rootfs")"
+    toplevel="$("${NIX[@]}" build --no-link --print-out-paths "path:$app_dir#system")"
+    image="$("${NIX[@]}" build --no-link --print-out-paths "path:$app_dir#rootfs")"
     inspect_artifact "$image" "$toplevel"
     publish_artifact "$image" "$toplevel"
 }
