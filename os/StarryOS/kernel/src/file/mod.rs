@@ -46,7 +46,13 @@ use starry_process::Pid;
 #[cfg(axtest)]
 pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
 #[cfg(axtest)]
-pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
+pub(crate) use self::epoll::epoll_hup_does_not_synthesize_readable_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_axtest::{
+    concurrent_reverse_add_is_serialized_for_test, edge_callback_does_not_reenter_target_for_test,
+    edge_readiness_requires_a_new_notification_for_test,
+    level_aliases_rotate_in_linux_callback_order_for_test,
+};
 #[cfg(axtest)]
 pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
 #[cfg(axtest)]
@@ -70,7 +76,8 @@ pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
-    peer_close_with_multiple_readers_is_visible_for_test,
+    interrupted_pipe_write_preserves_partial_progress_for_test,
+    peer_close_with_multiple_readers_is_visible_for_test, pipe_linux_io_semantics_hold_for_test,
     pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
 };
 #[cfg(axtest)]
@@ -199,6 +206,15 @@ pub type IoSrc<'a> = dyn ReadBuf + 'a;
 
 #[allow(dead_code)]
 pub trait FileLike: Pollable + DowncastSync {
+    /// Validate a scalar write length before importing the user buffer.
+    ///
+    /// File types with count errors that take precedence over `EFAULT` can
+    /// override this hook. The full write operation must repeat any invariant
+    /// needed to remain correct for non-scalar callers.
+    fn validate_write_len(&self, _len: usize) -> AxResult {
+        Ok(())
+    }
+
     fn read(&self, _dst: &mut IoDst) -> AxResult<usize> {
         Err(AxError::InvalidInput)
     }

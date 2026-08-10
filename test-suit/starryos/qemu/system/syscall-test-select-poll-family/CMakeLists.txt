@@ -35,6 +35,7 @@ set(SOURCES
     src/poll_regular_file.c
     src/poll_closed_fd.c
     src/poll_pipe_hup.c
+    src/poll_unknown_events.c
     src/pselect_sigmask_block.c
     src/pselect_sigmask_restore.c
     src/pselect_no_sigmask.c

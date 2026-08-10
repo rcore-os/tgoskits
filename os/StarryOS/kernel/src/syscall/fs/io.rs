@@ -150,6 +150,7 @@ pub fn sys_write(
 ) -> AxResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
+    file_like.validate_write_len(len)?;
     validate_user_read_buf(current, buf.cast_const(), len)?;
     memfd_checks_before_stream_write(&file_like, len as u64)?;
     let data = copy_user_read_buf(current, buf.cast_const(), len)?;
@@ -163,8 +164,12 @@ pub fn sys_writev(
     iovcnt: usize,
 ) -> AxResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
-    let total = validate_user_iov_buf_regions(current, iov, iovcnt)?;
     let file_like = get_file_like(fd)?;
+    // Check length invariants (e.g. eventfd count) before importing segment
+    // data, so a count error (EINVAL) takes precedence over a bad segment
+    // pointer (EFAULT), matching Linux vfs_writev / eventfd_write ordering.
+    file_like.validate_write_len(iov_total_len(current, iov, iovcnt)?)?;
+    let total = validate_user_iov_buf_regions(current, iov, iovcnt)?;
     memfd_checks_before_stream_write(&file_like, total as u64)?;
     let data = copy_user_iov_read_buf(current, iov, iovcnt)?;
     file_like.write(&mut data.as_slice()).map(|n| n as _)
@@ -586,8 +591,9 @@ pub fn sys_pwritev2(
     }
     if offset == -1 {
         // offset == -1: use current file position (like writev)
-        let total = validate_user_iov_buf_regions(current, iov, iovcnt)?;
         let file_like = get_file_like(fd)?;
+        file_like.validate_write_len(iov_total_len(current, iov, iovcnt)?)?;
+        let total = validate_user_iov_buf_regions(current, iov, iovcnt)?;
         memfd_checks_before_stream_write(&file_like, total as u64)?;
         let data = copy_user_iov_read_buf(current, iov, iovcnt)?;
         file_like.write(&mut data.as_slice()).map(|n| n as _)
@@ -632,6 +638,31 @@ fn validate_user_read_buf(
     }
     UserConstPtr::<u8>::from(buf).validate_slice(current, len)?;
     Ok(())
+}
+
+/// Sum of `iov_len` across the iovec array. Reads the iovec *struct* (so a bad
+/// array pointer still yields `EFAULT`) but does not touch `iov_base`, letting
+/// callers enforce length invariants (e.g. eventfd's 8-byte count) before any
+/// segment payload is imported. Same overflow cap as [`IoVectorBuf`].
+fn iov_total_len(
+    current: &crate::task::UserTaskRef,
+    iov: *const IoVec,
+    iovcnt: usize,
+) -> AxResult<usize> {
+    if iovcnt > 1024 {
+        return Err(AxError::InvalidInput);
+    }
+    let mut total = 0usize;
+    for i in 0..iovcnt {
+        let entry = iov.wrapping_add(i).vm_read(current)?;
+        if entry.iov_len < 0 {
+            return Err(AxError::InvalidInput);
+        }
+        total = total
+            .checked_add(entry.iov_len as usize)
+            .ok_or(AxError::InvalidInput)?;
+    }
+    Ok(total)
 }
 
 /// Validate each `iovec` segment is readable; returns total length (same cap as [`IoVectorBuf`]).

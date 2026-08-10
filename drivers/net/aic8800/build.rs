@@ -8,7 +8,7 @@
 //!
 //! Resolution order for each blob (first hit wins):
 //!   1. `$AIC8800_FIRMWARE_DIR/<name>` — explicit local cache / offline mirror.
-//!   2. `components/aic8800/firmware/<name>` — optional in-tree cache for
+//!   2. `drivers/net/aic8800/firmware/<name>` — optional in-tree cache for
 //!      offline builds.
 //!   3. download from the pinned upstream commit over HTTPS.
 //!
@@ -126,7 +126,7 @@ fn download(file: &FirmwareFile) -> Vec<u8> {
         !file.remote_path.is_empty(),
         "firmware {} has no upstream mirror (remote_path is empty) and was not found in the \
          in-tree firmware dir or $AIC8800_FIRMWARE_DIR. This blob is vendored in \
-         components/aic8800/firmware/ — ensure it is checked out (it is allow-listed in that \
+         drivers/net/aic8800/firmware/ — ensure it is checked out (it is allow-listed in that \
          dir's .gitignore).",
         file.name
     );

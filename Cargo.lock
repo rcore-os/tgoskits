@@ -416,6 +416,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-virtio-net-peer"
+version = "0.1.0"
+dependencies = [
+ "ax-net",
+ "ax-std",
+]
+
+[[package]]
 name = "arm-gic-driver"
 version = "0.17.11"
 dependencies = [
@@ -1536,6 +1544,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "axvirtio-common"
+version = "0.1.0"
+dependencies = [
+ "ax-kspin",
+ "ax-memory-addr",
+ "axaddrspace",
+ "axvm-types",
+ "log",
+]
+
+[[package]]
+name = "axvirtio-net"
+version = "0.1.0"
+dependencies = [
+ "ax-kspin",
+ "ax-memory-addr",
+ "axaddrspace",
+ "axdevice_base",
+ "axvirtio-common",
+ "axvm-types",
+ "log",
+]
+
+[[package]]
 name = "axvisor"
 version = "0.5.24"
 dependencies = [
@@ -1546,8 +1578,13 @@ dependencies = [
  "ax-task",
  "axbacktrace",
  "axbuild",
+ "axdevice",
+ "axdevice_base",
  "axtest",
+ "axvirtio-common",
+ "axvirtio-net",
  "axvm",
+ "axvm-types",
  "axvmconfig",
  "clap",
  "heapless",

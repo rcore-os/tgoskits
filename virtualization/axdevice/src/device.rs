@@ -146,6 +146,8 @@ pub struct DeviceRuntime {
     sysreg_index: BTreeMap<u32, RangeEntry>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
+    /// Devices whose periodic progress requires scoped guest-memory DMA.
+    dma_pollable_devices: Vec<(DeviceId, Arc<dyn DmaPollableDeviceOps>, DmaGrant)>,
     /// Optional lifecycle capabilities in contribution registration order.
     lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// Typed capabilities contributed during VM preparation.
@@ -302,6 +304,7 @@ impl DeviceRuntime {
             port_index: BTreeMap::new(),
             sysreg_index: BTreeMap::new(),
             pollable_devices: Vec::new(),
+            dma_pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
             planned: PlannedRuntimeResources::new(),
@@ -364,6 +367,16 @@ impl DeviceRuntime {
         )?;
         validate_bundle_grant_indices(
             bundle.devices.len(),
+            &bundle
+                .dma_pollable
+                .iter()
+                .map(|(index, _, grant)| (*index, grant.clone()))
+                .collect::<Vec<_>>(),
+            "register DMA-pollable device",
+            "DMA-pollable capability",
+        )?;
+        validate_bundle_grant_indices(
+            bundle.devices.len(),
             &bundle.timer_devices,
             "register device timer capability",
             "timer capability",
@@ -390,6 +403,24 @@ impl DeviceRuntime {
                 return Err(DeviceManagerError::ResourceConflict {
                     operation: "register pollable device",
                     detail: "the same pollable capability is already registered".into(),
+                });
+            }
+        }
+        for (index, (_, pollable, _)) in bundle.dma_pollable.iter().enumerate() {
+            if self
+                .dma_pollable_devices
+                .iter()
+                .map(|(_, existing, _)| existing)
+                .chain(
+                    bundle.dma_pollable[..index]
+                        .iter()
+                        .map(|(_, existing, _)| existing),
+                )
+                .any(|existing| Arc::ptr_eq(existing, pollable))
+            {
+                return Err(DeviceManagerError::ResourceConflict {
+                    operation: "register DMA-pollable device",
+                    detail: "the same DMA-pollable capability is already registered".into(),
                 });
             }
         }
@@ -441,6 +472,15 @@ impl DeviceRuntime {
                 .map(|(index, grant)| (DeviceId::new((saved_len + index) as u32), grant.clone())),
         );
         self.pollable_devices.extend(bundle.pollable);
+        self.dma_pollable_devices
+            .extend(
+                bundle
+                    .dma_pollable
+                    .into_iter()
+                    .map(|(index, pollable, grant)| {
+                        (DeviceId::new((saved_len + index) as u32), pollable, grant)
+                    }),
+            );
         self.lifecycle_devices.extend(bundle.lifecycle);
         self.services.append(bundle.services);
         self.planned.append(bundle.planned);
@@ -765,6 +805,28 @@ impl DeviceRuntime {
     /// Iterates over devices that require periodic polling.
     pub fn iter_pollable_dev(&self) -> impl Iterator<Item = &Arc<dyn PollableDeviceOps>> {
         self.pollable_devices.iter()
+    }
+
+    /// Polls asynchronous DMA devices with a guest-memory port scoped to each
+    /// individual callback.
+    pub fn poll_dma_devices(
+        &self,
+        now_ns: u64,
+        memory: &mut dyn DeviceAccess,
+        mut observe: impl FnMut(DeviceManagerResult),
+    ) {
+        for (device_id, pollable, grant) in &self.dma_pollable_devices {
+            let mut context = RuntimeDeviceAccess {
+                device_id: *device_id,
+                memory: Some(&mut *memory),
+                dma_grants: &self.dma_grants,
+                timer_grants: &self.timer_grants,
+                wake_grants: &self.wake_grants,
+                stop_grants: &self.stop_grants,
+                access_ports: &self.access_ports,
+            };
+            observe(pollable.poll_dma(now_ns, &mut context, grant));
+        }
     }
 
     /// Returns VM-local typed device services.
@@ -1215,7 +1277,7 @@ mod tests {
     };
     use crate::{
         DeviceBundle, DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-        ServiceCardinality, ServiceKey,
+        DmaPollableDeviceOps, ServiceCardinality, ServiceKey,
     };
 
     struct D {
@@ -1418,6 +1480,27 @@ mod tests {
         }
     }
 
+    struct TestDmaPoller {
+        grant: DmaGrant,
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl DmaPollableDeviceOps for TestDmaPoller {
+        fn poll_dma(
+            &self,
+            _now_ns: u64,
+            access: &mut dyn DeviceAccess,
+            _registered_grant: &DmaGrant,
+        ) -> DeviceManagerResult {
+            let mut byte = [0u8; 1];
+            access
+                .read_guest_memory(&self.grant, GuestPhysAddr::from_usize(0), &mut byte)
+                .map_err(DeviceManagerError::Device)?;
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
     struct ReadOnWriteDevice {
         resources: alloc::vec::Vec<Resource>,
     }
@@ -1581,6 +1664,62 @@ mod tests {
                 &mut memory,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn dma_polling_scopes_memory_to_the_registered_device_and_grant() {
+        let mut devices = DeviceRuntime::empty();
+        let grant = DmaGrant::new();
+        let polls = Arc::new(AtomicUsize::new(0));
+        devices
+            .register_bundle({
+                let mut bundle = DeviceBundle::new();
+                bundle.add_dma_pollable_device(
+                    Arc::new(D::new_mmio(0x7000, 0x100, "dma-poll-device")),
+                    Arc::new(TestDmaPoller {
+                        grant: grant.clone(),
+                        polls: polls.clone(),
+                    }),
+                    grant,
+                );
+                bundle
+            })
+            .unwrap();
+        let mut memory = TestMemoryPort;
+        let mut result = None;
+
+        devices.poll_dma_devices(123, &mut memory, |poll_result| result = Some(poll_result));
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(polls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn dma_polling_rejects_a_different_grant_token() {
+        let mut devices = DeviceRuntime::empty();
+        let registered_grant = DmaGrant::new();
+        let polls = Arc::new(AtomicUsize::new(0));
+        devices
+            .register_bundle({
+                let mut bundle = DeviceBundle::new();
+                bundle.add_dma_pollable_device(
+                    Arc::new(D::new_mmio(0x7100, 0x100, "wrong-dma-grant")),
+                    Arc::new(TestDmaPoller {
+                        grant: DmaGrant::new(),
+                        polls: polls.clone(),
+                    }),
+                    registered_grant,
+                );
+                bundle
+            })
+            .unwrap();
+        let mut memory = TestMemoryPort;
+        let mut result = None;
+
+        devices.poll_dma_devices(123, &mut memory, |poll_result| result = Some(poll_result));
+
+        assert!(result.unwrap().is_err());
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
     }
 
     fn dispatch_sensitive_grant_probe(

@@ -77,6 +77,12 @@ ax-std = { workspace = true, default-features = false, features = [
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
+axvm-types.workspace = true
+axdevice.workspace = true
+axdevice_base.workspace = true
+axvirtio-common.workspace = true
+axvirtio-net.workspace = true
+toml.workspace = true
 ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 

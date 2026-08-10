@@ -70,7 +70,7 @@ tarball。`build.rs` 在编译时把它们准备到 `OUT_DIR/firmware/`，`src/f
 `build.rs` 的固件来源优先级（命中即止）：
 
 1. `$AIC8800_FIRMWARE_DIR/<name>` — 显式本地缓存 / 离线镜像目录。
-2. 仓库内 `components/aic8800/firmware/<name>` — 可选的本地缓存；手动放入并通过
+2. 仓库内 `drivers/net/aic8800/firmware/<name>` — 可选的本地缓存；手动放入并通过
    SHA-256 校验后，可在离线构建时使用。
 3. 从上游 pin 的 commit 下载 — 任一构建在前两项均不可用时使用。
 

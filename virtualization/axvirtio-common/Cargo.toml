@@ -1,0 +1,20 @@
+[package]
+name = "axvirtio-common"
+version = "0.1.0"
+edition.workspace = true
+authors = ["Debin <luodeb@outlook.com>"]
+license.workspace = true
+repository.workspace = true
+description = "Common types, traits, and utilities for VirtIO device implementations"
+keywords = ["virtio", "hypervisor", "no_std", "arceos"]
+categories = ["no-std", "embedded", "hardware-support"]
+
+[dependencies]
+ax-memory-addr.workspace = true
+axaddrspace.workspace = true
+axvm-types.workspace = true
+ax-kspin.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }
